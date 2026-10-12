@@ -3,9 +3,11 @@ using AwesomeAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Application.Flows;
+using NetRatel.Application.Notifications;
 using NetRatel.Infrastructure.Flows;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared.Contracts.Notifications;
 using NetRatel.Tests.Infrastructure;
 using Npgsql;
 using Xunit;
@@ -283,6 +285,135 @@ public sealed class FlowPostgreSqlTests(PostgreSqlPersistenceFixture postgres)
         (await h.Provider.GetRequiredService<FlowRunProcessor>().ProcessOneAsync()).Should().BeFalse(); h.Dispatcher.Sends.Should().Be(1);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Group_retries_respect_each_target_deadline_and_keep_successful_or_unknown_siblings_unchanged(bool slackUnknown)
+    {
+        await using var h = await Harness.CreateAsync(postgres);
+        var version = await h.PublishAsync(FlowTestData.GroupGraph()); var queued = await h.Ingress.EnqueueAsync(h.Event(version));
+        h.Notifications.DiscordRetryOnce = true; h.Notifications.SlackUnknown = slackUnknown; h.Notifications.SlackRetryOnce = !slackUnknown;
+        (await h.Provider.GetRequiredService<FlowRunProcessor>().ProcessOneAsync()).Should().BeTrue();
+        var first = (await h.Definitions.GetRunByIdAsync(17, queued.RunId!.Value))!;
+        first.Run.Status.Should().Be(FlowRunStatus.RetryWaiting);
+        first.Actions.Should().HaveCount(3);
+        first.Actions.Single(action => action.Kind == FlowActionKind.RatelDeskIncident).Status.Should().Be(FlowActionStatus.Succeeded);
+        first.Actions.Single(action => action.Kind == FlowActionKind.Discord).Status.Should().Be(FlowActionStatus.RetryWaiting);
+        first.Actions.Single(action => action.Kind == FlowActionKind.Slack).Status.Should().Be(slackUnknown ? FlowActionStatus.DeliveryUnknown : FlowActionStatus.RetryWaiting);
+        await using var restarted = h.NewProvider();
+        (await restarted.GetRequiredService<FlowRunProcessor>().ProcessOneAsync()).Should().BeTrue();
+        var finished = (await h.Definitions.GetRunByIdAsync(17, queued.RunId.Value))!;
+        finished.Run.Status.Should().Be(slackUnknown ? FlowRunStatus.PartiallySucceeded : FlowRunStatus.RetryWaiting);
+        h.Dispatcher.Sends.Should().Be(1); h.Notifications.Calls[FlowActionKind.Discord].Should().Be(2); h.Notifications.Calls[FlowActionKind.Slack].Should().Be(1);
+        finished.Actions.Single(action => action.Kind == FlowActionKind.RatelDeskIncident).Receipt.Should()
+            .Be(first.Actions.Single(action => action.Kind == FlowActionKind.RatelDeskIncident).Receipt);
+        if (slackUnknown)
+        {
+            h.Clock.Advance(FlowLimits.HistoryRetention + TimeSpan.FromDays(1));
+            (await h.Store.PruneHistoryAsync()).Should().Be(0, "a partial run retains an uncertain notification's delivery key");
+        }
+        else
+        {
+            h.Clock.Advance(TimeSpan.FromSeconds(31));
+            (await restarted.GetRequiredService<FlowRunProcessor>().ProcessOneAsync()).Should().BeTrue();
+            (await h.Ingress.GetOutcomeAsync(17, queued.RunId.Value))!.Status.Should().Be(FlowRunStatus.Succeeded);
+            h.Dispatcher.Sends.Should().Be(1); h.Notifications.Calls[FlowActionKind.Discord].Should().Be(2); h.Notifications.Calls[FlowActionKind.Slack].Should().Be(2);
+        }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(23)]
+    public async Task Long_provider_retry_after_preserves_its_deadline_or_explicitly_exhausts_the_remaining_run_age(int ageHours)
+    {
+        await using var h = await Harness.CreateAsync(postgres);
+        var version = await h.PublishAsync(FlowTestData.GroupGraph()); var queued = await h.Ingress.EnqueueAsync(h.Event(version));
+        h.Notifications.DiscordRetryOnce = true; h.Notifications.DiscordRetryAfter = TimeSpan.FromHours(2);
+        h.Clock.Advance(TimeSpan.FromHours(ageHours));
+        var retryAt = h.Clock.GetUtcNow() + h.Notifications.DiscordRetryAfter;
+        (await h.Provider.GetRequiredService<FlowRunProcessor>().ProcessOneAsync()).Should().BeTrue();
+        var first = (await h.Definitions.GetRunByIdAsync(17, queued.RunId!.Value))!;
+        var discord = first.Actions.Single(action => action.Kind == FlowActionKind.Discord);
+        var exhausted = ageHours > 0;
+        discord.Status.Should().Be(exhausted ? FlowActionStatus.Failed : FlowActionStatus.RetryWaiting);
+        discord.Code.Should().Be(exhausted ? "retry-budget-exhausted" : "rate-limited");
+        first.Run.Status.Should().Be(exhausted ? FlowRunStatus.PartiallySucceeded : FlowRunStatus.RetryWaiting);
+        first.Actions.Should().NotContain(action => action.Status == FlowActionStatus.DeliveryUnknown,
+            "a confirmed rate-limit rejection is known to have created no notification");
+        await using (var scope = h.Provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var action = await db.FlowActions.SingleAsync(row => row.RunId == queued.RunId.Value && row.NodeId == discord.NodeId);
+            if (exhausted) action.NextAttemptAtUtc.Should().BeNull();
+            else action.NextAttemptAtUtc.Should().BeCloseTo(retryAt, TimeSpan.FromMicroseconds(1));
+        }
+        h.Clock.Advance(TimeSpan.FromHours(2) - TimeSpan.FromSeconds(1));
+        (await h.Provider.GetRequiredService<FlowRunProcessor>().ProcessOneAsync()).Should().BeFalse();
+        h.Notifications.Calls[FlowActionKind.Discord].Should().Be(1);
+        h.Clock.Advance(TimeSpan.FromSeconds(1));
+        (await h.Provider.GetRequiredService<FlowRunProcessor>().ProcessOneAsync()).Should().Be(!exhausted);
+        (await h.Ingress.GetOutcomeAsync(17, queued.RunId.Value))!.Status.Should()
+            .Be(exhausted ? FlowRunStatus.PartiallySucceeded : FlowRunStatus.Succeeded);
+        h.Notifications.Calls[FlowActionKind.Discord].Should().Be(exhausted ? 1 : 2);
+        h.Notifications.Calls[FlowActionKind.Slack].Should().Be(1); h.Dispatcher.Sends.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Notification_connector_CAS_tenant_scope_and_tombstone_preserve_the_winning_configuration()
+    {
+        await using var h = await Harness.CreateAsync(postgres);
+        var original = new NotificationConnectorState(Guid.NewGuid(), 17, 1, "owner",
+            new("Operations", NotificationProvider.Discord, true), "protected-webhook");
+        await using (var scope = h.Provider.CreateAsyncScope())
+        {
+            var store = new NotificationConnectorStore(scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>());
+            (await store.SaveAsync(original, 0)).Should().BeTrue();
+            (await store.GetAsync(18, original.Id)).Should().BeNull();
+            (await store.ListAsync(18)).Should().BeEmpty();
+        }
+        var first = original with { Revision = 2, Configuration = original.Configuration with { Name = "First editor" } };
+        var second = original with { Revision = 2, Configuration = original.Configuration with { Name = "Second editor" } };
+        async Task<bool> SaveAsync(NotificationConnectorState state, long revision)
+        {
+            await using var scope = h.Provider.CreateAsyncScope();
+            return await new NotificationConnectorStore(scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>()).SaveAsync(state, revision);
+        }
+        var results = await Task.WhenAll(SaveAsync(first, 1), SaveAsync(second, 1));
+        results.Count(result => result).Should().Be(1);
+        await using var readScope = h.Provider.CreateAsyncScope();
+        var reader = new NotificationConnectorStore(readScope.ServiceProvider.GetRequiredService<OrchestratorDbContext>());
+        var winner = (await reader.GetAsync(17, original.Id))!;
+        winner.Revision.Should().Be(2); winner.Configuration.Name.Should().Be(results[0] ? "First editor" : "Second editor");
+        var tombstone = winner with { Revision = 3, DeletedAtUtc = h.Clock.GetUtcNow(), ProtectedWebhookUrl = "",
+            Configuration = winner.Configuration with { Enabled = false } };
+        (await SaveAsync(tombstone, 2)).Should().BeTrue();
+        (await SaveAsync(winner with { Revision = 4 }, 3)).Should().BeFalse();
+        (await reader.ListAsync(17)).Should().BeEmpty();
+        var deleted = (await reader.GetAsync(17, original.Id))!;
+        deleted.Revision.Should().Be(3); deleted.ProtectedWebhookUrl.Should().BeEmpty(); deleted.DeletedAtUtc.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task A_crashed_webhook_send_is_not_replayed_and_previously_unstarted_group_targets_still_execute()
+    {
+        await using var h = await Harness.CreateAsync(postgres); var version = await h.PublishAsync(FlowTestData.GroupGraph());
+        var queued = await h.Ingress.EnqueueAsync(h.Event(version)); var first = (await h.Store.ClaimAsync(Guid.NewGuid()))!;
+        var target = FlowGraphValidator.ActionTargets(version.Graph).Single(action => action.Kind == FlowActionKind.Discord);
+        var draft = new FlowIncidentActionDraft(17, first.RunId, target.Id, target.ConnectorId!.Value, target.ConnectorRevision!.Value,
+            first.SourceInstanceId, FlowActionKeys.Create(first, target.Id), first.Event,
+            FlowPureEvaluation.Map(version.Graph.Nodes.Single(node => node.Kind == FlowNodeKind.MapIncident).Mapping!, first.Event.Data)) { Kind = target.Kind };
+        (await h.Store.GetOrCreateActionAsync(first, draft)).Should().NotBeNull();
+        (await h.Store.StartActionAsync(first, target.Id))!.Status.Should().Be(FlowActionStatus.Dispatching);
+        await h.Notifications.DispatchAsync(draft); // Provider accepted; sender stops before committing the local receipt.
+        h.Clock.Advance(FlowLimits.LeaseDuration + TimeSpan.FromSeconds(1));
+        await using var restarted = h.NewProvider();
+        (await restarted.GetRequiredService<FlowRunProcessor>().ProcessOneAsync()).Should().BeTrue();
+        var finished = (await h.Definitions.GetRunByIdAsync(17, queued.RunId!.Value))!;
+        finished.Run.Status.Should().Be(FlowRunStatus.PartiallySucceeded); finished.Actions.Should().HaveCount(3);
+        finished.Actions.Single(action => action.Kind == FlowActionKind.Discord).Status.Should().Be(FlowActionStatus.DeliveryUnknown);
+        h.Notifications.Calls[FlowActionKind.Discord].Should().Be(1); h.Notifications.Calls[FlowActionKind.Slack].Should().Be(1); h.Dispatcher.Sends.Should().Be(1);
+    }
+
     private static FlowIncidentActionDraft Draft(FlowRunLease lease)
     {
         var node = lease.Version.Graph.Nodes.Single(node => node.Kind == FlowNodeKind.CreateIncident);
@@ -325,7 +456,9 @@ public sealed class FlowPostgreSqlTests(PostgreSqlPersistenceFixture postgres)
         public bool Available { get; set; } = true;
         public long Revision { get; set; } = 1;
         public Task<FlowConnectorReferenceDto?> GetAsync(int tenantId, Guid id, FlowExecutionAuthorityDto authority, CancellationToken cancellationToken = default) => Task.FromResult<FlowConnectorReferenceDto?>(
-            id == FlowTestData.ConnectorId ? new(id, tenantId, "Deterministic fixture", true, Available, Available ? null : "receiver-idempotency-unverified", Revision) : null);
+            id == FlowTestData.ConnectorId ? new(id, tenantId, "Deterministic fixture", true, Available, Available ? null : "receiver-idempotency-unverified", Revision) :
+            id == FlowTestData.DiscordConnectorId ? new(id, tenantId, "Discord operations", true, Available, Revision: Revision) { Kind = FlowActionKind.Discord } :
+            id == FlowTestData.SlackConnectorId ? new(id, tenantId, "Slack operations", true, Available, Revision: Revision) { Kind = FlowActionKind.Slack } : null);
         public async Task<IReadOnlyList<FlowConnectorReferenceDto>> ListAsync(int tenantId, FlowExecutionAuthorityDto authority, CancellationToken cancellationToken = default) => [(await GetAsync(tenantId, FlowTestData.ConnectorId, authority, cancellationToken))!];
     }
     private sealed class Dispatcher : IFlowIncidentActionDispatcher
@@ -340,11 +473,29 @@ public sealed class FlowPostgreSqlTests(PostgreSqlPersistenceFixture postgres)
         public Task<FlowIncidentActionResult> DispatchAsync(FlowIncidentActionRequest action, CancellationToken cancellationToken = default)
         { Sends++; AfterSend?.Invoke(); return Task.FromResult(Returns ?? new FlowIncidentActionResult(FlowIncidentActionResultKind.Succeeded, "incident-created", new("fixture-incident", "fixture-tracking"))); }
     }
+    private sealed class NotificationDispatcher : IFlowNotificationActionDispatcher
+    {
+        public System.Collections.Concurrent.ConcurrentDictionary<FlowActionKind, int> Calls { get; } = new();
+        public bool DiscordRetryOnce { get; set; }
+        public TimeSpan DiscordRetryAfter { get; set; }
+        public bool SlackUnknown { get; set; }
+        public bool SlackRetryOnce { get; set; }
+        public Task<FlowIncidentActionResult> DispatchAsync(FlowIncidentActionDraft draft, CancellationToken cancellationToken = default)
+        {
+            var count = Calls.AddOrUpdate(draft.Kind, 1, (_, value) => value + 1);
+            return Task.FromResult(draft.Kind == FlowActionKind.Discord && DiscordRetryOnce && count == 1
+                ? new FlowIncidentActionResult(FlowIncidentActionResultKind.RetryableSafe, "rate-limited", RetryAfter: DiscordRetryAfter)
+                : draft.Kind == FlowActionKind.Slack && SlackUnknown ? new(FlowIncidentActionResultKind.DeliveryUnknown, "response-lost")
+                : draft.Kind == FlowActionKind.Slack && SlackRetryOnce && count == 1 ? new(FlowIncidentActionResultKind.RetryableSafe, "rate-limited", RetryAfter: TimeSpan.FromSeconds(30))
+                : new(FlowIncidentActionResultKind.Succeeded, "notification-accepted", new("provider-accepted")));
+        }
+    }
     private sealed class Harness : IAsyncDisposable
     {
         public required string Connection { get; init; }
         public Clock Clock { get; } = new(); public Authority Authority { get; } = new(); public Guard Guard { get; } = new();
         public Catalog Catalog { get; } = new(); public Dispatcher Dispatcher { get; } = new();
+        public NotificationDispatcher Notifications { get; } = new();
         public ServiceProvider Provider { get; private set; } = null!;
         public IFlowDefinitionService Definitions => Provider.GetRequiredService<IFlowDefinitionService>();
         public IFlowEventIngress Ingress => Provider.GetRequiredService<IFlowEventIngress>();
@@ -362,12 +513,13 @@ public sealed class FlowPostgreSqlTests(PostgreSqlPersistenceFixture postgres)
             services.AddSingleton<IFlowExecutionAuthorityVerifier>(Authority); services.AddSingleton<IFlowDispatchGuard>(Guard);
             services.AddSingleton<IFlowTransactionAdmission>(Guard);
             services.AddSingleton<IFlowConnectorCatalog>(Catalog); services.AddSingleton<IFlowIncidentActionDispatcher>(Dispatcher);
+            services.AddSingleton<IFlowNotificationActionDispatcher>(Notifications);
             return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         }
-        public async Task<FlowVersionDto> PublishAsync()
+        public async Task<FlowVersionDto> PublishAsync(FlowGraphDto? graph = null)
         {
             var created = (await Definitions.CreateAsync(17, new("CPU incident flow"), "editor")).Definition!;
-            var saved = (await Definitions.SaveDraftAsync(17, created.Id, new(created.Revision, created.Name, FlowTestData.Graph()), "editor")).Definition!;
+            var saved = (await Definitions.SaveDraftAsync(17, created.Id, new(created.Revision, created.Name, graph ?? FlowTestData.Graph()), "editor")).Definition!;
             var published = await Definitions.PublishAsync(17, saved.Id, new(saved.Revision), FlowTestData.Authority);
             published.Disposition.Should().Be(FlowWriteDisposition.Stored); return published.Version!;
         }

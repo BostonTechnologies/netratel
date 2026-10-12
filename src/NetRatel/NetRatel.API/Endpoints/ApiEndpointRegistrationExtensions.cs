@@ -7,6 +7,7 @@ using NetRatel.API.Gateway;
 using NetRatel.API.Realtime;
 using NetRatel.API.Realtime.Operations;
 using NetRatel.API.Endpoints.SystemPairing;
+using NetRatel.API.Endpoints.Notifications;
 
 namespace NetRatel.API.Endpoints;
 
@@ -27,6 +28,7 @@ public static class ApiEndpointRegistrationExtensions
         app.MapTenantEndpoints();
         app.MapSecretEndpoints();
         app.MapRatelDeskConnectorEndpoints();
+        app.MapNotificationConnectorEndpoints();
         app.MapScriptEndpoints();
         app.MapPrimaryClientAgentBindingReadEndpoints();
         app.MapMcpOperatorPolicyAdministrationEndpoints();

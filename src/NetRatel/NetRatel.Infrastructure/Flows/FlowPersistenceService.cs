@@ -78,7 +78,8 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
         if (source is null) return new(FlowWriteDisposition.NotFound); if (source.Revision != request.ExpectedRevision) return new(FlowWriteDisposition.Conflict);
         if (await db.FlowDefinitions.CountAsync(row => row.TenantId == tenantId, ct).ConfigureAwait(false) >= FlowLimits.MaximumFlowsPerTenant) return new(FlowWriteDisposition.CapacityExceeded);
         var graph = Parse<FlowGraphDto>(source.DraftJson); var ids = graph.Nodes.ToDictionary(node => node.Id, _ => Guid.NewGuid());
-        graph = graph with { Nodes = graph.Nodes.Select(node => node with { Id = ids[node.Id] }).ToArray(),
+        graph = graph with { Nodes = graph.Nodes.Select(node => node with { Id = ids[node.Id],
+                Actions = node.Actions?.Select(action => action with { Id = Guid.NewGuid() }).ToArray() }).ToArray(),
             Edges = graph.Edges.Select(edge => edge with { SourceNodeId = ids[edge.SourceNodeId], TargetNodeId = ids[edge.TargetNodeId] }).ToArray() };
         var now = clock.GetUtcNow(); var row = new FlowDefinitionRecord { Id = Guid.NewGuid(), TenantId = tenantId, Name = request.Name.Trim(), Revision = 1, Enabled = false,
             DraftJson = Serialize(graph), CreatedAtUtc = now, UpdatedAtUtc = now };
@@ -95,13 +96,24 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
         if (row.PublishedVersionNumber >= FlowLimits.MaximumVersionsPerFlow) return new(FlowWriteDisposition.CapacityExceeded);
         var graph = Parse<FlowGraphDto>(row.DraftJson); var validation = FlowGraphValidator.ValidateComplete(graph);
         if (!validation.Valid) return new(FlowWriteDisposition.Invalid, Code: validation.Issues[0].Code);
-        var action = graph.Nodes.Single(node => node.Kind == FlowNodeKind.CreateIncident);
-        var connector = await provider.GetRequiredService<IFlowConnectorCatalog>().GetAsync(tenantId, action.ConnectorId!.Value, authority, ct).ConfigureAwait(false);
-        if (connector is null || connector.TenantId != tenantId || connector.Id != action.ConnectorId || connector.Revision <= 0) return new(FlowWriteDisposition.ConnectorDenied, Code: "connector-authority");
-        if (!connector.Enabled || !connector.CanExecute) return new(FlowWriteDisposition.ConnectorDenied, Code: connector.UnavailableReason ?? "connector-unavailable");
-        if (action.ConnectorRevision is { } selectedRevision && selectedRevision != connector.Revision)
-            return new(FlowWriteDisposition.Conflict, Code: "connector-revision-conflict");
-        graph = graph with { Nodes = graph.Nodes.Select(node => node.Id == action.Id ? node with { ConnectorRevision = connector.Revision } : node).ToArray() };
+        var catalog = provider.GetRequiredService<IFlowConnectorCatalog>();
+        var pinned = new Dictionary<Guid, FlowActionTargetDto>();
+        foreach (var action in FlowGraphValidator.ActionTargets(graph))
+        {
+            var connector = await catalog.GetAsync(tenantId, action.ConnectorId!.Value, authority, ct).ConfigureAwait(false);
+            if (connector is null || connector.TenantId != tenantId || connector.Id != action.ConnectorId ||
+                connector.Kind != action.Kind || connector.Revision <= 0) return new(FlowWriteDisposition.ConnectorDenied, Code: "connector-authority");
+            if (!connector.Enabled || !connector.CanExecute) return new(FlowWriteDisposition.ConnectorDenied, Code: connector.UnavailableReason ?? "connector-unavailable");
+            if (action.ConnectorRevision is { } selectedRevision && selectedRevision != connector.Revision)
+                return new(FlowWriteDisposition.Conflict, Code: "connector-revision-conflict");
+            pinned.Add(action.Id, action with { ConnectorRevision = connector.Revision, Name = connector.Name });
+        }
+        graph = graph with { Nodes = graph.Nodes.Select(node => node.Kind switch
+        {
+            FlowNodeKind.CreateIncident => node with { ConnectorRevision = pinned[node.Id].ConnectorRevision },
+            FlowNodeKind.ActionGroup => node with { Actions = node.Actions!.Select(action => pinned[action.Id]).ToArray() },
+            _ => node
+        }).ToArray() };
         if (!FlowGraphValidator.ValidatePublished(graph).Valid) return new(FlowWriteDisposition.Invalid, Code: "published-graph");
         var json = Serialize(graph); var version = new FlowVersionRecord { Id = Guid.NewGuid(), FlowId = flowId, TenantId = tenantId, VersionNumber = row.PublishedVersionNumber + 1,
             GraphJson = json, ConfigurationHash = FlowContractValidation.Hash(Encoding.UTF8.GetBytes(json)), PublishedBy = authority.PrincipalId, PublishedAtUtc = clock.GetUtcNow() };
@@ -127,8 +139,12 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
         var row = await db.FlowRuns.AsNoTracking().SingleOrDefaultAsync(row => row.TenantId == tenantId && (flowId == null || row.FlowId == flowId) && row.Id == runId, ct).ConfigureAwait(false);
         if (row is null) return null;
         var actions = await db.FlowActions.AsNoTracking().Where(action => action.TenantId == tenantId && action.RunId == runId).ToListAsync(ct).ConfigureAwait(false);
+        var version = await db.FlowVersions.AsNoTracking().SingleAsync(version => version.TenantId == tenantId && version.Id == row.FlowVersionId, ct).ConfigureAwait(false);
+        var targets = FlowGraphValidator.ActionTargets(Parse<FlowGraphDto>(version.GraphJson)).ToDictionary(target => target.Id);
         return new(Summary(row), Parse<FlowEventEnvelope>(row.EventJson).Data, actions.Select(action => new FlowActionSummaryDto(action.NodeId, action.IdempotencyKey, action.Status, action.Attempts,
-            action.ConnectorRevision, action.Code, action.ReceiptJson is null ? null : Parse<FlowActionReceiptDto>(action.ReceiptJson))).ToArray());
+            action.ConnectorRevision, action.Code, action.ReceiptJson is null ? null : Parse<FlowActionReceiptDto>(action.ReceiptJson))
+            { Kind = targets.GetValueOrDefault(action.NodeId)?.Kind ?? FlowActionKind.RatelDeskIncident,
+                Name = targets.GetValueOrDefault(action.NodeId)?.Name }).ToArray());
     }
 
     public Task<FlowIngressResult> EnqueueAsync(FlowEventEnvelope input, CancellationToken ct = default) => WithDb(async (db, _) =>

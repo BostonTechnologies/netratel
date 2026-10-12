@@ -244,6 +244,42 @@ public sealed class FlowEditorTests : AsyncBunitContext
         _api.SaveCalls.Should().Be(1); _api.PublishCalls.Should().Be(0);
     }
 
+    [Fact]
+    public async Task An_existing_incident_can_gain_a_Discord_sibling_and_save_both_owned_targets_without_execution()
+    {
+        var incident = new FlowConnectorReferenceDto(Guid.NewGuid(), 17, "Service desk", true, true, Revision: 2);
+        var discord = new FlowConnectorReferenceDto(Guid.NewGuid(), 17, "Operations Discord", true, true, Revision: 3) { Kind = FlowActionKind.Discord };
+        var foreign = discord with { Id = Guid.NewGuid(), TenantId = 99, Name = "Other tenant Discord" };
+        var disabled = discord with { Id = Guid.NewGuid(), Enabled = false, Name = "Disabled Discord" };
+        var cut = RenderEditor(p => p.Add(e => e.Connectors, new[] { incident, discord, foreign, disabled }));
+        await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
+        var original = Definition().Draft.Nodes.Single(node => node.Kind == FlowNodeKind.CreateIncident);
+        await cut.InvokeAsync(() => cut.Find($"[data-node-id='{original.Id}'] [data-testid=flow-node-settings]").ClickAsync(new()));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-connector]").ChangeAsync(new() { Value = incident.Id.ToString() }));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-convert-action-group]").ClickAsync(new()));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-action-add]").ClickAsync(new()));
+        var graph = cut.FindComponent<FlowCanvas>().Instance.Adapter.Capture();
+        var group = graph.Nodes.Single(node => node.Kind == FlowNodeKind.ActionGroup);
+        group.Actions.Should().HaveCount(2);
+        group.Actions!.Single(action => action.Kind == FlowActionKind.RatelDeskIncident).ConnectorId.Should().Be(incident.Id);
+        group.Actions.Single(action => action.Kind == FlowActionKind.Discord).ConnectorId.Should().Be(discord.Id);
+        cut.FindAll("[data-testid=flow-action-target] option").Select(option => option.TextContent).Should()
+            .NotContain(text => text.Contains("Other tenant", StringComparison.Ordinal) || text.Contains("Disabled Discord", StringComparison.Ordinal));
+        cut.Render(p => p.Add(e => e.Connectors, new[] { incident, discord with { Revision = 4 }, foreign, disabled }));
+        cut.Find("[data-testid=flow-action-group]").TextContent.Should().Contain("Target configuration changed");
+        group.Actions.Single(action => action.Kind == FlowActionKind.Discord).ConnectorRevision.Should().Be(3);
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-action-use-updated-target]").ClickAsync(new()));
+        graph = cut.FindComponent<FlowCanvas>().Instance.Adapter.Capture();
+        group = graph.Nodes.Single(node => node.Kind == FlowNodeKind.ActionGroup);
+        group.Actions!.Single(action => action.Kind == FlowActionKind.Discord).ConnectorRevision.Should().Be(4);
+        cut.FindAll("[data-testid=flow-action-use-updated-target]").Should().BeEmpty();
+        FlowGraphValidator.ValidateComplete(graph).Valid.Should().BeTrue();
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-save]").ClickAsync(new()));
+        _api.LastSave!.Graph.Nodes.Single(node => node.Kind == FlowNodeKind.ActionGroup).Actions.Should().BeEquivalentTo(group.Actions);
+        _api.SaveCalls.Should().Be(1); _api.PublishCalls.Should().Be(0);
+        cut.FindComponent<FlowCanvas>().Instance.Adapter.ExecutionCalls.Should().Be(0);
+    }
+
     private IRenderedComponent<FlowEditor> RenderEditor(Action<ComponentParameterCollectionBuilder<FlowEditor>>? extra = null) => Render<FlowEditor>(p =>
     { p.Add(e => e.Definition, Definition()).Add(e => e.CanEdit, true).Add(e => e.CanPublish, true).Add(e => e.TenantName, "Tenant 17"); extra?.Invoke(p); });
     private static readonly Guid FlowId = Guid.NewGuid();

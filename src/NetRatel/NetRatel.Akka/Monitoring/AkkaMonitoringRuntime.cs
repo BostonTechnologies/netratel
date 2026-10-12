@@ -18,11 +18,15 @@ internal sealed class AkkaMonitoringRuntime(IRequiredActor<ClientMonitoringRegio
     public Task<MonitoringInputResult> EndEvidenceStreamAsync(MonitoringEvidenceFence fence, CancellationToken ct) => Ask<MonitoringInputResult>(new EndMonitoringStream(fence), ct);
     public Task<MonitoringInputResult> RecordTelemetryAsync(MonitoringTelemetryInput input, CancellationToken ct) => Ask<MonitoringInputResult>(new RecordMonitoringTelemetry(input), ct);
     public Task<MonitoringInputResult> RecordServicesAsync(MonitoringServicesInput input, CancellationToken ct) => Ask<MonitoringInputResult>(new RecordMonitoringServices(input), ct);
-    public Task<ImmutableArray<MonitoringSeriesState>> GetClientAsync(ClientKey client, CancellationToken ct) => Ask<ImmutableArray<MonitoringSeriesState>>(new GetClientMonitoring(client), ct);
+    public async Task<ImmutableArray<MonitoringSeriesState>> GetClientAsync(ClientKey client, CancellationToken ct) =>
+        (await Ask<ImmutableArray<MonitoringSeriesState>>(new GetClientMonitoring(client), ct).ConfigureAwait(false))
+        .AddRange(await store.LoadClientOfflineAsync(client, ct).ConfigureAwait(false));
     public Task<MonitoringSeriesPageDto> ReadTenantAsync(int tenant, int maximumCount, string? cursor, CancellationToken ct) => store.ReadTenantSeriesAsync(tenant, maximumCount, cursor, ct);
     public Task<MonitoringEventPageDto> ReadTenantEventsAsync(int tenant, int maximumCount, string? cursor, CancellationToken ct) => store.ReadTenantEventsAsync(tenant, maximumCount, cursor, ct);
     public Task<MonitoringSummaryDto> ReadTenantSummaryAsync(int tenant, CancellationToken ct) => store.ReadTenantSummaryAsync(tenant, ct);
-    public Task<MonitoringStoreWriteResult> AcknowledgeAsync(MonitoringOperatorCommand command, CancellationToken ct) => Ask<MonitoringStoreWriteResult>(new AcknowledgeMonitoringOccurrence(command), ct);
-    public Task<MonitoringStoreWriteResult> ClearAsync(MonitoringOperatorCommand command, CancellationToken ct) => Ask<MonitoringStoreWriteResult>(new ClearMonitoringOccurrence(command), ct);
+    public Task<MonitoringStoreWriteResult> AcknowledgeAsync(MonitoringOperatorCommand command, CancellationToken ct) =>
+        MonitoringOfflinePresentation.IsSeries(command.Series) ? store.OperateOccurrenceAsync(command, false, ct) : Ask<MonitoringStoreWriteResult>(new AcknowledgeMonitoringOccurrence(command), ct);
+    public Task<MonitoringStoreWriteResult> ClearAsync(MonitoringOperatorCommand command, CancellationToken ct) =>
+        MonitoringOfflinePresentation.IsSeries(command.Series) ? store.OperateOccurrenceAsync(command, true, ct) : Ask<MonitoringStoreWriteResult>(new ClearMonitoringOccurrence(command), ct);
     public async Task RefreshAsync(ClientKey client, CancellationToken ct) => _ = await Ask<bool>(new RefreshClientMonitoring(client), ct).ConfigureAwait(false);
 }

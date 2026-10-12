@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using NetRatel.Shared.Contracts.Flows;
 
 namespace NetRatel.Application.Flows;
@@ -27,7 +28,11 @@ public interface IFlowExecutionAuthorityVerifier
 }
 
 public sealed record FlowIncidentActionDraft(int TenantId, Guid RunId, Guid ActionNodeId, Guid ConnectorId, long ConnectorRevision,
-    Guid SourceInstanceId, string IdempotencyKey, FlowEventEnvelope Event, FlowIncidentFieldsDto Fields);
+    Guid SourceInstanceId, string IdempotencyKey, FlowEventEnvelope Event, FlowIncidentFieldsDto Fields)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public FlowActionKind Kind { get; init; }
+}
 public sealed record FlowIncidentTargetDto(string OrganizationId, string CustomerId, string? AssignedToId, IReadOnlyList<Guid> CategoryIds);
 /// <summary>Preparation resolves and pins connector mapping before this exact semantic request is persisted and sent.</summary>
 public sealed record FlowIncidentActionRequest(int TenantId, Guid RunId, Guid ActionNodeId, Guid ConnectorId,
@@ -42,6 +47,11 @@ public interface IFlowIncidentActionDispatcher
 {
     Task<FlowIncidentPreparationResult> PrepareAsync(FlowIncidentActionDraft draft, CancellationToken cancellationToken = default);
     Task<FlowIncidentActionResult> DispatchAsync(FlowIncidentActionRequest action, CancellationToken cancellationToken = default);
+}
+/// <summary>The durable draft pins the notification content and connector revision. Only proven nonacceptance is safe to retry.</summary>
+public interface IFlowNotificationActionDispatcher
+{
+    Task<FlowIncidentActionResult> DispatchAsync(FlowIncidentActionDraft draft, CancellationToken cancellationToken = default);
 }
 public interface IFlowConnectorCatalog
 {

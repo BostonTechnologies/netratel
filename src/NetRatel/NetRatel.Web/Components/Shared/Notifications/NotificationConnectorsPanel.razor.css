@@ -1,0 +1,5 @@
+.notification-connectors { min-width: 0; }
+.notification-tenant { min-width: 14rem; max-width: 28rem; }
+.notification-form { max-width: 46rem; }
+.notification-connectors a { color: var(--mud-palette-primary); }
+@media (max-width: 600px) { .notification-tenant { min-width: 0; width: 100%; } }

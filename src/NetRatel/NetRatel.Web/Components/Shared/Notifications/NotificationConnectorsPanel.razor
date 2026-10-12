@@ -1,0 +1,162 @@
+@using NetRatel.Shared.Contracts.Notifications
+@using NetRatel.Web.Services.Notifications
+@implements IDisposable
+@inject INotificationConnectorApiService Api
+
+<section class="notification-connectors" data-testid="notification-connectors">
+    <MudStack Row="true" Wrap="Wrap.Wrap" AlignItems="AlignItems.Center" Spacing="2" Class="mb-4">
+        <MudSelect T="int" Label="Tenant" Value="_tenantId" ValueChanged="ChangeTenantAsync" Variant="Variant.Outlined" Disabled="@(_busy || _loading)" Class="notification-tenant" data-testid="notification-tenant">
+            @foreach (var tenant in _tenants) { <MudSelectItem T="int" Value="tenant.TenantId">@tenant.Name</MudSelectItem> }
+        </MudSelect>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="@(() => Create(NotificationProvider.Discord))" Disabled="@(_busy || _tenantId <= 0)" data-testid="add-discord">Add Discord</MudButton>
+        <MudButton Variant="Variant.Outlined" OnClick="@(() => Create(NotificationProvider.Slack))" Disabled="@(_busy || _tenantId <= 0)" data-testid="add-slack">Add Slack</MudButton>
+    </MudStack>
+    <MudText Typo="Typo.body2" Class="mb-4">Send monitoring alerts to Discord or Slack channels. Enable a target here, then select it in a flow action group.</MudText>
+    @if (_error is not null) { <MudAlert Severity="Severity.Error" Class="mb-3" data-testid="notification-error">@_error <MudButton Variant="Variant.Text" OnClick="ReloadAsync" Disabled="_busy">Reload</MudButton></MudAlert> }
+    @if (_notice is not null) { <MudAlert Severity="_noticeSeverity" Class="mb-3" data-testid="notification-notice">@_notice</MudAlert> }
+    @if (_editing)
+    {
+        <MudPaper Outlined="true" Elevation="0" Class="notification-form pa-4 mb-4" data-testid="notification-form">
+            <MudText Typo="Typo.h6" Class="mb-3">@(_revision == 0 ? "Add" : "Edit") @_provider target</MudText>
+            <MudStack Spacing="2">
+                <MudTextField T="string" Label="Name" @bind-Value="_name" Immediate="true" Variant="Variant.Outlined" MaxLength="128" Disabled="_busy" data-testid="notification-name" />
+                <MudTextField T="string" Label="@(_revision == 0 ? "Webhook URL" : "Replace webhook URL")" @bind-Value="_webhook" Immediate="true" InputType="InputType.Password" Variant="Variant.Outlined" MaxLength="2048" Disabled="_busy" autocomplete="off" data-testid="notification-webhook" />
+                <MudText Typo="Typo.caption">@(_revision == 0 ? "Paste the incoming webhook URL created for your channel." : "Leave blank to keep the saved webhook. Its secret is never displayed.")</MudText>
+                @if (_provider == NotificationProvider.Discord)
+                {
+                    <MudTextField T="string" Label="Sender name (optional)" @bind-Value="_username" Variant="Variant.Outlined" MaxLength="80" Disabled="_busy" />
+                    <MudTextField T="string" Label="Thread ID (optional)" @bind-Value="_threadId" Variant="Variant.Outlined" MaxLength="20" Disabled="_busy" />
+                    <MudText Typo="Typo.caption">For forum channels, enter an existing thread ID. <a href="https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks" target="_blank" rel="noopener noreferrer">Create a Discord webhook</a>.</MudText>
+                }
+                else
+                {
+                    <MudText Typo="Typo.caption">Slack uses the channel and sender configured when you create its webhook. <a href="https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks/" target="_blank" rel="noopener noreferrer">Create a Slack webhook</a>.</MudText>
+                }
+                <MudCheckBox T="bool" Label="Enabled" @bind-Value="_enabled" Disabled="_busy" data-testid="notification-enabled" />
+                @if (_revision > 0) { <MudText Typo="Typo.caption">After changing this target, select its updated version and republish the flows that use it.</MudText> }
+                <MudStack Row="true" Spacing="2">
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SaveAsync" Disabled="@(_busy || string.IsNullOrWhiteSpace(_name) || _revision == 0 && string.IsNullOrWhiteSpace(_webhook))" data-testid="notification-save">Save target</MudButton>
+                    <MudButton OnClick="CloseEditor" Disabled="_busy">Cancel</MudButton>
+                </MudStack>
+            </MudStack>
+        </MudPaper>
+    }
+    @if (_loading) { <MudSkeleton Height="120px" /> }
+    else if (_tenants.Count == 0) { <MudText Typo="Typo.body2">No tenants are available for notification management.</MudText> }
+    else if (_connectors.Count == 0) { <MudText Typo="Typo.body2" Color="Color.Secondary" data-testid="notification-empty">No notification targets in this tenant yet.</MudText> }
+    else
+    {
+        <MudStack Spacing="2">
+            @foreach (var connector in _connectors)
+            {
+                <MudPaper Outlined="true" Elevation="0" Class="pa-4" @key="connector.Id" data-testid="notification-card">
+                    <MudStack Row="true" Wrap="Wrap.Wrap" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                        <div><MudText Typo="Typo.h6">@connector.Configuration.Name</MudText><MudText Typo="Typo.caption">@connector.Configuration.Provider · @(connector.HasWebhook ? "Webhook configured" : "Webhook required")</MudText></div>
+                        <MudChip T="string" Size="Size.Small" Color="@(connector.Configuration.Enabled ? Color.Success : Color.Default)">@(connector.Configuration.Enabled ? "Enabled" : "Disabled")</MudChip>
+                    </MudStack>
+                    <MudStack Row="true" Wrap="Wrap.Wrap" Spacing="1" Class="mt-3">
+                        <MudButton OnClick="@(() => Edit(connector))" Disabled="_busy" data-testid="notification-edit">Edit</MudButton>
+                        <MudButton OnClick="@(() => SendTestAsync(connector))" Disabled="@(_busy || !connector.Configuration.Enabled || !connector.HasWebhook)" data-testid="notification-test">Send test notification</MudButton>
+                        <MudButton Color="Color.Error" OnClick="@(() => _deleteTarget = connector)" Disabled="_busy" data-testid="notification-delete">Delete</MudButton>
+                    </MudStack>
+                </MudPaper>
+            }
+        </MudStack>
+    }
+</section>
+
+<MudDialog Visible="@(_deleteTarget is not null)" VisibleChanged="CloseDelete" AriaLabel="Delete notification target">
+    <DialogContent><MudText Typo="Typo.h6">Delete @_deleteTarget?.Configuration.Name?</MudText><MudText Typo="Typo.body2">Flows using this target will need another notification target.</MudText></DialogContent>
+    <DialogActions><MudButton OnClick="@(() => _deleteTarget = null)" Disabled="_busy">Cancel</MudButton><MudButton Color="Color.Error" Variant="Variant.Filled" OnClick="DeleteAsync" Disabled="_busy">Delete target</MudButton></DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter] public int? InitialTenantId { get; set; }
+    private readonly CancellationTokenSource _lifetime = new();
+    private IReadOnlyList<NotificationConnectorTenantDto> _tenants = [];
+    private IReadOnlyList<NotificationConnectorDto> _connectors = [];
+    private NotificationConnectorDto? _deleteTarget;
+    private int _tenantId;
+    private Guid _id;
+    private long _revision;
+    private NotificationProvider _provider;
+    private string _name = "", _webhook = "";
+    private string? _username, _threadId, _error, _notice;
+    private bool _enabled = true, _editing, _busy, _loading = true, _disposed;
+    private Severity _noticeSeverity;
+
+    protected override Task OnInitializedAsync()
+    {
+        _tenantId = InitialTenantId.GetValueOrDefault();
+        return ReloadAsync();
+    }
+    private Task ReloadAsync() => RunAsync(async () =>
+    {
+        CloseEditor(); _deleteTarget = null; _notice = null;
+        _loading = true;
+        _tenants = await Api.GetTenantsAsync(_lifetime.Token);
+        if (!_tenants.Any(x => x.TenantId == _tenantId)) _tenantId = _tenants.FirstOrDefault()?.TenantId ?? 0;
+        _connectors = _tenantId > 0 ? await Api.ListAsync(_tenantId, _lifetime.Token) : [];
+        _loading = false;
+    });
+    private Task ChangeTenantAsync(int tenantId) => RunAsync(async () =>
+    {
+        _tenantId = tenantId; CloseEditor(); _deleteTarget = null; _notice = null; _connectors = [];
+        _connectors = await Api.ListAsync(tenantId, _lifetime.Token);
+    });
+    private void Create(NotificationProvider provider)
+    {
+        _provider = provider; _id = Guid.NewGuid(); _revision = 0; _name = ""; _webhook = "";
+        _username = null; _threadId = null; _enabled = true; _editing = true; _error = null; _notice = null;
+    }
+    private void Edit(NotificationConnectorDto connector)
+    {
+        _id = connector.Id; _revision = connector.Revision; _provider = connector.Configuration.Provider;
+        _name = connector.Configuration.Name; _webhook = ""; _username = connector.Configuration.DiscordUsername;
+        _threadId = connector.Configuration.DiscordThreadId; _enabled = connector.Configuration.Enabled;
+        _editing = true; _error = null; _notice = null;
+    }
+    private void CloseEditor() { _editing = false; _webhook = ""; }
+    private void CloseDelete(bool visible) { if (!visible && !_busy) _deleteTarget = null; }
+    private Task SaveAsync() => RunAsync(async () =>
+    {
+        var request = new SaveNotificationConnectorRequest(_revision, new(_name, _provider, _enabled, _username, _threadId),
+            string.IsNullOrWhiteSpace(_webhook) ? null : _webhook);
+        await Api.SaveAsync(_tenantId, _id, request, _lifetime.Token);
+        CloseEditor(); _connectors = await Api.ListAsync(_tenantId, _lifetime.Token);
+        _notice = "Notification target saved. Select it in a flow action group."; _noticeSeverity = Severity.Success;
+    });
+    private Task SendTestAsync(NotificationConnectorDto connector) => RunAsync(async () =>
+    {
+        var result = await Api.SendTestAsync(_tenantId, connector.Id, _lifetime.Token);
+        _noticeSeverity = result.Status == NotificationDeliveryStatus.Succeeded ? Severity.Success : Severity.Warning;
+        _notice = result.Status switch
+        {
+            NotificationDeliveryStatus.Succeeded => $"Test notification sent to {connector.Configuration.Name}.",
+            NotificationDeliveryStatus.RateLimited => $"The target is rate limited. Try again in {Math.Ceiling(result.RetryAfter?.TotalSeconds ?? 1)} seconds.",
+            NotificationDeliveryStatus.DeliveryUnknown => "The provider did not confirm delivery. Check the channel before sending another test.",
+            NotificationDeliveryStatus.Rejected => "The provider rejected this notification. Check the webhook and its channel settings.",
+            _ => "The notification target is unavailable. Check that it is enabled and you have permission to use it."
+        };
+    });
+    private Task DeleteAsync() => RunAsync(async () =>
+    {
+        if (_deleteTarget is not { } target) return;
+        await Api.DeleteAsync(_tenantId, target.Id, target.Revision, _lifetime.Token);
+        _deleteTarget = null; if (_id == target.Id) CloseEditor();
+        _connectors = await Api.ListAsync(_tenantId, _lifetime.Token);
+        _notice = "Notification target deleted."; _noticeSeverity = Severity.Success;
+    });
+    private async Task RunAsync(Func<Task> action)
+    {
+        if (_busy || _disposed) return;
+        _busy = true; _error = null;
+        try { await action(); }
+        catch (OperationCanceledException) when (_disposed) { return; }
+        catch (HttpRequestException error) { _error = error.Message; }
+        catch (System.Text.Json.JsonException) { _error = "The server returned an invalid notification connector response."; }
+        catch (OperationCanceledException) { _error = "The request timed out. Reload the notification targets."; }
+        finally { _busy = false; _loading = false; }
+    }
+    public void Dispose() { _disposed = true; _webhook = ""; _lifetime.Cancel(); _lifetime.Dispose(); }
+}

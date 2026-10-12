@@ -13,12 +13,15 @@ public static class MonitoringCanonicalFlowEvent
             intent.PublishedFlowVersionId != intent.PinnedRule.PublishedFlowVersionId ||
             intent.PinnedRule.ExecutionPrincipalId is not { } principal ||
             intent.StableFlowDispatchKey != $"monitoring:v1:{intent.Series.TenantId}:{intent.OccurrenceId:D}:{intent.EventId:D}:{intent.PublishedFlowVersionId:D}") return null;
+        var offline = intent.OfflineSummary ?? intent.PinnedEvidence.OfflineSummary;
         var input = new FlowEventEnvelope(intent.Series.TenantId, intent.EventId, intent.OccurrenceId,
             intent.PublishedFlowVersionId, intent.AtUtc,
             new(intent.Series.AgentId, intent.Series.RuleId, intent.PinnedRule.Name,
-                intent.Series.AgentId.ToString("D"), intent.Series.ResourceKey,
-                intent.PinnedRule.Condition.Kind.ToString(), intent.PinnedRule.Severity.ToString(),
-                intent.PinnedEvidence.NumericValue, intent.PinnedEvidence.ServiceState?.ToString(), intent.PinnedEvidence.ObservedAtUtc),
+                MonitoringOfflinePresentation.IsSeries(intent.Series) ? "Monitored clients" : intent.Series.AgentId.ToString("D"), intent.Series.ResourceKey,
+                MonitoringOfflinePresentation.IsSeries(intent.Series) ? "ClientOffline" : intent.PinnedRule.Condition.Kind.ToString(), intent.PinnedRule.Severity.ToString(),
+                offline?.OfflineCount ?? intent.PinnedEvidence.NumericValue, intent.PinnedEvidence.ServiceState?.ToString(),
+                intent.OfflineSummary is null ? intent.PinnedEvidence.ObservedAtUtc : intent.AtUtc)
+                { OfflineSummary = offline },
             new(principal, intent.PinnedRule.ExecutionCredentialId));
         return FlowContractValidation.ValidEnvelope(input) ? input : null;
     }

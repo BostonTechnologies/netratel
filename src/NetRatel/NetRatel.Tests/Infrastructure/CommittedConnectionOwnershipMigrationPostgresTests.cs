@@ -31,6 +31,7 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
     private const string HistoricalServicesMigration = "20261002170000_AddClientServicesSnapshots";
     private const string PairingCutoverMigration = "20261009073210_ReplaceServiceLinksWithSystemPairing";
     private const string ClientMetadataAndOffboardingMigration = "20261012075546_AddClientMetadataAndOffboarding";
+    private const string NotificationConnectorsMigration = "20261012111517_AddNotificationConnectors";
 
     [Fact]
     public async Task True_foundation_upgrade_preserves_legacy_jobs_and_matches_fresh_pre_pairing_schema()
@@ -180,10 +181,10 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
         var expected = services.MigrationIds.Append(HistoricalMonitoringMigration).Append(FlowPreceding149PendingMigration)
             .Append(HistoricalConnectorMigration).Append(owner).Append(CommittedRegistrationMigration)
             .Append(ReceiverEvidenceMigration).Append(NativeRefreshExchangeMigration).Order(StringComparer.Ordinal).ToArray();
-        migrations.Should().Equal(expected.Append(PairingCutoverMigration).Append(ClientMetadataAndOffboardingMigration),
-            "registered history retains the exact historical ownership range followed by the pairing cutover and client metadata/offboarding migrations");
+        migrations.Should().Equal(expected.Append(PairingCutoverMigration).Append(ClientMetadataAndOffboardingMigration).Append(NotificationConnectorsMigration),
+            "registered history retains the exact historical ownership range followed by the pairing, client metadata/offboarding and notification connector migrations");
         // These historical Down/Up proofs explicitly stop at the shipped native-refresh range.
-        // Later pairing and client metadata/offboarding migrations remain unapplied here.
+        // Later pairing, client metadata/offboarding and notification connector migrations remain unapplied here.
         // PairingUpgradePostgresTests separately proves the forward cutover and revocation.
         var previous = services.MigrationIds.Last();
         return new(owner, previous, NativeRefreshExchangeMigration,
@@ -365,8 +366,8 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
     {
         await using var db = Context(database);
         (await db.Database.GetAppliedMigrationsAsync(ct)).Should().Equal(plan.CurrentMigrationIds);
-        (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal([PairingCutoverMigration, ClientMetadataAndOffboardingMigration],
-            "the historical range leaves exactly the later pairing cutover and client metadata/offboarding migrations unapplied");
+        (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal([PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration],
+            "the historical range leaves exactly the later pairing, client metadata/offboarding and notification connector migrations unapplied");
         db.Database.HasPendingModelChanges().Should().BeFalse();
     }
 

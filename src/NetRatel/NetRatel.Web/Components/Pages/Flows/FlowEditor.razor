@@ -55,7 +55,7 @@
                 <button type="button" @onclick="DryRunAsync" data-testid="flow-dry-run">Preview sample</button>
                 @if (_preview is not null)
                 {
-                    <div role="status" data-testid="flow-preview">@(_preview.Skipped ? "Skipped by condition" : _preview.Valid ? "Preview only — no incident sent" : "Preview could not validate the graph")
+                    <div role="status" data-testid="flow-preview">@(_preview.Skipped ? "Skipped by condition" : _preview.Valid ? "Preview only — no action sent" : "Preview could not validate the graph")
                         @if (_preview.Incident is { } fields) { <p><strong>@fields.Title</strong></p><p>@fields.Description</p><p>Priority: @(fields.Priority?.ToString() ?? "Connector default")</p> }
                     </div>
                 }
@@ -114,28 +114,43 @@
                             @if (selected.Kind == FlowNodeKind.MapIncident)
                             {
                                 var mapping = selected.Mapping ?? new("{ruleName}: {resource}", "{clientName} — {metric}: {value}");
-                                <label>Incident title<input value="@mapping.TitleTemplate" maxlength="@FlowLimits.MaximumTitleLength" @onchange="e => UpdateNode(selected with { Mapping = mapping with { TitleTemplate = e.Value?.ToString() ?? string.Empty } })" data-testid="flow-mapping-title" /></label>
+                                <label>Message / incident title<input value="@mapping.TitleTemplate" maxlength="@FlowLimits.MaximumTitleLength" @onchange="e => UpdateNode(selected with { Mapping = mapping with { TitleTemplate = e.Value?.ToString() ?? string.Empty } })" data-testid="flow-mapping-title" /></label>
                                 <label>Description<textarea maxlength="@FlowLimits.MaximumTemplateLength" @onchange="e => UpdateNode(selected with { Mapping = mapping with { DescriptionTemplate = e.Value?.ToString() ?? string.Empty } })">@mapping.DescriptionTemplate</textarea></label>
                                 <label>Priority<select value="@(mapping.Priority?.ToString() ?? "")" @onchange="e => UpdatePriority(selected, e)"><option value="">Connector default</option><option value="0">Low</option><option value="1">Normal</option><option value="2">High</option><option value="3">Urgent</option></select></label>
-                                <p class="flow-help">Fields: {ruleName}, {clientName}, {resource}, {metric}, {severity}, {value}, {serviceState}, {occurredAt}.</p>
+                                <p class="flow-help">The title and description feed every action. Priority applies to incident actions.</p>
+                                <p class="flow-help">Fields: {ruleName}, {clientName}, {resource}, {metric}, {severity}, {value}, {serviceState}, {occurredAt}, {offlineSummary}, {offlineCount}, {offlineClients}.</p>
                             }
                             @if (selected.Kind == FlowNodeKind.CreateIncident)
                             {
                                 <label>RatelDesk connector<select value="@(selected.ConnectorId?.ToString() ?? "")" @onchange="e => SelectConnector(selected, e)" data-testid="flow-connector"><option value="">Choose an available reference</option>
-                                    @foreach (var connector in Connectors.Where(c => c.TenantId == Definition.TenantId)) { <option value="@connector.Id">@connector.Name @(connector.CanExecute && connector.Enabled ? "" : "(unavailable)")</option> }
+                                    @foreach (var connector in Connectors.Where(c => c.TenantId == Definition.TenantId && c.Kind == FlowActionKind.RatelDeskIncident)) { <option value="@connector.Id">@connector.Name @(connector.CanExecute && connector.Enabled ? "" : "(unavailable)")</option> }
                                 </select></label>
                                 @if (SelectedConnector(selected) is { } reference)
-                                { <p role="status" data-testid="flow-connector-status">@(reference.Enabled && reference.CanExecute ? "Available for authorized server execution" : $"Unavailable: {reference.UnavailableReason ?? (reference.Enabled ? "Receiver capability is not verified" : "Connector disabled")}")</p> }
+                                {
+                                    @if (reference.Enabled && reference.CanExecute && selected.ConnectorRevision is { } revision && revision != reference.Revision)
+                                    {
+                                        <p role="status" data-testid="flow-connector-status">Target configuration changed. Use the updated target before publishing.</p>
+                                        <button type="button" @onclick="() => UpdateNode(selected with { ConnectorRevision = reference.Revision })" data-testid="flow-connector-use-updated-target">Use updated target</button>
+                                    }
+                                    else
+                                    { <p role="status" data-testid="flow-connector-status">@(reference.Enabled && reference.CanExecute ? "Available for authorized server execution" : $"Unavailable: {reference.UnavailableReason ?? (reference.Enabled ? "Receiver capability is not verified" : "Connector disabled")}")</p> }
+                                }
                                 else { <p role="status" data-testid="flow-connector-status">No owned connector reference is available. Configure one in Flows connectors before publishing this action.</p> }
                                 <MudButton Variant="Variant.Outlined" Size="MudBlazor.Size.Small" StartIcon="@Icons.Material.Filled.Link" OnClick="ConnectRatelDeskAsync" Disabled="@_busy" data-testid="flow-connect-rateldesk">Connect RatelDesk</MudButton>
                                 <a href="@($"/flows/connectors?tenantId={Definition.TenantId}")">Manage RatelDesk connectors</a>
+                                <button type="button" @onclick="() => ConvertToGroup(selected)" data-testid="flow-convert-action-group">Add more actions</button>
+                            }
+                            @if (selected.Kind == FlowNodeKind.ActionGroup)
+                            {
+                                <FlowActionGroupFields Node="selected" Targets="Connectors" TenantId="Definition.TenantId"
+                                    Disabled="@(ReadOnly || !CanEdit || _busy)" Changed="UpdateNode" ManageTargetsRequested="ManageNotificationTargetsAsync" />
                             }
                             <button type="button" @onclick="() => RequestRemoveAsync(selected.Id)" data-testid="flow-remove-node">Remove node</button>
                         </fieldset>
                     }
                     else { <p>Select a node on the canvas or in the node list.</p> }
                     <fieldset disabled="@(ReadOnly || !CanEdit || _busy)" class="flow-connections"><legend>Connections</legend>
-                        <label>From<select @bind="_from" data-testid="flow-connect-from"><option value="">Choose output</option>@foreach (var n in _adapter.Capture().Nodes.Where(n => n.Kind != FlowNodeKind.CreateIncident)) { <option value="@n.Id">@n.Name · @FlowCanvasAdapter.OutputType(n.Kind)</option> }</select></label>
+                        <label>From<select @bind="_from" data-testid="flow-connect-from"><option value="">Choose output</option>@foreach (var n in _adapter.Capture().Nodes.Where(n => !FlowGraphValidator.IsTerminal(n.Kind))) { <option value="@n.Id">@n.Name · @FlowCanvasAdapter.OutputType(n.Kind)</option> }</select></label>
                         <label>To<select @bind="_to" data-testid="flow-connect-to"><option value="">Choose input</option>@foreach (var n in _adapter.Capture().Nodes.Where(n => n.Kind != FlowNodeKind.AlertRaised)) { <option value="@n.Id">@n.Name · @FlowCanvasAdapter.InputType(n.Kind)</option> }</select></label>
                         <button type="button" @onclick="ConnectAsync" data-testid="flow-connect">Connect ports</button>
                         @foreach (var edge in _adapter.Capture().Edges)
@@ -383,6 +398,19 @@
         var returnUrl = $"/flows?tenantId={Definition.TenantId}&draftId={Definition.Id:D}&nodeId={_selected:D}";
         return RequestLeaveAsync(() => { _allowNavigation = true; Navigation.NavigateTo($"/account/integration-credentials?tab=connections&tenant_id={Definition.TenantId}&returnUrl={Uri.EscapeDataString(returnUrl)}"); return Task.CompletedTask; });
     }
+    private Task ManageNotificationTargetsAsync()
+    {
+        var returnUrl = $"/flows?tenantId={Definition.TenantId}&draftId={Definition.Id:D}&nodeId={_selected:D}";
+        return RequestLeaveAsync(() => { _allowNavigation = true; Navigation.NavigateTo($"/account/integration-credentials?tab=notifications&tenant_id={Definition.TenantId}&returnUrl={Uri.EscapeDataString(returnUrl)}"); return Task.CompletedTask; });
+    }
+    private void ConvertToGroup(FlowNodeDto node) => UpdateNode(node with
+    {
+        Kind = FlowNodeKind.ActionGroup, Name = "Action group", ConnectorId = null, ConnectorRevision = null,
+        Actions = [new(Guid.NewGuid(), FlowActionKind.RatelDeskIncident, node.ConnectorId, node.ConnectorRevision)
+            { Name = SelectedConnector(node)?.Name }]
+    });
+    private bool HasNodeKind(FlowNodeKind kind) => _adapter?.Metadata.Values.Any(node =>
+        FlowGraphValidator.IsTerminal(kind) ? FlowGraphValidator.IsTerminal(node.Kind) : node.Kind == kind) == true;
     private void UpdateNode(FlowNodeDto node) { if (ReadOnly || !CanEdit || _busy || _adapter is null) return; _adapter.Update(node); _ = CheckDirty(); }
     private Task MoveNodeAsync(FlowNodeDto definition, bool x, ChangeEventArgs args) => CommandAsync("move", async (tenant, id, token) =>
     {
@@ -394,8 +422,8 @@
         if (Current(generation, tenant, id)) await CheckDirty();
     });
     private Task CanvasReady() => InvokeAsync(StateHasChanged);
-    private bool CanInsert(FlowNodeKind kind) => CanEdit && !ReadOnly && !_busy && Enum.IsDefined(kind) && _canvas?.IsReady == true && _adapter is not null && _adapter.Tree.Nodes.Count < FlowLimits.MaximumNodes && !_adapter.Metadata.Values.Any(n => n.Kind == kind);
-    private string InsertBlockReason(FlowNodeKind kind) => ReadOnly ? "Published versions are read only" : !CanEdit ? "Editing permission required" : _busy ? "Wait for the current operation" : _canvas?.IsReady != true ? "Canvas is loading" : _adapter?.Metadata.Values.Any(n => n.Kind == kind) == true ? $"The draft already has {FlowCanvas.KindLabel(kind)}" : "Node limit reached";
+    private bool CanInsert(FlowNodeKind kind) => CanEdit && !ReadOnly && !_busy && Enum.IsDefined(kind) && _canvas?.IsReady == true && _adapter is not null && _adapter.Tree.Nodes.Count < FlowLimits.MaximumNodes && !HasNodeKind(kind);
+    private string InsertBlockReason(FlowNodeKind kind) => ReadOnly ? "Published versions are read only" : !CanEdit ? "Editing permission required" : _busy ? "Wait for the current operation" : _canvas?.IsReady != true ? "Canvas is loading" : HasNodeKind(kind) ? FlowGraphValidator.IsTerminal(kind) ? "Open the current action settings and choose Add more actions" : $"The draft already has {FlowCanvas.KindLabel(kind)}" : "Node limit reached";
     private bool CanDrop(FlowNodeKind kind, string zone) => zone == "canvas" && CanInsert(kind);
     private async Task DropNodeAsync(MudItemDropInfo<FlowNodeKind> drop)
     {
@@ -412,11 +440,12 @@
     }
     private Task AddNodeAsync(FlowNodeKind kind, FlowPositionDto position) => CommandAsync("add", async (tenant, id, token) =>
     {
-        if (!CanEdit || ReadOnly || _adapter is null || _adapter.Metadata.Values.Any(n => n.Kind == kind)) return;
+        if (!CanEdit || ReadOnly || _adapter is null || HasNodeKind(kind)) return;
         var generation = _generation; var adapter = _adapter;
         var definition = new FlowNodeDto(Guid.NewGuid(), kind, FlowCanvas.KindLabel(kind), position,
             kind == FlowNodeKind.Condition ? new(FlowValueField.NumericValue, FlowComparison.GreaterThan, 90) : null,
-            kind == FlowNodeKind.MapIncident ? new("{ruleName}: {resource}", "{clientName} — {metric}: {value}") : null);
+            kind == FlowNodeKind.MapIncident ? new("{ruleName}: {resource}", "{clientName} — {metric}: {value}") : null)
+            { Actions = kind == FlowNodeKind.ActionGroup ? [new(Guid.NewGuid(), FlowActionKind.Discord)] : null };
         await adapter.AddAsync(definition, token); if (!Current(generation, tenant, id)) return; _selected = definition.Id; await CheckDirty();
     });
     private async Task RequestRemoveAsync(Guid node)
@@ -441,7 +470,7 @@
         _from = _from == node.ToString() ? "" : _from; _to = _to == node.ToString() ? "" : _to;
         await CheckDirty();
     });
-    private static string PaletteHelp(FlowNodeKind kind) => kind switch { FlowNodeKind.AlertRaised => "Starts when a monitoring occurrence fires.", FlowNodeKind.Condition => "Checks a selected alert value.", FlowNodeKind.MapIncident => "Sets the incident title, description and priority.", FlowNodeKind.CreateIncident => "Delivers an incident through an approved RatelDesk connection.", _ => "Unsupported node." };
+    private static string PaletteHelp(FlowNodeKind kind) => kind switch { FlowNodeKind.AlertRaised => "Starts when a monitoring occurrence fires.", FlowNodeKind.Condition => "Checks a selected alert value.", FlowNodeKind.MapIncident => "Sets the message title, description and incident priority.", FlowNodeKind.CreateIncident => "Delivers an incident through an approved RatelDesk connection.", FlowNodeKind.ActionGroup => "Sends the same alert to Discord, Slack and RatelDesk independently.", _ => "Unsupported node." };
     private Task ConnectAsync() => CommandAsync("connect", async (tenant, id, token) =>
     { if (!CanEdit || ReadOnly || !Guid.TryParse(_from, out var from) || !Guid.TryParse(_to, out var to)) { _error = "Select an output and an input."; return; } var generation = _generation; await _adapter!.ConnectAsync(from, to, token); if (Current(generation, tenant, id)) await CheckDirty(); });
     private Task DisconnectAsync(FlowEdgeDto edge) => CommandAsync("disconnect", async (tenant, id, token) => { if (!CanEdit || ReadOnly) return; var generation = _generation; await _adapter!.DisconnectAsync(edge, token); if (Current(generation, tenant, id)) await CheckDirty(); });
@@ -458,19 +487,22 @@
     private void UpdatePriority(FlowNodeDto node, ChangeEventArgs e) => UpdateNode(node with { Mapping = (node.Mapping ?? new("{ruleName}", "")) with { Priority = int.TryParse(e.Value?.ToString(), out var priority) ? priority : null } });
     private void SelectConnector(FlowNodeDto node, ChangeEventArgs e)
     {
-        var reference = Guid.TryParse(e.Value?.ToString(), out var id) ? Connectors.FirstOrDefault(c => c.Id == id && c.TenantId == Definition.TenantId) : null;
+        var reference = Guid.TryParse(e.Value?.ToString(), out var id) ? Connectors.FirstOrDefault(c => c.Id == id && c.TenantId == Definition.TenantId && c.Kind == FlowActionKind.RatelDeskIncident) : null;
         UpdateNode(node with { ConnectorId = reference?.Id, ConnectorRevision = reference is { Revision: > 0 } ? reference.Revision : null });
     }
-    private FlowConnectorReferenceDto? SelectedConnector(FlowNodeDto node) => Connectors.FirstOrDefault(c => c.Id == node.ConnectorId && c.TenantId == Definition.TenantId);
+    private FlowConnectorReferenceDto? SelectedConnector(FlowNodeDto node) => Connectors.FirstOrDefault(c => c.Id == node.ConnectorId && c.TenantId == Definition.TenantId && c.Kind == FlowActionKind.RatelDeskIncident);
     private string NodeLabel(Guid? id) => id is null ? "" : _adapter?.Metadata.Values.FirstOrDefault(n => n.Id == id)?.Name ?? "Unknown node";
     private static string Number(double value) => value.ToString("0.######", CultureInfo.InvariantCulture);
     private static string IssueText(FlowValidationIssueDto issue) => issue.Code switch
     {
         "connector-required" or "connector-reference" or "connector-revision-required" => "Select an owned connector reference.",
-        "unreachable-path" or "input-path" or "output-path" => "Connect every node in one path from Alert raised to Create incident.",
+        "unreachable-path" or "input-path" or "output-path" => "Connect every node from Alert raised through mapping to an action or action group.",
         "typed-port" => "Connect compatible alert or incident ports.", "fanout" => "Each port supports one connection.", "cycle" => "Remove the cyclic connection.",
         "mapping" or "mapping-required" => "Check incident templates and approved fields.", "condition" or "condition-required" => "Check condition field, comparison and value.",
-        "node-catalogue" => "Use one trigger, one mapping, one action and at most one condition.", "graph-limit" or "graph-bytes" => "The draft exceeds the bounded graph size.",
+        "node-catalogue" => "Use one trigger, one mapping, one action or action group, and at most one condition.", "graph-limit" or "graph-bytes" => "The draft exceeds the bounded graph size.",
+        "actions-required" => "Add at least one target to the action group.", "action-limit" => $"An action group supports up to {FlowLimits.MaximumActionsPerGroup} targets.",
+        "duplicate-action-target" => "Select each notification or incident target only once in a group.",
+        "action-id" or "action-kind" or "action-name" => "Check the action group targets.",
         "node-layout" or "viewport-limit" => "Check node names and finite canvas geometry.", _ => "The graph contains an invalid definition (" + issue.Code + ")."
     };
     public async ValueTask DisposeAsync()

@@ -66,7 +66,7 @@ public sealed class MonitoringFlowOutboxProcessor(IMonitoringStore store, IFlowE
             return await store.CompleteOutboxAsync(new(lease, MonitoringOutboxStatus.Pending, Code: "flow_run_pending"), cancellationToken).ConfigureAwait(false);
         var status = outcome.Outcome switch
         {
-            MonitoringFlowOutcomeKind.Succeeded => MonitoringOutboxStatus.Completed,
+            MonitoringFlowOutcomeKind.Succeeded or MonitoringFlowOutcomeKind.PartiallySucceeded => MonitoringOutboxStatus.Completed,
             MonitoringFlowOutcomeKind.Skipped => MonitoringOutboxStatus.Skipped,
             MonitoringFlowOutcomeKind.Failed => MonitoringOutboxStatus.Failed,
             _ => MonitoringOutboxStatus.DeliveryUnknown
@@ -85,15 +85,22 @@ public sealed class MonitoringFlowOutboxProcessor(IMonitoringStore store, IFlowE
         if (version is null || version.TenantId != intent.Series.TenantId || version.Id != intent.PublishedFlowVersionId ||
             version.FlowId != run.FlowId || !PublishedMonitoringFlowProvider.HasValidImmutableGraph(version)) return null;
         var detail = await flows.GetRunByIdAsync(intent.Series.TenantId, run.Id, cancellationToken).ConfigureAwait(false);
-        if (detail is null || detail.Run != run || detail.Input != canonical.Data || detail.Actions.Count > 1) return null;
+        var targets = FlowGraphValidator.ActionTargets(version.Graph).ToDictionary(target => target.Id);
+        if (detail is null || detail.Run != run || detail.Input != canonical.Data || detail.Actions.Count > targets.Count ||
+            detail.Actions.Select(action => action.NodeId).Distinct().Count() != detail.Actions.Count ||
+            detail.Actions.Any(action => !targets.TryGetValue(action.NodeId, out var target) || target.Kind != action.Kind ||
+                !Enum.IsDefined(action.Status) || action.Status is FlowActionStatus.Pending or FlowActionStatus.Dispatching or FlowActionStatus.RetryWaiting ||
+                action.Status == FlowActionStatus.Succeeded && action.Receipt is null)) return null;
         var successful = detail.Actions.Where(action => action.Status == FlowActionStatus.Succeeded && action.Receipt is not null).ToArray();
         // Never discard a persisted success receipt by translating contradictory
         // run metadata into a local failure or an unknown delivery.
-        if (run.Status != FlowRunStatus.Succeeded && successful.Length != 0) return null;
+        if (run.Status is not (FlowRunStatus.Succeeded or FlowRunStatus.PartiallySucceeded) && successful.Length != 0) return null;
+        if (run.Status == FlowRunStatus.PartiallySucceeded && (successful.Length == 0 || successful.Length >= targets.Count)) return null;
+        if (run.Status == FlowRunStatus.Succeeded && successful.Length != targets.Count) return null;
+        if (run.Status == FlowRunStatus.Skipped && detail.Actions.Count != 0) return null;
         MonitoringIncidentReceiptDto? receipt = null;
-        if (run.Status == FlowRunStatus.Succeeded)
+        if (successful.FirstOrDefault(action => action.Kind == FlowActionKind.RatelDeskIncident)?.Receipt is { } persisted)
         {
-            if (successful.Length != 1 || successful[0].Receipt is not { } persisted) return null;
             var link = persisted.SafeLink is { } url && Uri.TryCreate(url, UriKind.Absolute, out var parsed) &&
                 parsed.Scheme == Uri.UriSchemeHttps && string.IsNullOrEmpty(parsed.UserInfo) ? url : null;
             receipt = new(persisted.IncidentId, persisted.TrackingId, link);
@@ -102,6 +109,7 @@ public sealed class MonitoringFlowOutboxProcessor(IMonitoringStore store, IFlowE
         var kind = run.Status switch
         {
             FlowRunStatus.Succeeded => MonitoringFlowOutcomeKind.Succeeded,
+            FlowRunStatus.PartiallySucceeded => MonitoringFlowOutcomeKind.PartiallySucceeded,
             FlowRunStatus.Skipped => MonitoringFlowOutcomeKind.Skipped,
             FlowRunStatus.Failed => MonitoringFlowOutcomeKind.Failed,
             _ => MonitoringFlowOutcomeKind.DeliveryUnknown
@@ -111,12 +119,16 @@ public sealed class MonitoringFlowOutboxProcessor(IMonitoringStore store, IFlowE
             ? value : kind switch
             {
                 MonitoringFlowOutcomeKind.Succeeded => "flow_succeeded", MonitoringFlowOutcomeKind.Skipped => "flow_skipped",
-                MonitoringFlowOutcomeKind.Failed => "flow_failed", _ => "flow_delivery_unknown"
+                MonitoringFlowOutcomeKind.Failed => "flow_failed", MonitoringFlowOutcomeKind.PartiallySucceeded => "flow_partially_succeeded", _ => "flow_delivery_unknown"
             };
         // This is the receipt observation time. CompletedAt remains on the
         // immutable FlowRun; an old completed run can resolve a newer Unknown
         // marker without moving the monitoring outcome clock backwards.
-        return new(run.Id, kind, clock.GetUtcNow(), code, receipt);
+        var unknown = detail.Actions.Count(action => action.Status == FlowActionStatus.DeliveryUnknown);
+        var counts = (targets.Count > 1 || targets.Values.Any(target => target.Kind != FlowActionKind.RatelDeskIncident)) &&
+            run.Status != FlowRunStatus.Skipped
+            ? new MonitoringFlowActionCountsDto(targets.Count, successful.Length, targets.Count - successful.Length - unknown, unknown) : null;
+        return new(run.Id, kind, clock.GetUtcNow(), code, receipt) { ActionResults = counts };
     }
 
     private Task<bool> CompleteRejectedAsync(MonitoringOutboxLease lease, string code, CancellationToken cancellationToken)

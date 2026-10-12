@@ -1,9 +1,13 @@
+using System.Text.Json.Serialization;
+using NetRatel.Shared.Contracts.Monitoring;
+
 namespace NetRatel.Shared.Contracts.Flows;
 
-public enum FlowNodeKind { AlertRaised = 1, Condition = 2, MapIncident = 3, CreateIncident = 4 }
+public enum FlowNodeKind { AlertRaised = 1, Condition = 2, MapIncident = 3, CreateIncident = 4, ActionGroup = 5 }
+public enum FlowActionKind { RatelDeskIncident = 0, Discord = 1, Slack = 2 }
 public enum FlowValueField { NumericValue = 1, Severity = 2, Metric = 3, Resource = 4, RuleName = 5, ClientName = 6, ServiceState = 7 }
 public enum FlowComparison { Equal = 1, NotEqual = 2, GreaterThan = 3, GreaterThanOrEqual = 4, LessThan = 5, LessThanOrEqual = 6 }
-public enum FlowRunStatus { Queued = 1, Running = 2, RetryWaiting = 3, Succeeded = 4, Skipped = 5, Failed = 6, DeliveryUnknown = 7 }
+public enum FlowRunStatus { Queued = 1, Running = 2, RetryWaiting = 3, Succeeded = 4, Skipped = 5, Failed = 6, DeliveryUnknown = 7, PartiallySucceeded = 8 }
 public enum FlowActionStatus { Pending = 1, Dispatching = 2, RetryWaiting = 3, Succeeded = 4, Failed = 5, DeliveryUnknown = 6 }
 
 public sealed record FlowPositionDto(double X, double Y);
@@ -11,15 +15,29 @@ public sealed record FlowViewportDto(double Scale = 1, double ScrollX = 0, doubl
     double NegativeX = 0, double NegativeY = 0, double PositiveX = 0, double PositiveY = 0);
 public sealed record FlowConditionDto(FlowValueField Field, FlowComparison Comparison, double? NumericValue = null, string? TextValue = null);
 public sealed record FlowIncidentMappingDto(string TitleTemplate, string DescriptionTemplate, int? Priority = null);
+public sealed record FlowActionTargetDto(Guid Id, FlowActionKind Kind, Guid? ConnectorId = null, long? ConnectorRevision = null)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Name { get; init; }
+}
 public sealed record FlowNodeDto(Guid Id, FlowNodeKind Kind, string Name, FlowPositionDto Position,
-    FlowConditionDto? Condition = null, FlowIncidentMappingDto? Mapping = null, Guid? ConnectorId = null, long? ConnectorRevision = null);
+    FlowConditionDto? Condition = null, FlowIncidentMappingDto? Mapping = null, Guid? ConnectorId = null, long? ConnectorRevision = null)
+{
+    // Omit this new property for historical graphs: their persisted configuration hash remains valid.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<FlowActionTargetDto>? Actions { get; init; }
+}
 public sealed record FlowEdgeDto(Guid SourceNodeId, string SourcePort, Guid TargetNodeId, string TargetPort);
 public sealed record FlowGraphDto(int SchemaVersion, IReadOnlyList<FlowNodeDto> Nodes, IReadOnlyList<FlowEdgeDto> Edges, FlowViewportDto Viewport);
 public sealed record FlowValidationIssueDto(string Code, Guid? NodeId = null);
 public sealed record FlowValidationResultDto(bool Valid, IReadOnlyList<FlowValidationIssueDto> Issues);
 
 public sealed record FlowEventDataDto(Guid AgentId, Guid RuleId, string RuleName, string ClientName, string Resource,
-    string Metric, string Severity, double? NumericValue, string? ServiceState, DateTimeOffset ObservedAtUtc);
+    string Metric, string Severity, double? NumericValue, string? ServiceState, DateTimeOffset ObservedAtUtc)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MonitoringOfflineSnapshotDto? OfflineSummary { get; init; }
+}
 public sealed record FlowIncidentFieldsDto(string Title, string Description, int? Priority = null);
 public sealed record FlowDryRunRequest(FlowGraphDto Graph, FlowEventDataDto Input);
 public sealed record FlowDryRunResultDto(bool Valid, bool Skipped, string Code, FlowIncidentFieldsDto? Incident,
@@ -39,9 +57,16 @@ public sealed record FlowRunSummaryDto(Guid Id, Guid FlowId, Guid FlowVersionId,
     FlowRunStatus Status, DateTimeOffset CreatedAtUtc, DateTimeOffset? CompletedAtUtc, string? Code = null);
 public sealed record FlowActionReceiptDto(string IncidentId, string? TrackingId = null, string? SafeLink = null);
 public sealed record FlowActionSummaryDto(Guid NodeId, string IdempotencyKey, FlowActionStatus Status, int Attempts,
-    long? ConnectorRevision, string? Code, FlowActionReceiptDto? Receipt);
+    long? ConnectorRevision, string? Code, FlowActionReceiptDto? Receipt)
+{
+    public FlowActionKind Kind { get; init; }
+    public string? Name { get; init; }
+}
 public sealed record FlowRunDetailDto(FlowRunSummaryDto Run, FlowEventDataDto Input, IReadOnlyList<FlowActionSummaryDto> Actions);
-public sealed record FlowConnectorReferenceDto(Guid Id, int TenantId, string Name, bool Enabled, bool CanExecute, string? UnavailableReason = null, long Revision = 0);
+public sealed record FlowConnectorReferenceDto(Guid Id, int TenantId, string Name, bool Enabled, bool CanExecute, string? UnavailableReason = null, long Revision = 0)
+{
+    public FlowActionKind Kind { get; init; }
+}
 public sealed record FlowTenantAccessDto(int TenantId, string TenantName, bool CanEdit, bool CanPublish, bool CanExecute);
 
 public static class FlowLimits
@@ -62,6 +87,7 @@ public static class FlowLimits
     public const int MaximumRunsPerTenant = 4096;
     public const int MaximumQueuedRunsPerTenant = 256;
     public const int MaximumActionAttempts = 5;
+    public const int MaximumActionsPerGroup = 8;
     public const int MaximumHistoryRows = 100;
     public const string OutputPort = "out";
     public const string InputPort = "in";

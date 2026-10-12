@@ -18,7 +18,8 @@ public interface IMonitoringApiService
     async Task<MonitoringSeriesPageDto> GetClientSeriesAsync(int tenantId, Guid agentId, CancellationToken token = default)
     {
         var page = await GetSeriesAsync(tenantId, token: token);
-        return page with { Items = page.Items.Where(item => item.Series.AgentId == agentId).ToImmutableArray(), NextCursor = null };
+        return page with { Items = page.Items.Where(item => item.Series.AgentId == agentId ||
+            !item.OfflineAgentIds.IsDefault && item.OfflineAgentIds.Contains(agentId)).ToImmutableArray(), NextCursor = null };
     }
     Task<MonitoringEventPageDto> GetEventsAsync(int tenantId, string? cursor = null, CancellationToken token = default);
     Task<IReadOnlyList<MonitoringPublishedFlowDto>> GetPublishedFlowsAsync(int tenantId, CancellationToken token = default);
@@ -67,7 +68,9 @@ public sealed class MonitoringApiService(IHttpClientFactory clients) : IMonitori
     public async Task<MonitoringSeriesPageDto> GetClientSeriesAsync(int tenantId, Guid agentId, CancellationToken token = default)
     {
         var rows = await GetAsync<MonitoringSeriesState[]>(Root(tenantId) + $"/agents/{agentId:D}/series", token);
-        var identities = await GetClientIdentitiesAsync(tenantId, [agentId], token);
+        var ids = rows.SelectMany(row => row.OfflineAgentIds.IsDefault ? Enumerable.Empty<Guid>() : row.OfflineAgentIds)
+            .Prepend(agentId).Distinct().Take(MonitoringLimits.MaximumTargetClients).ToArray();
+        var identities = await GetClientIdentitiesAsync(tenantId, ids, token);
         return new(rows.ToImmutableArray(), null, identities.ToImmutableArray());
     }
     public Task<MonitoringEventPageDto> GetEventsAsync(int tenantId, string? cursor = null, CancellationToken token = default) =>

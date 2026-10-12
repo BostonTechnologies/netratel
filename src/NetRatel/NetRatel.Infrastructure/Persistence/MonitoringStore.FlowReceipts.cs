@@ -92,7 +92,7 @@ public sealed partial class MonitoringStore
         else await ApplyHistoricalFlowOutcomeAsync(db, receipt.Intent, outcome, cancellationToken).ConfigureAwait(false);
         row.Status = outcome.Outcome switch
         {
-            MonitoringFlowOutcomeKind.Succeeded => MonitoringOutboxStatus.Completed,
+            MonitoringFlowOutcomeKind.Succeeded or MonitoringFlowOutcomeKind.PartiallySucceeded => MonitoringOutboxStatus.Completed,
             MonitoringFlowOutcomeKind.Skipped => MonitoringOutboxStatus.Skipped,
             MonitoringFlowOutcomeKind.Failed => MonitoringOutboxStatus.Failed,
             _ => MonitoringOutboxStatus.DeliveryUnknown

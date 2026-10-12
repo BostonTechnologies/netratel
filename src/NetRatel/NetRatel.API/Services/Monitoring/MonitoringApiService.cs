@@ -60,7 +60,9 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         RequirePage(maximumCount, cursor);
         var result = await runtime.ReadTenantAsync(tenantId, maximumCount, cursor, cancellationToken).ConfigureAwait(false);
         if (result.Items.Any(item => item.Series.TenantId != tenantId)) throw new InvalidOperationException("Monitoring series returned a different tenant.");
-        return Bounded(result with { ClientIdentities = await ReadIdentitiesAsync(tenantId, result.Items.Select(item => item.Series.AgentId), cancellationToken).ConfigureAwait(false) });
+        return Bounded(result with { ClientIdentities = await ReadIdentitiesAsync(tenantId, result.Items.SelectMany(item =>
+            item.OfflineAgentIds.IsDefault ? new[] { item.Series.AgentId } : item.OfflineAgentIds.Prepend(item.Series.AgentId))
+            .Where(id => id != Guid.Empty).Distinct().Take(MonitoringLimits.MaximumTargetClients), cancellationToken).ConfigureAwait(false) });
     }
 
     public async Task<MonitoringEventPageDto> GetEventsAsync(int tenantId, int maximumCount, string? cursor, ClaimsPrincipal user, CancellationToken cancellationToken)
@@ -69,7 +71,7 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         RequirePage(maximumCount, cursor);
         var result = await runtime.ReadTenantEventsAsync(tenantId, maximumCount, cursor, cancellationToken).ConfigureAwait(false);
         if (result.Items.Any(item => item.Series.TenantId != tenantId)) throw new InvalidOperationException("Monitoring events returned a different tenant.");
-        return Bounded(result with { ClientIdentities = await ReadIdentitiesAsync(tenantId, result.Items.Select(item => item.Series.AgentId), cancellationToken).ConfigureAwait(false) });
+        return Bounded(result with { ClientIdentities = await ReadIdentitiesAsync(tenantId, result.Items.Select(item => item.Series.AgentId).Where(id => id != Guid.Empty), cancellationToken).ConfigureAwait(false) });
     }
 
     public async Task<MonitoringSummaryDto> GetSummaryAsync(int tenantId, ClaimsPrincipal user, CancellationToken cancellationToken)
@@ -85,7 +87,9 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         await RequireAsync(user, NetRatelPermissions.MonitoringRead, new(tenantId, MonitoringResourceKind.Agent, agentId, agentId), cancellationToken).ConfigureAwait(false);
         await RequireAgentAsync(tenantId, agentId, cancellationToken).ConfigureAwait(false);
         var result = await runtime.GetClientAsync(new(tenantId, agentId), cancellationToken).ConfigureAwait(false);
-        if (result.Any(item => item.Series.TenantId != tenantId || item.Series.AgentId != agentId)) throw new InvalidOperationException("Monitoring series returned a different client.");
+        if (result.Any(item => item.Series.TenantId != tenantId || item.Series.AgentId != agentId &&
+            (!MonitoringOfflinePresentation.IsSeries(item.Series) || item.OfflineAgentIds.IsDefault || !item.OfflineAgentIds.Contains(agentId))))
+            throw new InvalidOperationException("Monitoring series returned a different client.");
         return Bounded(result);
     }
 
@@ -300,8 +304,10 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         MonitoringOperatorActionDto request, bool clear, ClaimsPrincipal user, CancellationToken cancellationToken)
     {
         var permission = clear ? NetRatelPermissions.MonitoringClear : NetRatelPermissions.MonitoringAcknowledge;
-        await RequireAsync(user, permission, new(tenantId, MonitoringResourceKind.Series, ruleId, agentId, resourceKey), cancellationToken).ConfigureAwait(false);
-        await RequireAgentAsync(tenantId, agentId, cancellationToken).ConfigureAwait(false);
+        var offline = MonitoringOfflinePresentation.IsSeries(new(tenantId, ruleId, agentId, resourceKey));
+        await RequireAsync(user, permission, offline ? new(tenantId, MonitoringResourceKind.Rule, ruleId) :
+            new(tenantId, MonitoringResourceKind.Series, ruleId, agentId, resourceKey), cancellationToken).ConfigureAwait(false);
+        if (!offline) await RequireAgentAsync(tenantId, agentId, cancellationToken).ConfigureAwait(false);
         var operatorId = RequireOperator(user, request.Reason);
         var configuration = await GetConfigurationAsync(tenantId, cancellationToken).ConfigureAwait(false);
         if (configuration.Rules.All(rule => rule.RuleId != ruleId)) throw new MonitoringApiException(404, "monitoring_resource_not_found");

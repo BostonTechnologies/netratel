@@ -67,6 +67,7 @@ public sealed partial class MonitoringStore
     private static async Task<MonitoringEvaluationResult> AttributeClientIdentityAsync(OrchestratorDbContext db,
         MonitoringEvaluationResult result, MonitoringSeriesRecord? current, CancellationToken cancellationToken)
     {
+        if (MonitoringOfflinePresentation.IsSeries(result.State.Series)) return result;
         if (result.State.Occurrence is { } occurrence)
         {
             var previousOccurrence = current is null ? null : ReadState(current).Occurrence;

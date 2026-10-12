@@ -31,7 +31,10 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
             return Suspend(state, rule, rule.Enabled ? MonitoringClosureDisposition.TargetRemoved : MonitoringClosureDisposition.RuleDisabled, null, null);
 
         var now = timeProvider.GetUtcNow();
-        var isDisk = IsDisk(rule);
+        var offline = MonitoringOfflinePresentation.IsSeries(state.Series);
+        var isDisk = IsDisk(rule) && !offline;
+        var freshness = offline ? MonitoringOfflinePresentation.SnapshotFreshness : rule.FreshnessBudget;
+        var breachHold = offline ? TimeSpan.FromSeconds(rule.OfflineGraceSeconds ?? MonitoringOfflinePresentation.DefaultGraceSeconds) : rule.BreachHold;
         var collectionReason = isDisk ? DiskCollectionReason(state, observation, now) : null;
         if (isDisk && observation.Complete && observation.Supported && collectionReason is null &&
             state.LastDiskCollection == observation.DiskCollection)
@@ -40,7 +43,7 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
         var changedEpoch = state.Cursor is { } previousCursor && previousCursor.ConnectionEpoch != observation.Cursor.ConnectionEpoch;
         var changedStream = state.EvidenceStreamId is { } previousStream && previousStream != observation.EvidenceStreamId;
         var gap = state.LatestEvidence is { } previous &&
-            (observation.ReceivedAtUtc - previous.ReceivedAtUtc > rule.FreshnessBudget || observation.ObservedAtUtc - previous.ObservedAtUtc > rule.FreshnessBudget);
+            (observation.ReceivedAtUtc - previous.ReceivedAtUtc > freshness || observation.ObservedAtUtc - previous.ObservedAtUtc > freshness);
         var working = state with { StateRevision = checked(state.StateRevision + 1), Cursor = observation.Cursor, EvidenceStreamId = observation.EvidenceStreamId,
             LatestEvidence = evidence, EvidenceQuality = evidence.Quality };
         // A newly committed epoch starts its own receipt clock. Invalid first input must not carry the prior epoch's receipt high water forward.
@@ -71,8 +74,8 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
                 var observedStart = isDisk ? continuing ? working.WindowStartedObservedAtUtc!.Value : observation.ObservedAtUtc : (DateTimeOffset?)null;
                 working = working with { Phase = MonitoringPhase.Pending, WindowStartedAtUtc = start,
                     WindowStartedObservedAtUtc = observedStart, PreviousQualifyingReceivedAtUtc = observation.ReceivedAtUtc };
-                if (observation.ReceivedAtUtc - start >= rule.BreachHold &&
-                    (!isDisk || observation.ObservedAtUtc - observedStart!.Value >= rule.BreachHold))
+                if (observation.ReceivedAtUtc - start >= breachHold &&
+                    (!isDisk || observation.ObservedAtUtc - observedStart!.Value >= breachHold))
                 {
                     var occurrence = new MonitoringOccurrenceDto(_nextId(), _nextId(), now, start, rule, evidence,
                         rule.PublishedFlowVersionId is null ? MonitoringFlowDispatchDisposition.NoFlowSelected : MonitoringFlowDispatchDisposition.Suppressed);
@@ -122,7 +125,8 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
             };
         }
         var outbox = ImmutableArray.CreateBuilder<MonitoringOutboxIntent>();
-        working = AddDispatchIfEligible(working, now, rule, outbox);
+        // Offline summaries must be captured by the next authoritative presence scan after an overlay changes.
+        if (!MonitoringOfflinePresentation.IsSeries(working.Series)) working = AddDispatchIfEligible(working, now, rule, outbox);
         if (working == state && outbox.Count == 0) return Unchanged(state);
         working = working with { StateRevision = checked(state.StateRevision + 1) };
         return Result(state, working, [], outbox.ToImmutable());
@@ -244,7 +248,7 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
             !HaveSamePinnedRule(state.Occurrence.PinnedRule, intent.PinnedRule) || state.Occurrence.RaisedEvidence != intent.PinnedEvidence ||
             intent.StableFlowDispatchKey != FlowDispatchKey(state.Series, state.Occurrence, intent.PublishedFlowVersionId) ||
             state.LatestEvidence?.Classification != MonitoringClassification.Breach || !IsCurrentFresh(state.LatestEvidence, currentRule, now)) return false;
-        return !ActiveBypasses(state.Series, bypasses, now, groups).Any();
+        return !WithSuppression(state, bypasses, now, groups).Suppressed;
     }
 
     private static bool IsDisk(MonitoringRuleDto rule) =>
@@ -338,13 +342,24 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
     public static void RequireFlowOutcome(MonitoringFlowOutcomeDto outcome, DateTimeOffset now)
     {
         if (outcome.FlowRunId == Guid.Empty ||
-            (outcome.FlowRunId is null && (outcome.Outcome is MonitoringFlowOutcomeKind.Succeeded or MonitoringFlowOutcomeKind.Skipped || outcome.Code is null)) ||
+            (outcome.FlowRunId is null && (outcome.Outcome is MonitoringFlowOutcomeKind.Succeeded or MonitoringFlowOutcomeKind.Skipped or MonitoringFlowOutcomeKind.PartiallySucceeded || outcome.Code is null)) ||
             !Enum.IsDefined(outcome.Outcome) || outcome.OccurredAtUtc == default ||
             outcome.OccurredAtUtc > now || (outcome.Code is { } code &&
                 (code.Length == 0 || code.Length > 64 || code.Any(character => character is not (>= 'a' and <= 'z' or >= '0' and <= '9' or '_' or '-')))))
             throw new ArgumentException("invalid_flow_outcome");
-        if (outcome.Receipt is { } receipt && (outcome.Outcome != MonitoringFlowOutcomeKind.Succeeded ||
+        if (outcome.Receipt is { } receipt && (outcome.Outcome is not (MonitoringFlowOutcomeKind.Succeeded or MonitoringFlowOutcomeKind.PartiallySucceeded) ||
             !MonitoringContractValidator.TryValidateIncidentReceipt(receipt, out _))) throw new ArgumentException("invalid_incident_receipt");
+        if (outcome.ActionResults is { } actions && (actions.Total is < 1 or > NetRatel.Shared.Contracts.Flows.FlowLimits.MaximumActionsPerGroup ||
+            actions.Succeeded < 0 || actions.Failed < 0 || actions.DeliveryUnknown < 0 ||
+            actions.Succeeded + actions.Failed + actions.DeliveryUnknown != actions.Total ||
+            outcome.Outcome == MonitoringFlowOutcomeKind.Succeeded && actions.Succeeded != actions.Total ||
+            outcome.Outcome == MonitoringFlowOutcomeKind.PartiallySucceeded && (actions.Succeeded == 0 || actions.Succeeded == actions.Total) ||
+            outcome.Outcome == MonitoringFlowOutcomeKind.Skipped ||
+            outcome.Outcome == MonitoringFlowOutcomeKind.Failed && (actions.Succeeded != 0 || actions.DeliveryUnknown != 0) ||
+            outcome.Outcome == MonitoringFlowOutcomeKind.DeliveryUnknown && (actions.Succeeded != 0 || actions.DeliveryUnknown == 0)))
+            throw new ArgumentException("invalid_flow_action_counts");
+        if (outcome.Outcome == MonitoringFlowOutcomeKind.PartiallySucceeded && outcome.ActionResults is null)
+            throw new ArgumentException("flow_action_counts_required");
     }
 
     public MonitoringEvaluationResult RecordFlowOutcome(MonitoringSeriesState state, Guid occurrenceId, Guid eventId, MonitoringFlowOutcomeDto outcome)
@@ -360,6 +375,7 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
         var disposition = outcome.Outcome switch
         {
             MonitoringFlowOutcomeKind.Succeeded or MonitoringFlowOutcomeKind.Skipped => MonitoringFlowDispatchDisposition.Completed,
+            MonitoringFlowOutcomeKind.PartiallySucceeded => MonitoringFlowDispatchDisposition.PartiallySucceeded,
             MonitoringFlowOutcomeKind.Failed => MonitoringFlowDispatchDisposition.Failed,
             _ => MonitoringFlowDispatchDisposition.DeliveryUnknown
         };
@@ -369,19 +385,27 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
 
     private MonitoringEvidenceDto Classify(MonitoringSeriesState state, MonitoringRuleDto rule, MonitoringObservationDto observation, DateTimeOffset now, string? collectionReason = null)
     {
+        var offline = MonitoringOfflinePresentation.IsSeries(state.Series);
+        var freshness = offline ? MonitoringOfflinePresentation.SnapshotFreshness : rule.FreshnessBudget;
         var reason = collectionReason ?? (!observation.Complete ? "partial" : !observation.Supported ? "unsupported" :
             observation.ObservedAtUtc == default || observation.ReceivedAtUtc == default ? "invalid_clock" :
             observation.ObservedAtUtc > now || observation.ReceivedAtUtc > now || observation.ObservedAtUtc > observation.ReceivedAtUtc ? "future_clock" :
-            now - observation.ObservedAtUtc > rule.FreshnessBudget || now - observation.ReceivedAtUtc > rule.FreshnessBudget ? "stale" :
+            now - observation.ObservedAtUtc > freshness || now - observation.ReceivedAtUtc > freshness ? "stale" :
             state.NotBeforeObservedAtUtc is { } observedFence && observation.ObservedAtUtc <= observedFence ? "before_evaluation_fence" :
             state.NotBeforeReceivedAtUtc is { } receivedFence && observation.ReceivedAtUtc <= receivedFence ? "before_receipt_fence" :
             state.LatestEvidence is { } previous && observation.Cursor.ConnectionEpoch == previous.Cursor.ConnectionEpoch &&
-                !IsDisk(rule) && (observation.ObservedAtUtc <= previous.ObservedAtUtc || observation.ReceivedAtUtc <= previous.ReceivedAtUtc) ? "reordered_clock" : null);
+                (offline || !IsDisk(rule)) && (observation.ObservedAtUtc <= previous.ObservedAtUtc || observation.ReceivedAtUtc <= previous.ReceivedAtUtc) ? "reordered_clock" : null);
         var classification = MonitoringClassification.Unknown;
         if (reason is null)
         {
             var condition = rule.Condition;
-            if (condition.Kind == MonitoringMetricKind.ServiceExpectedState)
+            if (offline)
+            {
+                if (!rule.AlertIfOffline || !MonitoringOfflinePresentation.IsValid(observation.OfflineSummary) ||
+                    observation.NumericValue != observation.OfflineSummary!.OfflineCount) reason = "invalid_offline_snapshot";
+                else classification = observation.OfflineSummary.OfflineCount > 0 ? MonitoringClassification.Breach : MonitoringClassification.Recovery;
+            }
+            else if (condition.Kind == MonitoringMetricKind.ServiceExpectedState)
             {
                 reason = observation.ServiceState is null or ClientServiceState.Unknown or ClientServiceState.Unsupported || !Enum.IsDefined(observation.ServiceState.Value) ? "unknown_service" :
                     (observation.ServiceState == ClientServiceState.Missing) != observation.AuthoritativeMissing ? "unproven_missing" :
@@ -411,7 +435,8 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
         return new(observation.Cursor, observation.EvidenceStreamId, observation.ObservedAtUtc, observation.ReceivedAtUtc,
             reason is null ? MonitoringEvidenceQuality.Fresh : MonitoringEvidenceQuality.Unknown, classification,
             observation.NumericValue, observation.NumericResolution, observation.ServiceState, reason,
-            IsWellFormedDiskCollection(observation.DiskCollection) ? observation.DiskCollection : null);
+            IsWellFormedDiskCollection(observation.DiskCollection) ? observation.DiskCollection : null,
+            offline && MonitoringOfflinePresentation.IsValid(observation.OfflineSummary) ? observation.OfflineSummary : null);
     }
 
     private MonitoringEvaluationResult Suspend(MonitoringSeriesState state, MonitoringRuleDto rule, MonitoringClosureDisposition disposition, Guid? operatorId, string? reason)
@@ -440,7 +465,8 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
         var pinned = occurrence.PinnedRule;
         if (pinned.PublishedFlowVersionId is not Guid flow) return state;
         var key = FlowDispatchKey(state.Series, occurrence, flow);
-        outbox.Add(new(key, occurrence.RaisedEventId, occurrence.OccurrenceId, state.Series, flow, now, pinned, occurrence.RaisedEvidence));
+        outbox.Add(new(key, occurrence.RaisedEventId, occurrence.OccurrenceId, state.Series, flow, now, pinned, occurrence.RaisedEvidence,
+            state.LatestEvidence?.OfflineSummary));
         return state with { Occurrence = occurrence with { FlowDispatchDisposition = MonitoringFlowDispatchDisposition.Enqueued } };
     }
 
@@ -458,16 +484,29 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
 
     private static bool IsCurrentFresh(MonitoringEvidenceDto? evidence, MonitoringRuleDto rule, DateTimeOffset now) =>
         evidence is { Quality: MonitoringEvidenceQuality.Fresh } && evidence.ObservedAtUtc <= now && evidence.ReceivedAtUtc <= now &&
-        now - evidence.ObservedAtUtc <= rule.FreshnessBudget && now - evidence.ReceivedAtUtc <= rule.FreshnessBudget;
+        now - evidence.ObservedAtUtc <= (evidence.OfflineSummary is null ? rule.FreshnessBudget : MonitoringOfflinePresentation.SnapshotFreshness) &&
+        now - evidence.ReceivedAtUtc <= (evidence.OfflineSummary is null ? rule.FreshnessBudget : MonitoringOfflinePresentation.SnapshotFreshness);
 
     private static bool HasOpenOccurrence(MonitoringSeriesState state) => state.Occurrence is { EndedAtUtc: null };
 
     private static MonitoringSeriesState WithSuppression(MonitoringSeriesState state, IReadOnlyList<MonitoringBypassDto> bypasses, DateTimeOffset now, IReadOnlyList<MonitoringGroupDto>? groups)
     {
+        if (MonitoringOfflinePresentation.IsSeries(state.Series))
+        {
+            var members = state.OfflineAgentIds.IsDefault ? [] : state.OfflineAgentIds;
+            var matches = members.Select(id => ActiveBypasses(state.Series with { AgentId = id }, bypasses, now, groups).ToArray()).ToArray();
+            var matching = matches.SelectMany(items => items).Select(item => item.BypassId).Distinct().Order().ToImmutableArray();
+            var suppressed = matches.Length > 0 && matches.All(items => items.Length > 0);
+            if (state.Suppressed == suppressed && !state.ApplicableBypassIds.IsDefault && state.ApplicableBypassIds.SequenceEqual(matching)) return state;
+            return state with { Suppressed = suppressed, ApplicableBypassIds = matching };
+        }
         var active = ActiveBypasses(state.Series, bypasses, now, groups).Select(bypass => bypass.BypassId).Distinct().Order().ToImmutableArray();
         if (state.Suppressed == (active.Length > 0) && !state.ApplicableBypassIds.IsDefault && state.ApplicableBypassIds.SequenceEqual(active)) return state;
         return state with { Suppressed = active.Length > 0, ApplicableBypassIds = active };
     }
+
+    internal static bool HasApplicableBypass(MonitoringSeriesKey series, IReadOnlyList<MonitoringBypassDto> bypasses,
+        DateTimeOffset now, IReadOnlyList<MonitoringGroupDto> groups) => ActiveBypasses(series, bypasses, now, groups).Any();
 
     private static IEnumerable<MonitoringBypassDto> ActiveBypasses(MonitoringSeriesKey series, IReadOnlyList<MonitoringBypassDto> bypasses, DateTimeOffset now, IReadOnlyList<MonitoringGroupDto>? groups)
     {
@@ -495,8 +534,10 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
 
     private static bool MatchesRule(MonitoringSeriesKey series, MonitoringRuleDto rule)
     {
-        if (series.TenantId != rule.TenantId || series.RuleId != rule.RuleId || series.AgentId == Guid.Empty || string.IsNullOrWhiteSpace(series.ResourceKey) ||
+        if (series.TenantId != rule.TenantId || series.RuleId != rule.RuleId || string.IsNullOrWhiteSpace(series.ResourceKey) ||
             series.ResourceKey.Length > MonitoringLimits.MaximumResourceKeyLength || series.ResourceKey.Any(char.IsControl)) return false;
+        if (MonitoringOfflinePresentation.IsSeries(series)) return rule.AlertIfOffline;
+        if (series.AgentId == Guid.Empty) return false;
         return rule.Condition.Kind switch
         {
             MonitoringMetricKind.CpuUsagePercent => series.ResourceKey == "cpu",

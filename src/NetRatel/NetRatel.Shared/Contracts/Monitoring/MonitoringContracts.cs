@@ -11,8 +11,8 @@ public enum MonitoringSeverity { Information, Warning, Critical }
 public enum MonitoringPhase { Healthy, Pending, Firing, Recovering, Resolved, Cleared, Suspended, NotApplicable }
 public enum MonitoringEvidenceQuality { Unknown, Fresh }
 public enum MonitoringClassification { Unknown, Breach, Recovery, Neutral }
-public enum MonitoringFlowDispatchDisposition { NoFlowSelected, Suppressed, Enqueued, Completed, Failed, DeliveryUnknown, Cancelled }
-public enum MonitoringFlowOutcomeKind { Succeeded, Skipped, Failed, DeliveryUnknown }
+public enum MonitoringFlowDispatchDisposition { NoFlowSelected, Suppressed, Enqueued, Completed, Failed, DeliveryUnknown, Cancelled, PartiallySucceeded }
+public enum MonitoringFlowOutcomeKind { Succeeded, Skipped, Failed, DeliveryUnknown, PartiallySucceeded }
 public enum MonitoringClosureDisposition { Recovered, ManuallyCleared, RuleDisabled, TargetRemoved, ConfigurationChanged }
 public enum MonitoringConditionResetPolicy { SuspendOccurrenceAndRequireNewWindow }
 public enum MonitoringEventKind { AlertRaised, AlertResolved, AlertCleared, AlertSuspended, AlertAcknowledged }
@@ -39,7 +39,9 @@ public sealed record MonitoringRuleDto(
     int TenantId, Guid RuleId, ulong Revision, ulong EvaluationRevision, string Name, bool Enabled,
     MonitoringSeverity Severity, MonitoringTargetSelectionDto Targets, MonitoringConditionDto Condition,
     TimeSpan BreachHold, TimeSpan RecoveryHold, TimeSpan FreshnessBudget,
-    Guid? PublishedFlowVersionId = null, string? ExecutionPrincipalId = null, string? ExecutionCredentialId = null);
+    Guid? PublishedFlowVersionId = null, string? ExecutionPrincipalId = null, string? ExecutionCredentialId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool AlertIfOffline = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? OfflineGraceSeconds = null);
 
 public sealed record MonitoringSeriesKey(int TenantId, Guid RuleId, Guid AgentId, string ResourceKey);
 
@@ -56,14 +58,16 @@ public sealed record MonitoringObservationDto(
     bool Complete, bool Supported, double? NumericValue = null, double NumericResolution = 0,
     ClientServiceState? ServiceState = null, bool AuthoritativeMissing = false,
     ulong? ServiceWatchPolicyRevision = null, ulong? CurrentServiceWatchPolicyRevision = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MonitoringDiskCollectionStamp? DiskCollection = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MonitoringDiskCollectionStamp? DiskCollection = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MonitoringOfflineSnapshotDto? OfflineSummary = null);
 
 public sealed record MonitoringEvidenceDto(
     MonitoringAcceptedCursor Cursor, Guid EvidenceStreamId, DateTimeOffset ObservedAtUtc, DateTimeOffset ReceivedAtUtc,
     MonitoringEvidenceQuality Quality, MonitoringClassification Classification,
     double? NumericValue, double NumericResolution, ClientServiceState? ServiceState,
     string? UnknownReason = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MonitoringDiskCollectionStamp? DiskCollection = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MonitoringDiskCollectionStamp? DiskCollection = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MonitoringOfflineSnapshotDto? OfflineSummary = null);
 
 /// <summary>An immutable occurrence keeps its original condition/action version even after a rename or action edit.</summary>
 public sealed record MonitoringOccurrenceDto(
@@ -76,8 +80,13 @@ public sealed record MonitoringOccurrenceDto(
 
 /// <summary>Condition-false is Skipped; action-node keys and receipts are derived by the pinned flow runtime.</summary>
 public sealed record MonitoringIncidentReceiptDto(string IncidentId, string? TrackingNumber = null, string? IncidentUrl = null);
+public sealed record MonitoringFlowActionCountsDto(int Total, int Succeeded, int Failed, int DeliveryUnknown);
 public sealed record MonitoringFlowOutcomeDto(Guid? FlowRunId, MonitoringFlowOutcomeKind Outcome, DateTimeOffset OccurredAtUtc,
-    string? Code = null, MonitoringIncidentReceiptDto? Receipt = null);
+    string? Code = null, MonitoringIncidentReceiptDto? Receipt = null)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MonitoringFlowActionCountsDto? ActionResults { get; init; }
+}
 
 public sealed record MonitoringSeriesState(
     MonitoringSeriesKey Series, ulong StateRevision, ulong EvaluationRevision,
@@ -90,7 +99,8 @@ public sealed record MonitoringSeriesState(
     string EvaluationFingerprint = "", Guid? EvidenceStreamId = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MonitoringDiskCollectionStamp? LastDiskCollection = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTimeOffset? WindowStartedObservedAtUtc = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTimeOffset? LastDiskTransportReceivedAtUtc = null, ulong OperatorRevision = 0);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTimeOffset? LastDiskTransportReceivedAtUtc = null, ulong OperatorRevision = 0,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] ImmutableArray<Guid> OfflineAgentIds = default);
 
 public sealed record MonitoringBypassDto(
     Guid BypassId, int TenantId, Guid? RuleId, Guid? AgentId, string? ResourceKey,
@@ -106,7 +116,8 @@ public sealed record MonitoringEventIntent(
 public sealed record MonitoringOutboxIntent(
     string StableFlowDispatchKey, Guid EventId, Guid OccurrenceId, MonitoringSeriesKey Series,
     Guid PublishedFlowVersionId, DateTimeOffset AtUtc,
-    MonitoringRuleDto PinnedRule, MonitoringEvidenceDto PinnedEvidence);
+    MonitoringRuleDto PinnedRule, MonitoringEvidenceDto PinnedEvidence,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] MonitoringOfflineSnapshotDto? OfflineSummary = null);
 
 public sealed record MonitoringAuditIntent(
     Guid AuditId, MonitoringSeriesKey Series, string Operation, Guid OperatorId, string Reason,

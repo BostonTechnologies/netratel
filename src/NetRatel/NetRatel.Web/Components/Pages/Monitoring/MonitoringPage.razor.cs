@@ -75,8 +75,10 @@ public partial class MonitoringPage
     private string EditorTitle => _editor switch { "rule" => _draft?.Original is null ? "New monitoring rule" : $"Edit {_draft!.Name}", "group" => _originalGroup is null ? "New client group" : $"Edit {_groupName}", "ack" => "Acknowledge occurrence", "clear" => "Clear occurrence", "delete" => "Remove configuration", _ => "Bypass" };
     private IEnumerable<MonitoringSeriesState> ActiveRows => State.Snapshot?.Series.Items.Where(row =>
         (row.Occurrence is { EndedAtUtc: null } || row.Phase == MonitoringPhase.Pending || Health(row) == "Unknown") &&
-        (RequestedClientId is null || row.Series.AgentId == RequestedClientId) && MatchesState(row) &&
-        (Contains(RuleName(row.Series.RuleId)) || Contains(ClientName(row.Series.AgentId)) || Contains(ClientContext(row.Series.AgentId)) || Contains(row.Series.ResourceKey))) ?? [];
+        (!MonitoringOfflinePresentation.IsSeries(row.Series) || row.Phase is not (MonitoringPhase.Suspended or MonitoringPhase.NotApplicable)) &&
+        (RequestedClientId is null || row.Series.AgentId == RequestedClientId || !row.OfflineAgentIds.IsDefault && row.OfflineAgentIds.Contains(RequestedClientId.Value)) && MatchesState(row) &&
+        (Contains(RuleName(row.Series.RuleId)) || Contains(ClientName(row.Series.AgentId)) || Contains(ClientContext(row.Series.AgentId)) || Contains(row.Series.ResourceKey) ||
+            Contains(row.LatestEvidence?.OfflineSummary?.Summary ?? ""))) ?? [];
 
     protected override async Task OnInitializedAsync()
     {
@@ -183,12 +185,13 @@ public partial class MonitoringPage
         _ => "Current support or evidence has not been confirmed"
     };
     private string RuleName(Guid id) => State.Snapshot?.Configuration.Rules.FirstOrDefault(r => r.RuleId == id)?.Name ?? "Removed rule";
-    private string ClientName(Guid id) => ClientIdentityPresentation.Name(State.ClientIdentity(id));
+    private string ClientName(Guid id) => id == Guid.Empty ? "Monitored clients" : ClientIdentityPresentation.Name(State.ClientIdentity(id));
     private string ClientContext(Guid id) => ClientIdentityPresentation.Context(State.ClientIdentity(id));
     private string Time(DateTimeOffset? at) => at is { } value ? TimeZoneInfo.ConvertTime(value, _timeZone).ToString("yyyy-MM-dd HH:mm:ss zzz") : "—";
     private bool MatchesState(MonitoringSeriesState row) => _stateFilter.ToLowerInvariant() switch
     {
         "firing" => row.Occurrence is { EndedAtUtc: null } && row.Phase == MonitoringPhase.Firing,
+        "offline" => row.LatestEvidence?.OfflineSummary?.OfflineCount > 0,
         "pending" => row.Phase == MonitoringPhase.Pending,
         "unknown" => Health(row) == "Unknown",
         "suppressed" => row.Suppressed,
@@ -202,6 +205,7 @@ public partial class MonitoringPage
     {
         MonitoringEventKind.AlertRaised => "Alert raised", MonitoringEventKind.AlertResolved => "Recovered", MonitoringEventKind.AlertCleared => "Alert cleared", MonitoringEventKind.AlertSuspended => "Alert suspended", MonitoringEventKind.AlertAcknowledged => "Acknowledged",
         MonitoringPhase.NotApplicable => "Not applicable",
+        MonitoringFlowDispatchDisposition.PartiallySucceeded => "Partially succeeded", MonitoringFlowOutcomeKind.PartiallySucceeded => "Partially succeeded",
         MonitoringFlowDispatchDisposition.NoFlowSelected => "Display only", MonitoringFlowDispatchDisposition.DeliveryUnknown => "Delivery unconfirmed",
         MonitoringClosureDisposition.ManuallyCleared => "Manually cleared", MonitoringClosureDisposition.RuleDisabled => "Rule disabled", MonitoringClosureDisposition.TargetRemoved => "Target removed", MonitoringClosureDisposition.ConfigurationChanged => "Configuration changed",
         MonitoringMetricKind.CpuUsagePercent => "CPU usage", MonitoringMetricKind.DiskFreePercent => "Disk free %", MonitoringMetricKind.DiskFreeSpace => "Disk free space", MonitoringMetricKind.ServiceExpectedState => "Selected service state",
@@ -211,6 +215,7 @@ public partial class MonitoringPage
     {
         var now = DateTimeOffset.UtcNow;
         var budget = State.Snapshot?.Configuration.Rules.FirstOrDefault(rule => rule.RuleId == row.Series.RuleId)?.FreshnessBudget ?? TimeSpan.Zero;
+        if (MonitoringOfflinePresentation.IsSeries(row.Series)) budget = MonitoringOfflinePresentation.SnapshotFreshness;
         var evidence = row.LatestEvidence;
         return row.EvidenceQuality == MonitoringEvidenceQuality.Unknown || evidence is null || evidence.ObservedAtUtc > now || evidence.ReceivedAtUtc > now ||
             now - evidence.ObservedAtUtc > budget || now - evidence.ReceivedAtUtc > budget ? "Unknown" : evidence.Classification.ToString();
@@ -218,6 +223,7 @@ public partial class MonitoringPage
     private string EvidenceValue(MonitoringSeriesState row)
     {
         if (row.LatestEvidence is not { } evidence) return "Unknown";
+        if (evidence.OfflineSummary is { } offline) return offline.Summary;
         if (evidence.ServiceState is { } service) return service.ToString();
         if (evidence.NumericValue is not { } value) return "Unknown";
         var kind = State.Snapshot?.Configuration.Rules.FirstOrDefault(rule => rule.RuleId == row.Series.RuleId)?.Condition.Kind;
@@ -247,7 +253,7 @@ public partial class MonitoringPage
     {
         if (_busy || series.Series.TenantId != State.TenantId) return;
         BeginEditor(operation); _operatorSeries = series;
-        if (operation == "bypass") { _bypassId = Guid.NewGuid(); _bypassRule = series.Series.RuleId; _bypassAgent = series.Series.AgentId; _bypassGroup = null; _bypassResource = series.Series.ResourceKey; _bypassMinutes = 60; }
+        if (operation == "bypass") { _bypassId = Guid.NewGuid(); _bypassRule = series.Series.RuleId; _bypassAgent = MonitoringOfflinePresentation.IsSeries(series.Series) ? null : series.Series.AgentId; _bypassGroup = null; _bypassResource = series.Series.ResourceKey; _bypassMinutes = 60; }
     }
     private void OpenBypass() { BeginEditor("bypass"); _bypassId = Guid.NewGuid(); _bypassRule = _bypassAgent = _bypassGroup = null; _bypassResource = ""; _bypassMinutes = 60; }
     private void OpenDelete(string collection, Guid id, string name) { BeginEditor("delete"); _deleteCollection = collection; _deleteId = id; _deleteName = name; }

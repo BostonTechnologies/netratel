@@ -139,7 +139,8 @@ public sealed class RatelDeskFlowReceiverAdapter(IRatelDeskConnectorStore connec
     private static int Map(RatelDeskPriorityMapping mapping, string severity) => severity.ToLowerInvariant() switch
     { "critical" => mapping.Critical, "error" or "high" => mapping.Error, "warning" or "medium" => mapping.Warning, _ => mapping.Information };
     private static string BuildOriginalDescription(FlowIncidentActionDraft draft) => draft.Fields.Description + "\n\nNetRatel monitoring occurrence\n" +
-        $"Client: {draft.Event.Data.ClientName} ({draft.Event.Data.AgentId:D})\nResource: {draft.Event.Data.Resource}\n" +
+        (draft.Event.Data.OfflineSummary is null ? $"Client: {draft.Event.Data.ClientName} ({draft.Event.Data.AgentId:D})\n" :
+            $"Scope: {draft.Event.Data.ClientName}\n") + $"Resource: {draft.Event.Data.Resource}\n" +
         $"Rule: {draft.Event.Data.RuleName} ({draft.Event.Data.RuleId:D})\nSeverity: {draft.Event.Data.Severity}\n" +
         $"Metric: {draft.Event.Data.Metric}\nObserved value: {draft.Event.Data.NumericValue?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? draft.Event.Data.ServiceState ?? "Unknown"}\n" +
         $"Observed at: {draft.Event.Data.ObservedAtUtc:O}\nOccurred at: {draft.Event.OccurredAtUtc:O}\n" +
