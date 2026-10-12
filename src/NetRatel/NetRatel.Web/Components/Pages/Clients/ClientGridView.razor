@@ -20,7 +20,7 @@
           Class="client-grid-view">
     <HeaderContent>
         <MudTh>Status</MudTh>
-        <MudTh>Client</MudTh>
+        <MudTh>Name / tags</MudTh>
         <MudTh>Host / IP</MudTh>
         <MudTh>Tenant</MudTh>
         <MudTh>OS</MudTh>
@@ -36,16 +36,28 @@
                 @(context.Online ? "Online" : "Offline")
             </MudChip>
         </MudTd>
-        <MudTd DataLabel="Client">
-            <span class="client-table-value" title="@context.DisplayName">@context.DisplayName</span>
+        <MudTd DataLabel="Name / tags">
+            @if (context.HasFriendlyName)
+            {
+                <span class="client-table-value client-friendly-name" title="@context.FriendlyName">@context.FriendlyName</span>
+            }
+            @if (context.DisplayTags.Count > 0)
+            {
+                <div class="client-tags" aria-label="Client tags">
+                    @foreach (var tag in context.DisplayTags)
+                    {
+                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" title="@tag">@tag</MudChip>
+                    }
+                </div>
+            }
         </MudTd>
         <MudTd DataLabel="Host / IP">
             <div class="client-table-host">
                 <div class="client-table-host-line">
-                    <span class="client-table-value" title="@(context.HostName ?? context.DisplayName)">@(context.HostName ?? context.DisplayName)</span>
+                    <span class="client-table-value client-host" title="@(context.HostName ?? context.DisplayName)">@(context.HostName ?? context.DisplayName)</span>
                     <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small" OnClick="@(() => CopyHostAsync(context))" aria-label="Copy host" />
                 </div>
-                <span class="client-table-secondary">n/a</span>
+                <span class="client-table-secondary" data-testid="client-ip-address">@(context.ReportedAddress ?? "Not reported")</span>
             </div>
         </MudTd>
         <MudTd DataLabel="Tenant"><span class="client-table-value" title="@context.TenantName">@(context.TenantName ?? $"Tenant {context.TenantId}")</span></MudTd>
@@ -77,6 +89,20 @@
                 <MudTooltip Text="Remote support"><MudIconButton Icon="@Icons.Material.Filled.SupportAgent" Size="Size.Small" Disabled="@(!context.CanUseRemoteSupport)" OnClick="@(() => OpenRemoteSupportAsync(context))" aria-label="Open remote support" /></MudTooltip>
                 <ClientServicesLauncher @key="(context.TenantId, context.AgentId)" TenantId="@context.TenantId" AgentId="@context.AgentId"
                                         HostLabel="@context.HostName" TenantLabel="@context.TenantName" />
+                @if (context.CanManage)
+                {
+                    <MudTooltip Text="Edit name and tags">
+                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small"
+                                       OnClick="@(() => EditAsync(context))" aria-label="Edit client" />
+                    </MudTooltip>
+                    @if (RemoveRequested.HasDelegate)
+                    {
+                        <MudTooltip Text="Remove or offboard client">
+                            <MudIconButton Icon="@Icons.Material.Filled.DeleteOutline" Size="Size.Small" Color="Color.Error"
+                                           OnClick="@(() => RemoveRequested.InvokeAsync(context))" aria-label="Remove client" />
+                        </MudTooltip>
+                    }
+                }
             </MudStack>
         </MudTd>
     </RowTemplate>
@@ -88,6 +114,16 @@
 @code {
     [Parameter, EditorRequired] public IReadOnlyList<ClientPresentationModel> Clients { get; set; } = [];
     [Parameter] public EventCallback RefreshRequested { get; set; }
+    [Parameter] public EventCallback<ClientPresentationModel> RemoveRequested { get; set; }
+
+    private async Task EditAsync(ClientPresentationModel client)
+    {
+        if (!client.CanManage) return;
+        var parameters = new DialogParameters<ClientMetadataDialog> { { dialog => dialog.Client, client } };
+        var dialog = await DialogService.ShowAsync<ClientMetadataDialog>("Edit client", parameters,
+            new DialogOptions { FullWidth = true, MaxWidth = MaxWidth.Small, CloseOnEscapeKey = true, CloseButton = true });
+        if (await dialog.Result is { Canceled: false }) await RefreshRequested.InvokeAsync();
+    }
 
     private async Task CopyHostAsync(ClientPresentationModel client)
     {

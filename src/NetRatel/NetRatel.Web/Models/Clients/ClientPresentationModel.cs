@@ -25,8 +25,17 @@ public sealed record ClientPresentationModel(
     GatewayFileCapabilityDto? File = null,
     double? LatencyMilliseconds = null,
     DateTimeOffset? LatencyMeasuredAtUtc = null,
-    DateTimeOffset? LatencyExpiresAtUtc = null)
+    DateTimeOffset? LatencyExpiresAtUtc = null,
+    string? ReportedAddress = null,
+    IReadOnlyList<string>? Tags = null,
+    string? FriendlyName = null,
+    bool CanManage = false)
 {
+    public bool HasFriendlyName => !string.IsNullOrWhiteSpace(FriendlyName) &&
+        !string.Equals(FriendlyName.Trim(), HostName.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    public IReadOnlyList<string> DisplayTags => Tags ?? [];
+
     public bool CanUseTerminal =>
         Online && Capabilities.Contains("terminal-gateway", StringComparer.OrdinalIgnoreCase) &&
         Terminal is { Supported: true, TransportReady: true, AvailableShells.Count: > 0 };

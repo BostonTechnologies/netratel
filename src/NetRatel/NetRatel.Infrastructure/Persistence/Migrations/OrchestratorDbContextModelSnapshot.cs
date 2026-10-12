@@ -51,6 +51,10 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<string>("DisabledReason")
                         .HasColumnType("text");
 
+                    b.Property<string>("FriendlyName")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
                     b.Property<bool>("IsEnabled")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
@@ -94,6 +98,12 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
                     b.Property<Guid?>("SupersededByAgentId")
                         .HasColumnType("uuid");
+
+                    b.PrimitiveCollection<string[]>("Tags")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text[]")
+                        .HasDefaultValue(new string[0]);
 
                     b.Property<int>("TenantId")
                         .HasColumnType("integer");
@@ -632,6 +642,93 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.HasIndex("TenantId", "CreatedAtUtc");
 
                     b.ToTable("ClientInstallGrants", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientOffboardingOperation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("CompletionTokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<long>("ConnectionEpoch")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid>("ConnectionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ExpectedKeyFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<bool>("FilesRemoved")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset?>("FinishedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ProtectedCompletionToken")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<DateTimeOffset>("ReceiptExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ReceiptHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("RequestedBy")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<bool>("ServiceRemoved")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset>("StartDeadlineUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<short>("State")
+                        .HasColumnType("smallint");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AgentId");
+
+                    b.HasIndex("TenantId", "AgentId")
+                        .IsUnique()
+                        .HasFilter("\"FinishedAtUtc\" IS NULL");
+
+                    b.HasIndex("TenantId", "AgentId", "CreatedAtUtc");
+
+                    b.ToTable("ClientOffboardingOperations", (string)null);
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientReleaseAutomationSettings", b =>
@@ -5981,6 +6078,15 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("EnrollmentCode");
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientOffboardingOperation", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.Agent", null)
+                        .WithMany()
+                        .HasForeignKey("AgentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientReleaseImportAsset", b =>

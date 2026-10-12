@@ -67,14 +67,7 @@ public sealed class EnrollmentService : IEnrollmentService
         await using var tx = await _db.Database.BeginTransactionAsync(ct);
         var now = DateTimeOffset.UtcNow;
         var code = await LoadActiveCodeAsync(normalizedCode, now, ct).ConfigureAwait(false);
-        var existing = await _db.Agents
-            .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(agent =>
-                agent.TenantId == code.TenantId &&
-                agent.PublicKeyFingerprint == installation.Fingerprint &&
-                agent.SupersededAtUtc == null,
-                ct)
-            .ConfigureAwait(false);
+        var existing = await LockCanonicalAgentAsync(code.TenantId, installation.Fingerprint, ct).ConfigureAwait(false);
 
         if (existing is not null)
         {
@@ -368,14 +361,8 @@ public sealed class EnrollmentService : IEnrollmentService
         await using var recoveryTransaction = await _db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
         var now = DateTimeOffset.UtcNow;
         var code = await LoadActiveCodeAsync(normalizedCode, now, ct).ConfigureAwait(false);
-        var agent = await _db.Agents
-            .IgnoreQueryFilters()
-            .SingleAsync(candidate =>
-                candidate.TenantId == code.TenantId &&
-                candidate.PublicKeyFingerprint == installation.Fingerprint &&
-                candidate.SupersededAtUtc == null,
-                ct)
-            .ConfigureAwait(false);
+        var agent = await LockCanonicalAgentAsync(code.TenantId, installation.Fingerprint, ct).ConfigureAwait(false)
+            ?? throw new AgentAuthException(409, "Agent identity is no longer available.", "agent_identity_unavailable");
         await ValidateEnrollmentProofAsync(agent.Id, request, installation, now, required: true, ct).ConfigureAwait(false);
         var refreshToken = IssueRefreshCredential(agent, now, revokeExisting: true);
         UpdateSafeMetadata(agent, request, installation, now);
@@ -388,6 +375,21 @@ public sealed class EnrollmentService : IEnrollmentService
             agent.Id,
             ShortFingerprint(installation.Fingerprint));
         return new AgentEnrollResponse(agent.Id, refreshToken, _options.RefreshTokenLifetimeDays);
+    }
+
+    private async Task<Agent?> LockCanonicalAgentAsync(int tenantId, string fingerprint, CancellationToken ct)
+    {
+        var id = await _db.Agents.IgnoreQueryFilters().AsNoTracking()
+            .Where(agent => agent.TenantId == tenantId && agent.PublicKeyFingerprint == fingerprint && agent.SupersededAtUtc == null)
+            .Select(agent => (Guid?)agent.Id).SingleOrDefaultAsync(ct).ConfigureAwait(false);
+        if (id is null) return null;
+        var agent = await AgentLifecycleLock.LockAsync(_db, tenantId, id.Value, ct).ConfigureAwait(false)
+            ?? throw new AgentAuthException(409, "Agent identity is no longer available.", "agent_identity_unavailable");
+        if (agent.DeletedAtUtc.HasValue)
+            throw new AgentAuthException(403, "This Agent was removed from the platform.", "agent_deleted");
+        // Disabled identities still recover their canonical identity without
+        // being enabled. Only a durable deletion forbids new credentials here.
+        return agent;
     }
 
     private static bool IsInstallationIdentityConflict(DbUpdateException exception) =>

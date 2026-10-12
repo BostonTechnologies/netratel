@@ -4,6 +4,7 @@ using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Akka.Configuration;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Presence;
+using NetRatel.API.Services;
 
 namespace NetRatel.API.Gateway;
 
@@ -47,6 +48,7 @@ public sealed class AgentControlGatewayService(
         try
         {
             registration = controlSessions.Register(session.Client, session.ConnectionId, session.ConnectionEpoch, provisional: true);
+            registration.SetCapabilities(hello.Hello.Capabilities);
         }
         catch (AgentGatewayRegistrationFencedException exception)
         {
@@ -112,7 +114,8 @@ public sealed class AgentControlGatewayService(
             !Guid.TryParse(frame.ClientId, out var clientId) || clientId != identity.AgentId ||
             !Guid.TryParse(frame.ConnectionId, out var connectionId) || connectionId == Guid.Empty ||
             frame.ConnectionEpoch == 0 ||
-            frame.Sequence != 0)
+            frame.Sequence != 0 || frame.Hello.Capabilities.Count > 32 ||
+            frame.Hello.Capabilities.Any(capability => capability.Length is < 1 or > 64 || capability.Any(char.IsControl)))
         {
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The control hello does not match the authenticated agent identity."));
         }
@@ -150,15 +153,23 @@ public sealed class AgentControlGatewayService(
             frame.ConnectionEpoch != session.ConnectionEpoch ||
             !string.Equals(frame.ConnectionId, session.ConnectionId.ToString("D"), StringComparison.OrdinalIgnoreCase) ||
             frame.Sequence == 0 ||
-            frame.Sequence <= lastInboundSequence ||
-            frame.PayloadCase != AgentControlFrame.PayloadOneofCase.PingResponse ||
-            !Guid.TryParse(frame.PingResponse.RequestId, out var requestId) || requestId == Guid.Empty ||
-            frame.PingResponse.RespondedAtUtc is null)
+            frame.Sequence <= lastInboundSequence)
         {
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The control response is invalid or stale."));
         }
 
         lastInboundSequence = frame.Sequence;
+        if (frame.PayloadCase == AgentControlFrame.PayloadOneofCase.UninstallAcknowledgement)
+        {
+            var acknowledgement = frame.UninstallAcknowledgement;
+            if (!Guid.TryParse(acknowledgement.OperationId, out var operationId) || operationId == Guid.Empty || acknowledgement.FailureCode.Length > 128)
+                throw new RpcException(new Status(StatusCode.InvalidArgument, "The uninstall acknowledgement is invalid."));
+            registration.TryCompleteUninstall(acknowledgement);
+            return;
+        }
+        if (frame.PayloadCase != AgentControlFrame.PayloadOneofCase.PingResponse ||
+            !Guid.TryParse(frame.PingResponse.RequestId, out var requestId) || requestId == Guid.Empty || frame.PingResponse.RespondedAtUtc is null)
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The control response is invalid."));
         if (!registration.TryCompletePing(requestId, frame.PingResponse.RespondedAtUtc.ToDateTimeOffset()))
         {
             logger.LogDebug(
@@ -166,6 +177,17 @@ public sealed class AgentControlGatewayService(
                 session.Client.TenantId,
                 session.Client.AgentId);
         }
+    }
+
+    // The helper has no agent credential after removal. This method validates only
+    // the high-entropy credential for one persisted operation, never a new session.
+    [AllowAnonymous]
+    public override async Task<UninstallReceiptAcknowledgement> CompleteUninstall(UninstallReceipt request, ServerCallContext context)
+    {
+        var offboarding = context.GetHttpContext().RequestServices.GetRequiredService<ClientOffboardingService>();
+        if (!await offboarding.CompleteAsync(request, context.CancellationToken).ConfigureAwait(false))
+            throw new RpcException(new Status(StatusCode.PermissionDenied, "The uninstall receipt was not accepted."));
+        return new UninstallReceiptAcknowledgement { Accepted = true };
     }
 
     private static async Task WriteOutboundFramesAsync(

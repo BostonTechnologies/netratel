@@ -131,8 +131,10 @@
       <ClientManifestCommit Condition="'$(ClientManifestCommit)' == ''">unknown</ClientManifestCommit>
       <ClientManifestExecutable Condition="$([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('win-'))">NetRatel.Client.exe</ClientManifestExecutable>
       <ClientManifestExecutable Condition="'$(ClientManifestExecutable)' == ''">NetRatel.Client</ClientManifestExecutable>
+      <ClientManifestSelfContained>$([System.String]::Copy('$(SelfContained)').ToLowerInvariant())</ClientManifestSelfContained>
+      <ClientManifestSingleFile>$([System.String]::Copy('$(PublishSingleFile)').ToLowerInvariant())</ClientManifestSingleFile>
     </PropertyGroup>
-    <WriteLinesToFile File="$(PublishDir)netratel-client-manifest.json" Lines="{&quot;schema&quot;:&quot;netratel.client.manifest.v1&quot;,&quot;product&quot;:&quot;NetRatel.Client&quot;,&quot;version&quot;:&quot;$(Version)&quot;,&quot;runtimeId&quot;:&quot;$(RuntimeIdentifier)&quot;,&quot;commitSha&quot;:&quot;$(ClientManifestCommit)&quot;,&quot;executable&quot;:&quot;$(ClientManifestExecutable)&quot;}" Overwrite="true" Encoding="UTF-8" />
+    <WriteLinesToFile File="$(PublishDir)netratel-client-manifest.json" Lines="{&quot;schema&quot;:&quot;netratel.client.manifest.v1&quot;,&quot;product&quot;:&quot;NetRatel.Client&quot;,&quot;version&quot;:&quot;$(Version)&quot;,&quot;runtimeId&quot;:&quot;$(RuntimeIdentifier)&quot;,&quot;commitSha&quot;:&quot;$(ClientManifestCommit)&quot;,&quot;executable&quot;:&quot;$(ClientManifestExecutable)&quot;,&quot;selfContained&quot;:$(ClientManifestSelfContained),&quot;singleFile&quot;:$(ClientManifestSingleFile)}" Overwrite="true" Encoding="UTF-8" />
   </Target>
 
   <Target Name="CreateClientArtifactPackage" AfterTargets="GenerateClientUpdateManifest" Condition="'$(CreateClientArtifactPackage)' == 'true'">

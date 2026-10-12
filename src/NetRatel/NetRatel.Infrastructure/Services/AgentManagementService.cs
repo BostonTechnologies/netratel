@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using System.Net;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Events;
+using NetRatel.Application.Presence;
 using NetRatel.Infrastructure.Persistence;
 
 namespace NetRatel.Infrastructure.Services;
@@ -179,57 +180,77 @@ public sealed class AgentManagementService : IAgentManagementService
 
     public async Task DeleteAsync(int tenantId, Guid agentId, string reason, string actor, CancellationToken ct)
     {
-        var agent = await _db.Agents.FirstOrDefaultAsync(a => a.TenantId == tenantId && a.Id == agentId, ct);
+        await using var ownedTransaction = _db.Database.IsRelational() && _db.Database.CurrentTransaction is null
+            ? await _db.Database.BeginTransactionAsync(ct).ConfigureAwait(false)
+            : null;
+        var agent = await AgentLifecycleLock.LockAsync(_db, tenantId, agentId, ct).ConfigureAwait(false);
         if (agent is null)
             throw new AgentAuthException(404, "Agent not found.", "agent_not_found");
 
         var now = DateTimeOffset.UtcNow;
+        var alreadyDeleted = agent.DeletedAtUtc.HasValue;
         agent.IsEnabled = false;
         agent.Status = AgentStatus.Disabled;
         agent.DisabledReason = "decommissioned";
-        agent.RevokedAtUtc = now;
-        agent.DeletedAtUtc = now;
-        agent.DeletedBy = actor;
-        foreach (var credential in _db.AgentCredentials.Where(candidate => candidate.AgentId == agentId && candidate.RevokedAtUtc == null))
+        agent.RevokedAtUtc ??= now;
+        if (!alreadyDeleted)
+        {
+            agent.RevokedAtUtc = now;
+            agent.DeletedAtUtc = now;
+            agent.DeletedBy = actor;
+        }
+        var credentials = await _db.AgentCredentials.Where(candidate =>
+            candidate.AgentId == agentId && candidate.RevokedAtUtc == null).ToListAsync(ct).ConfigureAwait(false);
+        foreach (var credential in credentials)
             credential.RevokedAtUtc = now;
-        foreach (var token in _db.AgentRefreshTokens.Where(candidate => candidate.AgentId == agentId && candidate.RevokedAtUtc == null))
-            token.RevokedAtUtc = now;
-        foreach (var token in _db.AgentRefreshTokens.Where(candidate => candidate.AgentId == agentId && candidate.ProtectedSuccessorToken != null))
+        var tokens = await _db.AgentRefreshTokens.Where(candidate => candidate.AgentId == agentId &&
+            (candidate.RevokedAtUtc == null || candidate.ProtectedSuccessorToken != null)).ToListAsync(ct).ConfigureAwait(false);
+        foreach (var token in tokens)
+        {
+            token.RevokedAtUtc ??= now;
             token.ProtectedSuccessorToken = null;
+        }
 
-        _db.OutboxMessages.Add(new OutboxMessage
+        if (!alreadyDeleted)
         {
-            Id = Guid.NewGuid(),
-            OccurredUtc = now,
-            Type = NetRatelEventTypes.Agent.WentOffline,
-            PayloadJson = JsonSerializer.Serialize(new AgentLifecyclePayload(agent.Id, tenantId, Actor: actor, Reason: "decommissioned")),
-            Source = "Agent",
-            CorrelationId = $"netratel-agent-{agent.Id:N}",
-            TenantId = tenantId.ToString(),
-            EntityId = agent.Id.ToString(),
-            Severity = "Warning",
-            Message = $"Agent {agent.Id} decommissioned.",
-            Status = OutboxStatuses.Pending,
-            Attempts = 0,
-            NextAttemptUtc = now
-        });
-        _db.OutboxMessages.Add(new OutboxMessage
-        {
-            Id = Guid.NewGuid(),
-            OccurredUtc = now,
-            Type = NetRatelEventTypes.AgentToken.Revoked,
-            PayloadJson = JsonSerializer.Serialize(new AgentLifecyclePayload(agent.Id, tenantId, Actor: actor, Reason: "decommissioned")),
-            Source = "Agent",
-            CorrelationId = $"netratel-agent-{agent.Id:N}",
-            TenantId = tenantId.ToString(),
-            EntityId = agent.Id.ToString(),
-            Severity = "Warning",
-            Message = $"Agent credentials revoked for decommissioned agent {agent.Id}.",
-            Status = OutboxStatuses.Pending,
-            Attempts = 0,
-            NextAttemptUtc = now
-        });
-        await _db.SaveChangesAsync(ct);
+            var auditReason = string.IsNullOrWhiteSpace(reason) ? "decommissioned" : reason.Trim();
+            _db.OutboxMessages.Add(new OutboxMessage
+            {
+                Id = Guid.NewGuid(),
+                OccurredUtc = now,
+                Type = NetRatelEventTypes.Agent.WentOffline,
+                PayloadJson = JsonSerializer.Serialize(new AgentLifecyclePayload(agent.Id, tenantId, Actor: actor, Reason: auditReason)),
+                Source = "Agent",
+                CorrelationId = $"netratel-agent-{agent.Id:N}",
+                TenantId = tenantId.ToString(),
+                EntityId = agent.Id.ToString(),
+                Severity = "Warning",
+                Message = $"Agent {agent.Id} decommissioned.",
+                Status = OutboxStatuses.Pending,
+                Attempts = 0,
+                NextAttemptUtc = now
+            });
+            _db.OutboxMessages.Add(new OutboxMessage
+            {
+                Id = Guid.NewGuid(),
+                OccurredUtc = now,
+                Type = NetRatelEventTypes.AgentToken.Revoked,
+                PayloadJson = JsonSerializer.Serialize(new AgentLifecyclePayload(agent.Id, tenantId, Actor: actor, Reason: auditReason)),
+                Source = "Agent",
+                CorrelationId = $"netratel-agent-{agent.Id:N}",
+                TenantId = tenantId.ToString(),
+                EntityId = agent.Id.ToString(),
+                Severity = "Warning",
+                Message = $"Agent credentials revoked for decommissioned agent {agent.Id}.",
+                Status = OutboxStatuses.Pending,
+                Attempts = 0,
+                NextAttemptUtc = now
+            });
+        }
+        await ClientConnectionEpochStore.RetireClientForDeletionAsync(_db, new ClientKey(tenantId, agentId), ct).ConfigureAwait(false);
+        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        if (ownedTransaction is not null)
+            await ownedTransaction.CommitAsync(ct).ConfigureAwait(false);
         _logger.LogInformation("Agent decommissioned. tenantId={TenantId}, agentId={AgentId}, actor={Actor}", tenantId, agentId, actor);
     }
 }

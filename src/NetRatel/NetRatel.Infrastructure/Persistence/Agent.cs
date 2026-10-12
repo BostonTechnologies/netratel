@@ -11,6 +11,8 @@ public sealed class Agent
     public Guid Id { get; set; }
     public int TenantId { get; set; }
     public string? Name { get; set; }
+    public string? FriendlyName { get; set; }
+    public string[] Tags { get; set; } = [];
     public AgentStatus Status { get; set; }
     public bool IsEnabled { get; set; } = true;
     public string? DisabledReason { get; set; }

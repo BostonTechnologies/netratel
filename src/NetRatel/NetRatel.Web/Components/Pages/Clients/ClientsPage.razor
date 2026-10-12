@@ -4,10 +4,12 @@
 
 @using NetRatel.Web.Models.Clients
 @using NetRatel.Web.Services.Clients
+@using NetRatel.Web.Components.Dialogs
 
 @inject ClientPresentationService ClientPresentation
 @inject NavigationManager Navigation
 @inject ILogger<ClientsPage> Logger
+@inject IDialogService DialogService
 
 <PageTitle>Clients</PageTitle>
 
@@ -28,7 +30,7 @@
                               Value="_search"
                               ValueChanged="OnSearchChanged"
                               Label="Search"
-                Placeholder="Name or host"
+                              Placeholder="Name, host, tag or IP"
                               Adornment="Adornment.Start"
                               AdornmentIcon="@Icons.Material.Filled.Search"
                               Immediate="true"
@@ -122,11 +124,11 @@
     {
         @if (_view == ClientListView.Table)
         {
-            <ClientGridView Clients="@FilteredClients" RefreshRequested="ReloadClientsAsync" />
+            <ClientGridView Clients="@FilteredClients" RefreshRequested="ReloadClientsAsync" RemoveRequested="RemoveAsync" />
         }
         else
         {
-            <ClientCardGrid Clients="@FilteredClients" RefreshRequested="ReloadClientsAsync" />
+            <ClientCardGrid Clients="@FilteredClients" RefreshRequested="ReloadClientsAsync" RemoveRequested="RemoveAsync" />
         }
     }
 </MudContainer>
@@ -223,6 +225,15 @@
 
     private Task ReloadClientsAsync() => ReloadClientsAsync(_refreshLoop?.Token ?? CancellationToken.None, "manual");
 
+    private async Task RemoveAsync(ClientPresentationModel client)
+    {
+        if (!client.CanManage) return;
+        var parameters = new DialogParameters<ClientOffboardingDialog> { { dialog => dialog.Client, client } };
+        var dialog = await DialogService.ShowAsync<ClientOffboardingDialog>("Remove client", parameters,
+            new DialogOptions { FullWidth = true, MaxWidth = MaxWidth.Small, CloseOnEscapeKey = true, CloseButton = true });
+        if (await dialog.Result is { Canceled: false }) await ReloadClientsAsync();
+    }
+
     private async Task ReloadClientsAsync(CancellationToken cancellationToken, string trigger)
     {
         if (_isLoading && _loadStarted)
@@ -281,7 +292,8 @@
         var term = _search.Trim();
         return Contains(client.DisplayName, term) || Contains(client.HostName, term) ||
                Contains(client.OperatingSystem, term) || Contains(client.TenantName, term) ||
-               Contains(client.AgentVersion, term);
+               Contains(client.AgentVersion, term) || Contains(client.FriendlyName, term) ||
+               Contains(client.ReportedAddress, term) || client.DisplayTags.Any(tag => Contains(tag, term));
     }
 
     private void OnSearchChanged(string? value)

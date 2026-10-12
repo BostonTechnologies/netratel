@@ -19,6 +19,8 @@ namespace NetRatel.Tests.Client;
 
 public sealed class AgentGatewayPresenceLivenessTests
 {
+    private readonly RecoveryNotifications _recoveryNotifications = new();
+
     [Theory]
     [InlineData(500)]
     [InlineData(30000)]
@@ -72,7 +74,8 @@ public sealed class AgentGatewayPresenceLivenessTests
             {
                 session = current;
                 return extensionLifetime.Task.WaitAsync(ct);
-            }, timeProvider: clientClock, nextRandom: () => 0, createCall: transport.Open);
+            }, timeProvider: clientClock, nextRandom: () => 0, createCall: transport.Open,
+            subscribeRecoveryNotifications: _recoveryNotifications.Subscribe);
         var run = agent.RunAsync(stopping.Token);
         try
         {
@@ -117,7 +120,8 @@ public sealed class AgentGatewayPresenceLivenessTests
                 ready.TrySetResult(session);
                 // slopwatch-ignore: SW004 Existing extension fixture remains pending until owner cancellation; no elapsed-time success condition.
                 return Task.Delay(Timeout.InfiniteTimeSpan, token);
-            }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open);
+            }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open,
+            subscribeRecoveryNotifications: _recoveryNotifications.Subscribe);
         var run = agent.RunAsync(stopping.Token);
         try
         {
@@ -149,7 +153,8 @@ public sealed class AgentGatewayPresenceLivenessTests
         });
         using var stopping = new CancellationTokenSource();
         var agent = new AgentGatewayPresenceClient(new GatewayClientOptions { Endpoint = "https://gateway.test" },
-            tokens, 7, Guid.NewGuid(), "test", [], _ => { }, timeProvider: clock, nextRandom: () => 0.5);
+            tokens, 7, Guid.NewGuid(), "test", [], _ => { }, timeProvider: clock, nextRandom: () => 0.5,
+            subscribeRecoveryNotifications: _recoveryNotifications.Subscribe);
         var run = agent.RunAsync(stopping.Token);
         try
         {
@@ -183,7 +188,8 @@ public sealed class AgentGatewayPresenceLivenessTests
                 session = current;
                 // slopwatch-ignore: SW004 Existing extension fixture remains pending until owner cancellation; no elapsed-time success condition.
                 return Task.Delay(Timeout.InfiniteTimeSpan, token);
-            }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open);
+            }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open,
+            subscribeRecoveryNotifications: _recoveryNotifications.Subscribe);
         var run = agent.RunAsync(stopping.Token);
         try
         {
@@ -215,7 +221,8 @@ public sealed class AgentGatewayPresenceLivenessTests
             new ClockTokenService(clock, TimeSpan.FromSeconds(65)), 7, Guid.NewGuid(), "test", [], message =>
             {
                 if (message.StartsWith("Presence authentication renewed", StringComparison.Ordinal)) Interlocked.Increment(ref renewals);
-            }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open, recoveryStateStore: store);
+            }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open, recoveryStateStore: store,
+            subscribeRecoveryNotifications: _recoveryNotifications.Subscribe);
         var run = agent.RunAsync(stopping.Token);
         try
         {
@@ -240,7 +247,8 @@ public sealed class AgentGatewayPresenceLivenessTests
     {
         var tokens = new DelegateTokenService(_ => throw new InvalidOperationException("unexpected worker defect"));
         var agent = new AgentGatewayPresenceClient(new GatewayClientOptions { Endpoint = "https://gateway.test" },
-            tokens, 7, Guid.NewGuid(), "test", [], _ => { });
+            tokens, 7, Guid.NewGuid(), "test", [], _ => { },
+            subscribeRecoveryNotifications: _recoveryNotifications.Subscribe);
         await Assert.ThrowsAsync<InvalidOperationException>(() => agent.RunAsync(CancellationToken.None));
     }
 
@@ -255,7 +263,7 @@ public sealed class AgentGatewayPresenceLivenessTests
         using var stopping = new CancellationTokenSource();
         var agent = new AgentGatewayPresenceClient(new GatewayClientOptions { Endpoint = "https://gateway.test" },
             tokens, 7, Guid.NewGuid(), "test", [], _ => { }, timeProvider: clock, nextRandom: () => 0.5,
-            createCall: transport.Open);
+            createCall: transport.Open, subscribeRecoveryNotifications: _recoveryNotifications.Subscribe);
         var run = agent.RunAsync(stopping.Token);
         try
         {
@@ -290,7 +298,7 @@ public sealed class AgentGatewayPresenceLivenessTests
         using var stopping = new CancellationTokenSource();
         var agent = new AgentGatewayPresenceClient(new GatewayClientOptions { Endpoint = "https://gateway.test" },
             tokens, 7, Guid.NewGuid(), "test", [], _ => { }, timeProvider: clock, nextRandom: () => 0.5,
-            createCall: transport.Open);
+            createCall: transport.Open, subscribeRecoveryNotifications: _recoveryNotifications.Subscribe);
         var run = agent.RunAsync(stopping.Token);
         try
         {
@@ -327,7 +335,8 @@ public sealed class AgentGatewayPresenceLivenessTests
                 ready.TrySetResult();
                 // slopwatch-ignore: SW004 Existing extension fixture remains pending until owner cancellation; no elapsed-time success condition.
                 return Task.Delay(Timeout.InfiniteTimeSpan, token);
-            }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open);
+            }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open,
+            subscribeRecoveryNotifications: _recoveryNotifications.Subscribe);
         var run = agent.RunAsync(stopping.Token);
         try
         {
@@ -483,8 +492,12 @@ public sealed class AgentGatewayPresenceLivenessTests
         await WaitUntilAsync(() => clock.HasTimer(TimeSpan.FromSeconds(3)));
         clock.Advance(TimeSpan.FromSeconds(3));
         await WaitUntilAsync(() => clock.HasTimer(TimeSpan.FromSeconds(1.5)));
+        _recoveryNotifications.SubscriptionCount.Should().Be(1);
         stopping.Cancel();
         await run.WaitAsync(TimeSpan.FromSeconds(2));
+        _recoveryNotifications.DisposeCount.Should().Be(1);
+        _recoveryNotifications.HasSubscriber.Should().BeFalse();
+        _recoveryNotifications.Notify();
         clock.Advance(TimeSpan.FromMinutes(1));
         transport.Attempts.Should().Be(1);
     }
@@ -510,7 +523,8 @@ public sealed class AgentGatewayPresenceLivenessTests
                 ready.TrySetResult();
                 // slopwatch-ignore: SW004 Existing extension fixture remains pending until owner cancellation; no elapsed-time success condition.
                 return Task.Delay(Timeout.InfiniteTimeSpan, token);
-            }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open);
+            }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open,
+            subscribeRecoveryNotifications: _recoveryNotifications.Subscribe);
         var run = agent.RunAsync(stopping.Token);
         try
         {
@@ -556,7 +570,8 @@ public sealed class AgentGatewayPresenceLivenessTests
                 session = owner;
                 // slopwatch-ignore: SW004 Existing extension fixture remains pending until owner cancellation; no elapsed-time success condition.
                 return Task.Delay(Timeout.InfiniteTimeSpan, token);
-            }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open);
+            }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open,
+            subscribeRecoveryNotifications: _recoveryNotifications.Subscribe);
         var run = agent.RunAsync(stopping.Token);
         try
         {
@@ -601,7 +616,8 @@ public sealed class AgentGatewayPresenceLivenessTests
                 Interlocked.Increment(ref starts);
                 // slopwatch-ignore: SW004 Existing extension fixture remains pending until owner cancellation; no elapsed-time success condition.
                 return Task.Delay(Timeout.InfiniteTimeSpan, token);
-            }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open);
+            }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open,
+            subscribeRecoveryNotifications: _recoveryNotifications.Subscribe);
         var run = agent.RunAsync(stopping.Token);
         try
         {
@@ -642,7 +658,8 @@ public sealed class AgentGatewayPresenceLivenessTests
                 ownerToken = token;
                 // slopwatch-ignore: SW004 Existing extension fixture remains pending until owner cancellation; no elapsed-time success condition.
                 return Task.Delay(Timeout.InfiniteTimeSpan, token);
-            }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open);
+            }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open,
+            subscribeRecoveryNotifications: _recoveryNotifications.Subscribe);
         var run = agent.RunAsync(stopping.Token);
         try
         {
@@ -711,7 +728,8 @@ public sealed class AgentGatewayPresenceLivenessTests
             {
                 session = current;
                 return extensionLifetime.Task.WaitAsync(ct);
-            }, timeProvider: clock, nextRandom: () => 0, createCall: transport.Open);
+            }, timeProvider: clock, nextRandom: () => 0, createCall: transport.Open,
+            subscribeRecoveryNotifications: _recoveryNotifications.Subscribe);
         var run = agent.RunAsync(stopping.Token);
         try
         {
@@ -727,17 +745,43 @@ public sealed class AgentGatewayPresenceLivenessTests
         finally { stopping.Cancel(); await run.WaitAsync(TimeSpan.FromSeconds(2)); }
     }
 
-    private static AgentGatewayPresenceClient CreateAgent(GatewayPresenceTestClock clock, ScriptedTransport transport,
+    private AgentGatewayPresenceClient CreateAgent(GatewayPresenceTestClock clock, ScriptedTransport transport,
         Action<string> log, TimeSpan? lifetime = null) => new(
         new GatewayClientOptions { Endpoint = "https://gateway.test", PresenceBootstrapTimeoutSeconds = 3 },
         new ClockTokenService(clock, lifetime ?? TimeSpan.FromHours(1)), 7, Guid.NewGuid(), "test", [], log,
-        timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open);
+        timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open,
+        subscribeRecoveryNotifications: _recoveryNotifications.Subscribe);
 
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
         // slopwatch-ignore: SW004 Existing bounded polling yields to stream continuations while observing assertions driven by virtual time; delay is not evidence of success.
         while (!condition()) await Task.Delay(1, timeout.Token);
+    }
+
+    private sealed class RecoveryNotifications : IDisposable
+    {
+        private Action? _notification;
+        private int _subscriptions;
+        private int _disposals;
+        internal int SubscriptionCount => Volatile.Read(ref _subscriptions);
+        internal int DisposeCount => Volatile.Read(ref _disposals);
+        internal bool HasSubscriber => Volatile.Read(ref _notification) is not null;
+
+        internal IDisposable Subscribe(Action notification)
+        {
+            Interlocked.Exchange(ref _notification, notification);
+            Interlocked.Increment(ref _subscriptions);
+            return this;
+        }
+
+        internal void Notify() => Volatile.Read(ref _notification)?.Invoke();
+
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref _notification, null);
+            Interlocked.Increment(ref _disposals);
+        }
     }
 
     private sealed class ClockTokenService(TimeProvider clock, TimeSpan lifetime) : IAgentTokenService

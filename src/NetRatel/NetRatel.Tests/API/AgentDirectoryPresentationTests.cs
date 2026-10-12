@@ -6,6 +6,42 @@ namespace NetRatel.Tests.API;
 
 public sealed class AgentDirectoryPresentationTests
 {
+    [Theory]
+    [InlineData("""{"os":"Linux","reportedAddress":"192.168.1.20"}""", "192.168.1.20")]
+    [InlineData("""{"os":"Win32NT","reportedAddress":"2001:db8:0:0::17"}""", "2001:db8::17")]
+    [InlineData("""{"reportedAddress":"","ipAddress":"192.168.1.21"}""", "192.168.1.21")]
+    [InlineData("""{"reportedAddress":"https://proxy.example","ipAddress":"n/a"}""", null)]
+    public void Directory_exposes_only_valid_persisted_client_addresses(string deviceInfoJson, string? expectedAddress)
+    {
+        var agent = AgentDirectoryPresentation.Create(7, Guid.NewGuid(), null, true, deviceInfoJson, "Example");
+
+        agent.ReportedAddress.Should().Be(expectedAddress);
+        if (expectedAddress is not null)
+            agent.Matches(expectedAddress).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Friendly_name_and_tags_preserve_the_reported_hostname()
+    {
+        var agent = AgentDirectoryPresentation.Create(7, Guid.NewGuid(), "Enrollment name", true,
+            """{"hostName":"dispatch-01","reportedAddress":"192.168.1.20"}""", "Example",
+            ["Prod", "Factory1"], "Dispatch Server");
+
+        agent.HostName.Should().Be("dispatch-01");
+        agent.DisplayName.Should().Be("Dispatch Server");
+        agent.FriendlyName.Should().Be("Dispatch Server");
+        agent.Tags.Should().Equal("Prod", "Factory1");
+        agent.Matches("factory1").Should().BeTrue();
+        agent.Matches("dispatch-01").Should().BeTrue();
+        agent.Matches("dispatch server").Should().BeTrue();
+
+        var cleared = AgentDirectoryPresentation.Create(7, agent.AgentId, null, true,
+            """{"hostName":"dispatch-01"}""", "Example", [], " ");
+        cleared.DisplayName.Should().Be("dispatch-01");
+        cleared.FriendlyName.Should().BeNull();
+        cleared.Tags.Should().BeEmpty();
+    }
+
     [Fact]
     public void Persistent_agent_directory_matches_host_operating_system_tenant_and_agent_id_when_offline()
     {

@@ -51,6 +51,8 @@ public sealed class ClientConnectionEpochStore(
         {
             await using var tx = await connection.BeginTransactionAsync(token);
             var lastIssued = await LockCounterAsync(connection, tx, request.Client, request.MinimumEpoch, token);
+            if (await IsDeletedAgentAsync(connection, tx, request.Client, token))
+                return new ReserveResult(OwnershipDisposition.NoActiveSession);
             var now = await EffectiveNowAsync(connection, tx, clock, token);
             if (!WithinAdmission(request, now)) return new ReserveResult(OwnershipDisposition.AdmissionExpired);
             await PruneAdmissionsAsync(connection, tx, request.Client, now, token);
@@ -118,6 +120,8 @@ public sealed class ClientConnectionEpochStore(
             // Admission journal/cancellation serialization is separate from
             // committed owner writes. Never compare LastIssuedEpoch here.
             await LockCounterAsync(connection, tx, reservation.Owner.Client, 0, token);
+            if (await IsDeletedAgentAsync(connection, tx, reservation.Owner.Client, token))
+                return new WriteResult(OwnershipDisposition.NoActiveSession);
             var admission = await ReadAdmissionAsync(connection, tx, reservation.Owner.Client, reservation.Owner.ConnectionId, token);
             if (admission is { Status: Cancelled }) return new WriteResult(OwnershipDisposition.AdmissionCancelled);
             if (admission is null || admission.Epoch != reservation.Owner.Epoch || admission.OperationId != reservation.OperationId ||
@@ -217,6 +221,9 @@ public sealed class ClientConnectionEpochStore(
         {
             await using var tx = await connection.BeginTransactionAsync(token);
             var current = await ReadOwnerAsync(connection, tx, request.Owner.Client, true, token);
+            if (await IsDeletedAgentAsync(connection, tx, request.Owner.Client, token))
+                return new WriteResult(OwnershipDisposition.NoActiveSession,
+                    current is null ? null : current with { Active = false });
             var now = await EffectiveNowAsync(connection, tx, clock, token);
             var denied = CheckCurrent(current, request.Owner, now);
             if (denied is not null) return new WriteResult(denied.Value, current);
@@ -354,7 +361,11 @@ public sealed class ClientConnectionEpochStore(
         return OperationAsync(async (connection, token) =>
         {
             var current = await ReadOwnerAsync(connection, null, client, false, token);
-            return current is null ? null : current with { Active = current.IsEffective(await EffectiveNowAsync(connection, null, clock, token)) };
+            return current is null ? null : current with
+            {
+                Active = !await IsDeletedAgentAsync(connection, null, client, token) &&
+                    current.IsEffective(await EffectiveNowAsync(connection, null, clock, token))
+            };
         }, ct);
     }
 
@@ -369,7 +380,7 @@ public sealed class ClientConnectionEpochStore(
         return await action((NpgsqlConnection)db.Database.GetDbConnection(), linked.Token);
     }
 
-    private static async Task<long> LockCounterAsync(NpgsqlConnection connection, NpgsqlTransaction tx,
+    internal static async Task<long> LockCounterAsync(NpgsqlConnection connection, NpgsqlTransaction tx,
         ClientKey client, long minimum, CancellationToken ct)
     {
         await ExecuteAsync(connection, tx, """
@@ -382,6 +393,53 @@ public sealed class ClientConnectionEpochStore(
               WHERE "TenantId"=@tenant AND "AgentId"=@agent),0)) FROM "ClientConnectionEpochs"
             WHERE "TenantId"=@tenant AND "AgentId"=@agent FOR UPDATE
             """, ct, ("tenant", client.TenantId), ("agent", client.AgentId));
+    }
+
+    // The tombstone is a deny fence only. Ownership-only callers/fixtures may
+    // have no Agent row; admission authentication remains the gateway's job.
+    private static Task<bool> IsDeletedAgentAsync(NpgsqlConnection connection, NpgsqlTransaction? transaction,
+        ClientKey client, CancellationToken cancellationToken) =>
+        ScalarAsync<bool>(connection, transaction, """
+            SELECT EXISTS (SELECT 1 FROM "Agents" WHERE "TenantId"=@tenant AND "Id"=@agent AND "DeletedAtUtc" IS NOT NULL)
+            """, cancellationToken, ("tenant", client.TenantId), ("agent", client.AgentId));
+
+    internal static async Task RetireClientForDeletionAsync(OrchestratorDbContext db, ClientKey client,
+        CancellationToken cancellationToken)
+    {
+        if (db.Database.IsNpgsql())
+        {
+            if (db.Database.CurrentTransaction is null)
+                throw new InvalidOperationException("agent-deletion-needs-caller-transaction");
+            // AgentLifecycleLock already holds the counter and Agent locks.
+            // The owner update waits for prior accepted ingress/heartbeats and
+            // invalidates that same authority; it creates no second owner.
+            await ExecuteAsync((NpgsqlConnection)db.Database.GetDbConnection(),
+                (NpgsqlTransaction)db.Database.CurrentTransaction.GetDbTransaction(), """
+                UPDATE "ClientConnectionOwners" SET "Active"=FALSE,"OwnerRevision"="OwnerRevision"+1
+                  WHERE "TenantId"=@tenant AND "AgentId"=@agent AND "Active"=TRUE;
+                UPDATE "ClientConnectionAdmissions" SET "Status"=2
+                  WHERE "TenantId"=@tenant AND "AgentId"=@agent AND "Status"<>2;
+                """, cancellationToken, ("tenant", client.TenantId), ("agent", client.AgentId)).ConfigureAwait(false);
+            foreach (var entry in db.ChangeTracker.Entries<ClientConnectionOwnerRecord>()
+                .Where(entry => entry.Entity.TenantId == client.TenantId && entry.Entity.AgentId == client.AgentId).ToArray())
+                await entry.ReloadAsync(cancellationToken).ConfigureAwait(false);
+            foreach (var entry in db.ChangeTracker.Entries<ClientConnectionAdmissionRecord>()
+                .Where(entry => entry.Entity.TenantId == client.TenantId && entry.Entity.AgentId == client.AgentId).ToArray())
+                await entry.ReloadAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        var owner = await db.ClientConnectionOwners.SingleOrDefaultAsync(row =>
+            row.TenantId == client.TenantId && row.AgentId == client.AgentId, cancellationToken).ConfigureAwait(false);
+        if (owner is { Active: true })
+        {
+            owner.Active = false;
+            owner.OwnerRevision++;
+        }
+        var admissions = await db.ClientConnectionAdmissions.Where(row =>
+            row.TenantId == client.TenantId && row.AgentId == client.AgentId && row.Status != Cancelled)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        foreach (var admission in admissions) admission.Status = Cancelled;
     }
 
     private static Task<int> PruneAdmissionsAsync(NpgsqlConnection c, NpgsqlTransaction tx, ClientKey key, DateTimeOffset now, CancellationToken ct) =>
@@ -466,6 +524,9 @@ public sealed class ClientConnectionEpochStore(
             throw new InvalidOperationException("owner-check-needs-caller-postgres-transaction");
         var current = await ReadOwnerAsync((NpgsqlConnection)db.Database.GetDbConnection(),
             (NpgsqlTransaction)db.Database.CurrentTransaction.GetDbTransaction(),expected.Client,false,ct,forShare:true);
+        if (await IsDeletedAgentAsync((NpgsqlConnection)db.Database.GetDbConnection(),
+            (NpgsqlTransaction)db.Database.CurrentTransaction.GetDbTransaction(), expected.Client, ct).ConfigureAwait(false))
+            return null;
         return current is not null && current.Owner==expected && current.IsEffective(await EffectiveNowAsync((NpgsqlConnection)db.Database.GetDbConnection(),
             (NpgsqlTransaction)db.Database.CurrentTransaction.GetDbTransaction(),clock,ct)) ? current : null;
     }
@@ -521,6 +582,6 @@ public sealed class ClientConnectionEpochStore(
     }
     private static async Task<int> ExecuteAsync(NpgsqlConnection c,NpgsqlTransaction tx,string sql,CancellationToken ct,params (string,object)[] values)
     { await using var cmd=Command(c,tx,sql,values); return await cmd.ExecuteNonQueryAsync(ct); }
-    private static async Task<T> ScalarAsync<T>(NpgsqlConnection c,NpgsqlTransaction tx,string sql,CancellationToken ct,params (string,object)[] values)
+    private static async Task<T> ScalarAsync<T>(NpgsqlConnection c,NpgsqlTransaction? tx,string sql,CancellationToken ct,params (string,object)[] values)
     { await using var cmd=Command(c,tx,sql,values); return (T)(await cmd.ExecuteScalarAsync(ct) ?? throw new InvalidOperationException("missing-store-row")); }
 }

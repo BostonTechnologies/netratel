@@ -37,6 +37,8 @@ public sealed class ClientPresenceDirectoryIntegrationTests
         db.Agents.Add(new Agent
         {
             Id = agentId, TenantId = tenantId, Name = $"Capability readiness {agentId:N}",
+            DeviceInfoJson = """{"hostName":"dispatch-01","reportedAddress":"192.168.1.20"}""",
+            FriendlyName = "Dispatch Server", Tags = ["Prod", "Factory1"],
             IsEnabled = true, CreatedAtUtc = DateTimeOffset.UtcNow
         });
         await db.SaveChangesAsync();
@@ -53,6 +55,11 @@ public sealed class ClientPresenceDirectoryIntegrationTests
             $"/api/v2/client-presence/?tenantId={tenantId}&search={agentId:D}&limit=1");
         var entry = directory!.Items.Should().ContainSingle().Which;
         entry.Online.Should().BeFalse();
+        entry.ReportedAddress.Should().Be("192.168.1.20");
+        entry.HostName.Should().Be("dispatch-01");
+        entry.FriendlyName.Should().Be("Dispatch Server");
+        entry.Tags.Should().Equal("Prod", "Factory1");
+        entry.CanManage.Should().BeTrue();
         entry.Terminal!.TransportReady.Should().BeFalse();
         entry.Terminal.ReadinessReason.Should().Be("terminal_presence_offline");
         entry.File!.SessionActive.Should().BeTrue();

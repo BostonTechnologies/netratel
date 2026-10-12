@@ -50,6 +50,8 @@ service AgentJobGateway {
 // operator latency probes, file browse requests, and remote-support signalling.
 service AgentControlGateway {
   rpc Connect(stream AgentControlFrame) returns (stream GatewayControlFrame);
+  // Only a per-operation receipt credential is accepted; this cannot admit an agent session.
+  rpc CompleteUninstall(UninstallReceipt) returns (UninstallReceiptAcknowledgement);
 }
 
 // File bytes are isolated from control, telemetry and presence so transfer
@@ -597,6 +599,7 @@ message AgentControlFrame {
   oneof payload {
     AgentControlHello hello = 10;
     PingResponse ping_response = 11;
+    UninstallAcknowledgement uninstall_acknowledgement = 12;
   }
 }
 
@@ -620,6 +623,7 @@ message GatewayControlFrame {
   oneof payload {
     ControlAccepted accepted = 10;
     PingRequest ping_request = 11;
+    UninstallRequest uninstall_request = 12;
   }
 }
 
@@ -631,6 +635,34 @@ message PingRequest {
   string request_id = 1;
   google.protobuf.Timestamp sent_at_utc = 2;
   google.protobuf.Timestamp deadline_utc = 3;
+}
+
+message UninstallRequest {
+  string operation_id = 1;
+  string completion_token = 2;
+  google.protobuf.Timestamp start_deadline_utc = 3;
+  string expected_key_fingerprint = 4;
+}
+
+message UninstallAcknowledgement {
+  string operation_id = 1;
+  bool accepted = 2;
+  string failure_code = 3;
+}
+
+message UninstallReceipt {
+  int32 tenant_id = 1;
+  string client_id = 2;
+  string operation_id = 3;
+  string completion_token = 4;
+  bool success = 5;
+  bool service_removed = 6;
+  bool files_removed = 7;
+  string failure_code = 8;
+}
+
+message UninstallReceiptAcknowledgement {
+  bool accepted = 1;
 }
 
 message AgentFileFrame {
