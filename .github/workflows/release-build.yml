@@ -67,7 +67,7 @@ jobs:
         run: bash tools/ci/run-fast-regressions.sh TestResults/fast
       - name: Retain fast regression receipts
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dotnet-test-results
           path: TestResults/fast
@@ -125,7 +125,7 @@ jobs:
             sha256sum *.tar.gz *.spdx.json *.nupkg > SHA256SUMS
           )
           tools/ci/verify-release-artifacts.sh --artifacts artifacts --version "$VERSION"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: netratel-${{ needs.validate.outputs.version }}-linux-x64
           path: artifacts
@@ -204,7 +204,7 @@ jobs:
             --runtime "${{ matrix.runtime }}" \
             --extension "${{ matrix.extension }}" \
             --integrity-only
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: netratel-client-${{ needs.validate.outputs.version }}-${{ matrix.runtime }}
           path: artifacts
