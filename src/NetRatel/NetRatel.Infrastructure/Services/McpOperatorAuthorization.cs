@@ -94,10 +94,11 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
     // The actual disabled fact remains in the request and all scope, role,
     // visibility, policy, confirmation, and audit checks still apply.
     private static bool AllowsDisabledClientAdministration(McpOperatorAccessRequest request) =>
+        request.Tool == "netratel_services" && request.Operation is "netratel_services/inventory" or "netratel_services/operation" ||
         request.Tool == "netratel_clients" && request.Operation is
             "netratel_clients/get" or "netratel_clients/presence" or
             "netratel_clients/capabilities" or "netratel_clients/binding" or
-            "netratel_clients/update_metadata" or "netratel_clients/update_attempts" or
+            "netratel_clients/update_metadata" or "netratel_clients/update_attempts" or "netratel_clients/metadata" or
             "netratel_clients/preview_disable" or "netratel_clients/disable" or
             "netratel_clients/preview_enable" or "netratel_clients/enable" or
             "netratel_clients/preview_delete" or "netratel_clients/delete";
@@ -215,10 +216,17 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
         if (!request.CapabilityAvailable)
             return McpOperatorDecision.Denied(request, "capability_unavailable", McpOperatorAuthorizationLayer.Capability, [selected.Id]);
 
-        if (!request.TargetOnline)
+        if (!request.TargetOnline && !AllowsOfflineManagedOperation(request))
             return McpOperatorDecision.Denied(request, "target_offline", McpOperatorAuthorizationLayer.Target, [selected.Id]);
 
         return new McpOperatorDecision(true, null, null, [selected.Id], constraints, request.TargetSetDigest, request, selected.Version, IsDevelopmentPolicy(selected));
+    }
+
+    private static bool AllowsOfflineManagedOperation(McpOperatorAccessRequest request)
+    {
+        if (request.Tool is null) return false;
+        var name = request.Operation[(request.Operation.LastIndexOf('/') + 1)..];
+        return ManagedOperationCatalog.Find(request.Tool, name) is { RequiresOnlineClient: false };
     }
 
     public async Task<McpOperatorAcceptedAudit> RecordAcceptedAsync(

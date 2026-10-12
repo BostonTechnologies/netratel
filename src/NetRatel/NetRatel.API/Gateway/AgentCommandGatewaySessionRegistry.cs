@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Threading.Channels;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Application.Presence;
+using NetRatel.Shared.Contracts.Services;
 
 namespace NetRatel.API.Gateway;
 
@@ -15,6 +16,10 @@ public interface IAgentCommandGatewaySessionRegistry
     AgentCommandGatewayRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch, bool provisional = false);
 
     bool IsAvailable(ClientKey client);
+
+    bool SupportsServiceControl(ClientKey client) => false;
+
+    void SetServiceControlSupport(ClientKey client, Guid registrationId, bool supported) { }
 
     Task DispatchAsync(ClientKey client, CommandGatewayDispatch dispatch, CancellationToken cancellationToken);
 
@@ -94,8 +99,22 @@ public sealed class AgentCommandGatewaySessionRegistry : IAgentCommandGatewaySes
 
     public bool IsAvailable(ClientKey client) => _sessions.TryGetValue(client, out var session) && session.IsActive;
 
-    public Task DispatchAsync(ClientKey client, CommandGatewayDispatch dispatch, CancellationToken cancellationToken) =>
-        GetSession(client).DispatchAsync(dispatch, cancellationToken);
+    public bool SupportsServiceControl(ClientKey client) =>
+        _sessions.TryGetValue(client, out var session) && session.IsActive && session.SupportsServiceControl;
+
+    public void SetServiceControlSupport(ClientKey client, Guid registrationId, bool supported)
+    {
+        if (_sessions.TryGetValue(client, out var session) && session.RegistrationId == registrationId)
+            session.SupportsServiceControl = supported;
+    }
+
+    public Task DispatchAsync(ClientKey client, CommandGatewayDispatch dispatch, CancellationToken cancellationToken)
+    {
+        var session = GetSession(client);
+        if (dispatch.TaskType == ClientServiceControlRules.TaskType && !session.SupportsServiceControl)
+            throw new AgentServiceControlUnavailableException();
+        return session.DispatchAsync(dispatch, cancellationToken);
+    }
 
     public Task CancelAsync(ClientKey client, string commandId, string reason, CancellationToken cancellationToken) =>
         GetSession(client).CancelAsync(commandId, reason, cancellationToken);
@@ -150,6 +169,7 @@ internal sealed class AgentCommandGatewaySession(
 
     public ChannelReader<GatewayCommandFrame> Reader => _outbound.Reader;
     public Guid RegistrationId { get; } = Guid.NewGuid();
+    public bool SupportsServiceControl { get; set; }
     public CancellationToken CompletionToken => _completion.Token;
     public bool IsActive => Volatile.Read(ref _active) != 0 && Volatile.Read(ref _completed) == 0;
     public void Activate() => Volatile.Write(ref _active, 1);
@@ -213,3 +233,5 @@ internal sealed class AgentCommandGatewaySession(
         }
     }
 }
+
+public sealed class AgentServiceControlUnavailableException() : InvalidOperationException("The current client does not support service control.");

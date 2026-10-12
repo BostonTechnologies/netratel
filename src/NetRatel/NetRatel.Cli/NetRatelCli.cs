@@ -8,7 +8,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-internal static class NetRatelCli
+internal static partial class NetRatelCli
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = false };
     private static readonly JsonSerializerOptions PrettyJsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
@@ -76,6 +76,14 @@ internal static class NetRatelCli
         root.AddCommand(BuildClientsCommand(runtime, globals));
         root.AddCommand(BuildClientFilesCommand(runtime, globals));
         root.AddCommand(BuildOperatorFilesCommand(runtime, globals));
+        root.AddCommand(BuildManagedOperationsCommand(runtime, globals, "netratel_services", "services",
+            "Read cached or live service inventories and control an exact Windows or systemd service. Read inventory before selecting its canonical name and platform."));
+        root.AddCommand(BuildManagedOperationsCommand(runtime, globals, "netratel_monitoring", "monitoring",
+            "Read monitoring data and manage tenant rules, groups, silences and alert occurrences. Read configuration before edits and preserve its revision."));
+        root.AddCommand(BuildManagedOperationsCommand(runtime, globals, "netratel_flows", "flows",
+            "Read and edit tenant flows, validate drafts, dry-run sample events, and publish reviewed versions. Mutations accept typed JSON data and --confirm."));
+        root.AddCommand(BuildManagedOperationsCommand(runtime, globals, "netratel_ai", "ai",
+            "Read AI investigations and their context, start an investigation, and continue its Netclaw conversation. Review connection status before sending work."));
         root.AddCommand(BuildCommandsCommand(runtime, globals));
         root.AddCommand(BuildOperatorScriptsCommand(runtime, globals));
         root.AddCommand(BuildOperatorTasksCommand(runtime, globals));
@@ -1103,6 +1111,7 @@ internal static class NetRatelCli
         clients.AddCommand(BuildOperatorClientLifecycleCommand(runtime, globals, "confirm-enable", "enable", "Confirm the unchanged client enable.", confirmed: true));
         clients.AddCommand(BuildOperatorClientLifecycleCommand(runtime, globals, "preview-delete", "delete", "Preview one irreversible client decommission and receive opaque credentials.", confirmed: false));
         clients.AddCommand(BuildOperatorClientLifecycleCommand(runtime, globals, "confirm-delete", "delete", "Confirm the unchanged irreversible client decommission.", confirmed: true));
+        AddManagedOperations(clients, runtime, globals, "netratel_clients");
         return clients;
     }
 

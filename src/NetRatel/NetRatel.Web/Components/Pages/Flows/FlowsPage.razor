@@ -96,11 +96,15 @@
                                     <dl class="flow-action-receipt">
                                         @if (action.Kind == FlowActionKind.RatelDeskIncident)
                                         { <div><dt>Incident ID</dt><dd data-testid="flow-incident-id">@receipt.IncidentId</dd></div> }
+                                        else if (action.Kind == FlowActionKind.NetclawInvestigation)
+                                        { <div><dt>Investigation ID</dt><dd>@receipt.IncidentId</dd></div> }
                                         else
                                         { <div><dt>Delivery reference</dt><dd data-testid="flow-notification-receipt">@receipt.IncidentId</dd></div> }
                                         @if (!string.IsNullOrWhiteSpace(receipt.TrackingId)) { <div><dt>Tracking number</dt><dd data-testid="flow-incident-tracking">@receipt.TrackingId</dd></div> }
                                     </dl>
-                                    @if (SafeReceiptLink(receipt.SafeLink) is { } link) { <p><a href="@link" target="_blank" rel="noopener noreferrer">@(action.Kind == FlowActionKind.RatelDeskIncident ? "Open incident" : "Open notification")</a></p> }
+                                    @if (action.Kind == FlowActionKind.NetclawInvestigation && Guid.TryParse(receipt.IncidentId, out var investigationId))
+                                    { <p><a href="@($"/ai/ops?tenantId={_tenantId}&investigation={investigationId:D}")">Open AI investigation</a> · Admission confirmed; follow the conversation for its result.</p> }
+                                    else if (SafeReceiptLink(receipt.SafeLink) is { } link) { <p><a href="@link" target="_blank" rel="noopener noreferrer">@(action.Kind == FlowActionKind.RatelDeskIncident ? "Open incident" : "Open notification")</a></p> }
                                 }
                             </section>
                         }

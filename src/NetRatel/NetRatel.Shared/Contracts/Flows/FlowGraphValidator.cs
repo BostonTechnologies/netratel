@@ -30,7 +30,7 @@ public static class FlowGraphValidator
             if (!Enum.IsDefined(node.Kind)) Error("node-kind", node.Id);
             if (!IsBoundedText(node.Name, FlowLimits.MaximumNameLength) || node.Position is null || !ValidCoordinate(node.Position.X) || !ValidCoordinate(node.Position.Y)) Error("node-layout", node.Id);
             if (node.Kind != FlowNodeKind.Condition && node.Condition is not null || node.Kind != FlowNodeKind.MapIncident && node.Mapping is not null ||
-                node.Kind != FlowNodeKind.CreateIncident && (node.ConnectorId is not null || node.ConnectorRevision is not null) ||
+                node.Kind is not (FlowNodeKind.CreateIncident or FlowNodeKind.InvestigateWithAi) && (node.ConnectorId is not null || node.ConnectorRevision is not null) ||
                 node.Kind != FlowNodeKind.ActionGroup && node.Actions is not null) Error("node-properties", node.Id);
             if (node.Kind == FlowNodeKind.Condition)
             {
@@ -43,7 +43,7 @@ public static class FlowGraphValidator
                     !ValidTemplate(mapping.DescriptionTemplate, FlowLimits.MaximumTemplateLength, true) || mapping.Priority is < 0 or > 3)) Error("mapping", node.Id);
                 if (complete && node.Mapping is null) Error("mapping-required", node.Id);
             }
-            if (node.Kind == FlowNodeKind.CreateIncident)
+            if (node.Kind is FlowNodeKind.CreateIncident or FlowNodeKind.InvestigateWithAi)
             {
                 if (!actionIds.Add(node.Id)) Error("action-id", node.Id);
                 if (node.ConnectorId == Guid.Empty || node.ConnectorRevision is <= 0) Error("connector-reference", node.Id);
@@ -114,11 +114,11 @@ public static class FlowGraphValidator
         FlowNodeKind.MapIncident => IsTerminal(target),
         _ => false
     };
-    public static bool IsTerminal(FlowNodeKind kind) => kind is FlowNodeKind.CreateIncident or FlowNodeKind.ActionGroup;
+    public static bool IsTerminal(FlowNodeKind kind) => kind is FlowNodeKind.CreateIncident or FlowNodeKind.ActionGroup or FlowNodeKind.InvestigateWithAi;
 
     public static IReadOnlyList<FlowActionTargetDto> ActionTargets(FlowGraphDto graph) => graph.Nodes.SelectMany(node =>
-        node.Kind == FlowNodeKind.CreateIncident
-            ? (IEnumerable<FlowActionTargetDto>)[new(node.Id, FlowActionKind.RatelDeskIncident, node.ConnectorId, node.ConnectorRevision)]
+        node.Kind is FlowNodeKind.CreateIncident or FlowNodeKind.InvestigateWithAi
+            ? (IEnumerable<FlowActionTargetDto>)[new(node.Id, node.Kind == FlowNodeKind.InvestigateWithAi ? FlowActionKind.NetclawInvestigation : FlowActionKind.RatelDeskIncident, node.ConnectorId, node.ConnectorRevision)]
             : node.Kind == FlowNodeKind.ActionGroup ? node.Actions ?? [] : []).ToArray();
     public static bool ValidCondition(FlowConditionDto condition) => Enum.IsDefined(condition.Field) && Enum.IsDefined(condition.Comparison) &&
         (condition.Field == FlowValueField.NumericValue

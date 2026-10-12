@@ -67,7 +67,8 @@ public static class McpLocalDelegationEndpoints
             var operationAccess = McpOperationAccessCatalog.Find(pairing.Tool, pairing.Operation);
             if (string.IsNullOrWhiteSpace(credentialId) || string.IsNullOrWhiteSpace(ownerPrincipalId) ||
                 string.IsNullOrWhiteSpace(requiredPermission) || operationAccess is null ||
-                !await access.AuthorizeAsync(http.User, requiredPermission, authorizationTenantId, cancellationToken).ConfigureAwait(false))
+                !await McpLocalDelegationPermissionMapper.AuthorizeAsync(access, http.User, pairing.Tool, pairing.Operation,
+                    authorizationTenantId, cancellationToken).ConfigureAwait(false))
             {
                 return Results.Forbid();
             }

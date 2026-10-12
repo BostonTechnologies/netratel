@@ -299,6 +299,60 @@ public sealed class ClientServicesDialogTests : AsyncBunitContext
         provider.WaitForAssertion(() => provider.FindAll("[data-testid='client-services-dialog']").Should().BeEmpty());
     }
 
+    [Fact]
+    public async Task Directory_row_removal_keeps_open_viewer_and_live_updates_until_operator_closes_it()
+    {
+        var provider = Render<MudDialogProvider>();
+        var row = Render<LauncherRow>();
+        row.Find("[data-testid='client-services-launcher']").Click();
+        provider.WaitForAssertion(() => _live.Subscriptions.Should().Be(1));
+        provider.Find("[data-testid='services-search']").Input("worker");
+        // This is the lifecycle event caused by MudTable replacing an immutable directory row.
+        row.Render(parameters => parameters.Add(component => component.Visible, false));
+        await _live.Events.Writer.WriteAsync(new("Reconnecting", Model(connected: false) with { Revision = 2 }));
+        provider.WaitForAssertion(() =>
+        {
+            provider.FindAll("[data-testid='client-services-dialog']").Should().ContainSingle();
+            provider.Find("[data-testid='services-search']").GetAttribute("value").Should().Be("worker");
+            provider.Find("[data-testid='services-offline']").Should().NotBeNull();
+            _live.Cancelled.Task.IsCompleted.Should().BeFalse();
+        });
+        provider.Find("[data-testid='close-services']").Click();
+        await _live.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public void Service_control_requires_confirmation_and_preserves_exact_target_and_result()
+    {
+        _api.Model = Model() with { SupportsServiceControl = true, CanControlServices = true };
+        var cut = RenderDialog();
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid='service-row']").Should().HaveCount(3));
+        cut.Find("[aria-label='Restart service worker.service']").Click();
+        _api.ControlRequests.Should().BeEmpty();
+        cut.Find("[data-testid='service-control-confirm']").TextContent.Should().Contain("worker.service").And.Contain("fixture-client");
+        cut.Find("[data-testid='service-control-confirm-button']").Click();
+        cut.WaitForAssertion(() =>
+        {
+            _api.ControlRequests.Should().ContainSingle();
+            var request = _api.ControlRequests.Single();
+            request.ServiceName.Should().Be("worker.service");
+            request.Platform.Should().Be(ClientServicePlatform.LinuxSystemd);
+            request.Action.Should().Be(ClientServiceControlAction.Restart);
+            request.OperationId.Should().NotBeEmpty();
+            cut.Find("[data-testid='service-control-result']").TextContent.Should().Contain("Verified state: Running");
+            cut.Find("[data-service-name='worker.service']").TextContent.Should().Contain("Running").And.Contain("Service action result");
+        });
+    }
+
+    [Fact]
+    public void Read_only_and_older_clients_never_offer_executable_service_controls()
+    {
+        var cut = RenderDialog();
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid='service-row']").Should().HaveCount(3));
+        cut.FindAll("[data-service-action]").Should().BeEmpty();
+        _api.ControlRequests.Should().BeEmpty();
+    }
+
     [Theory]
     [InlineData("unchanged", true)]
     [InlineData("tenant", false)]
@@ -378,6 +432,15 @@ public sealed class ClientServicesDialogTests : AsyncBunitContext
         public TaskCompletionSource<ClientServicesReadModelDto?>? PendingRead { get; set; }
         public TaskCompletionSource<ClientServicesRefreshResponse>? PendingRefresh { get; set; }
         public ClientServicesRefreshResponse RefreshResponse { get; set; } = new(ClientServicesRefreshStatus.Requested, Guid.NewGuid());
+        public List<ClientServiceControlRequest> ControlRequests { get; } = [];
+        public Task<ClientServiceOperationDto> ControlAsync(int tenantId, Guid agentId, ClientServiceControlRequest request, CancellationToken cancellationToken = default)
+        {
+            ControlRequests.Add(request);
+            var now = DateTimeOffset.UtcNow;
+            return Task.FromResult(new ClientServiceOperationDto(request.OperationId, tenantId, agentId, request.ServiceName, request.Platform,
+                request.Action, "Completed", now, now,
+                new(request.OperationId, request.ServiceName, request.Platform, request.Action, true, ClientServiceState.Running, now)));
+        }
         public Task<ClientServicesReadModelDto?> GetAsync(int tenantId, Guid agentId, CancellationToken cancellationToken = default)
         {
             ReadCount++;
@@ -406,6 +469,19 @@ public sealed class ClientServicesDialogTests : AsyncBunitContext
             Subscriptions++;
             try { await foreach (var item in Events.Reader.ReadAllAsync(cancellationToken)) yield return item; }
             finally { Cancelled.TrySetResult(); }
+        }
+    }
+
+    private sealed class LauncherRow : ComponentBase
+    {
+        [Parameter] public bool Visible { get; set; } = true;
+        protected override void BuildRenderTree(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder)
+        {
+            if (!Visible) return;
+            builder.OpenComponent<ClientServicesLauncher>(0);
+            builder.AddAttribute(1, nameof(ClientServicesLauncher.TenantId), 3);
+            builder.AddAttribute(2, nameof(ClientServicesLauncher.AgentId), AgentId);
+            builder.CloseComponent();
         }
     }
 }

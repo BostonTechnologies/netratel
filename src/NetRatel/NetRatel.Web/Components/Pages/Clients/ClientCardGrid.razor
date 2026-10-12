@@ -25,7 +25,7 @@
             var hostLabel = client.HostName ?? client.DisplayName;
             var primaryDisk = telemetry?.Disks.OrderByDescending(disk => disk.UsedGb).FirstOrDefault();
 
-            <MudItem xs="12" sm="12" md="6" lg="4" data-testid="client-card-item">
+            <MudItem @key="(client.TenantId, client.AgentId)" xs="12" sm="12" md="6" lg="4" data-testid="client-card-item">
                 <MudCard Elevation="3"
                          Class="@($"client-card{(client.Online ? string.Empty : " client-card-offline")}")"
                          data-testid="client-card"

@@ -11,6 +11,28 @@ namespace NetRatel.Tests.Flows;
 public sealed class FlowContractAndRuntimeTests
 {
     [Fact]
+    public async Task Ai_action_is_inert_in_preview_and_preserves_its_kind_pinned_target_and_stable_action_key_in_execution()
+    {
+        var original = FlowTestData.Lease("investigate-ai", 94);
+        var graph = original.Version.Graph with { Nodes = original.Version.Graph.Nodes.Select(node => node.Kind == FlowNodeKind.CreateIncident
+            ? node with { Kind = FlowNodeKind.InvestigateWithAi, Name = "Investigate with AI" } : node).ToArray() };
+        FlowGraphValidator.ValidatePublished(graph).Valid.Should().BeTrue();
+        var target = FlowGraphValidator.ActionTargets(graph).Single();
+        target.Kind.Should().Be(FlowActionKind.NetclawInvestigation);
+        var preview = FlowPureEvaluation.DryRun(new(graph, original.Event.Data));
+        preview.Valid.Should().BeTrue(); preview.Code.Should().Be("inert-preview");
+        var lease = original with { Version = original.Version with { Graph = graph, ConfigurationHash = FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(graph, new JsonSerializerOptions(JsonSerializerDefaults.Web))) } }; var calls = 0;
+        var result = await new VeloxFlowRuntimeAdapter().ExecuteAsync(lease, (draft, _) =>
+        {
+            calls++; draft.Kind.Should().Be(FlowActionKind.NetclawInvestigation);
+            draft.ConnectorId.Should().Be(target.ConnectorId!.Value); draft.ConnectorRevision.Should().Be(target.ConnectorRevision!.Value);
+            draft.IdempotencyKey.Should().Be(FlowActionKeys.Create(lease, target.Id));
+            return Task.FromResult(new FlowIncidentActionResult(FlowIncidentActionResultKind.Succeeded, "ai-investigation-queued", new("investigation-reference")));
+        });
+        calls.Should().Be(1); result.Status.Should().Be(FlowRunStatus.Succeeded);
+    }
+
+    [Fact]
     public void A_named_incomplete_template_can_be_saved_but_requires_a_connector_to_publish()
     {
         var graph = FlowGraphTemplates.IncidentFromAlert();

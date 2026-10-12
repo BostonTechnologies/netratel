@@ -93,6 +93,47 @@ public sealed class GatewayFileSystemApiService(IHttpClientFactory factory, Time
     public Task<HttpResponseMessage> DownloadAsync(int tenantId, Guid agentId, string path, CancellationToken cancellationToken = default) =>
         _streaming.GetAsync($"/api/v2/agents/{tenantId}/{agentId:D}/filesystem/file?path={Uri.EscapeDataString(path)}", HttpCompletionOption.ResponseHeadersRead, cancellationToken);
 
+    public async Task<GatewayFileSystemWriteResponse> CreateDirectoryAsync(int tenantId, Guid agentId, string parentPath,
+        string name, CancellationToken cancellationToken = default)
+    {
+        using var response = await _control.PostAsJsonAsync(
+            $"/api/v2/agents/{tenantId}/{agentId:D}/filesystem/directory",
+            new GatewayFileSystemCreateDirectoryRequest(parentPath, name), cancellationToken).ConfigureAwait(false);
+        return await ReadMutationResponseAsync(response, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<GatewayFileSystemWriteResponse> DeleteDirectoryAsync(int tenantId, Guid agentId, string path,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await _control.DeleteAsync(
+            $"/api/v2/agents/{tenantId}/{agentId:D}/filesystem/directory?path={Uri.EscapeDataString(path)}",
+            cancellationToken).ConfigureAwait(false);
+        return await ReadMutationResponseAsync(response, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<GatewayFileSystemWriteResponse> ReadMutationResponseAsync(HttpResponseMessage response,
+        CancellationToken cancellationToken)
+    {
+        if (!response.IsSuccessStatusCode)
+        {
+            GatewayFileProblem? problem;
+            try
+            {
+                problem = await response.Content.ReadFromJsonAsync<GatewayFileProblem>(cancellationToken).ConfigureAwait(false);
+            }
+            catch (JsonException exception)
+            {
+                throw new HttpRequestException("The folder operation failed. Refresh the directory to check its current state.", exception, response.StatusCode);
+            }
+            throw new HttpRequestException(problem?.Detail ?? "The folder operation failed. Refresh the directory to check its current state.", null, response.StatusCode);
+        }
+
+        return await response.Content.ReadFromJsonAsync<GatewayFileSystemWriteResponse>(cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("The gateway file API returned an empty response.");
+    }
+
+    private sealed record GatewayFileProblem(string? Code, string? Detail);
+
     public async Task<GatewayFileSystemWriteResponse> UploadAsync(int tenantId, Guid agentId, string path, Stream content, CancellationToken cancellationToken = default)
     {
         using var request = new HttpRequestMessage(HttpMethod.Put,

@@ -13,7 +13,16 @@ public sealed partial class MonitoringStore
 {
     /// <summary>Locks current Monitoring authority in the Flow caller's own transaction before its run/action mutation.</summary>
     public static async Task<FlowDispatchDecision> LockAndAdmitFlowAsync(OrchestratorDbContext db, FlowEventEnvelope input,
-        Guid expectedRunId, TimeProvider clock, CancellationToken ct)
+        Guid expectedRunId, TimeProvider clock, CancellationToken ct) =>
+        await LockAndAdmitFlowCoreAsync(db, input, expectedRunId, clock, false, ct).ConfigureAwait(false);
+
+    /// <summary>A durable local AI admission may outlive completion of its Flow outbox; monitoring state is still current.</summary>
+    internal static Task<FlowDispatchDecision> LockAndAdmitInvestigationAsync(OrchestratorDbContext db, FlowEventEnvelope input,
+        Guid expectedRunId, TimeProvider clock, CancellationToken ct) =>
+        LockAndAdmitFlowCoreAsync(db, input, expectedRunId, clock, true, ct);
+
+    private static async Task<FlowDispatchDecision> LockAndAdmitFlowCoreAsync(OrchestratorDbContext db, FlowEventEnvelope input,
+        Guid expectedRunId, TimeProvider clock, bool admittedInvestigation, CancellationToken ct)
     {
         if (!FlowContractValidation.ValidEnvelope(input) || expectedRunId == Guid.Empty ||
             !db.Database.IsNpgsql() || db.Database.CurrentTransaction is null) return new(false, "monitoring-admission-invalid");
@@ -47,7 +56,8 @@ public sealed partial class MonitoringStore
         if (outbox is null || outbox.EventId != input.EventId || outbox.OccurrenceId != input.OccurrenceId ||
             outbox.StableFlowDispatchKey != key || outbox.IntentJson != candidate.IntentJson ||
             outbox.FlowRunId is { } knownRun && knownRun != expectedRunId ||
-            outbox.Status is not (MonitoringOutboxStatus.Pending or MonitoringOutboxStatus.Leased))
+            !(outbox.Status is MonitoringOutboxStatus.Pending or MonitoringOutboxStatus.Leased ||
+                admittedInvestigation && outbox.Status == MonitoringOutboxStatus.Completed))
             return new(false, "monitoring-outbox-changed");
         // This is a nonlocking identity read. The caller next locks this exact run using its existing lease boundary.
         var run = await db.FlowRuns.AsNoTracking().SingleOrDefaultAsync(row => row.TenantId == input.TenantId && row.Id == expectedRunId, ct).ConfigureAwait(false);

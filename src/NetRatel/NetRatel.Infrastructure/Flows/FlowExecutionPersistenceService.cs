@@ -115,7 +115,7 @@ public sealed partial class FlowPersistenceService
         {
             if (Serialize(Parse<FlowIncidentActionDraft>(action.DraftJson)) != Serialize(draft)) return null;
             if (action.Status == FlowActionStatus.Dispatching && action.LeaseFence < lease.Fence &&
-                (draft.Kind != FlowActionKind.RatelDeskIncident || action.PreparedJson is not null && !Parse<FlowIncidentActionRequest>(action.PreparedJson).SupportsSafeReplay))
+                (draft.Kind is not (FlowActionKind.RatelDeskIncident or FlowActionKind.NetclawInvestigation) || action.PreparedJson is not null && !Parse<FlowIncidentActionRequest>(action.PreparedJson).SupportsSafeReplay))
             { action.Status = FlowActionStatus.DeliveryUnknown; action.Code = "interrupted-delivery-unknown"; action.LeaseFence = lease.Fence; }
             else if (action.Status is FlowActionStatus.Pending or FlowActionStatus.RetryWaiting) action.LeaseFence = lease.Fence;
             await db.SaveChangesAsync(ct).ConfigureAwait(false); if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false);
@@ -166,10 +166,12 @@ public sealed partial class FlowPersistenceService
         if (await CurrentLeaseAsync(db, lease, ct).ConfigureAwait(false) is null) return null;
         var row = await db.FlowActions.SingleOrDefaultAsync(row => row.TenantId == lease.Event.TenantId && row.RunId == lease.RunId && row.NodeId == nodeId, ct).ConfigureAwait(false);
         if (row is null) return null;
-        var notification = Parse<FlowIncidentActionDraft>(row.DraftJson).Kind is FlowActionKind.Discord or FlowActionKind.Slack;
+        var kind = Parse<FlowIncidentActionDraft>(row.DraftJson).Kind;
+        var notification = kind is FlowActionKind.Discord or FlowActionKind.Slack;
+        var localInvestigation = kind == FlowActionKind.NetclawInvestigation;
         // A notification draft already contains its exact immutable content and revision. No
         // RatelDesk target or receiver preparation is relevant to an incoming webhook.
-        if (row.PreparedJson is null && !notification) return null;
+        if (row.PreparedJson is null && !notification && !localInvestigation) return null;
         if (row.Status is FlowActionStatus.Succeeded or FlowActionStatus.Failed or FlowActionStatus.DeliveryUnknown) return ActionState(row);
         var receiver = await db.Set<FlowReceiverEvidenceRecord>().SingleOrDefaultAsync(evidence =>
             evidence.TenantId == lease.Event.TenantId && evidence.RunId == lease.RunId && evidence.NodeId == nodeId, ct).ConfigureAwait(false);
@@ -211,7 +213,7 @@ public sealed partial class FlowPersistenceService
         if (row.Status == FlowActionStatus.Dispatching)
         {
             if (row.LeaseFence == lease.Fence) return null;
-            if (notification || !Parse<FlowIncidentActionRequest>(row.PreparedJson!).SupportsSafeReplay)
+            if (!localInvestigation && (notification || !Parse<FlowIncidentActionRequest>(row.PreparedJson!).SupportsSafeReplay))
             { row.Status = FlowActionStatus.DeliveryUnknown; row.Code = "interrupted-delivery-unknown"; row.LeaseFence = lease.Fence; }
         }
         if (row.Status != FlowActionStatus.DeliveryUnknown)

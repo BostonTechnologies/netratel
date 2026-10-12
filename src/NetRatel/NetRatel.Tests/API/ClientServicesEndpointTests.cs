@@ -6,6 +6,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using AwesomeAssertions;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
@@ -17,6 +18,7 @@ using Microsoft.Extensions.Options;
 using NetRatel.API.Endpoints.Client;
 using NetRatel.API.Gateway;
 using NetRatel.API.Realtime;
+using NetRatel.API.Security.Authorization;
 using NetRatel.API.Services;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Presence;
@@ -31,6 +33,35 @@ public sealed class ClientServicesEndpointTests
 {
     private static readonly ClientKey Key = new(7, Guid.Parse("177b268f-b684-4813-92b1-4a182406b8b2"));
     private static string Path => $"/api/v2/agents/{Key.TenantId}/{Key.AgentId:D}/services";
+
+    [Fact]
+    public async Task Inventory_read_permission_cannot_admit_service_control_or_read_operation_results()
+    {
+        var http = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+        http.User = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "reader")], "Test"));
+        var directory = new Directory();
+        var request = new ClientServiceControlRequest(Guid.NewGuid(), "Spooler", ClientServicePlatform.Windows, ClientServiceControlAction.Stop);
+        var denied = await ClientServicesEndpoints.ControlAsync(Key.TenantId, Key.AgentId, request, http, new Access(), directory, null!, default);
+        denied.Should().BeOfType<Microsoft.AspNetCore.Http.HttpResults.ForbidHttpResult>();
+        var readDenied = await ClientServicesEndpoints.OperationAsync(Key.TenantId, Key.AgentId, request.OperationId, http, new Access(), directory, null!, default);
+        readDenied.Should().BeOfType<Microsoft.AspNetCore.Http.HttpResults.ForbidHttpResult>();
+        directory.Reads.Should().Be(0, "target and mutation services are reached only after the manage permission is checked");
+    }
+
+    [Fact]
+    public async Task Control_http_routes_require_authentication_and_manage_permission_before_resolving_mutation_service()
+    {
+        using var host = await HostAsync();
+        using var http = host.GetTestClient();
+        var request = new ClientServiceControlRequest(Guid.NewGuid(), "Spooler", ClientServicePlatform.Windows, ClientServiceControlAction.Stop);
+        (await http.PostAsJsonAsync(Path + "/control", request)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        (await http.GetAsync(Path + $"/operations/{request.OperationId:D}")).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+        (await http.PostAsJsonAsync(Path + "/control", request)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await http.GetAsync(Path + $"/operations/{request.OperationId:D}")).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        host.Services.GetRequiredService<Directory>().Reads.Should().Be(0);
+        host.Services.GetRequiredService<RecordingRouter>().Reads.Should().Be(0);
+    }
 
     [Fact]
     public async Task CachedOfflineInventoryRequiresTenantAndAgentAuthorizationBeforeDisclosure()
@@ -211,7 +242,14 @@ public sealed class ClientServicesEndpointTests
             {
                 services.AddRouting();
                 services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, Authentication>("Test", _ => { });
-                services.AddAuthorization(options => options.AddPolicy("TelemetryReader", policy => policy.RequireAuthenticatedUser()));
+                services.AddAuthorization(options =>
+                {
+                    options.AddPolicy("TelemetryReader", policy => policy.RequireAuthenticatedUser()
+                        .AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.TelemetryRead)));
+                    options.AddPolicy("ClientManager", policy => policy.RequireAuthenticatedUser()
+                        .AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.ClientManagement)));
+                });
+                services.AddSingleton<IAuthorizationHandler, EffectiveAccessHandler>();
                 services.AddSingleton<Clock>();
                 services.AddSingleton<TimeProvider>(provider => provider.GetRequiredService<Clock>());
                 services.AddSingleton<RecordingRouter>();
@@ -267,7 +305,10 @@ public sealed class ClientServicesEndpointTests
     {
         public Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenantId, CancellationToken cancellationToken = default) =>
             Task.FromResult(tenantId == Key.TenantId && permission == NetRatelPermissions.TelemetryRead);
-        public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenantId, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenantId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new EffectiveAccessSnapshot("reader", false, false, tenantId == Key.TenantId
+                ? new HashSet<string>(StringComparer.Ordinal) { NetRatelPermissions.TelemetryRead }
+                : new HashSet<string>(StringComparer.Ordinal)));
         public Task ReconcileBuiltInRolesAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 

@@ -735,7 +735,16 @@ message FileListPage {
   repeated FileEntry entries = 4;
   bool is_last_page = 5;
 }
-message FileEntry { string name = 1; string full_path = 2; bool is_directory = 3; int64 size_bytes = 4; }
+message FileEntry {
+  string name = 1;
+  string full_path = 2;
+  bool is_directory = 3;
+  int64 size_bytes = 4;
+  // Filesystem-reported metadata from this directory entry; never a recursive scan.
+  // Absent timestamps retain compatibility with earlier agents and unreadable metadata.
+  google.protobuf.Timestamp created_utc = 5;
+  google.protobuf.Timestamp last_modified_utc = 6;
+}
 message FileMetadata {
   string request_id = 1;
   string attempt_id = 2;
@@ -744,6 +753,7 @@ message FileMetadata {
   int64 size_bytes = 5;
   google.protobuf.Timestamp last_modified_utc = 6;
   string mime_type = 7;
+  google.protobuf.Timestamp created_utc = 8;
 }
 message FileTransferChunk {
   string request_id = 1;

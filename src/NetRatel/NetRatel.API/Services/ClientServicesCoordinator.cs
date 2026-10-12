@@ -24,7 +24,8 @@ public sealed class ClientServicesCoordinator(
     IClientServiceWatchPolicySource policies,
     IAgentTelemetryGatewaySessionRegistry sessions,
     TimeProvider timeProvider,
-    IClientPresenceRouter presence)
+    IClientPresenceRouter presence,
+    IAgentCommandGatewaySessionRegistry? commands = null)
 {
     private readonly object _gate = new();
     private readonly Dictionary<ClientKey, (DateTimeOffset At, Guid Request)> _refreshes = [];
@@ -41,7 +42,8 @@ public sealed class ClientServicesCoordinator(
         return new(client.TenantId, client.AgentId, state.LastCompleteInventory, state.LatestAttempt,
             state.WatchedServices, state.MonitoredServiceNames, state.WatchPolicyRevision,
             connected, connected && session.SupportsServices, timeProvider.GetUtcNow(), state.Revision,
-            state.LastPartialInventory, state.LatestInventoryAttempt);
+            state.LastPartialInventory, state.LatestInventoryAttempt,
+            connected && commands?.SupportsServiceControl(client) == true);
     }
 
     public async Task<ClientServiceWatchPolicyDto> GetPolicyAsync(ClientKey client, CancellationToken cancellationToken)

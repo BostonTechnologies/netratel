@@ -146,8 +146,10 @@ public sealed class McpCoreIsolationTests
         var httpToolNames = httpTools.Select(tool => tool.GetProperty("Name").GetString()).ToArray();
         var stdioToolNames = stdioTools.Select(tool => tool.GetProperty("Name").GetString()).ToArray();
 
-        httpToolNames.Should().HaveCount(22).And.NotContain(["netratel_config", "netratel_remote_support_v2", "netratel_connectivity", "netratel_events"]);
-        stdioToolNames.Should().HaveCount(24).And.Contain(["netratel_config", "netratel_remote_support_v2"]);
+        httpToolNames.Should().HaveCount(26).And.NotContain(["netratel_config", "netratel_remote_support_v2", "netratel_connectivity", "netratel_events"]);
+        stdioToolNames.Should().HaveCount(28).And.Contain(["netratel_config", "netratel_remote_support_v2"]);
+        httpToolNames.Should().Contain(["netratel_services", "netratel_monitoring", "netratel_flows", "netratel_ai"]);
+        stdioToolNames.Should().Contain(["netratel_services", "netratel_monitoring", "netratel_flows", "netratel_ai"]);
         httpDocument.RootElement.GetProperty("toolCount").GetInt32().Should().Be(httpTools.Length);
         stdioDocument.RootElement.GetProperty("toolCount").GetInt32().Should().Be(stdioTools.Length);
 
@@ -285,7 +287,7 @@ public sealed class McpCoreIsolationTests
             .ToArray();
 
         sharedHttpToolNames.Should().Equal(cataloguedHttpToolNames);
-        sharedHttpToolNames.Should().HaveCount(27);
+        sharedHttpToolNames.Should().HaveCount(31);
         sharedHttpToolNames.Should().NotContain("netratel_config");
         sharedHttpToolNames.Should().Contain("netratel_remote_support_v2");
     }
@@ -336,8 +338,9 @@ public sealed class McpCoreIsolationTests
         var productionTools = NetRatelMcpToolDefinitions.CreateForHttp("prod")
             .ToDictionary(tool => tool.ProtocolTool.Name, StringComparer.Ordinal);
 
-        tools.Should().HaveCount(26);
-        productionTools.Should().HaveCount(26);
+        tools.Should().HaveCount(30);
+        productionTools.Should().HaveCount(30);
+        tools.Should().ContainKeys("netratel_services", "netratel_monitoring", "netratel_flows", "netratel_ai");
         tools.Should().ContainKeys("netratel_commands", "netratel_connectivity", "netratel_events", "netratel_requests");
         tools.Should().NotContainKey("netratel_marker_jobs");
         productionTools.Should().NotContainKey("netratel_marker_jobs", "marker jobs are a Development-only QA compatibility contract, not a Production operator capability");
@@ -597,14 +600,21 @@ public sealed class McpCoreIsolationTests
     }
 
     [Fact]
-    public void Stdio_client_contract_has_only_the_source_backed_bounded_reads()
+    public void Stdio_client_contract_has_bounded_reads_and_confirmed_typed_metadata_updates()
     {
         var schema = NetRatelMcpToolDefinitions.CreateForStdio(StdioCompatibilityHandlers)
             .Single(tool => tool.ProtocolTool.Name == "netratel_clients")
             .ProtocolTool.InputSchema;
         var alternatives = AlternativesByOperation(schema);
 
-        alternatives.Keys.Should().BeEquivalentTo(["presence", "binding", "telemetry", "update_attempts"]);
+        alternatives.Keys.Should().BeEquivalentTo(["presence", "binding", "telemetry", "update_attempts", "metadata", "set_metadata"]);
+        var metadata = alternatives["metadata"].GetProperty("properties").GetProperty("request");
+        metadata.GetProperty("additionalProperties").GetBoolean().Should().BeFalse();
+        metadata.GetProperty("required").EnumerateArray().Select(value => value.GetString()).Should().Equal("tenantId", "agentId");
+        var setMetadata = alternatives["set_metadata"].GetProperty("properties");
+        setMetadata.GetProperty("confirm").GetProperty("type").GetString().Should().Be("boolean");
+        setMetadata.GetProperty("request").GetProperty("additionalProperties").GetBoolean().Should().BeFalse();
+        setMetadata.GetProperty("request").GetProperty("properties").GetProperty("data").GetProperty("additionalProperties").GetBoolean().Should().BeFalse();
         var presence = alternatives["presence"].GetProperty("properties").GetProperty("request");
         presence.GetProperty("additionalProperties").GetBoolean().Should().BeFalse();
         presence.GetProperty("properties").GetProperty("limit").GetProperty("maximum").GetInt32().Should().Be(100);

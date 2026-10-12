@@ -203,7 +203,7 @@
         adapter.Tree.GetHelper().LinkAdded -= LinkChanged; adapter.Tree.GetHelper().LinkRemoved -= LinkChanged;
         foreach (var node in adapter.Tree.Nodes) node.PropertyChanged -= PropertyChanged;
     }
-    public static string KindLabel(FlowNodeKind kind) => kind switch { FlowNodeKind.AlertRaised => "Alert raised", FlowNodeKind.Condition => "Typed condition", FlowNodeKind.MapIncident => "Map alert fields", FlowNodeKind.CreateIncident => "RatelDesk: Create incident", FlowNodeKind.ActionGroup => "Action group", _ => "Unsupported node" };
+    public static string KindLabel(FlowNodeKind kind) => kind switch { FlowNodeKind.AlertRaised => "Alert raised", FlowNodeKind.Condition => "Typed condition", FlowNodeKind.MapIncident => "Map alert fields", FlowNodeKind.CreateIncident => "RatelDesk: Create incident", FlowNodeKind.InvestigateWithAi => "AI: Investigate alert", FlowNodeKind.ActionGroup => "Action group", _ => "Unsupported node" };
     private static string NodeStyle(IWorkflowNodeViewModel node) => FormattableString.Invariant($"width:{node.Size.Width}px;height:{node.Size.Height}px;");
     private static string CardStyle(IWorkflowNodeViewModel node) => FormattableString.Invariant($"transform:scale({node.Size.Width / 220});");
     public async ValueTask DisposeAsync()

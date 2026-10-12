@@ -46,9 +46,9 @@
                 { dialog => dialog.HostLabel, HostLabel }, { dialog => dialog.TenantLabel, TenantLabel }
             };
             var dialog = await DialogService.ShowAsync<ClientServicesDialog>("Services", parameters,
-                new DialogOptions { FullScreen = true, FullWidth = true, CloseOnEscapeKey = true, CloseButton = false, NoHeader = true });
+                new DialogOptions { FullScreen = true, FullWidth = true, CloseOnEscapeKey = true, CloseOnNavigation = true, CloseButton = false, NoHeader = true });
             _dialog = dialog;
-            if (!IsCurrentScope(scopeGeneration, tenantId, agentId)) dialog.Close();
+            if (!_disposed && !IsCurrentScope(scopeGeneration, tenantId, agentId)) dialog.Close();
             await dialog.Result;
             if (ReferenceEquals(_dialog, dialog)) _dialog = null;
             if (!IsCurrentScope(scopeGeneration, tenantId, agentId)) return;
@@ -71,6 +71,9 @@
     {
         _disposed = true;
         _scopeGeneration++;
-        _dialog?.Close();
+        // MudTable replaces rows when fresh immutable directory records arrive.
+        // The dialog owns its captured tenant/client and its data stream, so the
+        // transient launcher's disposal must not dismiss an active investigation.
+        // Explicit navigation, Escape and Close remain owned by the dialog provider.
     }
 }

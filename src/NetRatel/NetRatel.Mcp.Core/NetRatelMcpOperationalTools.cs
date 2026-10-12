@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using ModelContextProtocol.Server;
+using NetRatel.Shared.Operations;
 
 namespace NetRatel.Mcp.Core;
 
@@ -98,6 +99,8 @@ public sealed partial class NetRatelMcpOperationalTools
     [McpServerTool(UseStructuredContent = true), Description("Inspect source-backed clients. Development retains compatibility presence, binding, telemetry, and update_attempts. The policy-admitted V2 profile (explicitly enabled in Development and default in Production) requires an exact persisted tenantId and agentId with current operator policy; get returns durable administrative metadata plus a curated display-name, hostname, operating-system, and architecture projection, presence and capabilities return bounded gateway facts, binding returns optional migration provenance (hasBinding=false is normal for a native V2 client; no bridge is needed for current V2 operations), telemetry returns one bounded current V2 gateway snapshot, update_attempts returns bounded redacted update lifecycle facts, and update_metadata returns durable tenant and client update policy state. V2 ping first returns a no-write server plan, then requires unchanged execute-scoped confirmation before it reaches the V2 control gateway. V2 software_update can only resume an already suspended target's automatic-update eligibility; it never selects, uploads, or directly pushes a release. Disable, enable, and delete use a distinct admin-scoped server preview, opaque confirmation, idempotency, and V2 lifecycle authority; delete decommissions credentials and retains historical evidence. No operation invokes a legacy client-identity route.")]
     public Task<NetRatelToolResponse> netratel_clients(string operation, JsonElement? request = null, bool confirm = false, CancellationToken cancellationToken = default)
     {
+        if (ManagedOperationCatalog.Find("netratel_clients", operation) is not null)
+            return ManagedOperationAsync("netratel_clients", operation, request, confirm, cancellationToken);
         var payload = ToObject(request);
         return operation switch
         {

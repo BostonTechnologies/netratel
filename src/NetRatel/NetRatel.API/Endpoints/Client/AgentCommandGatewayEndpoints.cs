@@ -1,9 +1,12 @@
 using Akka.Actor;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using NetRatel.API.Gateway;
 using NetRatel.Akka.Observability;
 using NetRatel.Application.Commands;
 using NetRatel.Application.Presence;
+using NetRatel.Infrastructure.Persistence;
+using NetRatel.Shared.Contracts.Services;
 
 namespace NetRatel.API.Endpoints.Client;
 
@@ -46,6 +49,8 @@ public static class AgentCommandGatewayEndpoints
         {
             return Results.BadRequest("A bounded task_type and payload_json are required.");
         }
+        if (string.Equals(request.TaskType.Trim(), ClientServiceControlRules.TaskType, StringComparison.OrdinalIgnoreCase))
+            return Results.BadRequest(new { code = "service_control_requires_dedicated_route" });
 
         var commandId = Guid.NewGuid().ToString("N");
         var correlationId = string.IsNullOrWhiteSpace(request.CorrelationId) ? commandId : request.CorrelationId.Trim();
@@ -69,9 +74,15 @@ public static class AgentCommandGatewayEndpoints
         [FromBody] GatewayCommandCancelRequest? request,
         IHostEnvironment environment,
         [FromServices] IAgentCommandGatewaySessionRegistry sessions,
+        [FromServices] OrchestratorDbContext db,
         CancellationToken cancellationToken)
     {
         var client = new ClientKey(tenantId, agentId);
+        // A native restart may already have stopped its service. Generic script
+        // permission cannot interrupt an operation admitted under client.manage.
+        if (Guid.TryParseExact(commandId, "N", out var operationId) && await db.ClientServiceOperations.AsNoTracking().AnyAsync(
+            operation => operation.Id == operationId && operation.TenantId == tenantId && operation.AgentId == agentId, cancellationToken).ConfigureAwait(false))
+            return Results.Conflict(new { code = "service_operation_cannot_be_cancelled" });
         if (!sessions.IsAvailable(client))
         {
             NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);

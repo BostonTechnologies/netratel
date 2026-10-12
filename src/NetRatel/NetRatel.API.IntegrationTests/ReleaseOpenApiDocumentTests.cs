@@ -1,7 +1,12 @@
 using System.Net;
 using System.Text.Json.Nodes;
 using AwesomeAssertions;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
+using NetRatel.API.Security.Authorization;
 using NetRatel.API.Security.M2M;
+using NetRatel.Infrastructure.Identity.Authorization;
 
 using Xunit;
 
@@ -52,6 +57,50 @@ public sealed class ReleaseOpenApiDocumentTests
             .Should().BeEquivalentTo(["Bearer", "LocalSession"]);
         SecuritySchemes(document, "/api/v1/client-artifacts/{rid}/{version}/download", "get")
             .Should().BeEquivalentTo(["Agent", "Bearer", "LocalSession", "M2M"]);
+        SecuritySchemes(document, "/api/v2/mcp/operator/application/{tool}/{operation}", "post")
+            .Should().BeEquivalentTo(["Bearer", "LocalSession", "IntegrationCredential", "M2M"]);
+        foreach (var (method, suffix) in new[]
+        {
+            ("get", "/browse"), ("post", "/create-directory/preview"), ("post", "/delete/confirm")
+        })
+        {
+            SecuritySchemes(document, "/api/v2/mcp/operator/agents/{tenantId}/{agentId}/files" + suffix, method)
+                .Should().BeEquivalentTo(["Bearer", "LocalSession", "IntegrationCredential", "M2M"]);
+        }
+        foreach (var (path, method) in new[]
+        {
+            ("/api/v2/agents/{tenantId}/{agentId}/metadata", "get"),
+            ("/api/v2/agents/{tenantId}/{agentId}/metadata", "put"),
+            ("/api/v1/ai/tenants", "get"),
+            ("/api/v1/tenants/{tenantId}/ai/connection", "get"),
+            ("/api/v1/tenants/{tenantId}/ai/connection/pair", "post"),
+            ("/api/v1/tenants/{tenantId}/ai/investigations", "post"),
+            ("/api/v1/tenants/{tenantId}/ai/investigations/{investigationId}/messages", "post")
+        })
+        {
+            SecuritySchemes(document, path, method)
+                .Should().BeEquivalentTo(["Bearer", "LocalSession", "IntegrationCredential"]);
+        }
+        foreach (var (method, suffix) in new[]
+        {
+            ("get", ""), ("get", "/file"), ("put", "/file"),
+            ("post", "/directory"), ("delete", "/directory")
+        })
+        {
+            SecuritySchemes(document, "/api/v2/agents/{tenantId}/{agentId}/filesystem" + suffix, method)
+                .Should().BeEquivalentTo(["Bearer", "LocalSession", "IntegrationCredential"]);
+        }
+        var deleteDirectory = _factory.Services.GetRequiredService<EndpointDataSource>().Endpoints
+            .OfType<RouteEndpoint>().Single(endpoint =>
+                endpoint.RoutePattern.RawText == "/api/v2/agents/{tenantId:int}/{agentId:guid}/filesystem/directory" &&
+                endpoint.Metadata.GetMetadata<HttpMethodMetadata>()!.HttpMethods.Contains("DELETE"));
+        deleteDirectory.Metadata.GetOrderedMetadata<IAuthorizeData>().Select(data => data.Policy)
+            .Should().Equal("FileDeleter");
+        var fileDeletePolicy = await _factory.Services.GetRequiredService<IAuthorizationPolicyProvider>()
+            .GetPolicyAsync("FileDeleter");
+        fileDeletePolicy.Should().NotBeNull();
+        fileDeletePolicy!.Requirements.OfType<EffectiveAccessRequirement>().Select(requirement => requirement.Permission)
+            .Should().Equal(NetRatelPermissions.FileDelete);
         SecuritySchemes(document, "/api/v1/system/version", "get").Should().BeEmpty();
         SecuritySchemes(document, "/api/pairing/v1/metadata", "get").Should().BeEmpty();
         SecuritySchemes(document, "/api/pairing/v1/exchange", "post").Should().BeEmpty();
@@ -100,6 +149,8 @@ public sealed class ReleaseOpenApiDocumentTests
 
         (await client.GetAsync("/api/v1/system/version")).StatusCode.Should().Be(HttpStatusCode.OK);
         (await client.GetAsync("/api/v1/jobs")).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        (await client.DeleteAsync($"/api/v2/agents/1/{Guid.NewGuid():D}/filesystem/directory"))
+            .StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         (await client.GetAsync("/api/v1/admin/system-connections")).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         (await client.GetAsync("/api/pairing/v1/directory")).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         (await client.PostAsync($"/api/pairing/v1/mappings/{Guid.NewGuid()}/test", new StringContent("{}", System.Text.Encoding.UTF8, "application/json")))

@@ -20,6 +20,8 @@ using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.API.Endpoints.Client;
 using NetRatel.API.Gateway;
 using NetRatel.API.Middleware;
+using NetRatel.API.Security.Authorization;
+using NetRatel.API.Security.M2M;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Presence;
 using NetRatel.Shared.Operations;
@@ -564,6 +566,7 @@ public sealed partial class McpOperatorClientFileEndpointTests
     {
         var client = app.GetTestClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+        client.DefaultRequestHeaders.Add(McpOperatorDelegationOptions.HeaderName, "fixture-verified-delegation");
         return client;
     }
 
@@ -578,8 +581,15 @@ public sealed partial class McpOperatorClientFileEndpointTests
             web.ConfigureServices(services =>
             {
                 services.AddRouting();
-                services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, TestAuthenticationHandler>("Test", _ => { });
-                services.AddAuthorization(policyOptions => policyOptions.AddPolicy("M2MOnly", policy => policy.RequireAuthenticatedUser()));
+                var authentication = services.AddAuthentication("M2M")
+                    .AddScheme<AuthenticationSchemeOptions, TestAuthenticationHandler>("M2M", _ => { });
+                ManagedOperationAuthorization.AddAuthentication(authentication);
+                services.AddAuthorization(McpOperatorFileAuthorization.AddPolicies);
+                McpOperatorFileAuthorization.AddHandlers(services);
+                services.AddSingleton(Options.Create(new M2MOptions
+                {
+                    Authority = "https://fixture.example", Audience = "fixture-api", AllowedCallerClientIds = ["mcp-service"]
+                }));
                 services.AddSingleton(new TestPresence(client));
                 services.AddSingleton<IClientPresenceRouter>(provider => provider.GetRequiredService<TestPresence>());
                 services.AddSingleton(new TestAdmission(includeReadRoot, includeWriteRoot));
@@ -649,7 +659,7 @@ public sealed partial class McpOperatorClientFileEndpointTests
     {
         protected override Task<AuthenticateResult> HandleAuthenticateAsync()
         {
-            var identity = new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "mcp-service")], Scheme.Name);
+            var identity = new ClaimsIdentity([new Claim("client_id", "mcp-service")], Scheme.Name);
             return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme.Name)));
         }
     }

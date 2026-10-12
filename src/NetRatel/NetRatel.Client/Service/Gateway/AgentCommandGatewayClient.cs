@@ -144,7 +144,10 @@ public sealed class AgentCommandGatewayClient(
 
         public async Task WriteHelloAsync(CancellationToken cancellationToken)
         {
-            await WriteAsync(new AgentCommandFrame { Hello = new AgentCommandHello { Capabilities = { "command-lifecycle-v1", "gateway-execution" } } }, cancellationToken).ConfigureAwait(false);
+            var hello = new AgentCommandHello { Capabilities = { "command-lifecycle-v1", "gateway-execution" } };
+            if (NetRatel.Client.Service.Services.ClientServiceControlExecutor.CurrentPlatform != NetRatel.Shared.Contracts.Services.ClientServicePlatform.Unknown)
+                hello.Capabilities.Add(NetRatel.Shared.Contracts.Services.ClientServiceControlRules.Capability);
+            await WriteAsync(new AgentCommandFrame { Hello = hello }, cancellationToken).ConfigureAwait(false);
         }
 
         public bool TryRegisterDispatch(CommandDispatch dispatch) =>

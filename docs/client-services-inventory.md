@@ -42,6 +42,49 @@ Error, Unsupported and offline outcomes are explicit. A 70-second deadline
 existing display timer, also ends an unfulfilled wait. Closing or changing client
 or tenant cancels requests/subscriptions and fences late responses.
 
+The dialog owns the tenant and client captured at opening. Replacing directory
+rows, changing heartbeat data, reconnecting the inventory stream, or disposing the
+launcher does not close it. Explicit Close, Escape, and navigation dismiss the
+dialog. The directory also keeps its rows mounted while a background refresh is
+in progress.
+
+## Start, stop and restart
+
+The API and native Windows/systemd clients support typed service actions through
+the existing Akka command gateway. Native command sessions must advertise
+`service-control-v1`; older or unsupported clients remain read-only. The API
+returns `SupportsServiceControl` and the current caller's `CanControlServices`
+with the inventory. Inventory and refresh require `telemetry.read`. Changing a
+service or reading an operation requires `client.manage` for its tenant and an
+existing authorized client. MCP and CLI apply their credential policy before
+using these same handlers.
+
+Read the inventory first and use its exact `Name` and `Platform`, never the display
+name. Submit `POST /api/v2/agents/{tenantId}/{agentId}/services/control` with a new
+`operationId`, `serviceName`, `platform` (`1` Windows or `2` Linux systemd), `action`
+(`Start`, `Stop`, or `Restart`), and an optional reason. Poll
+`GET /api/v2/agents/{tenantId}/{agentId}/services/operations/{operationId}` for its
+result. The UI confirms the named target before admission and shows the operation
+ID while tracking it. Directory refreshes and inventory events preserve the
+selected search and action state.
+
+The server saves intent and audit before dispatch, validates that the exact
+service appears in this client's inventory, and serializes active service
+operations per client. Native execution rechecks the identity, rejects wildcard
+systemd selections, checks its queue deadline, and reports a fresh native status
+after the action. Windows uses SCM without stopping dependent services;
+systemd uses a fixed executable and a separate argument vector. Neither path
+executes operator-supplied shell text. The NetRatel client service is protected;
+client offboarding is the removal path for that service.
+
+`Completed` means the client observed the expected resulting state. An accepted or
+started operation is still pending. `OutcomeUnknown` and `MayHaveExecuted` retain
+uncertainty after an interrupted execution or response. Reusing the same operation
+ID only reads the original operation; it never repeats a restart. Refresh the
+inventory before deciding whether a new operation is needed. All outcomes remain
+associated with the original tenant, client, service, actor, reason, and operation
+ID in persisted state and audit.
+
 Deploy the updated API and Web, and upgrade the Linux client binary to obtain the
 collector fix. Existing Windows clients continue to work with the additive backend
 fields. Release publication is separate from the source merge.

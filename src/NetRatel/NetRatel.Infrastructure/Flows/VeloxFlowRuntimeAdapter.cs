@@ -93,10 +93,12 @@ public sealed class VeloxFlowRuntimeAdapter : IFlowRuntimeAdapter
                 case FlowNodeKind.MapIncident:
                     state.Fields = FlowPureEvaluation.Map(definition.Mapping!, state.Lease.Event.Data); return state.Fields;
                 case FlowNodeKind.CreateIncident:
+                case FlowNodeKind.InvestigateWithAi:
                     if (state.Fields is null) throw new InvalidOperationException("runtime-mapping-required");
                     var draft = new FlowIncidentActionDraft(state.Lease.Event.TenantId, state.Lease.RunId, definition.Id,
                         definition.ConnectorId!.Value, definition.ConnectorRevision!.Value, state.Lease.SourceInstanceId,
-                        FlowActionKeys.Create(state.Lease, definition.Id), state.Lease.Event, state.Fields);
+                        FlowActionKeys.Create(state.Lease, definition.Id), state.Lease.Event, state.Fields)
+                    { Kind = definition.Kind == FlowNodeKind.InvestigateWithAi ? FlowActionKind.NetclawInvestigation : FlowActionKind.RatelDeskIncident };
                     var result = await state.Action(draft, ct).ConfigureAwait(false);
                     state.Result = new(result.Kind switch { FlowIncidentActionResultKind.Succeeded => FlowRunStatus.Succeeded,
                         FlowIncidentActionResultKind.RetryableSafe => FlowRunStatus.RetryWaiting, FlowIncidentActionResultKind.DeliveryUnknown => FlowRunStatus.DeliveryUnknown, _ => FlowRunStatus.Failed }, result.Code);

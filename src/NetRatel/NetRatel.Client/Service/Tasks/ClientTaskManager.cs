@@ -16,6 +16,8 @@ using NetRatel.Shared.Contracts.Tasks;
 using NetRatel.Shared.Service.Shells;
 using NetRatel.Shared.Security;
 using NetRatel.Shared.Data.Task;
+using NetRatel.Shared.Contracts.Services;
+using NetRatel.Client.Service.Services;
 
 namespace NetRatel.Client.Service.Tasks;
 
@@ -273,6 +275,10 @@ public sealed class ClientTaskManager : IDisposable
 
         switch (kind)
         {
+            case ClientServiceControlRules.TaskType:
+                await HandleServiceControlAsync(task, ct).ConfigureAwait(false);
+                break;
+
             case TaskKinds.ExecShellCommand:
                 if (string.Equals(rawType, TaskKinds.Legacy_RunPowerShell, StringComparison.OrdinalIgnoreCase))
                 {
@@ -365,6 +371,26 @@ public sealed class ClientTaskManager : IDisposable
         }
 
         return value;
+    }
+
+    private async Task HandleServiceControlAsync(CommandExecutionContext task, CancellationToken cancellationToken)
+    {
+        ClientServiceControlPayload? payload;
+        try { payload = JsonSerializer.Deserialize(task.Payload ?? "null", TaskPayloadJsonContext.Default.ClientServiceControlPayload); }
+        catch (JsonException)
+        {
+            await SafeStatusAsync(task, TaskStatuses.Failed, "Invalid service operation.", "{\"errorCode\":\"invalid_service_operation\"}", 1).ConfigureAwait(false);
+            return;
+        }
+        if (payload is null || !string.Equals(task.RequestId, payload.OperationId.ToString("N"), StringComparison.Ordinal))
+        {
+            await SafeStatusAsync(task, TaskStatuses.Failed, "Invalid service operation identity.", "{\"errorCode\":\"invalid_service_operation\"}", 1).ConfigureAwait(false);
+            return;
+        }
+        var result = await new ClientServiceControlExecutor().ExecuteAsync(payload, cancellationToken).ConfigureAwait(false);
+        await SafeStatusAsync(task, result.Success ? TaskStatuses.Completed : TaskStatuses.Failed,
+            result.Success ? "Service operation completed." : "Service operation failed.",
+            JsonSerializer.Serialize(result, TaskPayloadJsonContext.Default.ClientServiceControlResult), result.Success ? 0 : 1).ConfigureAwait(false);
     }
 
     private async Task HandleExecShellCmdAsync(CommandExecutionContext task, ITaskLogSink sink, CancellationToken ct)

@@ -93,6 +93,8 @@ public static class McpOperationTargetCatalog
 
     private static McpOperationTargetModel TargetFor(string tool, string operation) => (tool, operation) switch
     {
+        _ when ManagedOperationCatalog.Find(tool, operation) is { } managed => managed.AgentTarget
+            ? McpOperationTargetModel.Agent : McpOperationTargetModel.Tenant,
         // Discovery and control-plane operations intentionally have no
         // business target. Their distinct instance-scoped permission remains
         // an attenuation boundary for local HTTP credentials.

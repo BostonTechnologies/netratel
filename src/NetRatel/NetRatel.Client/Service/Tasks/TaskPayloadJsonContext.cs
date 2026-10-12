@@ -9,4 +9,6 @@ namespace NetRatel.Client.Service.Tasks;
 [JsonSourceGenerationOptions(JsonSerializerDefaults.Web, GenerationMode = JsonSourceGenerationMode.Metadata)]
 [JsonSerializable(typeof(ExecShellCommandPayload))]
 [JsonSerializable(typeof(ExecLibraryScriptPayload))]
+[JsonSerializable(typeof(NetRatel.Shared.Contracts.Services.ClientServiceControlPayload))]
+[JsonSerializable(typeof(NetRatel.Shared.Contracts.Services.ClientServiceControlResult))]
 internal partial class TaskPayloadJsonContext : JsonSerializerContext;

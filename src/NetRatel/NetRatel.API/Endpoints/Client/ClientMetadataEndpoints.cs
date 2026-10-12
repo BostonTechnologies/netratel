@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using NetRatel.API.Security.Authorization;
 using NetRatel.API.Services.AgentDirectory;
 using NetRatel.Application.Events;
 using NetRatel.Infrastructure.Identity.Authorization;
@@ -14,24 +15,26 @@ public static class ClientMetadataEndpoints
     public static IEndpointRouteBuilder MapClientMetadataEndpoints(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/v2/agents/{tenantId:int}/{agentId:guid}/metadata")
-            .WithTags("Client Metadata").RequireAuthorization("ClientManager");
-        group.MapGet("", ReadAsync).WithName("ClientMetadata_Read").Produces<ClientMetadataDto>();
-        group.MapPut("", UpdateAsync).WithName("ClientMetadata_Update").Produces<ClientMetadataDto>()
+            .WithTags("Client Metadata");
+        group.MapGet("", ReadAsync).RequireAuthorization(ClientMetadataAuthorization.ReadPolicy)
+            .WithName("ClientMetadata_Read").Produces<ClientMetadataDto>();
+        group.MapPut("", UpdateAsync).RequireAuthorization(ClientMetadataAuthorization.WritePolicy)
+            .WithName("ClientMetadata_Update").Produces<ClientMetadataDto>()
             .ProducesProblem(StatusCodes.Status400BadRequest);
         return app;
     }
 
-    private static async Task<IResult> ReadAsync(int tenantId, Guid agentId, HttpContext http,
+    internal static async Task<IResult> ReadAsync(int tenantId, Guid agentId, HttpContext http,
         IEffectiveAccessService access, OrchestratorDbContext db, CancellationToken cancellationToken)
     {
-        if (!await access.AuthorizeAsync(http.User, NetRatelPermissions.ClientManagement, tenantId, cancellationToken).ConfigureAwait(false))
+        if (!await access.AuthorizeAsync(http.User, NetRatelPermissions.TelemetryRead, tenantId, cancellationToken).ConfigureAwait(false))
             return Results.Forbid();
         var agent = await db.Agents.AsNoTracking()
             .SingleOrDefaultAsync(item => item.TenantId == tenantId && item.Id == agentId, cancellationToken).ConfigureAwait(false);
-        return agent is null ? Results.NotFound() : Results.Ok(Map(agent));
+        return agent is null || agent.DeletedAtUtc is not null ? Results.NotFound() : Results.Ok(Map(agent));
     }
 
-    private static async Task<IResult> UpdateAsync(int tenantId, Guid agentId, UpdateClientMetadataRequest request,
+    internal static async Task<IResult> UpdateAsync(int tenantId, Guid agentId, UpdateClientMetadataRequest request,
         HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, TimeProvider clock,
         CancellationToken cancellationToken)
     {
