@@ -144,9 +144,19 @@ public sealed class RealtimeFanoutBridgeConcurrencyTests
         var sendStarted = NewCompletionSource();
         var sendCancelled = NewCompletionSource();
         var lateCompletion = NewCompletionSource();
+        var workerAdvanced = NewCompletionSource();
+        var barrierCompletion = NewCompletionSource();
+        RealtimeGroupName.TryCreate(CommandTarget("after-timeout"), out var barrierGroup).Should().BeTrue();
         var attempts = 0;
-        hub.SendAsync = (_, cancellationToken) =>
+        hub.SendAsync = (publication, cancellationToken) =>
         {
+            if (publication.Group == barrierGroup)
+            {
+                cancellationToken.Register(() => barrierCompletion.TrySetCanceled(cancellationToken));
+                workerAdvanced.TrySetResult();
+                return barrierCompletion.Task;
+            }
+
             Interlocked.Increment(ref attempts);
             sendStarted.TrySetResult();
             cancellationToken.Register(() => sendCancelled.TrySetResult());
@@ -164,22 +174,35 @@ public sealed class RealtimeFanoutBridgeConcurrencyTests
             bridge.TryEnqueue(Command("late")).Should().BeTrue();
             await sendStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
             await time.WaitForTimerAsync().WaitAsync(TimeSpan.FromSeconds(3));
+            bridge.TryEnqueue(Command("after-timeout")).Should().BeTrue();
 
-            time.Advance(TimeSpan.FromSeconds(2));
+            time.Advance(TimeSpan.FromSeconds(2) - TimeSpan.FromTicks(1));
+            sendCancelled.Task.IsCompleted.Should().BeFalse();
+            workerAdvanced.Task.IsCompleted.Should().BeFalse();
+
+            time.Advance(TimeSpan.FromTicks(1));
             await sendCancelled.Task.WaitAsync(TimeSpan.FromSeconds(3));
-            await WaitForAsync(() => bridge.GetStatus().PublishTimeouts == 1);
+
+            // The single worker can start this blocked publication only after
+            // recording the timeout and releasing the original publication.
+            await workerAdvanced.Task.WaitAsync(TimeSpan.FromSeconds(3));
 
             bridge.GetStatus().Should().Match<RealtimeFanoutHealthStatus>(status =>
-                status.PublishTimeouts == 1 && status.Published == 0);
+                status.PublishTimeouts == 1 && status.PublishFailures == 0 && status.Published == 0 &&
+                status.InFlightPublishes == 1 && status.InFlightHighWaterMark == 1);
+            lateCompletion.Task.IsCompleted.Should().BeFalse();
 
-            lateCompletion.TrySetResult();
-            bridge.GetStatus().Published.Should().Be(0);
-            Volatile.Read(ref attempts).Should().Be(1);
+            lateCompletion.TrySetResult().Should().BeTrue();
         }
         finally
         {
             await bridge.StopAsync(CancellationToken.None);
         }
+
+        bridge.GetStatus().Should().Match<RealtimeFanoutHealthStatus>(status =>
+            status.PublishTimeouts == 1 && status.PublishFailures == 0 && status.Published == 0 &&
+            status.InFlightPublishes == 0);
+        Volatile.Read(ref attempts).Should().Be(1);
     }
 
     [Theory]
@@ -216,16 +239,16 @@ public sealed class RealtimeFanoutBridgeConcurrencyTests
             bridge.TryEnqueue(Command("failing")).Should().BeTrue();
             bridge.TryEnqueue(Command("recovery")).Should().BeTrue();
             await recoveryPublished.Task.WaitAsync(TimeSpan.FromSeconds(3));
-            await WaitForAsync(() => bridge.GetStatus().Published == 1 && bridge.GetStatus().InFlightPublishes == 0);
-
-            bridge.GetStatus().Should().Match<RealtimeFanoutHealthStatus>(status =>
-                status.PublishFailures == 1 && status.PublishTimeouts == 0 && status.Published == 1);
-            Volatile.Read(ref attempts).Should().Be(1);
         }
         finally
         {
             await bridge.StopAsync(CancellationToken.None);
         }
+
+        bridge.GetStatus().Should().Match<RealtimeFanoutHealthStatus>(status =>
+            status.PublishFailures == 1 && status.PublishTimeouts == 0 && status.Published == 1 &&
+            status.InFlightPublishes == 0);
+        Volatile.Read(ref attempts).Should().Be(1);
     }
 
     [Fact]
@@ -408,21 +431,6 @@ public sealed class RealtimeFanoutBridgeConcurrencyTests
             string connectionId,
             string groupName,
             CancellationToken cancellationToken = default) => Task.CompletedTask;
-    }
-
-    private static async Task WaitForAsync(Func<bool> condition)
-    {
-        for (var attempt = 0; attempt < 100; attempt++)
-        {
-            if (condition())
-            {
-                return;
-            }
-
-            await Task.Yield();
-        }
-
-        condition().Should().BeTrue("the asynchronous bridge operation should complete");
     }
 
     private sealed class ManualTimeProvider : TimeProvider
