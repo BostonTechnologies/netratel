@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
+using NetRatel.API.Security.Authorization;
 using NetRatel.Application.Events;
 using NetRatel.Application.Netclaw;
 using NetRatel.Infrastructure.Identity.Authorization;
@@ -13,24 +14,32 @@ public static class NetclawEndpoints
 {
     public static IEndpointRouteBuilder MapNetclawEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/api/v1/ai/tenants", TenantsAsync).RequireAuthorization().WithTags("AI investigations");
-        var group = app.MapGroup("/api/v1/tenants/{tenantId:int}/ai").RequireAuthorization().WithTags("AI investigations")
+        app.MapGet("/api/v1/ai/tenants", TenantsAsync).RequireAuthorization(NetclawAuthorization.DiscoveryPolicy).WithTags("AI investigations");
+        var group = app.MapGroup("/api/v1/tenants/{tenantId:int}/ai").WithTags("AI investigations")
             .AddEndpointFilter<NetclawErrorFilter>();
-        group.MapGet("/connection", ConnectionAsync); group.MapPost("/connection/pair", PairAsync);
-        group.MapPost("/connection/test", TestAsync); group.MapPut("/connection/enabled", EnabledAsync);
-        group.MapGet("/clients", ClientsAsync);
-        group.MapGet("/investigations", ListAsync); group.MapPost("/investigations", CreateAsync);
-        group.MapGet("/investigations/{investigationId:guid}", GetAsync);
-        group.MapPost("/investigations/{investigationId:guid}/messages", SendAsync);
-        group.MapPost("/investigations/{investigationId:guid}/approvals/{callId}", ApprovalAsync);
-        group.MapPost("/investigations/{investigationId:guid}/reconcile", ReconcileAsync);
-        group.MapPost("/investigations/{investigationId:guid}/archive", ArchiveAsync);
+        group.MapGet("/connection", ConnectionAsync).RequireAuthorization(NetclawAuthorization.ReadPolicy);
+        group.MapPost("/connection/pair", PairAsync).RequireAuthorization(NetclawAuthorization.ConnectionAdminPolicy);
+        group.MapPost("/connection/test", TestAsync).RequireAuthorization(NetclawAuthorization.ConnectionAdminPolicy);
+        group.MapPut("/connection/enabled", EnabledAsync).RequireAuthorization(NetclawAuthorization.ConnectionAdminPolicy);
+        group.MapGet("/clients", ClientsAsync).RequireAuthorization(NetclawAuthorization.ReadPolicy);
+        group.MapGet("/investigations", ListAsync).RequireAuthorization(NetclawAuthorization.ReadPolicy);
+        group.MapPost("/investigations", CreateAsync).RequireAuthorization(NetclawAuthorization.ReadPolicy, NetclawAuthorization.ManagePolicy);
+        group.MapGet("/investigations/{investigationId:guid}", GetAsync).RequireAuthorization(NetclawAuthorization.ReadPolicy);
+        group.MapPost("/investigations/{investigationId:guid}/messages", SendAsync)
+            .RequireAuthorization(NetclawAuthorization.ReadPolicy, NetclawAuthorization.ManagePolicy, NetclawAuthorization.SecretUsePolicy);
+        group.MapPost("/investigations/{investigationId:guid}/approvals/{callId}", ApprovalAsync)
+            .RequireAuthorization(NetclawAuthorization.ReadPolicy, NetclawAuthorization.ManagePolicy, NetclawAuthorization.SecretUsePolicy);
+        group.MapPost("/investigations/{investigationId:guid}/reconcile", ReconcileAsync)
+            .RequireAuthorization(NetclawAuthorization.ReadPolicy, NetclawAuthorization.ManagePolicy, NetclawAuthorization.SecretUsePolicy);
+        group.MapPost("/investigations/{investigationId:guid}/archive", ArchiveAsync)
+            .RequireAuthorization(NetclawAuthorization.ReadPolicy, NetclawAuthorization.ManagePolicy);
         return app;
     }
 
     internal static async Task<IResult> TenantsAsync(HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, CancellationToken ct)
     {
-        var ids = await access.GetAuthorizedTenantIdsAsync(http.User, NetRatelPermissions.TelemetryRead, ct);
+        var ids = MonitoringFlowPermissionAuthorization.RestrictDiscoveryTenantIds(http, NetRatelPermissions.TelemetryRead,
+            await access.GetAuthorizedTenantIdsAsync(http.User, NetRatelPermissions.TelemetryRead, ct));
         var query = db.Tenants.AsNoTracking(); if (ids is not null) query = query.Where(x => ids.Contains(x.Id));
         var tenants = await query.OrderBy(x => x.Name).Take(256).Select(x => new { x.Id, x.Name }).ToListAsync(ct);
         var result = new List<NetclawTenantDto>();
@@ -38,7 +47,8 @@ public static class NetclawEndpoints
             await access.AuthorizeAsync(http.User, NetRatelPermissions.ClientManagement, tenant.Id, ct) &&
             await access.AuthorizeAsync(http.User, NetRatelPermissions.SecretUse, tenant.Id, ct),
             await access.AuthorizeAsync(http.User, NetRatelPermissions.TenantAdministration, tenant.Id, ct)));
-        return Results.Ok(result);
+        return Results.Ok(MonitoringFlowPermissionAuthorization.RestrictDiscoveryRows(http,
+            NetRatelPermissions.TelemetryRead, result, tenant => tenant.TenantId));
     }
 
     internal static async Task<IResult> ConnectionAsync(int tenantId, HttpContext http, IEffectiveAccessService access,

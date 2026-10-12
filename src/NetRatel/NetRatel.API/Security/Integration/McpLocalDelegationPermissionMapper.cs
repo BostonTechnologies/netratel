@@ -5,7 +5,7 @@ using System.Security.Claims;
 namespace NetRatel.API.Security.Integration;
 
 /// <summary>
-/// Converts the closed MCP operation catalogue into one application permission
+/// Converts the closed MCP operation catalogue into application permissions
 /// for a local credential exchange. The result is an attenuation boundary: a
 /// credential never receives a capability merely by naming an MCP scope.
 /// </summary>
@@ -34,6 +34,7 @@ internal static class McpLocalDelegationPermissionMapper
                 : NetRatelPermissions.ClientManagement,
             "netratel_files" when operation is "preview_delete" or "delete" or "confirm_delete" or
                 "preview_artifact_cleanup" or "artifact_cleanup" or "confirm_artifact_cleanup" or "cleanup" => NetRatelPermissions.FileDelete,
+            "netratel_files" when operation is "collect" or "preview_collect" or "confirm_collect" => NetRatelPermissions.FileRead,
             "netratel_files" => access.RequiredScope switch
             {
                 McpOperationAccessScope.Files => NetRatelPermissions.FileRead,
@@ -60,10 +61,12 @@ internal static class McpLocalDelegationPermissionMapper
         _ => []
     };
 
-    public static IReadOnlyList<string> AdditionalPermissions(string tool, string operation) =>
-        tool == "netratel_files" && operation is "preview_move" or "move" or "confirm_move"
-            ? [NetRatelPermissions.FileDelete]
-            : ManagedOperationCatalog.Find(tool, operation)?.AdditionalPermissions ?? [];
+    public static IReadOnlyList<string> AdditionalPermissions(string tool, string operation) => (tool, operation) switch
+    {
+        ("netratel_files", "preview_copy" or "copy" or "confirm_copy") => [NetRatelPermissions.FileRead],
+        ("netratel_files", "preview_move" or "move" or "confirm_move") => [NetRatelPermissions.FileDelete],
+        _ => ManagedOperationCatalog.Find(tool, operation)?.AdditionalPermissions ?? []
+    };
 
     public static async Task<bool> AuthorizeAsync(IEffectiveAccessService access, ClaimsPrincipal principal,
         string tool, string operation, int? tenantId, CancellationToken cancellationToken)

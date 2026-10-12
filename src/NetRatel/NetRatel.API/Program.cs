@@ -486,9 +486,15 @@ builder.Services
         };
     });
 
+ManagedOperationAuthorization.AddAuthentication(builder.Services.AddAuthentication());
+
 builder.Services.AddAuthorization(options =>
 {
     MonitoringAuthorization.AddPolicies(options);
+    ManagedOperationAuthorization.AddPolicies(options);
+    McpOperatorFileAuthorization.AddPolicies(options);
+    ClientMetadataAuthorization.AddPolicies(options);
+    NetclawAuthorization.AddPolicies(options);
     string? ResolveAdminId() => builder.Configuration["Authorization:Oidc:AdminGroupId"]
                                  ?? builder.Configuration["Authorization:Azure:AdminGroupId"]
                                  ?? builder.Configuration["AzureAd:AdminGroupId"]
@@ -504,10 +510,11 @@ builder.Services.AddAuthorization(options =>
 
     // A bare RequireAuthorization() only proves authentication. Integration
     // credentials are deliberately attenuated and must therefore use a route
-    // with an explicit EffectiveAccessRequirement; otherwise a newly added
-    // authenticated endpoint could accidentally bypass their stored grant
-    // tuples. Existing OIDC, local, M2M, machine, and native-agent paths keep
-    // the established default policy unchanged.
+    // with an explicit EffectiveAccessRequirement or the closed managed-operation
+    // admission that binds its typed operation to current grants and MCP policy.
+    // Otherwise a newly added authenticated endpoint could accidentally bypass
+    // their stored grant tuples. Existing OIDC, local, M2M, machine, and
+    // native-agent paths keep the established default policy unchanged.
     options.DefaultPolicy = new AuthorizationPolicyBuilder("Bearer")
         .RequireAuthenticatedUser()
         .RequireAssertion(context => IntegrationCredentialAuthorizationBoundary.AllowsDefaultAuthenticatedRoute(context.User))
@@ -757,6 +764,8 @@ builder.Services.AddSingleton<NetRatel.Application.RatelDesk.IRatelDeskCredentia
 builder.Services.AddSingleton<IAuthorizationHandler, AllowedClientHandler>();
 builder.Services.AddScoped<IAuthorizationHandler, EffectiveAccessHandler>();
 MonitoringFlowPermissionAuthorization.AddHandlers(builder.Services);
+ManagedOperationAuthorization.AddHandlers(builder.Services);
+McpOperatorFileAuthorization.AddHandlers(builder.Services);
 builder.Services.AddScoped<IAuthorizationHandler, TerminalSessionAccessHandler>();
 builder.Services.AddScoped<InstanceAdministratorInvariant>();
 

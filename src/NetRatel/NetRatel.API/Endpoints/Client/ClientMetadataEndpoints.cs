@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using NetRatel.API.Security.Authorization;
 using NetRatel.API.Services.AgentDirectory;
 using NetRatel.Application.Events;
 using NetRatel.Infrastructure.Identity.Authorization;
@@ -14,9 +15,11 @@ public static class ClientMetadataEndpoints
     public static IEndpointRouteBuilder MapClientMetadataEndpoints(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/v2/agents/{tenantId:int}/{agentId:guid}/metadata")
-            .WithTags("Client Metadata").RequireAuthorization();
-        group.MapGet("", ReadAsync).WithName("ClientMetadata_Read").Produces<ClientMetadataDto>();
-        group.MapPut("", UpdateAsync).RequireAuthorization("ClientManager").WithName("ClientMetadata_Update").Produces<ClientMetadataDto>()
+            .WithTags("Client Metadata");
+        group.MapGet("", ReadAsync).RequireAuthorization(ClientMetadataAuthorization.ReadPolicy)
+            .WithName("ClientMetadata_Read").Produces<ClientMetadataDto>();
+        group.MapPut("", UpdateAsync).RequireAuthorization(ClientMetadataAuthorization.WritePolicy)
+            .WithName("ClientMetadata_Update").Produces<ClientMetadataDto>()
             .ProducesProblem(StatusCodes.Status400BadRequest);
         return app;
     }

@@ -5,6 +5,7 @@ using System.Security.Claims;
 using System.Text.Encodings.Web;
 using AwesomeAssertions;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
@@ -14,6 +15,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NetRatel.API.Endpoints.Client;
+using NetRatel.API.Security.Authorization;
 using NetRatel.Application.Events;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
@@ -135,8 +137,11 @@ public sealed class ClientMetadataEndpointTests
             web.ConfigureServices(services =>
             {
                 services.AddRouting();
-                services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, Authentication>("Test", _ => { });
-                services.AddAuthorization(options => options.AddPolicy("ClientManager", policy => policy.RequireAuthenticatedUser()));
+                services.AddAuthentication("Bearer")
+                    .AddScheme<AuthenticationSchemeOptions, Authentication>("Oidc", _ => { })
+                    .AddPolicyScheme("Bearer", "Bearer", options => options.ForwardDefault = "Oidc");
+                services.AddAuthorization(ClientMetadataAuthorization.AddPolicies);
+                services.AddSingleton<IAuthorizationHandler, EffectiveAccessHandler>();
                 services.AddSingleton<IEffectiveAccessService, Access>();
                 services.AddSingleton(TimeProvider.System);
                 services.AddDbContext<OrchestratorDbContext>(options => options.UseInMemoryDatabase(database));
@@ -181,7 +186,14 @@ public sealed class ClientMetadataEndpointTests
                 (permission, principal.FindFirstValue(ClaimTypes.NameIdentifier)) is
                     (NetRatelPermissions.ClientManagement, "manager") or (NetRatelPermissions.TelemetryRead, "reader"));
         public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenantId,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            var subject = principal.FindFirstValue(ClaimTypes.NameIdentifier) ?? string.Empty;
+            var permissions = new HashSet<string>(StringComparer.Ordinal);
+            if (tenantId == 7 && subject == "reader") permissions.Add(NetRatelPermissions.TelemetryRead);
+            if (tenantId == 7 && subject == "manager") permissions.Add(NetRatelPermissions.ClientManagement);
+            return Task.FromResult(new EffectiveAccessSnapshot(subject, false, false, permissions));
+        }
         public Task ReconcileBuiltInRolesAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 }

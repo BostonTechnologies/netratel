@@ -2,6 +2,7 @@ using System.Text.Json;
 using NetRatel.API.Endpoints.Monitoring;
 using NetRatel.API.Services;
 using NetRatel.API.Services.Monitoring;
+using NetRatel.API.Security.Authorization;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Flows;
 using NetRatel.Application.Events;
@@ -24,7 +25,7 @@ public static class ManagedOperationEndpoints
     public static IEndpointRouteBuilder MapManagedOperationEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/api/v2/mcp/operator/application/{tool}/{operation}", InvokeAsync)
-            .RequireAuthorization().WithTags("Managed Operations");
+            .RequireAuthorization(ManagedOperationAuthorization.PolicyName).WithTags("Managed Operations");
         return app;
     }
 

@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using NetRatel.API.Gateway;
 using NetRatel.API.Middleware;
+using NetRatel.API.Security.Authorization;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Presence;
 using NetRatel.Shared.Operations;
@@ -14,7 +15,7 @@ namespace NetRatel.API.Endpoints.Client;
 /// declared canonical path and carries its matching roots to the agent; the
 /// agent then resolves links and reparse points on the filesystem it owns.
 /// </summary>
-public static class McpOperatorClientFileEndpoints
+public static partial class McpOperatorClientFileEndpoints
 {
     private const string Tool = "netratel_files";
     private const int MaximumPageSize = 100;
@@ -29,29 +30,29 @@ public static class McpOperatorClientFileEndpoints
     {
         var group = app.MapGroup("/api/v2/mcp/operator/agents/{tenantId:int}/{agentId:guid}/files")
             .WithTags("MCP Operator Files")
-            .RequireAuthorization("M2MOnly");
+            .RequireAuthorization(McpOperatorFileAuthorization.PolicyName);
 
-        group.MapGet("/browse", BrowseAsync);
-        group.MapGet("/stat", StatAsync);
-        group.MapGet("/read", ReadAsync);
-        group.MapPost("/artifacts/collect/preview", CollectArtifactPreviewAsync);
-        group.MapPost("/artifacts/collect/confirm", CollectArtifactConfirmAsync);
-        group.MapGet("/artifacts/{artifactId:guid}", ArtifactStatusAsync);
-        group.MapGet("/artifacts/{artifactId:guid}/download", DownloadArtifactAsync);
-        group.MapPost("/artifacts/{artifactId:guid}/cleanup/preview", CleanupArtifactPreviewAsync);
-        group.MapPost("/artifacts/{artifactId:guid}/cleanup/confirm", CleanupArtifactConfirmAsync);
-        group.MapPost("/write-text/preview", WriteTextPreviewAsync);
-        group.MapPost("/write-text/confirm", WriteTextConfirmAsync);
-        group.MapPost("/upload/preview", UploadPreviewAsync);
-        group.MapPost("/upload/confirm", UploadConfirmAsync);
-        group.MapPost("/create-directory/preview", CreateDirectoryPreviewAsync);
-        group.MapPost("/create-directory/confirm", CreateDirectoryConfirmAsync);
-        group.MapPost("/delete/preview", DeletePreviewAsync);
-        group.MapPost("/delete/confirm", DeleteConfirmAsync);
-        group.MapPost("/copy/preview", CopyPreviewAsync);
-        group.MapPost("/copy/confirm", CopyConfirmAsync);
-        group.MapPost("/move/preview", MovePreviewAsync);
-        group.MapPost("/move/confirm", MoveConfirmAsync);
+        group.MapGet("/browse", BrowseAsync).WithMetadata(new McpOperatorFileOperationMetadata("browse"));
+        group.MapGet("/stat", StatAsync).WithMetadata(new McpOperatorFileOperationMetadata("stat"));
+        group.MapGet("/read", ReadAsync).WithMetadata(new McpOperatorFileOperationMetadata("read"));
+        group.MapPost("/artifacts/collect/preview", CollectArtifactPreviewAsync).WithMetadata(new McpOperatorFileOperationMetadata("preview_collect"));
+        group.MapPost("/artifacts/collect/confirm", CollectArtifactConfirmAsync).WithMetadata(new McpOperatorFileOperationMetadata("confirm_collect"));
+        group.MapGet("/artifacts/{artifactId:guid}", ArtifactStatusAsync).WithMetadata(new McpOperatorFileOperationMetadata("artifact_status"));
+        group.MapGet("/artifacts/{artifactId:guid}/download", DownloadArtifactAsync).WithMetadata(new McpOperatorFileOperationMetadata("download"));
+        group.MapPost("/artifacts/{artifactId:guid}/cleanup/preview", CleanupArtifactPreviewAsync).WithMetadata(new McpOperatorFileOperationMetadata("preview_artifact_cleanup"));
+        group.MapPost("/artifacts/{artifactId:guid}/cleanup/confirm", CleanupArtifactConfirmAsync).WithMetadata(new McpOperatorFileOperationMetadata("confirm_artifact_cleanup"));
+        group.MapPost("/write-text/preview", WriteTextPreviewAsync).WithMetadata(new McpOperatorFileOperationMetadata("preview_write_text"));
+        group.MapPost("/write-text/confirm", WriteTextConfirmAsync).WithMetadata(new McpOperatorFileOperationMetadata("confirm_write_text"));
+        group.MapPost("/upload/preview", UploadPreviewAsync).WithMetadata(new McpOperatorFileOperationMetadata("preview_upload"));
+        group.MapPost("/upload/confirm", UploadConfirmAsync).WithMetadata(new McpOperatorFileOperationMetadata("confirm_upload"));
+        group.MapPost("/create-directory/preview", CreateDirectoryPreviewAsync).WithMetadata(new McpOperatorFileOperationMetadata("preview_create_directory"));
+        group.MapPost("/create-directory/confirm", CreateDirectoryConfirmAsync).WithMetadata(new McpOperatorFileOperationMetadata("confirm_create_directory"));
+        group.MapPost("/delete/preview", DeletePreviewAsync).WithMetadata(new McpOperatorFileOperationMetadata("preview_delete"));
+        group.MapPost("/delete/confirm", DeleteConfirmAsync).WithMetadata(new McpOperatorFileOperationMetadata("confirm_delete"));
+        group.MapPost("/copy/preview", CopyPreviewAsync).WithMetadata(new McpOperatorFileOperationMetadata("preview_copy"));
+        group.MapPost("/copy/confirm", CopyConfirmAsync).WithMetadata(new McpOperatorFileOperationMetadata("confirm_copy"));
+        group.MapPost("/move/preview", MovePreviewAsync).WithMetadata(new McpOperatorFileOperationMetadata("preview_move"));
+        group.MapPost("/move/confirm", MoveConfirmAsync).WithMetadata(new McpOperatorFileOperationMetadata("confirm_move"));
         return app;
     }
 
@@ -81,7 +82,7 @@ public static class McpOperatorClientFileEndpoints
             return Failure("file_policy_roots_missing", context);
         if (await RecordAcceptedAsync(admission, context, cancellationToken).ConfigureAwait(false) is { } rejected)
             return rejected;
-        if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, path, cancellationToken).ConfigureAwait(false) is { } beforeDispatch)
+        if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context, path, cancellationToken).ConfigureAwait(false) is { } beforeDispatch)
             return Failure(beforeDispatch, context);
 
         try
@@ -92,7 +93,7 @@ public static class McpOperatorClientFileEndpoints
                 pageSize ?? MaximumPageSize,
                 accessPolicy,
                 cancellationToken).ConfigureAwait(false);
-            if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, path, cancellationToken).ConfigureAwait(false) is { } afterDispatch)
+            if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context, path, cancellationToken).ConfigureAwait(false) is { } afterDispatch)
                 return Failure(afterDispatch, context);
 
             var safeEntries = entries
@@ -149,7 +150,7 @@ public static class McpOperatorClientFileEndpoints
             return Failure("file_policy_roots_missing", context);
         if (await RecordAcceptedAsync(admission, context, cancellationToken).ConfigureAwait(false) is { } rejected)
             return rejected;
-        if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, path, cancellationToken).ConfigureAwait(false) is { } beforeDispatch)
+        if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context, path, cancellationToken).ConfigureAwait(false) is { } beforeDispatch)
             return Failure(beforeDispatch, context);
 
         GatewayFileReadOperation? operation = null;
@@ -168,7 +169,7 @@ public static class McpOperatorClientFileEndpoints
                 }
 
                 await content.WriteAsync(chunk, cancellationToken).ConfigureAwait(false);
-                if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, path, cancellationToken).ConfigureAwait(false) is { } revoked)
+                if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context, path, cancellationToken).ConfigureAwait(false) is { } revoked)
                 {
                     await operation.CancelAsync("operator_policy_revoked", CancellationToken.None).ConfigureAwait(false);
                     return Failure(revoked, context);
@@ -177,7 +178,7 @@ public static class McpOperatorClientFileEndpoints
 
             await operation.Completion.ConfigureAwait(false);
             completed = true;
-            if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, path, cancellationToken).ConfigureAwait(false) is { } afterDispatch)
+            if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context, path, cancellationToken).ConfigureAwait(false) is { } afterDispatch)
                 return Failure(afterDispatch, context);
 
             var bytes = content.ToArray();
@@ -305,7 +306,7 @@ public static class McpOperatorClientFileEndpoints
         McpOperatorAcceptedAudit acceptedAudit;
         try
         {
-            acceptedAudit = await admission.RecordAcceptedAsync(context.Request, cancellationToken).ConfigureAwait(false);
+            acceptedAudit = await RecordFileAcceptedAuditAsync(admission, context, cancellationToken).ConfigureAwait(false);
         }
         catch (McpOperatorAdmissionRejectedException rejection)
         {
@@ -319,7 +320,7 @@ public static class McpOperatorClientFileEndpoints
         try
         {
             var beforeDispatch = await RecheckArtifactCollectionAsync(
-                admission, presence, new ClientKey(tenantId, agentId), context.Request, request.Path, cancellationToken).ConfigureAwait(false);
+                admission, presence, new ClientKey(tenantId, agentId), context, request.Path, cancellationToken).ConfigureAwait(false);
             if (beforeDispatch.FailureCode is not null ||
                 !string.Equals(beforeDispatch.ReadRootFingerprint, readRootFingerprint, StringComparison.Ordinal))
             {
@@ -349,7 +350,7 @@ public static class McpOperatorClientFileEndpoints
 
                 await content.WriteAsync(chunk, cancellationToken).ConfigureAwait(false);
                 var duringDispatch = await RecheckArtifactCollectionAsync(
-                    admission, presence, new ClientKey(tenantId, agentId), context.Request, request.Path, cancellationToken).ConfigureAwait(false);
+                    admission, presence, new ClientKey(tenantId, agentId), context, request.Path, cancellationToken).ConfigureAwait(false);
                 if (duringDispatch.FailureCode is not null ||
                     !string.Equals(duringDispatch.ReadRootFingerprint, readRootFingerprint, StringComparison.Ordinal) ||
                     content.Length > duringDispatch.MaximumBytes)
@@ -365,7 +366,7 @@ public static class McpOperatorClientFileEndpoints
             await operation.Completion.ConfigureAwait(false);
             completed = true;
             var afterDispatch = await RecheckArtifactCollectionAsync(
-                admission, presence, new ClientKey(tenantId, agentId), context.Request, request.Path, cancellationToken).ConfigureAwait(false);
+                admission, presence, new ClientKey(tenantId, agentId), context, request.Path, cancellationToken).ConfigureAwait(false);
             if (afterDispatch.FailureCode is not null ||
                 !string.Equals(afterDispatch.ReadRootFingerprint, readRootFingerprint, StringComparison.Ordinal) ||
                 content.Length > afterDispatch.MaximumBytes)
@@ -445,7 +446,7 @@ public static class McpOperatorClientFileEndpoints
             return Failure("artifact_policy_changed", context);
         if (await RecordAcceptedAsync(admission, context, cancellationToken).ConfigureAwait(false) is { } rejected)
             return rejected;
-        if (await RecheckArtifactAccessAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, artifact, cancellationToken).ConfigureAwait(false) is { } afterAdmission)
+        if (await RecheckArtifactAccessAsync(admission, presence, new ClientKey(tenantId, agentId), context, artifact, cancellationToken).ConfigureAwait(false) is { } afterAdmission)
             return Failure(afterAdmission, context);
 
         return Results.Ok(ToArtifactMetadata(artifact, replayed: false, context.CorrelationId));
@@ -483,7 +484,7 @@ public static class McpOperatorClientFileEndpoints
             return Results.NotFound();
         if (!IsArtifactAvailable(artifact, DateTimeOffset.UtcNow) || artifact.Content is null || artifact.Content.Length != artifact.SizeBytes)
             return ArtifactUnavailable(artifact, context);
-        if (await RecheckArtifactAccessAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, artifact, cancellationToken).ConfigureAwait(false) is { } afterDownload)
+        if (await RecheckArtifactAccessAsync(admission, presence, new ClientKey(tenantId, agentId), context, artifact, cancellationToken).ConfigureAwait(false) is { } afterDownload)
             return Failure(afterDownload, context);
 
         return Results.Ok(new McpOperatorFileArtifactDownload(
@@ -582,7 +583,7 @@ public static class McpOperatorClientFileEndpoints
 
         try
         {
-            await admission.RecordAcceptedAsync(context.Request, cancellationToken).ConfigureAwait(false);
+            await RecordFileAcceptedAuditAsync(admission, context, cancellationToken).ConfigureAwait(false);
         }
         catch (McpOperatorAdmissionRejectedException rejection)
         {
@@ -590,7 +591,7 @@ public static class McpOperatorClientFileEndpoints
             return Failure(rejection.FailureCode, context);
         }
 
-        if (await RecheckArtifactCleanupAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, cancellationToken).ConfigureAwait(false) is { } beforeCleanup)
+        if (await RecheckArtifactCleanupAsync(admission, presence, new ClientKey(tenantId, agentId), context, cancellationToken).ConfigureAwait(false) is { } beforeCleanup)
         {
             await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, beforeCleanup, cancellationToken).ConfigureAwait(false);
             return Failure(beforeCleanup, context);
@@ -611,7 +612,7 @@ public static class McpOperatorClientFileEndpoints
             return Results.NotFound();
         }
 
-        if (await RecheckArtifactCleanupAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, cancellationToken).ConfigureAwait(false) is { } afterCleanup)
+        if (await RecheckArtifactCleanupAsync(admission, presence, new ClientKey(tenantId, agentId), context, cancellationToken).ConfigureAwait(false) is { } afterCleanup)
         {
             await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, artifactId.ToString("D"), cancellationToken).ConfigureAwait(false);
             return Failure(afterCleanup, context);
@@ -643,14 +644,14 @@ public static class McpOperatorClientFileEndpoints
             return Failure("file_policy_roots_missing", context);
         if (await RecordAcceptedAsync(admission, context, cancellationToken).ConfigureAwait(false) is { } rejected)
             return rejected;
-        if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, path, cancellationToken).ConfigureAwait(false) is { } beforeDispatch)
+        if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context, path, cancellationToken).ConfigureAwait(false) is { } beforeDispatch)
             return Failure(beforeDispatch, context);
 
         try
         {
             var metadata = await sessions.StatAsync(
                 new ClientKey(tenantId, agentId), path, accessPolicy, cancellationToken).ConfigureAwait(false);
-            if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, path, cancellationToken).ConfigureAwait(false) is { } afterDispatch)
+            if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context, path, cancellationToken).ConfigureAwait(false) is { } afterDispatch)
                 return Failure(afterDispatch, context);
 
             return Results.Ok(new McpOperatorFileStatResult(
@@ -1024,7 +1025,7 @@ public static class McpOperatorClientFileEndpoints
 
         try
         {
-            await admission.RecordAcceptedAsync(context.Request, cancellationToken).ConfigureAwait(false);
+            await RecordFileAcceptedAuditAsync(admission, context, cancellationToken).ConfigureAwait(false);
         }
         catch (McpOperatorAdmissionRejectedException rejection)
         {
@@ -1034,7 +1035,7 @@ public static class McpOperatorClientFileEndpoints
 
         try
         {
-            if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, write.Path, cancellationToken, isWrite: true).ConfigureAwait(false) is { } beforeDispatch)
+            if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context, write.Path, cancellationToken, isWrite: true).ConfigureAwait(false) is { } beforeDispatch)
             {
                 await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, beforeDispatch, cancellationToken).ConfigureAwait(false);
                 return Failure(beforeDispatch, context);
@@ -1053,7 +1054,7 @@ public static class McpOperatorClientFileEndpoints
                 await using var content = new MemoryStream(write.Bytes, writable: false);
                 await sessions.WriteAsync(new ClientKey(tenantId, agentId), write.Path, content, accessPolicy, cancellationToken).ConfigureAwait(false);
             }
-            if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, write.Path, cancellationToken, isWrite: true).ConfigureAwait(false) is { } afterDispatch)
+            if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context, write.Path, cancellationToken, isWrite: true).ConfigureAwait(false) is { } afterDispatch)
             {
                 var completedAfterRevocation = ToFileWriteResult(tenantId, agentId, write, replayed: false, context.CorrelationId);
                 await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, WriteResultReference(write, completedAfterRevocation), cancellationToken).ConfigureAwait(false);
@@ -1125,7 +1126,7 @@ public static class McpOperatorClientFileEndpoints
 
         try
         {
-            await admission.RecordAcceptedAsync(context.Request, cancellationToken).ConfigureAwait(false);
+            await RecordFileAcceptedAuditAsync(admission, context, cancellationToken).ConfigureAwait(false);
         }
         catch (McpOperatorAdmissionRejectedException rejection)
         {
@@ -1135,7 +1136,7 @@ public static class McpOperatorClientFileEndpoints
 
         try
         {
-            if (await RecheckRelocationAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, relocation, cancellationToken).ConfigureAwait(false) is { } beforeDispatch)
+            if (await RecheckRelocationAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context, relocation, cancellationToken).ConfigureAwait(false) is { } beforeDispatch)
             {
                 await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, beforeDispatch, cancellationToken).ConfigureAwait(false);
                 return Failure(beforeDispatch, context);
@@ -1150,7 +1151,7 @@ public static class McpOperatorClientFileEndpoints
                 await sessions.MoveAsync(new ClientKey(tenantId, agentId), relocation.SourcePath, relocation.DestinationPath, accessPolicy, cancellationToken).ConfigureAwait(false);
             }
 
-            if (await RecheckRelocationAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, relocation, cancellationToken).ConfigureAwait(false) is { } afterDispatch)
+            if (await RecheckRelocationAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context, relocation, cancellationToken).ConfigureAwait(false) is { } afterDispatch)
             {
                 var completedAfterRevocation = ToRelocationResult(tenantId, agentId, relocation, replayed: false, context.CorrelationId);
                 await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, RelocationResultReference(relocation, completedAfterRevocation), cancellationToken).ConfigureAwait(false);
@@ -1243,10 +1244,13 @@ public static class McpOperatorClientFileEndpoints
         IMcpOperatorRouteAdmission admission,
         [FromServices] IClientPresenceRouter presence,
         ClientKey client,
-        McpOperatorRouteAccessRequest request,
+        McpOperatorFileRouteContext context,
         string path,
         CancellationToken cancellationToken)
     {
+        if (!await HasCurrentFilePermissionAsync(context, cancellationToken).ConfigureAwait(false))
+            return new(null, null, 0, "permission_denied");
+        var request = context.Request;
         var target = await presence.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
         var evaluated = await admission.EvaluateAsync(request with
         {
@@ -1271,10 +1275,13 @@ public static class McpOperatorClientFileEndpoints
         IMcpOperatorRouteAdmission admission,
         [FromServices] IClientPresenceRouter presence,
         ClientKey client,
-        McpOperatorRouteAccessRequest request,
+        McpOperatorFileRouteContext context,
         McpOperatorFileArtifact artifact,
         CancellationToken cancellationToken)
     {
+        if (!await HasCurrentFilePermissionAsync(context, cancellationToken).ConfigureAwait(false))
+            return "permission_denied";
+        var request = context.Request;
         var target = await presence.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
         var evaluated = await admission.EvaluateAsync(request with
         {
@@ -1292,9 +1299,12 @@ public static class McpOperatorClientFileEndpoints
         IMcpOperatorRouteAdmission admission,
         [FromServices] IClientPresenceRouter presence,
         ClientKey client,
-        McpOperatorRouteAccessRequest request,
+        McpOperatorFileRouteContext context,
         CancellationToken cancellationToken)
     {
+        if (!await HasCurrentFilePermissionAsync(context, cancellationToken).ConfigureAwait(false))
+            return "permission_denied";
+        var request = context.Request;
         var target = await presence.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
         var evaluated = await admission.EvaluateAsync(request with
         {
@@ -1433,9 +1443,6 @@ public static class McpOperatorClientFileEndpoints
         string? delegatedOperation = null)
     {
         var fallback = MinimalContext(tenantId, agentId, operation, http.TraceIdentifier);
-        if (!http.TryGetMcpOperatorDelegation(out var delegation) || delegation is null)
-            return Rejected("delegated_identity_required", fallback);
-
         var operatorEnvironment = environment.IsDevelopment()
             ? McpOperatorEnvironment.Development
             : environment.IsProduction()
@@ -1448,40 +1455,41 @@ public static class McpOperatorClientFileEndpoints
             _ => null
         };
         var access = McpOperationAccessCatalog.Find(Tool, operation);
-        if (operatorEnvironment is null || expectedInstance is null || access is null ||
-            !string.Equals(delegation.Instance, expectedInstance, StringComparison.Ordinal) ||
-            !string.Equals(delegation.Tool, Tool, StringComparison.Ordinal) ||
-            !string.Equals(delegation.Operation, delegatedOperation ?? operation, StringComparison.Ordinal) ||
-            delegation.TenantId != tenantId || delegation.AgentId != agentId ||
-            string.IsNullOrWhiteSpace(delegation.Resource) || string.IsNullOrWhiteSpace(delegation.CorrelationId))
-        {
+        if (operatorEnvironment is null || expectedInstance is null || access is null)
             return Rejected("delegated_identity_invalid", fallback);
-        }
+
+        var resolved = await ResolveFileActorAsync(http, expectedInstance, tenantId, agentId,
+            operation, delegatedOperation ?? operation, access.RequiredScope, cancellationToken).ConfigureAwait(false);
+        if (resolved.Actor is not { } actor)
+            return Rejected(resolved.FailureCode ?? "delegated_identity_invalid", fallback);
 
         var target = await presence.GetSnapshotAsync(new ClientKey(tenantId, agentId), cancellationToken).ConfigureAwait(false);
         var request = new McpOperatorRouteAccessRequest(
             operatorEnvironment.Value,
             new McpOperatorPrincipal(
-                delegation.Identity.Subject,
-                delegation.Identity.ClientId,
-                delegation.Identity.AuthorizedParty,
-                delegation.Identity.Groups.ToHashSet(StringComparer.Ordinal),
-                delegation.Identity.Roles.ToHashSet(StringComparer.Ordinal),
-                delegation.Identity.Scopes.ToHashSet(StringComparer.Ordinal)),
-            delegation.ServicePrincipal,
-            delegation.Resource!,
-            delegation.Instance!,
+                actor.Identity.Subject,
+                actor.Identity.ClientId,
+                actor.Identity.AuthorizedParty,
+                actor.Identity.Groups.ToHashSet(StringComparer.Ordinal),
+                actor.Identity.Roles.ToHashSet(StringComparer.Ordinal),
+                actor.Identity.Scopes.ToHashSet(StringComparer.Ordinal)),
+            actor.ServicePrincipal,
+            actor.Resource,
+            expectedInstance,
             Tool,
             operation,
             tenantId,
             agentId,
             new HashSet<string>([McpOperationAccessScopeNames.Canonical(access.RequiredScope)], StringComparer.Ordinal),
-            delegation.CorrelationId!,
-            delegation.RequestId,
+            actor.CorrelationId,
+            actor.RequestId,
             target.Status == ClientPresenceStatus.Online,
             CapabilityAvailable: target.Capabilities.Contains("file-gateway", StringComparer.OrdinalIgnoreCase));
         var evaluated = await admission.EvaluateAsync(request, cancellationToken).ConfigureAwait(false);
-        var failureContext = new McpOperatorFileRouteContext(request, evaluated.Decision, McpOperationAccessScopeNames.Canonical(access.RequiredScope));
+        var failureContext = new McpOperatorFileRouteContext(request, evaluated.Decision, McpOperationAccessScopeNames.Canonical(access.RequiredScope))
+        {
+            DirectCaller = actor.DirectCaller
+        };
         return evaluated.Decision.IsAllowed
             ? new(failureContext, null)
             : Rejected(evaluated.Decision.FailureCode ?? "target_policy_missing", failureContext);
@@ -1494,7 +1502,7 @@ public static class McpOperatorClientFileEndpoints
     {
         try
         {
-            await admission.RecordAcceptedAsync(context.Request, cancellationToken).ConfigureAwait(false);
+            await RecordFileAcceptedAuditAsync(admission, context, cancellationToken).ConfigureAwait(false);
             return null;
         }
         catch (McpOperatorAdmissionRejectedException rejection)
@@ -1507,11 +1515,14 @@ public static class McpOperatorClientFileEndpoints
         IMcpOperatorRouteAdmission admission,
         [FromServices] IClientPresenceRouter presence,
         ClientKey client,
-        McpOperatorRouteAccessRequest request,
+        McpOperatorFileRouteContext context,
         string path,
         CancellationToken cancellationToken,
         bool isWrite = false)
     {
+        if (!await HasCurrentFilePermissionAsync(context, cancellationToken).ConfigureAwait(false))
+            return "permission_denied";
+        var request = context.Request;
         var target = await presence.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
         var evaluated = await admission.EvaluateAsync(request with
         {
@@ -1533,10 +1544,13 @@ public static class McpOperatorClientFileEndpoints
         IMcpOperatorRouteAdmission admission,
         [FromServices] IClientPresenceRouter presence,
         ClientKey client,
-        McpOperatorRouteAccessRequest request,
+        McpOperatorFileRouteContext context,
         McpOperatorFileRelocationCommand relocation,
         CancellationToken cancellationToken)
     {
+        if (!await HasCurrentFilePermissionAsync(context, cancellationToken).ConfigureAwait(false))
+            return "permission_denied";
+        var request = context.Request;
         var target = await presence.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
         var evaluated = await admission.EvaluateAsync(request with
         {
@@ -2005,6 +2019,8 @@ public static class McpOperatorClientFileEndpoints
         string Operation,
         string CorrelationId)
     {
+        public McpOperatorFileDirectCaller? DirectCaller { get; init; }
+
         public McpOperatorFileRouteContext(McpOperatorRouteAccessRequest request, McpOperatorDecision decision, string requiredScope)
             : this(request, decision, requiredScope, request.TenantId, request.AgentId, request.Operation, request.CorrelationId)
         {

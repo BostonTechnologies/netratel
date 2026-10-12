@@ -66,6 +66,8 @@ Before sending an automatic queued message, the worker checks the saved authorit
 
 The ordinary API routes start at `/api/v1/tenants/{tenantId}/ai`. Tenant discovery is `GET /api/v1/ai/tenants`.
 
+The AI and client-metadata APIs accept OIDC accounts, local sessions, and API-purpose integration credentials subject to their current tenant grants. CLI and isolated stdio clients can send their API-purpose credential directly to the managed operation API. The HTTP MCP relay authenticates with its configured API M2M credential and supplies a separately verified, short-lived delegation bound to the exact caller, operation, resource, environment, tenant, and client target. A relay token alone grants no account authority. HTTP-MCP-purpose credentials remain confined to the existing exchange and delegation path; they are not accepted directly on these account APIs.
+
 | API suffix | Purpose | Canonical permissions |
 | --- | --- | --- |
 | `GET /connection`, `GET /clients` | Safe connection status and selectable client metadata | `telemetry.read` |

@@ -17,7 +17,34 @@ namespace NetRatel.Tests.API;
 public sealed class McpFileDelegationPermissionTests
 {
     [Theory]
+    [InlineData("collect", NetRatelPermissions.FileRead, null)]
+    [InlineData("preview_collect", NetRatelPermissions.FileRead, null)]
+    [InlineData("confirm_collect", NetRatelPermissions.FileRead, null)]
+    [InlineData("copy", NetRatelPermissions.FileWrite, NetRatelPermissions.FileRead)]
+    [InlineData("preview_copy", NetRatelPermissions.FileWrite, NetRatelPermissions.FileRead)]
+    [InlineData("confirm_copy", NetRatelPermissions.FileWrite, NetRatelPermissions.FileRead)]
+    [InlineData("move", NetRatelPermissions.FileWrite, NetRatelPermissions.FileDelete)]
+    [InlineData("preview_move", NetRatelPermissions.FileWrite, NetRatelPermissions.FileDelete)]
+    [InlineData("confirm_move", NetRatelPermissions.FileWrite, NetRatelPermissions.FileDelete)]
+    [InlineData("cleanup", NetRatelPermissions.FileDelete, null)]
+    [InlineData("artifact_cleanup", NetRatelPermissions.FileDelete, null)]
+    [InlineData("preview_artifact_cleanup", NetRatelPermissions.FileDelete, null)]
+    [InlineData("confirm_artifact_cleanup", NetRatelPermissions.FileDelete, null)]
+    public void File_mutation_protocol_scope_retains_the_exact_client_data_permissions(
+        string operation, string permission, string? additionalPermission)
+    {
+        McpOperationAccessCatalog.Find("netratel_files", operation)!.RequiredScope.Should().Be(McpOperationAccessScope.Write,
+            "collect and relocation retain the existing MCP write protocol and confirmation boundary");
+        McpLocalDelegationPermissionMapper.RequiredPermission("netratel_files", operation).Should().Be(permission);
+        McpLocalDelegationPermissionMapper.AdditionalPermissions("netratel_files", operation)
+            .Should().Equal(additionalPermission is null ? [] : [additionalPermission]);
+    }
+
+    [Theory]
     [InlineData("browse", NetRatelPermissions.FileRead)]
+    [InlineData("collect", NetRatelPermissions.FileRead)]
+    [InlineData("preview_collect", NetRatelPermissions.FileRead)]
+    [InlineData("confirm_collect", NetRatelPermissions.FileRead)]
     [InlineData("preview_create_directory", NetRatelPermissions.FileWrite)]
     [InlineData("confirm_create_directory", NetRatelPermissions.FileWrite)]
     [InlineData("preview_delete", NetRatelPermissions.FileDelete)]
@@ -45,19 +72,89 @@ public sealed class McpFileDelegationPermissionTests
         (await scenario.InvokeAsync("confirm_create_directory")).Entered.Should().BeTrue();
     }
 
-    [Fact]
-    public async Task Move_requires_write_and_delete_for_one_tenant_in_exchange_and_execution()
+    [Theory]
+    [InlineData("copy", NetRatelPermissions.FileRead)]
+    [InlineData("preview_copy", NetRatelPermissions.FileRead)]
+    [InlineData("confirm_copy", NetRatelPermissions.FileRead)]
+    [InlineData("move", NetRatelPermissions.FileDelete)]
+    [InlineData("preview_move", NetRatelPermissions.FileDelete)]
+    [InlineData("confirm_move", NetRatelPermissions.FileDelete)]
+    public async Task Relocation_requires_both_current_permissions_in_one_tenant_for_exchange_and_execution(
+        string operation, string sourcePermission)
     {
         await using var scenario = new Scenario();
         await scenario.GrantAsync(NetRatelPermissions.FileWrite, 7);
-        await scenario.GrantAsync(NetRatelPermissions.FileDelete, 8);
-        (await scenario.InvokeAsync("confirm_move")).Status.Should().Be(StatusCodes.Status403Forbidden);
+        await scenario.GrantAsync(sourcePermission, 8);
+        (await scenario.InvokeAsync(operation)).Status.Should().Be(StatusCodes.Status403Forbidden);
         var user = new ClaimsPrincipal(new ClaimsIdentity([new Claim("netratel_principal_id", Scenario.Owner)], "Oidc"));
         var access = scenario.Services.GetRequiredService<IEffectiveAccessService>();
-        (await McpLocalDelegationPermissionMapper.AuthorizeAsync(access, user, "netratel_files", "preview_move", 7, default)).Should().BeFalse();
-        await scenario.GrantAsync(NetRatelPermissions.FileDelete, 7);
-        (await McpLocalDelegationPermissionMapper.AuthorizeAsync(access, user, "netratel_files", "preview_move", 7, default)).Should().BeTrue();
-        (await scenario.InvokeAsync("confirm_move")).Entered.Should().BeTrue();
+        (await McpLocalDelegationPermissionMapper.AuthorizeAsync(access, user, "netratel_files", operation, 7, default)).Should().BeFalse();
+        var grant = await scenario.GrantAsync(sourcePermission, 7);
+        (await McpLocalDelegationPermissionMapper.AuthorizeAsync(access, user, "netratel_files", operation, 7, default)).Should().BeTrue();
+        (await scenario.InvokeAsync(operation)).Entered.Should().BeTrue();
+        scenario.Db.PrincipalRoleAssignments.Remove(grant);
+        await scenario.Db.SaveChangesAsync();
+        (await McpLocalDelegationPermissionMapper.AuthorizeAsync(access, user, "netratel_files", operation, 7, default)).Should().BeFalse();
+        (await scenario.InvokeAsync(operation)).Status.Should().Be(StatusCodes.Status403Forbidden);
+    }
+
+    [Theory]
+    [InlineData("collect")]
+    [InlineData("preview_collect")]
+    [InlineData("confirm_collect")]
+    public async Task Local_collect_requires_current_read_grants_without_requiring_client_write(string operation)
+    {
+        await using var scenario = new Scenario();
+        var ownerGrant = await scenario.GrantAsync(NetRatelPermissions.FileRead, 7);
+        var credential = new IntegrationCredential
+        {
+            OwnerPrincipalId = Scenario.Owner, Purpose = IntegrationCredentialPurpose.HttpMcp,
+            Resource = Scenario.Resource, ExpiresAtUtc = DateTimeOffset.UtcNow.AddHours(1),
+            Grants = [new() { TenantId = 7, Permission = NetRatelPermissions.FileRead }]
+        };
+        scenario.Db.IntegrationCredentials.Add(credential);
+        await scenario.Db.SaveChangesAsync();
+
+        (await scenario.InvokeAsync(operation, credential: credential.Id, ingress: NetRatelPermissions.FileRead))
+            .Entered.Should().BeTrue("collect only reads client data into an internal artifact");
+        (await scenario.InvokeAsync(operation, credential: credential.Id, ingress: NetRatelPermissions.FileWrite))
+            .Status.Should().Be(StatusCodes.Status401Unauthorized, "the signed ingress permission must match the operation exactly");
+        (await scenario.InvokeAsync(operation, tenant: 8, credential: credential.Id, ingress: NetRatelPermissions.FileRead))
+            .Status.Should().Be(StatusCodes.Status401Unauthorized);
+        scenario.Db.PrincipalRoleAssignments.Remove(ownerGrant);
+        await scenario.Db.SaveChangesAsync();
+        (await scenario.InvokeAsync(operation, credential: credential.Id, ingress: NetRatelPermissions.FileRead))
+            .Status.Should().Be(StatusCodes.Status401Unauthorized, "the credential cannot retain a revoked owner read grant");
+    }
+
+    [Theory]
+    [InlineData("copy")]
+    [InlineData("preview_copy")]
+    [InlineData("confirm_copy")]
+    public async Task Local_copy_requires_source_read_in_both_current_owner_and_attenuated_credential(string operation)
+    {
+        await using var scenario = new Scenario();
+        await scenario.GrantAsync(NetRatelPermissions.FileWrite, 7);
+        var ownerRead = await scenario.GrantAsync(NetRatelPermissions.FileRead, 7);
+        var credential = new IntegrationCredential
+        {
+            OwnerPrincipalId = Scenario.Owner, Purpose = IntegrationCredentialPurpose.HttpMcp,
+            Resource = Scenario.Resource, ExpiresAtUtc = DateTimeOffset.UtcNow.AddHours(1),
+            Grants = [new() { TenantId = 7, Permission = NetRatelPermissions.FileWrite },
+                new() { TenantId = 8, Permission = NetRatelPermissions.FileRead }]
+        };
+        scenario.Db.IntegrationCredentials.Add(credential);
+        await scenario.Db.SaveChangesAsync();
+
+        (await scenario.InvokeAsync(operation, credential: credential.Id, ingress: NetRatelPermissions.FileWrite))
+            .Status.Should().Be(StatusCodes.Status401Unauthorized, "a write credential cannot borrow the owner's source read grant");
+        credential.Grants.Add(new() { CredentialId = credential.Id, TenantId = 7, Permission = NetRatelPermissions.FileRead });
+        await scenario.Db.SaveChangesAsync();
+        (await scenario.InvokeAsync(operation, credential: credential.Id, ingress: NetRatelPermissions.FileWrite)).Entered.Should().BeTrue();
+        scenario.Db.PrincipalRoleAssignments.Remove(ownerRead);
+        await scenario.Db.SaveChangesAsync();
+        (await scenario.InvokeAsync(operation, credential: credential.Id, ingress: NetRatelPermissions.FileWrite))
+            .Status.Should().Be(StatusCodes.Status401Unauthorized, "both current owner permissions still constrain an issued credential");
     }
 
     [Fact]

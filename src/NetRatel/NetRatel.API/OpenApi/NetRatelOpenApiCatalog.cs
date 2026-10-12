@@ -13,6 +13,7 @@ public static class NetRatelOpenApiCatalog
 {
     private static readonly HashSet<string> DefaultAuthenticatedSchemes = ["Bearer", "LocalSession", "IntegrationCredential"];
     private static readonly HashSet<string> InteractiveAccountSchemes = ["Bearer", "LocalSession"];
+    private static readonly HashSet<string> ManagedOperationSchemes = ["Bearer", "LocalSession", "IntegrationCredential", "M2M"];
     private static readonly HashSet<string> M2MSchemes = ["M2M"];
     private static readonly HashSet<string> ManagedServiceSchemes = [ServiceIdentityAuthenticationHandler.SchemeName];
     private static readonly HashSet<string> OrchestrationSchemes = [ServiceIdentityAuthenticationHandler.SchemeName];
@@ -53,6 +54,7 @@ public static class NetRatelOpenApiCatalog
             ["CommandOperator"] = DefaultAuthenticatedSchemes,
             ["FileReader"] = DefaultAuthenticatedSchemes,
             ["FileWriter"] = DefaultAuthenticatedSchemes,
+            ["FileDeleter"] = DefaultAuthenticatedSchemes,
             ["ArtifactPublisher"] = DefaultAuthenticatedSchemes,
             ["McpOperatorPolicyAdmin"] = DefaultAuthenticatedSchemes,
             [MonitoringAuthorization.ReadPolicy] = DefaultAuthenticatedSchemes,
@@ -63,6 +65,18 @@ public static class NetRatelOpenApiCatalog
             [MonitoringAuthorization.ReadOrManagePolicy] = DefaultAuthenticatedSchemes,
             [MonitoringAuthorization.PermissionsSummaryPolicy] = DefaultAuthenticatedSchemes,
             [MonitoringAuthorization.DiscoveryPolicy] = DefaultAuthenticatedSchemes,
+
+            [ClientMetadataAuthorization.ReadPolicy] = DefaultAuthenticatedSchemes,
+            [ClientMetadataAuthorization.WritePolicy] = DefaultAuthenticatedSchemes,
+            [NetclawAuthorization.ReadPolicy] = DefaultAuthenticatedSchemes,
+            [NetclawAuthorization.ManagePolicy] = DefaultAuthenticatedSchemes,
+            [NetclawAuthorization.SecretUsePolicy] = DefaultAuthenticatedSchemes,
+            [NetclawAuthorization.ConnectionAdminPolicy] = DefaultAuthenticatedSchemes,
+            [NetclawAuthorization.DiscoveryPolicy] = DefaultAuthenticatedSchemes,
+            // M2M authenticates the relay only; verified exact-operation caller
+            // delegation and current account grants remain mandatory.
+            [ManagedOperationAuthorization.PolicyName] = ManagedOperationSchemes,
+            [McpOperatorFileAuthorization.PolicyName] = ManagedOperationSchemes,
 
             // Administrative assertions deliberately do not accept a delegated
             // integration credential, even though they use the default selector.

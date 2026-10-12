@@ -13,6 +13,15 @@ namespace NetRatel.Tests.API;
 
 public sealed class MonitoringFlowPermissionAuthorizationTests
 {
+    private static readonly string[] AccountPolicies =
+    [
+        MonitoringAuthorization.ReadPolicy, MonitoringAuthorization.ReadOrManagePolicy,
+        MonitoringAuthorization.PermissionsSummaryPolicy, MonitoringAuthorization.DiscoveryPolicy,
+        ClientMetadataAuthorization.ReadPolicy, ClientMetadataAuthorization.WritePolicy,
+        NetclawAuthorization.ReadPolicy, NetclawAuthorization.ManagePolicy, NetclawAuthorization.SecretUsePolicy,
+        NetclawAuthorization.ConnectionAdminPolicy, NetclawAuthorization.DiscoveryPolicy
+    ];
+
     public static IEnumerable<object[]> UnsupportedPrincipals()
     {
         foreach (var scenario in new[] { "M2M", "ManagedService", "System", "Agent", "MachineToken", "Test", "service_claim",
@@ -42,8 +51,7 @@ public sealed class MonitoringFlowPermissionAuthorizationTests
         await using var scope = provider.CreateAsyncScope();
         var authorization = scope.ServiceProvider.GetRequiredService<IAuthorizationService>();
         var http = Resource(principal);
-        foreach (var policy in new[] { MonitoringAuthorization.ReadPolicy, MonitoringAuthorization.ReadOrManagePolicy,
-            MonitoringAuthorization.PermissionsSummaryPolicy, MonitoringAuthorization.DiscoveryPolicy })
+        foreach (var policy in AccountPolicies)
             (await authorization.AuthorizeAsync(principal, http, policy)).Succeeded.Should().BeFalse();
     }
 
@@ -58,11 +66,12 @@ public sealed class MonitoringFlowPermissionAuthorizationTests
         await using var scope = provider.CreateAsyncScope();
         var authorization = scope.ServiceProvider.GetRequiredService<IAuthorizationService>();
         var http = Resource(principal);
-        (await authorization.AuthorizeAsync(principal, http, MonitoringAuthorization.ReadPolicy)).Succeeded.Should().BeTrue();
-        (await authorization.AuthorizeAsync(principal, http, MonitoringAuthorization.ReadOrManagePolicy)).Succeeded.Should().BeTrue();
-        (await authorization.AuthorizeAsync(principal, http, MonitoringAuthorization.DiscoveryPolicy)).Succeeded.Should().BeTrue();
         var policies = scope.ServiceProvider.GetRequiredService<IAuthorizationPolicyProvider>();
-        (await policies.GetPolicyAsync(MonitoringAuthorization.ReadPolicy))!.AuthenticationSchemes.Should().Equal("Bearer");
+        foreach (var policy in AccountPolicies)
+        {
+            (await authorization.AuthorizeAsync(principal, http, policy)).Succeeded.Should().BeTrue();
+            (await policies.GetPolicyAsync(policy))!.AuthenticationSchemes.Should().Equal("Bearer");
+        }
     }
 
     [Theory]
@@ -101,6 +110,24 @@ public sealed class MonitoringFlowPermissionAuthorizationTests
             .Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task Ai_discovery_captures_telemetry_scope_independently_of_monitoring_scope()
+    {
+        var principal = new ClaimsPrincipal(Integration("api"));
+        await using var provider = Services(new PermissiveCurrentAccess { Scope = [7] }).BuildServiceProvider();
+        await using var scope = provider.CreateAsyncScope();
+        var http = Resource(principal);
+        (await scope.ServiceProvider.GetRequiredService<IAuthorizationService>()
+            .AuthorizeAsync(principal, http, NetclawAuthorization.DiscoveryPolicy)).Succeeded.Should().BeTrue();
+
+        MonitoringFlowPermissionAuthorization.RestrictDiscoveryTenantIds(http, NetRatelPermissions.TelemetryRead, null)
+            .Should().Equal(7);
+        MonitoringFlowPermissionAuthorization.RestrictDiscoveryRows(http, NetRatelPermissions.TelemetryRead, new[] { 7, 8 }, id => id)
+            .Should().Equal(7);
+        var unrelated = () => MonitoringFlowPermissionAuthorization.RestrictDiscoveryTenantIds(http, NetRatelPermissions.MonitoringRead, null);
+        unrelated.Should().Throw<UnauthorizedAccessException>();
+    }
+
     private static ClaimsIdentity Account(string scheme, params Claim[] additional) =>
         new([new Claim("netratel_principal_id", "isolated-current-principal"), .. additional], scheme);
     private static ClaimsIdentity Integration(string purpose) => Account(IntegrationCredentialAuthenticationHandler.SchemeName,
@@ -116,7 +143,12 @@ public sealed class MonitoringFlowPermissionAuthorizationTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddAuthorization(MonitoringAuthorization.AddPolicies);
+        services.AddAuthorization(options =>
+        {
+            MonitoringAuthorization.AddPolicies(options);
+            ClientMetadataAuthorization.AddPolicies(options);
+            NetclawAuthorization.AddPolicies(options);
+        });
         services.AddSingleton(access);
         services.AddScoped<IAuthorizationHandler, EffectiveAccessHandler>();
         MonitoringFlowPermissionAuthorization.AddHandlers(services);

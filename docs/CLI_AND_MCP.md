@@ -239,10 +239,32 @@ their existing policy-root and target checks. Folder deletion does not
 recursively delete contents. Filesystem roots, approved roots, and final
 symlink/junction targets are protected from directory mutations.
 
-Browsing requires `file.read`, creation requires `file.write`, and deletion
-requires `file.delete`. The Web file browser uses these same tenant grants to
-show its New folder and Delete empty folder controls and checks client
-capabilities before offering them.
+File operations use the following canonical tenant permissions, including
+their corresponding preview and confirmation operations:
+
+| Operation | Required application permissions |
+| --- | --- |
+| Browse, stat, read, and download | `file.read` |
+| Create a folder, upload, or write | `file.write` |
+| Delete a file or empty folder | `file.delete` |
+| Collect a client file into an internal artifact | `file.read` |
+| Copy | `file.read` and `file.write` |
+| Move | `file.write` and `file.delete` |
+| Clean up an artifact | `file.delete` |
+
+Collection retains the `netratel.mcp.write` protocol scope, operation policy,
+and existing plan/confirmation requirements. Copy and move retain their
+existing source and destination root checks. The Web file browser uses the
+same tenant grants to show its New folder and Delete empty folder controls
+and checks client capabilities before offering them.
+
+For CLI and stdio, an API-purpose integration credential uses its owner's
+current file permission intersected with that credential's exact tenant grant.
+The V2 file routes additionally require a matching MCP operation policy for
+the persisted client and explicit permitted path roots. Preview and confirmation
+remain bound to the same owner, credential, tenant, client, policy, and path.
+HTTP MCP uses its existing authenticated relay and verified delegated account;
+a raw M2M service token alone cannot supply that account authority.
 
 ### Netclaw connection and AI investigations
 
@@ -326,8 +348,11 @@ An isolated stdio configuration that contains both `integrationCredential` and
 any `oidc*` value is invalid. The MCP process sends JSON-RPC only on stdout;
 diagnostics remain on stderr and never include the complete credential.
 
-For a machine-to-machine client-credentials flow, create a private file such
-as `/etc/netratel/mcp.json` with deployment-specific values:
+For a machine-to-machine client-credentials flow on endpoints that explicitly
+admit a service caller, create a private file such as `/etc/netratel/mcp.json`
+with deployment-specific values. This mode alone does not authorize the V2
+file operations or the account-bound services, monitoring, flows, and AI
+operations above; use the API-purpose credential configuration for those:
 
 ```json
 {
@@ -343,9 +368,13 @@ Protect that file with owner-only access. From an extracted Linux x64 review
 archive, launch the server with:
 
 ```sh
-NETRATEL_MCP_CONFIG=/etc/netratel/mcp.json \
+NETRATEL_MCP_CONFIG=/etc/netratel/mcp.json NETRATEL_MCP_INSTANCE=prod \
   dotnet /path/to/netratel-mcp-linux-x64/NetRatel.Mcp.dll
 ```
+
+Set `NETRATEL_MCP_INSTANCE=prod` for the production operator surface, including
+folder creation and deletion. The default `dev` selects the Development
+compatibility surface; the process does not infer this choice from the API URL.
 
 The stdio protocol is written only to standard output; operational diagnostics
 are written to standard error. Configure the MCP host to supply the file path
