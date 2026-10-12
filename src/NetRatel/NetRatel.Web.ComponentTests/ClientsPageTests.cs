@@ -312,6 +312,25 @@ public sealed class ClientsPageTests : AsyncBunitContext
         Services.GetRequiredService<NavigationManager>().Uri.Should().Contain("view=table");
     }
 
+    [Theory]
+    [InlineData("Dispatch")]
+    [InlineData("factory1")]
+    [InlineData("192.0.2.17")]
+    public void ClientsPage_searches_friendly_names_tags_and_reported_addresses(string term)
+    {
+        var factory = (StubHttpClientFactory)Services.GetRequiredService<IHttpClientFactory>();
+        factory.FriendlyName = "Dispatch Server";
+        factory.Tags = ["Prod", "Factory1"];
+        factory.ReportedAddress = "192.0.2.17";
+        var cut = RenderClientsRoute(search: term);
+
+        cut.WaitForAssertion(() =>
+        {
+            cut.FindAll(".client-card").Should().ContainSingle();
+            cut.Find(".client-card").GetAttribute("data-agent-id").Should().Be(AgentId.ToString("D"));
+        });
+    }
+
     private IRenderedComponent<IComponent> RenderClientsRoute(string? search = null, string? view = null)
     {
         var query = new List<string>();
@@ -343,6 +362,9 @@ public sealed class ClientsPageTests : AsyncBunitContext
         public bool BlockTelemetryRequest { get; set; }
         public string? TelemetryResponseJson { get; set; }
         public double? LatencyMilliseconds { get; set; }
+        public string? FriendlyName { get; set; }
+        public IReadOnlyList<string>? Tags { get; set; }
+        public string? ReportedAddress { get; set; }
         public TaskCompletionSource TelemetryRequestStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public HttpClient CreateClient(string name) => new(new StubHandler(this))
@@ -455,7 +477,8 @@ public sealed class ClientsPageTests : AsyncBunitContext
                         new GatewayTerminalCapabilityDto(true, ["bash", "sh"], true, null, DateTimeOffset.UtcNow), "NetRatel",
                         LatencyMilliseconds: factory.LatencyMilliseconds,
                         LatencyMeasuredAtUtc: factory.LatencyMilliseconds.HasValue ? DateTimeOffset.UtcNow.AddSeconds(-15) : null,
-                        LatencyExpiresAtUtc: factory.LatencyMilliseconds.HasValue ? DateTimeOffset.UtcNow.AddSeconds(35) : null),
+                        LatencyExpiresAtUtc: factory.LatencyMilliseconds.HasValue ? DateTimeOffset.UtcNow.AddSeconds(35) : null,
+                        ReportedAddress: factory.ReportedAddress, Tags: factory.Tags, FriendlyName: factory.FriendlyName),
                     new ClientPresenceDto("gateway:3:offline", 3, Guid.Parse("99f5a0b0-5e61-4039-8d09-6c9d44c7c100"), "registered-offline-agent", null, "Linux", "x64", false, true,
                         null, null, [], "gateway", "unobserved", false, 12, null, "NetRatel")
                 ]),

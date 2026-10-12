@@ -10,6 +10,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<BootstrapInitializationRecord> BootstrapInitializations => Set<BootstrapInitializationRecord>();
     public DbSet<EnrollmentCode> EnrollmentCodes => Set<EnrollmentCode>();
     public DbSet<Agent> Agents => Set<Agent>();
+    public DbSet<ClientOffboardingOperation> ClientOffboardingOperations => Set<ClientOffboardingOperation>();
     public DbSet<DevelopmentOperatorTargetGrant> DevelopmentOperatorTargetGrants => Set<DevelopmentOperatorTargetGrant>();
     public DbSet<DevelopmentOperatorAcceptedAuditRecord> DevelopmentOperatorAcceptedAudits => Set<DevelopmentOperatorAcceptedAuditRecord>();
     public DbSet<McpOperatorPolicyRecord> McpOperatorPolicies => Set<McpOperatorPolicyRecord>();
@@ -190,6 +191,8 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entity.ToTable("Agents");
             entity.HasKey(x => x.Id);
             entity.HasQueryFilter(x => x.SupersededAtUtc == null && x.DeletedAtUtc == null);
+            entity.Property(x => x.FriendlyName).HasMaxLength(128);
+            entity.Property(x => x.Tags).HasColumnType("text[]").HasDefaultValue(Array.Empty<string>());
             entity.Property(x => x.Status).HasConversion<short>();
             entity.Property(x => x.IsEnabled).HasDefaultValue(true);
             entity.Property(x => x.KeyAlgorithm).HasDefaultValue("ecdsa-p256");
@@ -213,6 +216,24 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
                 .HasDatabaseName("IX_Agents_GlobalSearch_DeviceInfoJson_trgm")
                 .HasMethod("gin")
                 .HasOperators("gin_trgm_ops");
+        });
+
+        modelBuilder.Entity<ClientOffboardingOperation>(entity =>
+        {
+            entity.ToTable("ClientOffboardingOperations");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.State).HasConversion<short>();
+            entity.Property(x => x.RequestedBy).HasMaxLength(256);
+            entity.Property(x => x.Reason).HasMaxLength(256);
+            entity.Property(x => x.ExpectedKeyFingerprint).HasMaxLength(64);
+            entity.Property(x => x.CompletionTokenHash).HasMaxLength(64);
+            entity.Property(x => x.ProtectedCompletionToken).HasMaxLength(2048);
+            entity.Property(x => x.FailureCode).HasMaxLength(128);
+            entity.Property(x => x.ReceiptHash).HasMaxLength(64);
+            entity.HasIndex(x => new { x.TenantId, x.AgentId, x.CreatedAtUtc });
+            entity.HasIndex(x => new { x.TenantId, x.AgentId }).IsUnique()
+                .HasFilter("\"FinishedAtUtc\" IS NULL");
+            entity.HasOne<Agent>().WithMany().HasForeignKey(x => x.AgentId).OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<DevelopmentOperatorTargetGrant>(entity =>

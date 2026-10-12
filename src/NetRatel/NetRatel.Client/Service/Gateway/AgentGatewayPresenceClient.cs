@@ -7,6 +7,7 @@ using NetRatel.Application.ClientAuth;
 using NetRatel.Application.Events;
 using NetRatel.Client.Service.Updates;
 using NetRatel.Client.Service.Auth;
+using NetRatel.Client.Service.Offboarding;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -45,7 +46,8 @@ public sealed class AgentGatewayPresenceClient(
     Func<CancellationToken, Task<(string AccessToken, DateTimeOffset ExpiresAtUtc)>>? acquireToken = null,
     Func<string, int?>? resolveTenantId = null,
     Func<CancellationToken, Task<Guid>>? resolveAgentId = null,
-    Guid? pendingUpdateAttemptId = null)
+    Guid? pendingUpdateAttemptId = null,
+    bool supportsUninstall = false)
 {
     private static readonly TimeSpan DefaultExtensionShutdownTimeout = TimeSpan.FromSeconds(5);
     private readonly TimeSpan _extensionShutdownTimeout = ResolveExtensionShutdownTimeout(extensionShutdownTimeout);
@@ -313,6 +315,7 @@ public sealed class AgentGatewayPresenceClient(
             hello.Capabilities.Add("presence");
             hello.Capabilities.Add("heartbeat-latency");
             hello.Capabilities.Add("presence-auth-renewal-v1");
+            if (supportsUninstall) hello.Capabilities.Add(ClientOffboardingCoordinator.Capability);
             // Retain this legacy wire token verbatim; telemetry itself now uses the V2 stream.
             hello.Capabilities.Add("telemetry-shadow");
             hello.Capabilities.Add("file-gateway");

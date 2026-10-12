@@ -27,7 +27,11 @@ public sealed record ClientPresenceDto(
     GatewayFileCapabilityDto? File = null,
     double? LatencyMilliseconds = null,
     DateTimeOffset? LatencyMeasuredAtUtc = null,
-    DateTimeOffset? LatencyExpiresAtUtc = null);
+    DateTimeOffset? LatencyExpiresAtUtc = null,
+    string? ReportedAddress = null,
+    IReadOnlyList<string>? Tags = null,
+    string? FriendlyName = null,
+    bool CanManage = false);
 
 public sealed record GatewayTerminalCapabilityDto(
     bool Supported,

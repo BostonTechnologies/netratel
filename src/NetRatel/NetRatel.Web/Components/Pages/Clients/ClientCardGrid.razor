@@ -40,17 +40,33 @@
 
                         <CardHeaderContent>
                             <div class="client-header-content">
+                                @if (client.HasFriendlyName || client.DisplayTags.Count > 0)
+                                {
+                                    <div class="client-labels" data-testid="client-labels">
+                                        @if (client.HasFriendlyName)
+                                        {
+                                            <MudText Typo="Typo.h6" Class="client-friendly-name" title="@client.FriendlyName">@client.FriendlyName</MudText>
+                                        }
+                                        @if (client.DisplayTags.Count > 0)
+                                        {
+                                            <div class="client-tags" aria-label="Client tags">
+                                                @foreach (var tag in client.DisplayTags)
+                                                {
+                                                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" title="@tag">@tag</MudChip>
+                                                }
+                                            </div>
+                                        }
+                                    </div>
+                                }
                                 <div class="client-title-row">
-                                    <MudText Typo="Typo.h6" Class="client-title" title="@client.DisplayName">@client.DisplayName</MudText>
+                                    <div class="client-host-row">
+                                        <span class="client-host client-title" title="@hostLabel">@hostLabel</span>
+                                        <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small" OnClick="@(() => CopyHostAsync(client))" aria-label="Copy host" />
+                                    </div>
                                     <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined"
                                              Color="@(client.Online ? Color.Success : Color.Default)">
                                         @(client.Online ? "Online" : "Offline")
                                     </MudChip>
-                                </div>
-
-                                <div class="client-host-row">
-                                    <span class="client-host" title="@hostLabel">@hostLabel</span>
-                                    <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small" OnClick="@(() => CopyHostAsync(client))" aria-label="Copy host" />
                                 </div>
 
                                 <div class="client-meta-grid" data-testid="client-meta-grid">
@@ -129,6 +145,20 @@
                                     </MudTooltip>
                                     <ClientServicesLauncher @key="(client.TenantId, client.AgentId)" TenantId="@client.TenantId" AgentId="@client.AgentId"
                                                             HostLabel="@(client.HostName ?? client.DisplayName)" TenantLabel="@client.TenantName" />
+                                    @if (client.CanManage)
+                                    {
+                                        <MudTooltip Text="Edit name and tags">
+                                            <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small"
+                                                           OnClick="@(() => EditAsync(client))" aria-label="Edit client" />
+                                        </MudTooltip>
+                                        @if (RemoveRequested.HasDelegate)
+                                        {
+                                            <MudTooltip Text="Remove or offboard client">
+                                                <MudIconButton Icon="@Icons.Material.Filled.DeleteOutline" Size="Size.Small" Color="Color.Error"
+                                                               OnClick="@(() => RemoveRequested.InvokeAsync(client))" aria-label="Remove client" />
+                                            </MudTooltip>
+                                        }
+                                    }
                                 </div>
                             </div>
                         </CardHeaderContent>
@@ -142,7 +172,7 @@
                                     <MudIcon Icon="@Icons.Material.Filled.Language" Size="Size.Small" Color="Color.Info" />
                                     <span class="client-connectivity-label">IP Address</span>
                                 </MudStack>
-                                <span class="client-connectivity-value">n/a</span>
+                                <span class="client-connectivity-value" data-testid="client-ip-address" title="@client.ReportedAddress">@(client.ReportedAddress ?? "Not reported")</span>
                             </div>
                             <div class="client-connectivity-item client-connectivity-item-split">
                                 <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
@@ -198,6 +228,16 @@
 @code {
     [Parameter, EditorRequired] public IReadOnlyList<ClientPresentationModel> Clients { get; set; } = [];
     [Parameter] public EventCallback RefreshRequested { get; set; }
+    [Parameter] public EventCallback<ClientPresentationModel> RemoveRequested { get; set; }
+
+    private async Task EditAsync(ClientPresentationModel client)
+    {
+        if (!client.CanManage) return;
+        var parameters = new DialogParameters<ClientMetadataDialog> { { dialog => dialog.Client, client } };
+        var dialog = await DialogService.ShowAsync<ClientMetadataDialog>("Edit client", parameters,
+            new DialogOptions { FullWidth = true, MaxWidth = MaxWidth.Small, CloseOnEscapeKey = true, CloseButton = true });
+        if (await dialog.Result is { Canceled: false }) await RefreshRequested.InvokeAsync();
+    }
 
     private static string GetInitials(string name) => string.IsNullOrWhiteSpace(name)
         ? "?"

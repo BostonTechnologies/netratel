@@ -62,7 +62,8 @@ public sealed class ClientPresentationService(
                 client.TenantId,
                 client.AgentId,
                 client.DisplayName,
-                client.HostName ?? client.DisplayName,
+                !string.IsNullOrWhiteSpace(client.HostName) ? client.HostName :
+                    string.IsNullOrWhiteSpace(client.FriendlyName) ? client.DisplayName : "Hostname not reported",
                 client.TenantName ?? $"Tenant {client.TenantId}",
                 client.OperatingSystem,
                 client.Architecture,
@@ -76,7 +77,11 @@ public sealed class ClientPresentationService(
                 client.File,
                 client.LatencyMilliseconds,
                 client.LatencyMeasuredAtUtc,
-                client.LatencyExpiresAtUtc))
+                client.LatencyExpiresAtUtc,
+                client.ReportedAddress,
+                client.Tags,
+                client.FriendlyName,
+                client.CanManage))
             .OrderBy(client => client.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(client => client.TenantId)
             .ThenBy(client => client.AgentId)

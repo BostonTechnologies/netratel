@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using NetRatel.API.Gateway;
 using NetRatel.API.Services.AgentDirectory;
 using NetRatel.Application.Presence;
+using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts;
 
@@ -37,6 +38,7 @@ public static class ClientPresenceReadEndpoints
             [FromServices] IAgentTerminalSessionRegistry terminals,
             [FromServices] IAgentFileGatewaySessionRegistry files,
             [FromServices] OrchestratorDbContext db,
+            [FromServices] IEffectiveAccessService access,
             [FromServices] ILoggerFactory loggerFactory,
             HttpContext httpContext,
             CancellationToken ct) =>
@@ -60,6 +62,8 @@ public static class ClientPresenceReadEndpoints
                                  agent.TenantId,
                                  agent.Id,
                                  agent.Name,
+                                 agent.FriendlyName,
+                                 agent.Tags,
                                  agent.IsEnabled,
                                  agent.DeviceInfoJson,
                                  TenantName = tenant.Name
@@ -75,7 +79,9 @@ public static class ClientPresenceReadEndpoints
                     var pattern = $"%{EscapeLikePattern(term)}%";
                     // DeviceInfoJson is parsed and unescaped after paging; raw SQL text matching can omit a real host/OS match.
                     agents = agents.Where(agent =>
+                        (agent.FriendlyName != null && EF.Functions.ILike(agent.FriendlyName, pattern, "\\")) ||
                         (agent.Name != null && EF.Functions.ILike(agent.Name, pattern, "\\")) ||
+                        agent.Tags.Any(tag => EF.Functions.ILike(tag, pattern, "\\")) ||
                         agent.DeviceInfoJson != null ||
                         EF.Functions.ILike("Agent-" + agent.Id.ToString().Substring(0, 8), pattern, "\\") ||
                         EF.Functions.ILike(agent.Id.ToString(), pattern, "\\"));
@@ -83,6 +89,7 @@ public static class ClientPresenceReadEndpoints
 
                 const int batchSize = 100;
                 var matches = new List<ClientPresenceDto>(boundedLimit);
+                var managementByTenant = new Dictionary<int, bool>();
                 var offset = 0;
                 while (matches.Count < boundedLimit)
                 {
@@ -108,7 +115,9 @@ public static class ClientPresenceReadEndpoints
                             row.Name,
                             row.IsEnabled,
                             row.DeviceInfoJson,
-                            row.TenantName);
+                            row.TenantName,
+                            row.Tags,
+                            row.FriendlyName);
                         // The physical projection supplies optional latency only. Shared committed
                         // ownership supplies the current status and exact transport fence.
                         var current = await presence.GetSnapshotAsync(
@@ -117,7 +126,13 @@ public static class ClientPresenceReadEndpoints
                             timeProvider.GetUtcNow());
                         if ((!online.HasValue || item.Online == online.Value) && Matches(item, search))
                         {
-                            matches.Add(item);
+                            if (!managementByTenant.TryGetValue(item.TenantId, out var canManage))
+                            {
+                                canManage = await access.AuthorizeAsync(httpContext.User, NetRatelPermissions.ClientManagement,
+                                    item.TenantId, ct).ConfigureAwait(false);
+                                managementByTenant.Add(item.TenantId, canManage);
+                            }
+                            matches.Add(item with { CanManage = canManage });
                             if (matches.Count == boundedLimit)
                             {
                                 break;
@@ -210,7 +225,10 @@ public static class ClientPresenceReadEndpoints
             File: file,
             LatencyMilliseconds: latencyMatches ? physical!.LatencyMilliseconds : null,
             LatencyMeasuredAtUtc: latencyMatches ? physical!.LatencyMeasuredAtUtc : null,
-            LatencyExpiresAtUtc: latencyMatches ? physical!.LatencyExpiresAtUtc : null);
+            LatencyExpiresAtUtc: latencyMatches ? physical!.LatencyExpiresAtUtc : null,
+            ReportedAddress: agent.ReportedAddress,
+            Tags: agent.Tags,
+            FriendlyName: agent.FriendlyName);
     }
 
     internal static GatewayTerminalCapabilityDto MapTerminal(
@@ -286,6 +304,8 @@ public static class ClientPresenceReadEndpoints
         var term = search.Trim();
         return Contains(item.DisplayName, term) ||
                Contains(item.HostName, term) ||
+               Contains(item.ReportedAddress, term) ||
+               item.Tags?.Any(tag => Contains(tag, term)) == true ||
                Contains(item.OperatingSystem, term) ||
                item.AgentId.ToString("D").Contains(term, StringComparison.OrdinalIgnoreCase);
     }

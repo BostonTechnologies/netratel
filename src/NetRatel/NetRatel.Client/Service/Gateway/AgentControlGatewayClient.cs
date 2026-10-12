@@ -2,6 +2,7 @@ using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Grpc.Net.Client;
 using NetRatel.AgentGateway.Contracts.V1;
+using NetRatel.Client.Service.Offboarding;
 using System;
 using System.IO;
 using System.Net.Http;
@@ -16,7 +17,8 @@ namespace NetRatel.Client.Service.Gateway;
 /// </summary>
 public sealed class AgentControlGatewayClient(
     GatewayClientOptions options,
-    Action<string> log)
+    Action<string> log,
+    ClientOffboardingCoordinator? offboarding = null)
 {
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromSeconds(30);
@@ -65,6 +67,8 @@ public sealed class AgentControlGatewayClient(
         using var call = client.Connect(headers, cancellationToken: stoppingToken);
         try
         {
+            var hello = new AgentControlHello { Capabilities = { "ping" } };
+            if (offboarding is not null) hello.Capabilities.Add(ClientOffboardingCoordinator.Capability);
             await call.RequestStream.WriteAsync(new AgentControlFrame
             {
                 ProtocolVersion = options.ProtocolVersion,
@@ -73,7 +77,7 @@ public sealed class AgentControlGatewayClient(
                 ConnectionEpoch = session.ConnectionEpoch,
                 ConnectionId = session.ConnectionId.ToString("D"),
                 Sequence = 0,
-                Hello = new AgentControlHello { Capabilities = { "ping" } }
+                Hello = hello
             }).ConfigureAwait(false);
 
             if (!await call.ResponseStream.MoveNext(stoppingToken).ConfigureAwait(false) ||
@@ -86,10 +90,28 @@ public sealed class AgentControlGatewayClient(
             log($"Control gateway admitted. authority={call.ResponseStream.Current.Accepted.ControlAuthority}.");
 
             ulong sequence = 0;
+            ulong lastInboundSequence = 0;
             while (await call.ResponseStream.MoveNext(stoppingToken).ConfigureAwait(false))
             {
                 var request = call.ResponseStream.Current;
-                ValidateRequest(request, session);
+                ValidateRequest(request, session, lastInboundSequence);
+                lastInboundSequence = request.Sequence;
+                if (request.PayloadCase == GatewayControlFrame.PayloadOneofCase.UninstallRequest)
+                {
+                    var acknowledgement = offboarding is null
+                        ? new UninstallAcknowledgement { OperationId = request.UninstallRequest.OperationId, FailureCode = "uninstall_not_supported" }
+                        : await offboarding.PrepareAsync(session, request.UninstallRequest, stoppingToken).ConfigureAwait(false);
+                    await call.RequestStream.WriteAsync(new AgentControlFrame
+                    {
+                        ProtocolVersion = options.ProtocolVersion, TenantId = session.TenantId,
+                        ClientId = session.AgentId.ToString("D"), ConnectionEpoch = session.ConnectionEpoch,
+                        ConnectionId = session.ConnectionId.ToString("D"), Sequence = checked(++sequence),
+                        UninstallAcknowledgement = acknowledgement
+                    }, stoppingToken).ConfigureAwait(false);
+                    if (acknowledgement.Accepted && offboarding is not null)
+                        await offboarding.StartPreparedAsync(acknowledgement.OperationId, stoppingToken).ConfigureAwait(false);
+                    continue;
+                }
                 if (request.PayloadCase != GatewayControlFrame.PayloadOneofCase.PingRequest)
                 {
                     throw new RpcException(new Status(StatusCode.DataLoss, "Control gateway returned an unsupported frame."));
@@ -120,15 +142,19 @@ public sealed class AgentControlGatewayClient(
         }
         finally
         {
-            try
-            {
-                await call.RequestStream.CompleteAsync().ConfigureAwait(false);
-            }
-            catch (RpcException)
-            {
-                // The server already closed the stream.
-            }
+            if (!await TryCompleteStreamAsync(call.RequestStream).ConfigureAwait(false))
+                log("Control gateway stream was already closed during cleanup.");
         }
+    }
+
+    private static async Task<bool> TryCompleteStreamAsync(IClientStreamWriter<AgentControlFrame> stream)
+    {
+        try
+        {
+            await stream.CompleteAsync().ConfigureAwait(false);
+            return true;
+        }
+        catch (RpcException) { return false; }
     }
 
     private void ValidateAccepted(GatewayControlFrame frame, GatewayPresenceSession session)
@@ -145,14 +171,14 @@ public sealed class AgentControlGatewayClient(
         }
     }
 
-    private void ValidateRequest(GatewayControlFrame frame, GatewayPresenceSession session)
+    internal void ValidateRequest(GatewayControlFrame frame, GatewayPresenceSession session, ulong lastInboundSequence)
     {
         if (!string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) ||
             frame.TenantId != session.TenantId ||
             !string.Equals(frame.ClientId, session.AgentId.ToString("D"), StringComparison.OrdinalIgnoreCase) ||
             frame.ConnectionEpoch != session.ConnectionEpoch ||
             !string.Equals(frame.ConnectionId, session.ConnectionId.ToString("D"), StringComparison.OrdinalIgnoreCase) ||
-            frame.Sequence == 0)
+            frame.Sequence <= lastInboundSequence)
         {
             throw new RpcException(new Status(StatusCode.DataLoss, "Control gateway returned a frame for another presence session."));
         }

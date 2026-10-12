@@ -78,6 +78,40 @@ public sealed class ClientCardGridTests : AsyncBunitContext
         cut.Find("[data-testid='client-latency']").Should().NotBeNull();
     }
 
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData(" HV01 ", false)]
+    [InlineData("Dispatch Server", true)]
+    public void Card_renders_hostname_once_and_only_a_distinct_friendly_name(string? friendlyName, bool showFriendlyName)
+    {
+        var client = new ClientPresentationModel(3, AgentId, friendlyName ?? "hv01", "hv01", "Tenant", "Linux", "x64",
+            false, true, null, null, [], null, null, ReportedAddress: "192.0.2.17", Tags: ["Prod", "Factory1"], FriendlyName: friendlyName);
+        var cut = Render<ClientCardGrid>(parameters => parameters.Add(component => component.Clients, [client]));
+
+        cut.Find(".client-header-content").TextContent.Split("hv01", StringSplitOptions.None).Should().HaveCount(2);
+        cut.FindAll(".client-friendly-name").Should().HaveCount(showFriendlyName ? 1 : 0);
+        cut.Find(".client-tags").TextContent.Should().Contain("Prod").And.Contain("Factory1");
+        cut.Find("[data-testid='client-ip-address']").TextContent.Should().Be("192.0.2.17");
+        cut.FindAll("button[aria-label='Edit client']").Should().BeEmpty();
+        cut.FindAll("button[aria-label='Remove client']").Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Table_shows_edit_and_remove_for_an_offline_manager_and_does_not_duplicate_an_unlabelled_host()
+    {
+        ClientPresentationModel? removed = null;
+        var client = new ClientPresentationModel(3, AgentId, "hv01", "hv01", "Tenant", "Linux", "x64",
+            false, true, null, null, [], null, null, ReportedAddress: "2001:db8::17", CanManage: true);
+        var cut = Render<ClientGridView>(parameters => parameters.Add(component => component.Clients, [client])
+            .Add(component => component.RemoveRequested, (ClientPresentationModel selected) => removed = selected));
+
+        cut.Find("tbody").TextContent.Split("hv01", StringSplitOptions.None).Should().HaveCount(2);
+        cut.Find("button[aria-label='Edit client']").HasAttribute("disabled").Should().BeFalse();
+        cut.Find("button[aria-label='Remove client']").Click();
+        removed.Should().BeSameAs(client);
+        cut.Find("[data-testid='client-ip-address']").TextContent.Should().Be("2001:db8::17");
+    }
+
     private IRenderedComponent<ClientCardGrid> RenderGrid(bool online, IReadOnlyList<string> capabilities, GatewayTerminalCapabilityDto terminal) =>
         Render<ClientCardGrid>(parameters => parameters
             .Add(component => component.Clients,

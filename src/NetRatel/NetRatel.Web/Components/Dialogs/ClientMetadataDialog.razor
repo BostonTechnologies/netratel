@@ -1,0 +1,147 @@
+@using System.Net
+@using NetRatel.Shared.Contracts
+@using NetRatel.Web.Models.Clients
+@using NetRatel.Web.Services.Clients
+@using NetRatel.Web.Services.Authentication
+@implements IDisposable
+@inject IClientMetadataApiService MetadataApi
+@inject ILogger<ClientMetadataDialog> Logger
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="3" Class="client-metadata-editor" data-testid="client-metadata-editor">
+            @if (_loading)
+            {
+                <MudProgressLinear Indeterminate="true" aria-label="Loading client labels" />
+            }
+            @if (_error is not null)
+            {
+                <MudAlert Severity="Severity.Error" Dense="true" data-testid="client-metadata-error">@_error</MudAlert>
+            }
+            <MudTextField T="string" Value="_hostName" Label="Hostname" ReadOnly="true" Variant="Variant.Outlined"
+                          Placeholder="Not reported" HelperText="Reported by the client."
+                          data-testid="client-metadata-hostname" />
+            <MudTextField T="string" Value="_friendlyName" ValueChanged="FriendlyNameChanged" Label="Friendly name"
+                          Placeholder="Dispatch Server" Variant="Variant.Outlined" Immediate="true" Clearable="true"
+                          MaxLength="ClientMetadataValidation.MaximumNameLength" Disabled="@(!_available || _saving)"
+                          HelperText="Optional. Leave empty to show only the hostname."
+                          data-testid="client-metadata-name" />
+            <MudTextField T="string" Value="_tagsText" ValueChanged="TagsChanged" Label="Tags" Variant="Variant.Outlined"
+                          Placeholder="Prod, Factory1" Immediate="true" Clearable="true" Disabled="@(!_available || _saving)"
+                          MaxLength="@(ClientMetadataValidation.MaximumTags * (ClientMetadataValidation.MaximumTagLength + 2))"
+                          HelperText="Separate tags with commas."
+                          data-testid="client-metadata-tags" />
+            @if (_previewTags.Count > 0)
+            {
+                <div class="client-tags" aria-label="Tag preview" data-testid="client-metadata-tag-preview">
+                    @foreach (var tag in _previewTags)
+                    {
+                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@tag</MudChip>
+                    }
+                </div>
+            }
+            @if (_validationError is not null)
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true" data-testid="client-metadata-validation">@_validationError</MudAlert>
+            }
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel" Disabled="_saving" data-testid="client-metadata-cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SaveAsync"
+                   Disabled="@(!_available || _saving || _validationError is not null)" data-testid="client-metadata-save">
+            @(_saving ? "Saving…" : "Save")
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter, EditorRequired] public ClientPresentationModel Client { get; set; } = default!;
+    [CascadingParameter] private IMudDialogInstance? Dialog { get; set; }
+    private readonly CancellationTokenSource _lifetime = new();
+    private string? _hostName;
+    private string? _friendlyName;
+    private string? _tagsText;
+    private IReadOnlyList<string> _previewTags = [];
+    private string? _error;
+    private string? _validationError;
+    private bool _loading = true;
+    private bool _available;
+    private bool _saving;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _hostName = Client.HostName;
+        try
+        {
+            var metadata = await MetadataApi.GetAsync(Client.TenantId, Client.AgentId, _lifetime.Token);
+            if (metadata is null)
+            {
+                _error = "This client has been removed or is no longer available.";
+                return;
+            }
+            _hostName = metadata.HostName;
+            _friendlyName = metadata.FriendlyName;
+            _tagsText = string.Join(", ", metadata.Tags);
+            _available = true;
+            ValidateInputs();
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
+        catch (Exception exception)
+        {
+            Logger.LogWarning(exception, "Could not read labels for tenant {TenantId}, agent {AgentId}.", Client.TenantId, Client.AgentId);
+            _error = FailureMessage(exception, saving: false);
+        }
+        finally { _loading = false; }
+    }
+
+    private void FriendlyNameChanged(string? value) { _friendlyName = value; ValidateInputs(); }
+    private void TagsChanged(string? value) { _tagsText = value; ValidateInputs(); }
+
+    private UpdateClientMetadataRequest Draft() => new(_friendlyName,
+        (_tagsText ?? string.Empty).Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries));
+
+    private void ValidateInputs()
+    {
+        _previewTags = ClientMetadataValidation.TryNormalize(Draft(), out var normalized, out _validationError)
+            ? normalized.Tags! : [];
+    }
+
+    private async Task SaveAsync()
+    {
+        if (!_available || _saving || !ClientMetadataValidation.TryNormalize(Draft(), out var normalized, out _validationError)) return;
+        _saving = true;
+        _error = null;
+        try
+        {
+            var metadata = await MetadataApi.UpdateAsync(Client.TenantId, Client.AgentId, normalized, _lifetime.Token);
+            Dialog?.Close(DialogResult.Ok(metadata));
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
+        catch (Exception exception)
+        {
+            Logger.LogWarning(exception, "Could not save labels for tenant {TenantId}, agent {AgentId}.", Client.TenantId, Client.AgentId);
+            _error = FailureMessage(exception, saving: true);
+        }
+        finally { _saving = false; }
+    }
+
+    private static string FailureMessage(Exception exception, bool saving) => exception switch
+    {
+        ReauthRequiredException => "Sign in again to edit this client.",
+        HttpRequestException { StatusCode: HttpStatusCode.Unauthorized } => "Sign in again to edit this client.",
+        HttpRequestException { StatusCode: HttpStatusCode.Forbidden } => "You do not have permission to manage this client's tenant.",
+        HttpRequestException { StatusCode: HttpStatusCode.NotFound } => "This client has been removed or is no longer available.",
+        HttpRequestException { StatusCode: HttpStatusCode.BadRequest } => "The labels were rejected. Check the name and tags, then save again.",
+        OperationCanceledException => "The request timed out. Try again.",
+        _ => saving ? "The labels could not be saved. Try again." : "The client labels could not be loaded. Close the editor and try again."
+    };
+
+    private void Cancel() => Dialog?.Cancel();
+
+    public void Dispose()
+    {
+        _lifetime.Cancel();
+        _lifetime.Dispose();
+    }
+}

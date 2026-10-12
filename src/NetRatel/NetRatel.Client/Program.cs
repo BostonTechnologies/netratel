@@ -7,6 +7,7 @@ using NetRatel.Client.Service;
 using NetRatel.Client.Service.Auth;
 using NetRatel.Client.Service.Gateway;
 using NetRatel.Client.Service.Logging;
+using NetRatel.Client.Service.Offboarding;
 using NetRatel.Client.Service.RemoteDesktop;
 using NetRatel.Client.Service.RemoteSupport;
 using NetRatel.Client.Service.Tasks;
@@ -56,6 +57,13 @@ async Task RunClientAsync(CancellationToken nativeStopping)
     if (cliArgs.Any(a => string.Equals(a, "--version", StringComparison.OrdinalIgnoreCase)))
     {
         Console.WriteLine(GetAgentVersion());
+        return;
+    }
+
+    if (cliArgs.Any(a => string.Equals(a, ClientOffboardingHelper.Command, StringComparison.Ordinal)))
+    {
+        Environment.ExitCode = cliArgs.Length == 2 && cliArgs[0] == ClientOffboardingHelper.Command
+            ? await ClientOffboardingHelper.RunAsync(cliArgs[1], nativeStopping).ConfigureAwait(false) : 2;
         return;
     }
 
@@ -408,9 +416,6 @@ async Task RunClientAsync(CancellationToken nativeStopping)
         gatewayOptions,
         GetAgentVersion(),
         message => LogManager.WriteLog($"[Gateway] {message}"));
-    var controlGateway = new AgentControlGatewayClient(
-        gatewayOptions,
-        message => LogManager.WriteLog($"[Gateway] {message}"));
     var fileGateway = new AgentFileGatewayClient(
         gatewayOptions,
         new FileSystemService(),
@@ -436,6 +441,12 @@ async Task RunClientAsync(CancellationToken nativeStopping)
         GetAgentVersion(),
         tokenService,
         rootProvider.GetRequiredService<IHttpClientFactory>().CreateClient("AgentAuthApi"));
+    if (ClientOffboardingCoordinator.HasPendingUninstall) await updateCoordinator.DisposeAsync().ConfigureAwait(false);
+    var offboarding = await ClientOffboardingCoordinator.TryCreateAsync(cfg, gatewayOptions, credentialStore,
+        rootProvider.GetRequiredService<IAgentDeviceKeyStore>(), updateCoordinator,
+        message => LogManager.WriteLog($"[Offboarding] {message}"), applicationStopping.Token).ConfigureAwait(false);
+    var controlGateway = new AgentControlGatewayClient(gatewayOptions,
+        message => LogManager.WriteLog($"[Gateway] {message}"), offboarding);
     var gatewayExtensionSupervisor = new GatewayPresenceExtensionSupervisor(
         message => LogManager.WriteLog($"[Gateway] {message}"));
     var gatewayClient = new AgentGatewayPresenceClient(
@@ -474,7 +485,8 @@ async Task RunClientAsync(CancellationToken nativeStopping)
             return currentCredentials is { } current && Guid.TryParse(current.AgentId, out var currentAgentId)
                 ? currentAgentId : throw new InvalidOperationException("The enrolled agent ID is invalid.");
         },
-        pendingUpdateAttemptId: updateCoordinator.ReadPendingActivation(DateTimeOffset.UtcNow)?.AttemptId);
+        pendingUpdateAttemptId: updateCoordinator.ReadPendingActivation(DateTimeOffset.UtcNow)?.AttemptId,
+        supportsUninstall: offboarding is not null);
     await gatewayClient.RunAsync(applicationStopping.Token).ConfigureAwait(false);
     return;
 }
@@ -1938,6 +1950,7 @@ public sealed class NetRatelWindowsServiceHost : ServiceBase
         "-h",
         "/?",
         "--version",
+        ClientOffboardingHelper.Command,
         RemoteDesktopUserHelperConstants.RegistrationCommand,
         "--remote-desktop-user-helper",
         "--remote-desktop-diagnostics",

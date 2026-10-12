@@ -89,6 +89,8 @@ builder.Services.AddScoped<ScriptApiService>();
 builder.Services.AddScoped<ClientApiService>();
 builder.Services.AddScoped<ClientPresenceApiService>();
 builder.Services.AddScoped<ClientPresentationService>();
+builder.Services.AddScoped<IClientMetadataApiService, ClientMetadataApiService>();
+builder.Services.AddScoped<IClientOffboardingApiService, ClientOffboardingApiService>();
 builder.Services.AddScoped<GatewayClientActionApiService>();
 builder.Services.AddScoped<IGatewayLogApiService, GatewayLogApiService>();
 builder.Services.AddScoped<IGatewayLogLiveStreamService, GatewayLogLiveStreamService>();

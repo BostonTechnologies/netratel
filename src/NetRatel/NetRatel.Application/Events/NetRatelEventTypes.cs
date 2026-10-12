@@ -59,6 +59,7 @@ public static class NetRatelEventTypes
     public static class Agent
     {
         public const string Registered = "DomainEvent.Orchestration.Agent.Registered";
+        public const string MetadataUpdated = "DomainEvent.Orchestration.Agent.MetadataUpdated";
         public const string IdentityRecovered = "DomainEvent.Orchestration.Agent.IdentityRecovered";
         public const string Superseded = "DomainEvent.Orchestration.Agent.Superseded";
         public const string Connected = "DomainEvent.Orchestration.Agent.Connected";

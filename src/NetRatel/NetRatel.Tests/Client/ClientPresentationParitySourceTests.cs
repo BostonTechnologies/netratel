@@ -45,7 +45,7 @@ public sealed class ClientPresentationParitySourceTests
         source.Should().ContainAll(
             ".client-card-grid-shell .client-grid .mud-grid-item",
             ".client-card-grid-shell .client-card.mud-card",
-            "height: 500px !important",
+            "min-height: 500px",
             ".client-card-grid-shell .client-meta-label",
             "grid-template-columns: auto minmax(0, 1fr)",
             ".client-card-grid-shell .telemetry-split-grid",

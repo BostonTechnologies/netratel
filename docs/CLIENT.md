@@ -21,6 +21,99 @@ them between machines or use an operator OIDC credential in their place. A
 Client that has not enrolled exits rather than starting an unauthenticated
 service.
 
+## Client labels and offboarding
+
+On **Clients**, the compact **Edit client** action beside Services edits the
+friendly name and comma-separated tags. For example, set `Dispatch Server`
+with `Prod, Factory1`. The reported hostname remains read-only and appears
+once; an empty friendly name, or one equal to the hostname, does not add a
+second name. Tags can appear without a friendly name. Names are limited to
+128 characters, with up to 20 tags of 48 characters each; surrounding spaces
+and duplicate tags are normalized. These labels belong to the client record
+and can be edited while it is offline. Editing and removal require client
+management permission for that client's tenant.
+
+Cards and the table display the client's reported network address, supporting
+IPv4 or IPv6. This is the native client's selected local interface address,
+so a NAT or reverse proxy address need not match it. An omitted address in a
+later identity report preserves the last known value, including while the
+client is offline; **Not reported** means no valid address has been recorded.
+Search includes the friendly name, tags and reported address. Updating Web/API
+can expose an address already reported by an existing client; it does not
+require that client to support uninstall.
+
+### Choose the removal action
+
+Use **Remove client** to review the tenant, hostname, client ID and last-seen
+time before removing a duplicate. A shared hostname does not establish which
+enrolled identity is the obsolete record.
+
+| Action | Effect on the computer | When the record disappears |
+| --- | --- | --- |
+| **Remove from platform** | Leaves installed software in place. Revokes the client's platform access. Available for offline records too. | After the removal is saved. |
+| **Uninstall and remove** | An independent native helper stops and removes the managed service, installation files and installation credentials. Client logs are retained. | After the API accepts a successful helper receipt confirming both service and file removal. |
+
+Platform removal retains an auditable tombstone, the operator and the supplied
+reason. It revokes access and refresh credentials, invalidates connection
+ownership and cancels pending connection admissions in the same database
+transaction. The removed identity cannot reconnect or recover enrollment with
+its existing device key. Repeating record removal is idempotent.
+
+Uninstall requires an enabled, online client with a current control connection
+advertising `uninstall-v1`. Deploying Web/API alone cannot add that capability
+to older native binaries: install an approved native build that implements it.
+The requested operation is saved before dispatch, and its helper can continue
+independently of the service or browser. Going offline is not completion
+evidence. A confirmed failure or missing confirmation retains the client record
+and its operation status for investigation.
+
+For a pending operation, **Retry request** reuses the same operation identity
+while the client is eligible and its confirmation window remains open. The
+initial removal must start within its short dispatch deadline; retry can renew
+that deadline without replacing the operation. The helper persists its result
+and retries delivery, including after a restart, for up to the operation's
+24-hour confirmation window. Expiry does not delete the record or prove that
+the local installation remains intact. Inspect the computer and the saved
+failure reference before taking further action. **Remove record only…** is an
+explicit fallback when confirmation remains pending or has expired; it revokes
+platform access without waiting for a helper that may still be running.
+
+### Native uninstall eligibility and acceptance
+
+The initial implementation verifies the installed manifest and an owned service
+running with the following default layouts:
+
+| Runtime | Service identity | Installation and state |
+| --- | --- | --- |
+| Windows x64 | `NetRatel.Client` running as LocalSystem | `%ProgramFiles%\NetRatel\Client\versions\<version>`; credentials and update state under `%ProgramData%\NetRatel` |
+| Linux x64 | `netratel-client.service` running as root under systemd | `/opt/netratel/client/versions/<version>`; credentials and update state under `/var/lib/netratel`; generated units under `/etc/systemd/system` |
+
+The gateway must use HTTPS. Custom installation roots or updater state
+directories, a custom credential machine identity, interactive/user installs,
+containers, macOS and other runtime IDs do not advertise this capability.
+Unprotected paths, unexpected links, changed device identity or service files,
+and unsupported service overrides can prevent preparation or removal. The
+helper uses the existing installer/updater lock and verifies ownership before
+deleting files; it does not provide a general-purpose remote uninstall command.
+
+**Manual Windows and Linux acceptance is pending.** Before declaring this
+capability ready for deployment, validate on disposable machines with the
+supported native build:
+
+1. Edit/clear labels, search tags and IPs, and remove an obsolete offline record
+   without changing the other enrolled identity.
+2. Uninstall an online service; verify the service, installation and credential
+   files are gone, then confirm the record is removed only after the receipt.
+3. Interrupt receipt delivery and restart the helper host; verify the durable
+   operation remains visible and the same result is retried without repeating
+   a completed removal.
+4. Exercise a changed installation, pending/expired confirmation and explicit
+   record-only fallback; verify failures preserve the record and audit trail.
+
+Enhancement tracking: [client labels #190](https://github.com/BostonTechnologies/netratel/issues/190),
+[client offboarding #191](https://github.com/BostonTechnologies/netratel/issues/191),
+[reported addresses #192](https://github.com/BostonTechnologies/netratel/issues/192).
+
 ## Script interpreters
 
 Commands and library scripts run in external processes under the Client's

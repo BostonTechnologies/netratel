@@ -10,7 +10,7 @@
 .client-card-grid-shell .client-card.mud-card {
     display: flex;
     flex-direction: column;
-    height: 500px !important;
+    min-height: 500px;
     overflow: hidden;
     width: 100%;
 }
@@ -21,7 +21,7 @@
 }
 
 .client-card-grid-shell .client-card .mud-card-content {
-    flex: 1 1 0;
+    flex: 1 0 auto;
     min-height: 0;
     overflow: hidden;
 }
@@ -47,6 +47,7 @@
 
 .client-card-grid-shell .client-title-row {
     gap: 8px;
+    justify-content: space-between;
 }
 
 .client-card-grid-shell .client-title {
@@ -58,6 +59,7 @@
 
 .client-card-grid-shell .client-host-row {
     gap: 2px;
+    flex: 1 1 auto;
 }
 
 .client-card-grid-shell .client-host {
@@ -71,7 +73,7 @@
 }
 
 .client-card-grid-shell .client-action-row {
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     gap: 4px;
     min-height: 32px;
 }
@@ -185,7 +187,7 @@
 }
 
 .client-grid-view-shell .client-grid-actions {
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     gap: 2px;
 }
 
@@ -214,6 +216,44 @@
     color: var(--mud-palette-text-secondary);
     font-size: .75rem;
     line-height: 1.3;
+    overflow-wrap: anywhere;
+}
+
+.client-card-grid-shell .client-friendly-name,
+.client-grid-view-shell .client-friendly-name {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.client-card-grid-shell .client-tags,
+.client-grid-view-shell .client-tags,
+.client-metadata-editor .client-tags {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+}
+
+.client-card-grid-shell .client-tags .mud-chip,
+.client-grid-view-shell .client-tags .mud-chip,
+.client-metadata-editor .client-tags .mud-chip {
+    margin: 0;
+    max-width: 100%;
+    height: auto;
+    min-height: 24px;
+}
+
+.client-card-grid-shell .client-tags .mud-chip-content,
+.client-grid-view-shell .client-tags .mud-chip-content,
+.client-metadata-editor .client-tags .mud-chip-content {
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.client-grid-view-shell .client-host {
+    color: var(--mud-palette-secondary);
+    font-weight: 500;
 }
 
 @media (max-width: 720px) {

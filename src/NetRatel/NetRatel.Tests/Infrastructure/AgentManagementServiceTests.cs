@@ -32,6 +32,28 @@ public sealed class AgentManagementServiceTests
     }
 
     [Fact]
+    public async Task Missing_identity_observations_preserve_the_last_known_client_address()
+    {
+        await using var db = CreateDb();
+        var id = Guid.NewGuid();
+        db.Agents.Add(new Agent { Id = id, TenantId = 42, IsEnabled = true, Status = AgentStatus.Active,
+            DeviceInfoJson = """{"hostName":"dispatch-01","reportedAddress":"2001:db8::17"}""" });
+        await db.SaveChangesAsync();
+        var service = new AgentManagementService(db, NullLogger<AgentManagementService>.Instance);
+
+        await service.ReportIdentityAsync(42, id, "dispatch-01", null, default);
+        await service.ReportIdentityAsync(42, id, null, "", default);
+
+        using var metadata = System.Text.Json.JsonDocument.Parse(db.Agents.Single().DeviceInfoJson!);
+        metadata.RootElement.GetProperty("hostName").GetString().Should().Be("dispatch-01");
+        metadata.RootElement.GetProperty("reportedAddress").GetString().Should().Be("2001:db8::17");
+
+        await service.ReportIdentityAsync(42, id, null, "192.168.1.22", default);
+        using var refreshed = System.Text.Json.JsonDocument.Parse(db.Agents.Single().DeviceInfoJson!);
+        refreshed.RootElement.GetProperty("reportedAddress").GetString().Should().Be("192.168.1.22");
+    }
+
+    [Fact]
     public async Task AgentDirectory_QueryFilter_ReturnsOnlyCanonicalAgent()
     {
         await using var db = CreateDb();
@@ -91,7 +113,7 @@ public sealed class AgentManagementServiceTests
     }
 
     [Fact]
-    public async Task DeleteAsync_TombstonesAgent_RevokesCredentials_AndRetainsOnlySafeEvidence()
+    public async Task DeleteAsync_TombstonesAgent_RevokesCredentials_AndRetainsOperatorReason()
     {
         await using var db = CreateDb();
         var agent = new Agent
@@ -136,8 +158,7 @@ public sealed class AgentManagementServiceTests
         var evidence = await db.OutboxMessages.ToListAsync();
         evidence.Should().HaveCount(2);
         evidence.Select(message => message.PayloadJson).Should().OnlyContain(payload =>
-            payload.Contains("decommissioned", StringComparison.Ordinal) &&
-            !payload.Contains("Machine retired", StringComparison.Ordinal));
+            payload.Contains("Machine retired", StringComparison.Ordinal));
     }
 
     private static OrchestratorDbContext CreateDb()

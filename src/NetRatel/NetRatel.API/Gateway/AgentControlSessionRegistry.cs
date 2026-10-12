@@ -19,6 +19,8 @@ public sealed record AgentControlPingResult(
 public sealed class AgentControlSessionUnavailableException(ClientKey client)
     : InvalidOperationException($"No active control session exists for tenant {client.TenantId}, agent {client.AgentId:D}.");
 
+public sealed record AgentControlAvailability(Guid ConnectionId, ulong ConnectionEpoch, IReadOnlyList<string> Capabilities);
+
 public interface IAgentControlSessionRegistry
 {
     AgentControlSessionRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch, bool provisional = false);
@@ -31,6 +33,12 @@ public interface IAgentControlSessionRegistry
     bool IsAvailable(ClientKey client);
 
     bool TryGetLatestPing(ClientKey client, out AgentControlPingResult result);
+
+    AgentControlAvailability? GetAvailability(ClientKey client) => null;
+
+    Task<UninstallAcknowledgement> RequestUninstallAsync(ClientKey client, Guid connectionId, ulong connectionEpoch,
+        UninstallRequest request, TimeSpan timeout, CancellationToken cancellationToken) =>
+        Task.FromException<UninstallAcknowledgement>(new AgentControlSessionUnavailableException(client));
 }
 
 public sealed class AgentControlSessionRegistry(TimeProvider timeProvider) : IAgentControlSessionRegistry
@@ -88,7 +96,7 @@ public sealed class AgentControlSessionRegistry(TimeProvider timeProvider) : IAg
                 ((ICollection<KeyValuePair<ClientKey, AgentControlSession>>)_sessions)
                     .Remove(new KeyValuePair<ClientKey, AgentControlSession>(client, session));
                 session.Complete();
-            });
+            }, session.SetCapabilities, session.TryCompleteUninstall);
     }
 
     public async Task<AgentControlPingResult> RequestPingAsync(
@@ -113,6 +121,22 @@ public sealed class AgentControlSessionRegistry(TimeProvider timeProvider) : IAg
 
     public bool IsAvailable(ClientKey client) =>
         _sessions.TryGetValue(client, out var session) && session.IsActive;
+
+    public AgentControlAvailability? GetAvailability(ClientKey client) =>
+        _sessions.TryGetValue(client, out var session) && session.IsActive
+            ? new(session.ConnectionId, session.ConnectionEpoch, session.Capabilities) : null;
+
+    public async Task<UninstallAcknowledgement> RequestUninstallAsync(ClientKey client, Guid connectionId, ulong connectionEpoch,
+        UninstallRequest request, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        if (!_sessions.TryGetValue(client, out var session) || !session.IsActive || session.ConnectionId != connectionId ||
+            session.ConnectionEpoch != connectionEpoch || !session.Capabilities.Contains("uninstall-v1", StringComparer.Ordinal))
+            throw new AgentControlSessionUnavailableException(client);
+        var result = await session.RequestUninstallAsync(request, timeout, cancellationToken).ConfigureAwait(false);
+        if (!_sessions.TryGetValue(client, out var current) || !ReferenceEquals(current, session) || !session.IsActive)
+            throw new OperationCanceledException("The agent control session was replaced.");
+        return result;
+    }
 }
 
 public sealed class AgentControlSessionRegistration(
@@ -122,7 +146,9 @@ public sealed class AgentControlSessionRegistration(
     CancellationToken completionToken,
     Func<bool> isCurrent,
     Func<bool> activate,
-    Action unregister) : IDisposable
+    Action unregister,
+    Action<IReadOnlyList<string>>? setCapabilities = null,
+    Func<UninstallAcknowledgement, bool>? completeUninstall = null) : IDisposable
 {
     private int _disposed;
 
@@ -134,6 +160,9 @@ public sealed class AgentControlSessionRegistration(
 
     public bool TryCompletePing(Guid requestId, DateTimeOffset agentRespondedAtUtc) =>
         IsCurrent && completePing(requestId, agentRespondedAtUtc);
+
+    public void SetCapabilities(IReadOnlyList<string> capabilities) => setCapabilities?.Invoke(capabilities);
+    public bool TryCompleteUninstall(UninstallAcknowledgement acknowledgement) => IsCurrent && completeUninstall?.Invoke(acknowledgement) == true;
 
     public void Dispose()
     {
@@ -160,6 +189,8 @@ internal sealed class AgentControlSession(
             AllowSynchronousContinuations = false
         });
     private readonly ConcurrentDictionary<Guid, PendingPing> _pendingPings = new();
+    private readonly ConcurrentDictionary<Guid, PendingUninstall> _pendingUninstalls = new();
+    private readonly SemaphoreSlim _outboundGate = new(1, 1);
     private readonly CancellationTokenSource _completion = new();
     private int _active;
     private int _completed;
@@ -172,6 +203,43 @@ internal sealed class AgentControlSession(
     public void Activate() => Volatile.Write(ref _active, 1);
     public Guid ConnectionId => connectionId;
     public ulong ConnectionEpoch => connectionEpoch;
+    public IReadOnlyList<string> Capabilities { get; private set; } = [];
+    public void SetCapabilities(IReadOnlyList<string> capabilities)
+    {
+        if (IsActive) throw new InvalidOperationException("Control capabilities are fixed at admission.");
+        Capabilities = capabilities.Distinct(StringComparer.Ordinal).ToArray();
+    }
+
+    public async Task<UninstallAcknowledgement> RequestUninstallAsync(UninstallRequest request, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(request.OperationId, out var operationId) || operationId == Guid.Empty)
+            throw new ArgumentException("An uninstall operation ID is required.", nameof(request));
+        var pending = new PendingUninstall(request.Clone(), new(TaskCreationOptions.RunContinuationsAsynchronously));
+        while (!_pendingUninstalls.TryAdd(operationId, pending))
+        {
+            if (!_pendingUninstalls.TryGetValue(operationId, out var existing)) continue;
+            if (!existing.Request.Equals(request))
+                throw new InvalidOperationException("The uninstall operation is already being dispatched.");
+            return await existing.Completion.Task.WaitAsync(timeout, timeProvider, cancellationToken).ConfigureAwait(false);
+        }
+        using var deadline = new CancellationTokenSource(timeout, timeProvider);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token, CompletionToken);
+        try
+        {
+            await WriteFrameAsync(new GatewayControlFrame
+            {
+                ProtocolVersion = "1.0", TenantId = client.TenantId, ClientId = client.AgentId.ToString("D"),
+                ConnectionEpoch = connectionEpoch, ConnectionId = connectionId.ToString("D"),
+                UninstallRequest = request.Clone()
+            }, linked.Token).ConfigureAwait(false);
+            return await pending.Completion.Task.WaitAsync(linked.Token).ConfigureAwait(false);
+        }
+        finally { _pendingUninstalls.TryRemove(operationId, out _); }
+    }
+
+    public bool TryCompleteUninstall(UninstallAcknowledgement acknowledgement) =>
+        IsActive && Guid.TryParse(acknowledgement.OperationId, out var operationId) &&
+        _pendingUninstalls.TryGetValue(operationId, out var pending) && pending.Completion.TrySetResult(acknowledgement.Clone());
 
     public async Task<AgentControlPingResult> RequestPingAsync(TimeSpan timeout, CancellationToken cancellationToken)
     {
@@ -187,15 +255,13 @@ internal sealed class AgentControlSession(
 
         try
         {
-            var sequence = checked((ulong)Interlocked.Increment(ref _outboundSequence));
-            await _outbound.Writer.WriteAsync(new GatewayControlFrame
+            await WriteFrameAsync(new GatewayControlFrame
             {
                 ProtocolVersion = "1.0",
                 TenantId = client.TenantId,
                 ClientId = client.AgentId.ToString("D"),
                 ConnectionEpoch = connectionEpoch,
                 ConnectionId = connectionId.ToString("D"),
-                Sequence = sequence,
                 PingRequest = new PingRequest
                 {
                     RequestId = requestId.ToString("D"),
@@ -228,6 +294,18 @@ internal sealed class AgentControlSession(
             agentRespondedAtUtc));
     }
 
+    private async ValueTask WriteFrameAsync(GatewayControlFrame frame, CancellationToken cancellationToken)
+    {
+        // Pings and lifecycle commands share one ordered stream. Assign sequence numbers in write order.
+        await _outboundGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            frame.Sequence = checked((ulong)++_outboundSequence);
+            await _outbound.Writer.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
+        }
+        finally { _outboundGate.Release(); }
+    }
+
     public void Complete()
     {
         if (Interlocked.Exchange(ref _completed, 1) != 0)
@@ -238,9 +316,13 @@ internal sealed class AgentControlSession(
         {
             pending.Completion.TrySetException(new OperationCanceledException("The agent control session ended."));
         }
+        foreach (var pending in _pendingUninstalls.Values)
+            pending.Completion.TrySetException(new OperationCanceledException("The agent control session ended."));
     }
 
     private sealed record PendingPing(
         DateTimeOffset SentAtUtc,
         TaskCompletionSource<AgentControlPingResult> Completion);
+
+    private sealed record PendingUninstall(UninstallRequest Request, TaskCompletionSource<UninstallAcknowledgement> Completion);
 }
