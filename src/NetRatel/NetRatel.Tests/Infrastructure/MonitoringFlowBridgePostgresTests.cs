@@ -3,6 +3,7 @@ using System.Text.Json;
 using Akka.Actor;
 using AwesomeAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -10,14 +11,18 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using NetRatel.API.Services.Monitoring;
 using NetRatel.Akka.Monitoring;
 using NetRatel.Application.Flows;
+using NetRatel.Application.Netclaw;
 using NetRatel.Application.Monitoring;
 using NetRatel.Application.Presence;
 using NetRatel.Application.Telemetry;
 using NetRatel.Infrastructure.Flows;
+using NetRatel.Infrastructure.Netclaw;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared.Contracts.Netclaw;
+using NetRatel.Tests.Netclaw;
 using NetRatel.Shared.Contracts.Monitoring;
 using NetRatel.Tests.Flows;
 using Xunit;
@@ -27,6 +32,95 @@ namespace NetRatel.Tests.Infrastructure;
 [Collection(PostgreSqlPersistenceCollection.Name)]
 public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixture postgres)
 {
+    [Fact]
+    public async Task Automated_ai_flow_sends_pinned_context_waits_through_approval_and_delivers_one_completed_enriched_incident()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var rig = await Rig.CreateAsync(postgres, withAi: true);
+        await using (var scope = rig.Provider.CreateAsyncScope())
+        {
+            var library = scope.ServiceProvider.GetRequiredService<PromptLibraryService>();
+            await library.UpdateAsync(17, rig.OptionalPromptId, new("Hypervisor storage", null, "New optional guidance for a future publication.", 1), rig.Authority.PrincipalId, deadline.Token);
+            await library.ArchiveAsync(17, rig.OptionalPromptId, new(2, 1), rig.Authority.PrincipalId, deadline.Token);
+        }
+        await rig.FireAsync(); var handoff = await rig.ClaimAsync();
+        (await rig.Bridge.ProcessLeaseAsync(handoff, deadline.Token)).Should().BeTrue();
+        var processor = rig.Provider.GetRequiredService<FlowRunProcessor>();
+        (await processor.ProcessOneAsync(deadline.Token)).Should().BeTrue();
+        var admitted = (await rig.Definitions.GetRunsAsync(17, rig.Version.FlowId, deadline.Token)).Single();
+        admitted.Status.Should().Be(FlowRunStatus.WaitingForAi); rig.Dispatcher.Sends.Should().Be(0); rig.Daemon.Sends.Should().Be(0);
+        await using (var scope = rig.Provider.CreateAsyncScope())
+            await scope.ServiceProvider.GetRequiredService<PromptLibraryService>().UpdateAsync(17, rig.DefaultPromptId,
+                new("Tenant default", null, "Changed default for future investigations.", 1), rig.Authority.PrincipalId, deadline.Token);
+        var worker = rig.Provider.GetRequiredService<NetclawInvestigationWorker>();
+        await worker.StartAsync(deadline.Token);
+        try
+        {
+            var sent = await rig.Daemon.Sent.Reader.ReadAsync(deadline.Token);
+            sent.Text.Should().Contain("Keep the original alert and request approval for changes.")
+                .And.Contain("Use read-only hypervisor storage checks and escalate with evidence.")
+                .And.NotContain("Changed default for future investigations.").And.NotContain("New optional guidance for a future publication.");
+            Guid investigation;
+            await using (var scope = rig.Provider.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                var row = await db.AiInvestigations.AsNoTracking().SingleAsync(deadline.Token); investigation = row.Id;
+                row.Automated.Should().BeTrue(); row.ActiveMessageId.Should().Be(handoff.Intent.EventId);
+                var context = await db.Set<AiInvestigationContextRecord>().AsNoTracking().SingleAsync(deadline.Token);
+                context.Request.Should().Be(sent.Text); context.SendAttemptedAtUtc.Should().NotBeNull();
+                (await db.Set<AiInvestigationTurnResultRecord>().CountAsync(deadline.Token)).Should().Be(0);
+            }
+            rig.Clock.Advance(TimeSpan.FromSeconds(5)); (await processor.ProcessOneAsync(deadline.Token)).Should().BeTrue();
+            (await rig.Definitions.GetRunByIdAsync(17, admitted.Id, deadline.Token))!.Run.Status.Should().Be(FlowRunStatus.WaitingForAi);
+            rig.Dispatcher.Sends.Should().Be(0); rig.Daemon.Sends.Should().Be(1);
+            await rig.Daemon.EmitAsync(JsonSerializer.SerializeToElement(new { type = "tool_interaction", sessionId = sent.SessionId,
+                callId = "approval-1", toolName = "readOnlyStorageProbe", interactionOptions = new[] { new { key = "deny" }, new { key = "approve_once" } } }));
+            await WaitForApprovalAsync();
+            rig.Clock.Advance(TimeSpan.FromSeconds(5)); (await processor.ProcessOneAsync(deadline.Token)).Should().BeTrue();
+            (await rig.Definitions.GetRunByIdAsync(17, admitted.Id, deadline.Token))!.Run.Status.Should().Be(FlowRunStatus.AwaitingApproval);
+            rig.Dispatcher.Sends.Should().Be(0);
+            await using (var scope = rig.Provider.CreateAsyncScope())
+            {
+                var store = scope.ServiceProvider.GetRequiredService<InvestigationStore>();
+                var message = await store.AcceptApprovalAsync(17, investigation, "approval-1", "deny", rig.Authority.PrincipalId, deadline.Token);
+                await worker.RespondAsync(17, investigation, message, "approval-1", "deny", rig.Authority.PrincipalId, rig.Authority.IntegrationCredentialId, deadline.Token);
+            }
+            await rig.Daemon.EmitAsync("text", "Storage evidence identifies a full volume. No system changes were made.");
+            await rig.Daemon.EmitAsync("turn_completed"); await rig.Daemon.TurnClosed.Reader.ReadAsync(deadline.Token);
+            await using (var scope = rig.Provider.CreateAsyncScope())
+            {
+                var result = await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().Set<AiInvestigationTurnResultRecord>().AsNoTracking().SingleAsync(deadline.Token);
+                var discovery = JsonSerializer.Deserialize<FlowAiResultDto>(result.ResultJson, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+                discovery.Status.Should().Be(FlowAiResultStatus.Completed); discovery.MessageId.Should().Be(handoff.Intent.EventId);
+                discovery.FlowRunId.Should().Be(admitted.Id); discovery.FlowVersionId.Should().Be(rig.Version.Id);
+            }
+            rig.Clock.Advance(TimeSpan.FromSeconds(5));
+            await using var restarted = rig.NewProvider();
+            (await restarted.GetRequiredService<FlowRunProcessor>().ProcessOneAsync(deadline.Token)).Should().BeTrue();
+            var completed = (await rig.Definitions.GetRunByIdAsync(17, admitted.Id, deadline.Token))!;
+            completed.Run.Status.Should().Be(FlowRunStatus.Succeeded); completed.Actions.Should().HaveCount(2);
+            rig.Dispatcher.Sends.Should().Be(1); rig.Daemon.Sends.Should().Be(1);
+            rig.Dispatcher.LastRequest!.Fields.Description.Should().Contain("Value: 95").And.Contain("AI investigation")
+                .And.Contain("Storage evidence identifies a full volume.").And.Contain($"/ai/ops?tenantId=17&investigation={investigation:D}");
+            var frozen = rig.Dispatcher.LastRequest;
+            await rig.Daemon.EmitAsync("turn_completed"); // Late duplicate completion is from a retired exact turn.
+            (await restarted.GetRequiredService<FlowRunProcessor>().ProcessOneAsync(deadline.Token)).Should().BeFalse();
+            rig.Dispatcher.LastRequest.Should().Be(frozen); rig.Dispatcher.Sends.Should().Be(1);
+        }
+        finally { await worker.StopAsync(default); }
+
+        async Task WaitForApprovalAsync()
+        {
+            while (true)
+            {
+                await using var scope = rig.Provider.CreateAsyncScope();
+                var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                if (await db.AiInvestigations.AsNoTracking().AnyAsync(x => x.State == InvestigationState.AwaitingApproval, deadline.Token)) return;
+                await Task.Delay(10, deadline.Token);
+            }
+        }
+    }
+
     [Fact]
     public async Task Grouped_offline_scan_dispatches_without_telemetry_or_live_owner_and_survives_replica_restart()
     {
@@ -868,6 +962,11 @@ public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixtu
     private sealed class Rig : IAsyncDisposable
     {
         public required string Connection { get; init; }
+        public bool WithAi { get; init; }
+        public AutomatedInvestigationTestDaemon Daemon { get; } = new();
+        public Guid DefaultPromptId { get; private set; }
+        public Guid OptionalPromptId { get; private set; }
+        private readonly IDataProtectionProvider protection = new EphemeralDataProtectionProvider();
         public Clock Clock { get; } = new();
         public ClientKey Client { get; } = new(17, Guid.NewGuid());
         public FlowExecutionAuthorityDto Authority { get; } = new(ApplicationPrincipal.CreateId(), ApplicationPrincipal.CreateId());
@@ -885,9 +984,9 @@ public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixtu
         public MonitoringFlowOutboxProcessor Bridge => Provider.GetRequiredService<MonitoringFlowOutboxProcessor>();
         public MonitoringSeriesKey Key => new(Client.TenantId, Rule.RuleId, Client.AgentId, "cpu");
 
-        public static async Task<Rig> CreateAsync(PostgreSqlPersistenceFixture postgres)
+        public static async Task<Rig> CreateAsync(PostgreSqlPersistenceFixture postgres, bool withAi = false)
         {
-            var rig = new Rig { Connection = await postgres.CreateDatabaseAsync() };
+            var rig = new Rig { Connection = await postgres.CreateDatabaseAsync(), WithAi = withAi };
             rig.Provider = rig.NewProvider();
             await using (var scope = rig.Provider.CreateAsyncScope())
             {
@@ -902,6 +1001,9 @@ public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixtu
                 var role = new AccessRole { Name = "Exact tenant flow execution" };
                 role.Permissions.Add(new() { RoleId = role.Id, Permission = NetRatelPermissions.FlowRead });
                 role.Permissions.Add(new() { RoleId = role.Id, Permission = NetRatelPermissions.FlowExecute });
+                if (withAi)
+                    foreach (var permission in new[] { NetRatelPermissions.TelemetryRead, NetRatelPermissions.SecretUse, NetRatelPermissions.MonitoringRead, NetRatelPermissions.ClientManagement })
+                        role.Permissions.Add(new() { RoleId = role.Id, Permission = permission });
                 identity.AccessRoles.Add(role);
                 identity.PrincipalRoleAssignments.Add(new() { PrincipalId = rig.Authority.PrincipalId, RoleId = role.Id, TenantId = rig.Client.TenantId });
                 identity.IntegrationCredentials.Add(new()
@@ -912,11 +1014,36 @@ public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixtu
                     Grants = [new() { CredentialId = rig.Authority.IntegrationCredentialId!, TenantId = rig.Client.TenantId, Permission = NetRatelPermissions.FlowRead },
                         new() { CredentialId = rig.Authority.IntegrationCredentialId!, TenantId = rig.Client.TenantId, Permission = NetRatelPermissions.FlowExecute }]
                 });
+                if (withAi)
+                {
+                    var credential = identity.IntegrationCredentials.Local.Single();
+                    foreach (var permission in new[] { NetRatelPermissions.TelemetryRead, NetRatelPermissions.SecretUse, NetRatelPermissions.MonitoringRead, NetRatelPermissions.ClientManagement })
+                        credential.Grants.Add(new() { CredentialId = credential.Id, TenantId = rig.Client.TenantId, Permission = permission });
+                }
                 await identity.SaveChangesAsync();
+            }
+            FlowGraphDto graph = FlowTestData.Graph();
+            if (withAi)
+            {
+                await using var scope = rig.Provider.CreateAsyncScope();
+                var profile = scope.ServiceProvider.GetRequiredService<NetclawProfileService>();
+                var paired = await profile.PairAsync(17, new("https://netclaw.example", "test-code"), rig.Authority.PrincipalId, default);
+                paired.Success.Should().BeTrue();
+                var connection = await profile.GetAsync(17);
+                var library = scope.ServiceProvider.GetRequiredService<PromptLibraryService>();
+                var tenantDefault = await library.CreateAsync(17, new("Tenant default", null, "Keep the original alert and request approval for changes."), rig.Authority.PrincipalId);
+                rig.DefaultPromptId = tenantDefault.Summary.Id;
+                await library.SetDefaultAsync(17, new(rig.DefaultPromptId, 0, 1));
+                var optional = await library.CreateAsync(17, new("Hypervisor storage", "Read-only storage checks", "Use read-only hypervisor storage checks and escalate with evidence."), rig.Authority.PrincipalId);
+                rig.OptionalPromptId = optional.Summary.Id;
+                graph = FlowTestData.AiGraph();
+                graph = graph with { Nodes = graph.Nodes.Select(node => node.Kind == FlowNodeKind.InvestigateWithAi
+                    ? node with { ConnectorId = connection.Id, ConnectorRevision = connection.Revision,
+                        AiSettings = new() { OptionalPrompts = [new(rig.OptionalPromptId, 1)] } } : node).ToArray() };
             }
             var flow = (await rig.Definitions.CreateAsync(rig.Client.TenantId, new("Actual bridge flow"), rig.Authority.PrincipalId)).Definition!;
             var draft = (await rig.Definitions.SaveDraftAsync(rig.Client.TenantId, flow.Id,
-                new(flow.Revision, flow.Name, FlowTestData.Graph()), rig.Authority.PrincipalId)).Definition!;
+                new(flow.Revision, flow.Name, graph), rig.Authority.PrincipalId)).Definition!;
             var published = await rig.Definitions.PublishAsync(rig.Client.TenantId, flow.Id, new(draft.Revision), rig.Authority);
             published.Disposition.Should().Be(FlowWriteDisposition.Stored); rig.Version = published.Version!;
             rig.Clock.ResetToSystem();
@@ -956,7 +1083,17 @@ public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixtu
             services.AddSingleton(Evidence);
             services.AddSingleton<IMonitoringClientDirectory, Directory>();
             services.AddNetRatelClientServicesPersistence().AddNetRatelMonitoringPersistence().AddNetRatelFlows();
-            services.AddSingleton<IFlowConnectorCatalog, Catalog>();
+            if (WithAi)
+            {
+                services.AddSingleton(protection);
+                services.AddSingleton<INetclawPairingService>(Daemon);
+                services.AddSingleton<IAiAssistantChatClientFactory>(Daemon);
+                services.AddScoped<NetclawProfileService>(); services.AddScoped<NetclawAuthority>(); services.AddScoped<InvestigationStore>();
+                services.AddScoped<PromptLibraryService>(); services.AddScoped<IPromptLibraryService>(provider => provider.GetRequiredService<PromptLibraryService>());
+                services.AddScoped<NetclawFlowConnector>(); services.AddSingleton<NetclawInvestigationWorker>();
+                services.AddScoped<IFlowConnectorCatalog, AiCatalog>();
+            }
+            else services.AddSingleton<IFlowConnectorCatalog, Catalog>();
             services.AddSingleton<IFlowIncidentActionDispatcher>(Dispatcher);
             services.AddMonitoringFlowBridge();
             services.AddSingleton<CountingIngress>(provider => new(provider.GetRequiredService<FlowPersistenceService>()));
@@ -1028,6 +1165,14 @@ public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixtu
                 ? new(connectorId, tenantId, "Deterministic in-process receiver", true, true, Revision: 1) : null);
         public async Task<IReadOnlyList<FlowConnectorReferenceDto>> ListAsync(int tenantId, FlowExecutionAuthorityDto authority, CancellationToken cancellationToken = default) =>
             (await GetAsync(tenantId, FlowTestData.ConnectorId, authority, cancellationToken)) is { } item ? [item] : [];
+    }
+    private sealed class AiCatalog(NetclawFlowConnector ai) : IFlowConnectorCatalog
+    {
+        private readonly Catalog incident = new();
+        public async Task<FlowConnectorReferenceDto?> GetAsync(int tenantId, Guid connectorId, FlowExecutionAuthorityDto authority, CancellationToken ct = default) =>
+            await incident.GetAsync(tenantId, connectorId, authority, ct) ?? await ai.GetAsync(tenantId, connectorId, authority, ct);
+        public async Task<IReadOnlyList<FlowConnectorReferenceDto>> ListAsync(int tenantId, FlowExecutionAuthorityDto authority, CancellationToken ct = default) =>
+            [.. await incident.ListAsync(tenantId, authority, ct), .. await ai.ListAsync(tenantId, authority, ct)];
     }
     private sealed class Dispatcher : IFlowIncidentActionDispatcher
     {

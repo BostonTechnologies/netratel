@@ -2,6 +2,8 @@
 @using System.Text.Json
 @using MudBlazor.Extensions
 @using NetRatel.Shared.Contracts.Flows
+@using NetRatel.Shared.Contracts.Netclaw
+@using NetRatel.Web.Components.Pages.AIOps
 @using NetRatel.Web.Services.Flows
 @using VeloxDev.WorkflowSystem
 @implements IAsyncDisposable
@@ -73,7 +75,7 @@
                         <div class="flow-palette-item">
                             <MudDragHandle T="FlowNodeKind" Class="flow-palette-handle" aria-label="@($"Drag {FlowCanvas.KindLabel(kind)} to canvas")" data-testid="@($"flow-drag-{kind}")"><MudIcon Icon="@Icons.Material.Filled.DragIndicator" Size="MudBlazor.Size.Small" /></MudDragHandle>
                             <button type="button" class="flow-palette-label" @onclick="() => _paletteSelection = kind" data-testid="@($"flow-palette-{kind}")">@FlowCanvas.KindLabel(kind)</button>
-                            <MudTooltip Text="@(CanInsert(kind) ? $"Insert {FlowCanvas.KindLabel(kind)} at canvas center" : InsertBlockReason(kind))"><MudIconButton Icon="@Icons.Material.Filled.AddCircleOutline" Size="MudBlazor.Size.Small" OnClick="() => InsertNodeAsync(kind)" Disabled="@(!CanInsert(kind))" aria-label="@($"Insert {FlowCanvas.KindLabel(kind)} at canvas center")" data-testid="@($"flow-add-{kind}")" /></MudTooltip>
+                            <MudTooltip Text="@(CanInsert(kind) ? InsertHint(kind) : InsertBlockReason(kind))"><MudIconButton Icon="@Icons.Material.Filled.AddCircleOutline" Size="MudBlazor.Size.Small" OnClick="() => InsertNodeAsync(kind)" Disabled="@(!CanInsert(kind))" aria-label="@InsertHint(kind)" data-testid="@($"flow-add-{kind}")" /></MudTooltip>
                         </div>
                     </ItemRenderer>
                 </MudDropZone>
@@ -118,7 +120,7 @@
                                 <label>Description<textarea maxlength="@FlowLimits.MaximumTemplateLength" @onchange="e => UpdateNode(selected with { Mapping = mapping with { DescriptionTemplate = e.Value?.ToString() ?? string.Empty } })">@mapping.DescriptionTemplate</textarea></label>
                                 <label>Priority<select value="@(mapping.Priority?.ToString() ?? "")" @onchange="e => UpdatePriority(selected, e)"><option value="">Connector default</option><option value="0">Low</option><option value="1">Normal</option><option value="2">High</option><option value="3">Urgent</option></select></label>
                                 <p class="flow-help">The title and description feed every action. Priority applies to incident actions.</p>
-                                <p class="flow-help">Fields: {ruleName}, {clientName}, {resource}, {metric}, {severity}, {value}, {serviceState}, {occurredAt}, {offlineSummary}, {offlineCount}, {offlineClients}.</p>
+                                <p class="flow-help">Fields: {ruleName}, {clientName}, {resource}, {metric}, {severity}, {value}, {serviceState}, {occurredAt}, {offlineSummary}, {offlineCount}, {offlineClients}, {aiSummary}, {aiEvidence}, {aiRecommendations}, {aiStatus}, {aiObservedAt}, {aiInvestigationId}. AI findings are also appended separately to the incident.</p>
                             }
                             @if (selected.Kind is FlowNodeKind.CreateIncident or FlowNodeKind.InvestigateWithAi)
                             {
@@ -138,15 +140,25 @@
                                 else { <p role="status" data-testid="flow-connector-status">@(selected.Kind == FlowNodeKind.InvestigateWithAi ? "No owned Netclaw connection is available. Pair and verify one before publishing this action." : "No owned connector reference is available. Configure one in Flows connectors before publishing this action.")</p> }
                                 @if (selected.Kind == FlowNodeKind.InvestigateWithAi)
                                 {
-                                    <p class="flow-help">Opens one investigation for this alert with the affected clients as context. You can follow its progress and respond to approval requests in AI Ops.</p>
-                                    <a href="@($"/ai/integration?tenantId={Definition.TenantId}")">Configure Netclaw</a>
+                                    var ai = selected.AiSettings ?? new FlowAiSettingsDto();
+                                    <p class="flow-help">The output waits for this automated turn's committed result. It preserves the original alert and adds labelled AI findings to the downstream incident. Follow approval requests in AI Ops.</p>
+                                    <label>Investigation deadline (minutes)<input type="number" min="1" max="60" value="@ai.DeadlineMinutes" @onchange="e => UpdateAiDeadline(selected, e)" data-testid="flow-ai-deadline" /></label>
+                                    <label>If the investigation is unsuccessful<select value="@((int)ai.FailureBehavior)" @onchange="e => UpdateAiFailureBehavior(selected, e)" data-testid="flow-ai-failure-behavior">
+                                        <option value="@((int)FlowAiFailureBehavior.ContinueWithAlert)">Continue with original alert and labelled AI outcome</option>
+                                        <option value="@((int)FlowAiFailureBehavior.StopFlow)">Stop and flag the flow</option>
+                                    </select></label>
+                                    <p class="flow-help">Approval pauses until the deadline. Failed, timed-out or unconfirmed results never become successful findings.</p>
+                                    <PromptPicker @key="selected.Id" TenantId="Definition.TenantId" Selected="@(ai.OptionalPrompts ?? [])" SelectedChanged="references => UpdateAiPrompts(selected, references)"
+                                        PinnedPrompts="ai.PinnedPrompts" Disabled="@(ReadOnly || !CanEdit || _busy)" />
+                                    <a href="@($"/account/integration-credentials?tab=netclaw&tenantId={Definition.TenantId}")">Configure Netclaw</a>
                                 }
                                 else
                                 {
                                     <MudButton Variant="Variant.Outlined" Size="MudBlazor.Size.Small" StartIcon="@Icons.Material.Filled.Link" OnClick="ConnectRatelDeskAsync" Disabled="@_busy" data-testid="flow-connect-rateldesk">Connect RatelDesk</MudButton>
                                     <a href="@($"/flows/connectors?tenantId={Definition.TenantId}")">Manage RatelDesk connectors</a>
                                 }
-                                <button type="button" @onclick="() => ConvertToGroup(selected)" data-testid="flow-convert-action-group">Add more actions</button>
+                                @if (selected.Kind == FlowNodeKind.CreateIncident)
+                                { <button type="button" @onclick="() => ConvertToGroup(selected)" data-testid="flow-convert-action-group">Add more actions</button> }
                             }
                             @if (selected.Kind == FlowNodeKind.ActionGroup)
                             {
@@ -419,6 +431,11 @@
     });
     private bool HasNodeKind(FlowNodeKind kind) => _adapter?.Metadata.Values.Any(node =>
         FlowGraphValidator.IsTerminal(kind) ? FlowGraphValidator.IsTerminal(node.Kind) : node.Kind == kind) == true;
+    private FlowEdgeDto? AiInsertionEdge => _adapter?.Capture() is { } graph ? graph.Edges.FirstOrDefault(edge =>
+        graph.Nodes.Any(node => node.Id == edge.SourceNodeId && node.Kind == FlowNodeKind.MapIncident) &&
+        graph.Nodes.Any(node => node.Id == edge.TargetNodeId && FlowGraphValidator.IsTerminal(node.Kind))) : null;
+    private string InsertHint(FlowNodeKind kind) => kind == FlowNodeKind.InvestigateWithAi && AiInsertionEdge is not null
+        ? "Insert AI before the existing final action" : $"Insert {FlowCanvas.KindLabel(kind)} at canvas center";
     private void UpdateNode(FlowNodeDto node) { if (ReadOnly || !CanEdit || _busy || _adapter is null) return; _adapter.Update(node); _ = CheckDirty(); }
     private Task MoveNodeAsync(FlowNodeDto definition, bool x, ChangeEventArgs args) => CommandAsync("move", async (tenant, id, token) =>
     {
@@ -450,11 +467,20 @@
     {
         if (!CanEdit || ReadOnly || _adapter is null || HasNodeKind(kind)) return;
         var generation = _generation; var adapter = _adapter;
+        var insertBefore = kind == FlowNodeKind.InvestigateWithAi ? AiInsertionEdge : null;
         var definition = new FlowNodeDto(Guid.NewGuid(), kind, FlowCanvas.KindLabel(kind), position,
             kind == FlowNodeKind.Condition ? new(FlowValueField.NumericValue, FlowComparison.GreaterThan, 90) : null,
             kind == FlowNodeKind.MapIncident ? new("{ruleName}: {resource}", "{clientName} — {metric}: {value}") : null)
-            { Actions = kind == FlowNodeKind.ActionGroup ? [new(Guid.NewGuid(), FlowActionKind.Discord)] : null };
-        await adapter.AddAsync(definition, token); if (!Current(generation, tenant, id)) return; _selected = definition.Id; await CheckDirty();
+            { Actions = kind == FlowNodeKind.ActionGroup ? [new(Guid.NewGuid(), FlowActionKind.Discord)] : null,
+              AiSettings = kind == FlowNodeKind.InvestigateWithAi ? new() : null };
+        await adapter.AddAsync(definition, token);
+        if (insertBefore is not null)
+        {
+            await adapter.DisconnectAsync(insertBefore, token);
+            await adapter.ConnectAsync(insertBefore.SourceNodeId, definition.Id, token);
+            await adapter.ConnectAsync(definition.Id, insertBefore.TargetNodeId, token);
+        }
+        if (!Current(generation, tenant, id)) return; _selected = definition.Id; await CheckDirty();
     });
     private async Task RequestRemoveAsync(Guid node)
     {
@@ -478,7 +504,7 @@
         _from = _from == node.ToString() ? "" : _from; _to = _to == node.ToString() ? "" : _to;
         await CheckDirty();
     });
-    private static string PaletteHelp(FlowNodeKind kind) => kind switch { FlowNodeKind.AlertRaised => "Starts when a monitoring occurrence fires.", FlowNodeKind.Condition => "Checks a selected alert value.", FlowNodeKind.MapIncident => "Sets the message title, description and incident priority.", FlowNodeKind.CreateIncident => "Delivers an incident through an approved RatelDesk connection.", FlowNodeKind.InvestigateWithAi => "Starts a Netclaw investigation with the alert and affected systems.", FlowNodeKind.ActionGroup => "Runs notification, incident and AI actions independently.", _ => "Unsupported node." };
+    private static string PaletteHelp(FlowNodeKind kind) => kind switch { FlowNodeKind.AlertRaised => "Starts when a monitoring occurrence fires.", FlowNodeKind.Condition => "Checks a selected alert value.", FlowNodeKind.MapIncident => "Sets the message title, description and incident priority.", FlowNodeKind.CreateIncident => "Delivers an incident through an approved RatelDesk connection.", FlowNodeKind.InvestigateWithAi => "Waits for one AI investigation before the next action. Insert it into an existing incident path to retain and enrich the incident.", FlowNodeKind.ActionGroup => "Runs notification, incident and AI actions independently.", _ => "Unsupported node." };
     private Task ConnectAsync() => CommandAsync("connect", async (tenant, id, token) =>
     { if (!CanEdit || ReadOnly || !Guid.TryParse(_from, out var from) || !Guid.TryParse(_to, out var to)) { _error = "Select an output and an input."; return; } var generation = _generation; await _adapter!.ConnectAsync(from, to, token); if (Current(generation, tenant, id)) await CheckDirty(); });
     private Task DisconnectAsync(FlowEdgeDto edge) => CommandAsync("disconnect", async (tenant, id, token) => { if (!CanEdit || ReadOnly) return; var generation = _generation; await _adapter!.DisconnectAsync(edge, token); if (Current(generation, tenant, id)) await CheckDirty(); });
@@ -498,6 +524,18 @@
         var reference = Guid.TryParse(e.Value?.ToString(), out var id) ? Connectors.FirstOrDefault(c => c.Id == id && c.TenantId == Definition.TenantId && c.Kind == TargetKind(node)) : null;
         UpdateNode(node with { ConnectorId = reference?.Id, ConnectorRevision = reference is { Revision: > 0 } ? reference.Revision : null });
     }
+    private void UpdateAiDeadline(FlowNodeDto node, ChangeEventArgs args)
+    {
+        if (!int.TryParse(args.Value?.ToString(), out var minutes) || minutes is < 1 or > 60) { _error = "Choose an investigation deadline between 1 and 60 minutes."; return; }
+        UpdateNode(node with { AiSettings = (node.AiSettings ?? new()) with { DeadlineMinutes = minutes } });
+    }
+    private void UpdateAiFailureBehavior(FlowNodeDto node, ChangeEventArgs args)
+    {
+        if (Enum.TryParse<FlowAiFailureBehavior>(args.Value?.ToString(), out var behavior) && Enum.IsDefined(behavior))
+            UpdateNode(node with { AiSettings = (node.AiSettings ?? new()) with { FailureBehavior = behavior } });
+    }
+    private void UpdateAiPrompts(FlowNodeDto node, IReadOnlyList<AiPromptReference> references) => UpdateNode(node with
+    { AiSettings = (node.AiSettings ?? new()) with { OptionalPrompts = references.Count == 0 ? null : references.ToArray(), PinnedPrompts = null } });
     private static FlowActionKind TargetKind(FlowNodeDto node) => node.Kind == FlowNodeKind.InvestigateWithAi ? FlowActionKind.NetclawInvestigation : FlowActionKind.RatelDeskIncident;
     private FlowConnectorReferenceDto? SelectedConnector(FlowNodeDto node) => Connectors.FirstOrDefault(c => c.Id == node.ConnectorId && c.TenantId == Definition.TenantId && c.Kind == TargetKind(node));
     private string NodeLabel(Guid? id) => id is null ? "" : _adapter?.Metadata.Values.FirstOrDefault(n => n.Id == id)?.Name ?? "Unknown node";
@@ -508,7 +546,9 @@
         "unreachable-path" or "input-path" or "output-path" => "Connect every node from Alert raised through mapping to an action or action group.",
         "typed-port" => "Connect compatible alert or incident ports.", "fanout" => "Each port supports one connection.", "cycle" => "Remove the cyclic connection.",
         "mapping" or "mapping-required" => "Check incident templates and approved fields.", "condition" or "condition-required" => "Check condition field, comparison and value.",
-        "node-catalogue" => "Use one trigger, one mapping, one action or action group, and at most one condition.", "graph-limit" or "graph-bytes" => "The draft exceeds the bounded graph size.",
+        "node-catalogue" => "Use one trigger, one mapping, at most one AI step, one final action or action group, and at most one condition. AI may also end a path.", "graph-limit" or "graph-bytes" => "The draft exceeds the bounded graph size.",
+        "ai-settings" => "Choose a deadline between 1 and 60 minutes and an explicit AI failure behavior.",
+        "ai-prompts" or "ai-prompt-reference" or "ai-prompts-required" or "ai-prompt-snapshots" or "ai-prompts-not-pinned" => "Select available prompt revisions from this tenant and deliberately update unavailable revisions.",
         "actions-required" => "Add at least one target to the action group.", "action-limit" => $"An action group supports up to {FlowLimits.MaximumActionsPerGroup} targets.",
         "duplicate-action-target" => "Select each notification or incident target only once in a group.",
         "action-id" or "action-kind" or "action-name" => "Check the action group targets.",

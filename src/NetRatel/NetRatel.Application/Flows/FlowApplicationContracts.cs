@@ -32,6 +32,10 @@ public sealed record FlowIncidentActionDraft(int TenantId, Guid RunId, Guid Acti
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public FlowActionKind Kind { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FlowAiSettingsDto? AiSettings { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? AiDeadlineAtUtc { get; init; }
 }
 public sealed record FlowIncidentTargetDto(string OrganizationId, string CustomerId, string? AssignedToId, IReadOnlyList<Guid> CategoryIds);
 /// <summary>Preparation resolves and pins connector mapping before this exact semantic request is persisted and sent.</summary>
@@ -40,9 +44,12 @@ public sealed record FlowIncidentActionRequest(int TenantId, Guid RunId, Guid Ac
     FlowIncidentFieldsDto Fields, FlowIncidentTargetDto Target, bool SupportsSafeReplay, string SemanticFingerprint);
 public enum FlowIncidentPreparationStatus { Ready, Unavailable, Denied, Invalid }
 public sealed record FlowIncidentPreparationResult(FlowIncidentPreparationStatus Status, FlowIncidentActionRequest? Action = null, string? Code = null);
-public enum FlowIncidentActionResultKind { Succeeded, Failed, RetryableSafe, DeliveryUnknown, Unavailable }
+public enum FlowIncidentActionResultKind { Succeeded, Failed, RetryableSafe, DeliveryUnknown, Unavailable, Waiting }
 public sealed record FlowIncidentActionResult(FlowIncidentActionResultKind Kind, string Code,
-    FlowActionReceiptDto? Receipt = null, TimeSpan? RetryAfter = null);
+    FlowActionReceiptDto? Receipt = null, TimeSpan? RetryAfter = null)
+{
+    public FlowAiResultDto? AiResult { get; init; }
+}
 public interface IFlowIncidentActionDispatcher
 {
     Task<FlowIncidentPreparationResult> PrepareAsync(FlowIncidentActionDraft draft, CancellationToken cancellationToken = default);
@@ -79,8 +86,16 @@ public interface IFlowDefinitionService
 }
 
 public sealed record FlowRunLease(Guid RunId, Guid Token, Guid WorkerId, long Fence, DateTimeOffset ExpiresAtUtc,
-    Guid SourceInstanceId, FlowVersionDto Version, FlowEventEnvelope Event, int Attempts);
-public sealed record FlowRuntimeResult(FlowRunStatus Status, string Code);
+    Guid SourceInstanceId, FlowVersionDto Version, FlowEventEnvelope Event, int Attempts)
+{
+    public FlowContinuationDto? Continuation { get; init; }
+    public DateTimeOffset CreatedAtUtc { get; init; }
+}
+public sealed record FlowContinuationDto(Guid ResumeNodeId, FlowIncidentFieldsDto? Fields, FlowAiResultDto? AiResult = null);
+public sealed record FlowRuntimeResult(FlowRunStatus Status, string Code)
+{
+    public FlowContinuationDto? Continuation { get; init; }
+}
 public interface IFlowRuntimeAdapter
 {
     Task<FlowRuntimeResult> ExecuteAsync(FlowRunLease lease,

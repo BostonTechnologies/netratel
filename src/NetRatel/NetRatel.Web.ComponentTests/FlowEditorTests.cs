@@ -3,8 +3,10 @@ using Bunit;
 using AwesomeAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared.Contracts.Netclaw;
 using NetRatel.Web.Components.Pages.Flows;
 using NetRatel.Web.Services.Flows;
+using NetRatel.Web.Services;
 using Xunit;
 using MudBlazor;
 using MudBlazor.Services;
@@ -15,6 +17,7 @@ namespace NetRatel.Web.ComponentTests;
 public sealed class FlowEditorTests : AsyncBunitContext
 {
     private readonly FakeFlowApi _api = new();
+    private readonly FakePromptLibraryApi _prompts = new();
     private IRenderedComponent<MudDialogProvider> _dialogs = default!;
     public FlowEditorTests()
     {
@@ -26,6 +29,7 @@ public sealed class FlowEditorTests : AsyncBunitContext
         editorModule.Setup<double[]>("centerPosition", _ => true).SetResult([350, 240]);
         editorModule.Setup<double[]>("takeDropPosition", _ => true).SetResult([435, 270]);
         Services.AddSingleton<IFlowApiService>(_api);
+        Services.AddSingleton<IPromptLibraryApiService>(_prompts);
         Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
         _dialogs = Render<MudDialogProvider>();
     }
@@ -245,6 +249,46 @@ public sealed class FlowEditorTests : AsyncBunitContext
     }
 
     [Fact]
+    public async Task Inserted_Ai_Preserves_Final_Incident_And_Ordered_Guidance_Settings_Through_Save_Reload()
+    {
+        var prompts = _prompts;
+        var incident = new FlowConnectorReferenceDto(Guid.NewGuid(), 17, "Service desk", true, true, Revision: 2);
+        var netclaw = new FlowConnectorReferenceDto(Guid.NewGuid(), 17, "Netclaw", true, true, Revision: 3) { Kind = FlowActionKind.NetclawInvestigation };
+        var cut = RenderEditor(p => p.Add(e => e.Connectors, new[] { incident, netclaw }));
+        await cut.WaitForAssertionAsync(() => cut.Find("[data-testid=flow-add-InvestigateWithAi]").HasAttribute("disabled").Should().BeFalse());
+        var oldIncident = Definition().Draft.Nodes.Single(node => node.Kind == FlowNodeKind.CreateIncident);
+        await cut.InvokeAsync(() => cut.Find($"[data-node-id='{oldIncident.Id}'] [data-testid=flow-node-settings]").ClickAsync(new()));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-connector]").ChangeAsync(new() { Value = incident.Id.ToString() }));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-add-InvestigateWithAi]").ClickAsync(new()));
+        var adapter = cut.FindComponent<FlowCanvas>().Instance.Adapter;
+        var graph = adapter.Capture();
+        var ai = graph.Nodes.Single(node => node.Kind == FlowNodeKind.InvestigateWithAi);
+        graph.Nodes.Should().Contain(node => node.Id == oldIncident.Id && node.Kind == FlowNodeKind.CreateIncident);
+        graph.Edges.Should().Contain(edge => edge.SourceNodeId == ai.Id && edge.TargetNodeId == oldIncident.Id);
+        cut.FindAll($"[data-port-node='{ai.Id}'][data-port-direction=output]").Should().ContainSingle();
+        await cut.InvokeAsync(() => cut.Find($"[data-node-id='{ai.Id}'] [data-testid=flow-node-settings]").ClickAsync(new()));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-connector]").ChangeAsync(new() { Value = netclaw.Id.ToString() }));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-ai-deadline]").ChangeAsync(new() { Value = "11" }));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-ai-failure-behavior]").ChangeAsync(new() { Value = ((int)FlowAiFailureBehavior.StopFlow).ToString() }));
+        await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=prompt-add]").Should().HaveCount(2));
+        await cut.InvokeAsync(() => cut.Find($"[data-prompt-id='{prompts.Storage.Id}']").ClickAsync(new()));
+        await cut.InvokeAsync(() => cut.Find($"[data-prompt-id='{prompts.Windows.Id}']").ClickAsync(new()));
+        await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=prompt-selected]").Should().HaveCount(2));
+        await cut.InvokeAsync(() => cut.FindAll("[data-testid=prompt-move-up]")[1].ClickAsync(new()));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-save]").ClickAsync(new()));
+        var saved = _api.LastSave!.Graph;
+        var settings = saved.Nodes.Single(node => node.Id == ai.Id).AiSettings!;
+        settings.DeadlineMinutes.Should().Be(11); settings.FailureBehavior.Should().Be(FlowAiFailureBehavior.StopFlow);
+        settings.OptionalPrompts.Should().Equal(new AiPromptReference(prompts.Windows.Id, 1), new AiPromptReference(prompts.Storage.Id, 1));
+        FlowGraphValidator.ValidateComplete(saved).Valid.Should().BeTrue();
+        _api.ReloadDefinition = Definition() with { Revision = 8, Draft = saved };
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-reload]").ClickAsync(new()));
+        await cut.WaitForAssertionAsync(() => cut.FindComponent<FlowCanvas>().Instance.Adapter.Capture().Nodes.Single(node => node.Id == ai.Id).AiSettings.Should().BeEquivalentTo(settings));
+        adapter.ExecutionCalls.Should().Be(0); _api.PublishCalls.Should().Be(0); _api.DryRunCalls.Should().Be(0);
+        prompts.WriteCalls.Should().Be(0);
+    }
+
+    [Fact]
     public async Task An_existing_incident_can_gain_a_Discord_sibling_and_save_both_owned_targets_without_execution()
     {
         var incident = new FlowConnectorReferenceDto(Guid.NewGuid(), 17, "Service desk", true, true, Revision: 2);
@@ -292,11 +336,12 @@ internal sealed class FakeFlowApi : IFlowApiService
     public int SaveCalls, PublishCalls, ValidateCalls, DryRunCalls;
     public FlowSaveDraftRequest? LastSave;
     public TaskCompletionSource<FlowDefinitionDto>? SavePending;
+    public FlowDefinitionDto? ReloadDefinition;
     public Func<int, Guid, CancellationToken, Task<FlowVersionDto>>? VersionLookup;
     public Func<int, Guid, CancellationToken, Task<FlowRunDetailDto>>? RunLookup;
     public Task<IReadOnlyList<FlowTenantAccessDto>> GetTenantsAsync(CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowTenantAccessDto>>([new(17, "Tenant 17", true, true, true)]);
     public Task<IReadOnlyList<FlowDefinitionDto>> ListAsync(int tenantId, CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowDefinitionDto>>([FlowEditorTests.Definition()]);
-    public Task<FlowDefinitionDto> GetAsync(int tenantId, Guid flowId, CancellationToken token = default) => Task.FromResult(FlowEditorTests.Definition());
+    public Task<FlowDefinitionDto> GetAsync(int tenantId, Guid flowId, CancellationToken token = default) => Task.FromResult(ReloadDefinition ?? FlowEditorTests.Definition());
     public Task<FlowDefinitionDto> CreateAsync(int tenantId, FlowCreateRequest request, CancellationToken token = default) => throw new NotSupportedException();
     public Task<FlowDefinitionDto> SaveAsync(int tenantId, Guid flowId, FlowSaveDraftRequest request, CancellationToken token = default)
     { SaveCalls++; LastSave = request; return SavePending?.Task ?? Task.FromResult(FlowEditorTests.Definition() with { Revision = request.ExpectedRevision + 1, Name = request.Name, Draft = request.Graph }); }

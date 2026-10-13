@@ -27,9 +27,104 @@ public sealed class FlowContractAndRuntimeTests
             calls++; draft.Kind.Should().Be(FlowActionKind.NetclawInvestigation);
             draft.ConnectorId.Should().Be(target.ConnectorId!.Value); draft.ConnectorRevision.Should().Be(target.ConnectorRevision!.Value);
             draft.IdempotencyKey.Should().Be(FlowActionKeys.Create(lease, target.Id));
-            return Task.FromResult(new FlowIncidentActionResult(FlowIncidentActionResultKind.Succeeded, "ai-investigation-queued", new("investigation-reference")));
+            return Task.FromResult(new FlowIncidentActionResult(FlowIncidentActionResultKind.Succeeded, "ai-investigation-completed", new("investigation-reference"))
+            { AiResult = new(17, lease.RunId, lease.Version.Id, target.Id, Guid.NewGuid(), lease.Event.EventId, FlowAiResultStatus.Completed, lease.Event.OccurredAtUtc, lease.Event.OccurredAtUtc, "Completed evidence.") });
         });
         calls.Should().Be(1); result.Status.Should().Be(FlowRunStatus.Succeeded);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Ai_chain_waits_for_one_correlated_completion_and_resumes_only_the_checkpoint_path(bool beforeMapping)
+    {
+        var initial = FlowTestData.Lease("hypervisor-01", 94);
+        var graph = FlowTestData.AiGraph(beforeMapping);
+        var lease = initial with { Version = initial.Version with { Graph = graph,
+            ConfigurationHash = FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(graph, new JsonSerializerOptions(JsonSerializerDefaults.Web))) } };
+        FlowGraphValidator.ValidatePublished(graph).Valid.Should().BeTrue();
+        var preview = FlowPureEvaluation.DryRun(new(graph, lease.Event.Data));
+        preview.Valid.Should().BeTrue(); preview.Code.Should().Be("inert-preview"); preview.VisitedNodeIds.Should().HaveCount(4);
+        var ai = graph.Nodes.Single(node => node.Kind == FlowNodeKind.InvestigateWithAi);
+        var discovery = new FlowAiResultDto(17, lease.RunId, lease.Version.Id, ai.Id, Guid.NewGuid(), lease.Event.EventId,
+            FlowAiResultStatus.Processing, lease.Event.OccurredAtUtc);
+        var incidents = new List<FlowIncidentActionDraft>(); var automatedTurns = 0;
+        var runtime = new VeloxFlowRuntimeAdapter();
+        var waiting = await runtime.ExecuteAsync(lease, (draft, _) =>
+        {
+            if (draft.Kind == FlowActionKind.NetclawInvestigation)
+            {
+                automatedTurns++; return Task.FromResult(new FlowIncidentActionResult(FlowIncidentActionResultKind.Waiting, "ai-investigation-processing", new(discovery.InvestigationId.ToString())) { AiResult = discovery });
+            }
+            incidents.Add(draft); throw new InvalidOperationException("No incident before completion.");
+        });
+        waiting.Status.Should().Be(FlowRunStatus.WaitingForAi); waiting.Continuation!.ResumeNodeId.Should().Be(ai.Id);
+        incidents.Should().BeEmpty(); automatedTurns.Should().Be(1);
+        var completed = discovery with { Status = FlowAiResultStatus.Completed, CompletedAtUtc = lease.Event.OccurredAtUtc.AddMinutes(1),
+            Summary = "Read-only storage evidence shows a full volume.", Evidence = "Disk probe: completed", Recommendations = "Contact storage owner." };
+        var resumed = lease with { Continuation = waiting.Continuation };
+        var result = await runtime.ExecuteAsync(resumed, (draft, _) =>
+        {
+            if (draft.Kind == FlowActionKind.NetclawInvestigation)
+                return Task.FromResult(new FlowIncidentActionResult(FlowIncidentActionResultKind.Succeeded, "ai-investigation-completed", new(completed.InvestigationId.ToString())) { AiResult = completed });
+            incidents.Add(draft); return Task.FromResult(new FlowIncidentActionResult(FlowIncidentActionResultKind.Succeeded, "incident-created", new("incident-1")));
+        });
+        result.Status.Should().Be(FlowRunStatus.Succeeded); incidents.Should().ContainSingle(); automatedTurns.Should().Be(1);
+        var incident = incidents.Single();
+        incident.Fields.Description.Should().Contain("Value: 94").And.Contain("AI investigation").And.Contain(completed.Summary!).And.Contain(completed.Evidence!)
+            .And.Contain($"/ai/ops?tenantId=17&investigation={completed.InvestigationId:D}");
+        incident.Event.Data.Should().Be(lease.Event.Data); incident.IdempotencyKey.Should().Be(FlowActionKeys.Create(lease, incident.ActionNodeId));
+    }
+
+    [Theory]
+    [InlineData(FlowAiFailureBehavior.ContinueWithAlert, FlowAiResultStatus.Timeout, true)]
+    [InlineData(FlowAiFailureBehavior.ContinueWithAlert, FlowAiResultStatus.Failed, true)]
+    [InlineData(FlowAiFailureBehavior.ContinueWithAlert, FlowAiResultStatus.DeliveryUnknown, true)]
+    [InlineData(FlowAiFailureBehavior.StopFlow, FlowAiResultStatus.Timeout, false)]
+    public async Task Ai_failure_disposition_keeps_original_facts_and_labels_unsuccessful_outcomes(FlowAiFailureBehavior behavior, FlowAiResultStatus status, bool deliver)
+    {
+        var initial = FlowTestData.Lease("original-alert", 97); var graph = FlowTestData.AiGraph();
+        graph = graph with { Nodes = graph.Nodes.Select(node => node.Kind == FlowNodeKind.InvestigateWithAi
+            ? node with { AiSettings = new(2, behavior) } : node).ToArray() };
+        var lease = initial with { Version = initial.Version with { Graph = graph,
+            ConfigurationHash = FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(graph, new JsonSerializerOptions(JsonSerializerDefaults.Web))) } };
+        var incidents = 0;
+        var result = await new VeloxFlowRuntimeAdapter().ExecuteAsync(lease, (draft, _) =>
+        {
+            if (draft.Kind == FlowActionKind.NetclawInvestigation)
+                return Task.FromResult(new FlowIncidentActionResult(status == FlowAiResultStatus.DeliveryUnknown ? FlowIncidentActionResultKind.DeliveryUnknown : FlowIncidentActionResultKind.Failed, "ai-investigation-failed")
+                { AiResult = new(17, lease.RunId, lease.Version.Id, draft.ActionNodeId, Guid.NewGuid(), lease.Event.EventId, status, lease.Event.OccurredAtUtc, lease.Event.OccurredAtUtc, "Unconfirmed text must not become successful findings") });
+            incidents++; draft.Fields.Description.Should().Contain("Value: 97").And.Contain("Outcome: " + status)
+                .And.NotContain("Unconfirmed text");
+            return Task.FromResult(new FlowIncidentActionResult(FlowIncidentActionResultKind.Succeeded, "incident-created", new("incident-1")));
+        });
+        incidents.Should().Be(deliver ? 1 : 0); result.Status.Should().Be(deliver ? FlowRunStatus.Succeeded : FlowRunStatus.Failed);
+    }
+
+    [Fact]
+    public void Ai_templates_are_allowlisted_and_bounded_findings_never_remove_original_facts_or_the_reference()
+    {
+        var input = FlowTestData.EventData("original", 99);
+        var result = new FlowAiResultDto(17, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), FlowAiResultStatus.Completed,
+            input.ObservedAtUtc, input.ObservedAtUtc, new string('s', 3000), new string('e', 1000));
+        FlowGraphValidator.ValidTemplate("{aiSummary} {aiStatus} {aiObservedAt}", 4096).Should().BeTrue();
+        var mapped = FlowPureEvaluation.Map(new("{ruleName}", new string('a', 4000) + "\n{value} {resource}"), input, result);
+        mapped.Description.Should().HaveLength(FlowLimits.MaximumDescriptionLength).And.Contain("99 cpu").And.Contain("Additional AI findings omitted")
+            .And.Contain($"/ai/ops?tenantId=17&investigation={result.InvestigationId:D}").And.Contain("Outcome: Completed");
+        var denseInput = input with { RuleName = new string('r', 512) };
+        // A valid legacy mapping can expand almost to the receiver limit despite a short template.
+        // Leave less room than even the intact AI reference header, so this exercises the canonical-facts fallback.
+        var denseMapping = new FlowIncidentMappingDto("Monitoring alert", string.Concat(Enumerable.Repeat("{ruleName}", 15)) + new string('m', 200));
+        FlowPureEvaluation.Map(denseMapping, denseInput).Description.Should().HaveLength(7880);
+        var fallback = FlowPureEvaluation.Map(denseMapping, denseInput, result);
+        fallback.Description.Length.Should().BeLessThanOrEqualTo(FlowLimits.MaximumDescriptionLength);
+        fallback.Description.Should().Contain("Original alert facts").And.Contain("Rule ID: " + input.RuleId.ToString("D"))
+            .And.Contain("Agent ID: " + input.AgentId.ToString("D")).And.Contain("Severity: Critical").And.Contain("Value: 99")
+            .And.Contain("Resource: cpu").And.Contain("Full original alert and mapping retained")
+            .And.Contain($"/ai/ops?tenantId=17&investigation={result.InvestigationId:D}");
+        var offline = denseInput with { AgentId = Guid.Empty, Resource = MonitoringOfflinePresentation.ResourceKey, Metric = "ClientOffline", OfflineSummary = new(3, 8, "hv01, hv02, dns", false, 1) };
+        var offlineFallback = FlowPureEvaluation.Map(denseMapping, offline, result);
+        offlineFallback.Description.Should().Contain("Offline count: 3").And.Contain("Monitored count: 8").And.Contain("Suppressed count: 1");
     }
 
     [Fact]
@@ -189,6 +284,33 @@ public sealed class FlowContractAndRuntimeTests
     }
 
     [Fact]
+    public async Task Parallel_ai_action_groups_wait_without_enriching_or_reordering_their_independent_siblings()
+    {
+        var initial = FlowTestData.GroupLease(); var graph = initial.Version.Graph;
+        graph = graph with { Nodes = graph.Nodes.Select(node => node.Kind == FlowNodeKind.ActionGroup
+            ? node with { Actions = node.Actions!.Select(action => action.Kind == FlowActionKind.Slack
+                ? action with { Kind = FlowActionKind.NetclawInvestigation, ConnectorId = FlowTestData.AiConnectorId } : action).ToArray() } : node).ToArray() };
+        var lease = initial with { Version = initial.Version with { Graph = graph,
+            ConfigurationHash = FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(graph, new JsonSerializerOptions(JsonSerializerDefaults.Web))) } };
+        var runtime = new VeloxFlowRuntimeAdapter();
+        var result = await runtime.ExecuteAsync(lease, (draft, _) =>
+        {
+            draft.Fields.Description.Should().NotContain("AI investigation");
+            return Task.FromResult(draft.Kind == FlowActionKind.NetclawInvestigation
+                ? new FlowIncidentActionResult(FlowIncidentActionResultKind.Waiting, "ai-investigation-processing", new(Guid.NewGuid().ToString()))
+                    { AiResult = new(17, lease.RunId, lease.Version.Id, draft.ActionNodeId, Guid.NewGuid(), lease.Event.EventId, FlowAiResultStatus.Processing, lease.Event.OccurredAtUtc) }
+                : new(FlowIncidentActionResultKind.Succeeded, "delivered", new("receipt")));
+        });
+        result.Status.Should().Be(FlowRunStatus.WaitingForAi); result.Continuation!.AiResult.Should().BeNull();
+        var completed = await runtime.ExecuteAsync(lease with { Continuation = result.Continuation }, (draft, _) =>
+        {
+            draft.Fields.Description.Should().NotContain("AI investigation");
+            return Task.FromResult(new FlowIncidentActionResult(FlowIncidentActionResultKind.Succeeded, "delivered", new("receipt")));
+        });
+        completed.Status.Should().Be(FlowRunStatus.Succeeded);
+    }
+
+    [Fact]
     public void Offline_events_require_a_valid_explicit_aggregate_and_share_the_bounded_summary_with_existing_templates()
     {
         var input = FlowTestData.EventData("Monitored clients", 3) with
@@ -215,6 +337,15 @@ internal static class FlowTestData
         var condition = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.Condition, "Numeric condition", new(250, 350), new(FlowValueField.NumericValue, FlowComparison.GreaterThan, 75));
         return graph with { Nodes = [graph.Nodes[0], condition, .. graph.Nodes.Skip(1)],
             Edges = [new(graph.Nodes[0].Id, "out", condition.Id, "in"), new(condition.Id, "out", graph.Nodes[1].Id, "in"), graph.Edges[1]] };
+    }
+    public static readonly Guid AiConnectorId = Guid.Parse("d3cb241e-5322-4496-bd60-e2864ee7137f");
+    public static FlowGraphDto AiGraph(bool beforeMapping = false)
+    {
+        var graph = Graph(); var trigger = graph.Nodes[0]; var map = graph.Nodes[1]; var incident = graph.Nodes[2];
+        var ai = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.InvestigateWithAi, "AI: Investigate alert", new(500, 160), ConnectorId: AiConnectorId, ConnectorRevision: 1);
+        return graph with { Nodes = [trigger, map, ai, incident], Edges = beforeMapping
+            ? [new(trigger.Id, "out", ai.Id, "in"), new(ai.Id, "out", map.Id, "in"), new(map.Id, "out", incident.Id, "in")]
+            : [new(trigger.Id, "out", map.Id, "in"), new(map.Id, "out", ai.Id, "in"), new(ai.Id, "out", incident.Id, "in")] };
     }
     public static FlowEventDataDto EventData(string name, double value) => new(Guid.NewGuid(), Guid.NewGuid(), "CPU threshold", name, "cpu", "CpuUsagePercent", "Critical", value, null, DateTimeOffset.UtcNow);
     public static FlowGraphDto GroupGraph()

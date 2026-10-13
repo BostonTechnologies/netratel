@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Text;
+using NetRatel.Shared.Contracts.Netclaw;
 
 namespace NetRatel.Shared.Contracts.Flows;
 
@@ -6,7 +8,7 @@ namespace NetRatel.Shared.Contracts.Flows;
 public static class FlowGraphValidator
 {
     private static readonly HashSet<string> TemplateFields = new(StringComparer.Ordinal)
-        { "ruleName", "clientName", "resource", "metric", "severity", "value", "serviceState", "occurredAt", "offlineSummary", "offlineCount", "offlineClients" };
+        { "ruleName", "clientName", "resource", "metric", "severity", "value", "serviceState", "occurredAt", "offlineSummary", "offlineCount", "offlineClients", "aiSummary", "aiEvidence", "aiRecommendations", "aiStatus", "aiObservedAt", "aiInvestigationId" };
     public static FlowValidationResultDto ValidateDraft(FlowGraphDto? graph) => Validate(graph, false, false);
     public static FlowValidationResultDto ValidatePublished(FlowGraphDto? graph) => Validate(graph, true, true);
     public static FlowValidationResultDto ValidateComplete(FlowGraphDto? graph) => Validate(graph, true, false);
@@ -31,7 +33,20 @@ public static class FlowGraphValidator
             if (!IsBoundedText(node.Name, FlowLimits.MaximumNameLength) || node.Position is null || !ValidCoordinate(node.Position.X) || !ValidCoordinate(node.Position.Y)) Error("node-layout", node.Id);
             if (node.Kind != FlowNodeKind.Condition && node.Condition is not null || node.Kind != FlowNodeKind.MapIncident && node.Mapping is not null ||
                 node.Kind is not (FlowNodeKind.CreateIncident or FlowNodeKind.InvestigateWithAi) && (node.ConnectorId is not null || node.ConnectorRevision is not null) ||
-                node.Kind != FlowNodeKind.ActionGroup && node.Actions is not null) Error("node-properties", node.Id);
+                node.Kind != FlowNodeKind.ActionGroup && node.Actions is not null ||
+                node.Kind != FlowNodeKind.InvestigateWithAi && node.AiSettings is not null) Error("node-properties", node.Id);
+            if (node.Kind == FlowNodeKind.InvestigateWithAi && node.AiSettings is { } ai)
+            {
+                if (ai.DeadlineMinutes is < 1 or > 60 || !Enum.IsDefined(ai.FailureBehavior)) Error("ai-settings", node.Id);
+                var selected = ai.OptionalPrompts ?? [];
+                if (selected.Count > AiPromptLimits.MaxSelected || selected.Any(x => x is null || x.PromptId == Guid.Empty || x.Revision < 1) ||
+                    selected.Select(x => x.PromptId).Distinct().Count() != selected.Count) Error("ai-prompts", node.Id);
+                if (ai.PinnedPrompts is { } snapshots && (snapshots.Count != selected.Count || snapshots.Where((snapshot, index) =>
+                    snapshot is null || selected[index] is null || snapshot.PromptId != selected[index].PromptId || snapshot.Revision != selected[index].Revision || snapshot.IsDefault ||
+                    !IsBoundedText(snapshot.Name, 128) || snapshot.Description is not null && !IsBoundedText(snapshot.Description, AiPromptLimits.MaxDescriptionLength, allowEmpty: true, multiline: true) || !IsBoundedText(snapshot.Body, AiPromptLimits.MaxBodyUtf8Bytes, multiline: true) ||
+                    Encoding.UTF8.GetByteCount(snapshot.Body) > AiPromptLimits.MaxBodyUtf8Bytes).Any())) Error("ai-prompt-snapshots", node.Id);
+                if (pinned && selected.Count > 0 && ai.PinnedPrompts is null) Error("ai-prompts-not-pinned", node.Id);
+            }
             if (node.Kind == FlowNodeKind.Condition)
             {
                 if (node.Condition is { } condition && !ValidCondition(condition)) Error("condition", node.Id);
@@ -91,18 +106,18 @@ public static class FlowGraphValidator
         if (complete)
         {
             if (nodes.Values.Count(node => node.Kind == FlowNodeKind.AlertRaised) != 1 || nodes.Values.Count(node => node.Kind == FlowNodeKind.MapIncident) != 1 ||
-                nodes.Values.Count(node => IsTerminal(node.Kind)) != 1 || nodes.Values.Count(node => node.Kind == FlowNodeKind.Condition) > 1) Error("node-catalogue");
+                nodes.Values.Count(node => IsTerminal(node.Kind)) > 1 || nodes.Values.Count(node => node.Kind == FlowNodeKind.InvestigateWithAi) > 1 || nodes.Values.Count(node => node.Kind == FlowNodeKind.Condition) > 1) Error("node-catalogue");
             var trigger = nodes.Values.SingleOrDefaultSafe(node => node.Kind == FlowNodeKind.AlertRaised);
             if (trigger is not null)
             {
                 var visited = new HashSet<Guid>(); var current = trigger.Id;
                 while (visited.Add(current) && outgoing.TryGetValue(current, out var next)) current = next;
-                if (visited.Count != nodes.Count || !nodes.TryGetValue(current, out var terminal) || !IsTerminal(terminal.Kind)) Error("unreachable-path");
+                if (visited.Count != nodes.Count || !nodes.TryGetValue(current, out var terminal) || !CanEndPath(terminal.Kind)) Error("unreachable-path");
             }
             foreach (var node in nodes.Values)
             {
                 if (node.Kind == FlowNodeKind.AlertRaised ? incoming.ContainsKey(node.Id) : !incoming.ContainsKey(node.Id)) Error("input-path", node.Id);
-                if (IsTerminal(node.Kind) ? outgoing.ContainsKey(node.Id) : !outgoing.ContainsKey(node.Id)) Error("output-path", node.Id);
+                if (IsTerminal(node.Kind) ? outgoing.ContainsKey(node.Id) : node.Kind != FlowNodeKind.InvestigateWithAi && !outgoing.ContainsKey(node.Id)) Error("output-path", node.Id);
             }
         }
         return new(errors.Count == 0, errors.Distinct().ToArray());
@@ -110,11 +125,13 @@ public static class FlowGraphValidator
 
     public static bool CanConnect(FlowNodeKind source, FlowNodeKind target) => source switch
     {
-        FlowNodeKind.AlertRaised or FlowNodeKind.Condition => target is FlowNodeKind.Condition or FlowNodeKind.MapIncident,
-        FlowNodeKind.MapIncident => IsTerminal(target),
+        FlowNodeKind.AlertRaised or FlowNodeKind.Condition => target is FlowNodeKind.Condition or FlowNodeKind.MapIncident or FlowNodeKind.InvestigateWithAi,
+        FlowNodeKind.MapIncident => CanEndPath(target),
+        FlowNodeKind.InvestigateWithAi => target is FlowNodeKind.MapIncident or FlowNodeKind.CreateIncident or FlowNodeKind.ActionGroup,
         _ => false
     };
-    public static bool IsTerminal(FlowNodeKind kind) => kind is FlowNodeKind.CreateIncident or FlowNodeKind.ActionGroup or FlowNodeKind.InvestigateWithAi;
+    public static bool IsTerminal(FlowNodeKind kind) => kind is FlowNodeKind.CreateIncident or FlowNodeKind.ActionGroup;
+    public static bool CanEndPath(FlowNodeKind kind) => IsTerminal(kind) || kind == FlowNodeKind.InvestigateWithAi;
 
     public static IReadOnlyList<FlowActionTargetDto> ActionTargets(FlowGraphDto graph) => graph.Nodes.SelectMany(node =>
         node.Kind is FlowNodeKind.CreateIncident or FlowNodeKind.InvestigateWithAi

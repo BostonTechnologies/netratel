@@ -3,8 +3,11 @@ using AwesomeAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Application.Flows;
+using NetRatel.Application.Netclaw;
+using NetRatel.Shared.Contracts.Netclaw;
 using NetRatel.Application.Notifications;
 using NetRatel.Infrastructure.Flows;
+using NetRatel.Infrastructure.Netclaw;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts.Flows;
 using NetRatel.Shared.Contracts.Notifications;
@@ -414,6 +417,99 @@ public sealed class FlowPostgreSqlTests(PostgreSqlPersistenceFixture postgres)
         h.Notifications.Calls[FlowActionKind.Discord].Should().Be(1); h.Notifications.Calls[FlowActionKind.Slack].Should().Be(1); h.Dispatcher.Sends.Should().Be(1);
     }
 
+    [Fact]
+    public async Task Flow_optional_guidance_is_ordered_pinned_and_rejects_foreign_or_archived_draft_selections()
+    {
+        await using var h = await Harness.CreateAsync(postgres);
+        var storage = new AiPromptSnapshot(Guid.NewGuid(), 1, "Hypervisor storage", "Read-only storage checks", "Read-only storage guidance.");
+        var escalation = new AiPromptSnapshot(Guid.NewGuid(), 2, "Vendor escalation", "Contact the vendor", "Record evidence and contact the vendor.");
+        h.Prompts.Items.Add(storage.PromptId, storage); h.Prompts.Items.Add(escalation.PromptId, escalation);
+        var graph = FlowTestData.AiGraph();
+        graph = graph with { Nodes = graph.Nodes.Select(node => node.Kind == FlowNodeKind.InvestigateWithAi
+            ? node with { AiSettings = new() { OptionalPrompts = [new(escalation.PromptId, 2), new(storage.PromptId, 1)] } } : node).ToArray() };
+        var version = await h.PublishAsync(graph);
+        var settings = version.Graph.Nodes.Single(node => node.Kind == FlowNodeKind.InvestigateWithAi).AiSettings!;
+        settings.PinnedPrompts.Should().Equal(escalation, storage);
+        settings.PinnedPrompts!.All(x => !x.IsDefault).Should().BeTrue();
+        h.Prompts.Items[storage.PromptId] = storage with { Revision = 3, Body = "Newer storage guidance." };
+        var loaded = (await h.Definitions.GetVersionAsync(17, version.Id))!;
+        loaded.Graph.Nodes.Single(node => node.Kind == FlowNodeKind.InvestigateWithAi).AiSettings!.PinnedPrompts.Should().Equal(escalation, storage);
+        var current = (await h.Definitions.GetAsync(17, version.FlowId))!;
+        h.Prompts.Archived.Add(storage.PromptId);
+        (await h.Definitions.SaveDraftAsync(17, current.Id, new(current.Revision, current.Name, current.Draft), "editor")).Code.Should().Be("ai-prompt-unavailable");
+        var foreign = graph with { Nodes = graph.Nodes.Select(node => node.Kind == FlowNodeKind.InvestigateWithAi
+            ? node with { AiSettings = new() { OptionalPrompts = [new(Guid.NewGuid(), 1)] } } : node).ToArray() };
+        (await h.Definitions.SaveDraftAsync(17, current.Id, new(current.Revision, current.Name, foreign), "editor")).Disposition.Should().Be(FlowWriteDisposition.Invalid);
+    }
+
+    [Fact]
+    public async Task Ai_checkpoint_and_explicit_committed_turn_result_survive_restart_and_freeze_one_enriched_incident()
+    {
+        await using var h = await Harness.CreateAsync(postgres); var version = await h.PublishAsync(FlowTestData.AiGraph());
+        var queued = await h.Ingress.EnqueueAsync(h.Event(version)); var lease = (await h.Store.ClaimAsync(Guid.NewGuid()))!;
+        var runtime = new VeloxFlowRuntimeAdapter(); var investigationId = Guid.NewGuid(); FlowIncidentActionDraft? aiDraft = null;
+        var waiting = await runtime.ExecuteAsync(lease, async (draft, ct) =>
+        {
+            draft.Kind.Should().Be(FlowActionKind.NetclawInvestigation); aiDraft = draft;
+            (await h.Store.GetOrCreateActionAsync(lease, draft, ct)).Should().NotBeNull();
+            (await h.Store.StartActionAsync(lease, draft.ActionNodeId, ct))!.Status.Should().Be(FlowActionStatus.Dispatching);
+            var result = new FlowIncidentActionResult(FlowIncidentActionResultKind.Waiting, "ai-investigation-queued", new(investigationId.ToString("D")))
+            { AiResult = new(17, lease.RunId, version.Id, draft.ActionNodeId, investigationId, lease.Event.EventId, FlowAiResultStatus.Queued, h.Clock.GetUtcNow()) };
+            (await h.Store.CompleteActionAsync(lease, draft.ActionNodeId, result, ct)).Should().BeTrue(); return result;
+        });
+        (await h.Store.CompleteRunAsync(lease, waiting)).Should().BeTrue();
+        (await h.Definitions.GetRunByIdAsync(17, queued.RunId!.Value))!.Run.Status.Should().Be(FlowRunStatus.WaitingForAi); h.Dispatcher.Sends.Should().Be(0);
+        await using (var scope = h.Provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var row = new AiInvestigationRecord { Id = investigationId, TenantId = 17, RequestId = Guid.NewGuid(), Title = "Flow investigation", CreatedBy = FlowTestData.Authority.PrincipalId,
+                SourceActionKey = aiDraft!.IdempotencyKey, FlowRunId = lease.RunId, ActiveMessageId = lease.Event.EventId, Automated = true, State = InvestigationState.Idle, LastActivityUtc = h.Clock.GetUtcNow() };
+            db.Add(row); InvestigationStore.Append(db, row, "operator", "Investigate", row.CreatedBy, lease.Event.EventId);
+            await db.SaveChangesAsync();
+            // Idle without a committed terminal record cannot release this continuation.
+            (await db.Set<AiInvestigationTurnResultRecord>().AnyAsync()).Should().BeFalse();
+            InvestigationStore.Append(db, row, "assistant", "Storage evidence identifies a full volume.");
+            await InvestigationStore.StageTurnResultAsync(db, row, FlowAiResultStatus.Completed, h.Clock.GetUtcNow(), default);
+            await db.SaveChangesAsync();
+            // Duplicate completion and a later manual turn preserve the exact first automated result.
+            await InvestigationStore.StageTurnResultAsync(db, row, FlowAiResultStatus.Completed, h.Clock.GetUtcNow().AddMinutes(1), default);
+            row.ActiveMessageId = Guid.NewGuid(); row.Automated = false;
+            InvestigationStore.Append(db, row, "assistant", "Later manual findings must not replace the flow result.");
+            await InvestigationStore.StageTurnResultAsync(db, row, FlowAiResultStatus.Completed, h.Clock.GetUtcNow().AddMinutes(2), default);
+            await db.SaveChangesAsync(); (await db.Set<AiInvestigationTurnResultRecord>().CountAsync()).Should().Be(1);
+        }
+        h.Clock.Advance(TimeSpan.FromSeconds(5)); await using var restarted = h.NewProvider();
+        var store = restarted.GetRequiredService<IFlowExecutionStore>(); var resumed = (await store.ClaimAsync(Guid.NewGuid()))!;
+        resumed.Continuation!.ResumeNodeId.Should().Be(aiDraft!.ActionNodeId); resumed.Attempts.Should().Be(lease.Attempts);
+        FlowIncidentActionRequest? payload = null;
+        var completed = await runtime.ExecuteAsync(resumed, async (draft, ct) =>
+        {
+            var action = (await store.GetOrCreateActionAsync(resumed, draft, ct))!;
+            if (draft.Kind == FlowActionKind.NetclawInvestigation)
+            {
+                action.Status.Should().Be(FlowActionStatus.WaitingForAi);
+                await using var scope = restarted.CreateAsyncScope(); var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                var committed = await db.Set<AiInvestigationTurnResultRecord>().SingleAsync(x => x.TenantId == 17 && x.InvestigationId == investigationId && x.MessageId == resumed.Event.EventId, ct);
+                var findings = JsonSerializer.Deserialize<FlowAiResultDto>(committed.ResultJson, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+                var result = new FlowIncidentActionResult(FlowIncidentActionResultKind.Succeeded, "ai-investigation-completed", new(investigationId.ToString("D"))) { AiResult = findings };
+                (await store.CompleteActionAsync(resumed, draft.ActionNodeId, result, ct)).Should().BeTrue(); return result;
+            }
+            draft.Fields.Description.Should().Contain("Storage evidence identifies a full volume.").And.NotContain("Later manual findings").And.Contain("Value: 90");
+            payload = FlowTestData.Prepared(draft, true); (await store.SavePreparedActionAsync(resumed, draft.ActionNodeId, payload, ct)).Should().BeTrue();
+            (await store.StartActionAsync(resumed, draft.ActionNodeId, ct))!.Request.Should().BeEquivalentTo(payload);
+            var receipt = await h.Dispatcher.DispatchAsync(payload, ct); (await store.CompleteActionAsync(resumed, draft.ActionNodeId, receipt, ct)).Should().BeTrue(); return receipt;
+        });
+        // Crash after both action receipts but before the run continuation is acknowledged.
+        h.Clock.Advance(FlowLimits.LeaseDuration + TimeSpan.FromSeconds(1));
+        (await restarted.GetRequiredService<FlowRunProcessor>().ProcessOneAsync()).Should().BeTrue();
+        var finished = (await h.Definitions.GetRunByIdAsync(17, queued.RunId.Value))!;
+        finished.Run.Status.Should().Be(FlowRunStatus.Succeeded); h.Dispatcher.Sends.Should().Be(1);
+        var incident = finished.Actions.Single(x => x.Kind == FlowActionKind.RatelDeskIncident);
+        incident.IdempotencyKey.Should().Be(payload!.IdempotencyKey); incident.Attempts.Should().Be(1);
+        (await h.Ingress.EnqueueAsync(lease.Event)).Disposition.Should().Be(FlowIngressDisposition.Duplicate);
+        (await restarted.GetRequiredService<FlowRunProcessor>().ProcessOneAsync()).Should().BeFalse();
+    }
+
     private static FlowIncidentActionDraft Draft(FlowRunLease lease)
     {
         var node = lease.Version.Graph.Nodes.Single(node => node.Kind == FlowNodeKind.CreateIncident);
@@ -458,7 +554,8 @@ public sealed class FlowPostgreSqlTests(PostgreSqlPersistenceFixture postgres)
         public Task<FlowConnectorReferenceDto?> GetAsync(int tenantId, Guid id, FlowExecutionAuthorityDto authority, CancellationToken cancellationToken = default) => Task.FromResult<FlowConnectorReferenceDto?>(
             id == FlowTestData.ConnectorId ? new(id, tenantId, "Deterministic fixture", true, Available, Available ? null : "receiver-idempotency-unverified", Revision) :
             id == FlowTestData.DiscordConnectorId ? new(id, tenantId, "Discord operations", true, Available, Revision: Revision) { Kind = FlowActionKind.Discord } :
-            id == FlowTestData.SlackConnectorId ? new(id, tenantId, "Slack operations", true, Available, Revision: Revision) { Kind = FlowActionKind.Slack } : null);
+            id == FlowTestData.SlackConnectorId ? new(id, tenantId, "Slack operations", true, Available, Revision: Revision) { Kind = FlowActionKind.Slack } :
+            id == FlowTestData.AiConnectorId ? new(id, tenantId, "Netclaw investigation", true, Available, Revision: Revision) { Kind = FlowActionKind.NetclawInvestigation } : null);
         public async Task<IReadOnlyList<FlowConnectorReferenceDto>> ListAsync(int tenantId, FlowExecutionAuthorityDto authority, CancellationToken cancellationToken = default) => [(await GetAsync(tenantId, FlowTestData.ConnectorId, authority, cancellationToken))!];
     }
     private sealed class Dispatcher : IFlowIncidentActionDispatcher
@@ -490,12 +587,25 @@ public sealed class FlowPostgreSqlTests(PostgreSqlPersistenceFixture postgres)
                 : new(FlowIncidentActionResultKind.Succeeded, "notification-accepted", new("provider-accepted")));
         }
     }
+    private sealed class PromptLibrary : IPromptLibraryService
+    {
+        public Dictionary<Guid, AiPromptSnapshot> Items { get; } = [];
+        public HashSet<Guid> Archived { get; } = [];
+        public Task<AiPromptSnapshot?> ResolveDefaultAsync(int tenantId, CancellationToken ct = default) => Task.FromResult<AiPromptSnapshot?>(null);
+        public Task<AiPromptSnapshot> ResolveAsync(int tenantId, AiPromptReference reference, bool allowArchived = false, CancellationToken ct = default)
+        {
+            if (tenantId != 17 || !Items.TryGetValue(reference.PromptId, out var snapshot) || snapshot.Revision != reference.Revision || !allowArchived && Archived.Contains(reference.PromptId))
+                throw new KeyNotFoundException("Prompt unavailable.");
+            return Task.FromResult(snapshot);
+        }
+    }
     private sealed class Harness : IAsyncDisposable
     {
         public required string Connection { get; init; }
         public Clock Clock { get; } = new(); public Authority Authority { get; } = new(); public Guard Guard { get; } = new();
         public Catalog Catalog { get; } = new(); public Dispatcher Dispatcher { get; } = new();
         public NotificationDispatcher Notifications { get; } = new();
+        public PromptLibrary Prompts { get; } = new();
         public ServiceProvider Provider { get; private set; } = null!;
         public IFlowDefinitionService Definitions => Provider.GetRequiredService<IFlowDefinitionService>();
         public IFlowEventIngress Ingress => Provider.GetRequiredService<IFlowEventIngress>();
@@ -514,6 +624,7 @@ public sealed class FlowPostgreSqlTests(PostgreSqlPersistenceFixture postgres)
             services.AddSingleton<IFlowTransactionAdmission>(Guard);
             services.AddSingleton<IFlowConnectorCatalog>(Catalog); services.AddSingleton<IFlowIncidentActionDispatcher>(Dispatcher);
             services.AddSingleton<IFlowNotificationActionDispatcher>(Notifications);
+            services.AddSingleton<IPromptLibraryService>(Prompts);
             return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         }
         public async Task<FlowVersionDto> PublishAsync(FlowGraphDto? graph = null)

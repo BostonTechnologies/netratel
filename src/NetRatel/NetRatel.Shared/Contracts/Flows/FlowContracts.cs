@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using NetRatel.Shared.Contracts.Monitoring;
+using NetRatel.Shared.Contracts.Netclaw;
 
 namespace NetRatel.Shared.Contracts.Flows;
 
@@ -7,9 +8,23 @@ public enum FlowNodeKind { AlertRaised = 1, Condition = 2, MapIncident = 3, Crea
 public enum FlowActionKind { RatelDeskIncident = 0, Discord = 1, Slack = 2, NetclawInvestigation = 3 }
 public enum FlowValueField { NumericValue = 1, Severity = 2, Metric = 3, Resource = 4, RuleName = 5, ClientName = 6, ServiceState = 7 }
 public enum FlowComparison { Equal = 1, NotEqual = 2, GreaterThan = 3, GreaterThanOrEqual = 4, LessThan = 5, LessThanOrEqual = 6 }
-public enum FlowRunStatus { Queued = 1, Running = 2, RetryWaiting = 3, Succeeded = 4, Skipped = 5, Failed = 6, DeliveryUnknown = 7, PartiallySucceeded = 8 }
-public enum FlowActionStatus { Pending = 1, Dispatching = 2, RetryWaiting = 3, Succeeded = 4, Failed = 5, DeliveryUnknown = 6 }
+public enum FlowRunStatus { Queued = 1, Running = 2, RetryWaiting = 3, Succeeded = 4, Skipped = 5, Failed = 6, DeliveryUnknown = 7, PartiallySucceeded = 8, WaitingForAi = 9, AwaitingApproval = 10 }
+public enum FlowActionStatus { Pending = 1, Dispatching = 2, RetryWaiting = 3, Succeeded = 4, Failed = 5, DeliveryUnknown = 6, WaitingForAi = 7, AwaitingApproval = 8 }
 
+public enum FlowAiFailureBehavior { ContinueWithAlert = 0, StopFlow = 1 }
+public enum FlowAiResultStatus { Queued = 0, Processing = 1, AwaitingApproval = 2, Completed = 3, Failed = 4, Timeout = 5, Cancelled = 6, DeliveryUnknown = 7 }
+public sealed record FlowAiSettingsDto(int DeadlineMinutes = 15, FlowAiFailureBehavior FailureBehavior = FlowAiFailureBehavior.ContinueWithAlert)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<AiPromptReference>? OptionalPrompts { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<AiPromptSnapshot>? PinnedPrompts { get; init; }
+}
+/// <summary>Discovery data stays separate from the original measured alert. Correlation identifies one automated turn.</summary>
+public sealed record FlowAiResultDto(int TenantId, Guid FlowRunId, Guid FlowVersionId, Guid ActionNodeId,
+    Guid InvestigationId, Guid MessageId, FlowAiResultStatus Status, DateTimeOffset ObservedAtUtc,
+    DateTimeOffset? CompletedAtUtc = null, string? Summary = null, string? Evidence = null, string? Recommendations = null);
+public sealed record FlowAiOutputDto(FlowEventDataDto Alert, FlowAiResultDto? Investigation);
 public sealed record FlowPositionDto(double X, double Y);
 public sealed record FlowViewportDto(double Scale = 1, double ScrollX = 0, double ScrollY = 0,
     double NegativeX = 0, double NegativeY = 0, double PositiveX = 0, double PositiveY = 0);
@@ -26,6 +41,8 @@ public sealed record FlowNodeDto(Guid Id, FlowNodeKind Kind, string Name, FlowPo
     // Omit this new property for historical graphs: their persisted configuration hash remains valid.
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<FlowActionTargetDto>? Actions { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FlowAiSettingsDto? AiSettings { get; init; }
 }
 public sealed record FlowEdgeDto(Guid SourceNodeId, string SourcePort, Guid TargetNodeId, string TargetPort);
 public sealed record FlowGraphDto(int SchemaVersion, IReadOnlyList<FlowNodeDto> Nodes, IReadOnlyList<FlowEdgeDto> Edges, FlowViewportDto Viewport);
@@ -61,6 +78,8 @@ public sealed record FlowActionSummaryDto(Guid NodeId, string IdempotencyKey, Fl
 {
     public FlowActionKind Kind { get; init; }
     public string? Name { get; init; }
+    public FlowAiResultDto? AiResult { get; init; }
+    public FlowAiFailureBehavior? AiFailureBehavior { get; init; }
 }
 public sealed record FlowRunDetailDto(FlowRunSummaryDto Run, FlowEventDataDto Input, IReadOnlyList<FlowActionSummaryDto> Actions);
 public sealed record FlowConnectorReferenceDto(Guid Id, int TenantId, string Name, bool Enabled, bool CanExecute, string? UnavailableReason = null, long Revision = 0)

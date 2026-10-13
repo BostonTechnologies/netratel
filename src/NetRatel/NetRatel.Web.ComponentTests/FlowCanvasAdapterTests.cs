@@ -58,6 +58,32 @@ public sealed class FlowCanvasAdapterTests
     }
 
     [Fact]
+    public async Task Ai_Output_Restores_Both_Sequential_And_Historical_Ai_Only_Paths_Without_Execution()
+    {
+        var original = FlowGraphTemplates.IncidentFromAlert();
+        var map = original.Nodes.Single(node => node.Kind == FlowNodeKind.MapIncident);
+        var incident = original.Nodes.Single(node => node.Kind == FlowNodeKind.CreateIncident);
+        var ai = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.InvestigateWithAi, "AI investigation", new(490, 280), ConnectorId: Guid.NewGuid())
+            { AiSettings = new(9, FlowAiFailureBehavior.StopFlow) };
+        var chain = original with { Nodes = [.. original.Nodes, ai], Edges = [original.Edges[0],
+            new(map.Id, FlowLimits.OutputPort, ai.Id, FlowLimits.InputPort), new(ai.Id, FlowLimits.OutputPort, incident.Id, FlowLimits.InputPort)] };
+        await using var adapter = new FlowCanvasAdapter();
+        await adapter.RestoreAsync(chain);
+        Assert.Contains(adapter.Ports.Values, port => port == (ai.Id, true));
+        Assert.Equal(JsonSerializer.Serialize(chain), JsonSerializer.Serialize(adapter.Capture()));
+        Assert.Equal("alert + AI result", FlowCanvasAdapter.OutputType(ai.Kind));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => adapter.ConnectAsync(ai.Id, map.Id));
+        Assert.Equal(0, adapter.ExecutionCalls);
+
+        var aiOnly = chain with { Nodes = chain.Nodes.Where(node => node.Id != incident.Id).ToArray(),
+            Edges = chain.Edges.Where(edge => edge.TargetNodeId != incident.Id).ToArray() };
+        await using var historical = new FlowCanvasAdapter();
+        await historical.RestoreAsync(aiOnly);
+        Assert.Equal(JsonSerializer.Serialize(aiOnly), JsonSerializer.Serialize(historical.Capture()));
+        Assert.Equal(0, historical.ExecutionCalls);
+    }
+
+    [Fact]
     public async Task Keyboard_Connection_Path_Uses_The_Same_Typed_Native_Commands_And_Rejects_Unsafe_Connections()
     {
         var graph = FlowGraphTemplates.IncidentFromAlert();

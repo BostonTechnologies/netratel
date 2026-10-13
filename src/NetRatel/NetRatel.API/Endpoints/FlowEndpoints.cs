@@ -1,9 +1,11 @@
 using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Flows;
+using NetRatel.Application.Netclaw;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared.Contracts.Netclaw;
 
 namespace NetRatel.API.Endpoints;
 
@@ -53,11 +55,45 @@ public static class FlowEndpoints
     { FlowWriteDisposition.NotFound => 404, FlowWriteDisposition.Conflict => 409, FlowWriteDisposition.CapacityExceeded => 429,
         FlowWriteDisposition.ConnectorDenied => 422, _ => 400 });
     private static string SafeCode(string? code) => code is { Length: > 0 and <= 128 } && code.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.') ? code : "flow-request-rejected";
+    private static bool UsesPrompts(FlowGraphDto graph) => graph.Nodes?.Any(node =>
+        node?.AiSettings?.OptionalPrompts?.Count > 0 || node?.AiSettings?.PinnedPrompts?.Count > 0) == true;
+    private static bool ContainsPromptBodies(FlowGraphDto graph) => graph.Nodes?.Any(node => node?.AiSettings?.PinnedPrompts?.Count > 0) == true;
+    private static async Task<IResult?> PromptAccessAsync(int tenantId, bool required, HttpContext http, IEffectiveAccessService access, CancellationToken ct) =>
+        required && !await access.AuthorizeAsync(http.User, NetRatelPermissions.TelemetryRead, tenantId, ct).ConfigureAwait(false) ? Results.Forbid() : null;
+    private static async Task<bool> PromptReferencesAvailableAsync(int tenantId, FlowGraphDto graph, HttpContext http, CancellationToken ct)
+    {
+        if (!UsesPrompts(graph)) return true;
+        var library = http.RequestServices.GetRequiredService<IPromptLibraryService>();
+        try
+        {
+            foreach (var reference in (graph.Nodes ?? []).Where(node => node is not null).SelectMany(node => node.AiSettings?.OptionalPrompts ?? []).Where(reference => reference is not null))
+                await library.ResolveAsync(tenantId, reference, allowArchived: false, ct: ct).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception exception) when (exception is KeyNotFoundException or ArgumentException) { return false; }
+    }
+    private static async Task<FlowRunDetailDto> ProjectAiResultsAsync(int tenantId, FlowRunDetailDto run,
+        HttpContext http, IEffectiveAccessService access, CancellationToken ct)
+    {
+        if (run.Actions.All(action => action.AiResult is null)) return run;
+        var readable = await access.AuthorizeAsync(http.User, NetRatelPermissions.TelemetryRead, tenantId, ct).ConfigureAwait(false) &&
+            await access.AuthorizeAsync(http.User, NetRatelPermissions.MonitoringRead, tenantId, ct).ConfigureAwait(false);
+        return run with { Actions = run.Actions.Select(action => action with
+            { AiResult = readable && action.AiResult?.TenantId == tenantId ? action.AiResult : null }).ToArray() };
+    }
 
     internal static async Task<IResult> ListAsync(int tenantId, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, IFlowDefinitionService flows, CancellationToken ct)
-    { var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); return denied ?? Results.Ok(await flows.ListAsync(tenantId, ct).ConfigureAwait(false)); }
+    {
+        var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied;
+        var rows = await flows.ListAsync(tenantId, ct).ConfigureAwait(false);
+        return await PromptAccessAsync(tenantId, rows.Any(row => ContainsPromptBodies(row.Draft)), http, access, ct).ConfigureAwait(false) ?? Results.Ok(rows);
+    }
     internal static async Task<IResult> GetAsync(int tenantId, Guid flowId, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, IFlowDefinitionService flows, CancellationToken ct)
-    { var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied; var flow = await flows.GetAsync(tenantId, flowId, ct).ConfigureAwait(false); return flow is null ? Results.NotFound() : Results.Ok(flow); }
+    {
+        var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied;
+        var flow = await flows.GetAsync(tenantId, flowId, ct).ConfigureAwait(false); if (flow is null) return Results.NotFound();
+        return await PromptAccessAsync(tenantId, ContainsPromptBodies(flow.Draft), http, access, ct).ConfigureAwait(false) ?? Results.Ok(flow);
+    }
     internal static async Task<IResult> TemplateAsync(int tenantId, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, CancellationToken ct)
     { var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); return denied ?? Results.Ok(FlowGraphTemplates.IncidentFromAlert()); }
     internal static async Task<IResult> ConnectorsAsync(int tenantId, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, IFlowConnectorCatalog catalog, CancellationToken ct)
@@ -70,33 +106,73 @@ public static class FlowEndpoints
     internal static async Task<IResult> CreateAsync(int tenantId, FlowCreateRequest request, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, IFlowDefinitionService flows, CancellationToken ct)
     { var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowEdit, http, access, db, ct).ConfigureAwait(false); return denied ?? Write(await flows.CreateAsync(tenantId, request, Actor(http), ct).ConfigureAwait(false)); }
     internal static async Task<IResult> SaveAsync(int tenantId, Guid flowId, FlowSaveDraftRequest request, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, IFlowDefinitionService flows, CancellationToken ct)
-    { var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowEdit, http, access, db, ct).ConfigureAwait(false); return denied ?? Write(await flows.SaveDraftAsync(tenantId, flowId, request, Actor(http), ct).ConfigureAwait(false)); }
+    {
+        var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowEdit, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied;
+        return await PromptAccessAsync(tenantId, UsesPrompts(request.Graph), http, access, ct).ConfigureAwait(false) ?? Write(await flows.SaveDraftAsync(tenantId, flowId, request, Actor(http), ct).ConfigureAwait(false));
+    }
     internal static async Task<IResult> CloneAsync(int tenantId, Guid flowId, FlowCloneRequest request, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, IFlowDefinitionService flows, CancellationToken ct)
-    { var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowEdit, http, access, db, ct).ConfigureAwait(false); return denied ?? Write(await flows.CloneAsync(tenantId, flowId, request, Actor(http), ct).ConfigureAwait(false)); }
+    {
+        var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowEdit, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied;
+        var flow = await flows.GetAsync(tenantId, flowId, ct).ConfigureAwait(false); if (flow is null) return Results.NotFound();
+        return await PromptAccessAsync(tenantId, UsesPrompts(flow.Draft), http, access, ct).ConfigureAwait(false) ?? Write(await flows.CloneAsync(tenantId, flowId, request, Actor(http), ct).ConfigureAwait(false));
+    }
     internal static async Task<IResult> EnabledAsync(int tenantId, Guid flowId, FlowEnabledRequest request, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, IFlowDefinitionService flows, CancellationToken ct)
-    { var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowEdit, http, access, db, ct).ConfigureAwait(false); return denied ?? Write(await flows.SetEnabledAsync(tenantId, flowId, request, Actor(http), ct).ConfigureAwait(false)); }
+    {
+        var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowEdit, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied;
+        var flow = await flows.GetAsync(tenantId, flowId, ct).ConfigureAwait(false); if (flow is null) return Results.NotFound();
+        return await PromptAccessAsync(tenantId, ContainsPromptBodies(flow.Draft), http, access, ct).ConfigureAwait(false) ?? Write(await flows.SetEnabledAsync(tenantId, flowId, request, Actor(http), ct).ConfigureAwait(false));
+    }
     internal static async Task<IResult> PublishAsync(int tenantId, Guid flowId, FlowRevisionRequest request, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, IFlowDefinitionService flows, CancellationToken ct)
     {
         var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowPublish, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied;
+        var flow = await flows.GetAsync(tenantId, flowId, ct).ConfigureAwait(false); if (flow is null) return Results.NotFound();
+        denied = await PromptAccessAsync(tenantId, UsesPrompts(flow.Draft), http, access, ct).ConfigureAwait(false); if (denied is not null) return denied;
         var authority = Authority(http); if (authority is null) return Results.BadRequest(new { code = "canonical-principal-required" });
         var result = await flows.PublishAsync(tenantId, flowId, request, authority, ct).ConfigureAwait(false);
         return result.Disposition == FlowWriteDisposition.Stored && result.Version is not null ? Results.Ok(result.Version) : Failure(result.Disposition, result.Code);
     }
     internal static async Task<IResult> ValidateAsync(int tenantId, FlowGraphDto graph, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, CancellationToken ct)
-    { var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); return denied ?? Results.Ok(FlowGraphValidator.ValidateComplete(graph)); }
+    {
+        var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied;
+        denied = await PromptAccessAsync(tenantId, UsesPrompts(graph), http, access, ct).ConfigureAwait(false); if (denied is not null) return denied;
+        var validation = FlowGraphValidator.ValidateComplete(graph);
+        if (validation.Valid && !await PromptReferencesAvailableAsync(tenantId, graph, http, ct).ConfigureAwait(false))
+            return Results.Ok(new FlowValidationResultDto(false, [new("ai-prompt-unavailable")]));
+        return Results.Ok(validation);
+    }
     internal static async Task<IResult> DryRunAsync(int tenantId, FlowDryRunRequest request, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, CancellationToken ct)
     {
         var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied;
+        denied = await PromptAccessAsync(tenantId, UsesPrompts(request.Graph), http, access, ct).ConfigureAwait(false); if (denied is not null) return denied;
+        if (FlowGraphValidator.ValidateComplete(request.Graph).Valid && !await PromptReferencesAvailableAsync(tenantId, request.Graph, http, ct).ConfigureAwait(false))
+            return Results.BadRequest(new { code = "ai-prompt-unavailable" });
         try { return Results.Ok(FlowPureEvaluation.DryRun(request)); } catch (InvalidOperationException) { return Results.BadRequest(new { code = "mapping-output-limit" }); }
     }
     internal static async Task<IResult> VersionsAsync(int tenantId, Guid flowId, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, IFlowDefinitionService flows, CancellationToken ct)
-    { var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied; return await flows.GetAsync(tenantId, flowId, ct).ConfigureAwait(false) is null ? Results.NotFound() : Results.Ok(await flows.GetVersionsAsync(tenantId, flowId, ct).ConfigureAwait(false)); }
+    {
+        var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied;
+        if (await flows.GetAsync(tenantId, flowId, ct).ConfigureAwait(false) is null) return Results.NotFound();
+        var versions = await flows.GetVersionsAsync(tenantId, flowId, ct).ConfigureAwait(false);
+        return await PromptAccessAsync(tenantId, versions.Any(version => ContainsPromptBodies(version.Graph)), http, access, ct).ConfigureAwait(false) ?? Results.Ok(versions);
+    }
     internal static async Task<IResult> RunsAsync(int tenantId, Guid flowId, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, IFlowDefinitionService flows, CancellationToken ct)
     { var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied; return await flows.GetAsync(tenantId, flowId, ct).ConfigureAwait(false) is null ? Results.NotFound() : Results.Ok(await flows.GetRunsAsync(tenantId, flowId, ct).ConfigureAwait(false)); }
     internal static async Task<IResult> RunAsync(int tenantId, Guid flowId, Guid runId, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, IFlowDefinitionService flows, CancellationToken ct)
-    { var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied; var run = await flows.GetRunAsync(tenantId, flowId, runId, ct).ConfigureAwait(false); return run is null ? Results.NotFound() : Results.Ok(run); }
+    {
+        var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied;
+        var run = await flows.GetRunAsync(tenantId, flowId, runId, ct).ConfigureAwait(false); if (run is null) return Results.NotFound();
+        return Results.Ok(await ProjectAiResultsAsync(tenantId, run, http, access, ct).ConfigureAwait(false));
+    }
     internal static async Task<IResult> VersionByIdAsync(int tenantId, Guid versionId, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, IFlowDefinitionService flows, CancellationToken ct)
-    { var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied; var version = await flows.GetVersionAsync(tenantId, versionId, ct).ConfigureAwait(false); return version is null ? Results.NotFound() : Results.Ok(version); }
+    {
+        var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied;
+        var version = await flows.GetVersionAsync(tenantId, versionId, ct).ConfigureAwait(false); if (version is null) return Results.NotFound();
+        return await PromptAccessAsync(tenantId, ContainsPromptBodies(version.Graph), http, access, ct).ConfigureAwait(false) ?? Results.Ok(version);
+    }
     internal static async Task<IResult> RunByIdAsync(int tenantId, Guid runId, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, IFlowDefinitionService flows, CancellationToken ct)
-    { var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied; var run = await flows.GetRunByIdAsync(tenantId, runId, ct).ConfigureAwait(false); return run is null ? Results.NotFound() : Results.Ok(run); }
+    {
+        var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied;
+        var run = await flows.GetRunByIdAsync(tenantId, runId, ct).ConfigureAwait(false); if (run is null) return Results.NotFound();
+        return Results.Ok(await ProjectAiResultsAsync(tenantId, run, http, access, ct).ConfigureAwait(false));
+    }
 }

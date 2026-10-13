@@ -103,4 +103,22 @@ public sealed class FlowsPageTests : AsyncBunitContext
         var graph = definition.Draft with { Nodes = definition.Draft.Nodes.Select(n => n.Kind == FlowNodeKind.AlertRaised ? n with { Name = triggerName } : n).ToArray() };
         return new(Guid.NewGuid(), definition.Id, 17, number, graph, "component-proof", "Operator", DateTimeOffset.UtcNow);
     }
+
+    [Fact]
+    public async Task Ai_history_displays_actual_completion_and_published_failure_policy()
+    {
+        var version = Version(1, "AI result graph"); var definition = FlowEditorTests.Definition(); var runId = Guid.NewGuid(); var investigationId = Guid.NewGuid();
+        var nodeId = Guid.NewGuid(); var now = DateTimeOffset.UtcNow;
+        var detail = new FlowRunDetailDto(new(runId, definition.Id, version.Id, Guid.NewGuid(), Guid.NewGuid(), FlowRunStatus.Failed, now, now, "ai-timeout"),
+            new(Guid.NewGuid(), Guid.NewGuid(), "CPU rule", "SQL host", "cpu", "CPU", "warning", 95, null, now),
+            [new FlowActionSummaryDto(nodeId, "action", FlowActionStatus.Failed, 1, null, "ai-timeout", null)
+            { Kind = FlowActionKind.NetclawInvestigation, AiFailureBehavior = FlowAiFailureBehavior.StopFlow,
+                AiResult = new(17, runId, version.Id, nodeId, investigationId, Guid.NewGuid(), FlowAiResultStatus.Timeout, now, now) }]);
+        _api.RunLookup = (_, _, _) => Task.FromResult(detail); _api.VersionLookup = (_, _, _) => Task.FromResult(version);
+        Services.GetRequiredService<NavigationManager>().NavigateTo($"/flows?tenantId=17&run={runId:D}");
+        var cut = Render<FlowsPage>();
+        await cut.WaitForAssertionAsync(() => Assert.Contains("AI result: Timeout", cut.Find("[data-testid=flow-ai-result]").TextContent));
+        Assert.Contains("Stop the flow", cut.Find("[data-testid=flow-ai-result]").TextContent);
+        Assert.Equal($"/ai/ops?tenantId=17&investigation={investigationId:D}", cut.Find("[data-testid=flow-ai-result] a").GetAttribute("href"));
+    }
 }

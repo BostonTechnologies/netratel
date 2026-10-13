@@ -6,6 +6,9 @@ public static class FlowActionOutcomes
 {
     public static FlowRuntimeResult Aggregate(IReadOnlyList<FlowIncidentActionResult> results)
     {
+        if (results.Any(result => result.Kind == FlowIncidentActionResultKind.Waiting))
+            return new(results.Any(result => result.AiResult?.Status == FlowAiResultStatus.AwaitingApproval)
+                ? FlowRunStatus.AwaitingApproval : FlowRunStatus.WaitingForAi, "ai-investigation-waiting");
         // Retriable siblings remain runnable even when another destination failed or is uncertain.
         if (results.Any(result => result.Kind == FlowIncidentActionResultKind.RetryableSafe))
             return new(FlowRunStatus.RetryWaiting, "actions-retry-waiting");
