@@ -86,9 +86,11 @@
                     </HeaderContent>
                     <RowTemplate>
                         <MudTd DataLabel="Select">
+                            <span @onclick:stopPropagation="true">
                             <MudIconButton Size="Size.Small" aria-label="@($"Select {context.DisplayName}")"
                                            Icon="@(IsClientSelected(context) ? Icons.Material.Filled.RadioButtonChecked : Icons.Material.Outlined.RadioButtonUnchecked)"
-                                           OnClick="() => SelectClient(context)" Disabled="!context.Online || _isSubmitting" @onclick:stopPropagation="true" />
+                                           OnClick="() => SelectClient(context)" Disabled="!context.Online || _isSubmitting" />
+                            </span>
                         </MudTd>
                         <MudTd DataLabel="Client / host">
                             <MudText Typo="Typo.body2">@context.DisplayName</MudText>

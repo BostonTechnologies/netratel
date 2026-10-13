@@ -107,7 +107,7 @@ public sealed class NewTaskTests : AsyncBunitContext
             request.TaskType.Should().Be(TaskKinds.ExecShellCommand);
             request.ShellCommand!.Command.Should().Be("echo first\necho second");
             request.Payload.Should().Be(request.ShellCommand.Command);
-            request.Parameters.Should().Contain("Name", "operator");
+            request.Parameters.Should().Contain("name", "operator", "the existing task API serializes parameter keys with its camel-case dictionary policy");
             cut.Find("[data-testid=task-launch-status]").TextContent.Should().Contain("Completed").And.Contain("Fixture command completed");
             cut.Find("[data-testid=task-launch]").HasAttribute("disabled").Should().BeTrue();
             cut.Find("[data-testid=task-launch-status] a").GetAttribute("href").Should().StartWith("/tasks/request/");
