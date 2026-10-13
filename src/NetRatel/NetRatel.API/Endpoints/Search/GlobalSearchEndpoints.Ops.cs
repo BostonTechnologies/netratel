@@ -13,8 +13,8 @@ namespace NetRatel.API.Endpoints.Search;
 
 public static partial class GlobalSearchEndpoints
 {
-    private static async Task<IResult> SearchAlertsAsync(OrchestratorDbContext db, IEffectiveAccessService access,
-        ClaimsPrincipal principal, DatabaseCommandMetricsInterceptor metrics, ILoggerFactory log,
+    private static async Task<IResult> SearchAlertsAsync([FromServices] OrchestratorDbContext db, [FromServices] IEffectiveAccessService access,
+        ClaimsPrincipal principal, [FromServices] DatabaseCommandMetricsInterceptor metrics, [FromServices] ILoggerFactory log,
         [FromQuery] string? q, [FromQuery] int pageSize = 6, [FromQuery] int page = 1, CancellationToken ct = default)
     {
         var ids = await access.GetAuthorizedTenantIdsAsync(principal, NetRatelPermissions.MonitoringRead, ct);
@@ -28,8 +28,8 @@ public static partial class GlobalSearchEndpoints
         return Results.Ok(new PagedResult<GlobalSearchAlertDto>(rows, Math.Clamp(page, 1, 4000), take, rows.Count));
     }
 
-    private static async Task<IResult> SearchFlowsAsync(OrchestratorDbContext db, IEffectiveAccessService access,
-        ClaimsPrincipal principal, DatabaseCommandMetricsInterceptor metrics, ILoggerFactory log,
+    private static async Task<IResult> SearchFlowsAsync([FromServices] OrchestratorDbContext db, [FromServices] IEffectiveAccessService access,
+        ClaimsPrincipal principal, [FromServices] DatabaseCommandMetricsInterceptor metrics, [FromServices] ILoggerFactory log,
         [FromQuery] string? q, [FromQuery] int pageSize = 6, [FromQuery] int page = 1, CancellationToken ct = default)
     {
         var ids = await access.GetAuthorizedTenantIdsAsync(principal, NetRatelPermissions.FlowRead, ct);
@@ -43,8 +43,8 @@ public static partial class GlobalSearchEndpoints
         return Results.Ok(new PagedResult<GlobalSearchFlowDto>(rows, Math.Clamp(page, 1, 4000), take, rows.Count));
     }
 
-    private static async Task<IResult> SearchInvestigationsAsync(OrchestratorDbContext db, IEffectiveAccessService access,
-        ClaimsPrincipal principal, DatabaseCommandMetricsInterceptor metrics, ILoggerFactory log,
+    private static async Task<IResult> SearchInvestigationsAsync([FromServices] OrchestratorDbContext db, [FromServices] IEffectiveAccessService access,
+        ClaimsPrincipal principal, [FromServices] DatabaseCommandMetricsInterceptor metrics, [FromServices] ILoggerFactory log,
         [FromQuery] string? q, [FromQuery] int pageSize = 6, [FromQuery] int page = 1, CancellationToken ct = default)
     {
         var ids = await access.GetAuthorizedTenantIdsAsync(principal, NetRatelPermissions.TelemetryRead, ct);
@@ -179,8 +179,8 @@ public static partial class GlobalSearchEndpoints
         """);
     }
 
-    private static async Task<IResult> AlertDetailAsync(int tenantId, Guid occurrenceId, OrchestratorDbContext db,
-        IEffectiveAccessService access, ClaimsPrincipal principal, CancellationToken ct)
+    private static async Task<IResult> AlertDetailAsync(int tenantId, Guid occurrenceId, [FromServices] OrchestratorDbContext db,
+        [FromServices] IEffectiveAccessService access, ClaimsPrincipal principal, CancellationToken ct)
     {
         if (tenantId <= 0 || !await access.AuthorizeAsync(principal, NetRatelPermissions.MonitoringRead, tenantId, ct)) return Results.Forbid();
         var row = await db.MonitoringOccurrences.AsNoTracking().SingleOrDefaultAsync(row => row.TenantId == tenantId && row.OccurrenceId == occurrenceId, ct);

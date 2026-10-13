@@ -33,6 +33,7 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
     private const string ClientMetadataAndOffboardingMigration = "20261012075546_AddClientMetadataAndOffboarding";
     private const string NotificationConnectorsMigration = "20261012111517_AddNotificationConnectors";
     private const string ClientOperationsAndNetclawMigration = "20261012181247_AddClientOperationsAndNetclawInvestigations";
+    private const string TenantPromptsAndAiFlowContinuationsMigration = "20261013081704_AddTenantPromptsAndAiFlowContinuations";
 
     [Fact]
     public async Task True_foundation_upgrade_preserves_legacy_jobs_and_matches_fresh_pre_pairing_schema()
@@ -183,11 +184,11 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
             .Append(HistoricalConnectorMigration).Append(owner).Append(CommittedRegistrationMigration)
             .Append(ReceiverEvidenceMigration).Append(NativeRefreshExchangeMigration).Order(StringComparer.Ordinal).ToArray();
         migrations.Should().Equal(expected.Append(PairingCutoverMigration).Append(ClientMetadataAndOffboardingMigration)
-                .Append(NotificationConnectorsMigration).Append(ClientOperationsAndNetclawMigration),
-            "registered history retains the exact historical ownership range followed by pairing, client metadata/offboarding, notification connectors, client operations and Netclaw investigations");
+                .Append(NotificationConnectorsMigration).Append(ClientOperationsAndNetclawMigration).Append(TenantPromptsAndAiFlowContinuationsMigration),
+            "registered history retains the exact historical ownership range followed by pairing, client metadata/offboarding, notification connectors, client operations, Netclaw investigations, tenant prompts and AI flow continuations");
         // These historical Down/Up proofs explicitly stop at the shipped native-refresh range.
-        // Later pairing, client metadata/offboarding, notification connector, client operation
-        // and Netclaw investigation migrations remain unapplied here.
+        // Later pairing, client metadata/offboarding, notification connector, client operation,
+        // Netclaw investigation, tenant prompt and AI flow continuation migrations remain unapplied here.
         // PairingUpgradePostgresTests separately proves the forward cutover and revocation.
         var previous = services.MigrationIds.Last();
         return new(owner, previous, NativeRefreshExchangeMigration,
@@ -370,8 +371,8 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
         await using var db = Context(database);
         (await db.Database.GetAppliedMigrationsAsync(ct)).Should().Equal(plan.CurrentMigrationIds);
         (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal(
-            [PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration, ClientOperationsAndNetclawMigration],
-            "the historical range leaves exactly the later pairing, client metadata/offboarding, notification connector, client operation and Netclaw investigation migrations unapplied");
+            [PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration, ClientOperationsAndNetclawMigration, TenantPromptsAndAiFlowContinuationsMigration],
+            "the historical range leaves exactly the later pairing, client metadata/offboarding, notification connector, client operation, Netclaw investigation, tenant prompt and AI flow continuation migrations unapplied");
         db.Database.HasPendingModelChanges().Should().BeFalse();
     }
 
