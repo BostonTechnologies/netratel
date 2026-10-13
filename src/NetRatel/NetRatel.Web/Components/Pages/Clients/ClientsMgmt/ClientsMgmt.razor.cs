@@ -59,6 +59,7 @@ public partial class ClientsMgmt
             notification => InvokeAsync(() =>
             {
                 if (generation != _activityGeneration || _activeTab != 3 || _automationDisposed) return;
+                var previousStatus = _activityStatus;
                 _activityBackendConnected = notification.Connected;
                 if (!notification.Connected) _activityStatus = "Reconnecting";
                 if (notification.Kind is "ready" or "invalidate" || notification.Connected && !_activitySnapshotCurrent)
@@ -66,17 +67,20 @@ public partial class ClientsMgmt
                     _activitySnapshotCurrent = false;
                     QueueActivityRefresh(generation);
                 }
-                StateHasChanged();
+                // Invalidations change no displayed rows until the authoritative
+                // refresh completes. Keep event bursts from rendering the entire page.
+                if (previousStatus != _activityStatus) StateHasChanged();
             }), status => _ = InvokeAsync(() =>
             {
                 if (generation != _activityGeneration || _automationDisposed) return;
+                var statusChanged = _activityStatus != status;
                 _activityStatus = status;
                 if (status != "Live")
                 {
                     _activitySnapshotCurrent = false;
                     _activityBackendConnected = false;
                 }
-                StateHasChanged();
+                if (statusChanged) StateHasChanged();
             }), cancellation.Token);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested || generation != _activityGeneration)

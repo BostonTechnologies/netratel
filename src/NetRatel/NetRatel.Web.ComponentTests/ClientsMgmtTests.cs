@@ -436,9 +436,9 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
     public async Task Activity_Reconciles_StatusMembership_Bursts_And_Reconnect_Without_Resetting_Filters_Or_Groups()
     {
         var cut = Render<ClientsMgmt>();
-        cut.WaitForAssertion(() => cut.FindAll(".mud-tab").Should().NotBeEmpty());
-        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Activity").Click());
-        cut.WaitForAssertion(() => _activity.Starts.Should().Be(1));
+        await cut.WaitForAssertionAsync(() => cut.FindAll(".mud-tab").Should().NotBeEmpty());
+        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Activity").ClickAsync(new()));
+        await cut.WaitForAssertionAsync(() => _activity.Starts.Should().Be(1));
         cut.FindComponents<MudTextField<string>>().Single(field => field.Instance.Label == "Search attempts").Instance.Value.Should().BeNullOrEmpty();
         cut.FindComponents<MudSelect<string>>().Single(field => field.Instance.Label == "Group current page").Instance.Value.Should().Be("Tenant");
         // Parameter reconciliation can echo empty and null with the same effective
@@ -450,40 +450,40 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         });
         _activity.Starts.Should().Be(1);
         await cut.InvokeAsync(() => _activity.SendAsync("ready"));
-        cut.WaitForAssertion(() =>
+        await cut.WaitForAssertionAsync(() =>
         {
-            cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live", $"the original session should reconcile (stream starts: {_activity.Starts}, renders: {cut.RenderCount})");
+            cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live");
             _activity.Starts.Should().Be(1);
             cut.FindAll(".mud-tab").Single(tab => tab.GetAttribute("aria-selected") == "true").TextContent.Trim().Should().Be("Activity");
         });
-        await cut.InvokeAsync(() => cut.Find("button.mud-table-row-expander").Click());
-        cut.WaitForAssertion(() => cut.Markup.Should().Contain("activation_timeout"));
+        await cut.InvokeAsync(() => cut.Find("button.mud-table-row-expander").ClickAsync(new()));
+        await cut.WaitForAssertionAsync(() => cut.Markup.Should().Contain("activation_timeout"));
         var before = _artifacts.AttemptPageRequests;
         _artifacts.HistoryStatus = "Accepted";
         _artifacts.HistoryPurged = true;
         await cut.InvokeAsync(async () => { for (var index = 0; index < 30; index++) await _activity.SendAsync("invalidate"); });
-        cut.WaitForAssertion(() => cut.Markup.Should().Contain("Accepted").And.Contain("Historical · local package deleted"));
+        await cut.WaitForAssertionAsync(() => cut.Markup.Should().Contain("Accepted").And.Contain("Historical · local package deleted"));
         _artifacts.AttemptPageRequests.Should().Be(before + 1, "a burst refreshes one current filtered page");
         cut.Find("button.mud-table-row-expander").GetAttribute("aria-expanded").Should().Be("true", "the expanded group remains open after refresh");
         await cut.InvokeAsync(() => _activity.Disconnect());
-        await cut.InvokeAsync(() => cut.Find("[data-testid='activity-refresh']").Click());
-        cut.WaitForAssertion(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Reconnecting", "a manual snapshot does not make a disconnected stream Live"));
+        await cut.InvokeAsync(() => cut.Find("[data-testid='activity-refresh']").ClickAsync(new()));
+        await cut.WaitForAssertionAsync(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Reconnecting", "a manual snapshot does not make a disconnected stream Live"));
         await cut.InvokeAsync(() => _activity.SendAsync("ready"));
-        cut.WaitForAssertion(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
+        await cut.WaitForAssertionAsync(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
 
         var statusChanged = typeof(ClientsMgmt).GetMethod("OnAttemptStatusChanged", BindingFlags.Instance | BindingFlags.NonPublic)!;
         await cut.InvokeAsync(async () => await (Task)statusChanged.Invoke(cut.Instance, ["Accepted"])!);
-        cut.WaitForAssertion(() => _artifacts.LastHistoryStatus.Should().Be("Accepted"));
+        await cut.WaitForAssertionAsync(() => _artifacts.LastHistoryStatus.Should().Be("Accepted"));
         _artifacts.HistoryStatus = "RolledBack";
         await cut.InvokeAsync(() => _activity.SendAsync("invalidate"));
-        cut.WaitForAssertion(() => cut.Markup.Should().Contain("No update attempts match the active filters."));
+        await cut.WaitForAssertionAsync(() => cut.Markup.Should().Contain("No update attempts match the active filters."));
         _artifacts.LastHistoryStatus.Should().Be("Accepted");
 
         // A missed change enters this status filter while disconnected. Ready always reconciles.
         _artifacts.HistoryStatus = "Accepted";
         await cut.InvokeAsync(() => _activity.SendAsync("ready"));
-        cut.WaitForAssertion(() => cut.Find("button.mud-table-row-expander").GetAttribute("aria-expanded").Should().Be("true", "expansion is retained when the group leaves and reenters the filtered page"));
-        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Packages").Click());
+        await cut.WaitForAssertionAsync(() => cut.Find("button.mud-table-row-expander").GetAttribute("aria-expanded").Should().Be("true", "expansion is retained when the group leaves and reenters the filtered page"));
+        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Packages").ClickAsync(new()));
         _activity.Active.Should().BeFalse();
         var inactiveReads = _artifacts.AttemptPageRequests;
         await cut.InvokeAsync(() => _activity.SendAsync("invalidate"));
@@ -495,32 +495,35 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
     {
         _artifacts.HistoryTotal = 21;
         var cut = Render<ClientsMgmt>();
-        cut.WaitForAssertion(() => cut.FindAll(".mud-tab").Should().NotBeEmpty());
-        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Activity").Click());
+        await cut.WaitForAssertionAsync(() => cut.FindAll(".mud-tab").Should().NotBeEmpty());
+        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Activity").ClickAsync(new()));
         await cut.InvokeAsync(() => _activity.SendAsync("ready"));
-        cut.WaitForAssertion(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
+        await cut.WaitForAssertionAsync(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
         var table = (MudTable<ClientUpdateHistoryItemModel>)typeof(ClientsMgmt).GetField("_attemptTable", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(cut.Instance)!;
         await cut.InvokeAsync(() => table.NavigateTo(1));
-        cut.WaitForAssertion(() => _artifacts.LastHistoryPage.Should().Be(1));
+        await cut.WaitForAssertionAsync(() => _artifacts.LastHistoryPage.Should().Be(1));
         var before = _artifacts.AttemptPageRequests;
         await cut.InvokeAsync(() => _activity.SendAsync("invalidate"));
-        cut.WaitForAssertion(() => { _artifacts.AttemptPageRequests.Should().BeGreaterThan(before); _artifacts.LastHistoryPage.Should().Be(1); });
+        await cut.WaitForAssertionAsync(() => { _artifacts.AttemptPageRequests.Should().BeGreaterThan(before); _artifacts.LastHistoryPage.Should().Be(1); });
         table.CurrentPage.Should().Be(1);
         _artifacts.HistoryTotal = 1;
         await cut.InvokeAsync(() => _activity.SendAsync("invalidate"));
-        cut.WaitForAssertion(() => table.CurrentPage.Should().Be(0));
-        _artifacts.LastHistoryPage.Should().Be(0);
+        await cut.WaitForAssertionAsync(() =>
+        {
+            table.CurrentPage.Should().Be(0);
+            _artifacts.LastHistoryPage.Should().Be(0);
+        });
     }
 
     [Fact]
     public async Task Activity_older_stop_completion_does_not_duplicate_the_replacement_scopes_burst_refresh()
     {
         var cut = Render<ClientsMgmt>();
-        cut.WaitForAssertion(() => cut.FindAll(".mud-tab").Should().NotBeEmpty());
-        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Activity").Click());
-        cut.WaitForAssertion(() => _activity.Starts.Should().Be(1));
+        await cut.WaitForAssertionAsync(() => cut.FindAll(".mud-tab").Should().NotBeEmpty());
+        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Activity").ClickAsync(new()));
+        await cut.WaitForAssertionAsync(() => _activity.Starts.Should().Be(1));
         await cut.InvokeAsync(() => _activity.SendAsync("ready"));
-        cut.WaitForAssertion(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
+        await cut.WaitForAssertionAsync(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
         var pendingStop = _activity.HoldNextStop();
         var stop = typeof(ClientsMgmt).GetMethod("StopActivityAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var olderStop = cut.InvokeAsync(async () => await (Task)stop.Invoke(cut.Instance, null)!);
@@ -537,7 +540,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
             pendingStop.Drain.TrySetResult();
             await olderStop;
             await cut.InvokeAsync(async () => { for (var index = 0; index < 30; index++) await _activity.SendAsync("invalidate"); });
-            cut.WaitForAssertion(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
+            await cut.WaitForAssertionAsync(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
             _artifacts.AttemptPageRequests.Should().Be(before + 1, "the older shutdown cannot erase the replacement's coalescer ownership");
             _artifacts.LastHistoryStatus.Should().Be("Accepted");
             _activity.Active.Should().BeTrue();
@@ -553,7 +556,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
                 await supersededChange;
                 _activity.Starts.Should().Be(4);
                 await cut.InvokeAsync(() => _activity.SendAsync("ready"));
-                cut.WaitForAssertion(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
+                await cut.WaitForAssertionAsync(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
                 _artifacts.LastHistoryStatus.Should().Be("Accepted");
                 _activity.Active.Should().BeTrue();
             }
