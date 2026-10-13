@@ -4,6 +4,8 @@
 .script-library-workspace.script-library-picker { grid-template-columns: 1fr; height: min(520px, 65dvh); }
 .script-library-tree-column, .script-library-editor-column, .script-library-panel, .script-library-tree-scroll, .script-library-editor-frame { min-height: 0; min-width: 0; }
 .script-library-panel { display: flex; flex-direction: column; justify-content: flex-start; align-items: stretch; height: 100%; padding: 10px; border: 1px solid var(--mud-palette-divider); border-radius: var(--mud-default-borderradius); background: var(--mud-palette-surface); }
+/* MudDivider's FullWidth variant grows as a flex item; only the tree should fill this column. */
+.script-library-tree-panel ::deep > .mud-divider { flex: 0 0 auto; }
 .script-library-tree-scroll { display: block; flex: 1 1 0; overflow: auto; overscroll-behavior: contain; }
 .script-library-tree-scroll ::deep .mud-treeview { display: block; flex: none; margin: 0; padding: 0; text-align: start; }
 .script-library-tree-scroll ::deep .mud-treeview-item-content { min-height: 36px; padding-top: 0; padding-bottom: 0; }

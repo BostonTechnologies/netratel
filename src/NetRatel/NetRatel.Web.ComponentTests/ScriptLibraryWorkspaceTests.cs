@@ -33,24 +33,34 @@ public sealed class ScriptLibraryWorkspaceTests : AsyncBunitContext
         var tree = cut.FindComponent<MudTreeView<ScriptTreeNode>>();
         var folder = tree.Instance.Items!.Single(item => item.Value!.FullPath == "/operations/").Value;
         await cut.InvokeAsync(() => tree.Instance.SelectedValueChanged.InvokeAsync(folder));
-        await cut.Find("[data-testid=script-library-new]").ClickAsync(new());
-        provider.WaitForElement("[data-testid=new-script-name]");
-        var model = provider.FindComponent<NewScriptDialog>().Instance.Model;
-        Assert.Equal("/operations/", model.Folder);
-        Assert.Contains("/", model.ExistingFolders);
-        provider.Find("[data-testid=new-script-name]").Input("Inventory.ps1");
-        await provider.Find("[data-testid=new-script-create]").ClickAsync(new());
-        await cut.WaitForAssertionAsync(() => Assert.NotEmpty(cut.FindAll("[data-testid=script-library-editor]")));
-        var editor = cut.FindComponent<StandaloneCodeEditor>().Instance;
-        await cut.InvokeAsync(() => editor.OnDidInit.InvokeAsync());
-        Assert.Equal("", editor.ConstructionOptions(editor).Value);
-        Assert.Equal("powershell", editor.ConstructionOptions(editor).Language);
-        var selection = cut.FindComponent<MudTreeView<ScriptTreeNode>>().Instance;
-        Assert.Equal("Inventory.ps1", selection.SelectedValue!.Name);
-        Assert.True(selection.Items!.Single(item => item.Value!.FullPath == "/operations/").Expanded);
-        Assert.Contains(JSInterop.Invocations, invocation => invocation.Identifier == "blazorMonaco.editor.focus");
-        Assert.Equal("/operations/", Assert.Single(transport.Created).FolderPath);
-        Assert.All(transport.Paths, path => Assert.StartsWith("/api/v1/script-library", path));
+        var opening = cut.Find("[data-testid=script-library-new]").ClickAsync(new());
+        try
+        {
+            provider.WaitForElement("[data-testid=new-script-name]");
+            var model = provider.FindComponent<NewScriptDialog>().Instance.Model;
+            Assert.Equal("/operations/", model.Folder);
+            Assert.Contains("/", model.ExistingFolders);
+            provider.Find("[data-testid=new-script-name]").Input("Inventory.ps1");
+            await provider.Find("[data-testid=new-script-create]").ClickAsync(new());
+            await opening.WaitAsync(TimeSpan.FromSeconds(5));
+            await cut.WaitForAssertionAsync(() => Assert.NotEmpty(cut.FindAll("[data-testid=script-library-editor]")));
+            var editor = cut.FindComponent<StandaloneCodeEditor>().Instance;
+            await cut.InvokeAsync(() => editor.OnDidInit.InvokeAsync());
+            Assert.Equal("", editor.ConstructionOptions(editor).Value);
+            Assert.Equal("powershell", editor.ConstructionOptions(editor).Language);
+            var selection = cut.FindComponent<MudTreeView<ScriptTreeNode>>().Instance;
+            Assert.Equal("Inventory.ps1", selection.SelectedValue!.Name);
+            Assert.True(selection.Items!.Single(item => item.Value!.FullPath == "/operations/").Expanded);
+            Assert.Contains(JSInterop.Invocations, invocation => invocation.Identifier == "blazorMonaco.editor.focus");
+            Assert.Equal("/operations/", Assert.Single(transport.Created).FolderPath);
+            Assert.All(transport.Paths, path => Assert.StartsWith("/api/v1/script-library", path));
+        }
+        finally
+        {
+            foreach (var dialog in provider.FindComponents<NewScriptDialog>())
+                await provider.InvokeAsync(() => dialog.Instance.MudDialog.Cancel());
+            await opening.WaitAsync(TimeSpan.FromSeconds(5));
+        }
     }
 
     [Fact]
@@ -103,16 +113,29 @@ public sealed class ScriptLibraryWorkspaceTests : AsyncBunitContext
         var cut = Render<ScriptLibraryView>(p => p.Add(view => view.AllowAdding, true).Add(view => view.AllowEditing, true));
         transport.PendingList = new(TaskCreationOptions.RunContinuationsAsynchronously);
         var refresh = cut.Find("[aria-label='Refresh script library']").ClickAsync(new());
-        await cut.WaitForAssertionAsync(() => Assert.True(transport.DelayedListStarted));
-        await cut.Find("[data-testid=script-library-new]").ClickAsync(new());
-        provider.WaitForElement("[data-testid=new-script-name]");
-        provider.Find("[data-testid=new-script-name]").Input("New draft.ps1");
-        await provider.Find("[data-testid=new-script-create]").ClickAsync(new());
-        await cut.WaitForAssertionAsync(() => Assert.NotEmpty(cut.FindAll("[data-testid=script-library-editor]")));
-        transport.PendingList.SetResult(transport.ListResponse());
-        await refresh;
-        Assert.Equal("New draft.ps1", cut.FindComponent<MudTreeView<ScriptTreeNode>>().Instance.SelectedValue!.Name);
-        Assert.NotEmpty(cut.FindAll("[data-testid=script-library-editor]"));
+        Task? opening = null;
+        try
+        {
+            await cut.WaitForAssertionAsync(() => Assert.True(transport.DelayedListStarted));
+            opening = cut.Find("[data-testid=script-library-new]").ClickAsync(new());
+            provider.WaitForElement("[data-testid=new-script-name]");
+            provider.Find("[data-testid=new-script-name]").Input("New draft.ps1");
+            await provider.Find("[data-testid=new-script-create]").ClickAsync(new());
+            await opening.WaitAsync(TimeSpan.FromSeconds(5));
+            await cut.WaitForAssertionAsync(() => Assert.NotEmpty(cut.FindAll("[data-testid=script-library-editor]")));
+            transport.PendingList.SetResult(transport.ListResponse());
+            await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal("New draft.ps1", cut.FindComponent<MudTreeView<ScriptTreeNode>>().Instance.SelectedValue!.Name);
+            Assert.NotEmpty(cut.FindAll("[data-testid=script-library-editor]"));
+        }
+        finally
+        {
+            transport.PendingList.TrySetResult(transport.ListResponse());
+            foreach (var dialog in provider.FindComponents<NewScriptDialog>())
+                await provider.InvokeAsync(() => dialog.Instance.MudDialog.Cancel());
+            if (opening is not null) await opening.WaitAsync(TimeSpan.FromSeconds(5));
+            await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+        }
     }
 
     [Fact]
@@ -136,19 +159,27 @@ public sealed class ScriptLibraryWorkspaceTests : AsyncBunitContext
         Assert.Empty(transport.Updated);
         transport.PendingUpdate = new(TaskCreationOptions.RunContinuationsAsynchronously);
         var save = cut.FindAll("button").Single(button => button.TextContent.Trim() == "Save").ClickAsync(new());
-        await cut.WaitForAssertionAsync(() => Assert.Single(transport.Updated));
-        editorValue.SetResult("unsaved draft with later edit");
-        await cut.InvokeAsync(() => editor.Instance.OnDidChangeModelContent.InvokeAsync(new ModelContentChangedEvent()));
-        transport.PendingUpdate.SetResult(new(HttpStatusCode.OK) { Content = JsonContent.Create(new { id = 7UL, sourceRevision = 10 }) });
-        await save;
-        var update = Assert.Single(transport.Updated);
-        Assert.Equal("unsaved draft", update.Content);
-        Assert.Equal(9, update.ExpectedSourceRevision);
-        Assert.Contains("unsaved", cut.Markup);
-        transport.PendingUpdate = null;
-        await cut.FindAll("button").Single(button => button.TextContent.Trim() == "Save").ClickAsync(new());
-        Assert.Equal("unsaved draft with later edit", transport.Updated.Last().Content);
-        Assert.Equal(10, transport.Updated.Last().ExpectedSourceRevision);
+        try
+        {
+            await cut.WaitForAssertionAsync(() => Assert.Single(transport.Updated));
+            editorValue.SetResult("unsaved draft with later edit");
+            await cut.InvokeAsync(() => editor.Instance.OnDidChangeModelContent.InvokeAsync(new ModelContentChangedEvent()));
+            transport.PendingUpdate.SetResult(new(HttpStatusCode.OK) { Content = JsonContent.Create(new { id = 7UL, sourceRevision = 10 }) });
+            await save.WaitAsync(TimeSpan.FromSeconds(5));
+            var update = Assert.Single(transport.Updated);
+            Assert.Equal("unsaved draft", update.Content);
+            Assert.Equal(9, update.ExpectedSourceRevision);
+            Assert.Contains("unsaved", cut.Markup);
+            transport.PendingUpdate = null;
+            await cut.FindAll("button").Single(button => button.TextContent.Trim() == "Save").ClickAsync(new());
+            Assert.Equal("unsaved draft with later edit", transport.Updated.Last().Content);
+            Assert.Equal(10, transport.Updated.Last().ExpectedSourceRevision);
+        }
+        finally
+        {
+            transport.PendingUpdate?.TrySetResult(new(HttpStatusCode.OK) { Content = JsonContent.Create(new { id = 7UL, sourceRevision = 10 }) });
+            await save.WaitAsync(TimeSpan.FromSeconds(5));
+        }
     }
 
     [Theory]
