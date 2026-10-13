@@ -1,6 +1,8 @@
 using Bunit;
 using AwesomeAssertions;
+using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Forms;
+using Microsoft.AspNetCore.Components.Rendering;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor;
@@ -115,6 +117,50 @@ public sealed class ReleaseDeletionComponentTests : AsyncBunitContext
         cut.FindAll("[data-testid=local-release-imports] button")
             .Single(button => button.TextContent.Trim() == "Delete local release and files");
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task NavigationBeforePreviewOrConfirmationCompletesDoesNotDelete(bool confirmationOpened)
+    {
+        if (!confirmationOpened)
+            _artifacts.PendingPreview = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var dialogs = Render<MudDialogProvider>();
+        var host = Render<ReleaseHost>();
+        var cut = host.FindComponent<ClientsMgmt>();
+        cut.WaitForAssertion(() => DeleteButton(cut).Should().NotBeNull());
+        var operation = DeleteButton(cut).ClickAsync(new MouseEventArgs());
+        if (confirmationOpened)
+            dialogs.WaitForAssertion(() => dialogs.Markup.Should().Contain($"Delete local release {Version}?"));
+        else
+            cut.WaitForAssertion(() => _artifacts.PreviewVersions.Should().Equal(Version));
+
+        // Remove the routed page through the renderer while the layout's dialog provider
+        // remains mounted. This invokes the real IAsyncDisposable component lifecycle.
+        await host.InvokeAsync(host.Instance.HideClients);
+        cut.IsDisposed.Should().BeTrue();
+        if (confirmationOpened)
+            dialogs.FindAll("button").Single(button => button.TextContent.Trim() == "Delete local release and files").Click();
+        else
+            _artifacts.PendingPreview!.SetResult(_artifacts.CreatePlan(Version));
+        await operation.WaitAsync(TimeSpan.FromSeconds(5));
+
+        _artifacts.DeleteCalls.Should().Be(0);
+        _artifacts.DeletedVersions.Should().BeEmpty();
+        if (!confirmationOpened)
+            dialogs.Markup.Should().NotContain($"Delete local release {Version}?");
+    }
+
+    private sealed class ReleaseHost : ComponentBase
+    {
+        private bool _showClients = true;
+        public ReleaseHost() { }
+        public void HideClients() { _showClients = false; StateHasChanged(); }
+        protected override void BuildRenderTree(RenderTreeBuilder builder)
+        {
+            if (_showClients) { builder.OpenComponent<ClientsMgmt>(0); builder.CloseComponent(); }
+        }
+    }
+
     private sealed class InactiveActivityStream : IClientUpdateActivityStream
     {
         public Task StartAsync(int? tenantId, Func<ClientUpdateActivityEvent, Task> onNotification, Action<string> onStatus, CancellationToken ct = default) => Task.CompletedTask;
@@ -139,6 +185,7 @@ public sealed class ReleaseDeletionComponentTests : AsyncBunitContext
         public int DeleteCalls { get; private set; }
         public List<string> PreviewVersions { get; } = [];
         public List<string> DeletedVersions { get; } = [];
+        public TaskCompletionSource<ClientReleaseDeletionPlanModel>? PendingPreview { get; set; }
         private ClientReleaseDeletionStatusModel? _receipt;
         private static readonly Guid ImportId = Guid.Parse("6c874e17-645a-492b-909c-77d88e742a7a");
 
@@ -152,10 +199,12 @@ public sealed class ReleaseDeletionComponentTests : AsyncBunitContext
         public Task<ClientReleaseDeletionPlanModel> PreviewLocalReleaseDeletionAsync(string version, CancellationToken ct = default)
         {
             PreviewVersions.Add(version);
-            return Task.FromResult(new ClientReleaseDeletionPlanModel { Version = version, RuntimeIds = ["linux-x64", "win-x64"],
-                ReleaseIds = [Guid.Parse("62b1b92a-9703-45d5-8975-59bf93f3142a"), Guid.Parse("d3c5da1b-2b5f-4f9f-b280-ecc80c62b8ac")],
-                ImportIds = [ImportId], ReclaimableBytes = 3 * 1024 * 1024, HistoricalAttempts = 4, Blockers = Blockers });
+            return PendingPreview?.Task ?? Task.FromResult(CreatePlan(version));
         }
+        public ClientReleaseDeletionPlanModel CreatePlan(string version) =>
+            new() { Version = version, RuntimeIds = ["linux-x64", "win-x64"],
+                ReleaseIds = [Guid.Parse("62b1b92a-9703-45d5-8975-59bf93f3142a"), Guid.Parse("d3c5da1b-2b5f-4f9f-b280-ecc80c62b8ac")],
+                ImportIds = [ImportId], ReclaimableBytes = 3 * 1024 * 1024, HistoricalAttempts = 4, Blockers = Blockers };
         public Task<ClientReleaseDeletionStatusModel> DeleteLocalReleaseAsync(string version, CancellationToken ct = default)
         {
             DeleteCalls++;
