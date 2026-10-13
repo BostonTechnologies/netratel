@@ -1,0 +1,119 @@
+@using NetRatel.Shared.Contracts.Netclaw
+@using NetRatel.Web.Services
+@implements IDisposable
+@inject INetclawApiService Api
+
+<span class="netclaw-connection-status" @onmouseenter="ShowDetails" @onmouseleave="HideDetails">
+    <a class="netclaw-connection-badge @StatusClass" href="@Destination" aria-describedby="@_tooltipId"
+       @onfocus="ShowDetails" @onblur="HideDetails" data-testid="netclaw-connection-status">@StatusText</a>
+    <span id="@_tooltipId" role="tooltip" class="netclaw-connection-details" hidden="@(!_detailsVisible)">
+        <strong>Netclaw@(string.IsNullOrWhiteSpace(TenantName) ? "" : $" · {TenantName}")</strong>
+        @if (TenantId > 0) { <span>Tenant @TenantId</span> }
+        @if (SafeEndpoint is { } endpoint) { <span>Daemon: @endpoint</span> }
+        @if (Saved?.LastTestSucceeded == true && Saved.LastTestedAtUtc is { } verified)
+        { <span>Last successful saved verification: @Time(verified)</span> }
+        else { <span>No successful saved verification is recorded.</span> }
+        @if (Saved?.LastTestSucceeded == false && Saved.LastTestedAtUtc is { } failed)
+        { <span>Last check failed: @Time(failed)</span> }
+        @if (CurrentObservation is { ObservationAvailable: true } observation && observation.Sessions.Count > 0)
+        {
+            <span>Session observation: @Time(observation.ObservedAtUtc)</span>
+            @foreach (var session in observation.Sessions)
+            {
+                <span>SignalR: @session.SignalRState · investigation @session.InvestigationId</span>
+                <span>Authenticated: @Time(session.AuthenticatedAtUtc)</span>
+                <span>Last activity: @Time(session.LastActivityUtc)</span>
+            }
+            @if (!ObservationFresh) { <span>This observation is stale; current connectivity is unknown.</span> }
+        }
+        else
+        {
+            <span>@(CurrentObservation?.ObservationAvailable == true ? "No active session observation is available for this account." : "No active session observation is available from this API.")</span>
+            <span>A saved verification does not establish a live connection. Idle tenants do not need an active session.</span>
+        }
+    </span>
+</span>
+
+@code {
+    [Parameter] public int TenantId { get; set; }
+    [Parameter] public string? TenantName { get; set; }
+    [Parameter] public NetclawConnectionDto? Connection { get; set; }
+    private readonly string _tooltipId = $"netclaw-status-{Guid.NewGuid():N}";
+    private NetclawConnectionDiagnosticsDto? _diagnostics;
+    private CancellationTokenSource? _observationLifetime;
+    private (int Tenant, Guid Connection, long Revision)? _scope;
+    private bool _detailsVisible, _disposed;
+    private NetclawConnectionDto? Saved => Connection?.TenantId == TenantId ? Connection : null;
+    private NetclawConnectionDiagnosticsDto? CurrentObservation => _diagnostics is { } value && Saved is { } saved &&
+        value.TenantId == TenantId && value.ConnectionId == saved.Id && value.Revision == saved.Revision ? value : null;
+    private bool ObservationFresh => CurrentObservation is { } observation &&
+        DateTimeOffset.UtcNow - observation.ObservedAtUtc <= TimeSpan.FromSeconds(30);
+    private bool LiveConnected => ObservationFresh && CurrentObservation is { ObservationAvailable: true } observation &&
+        observation.Sessions.Any(session => session.SignalRState == NetclawSignalRState.Connected &&
+            DateTimeOffset.UtcNow - session.LastActivityUtc <= TimeSpan.FromMinutes(5));
+    private string Destination => TenantId > 0 ? $"/account/integration-credentials?tab=netclaw&tenantId={TenantId}" : "/account/integration-credentials?tab=netclaw";
+    private string StatusText => Saved switch
+    {
+        { HasDeviceToken: false } => "Connect Netclaw",
+        { Enabled: false } => "○ Netclaw disabled",
+        null => "○ Netclaw status unknown",
+        _ when LiveConnected => "● Netclaw connected",
+        _ when ObservationFresh && CurrentObservation?.Sessions.Any(session => session.SignalRState == NetclawSignalRState.Reconnecting) == true => "↻ Netclaw reconnecting",
+        _ when ObservationFresh && CurrentObservation?.Sessions.Any(session => session.SignalRState == NetclawSignalRState.Connecting) == true => "↻ Netclaw connecting",
+        _ when ObservationFresh && CurrentObservation?.Sessions.Any(session => session.SignalRState == NetclawSignalRState.Disconnected) == true => "○ Netclaw disconnected",
+        _ when CurrentObservation?.Sessions.Count > 0 => "○ Netclaw session stale / unknown",
+        { LastTestSucceeded: false } => "○ Netclaw check failed",
+        { LastTestSucceeded: true } => "✓ Netclaw verified",
+        _ => "○ Netclaw unverified"
+    };
+    private string StatusClass => LiveConnected && Saved is { Enabled: true, HasDeviceToken: true } ? "connected" :
+        Saved is { LastTestSucceeded: false, Enabled: true } ? "failed" : "unverified";
+    private string? SafeEndpoint => Uri.TryCreate(Saved?.DaemonAddress, UriKind.Absolute, out var uri) &&
+        uri.Scheme is "http" or "https" ? new UriBuilder(uri) { UserName = "", Password = "", Query = "", Fragment = "" }.Uri.GetLeftPart(UriPartial.Authority) : null;
+    private static string Time(DateTimeOffset time) => time.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss 'UTC'");
+    private void ShowDetails() => _detailsVisible = true;
+    private void HideDetails() => _detailsVisible = false;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var scope = (TenantId, Saved?.Id ?? Guid.Empty, Saved?.Revision ?? -1);
+        if (_scope == scope || _disposed) return;
+        _scope = scope;
+        _diagnostics = null; _detailsVisible = false;
+        _observationLifetime?.Cancel(); _observationLifetime?.Dispose();
+        _observationLifetime = new CancellationTokenSource();
+        if (TenantId <= 0 || Saved is not { Enabled: true, HasDeviceToken: true }) return;
+        var ct = _observationLifetime.Token;
+        await RefreshAsync(scope, ct);
+        _ = PollAsync(scope, ct);
+    }
+    private async Task RefreshAsync((int Tenant, Guid Connection, long Revision) scope, CancellationToken ct)
+    {
+        NetclawConnectionDiagnosticsDto? result;
+        try { result = await Api.ConnectionDiagnosticsAsync(scope.Tenant, ct); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+        catch (Exception exception) when (exception is HttpRequestException or System.Text.Json.JsonException or IOException or OperationCanceledException) { result = null; }
+        if (_disposed || ct.IsCancellationRequested || _scope != scope) return;
+        _diagnostics = result;
+    }
+    private async Task PollAsync((int Tenant, Guid Connection, long Revision) scope, CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                await RefreshAsync(scope, ct);
+                if (_disposed || ct.IsCancellationRequested || _scope != scope) return;
+                await InvokeAsync(() => { if (!_disposed && _scope == scope) StateHasChanged(); });
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (ObjectDisposedException) when (_disposed) { }
+    }
+    public void Dispose()
+    {
+        _disposed = true; _diagnostics = null;
+        _observationLifetime?.Cancel(); _observationLifetime?.Dispose();
+    }
+}
