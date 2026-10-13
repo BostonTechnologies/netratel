@@ -23,21 +23,26 @@ public sealed class VeloxFlowRuntimeAdapter : IFlowRuntimeAdapter
         {
             var models = new Dictionary<Guid, NodeDefaultViewModel>();
             var ports = new Dictionary<(Guid NodeId, bool Output), SlotDefaultViewModel>();
-            foreach (var definition in lease.Version.Graph.Nodes)
+            var startId = lease.Continuation?.ResumeNodeId ?? lease.Version.Graph.Nodes.Single(node => node.Kind == FlowNodeKind.AlertRaised).Id;
+            var path = new HashSet<Guid> { startId };
+            var currentId = startId;
+            while (lease.Version.Graph.Edges.SingleOrDefault(edge => edge.SourceNodeId == currentId) is { } nextEdge && path.Add(nextEdge.TargetNodeId)) currentId = nextEdge.TargetNodeId;
+            if (!lease.Version.Graph.Nodes.Any(node => node.Id == startId)) return new(FlowRunStatus.Failed, "runtime-checkpoint-invalid");
+            foreach (var definition in lease.Version.Graph.Nodes.Where(node => path.Contains(node.Id)))
             {
                 var node = new NodeDefaultViewModel(); node.SetHelper(new AllowlistedNodeHelper(definition, state)); models.Add(definition.Id, node);
                 await CompleteCommandAsync(tree.CreateNodeCommand, node, cancellationToken).ConfigureAwait(false);
                 if (definition.Kind != FlowNodeKind.AlertRaised) await AddPortAsync(node, definition.Id, false, ports, cancellationToken).ConfigureAwait(false);
                 if (!FlowGraphValidator.IsTerminal(definition.Kind)) await AddPortAsync(node, definition.Id, true, ports, cancellationToken).ConfigureAwait(false);
             }
-            foreach (var edge in lease.Version.Graph.Edges)
+            foreach (var edge in lease.Version.Graph.Edges.Where(edge => path.Contains(edge.SourceNodeId) && path.Contains(edge.TargetNodeId)))
             {
                 await CompleteCommandAsync(tree.SendConnectionCommand, ports[(edge.SourceNodeId, true)], cancellationToken).ConfigureAwait(false);
                 await CompleteCommandAsync(tree.ReceiveConnectionCommand, ports[(edge.TargetNodeId, false)], cancellationToken).ConfigureAwait(false);
                 await CompleteCommandAsync(tree.ResetVirtualLinkCommand, null, cancellationToken).ConfigureAwait(false);
             }
-            if (tree.Links.Count != lease.Version.Graph.Edges.Count) return new(FlowRunStatus.Failed, "runtime-graph-adaptation");
-            var trigger = lease.Version.Graph.Nodes.Single(node => node.Kind == FlowNodeKind.AlertRaised);
+            if (tree.Links.Count != path.Count - 1) return new(FlowRunStatus.Failed, "runtime-graph-adaptation");
+            var trigger = lease.Version.Graph.Nodes.Single(node => node.Id == startId);
             // Root compilation is a plan; the actual engine runs only on this explicit backend ingress path.
             var compiler = new CompilerViewModel();
             var compiled = await compiler.CompileAsync(models[trigger.Id], CompileRole.Root, cancellationToken).ConfigureAwait(false);
@@ -74,7 +79,9 @@ public sealed class VeloxFlowRuntimeAdapter : IFlowRuntimeAdapter
         public Func<FlowIncidentActionDraft, CancellationToken, Task<FlowIncidentActionResult>> Action { get; } = action;
         public int Steps { get; set; }
         public bool Skipped { get; set; }
-        public FlowIncidentFieldsDto? Fields { get; set; }
+        public FlowIncidentFieldsDto? Fields { get; set; } = lease.Continuation?.Fields;
+        public FlowAiResultDto? AiResult { get; set; } = lease.Continuation?.AiResult;
+        public bool Paused { get; set; }
         public FlowRuntimeResult? Result { get; set; }
     }
     private sealed class AllowlistedNodeHelper(FlowNodeDto definition, RunState state) : NodeHelper
@@ -83,7 +90,7 @@ public sealed class VeloxFlowRuntimeAdapter : IFlowRuntimeAdapter
         {
             ct.ThrowIfCancellationRequested();
             if (++state.Steps > FlowLimits.MaximumNodes) throw new InvalidOperationException("runtime-step-limit");
-            if (state.Skipped) return null;
+            if (state.Skipped || state.Paused) return null;
             switch (definition.Kind)
             {
                 case FlowNodeKind.AlertRaised: return state.Lease.Event.Data;
@@ -94,21 +101,41 @@ public sealed class VeloxFlowRuntimeAdapter : IFlowRuntimeAdapter
                     state.Fields = FlowPureEvaluation.Map(definition.Mapping!, state.Lease.Event.Data); return state.Fields;
                 case FlowNodeKind.CreateIncident:
                 case FlowNodeKind.InvestigateWithAi:
-                    if (state.Fields is null) throw new InvalidOperationException("runtime-mapping-required");
+                    var mapping = state.Lease.Version.Graph.Nodes.Single(node => node.Kind == FlowNodeKind.MapIncident).Mapping!;
+                    var incidentFields = FlowPureEvaluation.Map(mapping, state.Lease.Event.Data,
+                        definition.Kind == FlowNodeKind.InvestigateWithAi ? null : state.AiResult);
                     var draft = new FlowIncidentActionDraft(state.Lease.Event.TenantId, state.Lease.RunId, definition.Id,
                         definition.ConnectorId!.Value, definition.ConnectorRevision!.Value, state.Lease.SourceInstanceId,
-                        FlowActionKeys.Create(state.Lease, definition.Id), state.Lease.Event, state.Fields)
-                    { Kind = definition.Kind == FlowNodeKind.InvestigateWithAi ? FlowActionKind.NetclawInvestigation : FlowActionKind.RatelDeskIncident };
+                        FlowActionKeys.Create(state.Lease, definition.Id), state.Lease.Event, incidentFields)
+                    { Kind = definition.Kind == FlowNodeKind.InvestigateWithAi ? FlowActionKind.NetclawInvestigation : FlowActionKind.RatelDeskIncident,
+                        AiSettings = definition.AiSettings,
+                        AiDeadlineAtUtc = definition.Kind == FlowNodeKind.InvestigateWithAi
+                            ? (state.Lease.CreatedAtUtc == default ? state.Lease.Event.OccurredAtUtc : state.Lease.CreatedAtUtc).AddMinutes(definition.AiSettings?.DeadlineMinutes ?? 15) : null };
                     var result = await state.Action(draft, ct).ConfigureAwait(false);
+                    if (definition.Kind == FlowNodeKind.InvestigateWithAi)
+                    {
+                        state.AiResult = result.AiResult;
+                        if (result.Kind == FlowIncidentActionResultKind.Waiting)
+                        {
+                            state.Paused = true;
+                            state.Result = new(result.AiResult?.Status == FlowAiResultStatus.AwaitingApproval ? FlowRunStatus.AwaitingApproval : FlowRunStatus.WaitingForAi, result.Code)
+                            { Continuation = new(definition.Id, state.Fields, result.AiResult) };
+                            return null;
+                        }
+                        if (result.Kind != FlowIncidentActionResultKind.Succeeded &&
+                            (definition.AiSettings?.FailureBehavior == FlowAiFailureBehavior.StopFlow || result.AiResult is null)) state.Paused = true;
+                    }
                     state.Result = new(result.Kind switch { FlowIncidentActionResultKind.Succeeded => FlowRunStatus.Succeeded,
                         FlowIncidentActionResultKind.RetryableSafe => FlowRunStatus.RetryWaiting, FlowIncidentActionResultKind.DeliveryUnknown => FlowRunStatus.DeliveryUnknown, _ => FlowRunStatus.Failed }, result.Code);
-                    return result.Receipt;
+                    return definition.Kind == FlowNodeKind.InvestigateWithAi ? new FlowAiOutputDto(state.Lease.Event.Data, state.AiResult) : result.Receipt;
                 case FlowNodeKind.ActionGroup:
-                    if (state.Fields is null) throw new InvalidOperationException("runtime-mapping-required");
+                    state.Fields = FlowPureEvaluation.Map(state.Lease.Version.Graph.Nodes.Single(node => node.Kind == FlowNodeKind.MapIncident).Mapping!, state.Lease.Event.Data, state.AiResult);
                     // Every action owns a separate scope/receipt. Start all bounded siblings so one
                     // slow destination cannot consume their opportunity to run within this lease.
                     var results = await Task.WhenAll(definition.Actions!.Select(action => ExecuteChildAsync(action, ct))).ConfigureAwait(false);
                     state.Result = FlowActionOutcomes.Aggregate(results);
+                    if (state.Result.Status is FlowRunStatus.WaitingForAi or FlowRunStatus.AwaitingApproval)
+                        state.Result = state.Result with { Continuation = new(definition.Id, state.Fields, state.AiResult) };
                     return null;
                 default: throw new InvalidOperationException("runtime-node-kind");
             }
@@ -118,7 +145,9 @@ public sealed class VeloxFlowRuntimeAdapter : IFlowRuntimeAdapter
         {
             var draft = new FlowIncidentActionDraft(state.Lease.Event.TenantId, state.Lease.RunId, target.Id,
                 target.ConnectorId!.Value, target.ConnectorRevision!.Value, state.Lease.SourceInstanceId,
-                FlowActionKeys.Create(state.Lease, target.Id), state.Lease.Event, state.Fields!) { Kind = target.Kind };
+                FlowActionKeys.Create(state.Lease, target.Id), state.Lease.Event, state.Fields!) { Kind = target.Kind,
+                    AiDeadlineAtUtc = target.Kind == FlowActionKind.NetclawInvestigation
+                        ? (state.Lease.CreatedAtUtc == default ? state.Lease.Event.OccurredAtUtc : state.Lease.CreatedAtUtc).AddMinutes(15) : null };
             try { return await state.Action(draft, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return new(FlowIncidentActionResultKind.Failed, "action-cancelled"); }
             catch (Exception) { return new(FlowIncidentActionResultKind.Failed, "action-execution-failed"); }

@@ -38,16 +38,29 @@ public sealed partial class NetclawInvestigationWorker
         if (row.FlowRunId is not { } runId || row.SourceActionKey is null) return false;
         var db = provider.GetRequiredService<OrchestratorDbContext>();
         var action = await db.FlowActions.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == row.TenantId && x.RunId == runId && x.IdempotencyKey == row.SourceActionKey, ct);
-        if (action is null || action.Status is not (FlowActionStatus.Dispatching or FlowActionStatus.Succeeded)) return false;
+        if (action is null || action.Status is not (FlowActionStatus.Dispatching or FlowActionStatus.WaitingForAi or FlowActionStatus.AwaitingApproval or FlowActionStatus.Succeeded)) return false;
         var draft = JsonSerializer.Deserialize<FlowIncidentActionDraft>(action.DraftJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         if (draft is null || draft.Kind != FlowActionKind.NetclawInvestigation || draft.TenantId != row.TenantId || draft.RunId != runId ||
             draft.IdempotencyKey != row.SourceActionKey || draft.ConnectorId != profile.Id || draft.ConnectorRevision != profile.Revision ||
             draft.Event.OccurrenceId != row.OccurrenceId || draft.Event.EventId != row.ActiveMessageId ||
             draft.Event.Authority.PrincipalId != row.CreatedBy || draft.Event.Authority.IntegrationCredentialId != row.ActiveCredentialId) return false;
+        // Historical AI-only runs recorded queue admission as success. They may finish their already admitted first turn,
+        // while new completed actions can never admit another automated message.
+        if (action.Status == FlowActionStatus.Succeeded && (draft.AiDeadlineAtUtc is not null || action.AiResultJson is not null)) return false;
         await using var tx = await db.Database.BeginTransactionAsync(ct);
-        var decision = await MonitoringStore.LockAndAdmitInvestigationAsync(db, draft.Event, runId, clock, ct);
+        var expired = draft.AiDeadlineAtUtc is { } deadline && clock.GetUtcNow() >= deadline;
+        var decision = expired ? new FlowDispatchDecision(false, "ai-investigation-timeout")
+            : await MonitoringStore.LockAndAdmitInvestigationAsync(db, draft.Event, runId, clock, ct);
+        expired = draft.AiDeadlineAtUtc is { } currentDeadline && clock.GetUtcNow() >= currentDeadline;
+        if (expired)
+        {
+            var current = await db.Set<AiInvestigationRecord>().FromSqlInterpolated($"SELECT * FROM \"AiInvestigations\" WHERE \"Id\" = {row.Id} FOR UPDATE").AsNoTracking().SingleAsync(ct);
+            if (current.ActiveMessageId == draft.Event.EventId)
+                await InvestigationStore.StageTurnResultAsync(db, current, FlowAiResultStatus.Timeout, clock.GetUtcNow(), ct);
+            await db.SaveChangesAsync(ct);
+        }
         await tx.CommitAsync(ct);
-        return decision.Allowed;
+        return !expired && decision.Allowed;
     }
 
     private async Task NotSentAsync(Guid id, Guid? messageId, string reason, CancellationToken ct)
@@ -60,6 +73,7 @@ public sealed partial class NetclawInvestigationWorker
         {
             row.State = InvestigationState.Idle;
             InvestigationStore.Append(db, row, "dispatch_not_sent", reason);
+            await InvestigationStore.StageTurnResultAsync(db, row, FlowAiResultStatus.Failed, clock.GetUtcNow(), ct);
             await db.SaveChangesAsync(ct);
         }
         await tx.CommitAsync(ct);

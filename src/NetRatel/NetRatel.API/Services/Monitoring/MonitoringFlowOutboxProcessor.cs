@@ -77,7 +77,7 @@ public sealed class MonitoringFlowOutboxProcessor(IMonitoringStore store, IFlowE
     private async Task<MonitoringFlowOutcomeDto?> ReadVerifiedTerminalAsync(MonitoringOutboxIntent intent, FlowRunSummaryDto run,
         CancellationToken cancellationToken)
     {
-        if (run.Status is FlowRunStatus.Queued or FlowRunStatus.Running or FlowRunStatus.RetryWaiting ||
+        if (run.Status is FlowRunStatus.Queued or FlowRunStatus.Running or FlowRunStatus.RetryWaiting or FlowRunStatus.WaitingForAi or FlowRunStatus.AwaitingApproval ||
             !Enum.IsDefined(run.Status) || run.CompletedAtUtc is not { } completed || completed == default || completed > clock.GetUtcNow()) return null;
         var canonical = MonitoringFlowEventFactory.Create(intent);
         if (canonical is null) return null;
@@ -89,7 +89,7 @@ public sealed class MonitoringFlowOutboxProcessor(IMonitoringStore store, IFlowE
         if (detail is null || detail.Run != run || detail.Input != canonical.Data || detail.Actions.Count > targets.Count ||
             detail.Actions.Select(action => action.NodeId).Distinct().Count() != detail.Actions.Count ||
             detail.Actions.Any(action => !targets.TryGetValue(action.NodeId, out var target) || target.Kind != action.Kind ||
-                !Enum.IsDefined(action.Status) || action.Status is FlowActionStatus.Pending or FlowActionStatus.Dispatching or FlowActionStatus.RetryWaiting ||
+                !Enum.IsDefined(action.Status) || action.Status is FlowActionStatus.Pending or FlowActionStatus.Dispatching or FlowActionStatus.RetryWaiting or FlowActionStatus.WaitingForAi or FlowActionStatus.AwaitingApproval ||
                 action.Status == FlowActionStatus.Succeeded && action.Receipt is null)) return null;
         var successful = detail.Actions.Where(action => action.Status == FlowActionStatus.Succeeded && action.Receipt is not null).ToArray();
         // Never discard a persisted success receipt by translating contradictory

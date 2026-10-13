@@ -111,8 +111,9 @@ public sealed class FlowCanvasAdapter : IAsyncDisposable
     // The shared safe draft validator permits incomplete editing without weakening typed gestures.
     public static bool StructurallySafe(FlowGraphDto graph) => FlowGraphValidator.ValidateDraft(graph).Valid;
 
-    public static string InputType(FlowNodeKind kind) => FlowGraphValidator.IsTerminal(kind) ? "incident" : "alert";
-    public static string OutputType(FlowNodeKind kind) => kind == FlowNodeKind.MapIncident ? "incident" : "alert";
+    public static string InputType(FlowNodeKind kind) => FlowGraphValidator.IsTerminal(kind) ? "incident" : "alert context";
+    public static string OutputType(FlowNodeKind kind) => kind switch
+    { FlowNodeKind.MapIncident => "mapped alert", FlowNodeKind.InvestigateWithAi => "alert + AI result", _ => "alert" };
 
     // ExecuteAsync queues work. Subscribe before execution and await the matching native completion to prevent replay races.
     public static async Task CompleteAsync(IVeloxCommand command, object? parameter, CancellationToken token = default)

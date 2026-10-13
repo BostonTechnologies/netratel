@@ -22,6 +22,19 @@
     @if (_startupError is not null || State.Error is not null) { <MudAlert Severity="Severity.Error" data-testid="monitoring-read-error">@(_startupError ?? State.Error)</MudAlert> }
     @if (_successMessage is not null) { <div role="status" class="monitoring-save-success" data-testid="monitoring-save-success">@_successMessage</div> }
     @if (State.Loading) { <MudProgressLinear Indeterminate="true" aria-label="Loading monitoring" /> }
+    @if (_loadingAlert) { <p role="status">Loading selected alert…</p> }
+    @if (_alertError is not null) { <MudAlert Severity="Severity.Error" data-testid="monitoring-alert-error">@_alertError</MudAlert> }
+    @if (_selectedAlert is { } selected)
+    {
+        <MudPaper Class="monitoring-panel pa-3" data-testid="monitoring-selected-alert" data-occurrence-id="@selected.Occurrence.OccurrenceId">
+            <h2>@selected.Occurrence.PinnedRule.Name</h2>
+            <p>@TenantName · @Label(selected.Occurrence.PinnedRule.Severity) · @(selected.Occurrence.EndedAtUtc is null ? "Active" : "Closed")</p>
+            <ClientIdentity Identity="@(selected.Occurrence.ClientIdentity ?? State.ClientIdentity(selected.AgentId))" />
+            <dl><dt>Resource</dt><dd>@selected.Resource</dd><dt>Raised</dt><dd>@Time(selected.Occurrence.RaisedAtUtc)</dd><dt>Ended</dt><dd>@Time(selected.Occurrence.EndedAtUtc)</dd><dt>Occurrence</dt><dd><code>@selected.Occurrence.OccurrenceId</code></dd></dl>
+            @if (selected.Occurrence.FlowOutcome?.FlowRunId is { } runId) { <a href="@($"/flows?tenantId={selected.TenantId}&run={runId:D}")">Open flow run</a> }
+            <MudButton OnClick="CloseSelectedAlert">Close alert details</MudButton>
+        </MudPaper>
+    }
     @if (State.Snapshot is { } snapshot)
     {
         @if (_pendingWatchAtSaveTenant == State.TenantId && _pendingWatchAtSaveRevision is { } savedRevision) { <MudAlert Severity="Severity.Warning" data-testid="monitoring-watch-pending-at-save">Configuration revision @savedRevision was saved. The server reported selected service watch updates pending at save time. This notice does not confirm their current activation; fresh service evidence is still required.</MudAlert> }

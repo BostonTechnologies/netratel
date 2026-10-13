@@ -25,6 +25,8 @@ public sealed class AiInvestigationRecord
     public int TenantId { get; set; }
     public Guid RequestId { get; set; }
     public string Title { get; set; } = string.Empty;
+    public string PromptSnapshotsJson { get; set; } = "[]";
+    public string SelectedPromptReferencesJson { get; set; } = "[]";
     public Guid[] AgentIds { get; set; } = [];
     public Guid? OccurrenceId { get; set; }
     public Guid? FlowRunId { get; set; }
@@ -80,6 +82,8 @@ public static class NetclawPersistenceModel
         builder.Entity<AiInvestigationRecord>(entity =>
         {
             entity.ToTable("AiInvestigations"); entity.HasKey(x => x.Id);
+            entity.Property(x => x.PromptSnapshotsJson).HasColumnType("jsonb").HasDefaultValue("[]");
+            entity.Property(x => x.SelectedPromptReferencesJson).HasColumnType("jsonb").HasDefaultValue("[]");
             entity.Property(x => x.Title).HasMaxLength(200); entity.Property(x => x.AgentIds).HasColumnType("uuid[]");
             entity.Property(x => x.SourceActionKey).HasMaxLength(256); entity.Property(x => x.RemoteSessionId).HasMaxLength(256);
             entity.Property(x => x.ProfileFingerprint).HasMaxLength(64); entity.Property(x => x.CreatedBy).HasMaxLength(256);

@@ -1,7 +1,6 @@
-using System.Net;
-using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Clients;
 
 namespace NetRatel.API.Services.AgentDirectory;
 
@@ -32,7 +31,7 @@ public sealed record AgentDirectoryPresentation(
         IReadOnlyList<string>? tags = null,
         string? friendlyName = null)
     {
-        var device = ParseDeviceInfo(deviceInfoJson);
+        var device = ClientDirectoryIdentity.Parse(deviceInfoJson);
         var shortId = agentId.ToString("N")[..8];
         return new(
             tenantId,
@@ -43,7 +42,7 @@ public sealed record AgentDirectoryPresentation(
             device.Architecture,
             isEnabled,
             tenantName,
-            device.ReportedAddress,
+            device.PrimaryAddress,
             tags ?? [],
             string.IsNullOrWhiteSpace(friendlyName) ? null : friendlyName.Trim());
     }
@@ -58,53 +57,12 @@ public sealed record AgentDirectoryPresentation(
         Contains(TenantName, term) ||
         AgentId.ToString("D").Contains(term.Trim(), StringComparison.OrdinalIgnoreCase);
 
-    private static DeviceInfo ParseDeviceInfo(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json))
-        {
-            return new(null, null, null, null);
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(json);
-            var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object)
-            {
-                return new(null, null, null, null);
-            }
-
-            return new(
-                ReadString(root, "hostName"),
-                ReadString(root, "os"),
-                ReadString(root, "architecture"),
-                ReadAddress(root, "reportedAddress") ?? ReadAddress(root, "ipAddress"));
-        }
-        catch (JsonException)
-        {
-            return new(null, null, null, null);
-        }
-    }
-
-    private static string? ReadString(JsonElement element, string propertyName) =>
-        element.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
-            ? property.GetString()
-            : null;
-
-    // Read the client's persisted NIC observation. The gateway/proxy peer is
-    // deliberately not an address source, including while this client is offline.
-    private static string? ReadAddress(JsonElement element, string propertyName) =>
-        ReadString(element, propertyName) is { Length: <= 64 } value && IPAddress.TryParse(value, out var address)
-            ? address.ToString()
-            : null;
-
     private static bool Contains(string? value, string term) =>
         !string.IsNullOrWhiteSpace(value) && value.Contains(term.Trim(), StringComparison.OrdinalIgnoreCase);
 
     private static string FirstNonEmpty(params string?[] values) =>
         values.First(value => !string.IsNullOrWhiteSpace(value))!;
 
-    private sealed record DeviceInfo(string? HostName, string? OperatingSystem, string? Architecture, string? ReportedAddress);
 }
 
 internal static class AgentDirectorySearch

@@ -8,6 +8,9 @@ namespace NetRatel.Infrastructure.Persistence;
 
 public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> options) : DbContext(options)
 {
+    public DbSet<AiPromptRecord> AiPrompts => Set<AiPromptRecord>();
+    public DbSet<AiPromptRevisionRecord> AiPromptRevisions => Set<AiPromptRevisionRecord>();
+    public DbSet<AiPromptDefaultRecord> AiPromptDefaults => Set<AiPromptDefaultRecord>();
     public DbSet<NetclawConnectionRecord> NetclawConnections => Set<NetclawConnectionRecord>();
     public DbSet<AiInvestigationRecord> AiInvestigations => Set<AiInvestigationRecord>();
     public DbSet<AiInvestigationEventRecord> AiInvestigationEvents => Set<AiInvestigationEventRecord>();
@@ -132,6 +135,8 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     {
         ClientServiceOperationModel.Configure(modelBuilder);
         NetclawPersistenceModel.Configure(modelBuilder);
+        AiInvestigationContextRecord.Configure(modelBuilder);
+        AiPromptPersistenceModel.Configure(modelBuilder);
         MonitoringPersistenceModel.Configure(modelBuilder);
         FlowPersistenceModel.Configure(modelBuilder);
         FlowReceiverEvidenceModel.Configure(modelBuilder);

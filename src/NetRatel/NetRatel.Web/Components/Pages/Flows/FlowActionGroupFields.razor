@@ -39,7 +39,7 @@
     <button type="button" disabled="@(Disabled || (Node.Actions?.Count ?? 0) >= FlowLimits.MaximumActionsPerGroup)" @onclick="AddAsync" data-testid="flow-action-add">Add action</button>
     <p class="flow-help">@(Node.Actions?.Count ?? 0) / @FlowLimits.MaximumActionsPerGroup actions</p>
     <button type="button" disabled="@Disabled" @onclick="ManageTargetsRequested" data-testid="flow-manage-notifications">Manage notification targets</button>
-    <a href="@($"/ai/integration?tenantId={TenantId}")">Configure Netclaw</a>
+    <a href="@($"/account/integration-credentials?tab=netclaw&tenantId={TenantId}")">Configure Netclaw</a>
 </div>
 
 @code {

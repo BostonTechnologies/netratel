@@ -18,9 +18,11 @@ public static class NetclawEndpoints
         var group = app.MapGroup("/api/v1/tenants/{tenantId:int}/ai").WithTags("AI investigations")
             .AddEndpointFilter<NetclawErrorFilter>();
         group.MapGet("/connection", ConnectionAsync).RequireAuthorization(NetclawAuthorization.ReadPolicy);
+        group.MapGet("/connection/diagnostics", ConnectionDiagnosticsAsync).RequireAuthorization(NetclawAuthorization.ReadPolicy);
         group.MapPost("/connection/pair", PairAsync).RequireAuthorization(NetclawAuthorization.ConnectionAdminPolicy);
         group.MapPost("/connection/test", TestAsync).RequireAuthorization(NetclawAuthorization.ConnectionAdminPolicy);
         group.MapPut("/connection/enabled", EnabledAsync).RequireAuthorization(NetclawAuthorization.ConnectionAdminPolicy);
+        group.MapGet("/clients/search", SearchClientsAsync).RequireAuthorization(NetclawAuthorization.ReadPolicy);
         group.MapGet("/clients", ClientsAsync).RequireAuthorization(NetclawAuthorization.ReadPolicy);
         group.MapGet("/investigations", ListAsync).RequireAuthorization(NetclawAuthorization.ReadPolicy);
         group.MapPost("/investigations", CreateAsync).RequireAuthorization(NetclawAuthorization.ReadPolicy, NetclawAuthorization.ManagePolicy);
@@ -55,6 +57,20 @@ public static class NetclawEndpoints
         NetclawProfileService profiles, CancellationToken ct) =>
         await AllowedAsync(tenantId, NetRatelPermissions.TelemetryRead, http, access, ct) ? Results.Ok(await profiles.GetAsync(tenantId, ct)) : Results.Forbid();
 
+    internal static async Task<IResult> ConnectionDiagnosticsAsync(int tenantId, HttpContext http, IEffectiveAccessService access,
+        NetclawProfileService profiles, NetclawInvestigationWorker worker, OrchestratorDbContext db, CancellationToken ct)
+    {
+        if (!await AllowedAsync(tenantId, NetRatelPermissions.TelemetryRead, http, access, ct)) return Results.Forbid();
+        var observation = worker.ConnectionDiagnostics(await profiles.GetAsync(tenantId, ct));
+        if (observation.Sessions.Count == 0) return Results.Ok(observation);
+        var includeAlerts = await AllowedAsync(tenantId, NetRatelPermissions.MonitoringRead, http, access, ct);
+        var ids = observation.Sessions.Select(session => session.InvestigationId).ToArray();
+        var readable = await db.Set<AiInvestigationRecord>().AsNoTracking()
+            .Where(row => row.TenantId == tenantId && ids.Contains(row.Id) && (includeAlerts || row.OccurrenceId == null))
+            .Select(row => row.Id).ToListAsync(ct);
+        return Results.Ok(observation with { Sessions = observation.Sessions.Where(session => readable.Contains(session.InvestigationId)).ToArray() });
+    }
+
     internal static async Task<IResult> PairAsync(int tenantId, NetclawPairRequest request, HttpContext http,
         IEffectiveAccessService access, NetclawProfileService profiles, IEventRecorder audit, CancellationToken ct)
     {
@@ -81,6 +97,11 @@ public static class NetclawEndpoints
     internal static async Task<IResult> ClientsAsync(int tenantId, HttpContext http, IEffectiveAccessService access,
         InvestigationStore store, CancellationToken ct) =>
         await AllowedAsync(tenantId, NetRatelPermissions.TelemetryRead, http, access, ct) ? Results.Ok(await store.ClientsAsync(tenantId, null, ct)) : Results.Forbid();
+
+    internal static async Task<IResult> SearchClientsAsync(int tenantId, string? search, int? offset, HttpContext http,
+        IEffectiveAccessService access, InvestigationStore store, CancellationToken ct) =>
+        await AllowedAsync(tenantId, NetRatelPermissions.TelemetryRead, http, access, ct)
+            ? Results.Ok(await store.SearchClientsAsync(tenantId, search, offset ?? 0, ct)) : Results.Forbid();
 
     internal static async Task<IResult> ListAsync(int tenantId, int? skip, HttpContext http, IEffectiveAccessService access,
         InvestigationStore store, CancellationToken ct)

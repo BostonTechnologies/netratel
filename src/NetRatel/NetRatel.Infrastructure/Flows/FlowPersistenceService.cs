@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Application.Flows;
+using NetRatel.Application.Netclaw;
+using NetRatel.Shared.Contracts.Netclaw;
 using NetRatel.Application.RatelDesk;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts.Flows;
@@ -50,11 +52,14 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
         return new(FlowWriteDisposition.Stored, Definition(row));
     });
 
-    public Task<FlowDefinitionWriteResult> SaveDraftAsync(int tenantId, Guid flowId, FlowSaveDraftRequest request, string actorId, CancellationToken ct = default)
+    public async Task<FlowDefinitionWriteResult> SaveDraftAsync(int tenantId, Guid flowId, FlowSaveDraftRequest request, string actorId, CancellationToken ct = default)
     {
         var validation = FlowGraphValidator.ValidateDraft(request.Graph);
-        if (!ValidName(request.Name) || !validation.Valid) return Task.FromResult(new FlowDefinitionWriteResult(FlowWriteDisposition.Invalid, Code: validation.Issues.FirstOrDefault()?.Code ?? "flow-name"));
-        return MutateAsync(tenantId, flowId, request.ExpectedRevision, actorId, "draft-saved", row => { row.Name = request.Name.Trim(); row.DraftJson = Serialize(request.Graph); }, ct);
+        if (!ValidName(request.Name) || !validation.Valid) return new FlowDefinitionWriteResult(FlowWriteDisposition.Invalid, Code: validation.Issues.FirstOrDefault()?.Code ?? "flow-name");
+        if (await ResolveFlowPromptsAsync(tenantId, request.Graph, false, ct) is null) return new(FlowWriteDisposition.Invalid, Code: "ai-prompt-unavailable");
+        var draft = request.Graph with { Nodes = request.Graph.Nodes.Select(node => node.AiSettings is { } settings
+            ? node with { AiSettings = settings with { PinnedPrompts = null } } : node).ToArray() };
+        return await MutateAsync(tenantId, flowId, request.ExpectedRevision, actorId, "draft-saved", row => { row.Name = request.Name.Trim(); row.DraftJson = Serialize(draft); }, ct);
     }
     public Task<FlowDefinitionWriteResult> SetEnabledAsync(int tenantId, Guid flowId, FlowEnabledRequest request, string actorId, CancellationToken ct = default) =>
         MutateAsync(tenantId, flowId, request.ExpectedRevision, actorId, request.Enabled ? "enabled" : "disabled", row => row.Enabled = request.Enabled, ct);
@@ -114,6 +119,8 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
             FlowNodeKind.ActionGroup => node with { Actions = node.Actions!.Select(action => pinned[action.Id]).ToArray() },
             _ => node
         }).ToArray() };
+        graph = await ResolveFlowPromptsAsync(tenantId, graph, true, ct).ConfigureAwait(false);
+        if (graph is null) return new(FlowWriteDisposition.Invalid, Code: "ai-prompt-unavailable");
         if (!FlowGraphValidator.ValidatePublished(graph).Valid) return new(FlowWriteDisposition.Invalid, Code: "published-graph");
         var json = Serialize(graph); var version = new FlowVersionRecord { Id = Guid.NewGuid(), FlowId = flowId, TenantId = tenantId, VersionNumber = row.PublishedVersionNumber + 1,
             GraphJson = json, ConfigurationHash = FlowContractValidation.Hash(Encoding.UTF8.GetBytes(json)), PublishedBy = authority.PrincipalId, PublishedAtUtc = clock.GetUtcNow() };
@@ -144,7 +151,10 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
         return new(Summary(row), Parse<FlowEventEnvelope>(row.EventJson).Data, actions.Select(action => new FlowActionSummaryDto(action.NodeId, action.IdempotencyKey, action.Status, action.Attempts,
             action.ConnectorRevision, action.Code, action.ReceiptJson is null ? null : Parse<FlowActionReceiptDto>(action.ReceiptJson))
             { Kind = targets.GetValueOrDefault(action.NodeId)?.Kind ?? FlowActionKind.RatelDeskIncident,
-                Name = targets.GetValueOrDefault(action.NodeId)?.Name }).ToArray());
+                Name = targets.GetValueOrDefault(action.NodeId)?.Name,
+                AiResult = action.AiResultJson is null ? null : Parse<FlowAiResultDto>(action.AiResultJson),
+                AiFailureBehavior = targets.GetValueOrDefault(action.NodeId)?.Kind == FlowActionKind.NetclawInvestigation
+                    ? Parse<FlowGraphDto>(version.GraphJson).Nodes.SingleOrDefault(node => node.Id == action.NodeId)?.AiSettings?.FailureBehavior ?? FlowAiFailureBehavior.ContinueWithAlert : null }).ToArray());
     }
 
     public Task<FlowIngressResult> EnqueueAsync(FlowEventEnvelope input, CancellationToken ct = default) => WithDb(async (db, _) =>
@@ -160,7 +170,7 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
         var version = await db.FlowVersions.AsNoTracking().SingleOrDefaultAsync(row => row.TenantId == input.TenantId && row.Id == input.FlowVersionId, ct).ConfigureAwait(false);
         if (version is null || !FlowGraphValidator.ValidatePublished(Parse<FlowGraphDto>(version.GraphJson)).Valid) return new(FlowIngressDisposition.Invalid, Code: "flow-version");
         var enabled = await db.FlowDefinitions.AnyAsync(row => row.TenantId == input.TenantId && row.Id == version.FlowId && row.Enabled, ct).ConfigureAwait(false);
-        var active = new[] { FlowRunStatus.Queued, FlowRunStatus.Running, FlowRunStatus.RetryWaiting };
+        var active = new[] { FlowRunStatus.Queued, FlowRunStatus.Running, FlowRunStatus.RetryWaiting, FlowRunStatus.WaitingForAi, FlowRunStatus.AwaitingApproval };
         if (await db.FlowRuns.CountAsync(row => row.TenantId == input.TenantId, ct).ConfigureAwait(false) >= FlowLimits.MaximumRunsPerTenant ||
             await db.FlowRuns.CountAsync(row => row.TenantId == input.TenantId && active.Contains(row.Status), ct).ConfigureAwait(false) >= FlowLimits.MaximumQueuedRunsPerTenant) return new(FlowIngressDisposition.CapacityExceeded);
         var run = new FlowRunRecord { Id = Guid.NewGuid(), TenantId = input.TenantId, FlowId = version.FlowId, FlowVersionId = version.Id, EventId = input.EventId,
@@ -168,6 +178,27 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
             CompletedAtUtc = enabled ? null : clock.GetUtcNow(), Code = enabled ? null : "flow-disabled" };
         db.FlowRuns.Add(run); await db.SaveChangesAsync(ct).ConfigureAwait(false); if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false);
         return new(enabled ? FlowIngressDisposition.Enqueued : FlowIngressDisposition.Disabled, run.Id, run.Code);
+    });
+
+    private Task<FlowGraphDto?> ResolveFlowPromptsAsync(int tenantId, FlowGraphDto graph, bool pin, CancellationToken ct) => WithDb<FlowGraphDto?>(async (_, provider) =>
+    {
+        var nodes = new List<FlowNodeDto>();
+        foreach (var node in graph.Nodes)
+        {
+            if (node.AiSettings is not { OptionalPrompts.Count: > 0 } settings) { nodes.Add(node); continue; }
+            var library = provider.GetService<IPromptLibraryService>();
+            if (library is null) return null;
+            var snapshots = new List<AiPromptSnapshot>();
+            try
+            {
+                foreach (var reference in settings.OptionalPrompts)
+                    snapshots.Add(await library.ResolveAsync(tenantId, reference, allowArchived: false, ct: ct).ConfigureAwait(false));
+            }
+            catch (KeyNotFoundException) { return null; }
+            catch (ArgumentException) { return null; }
+            nodes.Add(pin ? node with { AiSettings = settings with { PinnedPrompts = snapshots } } : node);
+        }
+        return graph with { Nodes = nodes };
     });
 
     private static bool ValidName(string name) => FlowGraphValidator.IsBoundedText(name, FlowLimits.MaximumNameLength);

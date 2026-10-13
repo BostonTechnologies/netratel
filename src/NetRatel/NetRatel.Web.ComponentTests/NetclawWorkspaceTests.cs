@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Shared.Contracts.Netclaw;
 using NetRatel.Web.Components.Pages.AIOps;
+using NetRatel.Web.Components.Shared.Netclaw;
 using NetRatel.Web.Services;
 using Xunit;
 
@@ -17,7 +18,7 @@ public sealed class NetclawWorkspaceTests : AsyncBunitContext
     [Fact]
     public async Task Pairing_uses_expected_revision_and_clears_code_when_saved_verification_fails()
     {
-        var cut = Render<NetclawConnection>();
+        var cut = Render<NetclawConnectionPanel>();
         await cut.WaitForAssertionAsync(() => Assert.NotEmpty(cut.FindAll("[data-testid=netclaw-address]")));
         cut.Find("[data-testid=netclaw-address]").Change("https://daemon.example");
         cut.Find("[data-testid=netclaw-pairing-code]").Change("one-time-secret-code");
@@ -50,6 +51,27 @@ public sealed class NetclawWorkspaceTests : AsyncBunitContext
     }
 
     [Fact]
+    public async Task Byte_validation_preserves_question_and_allows_editing_before_another_explicit_send()
+    {
+        api.RejectValidation = true;
+        Services.GetRequiredService<NavigationManager>().NavigateTo($"/ai/ops?tenantId=17&investigation={api.Id}");
+        var cut = Render<Tools>();
+        await cut.WaitForAssertionAsync(() => Assert.Contains("Existing evidence", cut.Markup));
+        const string question = "Keep this question while reducing its size";
+        cut.Find("textarea").Change(question);
+        await cut.FindAll("button").Single(x => x.TextContent == "Send").ClickAsync(new());
+        await cut.WaitForAssertionAsync(() => Assert.Contains("28,000 byte context limit", cut.Markup));
+        Assert.Equal(question, cut.Find("textarea").GetAttribute("value"));
+        Assert.False(cut.Find("textarea").HasAttribute("disabled"));
+        Assert.Equal(question, Assert.Single(api.Messages).Text);
+        await cut.FindAll("button").Single(x => x.TextContent == "Send").ClickAsync(new());
+        Assert.Equal(question, api.Messages[1].Text);
+        Assert.NotEqual(api.Messages[0].MessageId, api.Messages[1].MessageId);
+        cut.Find("textarea").Change("A shorter question");
+        Assert.Equal(2, api.Messages.Count);
+    }
+
+    [Fact]
     public async Task Read_only_workspace_shows_saved_evidence_without_exposing_send_or_approval_controls()
     {
         api.CanInvestigate = false;
@@ -65,7 +87,7 @@ public sealed class NetclawWorkspaceTests : AsyncBunitContext
     private sealed class WorkspaceApi : INetclawApiService
     {
         public Guid Id { get; } = Guid.NewGuid(); private readonly Guid agent = Guid.NewGuid();
-        public bool CanInvestigate = true; public List<InvestigationMessageRequest> Messages { get; } = [];
+        public bool CanInvestigate = true; public bool RejectValidation; public List<InvestigationMessageRequest> Messages { get; } = [];
         public List<NetclawPairRequest> PairRequests { get; } = [];
         private InvestigationMessageRequest? accepted;
         private InvestigationSummaryDto Summary => new(Id, 17, "Worker health", accepted is null ? InvestigationState.Idle : InvestigationState.Queued, [agent], null, null, DateTimeOffset.UtcNow, "operator");
@@ -89,6 +111,7 @@ public sealed class NetclawWorkspaceTests : AsyncBunitContext
         public Task<InvestigationSnapshotDto> SendAsync(int tenantId, Guid id, InvestigationMessageRequest request, CancellationToken ct = default)
         {
             Messages.Add(request);
+            if (RejectValidation) throw new HttpRequestException("28,000 byte context limit exceeded.", null, HttpStatusCode.BadRequest);
             if (Messages.Count == 1) throw new HttpRequestException("Synthetic interrupted request", null, HttpStatusCode.BadGateway);
             accepted = request; return Task.FromResult(Snapshot());
         }

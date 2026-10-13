@@ -26,6 +26,7 @@ public static class FlowPersistenceModel
         builder.Entity<FlowRunRecord>(entity =>
         {
             entity.ToTable("FlowRuns"); entity.HasKey(row => row.Id); entity.HasAlternateKey(row => new { row.TenantId, row.Id });
+            entity.Property(row => row.ContinuationJson).HasColumnType("jsonb");
             entity.Property(row => row.EventJson).HasColumnType("jsonb").IsRequired();
             entity.Property(row => row.EventFingerprint).HasMaxLength(64).IsRequired();
             entity.Property(row => row.Status).HasConversion<int>(); entity.Property(row => row.Code).HasMaxLength(128);
@@ -40,6 +41,7 @@ public static class FlowPersistenceModel
             entity.ToTable("FlowActions"); entity.HasKey(row => new { row.RunId, row.NodeId });
             entity.HasAlternateKey(row => new { row.TenantId, row.RunId, row.NodeId });
             entity.Property(row => row.IdempotencyKey).HasMaxLength(200).IsRequired(); entity.HasIndex(row => new { row.TenantId, row.IdempotencyKey }).IsUnique();
+            entity.Property(row => row.AiResultJson).HasColumnType("jsonb");
             entity.Property(row => row.DraftJson).HasColumnType("jsonb").IsRequired(); entity.Property(row => row.PreparedJson).HasColumnType("jsonb");
             entity.Property(row => row.SemanticFingerprint).HasMaxLength(64); entity.Property(row => row.ReceiptJson).HasColumnType("jsonb");
             entity.Property(row => row.Code).HasMaxLength(128); entity.Property(row => row.Status).HasConversion<int>();
@@ -50,6 +52,13 @@ public static class FlowPersistenceModel
             entity.ToTable("FlowAudits"); entity.HasKey(row => row.Id);
             entity.Property(row => row.ActorId).HasMaxLength(256).IsRequired(); entity.Property(row => row.Operation).HasMaxLength(64).IsRequired();
             entity.HasIndex(row => new { row.TenantId, row.FlowId, row.AtUtc });
+        });
+        builder.Entity<Netclaw.AiInvestigationTurnResultRecord>(entity =>
+        {
+            entity.ToTable("AiInvestigationTurnResults");
+            entity.HasKey(row => new { row.TenantId, row.InvestigationId, row.MessageId });
+            entity.Property(row => row.ResultJson).HasColumnType("jsonb").IsRequired();
+            entity.HasOne<Netclaw.AiInvestigationRecord>().WithMany().HasForeignKey(row => row.InvestigationId).OnDelete(DeleteBehavior.Cascade);
         });
         builder.Entity<FlowRuntimeIdentityRecord>(entity => { entity.ToTable("FlowRuntimeIdentity"); entity.HasKey(row => row.Id); entity.Property(row => row.Id).ValueGeneratedNever(); });
     }

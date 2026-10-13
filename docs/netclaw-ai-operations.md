@@ -1,6 +1,6 @@
 # Netclaw AI operations
 
-NetRatel uses the same authenticated native SignalR chat protocol as RatelDesk. Each tenant has its own protected device credential and durable investigations. The AI Ops workspace is `/ai/ops`; connection administration is `/ai/integration`.
+NetRatel uses the same authenticated native SignalR chat protocol as RatelDesk. Each tenant has its own protected device credential and durable investigations. The AI Ops workspace is `/ai/ops`; connection administration is the **Netclaw** tab at `/account/integration-credentials?tab=netclaw&tenantId=<id>`. Older `/ai/integration` bookmarks redirect while preserving the tenant.
 
 ## Connect a daemon
 
@@ -12,7 +12,7 @@ NetRatel uses the same authenticated native SignalR chat protocol as RatelDesk. 
 
 Use the daemon root address or its `/hub/session` URL. HTTPS is supported. Explicit private IP literals printed by Netclaw can use HTTP under the same private-network policy as RatelDesk; arbitrary public HTTP, URL credentials, query strings, alternate hub paths, metadata destinations, redirects, and unsafe resolved addresses are rejected. Preserve the deployment's Data Protection keys when replacing an API container so stored device credentials remain usable.
 
-**Connected** means the saved profile last passed an authenticated SignalR verification. It is a last-test result, rather than a continuous daemon health guarantee. A new profile revision invalidates that result and retires affected active transports. Disabling the connection stops new turns; an already running remote turn may continue and its outcome remains available for recovery.
+The green **Connected** badge requires a fresh observation from the existing authenticated SignalR session owner. Historical verification is shown separately with its recorded time. Hover or keyboard focus shows the authorized endpoint and available session activity; an idle tenant or another API replica can have no current observation. Viewing diagnostics does not connect a new session. A new profile revision invalidates verification and retires affected active transports. Disabling the connection stops new turns; an already running remote turn may continue and its outcome remains available for recovery.
 
 ### Grant tool access separately
 
@@ -24,9 +24,15 @@ Choose a credential whose permitted tenant and clients match the investigation's
 
 ## Investigate manually or from an alert
 
-The workspace lists recent manual and alert-linked investigations, with separate counts for running turns, pending approvals, and unconfirmed outcomes. Choose a title and 1–20 client IDs for a new investigation. The picker searches hostname, friendly name, and tags. It excludes deleted and superseded registrations. The selected context stays attached to the investigation so later messages refer to the same systems.
+The workspace lists recent manual and alert-linked investigations, with separate counts for running turns, pending approvals, and unconfirmed outcomes. Choose a title and 1–20 client IDs for a new investigation. The picker searches hostname, friendly name, IP addresses and tags using the authorized client directory. It excludes deleted and superseded registrations. Unknown hostnames are labelled explicitly; immutable IDs remain available as references. The selected scope stays attached to the investigation so later messages refer to the same systems.
 
-Each request supplies the selected client identities, bounded metadata and observation times. Alert investigations also include the linked monitoring occurrence and flow-run reference. Large context or message combinations are rejected before transport with an explicit saved event. The assistant can retrieve further detail through its permitted MCP tools.
+Each request supplies tenant ID/name, selected client identities, OS/architecture, IPs, tags, status, version and last-known observation times where available. Offline observations remain explicitly last-known. Alert investigations include the linked monitoring occurrence and flow-run reference. Later turns refresh authorized metadata and record the snapshot actually sent. The shared preflight checks serialized `[sessionId, request]` against 28,000 UTF-8 bytes. Oversized combinations report a useful error and retain the operator's input; required guidance, scope IDs and questions are not silently truncated. The assistant can retrieve further detail through its permitted MCP tools.
+
+### Tenant guidance
+
+Open **AI Ops → Prompts** to create, view, edit, copy or archive tenant guidance using Monaco. Read/use follows `telemetry.read`; management follows `client.manage`. Every save creates an immutable revision and requires the current edit token. Setting or removing the single tenant default also requires its current token. Archiving a default requires explicitly removing or replacing it; archive preserves historical revisions.
+
+New sessions automatically snapshot the tenant default when configured, followed by ordered optional selections from **Add prompts to LLM context**. Zero optional selections is valid. Existing sessions retain their saved guidance after library edits. Published flow optional guidance retains its deliberately published revisions; the tenant default is resolved when a new investigation session is created. Fixed platform instructions, tenant guidance, clearly delimited untrusted observations and the question use one shared composer. Prompt names for MCP connections are guidance text and do not create credentials or expand grants. Creating or previewing a manual investigation does not send an LLM turn; **Send** remains explicit.
 
 The conversation keeps operator messages, completed assistant text, tool activity, approval requests and decisions, and recovery events. Streaming draft text is temporary; committed transcript entries survive browser navigation and API restarts. Refresh and polling retain the existing conversation during transient failures. Text is rendered as text, including untrusted client or assistant content; it is not executed as HTML.
 
@@ -54,11 +60,13 @@ Approval decisions are persisted before transport, bound to the exact active mes
 ## Trigger an investigation from Flows
 
 1. Pair and successfully test the tenant's Netclaw connection.
-2. Create or edit a flow draft with **Alert raised → Map alert fields → AI: Investigate alert**. Select the available Netclaw connection in the AI node.
-3. To combine an investigation with Slack, Discord, or a RatelDesk incident, use an **Action group** and select **AI investigation** as one action type. Converting an existing terminal action to a group preserves its selected target.
+2. Create or edit a flow draft with **Alert raised → Map alert fields → AI: Investigate alert → RatelDesk: Create incident**. Insert AI before an existing incident action and select its Netclaw connection, optional guidance, deadline and failure disposition. An AI-only terminal path remains supported.
+3. An **Action group** still supports independent parallel destinations. Use an AI node before the incident action when the incident must depend on investigation completion.
 4. Preview the draft, review its mapping and targets, publish an immutable version, and bind that published version to the intended monitoring rule.
 
-The preview is inert. Publication pins the connection revision. A monitoring action creates one local investigation using its stable action key and queues one message using its stable event ID; retrying that local admission cannot create another remote turn. The configured principal and credential need `flow.execute`, `telemetry.read`, `monitoring.read`, and `secret.use`. Existing flow publication, rule management, target selection, suppression, and current-evidence gates still apply.
+The preview is inert. Publication pins the connection and optional prompt revisions. A monitoring action creates one local investigation using its stable action key and queues one exact automated message; retrying admission cannot create another remote turn. Queue admission is a waiting checkpoint. The downstream path waits for an explicit committed terminal result correlated to tenant, run/version, action, investigation and message. Approval waits, failure, timeout, cancellation and unknown delivery remain distinct. The default failure disposition continues with original alert facts and a labelled unsuccessful AI outcome; operators can instead stop the flow. The configured principal and credential need `flow.execute`, `telemetry.read`, `monitoring.read`, and `secret.use`. Existing flow publication, rule management, target selection, suppression, and current-evidence gates still apply.
+
+The incident retains original alert facts and adds an **AI investigation** section with outcome, evidence, observation time and the investigation reference. If a mapped description leaves insufficient space, the incident keeps canonical alert facts and a labelled excerpt; the full original event and mapping remain in flow history. AI discovery does not become fresh telemetry. Map-before-AI flows receive the same enrichment. The final semantic incident payload is persisted before its first send; restart, duplicate completion and receiver recovery retain its key and payload. Late completion or a manual follow-up cannot release a second incident.
 
 Before sending an automatic queued message, the worker checks the saved authority, selected clients, exact action/connection revision, current monitoring occurrence/evidence, target membership, silence state, and enabled published flow again. A clear, silence, removed target, disabled flow, changed connection, or revoked credential can therefore prevent a queued message that has not started transport. Completed local admission is a receipt for the investigation's creation; it does not claim that the AI has completed its work. Use **Open AI investigation** from the flow-run result to follow its actual outcome.
 

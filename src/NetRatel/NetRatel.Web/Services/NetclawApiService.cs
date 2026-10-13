@@ -10,10 +10,21 @@ public interface INetclawApiService
 {
     Task<IReadOnlyList<NetclawTenantDto>> TenantsAsync(CancellationToken ct = default);
     Task<NetclawConnectionDto> ConnectionAsync(int tenantId, CancellationToken ct = default);
+    Task<NetclawConnectionDiagnosticsDto?> ConnectionDiagnosticsAsync(int tenantId, CancellationToken ct = default) =>
+        Task.FromResult<NetclawConnectionDiagnosticsDto?>(null);
     Task<NetclawTestResult> PairAsync(int tenantId, NetclawPairRequest request, CancellationToken ct = default);
     Task<NetclawTestResult> TestAsync(int tenantId, CancellationToken ct = default);
     Task<NetclawConnectionDto> EnabledAsync(int tenantId, NetclawEnabledRequest request, CancellationToken ct = default);
     Task<IReadOnlyList<InvestigationClientDto>> ClientsAsync(int tenantId, CancellationToken ct = default);
+    async Task<InvestigationClientPageDto> SearchClientsAsync(int tenantId, string? search = null, int offset = 0, CancellationToken ct = default)
+    {
+        var clients = await ClientsAsync(tenantId, ct);
+        var term = search?.Trim() ?? "";
+        var matches = clients.Where(x => term.Length == 0 || x.HostName.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+            x.FriendlyName?.Contains(term, StringComparison.OrdinalIgnoreCase) == true || x.PrimaryIpAddress?.Contains(term, StringComparison.OrdinalIgnoreCase) == true ||
+            x.Tags.Any(tag => tag.Contains(term, StringComparison.OrdinalIgnoreCase))).Skip(offset).Take(100).ToArray();
+        return new(matches, null);
+    }
     Task<IReadOnlyList<InvestigationSummaryDto>> ListAsync(int tenantId, CancellationToken ct = default);
     Task<InvestigationSnapshotDto> CreateAsync(int tenantId, InvestigationCreateRequest request, CancellationToken ct = default);
     Task<InvestigationSnapshotDto> GetAsync(int tenantId, Guid id, long after = 0, CancellationToken ct = default);
@@ -31,10 +42,14 @@ public sealed class NetclawApiService(IHttpClientFactory factory) : INetclawApiS
     private static string Item(int tenant, Guid id) => $"{Root(tenant)}/investigations/{id:D}";
     public Task<IReadOnlyList<NetclawTenantDto>> TenantsAsync(CancellationToken ct = default) => Read<IReadOnlyList<NetclawTenantDto>>("/api/v1/ai/tenants", ct);
     public Task<NetclawConnectionDto> ConnectionAsync(int tenantId, CancellationToken ct = default) => Read<NetclawConnectionDto>(Root(tenantId) + "/connection", ct);
+    public async Task<NetclawConnectionDiagnosticsDto?> ConnectionDiagnosticsAsync(int tenantId, CancellationToken ct = default) =>
+        await Read<NetclawConnectionDiagnosticsDto>(Root(tenantId) + "/connection/diagnostics", ct);
     public Task<NetclawTestResult> PairAsync(int tenantId, NetclawPairRequest request, CancellationToken ct = default) => Write<NetclawTestResult>(Root(tenantId) + "/connection/pair", request, ct);
     public Task<NetclawTestResult> TestAsync(int tenantId, CancellationToken ct = default) => Write<NetclawTestResult>(Root(tenantId) + "/connection/test", null, ct);
     public Task<NetclawConnectionDto> EnabledAsync(int tenantId, NetclawEnabledRequest request, CancellationToken ct = default) => Send<NetclawConnectionDto>(HttpMethod.Put, Root(tenantId) + "/connection/enabled", request, ct);
     public Task<IReadOnlyList<InvestigationClientDto>> ClientsAsync(int tenantId, CancellationToken ct = default) => Read<IReadOnlyList<InvestigationClientDto>>(Root(tenantId) + "/clients", ct);
+    public Task<InvestigationClientPageDto> SearchClientsAsync(int tenantId, string? search = null, int offset = 0, CancellationToken ct = default) =>
+        Read<InvestigationClientPageDto>(Root(tenantId) + $"/clients/search?offset={offset}&search={Uri.EscapeDataString(search ?? "")}", ct);
     public Task<IReadOnlyList<InvestigationSummaryDto>> ListAsync(int tenantId, CancellationToken ct = default) => Read<IReadOnlyList<InvestigationSummaryDto>>(Root(tenantId) + "/investigations", ct);
     public Task<InvestigationSnapshotDto> CreateAsync(int tenantId, InvestigationCreateRequest request, CancellationToken ct = default) => Write<InvestigationSnapshotDto>(Root(tenantId) + "/investigations", request, ct);
     public Task<InvestigationSnapshotDto> GetAsync(int tenantId, Guid id, long after = 0, CancellationToken ct = default) => Read<InvestigationSnapshotDto>(Item(tenantId, id) + $"?after={after}", ct);

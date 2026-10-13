@@ -109,6 +109,9 @@ public sealed class MonitoringPageStateTests
 
 internal class MonitoringTestApi : IMonitoringApiService
 {
+    public Func<int, Guid, CancellationToken, Task<NetRatel.Shared.Contracts.MonitoringAlertDetailDto>>? AlertRead { get; set; }
+    public Task<NetRatel.Shared.Contracts.MonitoringAlertDetailDto> GetAlertAsync(int tenantId, Guid occurrenceId, CancellationToken token = default) =>
+        AlertRead?.Invoke(tenantId, occurrenceId, token) ?? Task.FromException<NetRatel.Shared.Contracts.MonitoringAlertDetailDto>(new HttpRequestException("Alert unavailable"));
     public int PreviewCalls { get; private set; }
     public IReadOnlyList<MonitoringPublishedFlowDto> PublishedFlows { get; set; } = [];
     public bool CanRead { get; set; } = true;

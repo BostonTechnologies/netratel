@@ -1,0 +1,67 @@
+@page "/search"
+@rendermode InteractiveServer
+@implements IDisposable
+@using System.Net.Http.Json
+@using NetRatel.Shared.Contracts
+@using NetRatel.Web.Services.Search
+@using Microsoft.AspNetCore.Components.Authorization
+@inject IHttpClientFactory Clients
+@inject NavigationManager Navigation
+
+<PageTitle>Search results</PageTitle>
+<MudText Typo="Typo.h5">@Title</MudText>
+<MudText>Results for “@Search”</MudText>
+@if (_loading) { <MudProgressLinear Indeterminate="true" /> }
+@if (_error is not null) { <MudAlert Severity="Severity.Error">@_error</MudAlert> }
+@foreach (var result in _results)
+{
+    <MudPaper Class="pa-3 my-2"><a href="@result.Href">@result.Title</a><MudText>@result.Subtitle</MudText><MudText Typo="Typo.caption">@result.Meta</MudText></MudPaper>
+}
+@if (!_loading && _error is null && _results.Count == 0) { <MudText>No matches on this page.</MudText> }
+<MudButton Disabled="@(_loading || Page <= 1)" OnClick="() => Go(Page - 1)">Previous page</MudButton>
+<MudButton Disabled="@(_loading || !_hasMore || Page >= 4000)" OnClick="() => Go(Page + 1)">Next page</MudButton>
+
+@code {
+    [SupplyParameterFromQuery(Name = "section")] public string? Section { get; set; }
+    [SupplyParameterFromQuery(Name = "search")] public string? Search { get; set; }
+    [SupplyParameterFromQuery(Name = "page")] public int? RequestedPage { get; set; }
+    [CascadingParameter] private Task<AuthenticationState>? Authentication { get; set; }
+    private int Page => Math.Clamp(RequestedPage ?? 1, 1, 4000);
+    private string Title => Section switch { "alerts" => "Monitoring alerts", "flows" => "Flows", "investigations" => "AI investigations", _ => "Search results" };
+    private IReadOnlyList<GlobalSearchResult> _results = [];
+    private CancellationTokenSource? _read;
+    private long _generation;
+    private bool _loading, _hasMore;
+    private string? _error;
+    protected override async Task OnParametersSetAsync()
+    {
+        _read?.Cancel(); _read?.Dispose(); _read = new(); _read.CancelAfter(TimeSpan.FromMilliseconds(1200));
+        var token = _read.Token; var generation = ++_generation;
+        _results = []; _error = null; _hasMore = false;
+        if (Section is not ("alerts" or "flows" or "investigations")) { _error = "Choose an available search group."; return; }
+        var section = Section; var path = $"/api/v1/global-search/{section}?q={Uri.EscapeDataString(Search ?? "")}&pageSize=25&page={Page}";
+        _loading = true;
+        try
+        {
+            var client = Clients.CreateClient("OrchestratorApi");
+            var results = section switch
+            {
+                "alerts" => (await client.GetFromJsonAsync<PagedResult<GlobalSearchAlertDto>>(path, token))?.Items.Select(row =>
+                    new GlobalSearchResult(Title, row.Title, $"{row.TenantName} · {row.ClientName}", $"{row.Severity} · {row.State} · {row.Resource}", $"/monitoring?tenantId={row.TenantId}&alert={row.OccurrenceId:D}", "")).ToArray(),
+                "flows" => (await client.GetFromJsonAsync<PagedResult<GlobalSearchFlowDto>>(path, token))?.Items.Select(row =>
+                    new GlobalSearchResult(Title, row.Title, row.TenantName, $"{(row.Enabled ? "Enabled" : "Disabled")} · {(row.PublishedVersionNumber > 0 ? $"Published v{row.PublishedVersionNumber}" : "Draft")}", $"/flows?tenantId={row.TenantId}&draftId={row.FlowId:D}", "")).ToArray(),
+                _ => (await client.GetFromJsonAsync<PagedResult<GlobalSearchInvestigationDto>>(path, token))?.Items.Select(row =>
+                    new GlobalSearchResult(Title, row.Title, $"{row.TenantName} · {row.ClientContext}", row.State, $"/ai/ops?tenantId={row.TenantId}&investigation={row.InvestigationId:D}", "")).ToArray()
+            };
+            if (token.IsCancellationRequested || generation != _generation) return;
+            _results = results ?? []; _hasMore = _results.Count == 25;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        { if (generation == _generation) _error = "Search timed out. Refresh to retry."; }
+        catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
+        { if (generation == _generation) _error = "Search results could not be loaded. Refresh to retry."; }
+        finally { if (generation == _generation) _loading = false; }
+    }
+    private void Go(int page) => Navigation.NavigateTo($"/search?section={Section}&search={Uri.EscapeDataString(Search ?? "")}&page={page}");
+    public void Dispose() { ++_generation; _read?.Cancel(); _read?.Dispose(); }
+}

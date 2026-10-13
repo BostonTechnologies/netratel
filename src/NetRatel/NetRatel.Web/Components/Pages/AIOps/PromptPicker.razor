@@ -1,0 +1,163 @@
+@using NetRatel.Shared.Contracts.Netclaw
+@using NetRatel.Web.Services
+@implements IDisposable
+@inject IPromptLibraryApiService Api
+
+<section class="ai-prompt-picker" data-testid="ai-prompt-picker">
+    <h4>Add prompts to LLM context <span>(optional)</span></h4>
+    <p class="prompt-help">Guidance is included in the displayed order. Permissions and approvals still apply.</p>
+    @if (_error is not null) { <p role="alert" data-testid="prompt-picker-error">@_error</p> }
+    @if (_loading) { <p role="status">Loading tenant guidance…</p> }
+    <div class="prompt-default" data-testid="prompt-default">
+        @if (EffectiveDefault is { } automatic)
+        { <strong>Always included: @automatic.Name · revision @automatic.Revision</strong><p>@automatic.Description</p> }
+        else { <span>@(_error is null ? "No tenant default guidance is configured." : "Tenant default guidance is unavailable.")</span> }
+        @if (!UseDefaultSnapshot) { <p class="prompt-help">The default is resolved when a new investigation session starts. Existing sessions retain their saved guidance.</p> }
+    </div>
+    <ol class="prompt-selected" data-testid="prompt-selections">
+        @foreach (var reference in Selected)
+        {
+            var snapshot = Snapshot(reference);
+            var current = _current.GetValueOrDefault(reference.PromptId);
+            var index = Index(reference);
+            <li @key="reference.PromptId" data-testid="prompt-selected">
+                <strong>@(snapshot?.Name ?? "Unavailable selected prompt") · revision @reference.Revision</strong>
+                @if (snapshot?.Description is { } description) { <p>@description</p> }
+                @if (current?.Archived == true) { <p role="status">Archived guidance is retained for existing published versions. Remove it before publishing a new draft.</p> }
+                @if (snapshot is null) { <p role="status">The saved revision could not be loaded. Your selection is preserved.</p> }
+                @if (current is { Archived: false } && current.Revision > reference.Revision)
+                {
+                    <p role="status">Revision @current.Revision is available. Updating this draft requires saving and publishing a new version.</p>
+                    <button type="button" disabled="@Disabled" @onclick="() => UseCurrentAsync(reference, current)" data-testid="prompt-use-current">Use revision @current.Revision</button>
+                }
+                @if (!Disabled)
+                {
+                    <div class="prompt-actions">
+                        <button type="button" disabled="@(index == 0)" @onclick="() => MoveAsync(index, -1)" aria-label="@($"Move {snapshot?.Name ?? "prompt"} earlier")" data-testid="prompt-move-up">↑</button>
+                        <button type="button" disabled="@(index == Selected.Count - 1)" @onclick="() => MoveAsync(index, 1)" aria-label="@($"Move {snapshot?.Name ?? "prompt"} later")" data-testid="prompt-move-down">↓</button>
+                        <button type="button" @onclick="() => RemoveAsync(reference)" data-testid="prompt-remove">Remove</button>
+                    </div>
+                }
+            </li>
+        }
+    </ol>
+    @if (!Disabled)
+    {
+        <label>Search tenant prompts<input value="@_query" @onchange="SearchAsync" maxlength="128" data-testid="prompt-search" /></label>
+        <ul class="prompt-catalog" data-testid="prompt-catalog">
+            @foreach (var item in _items.Where(item => !item.Archived && !item.IsDefault && Selected.All(reference => reference.PromptId != item.Id)))
+            {
+                <li><strong>@item.Name · revision @item.Revision</strong><p>@item.Description</p>
+                    <button type="button" disabled="@(_loading || Selected.Count >= AiPromptLimits.MaxSelected)" @onclick="() => AddAsync(item)" data-testid="prompt-add" data-prompt-id="@item.Id">Add prompt</button>
+                </li>
+            }
+        </ul>
+        @if (_hasMore) { <p class="prompt-help">More prompts match. Narrow your search to find the required guidance.</p> }
+        @if (!_loading && _items.Count == 0) { <p class="prompt-help">No matching prompts are available in this tenant.</p> }
+        <p class="prompt-help">@Selected.Count / @AiPromptLimits.MaxSelected optional prompts selected. Zero optional prompts is valid.</p>
+    }
+    <details data-testid="prompt-guidance-preview">
+        <summary>Effective guidance preview</summary>
+        <p class="prompt-help">Fixed platform instructions and authorized alert/client context are composed server-side when sending. This preview shows guidance only.</p>
+        @if (EffectiveDefault is { } defaultPrompt) { <h5>Tenant default · @defaultPrompt.Name · revision @defaultPrompt.Revision</h5><pre>@defaultPrompt.Body</pre> }
+        @foreach (var reference in Selected)
+        {
+            @if (Snapshot(reference) is { } prompt) { <h5>Optional guidance · @prompt.Name · revision @prompt.Revision</h5><pre>@prompt.Body</pre> }
+        }
+    </details>
+</section>
+
+@code {
+    [Parameter] public int TenantId { get; set; }
+    [Parameter] public IReadOnlyList<AiPromptReference> Selected { get; set; } = [];
+    [Parameter] public EventCallback<IReadOnlyList<AiPromptReference>> SelectedChanged { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public IReadOnlyList<AiPromptSnapshot>? PinnedPrompts { get; set; }
+    [Parameter] public bool UseDefaultSnapshot { get; set; }
+    [Parameter] public AiPromptSnapshot? DefaultPrompt { get; set; }
+    private IReadOnlyList<AiPromptSummaryDto> _items = [];
+    private readonly Dictionary<Guid, AiPromptSummaryDto> _current = [];
+    private readonly Dictionary<AiPromptReference, AiPromptSnapshot> _snapshots = [];
+    private AiPromptSnapshot? _default;
+    private string _query = "", _selectionKey = "";
+    private string? _error;
+    private int _tenant, _generation, _catalogGeneration;
+    private bool _loading, _hasMore, _disposed;
+    private CancellationTokenSource _scope = new();
+    private AiPromptSnapshot? EffectiveDefault => UseDefaultSnapshot ? DefaultPrompt : _default;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var changedTenant = _tenant != TenantId;
+        if (changedTenant)
+        {
+            _scope.Cancel(); _scope.Dispose(); _scope = new(); ++_generation;
+            _tenant = TenantId; _selectionKey = ""; _query = ""; _items = []; _current.Clear(); _snapshots.Clear(); _default = null; _error = null;
+        }
+        var key = string.Join(";", Selected.Select(reference => $"{reference.PromptId}:{reference.Revision}"));
+        if (!changedTenant && key == _selectionKey) return;
+        _selectionKey = key;
+        if (TenantId <= 0) return;
+        var generation = _generation; var tenant = TenantId; var token = _scope.Token;
+        _loading = true;
+        try
+        {
+            if (changedTenant) await LoadCatalogAsync(tenant, generation, token);
+            foreach (var reference in Selected.ToArray())
+            {
+                if (_snapshots.ContainsKey(reference)) continue;
+                var detail = await Api.GetAsync(tenant, reference.PromptId, reference.Revision, token);
+                if (!Current(tenant, generation)) return;
+                if (detail.Summary.Id != reference.PromptId || detail.Summary.Revision != reference.Revision) throw new InvalidOperationException("The requested prompt revision was not returned.");
+                _snapshots[reference] = new(reference.PromptId, reference.Revision, detail.Summary.Name, detail.Summary.Description, detail.Body);
+                if (!_current.ContainsKey(reference.PromptId))
+                {
+                    var latest = await Api.GetAsync(tenant, reference.PromptId, ct: token);
+                    if (!Current(tenant, generation)) return;
+                    if (latest.Summary.Id == reference.PromptId) _current[reference.PromptId] = latest.Summary;
+                }
+            }
+            if (Current(tenant, generation)) _error = null;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception) { if (Current(tenant, generation)) _error = "Tenant guidance could not be loaded. Your selected revisions are preserved; retry the search or reload before publishing."; }
+        finally { if (Current(tenant, generation)) _loading = false; }
+    }
+
+    private async Task LoadCatalogAsync(int tenant, int generation, CancellationToken token)
+    {
+        var request = ++_catalogGeneration;
+        var result = await Api.ListAsync(tenant, string.IsNullOrWhiteSpace(_query) ? null : _query, includeArchived: false, ct: token);
+        if (!Current(tenant, generation) || request != _catalogGeneration) return;
+        _items = result.Items; _hasMore = result.HasMore;
+        _default = result.Default.Prompt;
+        foreach (var item in result.Items) _current[item.Id] = item;
+    }
+    private async Task SearchAsync(ChangeEventArgs args)
+    {
+        if (Disabled || TenantId <= 0) return;
+        _query = args.Value?.ToString() ?? "";
+        var generation = _generation; var tenant = TenantId; var token = _scope.Token;
+        _loading = true;
+        try { await LoadCatalogAsync(tenant, generation, token); if (Current(tenant, generation)) _error = null; }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception) { if (Current(tenant, generation)) _error = "Tenant prompt search failed. Your selected revisions are preserved."; }
+        finally { if (Current(tenant, generation)) _loading = false; }
+    }
+    private bool Current(int tenant, int generation) => !_disposed && TenantId == tenant && _tenant == tenant && _generation == generation;
+    private AiPromptSnapshot? Snapshot(AiPromptReference reference) => PinnedPrompts?.FirstOrDefault(prompt => prompt.PromptId == reference.PromptId && prompt.Revision == reference.Revision)
+        ?? _snapshots.GetValueOrDefault(reference);
+    private int Index(AiPromptReference reference) => Selected.ToList().IndexOf(reference);
+    private Task AddAsync(AiPromptSummaryDto item) => Disabled || item.Archived || item.IsDefault || Selected.Count >= AiPromptLimits.MaxSelected || Selected.Any(reference => reference.PromptId == item.Id)
+        ? Task.CompletedTask : SelectedChanged.InvokeAsync((IReadOnlyList<AiPromptReference>)[.. Selected, new(item.Id, item.Revision)]);
+    private Task RemoveAsync(AiPromptReference reference) => Disabled ? Task.CompletedTask : SelectedChanged.InvokeAsync((IReadOnlyList<AiPromptReference>)Selected.Where(item => item.PromptId != reference.PromptId).ToArray());
+    private Task UseCurrentAsync(AiPromptReference reference, AiPromptSummaryDto current) => Disabled || current.Archived ? Task.CompletedTask :
+        SelectedChanged.InvokeAsync((IReadOnlyList<AiPromptReference>)Selected.Select(item => item.PromptId == reference.PromptId ? new(item.PromptId, current.Revision) : item).ToArray());
+    private Task MoveAsync(int index, int direction)
+    {
+        if (Disabled || index < 0 || index >= Selected.Count || index + direction < 0 || index + direction >= Selected.Count) return Task.CompletedTask;
+        var ordered = Selected.ToArray(); (ordered[index], ordered[index + direction]) = (ordered[index + direction], ordered[index]);
+        return SelectedChanged.InvokeAsync((IReadOnlyList<AiPromptReference>)ordered);
+    }
+    public void Dispose() { _disposed = true; ++_generation; _scope.Cancel(); _scope.Dispose(); }
+}

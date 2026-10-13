@@ -28,6 +28,7 @@ public sealed class FlowVersionRecord
 }
 public sealed class FlowRunRecord
 {
+    public string? ContinuationJson { get; set; }
     public Guid Id { get; set; }
     public int TenantId { get; set; }
     public Guid FlowId { get; set; }
@@ -49,6 +50,7 @@ public sealed class FlowRunRecord
 }
 public sealed class FlowActionRecord
 {
+    public string? AiResultJson { get; set; }
     public Guid RunId { get; set; }
     public Guid NodeId { get; set; }
     public int TenantId { get; set; }

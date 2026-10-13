@@ -1,5 +1,5 @@
 @using MudBlazor
-@using BlazorMonaco.Editor
+@using NetRatel.Web.Components.Shared
 
 <MudDialog>
     <TitleContent>
@@ -58,9 +58,7 @@
             </MudItem>
 
             <MudItem xs="12" sm="9" Style="height: 100%;">
-                <StandaloneCodeEditor @ref="_editor"
-                                      ConstructionOptions="EditorConstructionOptions"
-                                      OnDidInit="EditorOnDidInit" />
+                <MonacoTextEditor @ref="_editor" @bind-Value="_initialContent" Language="@_selectedLanguage" Theme="@_selectedTheme" ShowToolbar="false" />
             </MudItem>
         </MudGrid>
     </DialogContent>

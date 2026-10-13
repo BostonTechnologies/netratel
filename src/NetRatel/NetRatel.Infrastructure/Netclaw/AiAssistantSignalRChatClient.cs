@@ -5,6 +5,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Http.Connections.Client;
 using Microsoft.AspNetCore.SignalR.Client;
 using NetRatel.Application.Netclaw;
+using NetRatel.Shared.Contracts.Netclaw;
 using NetRatel.Infrastructure.Netclaw;
 
 namespace NetRatel.Infrastructure.Netclaw;
@@ -14,6 +15,7 @@ public sealed record SessionEnsureResult(string SessionId, bool Created);
 public interface IAiAssistantChatClient : IAsyncDisposable
 {
     bool IsConnected { get; }
+    NetclawSignalRState ConnectionState => IsConnected ? NetclawSignalRState.Connected : NetclawSignalRState.Disconnected;
     Task<SessionEnsureResult> ConnectAsync(string? sessionId, Func<JsonElement, Task> output, CancellationToken ct);
     Task SendAsync(string sessionId, string text, CancellationToken ct);
     Task RespondAsync(string sessionId, string callId, string key, CancellationToken ct);
@@ -40,6 +42,14 @@ public sealed class AiAssistantSignalRChatClient : IAiAssistantChatClient
     }
 
     public bool IsConnected => connection.State == HubConnectionState.Connected;
+    public NetclawSignalRState ConnectionState => connection.State switch
+    {
+        HubConnectionState.Connected => NetclawSignalRState.Connected,
+        HubConnectionState.Connecting => NetclawSignalRState.Connecting,
+        HubConnectionState.Reconnecting => NetclawSignalRState.Reconnecting,
+        HubConnectionState.Disconnected => NetclawSignalRState.Disconnected,
+        _ => NetclawSignalRState.Unknown
+    };
     private readonly HubConnection connection;
 
     private static HubConnection BuildConnection(NetclawRuntimeProfile options, IntegrationConnectionHooks? hooks)

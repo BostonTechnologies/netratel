@@ -15,6 +15,8 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NetRatel.Application.Netclaw;
 using NetRatel.Infrastructure.Netclaw;
+using NetRatel.Infrastructure.Persistence;
+using NetRatel.Shared.Contracts.Netclaw;
 using Xunit;
 
 namespace NetRatel.Tests.Netclaw;
@@ -52,11 +54,22 @@ public sealed class NetclawProtocolTests
             var result = await client.ConnectAsync("persisted-session", item =>
             { if (item.GetProperty("type").GetString() == "text") output.TrySetResult(item.Clone()); return Task.CompletedTask; }, deadline.Token);
             Assert.Equal("persisted-session", result.SessionId); Assert.False(result.Created);
-            await client.SendAsync(result.SessionId, "Investigate selected systems", deadline.Token);
+            var agentId = Guid.NewGuid();
+            var system = InvestigationClientProjection.Create(new Agent { Id = agentId, TenantId = 17, Name = agentId.ToString(),
+                DeviceInfoJson = "{\"hostName\":\"real-linux-host\",\"os\":\"Linux\",\"architecture\":\"arm64\",\"reportedAddress\":\"10.20.30.40\"}",
+                Tags = ["production"] }, "Tenant operations", null, DateTimeOffset.UtcNow);
+            var context = InvestigationContextComposer.Compose(new AiInvestigationRecord { TenantId = 17, AgentIds = [agentId],
+                PromptSnapshotsJson = JsonSerializer.Serialize(new[] { new AiPromptSnapshot(Guid.NewGuid(), 3, "Tenant guidance", null, "Use permitted MCP connections.", true) }) },
+                "Tenant operations", [system], null, Guid.NewGuid(), "Investigate selected systems", result.SessionId, DateTimeOffset.UtcNow);
+            await client.SendAsync(result.SessionId, context.Request, deadline.Token);
             await client.RespondAsync(result.SessionId, "call-1", "deny", deadline.Token);
             Assert.Equal("Evidence ready", (await output.Task.WaitAsync(deadline.Token)).GetProperty("text").GetString());
             Assert.Contains(calls, call => call.Method == "EnsureSession" && call.Arguments.SequenceEqual(["persisted-session", "signalr"]));
-            Assert.Contains(calls, call => call.Method == "SendMessage" && call.Arguments.SequenceEqual(["persisted-session", "Investigate selected systems"]));
+            var sent = Assert.Single(calls, call => call.Method == "SendMessage");
+            Assert.Equal(["persisted-session", context.Request], sent.Arguments);
+            Assert.Contains("real-linux-host", sent.Arguments[1]); Assert.Contains("10.20.30.40", sent.Arguments[1]);
+            Assert.Contains("Tenant operations", sent.Arguments[1]); Assert.Contains("Tenant guidance", sent.Arguments[1]);
+            Assert.Equal(context.PayloadBytes, JsonSerializer.SerializeToUtf8Bytes(sent.Arguments).Length);
             Assert.Contains(calls, call => call.Method == "RespondToInteraction" && call.Arguments.SequenceEqual(["persisted-session", "call-1", "deny"]));
             Assert.All(calls, call => Assert.Equal("device", call.User));
             if (rejectWebSockets) Assert.NotEmpty(fallback); else Assert.Empty(fallback);

@@ -20,7 +20,7 @@ public sealed class GlobalSearchServiceTests
 
         var groups = await service.SearchAsync("");
 
-        groups.Select(g => g.Key).Should().Equal("tenants", "clients", "scripts", "jobs", "requests", "tasks");
+        groups.Select(g => g.Key).Should().Equal("tenants", "clients", "scripts", "jobs", "requests", "tasks", "alerts", "flows", "investigations");
         groups.Should().OnlyContain(g => g.Results.Count == 0);
     }
 
@@ -105,6 +105,22 @@ public sealed class GlobalSearchServiceTests
     }
 
     [Fact]
+    public async Task Ops_sources_keep_server_metadata_matches_and_link_exact_tenant_entities()
+    {
+        var id = Guid.Parse("df714e94-dcf0-4656-9734-6eb1ecc4681e");
+        var service = new GlobalSearchService(new FakeHttpClientFactory(new Dictionary<string, object?>
+        {
+            ["/api/v1/global-search/alerts?q=human-tag&pageSize=6"] = Page(new[] { new GlobalSearchAlertDto(id, 7, "CPU threshold", "Operations", "Host", "cpu", "Critical", "Firing") }),
+            ["/api/v1/global-search/flows?q=human-tag&pageSize=6"] = Page(new[] { new GlobalSearchFlowDto(id, 7, "Incident flow", "Operations", true, 2) }),
+            ["/api/v1/global-search/investigations?q=human-tag&pageSize=6"] = Page(new[] { new GlobalSearchInvestigationDto(id, 7, "Diagnose host", "Operations", "Idle", "Host", null, null) })
+        }), NullLogger<GlobalSearchService>.Instance);
+        var groups = await service.SearchAsync("human-tag");
+        groups.Single(group => group.Key == "alerts").Results.Should().ContainSingle().Which.Href.Should().Be($"/monitoring?tenantId=7&alert={id:D}");
+        groups.Single(group => group.Key == "flows").Results.Should().ContainSingle().Which.Href.Should().Be($"/flows?tenantId=7&draftId={id:D}");
+        groups.Single(group => group.Key == "investigations").Results.Should().ContainSingle().Which.Href.Should().Be($"/ai/ops?tenantId=7&investigation={id:D}");
+    }
+
+    [Fact]
     public async Task Incremental_search_returns_fast_groups_before_slow_groups()
     {
         var factory = new FakeHttpClientFactory(
@@ -167,6 +183,19 @@ public sealed class GlobalSearchServiceTests
         timedOut.Should().NotBeNull();
         timedOut!.IsLoading.Should().BeFalse();
         timedOut.ContinueHref.Should().Be("/tenants?search=Slow");
+    }
+
+    [Fact]
+    public async Task A_slow_new_source_times_out_independently_and_keeps_persisted_search_continuation()
+    {
+        var factory = new FakeHttpClientFactory(new Dictionary<string, object?>(), new Dictionary<string, TimeSpan>
+        { ["/api/v1/global-search/alerts?q=Slow&pageSize=6"] = TimeSpan.FromSeconds(5) });
+        var service = new GlobalSearchService(factory, NullLogger<GlobalSearchService>.Instance);
+        var groups = await service.SearchAsync("Slow");
+        groups.Should().HaveCount(9);
+        groups.Single(group => group.Key == "alerts").TimedOut.Should().BeTrue();
+        groups.Single(group => group.Key == "alerts").ContinueHref.Should().Be("/search?section=alerts&search=Slow");
+        groups.Where(group => group.Key != "alerts").Should().OnlyContain(group => !group.TimedOut && !group.IsLoading);
     }
 
     [Fact]

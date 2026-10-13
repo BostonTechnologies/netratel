@@ -134,7 +134,7 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
             (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal(
                 [HistoricalMonitoringMigration, FlowPreceding149PendingMigration, HistoricalConnectorMigration,
                  CommittedRegistrationMigration, ReceiverEvidenceMigration, NativeRefreshExchangeMigration,
-                 PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration, ClientOperationsAndNetclawMigration],
+                 PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration, ClientOperationsAndNetclawMigration, TenantPromptsAndAiFlowContinuationsMigration],
                 "the lower-ID Monitoring, Flow and Connector migrations plus registration and receiver are genuinely unapplied on the authentic preceding schema");
         await using var connection = new NpgsqlConnection(database);
         await connection.OpenAsync(ct);
@@ -375,7 +375,7 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
         await using (var db = Context(database))
             (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal(
                 [FlowPreceding149PendingMigration, HistoricalConnectorMigration, ReceiverEvidenceMigration,
-                 NativeRefreshExchangeMigration, PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration, ClientOperationsAndNetclawMigration],
+                 NativeRefreshExchangeMigration, PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration, ClientOperationsAndNetclawMigration, TenantPromptsAndAiFlowContinuationsMigration],
                 "retained lower-ID Flow and Connector plus genuine receiver are unapplied on authentic current149");
         await using var connection = new NpgsqlConnection(database);
         await connection.OpenAsync(ct);
@@ -565,30 +565,43 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
 
     private static async Task SeedScopedPassiveFlowRowsAsync(string database, int tenant, CancellationToken ct)
     {
-        await using var db = Context(database);
+        await using var connection = new NpgsqlConnection(database);
+        await connection.OpenAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
         var definition = Guid.NewGuid();
         var version = Guid.NewGuid();
         var run = Guid.NewGuid();
         var at = new DateTimeOffset(2026, 10, 5, 12, 0, 0, TimeSpan.Zero);
         // Passive, relationally valid migration rows exercise loss/preservation scope.
-        // They do not claim a connector send, executable graph or physical evidence.
-        db.FlowDefinitions.Add(new() { Id = definition, TenantId = tenant, Name = "Passive migration definition",
-            Revision = 1, Enabled = false, DraftJson = "{\"migrationFixture\":true}", PublishedVersionId = version,
-            PublishedVersionNumber = 1, CreatedAtUtc = at, UpdatedAtUtc = at });
-        db.FlowVersions.Add(new() { Id = version, TenantId = tenant, FlowId = definition, VersionNumber = 1,
-            GraphJson = "{\"migrationFixture\":true}", ConfigurationHash = new string('a', 64),
-            PublishedBy = "migration-fixture", PublishedAtUtc = at });
-        db.FlowRuns.Add(new() { Id = run, TenantId = tenant, FlowId = definition, FlowVersionId = version,
-            EventId = Guid.NewGuid(), OccurrenceId = Guid.NewGuid(), EventJson = "{\"migrationFixture\":true}",
-            EventFingerprint = new string('b', 64), CreatedAtUtc = at });
-        db.FlowActions.Add(new() { RunId = run, NodeId = Guid.NewGuid(), TenantId = tenant,
-            IdempotencyKey = "passive-migration-" + run.ToString("N"), DraftJson = "{\"migrationFixture\":true}",
-            PreparedJson = "{\"passivePrepared\":true}", ConnectorRevision = 1, SemanticFingerprint = new string('c', 64),
-            ReceiptJson = "{\"passiveReceipt\":true}" });
-        db.FlowAudits.Add(new() { Id = Guid.NewGuid(), TenantId = tenant, FlowId = definition, Revision = 1,
-            ActorId = "migration-fixture", Operation = "passive-schema-fixture", AtUtc = at });
-        db.FlowRuntimeIdentity.Add(new() { Id = 1, SourceInstanceId = Guid.NewGuid() });
-        (await db.SaveChangesAsync(ct)).Should().Be(6);
+        // Use the genuine historical column projection: current EF entities include later AI checkpoint/result
+        // columns that must remain absent while these fixtures prove the original Flow Down/Up range.
+        // These rows do not claim a connector send, executable graph or physical evidence.
+        await using var command = new NpgsqlCommand("""
+            INSERT INTO "FlowDefinitions" ("Id","TenantId","Name","Revision","Enabled","DraftJson",
+                "PublishedVersionId","PublishedVersionNumber","CreatedAtUtc","UpdatedAtUtc")
+            VALUES (@definition,@tenant,'Passive migration definition',1,FALSE,'{"migrationFixture":true}'::jsonb,
+                @version,1,@at,@at);
+            INSERT INTO "FlowVersions" ("Id","TenantId","FlowId","VersionNumber","GraphJson",
+                "ConfigurationHash","PublishedBy","PublishedAtUtc")
+            VALUES (@version,@tenant,@definition,1,'{"migrationFixture":true}'::jsonb,
+                repeat('a',64),'migration-fixture',@at);
+            INSERT INTO "FlowRuns" ("Id","TenantId","FlowId","FlowVersionId","EventId","OccurrenceId",
+                "EventJson","EventFingerprint","Status","Fence","Attempts","CreatedAtUtc")
+            VALUES (@run,@tenant,@definition,@version,@event,@occurrence,'{"migrationFixture":true}'::jsonb,
+                repeat('b',64),0,0,0,@at);
+            INSERT INTO "FlowActions" ("RunId","NodeId","TenantId","IdempotencyKey","Status","DraftJson",
+                "PreparedJson","ConnectorRevision","SemanticFingerprint","ReceiptJson","LeaseFence","Attempts")
+            VALUES (@run,@node,@tenant,@action_key,0,'{"migrationFixture":true}'::jsonb,
+                '{"passivePrepared":true}'::jsonb,1,repeat('c',64),'{"passiveReceipt":true}'::jsonb,0,0);
+            INSERT INTO "FlowAudits" ("Id","TenantId","FlowId","Revision","ActorId","Operation","AtUtc")
+            VALUES (@audit,@tenant,@definition,1,'migration-fixture','passive-schema-fixture',@at);
+            INSERT INTO "FlowRuntimeIdentity" ("Id","SourceInstanceId") VALUES (1,@source);
+            """, connection, transaction);
+        Add(command, ("definition", definition), ("version", version), ("run", run), ("tenant", tenant), ("at", at),
+            ("event", Guid.NewGuid()), ("occurrence", Guid.NewGuid()), ("node", Guid.NewGuid()),
+            ("action_key", "passive-migration-" + run.ToString("N")), ("audit", Guid.NewGuid()), ("source", Guid.NewGuid()));
+        (await command.ExecuteNonQueryAsync(ct)).Should().Be(6);
+        await transaction.CommitAsync(ct);
     }
 
     private static async Task AssertScopedFlowCountsAsync(NpgsqlConnection connection, long expected, CancellationToken ct)
@@ -663,7 +676,7 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
         await using (var db = Context(database))
             (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal(
                 [HistoricalConnectorMigration, ReceiverEvidenceMigration, NativeRefreshExchangeMigration,
-                 PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration, ClientOperationsAndNetclawMigration]);
+                 PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration, ClientOperationsAndNetclawMigration, TenantPromptsAndAiFlowContinuationsMigration]);
         await using var connection = new NpgsqlConnection(database);
         await connection.OpenAsync(ct);
         await AssertMonitoringPresenceAsync(connection, present: true, ct);
@@ -711,9 +724,9 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
             .Where(id => id != FlowPreceding149PendingMigration).ToArray();
         (await db.Database.GetAppliedMigrationsAsync(ct)).Should().Equal(expected);
         var pending = flowPresent ? new[] { HistoricalConnectorMigration, ReceiverEvidenceMigration, NativeRefreshExchangeMigration,
-                PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration, ClientOperationsAndNetclawMigration }
+                PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration, ClientOperationsAndNetclawMigration, TenantPromptsAndAiFlowContinuationsMigration }
             : new[] { FlowPreceding149PendingMigration, HistoricalConnectorMigration, ReceiverEvidenceMigration, NativeRefreshExchangeMigration,
-                PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration, ClientOperationsAndNetclawMigration };
+                PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration, ClientOperationsAndNetclawMigration, TenantPromptsAndAiFlowContinuationsMigration };
         (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal(pending);
         // This checks source/snapshot agreement; this staged schema deliberately has pending IDs.
         db.Database.HasPendingModelChanges().Should().BeFalse();
@@ -781,7 +794,7 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
         (await MigrationHistorySnapshotAsync(connection, retainedIds, ct)).Should().Equal(retainedHistory);
         await using (var db = Context(prior.Database))
             (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal(
-                [ReceiverEvidenceMigration, PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration, ClientOperationsAndNetclawMigration]);
+                [ReceiverEvidenceMigration, PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration, ClientOperationsAndNetclawMigration, TenantPromptsAndAiFlowContinuationsMigration]);
         await AssertScopedReceiverSchemaAsync(connection, present: false, ct);
         await AssertPreceding151PreservedAsync(connection, prior, ct);
         await AssertScopedRetainedRowsAsync(connection, connectorBase, connectorRows, ct);

@@ -1,9 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
-using BlazorMonaco.Editor;
+using NetRatel.Web.Components.Shared;
 using Microsoft.AspNetCore.Components;
-using Microsoft.JSInterop;
 using MudBlazor;
 using NetRatel.Web.Services.Script;
 
@@ -16,9 +15,8 @@ public partial class CodeEditor
 
     [Inject] private ScriptService ScriptService { get; set; } = default!;
     [Inject] private ISnackbar Snackbar { get; set; } = default!;
-    [Inject] private IJSRuntime JSRuntime { get; set; } = default!;
 
-    private StandaloneCodeEditor? _editor;
+    private MonacoTextEditor? _editor;
     private bool _saving;
 
     private string _selectedLanguage = "plaintext";
@@ -59,7 +57,6 @@ public partial class CodeEditor
             }
 
             _selectedLanguage = value;
-            _ = UpdateLanguageAsync(value);
         }
     }
 
@@ -74,7 +71,6 @@ public partial class CodeEditor
             }
 
             _selectedTheme = value;
-            _ = UpdateThemeAsync(value);
         }
     }
 
@@ -87,60 +83,6 @@ public partial class CodeEditor
         _selectedLanguage = MapScriptTypeToLanguage(ScriptToEdit.ScriptType);
     }
 
-    private StandaloneEditorConstructionOptions EditorConstructionOptions(StandaloneCodeEditor editor) => new()
-    {
-        AutomaticLayout = true,
-        Theme = _selectedTheme,
-        Language = _selectedLanguage,
-        Value = _initialContent,
-        GlyphMargin = true,
-        ScrollBeyondLastLine = false
-    };
-
-    private async Task EditorOnDidInit()
-    {
-        if (_editor is null)
-        {
-            return;
-        }
-
-        await UpdateThemeAsync(_selectedTheme);
-        await UpdateLanguageAsync(_selectedLanguage);
-    }
-
-    private async Task UpdateLanguageAsync(string language)
-    {
-        if (_editor is null)
-        {
-            return;
-        }
-
-        try
-        {
-            var model = await _editor.GetModel();
-            if (model is not null)
-            {
-                await BlazorMonaco.Editor.Global.SetModelLanguage(JSRuntime, model, language);
-            }
-        }
-        catch (JSException ex)
-        {
-            Console.WriteLine($"Failed to set editor language: {ex.Message}");
-        }
-    }
-
-    private async Task UpdateThemeAsync(string theme)
-    {
-        try
-        {
-            await BlazorMonaco.Editor.Global.SetTheme(JSRuntime, theme);
-        }
-        catch (JSException ex)
-        {
-            Console.WriteLine($"Failed to set editor theme: {ex.Message}");
-        }
-    }
-
     private async Task SaveScript()
     {
         if (_editor is null)
@@ -151,7 +93,7 @@ public partial class CodeEditor
         _saving = true;
         try
         {
-            var content = await _editor.GetValue();
+            var content = await _editor.GetValueAsync();
             var request = new ScriptUpdateRequest(
                 EditableName,
                 NormalizeFolderPath(EditableFolderPath),

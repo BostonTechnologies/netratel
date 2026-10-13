@@ -1,0 +1,72 @@
+@using BlazorMonaco.Editor
+@using Microsoft.JSInterop
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+<div class="monaco-text-surface @(_fullscreen ? "fullscreen" : "")" data-testid="monaco-text-editor">
+    @if (ShowToolbar)
+    {
+        <div class="monaco-text-toolbar">
+            <label>Format<select value="@_language" @onchange="ChooseLanguageAsync"><option value="markdown">Markdown</option><option value="plaintext">Plain text</option></select></label>
+            <label>Theme<select value="@_theme" @onchange="ChooseThemeAsync"><option value="vs-dark">Dark</option><option value="vs">Light</option><option value="hc-black">High contrast</option></select></label>
+            <button type="button" @onclick="ToggleFullscreen" aria-label="@(_fullscreen ? "Exit fullscreen" : "Enter fullscreen")">@(_fullscreen ? "Exit fullscreen" : "Fullscreen")</button>
+        </div>
+    }
+    <div class="monaco-text-content">
+        <StandaloneCodeEditor @key="_key" @ref="_editor" Id="@_id" ConstructionOptions="Options" OnDidInit="InitializedAsync" OnDidChangeModelContent="ChangedAsync" />
+    </div>
+</div>
+
+@code {
+    [Parameter] public string Value { get; set; } = "";
+    [Parameter] public EventCallback<string> ValueChanged { get; set; }
+    [Parameter] public bool ReadOnly { get; set; }
+    [Parameter] public string Language { get; set; } = "markdown";
+    [Parameter] public string Theme { get; set; } = "vs-dark";
+    [Parameter] public bool ShowToolbar { get; set; } = true;
+    private readonly string _id = "text-monaco-" + Guid.NewGuid().ToString("N");
+    private Guid _key = Guid.NewGuid();
+    private StandaloneCodeEditor? _editor;
+    private string _currentValue = "", _theme = "vs-dark", _language = "markdown", _parameterTheme = "vs-dark", _parameterLanguage = "markdown";
+    private bool _initialized, _fullscreen, _readOnly, _disposed;
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_readOnly != ReadOnly || _parameterLanguage != Language)
+        { _readOnly = ReadOnly; _parameterLanguage = Language; _language = Language; _key = Guid.NewGuid(); _initialized = false; }
+        if (_parameterTheme != Theme) { _parameterTheme = Theme; _theme = Theme; if (_initialized) await BlazorMonaco.Editor.Global.SetTheme(JS, _theme); }
+        if (_currentValue != Value)
+        { _currentValue = Value; if (_initialized && _editor is not null) await _editor.SetValue(Value); }
+    }
+    private StandaloneEditorConstructionOptions Options(StandaloneCodeEditor editor) => new()
+    { AutomaticLayout = true, Theme = _theme, Language = _language, Value = _currentValue, ReadOnly = ReadOnly,
+        ScrollBeyondLastLine = false, WordWrap = "on", GlyphMargin = false };
+    private async Task InitializedAsync()
+    {
+        _initialized = true; await BlazorMonaco.Editor.Global.SetTheme(JS, _theme);
+        if (!ReadOnly && _editor is not null) await _editor.Focus();
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    { if (_initialized && _editor is not null && !_disposed) await _editor.Layout(); }
+    private async Task ChangedAsync(ModelContentChangedEvent change)
+    {
+        if (!_initialized || _disposed || _editor is null || ReadOnly) return;
+        var value = await _editor.GetValue();
+        if (value == _currentValue) return;
+        _currentValue = value; await ValueChanged.InvokeAsync(value);
+    }
+    public async Task<string> GetValueAsync() => _initialized && _editor is not null ? await _editor.GetValue() : _currentValue;
+    private void ToggleFullscreen() => _fullscreen = !_fullscreen;
+    private async Task ChooseThemeAsync(ChangeEventArgs change)
+    { _theme = change.Value?.ToString() ?? "vs-dark"; await BlazorMonaco.Editor.Global.SetTheme(JS, _theme); }
+    private async Task ChooseLanguageAsync(ChangeEventArgs change)
+    {
+        _language = change.Value?.ToString() ?? "markdown";
+        if (_editor is not null && _initialized && await _editor.GetModel() is { } model) await BlazorMonaco.Editor.Global.SetModelLanguage(JS, model, _language);
+    }
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        if (_editor is not null && _initialized)
+            try { await _editor.DisposeEditor(); } catch (JSDisconnectedException) { } catch (ObjectDisposedException) { }
+    }
+}

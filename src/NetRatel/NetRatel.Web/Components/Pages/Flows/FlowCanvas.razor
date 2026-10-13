@@ -43,7 +43,7 @@
                                         <MudTooltip Text="Delete node"><MudIconButton Icon="@Icons.Material.Filled.DeleteOutline" Size="MudBlazor.Size.Small" OnClick="() => Delete.InvokeAsync(metadata.Id)" Disabled="@ReadOnly" aria-label="@($"Delete {metadata.Name}")" data-testid="flow-node-delete" /></MudTooltip>
                                     </div>
                                 </header>
-                                <div class="flow-node-body"><span>@(metadata.Kind == FlowNodeKind.ActionGroup ? $"{metadata.Actions?.Count ?? 0} notification / incident actions" : KindLabel(metadata.Kind))</span>
+                                <div class="flow-node-body"><span>@(metadata.Kind == FlowNodeKind.ActionGroup ? $"{metadata.Actions?.Count ?? 0} notification / incident actions" : metadata.Kind == FlowNodeKind.InvestigateWithAi ? "Waits for the correlated AI turn" : KindLabel(metadata.Kind))</span>
                                     @foreach (var slot in node.Slots)
                                     {
                                         if (!Adapter.Ports.TryGetValue(slot, out var port)) continue;

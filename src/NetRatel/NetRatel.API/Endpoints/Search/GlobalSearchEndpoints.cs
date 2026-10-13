@@ -16,7 +16,7 @@ using NetRatel.Infrastructure.Identity.Authorization;
 namespace NetRatel.API.Endpoints.Search;
 
 /// <summary>Current business search over PostgreSQL directory and orchestration projections.</summary>
-public static class GlobalSearchEndpoints
+public static partial class GlobalSearchEndpoints
 {
     private const int MaxPageSize = 25;
 
@@ -33,6 +33,12 @@ public static class GlobalSearchEndpoints
         group.MapGet("/requests", SearchRequestsAsync);
         group.MapGet("/clients", SearchAgentsAsync);
         group.MapGet("/tasks", SearchTasksAsync);
+        group.MapGet("/alerts", SearchAlertsAsync);
+        group.MapGet("/flows", SearchFlowsAsync);
+        group.MapGet("/investigations", SearchInvestigationsAsync);
+        app.MapGet("/api/v2/tenants/{tenantId:int}/monitoring/alerts/{occurrenceId:guid}", AlertDetailAsync)
+            .RequireAuthorization(NetRatel.API.Security.Authorization.MonitoringAuthorization.ReadPolicy)
+            .WithMetadata(new NetRatel.API.Middleware.MonitoringHttpBounds()).WithTags("Monitoring");
         return app;
     }
 

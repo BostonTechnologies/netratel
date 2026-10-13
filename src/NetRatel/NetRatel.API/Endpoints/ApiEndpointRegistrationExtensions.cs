@@ -73,6 +73,7 @@ public static class ApiEndpointRegistrationExtensions
         NetRatel.API.Endpoints.Monitoring.OperationsDashboardEndpoints.MapOperationsDashboardEndpoints(app);
         app.MapFlowEndpoints();
         app.MapNetclawEndpoints();
+        app.MapAiPromptEndpoints();
         app.MapTelemetryEndpoints();
         app.MapAgentFileGatewayEndpoints();
         app.MapAgentLogGatewayEndpoints();

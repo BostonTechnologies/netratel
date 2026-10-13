@@ -3,7 +3,10 @@ using NetRatel.Shared.Contracts.Flows;
 namespace NetRatel.Application.Flows;
 
 public sealed record FlowActionExecutionState(FlowActionStatus Status, int Attempts, FlowIncidentActionRequest? Request,
-    FlowActionReceiptDto? Receipt, string? Code, DateTimeOffset? NextAttemptAtUtc = null);
+    FlowActionReceiptDto? Receipt, string? Code, DateTimeOffset? NextAttemptAtUtc = null)
+{
+    public FlowAiResultDto? AiResult { get; init; }
+}
 /// <summary>Every mutation verifies the current run lease token/fence/expiry using a scoped transaction.</summary>
 public interface IFlowExecutionStore
 {

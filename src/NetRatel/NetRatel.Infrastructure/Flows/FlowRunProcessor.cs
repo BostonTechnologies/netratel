@@ -126,9 +126,9 @@ public sealed partial class FlowRunProcessor(IFlowExecutionStore store, IFlowRun
     }
     private static FlowIncidentActionResult? Terminal(FlowActionExecutionState state) => state.Status switch
     {
-        FlowActionStatus.Succeeded => new(FlowIncidentActionResultKind.Succeeded, state.Code ?? "incident-created", state.Receipt),
-        FlowActionStatus.Failed => new(FlowIncidentActionResultKind.Failed, state.Code ?? "action-failed"),
-        FlowActionStatus.DeliveryUnknown => new(FlowIncidentActionResultKind.DeliveryUnknown, state.Code ?? "delivery-unknown"), _ => null
+        FlowActionStatus.Succeeded => new(FlowIncidentActionResultKind.Succeeded, state.Code ?? "incident-created", state.Receipt) { AiResult = state.AiResult },
+        FlowActionStatus.Failed => new(FlowIncidentActionResultKind.Failed, state.Code ?? "action-failed", state.Receipt) { AiResult = state.AiResult },
+        FlowActionStatus.DeliveryUnknown => new(FlowIncidentActionResultKind.DeliveryUnknown, state.Code ?? "delivery-unknown", state.Receipt) { AiResult = state.AiResult }, _ => null
     };
     private static string SafeCode(string code) => code.Length is > 0 and <= 128 && code.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '.' or '_') ? code : "dispatch-denied";
 }
