@@ -1469,7 +1469,11 @@ public sealed class ClientsManagementBrowserFixture : IAsyncLifetime
     public async ValueTask InitializeAsync()
     {
         _playwright = await Playwright.CreateAsync();
-        _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true });
+        _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+        {
+            Headless = true,
+            ExecutablePath = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_CHROMIUM_PATH")
+        });
     }
 
     public async ValueTask DisposeAsync()
@@ -1494,6 +1498,10 @@ public sealed class ClientsManagementBrowserFixture : IAsyncLifetime
 [Route("/flows")]
 [Route("/monitoring")]
 [Route("/flows/connectors")]
+[Route("/ai/prompts")]
+[Route("/scriptlibrary")]
+[Route("/tasks/new")]
+[Route("/jobs")]
 public sealed class ClientsManagementFixtureApp : ComponentBase
 {
     protected override void BuildRenderTree(RenderTreeBuilder builder)
@@ -1523,6 +1531,10 @@ public sealed class ClientsManagementFixtureApp : ComponentBase
         builder.OpenElement(26, "script");
         builder.AddAttribute(27, "src", "/js/global-search-hotkeys.js");
         builder.CloseElement();
+        AddScript(builder, "/_content/BlazorMonaco/jsInterop.js");
+        AddScript(builder, "/_content/BlazorMonaco/lib/monaco-editor/min/vs/loader.js");
+        AddScript(builder, "/_content/BlazorMonaco/lib/monaco-editor/min/vs/editor/editor.main.js");
+        AddScript(builder, "/_content/CodeBeam.MudBlazor.Extensions/MudExtensions.min.js");
         builder.OpenElement(28, "script");
         builder.AddAttribute(29, "src", "/_framework/blazor.web.js");
         builder.CloseElement();
@@ -1530,6 +1542,13 @@ public sealed class ClientsManagementFixtureApp : ComponentBase
         builder.AddAttribute(31, "src", "/_content/MudBlazor/MudBlazor.min.js");
         builder.CloseElement();
         builder.CloseElement();
+        builder.CloseElement();
+    }
+
+    private static void AddScript(RenderTreeBuilder builder, string src)
+    {
+        builder.OpenElement(0, "script");
+        builder.AddAttribute(1, "src", src);
         builder.CloseElement();
     }
 
@@ -1567,6 +1586,7 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
     public FixtureClientServicesService ServicesData => _application.Services.GetRequiredService<FixtureClientServicesService>();
     public FixtureFlowApiService FlowsData => _application.Services.GetRequiredService<FixtureFlowApiService>();
     public FixtureMonitoringApi MonitoringData => _application.Services.GetRequiredService<FixtureMonitoringApi>();
+    public FixtureClientUpdateActivityStream ActivityStream => _application.Services.GetRequiredService<FixtureClientUpdateActivityStream>();
     public IReadOnlyList<string> StartupServerDiagnostics => _serverDiagnostics.Snapshot();
 
     public static async Task<ClientsManagementFixtureHost> StartAsync(Action<IServiceCollection>? configureServices = null)
@@ -1596,6 +1616,8 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
         builder.Services.AddSingleton<FixtureMonitoringApi>();
         builder.Services.AddSingleton<NetRatel.Web.Services.Monitoring.IMonitoringApiService>(services => services.GetRequiredService<FixtureMonitoringApi>());
         builder.Services.AddSingleton<IClientArtifactsService>(services => services.GetRequiredService<FixtureClientArtifactsService>());
+        builder.Services.AddSingleton<FixtureClientUpdateActivityStream>();
+        builder.Services.AddSingleton<IClientUpdateActivityStream>(services => services.GetRequiredService<FixtureClientUpdateActivityStream>());
         builder.Services.AddSingleton<ITenantApiService, FixtureTenantApiService>();
         builder.Services.AddSingleton<IDeploymentBrandingApiService, FixtureBrandingApiService>();
         builder.Services.AddSingleton<IAccessAdministrationApiService, FixtureAccessAdministrationApiService>();
@@ -2079,6 +2101,7 @@ internal sealed class FixtureClientArtifactsService : IClientArtifactsService
     public int ArtifactPageRequests { get; private set; }
     public int ReleasePageRequests { get; private set; }
     public int AttemptPageRequests { get; private set; }
+    public string HistoryStatus { get; set; } = "RolledBack";
     public List<ClientUpdateReleaseModel> PublishedPrereleases { get; } = [];
 
     public Task<List<ClientArtifactSummaryModel>> ListAsync(string? rid, CancellationToken ct = default) => Task.FromResult(new List<ClientArtifactSummaryModel>());
@@ -2104,7 +2127,7 @@ internal sealed class FixtureClientArtifactsService : IClientArtifactsService
     public Task<ClientUpdateHistoryPageModel> GetUpdateHistoryAsync(int page, int pageSize, string? search = null, string? status = null, int? releaseId = null, string? runtimeId = null, int? tenantId = null, string? version = null, CancellationToken ct = default)
     {
         AttemptPageRequests++;
-        return Task.FromResult(new ClientUpdateHistoryPageModel { Total = 1, Page = page, PageSize = pageSize, Items = [new ClientUpdateHistoryItemModel { AttemptId = Guid.NewGuid(), TenantId = 7, TenantName = "Visual fixture", AgentId = AgentId, ClientDisplayName = "Fixture agent", ClientHostName = "fixture-host", RuntimeId = "win-x64", TargetVersion = "0.4.102", Status = "RolledBack", FailureCode = "fixture_failure", Message = "A bounded visual-fixture failure summary", UpdatedAtUtc = DateTimeOffset.UtcNow }] });
+        return Task.FromResult(new ClientUpdateHistoryPageModel { Total = 1, Page = page, PageSize = pageSize, Items = [new ClientUpdateHistoryItemModel { AttemptId = Guid.NewGuid(), TenantId = 7, TenantName = "Visual fixture", AgentId = AgentId, ClientDisplayName = "Fixture agent", ClientHostName = "fixture-host", RuntimeId = "win-x64", TargetVersion = "0.4.102", Status = HistoryStatus, FailureCode = "fixture_failure", Message = "A bounded visual-fixture failure summary", UpdatedAtUtc = DateTimeOffset.UtcNow }] });
     }
 
     public Task<AgentClientUpdateStatePageModel> GetSuspendedAgentsAsync(int page, int pageSize, string? search = null, int? tenantId = null, CancellationToken ct = default) =>
@@ -2250,4 +2273,16 @@ internal sealed class FixtureTenantApiService : ITenantApiService
     public Task CreateTenantAsync(CreateTenantRequest request, CancellationToken cancellationToken = default) => Task.CompletedTask;
     public Task UpdateTenantAsync(int tenantId, UpdateTenantRequest request, CancellationToken cancellationToken = default) => Task.CompletedTask;
     public Task DeleteTenantAsync(int tenantId, CancellationToken cancellationToken = default) => Task.CompletedTask;
+}
+
+internal sealed class FixtureClientUpdateActivityStream : IClientUpdateActivityStream
+{
+    private Func<ClientUpdateActivityEvent, Task>? _notification;
+    private Action<string>? _status;
+    public Task StartAsync(int? tenantId, Func<ClientUpdateActivityEvent, Task> onNotification, Action<string> onStatus, CancellationToken ct = default)
+    { _notification = onNotification; _status = onStatus; onStatus("Reconnecting"); return SendAsync("ready"); }
+    public Task SendAsync(string kind) => _notification?.Invoke(new(kind, Guid.NewGuid(), true)) ?? Task.CompletedTask;
+    public void Disconnect() => _status?.Invoke("Reconnecting");
+    public Task StopAsync() { _notification = null; _status = null; return Task.CompletedTask; }
+    public ValueTask DisposeAsync() { _notification = null; _status = null; return ValueTask.CompletedTask; }
 }
