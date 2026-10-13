@@ -763,6 +763,32 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("BootstrapInitializations", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientArtifactDownloadLease", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RuntimeId")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Version")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Version", "ExpiresAtUtc");
+
+                    b.ToTable("ClientArtifactDownloadLeases");
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientConnectionAdmissionRecord", b =>
                 {
                     b.Property<int>("TenantId")
@@ -1178,6 +1204,59 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("ClientReleaseAutomationSettings", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientReleaseDeletionReceipt", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("DeletedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<string>("PlanJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("PreviousReceiptsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("RequestedBy")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<bool>("Suppressed")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Version")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Version")
+                        .IsUnique();
+
+                    b.ToTable("ClientReleaseDeletionReceipts");
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientReleaseImportAsset", b =>
                 {
                     b.Property<Guid>("OperationId")
@@ -1480,10 +1559,16 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("PublicId")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid?>("PurgedReleasePublicId")
+                        .HasColumnType("uuid");
+
                     b.Property<DateTimeOffset?>("ReadmittedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<int>("ReleaseId")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("ReleaseRecordId")
                         .HasColumnType("integer");
 
                     b.Property<string>("RuntimeId")
@@ -1510,7 +1595,7 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.HasIndex("PublicId")
                         .IsUnique();
 
-                    b.HasIndex("ReleaseId");
+                    b.HasIndex("ReleaseRecordId");
 
                     b.HasIndex("AgentId", "ReleaseId")
                         .IsUnique();
@@ -6676,9 +6761,8 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
                     b.HasOne("NetRatel.Infrastructure.Persistence.ClientUpdateReleaseRecord", "Release")
                         .WithMany("Attempts")
-                        .HasForeignKey("ReleaseId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .HasForeignKey("ReleaseRecordId")
+                        .OnDelete(DeleteBehavior.SetNull);
 
                     b.Navigation("Release");
                 });

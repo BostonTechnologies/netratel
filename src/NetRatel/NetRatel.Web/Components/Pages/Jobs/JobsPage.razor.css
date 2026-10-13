@@ -1,0 +1,16 @@
+.jobs-console { padding-top: 12px; padding-bottom: 12px; }
+.jobs-console ::deep .jobs-toolbar { gap: 8px; flex-wrap: wrap; }
+.jobs-console ::deep .jobs-panel { border: 1px solid var(--mud-palette-divider); border-radius: var(--netratel-radius-surface, 7px); }
+.jobs-row-actions { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px; }
+.jobs-console ::deep .jobs-table .mud-table-body td { vertical-align: middle; padding-top: 6px; padding-bottom: 6px; }
+.jobs-console ::deep .jobs-table .mud-table-head th { color: var(--mud-palette-text-secondary); }
+.jobs-console ::deep .jobs-row-actions .mud-icon-button { width: 34px; height: 34px; }
+.jobs-console ::deep .jobs-row-actions .mud-icon-button:focus-visible { outline: 2px solid var(--mud-palette-primary); outline-offset: 2px; }
+.jobs-console ::deep .jobs-workspace .mud-tab { min-height: 36px; padding: 6px 12px; text-transform: none; }
+@media (max-width: 959px) {
+    .jobs-console ::deep .mud-table-container { min-height: 220px; }
+    .jobs-row-actions { justify-content: flex-start; }
+}
+@media (pointer: coarse) {
+    .jobs-console ::deep .jobs-row-actions .mud-icon-button { width: 44px; height: 44px; }
+}

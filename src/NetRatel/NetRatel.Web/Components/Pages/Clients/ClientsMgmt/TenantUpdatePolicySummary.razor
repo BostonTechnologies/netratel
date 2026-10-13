@@ -14,6 +14,10 @@
                 <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name</MudSelectItem>
             }
         </MudSelect>
+        @if (_loadError is not null)
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true">@_loadError <MudButton Size="Size.Small" OnClick="LoadEligibilityAsync">Retry</MudButton></MudAlert>
+        }
         @if (SelectedTenant is { } selected)
         {
             <MudText Typo="Typo.body2" data-testid="tenant-policy-current">
@@ -38,6 +42,7 @@
     [Parameter] public IReadOnlyList<TenantDto> Tenants { get; set; } = [];
     private int? _selectedTenantId;
     private IReadOnlyList<string> _publishedPrereleases = [];
+    private string? _loadError;
     private TenantDto? SelectedTenant => Tenants.FirstOrDefault(tenant => tenant.TenantId == _selectedTenantId);
     private static bool AllowsPrereleases(TenantDto tenant) =>
         string.Equals(tenant.AutoUpdateChannel, "prerelease", StringComparison.OrdinalIgnoreCase);
@@ -47,11 +52,21 @@
         if (SelectedTenant is null) _selectedTenantId = Tenants.FirstOrDefault()?.TenantId;
     }
 
-    protected override async Task OnInitializedAsync()
+    protected override Task OnInitializedAsync() => LoadEligibilityAsync();
+
+    private async Task LoadEligibilityAsync()
     {
-        // The published management catalogue, not the GitHub discovery label, proves these offers are enabled.
-        var releases = await Artifacts.GetUpdateReleasePageAsync(0, 5, channel: "prerelease", enabled: true);
-        _publishedPrereleases = releases.Items.Where(release => release.Enabled && release.Channel == "prerelease")
-            .Select(release => release.Version).Distinct(StringComparer.Ordinal).ToArray();
+        try
+        {
+            // Request the endpoint's supported bounded page, then sample distinct versions for display.
+            var releases = await Artifacts.GetUpdateReleasePageAsync(0, 10, channel: "prerelease", enabled: true);
+            _publishedPrereleases = releases.Items.Where(release => release.Enabled && release.Channel == "prerelease")
+                .Select(release => release.Version).Distinct(StringComparer.Ordinal).Take(5).ToArray();
+            _loadError = null;
+        }
+        catch (HttpRequestException)
+        {
+            _loadError = "Published prerelease eligibility is unavailable. The previous sample is retained; tenant policy remains inspectable.";
+        }
     }
 }

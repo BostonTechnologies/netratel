@@ -1,12 +1,12 @@
 .netratel-nav {
-    padding: 0.75rem 0.65rem 1rem;
+    padding: 0.4rem 0.5rem 0.75rem;
 }
 
 .nav-section-heading {
     display: flex;
     align-items: center;
     gap: 0.65rem;
-    margin: 1.1rem 0.75rem 0.4rem;
+    margin: 0.7rem 0.5rem 0.25rem;
     color: var(--mud-palette-text-secondary);
     font-size: 0.68rem;
     font-weight: 700;
@@ -24,13 +24,13 @@
 
 .nav-account-divider {
     border-color: var(--mud-palette-divider);
-    margin-top: 1rem !important;
+    margin-top: 0.5rem !important;
 }
 
 ::deep .mud-nav-link,
 ::deep .mud-nav-group > .mud-nav-link {
-    min-height: 44px;
-    margin: 0.12rem 0;
+    min-height: 36px;
+    margin: 0.08rem 0;
     border: 1px solid transparent;
     border-radius: var(--mud-default-borderradius);
     color: var(--mud-palette-drawer-text);
@@ -65,14 +65,44 @@
     box-shadow: inset 3px 0 0 var(--mud-palette-primary);
 }
 
-::deep .mud-navmenu .mud-collapse-container {
+::deep .mud-collapse-container {
     margin-left: 0.45rem;
     padding-left: 0.3rem;
     border-left: 1px solid var(--mud-palette-divider);
 }
 
-::deep .mud-navmenu .mud-collapse-container .mud-nav-link {
-    min-height: 40px;
+::deep .mud-collapse-container .mud-nav-link {
+    min-height: 34px;
     color: var(--mud-palette-text-secondary);
     font-size: 0.88rem;
+}
+
+::deep .mud-nav-link {
+    padding: 6px 8px;
+}
+
+::deep .mud-nav-link .mud-nav-link-text {
+    margin-left: 10px;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.3;
+}
+
+::deep .mud-nav-link .mud-icon-root {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+}
+
+::deep .mud-nav-link:focus-visible {
+    outline: 2px solid var(--mud-palette-info);
+    outline-offset: -2px;
+}
+
+@media (pointer: coarse) {
+    ::deep .mud-nav-link,
+    ::deep .mud-collapse-container .mud-nav-link {
+        min-height: 44px;
+    }
 }

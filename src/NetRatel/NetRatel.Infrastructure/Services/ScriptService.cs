@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Scripts;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Shared.Contracts.Scripts;
 
 namespace NetRatel.Infrastructure.Services;
 
@@ -50,11 +51,16 @@ public sealed class ScriptService(OrchestratorDbContext db) : IScriptService
 
     public async Task<ScriptInfo> CreateAsync(CreateScriptCommand command, CancellationToken ct = default)
     {
+        var name = ScriptLibraryPlacement.NormalizeName(command.Name);
+        var folder = ScriptLibraryPlacement.NormalizeFolder(command.FolderPath);
+        if (string.IsNullOrWhiteSpace(command.ScriptType)) throw new ArgumentException("Choose a script type.");
+        await using var transaction = await ScriptReferenceFence.BeginAsync(_db, ct);
+        await EnsurePlacementAvailableAsync(name, folder, null, ct);
         var now = DateTimeOffset.UtcNow;
         var script = new ScriptDefinition
         {
-            Name = command.Name.Trim(),
-            FolderPath = NormalizeFolderPath(command.FolderPath),
+            Name = name,
+            FolderPath = folder,
             Description = NormalizeDescription(command.Description),
             Content = command.Content ?? string.Empty,
             ScriptType = NormalizeScriptType(command.ScriptType),
@@ -67,12 +73,17 @@ public sealed class ScriptService(OrchestratorDbContext db) : IScriptService
 
         _db.Scripts.Add(script);
         await _db.SaveChangesAsync(ct);
+        if (transaction is not null) await transaction.CommitAsync(ct);
 
         return MapScript(script);
     }
 
     public async Task<ScriptInfo?> UpdateAsync(UpdateScriptCommand command, CancellationToken ct = default)
     {
+        await using var transaction = await ScriptReferenceFence.BeginAsync(_db, ct);
+        // Acquire the same placement fence before reading the row so concurrent
+        // create/rename/move requests see the committed winner.
+        if (command.Name is not null || command.FolderPath is not null) await LockPlacementsAsync(ct);
         var script = await _db.Scripts
             .Include(x => x.Parameters)
             .FirstOrDefaultAsync(x => x.Id == (long)command.ScriptId, ct);
@@ -84,14 +95,19 @@ public sealed class ScriptService(OrchestratorDbContext db) : IScriptService
 
         EnsureRevision(script, command.ExpectedSourceRevision);
 
+        if (command.Name is not null || command.FolderPath is not null)
+            await EnsurePlacementAvailableAsync(
+                ScriptLibraryPlacement.NormalizeName(command.Name ?? script.Name),
+                ScriptLibraryPlacement.NormalizeFolder(command.FolderPath ?? script.FolderPath), script.Id, ct);
+
         if (command.Name is not null)
         {
-            script.Name = command.Name.Trim();
+            script.Name = ScriptLibraryPlacement.NormalizeName(command.Name);
         }
 
         if (command.FolderPath is not null)
         {
-            script.FolderPath = NormalizeFolderPath(command.FolderPath);
+            script.FolderPath = ScriptLibraryPlacement.NormalizeFolder(command.FolderPath);
         }
 
         if (command.Description is not null)
@@ -114,7 +130,36 @@ public sealed class ScriptService(OrchestratorDbContext db) : IScriptService
         ReplaceParamsFromManifest(script, script.ManifestJson);
 
         await _db.SaveChangesAsync(ct);
+        if (transaction is not null) await transaction.CommitAsync(ct);
         return MapScript(script);
+    }
+
+    private async Task LockPlacementsAsync(CancellationToken ct)
+    {
+        if (_db.Database.IsNpgsql())
+            await _db.Database.ExecuteSqlRawAsync("LOCK TABLE \"Scripts\" IN SHARE ROW EXCLUSIVE MODE", ct);
+    }
+
+    private async Task EnsurePlacementAvailableAsync(string name, string folder, long? excludingId, CancellationToken ct)
+    {
+        await LockPlacementsAsync(ct);
+        var placements = await _db.Scripts.AsNoTracking().Where(script => script.Id != excludingId)
+            .Select(script => new { script.Name, script.FolderPath }).ToListAsync(ct);
+        var target = folder + name;
+        var folders = ScriptLibraryPlacement.FolderChain(folder);
+        foreach (var placement in placements)
+        {
+            // Read old slash conventions consistently without changing saved
+            // sources or source revisions as a side effect of creation.
+            string existingFolder;
+            try { existingFolder = ScriptLibraryPlacement.NormalizeFolder(placement.FolderPath); }
+            catch (ArgumentException) { continue; }
+            var existingFile = existingFolder + placement.Name;
+            if (string.Equals(existingFile, target, StringComparison.OrdinalIgnoreCase)
+                || folders.Any(path => string.Equals(path.TrimEnd('/'), existingFile, StringComparison.OrdinalIgnoreCase))
+                || ScriptLibraryPlacement.FolderChain(existingFolder).Any(path => string.Equals(path.TrimEnd('/'), target, StringComparison.OrdinalIgnoreCase)))
+                throw new ScriptLibraryCollisionException("A script or folder already occupies this library path. Choose another name or folder.");
+        }
     }
 
     public Task<ScriptInfo?> DeleteAsync(ulong scriptId, CancellationToken ct = default) => DeleteCoreAsync(scriptId, null, ct);
@@ -244,17 +289,6 @@ public sealed class ScriptService(OrchestratorDbContext db) : IScriptService
 
         using var doc = JsonDocument.Parse(raw);
         return JsonSerializer.Serialize(doc.RootElement, JsonOptions);
-    }
-
-    private static string NormalizeFolderPath(string? folderPath)
-    {
-        if (string.IsNullOrWhiteSpace(folderPath))
-        {
-            return "/";
-        }
-
-        var normalized = folderPath.Replace("\\", "/", StringComparison.Ordinal).Trim();
-        return normalized.StartsWith("/", StringComparison.Ordinal) ? normalized : "/" + normalized;
     }
 
     private static string NormalizeDescription(string? description) => description?.Trim() ?? string.Empty;

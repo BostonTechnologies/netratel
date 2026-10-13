@@ -12,6 +12,7 @@ public static class ClientUpdatesEndpoints
 {
     public static IEndpointRouteBuilder MapClientUpdatesEndpoints(this IEndpointRouteBuilder app)
     {
+        app.MapClientReleaseDeletionEndpoints();
         var admin = app.MapGroup("/api/v1/client-updates")
             .RequireAuthorization("ArtifactPublisher")
             .WithTags("Client Updates");
@@ -428,7 +429,8 @@ public static class ClientUpdatesEndpoints
             row.Tenant == null ? null : row.Tenant.Name,
             row.Agent == null ? null : row.Agent.Name,
             row.Agent == null ? null : row.Agent.DeviceInfoJson,
-            row.Agent != null && row.Agent.IsEnabled));
+            row.Agent != null && row.Agent.IsEnabled,
+            row.Attempt.PurgedReleasePublicId != null));
     }
 
     private static ClientUpdateHistoryItemDto MapHistoryItem(ClientUpdateHistoryRow row)
@@ -454,7 +456,8 @@ public static class ClientUpdatesEndpoints
             row.TenantName,
             row.AgentId,
             presentation.DisplayName,
-            presentation.HostName);
+            presentation.HostName,
+            row.LocalPackagePurged);
     }
 
     private static AgentClientUpdateStateDto MapState(ClientUpdateStateRow row)
@@ -520,7 +523,8 @@ public static class ClientUpdatesEndpoints
         string? TenantName,
         string? AgentName,
         string? AgentDeviceInfoJson,
-        bool AgentIsEnabled);
+        bool AgentIsEnabled,
+        bool LocalPackagePurged);
 
     private sealed record ClientUpdateStateRow(
         Guid AgentId,
@@ -548,7 +552,7 @@ public sealed record ClientUpdateAttemptDto(int Id, string ClientIdentity, int R
     Guid AttemptId, int TenantId, Guid AgentId, string? FailureCode, string? TenantName, string? AgentName);
 public sealed record ClientUpdateHistoryItemDto(Guid AttemptId, int ReleaseId, string RuntimeId, string TargetVersion,
     string Status, string? FailureCode, string? Message, DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc,
-    int TenantId, string? TenantName, Guid AgentId, string ClientDisplayName, string? ClientHostName);
+    int TenantId, string? TenantName, Guid AgentId, string ClientDisplayName, string? ClientHostName, bool LocalPackagePurged = false);
 public sealed record ClientUpdateHistoryPageDto(IReadOnlyList<ClientUpdateHistoryItemDto> Items, int Total, int Page, int PageSize);
 public sealed record ClientUpdateReleasePageDto(IReadOnlyList<ClientUpdateReleaseDto> Items, int Total, int Page, int PageSize);
 public sealed record ClientUpdateAttemptDiagnosticDto(Guid AttemptId, int ReleaseId, int TenantId, Guid AgentId,

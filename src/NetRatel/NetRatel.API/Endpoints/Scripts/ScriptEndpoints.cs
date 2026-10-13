@@ -25,6 +25,10 @@ public static class ScriptEndpoints
             { return Results.Conflict(new { code = "script_source_revision_conflict", remediation = "Reload the script before editing." }); }
             catch (ScriptSourceInUseException)
             { return Results.Conflict(new { code = "script_source_in_use", remediation = "Remove job definition references before deletion." }); }
+            catch (ScriptLibraryCollisionException exception)
+            { return Results.Conflict(new { code = "script_library_path_conflict", remediation = exception.Message }); }
+            catch (ArgumentException exception)
+            { return Results.BadRequest(new { code = "invalid_script_library_input", remediation = exception.Message }); }
         });
 
         group.MapGet("/", async (IScriptService scripts, CancellationToken ct) =>
@@ -93,10 +97,10 @@ public static class ScriptEndpoints
         {
             var created = await scripts.CreateAsync(new CreateScriptCommand(
                 request.Name,
-                NormalizeFolderPath(request.FolderPath),
+                ScriptLibraryPlacement.NormalizeFolder(request.FolderPath),
                 request.Description,
                 request.Content,
-                NormalizeScriptType(request.ScriptType),
+                request.ScriptType ?? string.Empty,
                 ManifestRaw: null), ct);
 
             await events.RecordAsync(new DomainEvent
@@ -130,7 +134,7 @@ public static class ScriptEndpoints
             var after = await scripts.UpdateAsync(new UpdateScriptCommand(
                 id,
                 request.Name,
-                request.FolderPath is null ? null : NormalizeFolderPath(request.FolderPath),
+                request.FolderPath is null ? null : ScriptLibraryPlacement.NormalizeFolder(request.FolderPath),
                 request.Description,
                 request.Content,
                 request.ScriptType is null ? null : NormalizeScriptType(request.ScriptType),
@@ -202,27 +206,6 @@ public static class ScriptEndpoints
 
     private static ScriptResponse MapResponse(ScriptInfo script)
         => new(script.Id, script.Name, script.FolderPath, script.Description, script.Content, script.ScriptType, script.CreatedAtUtc, script.UpdatedAtUtc, script.SourceRevision);
-
-    private static string NormalizeFolderPath(string? folderPath)
-    {
-        if (string.IsNullOrWhiteSpace(folderPath))
-        {
-            return "/";
-        }
-
-        var normalized = folderPath.Replace("\\", "/", StringComparison.Ordinal);
-        if (!normalized.StartsWith('/'))
-        {
-            normalized = "/" + normalized;
-        }
-
-        if (!normalized.EndsWith('/'))
-        {
-            normalized += "/";
-        }
-
-        return normalized;
-    }
 
     private static string NormalizeScriptType(string? scriptType)
     {

@@ -55,6 +55,8 @@ public sealed class GitHubClientAssetDownloader(HttpClient http, IConfiguration 
                 uri = response.Headers.Location;
                 continue;
             }
+            if (redirect == 0 && response.StatusCode == HttpStatusCode.NotFound)
+                throw new GitHubReleaseMissingException("The selected GitHub asset is confirmed missing; deliberate retry is required.");
             if (response.StatusCode != HttpStatusCode.OK)
                 throw new HttpRequestException($"GitHub asset request returned HTTP {(int)response.StatusCode}.");
             if (response.Content.Headers.ContentLength is { } reportedLength && reportedLength != expectedSize)

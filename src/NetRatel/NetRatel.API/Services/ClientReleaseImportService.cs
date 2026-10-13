@@ -34,6 +34,15 @@ public sealed class ClientReleaseImportService(
         var existing = await db.ClientReleaseImportOperations.Include(x => x.Assets)
             .SingleOrDefaultAsync(x => x.GitHubReleaseId == releaseId, ct);
         if (existing is not null) return ToStatus(existing);
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        await ClientReleaseDeletionService.LockAdmissionsAsync(db, ct);
+        var deletion = await db.ClientReleaseDeletionReceipts.SingleOrDefaultAsync(x => x.Version == release.Version && x.Suppressed, ct);
+        if (deletion is not null)
+        {
+            if (requestedBy == "client-release-automation") return null;
+            if (deletion.State != "Deleted") throw new InvalidOperationException("Local release cleanup must finish before deliberate re-import.");
+            deletion.Suppressed = false;
+        }
         var now = clock.GetUtcNow();
         var operation = new ClientReleaseImportOperation
         {
@@ -52,6 +61,7 @@ public sealed class ClientReleaseImportService(
             if (existing is null) throw;
             return ToStatus(existing);
         }
+        await transaction.CommitAsync(ct);
         return ToStatus(operation);
     }
 
@@ -80,8 +90,12 @@ public sealed class ClientReleaseImportService(
 
     public async Task<bool> RetryAsync(Guid id, CancellationToken ct)
     {
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        await ClientReleaseDeletionService.LockAdmissionsAsync(db, ct);
+        var operation = await db.ClientReleaseImportOperations.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct);
+        if (operation is null || await ClientReleaseDeletionService.IsSuppressedAsync(db, operation.Version, ct)) return false;
         var now = clock.GetUtcNow();
-        return await db.ClientReleaseImportOperations
+        var retried = await db.ClientReleaseImportOperations
             .Where(x => x.Id == id && (x.State == ClientReleaseImportState.Failed ||
                 x.State == ClientReleaseImportState.Cancelled))
             .ExecuteUpdateAsync(setters => setters
@@ -89,6 +103,8 @@ public sealed class ClientReleaseImportService(
                 .SetProperty(x => x.CancellationRequested, false)
                 .SetProperty(x => x.Error, (string?)null)
                 .SetProperty(x => x.UpdatedAtUtc, now), ct) > 0;
+        await transaction.CommitAsync(ct);
+        return retried;
     }
 
     public async Task<bool> PublishAsync(Guid id, string publishedBy, bool confirmPrerelease, CancellationToken ct,
@@ -243,7 +259,7 @@ public sealed class ClientReleaseImportWorker(
             var ct = owned.Token;
             await CheckCancellationAsync(db, claim, ct);
             var release = await catalog.FindAsync(operation.GitHubReleaseId, ct)
-                ?? throw new InvalidDataException("The selected GitHub release is no longer available.");
+                ?? throw new GitHubReleaseMissingException("The selected GitHub release is confirmed missing; verified local packages remain available.");
             if (release.Tag != operation.Tag || release.Version != operation.Version ||
                 release.PublicationAsset is null || release.ChecksumsAsset is null)
                 throw new InvalidDataException("The selected release identity or publication evidence changed.");
@@ -385,7 +401,9 @@ public sealed class ClientReleaseImportWorker(
             if (current.LeaseOwner == claim.LeaseOwner && current.LeaseGeneration == claim.LeaseGeneration)
             {
                 current.State = current.CancellationRequested ? ClientReleaseImportState.Cancelled : ClientReleaseImportState.Failed;
-                current.Error = exception is OperationCanceledException ? "Import cancelled." : exception.Message[..Math.Min(exception.Message.Length, 2000)];
+                current.Error = exception is OperationCanceledException
+                    ? current.CancellationRequested ? "Import cancelled." : "Transient upstream: the import timed out; retry after checking connectivity."
+                    : (exception is HttpRequestException ? "Transient upstream: " : "") + exception.Message[..Math.Min(exception.Message.Length, 1950)];
                 current.UpdatedAtUtc = clock.GetUtcNow();
                 current.LeaseOwner = null;
                 current.LeaseUntilUtc = null;

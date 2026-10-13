@@ -118,6 +118,33 @@ public sealed class GitHubClientReleaseCatalogTests
             .Should().ThrowAsync<ArgumentException>();
     }
 
+    [Fact]
+    public async Task IdentityLookupUsesTheReleaseEndpointAndConfirmsOnly404AsMissing()
+    {
+        using var missing = Client(request =>
+        {
+            request.RequestUri!.AbsolutePath.Should().EndWith("/releases/42");
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        });
+        Assert.Null(await Catalog(missing).FindAsync(42, default));
+        using var unavailable = Client(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        await Assert.ThrowsAsync<HttpRequestException>(() => Catalog(unavailable).FindAsync(42, default));
+        using var forbidden = Client(_ => new HttpResponseMessage(HttpStatusCode.Forbidden));
+        await Assert.ThrowsAsync<HttpRequestException>(() => Catalog(forbidden).FindAsync(42, default));
+    }
+
+    [Fact]
+    public async Task Tag404IsConfirmedMissingWhileAuthenticationFailureIsUnknown()
+    {
+        using var missing = Client(_ => new HttpResponseMessage(HttpStatusCode.NotFound));
+        await Assert.ThrowsAsync<GitHubReleaseMissingException>(() => Catalog(missing).ResolveTagCommitAsync("v1.2.3", default));
+        using var auth = Client(_ => new HttpResponseMessage(HttpStatusCode.Unauthorized));
+        await Assert.ThrowsAsync<HttpRequestException>(() => Catalog(auth).ResolveTagCommitAsync("v1.2.3", default));
+        var page = await Catalog(auth).ListAsync("all", 0, true, default);
+        Assert.Contains("authentication", page.Warning);
+        Assert.Equal(DateTimeOffset.MinValue, page.RefreshedAtUtc);
+    }
+
     private static GitHubClientReleaseCatalog Catalog(HttpClient client) => new(
         client, new ConfigurationBuilder().Build(), TimeProvider.System,
         NullLogger<GitHubClientReleaseCatalog>.Instance);

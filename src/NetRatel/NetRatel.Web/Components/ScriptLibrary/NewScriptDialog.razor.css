@@ -1,0 +1,4 @@
+.new-script-form { min-width: 0; width: 100%; }
+.new-script-form ::deep .mud-input-control { margin-bottom: 8px; }
+.new-script-placement { padding: 8px 10px; border: 1px solid var(--mud-palette-divider); border-radius: var(--mud-default-borderradius); background: var(--mud-palette-background); overflow-wrap: anywhere; }
+.new-script-convention { margin-bottom: 8px; }

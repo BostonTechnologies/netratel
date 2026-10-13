@@ -35,6 +35,26 @@ public sealed class ScriptSourceRevisionPostgresTests : IAsyncLifetime
 
     public ValueTask DisposeAsync() => postgres.DisposeAsync();
 
+    [Fact]
+    public async Task Concurrent_library_creation_rechecks_the_committed_path_before_accepting_a_duplicate()
+    {
+        var folder = $"/creation-{Guid.NewGuid():N}/";
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var ct = timeout.Token;
+        await using var winner = new OrchestratorDbContext(options);
+        await using var loser = new OrchestratorDbContext(options);
+        await loser.Database.OpenConnectionAsync(ct);
+        var loserPid = ((NpgsqlConnection)loser.Database.GetDbConnection()).ProcessID;
+        await using var transaction = await winner.Database.BeginTransactionAsync(ct);
+        await new ScriptService(winner).CreateAsync(new("same.ps1", folder, "", "", "PowerShell", null), ct);
+        var pending = new ScriptService(loser).CreateAsync(new("SAME.ps1", folder, "", "", "PowerShell", null), ct);
+        await WaitForDatabaseBlockAsync(loserPid, pending, ct);
+        await transaction.CommitAsync(ct);
+        await Assert.ThrowsAsync<ScriptLibraryCollisionException>(() => pending);
+        await using var verify = new OrchestratorDbContext(options);
+        Assert.Equal(1, await verify.Scripts.CountAsync(script => script.FolderPath == folder, ct));
+    }
+
     [Theory]
     [InlineData(false, false, false)]
     [InlineData(false, false, true)]
@@ -266,7 +286,7 @@ public sealed class ScriptSourceRevisionPostgresTests : IAsyncLifetime
             await delete.Should().ThrowAsync<ScriptSourceInUseException>();
             (await db.Scripts.SingleAsync(script => script.Id == (long)source.Id)).SourceRevision.Should().Be(1);
         }
-        var free = await CreateAsync();
+        var free = await CreateAsync("unreferenced source");
         await using (var db = new OrchestratorDbContext(options))
         {
             var deleted = await new ScriptService(db).DeleteAsync(free.Id, free.SourceRevision);
@@ -366,10 +386,10 @@ public sealed class ScriptSourceRevisionPostgresTests : IAsyncLifetime
                 request.CorrelationId, request.RequestId, DateTimeOffset.UtcNow));
     }
 
-    private async Task<ScriptInfo> CreateAsync()
+    private async Task<ScriptInfo> CreateAsync(string name = "source")
     {
         await using var db = new OrchestratorDbContext(options);
-        return await new ScriptService(db).CreateAsync(new("source", "/", "test", "original", "bash", null));
+        return await new ScriptService(db).CreateAsync(new(name, "/", "test", "original", "bash", null));
     }
 
     private static UpdateScriptCommand Edit(ScriptInfo source, string content) =>

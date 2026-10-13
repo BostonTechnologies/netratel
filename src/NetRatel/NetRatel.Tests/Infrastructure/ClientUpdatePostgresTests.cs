@@ -5,6 +5,8 @@ using NetRatel.API.Gateway;
 using NetRatel.API.Services;
 using NetRatel.Infrastructure.Persistence;
 using Testcontainers.PostgreSql;
+using Npgsql;
+using System.Text.Json;
 using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
@@ -39,6 +41,31 @@ public sealed class ClientUpdatePostgresTests : IAsyncLifetime
         db.ClientUpdateReleases.Add(CreateRelease(Guid.NewGuid(), 2));
         var save = () => db.SaveChangesAsync();
         await save.Should().ThrowAsync<DbUpdateException>();
+    }
+
+    [Fact]
+    public async Task Activity_invalidation_is_delivered_only_for_a_committed_transaction()
+    {
+        await using var listener = new NpgsqlConnection(_postgres.GetConnectionString());
+        await listener.OpenAsync();
+        await using (var command = new NpgsqlCommand("LISTEN " + ClientUpdateActivityNotifications.ChannelName, listener))
+            await command.ExecuteNonQueryAsync();
+        var observed = new List<ClientUpdateActivityNotification>();
+        listener.Notification += (_, notification) => observed.Add(JsonSerializer.Deserialize<ClientUpdateActivityNotification>(notification.Payload)!);
+        await using var db = new OrchestratorDbContext(_options);
+        await using (var transaction = await db.Database.BeginTransactionAsync())
+        {
+            await ClientUpdateActivityNotifications.NotifyAsync(db, 7, CancellationToken.None);
+            await transaction.RollbackAsync();
+        }
+        await using (var transaction = await db.Database.BeginTransactionAsync())
+        {
+            await ClientUpdateActivityNotifications.NotifyAsync(db, 8, CancellationToken.None);
+            await transaction.CommitAsync();
+        }
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await listener.WaitAsync(deadline.Token);
+        observed.Should().ContainSingle().Which.TenantId.Should().Be(8);
     }
 
     [Fact]

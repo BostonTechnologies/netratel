@@ -132,6 +132,7 @@ public sealed class ClientReleaseAutomationWorker(
                 !prerelease && !policy.DownloadStable) continue;
             var newest = Newest(releases, prerelease);
             if (newest is null) continue;
+            if (await ClientReleaseDeletionService.IsSuppressedAsync(db, newest.Version, ct)) continue;
             if (newest.PublicationState != "verification required" ||
                 newest.PublicationAsset is null || newest.ChecksumsAsset is null ||
                 newest.ClientAssets.Count == 0)
@@ -154,8 +155,9 @@ public sealed class ClientReleaseAutomationWorker(
                         .Where(x => x.Id == queued.Id && x.RequestedBy == AutomaticActor)
                         .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.IsAutomatic, true), ct);
             }
-            else if (existing.IsAutomatic && existing.State is
-                ClientReleaseImportState.Failed or ClientReleaseImportState.Cancelled)
+            else if (existing.IsAutomatic && existing.AttemptCount < 5 &&
+                existing.Error?.StartsWith("Transient upstream:", StringComparison.Ordinal) == true &&
+                existing.State == ClientReleaseImportState.Failed)
                 await imports.RetryAsync(existing.Id, ct);
         }
     }

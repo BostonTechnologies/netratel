@@ -1,40 +1,112 @@
 @using MudBlazor
 @using NetRatel.Shared.Contracts.Execution
+@using NetRatel.Shared.Contracts.Scripts
 
-@code
-{
-    private static readonly (string Label, ScriptType Value)[] ScriptTypes = new[]
-    {
-        ("PowerShell", ScriptType.PowerShell),
-        ("Bash",       ScriptType.Bash),
-        ("Python",     ScriptType.Python),
-        ("JavaScript", ScriptType.JavaScript),
-        ("TypeScript", ScriptType.TypeScript),
-        ("SQL",        ScriptType.Sql),
-        ("JSON",       ScriptType.Json),
-    };
+<MudDialog Class="new-script-dialog">
+    <DialogContent>
+        <div class="new-script-form" data-testid="new-script-form">
+            <MudForm @ref="_form">
+                <MudTextField T="string" @ref="_nameField" @bind-Value="Model.Name" Label="Name"
+                              Variant="Variant.Outlined" Margin="Margin.Dense" Immediate="true" Required="true"
+                              MaxLength="@ScriptLibraryPlacement.MaximumNameLength" Validation="@(new Func<string?, string?>(ValidateName))"
+                              Disabled="_creating" data-testid="new-script-name" />
+                <MudSelect T="ScriptType?" Label="Script type" @bind-Value="Model.Type"
+                           Variant="Variant.Outlined" Margin="Margin.Dense" Required="true" Disabled="_creating"
+                           data-testid="new-script-type">
+                    @foreach (var option in ScriptLibraryTypes.Options)
+                    {
+                        <MudSelectItem T="ScriptType?" Value="@option.Value">@option.Label</MudSelectItem>
+                    }
+                </MudSelect>
+                <MudSwitch T="bool" @bind-Value="Model.UseNewFolder" Label="New folder / path" Color="Color.Primary"
+                           Disabled="_creating" data-testid="new-script-new-folder" />
+                @if (Model.UseNewFolder)
+                {
+                    <MudTextField T="string" @bind-Value="Model.NewFolder" Label="New folder path"
+                                  Placeholder="/operations/windows/" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                  Immediate="true" Required="true" MaxLength="@ScriptLibraryPlacement.MaximumFolderLength"
+                                  Validation="@(new Func<string?, string?>(ValidateFolder))" Disabled="_creating"
+                                  HelperText="Nested logical library folders are created with the script."
+                                  data-testid="new-script-folder-path" />
+                }
+                else
+                {
+                    <MudAutocomplete T="string" @bind-Value="Model.Folder" Label="Folder" SearchFunc="SearchFolders"
+                                     ToStringFunc="FolderLabel" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                     Strict="true" CoerceValue="false" ResetValueOnEmptyText="false" MinCharacters="0"
+                                     MaxItems="100" Disabled="_creating" data-testid="new-script-existing-folder" />
+                }
+                @if (ScriptLibraryTypes.Options.FirstOrDefault(option => option.Value == Model.Type) is { } selectedType)
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Secondary" Class="new-script-convention">@selectedType.Extension file convention</MudText>
+                }
+                <div class="new-script-placement" aria-live="polite" data-testid="new-script-placement">
+                    <MudText Typo="Typo.caption">Placement</MudText>
+                    <MudText Typo="Typo.body2">@Model.PlacementPreview</MudText>
+                </div>
+                @if (_error is not null)
+                {
+                    <MudAlert Severity="Severity.Error" Dense="true" Class="mt-2" data-testid="new-script-error">@_error</MudAlert>
+                }
+            </MudForm>
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" OnClick="Cancel" Disabled="_creating">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="CreateAsync" Disabled="_creating"
+                   data-testid="new-script-create">@(_creating ? "Creating…" : "Create")</MudButton>
+    </DialogActions>
+</MudDialog>
 
+@code {
     [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
     [Parameter] public NewScriptDialogModel Model { get; set; } = default!;
-}
+    [Parameter, EditorRequired] public Func<CreateScriptRequest, Task<ulong>> CreateScript { get; set; } = default!;
+    private MudForm? _form;
+    private MudTextField<string>? _nameField;
+    private bool _creating;
+    private string? _error;
 
-<MudDialog>
-  <DialogContent>
-    <MudStack Spacing="2">
-      <MudTextField @bind-Value="Model.Name" Label="Name" Required="true" />
-      <MudTextField @bind-Value="Model.Folder" Label="Folder (e.g. /windows/powershell/)" />
-      <MudSelect T="ScriptType?" Label="Type" @bind-Value="Model.Type" Clearable="true">
-        @foreach (var option in ScriptTypes)
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && _nameField is not null) await _nameField.FocusAsync();
+    }
+
+    private Task<IEnumerable<string>> SearchFolders(string? search, CancellationToken ct) =>
+        Task.FromResult(Model.ExistingFolders.Where(folder => string.IsNullOrWhiteSpace(search)
+            || FolderLabel(folder).Contains(search, StringComparison.OrdinalIgnoreCase)));
+
+    private static string FolderLabel(string? folder) => folder is null or "/" ? "/ (root)" : folder;
+    private static string? ValidateName(string? name)
+    {
+        try { ScriptLibraryPlacement.NormalizeName(name); return null; }
+        catch (ArgumentException exception) { return exception.Message; }
+    }
+    private static string? ValidateFolder(string? folder)
+    {
+        try { ScriptLibraryPlacement.NormalizeFolder(folder); return null; }
+        catch (ArgumentException exception) { return exception.Message; }
+    }
+
+    private async Task CreateAsync()
+    {
+        if (_creating) return;
+        _error = null;
+        await _form!.Validate();
+        if (!_form.IsValid) return;
+        try
         {
-            <MudSelectItem T="ScriptType?" Value="@option.Value">@option.Label</MudSelectItem>
+            var request = Model.ToRequest();
+            _creating = true;
+            var id = await CreateScript(request);
+            MudDialog.Close(DialogResult.Ok(id));
         }
-      </MudSelect>
-    </MudStack>
-  </DialogContent>
-  <DialogActions>
-    <MudButton Variant="Variant.Text" OnClick="() => MudDialog.Cancel()">Cancel</MudButton>
-    <MudButton Color="Color.Primary"
-               Disabled="@string.IsNullOrWhiteSpace(Model?.Name)"
-               OnClick="() => MudDialog.Close(DialogResult.Ok(true))">Create</MudButton>
-  </DialogActions>
-</MudDialog>
+        catch (Exception exception)
+        {
+            _error = exception.Message;
+        }
+        finally { _creating = false; }
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+}

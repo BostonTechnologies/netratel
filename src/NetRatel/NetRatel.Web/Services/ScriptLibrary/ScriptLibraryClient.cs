@@ -31,10 +31,12 @@ public class ScriptLibraryClient
         return await resp.Content.ReadFromJsonAsync<ScriptDto>(cancellationToken: ct);
     }
 
-    public async Task CreateAsync(CreateScriptRequest req, CancellationToken ct)
+    public async Task<ulong> CreateAsync(CreateScriptRequest req, CancellationToken ct)
     {
         using var resp = await Api.PostAsJsonAsync("/api/v1/script-library", req, ct);
         await EnsureSuccessJsonOrNoContentAsync(resp);
+        var result = await resp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>(cancellationToken: ct);
+        return result.GetProperty("id").GetUInt64();
     }
 
     public async Task<long> UpdateAsync(ulong id, UpdateScriptRequest req, CancellationToken ct)
@@ -69,6 +71,13 @@ public class ScriptLibraryClient
         if (!resp.IsSuccessStatusCode)
         {
             var body = await resp.Content.ReadAsStringAsync();
+            try
+            {
+                using var error = System.Text.Json.JsonDocument.Parse(body);
+                if (error.RootElement.TryGetProperty("remediation", out var remediation) && remediation.ValueKind == System.Text.Json.JsonValueKind.String)
+                    throw new InvalidOperationException(remediation.GetString());
+            }
+            catch (System.Text.Json.JsonException) { }
             throw new InvalidOperationException($"API error {(int)resp.StatusCode}: {body}");
         }
     }

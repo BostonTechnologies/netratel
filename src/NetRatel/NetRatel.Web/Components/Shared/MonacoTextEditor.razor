@@ -21,6 +21,7 @@
     [Parameter] public string Value { get; set; } = "";
     [Parameter] public EventCallback<string> ValueChanged { get; set; }
     [Parameter] public bool ReadOnly { get; set; }
+    [Parameter] public bool AutoFocus { get; set; } = true;
     [Parameter] public string Language { get; set; } = "markdown";
     [Parameter] public string Theme { get; set; } = "vs-dark";
     [Parameter] public bool ShowToolbar { get; set; } = true;
@@ -43,7 +44,7 @@
     private async Task InitializedAsync()
     {
         _initialized = true; await BlazorMonaco.Editor.Global.SetTheme(JS, _theme);
-        if (!ReadOnly && _editor is not null) await _editor.Focus();
+        if (AutoFocus && !ReadOnly && _editor is not null) await _editor.Focus();
     }
     protected override async Task OnAfterRenderAsync(bool firstRender)
     { if (_initialized && _editor is not null && !_disposed) await _editor.Layout(); }

@@ -33,6 +33,10 @@ public interface IClientArtifactsService
         throw new NotSupportedException();
     Task PublishReleaseImportAsync(Guid id, bool confirmPrerelease, CancellationToken ct = default) =>
         throw new NotSupportedException();
+    Task<ClientReleaseDeletionPlanModel> PreviewLocalReleaseDeletionAsync(string version, CancellationToken ct = default) => throw new NotSupportedException();
+    Task<ClientReleaseDeletionStatusModel> DeleteLocalReleaseAsync(string version, CancellationToken ct = default) => throw new NotSupportedException();
+    Task<List<ClientReleaseDeletionStatusModel>> GetLocalReleaseDeletionsAsync(CancellationToken ct = default) => Task.FromResult(new List<ClientReleaseDeletionStatusModel>());
+    Task<ClientReleaseSourceStatusModel> CheckLocalReleaseSourceAsync(string version, CancellationToken ct = default) => throw new NotSupportedException();
     Task<List<ClientArtifactSummaryModel>> ListAsync(string? rid, CancellationToken ct = default);
     Task<ClientArtifactPageModel> GetArtifactsAsync(
         int page,
@@ -119,6 +123,33 @@ public class ClientArtifactsService : IClientArtifactsService
         _uploads = uploads;
         _jsRuntime = jsRuntime;
     }
+
+    public async Task<ClientReleaseDeletionPlanModel> PreviewLocalReleaseDeletionAsync(string version, CancellationToken ct = default) =>
+        await _uploads.Http.GetFromJsonAsync<ClientReleaseDeletionPlanModel>($"/api/v1/client-updates/local-releases/{Uri.EscapeDataString(version)}/delete-preview", ct)
+        ?? throw new HttpRequestException("The local deletion preview was empty.");
+    public async Task<ClientReleaseDeletionStatusModel> DeleteLocalReleaseAsync(string version, CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.PostAsJsonAsync($"/api/v1/client-updates/local-releases/{Uri.EscapeDataString(version)}/delete",
+            new { confirmedVersion = version }, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            string? detail = null;
+            try
+            {
+                var problem = await response.Content.ReadFromJsonAsync<Dictionary<string, System.Text.Json.JsonElement>>(cancellationToken: ct);
+                if (problem is not null && problem.TryGetValue("message", out var message)) detail = message.GetString();
+            }
+            catch (System.Text.Json.JsonException) { /* Authentication/proxy errors may have an empty or non-JSON body. */ }
+            throw new HttpRequestException(detail ?? "Could not delete local release data. Refresh authentication or connectivity and retry.", null, response.StatusCode);
+        }
+        return await response.Content.ReadFromJsonAsync<ClientReleaseDeletionStatusModel>(cancellationToken: ct)
+            ?? throw new HttpRequestException("The local deletion receipt was empty.");
+    }
+    public async Task<List<ClientReleaseDeletionStatusModel>> GetLocalReleaseDeletionsAsync(CancellationToken ct = default) =>
+        await _uploads.Http.GetFromJsonAsync<List<ClientReleaseDeletionStatusModel>>("/api/v1/client-updates/local-releases/deletions", ct) ?? [];
+    public async Task<ClientReleaseSourceStatusModel> CheckLocalReleaseSourceAsync(string version, CancellationToken ct = default) =>
+        await _uploads.Http.GetFromJsonAsync<ClientReleaseSourceStatusModel>($"/api/v1/client-updates/local-releases/{Uri.EscapeDataString(version)}/source", ct)
+        ?? throw new HttpRequestException("The source availability response was empty.");
 
     public async Task<GitHubClientReleasePageModel> GetGitHubReleasesAsync(string channel, int page, bool refresh, CancellationToken ct = default)
     {
@@ -273,13 +304,12 @@ public class ClientArtifactsService : IClientArtifactsService
         {
             return await _uploads.Http.GetFromJsonAsync<ClientUpdateReleasePageModel>(
                        $"/api/v1/client-updates/management/releases?{string.Join('&', query)}", ct)
-                   ?? new ClientUpdateReleasePageModel { Page = page, PageSize = pageSize };
+                   ?? throw new HttpRequestException("The local release page response was empty.");
         }
         catch (HttpRequestException ex)
         {
-            _logger.LogError(ex, "Failed to load paged client update releases");
-            _snackbar.Add("Could not load update releases.", Severity.Error);
-            return new ClientUpdateReleasePageModel { Page = page, PageSize = pageSize };
+            _logger.LogWarning(ex, "Failed to load paged client update releases");
+            throw;
         }
     }
 
@@ -328,9 +358,8 @@ public class ClientArtifactsService : IClientArtifactsService
         }
         catch (HttpRequestException ex)
         {
-            _logger.LogError(ex, "Failed to load paged client update history");
-            _snackbar.Add("Could not load update history.", Severity.Error);
-            return new ClientUpdateHistoryPageModel { Page = page, PageSize = pageSize };
+            _logger.LogWarning(ex, "Failed to load paged client update history");
+            throw;
         }
     }
 
@@ -756,6 +785,7 @@ public sealed class ClientUpdateHistoryItemModel
     public Guid AgentId { get; set; }
     public string ClientDisplayName { get; set; } = string.Empty;
     public string? ClientHostName { get; set; }
+    public bool LocalPackagePurged { get; set; }
 }
 
 public sealed class AgentClientUpdateStateModel

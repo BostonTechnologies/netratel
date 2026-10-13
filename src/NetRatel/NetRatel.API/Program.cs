@@ -849,10 +849,14 @@ builder.Services.AddScoped(services => new GitHubClientAssetDownloader(
     services.GetRequiredService<IHttpClientFactory>().CreateClient("GitHubClientAssets"),
     services.GetRequiredService<IConfiguration>()));
 builder.Services.AddScoped<ClientReleaseImportService>();
+builder.Services.AddScoped<ClientReleaseDeletionService>();
+builder.Services.AddHostedService<ClientReleaseDeletionWorker>();
 builder.Services.AddScoped<ClientReleaseAutomationService>();
 builder.Services.AddHostedService<ClientReleaseAutomationWorker>();
 builder.Services.AddHostedService<ClientReleaseImportWorker>();
 builder.Services.AddScoped<ClientUpdateAuthorityService>();
+builder.Services.AddSingleton<ClientUpdateActivityBroker>();
+builder.Services.AddHostedService<ClientUpdateActivityListener>();
 builder.Services.AddScoped<IClientUpdateActivationAuthority>(services => services.GetRequiredService<ClientUpdateAuthorityService>());
 builder.Services.AddScoped<IClientUpdatePublisher>(services => services.GetRequiredService<ClientUpdateAuthorityService>());
 builder.Services.AddScoped<IClientUpdateOperatorAuthority>(services => services.GetRequiredService<ClientUpdateAuthorityService>());
@@ -967,6 +971,7 @@ app.UseMiddleware<NetRatel.API.Middleware.FlowRequestBodyLimitMiddleware>();
 app.UseMiddleware<NetRatel.API.Middleware.PairingRequestBodyLimitMiddleware>();
 
 app.MapApiEndpoints();
+app.MapClientUpdateActivityEndpoints();
 app.MapManagedOperationEndpoints();
 app.MapReadyBootstrapStatus(bootstrapDescriptor);
 

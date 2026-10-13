@@ -1,20 +1,14 @@
-using System;
-using System.IO;
-using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Runtime.CompilerServices;
 using System.Text;
-using System.Threading;
-using System.Threading.Channels;
-using System.Threading.Tasks;
 
 namespace NetRatel.Web.Services;
 
+/// <summary>The registered authenticated HTTP SSE transport. Consuming a stream owns its response.</summary>
 public sealed class SseClient : IAsyncDisposable
 {
     private readonly HttpClient _http;
-    private CancellationTokenSource? _cts;
-    private Task? _reader;
-    private Channel<string> _lines = Channel.CreateUnbounded<string>();
+    private CancellationTokenSource? _connection;
 
     public SseClient(HttpClient http)
     {
@@ -22,81 +16,50 @@ public sealed class SseClient : IAsyncDisposable
         _http.Timeout = Timeout.InfiniteTimeSpan;
     }
 
-    public IAsyncEnumerable<string> Connect(string relativeUrl, CancellationToken externalToken = default)
+    public async IAsyncEnumerable<string> Connect(string relativeUrl,
+        [EnumeratorCancellation] CancellationToken externalToken = default)
     {
-        _cts?.Cancel();
-        _cts = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
-        var ct = _cts.Token;
-        _lines = Channel.CreateUnbounded<string>();
-        var lines = _lines;
-
-        _reader = Task.Run(async () =>
+        var connection = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
+        var previous = Interlocked.Exchange(ref _connection, connection);
+        CancelSafely(previous);
+        var ct = connection.Token;
+        try
         {
-            try
+            using var req = new HttpRequestMessage(HttpMethod.Get, relativeUrl);
+            req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+            req.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
+            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+            resp.EnsureSuccessStatusCode();
+            await using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            while (!ct.IsCancellationRequested)
             {
-                using var req = new HttpRequestMessage(HttpMethod.Get, relativeUrl);
-                req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
-                using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
-                resp.EnsureSuccessStatusCode();
-
-                await using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-                using var sr = new StreamReader(stream, Encoding.UTF8);
-
-                while (!ct.IsCancellationRequested)
-                {
-                    var line = await sr.ReadLineAsync().ConfigureAwait(false);
-                    if (line is null) break;
-
-                    if (line.StartsWith("data:", StringComparison.Ordinal))
-                    {
-                        var json = line.Substring(5).TrimStart();
-                        await lines.Writer.WriteAsync(json, ct).ConfigureAwait(false);
-                    }
-                    // ignore comments ":" and empty separator lines
-                }
+                // Servers send a heartbeat within 15 seconds. A stalled proxy/socket is a
+                // disconnect, not a Live connection. No unbounded background channel exists.
+                using var readTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                readTimeout.CancelAfter(TimeSpan.FromSeconds(45));
+                var line = await reader.ReadLineAsync(readTimeout.Token).ConfigureAwait(false);
+                if (line is null) yield break;
+                if (line.Length > 64 * 1024) throw new IOException("SSE notification exceeds the bounded payload limit.");
+                if (line.StartsWith("data:", StringComparison.Ordinal)) yield return line[5..].TrimStart();
             }
-            catch (OperationCanceledException)
-            {
-                // normal on close/hover out
-            }
-            catch (IOException)
-            {
-                // normal on server/client closing the socket
-            }
-            catch (ObjectDisposedException)
-            {
-                // normal when NetworkStream is torn down under cancellation
-            }
-            catch (Exception)
-            {
-                // swallow other transient errors; callers can reconnect on demand
-            }
-            finally
-            {
-                lines.Writer.TryComplete();
-            }
-        }, ct);
-
-        return ReadAllAsync(lines, ct);
-    }
-
-    private static async IAsyncEnumerable<string> ReadAllAsync(
-        Channel<string> lines,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
-    {
-        while (await lines.Reader.WaitToReadAsync(ct).ConfigureAwait(false))
+        }
+        finally
         {
-            while (lines.Reader.TryRead(out var s))
-            {
-                yield return s;
-            }
+            Interlocked.CompareExchange(ref _connection, null, connection);
+            connection.Dispose();
         }
     }
 
-    public async ValueTask DisposeAsync()
+    private static void CancelSafely(CancellationTokenSource? source)
     {
-        try { _cts?.Cancel(); } catch { }
-        try { if (_reader is not null) await _reader.ConfigureAwait(false); } catch { }
-        _cts?.Dispose();
+        try { source?.Cancel(); }
+        catch (ObjectDisposedException) { /* A completing enumeration already released the source. */ }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        CancelSafely(Interlocked.Exchange(ref _connection, null));
+        return ValueTask.CompletedTask;
     }
 }

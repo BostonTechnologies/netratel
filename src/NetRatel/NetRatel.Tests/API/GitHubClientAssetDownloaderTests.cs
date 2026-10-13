@@ -108,6 +108,26 @@ public sealed class GitHubClientAssetDownloaderTests
         Assert.False(File.Exists(path));
     }
 
+    [Fact]
+    public async Task MissingOfficialAssetIsConfirmedButRedirectedDownloadFailureIsTransient()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"missing-client-asset-{Guid.NewGuid():N}.zip");
+        using var missing = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound)));
+        await Assert.ThrowsAsync<GitHubReleaseMissingException>(() => Downloader(missing).DownloadAsync(1, 10, null, path, default));
+        using var redirected = new HttpClient(new StubHandler(request =>
+        {
+            if (request.RequestUri!.Host == "api.github.com")
+            {
+                var response = new HttpResponseMessage(HttpStatusCode.Redirect);
+                response.Headers.Location = new Uri("https://release-assets.githubusercontent.com/temporary.zip");
+                return response;
+            }
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }));
+        await Assert.ThrowsAsync<HttpRequestException>(() => Downloader(redirected).DownloadAsync(1, 10, null, path, default));
+        Assert.False(File.Exists(path));
+    }
+
     private static GitHubClientAssetDownloader Downloader(HttpClient client) => new(client,
         new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
