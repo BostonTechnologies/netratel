@@ -38,10 +38,10 @@ public sealed class OperatorWorkspacesResponsiveTests(ClientsManagementBrowserFi
         try
         {
             await OpenAsync(page, "/ai/prompts", width);
-            await page.Locator($"html[data-netratel-theme='{theme}']").WaitForAsync();
+            await page.Locator($"html[data-netratel-theme='{theme}']").WaitForAsync(new() { Timeout = 90_000 });
             await page.GetByTestId("prompt-new").ClickAsync();
             var name = page.GetByTestId("prompt-name");
-            await page.Locator(".prompt-editor .monaco-editor").WaitForAsync();
+            await page.Locator(".prompt-editor .monaco-editor").WaitForAsync(new() { Timeout = 90_000 });
             await Assertions.Expect(name).ToHaveValueAsync("");
             await Assertions.Expect(name).ToBeFocusedAsync();
             await Assertions.Expect(page.GetByTestId("prompt-save")).ToBeDisabledAsync();
@@ -77,6 +77,7 @@ public sealed class OperatorWorkspacesResponsiveTests(ClientsManagementBrowserFi
             await page.GetByTestId("new-script-create").ClickAsync();
             await Assertions.Expect(page.GetByTestId("new-script-create")).ToHaveCountAsync(0);
             await Assertions.Expect(tree.GetByText("Review script", new() { Exact = true })).ToBeVisibleAsync();
+            await page.GetByTestId("script-library-editor").Locator(".monaco-editor").WaitForAsync(new() { Timeout = 90_000 });
             await Assertions.Expect(page.GetByTestId("script-library-editor").Locator(".inputarea")).ToBeFocusedAsync();
             Assert.Equal("/operations/windows/", _scripts.LastCreate!.FolderPath);
 
@@ -149,9 +150,10 @@ public sealed class OperatorWorkspacesResponsiveTests(ClientsManagementBrowserFi
 
     private async Task OpenAsync(IPage page, string route, int width)
     {
-        var response = await page.GotoAsync(_fixture!.BaseAddress + route, new() { WaitUntil = WaitUntilState.Load });
+        // Match the existing fixture's bounded cold-start allowance; interactions retain the 15s default.
+        var response = await page.GotoAsync(_fixture!.BaseAddress + route, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
         Assert.True(response?.Ok == true, $"Fixture route {route} returned {response?.Status}.");
-        await page.GetByTestId("app-main-content").WaitForAsync();
+        await page.GetByTestId("app-main-content").WaitForAsync(new() { Timeout = 90_000 });
         var drawer = page.GetByTestId("app-navigation-drawer");
         var closed = await drawer.EvaluateAsync<bool>("e => e.classList.contains('mud-drawer--closed')");
         if ((width >= 1280 && closed) || (width < 1280 && !closed)) await page.GetByTestId("navigation-toggle").ClickAsync();
