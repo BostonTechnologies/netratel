@@ -50,8 +50,8 @@
     protected override async Task OnInitializedAsync()
     {
         // The published management catalogue, not the GitHub discovery label, proves these offers are enabled.
-        var releases = await Artifacts.GetUpdateReleasePageAsync(0, 5, channel: "prerelease", enabled: true);
+        var releases = await Artifacts.GetUpdateReleasePageAsync(0, 10, channel: "prerelease", enabled: true);
         _publishedPrereleases = releases.Items.Where(release => release.Enabled && release.Channel == "prerelease")
-            .Select(release => release.Version).Distinct(StringComparer.Ordinal).ToArray();
+            .Select(release => release.Version).Distinct(StringComparer.Ordinal).Take(5).ToArray();
     }
 }

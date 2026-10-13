@@ -60,7 +60,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
                 explanation.Should().Contain("Excluded releases create no update attempts");
             }
         });
-        Assert.Equal<(int, int, string?, bool?)?>((0, 5, "prerelease", true), _artifacts.EligibilityQuery);
+        Assert.Equal<(int, int, string?, bool?)?>((0, 10, "prerelease", true), _artifacts.EligibilityQuery);
         _artifacts.SaveCalls.Should().Be(0);
     }
 
