@@ -16,31 +16,26 @@
 
 @implements IAsyncDisposable
 
-<MudStack Spacing="3" Class="script-library-shell">
-    <MudPaper Elevation="0" Class="script-library-hero pa-5">
-        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="flex-wrap">
-            <MudStack Spacing="1">
-                <MudText Class="script-library-kicker">Shared Automation</MudText>
-                <MudText Typo="Typo.h4">Script Library</MudText>
-                <MudText Typo="Typo.body2">Organize reusable scripts, keep the editor central, and manage the library without fighting the tree.</MudText>
-            </MudStack>
-            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
-                <MudChip T="string" Variant="Variant.Outlined" Size="Size.Small">@_all.Count script@(_all.Count == 1 ? string.Empty : "s")</MudChip>
-                <MudChip T="string" Variant="Variant.Outlined" Size="Size.Small">@_types.Count type@(_types.Count == 1 ? string.Empty : "s")</MudChip>
-                @if (_current is not null)
-                {
-                    <MudChip T="string" Variant="Variant.Text" Size="Size.Small">@_current.Name</MudChip>
-                }
-            </MudStack>
-        </MudStack>
-    </MudPaper>
-
-<MudGrid Class="script-library-workspace" data-testid="script-library-workspace">
-    <MudItem xs="12" sm="4" md="3" Class="script-library-tree-column">
-        <MudPaper Elevation="0" Class="pa-3 h-100 d-flex flex-column script-library-panel">
+<div class="script-library-shell">
+    <div class="script-library-toolbar" data-testid="script-library-toolbar">
+        <MudText Typo="Typo.h6">Script Library</MudText>
+        <MudText Typo="Typo.caption" Color="Color.Secondary">@(_loading ? "Loading…" : _loadFailed ? "Library refresh unavailable" : $"{_all.Count} shared script{(_all.Count == 1 ? string.Empty : "s")}")</MudText>
+        @if (!ReadOnly && AllowAdding)
+        {
+            <MudButton Variant="Variant.Filled" Size="Size.Small" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add"
+                       OnClick="NewScript" data-testid="script-library-new">New Script</MudButton>
+        }
+        <MudTooltip Text="Refresh list">
+            <MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small" OnClick="ReloadAsync" aria-label="Refresh script library" />
+        </MudTooltip>
+    </div>
+    <div class="script-library-workspace @(ShowViewer ? string.Empty : "script-library-picker")" data-testid="script-library-workspace">
+        <div class="script-library-tree-column">
+            <div class="script-library-panel script-library-tree-panel">
             <MudStack Spacing="1">
                 <MudTextField T="string"
                               Label="Search"
+                              Variant="Variant.Outlined" Margin="Margin.Dense"
                               Immediate="true"
                               Value="@_search"
                               ValueChanged="@OnSearchChanged"
@@ -48,11 +43,11 @@
                               AdornmentIcon="@Icons.Material.Filled.Search"
                               Clearable="true" />
 
-                <MudSelect T="string" Label="Type" Dense="true" Value="@_filterType" ValueChanged="@OnFilterChanged" Clearable="true">
+                <MudSelect T="string" Label="Type" Variant="Variant.Outlined" Margin="Margin.Dense" Dense="true" Value="@_filterType" ValueChanged="@OnFilterChanged" Clearable="true">
                     <MudSelectItem Value="@((string?)null)">All</MudSelectItem>
                     @foreach (var t in _types.OrderBy(t => t, StringComparer.OrdinalIgnoreCase))
                     {
-                        <MudSelectItem Value="@t">@t</MudSelectItem>
+                        <MudSelectItem Value="@t">@(ScriptLibraryTypes.Find(t)?.Label ?? t)</MudSelectItem>
                     }
                 </MudSelect>
             </MudStack>
@@ -87,10 +82,10 @@
                                             <MudText Typo="Typo.body2" Class="mud-truncate">@value.Name</MudText>
                                             @if (!value.IsFolder && AllowEditing && !ReadOnly)
                                             {
-                                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
-                                                    <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => BeginRename(value))" />
-                                                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => DeleteScript(value))" />
-                                                </MudStack>
+                                                <div class="script-library-row-actions" @onclick:stopPropagation="true">
+                                                    <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => BeginRename(value))" aria-label="@($"Rename {value.Name}")" />
+                                                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => DeleteScript(value))" aria-label="@($"Delete {value.Name}")" />
+                                                </div>
                                             }
                                         </MudStack>
                                     }
@@ -101,50 +96,25 @@
                 }
             </div>
 
-            <MudDivider Class="my-2" />
-
-            <MudStack Row="true" Spacing="1">
-                <MudTooltip Text="New script">
-                    <MudIconButton Icon="@Icons.Material.Filled.Add"
-                                   Size="Size.Small"
-                                   Disabled="@(ReadOnly || !AllowAdding)"
-                                   OnClick="@NewScript" />
-                </MudTooltip>
-                <MudTooltip Text="Save (Ctrl+S)">
-                    <MudIconButton Icon="@Icons.Material.Filled.Save"
-                                   Size="Size.Small"
-                                   Color="Color.Primary"
-                                   Disabled="@(!AllowEditing || ReadOnly || !_dirty || _current is null)"
-                                   OnClick="@Save" />
-                </MudTooltip>
-                <MudTooltip Text="Refresh list">
-                    <MudIconButton Icon="@Icons.Material.Filled.Refresh"
-                                   Size="Size.Small"
-                                   OnClick="@ReloadAsync" />
-                </MudTooltip>
-            </MudStack>
-        </MudPaper>
-    </MudItem>
+            </div>
+        </div>
 
     @if (ShowViewer)
     {
-        <MudItem xs="12" sm="8" md="9" Class="script-library-editor-column">
-            <MudPaper Elevation="0" Class="pa-3 h-full d-flex flex-column script-library-panel">
+        <div class="script-library-editor-column">
+            <div class="script-library-panel script-library-editor-panel">
                 @if (_current is null)
                 {
-                    <MudStack Class="justify-center align-center h-100" Spacing="1">
-                        <MudText Typo="Typo.h6">Select a script to view or edit.</MudText>
-                        <MudText Typo="Typo.caption" Color="Color.Secondary">Use the left workspace to search, filter, create, rename, and choose the script you want to work on.</MudText>
-                    </MudStack>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Select a script to view or edit.</MudText>
                 }
                 else
                 {
-                    <MudPaper Class="script-library-editor-head pa-3 mb-3" Elevation="0">
+                    <div class="script-library-editor-head">
                         <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="flex-wrap">
                             <MudStack Spacing="1">
                                 <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
                                     <MudText Typo="Typo.h6" Class="mr-2">@_current.Name</MudText>
-                                    <MudChip T="string" Variant="Variant.Outlined" Color="Color.Info" Size="Size.Small">@(_current.ScriptType ?? "plaintext")</MudChip>
+                                    <MudChip T="string" Variant="Variant.Outlined" Color="Color.Info" Size="Size.Small">@(ScriptLibraryTypes.Find(_current.ScriptType)?.Label ?? _current.ScriptType ?? "plaintext")</MudChip>
                                     @if (_dirty)
                                     {
                                         <MudChip T="string" Variant="Variant.Outlined" Color="Color.Warning" Size="Size.Small">unsaved</MudChip>
@@ -153,21 +123,16 @@
                                 <MudText Typo="Typo.caption" Color="Color.Secondary">@NormalizeFolder(_current.FolderPath) - updated @_current.UpdatedAt.ToLocalTime().ToString("g")</MudText>
                             </MudStack>
                             <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
-                                @if (!ReadOnly && AllowAdding)
-                                {
-                                    <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Add" OnClick="@NewScript">New</MudButton>
-                                }
-                                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh" OnClick="@ReloadAsync">Refresh</MudButton>
                                 <MudButton Variant="Variant.Filled"
-                                           Color="Color.Primary"
+                                           Size="Size.Small" Color="Color.Primary"
                                            StartIcon="@Icons.Material.Filled.Save"
-                                           Disabled="@(!AllowEditing || ReadOnly || !_dirty || _current is null)"
+                                           Disabled="@(!AllowEditing || ReadOnly || !_dirty || _current is null || _saving)"
                                            OnClick="@Save">
                                     Save
                                 </MudButton>
                             </MudStack>
                         </MudStack>
-                    </MudPaper>
+                    </div>
 
                     <div @ref="_editorHost" class="script-library-editor-frame" data-testid="script-library-editor-frame">
                         <div class="script-library-editor" data-testid="script-library-editor">
@@ -175,16 +140,17 @@
                                                   @ref="_editor"
                                                   Id="script-library-monaco"
                                                   CssClass="script-library-monaco"
+                                                  OnDidInit="OnEditorInitialized"
                                                   OnDidChangeModelContent="OnEditorContentChanged"
                                                   ConstructionOptions="@EditorOptions" />
                         </div>
                     </div>
                 }
-            </MudPaper>
-        </MudItem>
+            </div>
+        </div>
     }
-</MudGrid>
-</MudStack>
+    </div>
+</div>
 
 @code
 {
@@ -204,14 +170,22 @@
     private ScriptDto? _current;
     private StandaloneCodeEditor? _editor;
     private ElementReference _editorHost;
+    private ElementReference _observedEditorHost;
+    private string? _observedEditorKey;
     private System.Timers.Timer? _debounce;
+    private CancellationTokenSource? _listCancellation;
+    private long _listGeneration;
     private IJSObjectReference? _resizeObserverModule;
     private DotNetObjectReference<ScriptLibraryView>? _selfReference;
     private bool _disposed;
     private int _layoutQueued;
     private bool _loading;
+    private bool _loadFailed;
     private bool _dirty;
-    private bool _suppressDirty;
+    private bool _saving;
+    private bool _editorInitialized;
+    private bool _focusEditor;
+    private string _selectedFolder = "/";
     private string _editorBaseline = string.Empty;
     private string? _search;
     private string? _filterType;
@@ -236,10 +210,22 @@
         {
             _selfReference = DotNetObjectReference.Create(this);
             _resizeObserverModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/resizeObserver.js");
+        }
+        if (_observedEditorKey != _editorKey)
+        {
+            if (_observedEditorKey is not null)
+                await _resizeObserverModule.InvokeVoidAsync("unobserveResize", _observedEditorHost);
             await _resizeObserverModule.InvokeVoidAsync("observeResize", _editorHost, _selfReference, nameof(OnEditorHostResize));
+            _observedEditorHost = _editorHost;
+            _observedEditorKey = _editorKey;
         }
 
         await LayoutEditorAsync();
+        if (_focusEditor && _editorInitialized && _editor is not null)
+        {
+            _focusEditor = false;
+            await _editor.Focus();
+        }
     }
 
     [JSInvokable]
@@ -286,6 +272,8 @@
     public async ValueTask DisposeAsync()
     {
         _disposed = true;
+        _listCancellation?.Cancel();
+        _listCancellation?.Dispose();
         if (_debounce is not null)
         {
             _debounce.Elapsed -= DebounceElapsed;
@@ -296,7 +284,7 @@
         {
             try
             {
-                await _resizeObserverModule.InvokeVoidAsync("unobserveResize", _editorHost);
+                await _resizeObserverModule.InvokeVoidAsync("unobserveResize", _observedEditorHost);
             }
             catch (JSDisconnectedException ex)
             {
@@ -331,12 +319,35 @@
 
     private async Task ReloadAsync()
     {
+        _listCancellation?.Cancel();
+        _listCancellation?.Dispose();
+        _listCancellation = new();
+        var token = _listCancellation.Token;
+        var generation = ++_listGeneration;
         _loading = true;
         StateHasChanged();
 
         try
         {
-            _all = await Api.ListAsync(CancellationToken.None);
+            var scripts = await Api.ListAsync(token);
+            if (_disposed || generation != _listGeneration) return;
+            _all = scripts;
+            _loadFailed = false;
+            if (_current is not null && !_dirty)
+            {
+                var refreshed = scripts.FirstOrDefault(script => script.Id == _current.Id);
+                if (refreshed is not null)
+                {
+                    if (_current.Content != refreshed.Content || _current.ScriptType != refreshed.ScriptType)
+                    {
+                        _editorKey = Guid.NewGuid().ToString();
+                        _editorInitialized = false;
+                    }
+                    _current = refreshed;
+                    _editorBaseline = refreshed.Content ?? string.Empty;
+                }
+                else SelectNone();
+            }
             _types = _all
                 .Select(s => s.ScriptType)
                 .Where(t => !string.IsNullOrWhiteSpace(t))
@@ -345,20 +356,32 @@
 
             RebuildTree();
         }
-        catch (Exception ex)
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception ex) when (!_disposed && generation == _listGeneration)
         {
+            _loadFailed = true;
             Snackbar.Add($"Failed to load scripts: {ex.Message}", Severity.Error);
         }
         finally
         {
-            _loading = false;
-            StateHasChanged();
+            if (!_disposed && generation == _listGeneration)
+            {
+                _loading = false;
+                StateHasChanged();
+            }
         }
     }
 
-    private void RebuildTree()
+    private void InvalidateListReads()
     {
-        UpdateExpandedSnapshot();
+        ++_listGeneration;
+        _listCancellation?.Cancel();
+        _loading = false;
+    }
+
+    private void RebuildTree(bool captureExpansion = true)
+    {
+        if (captureExpansion) UpdateExpandedSnapshot();
         _treeRoots = ScriptTreeBuilder.Build(_all, _filterType, _search, _expanded);
         _tree = _treeRoots.Select(CreateTreeItemData).ToList();
 
@@ -367,7 +390,8 @@
             var match = _treeRoots.SelectMany(Flatten).FirstOrDefault(n => !n.IsFolder && n.Id == _current.Id);
             if (match is null)
             {
-                SelectNone();
+                // Filtering or a refresh must not destroy an open draft.
+                _active = null;
             }
             else
             {
@@ -462,6 +486,11 @@
 
     private async Task OnActivatedChanged(ScriptTreeNode? node)
     {
+        if (_current is not null && node is { IsFolder: false } && node.Id == _current.Id)
+        {
+            _active = node;
+            return;
+        }
         if (_dirty && node?.Id != _current?.Id)
         {
             var leave = await Confirm("Unsaved changes", "Discard changes and switch file?");
@@ -475,17 +504,19 @@
         }
 
         _active = node;
+        if (node is not null)
+            _selectedFolder = node.IsFolder ? node.FullPath : NormalizeFolder(_all.FirstOrDefault(script => script.Id == node.Id)?.FolderPath);
 
         if (node is null || node.IsFolder)
         {
-            SelectNone();
+            SelectNone(clearActive: node is null);
             return;
         }
 
         _current = _all.FirstOrDefault(s => s.Id == node.Id);
         _editorBaseline = _current?.Content ?? string.Empty;
         _dirty = false;
-        _suppressDirty = true;
+        _editorInitialized = false;
         _editorKey = Guid.NewGuid().ToString();
         StateHasChanged();
     }
@@ -493,20 +524,23 @@
     private Task OnEditorContentChanged(ModelContentChangedEvent _)
         => UpdateDirtyFlagAsync();
 
+    private Task OnEditorInitialized()
+    {
+        _editorInitialized = true;
+        return InvokeAsync(StateHasChanged);
+    }
+
     private async Task UpdateDirtyFlagAsync()
     {
-        if (_suppressDirty)
-        {
-            _suppressDirty = false;
-            return;
-        }
-
-        if (_editor is null)
+        if (_editor is null || !_editorInitialized)
         {
             return;
         }
 
-        var value = await _editor.GetValue();
+        var editor = _editor;
+        var current = _current;
+        var value = await editor.GetValue();
+        if (!ReferenceEquals(editor, _editor) || !ReferenceEquals(current, _current) || _disposed) return;
         var dirty = !string.Equals(value, _editorBaseline, StringComparison.Ordinal);
         if (dirty != _dirty)
         {
@@ -517,12 +551,13 @@
 
     private async Task Save()
     {
-        if (_current is null || _editor is null)
+        if (_current is null || _editor is null || !AllowEditing || ReadOnly || _saving)
         {
             return;
         }
 
         var observed = _current;
+        _saving = true;
         try
         {
             var content = await _editor.GetValue();
@@ -533,6 +568,7 @@
                 Description: null,
                 Content: content,
                 ScriptType: null, ExpectedSourceRevision: observed.SourceRevision), CancellationToken.None);
+            InvalidateListReads();
 
             var idx = _all.FindIndex(s => s.Id == observed.Id);
             if (idx >= 0 && _all[idx].SourceRevision <= sourceRevision)
@@ -542,9 +578,13 @@
 
             if (ReferenceEquals(_current, observed))
             {
-                _current = observed with { Content = content, UpdatedAt = DateTimeOffset.UtcNow, SourceRevision = sourceRevision };
-                _editorBaseline = content;
-                _dirty = false;
+                var latestContent = await _editor.GetValue();
+                if (ReferenceEquals(_current, observed))
+                {
+                    _current = observed with { Content = content, UpdatedAt = DateTimeOffset.UtcNow, SourceRevision = sourceRevision };
+                    _editorBaseline = content;
+                    _dirty = !string.Equals(latestContent, content, StringComparison.Ordinal);
+                }
             }
             Snackbar.Add("Saved.", Severity.Success);
         }
@@ -552,6 +592,7 @@
         {
             Snackbar.Add($"Save failed: {ex.Message}", Severity.Error);
         }
+        finally { _saving = false; }
     }
 
     private async Task NewScript()
@@ -561,28 +602,50 @@
             return;
         }
 
-        var (ok, name, folder, type) = await PromptNewScript();
-        if (!ok)
+        if (_dirty && !await Confirm("Unsaved changes", "Discard changes when the new script is created?")) return;
+        var model = new NewScriptDialogModel
         {
-            return;
-        }
+            Folder = _selectedFolder,
+            Type = ScriptLibraryTypes.Find(_filterType)?.Value ?? ScriptType.PowerShell,
+            ExistingFolders = _all.SelectMany(script => ExistingFolderChain(script.FolderPath))
+                .Append("/").Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToList()
+        };
+        var parameters = new DialogParameters
+        {
+            ["Model"] = model,
+            ["CreateScript"] = new Func<CreateScriptRequest, Task<ulong>>(request => Api.CreateAsync(request, CancellationToken.None))
+        };
+        var dialog = await Dialogs.ShowAsync<NewScriptDialog>("New Script", parameters,
+            new DialogOptions { FullWidth = true, MaxWidth = MaxWidth.Small, CloseOnEscapeKey = false, BackdropClick = false });
+        var result = await dialog.Result;
+        if (result is null || result.Canceled || result.Data is not ulong id || _disposed) return;
 
-        try
-        {
-            var scriptType = type?.ToString();
-            await Api.CreateAsync(new CreateScriptRequest(name, folder, "", "", scriptType), CancellationToken.None);
-            await ReloadAsync();
-            Snackbar.Add("Script created.", Severity.Success);
-        }
-        catch (Exception ex)
-        {
-            Snackbar.Add($"Create failed: {ex.Message}", Severity.Error);
-        }
+        var request = model.ToRequest();
+        InvalidateListReads();
+        var created = new ScriptDto(id, request.Name, request.FolderPath, request.Description, request.Content,
+            request.ScriptType, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        _all.Add(created);
+        _types.Add(created.ScriptType!);
+        UpdateExpandedSnapshot();
+        foreach (var folder in ScriptLibraryPlacement.FolderChain(created.FolderPath)) _expanded.Add(folder);
+        // Make the just-created script visible even if the previous search/type
+        // hid its placement. Embedded fixed-type picker scope remains intact.
+        _search = null;
+        _filterType = string.IsNullOrWhiteSpace(FilterByType) ? null : FilterByType;
+        _current = created;
+        _selectedFolder = request.FolderPath!;
+        _editorBaseline = created.Content ?? string.Empty;
+        _dirty = false;
+        _editorInitialized = false;
+        _editorKey = Guid.NewGuid().ToString();
+        _focusEditor = ShowViewer;
+        RebuildTree(captureExpansion: false);
+        Snackbar.Add("Script created.", Severity.Success);
     }
 
     private async Task DeleteScript(ScriptTreeNode node)
     {
-        if (node.Id is null)
+        if (node.Id is null || !AllowEditing || ReadOnly)
         {
             return;
         }
@@ -596,6 +659,7 @@
         try
         {
             await Api.DeleteAsync(node.Id.Value, observedRevision, CancellationToken.None);
+            InvalidateListReads();
             if (_current?.Id == node.Id.Value)
             {
                 SelectNone();
@@ -612,7 +676,7 @@
 
     private async Task BeginRename(ScriptTreeNode node)
     {
-        if (node.Id is null)
+        if (node.Id is null || !AllowEditing || ReadOnly)
         {
             return;
         }
@@ -626,12 +690,16 @@
 
         try
         {
-            await Api.UpdateAsync(node.Id.Value, new UpdateScriptRequest(
+            var revision = await Api.UpdateAsync(node.Id.Value, new UpdateScriptRequest(
                 Name: newName,
                 FolderPath: null,
                 Description: null,
                 Content: null,
                 ScriptType: null, ExpectedSourceRevision: observedRevision), CancellationToken.None);
+            InvalidateListReads();
+
+            if (_current?.Id == node.Id.Value)
+                _current = _current with { Name = newName, SourceRevision = revision };
 
             await ReloadAsync();
             Snackbar.Add("Renamed.", Severity.Success);
@@ -678,33 +746,14 @@
         });
     }
 
-    private void SelectNone()
+    private void SelectNone(bool clearActive = true)
     {
-        _active = null;
+        if (clearActive) _active = null;
         _current = null;
         _dirty = false;
         _editorBaseline = string.Empty;
         _editorKey = Guid.NewGuid().ToString();
         StateHasChanged();
-    }
-
-    private async Task<(bool ok, string name, string folder, ScriptType? type)> PromptNewScript()
-    {
-        var model = new NewScriptDialogModel();
-        var parameters = new DialogParameters { ["Model"] = model };
-        var dialogRef = await Dialogs.ShowAsync<NewScriptDialog>("New Script", parameters);
-        if (dialogRef is not { } dialog)
-        {
-            return (false, string.Empty, NormalizeFolder(model.Folder), model.Type);
-        }
-
-        var result = await dialog.Result;
-        if (result is null)
-        {
-            return (false, string.Empty, NormalizeFolder(model.Folder), model.Type);
-        }
-
-        return (!result.Canceled, model.Name?.Trim() ?? string.Empty, NormalizeFolder(model.Folder), model.Type);
     }
 
     private async Task<(bool ok, string name)> PromptRename(string current)
@@ -741,17 +790,7 @@
             ScrollBeyondLastLine = false
         };
 
-    private static string LangFor(string? type) => (type ?? string.Empty).ToLowerInvariant() switch
-    {
-        "powershell" => "powershell",
-        "bash" or "shell" => "shell",
-        "python" => "python",
-        "javascript" => "javascript",
-        "typescript" => "typescript",
-        "sql" => "sql",
-        "json" => "json",
-        _ => "plaintext"
-    };
+    private static string LangFor(string? type) => ScriptLibraryTypes.Find(type)?.Language ?? "plaintext";
 
     private void HookCtrlS()
     {
@@ -765,7 +804,7 @@
             return "/";
         }
 
-        var normalized = path.Replace('\\', '/');
+        var normalized = path.Trim().Replace('\\', '/');
         if (!normalized.StartsWith('/'))
         {
             normalized = "/" + normalized;
@@ -778,115 +817,10 @@
 
         return normalized;
     }
+
+    private static IReadOnlyList<string> ExistingFolderChain(string? path)
+    {
+        try { return ScriptLibraryPlacement.FolderChain(path); }
+        catch (ArgumentException) { return ["/"]; }
+    }
 }
-
-<style>
-    .script-library-shell {
-        padding-bottom: 1rem;
-    }
-
-    .script-library-hero,
-    .script-library-panel,
-    .script-library-editor-head {
-        border-radius: var(--mud-default-borderradius);
-        border: 1px solid var(--mud-palette-lines-default);
-        background: var(--mud-palette-surface);
-        box-shadow: none;
-    }
-
-    .script-library-hero {
-        border-left: 2px solid var(--mud-palette-primary);
-    }
-
-    .script-library-kicker {
-        color: var(--mud-palette-primary);
-        font-size: 0.76rem;
-        font-weight: 700;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-    }
-
-    .script-library-editor-head {
-        background: color-mix(in srgb, var(--mud-palette-primary) 6%, var(--mud-palette-surface));
-    }
-
-    .script-library-workspace {
-        height: min(680px, calc(100dvh - 216px));
-        min-height: 420px;
-    }
-
-    .script-library-tree-column,
-    .script-library-editor-column,
-    .script-library-panel,
-    .script-library-tree-scroll,
-    .script-library-editor-frame {
-        min-height: 0;
-        min-width: 0;
-    }
-
-    .script-library-tree-column,
-    .script-library-editor-column,
-    .script-library-panel {
-        height: 100%;
-    }
-
-    .script-library-tree-scroll {
-        display: flex;
-        flex-direction: column;
-        justify-content: flex-start;
-        align-items: stretch;
-        flex: 1 1 auto;
-        overflow: auto;
-        overscroll-behavior: contain;
-    }
-
-    .script-library-tree-scroll > .mud-treeview {
-        flex: 0 0 auto;
-        align-self: stretch;
-        margin: 0;
-        padding: 0;
-        text-align: start;
-    }
-
-    .script-library-editor-frame {
-        display: flex;
-        flex: 1 1 auto;
-        overflow: hidden;
-        border: 1px solid var(--mud-palette-divider);
-        border-radius: var(--netratel-radius-surface, 7px);
-    }
-
-    .script-library-editor {
-        display: flex;
-        flex: 1 1 auto;
-        width: 100%;
-        height: 100%;
-        min-height: 0;
-        min-width: 0;
-    }
-
-    .script-library-editor .monaco-editor-container,
-    .script-library-editor .monaco-editor,
-    .script-library-editor .overflow-guard {
-        flex: 1 1 auto;
-        width: 100%;
-        height: 100%;
-        min-height: 0;
-        min-width: 0;
-    }
-
-    @@media (max-width: 599px) {
-        .script-library-workspace {
-            height: auto;
-            min-height: 0;
-        }
-
-        .script-library-tree-column {
-            min-height: 420px;
-        }
-
-        .script-library-editor-column {
-            min-height: 560px;
-        }
-    }
-</style>
