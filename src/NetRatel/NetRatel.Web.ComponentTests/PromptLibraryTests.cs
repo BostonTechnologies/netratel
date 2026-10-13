@@ -114,6 +114,7 @@ public sealed class PromptLibraryTests : AsyncBunitContext
     public async Task Failed_edit_save_retains_input_and_revision_and_tenant_switch_requires_confirmation()
     {
         api.FailSave = true;
+        JSInterop.Setup<string>("blazorMonaco.editor.getValue", _ => true).SetResult("Original tenant body");
         var cut = Render<Prompts>(); await cut.WaitForAssertionAsync(() => Assert.NotEmpty(cut.FindAll("[data-testid=prompt-item]")));
         await cut.Find("[data-testid=prompt-item]").ClickAsync(new());
         await Button(cut, "Edit").ClickAsync(new());
@@ -132,6 +133,25 @@ public sealed class PromptLibraryTests : AsyncBunitContext
         Assert.Equal(2, api.Updated.Count);
         Assert.All(api.Updated, request => Assert.Equal(1, request.ExpectedRevision));
         Assert.Empty(cut.FindAll("[data-testid=prompt-save]"));
+    }
+
+    [Fact]
+    public async Task Unavailable_editor_content_retains_the_draft_and_never_submits_an_empty_replacement()
+    {
+        var cut = Render<Prompts>(); await cut.WaitForAssertionAsync(() => Assert.NotEmpty(cut.FindAll("[data-testid=prompt-item]")));
+        await cut.Find("[data-testid=prompt-item]").ClickAsync(new());
+        await Button(cut, "Edit").ClickAsync(new());
+        cut.Find("[data-testid=prompt-name]").Input("Retained draft");
+        var monaco = cut.FindComponent<StandaloneCodeEditor>().Instance;
+        await cut.InvokeAsync(() => monaco.OnDidInit.InvokeAsync());
+        JSInterop.Setup<string>("blazorMonaco.editor.getValue", _ => true).SetResult(null!);
+        await cut.InvokeAsync(() => monaco.OnDidChangeModelContent.InvokeAsync(new ModelContentChangedEvent()));
+        await cut.Find("[data-testid=prompt-save]").ClickAsync(new());
+        Assert.Contains("Editor content is unavailable", cut.Markup);
+        Assert.Equal("Retained draft", cut.Find("[data-testid=prompt-name]").GetAttribute("value"));
+        Assert.Equal("Original tenant body", cut.FindComponent<MonacoTextEditor>().Instance.Value);
+        Assert.Contains("Unsaved changes", cut.Markup);
+        Assert.Empty(api.Created); Assert.Empty(api.Updated);
     }
 
     [Fact]

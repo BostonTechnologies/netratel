@@ -249,11 +249,12 @@
     }
     private void EditPrompt() { if (CanManage && !_busy && _detail?.Summary.Archived == false) BeginEditor(_detail, true, false); }
     private void CopyPrompt() { if (CanManage && !_busy && _detail is not null) BeginEditor(_detail, true, true); }
-    private void BodyChanged(string body) { if (_editing && !_saving) _body = body; }
+    private void BodyChanged(string? body) { if (_editing && !_saving && body is not null) _body = body; }
     private Task SaveAsync() => CommandAsync(async (tenant, generation, ct) =>
     {
         var body = _editor is null ? _body : await _editor.GetValueAsync();
         if (!Current(tenant, generation)) return;
+        if (body is null) { _error = "Editor content is unavailable. Your draft is retained; try again when the editor is ready."; return; }
         _body = body;
         if (Encoding.UTF8.GetByteCount(body) > AiPromptLimits.MaxBodyUtf8Bytes) { _error = "Prompt guidance exceeds 8192 UTF-8 bytes. Shorten it before saving."; return; }
         var request = new AiPromptSaveRequest(_name, _description, body, _editingId is null ? 0 : _detail!.Summary.Revision);
