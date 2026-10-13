@@ -69,6 +69,45 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
     }
 
     [Fact]
+    public async Task Pending_run_ignores_escape_backdrop_and_stale_cancel_without_releasing_page_guard()
+    {
+        var page = Render<JobsPage>();
+        page.WaitForElement("button[aria-label='Run Nightly backup']");
+        page.Find("button[aria-label='Run Nightly backup']").Click();
+        _dialogs.WaitForElement(".run-job-dialog");
+        Button(_dialogs, "Cancel").Click();
+        page.WaitForAssertion(() => page.Find("button[aria-label='Run Nightly backup']").HasAttribute("disabled").Should().BeFalse());
+        _transport.RunCalls.Should().Be(0);
+
+        _transport.PendingRun = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        page.Find("button[aria-label='Run Nightly backup']").Click();
+        _dialogs.WaitForAssertion(() => Button(_dialogs, "Start Run").HasAttribute("disabled").Should().BeFalse());
+        var starting = _dialogs.InvokeAsync(() => Button(_dialogs, "Start Run").ClickAsync(new MouseEventArgs()));
+        try
+        {
+            _dialogs.WaitForAssertion(() => _transport.RunCalls.Should().Be(1));
+            var container = _dialogs.FindComponent<MudDialogContainer>();
+            var keyInterceptor = (KeyInterceptorService)Services.GetRequiredService<IKeyInterceptorService>();
+            // Exercise the same registered key interceptor entrypoint used by MudBlazor's JS,
+            // because Escape dismissal is not a native DOM keydown handler on the dialog div.
+            await _dialogs.InvokeAsync(() => keyInterceptor.OnKeyDown(
+                ((IMudDialogInstance)container.Instance).ElementId, new KeyboardEventArgs { Key = "Escape", Code = "Escape" }));
+            _dialogs.Find(".mud-overlay").Click();
+            Button(_dialogs, "Cancel").Click();
+            _dialogs.FindComponents<RunJobDialog>().Should().ContainSingle();
+            page.Find("button[aria-label='Run Nightly backup']").HasAttribute("disabled").Should().BeTrue();
+            page.Find("button[aria-label='Run Nightly backup']").Click();
+            _transport.RunCalls.Should().Be(1);
+        }
+        finally
+        {
+            _transport.PendingRun.TrySetResult(new(HttpStatusCode.OK) { Content = JsonContent.Create(
+                new JobRunDto(9, 42, "Nightly backup", 7, "fixture-host", "ui", JobRunStatusDto.Pending, 0, 0, null, null, null, "{}")) });
+            await starting;
+        }
+    }
+
+    [Fact]
     public async Task Create_continues_with_persisted_id_steps_and_same_job_save_without_execution()
     {
         var (cut, reference) = await OpenEditorAsync();

@@ -316,7 +316,11 @@
         }
     }
 
-    private void Cancel() => MudDialog.Cancel();
+    private void Cancel()
+    {
+        if (_isSubmitting) return;
+        MudDialog.Cancel();
+    }
 }
 
 <style>

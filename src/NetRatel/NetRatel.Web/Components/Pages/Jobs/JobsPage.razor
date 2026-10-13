@@ -586,7 +586,8 @@
         {
             MaxWidth = MaxWidth.Medium,
             FullWidth = true,
-            CloseOnEscapeKey = true
+            CloseOnEscapeKey = false,
+            BackdropClick = false
         };
 
         var dialogRef = await DialogService.ShowAsync<RunJobDialog>($"Run Job: {job.Name}", parameters, options);
