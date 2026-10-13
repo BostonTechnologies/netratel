@@ -2,83 +2,126 @@
 @rendermode InteractiveServer
 @attribute [Authorize]
 @using System.Text
+@using System.Security.Claims
 @using NetRatel.Shared.Contracts.Netclaw
 @using NetRatel.Web.Services
 @using NetRatel.Web.Components.Shared
 @implements IDisposable
 @inject IPromptLibraryApiService Api
+@inject NavigationManager Navigation
 
 <PageTitle>AI Ops · Prompts</PageTitle>
+<NavigationLock ConfirmExternalNavigation="@Dirty" OnBeforeInternalNavigation="BeforeNavigationAsync" />
 <main class="prompt-library" data-testid="prompt-library">
-    <header><p class="eyebrow">AI OPERATIONS</p><h1>Prompts</h1><p>Write tenant guidance for new investigations and optional reusable prompts.</p></header>
-    <div class="prompt-toolbar">
-        <label>Tenant<select value="@_tenant" @onchange="ChooseTenantAsync" data-testid="prompt-tenant">@if (_tenant == 0) { <option value="0" disabled>Select tenant</option> }@foreach (var tenant in _tenants) { <option value="@tenant.TenantId">@tenant.TenantName</option> }</select></label>
-        <label>Search<input @bind="_search" placeholder="Name or description" maxlength="128" /></label>
-        <button type="button" @onclick="ReloadAsync" disabled="@(_busy || _tenant == 0)">Search / refresh</button>
-        <label class="prompt-check"><input type="checkbox" @bind="_includeArchived" />Include archived</label>
-        <button type="button" @onclick="NewPrompt" disabled="@(_busy || !CanManage || Dirty)" data-testid="prompt-new">New prompt</button>
-    </div>
-    @if (_error is not null) { <p role="alert" class="prompt-notice">@_error</p> }
+    <header class="prompt-toolbar">
+        <h1>Prompts</h1>
+        <div class="prompt-tenant-field">
+            <MudSelect T="int" Label="Tenant" Value="_tenant" ValueChanged="ChooseTenantAsync" Dense="true" Margin="Margin.Dense" Variant="Variant.Outlined" Disabled="@(_tenants.Count == 0)" data-testid="prompt-tenant">
+                @foreach (var tenant in _tenants) { <MudSelectItem T="int" Value="tenant.TenantId">@tenant.TenantName</MudSelectItem> }
+            </MudSelect>
+        </div>
+        <div class="prompt-search-field">
+            <MudTextField T="string" Label="Search prompts" @bind-Value="_search" Immediate="true" MaxLength="128" Margin="Margin.Dense" Variant="Variant.Outlined" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" OnKeyDown="SearchKeyDownAsync" />
+        </div>
+        <MudTooltip Text="Search / refresh"><MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small" OnClick="ReloadAsync" Disabled="@(_busy || _tenant == 0)" aria-label="Search / refresh" /></MudTooltip>
+        <MudCheckBox T="bool" Value="_includeArchived" ValueChanged="ArchivedFilterChangedAsync" Label="Archived" Size="Size.Small" Dense="true" Disabled="@(_busy || _tenant == 0)" />
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="NewPrompt" Disabled="@(_busy || !CanManage)" data-testid="prompt-new">New</MudButton>
+    </header>
+    @if (_error is not null) { <MudAlert Severity="Severity.Error" Dense="true" Class="prompt-notice" role="alert">@_error</MudAlert> }
     @if (_loading) { <p role="status">Loading authorized tenant prompts…</p> }
     else if (_tenants.Count == 0) { <p>No prompt access. A tenant role with read telemetry permission grants access to this library.</p> }
     else
     {
-        <section class="prompt-default" aria-label="Default session prompt">
-            <h2>Default session prompt</h2>
-            @if (_list.Default.Prompt is { } guidance)
-            { <p><strong>@guidance.Name</strong> · revision @guidance.Revision. Automatically included in every new manual or Flow investigation.</p>
-              @if (CanManage) { <button type="button" @onclick="RemoveDefaultAsync" disabled="@(_busy || Dirty)">Remove default</button> } }
-            else { <p>No tenant-specific default is configured. New investigations still receive the fixed platform baseline.</p> }
-            <p class="muted">Edits apply to new sessions. Saved and running investigations keep their original prompt revisions. Guidance does not grant permissions or replace approval and recovery controls.</p>
-        </section>
-        @if (_discard || _nextTenant is not null)
-        { <div class="prompt-notice"><p>Discard unsaved prompt changes@(_nextTenant is not null ? " and switch tenant" : "")?</p><button type="button" @onclick="DiscardAsync">Discard changes</button><button type="button" @onclick="KeepEditing">Keep editing</button></div> }
-        <div class="prompt-workspace">
-            <aside aria-label="Tenant prompt list">
-                @if (_list.Items.Count == 0) { <p>No matching prompts. Create guidance such as disk-space investigation, offline-client checks or vendor escalation.</p> }
-                @foreach (var prompt in _list.Items)
-                {
-                    <button type="button" class="prompt-item" @key="prompt.Id" @onclick="() => OpenAsync(prompt.Id)" disabled="@(_busy || Dirty)" data-testid="prompt-item">
-                        <strong>@prompt.Name</strong><span>@(prompt.IsDefault ? "Default session prompt" : "Optional guidance") · revision @prompt.Revision @(prompt.Archived ? "· archived" : "")</span><small>@prompt.Description</small>
-                    </button>
-                }
-                @if (_list.HasMore) { <p class="prompt-notice">Showing the first @AiPromptLimits.MaxListItems matches. Refine your search to find more prompts.</p> }
+        @if (_discard)
+        {
+            <div class="prompt-notice prompt-discard" role="alert" aria-label="Discard unsaved prompt changes">
+                <span>Discard unsaved prompt changes@(_nextTenant is not null ? " and switch tenant" : "")?</span>
+                <MudButton Size="Size.Small" Color="Color.Warning" OnClick="DiscardAsync" Disabled="@_busy">Discard changes</MudButton>
+                <MudButton Size="Size.Small" OnClick="KeepEditing">Keep editing</MudButton>
+            </div>
+        }
+        <div class="prompt-workspace @(_editing ? "is-editing" : "")">
+            <aside class="prompt-list" aria-label="Tenant prompt list">
+                <div class="prompt-default-status">
+                    <span title="@(_list.Default.Prompt?.Name ?? "Platform baseline")" data-testid="prompt-default-status">Default: @(_list.Default.Prompt?.Name ?? "Platform baseline")</span>
+                    @if (_list.Default.Prompt is not null && CanManage)
+                    { <MudTooltip Text="Remove default"><MudIconButton Icon="@Icons.Material.Filled.Clear" Size="Size.Small" OnClick="RemoveDefaultAsync" Disabled="@(_busy || Dirty)" aria-label="Remove default" data-testid="prompt-remove-default" /></MudTooltip> }
+                </div>
+                <details class="prompt-help">
+                    <summary>Default policy</summary>
+                    <p>@(_list.Default.Prompt is null ? "No tenant-specific default is configured. New investigations receive the fixed platform baseline." : "The tenant default is included in every new manual or Flow investigation.")</p>
+                    <p>Edits apply to new sessions. Saved and running investigations keep their original prompt revisions. Guidance does not grant permissions or replace approval and recovery controls. Prompt text is never executed or interpolated.</p>
+                </details>
+                <div class="prompt-list-items">
+                    @if (_list.Items.Count == 0) { <p class="prompt-empty">No matching prompts.</p> }
+                    @foreach (var prompt in _list.Items)
+                    {
+                        <button type="button" class="prompt-item @(_detail?.Summary.Id == prompt.Id ? "selected" : "")" @key="prompt.Id" @onclick="() => OpenAsync(prompt.Id)" disabled="@_busy" aria-pressed="@(_detail?.Summary.Id == prompt.Id ? "true" : "false")" data-testid="prompt-item">
+                            <strong>@prompt.Name</strong>
+                            <span>Revision @prompt.Revision @(prompt.IsDefault ? "· Default" : "") @(prompt.Archived ? "· Archived" : "")</span>
+                            @if (!string.IsNullOrWhiteSpace(prompt.Description)) { <small>@prompt.Description</small> }
+                        </button>
+                    }
+                    @if (_list.HasMore) { <p class="prompt-empty">First @AiPromptLimits.MaxListItems matches. Refine your search for more.</p> }
+                </div>
             </aside>
             <section class="prompt-detail" aria-label="Prompt editor">
-                @if (_detail is null && !_editing) { <h2>Choose a prompt</h2><p>View guidance, make a copy, or edit an active prompt.</p> }
+                @if (_detail is null && !_editing) { <div class="prompt-empty"><h2>Choose a prompt</h2><p>View guidance or create a prompt.</p></div> }
                 else
                 {
-                    <div class="prompt-detail-heading"><h2>@(_editing ? (_editingId is null ? "New prompt" : "Edit prompt") : _detail!.Summary.Name)</h2>@if (Dirty) { <span role="status" class="prompt-unsaved">Unsaved changes</span> }</div>
+                    <div class="prompt-detail-heading">
+                        <h2>@(_editing ? (_editingId is null ? "New prompt" : "Edit prompt") : _detail!.Summary.Name)</h2>
+                        <span role="status" class="@(Dirty ? "prompt-unsaved" : "muted")">@(_busy ? "Saving / loading…" : Dirty ? "Unsaved changes" : _editing ? (_editingId is null ? "Blank draft" : "Saved draft") : $"Revision {_detail!.Summary.Revision}")</span>
+                    </div>
                     @if (!_editing && _detail is { } detail)
                     {
-                        <p class="muted">Revision @detail.Summary.Revision · created @detail.Summary.CreatedAtUtc.ToString("u") by @detail.Summary.CreatedBy · updated @detail.Summary.UpdatedAtUtc.ToString("u") by @detail.Summary.UpdatedBy</p>
-                        <p>@detail.Summary.Description</p>
-                        <div class="prompt-actions">
-                            <button type="button" @onclick="CopyPrompt" disabled="@(_busy || !CanManage)">Copy</button>
-                            @if (!detail.Summary.Archived)
-                            {
-                                <button type="button" @onclick="EditPrompt" disabled="@(_busy || !CanManage)">Edit</button>
-                                <button type="button" @onclick="SetDefaultAsync" disabled="@(_busy || !CanManage || detail.Summary.IsDefault)">Set as default</button>
-                                <button type="button" @onclick="() => _confirmArchive = true" disabled="@(_busy || !CanManage)">Archive</button>
-                            }
-                        </div>
+                        @if (!string.IsNullOrWhiteSpace(detail.Summary.Description)) { <p class="prompt-description">@detail.Summary.Description</p> }
+                        <details class="prompt-audit">
+                            <summary>Updated @detail.Summary.UpdatedAtUtc.ToString("g") by @ActorName(detail.Summary.UpdatedBy) · Audit details</summary>
+                            <dl>
+                                <dt>Created</dt><dd>@detail.Summary.CreatedAtUtc.ToString("u") · @ActorName(detail.Summary.CreatedBy)</dd>
+                                <dt>Creator ID</dt><dd><code>@detail.Summary.CreatedBy</code></dd>
+                                <dt>Updated</dt><dd>@detail.Summary.UpdatedAtUtc.ToString("u") · @ActorName(detail.Summary.UpdatedBy)</dd>
+                                <dt>Updater ID</dt><dd><code>@detail.Summary.UpdatedBy</code></dd>
+                            </dl>
+                        </details>
                         @if (_confirmArchive)
                         {
-                            <div class="prompt-notice"><p>Archive this prompt? It will be unavailable for new selections. Saved revisions remain available to existing investigations and published Flows.</p>
-                                @if (detail.Summary.IsDefault) { <p>Choose a replacement default from the list before archiving, or explicitly remove this default.</p><label class="prompt-check"><input type="checkbox" @bind="_removeDefaultOnArchive" />Remove default and archive; new sessions use the platform baseline</label> }
-                                <button type="button" @onclick="ArchiveAsync" disabled="@(_busy || detail.Summary.IsDefault && !_removeDefaultOnArchive)">Confirm archive</button><button type="button" @onclick="() => _confirmArchive = false">Keep prompt</button>
+                            <div class="prompt-notice"><p>Archive this prompt? New selections will exclude it. Existing investigation and Flow snapshots remain available.</p>
+                                @if (detail.Summary.IsDefault) { <MudCheckBox T="bool" @bind-Value="_removeDefaultOnArchive" Label="Remove default and archive; new sessions use the platform baseline" Size="Size.Small" /> }
+                                <MudButton Size="Size.Small" Color="Color.Warning" OnClick="ArchiveAsync" Disabled="@(_busy || detail.Summary.IsDefault && !_removeDefaultOnArchive)">Confirm archive</MudButton>
+                                <MudButton Size="Size.Small" OnClick="() => _confirmArchive = false">Keep prompt</MudButton>
                             </div>
                         }
                     }
                     else
                     {
-                        <label>Name<input @bind="_name" @bind:event="oninput" maxlength="128" disabled="@_busy" data-testid="prompt-name" /></label>
-                        <label>Description<textarea @bind="_description" @bind:event="oninput" maxlength="1024" rows="2" disabled="@_busy" data-testid="prompt-description"></textarea></label>
+                        <div class="prompt-fields">
+                            <MudTextField T="string" @ref="_nameInput" Label="Name" @bind-Value="_name" Immediate="true" MaxLength="128" Margin="Margin.Dense" Variant="Variant.Outlined" Disabled="@_saving" data-testid="prompt-name" />
+                            <MudTextField T="string" Label="Description (optional)" @bind-Value="_description" Immediate="true" MaxLength="1024" Margin="Margin.Dense" Variant="Variant.Outlined" Disabled="@_saving" data-testid="prompt-description" />
+                        </div>
                     }
-                    <div class="prompt-editor"><MonacoTextEditor @key="_editorKey" @ref="_editor" Value="@_body" ValueChanged="BodyChanged" ReadOnly="@(!_editing || _busy)" /></div>
-                    <p class="muted">@Encoding.UTF8.GetByteCount(_body) / @AiPromptLimits.MaxBodyUtf8Bytes UTF-8 bytes. Plain guidance only; prompt text is never executed or interpolated.</p>
-                    @if (_editing)
-                    { <div class="prompt-actions"><button type="button" @onclick="SaveAsync" disabled="@(_busy || !Dirty || string.IsNullOrWhiteSpace(_name) || string.IsNullOrWhiteSpace(_body))" data-testid="prompt-save">Save</button><button type="button" @onclick="Cancel" disabled="@_busy" data-testid="prompt-cancel">Cancel</button></div> }
+                    <div class="prompt-editor"><MonacoTextEditor @key="_editorKey" @ref="_editor" Value="@_body" ValueChanged="BodyChanged" ReadOnly="@(!_editing || _saving)" AutoFocus="false" /></div>
+                    <footer class="prompt-footer">
+                        <span class="muted">@Encoding.UTF8.GetByteCount(_body) / @AiPromptLimits.MaxBodyUtf8Bytes bytes · Plain guidance</span>
+                        <div class="prompt-actions">
+                        @if (_editing)
+                        {
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" OnClick="SaveAsync" Disabled="@(_busy || !Dirty || string.IsNullOrWhiteSpace(_name) || string.IsNullOrWhiteSpace(_body))" data-testid="prompt-save">Save</MudButton>
+                            <MudButton Size="Size.Small" OnClick="Cancel" Disabled="@_busy" data-testid="prompt-cancel">Cancel</MudButton>
+                        }
+                        else if (_detail is { } saved)
+                        {
+                            <MudButton Size="Size.Small" OnClick="CopyPrompt" Disabled="@(_busy || !CanManage)">Copy</MudButton>
+                            @if (!saved.Summary.Archived)
+                            {
+                                <MudButton Size="Size.Small" OnClick="EditPrompt" Disabled="@(_busy || !CanManage)">Edit</MudButton>
+                                <MudButton Size="Size.Small" OnClick="SetDefaultAsync" Disabled="@(_busy || !CanManage || saved.Summary.IsDefault)">Set as default</MudButton>
+                                <MudButton Size="Size.Small" OnClick="() => _confirmArchive = true" Disabled="@(_busy || !CanManage)">Archive</MudButton>
+                            }
+                        }
+                        </div>
+                    </footer>
                 }
             </section>
         </div>
@@ -87,6 +130,12 @@
 
 @code {
     [SupplyParameterFromQuery(Name = "tenantId")] public int? RequestedTenant { get; set; }
+    [CascadingParameter] private Task<AuthenticationState>? AuthenticationState { get; set; }
+    private MudTextField<string>? _nameInput;
+    private readonly Dictionary<string, string> _actorNames = new(StringComparer.Ordinal);
+    private Guid? _nextPrompt;
+    private string? _nextNavigation;
+    private bool _nextNew, _focusName;
     private IReadOnlyList<AiPromptTenantDto> _tenants = [];
     private AiPromptListDto _list = new([], new(0, null), false);
     private AiPromptDetailDto? _detail;
@@ -98,13 +147,20 @@
     private Guid _editorKey = Guid.NewGuid();
     private string _search = "", _name = "", _description = "", _body = "", _initialName = "", _initialDescription = "", _initialBody = "";
     private string? _error;
-    private bool _loading = true, _busy, _editing, _includeArchived, _discard, _disposed, _confirmArchive, _removeDefaultOnArchive, _initializedPage;
+    private bool _loading = true, _busy, _saving, _editing, _includeArchived, _discard, _disposed, _confirmArchive, _removeDefaultOnArchive, _initializedPage;
     private bool CanManage => _tenants.FirstOrDefault(x => x.TenantId == _tenant)?.CanManage == true;
     private bool Dirty => _editing && (_name != _initialName || _description != _initialDescription || _body != _initialBody);
     protected override async Task OnInitializedAsync()
     {
         try
         {
+            if (AuthenticationState is not null)
+            {
+                var principal = (await AuthenticationState).User;
+                var subject = principal.FindFirst("sub")?.Value ?? principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                var name = principal.FindFirst("name")?.Value ?? principal.Identity?.Name;
+                if (!string.IsNullOrWhiteSpace(subject) && !string.IsNullOrWhiteSpace(name) && name != subject) _actorNames[subject] = name;
+            }
             _tenants = await Api.TenantsAsync(_scope.Token);
             _tenant = RequestedTenant is { } requested ? _tenants.FirstOrDefault(x => x.TenantId == requested)?.TenantId ?? 0 : _tenants.FirstOrDefault()?.TenantId ?? 0;
             if (_tenant > 0) _list = await Api.ListAsync(_tenant, ct: _scope.Token);
@@ -119,64 +175,89 @@
         if (!_initializedPage || _disposed || _appliedRequestedTenant == RequestedTenant) return;
         _appliedRequestedTenant = RequestedTenant;
         if (RequestedTenant is not { } tenant || tenant == _tenant) return;
-        if (!_tenants.Any(x => x.TenantId == tenant))
-        {
-            ++_generation; _scope.Cancel(); _scope.Dispose(); _scope = new(); _tenant = 0; _busy = false;
-            ClearEditor(); _list = new([], new(0, null), false); _loading = false;
-            _error = "The linked tenant is unavailable to this account."; return;
-        }
-        if (Dirty) { _nextTenant = tenant; return; }
+        if (Dirty) { KeepEditing(); _nextTenant = tenant; _discard = true; return; }
         await SwitchTenantAsync(tenant);
     }
     private bool Current(int tenant, int generation) => !_disposed && tenant == _tenant && generation == _generation;
-    private async Task ChooseTenantAsync(ChangeEventArgs e)
+    private async Task ChooseTenantAsync(int tenant)
     {
-        if (!int.TryParse(e.Value?.ToString(), out var tenant) || tenant == _tenant || !_tenants.Any(x => x.TenantId == tenant)) return;
-        if (Dirty) { _nextTenant = tenant; return; }
+        if (tenant == _tenant || !_tenants.Any(x => x.TenantId == tenant)) return;
+        if (Dirty) { KeepEditing(); _nextTenant = tenant; _discard = true; return; }
         await SwitchTenantAsync(tenant);
+    }
+    private string ActorName(string id) => _actorNames.GetValueOrDefault(id) ?? "Unresolved operator";
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_focusName && _editing && _nameInput is not null)
+        { _focusName = false; await _nameInput.FocusAsync(); }
+    }
+    private Task SearchKeyDownAsync(KeyboardEventArgs e) => e.Key == "Enter" ? ReloadAsync() : Task.CompletedTask;
+    private async Task ArchivedFilterChangedAsync(bool includeArchived) { _includeArchived = includeArchived; await ReloadAsync(); }
+    private Task BeforeNavigationAsync(LocationChangingContext context)
+    {
+        if (!Dirty) return Task.CompletedTask;
+        context.PreventNavigation(); KeepEditing(); _nextNavigation = context.TargetLocation; _discard = true;
+        return InvokeAsync(StateHasChanged);
     }
     private async Task SwitchTenantAsync(int tenant)
     {
+        if (!_tenants.Any(x => x.TenantId == tenant))
+        {
+            ++_generation; _scope.Cancel(); _scope.Dispose(); _scope = new(); _tenant = 0; _busy = false; _saving = false;
+            ClearEditor(); _list = new([], new(0, null), false); _loading = false;
+            _error = "The linked tenant is unavailable to this account."; return;
+        }
         ++_generation; _scope.Cancel(); _scope.Dispose(); _scope = new(); _tenant = tenant; _list = new([], new(0, null), false);
-        _busy = false; ClearEditor(); _error = null; _loading = true; var generation = _generation;
+        _busy = false; _saving = false; ClearEditor(); _error = null; _loading = true; var generation = _generation;
         await CommandAsync(async (id, generation, ct) => { var list = await Api.ListAsync(id, ct: ct); if (Current(id, generation)) _list = list; });
         if (Current(tenant, generation)) _loading = false;
     }
-    private async Task CommandAsync(Func<int, int, CancellationToken, Task> action)
+    private async Task CommandAsync(Func<int, int, CancellationToken, Task> action, bool lockEditor = false)
     {
         if (_busy || _disposed || _tenant == 0) return;
         var tenant = _tenant; var generation = _generation; var ct = _scope.Token;
-        _busy = true; _error = null;
+        _busy = true; _saving = lockEditor; _error = null;
         try { await action(tenant, generation, ct); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (OperationCanceledException) { if (Current(tenant, generation)) _error = "The request timed out. Refresh the saved state before retrying."; }
         catch (HttpRequestException e) { if (Current(tenant, generation)) _error = e.Message; }
-        finally { if (Current(tenant, generation)) _busy = false; }
+        finally { if (Current(tenant, generation)) { _busy = false; _saving = false; } }
     }
     private Task ReloadAsync() => CommandAsync(async (tenant, generation, ct) => { var list = await Api.ListAsync(tenant, _search, _includeArchived, ct); if (Current(tenant, generation)) _list = list; });
-    private Task OpenAsync(Guid id) => CommandAsync(async (tenant, generation, ct) =>
-    { var detail = await Api.GetAsync(tenant, id, ct: ct); if (Current(tenant, generation)) { _detail = detail; BeginEditor(detail, false, false); } });
+    private Task OpenAsync(Guid id)
+    {
+        if (Dirty) { KeepEditing(); _nextPrompt = id; _discard = true; return Task.CompletedTask; }
+        return CommandAsync(async (tenant, generation, ct) =>
+        { var detail = await Api.GetAsync(tenant, id, ct: ct); if (Current(tenant, generation)) { _detail = detail; BeginEditor(detail, false, false); } });
+    }
     private void BeginEditor(AiPromptDetailDto? detail, bool edit, bool copy)
     {
         _editing = edit; _editingId = copy ? null : detail?.Summary.Id; _name = detail?.Summary.Name ?? "";
         if (copy) _name += " (copy)";
         _description = detail?.Summary.Description ?? ""; _body = detail?.Body ?? "";
         _initialName = copy ? "" : _name; _initialDescription = copy ? "" : _description; _initialBody = copy ? "" : _body;
-        _discard = false; _confirmArchive = false; _removeDefaultOnArchive = false; _editorKey = Guid.NewGuid();
+        KeepEditing(); _focusName = edit; _confirmArchive = false; _removeDefaultOnArchive = false; _editorKey = Guid.NewGuid();
     }
-    private void NewPrompt() { if (!CanManage || Dirty || _busy) return; _detail = null; BeginEditor(null, true, false); }
+    private void NewPrompt()
+    {
+        if (!CanManage || _busy) return;
+        if (Dirty) { KeepEditing(); _nextNew = true; _discard = true; return; }
+        _detail = null; BeginEditor(null, true, false);
+    }
     private void EditPrompt() { if (CanManage && !_busy && _detail?.Summary.Archived == false) BeginEditor(_detail, true, false); }
     private void CopyPrompt() { if (CanManage && !_busy && _detail is not null) BeginEditor(_detail, true, true); }
-    private void BodyChanged(string body) { if (_editing && !_busy) _body = body; }
+    private void BodyChanged(string body) { if (_editing && !_saving) _body = body; }
     private Task SaveAsync() => CommandAsync(async (tenant, generation, ct) =>
     {
         var body = _editor is null ? _body : await _editor.GetValueAsync();
+        if (!Current(tenant, generation)) return;
+        _body = body;
         if (Encoding.UTF8.GetByteCount(body) > AiPromptLimits.MaxBodyUtf8Bytes) { _error = "Prompt guidance exceeds 8192 UTF-8 bytes. Shorten it before saving."; return; }
         var request = new AiPromptSaveRequest(_name, _description, body, _editingId is null ? 0 : _detail!.Summary.Revision);
         var saved = _editingId is { } id ? await Api.UpdateAsync(tenant, id, request, ct) : await Api.CreateAsync(tenant, request, ct);
         if (!Current(tenant, generation)) return;
         _detail = saved; BeginEditor(saved, false, false); var list = await Api.ListAsync(tenant, _search, _includeArchived, ct); if (Current(tenant, generation)) _list = list;
-    });
+    }, lockEditor: true);
     private Task SetDefaultAsync() => CommandAsync(async (tenant, generation, ct) =>
     {
         if (_detail is null) return; var detail = _detail;
@@ -193,9 +274,17 @@
         if (!Current(tenant, generation)) return; _detail = archived; BeginEditor(archived, false, false);
         var list = await Api.ListAsync(tenant, _search, _includeArchived, ct); if (Current(tenant, generation)) _list = list;
     });
-    private void Cancel() { if (Dirty) _discard = true; else ClearEditor(); }
-    private async Task DiscardAsync() { var tenant = _nextTenant; ClearEditor(); _nextTenant = null; if (tenant is { } id) await SwitchTenantAsync(id); }
-    private void KeepEditing() { _discard = false; _nextTenant = null; }
-    private void ClearEditor() { _detail = null; _editing = false; _editingId = null; _name = _description = _body = ""; _discard = false; _confirmArchive = false; _editorKey = Guid.NewGuid(); }
+    private void Cancel() { KeepEditing(); if (Dirty) _discard = true; else ClearEditor(); }
+    private async Task DiscardAsync()
+    {
+        var tenant = _nextTenant; var prompt = _nextPrompt; var navigation = _nextNavigation; var newPrompt = _nextNew;
+        ClearEditor();
+        if (tenant is { } tenantId) await SwitchTenantAsync(tenantId);
+        else if (prompt is { } promptId) await OpenAsync(promptId);
+        else if (newPrompt) NewPrompt();
+        else if (navigation is not null) Navigation.NavigateTo(navigation);
+    }
+    private void KeepEditing() { _discard = false; _nextTenant = null; _nextPrompt = null; _nextNavigation = null; _nextNew = false; }
+    private void ClearEditor() { _detail = null; _editing = false; _editingId = null; _name = _description = _body = ""; KeepEditing(); _focusName = false; _confirmArchive = false; _editorKey = Guid.NewGuid(); }
     public void Dispose() { _disposed = true; ++_generation; _scope.Cancel(); _scope.Dispose(); }
 }
