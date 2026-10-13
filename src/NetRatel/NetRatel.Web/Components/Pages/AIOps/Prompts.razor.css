@@ -1,0 +1,14 @@
+.prompt-library{max-width:1500px;margin:auto;padding:28px;color:var(--mud-palette-text-primary)}
+.eyebrow{letter-spacing:.15em;font-size:.72rem;color:var(--mud-palette-primary)}
+h1{font-size:2rem;margin:0 0 10px}h2{font-size:1.1rem;margin:0 0 12px}
+.prompt-toolbar,.prompt-actions,.prompt-detail-heading{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:18px 0}
+label{display:flex;flex-direction:column;gap:6px;font-size:.85rem}.prompt-check{flex-direction:row;align-items:center}
+input,select,textarea,button{color:inherit;background:var(--mud-palette-surface);border:1px solid var(--mud-palette-lines-default);border-radius:7px;padding:9px 12px;font:inherit}
+button{cursor:pointer}button:disabled{opacity:.45;cursor:default}
+.prompt-default{padding:20px;background:var(--mud-palette-surface);border:1px solid var(--mud-palette-lines-default);border-radius:10px}
+.prompt-default p{margin:10px 0}.muted,small{color:var(--mud-palette-text-secondary);font-size:.8rem}
+.prompt-workspace{display:grid;grid-template-columns:290px minmax(0,1fr);gap:24px;margin-top:24px}
+.prompt-item{display:flex;width:100%;text-align:left;flex-direction:column;gap:6px;margin-bottom:9px}
+.prompt-item span{font-size:.8rem}.prompt-detail{min-width:0}.prompt-detail>label{margin:12px 0}.prompt-editor{height:440px;margin-top:18px}
+.prompt-notice{padding:14px;margin:14px 0;border:1px solid var(--mud-palette-warning);border-radius:8px}.prompt-notice button{margin-right:10px}.prompt-unsaved{font-size:.8rem;color:var(--mud-palette-warning)}
+@media(max-width:850px){.prompt-library{padding:15px}.prompt-workspace{grid-template-columns:1fr}.prompt-editor{height:400px}}

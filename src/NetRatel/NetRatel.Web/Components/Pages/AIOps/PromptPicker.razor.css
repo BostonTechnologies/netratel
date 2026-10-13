@@ -1,0 +1,9 @@
+.ai-prompt-picker{min-width:0;margin:.75rem 0;border-top:1px solid var(--mud-palette-divider);padding-top:.5rem}
+.ai-prompt-picker h4{font-size:.875rem;margin:.25rem 0}.ai-prompt-picker h4 span,.prompt-help{font-size:.75rem;color:var(--mud-palette-text-secondary)}
+.prompt-default,.prompt-selected li,.prompt-catalog li{border:1px solid var(--mud-palette-divider);border-radius:4px;padding:.5rem;margin:.4rem 0;font-size:.8125rem;overflow-wrap:anywhere}
+.prompt-selected{padding-left:1.25rem}.prompt-catalog{list-style:none;padding:0;max-height:240px;overflow:auto}.ai-prompt-picker p{margin:.25rem 0}
+.prompt-actions{display:flex;gap:.25rem;margin-top:.35rem}.ai-prompt-picker label{display:flex;flex-direction:column;gap:.25rem;font-size:.8125rem}
+.ai-prompt-picker button,.ai-prompt-picker input{font:inherit;font-size:.8125rem;background:var(--mud-palette-surface);color:var(--mud-palette-text-primary);border:1px solid var(--mud-palette-divider);border-radius:4px;padding:.35rem .5rem;max-width:100%}
+.ai-prompt-picker button:disabled{opacity:.55}.ai-prompt-picker details{margin:.75rem 0}.ai-prompt-picker summary{cursor:pointer;font-size:.8125rem}.ai-prompt-picker h5{font-size:.8125rem;margin:.75rem 0 .25rem}
+.ai-prompt-picker pre{font-size:.75rem;white-space:pre-wrap;overflow-wrap:anywhere;max-height:250px;overflow:auto;margin:.25rem 0}
+.ai-prompt-picker [role=alert]{color:var(--mud-palette-error)}.ai-prompt-picker button:focus-visible,.ai-prompt-picker input:focus-visible{outline:2px solid var(--mud-palette-primary);outline-offset:2px}

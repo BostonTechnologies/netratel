@@ -21,6 +21,8 @@ public static class NetclawServiceRegistration
             });
         services.TryAddSingleton<IAiAssistantChatClientFactory, AiAssistantChatClientFactory>();
         services.TryAddScoped<NetclawProfileService>(); services.TryAddScoped<NetclawAuthority>();
+        services.TryAddScoped<PromptLibraryService>();
+        services.TryAddScoped<IPromptLibraryService>(provider => provider.GetRequiredService<PromptLibraryService>());
         services.TryAddScoped<InvestigationStore>(); services.TryAddScoped<NetclawFlowConnector>();
         services.TryAddScoped<NotificationAndIncidentConnectorCatalog>();
         services.Replace(ServiceDescriptor.Scoped<IFlowConnectorCatalog, NetclawConnectorCatalog>());

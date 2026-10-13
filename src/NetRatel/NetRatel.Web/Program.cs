@@ -85,6 +85,7 @@ MudExtensions.Services.ExtensionServiceCollectionExtensions.AddMudExtensions(bui
 
 builder.Services.AddSingleton(new ClientApiOptions());
 builder.Services.AddScoped<INetclawApiService, NetclawApiService>();
+builder.Services.AddScoped<IPromptLibraryApiService, PromptLibraryApiService>();
 builder.Services.AddScoped<ScriptService>();
 builder.Services.AddScoped<ScriptApiService>();
 builder.Services.AddScoped<ClientApiService>();
