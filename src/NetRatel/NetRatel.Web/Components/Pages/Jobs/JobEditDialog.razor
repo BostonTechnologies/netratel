@@ -27,6 +27,18 @@
             {
                 <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2">@_validationMessage</MudAlert>
             }
+            @if (!string.IsNullOrWhiteSpace(_cloneCopyWarning))
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2">@_cloneCopyWarning</MudAlert>
+            }
+            @if (_detailsLoadFailed)
+            {
+                <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2">
+                    Saved steps and parameters could not be loaded. Retry before editing job details.
+                    <MudButton Size="Size.Small" Disabled="@(_isSaving || _detailsBusy)"
+                               OnClick="@(() => RunDetailsActionAsync(() => RefreshDetailsAsync(_jobId!.Value)))">Retry details</MudButton>
+                </MudAlert>
+            }
             <fieldset class="jobs-editor-fields" disabled="@(_isSaving || _isLoading)">
             <MudGrid Spacing="2" Class="flex-grow-1 jobs-editor-layout ma-0">
                 <MudItem xs="12" md="4" Class="d-flex">
@@ -191,7 +203,7 @@
                         <ToolBarContent>
                             <MudText Typo="Typo.h6">Steps</MudText>
                             <MudSpacer />
-                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="@(() => RunDetailsActionAsync(AddStep))" Disabled="@(_jobId == null || _isSaving || _detailsBusy)">
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="@(() => RunDetailsActionAsync(AddStep))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed)">
                                 Add Step
                             </MudButton>
                         </ToolBarContent>
@@ -212,20 +224,24 @@
                                            Value="context.Enabled"
                                            ValueChanged="@(async (bool value) => await RunDetailsActionAsync(() => ToggleStepEnabledAsync(context, value)))"
                                            Color="Color.Primary"
-                                           Disabled="@(_jobId == null || _isSaving || _detailsBusy)" />
+                                           Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed)" />
                             </MudTd>
                             <MudTd><MudText Typo="Typo.body2" Class="mud-text-secondary">@GetStepSummary(context)</MudText></MudTd>
                             <MudTd Style="text-align:right">
-                                <MudIconButton Icon="@Icons.Material.Filled.ArrowUpward" Size="Size.Small" OnClick="@(() => RunDetailsActionAsync(() => MoveStepAsync(context, -1)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || !CanMove(context, -1))"/>
-                                <MudIconButton Icon="@Icons.Material.Filled.ArrowDownward" Size="Size.Small" OnClick="@(() => RunDetailsActionAsync(() => MoveStepAsync(context, 1)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || !CanMove(context, 1))"/>
-                                <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => RunDetailsActionAsync(() => EditStepAsync(context)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy)" />
-                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => RunDetailsActionAsync(() => DeleteStepAsync(context)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy)" />
+                                <MudIconButton Icon="@Icons.Material.Filled.ArrowUpward" Size="Size.Small" OnClick="@(() => RunDetailsActionAsync(() => MoveStepAsync(context, -1)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed || !CanMove(context, -1))"/>
+                                <MudIconButton Icon="@Icons.Material.Filled.ArrowDownward" Size="Size.Small" OnClick="@(() => RunDetailsActionAsync(() => MoveStepAsync(context, 1)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed || !CanMove(context, 1))"/>
+                                <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => RunDetailsActionAsync(() => EditStepAsync(context)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed)" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => RunDetailsActionAsync(() => DeleteStepAsync(context)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed)" />
                             </MudTd>
                         </RowTemplate>
                         <NoRecordsContent>
                             @if (_jobId == null)
                             {
                                 <MudText Class="pa-3" Typo="Typo.body2" Color="Color.Secondary">Enter the definition, then choose Create and add steps. Steps require a saved job ID.</MudText>
+                            }
+                            else if (_detailsLoadFailed)
+                            {
+                                <MudText Align="Align.Center" Class="pa-4">Steps unavailable.</MudText>
                             }
                             else
                             {
@@ -241,7 +257,7 @@
                         <ToolBarContent>
                             <MudText Typo="Typo.h6">Parameters</MudText>
                             <MudSpacer />
-                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="@(() => RunDetailsActionAsync(AddParam))" Disabled="@(_jobId == null || _isSaving || _detailsBusy)">
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="@(() => RunDetailsActionAsync(AddParam))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed)">
                                 Add Param
                             </MudButton>
                         </ToolBarContent>
@@ -256,14 +272,18 @@
                             <MudTd>@context.Type</MudTd>
                             <MudTd><MudText Typo="Typo.caption" Style="font-family:monospace">@GetParamDefault(context)</MudText></MudTd>
                             <MudTd Style="text-align:right">
-                                <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => RunDetailsActionAsync(() => EditParamAsync(context)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy)" />
-                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => RunDetailsActionAsync(() => DeleteParamAsync(context)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy)" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => RunDetailsActionAsync(() => EditParamAsync(context)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed)" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => RunDetailsActionAsync(() => DeleteParamAsync(context)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed)" />
                             </MudTd>
                         </RowTemplate>
                         <NoRecordsContent>
                             @if (_jobId == null)
                             {
                                 <MudText Class="pa-3" Typo="Typo.body2" Color="Color.Secondary">Create the job first, then add runtime parameters here.</MudText>
+                            }
+                            else if (_detailsLoadFailed)
+                            {
+                                <MudText Align="Align.Center" Class="pa-4">Parameters unavailable.</MudText>
                             }
                             else
                             {
@@ -303,6 +323,8 @@
     private bool _isSaving;
     private bool _isLoading = true;
     private bool _detailsBusy;
+    private bool _detailsLoadFailed;
+    private string? _cloneCopyWarning;
     private bool _createdInWorkspace;
     private int _detailsTab;
     private JobDto? _savedJob;
@@ -427,8 +449,7 @@
             }
 
             // Load sub-lists
-            _params = (await JobApi.GetJobParamsAsync(jobId)).OrderBy(p => p.Name).ToList();
-            _steps = (await JobApi.GetJobStepsAsync(jobId)).OrderBy(s => s.Ordinal).ToList();
+            await RefreshDetailsAsync(jobId);
         }
         catch (Exception ex)
         {
@@ -694,6 +715,8 @@
                 job = await JobApi.CreateJobAsync(req);
                 if (job.Id == 0) throw new InvalidOperationException("The server did not return a saved job ID.");
                 _jobId = job.Id;
+                _params = [];
+                _steps = [];
                 _savedJob = job;
                 _createdInWorkspace = true;
                 _savedDefinition = DefinitionSnapshot;
@@ -706,12 +729,15 @@
                         await CloneJobDetailsAsync(job.Id, templateParams, templateSteps);
                         _isCloneDraft = false;
                         Snackbar.Add("Job copied. You can now edit steps and parameters.", Severity.Success);
-                        await RefreshDetailsAsync(job.Id);
                     }
                     catch (Exception ex)
                     {
-                        Snackbar.Add($"Job created but failed to copy steps/params: {ex.Message}", Severity.Warning);
+                        _cloneCopyWarning = $"Job #{job.Id} was created, but not all steps or parameters were copied: {ex.Message}. Review the saved clone before running it.";
                     }
+                    // Always show the clone's actual persisted children, including a partial copy.
+                    // A failed reload keeps child actions blocked and offers an explicit retry.
+                    try { await RefreshDetailsAsync(job.Id); }
+                    catch { /* RefreshDetailsAsync records the unavailable state shown above. */ }
                 }
                 else
                 {
@@ -882,9 +908,23 @@
 
     private async Task RefreshDetailsAsync(ulong jobId)
     {
-        _params = (await JobApi.GetJobParamsAsync(jobId)).OrderBy(p => p.Name).ToList();
-        _steps = (await JobApi.GetJobStepsAsync(jobId)).OrderBy(s => s.Ordinal).ToList();
+        try
+        {
+            var parameters = (await JobApi.GetJobParamsAsync(jobId)).OrderBy(p => p.Name).ToList();
+            var steps = (await JobApi.GetJobStepsAsync(jobId)).OrderBy(s => s.Ordinal).ToList();
+            _params = parameters;
+            _steps = steps;
+            _detailsLoadFailed = false;
+        }
+        catch
+        {
+            _detailsLoadFailed = true;
+            throw;
+        }
     }
+
+    private bool CanModifyParam(JobParamDto param) => !_detailsLoadFailed && _jobId == param.JobId;
+    private bool CanModifyStep(JobStepDto step) => !_detailsLoadFailed && _jobId == step.JobId;
 
     private async Task RunDetailsActionAsync(Func<Task> action)
     {
@@ -899,7 +939,7 @@
 
     private async Task AddParam()
     {
-        if (_jobId is null) return;
+        if (_jobId is null || _detailsLoadFailed) return;
         var jobId = _jobId.Value;
 
         var parameters = new DialogParameters { ["JobId"] = jobId };
@@ -910,7 +950,7 @@
 
     private async Task EditParamAsync(JobParamDto param)
     {
-        if (_jobId is null) return;
+        if (!CanModifyParam(param)) return;
         var jobId = _jobId.Value;
 
         var parameters = new DialogParameters { ["JobId"] = jobId, ["ExistingParam"] = param };
@@ -921,7 +961,7 @@
 
     private async Task AddStep()
     {
-        if (_jobId is null) return;
+        if (_jobId is null || _detailsLoadFailed) return;
         var jobId = _jobId.Value;
 
         var parameters = new DialogParameters { ["JobId"] = jobId, ["JobParams"] = _params };
@@ -932,7 +972,7 @@
 
     private async Task EditStepAsync(JobStepDto step)
     {
-        if (_jobId is null) return;
+        if (!CanModifyStep(step)) return;
         var jobId = _jobId.Value;
 
         var parameters = new DialogParameters { ["JobId"] = jobId, ["ExistingStep"] = step, ["JobParams"] = _params };
@@ -943,21 +983,21 @@
 
     private async Task DeleteParamAsync(JobParamDto param)
     {
-        if (_jobId is null) return;
+        if (!CanModifyParam(param)) return;
         await JobApi.DeleteJobParamAsync(param.Id);
         await RefreshDetailsAsync(_jobId.Value);
     }
 
     private async Task DeleteStepAsync(JobStepDto step)
     {
-        if (_jobId is null) return;
+        if (!CanModifyStep(step)) return;
         await JobApi.DeleteJobStepAsync(step.Id);
         await RefreshDetailsAsync(_jobId.Value);
     }
 
     private async Task ToggleStepEnabledAsync(JobStepDto step, bool enabled)
     {
-        if (_jobId is null) return;
+        if (!CanModifyStep(step)) return;
         var req = new UpdateJobStepRequest(
             step.Type,
             step.Runner,
@@ -972,7 +1012,7 @@
 
     private async Task MoveStepAsync(JobStepDto step, int delta)
     {
-        if (_jobId is null) return;
+        if (!CanModifyStep(step)) return;
         await JobApi.ReorderJobStepAsync(step.Id, step.Ordinal + delta);
         await RefreshDetailsAsync(_jobId.Value);
     }

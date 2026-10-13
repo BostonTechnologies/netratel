@@ -112,7 +112,7 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
         cut.WaitForAssertion(() => _transport.StepUpdates.Should().Be(1));
         Name(cut).GetAttribute("value").Should().Be("Unsaved renamed workflow");
         cut.FindComponent<MudTimePicker>().Instance.Time.Should().Be(new TimeSpan(9, 30, 0));
-        cut.FindComponents<MudTabs>().First().Instance.ActivePanelIndex.Should().Be(2);
+        cut.Find(".jobs-editor-definition-tabs .mud-tab-active").TextContent.Trim().Should().Be("Schedule");
         Button(cut, "Save").Click();
         cut.WaitForAssertion(() => _transport.Update.Should().NotBeNull());
         _transport.Update!.Name.Should().Be("Unsaved renamed workflow");
@@ -162,10 +162,12 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
         _transport.FailParams = true;
         var reference = await Services.GetRequiredService<IDialogService>().ShowAsync<RunJobDialog>("Run",
             new DialogParameters { ["Job"] = _transport.Job });
-        _dialogs.WaitForAssertion(() => Button(_dialogs, "Start Run").HasAttribute("disabled").Should().BeTrue());
+        _dialogs.WaitForAssertion(() => _dialogs.Markup.Should().Contain("Parameters could not be loaded."));
+        Button(_dialogs, "Start Run").HasAttribute("disabled").Should().BeTrue();
         Button(_dialogs, "Start Run").Click();
         _transport.RunCalls.Should().Be(0);
-        reference.Close(DialogResult.Cancel());
+        Button(_dialogs, "Cancel").Click();
+        (await reference.Result)!.Canceled.Should().BeTrue();
 
         _transport.FailParams = false;
         _transport.PendingRun = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -189,6 +191,36 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
         _transport.ParamJobId.Should().Be(43);
         _transport.CreateCalls.Should().Be(1);
         _transport.RunCalls.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Failed_clone_copy_never_exposes_or_mutates_original_child_ids(bool reloadFails)
+    {
+        var (cut, _) = await OpenEditorAsync(cloneId: 42);
+        var originalStepCallback = cut.FindComponents<MudSwitch<bool>>()
+            .Single(toggle => toggle.Instance.Label is null).Instance.ValueChanged;
+        _transport.FailCloneParamCopy = true;
+        _transport.FailCloneDetailsLoad = reloadFails;
+        Button(cut, "Create and add steps").Click();
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("not all steps or parameters were copied"));
+        cut.Markup.Should().NotContain("echo backup");
+        _transport.CreateCalls.Should().Be(1);
+        _transport.ParamJobId.Should().Be(43);
+        // A callback retained from the original draft must also be fenced by child ownership.
+        await cut.InvokeAsync(() => originalStepCallback.InvokeAsync(false));
+        _transport.StepUpdates.Should().Be(0);
+        Button(cut, "Add Step").HasAttribute("disabled").Should().Be(reloadFails);
+        if (reloadFails)
+        {
+            cut.Markup.Should().Contain("Saved steps and parameters could not be loaded");
+            _transport.FailCloneDetailsLoad = false;
+            Button(cut, "Retry details").Click();
+            cut.WaitForAssertion(() => Button(cut, "Add Step").HasAttribute("disabled").Should().BeFalse());
+        }
+        _transport.RunCalls.Should().Be(0);
+        _transport.CreateCalls.Should().Be(1);
     }
 
     private async Task<(IRenderedComponent<JobEditDialog> Cut, IDialogReference Reference)> OpenEditorAsync(ulong? jobId = null, ulong? cloneId = null)
@@ -242,6 +274,8 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
         public UpdateJobRequest? Update { get; private set; }
         public bool FailSave { get; set; }
         public bool FailParams { get; set; }
+        public bool FailCloneParamCopy { get; set; }
+        public bool FailCloneDetailsLoad { get; set; }
         public TaskCompletionSource<HttpResponseMessage>? PendingRun { get; set; }
         public TaskCompletionSource<HttpResponseMessage>? PendingCreate { get; set; }
         public HttpClient CreateClient(string name) => new(this, disposeHandler: false) { BaseAddress = new("https://jobs.example.test") };
@@ -252,7 +286,7 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
             {
                 if (path == "/api/v1/jobs") return Ok(new[] { Job });
                 if (path == "/api/v1/jobruns/query") return Ok(new PagedJobRunsDto([], 0));
-                if (path.EndsWith("/params")) { ParamReads++; return FailParams ? new(HttpStatusCode.ServiceUnavailable) : Ok(_parameters); }
+                if (path.EndsWith("/params")) { ParamReads++; return FailParams || FailCloneDetailsLoad && path == "/api/v1/jobs/43/params" ? new(HttpStatusCode.ServiceUnavailable) : Ok(_parameters); }
                 if (path.EndsWith("/steps")) return Ok(_steps);
                 if (path.EndsWith("/details")) return Ok(new JobWithDetailsDto(Job, _steps, _parameters));
                 if (path == "/api/v1/jobs/42") return Ok(Job);
@@ -281,6 +315,7 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
                 {
                     var body = (await request.Content!.ReadFromJsonAsync<AddJobParamRequest>(cancellationToken))!;
                     ParamJobId = ulong.Parse(path.Split('/')[4]);
+                    if (FailCloneParamCopy) return new(HttpStatusCode.ServiceUnavailable);
                     var param = new JobParamDto(2, ParamJobId.Value, body.Name, body.Type, body.Required, body.Default, body.Description, body.OptionsJson);
                     _parameters.Add(param); return Ok(param);
                 }
