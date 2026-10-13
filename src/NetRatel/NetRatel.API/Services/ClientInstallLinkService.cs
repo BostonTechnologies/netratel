@@ -118,6 +118,9 @@ public sealed class ClientInstallLinkService(
             MaxUses = validated.maxUses
         };
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        await ClientReleaseDeletionService.LockAdmissionsAsync(db, ct);
+        if (await ClientReleaseDeletionService.IsSuppressedAsync(db, artifact.Version, ct))
+            throw new InvalidOperationException("The selected local package is being deleted or has been purged.");
         db.EnrollmentCodes.Add(new EnrollmentCode
         {
             Id = codeId, TenantId = request.TenantId,

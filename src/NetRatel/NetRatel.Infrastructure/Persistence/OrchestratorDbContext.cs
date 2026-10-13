@@ -100,6 +100,8 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<RemoteSupportSessionRecord> RemoteSupportSessions => Set<RemoteSupportSessionRecord>();
     public DbSet<RemoteSupportAuditEventRecord> RemoteSupportAuditEvents => Set<RemoteSupportAuditEventRecord>();
 
+    public DbSet<ClientReleaseDeletionReceipt> ClientReleaseDeletionReceipts => Set<ClientReleaseDeletionReceipt>();
+    public DbSet<ClientArtifactDownloadLease> ClientArtifactDownloadLeases => Set<ClientArtifactDownloadLease>();
     public DbSet<ClientUpdateReleaseRecord> ClientUpdateReleases => Set<ClientUpdateReleaseRecord>();
     public DbSet<ClientUpdateAttemptRecord> ClientUpdateAttempts => Set<ClientUpdateAttemptRecord>();
     public DbSet<AgentClientUpdateStateRecord> AgentClientUpdateStates => Set<AgentClientUpdateStateRecord>();
@@ -109,15 +111,25 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<ClientReleaseAutomationSettings> ClientReleaseAutomationSettings => Set<ClientReleaseAutomationSettings>();
     public DbSet<ClientInstallGrant> ClientInstallGrants => Set<ClientInstallGrant>();
 
+    private void PreserveUpdateReleaseReference()
+    {
+        foreach (var entry in ChangeTracker.Entries<ClientUpdateAttemptRecord>())
+            if (entry.State == EntityState.Added && entry.Entity.ReleaseRecordId is null &&
+                entry.Entity.PurgedReleasePublicId is null && entry.Entity.ReleaseId > 0)
+                entry.Entity.ReleaseRecordId = entry.Entity.ReleaseId;
+    }
+
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         AdvanceScriptSourceRevisions();
+        PreserveUpdateReleaseReference();
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
 
     public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
         AdvanceScriptSourceRevisions();
+        PreserveUpdateReleaseReference();
         return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
 
@@ -1006,8 +1018,8 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entity.HasIndex(x => new { x.TenantId, x.AgentId, x.UpdatedAtUtc });
             entity.HasOne(x => x.Release)
                 .WithMany(x => x.Attempts)
-                .HasForeignKey(x => x.ReleaseId)
-                .OnDelete(DeleteBehavior.Restrict);
+                .HasForeignKey(x => x.ReleaseRecordId)
+                .OnDelete(DeleteBehavior.SetNull);
             entity.HasOne<Agent>()
                 .WithMany()
                 .HasForeignKey(x => x.AgentId)
@@ -1031,6 +1043,23 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entity.ToTable("ClientUpdateCatalogRevision");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.Id).ValueGeneratedNever();
+        });
+
+        modelBuilder.Entity<ClientReleaseDeletionReceipt>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Version).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.RequestedBy).HasMaxLength(256).IsRequired();
+            entity.Property(x => x.State).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.Error).HasMaxLength(2048);
+            entity.HasIndex(x => x.Version).IsUnique();
+        });
+        modelBuilder.Entity<ClientArtifactDownloadLease>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.RuntimeId).HasMaxLength(32).IsRequired();
+            entity.Property(x => x.Version).HasMaxLength(64).IsRequired();
+            entity.HasIndex(x => new { x.Version, x.ExpiresAtUtc });
         });
 
         modelBuilder.Entity<ClientReleaseImportOperation>(entity =>

@@ -126,6 +126,7 @@ builder.Services.AddOptions<FileBrowserOptions>()
     .ValidateOnStart();
 builder.Services.AddScoped<ClientArtifactsService>();
 builder.Services.AddScoped<IClientArtifactsService>(sp => sp.GetRequiredService<ClientArtifactsService>());
+builder.Services.AddScoped<IClientUpdateActivityStream, ClientUpdateActivityStream>();
 builder.Services.AddScoped<ClientSettingsApiService>();
 builder.Services.AddScoped<IAgentApiService, AgentApiService>();
 builder.Services.AddScoped<IEnrollmentCodeApiService, EnrollmentCodeApiService>();

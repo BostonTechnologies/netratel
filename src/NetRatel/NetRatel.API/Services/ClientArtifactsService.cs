@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NuGet.Versioning;
@@ -26,6 +27,7 @@ public sealed class ClientArtifactsOptions
     // Test-only crash injection. Normal configuration cannot bind a delegate,
     // so production paths leave this unset.
     public Action<ClientArtifactCommitPhase>? TestCommitHook { get; set; }
+    public Action? TestDeletionHook { get; set; }
 }
 
 public enum ClientArtifactCommitPhase
@@ -245,6 +247,7 @@ public sealed class ClientArtifactsService : IClientArtifactsService
             throw new InvalidOperationException("The import visibility claim does not match the operation.");
 
         await using var transaction = await _db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+        await ClientReleaseDeletionService.LockAdmissionsAsync(_db, ct);
         await EnsureImportClaimLockedAsync(claim, ct).ConfigureAwait(false);
         var hasAssets = await _db.ClientReleaseImportAssets.AsNoTracking()
             .AnyAsync(x => x.OperationId == operationId, ct).ConfigureAwait(false);
@@ -260,7 +263,15 @@ public sealed class ClientArtifactsService : IClientArtifactsService
 
     public async Task CompleteImportVisibilityAsync(Guid operationId, CancellationToken ct)
     {
+        await using var transaction = _db.Database.IsRelational() ? await _db.Database.BeginTransactionAsync(ct) : null;
+        await ClientReleaseDeletionService.LockAdmissionsAsync(_db, ct);
+        var version = await _db.ClientReleaseImportOperations.AsNoTracking().Where(x => x.Id == operationId)
+            .Select(x => x.Version).SingleOrDefaultAsync(ct);
+        if (version is not null && await ClientReleaseDeletionService.IsSuppressedAsync(_db, version, ct) ||
+            await _db.ClientReleaseDeletionReceipts.AnyAsync(x => x.PlanJson.Contains(operationId.ToString()) || x.PreviousReceiptsJson.Contains(operationId.ToString()), ct))
+            return;
         await WriteImportVisibilityMarkerAsync(operationId, ct).ConfigureAwait(false);
+        if (transaction is not null) await transaction.CommitAsync(ct);
     }
 
     private async Task WriteImportVisibilityMarkerAsync(Guid operationId, CancellationToken ct)
@@ -296,6 +307,8 @@ public sealed class ClientArtifactsService : IClientArtifactsService
 
         var normalizedRid = NormalizeRid(rid);
         var normalizedVersion = NormalizeVersion(version);
+        if (await ClientReleaseDeletionService.IsSuppressedAsync(_db, normalizedVersion, ct))
+            throw new InvalidOperationException("This local release was deleted. Deliberately re-import it before uploading package data.");
         var extension = NormalizeExtension(file.FileName);
         if (!AllowedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
             throw new RequestValidationException("file", "Artifacts must be .zip, .7z, or .tar.gz files.");
@@ -516,6 +529,8 @@ public sealed class ClientArtifactsService : IClientArtifactsService
 
         var normalizedRid = NormalizeRid(rid);
         var normalizedVersion = NormalizeVersion(version);
+        if (await ClientReleaseDeletionService.IsSuppressedAsync(_db, normalizedVersion, ct))
+            throw new InvalidOperationException("This local release was deleted. Deliberately re-import it before uploading package data.");
         var extension = NormalizeExtension(file.FileName);
         if (!AllowedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
             throw new RequestValidationException("file", "Artifacts must be .zip, .7z, or .tar.gz files.");
@@ -531,13 +546,36 @@ public sealed class ClientArtifactsService : IClientArtifactsService
         if (existingArtifact != existingMetadata)
             throw new ClientArtifactConflictException(normalizedRid, normalizedVersion);
 
-        var stagingDirectory = Path.Combine(storageRoot, ".upload-staging", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(stagingDirectory);
+        var uploadId = Guid.NewGuid();
+        var stagingDirectory = Path.Combine(storageRoot, ".upload-staging", uploadId.ToString("N"));
         var stagedArtifact = Path.Combine(stagingDirectory, fileName);
         var stagedMetadata = Path.Combine(stagingDirectory, "metadata.json");
+        var stagedOwnership = Path.Combine(stagingDirectory, "ownership.json");
+        var uploadLease = new ClientArtifactDownloadLease
+        {
+            Id = uploadId, RuntimeId = normalizedRid, Version = normalizedVersion,
+            ExpiresAtUtc = _clock.GetUtcNow().AddMinutes(30)
+        };
+        // The same bounded archive-transfer fence protects reads and writes. A crash leaves
+        // proven staging ownership behind, and recovery may clean it after this lease drains.
+        using var uploadDeadline = new CancellationTokenSource(TimeSpan.FromMinutes(30), _clock);
+        using var uploadCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, uploadDeadline.Token);
+        ct = uploadCancellation.Token;
 
         try
         {
+            await using (var admission = _db.Database.IsRelational() ? await _db.Database.BeginTransactionAsync(ct) : null)
+            {
+                await ClientReleaseDeletionService.LockAdmissionsAsync(_db, ct);
+                if (await ClientReleaseDeletionService.IsSuppressedAsync(_db, normalizedVersion, ct))
+                    throw new InvalidOperationException("This local package is being deleted or has been purged.");
+                _db.ClientArtifactDownloadLeases.Add(uploadLease);
+                await _db.SaveChangesAsync(ct);
+                Directory.CreateDirectory(stagingDirectory);
+                await File.WriteAllTextAsync(stagedOwnership,
+                    JsonSerializer.Serialize(new { rid = normalizedRid, version = normalizedVersion }), ct);
+                if (admission is not null) await admission.CommitAsync(ct);
+            }
             await using (var destination = new FileStream(stagedArtifact, FileMode.CreateNew, FileAccess.Write,
                 FileShare.None, 64 * 1024, useAsync: true))
             {
@@ -592,8 +630,15 @@ public sealed class ClientArtifactsService : IClientArtifactsService
                 await metaStream.FlushAsync(ct).ConfigureAwait(false);
             }
 
+            await using var commitTransaction = _db.Database.IsRelational() ? await _db.Database.BeginTransactionAsync(ct) : null;
+            await ClientReleaseDeletionService.LockAdmissionsAsync(_db, ct);
+            if (await ClientReleaseDeletionService.IsSuppressedAsync(_db, normalizedVersion, ct))
+                throw new InvalidOperationException("This local package is being deleted or has been purged.");
+            if (_clock.GetUtcNow() >= uploadLease.ExpiresAtUtc)
+                throw new IOException("The archive upload lease expired. Start a new upload.");
             _options.TestCommitHook?.Invoke(ClientArtifactCommitPhase.BeforeAtomicDirectoryMove);
             Directory.CreateDirectory(Path.GetDirectoryName(versionDir)!);
+            File.Delete(stagedOwnership);
             try
             {
                 Directory.Move(stagingDirectory, versionDir);
@@ -602,6 +647,7 @@ public sealed class ClientArtifactsService : IClientArtifactsService
             {
                 throw new ClientArtifactConflictException(normalizedRid, normalizedVersion);
             }
+            if (commitTransaction is not null) await commitTransaction.CommitAsync(ct);
             _logger.LogInformation(
                 "Stored client artifact {Rid}/{Version} at {ArtifactPath}; size={Size}; sha256={Sha256}",
                 normalizedRid,
@@ -645,6 +691,17 @@ public sealed class ClientArtifactsService : IClientArtifactsService
                 _logger.LogWarning(cleanupException,
                     "Failed to remove temporary client artifact directory {TemporaryPath}.", stagingDirectory);
             }
+            try
+            {
+                await using var leaseDb = new OrchestratorDbContext(
+                    (DbContextOptions<OrchestratorDbContext>)_db.GetService<IDbContextOptions>());
+                var lease = await leaseDb.ClientArtifactDownloadLeases.FindAsync(uploadId);
+                if (lease is not null) { leaseDb.Remove(lease); await leaseDb.SaveChangesAsync(); }
+            }
+            catch (Exception cleanupException)
+            {
+                _logger.LogWarning(cleanupException, "Upload staging lease {UploadId} will drain at expiry.", uploadId);
+            }
         }
     }
 
@@ -663,11 +720,11 @@ public sealed class ClientArtifactsService : IClientArtifactsService
                 var isZip = string.Equals(extension, ".zip", StringComparison.OrdinalIgnoreCase);
                 if (!isZip)
                 {
-                    var directStream = new FileStream(artifactPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, useAsync: true);
+                    var directStream = await OpenLeasedArchiveAsync(artifactPath, normalizedRid, metadata.Version, ct);
                     return new ClientArtifactDownloadResult(directStream, metadata.ContentType ?? "application/octet-stream", metadata.FileName, false, metadata.ToSummary());
                 }
 
-                var stream = new FileStream(artifactPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, useAsync: true);
+                var stream = await OpenLeasedArchiveAsync(artifactPath, normalizedRid, metadata.Version, ct);
 
                 return new ClientArtifactDownloadResult(
                     stream,
@@ -707,7 +764,7 @@ public sealed class ClientArtifactsService : IClientArtifactsService
             throw new FileNotFoundException($"Artifact file missing for RID '{normalizedRid}' and version '{metadata.Version}'.");
         }
 
-        var stream = new FileStream(artifactPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, useAsync: true);
+        var stream = await OpenLeasedArchiveAsync(artifactPath, normalizedRid, metadata.Version, ct);
         _logger.LogInformation(
             "Raw client artifact download for {Rid}/{Version} from {ArtifactPath}; size={Size}",
             normalizedRid,
@@ -743,11 +800,11 @@ public sealed class ClientArtifactsService : IClientArtifactsService
                         throw new RequestValidationException("runtimeId", "InjectEnrollment requires a .zip artifact.");
                     }
 
-                    var directStream = new FileStream(artifactPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, useAsync: true);
+                    var directStream = await OpenLeasedArchiveAsync(artifactPath, normalizedRid, metadata.Version, ct);
                     return new ClientArtifactDownloadResult(directStream, metadata.ContentType ?? "application/octet-stream", metadata.FileName, false, metadata.ToSummary());
                 }
 
-                await using var fs = new FileStream(artifactPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, useAsync: true);
+                await using var fs = await OpenLeasedArchiveAsync(artifactPath, normalizedRid, metadata.Version, ct);
                 var ms = await CloneToMemoryAsync(fs, ct);
                 EnrollmentCodeIssueResult? issuedEnrollment = null;
                 var finalStream = ms;
@@ -800,10 +857,46 @@ public sealed class ClientArtifactsService : IClientArtifactsService
         };
     }
 
+    private async Task<Stream> OpenLeasedArchiveAsync(string artifactPath, string runtimeId, string version, CancellationToken ct)
+    {
+        var ownsTransaction = _db.Database.IsRelational() && _db.Database.CurrentTransaction is null;
+        await using var transaction = ownsTransaction ? await _db.Database.BeginTransactionAsync(ct) : null;
+        await ClientReleaseDeletionService.LockAdmissionsAsync(_db, ct);
+        if (await ClientReleaseDeletionService.IsSuppressedAsync(_db, version, ct))
+            throw new IOException("The selected local package is being deleted or has been purged.");
+        var lease = new ClientArtifactDownloadLease
+        {
+            Id = Guid.NewGuid(), RuntimeId = runtimeId, Version = version,
+            ExpiresAtUtc = _clock.GetUtcNow().AddMinutes(30)
+        };
+        _db.ClientArtifactDownloadLeases.Add(lease);
+        await _db.SaveChangesAsync(ct);
+        var stream = new FileStream(artifactPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, useAsync: true);
+        try
+        {
+            if (transaction is not null) await transaction.CommitAsync(ct);
+            return new ClientArtifactLeaseStream(stream, lease.Id, lease.ExpiresAtUtc, _clock,
+                (DbContextOptions<OrchestratorDbContext>)_db.GetService<IDbContextOptions>());
+        }
+        catch { await stream.DisposeAsync(); throw; }
+    }
+
     public async Task DeleteAsync(string rid, string version, CancellationToken ct)
     {
         var normalizedRid = NormalizeRid(rid);
         var normalizedVersion = NormalizeVersion(version);
+        await using var deletionTransaction = _db.Database.IsRelational() ? await _db.Database.BeginTransactionAsync(ct) : null;
+        await ClientReleaseDeletionService.LockAdmissionsAsync(_db, ct);
+        if (_db.Database.IsNpgsql())
+            await _db.Database.ExecuteSqlRawAsync("LOCK TABLE \"Tenants\", \"ClientUpdateReleases\", \"ClientUpdateAttempts\", \"ClientReleaseImportOperations\", \"ClientInstallGrants\", \"ClientArtifactDownloadLeases\" IN SHARE ROW EXCLUSIVE MODE", ct);
+        if (await _db.ClientUpdateReleases.AnyAsync(x => x.Version == normalizedVersion, ct) ||
+            await _db.ClientReleaseImportOperations.AnyAsync(x => x.Version == normalizedVersion, ct) ||
+            await _db.ClientUpdateAttempts.AnyAsync(x => (x.TargetVersion == normalizedVersion || x.FromVersion == normalizedVersion) &&
+                (x.State <= ClientUpdateAttemptState.GatewayReadmitted || x.State == ClientUpdateAttemptState.RollbackUnverified), ct) ||
+            await _db.ClientInstallGrants.AnyAsync(x => x.ArtifactVersion == normalizedVersion && x.RevokedAtUtc == null && x.ExpiresAtUtc > _clock.GetUtcNow(), ct) ||
+            await _db.ClientArtifactDownloadLeases.AnyAsync(x => x.Version == normalizedVersion && x.ExpiresAtUtc > _clock.GetUtcNow(), ct) ||
+            await _db.Tenants.AnyAsync(x => x.AutoUpdateTargetVersion == normalizedVersion, ct))
+            throw new InvalidOperationException("This package has release dependencies. Use Delete local release and files to preview and safely remove it.");
         var storageRoot = EnsureStorageRoot();
         var versionDir = Path.Combine(storageRoot, normalizedRid, normalizedVersion);
         var metadataPath = Path.Combine(versionDir, "metadata.json");
@@ -835,6 +928,7 @@ public sealed class ClientArtifactsService : IClientArtifactsService
             }
         }
 
+        if (deletionTransaction is not null) await deletionTransaction.CommitAsync(ct);
         await _events.RecordAsync(new DomainEvent
         {
             EventType = NetRatelEventTypes.Artifact.Deleted,
@@ -1049,6 +1143,8 @@ public sealed class ClientArtifactsService : IClientArtifactsService
     {
         var legacyRoot = ResolveLegacyRoot();
         var resolvedVersion = await ResolveLegacyVersionAsync(legacyRoot, rid, version, ct);
+        if (await ClientReleaseDeletionService.IsSuppressedAsync(_db, resolvedVersion, ct))
+            throw new FileNotFoundException("This local release was deleted; legacy fallback is suppressed until deliberate re-import.");
         var ridPath = Path.Combine(legacyRoot, resolvedVersion, rid);
         if (!Directory.Exists(ridPath))
         {

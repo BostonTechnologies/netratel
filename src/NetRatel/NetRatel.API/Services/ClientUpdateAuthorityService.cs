@@ -78,6 +78,7 @@ public sealed class ClientUpdateAuthorityService(
         if (items.Count == 0 || items.Select(x => x.Artifact.Rid).Distinct(StringComparer.Ordinal).Count() != items.Count)
             throw new InvalidOperationException("A complete client pack with unique runtimes is required.");
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await ClientReleaseDeletionService.LockAdmissionsAsync(db, cancellationToken).ConfigureAwait(false);
         // The revision row serializes concurrent publishers before reading operation state.
         var revision = await IncrementRevisionAsync(cancellationToken).ConfigureAwait(false);
         var operation = await db.ClientReleaseImportOperations.Include(x => x.Assets)
@@ -94,6 +95,9 @@ public sealed class ClientUpdateAuthorityService(
             throw new InvalidOperationException("The imported client pack has an invalid version.");
         if (parsedVersion.IsPrerelease && !confirmPrerelease)
             throw new InvalidOperationException("Prerelease publication requires explicit confirmation.");
+
+        if (await ClientReleaseDeletionService.IsSuppressedAsync(db, operation.Version, cancellationToken).ConfigureAwait(false))
+            throw new InvalidOperationException("This local release was deleted; deliberately re-import it before publication.");
 
         var enabledOffers = Array.Empty<(string RuntimeId, string Version)>();
         if (automatic)
@@ -185,6 +189,9 @@ public sealed class ClientUpdateAuthorityService(
             throw new InvalidOperationException($"Artifact version '{artifact.Version}' must be normalized SemVer.");
         }
 
+        if (await ClientReleaseDeletionService.IsSuppressedAsync(db, artifact.Version, cancellationToken).ConfigureAwait(false))
+            throw new InvalidOperationException("This local release was deleted; deliberately re-import it before publication.");
+
         var existing = await db.ClientUpdateReleases
             .SingleOrDefaultAsync(x => x.RuntimeId == artifact.Rid && x.Version == version.ToNormalizedString(), cancellationToken)
             .ConfigureAwait(false);
@@ -199,6 +206,9 @@ public sealed class ClientUpdateAuthorityService(
         }
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await ClientReleaseDeletionService.LockAdmissionsAsync(db, cancellationToken).ConfigureAwait(false);
+        if (await ClientReleaseDeletionService.IsSuppressedAsync(db, artifact.Version, cancellationToken).ConfigureAwait(false))
+            throw new InvalidOperationException("This local release was deleted; deliberately re-import it before publication.");
         var revision = await IncrementRevisionAsync(cancellationToken).ConfigureAwait(false);
         var release = new ClientUpdateReleaseRecord
         {
@@ -232,9 +242,13 @@ public sealed class ClientUpdateAuthorityService(
         string admissionNonce,
         CancellationToken cancellationToken)
     {
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await ClientReleaseDeletionService.LockAdmissionsAsync(db, cancellationToken).ConfigureAwait(false);
         var release = await db.ClientUpdateReleases.SingleOrDefaultAsync(
             x => x.PublicId == releasePublicId && x.Enabled,
             cancellationToken).ConfigureAwait(false);
+        if (release is not null && await ClientReleaseDeletionService.IsSuppressedAsync(db, release.Version, cancellationToken).ConfigureAwait(false))
+            return null;
         var tenantPolicy = await db.Tenants.AsNoTracking()
             .Where(x => x.Id == identity.TenantId)
             .Select(x => new { x.AutoUpdate, x.AutoUpdateChannel, x.AutoUpdateTargetVersion })
@@ -277,6 +291,7 @@ public sealed class ClientUpdateAuthorityService(
             {
                 PublicId = Guid.NewGuid(),
                 ReleaseId = release.Id,
+                ReleaseRecordId = release.Id,
                 TenantId = identity.TenantId,
                 AgentId = identity.AgentId,
                 FromVersion = current.ToNormalizedString(),
@@ -369,6 +384,8 @@ public sealed class ClientUpdateAuthorityService(
                 return null;
             }
         }
+        await ClientUpdateActivityNotifications.NotifyAsync(db, identity.TenantId, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         ClientUpdateTelemetry.ClaimObserved("eligible");
         return new ClientUpdateClaimResult(attempt.PublicId, release.PublicId, admissionNonce, release.Version);
     }
@@ -383,11 +400,12 @@ public sealed class ClientUpdateAuthorityService(
         long connectionEpoch,
         CancellationToken cancellationToken)
     {
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         var attempt = await db.ClientUpdateAttempts.AsNoTracking().Include(x => x.Release).SingleOrDefaultAsync(
             x => x.PublicId == attemptId,
             cancellationToken).ConfigureAwait(false);
         if (attempt is null) return new(false, "attempt_not_found");
-        if (attempt.Release.PublicId != releaseId) return new(false, "release_mismatch");
+        if (attempt.Release?.PublicId != releaseId) return new(false, "release_mismatch");
         if (attempt.TenantId != identity.TenantId || attempt.AgentId != identity.AgentId) return new(false, "agent_mismatch");
         if (attempt.State is not ClientUpdateAttemptState.Activating and not ClientUpdateAttemptState.GatewayReadmitted)
             return new(false, "invalid_attempt_state");
@@ -409,6 +427,9 @@ public sealed class ClientUpdateAuthorityService(
                 .SetProperty(x => x.ReadmittedAtUtc, readmittedAtUtc)
                 .SetProperty(x => x.UpdatedAtUtc, readmittedAtUtc), cancellationToken)
             .ConfigureAwait(false);
+        if (affected == 1)
+            await ClientUpdateActivityNotifications.NotifyAsync(db, identity.TenantId, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return affected == 1
             ? new(true, "accepted")
             : new(false, "invalid_attempt_state");
@@ -440,6 +461,7 @@ public sealed class ClientUpdateAuthorityService(
         long connectionEpoch,
         CancellationToken cancellationToken)
     {
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         var attempt = await db.ClientUpdateAttempts.AsNoTracking().SingleOrDefaultAsync(
             x => x.PublicId == attemptId && x.TenantId == identity.TenantId && x.AgentId == identity.AgentId,
             cancellationToken).ConfigureAwait(false);
@@ -460,6 +482,8 @@ public sealed class ClientUpdateAuthorityService(
                 .SetProperty(x => x.UpdatedAtUtc, now), cancellationToken)
             .ConfigureAwait(false);
         if (affected != 1) return new(false, "confirmation_write_failed");
+        await ClientUpdateActivityNotifications.NotifyAsync(db, identity.TenantId, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         if (attempt.ReadmittedAtUtc.HasValue)
             ClientUpdateTelemetry.ActivationCompleted(now - attempt.ReadmittedAtUtc.Value, "accepted");
         ClientUpdateTelemetry.OutcomeObserved(ClientUpdateAttemptState.Accepted);
@@ -500,9 +524,12 @@ public sealed class ClientUpdateAuthorityService(
             agentState.SuspendedAtUtc = timeProvider.GetUtcNow();
             agentState.SuspensionReason = failureCode ?? state.ToString();
             agentState.SuspensionAttemptId = attempt.PublicId;
-            agentState.SuppressedReleaseId = await db.ClientUpdateReleases.AsNoTracking()
-                .Where(x => x.Id == attempt.ReleaseId).Select(x => x.PublicId)
-                .SingleAsync(cancellationToken).ConfigureAwait(false);
+            // Terminal reports can be replayed after the local package was purged. The
+            // historical public identity survives independently of the nullable live FK.
+            agentState.SuppressedReleaseId = attempt.PurgedReleasePublicId ??
+                await db.ClientUpdateReleases.AsNoTracking()
+                    .Where(x => x.Id == attempt.ReleaseRecordId).Select(x => x.PublicId)
+                    .SingleAsync(cancellationToken).ConfigureAwait(false);
             agentState.PolicyRevision++;
             var revision = await IncrementRevisionAsync(cancellationToken).ConfigureAwait(false);
             await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -512,6 +539,7 @@ public sealed class ClientUpdateAuthorityService(
         {
             await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
+        await ClientUpdateActivityNotifications.NotifyAsync(db, identity.TenantId, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         ClientUpdateTelemetry.OutcomeObserved(state);
         if (state is ClientUpdateAttemptState.RolledBack or ClientUpdateAttemptState.RollbackUnverified &&

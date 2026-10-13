@@ -37,8 +37,11 @@ public sealed class ClientUpdateAttemptRecord
 {
     public int Id { get; set; }
     public Guid PublicId { get; set; }
+    // Historical release identity survives package purging. Only ReleaseRecordId is a live FK.
     public int ReleaseId { get; set; }
-    public ClientUpdateReleaseRecord Release { get; set; } = null!;
+    public int? ReleaseRecordId { get; set; }
+    public Guid? PurgedReleasePublicId { get; set; }
+    public ClientUpdateReleaseRecord? Release { get; set; }
     public int TenantId { get; set; }
     public Guid AgentId { get; set; }
     public string FromVersion { get; set; } = string.Empty;

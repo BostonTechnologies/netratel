@@ -118,6 +118,22 @@ public sealed class ClientUpdateHistoryEndpointPostgresTests : IAsyncLifetime
         invalid.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
+    [Fact]
+    public async Task TenantPrereleaseSummaryPageContractAcceptsTenAndStillRejectsFive()
+    {
+        using var app = await BuildAppAsync();
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+        var supported = await client.GetAsync("/api/v1/client-updates/management/releases?page=0&pageSize=10&channel=prerelease&enabled=true");
+        Assert.Equal(HttpStatusCode.OK, supported.StatusCode);
+        var mismatched = await client.GetAsync("/api/v1/client-updates/management/releases?page=0&pageSize=5&channel=prerelease&enabled=true");
+        Assert.Equal(HttpStatusCode.BadRequest, mismatched.StatusCode);
+        var unconfirmed = await client.PostAsJsonAsync("/api/v1/client-updates/local-releases/1.2.3/delete", new { confirmedVersion = "1.2.4" });
+        Assert.Equal(HttpStatusCode.BadRequest, unconfirmed.StatusCode);
+        client.DefaultRequestHeaders.Authorization = null;
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/v1/client-updates/local-releases/1.2.3/delete-preview")).StatusCode);
+    }
+
     private async Task<int> SeedAsync()
     {
         const int tenantId = 87;
@@ -192,6 +208,9 @@ public sealed class ClientUpdateHistoryEndpointPostgresTests : IAsyncLifetime
                 services.AddSingleton<IClientArtifactsService>(_ => throw new NotSupportedException());
                 services.AddSingleton<IClientUpdatePublisher>(_ => throw new NotSupportedException());
                 services.AddScoped<ClientUpdateAuthorityService>();
+                services.AddScoped<ClientReleaseDeletionService>();
+                services.Configure<ClientArtifactsOptions>(_ => { });
+                services.AddSingleton<TimeProvider>(TimeProvider.System);
             });
             web.Configure(app =>
             {

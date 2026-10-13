@@ -82,9 +82,11 @@ public sealed class GitHubClientReleaseCatalog(
             var upstreamHasNext = true;
             var scannedPages = 0;
             var now = clock.GetUtcNow();
+            string? requestWarning = null;
             for (var upstreamPage = 1; upstreamPage <= MaxUpstreamPages && upstreamHasNext && filtered.Count < desiredCount; upstreamPage++)
             {
                 var cached = await GetUpstreamPageAsync(upstreamPage, refresh, cancellationToken).ConfigureAwait(false);
+                requestWarning ??= _warning;
                 if (cached is null)
                     break;
                 scannedPages++;
@@ -100,7 +102,7 @@ public sealed class GitHubClientReleaseCatalog(
                           upstreamHasNext && scannedPages > 0 && !limitReached;
             var refreshedAt = _pages.Count == 0 ? DateTimeOffset.MinValue : _pages.Values.Min(x => x.FetchedAtUtc);
             return new GitHubClientReleasePage(items, page, hasMore, limitReached, refreshedAt,
-                _warning ?? (limitReached ? "The scan limit was reached; older matching releases may exist." : null));
+                requestWarning ?? _warning ?? (limitReached ? "The scan limit was reached; older matching releases may exist." : null));
         }
         finally
         {
@@ -111,23 +113,27 @@ public sealed class GitHubClientReleaseCatalog(
     public async Task<GitHubClientRelease?> FindAsync(long releaseId, CancellationToken cancellationToken)
     {
         if (releaseId <= 0) return null;
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            for (var page = 1; page <= MaxUpstreamPages; page++)
-            {
-                var cached = await GetUpstreamPageAsync(page, false, cancellationToken).ConfigureAwait(false);
-                if (cached is null) return null;
-                var found = cached.Releases.FirstOrDefault(x => x.Id == releaseId);
-                if (found is not null) return found;
-                if (!cached.HasNext) return null;
-            }
-            return null;
-        }
-        finally
-        {
-            _gate.Release();
-        }
+        // Identity lookup must not infer deletion from a filtered/partial catalogue page,
+        // cache miss, or failed discovery request.
+        using var request = CreateRequest($"repos/{Repository}/releases/{releaseId}");
+        using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        if (response.StatusCode == HttpStatusCode.NotFound) return null;
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+        return ParseRelease(document.RootElement)
+            ?? throw new InvalidDataException("The selected release is not a published compatible release.");
+    }
+
+    private HttpRequestMessage CreateRequest(string path)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
+        request.Headers.UserAgent.ParseAdd("NetRatel-ClientReleaseImporter");
+        var token = configuration["GitHubReleases:ReadOnlyToken"];
+        if (!string.IsNullOrWhiteSpace(token)) request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        return request;
     }
 
     public async Task<string> ResolveTagCommitAsync(string tag, CancellationToken cancellationToken)
@@ -145,6 +151,8 @@ public sealed class GitHubClientReleaseCatalog(
         if (!string.IsNullOrWhiteSpace(token))
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+            throw new GitHubReleaseMissingException("The selected GitHub release tag is confirmed missing.");
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -162,7 +170,7 @@ public sealed class GitHubClientReleaseCatalog(
             return prior;
         if (now < _retryAfterUtc)
         {
-            _warning = "GitHub requests are rate limited; cached releases remain available.";
+            _warning ??= "GitHub requests are temporarily deferred; cached releases remain available.";
             return prior;
         }
 
@@ -186,7 +194,8 @@ public sealed class GitHubClientReleaseCatalog(
                 _warning = null;
                 return _pages[page] = prior with { FetchedAtUtc = now };
             }
-            if (response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
+            if (response.StatusCode == HttpStatusCode.TooManyRequests || response.StatusCode == HttpStatusCode.Forbidden &&
+                (response.Headers.RetryAfter is not null || response.Headers.TryGetValues("X-RateLimit-Remaining", out var remaining) && remaining.FirstOrDefault() == "0"))
             {
                 var delay = response.Headers.RetryAfter?.Delta ??
                     (response.Headers.RetryAfter?.Date - now) ?? TimeSpan.FromMinutes(1);
@@ -201,7 +210,9 @@ public sealed class GitHubClientReleaseCatalog(
             if (response.StatusCode != HttpStatusCode.OK)
             {
                 BackOff(now);
-                _warning = "GitHub release metadata is temporarily unavailable; cached releases remain available.";
+                _warning = response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden
+                    ? "GitHub authentication or access failed; cached releases remain available."
+                    : "GitHub release metadata is temporarily unavailable; cached releases remain available.";
                 logger.LogWarning("GitHub release catalogue returned {StatusCode}", (int)response.StatusCode);
                 return prior;
             }
@@ -311,3 +322,5 @@ public sealed class GitHubClientReleaseCatalog(
 
     private sealed record CachedPage(IReadOnlyList<GitHubClientRelease> Releases, bool HasNext, EntityTagHeaderValue? ETag, DateTimeOffset FetchedAtUtc);
 }
+
+public sealed class GitHubReleaseMissingException(string message) : IOException(message);

@@ -21,6 +21,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
     private static readonly Guid ReleaseId = Guid.Parse("4df89355-f24b-4df6-a954-87d0ebcf6bf0");
     private static readonly Guid AgentId = Guid.Parse("628a2aa8-45bc-4fab-a424-afc26a3851dd");
     private readonly StubClientArtifactsService _artifacts = new();
+    private readonly StubActivityStream _activity = new();
 
     public ClientsMgmtTests()
     {
@@ -28,6 +29,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
         Services.AddLogging();
         Services.AddSingleton<IClientArtifactsService>(_artifacts);
+        Services.AddSingleton<IClientUpdateActivityStream>(_activity);
         Services.AddSingleton<ITenantApiService>(new StubTenantApiService());
     }
 
@@ -419,6 +421,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         {
             cut.Markup.Should().Contain("Save or cancel the automation draft before changing tabs.");
             typeof(ClientsMgmt).GetField("_activeTab", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(cut.Instance).Should().Be(0);
+            cut.FindAll(".mud-tab").Single(tab => tab.GetAttribute("aria-selected") == "true").TextContent.Trim().Should().Be("GitHub releases");
         });
 
         await cut.InvokeAsync(() => cut.Find("[data-testid='close-automation-settings']").Click());
@@ -427,6 +430,188 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         await cut.InvokeAsync(() => cut.Find("[data-testid='cancel-automation-policy']").Click());
         await cut.InvokeAsync(() => cut.Find("[data-testid='close-automation-settings']").Click());
         cut.WaitForAssertion(() => cut.Markup.Should().NotContain("Unsaved automation changes are still open"));
+    }
+
+    [Fact]
+    public async Task Activity_Reconciles_StatusMembership_Bursts_And_Reconnect_Without_Resetting_Filters_Or_Groups()
+    {
+        var cut = Render<ClientsMgmt>();
+        cut.WaitForAssertion(() => cut.FindAll(".mud-tab").Should().NotBeEmpty());
+        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Activity").Click());
+        cut.WaitForAssertion(() => _activity.Starts.Should().Be(1));
+        cut.FindComponents<MudTextField<string>>().Single(field => field.Instance.Label == "Search attempts").Instance.Value.Should().BeNullOrEmpty();
+        cut.FindComponents<MudSelect<string>>().Single(field => field.Instance.Label == "Group current page").Instance.Value.Should().Be("Tenant");
+        // Parameter reconciliation can echo empty and null with the same effective
+        // query. It must not cancel the live session or replace its snapshot scope.
+        await cut.InvokeAsync(async () =>
+        {
+            foreach (var method in new[] { "OnAttemptSearchChanged", "OnAttemptRidChanged", "OnAttemptVersionChanged", "OnAttemptStatusChanged" })
+                await (Task)typeof(ClientsMgmt).GetMethod(method, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(cut.Instance, [string.Empty])!;
+        });
+        _activity.Starts.Should().Be(1);
+        await cut.InvokeAsync(() => _activity.SendAsync("ready"));
+        cut.WaitForAssertion(() =>
+        {
+            cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live", $"the original session should reconcile (stream starts: {_activity.Starts}, renders: {cut.RenderCount})");
+            _activity.Starts.Should().Be(1);
+            cut.FindAll(".mud-tab").Single(tab => tab.GetAttribute("aria-selected") == "true").TextContent.Trim().Should().Be("Activity");
+        });
+        await cut.InvokeAsync(() => cut.Find("button.mud-table-row-expander").Click());
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("activation_timeout"));
+        var before = _artifacts.AttemptPageRequests;
+        _artifacts.HistoryStatus = "Accepted";
+        _artifacts.HistoryPurged = true;
+        await cut.InvokeAsync(async () => { for (var index = 0; index < 30; index++) await _activity.SendAsync("invalidate"); });
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("Accepted").And.Contain("Historical · local package deleted"));
+        _artifacts.AttemptPageRequests.Should().Be(before + 1, "a burst refreshes one current filtered page");
+        cut.Find("button.mud-table-row-expander").GetAttribute("aria-expanded").Should().Be("true", "the expanded group remains open after refresh");
+        await cut.InvokeAsync(() => _activity.Disconnect());
+        await cut.InvokeAsync(() => cut.Find("[data-testid='activity-refresh']").Click());
+        cut.WaitForAssertion(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Reconnecting", "a manual snapshot does not make a disconnected stream Live"));
+        await cut.InvokeAsync(() => _activity.SendAsync("ready"));
+        cut.WaitForAssertion(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
+
+        var statusChanged = typeof(ClientsMgmt).GetMethod("OnAttemptStatusChanged", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        await cut.InvokeAsync(async () => await (Task)statusChanged.Invoke(cut.Instance, ["Accepted"])!);
+        cut.WaitForAssertion(() => _artifacts.LastHistoryStatus.Should().Be("Accepted"));
+        _artifacts.HistoryStatus = "RolledBack";
+        await cut.InvokeAsync(() => _activity.SendAsync("invalidate"));
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("No update attempts match the active filters."));
+        _artifacts.LastHistoryStatus.Should().Be("Accepted");
+
+        // A missed change enters this status filter while disconnected. Ready always reconciles.
+        _artifacts.HistoryStatus = "Accepted";
+        await cut.InvokeAsync(() => _activity.SendAsync("ready"));
+        cut.WaitForAssertion(() => cut.Find("button.mud-table-row-expander").GetAttribute("aria-expanded").Should().Be("true", "expansion is retained when the group leaves and reenters the filtered page"));
+        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Packages").Click());
+        _activity.Active.Should().BeFalse();
+        var inactiveReads = _artifacts.AttemptPageRequests;
+        await cut.InvokeAsync(() => _activity.SendAsync("invalidate"));
+        _artifacts.AttemptPageRequests.Should().Be(inactiveReads);
+    }
+
+    [Fact]
+    public async Task Activity_preserves_the_current_page_and_clamps_only_when_the_final_page_disappears()
+    {
+        _artifacts.HistoryTotal = 21;
+        var cut = Render<ClientsMgmt>();
+        cut.WaitForAssertion(() => cut.FindAll(".mud-tab").Should().NotBeEmpty());
+        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Activity").Click());
+        await cut.InvokeAsync(() => _activity.SendAsync("ready"));
+        cut.WaitForAssertion(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
+        var table = (MudTable<ClientUpdateHistoryItemModel>)typeof(ClientsMgmt).GetField("_attemptTable", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(cut.Instance)!;
+        await cut.InvokeAsync(() => table.NavigateTo(1));
+        cut.WaitForAssertion(() => _artifacts.LastHistoryPage.Should().Be(1));
+        var before = _artifacts.AttemptPageRequests;
+        await cut.InvokeAsync(() => _activity.SendAsync("invalidate"));
+        cut.WaitForAssertion(() => { _artifacts.AttemptPageRequests.Should().BeGreaterThan(before); _artifacts.LastHistoryPage.Should().Be(1); });
+        table.CurrentPage.Should().Be(1);
+        _artifacts.HistoryTotal = 1;
+        await cut.InvokeAsync(() => _activity.SendAsync("invalidate"));
+        cut.WaitForAssertion(() => table.CurrentPage.Should().Be(0));
+        _artifacts.LastHistoryPage.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Activity_older_stop_completion_does_not_duplicate_the_replacement_scopes_burst_refresh()
+    {
+        var cut = Render<ClientsMgmt>();
+        cut.WaitForAssertion(() => cut.FindAll(".mud-tab").Should().NotBeEmpty());
+        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Activity").Click());
+        cut.WaitForAssertion(() => _activity.Starts.Should().Be(1));
+        await cut.InvokeAsync(() => _activity.SendAsync("ready"));
+        cut.WaitForAssertion(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
+        var pendingStop = _activity.HoldNextStop();
+        var stop = typeof(ClientsMgmt).GetMethod("StopActivityAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var olderStop = cut.InvokeAsync(async () => await (Task)stop.Invoke(cut.Instance, null)!);
+        try
+        {
+            await pendingStop.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            _artifacts.HistoryStatus = "Accepted";
+            var change = typeof(ClientsMgmt).GetMethod("OnAttemptStatusChanged", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            await cut.InvokeAsync(async () => await (Task)change.Invoke(cut.Instance, ["Accepted"])!);
+            _activity.Starts.Should().Be(2);
+            _activity.Active.Should().BeTrue();
+            var before = _artifacts.AttemptPageRequests;
+            await cut.InvokeAsync(() => _activity.SendAsync("ready"));
+            pendingStop.Drain.TrySetResult();
+            await olderStop;
+            await cut.InvokeAsync(async () => { for (var index = 0; index < 30; index++) await _activity.SendAsync("invalidate"); });
+            cut.WaitForAssertion(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
+            _artifacts.AttemptPageRequests.Should().Be(before + 1, "the older shutdown cannot erase the replacement's coalescer ownership");
+            _artifacts.LastHistoryStatus.Should().Be("Accepted");
+            _activity.Active.Should().BeTrue();
+
+            // A third immediate scope change cancels an earlier Start waiting for
+            // transport shutdown. That old input must not fault the UI callback.
+            var queuedStart = _activity.HoldNextStart();
+            try
+            {
+                var supersededChange = cut.InvokeAsync(async () => await (Task)change.Invoke(cut.Instance, ["Downloading"])!);
+                await queuedStart.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+                await cut.InvokeAsync(async () => await (Task)change.Invoke(cut.Instance, ["Accepted"])!);
+                await supersededChange;
+                _activity.Starts.Should().Be(4);
+                await cut.InvokeAsync(() => _activity.SendAsync("ready"));
+                cut.WaitForAssertion(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
+                _artifacts.LastHistoryStatus.Should().Be("Accepted");
+                _activity.Active.Should().BeTrue();
+            }
+            finally { queuedStart.Drain.TrySetResult(); }
+        }
+        finally
+        {
+            pendingStop.Drain.TrySetResult();
+            await olderStop;
+        }
+    }
+
+    private sealed class StubActivityStream : IClientUpdateActivityStream
+    {
+        private Func<ClientUpdateActivityEvent, Task>? _handler;
+        private Action<string>? _status;
+        private readonly Queue<PendingStop> _stops = [];
+        private readonly Queue<PendingStop> _starts = [];
+        public sealed record PendingStop(TaskCompletionSource Started, TaskCompletionSource Drain);
+        public PendingStop HoldNextStop()
+        {
+            var stop = new PendingStop(new(TaskCreationOptions.RunContinuationsAsynchronously), new(TaskCreationOptions.RunContinuationsAsynchronously));
+            _stops.Enqueue(stop);
+            return stop;
+        }
+        public PendingStop HoldNextStart()
+        {
+            var start = new PendingStop(new(TaskCreationOptions.RunContinuationsAsynchronously), new(TaskCreationOptions.RunContinuationsAsynchronously));
+            _starts.Enqueue(start);
+            return start;
+        }
+        public int Starts { get; private set; }
+        public bool Active => _handler is not null;
+        public async Task StartAsync(int? tenantId, Func<ClientUpdateActivityEvent, Task> onNotification, Action<string> onStatus, CancellationToken ct = default)
+        {
+            Starts++;
+            if (_starts.Count > 0)
+            {
+                var start = _starts.Dequeue();
+                start.Started.TrySetResult();
+                await start.Drain.Task.WaitAsync(ct);
+            }
+            ct.ThrowIfCancellationRequested();
+            _handler = onNotification; _status = onStatus; onStatus("Reconnecting");
+        }
+        public void Disconnect() => _status?.Invoke("Reconnecting");
+        public Task SendAsync(string kind) => _handler?.Invoke(new(kind, Guid.NewGuid(), true)) ?? Task.CompletedTask;
+        public async Task StopAsync()
+        {
+            _handler = null; _status = null;
+            if (_stops.Count > 0)
+            {
+                var stop = _stops.Dequeue();
+                stop.Started.TrySetResult();
+                await stop.Drain.Task;
+            }
+        }
+        public ValueTask DisposeAsync() { _handler = null; _status = null; return ValueTask.CompletedTask; }
     }
 
     private sealed class StubClientArtifactsService : IClientArtifactsService
@@ -545,6 +730,11 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         public int ArtifactPageRequests { get; private set; }
         public int ReleasePageRequests { get; private set; }
         public int AttemptPageRequests { get; private set; }
+        public string HistoryStatus { get; set; } = "RolledBack";
+        public bool HistoryPurged { get; set; }
+        public int HistoryTotal { get; set; } = 1;
+        public int LastHistoryPage { get; private set; }
+        public string? LastHistoryStatus { get; private set; }
 
         public Task<List<ClientArtifactSummaryModel>> ListAsync(string? rid, CancellationToken ct = default) =>
             Task.FromResult(new List<ClientArtifactSummaryModel>
@@ -614,14 +804,17 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
             int? tenantId = null,
             string? version = null,
             CancellationToken ct = default) =>
-            GetHistoryPageAsync(page, pageSize);
+            GetHistoryPageAsync(page, pageSize, status);
 
-        private Task<ClientUpdateHistoryPageModel> GetHistoryPageAsync(int page, int pageSize)
+        private Task<ClientUpdateHistoryPageModel> GetHistoryPageAsync(int page, int pageSize, string? status)
         {
             AttemptPageRequests++;
+            LastHistoryStatus = status;
+            LastHistoryPage = page;
+            if (!string.IsNullOrWhiteSpace(status) && status != HistoryStatus) return Task.FromResult(new ClientUpdateHistoryPageModel { Page = page, PageSize = pageSize });
             return Task.FromResult(new ClientUpdateHistoryPageModel
             {
-                Total = 1,
+                Total = HistoryTotal,
                 Page = page,
                 PageSize = pageSize,
                 Items =
@@ -636,7 +829,8 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
                         ClientHostName = "canary-host",
                         RuntimeId = "win-x64",
                         TargetVersion = "0.4.102",
-                        Status = "RolledBack",
+                        Status = HistoryStatus,
+                        LocalPackagePurged = HistoryPurged,
                         FailureCode = "activation_timeout",
                         UpdatedAtUtc = DateTimeOffset.UtcNow
                     }

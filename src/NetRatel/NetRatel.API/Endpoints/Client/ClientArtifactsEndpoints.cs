@@ -389,6 +389,10 @@ public static class ClientArtifactsEndpoints
             {
                 return Results.Conflict(new { message = "Imported client packs are managed through their release operation." });
             }
+            catch (InvalidOperationException exception)
+            {
+                return Results.Conflict(new { message = exception.Message });
+            }
             return Results.NoContent();
         })
         .RequireAuthorization("ClientArtifactsWrite")
