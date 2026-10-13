@@ -212,14 +212,21 @@ public class MainLayoutTests : AsyncBunitContext
         {
             cut.FindAll(".netratel-nav a.active[href^='/clients']")
                 .Select(link => link.GetAttribute("href")).Should().Equal(expectedHref);
+            cut.FindAll(".netratel-nav a[aria-current='page'][href^='/clients']")
+                .Select(link => link.GetAttribute("href")).Should().Equal(expectedHref);
             cut.FindAll(".netratel-nav-brand").Should().BeEmpty();
             cut.Find("nav[aria-label='Primary navigation']").Should().NotBeNull();
             cut.Find(".netratel-nav a[href='/logout']").Should().NotBeNull();
         });
 
         navigation.NavigateTo("/clients/mgmt");
-        cut.WaitForAssertion(() => cut.FindAll(".netratel-nav a.active[href^='/clients']")
-            .Select(link => link.GetAttribute("href")).Should().Equal("/clients/mgmt"));
+        cut.WaitForAssertion(() =>
+        {
+            cut.FindAll(".netratel-nav a.active[href^='/clients']")
+                .Select(link => link.GetAttribute("href")).Should().Equal("/clients/mgmt");
+            cut.FindAll(".netratel-nav a[aria-current='page'][href^='/clients']")
+                .Select(link => link.GetAttribute("href")).Should().Equal("/clients/mgmt");
+        });
     }
 
     [Fact]

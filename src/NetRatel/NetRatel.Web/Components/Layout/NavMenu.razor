@@ -23,7 +23,7 @@
 
             <div class="nav-section-heading"><span>Estate</span></div>
             <MudNavGroup Title="Estate Management" Expanded="false" Icon="@Icons.Material.Filled.Business">
-                <MudNavLink Href="/clients" Match="NavLinkMatch.All" Class="@(IsClientInventoryRoute ? "active" : null)" aria-current="@(IsClientInventoryRoute ? "page" : null)" Icon="@Icons.Material.Filled.Devices">Clients</MudNavLink>
+                <MudNavLink Href="/clients" Match="@(IsClientInventoryRoute ? NavLinkMatch.Prefix : NavLinkMatch.All)" Icon="@Icons.Material.Filled.Devices">Clients</MudNavLink>
                 <MudNavLink Href="/tenants" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.People">Tenants</MudNavLink>
             </MudNavGroup>
             <MudNavLink Href="/clients/mgmt" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.RocketLaunch">Agent Installers</MudNavLink>
