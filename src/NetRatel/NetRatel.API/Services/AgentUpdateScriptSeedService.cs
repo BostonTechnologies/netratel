@@ -1,5 +1,7 @@
 using NetRatel.Application.Scripts;
 using NetRatel.Application.Artifacts;
+using NetRatel.Shared.Contracts.Scripts;
+using Microsoft.EntityFrameworkCore;
 
 namespace NetRatel.API.Services;
 
@@ -10,33 +12,78 @@ public sealed class AgentUpdateScriptSeedService(IServiceScopeFactory scopeFacto
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        await using var scope = _scopeFactory.CreateAsyncScope();
-        var scripts = scope.ServiceProvider.GetRequiredService<IScriptService>();
-        await UpsertAsync(scripts, WindowsScript, cancellationToken).ConfigureAwait(false);
-        await UpsertAsync(scripts, LinuxScript, cancellationToken).ConfigureAwait(false);
+        foreach (var seed in new[] { WindowsScript, LinuxScript })
+        {
+            // A reconciled losing update may still be tracked in its context.
+            // Dispose that unit of work before seeding the next platform.
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var scripts = scope.ServiceProvider.GetRequiredService<IScriptService>();
+            await UpsertAsync(scripts, seed, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
     private async Task UpsertAsync(IScriptService scripts, SeedScript seed, CancellationToken ct)
     {
-        var existing = (await scripts.ListAsync(ct).ConfigureAwait(false))
-            .FirstOrDefault(x => string.Equals(x.FolderPath, seed.FolderPath, StringComparison.OrdinalIgnoreCase)
-                                 && string.Equals(x.Name, seed.Name, StringComparison.OrdinalIgnoreCase));
+        var name = ScriptLibraryPlacement.NormalizeName(seed.Name);
+        var folder = ScriptLibraryPlacement.NormalizeFolder(seed.FolderPath);
+        var existing = await FindExistingAsync().ConfigureAwait(false);
 
         if (existing is null)
         {
-            await scripts.CreateAsync(new CreateScriptCommand(seed.Name, seed.FolderPath, seed.Description, seed.Content, seed.ScriptType, ManifestRaw: null), ct).ConfigureAwait(false);
-            _logger.LogInformation("Seeded NetRatel agent update script {Folder}/{Name}.", seed.FolderPath, seed.Name);
-            return;
+            try
+            {
+                await scripts.CreateAsync(new CreateScriptCommand(name, folder, seed.Description, seed.Content, seed.ScriptType, ManifestRaw: null), ct).ConfigureAwait(false);
+                _logger.LogInformation("Seeded NetRatel agent update script {Folder}/{Name}.", folder, name);
+                return;
+            }
+            catch (ScriptLibraryCollisionException)
+            {
+                // Another API host can commit this exact seed after our initial
+                // read. Reconcile that winner once; a genuine path collision fails.
+                existing = await FindExistingAsync().ConfigureAwait(false);
+                if (existing is null || !IsCurrent(existing)) throw;
+            }
         }
 
-        if (!string.Equals(existing.Content, seed.Content, StringComparison.Ordinal) ||
-            !string.Equals(existing.ScriptType, seed.ScriptType, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(existing.Description, seed.Description, StringComparison.Ordinal))
+        if (!IsCurrent(existing))
         {
-            await scripts.UpdateAsync(new UpdateScriptCommand(existing.Id, seed.Name, seed.FolderPath, seed.Description, seed.Content, seed.ScriptType, ManifestRaw: null), ct).ConfigureAwait(false);
-            _logger.LogInformation("Updated seeded NetRatel agent update script {Folder}/{Name}.", seed.FolderPath, seed.Name);
+            try
+            {
+                // Preserve existing logical placement, including legacy slash
+                // conventions, and fence edits with the observed source revision.
+                var updated = await scripts.UpdateAsync(new UpdateScriptCommand(existing.Id, null, null, seed.Description, seed.Content, seed.ScriptType,
+                    ManifestRaw: null, ExpectedSourceRevision: existing.SourceRevision), ct).ConfigureAwait(false);
+                if (updated is null) throw new ScriptSourceConcurrencyException();
+                _logger.LogInformation("Updated seeded NetRatel agent update script {Folder}/{Name}.", folder, name);
+            }
+            catch (Exception exception) when (exception is ScriptSourceConcurrencyException or DbUpdateConcurrencyException)
+            {
+                var winner = await FindExistingAsync().ConfigureAwait(false);
+                if (winner is null || winner.Id != existing.Id || !IsCurrent(winner)) throw;
+            }
+        }
+
+        async Task<ScriptInfo?> FindExistingAsync() => (await scripts.ListAsync(ct).ConfigureAwait(false))
+            .FirstOrDefault(script => IsSamePlacement(script, name, folder));
+
+        bool IsCurrent(ScriptInfo script) => string.Equals(script.Content, seed.Content, StringComparison.Ordinal) &&
+            string.Equals(script.ScriptType, seed.ScriptType, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(script.Description, seed.Description, StringComparison.Ordinal);
+    }
+
+    private static bool IsSamePlacement(ScriptInfo script, string name, string folder)
+    {
+        try
+        {
+            return string.Equals(ScriptLibraryPlacement.NormalizeFolder(script.FolderPath), folder, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(ScriptLibraryPlacement.NormalizeName(script.Name), name, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (ArgumentException)
+        {
+            // An unrelated legacy row with invalid placement is not this seed.
+            return false;
         }
     }
 
