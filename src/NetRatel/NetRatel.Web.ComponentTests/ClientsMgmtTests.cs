@@ -519,10 +519,22 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
     public async Task Activity_older_stop_completion_does_not_duplicate_the_replacement_scopes_burst_refresh()
     {
         var cut = Render<ClientsMgmt>();
+        async Task AwaitScheduledRefreshAsync()
+        {
+            // Notification callbacks schedule the coalescer. Await its actual
+            // reload outside the renderer before asserting its displayed snapshot.
+            Task? refresh = null;
+            await cut.InvokeAsync(() =>
+            {
+                refresh = (Task?)typeof(ClientsMgmt).GetField("_activityRefreshTask", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(cut.Instance);
+            });
+            if (refresh is not null) await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+        }
         await cut.WaitForAssertionAsync(() => cut.FindAll(".mud-tab").Should().NotBeEmpty());
         await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Activity").ClickAsync(new()));
         await cut.WaitForAssertionAsync(() => _activity.Starts.Should().Be(1));
         await cut.InvokeAsync(() => _activity.SendAsync("ready"));
+        await AwaitScheduledRefreshAsync();
         await cut.WaitForAssertionAsync(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
         var pendingStop = _activity.HoldNextStop();
         var stop = typeof(ClientsMgmt).GetMethod("StopActivityAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
@@ -540,6 +552,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
             pendingStop.Drain.TrySetResult();
             await olderStop;
             await cut.InvokeAsync(async () => { for (var index = 0; index < 30; index++) await _activity.SendAsync("invalidate"); });
+            await AwaitScheduledRefreshAsync();
             await cut.WaitForAssertionAsync(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
             _artifacts.AttemptPageRequests.Should().Be(before + 1, "the older shutdown cannot erase the replacement's coalescer ownership");
             _artifacts.LastHistoryStatus.Should().Be("Accepted");
@@ -556,6 +569,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
                 await supersededChange;
                 _activity.Starts.Should().Be(4);
                 await cut.InvokeAsync(() => _activity.SendAsync("ready"));
+                await AwaitScheduledRefreshAsync();
                 await cut.WaitForAssertionAsync(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
                 _artifacts.LastHistoryStatus.Should().Be("Accepted");
                 _activity.Active.Should().BeTrue();
