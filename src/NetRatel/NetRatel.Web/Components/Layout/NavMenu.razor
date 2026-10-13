@@ -1,17 +1,12 @@
-﻿@implements IDisposable
+@implements IDisposable
 @inject NavigationManager NavigationManager
 @inject AuthenticationStateProvider AuthenticationStateProvider
 @inject NetRatel.Web.Services.Access.IAccessAdministrationApiService AccessApi
-@inject IDeploymentBrandingApiService BrandingApi
-@inject ILogger<NavMenu> Logger
 @inject NetRatel.Web.Services.Flows.IFlowApiService FlowApi
 @inject IServiceProvider Services
 
-<MudNavMenu Class="netratel-nav">
-    <a class="netratel-nav-brand" href="/" aria-label="@($"{ApplicationName} home")">
-        <img src="@CompactLogoUrl" width="64" height="64" alt="@ApplicationName" />
-        <span>@ApplicationName</span>
-    </a>
+<nav class="netratel-nav" aria-label="Primary navigation">
+<MudNavMenu>
     <AuthorizeView Context="outerAuthState">
         <Authorized Context="outerAuthState">
             <div class="nav-section-heading"><span>Command</span></div>
@@ -28,7 +23,7 @@
 
             <div class="nav-section-heading"><span>Estate</span></div>
             <MudNavGroup Title="Estate Management" Expanded="false" Icon="@Icons.Material.Filled.Business">
-                <MudNavLink Href="/clients" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Devices">Clients</MudNavLink>
+                <MudNavLink Href="/clients" Match="NavLinkMatch.All" Class="@(IsClientInventoryRoute ? "active" : null)" aria-current="@(IsClientInventoryRoute ? "page" : null)" Icon="@Icons.Material.Filled.Devices">Clients</MudNavLink>
                 <MudNavLink Href="/tenants" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.People">Tenants</MudNavLink>
             </MudNavGroup>
             <MudNavLink Href="/clients/mgmt" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.RocketLaunch">Agent Installers</MudNavLink>
@@ -75,6 +70,7 @@
     </AuthorizeView>
 
 </MudNavMenu>
+</nav>
 
 @code {
     private string? currentUrl;
@@ -82,9 +78,22 @@
     private bool canAdministerAccess;
     private bool canReadFlows;
     private bool canReadMonitoring;
-    private EffectiveDeploymentBranding? _branding;
-    private string ApplicationName => _branding?.ApplicationName.Value ?? "NetRatel";
-    private string CompactLogoUrl => _branding?.CompactLogoUrl.Value ?? "brand/netratel-mark-64.png";
+    // Client detail routes belong to inventory; management and runtime settings
+    // have their own leaves and must never also highlight Clients.
+    private bool IsClientInventoryRoute
+    {
+        get
+        {
+            var path = (currentUrl ?? string.Empty).Split('?', '#')[0].TrimEnd('/');
+            return path.Equals("clients", StringComparison.OrdinalIgnoreCase) ||
+                (path.StartsWith("clients/", StringComparison.OrdinalIgnoreCase) &&
+                 !IsRouteBranch(path, "clients/mgmt") && !IsRouteBranch(path, "clients/settings"));
+        }
+    }
+
+    private static bool IsRouteBranch(string path, string route) =>
+        path.Equals(route, StringComparison.OrdinalIgnoreCase) ||
+        path.StartsWith(route + "/", StringComparison.OrdinalIgnoreCase);
 
     protected override async Task OnInitializedAsync()
     {
@@ -108,23 +117,6 @@
         }
         try { var monitoring = Services.GetService<NetRatel.Web.Services.Monitoring.IMonitoringApiService>(); canReadMonitoring = authState.User.Identity?.IsAuthenticated == true && monitoring is not null && (await monitoring.GetTenantsAsync()).Count > 0; }
         catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException) { canReadMonitoring = false; }
-        try
-        {
-            ApplyBranding(await BrandingApi.GetPublicAsync());
-        }
-        catch (HttpRequestException exception)
-        {
-            // Preserve approved built-in presentation if the API is temporarily unavailable.
-            Logger.LogDebug(exception, "Could not read public deployment branding while loading navigation.");
-        }
-    }
-
-    private void ApplyBranding(EffectiveDeploymentBranding candidate)
-    {
-        if (_branding is null || candidate.Version >= _branding.Version)
-        {
-            _branding = candidate;
-        }
     }
 
     private void OnLocationChanged(object? sender, LocationChangedEventArgs e)

@@ -1,4 +1,5 @@
 using Bunit;
+using Microsoft.AspNetCore.Components;
 using AwesomeAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
@@ -189,6 +190,36 @@ public class MainLayoutTests : AsyncBunitContext
         cut.Find("[data-testid='netratel-appbar-grid']").Should().NotBeNull();
         cut.Find("[data-testid='global-search']").Should().NotBeNull();
         cut.Find("[data-testid='mobile-overflow']").Should().NotBeNull();
+    }
+
+    [Theory]
+    [InlineData("/clients", "/clients")]
+    [InlineData("/clients/mgmt", "/clients/mgmt")]
+    [InlineData("/clients/mgmt?tab=activity", "/clients/mgmt")]
+    [InlineData("/clients/settings", "/clients/settings")]
+    [InlineData("/clients/detail/fixture-agent", "/clients")]
+    public void Navigation_SelectsOnlyTheIntendedClientLeaf(string route, string expectedHref)
+    {
+        var authorization = AddAuthorization();
+        authorization.SetAuthorized("An operator with a long account name");
+        authorization.SetRoles("Operator");
+        AddConfiguration(new Dictionary<string, string?>());
+        var navigation = Services.GetRequiredService<NavigationManager>();
+        navigation.NavigateTo(route);
+        var cut = RenderMainLayout();
+
+        cut.WaitForAssertion(() =>
+        {
+            cut.FindAll(".netratel-nav a.active[href^='/clients']")
+                .Select(link => link.GetAttribute("href")).Should().Equal(expectedHref);
+            cut.FindAll(".netratel-nav-brand").Should().BeEmpty();
+            cut.Find("nav[aria-label='Primary navigation']").Should().NotBeNull();
+            cut.Find(".netratel-nav a[href='/logout']").Should().NotBeNull();
+        });
+
+        navigation.NavigateTo("/clients/mgmt");
+        cut.WaitForAssertion(() => cut.FindAll(".netratel-nav a.active[href^='/clients']")
+            .Select(link => link.GetAttribute("href")).Should().Equal("/clients/mgmt"));
     }
 
     [Fact]
