@@ -24,7 +24,10 @@ public sealed class GlobalSearchService : IGlobalSearchService
         new("scripts", "Scripts", Icons.Material.Filled.Terminal, "/scriptlibrary"),
         new("jobs", "Jobs", Icons.Material.Filled.Work, "/jobs"),
         new("requests", "Requests", Icons.Material.Filled.Hub, "/requests"),
-        new("tasks", "Tasks", Icons.Material.Filled.TaskAlt, "/tasks/history")
+        new("tasks", "Tasks", Icons.Material.Filled.TaskAlt, "/tasks/history"),
+        new("alerts", "Monitoring alerts", Icons.Material.Filled.NotificationsActive, "/monitoring"),
+        new("flows", "Flows", Icons.Material.Filled.AccountTree, "/flows"),
+        new("investigations", "AI investigations", Icons.Material.Filled.Psychology, "/ai/ops")
     ];
 
     private readonly IHttpClientFactory _clientFactory;
@@ -172,6 +175,9 @@ public sealed class GlobalSearchService : IGlobalSearchService
             "jobs" => BuildGroup(key, term, await ReadPageAsync<JobDto>(http, BuildUrl(key, term), cancellationToken), MatchJobs),
             "requests" => BuildGroup(key, term, await ReadPageAsync<GlobalSearchRequestDto>(http, BuildUrl(key, term), cancellationToken), MatchRequests),
             "tasks" => BuildGroup(key, term, await ReadPageAsync<TaskDto>(http, BuildUrl(key, term), cancellationToken), MatchTasks),
+            "alerts" => BuildGroup(key, term, await ReadPageAsync<GlobalSearchAlertDto>(http, BuildUrl(key, term), cancellationToken), MatchAlerts),
+            "flows" => BuildGroup(key, term, await ReadPageAsync<GlobalSearchFlowDto>(http, BuildUrl(key, term), cancellationToken), MatchFlows),
+            "investigations" => BuildGroup(key, term, await ReadPageAsync<GlobalSearchInvestigationDto>(http, BuildUrl(key, term), cancellationToken), MatchInvestigations),
             _ => BuildGroup(key, term, [], totalCount: 0)
         };
     }
@@ -232,9 +238,29 @@ public sealed class GlobalSearchService : IGlobalSearchService
 
     private static string ContinueHref(SectionDefinition section, string term)
     {
+        if (section.Key is "alerts" or "flows" or "investigations")
+            return $"/search?section={section.Key}&search={Escape(term)}";
         var separator = section.Href.Contains('?', StringComparison.Ordinal) ? "&" : "?";
         return $"{section.Href}{separator}search={Escape(term)}";
     }
+
+    // Matching includes metadata that the server deliberately does not repeat in every
+    // snippet. Retain its authorized matches while giving title matches higher rank.
+    private static IEnumerable<ScoredResult> MatchAlerts(IEnumerable<GlobalSearchAlertDto> rows, string term) =>
+        rows.Select(row => new ScoredResult(Math.Max(1, Score(term, row.Title, [row.Title, row.TenantName, row.ClientName, row.Resource, row.Severity, row.State])),
+            new GlobalSearchResult("Monitoring alerts", row.Title, Join(row.TenantName, row.ClientName), Join(row.Severity, row.State, row.Resource),
+                $"/monitoring?tenantId={row.TenantId}&alert={row.OccurrenceId:D}", Icons.Material.Filled.NotificationsActive)));
+
+    private static IEnumerable<ScoredResult> MatchFlows(IEnumerable<GlobalSearchFlowDto> rows, string term) =>
+        rows.Select(row => new ScoredResult(Math.Max(1, Score(term, row.Title, [row.Title, row.TenantName, row.FlowId.ToString()])),
+            new GlobalSearchResult("Flows", row.Title, row.TenantName,
+                Join(row.Enabled ? "Enabled" : "Disabled", row.PublishedVersionNumber > 0 ? $"Published v{row.PublishedVersionNumber}" : "Draft"),
+                $"/flows?tenantId={row.TenantId}&draftId={row.FlowId:D}", Icons.Material.Filled.AccountTree)));
+
+    private static IEnumerable<ScoredResult> MatchInvestigations(IEnumerable<GlobalSearchInvestigationDto> rows, string term) =>
+        rows.Select(row => new ScoredResult(Math.Max(1, Score(term, row.Title, [row.Title, row.TenantName, row.ClientContext, row.State])),
+            new GlobalSearchResult("AI investigations", row.Title, Join(row.TenantName, row.ClientContext), row.State,
+                $"/ai/ops?tenantId={row.TenantId}&investigation={row.InvestigationId:D}", Icons.Material.Filled.Psychology)));
 
     private static IEnumerable<ScoredResult> MatchTenants(IEnumerable<TenantDto> tenants, string term)
     {
@@ -453,6 +479,8 @@ public sealed class GlobalSearchService : IGlobalSearchService
 
     private static string? FirstNonEmpty(params string?[] values) =>
         values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+
+    private static string Join(params string?[] values) => string.Join(" · ", values.Where(value => !string.IsNullOrWhiteSpace(value)));
 
     private static string NormalizeFolder(string? folder) =>
         string.IsNullOrWhiteSpace(folder) ? "Root" : folder.Trim('/');

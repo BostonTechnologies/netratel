@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Components.Web;
 using MudBlazor;
 using Microsoft.JSInterop;
 using NetRatel.Shared.Contracts.Monitoring;
+using NetRatel.Shared.Contracts;
 using NetRatel.Shared.Contracts.Services;
 using NetRatel.Web.Services.Monitoring;
 
@@ -15,6 +16,15 @@ public partial class MonitoringPage
     [SupplyParameterFromQuery(Name = "tenantId")] public int? RequestedTenantId { get; set; }
     [SupplyParameterFromQuery(Name = "clientId")] public Guid? RequestedClientId { get; set; }
     [SupplyParameterFromQuery(Name = "state")] public string? RequestedState { get; set; }
+    [SupplyParameterFromQuery(Name = "alert")] public Guid? RequestedAlertId { get; set; }
+    [SupplyParameterFromQuery(Name = "search")] public string? RequestedSearch { get; set; }
+    private Guid? _appliedQueryAlert;
+    private string? _appliedQuerySearch;
+    private MonitoringAlertDetailDto? _selectedAlert;
+    private CancellationTokenSource? _alertRead;
+    private long _alertGeneration;
+    private bool _loadingAlert;
+    private string? _alertError;
     private TimeZoneInfo _timeZone = TimeZoneInfo.Utc;
     private int? _appliedQueryTenant;
     private Guid? _appliedQueryClient;
@@ -82,7 +92,17 @@ public partial class MonitoringPage
 
     protected override async Task OnInitializedAsync()
     {
-        try { _tenants = await Api.GetTenantsAsync(_lifetime.Token); if (_tenants.Count > 0) { State.ClientFilter = RequestedClientId; _stateFilter = RequestedState ?? ""; await State.SelectTenantAsync(_tenants.Any(tenant => tenant.TenantId == RequestedTenantId) ? RequestedTenantId!.Value : _tenants[0].TenantId); RememberQuery(); } }
+        try
+        {
+            _tenants = await Api.GetTenantsAsync(_lifetime.Token);
+            if (_tenants.Count > 0)
+            {
+                State.ClientFilter = RequestedClientId; _stateFilter = RequestedState ?? ""; _search = RequestedSearch ?? "";
+                var tenant = RequestedTenantId is { } requested ? _tenants.Any(item => item.TenantId == requested) ? requested : 0 : _tenants[0].TenantId;
+                if (tenant == 0) { _startupError = "The linked tenant does not grant Monitoring access."; RememberQuery(); return; }
+                await State.SelectTenantAsync(tenant); RememberQuery(); await LoadRequestedAlert();
+            }
+        }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
         catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException) { _startupError = "Could not load authorized monitoring tenants. Refresh to try again."; }
     }
@@ -92,21 +112,54 @@ public partial class MonitoringPage
         _appliedQueryTenant = RequestedTenantId;
         _appliedQueryClient = RequestedClientId;
         _appliedQueryState = RequestedState;
+        _appliedQueryAlert = RequestedAlertId;
+        _appliedQuerySearch = RequestedSearch;
     }
     private async Task<bool> ApplyRequestedScope()
     {
         if (_busy || _tenants.Count == 0 ||
-            (_appliedQueryTenant == RequestedTenantId && _appliedQueryClient == RequestedClientId && _appliedQueryState == RequestedState)) return false;
-        var tenant = _tenants.Any(item => item.TenantId == RequestedTenantId) ? RequestedTenantId!.Value : State.TenantId;
+            (_appliedQueryTenant == RequestedTenantId && _appliedQueryClient == RequestedClientId && _appliedQueryState == RequestedState && _appliedQueryAlert == RequestedAlertId && _appliedQuerySearch == RequestedSearch)) return false;
+        FenceAlert();
+        var tenant = RequestedTenantId is { } requested ? _tenants.Any(item => item.TenantId == requested) ? requested : 0 : State.TenantId > 0 ? State.TenantId : _tenants[0].TenantId;
         var stateChanged = _appliedQueryState != RequestedState;
         RememberQuery();
-        CloseEditor(); _search = "";
+        CloseEditor(); _search = RequestedSearch ?? "";
+        if (tenant == 0) { _startupError = "The linked tenant does not grant Monitoring access."; _state?.Dispose(); _state = new(Api); return true; }
+        _startupError = null;
         if (stateChanged) _stateFilter = RequestedState ?? "";
         State.ClientFilter = RequestedClientId;
         if (State.TenantId != tenant) _pendingWatchAtSaveRevision = null;
         await State.SelectTenantAsync(tenant);
+        await LoadRequestedAlert();
         return true;
     }
+    private void FenceAlert()
+    {
+        ++_alertGeneration; _alertRead?.Cancel(); _alertRead?.Dispose(); _alertRead = null;
+        _selectedAlert = null; _alertError = null; _loadingAlert = false;
+    }
+    private async Task LoadRequestedAlert()
+    {
+        FenceAlert();
+        if (RequestedAlertId is not { } id) return;
+        if (id == Guid.Empty || RequestedTenantId != State.TenantId || State.Snapshot?.Permissions.CanRead != true)
+        { _alertError = "The alert link needs its authorized tenant and occurrence."; return; }
+        var tenant = State.TenantId; var generation = _alertGeneration;
+        _alertRead = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, State.Token);
+        var token = _alertRead.Token; _loadingAlert = true;
+        try
+        {
+            var alert = await Api.GetAlertAsync(tenant, id, token);
+            if (token.IsCancellationRequested || generation != _alertGeneration || State.TenantId != tenant || RequestedAlertId != id) return;
+            if (alert.TenantId != tenant || alert.Occurrence.OccurrenceId != id || alert.Occurrence.PinnedRule.TenantId != tenant)
+            { _alertError = "The linked alert could not be verified."; return; }
+            _selectedAlert = alert;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (HttpRequestException error) { if (generation == _alertGeneration) _alertError = error.Message; }
+        finally { if (generation == _alertGeneration) _loadingAlert = false; }
+    }
+    private void CloseSelectedAlert() => Navigation.NavigateTo($"/monitoring?tenantId={State.TenantId}");
     private void ClearClientFilter()
     {
         var query = $"/monitoring?tenantId={State.TenantId}";
@@ -150,11 +203,11 @@ public partial class MonitoringPage
     private async Task ChangeTenant(ChangeEventArgs args)
     {
         if (_editor is not null || !int.TryParse(args.Value?.ToString(), out var tenant) || !_tenants.Any(t => t.TenantId == tenant)) return;
-        CloseEditor(); _search = ""; _stateFilter = ""; RequestedTenantId = tenant; RequestedClientId = null; RequestedState = null;
+        FenceAlert(); CloseEditor(); _search = ""; _stateFilter = ""; RequestedTenantId = tenant; RequestedClientId = null; RequestedState = null; RequestedAlertId = null; RequestedSearch = null;
         RememberQuery(); State.ClientFilter = null; _pendingWatchAtSaveRevision = null; _successMessage = null; await State.SelectTenantAsync(tenant);
         Navigation.NavigateTo($"/monitoring?tenantId={tenant}", replace: true);
     }
-    private Task Refresh() => State.RefreshAsync();
+    private async Task Refresh() { FenceAlert(); await State.RefreshAsync(); await LoadRequestedAlert(); }
     private Task PageSeries(string? cursor) => State.NextSeriesPageAsync(cursor);
     private Task PageHistory(string? cursor) => State.NextHistoryPageAsync(cursor);
     private bool Contains(string? text) => string.IsNullOrWhiteSpace(_search) || text?.Contains(_search, StringComparison.OrdinalIgnoreCase) == true;
@@ -391,5 +444,5 @@ public partial class MonitoringPage
         { if (State.IsCurrent(tenant, scope) && editor == _editorGeneration) { _conflict = error is HttpRequestException { StatusCode: System.Net.HttpStatusCode.Conflict }; _editorError = error is HttpRequestException ? error.Message : "Could not confirm the save. Your edits are retained; refresh before retrying."; } }
         finally { _busy = false; }
     }
-    public void Dispose() { _lifetime.Cancel(); _lifetime.Dispose(); _inventoryRead?.Cancel(); _inventoryRead?.Dispose(); _state?.Dispose(); }
+    public void Dispose() { FenceAlert(); _lifetime.Cancel(); _lifetime.Dispose(); _inventoryRead?.Cancel(); _inventoryRead?.Dispose(); _state?.Dispose(); }
 }

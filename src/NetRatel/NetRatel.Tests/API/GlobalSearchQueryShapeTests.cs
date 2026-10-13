@@ -18,6 +18,9 @@ public sealed class GlobalSearchQueryShapeTests
     [InlineData("jobs")]
     [InlineData("requests")]
     [InlineData("tasks")]
+    [InlineData("alerts")]
+    [InlineData("flows")]
+    [InlineData("investigations")]
     public void Expensive_sections_compile_to_one_bounded_postgresql_command(string section)
     {
         using var db = CreateDbContext();
@@ -28,12 +31,27 @@ public sealed class GlobalSearchQueryShapeTests
             "jobs" => GlobalSearchEndpoints.BuildJobQuery(db, "linux").Take(6).ToQueryString(),
             "requests" => GlobalSearchEndpoints.BuildRequestQuery(db, "linux").Take(6).ToQueryString(),
             "tasks" => GlobalSearchEndpoints.BuildTaskQuery(db, "linux").Take(6).ToQueryString(),
+            "alerts" => GlobalSearchEndpoints.BuildAlertQuery(db, "linux", [7]).Take(6).ToQueryString(),
+            "flows" => GlobalSearchEndpoints.BuildFlowQuery(db, "linux", [7]).Take(6).ToQueryString(),
+            "investigations" => GlobalSearchEndpoints.BuildInvestigationQuery(db, "linux", [7], [7]).Take(6).ToQueryString(),
             _ => throw new ArgumentOutOfRangeException(nameof(section), section, null)
         };
 
         sql.Should().Contain("SELECT");
         sql.Should().Contain("LIMIT");
         sql.TrimEnd().Should().NotEndWith(";");
+    }
+
+    [Fact]
+    public void Ops_search_matches_only_safe_metadata_and_authorizes_alert_backed_investigations_in_sql()
+    {
+        using var db = CreateDbContext();
+        var alerts = GlobalSearchEndpoints.BuildAlertQuery(db, "linux", [7]).Take(6).ToQueryString();
+        var investigations = GlobalSearchEndpoints.BuildInvestigationQuery(db, "linux", [7], []).Take(6).ToQueryString();
+        alerts.Should().Contain("'PinnedRule' ->> 'Name'").And.Contain("ANY");
+        investigations.Should().Contain("\"OccurrenceId\" IS NULL").And.Contain("\"TenantId\"");
+        investigations.Should().NotContain("AiInvestigationEvents").And.NotContain("ActiveCredentialId").And.NotContain("RemoteSessionId");
+        alerts.Should().NotContain("ExecutionCredentialId");
     }
 
     [Fact]

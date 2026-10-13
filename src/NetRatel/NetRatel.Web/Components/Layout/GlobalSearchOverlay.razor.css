@@ -1,0 +1,4 @@
+.global-search-selected {
+    background: var(--mud-palette-action-default-hover);
+    outline: 1px solid var(--mud-palette-primary);
+}

@@ -2,11 +2,14 @@ using System.Collections.Immutable;
 using System.Net;
 using System.Net.Http.Json;
 using NetRatel.Shared.Contracts.Monitoring;
+using NetRatel.Shared.Contracts;
 
 namespace NetRatel.Web.Services.Monitoring;
 
 public interface IMonitoringApiService
 {
+    Task<MonitoringAlertDetailDto> GetAlertAsync(int tenantId, Guid occurrenceId, CancellationToken token = default) =>
+        Task.FromException<MonitoringAlertDetailDto>(new HttpRequestException("The linked alert is unavailable."));
     Task<IReadOnlyList<MonitoringTenantDto>> GetTenantsAsync(CancellationToken token = default);
     Task<MonitoringClientPageDto> GetClientsAsync(int tenantId, string? cursor = null, CancellationToken token = default);
     Task<MonitoringClientPageDto> SearchClientsAsync(int tenantId, string? search, string? cursor = null, CancellationToken token = default) => GetClientsAsync(tenantId, cursor, token);
@@ -59,6 +62,8 @@ public sealed class MonitoringApiService(IHttpClientFactory clients) : IMonitori
     }
     public Task<MonitoringPermissionsDto> GetPermissionsAsync(int tenantId, CancellationToken token = default) =>
         GetAsync<MonitoringPermissionsDto>(Root(tenantId) + "/permissions", token);
+    public Task<MonitoringAlertDetailDto> GetAlertAsync(int tenantId, Guid occurrenceId, CancellationToken token = default) =>
+        GetAsync<MonitoringAlertDetailDto>(Root(tenantId) + $"/alerts/{occurrenceId:D}", token);
     public Task<MonitoringConfigurationDto> GetConfigurationAsync(int tenantId, CancellationToken token = default) =>
         GetAsync<MonitoringConfigurationDto>(Root(tenantId) + "/configuration", token);
     public Task<MonitoringSummaryDto> GetSummaryAsync(int tenantId, CancellationToken token = default) =>

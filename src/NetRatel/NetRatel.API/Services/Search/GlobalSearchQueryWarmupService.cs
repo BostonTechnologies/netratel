@@ -23,9 +23,12 @@ public sealed class GlobalSearchQueryWarmupService(
             await GlobalSearchEndpoints.BuildJobQuery(db, WarmupTerm).Take(1).LoadAsync(cancellationToken).ConfigureAwait(false);
             await GlobalSearchEndpoints.BuildRequestQuery(db, WarmupTerm).Take(1).LoadAsync(cancellationToken).ConfigureAwait(false);
             await GlobalSearchEndpoints.BuildTaskQuery(db, WarmupTerm).Take(1).LoadAsync(cancellationToken).ConfigureAwait(false);
+            await GlobalSearchEndpoints.BuildAlertQuery(db, WarmupTerm).Take(1).LoadAsync(cancellationToken).ConfigureAwait(false);
+            await GlobalSearchEndpoints.BuildFlowQuery(db, WarmupTerm).Take(1).LoadAsync(cancellationToken).ConfigureAwait(false);
+            await GlobalSearchEndpoints.BuildInvestigationQuery(db, WarmupTerm).Take(1).LoadAsync(cancellationToken).ConfigureAwait(false);
             logger.LogInformation(
                 "Global Search query warmup completed. QueryCount={QueryCount} ElapsedMs={ElapsedMs:F3}",
-                4,
+                7,
                 Stopwatch.GetElapsedTime(started).TotalMilliseconds);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

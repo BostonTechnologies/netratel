@@ -3,6 +3,8 @@ using Microsoft.Extensions.DependencyInjection;
 using MudBlazor.Services;
 using NetRatel.Shared.Contracts.Services;
 using NetRatel.Shared.Contracts.Monitoring;
+using NetRatel.Shared.Contracts;
+using Microsoft.AspNetCore.Components;
 using NetRatel.Web.Components.Pages.Monitoring;
 using NetRatel.Web.Services.Monitoring;
 using NetRatel.Web.Services.Services;
@@ -19,6 +21,51 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
         Services.AddSingleton<IMonitoringApiService>(_api);
         Services.AddSingleton<IClientServicesApiService>(new EmptyServices());
+    }
+    [Fact]
+    public async Task Selected_closed_alert_loads_exact_persisted_occurrence_and_fences_a_prior_response()
+    {
+        var old = Alert("Old closed alert"); var latest = Alert("Latest closed alert");
+        var pending = new TaskCompletionSource<MonitoringAlertDetailDto>(); CancellationToken oldToken = default;
+        _api.AlertRead = (tenant, id, token) =>
+        {
+            Assert.Equal(1, tenant);
+            if (id != old.Occurrence.OccurrenceId) return Task.FromResult(latest);
+            oldToken = token; return pending.Task;
+        };
+        var nav = Services.GetRequiredService<NavigationManager>();
+        nav.NavigateTo($"/monitoring?tenantId=1&alert={old.Occurrence.OccurrenceId:D}");
+        var cut = Render<MonitoringPage>();
+        await cut.WaitForAssertionAsync(() => Assert.True(oldToken.CanBeCanceled));
+        await cut.InvokeAsync(() => nav.NavigateTo($"/monitoring?tenantId=1&alert={latest.Occurrence.OccurrenceId:D}"));
+        await cut.WaitForAssertionAsync(() => Assert.Contains("Latest closed alert", cut.Find("[data-testid=monitoring-selected-alert]").TextContent));
+        Assert.True(oldToken.IsCancellationRequested);
+        await cut.InvokeAsync(() => pending.SetResult(old));
+        Assert.DoesNotContain("Old closed alert", cut.Markup);
+        Assert.Contains("Closed", cut.Find("[data-testid=monitoring-selected-alert]").TextContent);
+        Assert.Empty(cut.FindAll("[data-testid=monitoring-series-row]"));
+    }
+
+    [Fact]
+    public async Task Unauthorized_alert_tenant_clears_previous_details_without_requesting_the_resource()
+    {
+        var alert = Alert("Authorized alert"); var reads = 0;
+        _api.AlertRead = (_, _, _) => { ++reads; return Task.FromResult(alert); };
+        var nav = Services.GetRequiredService<NavigationManager>(); nav.NavigateTo($"/monitoring?tenantId=1&alert={alert.Occurrence.OccurrenceId:D}");
+        var cut = Render<MonitoringPage>();
+        await cut.WaitForAssertionAsync(() => Assert.NotEmpty(cut.FindAll("[data-testid=monitoring-selected-alert]")));
+        await cut.InvokeAsync(() => nav.NavigateTo($"/monitoring?tenantId=99&alert={alert.Occurrence.OccurrenceId:D}"));
+        await cut.WaitForAssertionAsync(() => Assert.Contains("does not grant Monitoring access", cut.Markup));
+        Assert.Empty(cut.FindAll("[data-testid=monitoring-selected-alert]")); Assert.Equal(1, reads);
+    }
+
+    private static MonitoringAlertDetailDto Alert(string name)
+    {
+        var draft = MonitoringRuleDraft.Create(); draft.Name = name;
+        var rule = draft.Build(1); var now = DateTimeOffset.UtcNow;
+        var evidence = new MonitoringEvidenceDto(new(1, 1), Guid.NewGuid(), now, now, MonitoringEvidenceQuality.Fresh, MonitoringClassification.Breach, 95, 0, null);
+        return new(1, rule.RuleId, Guid.NewGuid(), "cpu", new(Guid.NewGuid(), Guid.NewGuid(), now.AddHours(-1), now.AddHours(-1), rule, evidence,
+            MonitoringFlowDispatchDisposition.NoFlowSelected, EndedAtUtc: now));
     }
     [Fact]
     public void Offline_checkbox_and_grace_are_saved_with_the_rule_scope()

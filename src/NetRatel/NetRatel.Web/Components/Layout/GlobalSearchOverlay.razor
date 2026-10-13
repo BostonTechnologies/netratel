@@ -1,5 +1,8 @@
 @using Microsoft.AspNetCore.Components.Web
 @using NetRatel.Web.Services.Search
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.AspNetCore.Components.Routing
+@implements IDisposable
 
 @inject IGlobalSearchService SearchService
 @inject NavigationManager Nav
@@ -12,7 +15,7 @@
                 <MudIcon Icon="@Icons.Material.Filled.Search" Size="Size.Medium" />
                 <MudTextField @ref="_searchInput"
                               T="string"
-                              Value="_query"
+                              Value="@_query"
                               ValueChanged="OnQueryChangedAsync"
                               Placeholder="Search..."
                               Immediate="true"
@@ -28,7 +31,7 @@
                     <MudStack Spacing="1" Class="global-search-section-list">
                         @foreach (var group in _groups)
                         {
-                            <button type="button" class="global-search-row" @onclick="@(() => NavigateAsync(group.Href))">
+                            <button type="button" class="@RowClass("global-search-row", group.Href)" @onclick="@(() => NavigateAsync(group.Href))">
                                 <MudIcon Icon="@group.Icon" Size="Size.Small" />
                                 <span>@group.Title</span>
                             </button>
@@ -54,7 +57,7 @@
                                 </div>
                                 @foreach (var result in group.Results)
                                 {
-                                    <button type="button" class="global-search-result" @onclick="@(() => NavigateAsync(result.Href))">
+                                    <button type="button" class="@RowClass("global-search-result", result.Href)" @onclick="@(() => NavigateAsync(result.Href))">
                                         <MudIcon Icon="@result.Icon" Size="Size.Small" />
                                         <span class="global-search-result-main">
                                             <span class="global-search-result-title">@result.Title</span>
@@ -71,14 +74,14 @@
                                 }
                                 @if (group.TimedOut && !string.IsNullOrWhiteSpace(group.ContinueHref))
                                 {
-                                    <button type="button" class="global-search-row" @onclick="@(() => NavigateAsync(group.ContinueHref))">
+                                    <button type="button" class="@RowClass("global-search-row", group.ContinueHref)" @onclick="@(() => NavigateAsync(group.ContinueHref))">
                                         <MudIcon Icon="@group.Icon" Size="Size.Small" />
                                         <span>@group.Title search timed out — continue search</span>
                                     </button>
                                 }
                                 else if (!string.IsNullOrWhiteSpace(group.ContinueHref))
                                 {
-                                    <button type="button" class="global-search-row" @onclick="@(() => NavigateAsync(group.ContinueHref))">
+                                    <button type="button" class="@RowClass("global-search-row", group.ContinueHref)" @onclick="@(() => NavigateAsync(group.ContinueHref))">
                                         <MudIcon Icon="@Icons.Material.Filled.ArrowForward" Size="Size.Small" />
                                         <span>Continue search in @group.Title</span>
                                     </button>
@@ -95,6 +98,7 @@
 @code {
     [Parameter] public bool Open { get; set; }
     [Parameter] public EventCallback<bool> OpenChanged { get; set; }
+    [CascadingParameter] private Task<AuthenticationState>? Authentication { get; set; }
 
     private MudTextField<string>? _searchInput;
     private IReadOnlyList<GlobalSearchGroup> _groups = [];
@@ -102,9 +106,17 @@
     private string? _query;
     private bool _isLoading;
     private bool _wasOpen;
+    private long _generation;
+    private int _selection;
+    private Task<AuthenticationState>? _authentication;
+    protected override void OnInitialized() => Nav.LocationChanged += LocationChanged;
 
     protected override async Task OnParametersSetAsync()
     {
+        if (!ReferenceEquals(_authentication, Authentication))
+        {
+            _authentication = Authentication; FenceSearch(); _groups = []; _wasOpen = false;
+        }
         if (Open && !_wasOpen)
         {
             _query = string.Empty;
@@ -115,7 +127,7 @@
         else if (!Open)
         {
             _wasOpen = false;
-            _searchCts?.Cancel();
+            FenceSearch();
         }
     }
 
@@ -131,6 +143,7 @@
     private async Task OnQueryChangedAsync(string? value)
     {
         _query = value;
+        var generation = ++_generation; _selection = 0;
         _searchCts?.Cancel();
         _searchCts?.Dispose();
         _searchCts = new CancellationTokenSource();
@@ -139,10 +152,13 @@
         if (string.IsNullOrWhiteSpace(_query))
         {
             _isLoading = false;
-            _groups = await SearchService.SearchAsync(null, token);
+            var empty = await SearchService.SearchAsync(null, token);
+            if (!token.IsCancellationRequested && generation == _generation) _groups = empty;
             return;
         }
 
+        _groups = _groups.Select(group => group with
+        { Results = [], ContinueHref = null, TotalCount = null, IsLoading = true, TimedOut = false }).ToArray();
         _isLoading = true;
         StateHasChanged();
 
@@ -152,6 +168,7 @@
             var groups = _groups.ToDictionary(group => group.Key, StringComparer.Ordinal);
             await foreach (var group in SearchService.SearchIncrementalAsync(_query, token))
             {
+                if (token.IsCancellationRequested || generation != _generation || !Open) return;
                 groups[group.Key] = group;
                 _groups = _groups.Select(existing => groups.TryGetValue(existing.Key, out var updated) ? updated : existing).ToList();
                 StateHasChanged();
@@ -163,7 +180,7 @@
         }
         finally
         {
-            if (!token.IsCancellationRequested)
+            if (!token.IsCancellationRequested && generation == _generation)
             {
                 _isLoading = false;
                 StateHasChanged();
@@ -179,11 +196,16 @@
         }
         else if (args.Key == "Enter")
         {
-            var first = _groups.SelectMany(g => g.Results).FirstOrDefault();
-            if (first is not null)
+            var links = SelectionLinks();
+            if (links.Count > 0)
             {
-                await NavigateAsync(first.Href);
+                await NavigateAsync(links[Math.Clamp(_selection, 0, links.Count - 1)]);
             }
+        }
+        else if (args.Key is "ArrowDown" or "ArrowUp")
+        {
+            var count = SelectionLinks().Count;
+            if (count > 0) _selection = Math.Clamp(_selection + (args.Key == "ArrowDown" ? 1 : -1), 0, count - 1);
         }
     }
 
@@ -195,7 +217,20 @@
 
     private async Task CloseAsync()
     {
-        _searchCts?.Cancel();
+        FenceSearch();
         await OpenChanged.InvokeAsync(false);
     }
+    private IReadOnlyList<string> SelectionLinks() => string.IsNullOrWhiteSpace(_query)
+        ? _groups.Select(group => group.Href).ToArray()
+        : _groups.Where(group => !group.IsLoading).SelectMany(group => group.Results.Select(result => result.Href)
+            .Concat(group.ContinueHref is { } href ? [href] : Array.Empty<string>())).ToArray();
+    private string RowClass(string css, string? href)
+    {
+        var links = SelectionLinks();
+        return links.Count > 0 && links[Math.Clamp(_selection, 0, links.Count - 1)] == href ? css + " global-search-selected" : css;
+    }
+    private void FenceSearch() { ++_generation; _searchCts?.Cancel(); _isLoading = false; _selection = 0; }
+    private void LocationChanged(object? sender, LocationChangedEventArgs args) => _ = InvokeAsync(async () =>
+    { FenceSearch(); _groups = []; if (Open) await OpenChanged.InvokeAsync(false); });
+    public void Dispose() { Nav.LocationChanged -= LocationChanged; FenceSearch(); _searchCts?.Dispose(); }
 }
