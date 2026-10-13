@@ -286,7 +286,7 @@ public sealed class ScriptSourceRevisionPostgresTests : IAsyncLifetime
             await delete.Should().ThrowAsync<ScriptSourceInUseException>();
             (await db.Scripts.SingleAsync(script => script.Id == (long)source.Id)).SourceRevision.Should().Be(1);
         }
-        var free = await CreateAsync();
+        var free = await CreateAsync("unreferenced source");
         await using (var db = new OrchestratorDbContext(options))
         {
             var deleted = await new ScriptService(db).DeleteAsync(free.Id, free.SourceRevision);
@@ -386,10 +386,10 @@ public sealed class ScriptSourceRevisionPostgresTests : IAsyncLifetime
                 request.CorrelationId, request.RequestId, DateTimeOffset.UtcNow));
     }
 
-    private async Task<ScriptInfo> CreateAsync()
+    private async Task<ScriptInfo> CreateAsync(string name = "source")
     {
         await using var db = new OrchestratorDbContext(options);
-        return await new ScriptService(db).CreateAsync(new("source", "/", "test", "original", "bash", null));
+        return await new ScriptService(db).CreateAsync(new(name, "/", "test", "original", "bash", null));
     }
 
     private static UpdateScriptCommand Edit(ScriptInfo source, string content) =>

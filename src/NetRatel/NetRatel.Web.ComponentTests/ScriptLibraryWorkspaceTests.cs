@@ -34,11 +34,11 @@ public sealed class ScriptLibraryWorkspaceTests : AsyncBunitContext
         var folder = tree.Instance.Items!.Single(item => item.Value!.FullPath == "/operations/").Value;
         await cut.InvokeAsync(() => tree.Instance.SelectedValueChanged.InvokeAsync(folder));
         await cut.Find("[data-testid=script-library-new]").ClickAsync(new());
-        provider.WaitForElement("[data-testid=new-script-name] input");
+        provider.WaitForElement("[data-testid=new-script-name]");
         var model = provider.FindComponent<NewScriptDialog>().Instance.Model;
         Assert.Equal("/operations/", model.Folder);
         Assert.Contains("/", model.ExistingFolders);
-        provider.Find("[data-testid=new-script-name] input").Input("Inventory.ps1");
+        provider.Find("[data-testid=new-script-name]").Input("Inventory.ps1");
         await provider.Find("[data-testid=new-script-create]").ClickAsync(new());
         await cut.WaitForAssertionAsync(() => Assert.NotEmpty(cut.FindAll("[data-testid=script-library-editor]")));
         var editor = cut.FindComponent<StandaloneCodeEditor>().Instance;
@@ -105,8 +105,8 @@ public sealed class ScriptLibraryWorkspaceTests : AsyncBunitContext
         var refresh = cut.Find("[aria-label='Refresh script library']").ClickAsync(new());
         await cut.WaitForAssertionAsync(() => Assert.True(transport.DelayedListStarted));
         await cut.Find("[data-testid=script-library-new]").ClickAsync(new());
-        provider.WaitForElement("[data-testid=new-script-name] input");
-        provider.Find("[data-testid=new-script-name] input").Input("New draft.ps1");
+        provider.WaitForElement("[data-testid=new-script-name]");
+        provider.Find("[data-testid=new-script-name]").Input("New draft.ps1");
         await provider.Find("[data-testid=new-script-create]").ClickAsync(new());
         await cut.WaitForAssertionAsync(() => Assert.NotEmpty(cut.FindAll("[data-testid=script-library-editor]")));
         transport.PendingList.SetResult(transport.ListResponse());
