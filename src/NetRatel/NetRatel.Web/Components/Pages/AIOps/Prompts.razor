@@ -71,7 +71,10 @@
                 {
                     <div class="prompt-detail-heading">
                         <h2>@(_editing ? (_editingId is null ? "New prompt" : "Edit prompt") : _detail!.Summary.Name)</h2>
-                        <span role="status" class="@(Dirty ? "prompt-unsaved" : "muted")">@(_busy ? "Saving / loading…" : Dirty ? "Unsaved changes" : _editing ? (_editingId is null ? "Blank draft" : "Saved draft") : $"Revision {_detail!.Summary.Revision}")</span>
+                        <div class="prompt-detail-status">
+                            @if (Dirty) { <span role="status" class="prompt-unsaved">Unsaved changes</span> }
+                            <span role="status" class="muted">@(_saving ? "Saving…" : _busy ? "Loading…" : _editing ? (_editingId is null ? "Blank draft" : "Saved draft") : $"Revision {_detail!.Summary.Revision}")</span>
+                        </div>
                     </div>
                     @if (!_editing && _detail is { } detail)
                     {
@@ -157,7 +160,7 @@
             if (AuthenticationState is not null)
             {
                 var principal = (await AuthenticationState).User;
-                var subject = principal.FindFirst("sub")?.Value ?? principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                var subject = principal.FindFirst("netratel_principal_id")?.Value ?? principal.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? principal.FindFirst("sub")?.Value;
                 var name = principal.FindFirst("name")?.Value ?? principal.Identity?.Name;
                 if (!string.IsNullOrWhiteSpace(subject) && !string.IsNullOrWhiteSpace(name) && name != subject) _actorNames[subject] = name;
             }

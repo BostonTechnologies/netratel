@@ -27,7 +27,7 @@ public sealed class PromptLibraryTests : AsyncBunitContext
     {
         var cut = Render<Prompts>(); await cut.WaitForAssertionAsync(() => Assert.Contains("Default: Platform baseline", cut.Markup));
         await cut.Find("[data-testid=prompt-new]").ClickAsync(new());
-        cut.Find("[data-testid=prompt-name] input").Input("Offline investigation");
+        cut.Find("[data-testid=prompt-name]").Input("Offline investigation");
         const string guidance = "# Offline client\nRead evidence <script>literal text</script>\n";
         JSInterop.Setup<string>("blazorMonaco.editor.getValue", _ => true).SetResult(guidance);
         var surface = cut.FindComponent<MonacoTextEditor>(); var monaco = surface.FindComponent<StandaloneCodeEditor>();
@@ -73,7 +73,7 @@ public sealed class PromptLibraryTests : AsyncBunitContext
         var cut = Render<Prompts>(); await cut.WaitForAssertionAsync(() => Assert.NotEmpty(cut.FindAll("[data-testid=prompt-item]")));
         await cut.Find("[data-testid=prompt-item]").ClickAsync(new());
         await cut.FindAll("button").Single(x => x.TextContent == "Edit").ClickAsync(new());
-        cut.Find("[data-testid=prompt-name] input").Input("Unsaved replacement");
+        cut.Find("[data-testid=prompt-name]").Input("Unsaved replacement");
         await cut.Find("[data-testid=prompt-cancel]").ClickAsync(new());
         await cut.FindAll("button").Single(x => x.TextContent == "Discard changes").ClickAsync(new());
         Assert.Empty(api.Created); Assert.Empty(api.Updated); Assert.DoesNotContain("Unsaved replacement", cut.Markup);
@@ -87,21 +87,21 @@ public sealed class PromptLibraryTests : AsyncBunitContext
         await cut.Find("[data-testid=prompt-item]").ClickAsync(new());
         Assert.Equal("true", cut.Find("[data-testid=prompt-item]").GetAttribute("aria-pressed"));
         await cut.Find("[data-testid=prompt-new]").ClickAsync(new());
-        Assert.Equal("", cut.Find("[data-testid=prompt-name] input").GetAttribute("value"));
+        Assert.Equal("", cut.Find("[data-testid=prompt-name]").GetAttribute("value"));
         var editor = cut.FindComponent<MonacoTextEditor>();
         Assert.Equal("", editor.Instance.Value); Assert.False(editor.Instance.AutoFocus);
         Assert.NotNull(cut.Find(".prompt-detail .prompt-footer [data-testid=prompt-save]"));
-        cut.Find("[data-testid=prompt-name] input").Input("Keep this draft");
+        cut.Find("[data-testid=prompt-name]").Input("Keep this draft");
         await cut.Find("[data-testid=prompt-item]").ClickAsync(new());
         Assert.Contains("Discard unsaved prompt changes", cut.Markup);
-        Assert.Equal("Keep this draft", cut.Find("[data-testid=prompt-name] input").GetAttribute("value"));
+        Assert.Equal("Keep this draft", cut.Find("[data-testid=prompt-name]").GetAttribute("value"));
         await Button(cut, "Keep editing").ClickAsync(new());
 
         var navigation = Services.GetRequiredService<NavigationManager>();
         await cut.InvokeAsync(() => navigation.NavigateTo("/tasks/new"));
         Assert.DoesNotContain("/tasks/new", navigation.Uri);
         Assert.Contains("Discard unsaved prompt changes", cut.Markup);
-        Assert.Equal("Keep this draft", cut.Find("[data-testid=prompt-name] input").GetAttribute("value"));
+        Assert.Equal("Keep this draft", cut.Find("[data-testid=prompt-name]").GetAttribute("value"));
         await Button(cut, "Keep editing").ClickAsync(new());
         await cut.Find("[data-testid=prompt-item]").ClickAsync(new());
         await Button(cut, "Discard changes").ClickAsync(new());
@@ -117,15 +117,15 @@ public sealed class PromptLibraryTests : AsyncBunitContext
         var cut = Render<Prompts>(); await cut.WaitForAssertionAsync(() => Assert.NotEmpty(cut.FindAll("[data-testid=prompt-item]")));
         await cut.Find("[data-testid=prompt-item]").ClickAsync(new());
         await Button(cut, "Edit").ClickAsync(new());
-        cut.Find("[data-testid=prompt-name] input").Input("Edited guidance");
+        cut.Find("[data-testid=prompt-name]").Input("Edited guidance");
         await cut.Find("[data-testid=prompt-save]").ClickAsync(new());
         Assert.Contains("Revision conflict", cut.Markup);
-        Assert.Equal("Edited guidance", cut.Find("[data-testid=prompt-name] input").GetAttribute("value"));
+        Assert.Equal("Edited guidance", cut.Find("[data-testid=prompt-name]").GetAttribute("value"));
         Assert.Equal("Original tenant body", cut.FindComponent<MonacoTextEditor>().Instance.Value);
         Assert.Equal(1, Assert.Single(api.Updated).ExpectedRevision);
         await cut.InvokeAsync(() => cut.FindComponent<MudSelect<int>>().Instance.ValueChanged.InvokeAsync(18));
         Assert.Contains("and switch tenant", cut.Markup);
-        Assert.Equal("Edited guidance", cut.Find("[data-testid=prompt-name] input").GetAttribute("value"));
+        Assert.Equal("Edited guidance", cut.Find("[data-testid=prompt-name]").GetAttribute("value"));
         await Button(cut, "Keep editing").ClickAsync(new());
         api.FailSave = false;
         await cut.Find("[data-testid=prompt-save]").ClickAsync(new());
@@ -175,7 +175,7 @@ public sealed class PromptLibraryTests : AsyncBunitContext
             await cut.WaitForAssertionAsync(() => Assert.True(api.ListLoading));
             Assert.Same(monaco, cut.FindComponent<StandaloneCodeEditor>().Instance);
             Assert.False(cut.FindComponent<MonacoTextEditor>().Instance.ReadOnly);
-            cut.Find("[data-testid=prompt-name] input").Input("Draft during refresh");
+            cut.Find("[data-testid=prompt-name]").Input("Draft during refresh");
             JSInterop.Setup<string>("blazorMonaco.editor.getValue", _ => true).SetResult("Guidance typed during refresh");
             await cut.InvokeAsync(() => monaco.OnDidChangeModelContent.InvokeAsync(new ModelContentChangedEvent()));
         }
@@ -185,7 +185,7 @@ public sealed class PromptLibraryTests : AsyncBunitContext
             await refresh;
         }
         Assert.Same(monaco, cut.FindComponent<StandaloneCodeEditor>().Instance);
-        Assert.Equal("Draft during refresh", cut.Find("[data-testid=prompt-name] input").GetAttribute("value"));
+        Assert.Equal("Draft during refresh", cut.Find("[data-testid=prompt-name]").GetAttribute("value"));
         Assert.Equal("Guidance typed during refresh", cut.FindComponent<MonacoTextEditor>().Instance.Value);
         Assert.Contains("Unsaved changes", cut.Markup); Assert.Empty(api.Updated);
     }
