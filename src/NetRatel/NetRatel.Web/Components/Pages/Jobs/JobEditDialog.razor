@@ -1,5 +1,6 @@
 @using System.Linq
 @using System.Threading
+@implements IDisposable
 @using MudBlazor
 @using NetRatel.Shared
 @using NetRatel.Shared.Contracts.Jobs
@@ -13,35 +14,27 @@
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 
-<MudDialog>
+<MudDialog Class="jobs-edit-dialog">
     <DialogContent>
-        <MudContainer MaxWidth="MaxWidth.False" Class="pa-0 jobs-editor-container">
-            <MudPaper Elevation="0" Class="jobs-editor-hero pa-4 mb-3 rounded-lg">
-                <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
-                    <MudStack Spacing="1">
-                        <MudText Class="jobs-editor-kicker">Workflow Designer</MudText>
-                        <MudText Typo="Typo.h5">@(_jobId == null ? "Create workflow" : $"Edit workflow #{_jobId}")</MudText>
-                        <MudText Typo="Typo.body2">Define tenant, environment, target client, execution steps, and runtime parameters in one place.</MudText>
-                    </MudStack>
-                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
-                        <MudChip T="string" Variant="Variant.Outlined" Size="Size.Small">@(_selectedTenant?.Name ?? "No tenant")</MudChip>
-                        <MudChip T="string" Variant="Variant.Outlined" Size="Size.Small">@_environment.ToShortLabel()</MudChip>
-                        <MudChip T="string" Variant="Variant.Text" Size="Size.Small">@($"{_steps.Count} step{(_steps.Count == 1 ? string.Empty : "s")}")</MudChip>
-                    </MudStack>
-                </MudStack>
-            </MudPaper>
-
-            <MudGrid Spacing="3" Class="flex-grow-1 jobs-editor-layout ma-0">
+        <div class="jobs-editor-container">
+            @if (_createdInWorkspace)
+            {
+                <MudText Typo="Typo.caption" Color="Color.Secondary" Class="jobs-editor-saved" role="status">
+                    Job #@_jobId created. Add steps or parameters below, then Save to finish.
+                </MudText>
+            }
+            @if (!string.IsNullOrWhiteSpace(_validationMessage))
+            {
+                <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2">@_validationMessage</MudAlert>
+            }
+            <fieldset class="jobs-editor-fields" disabled="@(_isSaving || _isLoading)">
+            <MudGrid Spacing="2" Class="flex-grow-1 jobs-editor-layout ma-0">
                 <MudItem xs="12" md="4" Class="d-flex">
-                    <MudPaper Elevation="0" Class="pa-4 rounded-lg jobs-editor-panel jobs-editor-sidebar">
+                    <MudPaper Elevation="0" Class="pa-3 jobs-editor-panel jobs-editor-sidebar">
                         <MudStack Spacing="2">
-                            <MudTabs Rounded="true" Elevation="0" TabPanelsClass="pt-3" Color="Color.Primary">
+                            <MudTabs KeepPanelsAlive="true" Elevation="0" TabPanelsClass="pt-2" Color="Color.Default" Class="jobs-editor-definition-tabs">
                                 <MudTabPanel Text="Definition" Icon="@Icons.Material.Filled.Work">
                                     <MudStack Spacing="2">
-                                        <MudText Typo="Typo.caption" Color="Color.Secondary">
-                                            Workflow identity, tenant scope, environment, and target.
-                                        </MudText>
-
                                         <MudTextField @bind-Value="_name"
                                                       Label="Job Name"
                                                       Variant="Variant.Outlined"
@@ -108,12 +101,15 @@
                                                       AdornmentIcon="@Icons.Material.Filled.Folder"
                                                       Disabled="@(_selectedTenant is null)" />
 
-                                        <MudPaper Class="pa-3 jobs-editor-folder-preview" Outlined="true">
-                                            <MudText Typo="Typo.caption" Class="jobs-editor-kicker-muted">Saved Path</MudText>
+                                        <MudPaper Class="pa-2 jobs-editor-folder-preview" Outlined="true">
+                                            <MudText Typo="Typo.caption" Class="jobs-editor-field-caption">Saved Path</MudText>
                                             <MudText Typo="Typo.body2" Style="font-family:monospace">@EffectiveFolderPathLabel</MudText>
                                         </MudPaper>
 
-                                        <MudText Typo="Typo.subtitle2">Runtime Policy</MudText>
+                                    </MudStack>
+                                </MudTabPanel>
+                                <MudTabPanel Text="Runtime">
+                                    <MudStack Spacing="2">
                                         <MudGrid Spacing="1">
                                             <MudItem xs="12" sm="6">
                                                 <MudNumericField T="int"
@@ -175,8 +171,8 @@
                                                        AmPm="false"
                                                        Disabled="@(!_scheduleEnabled)" />
 
-                                        <MudPaper Class="pa-3 jobs-editor-folder-preview" Outlined="true">
-                                            <MudText Typo="Typo.caption" Class="jobs-editor-kicker-muted">Timezone</MudText>
+                                        <MudPaper Class="pa-2 jobs-editor-folder-preview" Outlined="true">
+                                            <MudText Typo="Typo.caption" Class="jobs-editor-field-caption">Timezone</MudText>
                                             <MudText Typo="Typo.body2">@ScheduleTimeZoneId</MudText>
                                         </MudPaper>
                                     </MudStack>
@@ -187,15 +183,15 @@
                 </MudItem>
 
                 <MudItem xs="12" md="8" Class="d-flex">
-                    <MudTabs Elevation="2" Rounded="true" ApplyEffectsToContainer="true" TabPanelsClass="pa-0" Color="Color.Primary" Class="flex-grow-1 jobs-editor-tabs">
+                    <MudTabs @bind-ActivePanelIndex="_detailsTab" KeepPanelsAlive="true" Elevation="0" TabPanelsClass="pa-0" Color="Color.Default" Class="flex-grow-1 jobs-editor-tabs">
 
                 <!-- STEPS TAB -->
-                <MudTabPanel Text="Execution Steps" Icon="@Icons.Material.Filled.PlaylistPlay" BadgeData="@(_steps.Count > 0 ? _steps.Count : null)" BadgeColor="Color.Secondary">
-                    <MudTable Items="_steps" Dense="true" Hover="true" FixedHeader="true" Height="430px" Style="background: transparent;">
+                <MudTabPanel Text="Steps" Icon="@Icons.Material.Filled.PlaylistPlay" BadgeData="@(_steps.Count > 0 ? _steps.Count : null)" BadgeColor="Color.Secondary">
+                    <MudTable Items="_steps" Dense="true" Hover="true" FixedHeader="true" Height="min(360px, calc(100dvh - 270px))" Style="background: transparent;">
                         <ToolBarContent>
                             <MudText Typo="Typo.h6">Steps</MudText>
                             <MudSpacer />
-                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="AddStep" Disabled="@(_jobId == null)">
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="@(() => RunDetailsActionAsync(AddStep))" Disabled="@(_jobId == null || _isSaving || _detailsBusy)">
                                 Add Step
                             </MudButton>
                         </ToolBarContent>
@@ -214,22 +210,22 @@
                             <MudTd>
                                 <MudSwitch T="bool"
                                            Value="context.Enabled"
-                                           ValueChanged="@(async (bool value) => await ToggleStepEnabledAsync(context, value))"
+                                           ValueChanged="@(async (bool value) => await RunDetailsActionAsync(() => ToggleStepEnabledAsync(context, value)))"
                                            Color="Color.Primary"
-                                           Disabled="@(_jobId == null)" />
+                                           Disabled="@(_jobId == null || _isSaving || _detailsBusy)" />
                             </MudTd>
                             <MudTd><MudText Typo="Typo.body2" Class="mud-text-secondary">@GetStepSummary(context)</MudText></MudTd>
                             <MudTd Style="text-align:right">
-                                <MudIconButton Icon="@Icons.Material.Filled.ArrowUpward" Size="Size.Small" OnClick="@(() => MoveStepAsync(context, -1))" Disabled="@(_jobId == null || !CanMove(context, -1))"/>
-                                <MudIconButton Icon="@Icons.Material.Filled.ArrowDownward" Size="Size.Small" OnClick="@(() => MoveStepAsync(context, 1))" Disabled="@(_jobId == null || !CanMove(context, 1))"/>
-                                <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => EditStepAsync(context))" Disabled="@(_jobId == null)" />
-                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => DeleteStepAsync(context))" Disabled="@(_jobId == null)" />
+                                <MudIconButton Icon="@Icons.Material.Filled.ArrowUpward" Size="Size.Small" OnClick="@(() => RunDetailsActionAsync(() => MoveStepAsync(context, -1)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || !CanMove(context, -1))"/>
+                                <MudIconButton Icon="@Icons.Material.Filled.ArrowDownward" Size="Size.Small" OnClick="@(() => RunDetailsActionAsync(() => MoveStepAsync(context, 1)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || !CanMove(context, 1))"/>
+                                <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => RunDetailsActionAsync(() => EditStepAsync(context)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy)" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => RunDetailsActionAsync(() => DeleteStepAsync(context)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy)" />
                             </MudTd>
                         </RowTemplate>
                         <NoRecordsContent>
                             @if (_jobId == null)
                             {
-                                <MudAlert Severity="Severity.Warning" Class="ma-2">Save job to enable steps.</MudAlert>
+                                <MudText Class="pa-3" Typo="Typo.body2" Color="Color.Secondary">Enter the definition, then choose Create and add steps. Steps require a saved job ID.</MudText>
                             }
                             else
                             {
@@ -241,11 +237,11 @@
 
                 <!-- PARAMETERS TAB -->
                 <MudTabPanel Text="Parameters" Icon="@Icons.Material.Filled.Tune" BadgeData="@(_params.Count > 0 ? _params.Count : null)" BadgeColor="Color.Secondary">
-                    <MudTable Items="_params" Dense="true" Hover="true" FixedHeader="true" Height="430px">
+                    <MudTable Items="_params" Dense="true" Hover="true" FixedHeader="true" Height="min(360px, calc(100dvh - 270px))">
                         <ToolBarContent>
                             <MudText Typo="Typo.h6">Parameters</MudText>
                             <MudSpacer />
-                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="AddParam" Disabled="@(_jobId == null)">
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="@(() => RunDetailsActionAsync(AddParam))" Disabled="@(_jobId == null || _isSaving || _detailsBusy)">
                                 Add Param
                             </MudButton>
                         </ToolBarContent>
@@ -260,14 +256,14 @@
                             <MudTd>@context.Type</MudTd>
                             <MudTd><MudText Typo="Typo.caption" Style="font-family:monospace">@GetParamDefault(context)</MudText></MudTd>
                             <MudTd Style="text-align:right">
-                                <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => EditParamAsync(context))" Disabled="@(_jobId == null)" />
-                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => DeleteParamAsync(context))" Disabled="@(_jobId == null)" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => RunDetailsActionAsync(() => EditParamAsync(context)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy)" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => RunDetailsActionAsync(() => DeleteParamAsync(context)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy)" />
                             </MudTd>
                         </RowTemplate>
                         <NoRecordsContent>
                             @if (_jobId == null)
                             {
-                                <MudAlert Severity="Severity.Warning" Class="ma-2">Save job to enable parameters.</MudAlert>
+                                <MudText Class="pa-3" Typo="Typo.body2" Color="Color.Secondary">Create the job first, then add runtime parameters here.</MudText>
                             }
                             else
                             {
@@ -279,12 +275,13 @@
                     </MudTabs>
                 </MudItem>
             </MudGrid>
-        </MudContainer>
+            </fieldset>
+        </div>
     </DialogContent>
     <DialogActions>
-        <MudButton OnClick="Cancel">Cancel</MudButton>
-        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SaveAsync" StartIcon="@Icons.Material.Filled.Save">
-            @(_jobId == null ? "Create Job" : "Save Changes")
+        <MudButton OnClick="CancelAsync" Disabled="@(_isSaving || _detailsBusy)">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SaveAsync" Disabled="@(_isSaving || _isLoading || _detailsBusy)" StartIcon="@Icons.Material.Filled.Save">
+            @(_isSaving ? "Saving…" : _jobId == null ? "Create and add steps" : "Save")
         </MudButton>
     </DialogActions>
 </MudDialog>
@@ -303,7 +300,24 @@
     }
 
     private ulong? _jobId;
+    private bool _isSaving;
+    private bool _isLoading = true;
+    private bool _detailsBusy;
+    private bool _createdInWorkspace;
+    private int _detailsTab;
+    private JobDto? _savedJob;
+    private string _savedDefinition = string.Empty;
+    private string DefinitionSnapshot => System.Text.Json.JsonSerializer.Serialize(new
+    {
+        Name = _name, TenantId = _selectedTenant?.Id, Environment = _environment,
+        AgentId = _selectedClient?.AgentId ?? _rawAgentId, Folder = _folderSubfolder,
+        ExpectedMinutes = _expectedRuntimeMinutes, GraceMinutes = _graceRuntimeMinutes,
+        ScheduleEnabled = _scheduleEnabled, SchedulePreset = _schedulePreset, ScheduleTime = _scheduleTime,
+        ScheduleDays = _selectedScheduleDays.OrderBy(day => day).ToArray()
+    });
+    private bool HasDefinitionChanges => DefinitionSnapshot != _savedDefinition;
     private string _name = string.Empty;
+    private string? _validationMessage;
     private string? _suggestedFolderNormalized;
     private string _folderSubfolder = string.Empty;
     private bool _folderSubfolderOverridden;
@@ -363,6 +377,8 @@
         {
             TryPreselectTenantAndFolderFromSuggestedPath();
         }
+        _savedDefinition = DefinitionSnapshot;
+        _isLoading = false;
     }
 
     private async Task LoadTenantsAsync()
@@ -499,7 +515,8 @@
     private void OnEnvironmentChanged(ClientEnvironment env)
     {
         _environment = env;
-        _selectedClient = null; // Reset client on env change (optional, but safer)
+        _selectedClient = null;
+        _rawAgentId = null; // A changed environment requires explicit target reselection.
         StateHasChanged();
     }
 
@@ -522,7 +539,8 @@
 
     private void OnClientChanged(ClientPresentationModel? client)
     {
-        _selectedClient = client;
+        _selectedClient = client is { Enabled: true } && client.TenantId == _selectedTenant?.Id ? client : null;
+        _rawAgentId = _selectedClient?.AgentId;
     }
 
     private void OnSubfolderChanged(string path)
@@ -624,11 +642,14 @@
 
     private async Task SaveAsync()
     {
+        if (_isSaving || _isLoading || _detailsBusy) return;
+        _isSaving = true;
+        _validationMessage = null;
         try
         {
             if (string.IsNullOrWhiteSpace(_name))
             {
-                Snackbar.Add("Name is required.", Severity.Warning);
+                _validationMessage = "Name is required.";
                 return;
             }
 
@@ -636,12 +657,12 @@
             var finalAgentId = _selectedClient?.AgentId ?? _rawAgentId;
 
             if (finalTenantId == null) {
-                 Snackbar.Add("Please select a Tenant.", Severity.Warning);
+                 _validationMessage = "Please select a Tenant.";
                  return;
             }
             if (!finalAgentId.HasValue)
             {
-                Snackbar.Add("Please select an Agent.", Severity.Warning);
+                _validationMessage = "Please select an Agent.";
                 return;
             }
 
@@ -649,7 +670,7 @@
             var schedule = BuildScheduleRequest();
             if (_scheduleEnabled && schedule is null)
             {
-                Snackbar.Add("Select at least one schedule day and a run time.", Severity.Warning);
+                _validationMessage = "Select at least one schedule day and a run time.";
                 return;
             }
 
@@ -671,7 +692,12 @@
                     Schedule: schedule,
                     AgentId: finalAgentId);
                 job = await JobApi.CreateJobAsync(req);
+                if (job.Id == 0) throw new InvalidOperationException("The server did not return a saved job ID.");
                 _jobId = job.Id;
+                _savedJob = job;
+                _createdInWorkspace = true;
+                _savedDefinition = DefinitionSnapshot;
+                _detailsTab = 0;
 
                 if (_isCloneDraft && templateParams is not null && templateSteps is not null)
                 {
@@ -680,7 +706,7 @@
                         await CloneJobDetailsAsync(job.Id, templateParams, templateSteps);
                         _isCloneDraft = false;
                         Snackbar.Add("Job copied. You can now edit steps and parameters.", Severity.Success);
-                        await LoadJobAsync(job.Id);
+                        await RefreshDetailsAsync(job.Id);
                     }
                     catch (Exception ex)
                     {
@@ -692,6 +718,7 @@
                     Snackbar.Add("Job Created. You can now add steps.", Severity.Success);
                 }
 
+                _savedDefinition = DefinitionSnapshot;
                 StateHasChanged();
             }
             else
@@ -708,12 +735,18 @@
                     Schedule: schedule,
                     AgentId: finalAgentId);
                 job = await JobApi.UpdateJobAsync(_jobId.Value, req);
+                _savedDefinition = DefinitionSnapshot;
+                _savedJob = job;
                 MudDialog.Close(DialogResult.Ok(job));
             }
         }
         catch (Exception ex)
         {
-            Snackbar.Add($"Failed to save: {ex.Message}", Severity.Error);
+            _validationMessage = $"Failed to save: {ex.Message}";
+        }
+        finally
+        {
+            _isSaving = false;
         }
     }
 
@@ -828,12 +861,38 @@
 
     // --- Standard Helpers (Same as previous) ---
 
-    private void Cancel() => MudDialog.Cancel();
+    private async Task CancelAsync()
+    {
+        if (_isSaving || _detailsBusy) return;
+        if (HasDefinitionChanges && await DialogService.ShowMessageBoxAsync(
+                "Discard unsaved definition?", "Unsaved definition changes will be discarded. Saved steps and parameters are retained.",
+                yesText: "Discard", cancelText: "Keep editing") is not true)
+            return;
+        if (_createdInWorkspace && _savedJob is not null)
+            MudDialog.Close(DialogResult.Ok(_savedJob));
+        else
+            MudDialog.Cancel();
+    }
 
     public void Dispose()
     {
         _disposeCts.Cancel();
         _disposeCts.Dispose();
+    }
+
+    private async Task RefreshDetailsAsync(ulong jobId)
+    {
+        _params = (await JobApi.GetJobParamsAsync(jobId)).OrderBy(p => p.Name).ToList();
+        _steps = (await JobApi.GetJobStepsAsync(jobId)).OrderBy(s => s.Ordinal).ToList();
+    }
+
+    private async Task RunDetailsActionAsync(Func<Task> action)
+    {
+        if (_detailsBusy || _isSaving) return;
+        _detailsBusy = true;
+        try { await action(); }
+        catch (Exception ex) { Snackbar.Add($"Could not update job details: {ex.Message}", Severity.Error); }
+        finally { _detailsBusy = false; }
     }
 
     // --- Steps & Params (Dialog Calls) ---
@@ -846,7 +905,7 @@
         var parameters = new DialogParameters { ["JobId"] = jobId };
         var dialog = await DialogService.ShowAsync<ParamEditDialog>("Add Parameter", parameters);
         var result = await dialog.Result;
-        if (result is not null && !result.Canceled) await LoadJobAsync(jobId);
+        if (result is not null && !result.Canceled) await RefreshDetailsAsync(jobId);
     }
 
     private async Task EditParamAsync(JobParamDto param)
@@ -857,7 +916,7 @@
         var parameters = new DialogParameters { ["JobId"] = jobId, ["ExistingParam"] = param };
         var dialog = await DialogService.ShowAsync<ParamEditDialog>("Edit Parameter", parameters);
         var result = await dialog.Result;
-        if (result is not null && !result.Canceled) await LoadJobAsync(jobId);
+        if (result is not null && !result.Canceled) await RefreshDetailsAsync(jobId);
     }
 
     private async Task AddStep()
@@ -868,7 +927,7 @@
         var parameters = new DialogParameters { ["JobId"] = jobId, ["JobParams"] = _params };
         var dialog = await DialogService.ShowAsync<StepEditDialog>("Add Step", parameters, new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true });
         var result = await dialog.Result;
-        if (result is not null && !result.Canceled) await LoadJobAsync(jobId);
+        if (result is not null && !result.Canceled) await RefreshDetailsAsync(jobId);
     }
 
     private async Task EditStepAsync(JobStepDto step)
@@ -879,21 +938,21 @@
         var parameters = new DialogParameters { ["JobId"] = jobId, ["ExistingStep"] = step, ["JobParams"] = _params };
         var dialog = await DialogService.ShowAsync<StepEditDialog>("Edit Step", parameters, new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true });
         var result = await dialog.Result;
-        if (result is not null && !result.Canceled) await LoadJobAsync(jobId);
+        if (result is not null && !result.Canceled) await RefreshDetailsAsync(jobId);
     }
 
     private async Task DeleteParamAsync(JobParamDto param)
     {
         if (_jobId is null) return;
         await JobApi.DeleteJobParamAsync(param.Id);
-        await LoadJobAsync(_jobId.Value);
+        await RefreshDetailsAsync(_jobId.Value);
     }
 
     private async Task DeleteStepAsync(JobStepDto step)
     {
         if (_jobId is null) return;
         await JobApi.DeleteJobStepAsync(step.Id);
-        await LoadJobAsync(_jobId.Value);
+        await RefreshDetailsAsync(_jobId.Value);
     }
 
     private async Task ToggleStepEnabledAsync(JobStepDto step, bool enabled)
@@ -908,14 +967,14 @@
             enabled);
 
         await JobApi.UpdateJobStepAsync(step.Id, req);
-        await LoadJobAsync(_jobId.Value);
+        await RefreshDetailsAsync(_jobId.Value);
     }
 
     private async Task MoveStepAsync(JobStepDto step, int delta)
     {
         if (_jobId is null) return;
         await JobApi.ReorderJobStepAsync(step.Id, step.Ordinal + delta);
-        await LoadJobAsync(_jobId.Value);
+        await RefreshDetailsAsync(_jobId.Value);
     }
 
     private bool CanMove(JobStepDto step, int delta)
@@ -930,73 +989,3 @@
             : step.Type.ToString();
     private string GetParamDefault(JobParamDto param) => param.Default ?? "-";
 }
-
-<style>
-    .jobs-editor-hero,
-    .jobs-editor-panel {
-        border: 1px solid var(--mud-palette-divider);
-        border-radius: var(--netratel-radius-surface, 7px);
-        background: var(--mud-palette-surface);
-        box-shadow: none;
-    }
-
-    .jobs-editor-hero {
-        border-left: 2px solid var(--mud-palette-primary);
-    }
-
-    .jobs-editor-kicker {
-        color: var(--mud-palette-primary);
-        font-size: 0.74rem;
-        font-weight: 700;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-    }
-
-    .jobs-editor-kicker-muted {
-        opacity: 0.74;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-    }
-
-    .jobs-editor-layout {
-        min-height: 0;
-    }
-
-    .jobs-editor-container {
-        display: flex;
-        height: min(650px, calc(100dvh - 140px));
-        min-height: 0;
-        flex-direction: column;
-    }
-
-    .jobs-editor-sidebar {
-        width: 100%;
-    }
-
-    .jobs-editor-folder-preview {
-        background: var(--mud-palette-background-gray);
-        border-color: var(--mud-palette-divider);
-    }
-
-    .jobs-editor-tabs {
-        width: 100%;
-        min-height: 0;
-    }
-
-    .jobs-editor-tabs .mud-tabs-panels,
-    .jobs-editor-tabs .mud-tabpanel {
-        height: 100%;
-    }
-
-    @@media (max-width: 959px) {
-        .jobs-editor-container {
-            height: auto;
-            max-height: calc(100dvh - 96px);
-            overflow: auto;
-        }
-
-        .jobs-editor-hero {
-            margin-bottom: 0.75rem;
-        }
-    }
-</style>
