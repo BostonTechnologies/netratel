@@ -15,7 +15,7 @@ public sealed class OperatorWorkspacesResponsiveTests(ClientsManagementBrowserFi
     private readonly ScriptLibraryWorkspaceFixture _scripts = new();
 
     [Theory]
-    [InlineData(1366, 768, "light", 1d)]
+    [InlineData(1366, 768, "light", 1d, Traits = new[] { "Viewport", "DesktopLight" })]
     [InlineData(1366, 768, "dark", 1d)]
     [InlineData(390, 844, "dark", 1d)]
     [InlineData(640, 400, "light", 2d)] // 1280×800 physical pixels at 200% browser zoom equivalent.
@@ -62,7 +62,11 @@ public sealed class OperatorWorkspacesResponsiveTests(ClientsManagementBrowserFi
             await tree.GetByText("operations", new() { Exact = true }).WaitForAsync();
             var treeBounds = (await tree.BoundingBoxAsync())!;
             var rowBounds = (await tree.Locator(".mud-treeview-item-content").First.BoundingBoxAsync())!;
+            var dividerBounds = (await page.Locator(".script-library-tree-panel > .mud-divider").BoundingBoxAsync())!;
+            var filtersBounds = (await page.Locator(".script-library-tree-panel > div:first-child").BoundingBoxAsync())!;
             Assert.InRange(rowBounds.Y - treeBounds.Y, -1, 12);
+            Assert.InRange(dividerBounds.Height, 0, 2);
+            Assert.InRange(rowBounds.Y - filtersBounds.Y - filtersBounds.Height, 0, 28);
             await CaptureAsync(page, $"scripts-short-tree-{width}x{height}-{theme}-dpr{dpr}");
             await tree.GetByText("operations", new() { Exact = true }).ClickAsync();
             await page.GetByTestId("script-library-new").ClickAsync();
@@ -78,7 +82,7 @@ public sealed class OperatorWorkspacesResponsiveTests(ClientsManagementBrowserFi
             await Assertions.Expect(page.GetByTestId("new-script-create")).ToHaveCountAsync(0);
             await Assertions.Expect(tree.GetByText("Review script", new() { Exact = true })).ToBeVisibleAsync();
             await page.GetByTestId("script-library-editor").Locator(".monaco-editor").WaitForAsync(new() { Timeout = 90_000 });
-            await Assertions.Expect(page.GetByTestId("script-library-editor").Locator(".inputarea")).ToBeFocusedAsync();
+            await Assertions.Expect(page.GetByTestId("script-library-editor").GetByRole(AriaRole.Textbox, new() { Name = "Editor content", Exact = true })).ToBeFocusedAsync();
             Assert.Equal("/operations/windows/", _scripts.LastCreate!.FolderPath);
 
             await OpenAsync(page, "/tasks/new", width);
@@ -137,9 +141,45 @@ public sealed class OperatorWorkspacesResponsiveTests(ClientsManagementBrowserFi
             await CaptureAsync(page, $"workspace-failure-{width}x{height}-{theme}-dpr{dpr}", validateOverflow: false);
             var root = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.Combine(Directory.GetCurrentDirectory(), "TestResults", "playwright");
             var performance = await page.EvaluateAsync<JsonElement>("""
-                () => ({readyState: document.readyState, resources: performance.getEntriesByType('resource').slice(-60).map(e => ({
+                () => {
+                  const matchedRules = e => {
+                    const matches = [];
+                    const visit = (rules, source) => {
+                      for (const rule of rules) {
+                        if (rule.selectorText && rule.style && /(?:height|flex[\w-]*|margin[\w-]*|padding[\w-]*|display|justify-content|align-items)\s*:/.test(rule.style.cssText)) {
+                          try { if (e.matches(rule.selectorText)) matches.push({source, selector: rule.selectorText, styles: rule.style.cssText}); } catch {}
+                        }
+                        if (rule.cssRules) visit(rule.cssRules, source);
+                      }
+                    };
+                    for (const sheet of document.styleSheets) {
+                      try { visit(sheet.cssRules, sheet.href ? new URL(sheet.href).pathname : 'inline'); } catch {}
+                    }
+                    return matches.slice(-24);
+                  };
+                  const describe = e => {
+                    if (!e) return null;
+                    const r=e.getBoundingClientRect(), s=getComputedStyle(e);
+                    return {tag:e.tagName, classes:e.className, rect:{x:r.x,y:r.y,width:r.width,height:r.height},
+                      display:s.display, position:s.position, height:s.height, minHeight:s.minHeight, maxHeight:s.maxHeight,
+                      flex:s.flex, flexBasis:s.flexBasis, flexGrow:s.flexGrow, flexShrink:s.flexShrink, flexDirection:s.flexDirection,
+                      justifyContent:s.justifyContent, alignItems:s.alignItems,
+                      marginTop:s.marginTop, marginBottom:s.marginBottom, paddingTop:s.paddingTop, paddingBottom:s.paddingBottom,
+                      matchedRules:matchedRules(e)};
+                  };
+                  const panel=document.querySelector('.script-library-tree-panel');
+                  const row=panel?.querySelector('.mud-treeview-item-content');
+                  const ancestors=[];
+                  for(let e=row; e && ancestors.length<8; e=e.parentElement) ancestors.push(describe(e));
+                  return {readyState: document.readyState,
+                  activeElement: {tag: document.activeElement?.tagName, classes: document.activeElement?.className,
+                    role: document.activeElement?.getAttribute('role'), label: document.activeElement?.getAttribute('aria-label'),
+                    inScriptMonaco: !!document.activeElement?.closest('[data-testid="script-library-editor"] .monaco-editor')},
+                  scriptTree: {panel:describe(panel), children:panel ? Array.from(panel.children).map(describe) : [],
+                    rootTree:describe(panel?.querySelector('.mud-treeview')), firstRow:describe(row), ancestors},
+                  resources: performance.getEntriesByType('resource').slice(-60).map(e => ({
                   path: new URL(e.name).origin + new URL(e.name).pathname, duration: e.duration, responseEnd: e.responseEnd
-                }))})
+                }))}; }
                 """);
             await File.WriteAllTextAsync(Path.Combine(root, $"workspace-failure-{width}x{height}-{theme}-dpr{dpr}.json"),
                 JsonSerializer.Serialize(new { performance, pending = pending.ToArray(), failedRequests = failedRequests.ToArray(), errors,
