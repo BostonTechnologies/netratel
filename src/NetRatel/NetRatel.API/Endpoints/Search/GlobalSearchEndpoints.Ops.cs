@@ -157,9 +157,9 @@ public static partial class GlobalSearchEndpoints
             WHERE ({unrestricted} OR o."TenantId" = ANY({scope})) AND ({noTerm} OR
                 o."OccurrenceJson" -> 'PinnedRule' ->> 'Name' ILIKE {like} OR t."Name" ILIKE {like} OR o."ResourceKey" ILIKE {like} OR o."OccurrenceId"::text ILIKE {like} OR
                 a."FriendlyName" ILIKE {like} OR a."Name" ILIKE {like} OR
-                (CASE WHEN a."DeviceInfoJson" IS JSON OBJECT THEN a."DeviceInfoJson"::jsonb ELSE 'null'::jsonb END ->> 'hostName') ILIKE {like} OR
-                (CASE WHEN a."DeviceInfoJson" IS JSON OBJECT THEN a."DeviceInfoJson"::jsonb ELSE 'null'::jsonb END ->> 'reportedAddress') ILIKE {like} OR
-                (CASE WHEN a."DeviceInfoJson" IS JSON OBJECT THEN a."DeviceInfoJson"::jsonb ELSE 'null'::jsonb END ->> 'ipAddress') ILIKE {like} OR
+                (CASE WHEN jsonb_typeof((CASE WHEN a."DeviceInfoJson" IS JSON OBJECT THEN a."DeviceInfoJson"::jsonb ELSE 'null'::jsonb END) -> 'hostName') = 'string' THEN (CASE WHEN a."DeviceInfoJson" IS JSON OBJECT THEN a."DeviceInfoJson"::jsonb ELSE 'null'::jsonb END) ->> 'hostName' END) ILIKE {like} OR
+                (CASE WHEN jsonb_typeof((CASE WHEN a."DeviceInfoJson" IS JSON OBJECT THEN a."DeviceInfoJson"::jsonb ELSE 'null'::jsonb END) -> 'reportedAddress') = 'string' THEN (CASE WHEN a."DeviceInfoJson" IS JSON OBJECT THEN a."DeviceInfoJson"::jsonb ELSE 'null'::jsonb END) ->> 'reportedAddress' END) ILIKE {like} OR
+                (CASE WHEN jsonb_typeof((CASE WHEN a."DeviceInfoJson" IS JSON OBJECT THEN a."DeviceInfoJson"::jsonb ELSE 'null'::jsonb END) -> 'ipAddress') = 'string' THEN (CASE WHEN a."DeviceInfoJson" IS JSON OBJECT THEN a."DeviceInfoJson"::jsonb ELSE 'null'::jsonb END) ->> 'ipAddress' END) ILIKE {like} OR
                 o."OccurrenceJson" -> 'ClientIdentity' ->> 'DisplayName' ILIKE {like} OR o."OccurrenceJson" -> 'ClientIdentity' ->> 'Hostname' ILIKE {like} OR o."OccurrenceJson" -> 'ClientIdentity' ->> 'ReportedAddress' ILIKE {like} OR
                 EXISTS (SELECT 1 FROM unnest(a."Tags") tag WHERE tag ILIKE {like}) OR
                 CASE o."OccurrenceJson" -> 'PinnedRule' ->> 'Severity' WHEN '0' THEN 'Information' WHEN '1' THEN 'Warning' WHEN '2' THEN 'Critical' ELSE 'Unknown' END ILIKE {like} OR
@@ -173,9 +173,9 @@ public static partial class GlobalSearchEndpoints
         var unrestricted = ids is null; var scope = ids ?? [];
         return db.Database.SqlQuery<Guid>($"""
         SELECT a."Id" AS "Value" FROM "Agents" a WHERE ({unrestricted} OR a."TenantId" = ANY({scope})) AND (
-            (CASE WHEN a."DeviceInfoJson" IS JSON OBJECT THEN a."DeviceInfoJson"::jsonb ELSE 'null'::jsonb END ->> 'hostName') ILIKE {like} OR
-            (CASE WHEN a."DeviceInfoJson" IS JSON OBJECT THEN a."DeviceInfoJson"::jsonb ELSE 'null'::jsonb END ->> 'reportedAddress') ILIKE {like} OR
-            (CASE WHEN a."DeviceInfoJson" IS JSON OBJECT THEN a."DeviceInfoJson"::jsonb ELSE 'null'::jsonb END ->> 'ipAddress') ILIKE {like})
+            (CASE WHEN jsonb_typeof((CASE WHEN a."DeviceInfoJson" IS JSON OBJECT THEN a."DeviceInfoJson"::jsonb ELSE 'null'::jsonb END) -> 'hostName') = 'string' THEN (CASE WHEN a."DeviceInfoJson" IS JSON OBJECT THEN a."DeviceInfoJson"::jsonb ELSE 'null'::jsonb END) ->> 'hostName' END) ILIKE {like} OR
+            (CASE WHEN jsonb_typeof((CASE WHEN a."DeviceInfoJson" IS JSON OBJECT THEN a."DeviceInfoJson"::jsonb ELSE 'null'::jsonb END) -> 'reportedAddress') = 'string' THEN (CASE WHEN a."DeviceInfoJson" IS JSON OBJECT THEN a."DeviceInfoJson"::jsonb ELSE 'null'::jsonb END) ->> 'reportedAddress' END) ILIKE {like} OR
+            (CASE WHEN jsonb_typeof((CASE WHEN a."DeviceInfoJson" IS JSON OBJECT THEN a."DeviceInfoJson"::jsonb ELSE 'null'::jsonb END) -> 'ipAddress') = 'string' THEN (CASE WHEN a."DeviceInfoJson" IS JSON OBJECT THEN a."DeviceInfoJson"::jsonb ELSE 'null'::jsonb END) ->> 'ipAddress' END) ILIKE {like})
         """);
     }
 

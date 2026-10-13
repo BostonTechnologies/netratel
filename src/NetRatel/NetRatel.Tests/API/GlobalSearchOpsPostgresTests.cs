@@ -21,7 +21,7 @@ public sealed class GlobalSearchOpsPostgresTests(PostgreSqlPersistenceFixture po
         await db.Database.MigrateAsync();
         var now = DateTimeOffset.UtcNow; var agentA = Guid.NewGuid(); var agentB = Guid.NewGuid();
         db.Tenants.AddRange(new Tenant { Id = 7, Name = "Operations", CreatedAtUtc = now, UpdatedAtUtc = now }, new Tenant { Id = 8, Name = "Hidden tenant", CreatedAtUtc = now, UpdatedAtUtc = now });
-        db.Agents.AddRange(new Agent { Id = agentA, TenantId = 7, Name = "sql-host", FriendlyName = "Database host", Tags = ["critical-system"], DeviceInfoJson = """{"hostName":"db-01","ipAddress":"10.7.0.4","privateInventory":"PRIVATE-INVENTORY"}""", CreatedAtUtc = now },
+        db.Agents.AddRange(new Agent { Id = agentA, TenantId = 7, Name = "sql-host", FriendlyName = "Database host", Tags = ["critical-system"], DeviceInfoJson = """{"hostName":{"privateValue":"PRIVATE-HOST-OBJECT"},"ipAddress":"10.7.0.4","privateInventory":"PRIVATE-INVENTORY"}""", CreatedAtUtc = now },
             new Agent { Id = agentB, TenantId = 8, Name = "hidden-host", Tags = ["critical-system"], CreatedAtUtc = now });
         for (var index = 0; index < 64; index++)
         {
@@ -52,5 +52,7 @@ public sealed class GlobalSearchOpsPostgresTests(PostgreSqlPersistenceFixture po
         Assert.Empty(await GlobalSearchEndpoints.BuildAlertQuery(db, "PRIVATE-CREDENTIAL", [7]).Take(6).ToListAsync());
         Assert.Empty(await GlobalSearchEndpoints.BuildAlertQuery(db, "PRIVATE-INVENTORY", [7]).Take(6).ToListAsync());
         Assert.Empty(await GlobalSearchEndpoints.BuildInvestigationQuery(db, "PRIVATE-INVENTORY", [7], [7]).Take(6).ToListAsync());
+        Assert.Empty(await GlobalSearchEndpoints.BuildAlertQuery(db, "PRIVATE-HOST-OBJECT", [7]).Take(6).ToListAsync());
+        Assert.Empty(await GlobalSearchEndpoints.BuildInvestigationQuery(db, "PRIVATE-HOST-OBJECT", [7], [7]).Take(6).ToListAsync());
     }
 }
