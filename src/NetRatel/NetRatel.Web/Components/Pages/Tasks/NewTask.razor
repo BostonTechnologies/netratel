@@ -169,7 +169,7 @@
             </div>
             <MudExpansionPanels Elevation="0" Dense="true" Class="task-advanced">
                 <MudExpansionPanel Text="Advanced" Dense="true">
-                    <MudTextField @bind-Value="_requestId" Label="Request ID (optional)" Immediate="true" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_isSubmitting || _launchedRequestId is not null" />
+                    <MudTextField @bind-Value="RequestId" Label="Request ID (optional)" Immediate="true" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_isSubmitting || _launchedRequestId is not null" />
                     @if (_taskType == TaskKinds.ExecLibraryScript)
                     {
                         <MudSelect T="ShellExecutor" Label="Preferred shell" Variant="Variant.Outlined" Margin="Margin.Dense" Dense="true" @bind-Value="_libraryShellPreference" Disabled="_isSubmitting">
@@ -275,6 +275,16 @@
     }
 
     private string? _requestId;
+    private bool _requestIdIsGenerated;
+    private string? RequestId
+    {
+        get => _requestId;
+        set
+        {
+            _requestId = value;
+            _requestIdIsGenerated = false;
+        }
+    }
 
     private bool _isSubmitting;
     private bool _showValidation;
@@ -517,6 +527,7 @@
     {
         if (_isSubmitting || tenant?.Id == _selectedTenant?.Id) return;
         ClearLaunchFeedback();
+        InvalidateRecentScope();
 
         _clientsLoadCts?.Cancel();
         _clientLoadGeneration++;
@@ -546,6 +557,7 @@
     {
         if (_isSubmitting || _environment == environment) return;
         ClearLaunchFeedback();
+        InvalidateRecentScope();
 
         _environment = environment;
         _clientPage = 1;
@@ -849,6 +861,7 @@
             if (string.IsNullOrWhiteSpace(_requestId))
             {
                 _requestId = Guid.NewGuid().ToString("N");
+                _requestIdIsGenerated = true;
                 request.RequestId = _requestId;
             }
 
@@ -931,12 +944,27 @@
         _launchedRequestId = null;
         _launchedTask = null;
         _launchStatusUnavailable = false;
+        if (_requestIdIsGenerated)
+        {
+            _requestId = null;
+            _requestIdIsGenerated = false;
+        }
+    }
+
+    private void InvalidateRecentScope()
+    {
+        _recentLoadCts?.Cancel();
+        ++_recentLoadGeneration;
+        _recentTasks.Clear();
+        _recentUpdatedAt = null;
+        _recentUnavailable = false;
+        _isLoadingRecentTasks = false;
+        _recentScope = null;
     }
 
     private void PrepareAnotherTask()
     {
         ClearLaunchFeedback();
-        _requestId = null;
         RecomputeCanSubmit();
     }
 
