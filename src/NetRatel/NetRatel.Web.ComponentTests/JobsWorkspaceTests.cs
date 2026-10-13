@@ -87,11 +87,12 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
         {
             _dialogs.WaitForAssertion(() => _transport.RunCalls.Should().Be(1));
             var container = _dialogs.FindComponent<MudDialogContainer>();
-            var keyInterceptor = (KeyInterceptorService)Services.GetRequiredService<IKeyInterceptorService>();
-            // Exercise the same registered key interceptor entrypoint used by MudBlazor's JS,
-            // because Escape dismissal is not a native DOM keydown handler on the dialog div.
-            await _dialogs.InvokeAsync(() => keyInterceptor.OnKeyDown(
-                ((IMudDialogInstance)container.Instance).ElementId, new KeyboardEventArgs { Key = "Escape", Code = "Escape" }));
+            var keyInterceptor = Services.GetRequiredService<IKeyInterceptorService>();
+            // Dispatch through the registered public keyboard service: Escape dismissal
+            // is not a native DOM keydown handler on the dialog div.
+            await _dialogs.InvokeAsync(() => keyInterceptor.DispatchAsync(
+                ((IMudDialogInstance)container.Instance).ElementId, KeyEventKind.Down,
+                new KeyboardEventArgs { Key = "Escape", Code = "Escape" }));
             _dialogs.Find(".mud-overlay").Click();
             Button(_dialogs, "Cancel").Click();
             _dialogs.FindComponents<RunJobDialog>().Should().ContainSingle();
