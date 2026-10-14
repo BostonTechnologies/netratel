@@ -9,6 +9,7 @@ using NetRatel.Web.Services.Flows;
 using NetRatel.Web.Services;
 using Xunit;
 using MudBlazor;
+using MudBlazor.Extensions;
 using MudBlazor.Services;
 using Microsoft.AspNetCore.Components;
 
@@ -239,10 +240,22 @@ public sealed class FlowEditorTests : AsyncBunitContext
         await cut.InvokeAsync(() => navigation.NavigateTo("/monitoring?tenantId=17"));
         navigation.Uri.Should().Be(original);
         await _dialogs.WaitForAssertionAsync(() => _dialogs.FindAll("[data-testid=flow-keep-editing]").Count.Should().Be(1));
+        MudDialog InlineLeaveDialog() => cut.FindComponents<MudDialog>().Single(dialog =>
+            dialog.Instance.UserAttributes?.ContainsKey("data-testid") == true &&
+            Equals(dialog.Instance.UserAttributes["data-testid"], "flow-unsaved-dialog")).Instance;
+        var previousVisibleChanged = InlineLeaveDialog().VisibleChanged;
         await _dialogs.InvokeAsync(() => _dialogs.Find("[data-testid=flow-keep-editing]").ClickAsync(new()));
         cut.Find("[data-testid=flow-dirty]").TextContent.Should().Contain("Unsaved");
+        cut.Find("[data-testid=flow-name]").GetAttribute("value").Should().Be("Retained navigation");
         await cut.InvokeAsync(() => navigation.NavigateTo("/monitoring?tenantId=17"));
         await _dialogs.WaitForAssertionAsync(() => _dialogs.FindAll("[data-testid=flow-save-leave]").Count.Should().Be(1));
+        // Mud's detached close completion can report visibility after the successor opens.
+        await cut.InvokeAsync(() => previousVisibleChanged.InvokeAsync(false));
+        InlineLeaveDialog().GetState(dialog => dialog.Visible).Should().BeTrue();
+        cut.Find("[data-testid=flow-dirty]").TextContent.Should().Contain("Unsaved");
+        cut.Find("[data-testid=flow-name]").GetAttribute("value").Should().Be("Retained navigation");
+        navigation.Uri.Should().Be(original);
+        _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
         await _dialogs.InvokeAsync(() => _dialogs.Find("[data-testid=flow-save-leave]").ClickAsync(new()));
         navigation.Uri.Should().EndWith("/monitoring?tenantId=17");
         _api.SaveCalls.Should().Be(1); _api.PublishCalls.Should().Be(0);
