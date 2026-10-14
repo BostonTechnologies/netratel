@@ -8,6 +8,11 @@ using NetRatel.Mcp.Core;
 using NetRatel.Mcp.Core.Prompts;
 using NetRatel.Mcp.Tools;
 
+if (NetRatel.Setup.SetupCommand.IsSetupInvocation(args))
+    return await NetRatel.Setup.SetupCommand.RunAsync(args, ConfigurationSurface.StdioMcp);
+
+try
+{
 var builder = Host.CreateApplicationBuilder(args);
 
 // MCP stdio reserves stdout for protocol frames. The console logger is explicitly stderr-only.
@@ -15,12 +20,15 @@ builder.Logging.ClearProviders();
 builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
 
 var configurationPath = AgentClientConfigurationResolver.GetMcpConfigurationPath(Environment.GetEnvironmentVariable);
-var configuration = AgentClientConfigurationResolver.LoadIsolated(configurationPath);
-var configurationStore = new AgentClientConfigurationStore(configurationPath!);
+var effective = new NetRatelConfigurationService().Load(new(ConfigurationSurface.StdioMcp, configurationPath));
+var validation = effective.Validate();
+if (!validation.IsValid) throw new AgentClientValidationException("NetRatel MCP configuration is invalid. Run NetRatel.Mcp config validate or setup explicitly.");
+var configuration = effective.Configuration;
+var configurationStore = new AgentClientConfigurationStore(effective.ConfigurationPath, readOnly: effective.ConfigurationPath is null);
 var apiBaseUri = Uri.TryCreate(configuration.ApiBaseUrl ?? AgentClientConfiguration.DefaultApiBaseUrl, UriKind.Absolute, out var configuredApiBaseUri)
     ? configuredApiBaseUri
     : throw new AgentClientValidationException("NetRatel MCP API base URL must be absolute.");
-var mcpInstance = (Environment.GetEnvironmentVariable("NETRATEL_MCP_INSTANCE") ?? "dev").Trim().ToLowerInvariant();
+var mcpInstance = (configuration.Instance ?? "dev").Trim().ToLowerInvariant();
 if (mcpInstance is not "dev" and not "prod")
     throw new AgentClientValidationException("NETRATEL_MCP_INSTANCE must be dev or prod.");
 var hostContext = new NetRatelMcpHostContext(
@@ -44,3 +52,11 @@ builder.Services
     .WithPrompts<NetRatelPrompts>();
 
 await builder.Build().RunAsync();
+
+return 0;
+}
+catch (Exception)
+{
+    await Console.Error.WriteLineAsync("NetRatel MCP could not start. Run NetRatel.Mcp config validate or setup --help explicitly. Diagnostics never write protocol stdout.");
+    return 2;
+}

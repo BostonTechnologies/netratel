@@ -57,15 +57,73 @@ Compose `environment` values take precedence over `env_file`. The generated `web
 
 Export the generated owner-only secret material through the deployment's protected secret store with read access for API UID `1654` and MCP UID `10001`. Keep the generation consistent, mounted read-only and unwritable by unrelated users. Retain the owner-only setup originals for idempotent reuse. **Before `config` or `up`, update the generated overlay's bind-source paths**: API mounts must point to API-readable protected runtime exports, and MCP mounts to MCP-readable exports of the **same generation and bytes**. Keep their container destinations `/run/netratel-mcp-secrets/delegation.key` and `/run/netratel-mcp-secrets/outbound-m2m.secret` and `read_only: true` unchanged. For example, provide separate `0600` exports owned by UID `1654` and UID `10001`, respectively, or a deliberately restricted shared-group export. The delegation file is identical on both services; the newly provisioned outbound service secret is likewise identical at its API and MCP references. Apply the source-path change through the deployment's reviewed configuration mechanism. The generated bindings initially reference the setup-owned originals, so exporting copies alone does not make the stack use them. Do not make secrets world-readable to resolve a UID mismatch.
 
+**A fresh generated overlay is not ready to apply until runtime secret access is configured.** Its `0600` originals are owned by the setup user; API UID `1654` cannot read originals owned by tooling UID `10001`. Running setup as the operator's UID/GID, as shown above, lets that operator prepare separate runtime exports without root or changing the originals.
+
+For Linux bind mounts with matching host/container UID and GID numbers, an existing restricted group provides one concrete non-root option. The group must contain **only approved secret readers**, and the operator must belong to it. The example uses the operator's primary group; if that group is not restricted, select another existing approved group and use its numeric GID instead. Setup does not create groups or change group membership. Deployments with UID/GID remapping must use their secret store's supported identity mapping.
+
+```sh
+export NETRATEL_MCP_RUNTIME_SECRET_GID="$(id -g)"
+mkdir -m 700 mcp-runtime-secrets
+install -m 640 -g "$NETRATEL_MCP_RUNTIME_SECRET_GID" \
+  mcp-setup/secrets/delegation.key mcp-runtime-secrets/delegation.key
+install -m 640 -g "$NETRATEL_MCP_RUNTIME_SECRET_GID" \
+  mcp-setup/secrets/outbound-m2m.secret mcp-runtime-secrets/outbound-m2m.secret
+export NETRATEL_MCP_RUNTIME_SECRETS_DIRECTORY="$PWD/mcp-runtime-secrets"
+```
+
+These copies grant the selected group read access, never write access; the setup originals remain `0600`. For an existing identity or delegation generation, copy the explicitly selected existing files instead, preserving their exact bytes and references. Do not generate replacement material for this access step.
+
+Save the following reviewed deployment override as `mcp-runtime-secrets.yaml`. Its individual bind mounts replace the generated mounts at the same container destinations, and its numeric supplemental group lets both serving UIDs read the protected exports. Keep additional existing secret references mounted deliberately when using an outbound JSON identity.
+
+```yaml
+services:
+  api:
+    group_add:
+      - "${NETRATEL_MCP_RUNTIME_SECRET_GID:?set the approved numeric secret-reader GID}"
+    volumes:
+      - type: bind
+        source: ${NETRATEL_MCP_RUNTIME_SECRETS_DIRECTORY:?set the absolute runtime export directory}/delegation.key
+        target: /run/netratel-mcp-secrets/delegation.key
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NETRATEL_MCP_RUNTIME_SECRETS_DIRECTORY:?set the absolute runtime export directory}/outbound-m2m.secret
+        target: /run/netratel-mcp-secrets/outbound-m2m.secret
+        read_only: true
+        bind:
+          create_host_path: false
+  mcp-http:
+    group_add:
+      - "${NETRATEL_MCP_RUNTIME_SECRET_GID:?set the approved numeric secret-reader GID}"
+    volumes:
+      - type: bind
+        source: ${NETRATEL_MCP_RUNTIME_SECRETS_DIRECTORY:?set the absolute runtime export directory}/delegation.key
+        target: /run/netratel-mcp-secrets/delegation.key
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NETRATEL_MCP_RUNTIME_SECRETS_DIRECTORY:?set the absolute runtime export directory}/outbound-m2m.secret
+        target: /run/netratel-mcp-secrets/outbound-m2m.secret
+        read_only: true
+        bind:
+          create_host_path: false
+```
+
+This example covers fresh setup's API M2M identity. For a preserved JSON identity, omit the `outbound-m2m.secret` mounts and provide the MCP-readable JSON and any referenced secret exports at their reviewed destinations instead. Keep these deployment variables in the operator's environment or untracked deployment `.env` file. Recreate containers after replacing bind-mounted exports so they use the selected files and generation.
+
 Apply the setup overlay after the MCP overlay, together with the deployment's existing HTTPS and database overlays. Example for a bundled PostgreSQL/public HTTPS stack:
 
 ```sh
 docker compose --env-file .env \
   -f compose.images.yaml -f compose.public-https.yaml \
-  -f compose.mcp-http.yaml -f mcp-setup/compose.http-host.yaml config --quiet
+  -f compose.mcp-http.yaml -f mcp-setup/compose.http-host.yaml \
+  -f mcp-runtime-secrets.yaml config --quiet
 docker compose --env-file .env \
   -f compose.images.yaml -f compose.public-https.yaml \
-  -f compose.mcp-http.yaml -f mcp-setup/compose.http-host.yaml up -d --force-recreate
+  -f compose.mcp-http.yaml -f mcp-setup/compose.http-host.yaml \
+  -f mcp-runtime-secrets.yaml up -d --force-recreate
 ```
 
 Keep the reviewed immutable image digests and existing native gateway exposure. The generated overlay prepares settings only; it does not install certificates, alter ingress or claim live checks passed. Configure the selected public/trusted HTTPS API target consistently. Private Web-to-API/MCP HTTP does not satisfy MCP outbound HTTPS validation.
@@ -100,7 +158,7 @@ docker compose --env-file .env -f compose.setup.yaml run --rm --no-deps \
 
 Use `--target stdio` for an isolated stdio profile or `--target http-client` for a canonical-resource HttpMcp profile. An HTTP client secret belongs to its own namespace, never the host's outbound profile. The wizard's returned launch/client snippet uses a secret reference rather than printing a bearer. Third-party clients need their own supported secret-injection configuration.
 
-Run stdio protocol serving without a TTY, preserving the same mounted profile/secret paths. Native distributions use their actual `NetRatel.Mcp` apphost or `dotnet NetRatel.Mcp.dll`; the HTTP image uses `stdio` through its dispatcher. For raw Docker pipes, disable the image's HTTP health probe with `docker run -i --rm --no-healthcheck ... IMAGE stdio`, supplying the explicitly mounted profile and secret references. `cli config validate`, `cli doctor`, and corresponding explicit stdio tooling commands emit redacted diagnostic results; ordinary stdio initialization emits JSON-RPC only on stdout. See [CLI/stdio guidance](../integrations/CLI_AND_MCP.md) for native commands, browser approval and exit behavior.
+Run stdio protocol serving without a TTY, preserving the same mounted profile/secret paths. Native distributions use their actual `NetRatel.Mcp` apphost or `dotnet NetRatel.Mcp.dll`; the HTTP image uses `stdio` through its dispatcher. For raw Docker pipes, disable the image's HTTP health probe with `docker run -i --rm --no-healthcheck ... IMAGE stdio`, supplying the explicitly mounted profile and secret references. `cli config validate`, `cli doctor`, and corresponding explicit stdio tooling commands emit redacted diagnostic results. Stdio doctor performs bounded initialize/catalog/authentication-status validation when the local stdio executable is installed, using only the selected effective configuration; unavailable or unexecuted protocol checks remain pending with exit `2`. Ordinary stdio initialization emits JSON-RPC only on stdout. See [CLI/stdio guidance](../integrations/CLI_AND_MCP.md) for native commands, browser approval and exit behavior.
 
 ## Rotation
 

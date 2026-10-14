@@ -53,6 +53,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "NetRatel.ClientArtifactCras
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "NetRatel.Pairing.NativeRunner", "src\NetRatel\NetRatel.Pairing.NativeRunner\NetRatel.Pairing.NativeRunner.csproj", "{B3BA45A6-6DCC-5B20-BCC9-07472E3BBAEE}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NetRatel.Setup", "src\NetRatel\NetRatel.Setup\NetRatel.Setup.csproj", "{C7B24883-2637-4498-AD9A-3E466353870E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -327,6 +329,18 @@ Global
 		{B3BA45A6-6DCC-5B20-BCC9-07472E3BBAEE}.Release|x64.Build.0 = Release|Any CPU
 		{B3BA45A6-6DCC-5B20-BCC9-07472E3BBAEE}.Release|x86.ActiveCfg = Release|Any CPU
 		{B3BA45A6-6DCC-5B20-BCC9-07472E3BBAEE}.Release|x86.Build.0 = Release|Any CPU
+		{C7B24883-2637-4498-AD9A-3E466353870E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C7B24883-2637-4498-AD9A-3E466353870E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C7B24883-2637-4498-AD9A-3E466353870E}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{C7B24883-2637-4498-AD9A-3E466353870E}.Debug|x64.Build.0 = Debug|Any CPU
+		{C7B24883-2637-4498-AD9A-3E466353870E}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{C7B24883-2637-4498-AD9A-3E466353870E}.Debug|x86.Build.0 = Debug|Any CPU
+		{C7B24883-2637-4498-AD9A-3E466353870E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C7B24883-2637-4498-AD9A-3E466353870E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C7B24883-2637-4498-AD9A-3E466353870E}.Release|x64.ActiveCfg = Release|Any CPU
+		{C7B24883-2637-4498-AD9A-3E466353870E}.Release|x64.Build.0 = Release|Any CPU
+		{C7B24883-2637-4498-AD9A-3E466353870E}.Release|x86.ActiveCfg = Release|Any CPU
+		{C7B24883-2637-4498-AD9A-3E466353870E}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -336,6 +350,7 @@ Global
 		{BDAA438D-2FBC-07AF-F2C4-BB2EA199DBEF} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{FFC3B172-17ED-4A9A-A77A-80CEB7781D51} = {BDAA438D-2FBC-07AF-F2C4-BB2EA199DBEF}
 		{B3BA45A6-6DCC-5B20-BCC9-07472E3BBAEE} = {BDAA438D-2FBC-07AF-F2C4-BB2EA199DBEF}
+		{C7B24883-2637-4498-AD9A-3E466353870E} = {BDAA438D-2FBC-07AF-F2C4-BB2EA199DBEF}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {B74349E3-6740-4DB3-B30C-8979D0411979}
