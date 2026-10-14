@@ -19,6 +19,7 @@ using Xunit;
 
 namespace NetRatel.Tests.Client;
 
+[Collection(nameof(LegacyPowerShellExecutionCollection))]
 public sealed class ClientUpdateVersioningTests
 {
     [Theory]
