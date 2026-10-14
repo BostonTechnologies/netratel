@@ -99,7 +99,7 @@ or unauthorized connector dependencies. An unverified RatelDesk receiver
 returns `receiver-idempotency-unverified` and preserves the draft. Flow write
 bodies are bounded before JSON binding, including chunked streams. There is
 no browser/API execute route. The monitoring ingress and backend worker own
-durable execution. See [Flows](FLOWS.md) for schema bounds, authority,
+durable execution. See [Flows](../operations/FLOWS.md) for schema bounds, authority,
 receipts/recovery, VeloxDev version and the receiver dependency.
 
 ## Release verification
@@ -107,6 +107,6 @@ receipts/recovery, VeloxDev version and the receiver dependency.
 The protected release and PR workflows validate the generated surface with
 the normal build/test matrix, Scalar Web routing, local-first browser journey,
 and source/release-image OIDC Compose smoke. For runnable deployment and
-credential examples, use [first-run setup](FIRST_RUN_SETUP.md),
-[configuration](CONFIGURATION.md), [self-hosting](SELF_HOSTING.md), and
-[CLI and MCP](CLI_AND_MCP.md).
+credential examples, use [first-run setup](../deployment/FIRST_RUN_SETUP.md),
+[configuration](../deployment/CONFIGURATION.md), [self-hosting](../deployment/SELF_HOSTING.md), and
+[CLI and MCP](../integrations/CLI_AND_MCP.md).

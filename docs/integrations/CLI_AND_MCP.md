@@ -6,8 +6,7 @@ least-privilege credentials appropriate to their caller.
 
 The stdio MCP server is intended for a local MCP host process. HTTP MCP is an
 optional separately deployed service; it is not required for normal Web/API or
-native Client operation. Do not expose either interface publicly until its OIDC
-resource, allowed operations, and network policy have been configured.
+native Client operation. Configure its explicit authentication mode, canonical resource, allowed operations and network policy before exposing HTTP MCP. See the [HTTP MCP operator guide](../mcp-http/README.md) and [Web/YARP single-origin routing](../deployment/web-gateway.md).
 
 HTTP MCP requires HTTPS OIDC discovery metadata by default. The
 `NetRatel:Mcp:Http:RequireHttpsMetadata=false` setting is accepted only by a
@@ -19,6 +18,36 @@ from its matching prerelease, verify `SHA256SUMS` before extraction, and keep
 the archive together with its SBOM and provenance record. A source checkout is
 appropriate for development rather than a substitute for a promoted release
 bundle.
+
+## Explicit setup and profiles
+
+Run `netratel setup` or `netratel auth login` to connect a client. Setup is explicit; normal commands and MCP startup never open a wizard. Choose the transport and an isolated named profile:
+
+```sh
+netratel setup --transport cli --profile operator
+netratel setup --transport stdio --profile mcp-operator
+netratel setup --transport http --profile http-operator
+```
+
+Enter the HTTPS instance URL, review the selected instance, then explicitly open/copy the trusted browser approval link. Enter the short code in the signed-in account UX, approve the actual tenants/permissions/expiry, return to the terminal, and review the destination/profile/secret reference before saving. Browser launch is an explicit action, and the link works from a separate machine for SSH/container sessions. The protocol is NetRatel integration-credential pairing; it does not issue an external OAuth/OIDC token. Existing-credential setup remains available for older instances without pairing.
+
+CLI and stdio use API-purpose credentials. HTTP MCP client setup uses a separate HttpMcp-purpose credential and canonical `/mcp` resource; it cannot configure the host's outbound service identity. Deleting a local profile does not revoke a server credential. Revoke/rotate from `/account/integration-credentials`.
+
+The Termina setup UI supports keyboard navigation, visible focus, PageUp/PageDown scrolling for long forms and reviews, and explicit Back/Next/Cancel, retains fields after validation errors and marks environment-managed settings read-only. It masks manual secret entry and emits no secrets in generated configuration examples. Cancelling before save preserves the prior profile. Replacing an existing profile requires deliberate confirmation. On a non-TTY, interactive setup exits with code `2` and help on stderr; cancellation exits `130`, other setup failures `3`. Normal stdio serving uses pipes without a TTY and writes JSON-RPC only to stdout.
+
+The noninteractive existing-credential equivalent reads a protected file:
+
+```sh
+netratel setup --non-interactive --transport cli --profile operator \
+  --instance https://netratel.example.invalid \
+  --credential-file /run/secrets/netratel-api-credential
+```
+
+Use `--replace` only after reviewing replacement of the selected profile. Do not pass a raw credential as a command argument. `--config PATH` selects an explicit destination instead of the standard isolated profile path. Exported environment/container configuration needs an explicit apply/recreate step; setup cannot edit a parent shell or running container.
+
+`netratel config validate` emits redacted structured effective/source information with exit `0` for valid local configuration or `2` for invalid configuration. `netratel doctor` performs bounded read-only checks and reports unavailable/unauthorized stages separately. `netratel profile list` lists local profiles; `netratel profile select NAME` prints an explicit config invocation or dedicated selector rather than silently switching every consumer. See [shared configuration](configuration.md) for keys, precedence, origin/purpose binding and atomic persistence.
+
+The stdio distribution and HTTP tooling image provide explicit `setup`, `config validate`, `doctor` and profile commands through their supported executable entry points. The stdio archive ships the `NetRatel.Mcp` apphost and `NetRatel.Mcp.dll`; use the extracted apphost or `dotnet /absolute/path/NetRatel.Mcp.dll`. Setup emits that actual executable when found. A standalone CLI installation without the stdio archive reports that the stdio executable must be installed before its launch snippet can work. The HTTP tooling image uses its `stdio` dispatcher instead. See [HTTP MCP setup](../mcp-http/setup.md) for native/container examples and the separate administrator host flow.
 
 ## Integration credentials
 
@@ -327,20 +356,18 @@ administrative operations follow the same review / `--confirm` boundary.
 
 ## stdio MCP configuration
 
-The stdio MCP server requires an explicit absolute configuration-file path in
-`NETRATEL_MCP_CONFIG`; it never reads ambient CLI or AgentClient credential
-variables. The legacy mixed-case `NetRatel_MCP_CONFIG` name is a
+The stdio MCP server loads an explicitly selected isolated profile/file or complete dedicated `NetRatel:Mcp:Outbound` environment configuration. `NETRATEL_MCP_CONFIG` selects the compatibility absolute configuration-file path; it never reads ambient CLI or AgentClient credential variables. The legacy mixed-case `NetRatel_MCP_CONFIG` name is a
 compatibility-only alias. Keep the JSON configuration file private and provide
 only least-privilege credentials for its target API.
 
 The stdio server remains isolated from CLI and AgentClient environment
-credentials. To use an integration credential, place it only in that explicit
-owner-readable file; omit every `oidc*` field:
+credentials. To use an integration credential, select its API-purpose protected reference in that explicit owner-readable file or dedicated MCP environment; omit every `oidc*` field:
 
 ```json
 {
   "apiBaseUrl": "https://netratel.example.invalid",
-  "integrationCredential": "read-from-your-secret-store"
+  "authenticationMode": "IntegrationCredential",
+  "integrationCredentialFile": "/run/secrets/netratel-api-credential"
 }
 ```
 
@@ -359,7 +386,7 @@ operations above; use the API-purpose credential configuration for those:
   "apiBaseUrl": "https://netratel.example.invalid",
   "apiM2MTokenUrl": "https://netratel.example.invalid/connect/token",
   "apiM2MClientId": "replace-with-a-least-privilege-client-id",
-  "apiM2MClientSecret": "supply-through-your-secret-mechanism",
+  "apiM2MClientSecretFile": "/run/secrets/netratel-mcp-service",
   "apiM2MScope": "netratel.api"
 }
 ```
@@ -379,3 +406,5 @@ compatibility surface; the process does not infer this choice from the API URL.
 The stdio protocol is written only to standard output; operational diagnostics
 are written to standard error. Configure the MCP host to supply the file path
 and to restart the process when credentials or the target configuration change.
+
+For every canonical setting and alias, use [shared tooling configuration](configuration.md) and [HTTP MCP configuration](../mcp-http/configuration.md). [Web/YARP routing](../deployment/web-gateway.md) explains the single public origin, API allowlist and optional MCP route.

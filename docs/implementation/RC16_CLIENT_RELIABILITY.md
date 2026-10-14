@@ -96,7 +96,7 @@ Source evidence retained for this candidate:
   REST fallback with synthetic responders. The original RC.16 short probes
   established route precedence. The generic regression has since been extended
   with a 195-second framed duplex A/B/direct control; see the
-  [supported streaming profile](CLIENT.md#sustained-traefik-gateway-streams).
+  [supported streaming profile](../client/CLIENT.md#sustained-traefik-gateway-streams).
   Neither fixture establishes the reported production deployment's version or
   the cause of its disconnections.
 - `NetRatel.API/Program.cs` separates REST HTTP/1 on port 9222 from gateway h2c

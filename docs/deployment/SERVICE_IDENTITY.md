@@ -1,6 +1,6 @@
 # Service identities
 
-NetRatel ↔ RatelDesk setup uses [pairing codes](integrations/rateldesk-pairing.md).
+NetRatel ↔ RatelDesk setup uses [pairing codes](../integrations/rateldesk-pairing.md).
 The setup credential is separate from tenant business principals. Final Save
 creates narrowly scoped business credentials for the selected real tenant and
 capabilities. Current connection authority is checked at token issuance and

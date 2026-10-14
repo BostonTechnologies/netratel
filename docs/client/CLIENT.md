@@ -197,7 +197,7 @@ therefore do not establish that a gateway stream can remain connected.
 
 For an unbounded gateway stream, use a dedicated gateway entrypoint with
 `readTimeout: 0s`, as shown in
-[`docs/deployment/traefik-gateway-static.yaml`](deployment/traefik-gateway-static.yaml).
+[`docs/deployment/traefik-gateway-static.yaml`](../deployment/traefik-gateway-static.yaml).
 This changes only the conflicting body-read deadline. Merge that fragment into
 the operator-owned **static** configuration and restart Traefik; retain the
 deployment's other entrypoints, timeouts, trusted forwarded headers, TLS,

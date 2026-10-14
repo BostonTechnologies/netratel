@@ -26,7 +26,7 @@ Open `/flows`, choose the same tenant, and create or edit a flow. Add an **Actio
 - Slack notification to the service team channel.
 - RatelDesk create incident using the existing incident connector.
 
-The mapping node supplies the title and description to every child. Each action has its own delivery outcome and receipt, so a failed channel does not hide a successful incident. Validate, publish, and select that immutable published version in the monitoring rule. See [flows](FLOWS.md) for authority, retries and run history, and [monitoring](MONITORING.md#alert-if-offline) for grouped outages.
+The mapping node supplies the title and description to every child. Each action has its own delivery outcome and receipt, so a failed channel does not hide a successful incident. Validate, publish, and select that immutable published version in the monitoring rule. See [flows](../operations/FLOWS.md) for authority, retries and run history, and [monitoring](../operations/MONITORING.md#alert-if-offline) for grouped outages.
 
 ## Delivery behavior
 

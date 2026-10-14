@@ -23,5 +23,5 @@ archives require the .NET 10 runtime.
 Windows/macOS CLI or stdio MCP archives, other native Client runtime IDs,
 multi-architecture server images, distributed topologies, and production
 certification are not advertised for rc.1. See [self-hosting](SELF_HOSTING.md),
-[CLI and MCP](CLI_AND_MCP.md), and [release engineering](RELEASES.md) for the
+[CLI and MCP](../integrations/CLI_AND_MCP.md), and [release engineering](RELEASES.md) for the
 tested deployment and release boundaries.

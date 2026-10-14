@@ -2,7 +2,7 @@
 
 NetRatel uses PostgreSQL for application and identity data. A new Local or
 Hybrid installation opens the proof-gated setup wizard; OIDC is optional.
-Finish the [image-bundle quick start](../README.md#get-started) or the
+Finish the [image-bundle quick start](../../README.md#self-hosting) or the
 [source recipe](SELF_HOSTING.md#source-build-for-development) first. The
 `migrations` container must exit successfully before API and Web can start.
 

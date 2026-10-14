@@ -8,7 +8,7 @@ not enable delivery. Release interoperability evidence is recorded separately.
 
 ## Setup
 
-Use [System connections pairing](integrations/rateldesk-pairing.md) at
+Use [System connections pairing](rateldesk-pairing.md) at
 `/account/integration-credentials`. Pair either way, select the exact tenant,
 organization and customer, enable **Create incidents**, and select **Save**.
 Save creates or adopts the real tenant-owned Flow connector and validates its

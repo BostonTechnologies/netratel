@@ -42,5 +42,5 @@ digests and verifies Local and OIDC continuity against candidate images. The
 release workflow also builds and verifies the Compose bundle, CLI and stdio
 MCP archives, native Client archives, checksums, SBOMs, and image labels.
 The owner must use the accepted merged SHA, matching tag and artifact receipt,
-then verify public downloads after publication. See [release engineering](RELEASES.md),
-[self-hosting](SELF_HOSTING.md), and [the rc.5 historical notes](RELEASE_NOTES_0.1.0-rc.5.md).
+then verify public downloads after publication. See [release engineering](../deployment/RELEASES.md),
+[self-hosting](../deployment/SELF_HOSTING.md), and [the rc.5 historical notes](RELEASE_NOTES_0.1.0-rc.5.md).

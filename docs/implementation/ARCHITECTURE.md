@@ -27,7 +27,7 @@ CLI / stdio MCP ──separate least-privilege credentials──> API
 HTTP MCP ──separate OAuth/resource policy───────────────> API
 ```
 
-See [configuration](CONFIGURATION.md) for deployment inputs and
-[self-hosting](SELF_HOSTING.md) for the supported evaluation stack. The
+See [configuration](../deployment/CONFIGURATION.md) for deployment inputs and
+[self-hosting](../deployment/SELF_HOSTING.md) for the supported evaluation stack. The
 operation and credential boundary is rendered from the running API at
-[`/api/docs/`](API_REFERENCE.md).
+[`/api/docs/`](../contracts/API_REFERENCE.md).

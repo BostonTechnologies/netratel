@@ -5,7 +5,7 @@ variables, a deployment secret mechanism, or mounted configuration files for
 instance-specific values. The repository examples use reserved placeholders and
 are not a usable production configuration.
 
-The running [API reference](API_REFERENCE.md) identifies the credential scheme
+The running [API reference](../contracts/API_REFERENCE.md) identifies the credential scheme
 accepted by each operation; it is a contract viewer, not a secret store.
 
 ## Native Client configuration precedence
@@ -77,7 +77,7 @@ protected state.
 
 ## RatelDesk connections
 
-Use [RatelDesk pairing](integrations/rateldesk-pairing.md) to generate a code,
+Use [RatelDesk pairing](../integrations/rateldesk-pairing.md) to generate a code,
 pair the systems, and save the tenant mapping and selected capabilities.
 Pairing credentials stay protected on the server and are separate from
 personal API/MCP credentials and native-agent keys. Upgrade both products
@@ -342,3 +342,7 @@ the UTC interpretation before creation.
 `/health/live` and `/health/ready` are protected by the `HealthRead` policy.
 Use a deployment identity with that policy for authenticated monitoring rather
 than exposing an unauthenticated production probe.
+
+## Web gateway and operator tooling
+
+[Web/YARP routing](web-gateway.md) documents the selective API allowlist, generated private Compose destinations, explicit overrides and optional same-origin MCP. [Shared CLI/stdio configuration](../integrations/configuration.md) covers isolated profiles, deterministic precedence and secret references. The [HTTP MCP reference](../mcp-http/configuration.md) contains the complete ingress/outbound/delegation Docker mapping; its [setup guide](../mcp-http/setup.md) distinguishes browser client approval from administrator deployment setup.

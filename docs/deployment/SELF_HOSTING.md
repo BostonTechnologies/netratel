@@ -136,7 +136,7 @@ docker compose --env-file .env -f compose.images.yaml -f compose.public-https.ya
 Open `NETRATEL_PUBLIC_ORIGIN`. For external PostgreSQL, include
 `-f compose.external-postgres.yaml` before `-f compose.public-https.yaml`.
 Managed deployments can use equivalent settings with their own HTTPS proxy.
-For Traefik, apply the [sustained native gateway profile](CLIENT.md#sustained-traefik-gateway-streams)
+For Traefik, apply the [sustained native gateway profile](../client/CLIENT.md#sustained-traefik-gateway-streams)
 on a dedicated gateway entrypoint and publish its actual HTTPS Gateway URL.
 Its request-body timeout is static configuration shared by every router on a
 listener; an additional hostname or router label does not isolate it.
@@ -144,7 +144,7 @@ Use their API **container console** for `cat /var/netratel/bootstrap/setup-proof
 do not run Docker commands inside the container. Mount bootstrap state,
 Data Protection keys, application storage, and the signing key durably with
 UID/GID 1654 access. Keep the configured public HTTP MCP URL distinct from
-the internal API URL; see [local HTTP MCP mode](mcp-http/local-credential-mode.md).
+the internal API URL; see [local HTTP MCP mode](../mcp-http/local-credential-mode.md).
 
 ## 6. Restart, upgrade, and troubleshoot
 
@@ -169,9 +169,9 @@ requires restoring one matching backup set; it must not create a new owner.
 ## Alternatives and references
 
 - [Optional OIDC and Hybrid configuration](CONFIGURATION.md)
-- [CLI and MCP](CLI_AND_MCP.md)
+- [CLI and MCP](../integrations/CLI_AND_MCP.md)
 - [Backup, recovery, and first-run commands](FIRST_RUN_SETUP.md)
-- [Source build for development](DEVELOPMENT.md)
+- [Source build for development](../implementation/DEVELOPMENT.md)
 
 ### Source build for development
 

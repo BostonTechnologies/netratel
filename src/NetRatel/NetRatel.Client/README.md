@@ -5,7 +5,7 @@ presence, command, file, terminal, telemetry, and remote-support transports.
 It does not generate or consume SpacetimeDB bindings.
 
 For installation, update, and rollout procedures, see the
-[client documentation](../../../docs/CLIENT.md).
+[client documentation](../../../docs/client/CLIENT.md).
 
 PowerShell commands and scripts use an installed external interpreter. Explicit
 `Pwsh` and `WindowsPowerShell` selections require that engine; PowerShell `Auto`

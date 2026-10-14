@@ -24,16 +24,20 @@ tools/ci/test-public-disclosure.sh
 ```
 
 The disposable generic-OIDC Compose rehearsal is described in
-[self-hosting](SELF_HOSTING.md). It uses synthetic data and is distinct from a
+[self-hosting](../deployment/SELF_HOSTING.md). It uses synthetic data and is distinct from a
 deployment smoke test. Do not point it at a production database, OIDC tenant,
 or managed Client.
 
 CI builds final Client packages on matching Linux, Windows, and macOS runners,
 and runs source- and release-image Compose rehearsals. See
-[release engineering](RELEASES.md) for its artifact and provenance checks.
+[release engineering](../deployment/RELEASES.md) for its artifact and provenance checks.
 
 Windows/WSL/public-HTTPS Client enrollment and lifecycle journeys through OS
 services require explicit owner approval before adding or reinstating CI. Keep
 ordinary build, packaging, checksum, release-source/version, focused offline
 unit/security/contract tests and established server checks. Owner-run manual
 acceptance covers installation, repair, enrollment and online service behavior.
+
+## Operator setup UI dependency
+
+Explicit operator setup uses Termina `0.17.0-beta.6` with its matching R3 page/render model on .NET 10. The package is Apache-2.0 licensed; retain its dependency/license provenance and generated runtime SBOM/notices in CLI/stdio and HTTP tooling distributions. The compatibility spike restored and built the matching package/API before broader implementation. Headless configuration, credential pairing and persistence remain shared services; normal stdio serving emits JSON-RPC only and does not invoke the UI.

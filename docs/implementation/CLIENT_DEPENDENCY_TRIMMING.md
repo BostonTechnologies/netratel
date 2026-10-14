@@ -100,14 +100,14 @@ normalizing only a separate validation copy.
 for A/B on the same Windows image and SDK as the measurement. It verified the
 original archive hashes, manifest sources, full file inventories, SBOM/checksums,
 candidate content and fresh/cached `--version` probes, without restore/publish.
-The [receipts](evidence/client-dependency-trimming/windows-archive-verification.json)
+The [receipts](../evidence/client-dependency-trimming/windows-archive-verification.json)
 retain original and normalized index hashes and original archive/metrics identity.
 The [failed verification](https://github.com/BostonTechnologies/netratel/actions/runs/37744824744)
 and original failed metrics remain visible.
 
-Committed [measurements](evidence/client-dependency-trimming/measurements.json)
+Committed [measurements](../evidence/client-dependency-trimming/measurements.json)
 retain exact stage outcomes, sizes, archive hashes, SDK/image identities and
-inventory hashes. The [package inventories](evidence/client-dependency-trimming/package-inventories.json)
+inventory hashes. The [package inventories](../evidence/client-dependency-trimming/package-inventories.json)
 retain exact restored/final package versions and distribution files per RID.
 Full logs, evaluated properties, project assets, final graphs and prebundle
 inventories are in `client-measurement-evidence-<RID>`; native archives, SBOMs and

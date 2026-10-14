@@ -62,7 +62,7 @@ if find src/NetRatel -type f \( -name Dockerfile -o -name 'Dockerfile.*' -o -nam
 fi
 
 active_paths=(.github docker docs scripts tools NetRatel.sln .gitignore)
-stale_pattern='NetRatel\.(API|Web|Mcp\.Http|Client)/Dockerfile|docker/client/Dockerfile($|[^.])|docker/(traefik|deployment-control-plane|remote-support-turn-generic)|NetRatel\.Client/tools/'
+stale_pattern='NetRatel\.(API|Web|Mcp\.Http|Client)/Dockerfile|docker/client/Dockerfile($|[^.])|docker/(traefik|deployment-control-plane|remote-support-turn-generic)|(^|[^[:alnum:]_./])NetRatel\.Client/tools/'
 if rg -n \
   --glob '!docs/repository-layout-ci-migration.md' \
   --glob '!tools/ci/validate-layout.sh' \
@@ -71,10 +71,17 @@ if rg -n \
   fail 'active build or deployment collateral still refers to a pre-migration path'
 fi
 
-while IFS= read -r project; do
-  [[ -z "$project" ]] && continue
-  [[ -f "$project" ]] || fail "solution references missing project: $project"
-done < <(dotnet sln NetRatel.sln list | tail -n +3)
+if solution_project_list=$(dotnet sln NetRatel.sln list); then
+  while IFS= read -r project; do
+    [[ -z "$project" ]] && continue
+    [[ -f "$project" ]] || fail "solution references missing project: $project"
+  done < <(printf '%s\n' "$solution_project_list" | tail -n +3)
+else
+  fail 'could not read solution project list'
+fi
+
+python3 tools/ci/check-documentation.py || fail 'documentation placement or local Markdown links failed'
+python3 tools/ci/test-documentation.py || fail 'documentation source/archive integrity fixtures failed'
 
 if [[ "$failed" == true ]]; then
   exit 1

@@ -50,6 +50,8 @@ jobs:
             sudo apt-get install -y --no-install-recommends ripgrep
           fi
           rg --version
+      - name: Validate source and documentation layout
+        run: tools/ci/validate-layout.sh
       - name: Validate PostgreSQL-only configuration
         run: bash tools/ci/check-postgresql-only.sh
       - name: Validate release scripts and workflow contracts

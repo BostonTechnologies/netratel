@@ -66,7 +66,7 @@ is still unknown. Do not add subordinate `Cancelled`/`Internal` messages to
 the primary incident count or infer downtime from the disconnect-only CSV.
 
 RC.19 already contains the Traefik v3.7.13 A/B proof and reference setting.
-[Its evidence](RC19_INSTALLER_GATEWAY_RELIABILITY.md) distinguishes the default
+[Its evidence](../implementation/RC19_INSTALLER_GATEWAY_RELIABILITY.md) distinguishes the default
 60-second body-read deadline from a corrected/direct approximately 195-second
 continuous stream. This PR's product lifecycle changes and further functional
 tests must be assessed separately from that existing proof.
@@ -123,7 +123,7 @@ Change the winning configuration source; a lower-precedence file is insufficient
 Inspect a finite `writeTimeout` independently before claiming sustained streaming.
 Leave other limits intact unless a separate reproduced conflict justifies a change.
 
-The [reference fragment](deployment/traefik-gateway-static.yaml) reserves a
+The [reference fragment](../deployment/traefik-gateway-static.yaml) reserves a
 dedicated listener on `:8443`. Its name/port are examples, not the running
 deployment. If the listener also serves Web/REST, use the documented
 [dedicated-listener design](CLIENT.md#sustained-traefik-gateway-streams) and
@@ -240,7 +240,7 @@ exhausted bounded identity storage; missing identities are counted separately.
 
 `global.json` requires SDK **10.0.401** with roll-forward disabled and
 Microsoft.Testing.Platform. The authoritative invocation and receipt verifier
-are in [.github/workflows/public-pr-validation.yml](../.github/workflows/public-pr-validation.yml).
+are in [.github/workflows/public-pr-validation.yml](../../.github/workflows/public-pr-validation.yml).
 Under the 7 October 2026 owner policy, required PR/main validation runs source
 checks, one build and three fast regression assemblies. Release builds run on
 GitHub-hosted Actions; these commands document their selection:
@@ -270,7 +270,7 @@ terminal/file renewal continuity. `--native-only` is a diagnostic rerun option,
 not a replacement for a requested full transport diagnostic.
 
 Request expensive functional checks through
-[integration-validation.yml](../.github/workflows/integration-validation.yml),
+[integration-validation.yml](../../.github/workflows/integration-validation.yml),
 which runs only the selected suite when dispatched. Browser/Chromium, complete
 product-pair service links, native client execution/install/update, sustained
 gateway tests and deployment/upgrade checks are manual. Platform diagnostics

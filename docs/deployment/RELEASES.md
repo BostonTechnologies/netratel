@@ -6,8 +6,8 @@ is `release/release-manifest.json`; CI adds the derived version to the bundled
 copy.
 
 Review the GitHub release notes for each candidate before publishing its draft.
-The [rc.5 notes](RELEASE_NOTES_0.1.0-rc.5.md) and
-[rc.6 notes](RELEASE_NOTES_0.1.0-rc.6.md) are historical; neither sets the
+The [rc.5 notes](../release-notes/RELEASE_NOTES_0.1.0-rc.5.md) and
+[rc.6 notes](../release-notes/RELEASE_NOTES_0.1.0-rc.6.md) are historical; neither sets the
 product version. Each candidate is source preparation until the owner merges,
 tags, publishes the release, and verifies the public downloads.
 
@@ -132,7 +132,7 @@ selection applies to tag-build validation, with real CLI/stdio/native packaging
 and integrity checks retained. Packaging/publication costs are measured
 separately; the under-20-minute acceptance applies to required PR/main runs.
 
-Use [integration-validation.yml](../.github/workflows/integration-validation.yml)
+Use [integration-validation.yml](../../.github/workflows/integration-validation.yml)
 only through explicit `workflow_dispatch` to select one functional suite at an
 actual source ref, compatible peer and artifact identity. There is no implicit
 PR/main/tag/publication dependency or nightly schedule. Browser/Chromium,

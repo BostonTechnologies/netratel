@@ -39,6 +39,6 @@ SBOMs and build provenance attestations. Verify the exact release `SHA256SUMS`
 before extraction and use only the immutable image digests in the promoted
 Compose bundle.
 
-See `docs/SELF_HOSTING.md` for fresh and established-OIDC operator journeys,
-`docs/CLI_AND_MCP.md` for credential purpose and use, and `docs/RELEASES.md`
+See `docs/deployment/SELF_HOSTING.md` for fresh and established-OIDC operator journeys,
+`docs/integrations/CLI_AND_MCP.md` for credential purpose and use, and `docs/deployment/RELEASES.md`
 for provenance verification and the supported release boundaries.

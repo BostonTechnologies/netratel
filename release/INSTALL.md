@@ -60,7 +60,7 @@ Enter the code, choose an administrator email and passphrase, and use those
 details to sign in. There is no default administrator password. From an API
 container console, use `cat /var/netratel/bootstrap/setup-proof` directly.
 Run `dotnet NetRatel.API.dll --setup-status` there if the code is unavailable.
-See [First-run setup](docs/FIRST_RUN_SETUP.md) for recovery cases.
+See [First-run setup](docs/deployment/FIRST_RUN_SETUP.md) for recovery cases.
 
 For public HTTPS, use the included `compose.public-https.yaml` and
 `nginx.public-https.conf`. Put a valid certificate and key at the paths in
@@ -81,7 +81,7 @@ both addresses even when they share a host. Generate a fresh protected link
 after changing addresses; previously issued links keep their original script.
 For standalone Client Docker deployments, set
 `NetRatelCLIENT__Client__ApiBaseUrl` and `NetRatelCLIENT__Gateway__Endpoint`.
-See [configuration](docs/CONFIGURATION.md) for precedence and split REST hosts.
+See [configuration](docs/deployment/CONFIGURATION.md) for precedence and split REST hosts.
 
 Optional HTTP MCP is not enabled by default. Its external-OIDC mode requires
 separate OIDC audience, scope, group and target API configuration in `.env`.
@@ -111,4 +111,8 @@ database is reachable before starting the one-shot migrations service.
 For a missing code, run `dotnet NetRatel.API.dll --setup-status` inside the API
 container. Restore a matching backup set after a partial database, bootstrap,
 or key reset; do not delete one volume to reopen setup. The bundled
-`docs/FIRST_RUN_SETUP.md` has the detailed checks.
+`docs/deployment/FIRST_RUN_SETUP.md` has the detailed checks.
+
+## Same-origin Web and optional HTTP MCP
+
+The [Web/YARP routing guide](docs/deployment/web-gateway.md) explains generated API destinations and custom overrides. The optional MCP overlay explicitly enables Web routing as well as the MCP service. [HTTP MCP setup](docs/mcp-http/setup.md) covers persistent host/tooling setup, local or external OIDC ingress, independent outbound identity, matching delegation and migration. Use the [full configuration reference](docs/mcp-http/configuration.md) for Compose interpolation versus actual injected .NET keys and secret-file inputs. Complete initialize and a permitted read-only tool call before reporting functional acceptance.
