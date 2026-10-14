@@ -46,7 +46,9 @@ public sealed partial class NetRatelMcpOperationalTools
 
     [McpServerTool(UseStructuredContent = true), Description("Read NetRatel AI-agent authentication status. Operation must be status.")]
     public Task<NetRatelToolResponse> netratel_auth(string operation = "status", CancellationToken cancellationToken = default)
-        => GetAsync("netratel_auth", operation, ["status"], "/api/v2/mcp/operator/auth/status", cancellationToken);
+        => GetAsync("netratel_auth", operation, ["status"], hostContext?.Transport == NetRatelMcpTransport.Stdio
+            ? "/api/v1/auth/ai-agent/status"
+            : "/api/v2/mcp/operator/auth/status", cancellationToken);
 
     [McpServerTool(UseStructuredContent = true), Description("Read authenticated NetRatel health. Operation must be get.")]
     public Task<NetRatelToolResponse> netratel_health(string operation = "get", CancellationToken cancellationToken = default)

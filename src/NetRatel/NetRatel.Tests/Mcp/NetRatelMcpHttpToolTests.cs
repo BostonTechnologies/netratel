@@ -171,12 +171,34 @@ public sealed class NetRatelMcpHttpToolTests
     public async Task AuthenticationStatus_tool_uses_the_delegation_bound_v2_route()
     {
         var client = new RecordingApiClient(data: new JsonObject { ["authenticated"] = true });
-        var tools = new NetRatelMcpOperationalTools(client);
+        var host = new NetRatelMcpHostContext(
+            new NetRatelMcpTarget("prod", new Uri("https://api.example"), new Uri("https://api.example/mcp"), NetRatelMcpCatalog.Revision),
+            NetRatelMcpTransport.StreamableHttp, "test");
+        var tools = new NetRatelMcpOperationalTools(client, host);
 
         var result = await tools.netratel_auth();
 
         result.Success.Should().BeTrue();
         client.Paths.Should().ContainSingle().Which.Should().Be("/api/v2/mcp/operator/auth/status");
+        client.Mutations.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("dev")]
+    [InlineData("prod")]
+    public async Task Stdio_authentication_status_uses_the_public_api_identity_route(string instance)
+    {
+        var client = new RecordingApiClient(data: new JsonObject { ["authenticated"] = true });
+        var host = new NetRatelMcpHostContext(
+            new NetRatelMcpTarget(instance, new Uri("https://api.example"), new Uri("https://api.example/mcp"), NetRatelMcpCatalog.Revision),
+            NetRatelMcpTransport.Stdio, "test");
+        var tools = new NetRatelMcpOperationalTools(client, host);
+
+        var result = await tools.netratel_auth();
+
+        result.Success.Should().BeTrue();
+        client.Paths.Should().ContainSingle().Which.Should().Be("/api/v1/auth/ai-agent/status");
+        client.Mutations.Should().BeEmpty();
     }
 
     [Fact]
