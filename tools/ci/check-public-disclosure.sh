@@ -16,7 +16,7 @@ report() {
 # in the private pre-export review, not in a public repository.
 while IFS= read -r -d '' path; do
   case "$path" in
-    .dockerignore|.env.example|.gitattributes|.gitignore|.gitleaks.toml|AGENTS.md|CODE_OF_CONDUCT.md|CONTRIBUTING.md|Directory.Build.props|Directory.Build.targets|LICENSE|NetRatel.sln|NOTICE|README.md|SECURITY.md|build-main.ps1|compose.yaml|coverage.runsettings|dotnet-install.sh|dotnet-tools.json|global.json|readme.trustmodel.md|setup-dotnet9.sh|setup.sh|.github/*|docker/*|docs/*|release/*|samples/*|scripts/*|src/NetRatel/*|tests/*|tools/*)
+    .dockerignore|.env.example|.env.mcp-http.example|.env.mcp-http.outbound.example|.env.mcp-http.api.example|.gitattributes|.gitignore|.gitleaks.toml|AGENTS.md|CODE_OF_CONDUCT.md|CONTRIBUTING.md|Directory.Build.props|Directory.Build.targets|LICENSE|NetRatel.sln|NOTICE|README.md|SECURITY.md|build-main.ps1|compose.yaml|compose.mcp-http.yaml|compose.mcp-http.config.yaml|compose.mcp-http.ports.yaml|compose.mcp-http.secrets.yaml|compose.setup.yaml|coverage.runsettings|dotnet-install.sh|dotnet-tools.json|global.json|readme.trustmodel.md|setup-dotnet9.sh|setup.sh|.github/*|docker/*|docs/*|release/*|samples/*|scripts/*|src/NetRatel/*|tests/*|tools/*)
       ;;
     *)
       report "Public disclosure gate rejected an unclassified tracked path."
@@ -24,7 +24,7 @@ while IFS= read -r -d '' path; do
       ;;
   esac
   case "$path" in
-    .env.example)
+    .env.example|.env.mcp-http.example|.env.mcp-http.outbound.example|.env.mcp-http.api.example)
       ;;
     .keys/*|*.pem|*.key|*.pfx|*.p12|*.jks|*.keystore|docker/komodo/*|docker/traefik/*|docs/observability/*|docs/helpdesk/*|docs/system-connectivity-runtime.md|migration/private/*|*.env|.env.*)
       report "Public disclosure gate rejected private path: $path"
