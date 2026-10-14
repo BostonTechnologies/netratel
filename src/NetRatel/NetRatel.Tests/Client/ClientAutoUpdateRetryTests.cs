@@ -139,6 +139,7 @@ public sealed class ClientAutoUpdateRetryTests
         for (var i = 0; i < 20; i++) rig.Offer();
         await rig.Coordinator.DisposeAsync();
         Assert.Equal(invalidArtifact ? 1 : 2, rig.Claims);
+        Assert.Equal(invalidArtifact ? 1 : 2, rig.Nonces.Distinct().Count());
         Assert.Equal(invalidArtifact ? 1 : 2, rig.Downloads);
         Assert.Equal(invalidArtifact ? 0 : 1, rig.Launches);
         rig.AssertSafeDiagnostics();
@@ -387,6 +388,282 @@ public sealed class ClientAutoUpdateRetryTests
             return (package, new ClientUpdateOffer { ReleaseId = Guid.NewGuid().ToString("D"), RuntimeId = "linux-x64", Version = version,
                 DownloadPath = $"/api/v1/client-artifacts/linux-x64/{version}/raw-download?signature=signed-query-secret", SizeBytes = package.Length,
                 Sha256 = Convert.ToHexString(SHA256.HashData(package)).ToLowerInvariant() });
+        }
+    }
+}
+
+public sealed class ClientUpdateResultDeliveryTests
+{
+    [Fact]
+    public async Task PlainRoute404SurvivesRestartAndRecoversWithoutChangingTheInstallationOutcome()
+    {
+        await using var rig = new DeliveryRig();
+        rig.Response = () => new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("route unavailable") };
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.Equal("retry_wait", rig.Status("deliveryState"));
+        Assert.Equal("RolledBack", rig.Status("installationState"));
+        Assert.True(rig.Worker.HasUnresolvedResult);
+        var original = File.ReadAllText(rig.ResultPath);
+        File.Delete(rig.SuspensionPath); // An acknowledged Resume removes the installation suspension.
+        rig.Worker = rig.CreateWorker();
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.Equal(1, rig.Requests);
+        Assert.False(File.Exists(rig.SuspensionPath));
+        rig.Clock.Advance(TimeSpan.FromMinutes(5));
+        rig.Response = () => rig.Reply(HttpStatusCode.Accepted, "duplicate", "report_duplicate", "RolledBack", false);
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.Equal(2, rig.Requests);
+        Assert.Equal("acknowledged", rig.Status("deliveryState"));
+        Assert.False(File.Exists(rig.ResultPath));
+        Assert.Equal(original, File.ReadAllText(Assert.Single(Directory.GetFiles(rig.Root, "*.consumed.json"))));
+        Assert.False(File.Exists(rig.SuspensionPath));
+        Assert.False(rig.Worker.HasUnresolvedResult);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound, "not_found", "attempt_not_found", "permanent_rejected", null)]
+    [InlineData(HttpStatusCode.Conflict, "conflict", "accepted_authority_conflict", "conflict", "Accepted")]
+    public async Task StructuredPermanentAndConflictOutcomesRetainEvidenceWithoutAnotherRequest(
+        HttpStatusCode status, string outcome, string code, string expected, string? serverState)
+    {
+        await using var rig = new DeliveryRig();
+        rig.Response = () => rig.Reply(status, outcome, code, serverState);
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.Equal(expected, rig.Status("deliveryState"));
+        Assert.Equal("required", rig.Status("reconciliationState"));
+        Assert.Equal(serverState, rig.Status("serverState"));
+        Assert.Equal("RolledBack", rig.Status("installationState"));
+        var original = File.ReadAllText(rig.ResultPath);
+        rig.Worker = rig.CreateWorker();
+        rig.Clock.Advance(TimeSpan.FromDays(1));
+        for (var i = 0; i < 10; i++) await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.Equal(1, rig.Requests);
+        Assert.Equal(original, File.ReadAllText(rig.ResultPath));
+        Assert.True(rig.Worker.HasUnresolvedResult);
+    }
+
+    [Fact]
+    public async Task RetryAfterIsBoundedAndRejectedTokenGetsOneRefreshWithinTheRequestBudget()
+    {
+        await using var rig = new DeliveryRig();
+        rig.Response = () =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+            response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromDays(1));
+            return response;
+        };
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        rig.Clock.Advance(TimeSpan.FromSeconds(299));
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.Equal(1, rig.Requests);
+        rig.Clock.Advance(TimeSpan.FromSeconds(1));
+        rig.Response = () => new HttpResponseMessage(HttpStatusCode.Unauthorized);
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.Equal(3, rig.Requests);
+        Assert.Equal(1, rig.Invalidations);
+        Assert.Equal("retry_wait", rig.Status("deliveryState"));
+        Assert.All(rig.RequestNonces, nonce => Assert.Equal("protected-test-nonce", nonce));
+    }
+
+    [Fact]
+    public async Task ResumedAttemptIsNotSuspendedOnItsFirstLocalDeliveryAndChangedResultCannotReplacePendingEvidence()
+    {
+        await using var rig = new DeliveryRig();
+        ProtectedUpdateState.AtomicWriteJson(Path.Combine(rig.Root, "policy.json"), new { revision = 5, resumeAttemptId = rig.AttemptId, resumeRevision = 5 });
+        rig.Response = () => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.False(File.Exists(rig.SuspensionPath));
+        ProtectedUpdateState.AtomicWriteJson(rig.ResultPath, new { schema = "netratel.update.result.v2",
+            attemptId = Guid.NewGuid(), releaseId = Guid.NewGuid(), state = "FailedPreActivation" });
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.Equal("identity_conflict", rig.Status("deliveryState"));
+        using var record = JsonDocument.Parse(File.ReadAllText(Path.Combine(rig.Root, "result-delivery.json")));
+        Assert.Equal(rig.AttemptId, record.RootElement.GetProperty("attemptId").GetGuid());
+        Assert.Equal("RolledBack", record.RootElement.GetProperty("originalResult").GetProperty("state").GetString());
+        Assert.Equal(1, rig.Requests);
+        Assert.True(rig.Worker.HasUnresolvedResult);
+    }
+
+    [Theory]
+    [InlineData("", "acknowledged")]
+    [InlineData("<html>proxy response</html>", "unclassified_response")]
+    public async Task LegacyEmptyAcceptedAcknowledgesButMalformedProxyContentRetainsEvidence(string content, string expected)
+    {
+        await using var rig = new DeliveryRig();
+        rig.Response = () => new HttpResponseMessage(HttpStatusCode.Accepted) { Content = new StringContent(content) };
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.Equal(expected, rig.Status("deliveryState"));
+        Assert.Equal(expected != "acknowledged", File.Exists(rig.ResultPath));
+    }
+
+    [Fact]
+    public async Task WindowsPowerShellUtf8BomResultRecoversAfterMalformedDataAndArchivesItsExactBytes()
+    {
+        await using var rig = new DeliveryRig();
+        var nativeBytes = File.ReadAllBytes(rig.ResultPath);
+        File.WriteAllText(rig.ResultPath, "{");
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.Equal(0, rig.Requests);
+        Assert.True(rig.Worker.HasUnresolvedResult);
+        var original = new byte[nativeBytes.Length + 3];
+        original[0] = 0xef;
+        original[1] = 0xbb;
+        original[2] = 0xbf;
+        nativeBytes.CopyTo(original, 3);
+        File.WriteAllBytes(rig.ResultPath, original);
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.Equal(1, rig.Requests);
+        Assert.Equal("acknowledged", rig.Status("deliveryState"));
+        Assert.Equal(original, File.ReadAllBytes(Assert.Single(Directory.GetFiles(rig.Root, "*.consumed.json"))));
+        Assert.False(rig.Worker.HasUnresolvedResult);
+    }
+
+    [Fact]
+    public async Task MalformedAcknowledgementMetadataFencesFutureWorkWithoutLosingEvidence()
+    {
+        await using var rig = new DeliveryRig();
+        File.Delete(rig.ResultPath);
+        ProtectedUpdateState.AtomicWriteJson(Path.Combine(rig.Root, "result-delivery.json"), new { deliveryState = "acknowledged" });
+        Assert.True(rig.Worker.HasUnresolvedResult);
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.Equal(0, rig.Requests);
+        Assert.Equal("acknowledged", rig.Status("deliveryState"));
+        Assert.True(rig.Worker.HasUnresolvedResult);
+    }
+
+    [Fact]
+    public async Task ExplicitResumeAllowsFutureWorkAfterArchivingTheConflictingOutcomeAndReceipt()
+    {
+        await using var rig = new DeliveryRig();
+        rig.Response = () => rig.Reply(HttpStatusCode.Conflict, "conflict", "accepted_authority_conflict", "Accepted");
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.True(rig.Worker.HasUnresolvedResult);
+        ProtectedUpdateState.AtomicWriteJson(Path.Combine(rig.Root, "policy.json"), new { revision = 5, resumeAttemptId = rig.AttemptId, resumeRevision = 4 });
+        Assert.True(rig.Worker.HasUnresolvedResult);
+        ProtectedUpdateState.AtomicWriteJson(Path.Combine(rig.Root, "policy.json"), new { revision = 6, resumeAttemptId = rig.AttemptId, resumeRevision = 6 });
+        Assert.False(rig.Worker.HasUnresolvedResult);
+        Assert.False(File.Exists(rig.ResultPath));
+        using var outcome = JsonDocument.Parse(File.ReadAllText(Assert.Single(Directory.GetFiles(rig.Root, "*.unresolved.json"))));
+        Assert.Equal("RolledBack", outcome.RootElement.GetProperty("state").GetString());
+        using var receipt = JsonDocument.Parse(File.ReadAllText(Assert.Single(Directory.GetFiles(rig.Root, "*.delivery.json"))));
+        Assert.Equal("conflict", receipt.RootElement.GetProperty("deliveryState").GetString());
+        Assert.Equal("required", receipt.RootElement.GetProperty("reconciliationState").GetString());
+        Assert.Equal("Accepted", receipt.RootElement.GetProperty("serverState").GetString());
+        rig.Worker = rig.CreateWorker();
+        Assert.False(rig.Worker.HasUnresolvedResult);
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.Equal(1, rig.Requests);
+    }
+
+    [Fact]
+    public async Task TypedRecoverableTokenFailureRetriesAfterTheBackendReturns()
+    {
+        await using var rig = new DeliveryRig();
+        rig.TokenFailure = new AgentClientAuthException("Backend unavailable", 502, endpointRole: AgentAuthEndpointRole.Token);
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.Equal(0, rig.Requests);
+        Assert.Equal("retry_wait", rig.Status("deliveryState"));
+        rig.Clock.Advance(TimeSpan.FromMinutes(5));
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.Equal(1, rig.Requests);
+        Assert.Equal("acknowledged", rig.Status("deliveryState"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("1.2.5")]
+    public async Task NativeAcceptedWithoutVersionBoundReadinessRetainsReconciliationEvidence(string? readyVersion)
+    {
+        await using var rig = new DeliveryRig();
+        ProtectedUpdateState.AtomicWriteJson(rig.ResultPath, new { schema = "netratel.update.result.v2",
+            rig.AttemptId, rig.ReleaseId, state = "Accepted", toVersion = "1.2.4" });
+        ProtectedUpdateState.AtomicWriteJson(Path.Combine(rig.Root, "request.json"), new { rig.AttemptId, rig.ReleaseId,
+            admissionNonce = "protected-test-nonce", toVersion = "1.2.4" });
+        if (readyVersion is not null)
+            ProtectedUpdateState.AtomicWriteJson(Path.Combine(rig.Root, "ready.json"), new { schema = "netratel.update.ready.v2",
+                rig.AttemptId, rig.ReleaseId, confirmationId = Guid.NewGuid(), version = readyVersion });
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.Equal("confirmation_missing", rig.Status("deliveryState"));
+        Assert.Equal("required", rig.Status("reconciliationState"));
+        Assert.Equal(0, rig.Requests);
+        Assert.True(File.Exists(rig.ResultPath));
+    }
+
+    [Fact]
+    public async Task AResultBlocksNewClaimsBeforeItsDeliveryWorkerLoadsIt()
+    {
+        await using var rig = new DeliveryRig();
+        rig.Response = () => rig.Reply(HttpStatusCode.Conflict, "conflict", "state_conflict", "Accepted");
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        using var api = new HttpClient(rig, false) { BaseAddress = new Uri("https://api.example.test") };
+        await using var coordinator = new AkkaClientAutoUpdateCoordinator(new ClientOptions
+        {
+            ApiBaseUrl = api.BaseAddress.ToString(),
+            AutoUpdate = new AutoUpdateOptions { StateDirectory = rig.Root, RuntimeId = "linux-x64" }
+        }, "1.2.3", rig, api, rig.Clock, () => throw new InvalidOperationException("Unexpected native launch"), true);
+        coordinator.OnAcknowledgement(new ClientUpdateOffer { ReleaseId = Guid.NewGuid().ToString("D"),
+            Version = "1.2.5", RuntimeId = "linux-x64" }, new ClientUpdatePolicy { AutoUpdateEnabled = true }, null);
+        await coordinator.DisposeAsync();
+        Assert.Equal(1, rig.Requests);
+        Assert.True(File.Exists(rig.ResultPath));
+    }
+
+    private sealed class DeliveryRig : HttpMessageHandler, IAgentTokenService, IAsyncDisposable
+    {
+        internal readonly string Root = Path.Combine(Path.GetTempPath(), "netratel-result-delivery-" + Guid.NewGuid().ToString("N"));
+        internal readonly Guid AttemptId = Guid.NewGuid(), ReleaseId = Guid.NewGuid();
+        internal readonly GatewayPresenceTestClock Clock = new();
+        internal readonly ConcurrentQueue<string?> RequestNonces = new();
+        internal string ResultPath => Path.Combine(Root, "result.json");
+        internal string SuspensionPath => Path.Combine(Root, "suspension.json");
+        internal ClientUpdateResultDelivery Worker;
+        internal Func<HttpResponseMessage> Response;
+        internal int Requests, Invalidations;
+        internal AgentClientAuthException? TokenFailure;
+        private readonly HttpClient _api;
+
+        internal DeliveryRig()
+        {
+            Directory.CreateDirectory(Root);
+            _api = new HttpClient(this, false) { BaseAddress = new Uri("https://api.example.test") };
+            ProtectedUpdateState.AtomicWriteJson(ResultPath, new { schema = "netratel.update.result.v2", AttemptId, ReleaseId,
+                state = "RolledBack", failureCode = "activation_timeout", message = "Rollback reconnected.",
+                completedAtUtc = Clock.GetUtcNow(), activeTarget = "/client/previous" });
+            ProtectedUpdateState.AtomicWriteJson(Path.Combine(Root, "request.json"), new { AttemptId, ReleaseId, admissionNonce = "protected-test-nonce" });
+            Response = () => Reply(HttpStatusCode.Accepted, "applied", "report_applied", "RolledBack");
+            Worker = CreateWorker();
+        }
+        internal ClientUpdateResultDelivery CreateWorker() => new(Root, ResultPath, Path.Combine(Root, "request.json"),
+            Path.Combine(Root, "ready.json"), SuspensionPath, this, _api, Clock, new object(), _ => { });
+        internal string? Status(string key)
+        {
+            using var record = JsonDocument.Parse(File.ReadAllText(Path.Combine(Root, "result-delivery.json")));
+            return record.RootElement.GetProperty(key).GetString();
+        }
+        internal HttpResponseMessage Reply(HttpStatusCode status, string outcome, string code, string? state, bool suspended = true) =>
+            new(status) { Content = JsonContent.Create(new { outcome, code, state, confirmationId = state == "Accepted" ? Guid.NewGuid() : (Guid?)null,
+                suspensionActive = suspended, policyRevision = 5 }) };
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref Requests);
+            Assert.EndsWith($"/attempts/{AttemptId:D}/result", request.RequestUri!.AbsolutePath);
+            using var document = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
+            Assert.Equal("RolledBack", document.RootElement.GetProperty("state").GetString());
+            RequestNonces.Enqueue(document.RootElement.GetProperty("admissionNonce").GetString());
+            return Response();
+        }
+        public Task<(string AccessToken, DateTimeOffset ExpiresAtUtc)> GetAccessTokenAsync(CancellationToken cancellationToken)
+        {
+            if (TokenFailure is { } failure) { TokenFailure = null; throw failure; }
+            return Task.FromResult(("secret-delivery-token", Clock.GetUtcNow().AddMinutes(10)));
+        }
+        public bool InvalidateAccessToken(string rejectedAccessToken) { Interlocked.Increment(ref Invalidations); return true; }
+        public ValueTask DisposeAsync()
+        {
+            _api.Dispose();
+            Dispose();
+            Directory.Delete(Root, true);
+            return ValueTask.CompletedTask;
         }
     }
 }

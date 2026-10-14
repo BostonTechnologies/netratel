@@ -16,4 +16,10 @@ public sealed record TaskLifecyclePayload(string RequestId, string TaskType, str
 
 public sealed record AgentLifecyclePayload(Guid AgentId, int? TenantId, string? Actor, string? Reason = null);
 
-public sealed record ExceptionPayload(string Path, string Method, string CorrelationId, string Error, string? StackTrace);
+public sealed record ExceptionPayload(string Path, string Method, string CorrelationId, string Error, string? StackTrace,
+    string? ExceptionType = null, string? AttemptId = null, ExceptionOccurrencePayload? Occurrence = null,
+    string? InnerExceptionType = null, string? InnerError = null);
+
+public sealed record ExceptionOccurrencePayload(string ErrorIdentity, long Count,
+    DateTimeOffset FirstSeenUtc, DateTimeOffset LastSeenUtc,
+    string FirstCorrelationId, string LastCorrelationId, string? FirstTraceId, string? LastTraceId);

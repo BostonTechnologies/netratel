@@ -11,6 +11,7 @@ using Microsoft.Extensions.Logging;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Akka.Configuration;
 using NetRatel.API.Gateway;
+using NetRatel.API.Services;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Presence;
 using NetRatel.Tests.Client;
@@ -71,11 +72,13 @@ public sealed class AgentGatewayLifetimeTests
     [Fact]
     public async Task AcceptedHeartbeats_RenewThePolicyWithoutAnOverallStreamDeadline()
     {
-        var fixture = new Fixture();
+        var observer = new RecordingActivationAuthority();
+        var fixture = new Fixture { ActivationAuthority = observer };
         using var host = await BuildHostAsync(fixture);
         using var channel = CreateChannel(host);
         using var call = new PresenceGrpcGateway.AgentGatewayClient(channel).Connect();
         var connected = await AdmitAsync(call, fixture);
+        observer.PresenceObservations.Should().Be(0, "the hello admission is still provisional");
         for (ulong sequence = 1; sequence <= 4; sequence++)
         {
             fixture.Clock.Advance(TimeSpan.FromSeconds(1.5));
@@ -84,9 +87,87 @@ public sealed class AgentGatewayLifetimeTests
             accepted.ConnectionEpoch.Should().Be(connected.ConnectionEpoch);
             fixture.HandlerFinished.Task.IsCompleted.Should().BeFalse();
         }
+        observer.PresenceObservations.Should().Be(1, "the committed observed version needs one Activity invalidation per session");
+        observer.ObservedIdentity.Should().Be(new AuthenticatedAgentIdentity(fixture.Client.TenantId, fixture.Client.AgentId));
         await call.RequestStream.CompleteAsync();
         await fixture.HandlerFinished.Task.WaitAsync(TimeSpan.FromSeconds(2));
         fixture.Router.Ended!.Reason.Should().Be("stream_closed");
+    }
+
+    [Fact]
+    public async Task FencedFirstHeartbeat_DoesNotNotifyUpdateActivity()
+    {
+        var observer = new RecordingActivationAuthority();
+        var fixture = new Fixture { ActivationAuthority = observer };
+        using var host = await BuildHostAsync(fixture);
+        using var channel = CreateChannel(host);
+        using var call = new PresenceGrpcGateway.AgentGatewayClient(channel).Connect();
+        var connected = await AdmitAsync(call, fixture);
+        fixture.Router.RejectHeartbeats = true;
+        var heartbeat = () => HeartbeatAsync(call, fixture, connected, 1);
+        (await heartbeat.Should().ThrowAsync<RpcException>()).Which.StatusCode.Should().Be(StatusCode.Aborted);
+        await fixture.HandlerFinished.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        observer.PresenceObservations.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task SlowActivityObserver_ExpiresItsOwnBudgetWithoutRetiringPresence()
+    {
+        var observer = new RecordingActivationAuthority { BlockPresenceObservation = true };
+        var fixture = new Fixture { ActivationAuthority = observer };
+        using var host = await BuildHostAsync(fixture);
+        using var channel = CreateChannel(host);
+        using var call = new PresenceGrpcGateway.AgentGatewayClient(channel).Connect();
+        var connected = await AdmitAsync(call, fixture);
+        var presenceTimers = fixture.Clock.ActiveTimerCount;
+        var heartbeat = HeartbeatAsync(call, fixture, connected, 1);
+        await observer.ObservationEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        fixture.Clock.ActiveTimerCount.Should().Be(presenceTimers + 1);
+        fixture.Clock.Advance(TimeSpan.FromSeconds(1));
+
+        (await heartbeat).HeartbeatAccepted.Should().NotBeNull();
+        observer.ObservationCancellation.IsCancellationRequested.Should().BeTrue();
+        fixture.Clock.ActiveTimerCount.Should().Be(presenceTimers, "the observer deadline is disposed before acknowledgement");
+        (await HeartbeatAsync(call, fixture, connected, 2)).HeartbeatAccepted.Should().NotBeNull();
+        observer.PresenceObservations.Should().Be(1, "a failed observer must not run again on healthy heartbeats");
+        fixture.HandlerFinished.Task.IsCompleted.Should().BeFalse();
+        await call.RequestStream.CompleteAsync();
+        await fixture.HandlerFinished.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        fixture.Clock.ActiveTimerCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ActivationConfirmation_ReplaysOnlyAfterTheExactSessionHeartbeat()
+    {
+        var activation = new RecordingActivationAuthority();
+        var fixture = new Fixture { ActivationAuthority = activation };
+        using var host = await BuildHostAsync(fixture);
+        using var channel = CreateChannel(host);
+        using var call = new PresenceGrpcGateway.AgentGatewayClient(channel).Connect();
+        var connected = await AdmitAsync(call, fixture, new ConnectHello
+        {
+            AgentVersion = "0.4.102",
+            UpdateActivation = new UpdateActivationContext
+            {
+                AttemptId = activation.AttemptId.ToString("D"), ReleaseId = activation.ReleaseId.ToString("D"),
+                AdmissionNonce = new string('a', 64)
+            }
+        });
+
+        var first = await HeartbeatAsync(call, fixture, connected, 1);
+        // A lost response or failed local ready write needs the same receipt again.
+        var retry = await HeartbeatAsync(call, fixture, connected, 2);
+        first.HeartbeatAccepted.UpdateConfirmation.ConfirmationId.Should().Be(activation.ConfirmationId.ToString("D"));
+        retry.HeartbeatAccepted.UpdateConfirmation.Should().Be(first.HeartbeatAccepted.UpdateConfirmation);
+        activation.Confirmations.Should().Be(1, "the already verified session receipt can be replayed without another database call");
+        activation.ConnectionId.Should().Be(Guid.Parse(connected.ConnectionId));
+        activation.ConnectionEpoch.Should().Be((long)connected.ConnectionEpoch);
+
+        fixture.Router.RejectHeartbeats = true;
+        var rejected = () => HeartbeatAsync(call, fixture, connected, 3);
+        (await rejected.Should().ThrowAsync<RpcException>()).Which.StatusCode.Should().Be(StatusCode.Aborted);
+        await fixture.HandlerFinished.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        fixture.WritesCompleted.Should().Be(3, "a fenced heartbeat cannot receive even a cached confirmation");
     }
 
     [Fact]
@@ -164,13 +245,14 @@ public sealed class AgentGatewayLifetimeTests
     private static GrpcChannel CreateChannel(IHost host) => GrpcChannel.ForAddress("http://localhost",
         new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() });
 
-    private static async Task<GatewayFrame> AdmitAsync(AsyncDuplexStreamingCall<AgentFrame, GatewayFrame> call, Fixture fixture)
+    private static async Task<GatewayFrame> AdmitAsync(AsyncDuplexStreamingCall<AgentFrame, GatewayFrame> call, Fixture fixture,
+        ConnectHello? hello = null)
     {
         await call.RequestStream.WriteAsync(new AgentFrame
         {
             ProtocolVersion = "1.0", TenantId = fixture.Client.TenantId,
             ClientId = fixture.Client.AgentId.ToString("D"), ConnectionId = Guid.NewGuid().ToString("D"),
-            OperationId = Guid.NewGuid().ToString("D"), Hello = new ConnectHello { AgentVersion = "test" }
+            OperationId = Guid.NewGuid().ToString("D"), Hello = hello ?? new ConnectHello { AgentVersion = "test" }
         });
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         (await call.ResponseStream.MoveNext(deadline.Token)).Should().BeTrue();
@@ -206,7 +288,7 @@ public sealed class AgentGatewayLifetimeTests
                 services.AddGrpc();
                 services.AddSingleton(fixture);
                 services.AddSingleton(sp => new AgentGatewayService(fixture.Router, new ActiveAgentManagement(fixture),
-                    null!, null!, new NetRatelAkkaOptions
+                    null!, fixture.ActivationAuthority!, new NetRatelAkkaOptions
                     {
                         HeartbeatIntervalSeconds = 1, MissedHeartbeatLimit = 2, HeartbeatGraceSeconds = 0
                     }, fixture.Clock, sp.GetRequiredService<IHostEnvironment>(), sp.GetRequiredService<ILogger<AgentGatewayService>>()));
@@ -239,6 +321,7 @@ public sealed class AgentGatewayLifetimeTests
         public TaskCompletionSource WriteBlocked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ReleaseWrite { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool BlockAcknowledgement { get; init; }
+        public IClientUpdateActivationAuthority? ActivationAuthority { get; init; }
         public CancellationToken WriteCancellation { get; set; }
         public int WritesCompleted { get; set; }
     }
@@ -276,6 +359,7 @@ public sealed class AgentGatewayLifetimeTests
         public StartGatewayPresenceSession? Started { get; private set; }
         public EndGatewayPresenceSession? Ended { get; private set; }
         public Func<StartGatewayPresenceSession, CancellationToken, Task<GatewayPresenceSessionStarted>>? StartOverride { get; set; }
+        public bool RejectHeartbeats { get; set; }
         public Task<GatewayPresenceSessionStarted> StartSessionAsync(StartGatewayPresenceSession message, CancellationToken cancellationToken)
         {
             Started = message;
@@ -285,6 +369,8 @@ public sealed class AgentGatewayLifetimeTests
         }
         public Task<PresenceMessageResult> RecordHeartbeatAsync(RecordGatewayHeartbeat message, CancellationToken cancellationToken)
         {
+            if (RejectHeartbeats)
+                return Task.FromResult(new PresenceMessageResult(message.Client, 1, PresenceMessageDisposition.StaleConnectionEpoch, _lastSequence));
             var duplicate = message.Sequence == _lastSequence;
             _lastSequence = message.Sequence;
             return Task.FromResult(new PresenceMessageResult(message.Client, 1,
@@ -297,6 +383,50 @@ public sealed class AgentGatewayLifetimeTests
         }
         public Task<ClientPresenceSnapshot> GetSnapshotAsync(ClientKey client, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<ClientPresenceRouteStatus> ProbeAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    private sealed class RecordingActivationAuthority : IClientUpdateActivationAuthority
+    {
+        public Guid AttemptId { get; } = Guid.NewGuid();
+        public Guid ReleaseId { get; } = Guid.NewGuid();
+        public Guid ConfirmationId { get; } = Guid.NewGuid();
+        public Guid ConnectionId { get; private set; }
+        public long ConnectionEpoch { get; private set; }
+        public int Confirmations { get; private set; }
+        public int PresenceObservations { get; private set; }
+        public AuthenticatedAgentIdentity? ObservedIdentity { get; private set; }
+        public bool BlockPresenceObservation { get; init; }
+        public TaskCompletionSource ObservationEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public CancellationToken ObservationCancellation { get; private set; }
+
+        public async Task NotifyPresenceObservedAsync(AuthenticatedAgentIdentity identity, CancellationToken cancellationToken)
+        {
+            ObservedIdentity = identity;
+            PresenceObservations++;
+            ObservationCancellation = cancellationToken;
+            ObservationEntered.TrySetResult();
+            if (BlockPresenceObservation) await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
+
+        public Task<ClientUpdateActivationResult> MarkReadmittedAsync(AuthenticatedAgentIdentity identity, Guid attemptId,
+            Guid releaseId, string nonce, string agentVersion, Guid connectionId, long connectionEpoch, CancellationToken cancellationToken)
+        {
+            attemptId.Should().Be(AttemptId);
+            releaseId.Should().Be(ReleaseId);
+            ConnectionId = connectionId;
+            ConnectionEpoch = connectionEpoch;
+            return Task.FromResult(new ClientUpdateActivationResult(true, "accepted"));
+        }
+
+        public Task<ClientUpdateActivationResult> ConfirmAsync(AuthenticatedAgentIdentity identity, Guid attemptId,
+            Guid connectionId, long connectionEpoch, CancellationToken cancellationToken)
+        {
+            attemptId.Should().Be(AttemptId);
+            connectionId.Should().Be(ConnectionId);
+            connectionEpoch.Should().Be(ConnectionEpoch);
+            Confirmations++;
+            return Task.FromResult(new ClientUpdateActivationResult(true, "accepted", ConfirmationId));
+        }
     }
 
     private sealed class ActiveAgentManagement(Fixture fixture) : IAgentManagementService

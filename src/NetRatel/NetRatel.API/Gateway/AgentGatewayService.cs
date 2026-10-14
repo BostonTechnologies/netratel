@@ -60,6 +60,8 @@ public sealed class AgentGatewayService(
         Guid? activationAttemptId = null;
         Guid? activationReleaseId = null;
         var activationReadmitted = false;
+        UpdateActivationConfirmation? activationConfirmation = null;
+        var presenceObservationNotified = false;
         var disconnectReason = "stream_closed";
 
         async Task RunPresenceAsync(CancellationToken cancellationToken)
@@ -293,6 +295,26 @@ public sealed class AgentGatewayService(
                         $"Presence frame was rejected: {result.Disposition}."));
                 }
 
+                if (!presenceObservationNotified && result.Disposition == PresenceMessageDisposition.Accepted)
+                {
+                    presenceObservationNotified = true;
+                    try
+                    {
+                        using var observerDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(1), timeProvider);
+                        using var observerCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                            cancellationToken, observerDeadline.Token);
+                        if (updateAuthority is not null)
+                            await updateAuthority.NotifyPresenceObservedAsync(authenticatedIdentity, observerCancellation.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                    catch (Exception exception)
+                    {
+                        logger.LogWarning(exception,
+                            "Client update Activity presence observation notification failed; presence remains healthy. tenantId={TenantId} agentId={AgentId}",
+                            client.TenantId, client.AgentId);
+                    }
+                }
+
                 var heartbeatAccepted = new HeartbeatAccepted
                 {
                     Duplicate = result.Disposition == PresenceMessageDisposition.Duplicate,
@@ -313,7 +335,7 @@ public sealed class AgentGatewayService(
                         cancellationToken.ThrowIfCancellationRequested();
                         if (confirmation.Accepted && confirmation.ConfirmationId.HasValue)
                         {
-                            heartbeatAccepted.UpdateConfirmation = new UpdateActivationConfirmation
+                            activationConfirmation = new UpdateActivationConfirmation
                             {
                                 AttemptId = activationAttemptId.Value.ToString("D"),
                                 ReleaseId = activationReleaseId.Value.ToString("D"),
@@ -333,6 +355,13 @@ public sealed class AgentGatewayService(
                         logger.LogWarning(exception, "Update activation heartbeat confirmation failed; presence remains healthy.");
                     }
                 }
+
+                // Replay the verified receipt only after this exact session's
+                // authoritative heartbeat. Delivery or the local ready marker
+                // write can fail after confirmation commits; no new DB write or
+                // confirmation identity is needed for subsequent heartbeats.
+                if (activationConfirmation is not null)
+                    heartbeatAccepted.UpdateConfirmation = activationConfirmation.Clone();
 
                 cancellationToken.ThrowIfCancellationRequested();
                 await responseStream.WriteAsync(new GatewayFrame

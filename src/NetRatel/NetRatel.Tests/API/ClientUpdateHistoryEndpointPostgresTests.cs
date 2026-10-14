@@ -15,6 +15,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NetRatel.API.Endpoints.Client;
 using NetRatel.API.Services;
+using NetRatel.Application.Presence;
 using NetRatel.Infrastructure.Persistence;
 using Testcontainers.PostgreSql;
 using Xunit;
@@ -58,6 +59,50 @@ public sealed class ClientUpdateHistoryEndpointPostgresTests : IAsyncLifetime
         page.Items[0].ClientDisplayName.Should().Be("Canary agent");
         page.Items[0].Status.Should().Be("RolledBack");
         page.Items[0].FailureCode.Should().Be("activation_timeout");
+        page.Items[0].FromVersion.Should().Be("0.4.101");
+        page.Items[0].ObservedRunningVersion.Should().BeNull("the target release is not a running-version observation");
+        page.Items[0].SuspendedAtUtc.Should().NotBeNull();
+        page.Items[0].SuspensionReason.Should().Be("operator-review");
+        page.Items[0].PolicyRevision.Should().Be(1);
+
+        // Produce committed owner metadata through the real writer and commit guard.
+        // A target release alone must never become an observed running version.
+        await using var ownerServices = new ServiceCollection()
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
+            .BuildServiceProvider();
+        var owners = new ClientConnectionEpochStore(ownerServices.GetRequiredService<IServiceScopeFactory>(),
+            TimeProvider.System, new OwnershipPolicy(TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(5), TimeSpan.FromSeconds(10)));
+        var key = new ClientKey(page.Items[0].TenantId, page.Items[0].AgentId);
+        var receivedAt = DateTimeOffset.UtcNow;
+        var reserved = await owners.ReserveAsync(new AdmissionRequest(key, Guid.NewGuid(), Guid.NewGuid(), 0,
+            receivedAt, receivedAt.AddSeconds(30), receivedAt.AddMinutes(10),
+            new PresenceMetadata("0.4.101", [], null)), CancellationToken.None);
+        reserved.Disposition.Should().Be(OwnershipDisposition.Accepted);
+        var observedAt = new DateTimeOffset(DateTimeOffset.UtcNow.UtcTicks / 10 * 10, TimeSpan.Zero);
+        var committed = await owners.CommitAsync(reserved.Reservation!,
+            new HeartbeatRequest(reserved.Reservation!.Owner, 1, observedAt), CancellationToken.None);
+        committed.Disposition.Should().Be(OwnershipDisposition.Accepted);
+        committed.Current!.AcceptanceGuardAtUtc.Should().NotBeNull();
+        var observedPage = await client.GetFromJsonAsync<ClientUpdateHistoryPageDto>(
+            $"/api/v1/client-updates/history?page=0&pageSize=10&search=canary-host&status=RolledBack&releaseId={releaseId}");
+        var observed = observedPage!.Items.Should().ContainSingle().Subject;
+        observed.TargetVersion.Should().Be("0.4.102");
+        observed.ObservedRunningVersion.Should().Be("0.4.101");
+        observed.ObservedAtUtc.Should().Be(observedAt);
+        observed.PresenceActive.Should().BeTrue();
+
+        await using (var db = new OrchestratorDbContext(_options))
+        {
+            var owner = await db.ClientConnectionOwners.SingleAsync(row => row.TenantId == key.TenantId && row.AgentId == key.AgentId);
+            owner.PresenceExpiresAtUtc = observedAt.AddMinutes(-1);
+            await db.SaveChangesAsync();
+        }
+        var expiredPage = await client.GetFromJsonAsync<ClientUpdateHistoryPageDto>(
+            $"/api/v1/client-updates/history?page=0&pageSize=10&search=canary-host&status=RolledBack&releaseId={releaseId}");
+        var lastKnown = expiredPage!.Items.Should().ContainSingle().Subject;
+        lastKnown.PresenceActive.Should().BeFalse();
+        lastKnown.ObservedRunningVersion.Should().Be("0.4.101");
+        lastKnown.ObservedAtUtc.Should().Be(observedAt);
     }
 
     [Fact]

@@ -70,12 +70,16 @@ public sealed class ClientReleaseDeletionTests : IAsyncLifetime
         await using var db = new OrchestratorDbContext(_options);
         var (release, _) = await SeedAsync(db, history: true);
         var attempt = await db.ClientUpdateAttempts.SingleAsync();
-        attempt.State = ClientUpdateAttemptState.RolledBack;
+        attempt.State = ClientUpdateAttemptState.Activating;
         await db.SaveChangesAsync();
-        Assert.Equal("Deleted", (await Service(db).DeleteAsync(Version, "fixture", default)).State);
-
         var authority = new ClientUpdateAuthorityService(db, new UpdateCatalog(), TimeProvider.System,
             NullLogger<ClientUpdateAuthorityService>.Instance);
+        Assert.Equal(ClientUpdateReportOutcome.Applied, (await authority.ReportAsync(
+            new AuthenticatedAgentIdentity(attempt.TenantId, attempt.AgentId), attempt.PublicId,
+            ClientUpdateAttemptState.RolledBack, "fixture-rollback", "replayed terminal report", default)).Outcome);
+        // A resumed agent must stay resumed when its committed report is replayed after purge.
+        await authority.ResumeAsync(attempt.TenantId, attempt.AgentId, "fixture", default);
+        Assert.Equal("Deleted", (await Service(db).DeleteAsync(Version, "fixture", default)).State);
         await authority.ReportAsync(new AuthenticatedAgentIdentity(attempt.TenantId, attempt.AgentId),
             attempt.PublicId, ClientUpdateAttemptState.RolledBack, "fixture-rollback", "replayed terminal report", default);
 

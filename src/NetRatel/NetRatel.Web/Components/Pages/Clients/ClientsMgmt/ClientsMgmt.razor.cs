@@ -46,6 +46,29 @@ public partial class ClientsMgmt
     private string ActivityRowStyle(ClientUpdateHistoryItemModel item, int _) =>
         AttemptGroup?.Selector is { } selector && !IsActivityGroupExpanded(selector(item)) ? "display:none" : string.Empty;
 
+    private static string ActivityTime(DateTimeOffset? at) => at is { } value
+        ? value.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'") : "not recorded";
+
+    private static string InstallationSummary(ClientUpdateHistoryItemModel item) => (item.ReportedState ?? item.Status) switch
+    {
+        "RolledBack" => "Installation: previous version restored",
+        "RollbackUnverified" => "Installation: rollback unverified",
+        "FailedPreActivation" => "Installation: activation not completed",
+        "Accepted" => item.ConfirmationId is not null ? "Installation: target confirmed at gateway" : "Installation: confirmation detail unavailable",
+        _ => "Installation: in progress"
+    };
+
+    private static string ServerReportSummary(ClientUpdateHistoryItemModel item) => item.ReconciliationState is not null
+        ? "Server report: conflicts with accepted confirmation"
+        : item.Status is "RolledBack" or "RollbackUnverified" or "FailedPreActivation" ? "Server report: received"
+        : item.Status == "Accepted" ? "Server confirmation: recorded" : "Server report: awaiting terminal result";
+
+    private static string OperatorAction(ClientUpdateHistoryItemModel item) => item.ReconciliationState is not null
+        ? "Action: reconcile the running version and installation evidence before resuming automatic updates."
+        : item.SuspendedAtUtc is not null
+            ? "Action: review the installation outcome; resume affects future automatic updates only."
+            : "Action: no operator intervention recorded as required.";
+
     private async Task StartActivityAsync()
     {
         if (_activeTab != 3 || _automationDisposed || _activityCancellation is not null) return;

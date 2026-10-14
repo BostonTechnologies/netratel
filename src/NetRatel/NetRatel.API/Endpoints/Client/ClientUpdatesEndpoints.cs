@@ -1,9 +1,11 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 using NetRatel.API.Gateway;
 using NetRatel.API.Services;
 using NetRatel.API.Services.AgentDirectory;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Application.Presence;
 using NetRatel.Shared;
 
 namespace NetRatel.API.Endpoints.Client;
@@ -323,12 +325,18 @@ public static class ClientUpdatesEndpoints
         {
             if (!AgentGatewayIdentityResolver.TryResolve(http.User, out var identity, out var error) || identity is null)
                 return Results.Problem(error, statusCode: StatusCodes.Status403Forbidden);
-            if (!Enum.TryParse<ClientUpdateAttemptState>(request.State, true, out var state) ||
-                state is ClientUpdateAttemptState.Accepted or ClientUpdateAttemptState.GatewayReadmitted)
-                return Results.BadRequest(new { message = "The reported update state is invalid." });
-            await updates.ReportAsync(identity, attemptId, state, request.FailureCode, request.Message, cancellationToken)
-                .ConfigureAwait(false);
-            return Results.Accepted();
+            if (!ClientUpdateAuthorityService.TryParseReportState(request.State, out var state))
+                return Results.BadRequest(new ClientUpdateReportResult(ClientUpdateReportOutcome.InvalidState, "invalid_report_state"));
+            var result = await updates.ReportAsync(identity, attemptId, state, request.FailureCode, request.Message,
+                cancellationToken, request.AdmissionNonce).ConfigureAwait(false);
+            return result.Outcome switch
+            {
+                ClientUpdateReportOutcome.Applied or ClientUpdateReportOutcome.Duplicate => Results.Accepted(value: result),
+                ClientUpdateReportOutcome.InvalidState => Results.BadRequest(result),
+                ClientUpdateReportOutcome.NotFound => Results.NotFound(result),
+                ClientUpdateReportOutcome.Conflict => Results.Conflict(result),
+                _ => throw new InvalidOperationException("Unexpected client update report outcome.")
+            };
         });
 
         return app;
@@ -389,7 +397,13 @@ public static class ClientUpdatesEndpoints
                     from agent in agents.DefaultIfEmpty()
                     join tenant in db.Tenants.AsNoTracking() on attempt.TenantId equals tenant.Id into tenants
                     from tenant in tenants.DefaultIfEmpty()
-                    select new { Attempt = attempt, Agent = agent, Tenant = tenant };
+                    join owner in db.ClientConnectionOwners.AsNoTracking()
+                        on new { attempt.TenantId, attempt.AgentId } equals new { owner.TenantId, owner.AgentId } into owners
+                    from owner in owners.DefaultIfEmpty()
+                    join state in db.AgentClientUpdateStates.AsNoTracking()
+                        on new { attempt.TenantId, attempt.AgentId } equals new { state.TenantId, state.AgentId } into states
+                    from state in states.DefaultIfEmpty()
+                    select new { Attempt = attempt, Agent = agent, Tenant = tenant, Owner = owner, UpdateState = state };
 
         if (!string.IsNullOrWhiteSpace(search))
         {
@@ -430,7 +444,26 @@ public static class ClientUpdatesEndpoints
             row.Agent == null ? null : row.Agent.Name,
             row.Agent == null ? null : row.Agent.DeviceInfoJson,
             row.Agent != null && row.Agent.IsEnabled,
-            row.Attempt.PurgedReleasePublicId != null));
+            row.Attempt.PurgedReleasePublicId != null,
+            row.Attempt.FromVersion,
+            row.Attempt.ConfirmedAtUtc,
+            row.Attempt.ConfirmationId,
+            row.Attempt.ReconciliationState,
+            row.Attempt.ReportedState == null ? null : row.Attempt.ReportedState.ToString(),
+            row.Attempt.ReportedFailureCode,
+            row.Attempt.ReportedMessage,
+            row.Attempt.ReportedAtUtc,
+            row.Owner == null || row.Owner.AcceptanceGuardAtUtc == null ? null : row.Owner.MetadataJson,
+            row.Owner == null || row.Owner.AcceptanceGuardAtUtc == null ? null : row.Owner.LastReceivedAtUtc,
+            row.Owner != null && row.Owner.Active,
+            row.Owner == null ? null : row.Owner.PresenceExpiresAtUtc,
+            row.Owner == null ? null : row.Owner.AuthenticationExpiresAtUtc,
+            row.Owner == null ? null : row.Owner.AcceptanceGuardAtUtc,
+            row.UpdateState == null ? null : row.UpdateState.SuspendedAtUtc,
+            row.UpdateState == null ? null : row.UpdateState.SuspensionReason,
+            row.UpdateState == null ? 0 : row.UpdateState.PolicyRevision,
+            row.UpdateState == null ? null : row.UpdateState.ResumedAtUtc,
+            row.UpdateState == null ? null : row.UpdateState.ResumedBy));
     }
 
     private static ClientUpdateHistoryItemDto MapHistoryItem(ClientUpdateHistoryRow row)
@@ -442,6 +475,13 @@ public static class ClientUpdatesEndpoints
             row.AgentIsEnabled,
             row.AgentDeviceInfoJson,
             row.TenantName ?? $"Tenant {row.TenantId}");
+        string? observedVersion = null;
+        if (row.OwnerMetadataJson is not null)
+        {
+            try { observedVersion = JsonSerializer.Deserialize<PresenceMetadata>(row.OwnerMetadataJson)?.AgentVersion; }
+            catch (JsonException) { /* Legacy metadata is not proof of a running version. */ }
+        }
+        var now = DateTimeOffset.UtcNow;
         return new ClientUpdateHistoryItemDto(
             row.AttemptId,
             row.ReleaseId,
@@ -457,7 +497,12 @@ public static class ClientUpdatesEndpoints
             row.AgentId,
             presentation.DisplayName,
             presentation.HostName,
-            row.LocalPackagePurged);
+            row.LocalPackagePurged,
+            row.FromVersion, observedVersion, row.ObservedAtUtc,
+            row.OwnerActive && row.AcceptanceGuardAtUtc.HasValue && row.PresenceExpiresAtUtc > now && row.AuthenticationExpiresAtUtc > now,
+            row.ConfirmedAtUtc, row.ConfirmationId,
+            row.ReconciliationState, row.ReportedState, row.ReportedFailureCode, row.ReportedMessage, row.ReportedAtUtc,
+            row.SuspendedAtUtc, row.SuspensionReason, row.PolicyRevision, row.ResumedAtUtc, row.ResumedBy);
     }
 
     private static AgentClientUpdateStateDto MapState(ClientUpdateStateRow row)
@@ -524,7 +569,26 @@ public static class ClientUpdatesEndpoints
         string? AgentName,
         string? AgentDeviceInfoJson,
         bool AgentIsEnabled,
-        bool LocalPackagePurged);
+        bool LocalPackagePurged,
+        string FromVersion,
+        DateTimeOffset? ConfirmedAtUtc,
+        Guid? ConfirmationId,
+        string? ReconciliationState,
+        string? ReportedState,
+        string? ReportedFailureCode,
+        string? ReportedMessage,
+        DateTimeOffset? ReportedAtUtc,
+        string? OwnerMetadataJson,
+        DateTimeOffset? ObservedAtUtc,
+        bool OwnerActive,
+        DateTimeOffset? PresenceExpiresAtUtc,
+        DateTimeOffset? AuthenticationExpiresAtUtc,
+        DateTimeOffset? AcceptanceGuardAtUtc,
+        DateTimeOffset? SuspendedAtUtc,
+        string? SuspensionReason,
+        long PolicyRevision,
+        DateTimeOffset? ResumedAtUtc,
+        string? ResumedBy);
 
     private sealed record ClientUpdateStateRow(
         Guid AgentId,
@@ -542,7 +606,7 @@ public static class ClientUpdatesEndpoints
 }
 
 public sealed record ClientUpdateClaimRequest(string RuntimeId, string CurrentVersion, string Channel, string AdmissionNonce);
-public sealed record ClientUpdateResultRequest(string State, string? FailureCode, string? Message);
+public sealed record ClientUpdateResultRequest(string State, string? FailureCode, string? Message, string? AdmissionNonce = null);
 public sealed record ClientUpdateReleaseReconcileRequest(string RuntimeId, string Version);
 public sealed record ClientUpdateReleaseDto(int Id, int? TenantId, ClientEnvironment? Environment, string RuntimeId,
     string Version, string ArtifactUrl, string Sha256, bool Enabled, DateTimeOffset PublishedAt, string PublishedBy,
@@ -552,7 +616,13 @@ public sealed record ClientUpdateAttemptDto(int Id, string ClientIdentity, int R
     Guid AttemptId, int TenantId, Guid AgentId, string? FailureCode, string? TenantName, string? AgentName);
 public sealed record ClientUpdateHistoryItemDto(Guid AttemptId, int ReleaseId, string RuntimeId, string TargetVersion,
     string Status, string? FailureCode, string? Message, DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc,
-    int TenantId, string? TenantName, Guid AgentId, string ClientDisplayName, string? ClientHostName, bool LocalPackagePurged = false);
+    int TenantId, string? TenantName, Guid AgentId, string ClientDisplayName, string? ClientHostName, bool LocalPackagePurged = false,
+    string? FromVersion = null, string? ObservedRunningVersion = null, DateTimeOffset? ObservedAtUtc = null, bool PresenceActive = false,
+    DateTimeOffset? ConfirmedAtUtc = null, Guid? ConfirmationId = null,
+    string? ReconciliationState = null, string? ReportedState = null, string? ReportedFailureCode = null,
+    string? ReportedMessage = null, DateTimeOffset? ReportedAtUtc = null,
+    DateTimeOffset? SuspendedAtUtc = null, string? SuspensionReason = null, long PolicyRevision = 0,
+    DateTimeOffset? ResumedAtUtc = null, string? ResumedBy = null);
 public sealed record ClientUpdateHistoryPageDto(IReadOnlyList<ClientUpdateHistoryItemDto> Items, int Total, int Page, int PageSize);
 public sealed record ClientUpdateReleasePageDto(IReadOnlyList<ClientUpdateReleaseDto> Items, int Total, int Page, int PageSize);
 public sealed record ClientUpdateAttemptDiagnosticDto(Guid AttemptId, int ReleaseId, int TenantId, Guid AgentId,

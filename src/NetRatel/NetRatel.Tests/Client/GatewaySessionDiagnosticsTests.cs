@@ -25,6 +25,7 @@ public sealed class GatewaySessionDiagnosticsTests
     [InlineData(403, "text/html", null, false, "http-proxy-origin-rejection", "unknown", 300)]
     [InlineData(200, "application/grpc", "7", false, "grpc-rejection", "unknown", 300)]
     [InlineData(200, "application/grpc+proto", "16", false, "grpc-rejection", "unknown", 1)]
+    [InlineData(200, "application/grpc", "2", false, "transport-or-stream", "unknown", 1)]
     [InlineData(200, "text/plain", null, false, "http-proxy-origin-rejection", "unknown", 1)]
     [InlineData(403, "application/grpc", "7", false, "http-proxy-origin-rejection", "unknown", 300)]
     public async Task RunAsync_ClassifiesObservedResponse_WithoutLoggingSecretsOrAdmitting(
@@ -69,6 +70,7 @@ public sealed class GatewaySessionDiagnosticsTests
         logs.Should().OnlyContain(message => !message.Contains(Secret, StringComparison.Ordinal));
         extensionStarts.Should().Be(0);
         tokenService.Requests.Should().Be(1);
+        tokenService.Invalidations.Should().Be(grpcStatus == "16" ? 1 : 0);
     }
 
     [Fact]
@@ -215,10 +217,12 @@ public sealed class GatewaySessionDiagnosticsTests
         tokenService.Requests.Should().Be(1);
     }
 
-    [Fact]
-    public async Task RunAsync_RepeatedFailures_AreRateLimited_WhileRetryAndIdentityRemainUnchanged()
+    [Theory]
+    [InlineData(StatusCode.Unavailable)]
+    [InlineData(StatusCode.Unknown)]
+    public async Task RunAsync_RepeatedFailures_AreRateLimited_WhileRetryAndIdentityRemainUnchanged(StatusCode status)
     {
-        var gateway = new RepeatedlyDeniedGateway();
+        var gateway = new RepeatedlyDeniedGateway(status);
         using var host = await BuildHostAsync(gateway);
         using var stopping = new CancellationTokenSource();
         var logs = new ConcurrentQueue<string>();
@@ -241,6 +245,7 @@ public sealed class GatewaySessionDiagnosticsTests
             attempts.Should().OnlyContain(request => request.Authorization == $"Bearer {Secret}");
             gateway.Hellos.Should().HaveCount(3).And.OnlyContain(hello => hello.ClientId == agentId.ToString("D") && hello.TenantId == 7 && hello.Sequence == 0);
             tokenService.Requests.Should().Be(3);
+            tokenService.Invalidations.Should().Be(0, "availability failures cannot invalidate current credentials or provoke refresh storms");
             logs.Should().OnlyContain(message => !message.Contains(Secret, StringComparison.Ordinal));
         }
         finally
@@ -307,6 +312,13 @@ public sealed class GatewaySessionDiagnosticsTests
     private sealed class RecordingTokenService : IAgentTokenService
     {
         internal int Requests { get; private set; }
+        internal int Invalidations { get; private set; }
+        public bool InvalidateAccessToken(string rejectedAccessToken)
+        {
+            rejectedAccessToken.Should().Be(Secret);
+            Invalidations++;
+            return true;
+        }
         public Task<(string AccessToken, DateTimeOffset ExpiresAtUtc)> GetAccessTokenAsync(CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();

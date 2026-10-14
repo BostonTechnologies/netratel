@@ -1014,8 +1014,13 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entity.Property(x => x.RuntimeId).HasMaxLength(32).IsRequired();
             entity.Property(x => x.AdmissionNonceHash).HasMaxLength(64).IsRequired();
             entity.Property(x => x.FailureCode).HasMaxLength(64);
+            entity.Property(x => x.ReconciliationState).HasMaxLength(64);
+            entity.Property(x => x.ReportedState).HasConversion<short>();
+            entity.Property(x => x.ReportedFailureCode).HasMaxLength(64);
+            entity.Property(x => x.ReportedMessage).HasMaxLength(4096);
             entity.HasIndex(x => x.PublicId).IsUnique();
-            entity.HasIndex(x => new { x.AgentId, x.ReleaseId }).IsUnique();
+            entity.HasIndex(x => new { x.AgentId, x.ReleaseId });
+            entity.HasIndex(x => new { x.AgentId, x.ReleaseId, x.AdmissionNonceHash });
             entity.HasIndex(x => new { x.TenantId, x.AgentId, x.UpdatedAtUtc });
             entity.HasOne(x => x.Release)
                 .WithMany(x => x.Attempts)

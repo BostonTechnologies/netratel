@@ -10,8 +10,12 @@ namespace NetRatel.Tests.Client;
 [Trait("category", "manual-integration")]
 public sealed class LinuxUpdaterRollbackTests
 {
-    [Fact]
-    public async Task FailedReadiness_RestoresPreviousVersion_AndPersistsSuspension()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("checksum_mismatch")]
+    [InlineData("target_exists")]
+    [InlineData("service_stop_failed")]
+    public async Task NativeFailure_PreservesPreviousVersion_AndReportsCutoverOutcome(string? preCutoverFailure)
     {
         if (!OperatingSystem.IsLinux())
         {
@@ -39,6 +43,9 @@ public sealed class LinuxUpdaterRollbackTests
         {
             CreateArchive(package, "0.4.112-test");
             var sha256 = Convert.ToHexString(await SHA256.HashDataAsync(File.OpenRead(package))).ToLowerInvariant();
+            if (preCutoverFailure == "checksum_mismatch") sha256 = new string('0', 64);
+            if (preCutoverFailure == "target_exists")
+                Directory.CreateDirectory(Path.Combine(versions, "0.4.112-test"));
             var requestPayload = new
             {
                 version = "0.4.112-test",
@@ -58,7 +65,7 @@ public sealed class LinuxUpdaterRollbackTests
             var systemctl = Path.Combine(fakeBin, "systemctl");
             var serviceState = Path.Combine(root, "service-running");
             await File.WriteAllTextAsync(serviceState, "running");
-            await File.WriteAllTextAsync(systemctl, "#!/usr/bin/env bash\ncase \"$1\" in\n  stop) rm -f \"$FAKE_SERVICE_STATE\" ;;\n  start) touch \"$FAKE_SERVICE_STATE\"; printf '{\"version\":\"0.4.111\"}' > \"$FAKE_PRESENCE_PATH\" ;;\n  is-active) test -f \"$FAKE_SERVICE_STATE\" ;;\nesac\n");
+            await File.WriteAllTextAsync(systemctl, "#!/usr/bin/env bash\ncase \"$1\" in\n  stop) if [ \"${FAKE_STOP_FAILS:-false}\" != true ]; then rm -f \"$FAKE_SERVICE_STATE\"; fi ;;\n  start) touch \"$FAKE_SERVICE_STATE\"; printf '{\"version\":\"0.4.111\"}' > \"$FAKE_PRESENCE_PATH\" ;;\n  is-active) test -f \"$FAKE_SERVICE_STATE\" ;;\nesac\n");
             File.SetUnixFileMode(systemctl, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
             var repositoryRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../../"));
@@ -76,21 +83,36 @@ public sealed class LinuxUpdaterRollbackTests
             start.Environment["NetRatel_UPDATE_ROLLBACK_CHECKIN_TIMEOUT"] = "1";
             start.Environment["FAKE_PRESENCE_PATH"] = presence;
             start.Environment["FAKE_SERVICE_STATE"] = serviceState;
+            start.Environment["FAKE_STOP_FAILS"] = (preCutoverFailure == "service_stop_failed").ToString().ToLowerInvariant();
             start.Environment["PATH"] = $"{fakeBin}:/usr/bin:/bin";
 
             using var process = Process.Start(start)!;
-            await process.WaitForExitAsync();
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            try
+            {
+                await process.WaitForExitAsync(deadline.Token);
+            }
+            finally
+            {
+                if (!process.HasExited) process.Kill(entireProcessTree: true);
+            }
 
-            process.ExitCode.Should().Be(2);
+            process.ExitCode.Should().Be(preCutoverFailure is null ? 2 : 1);
             new FileInfo(current).ResolveLinkTarget(returnFinalTarget: true)!.FullName.Should().Be(previous);
-            Directory.EnumerateDirectories(Path.Combine(root, "failed"), "0.4.112-test-*").Should().ContainSingle();
+            var failedTargets = Directory.EnumerateDirectories(Path.Combine(root, "failed"), "0.4.112-test-*");
+            if (preCutoverFailure is null) failedTargets.Should().ContainSingle();
+            else failedTargets.Should().BeEmpty();
 
             var result = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(state, "result.json")));
-            result.RootElement.GetProperty("state").GetString().Should().Be("RolledBack");
+            result.RootElement.GetProperty("state").GetString().Should().Be(preCutoverFailure is null ? "RolledBack" : "FailedPreActivation");
             result.RootElement.GetProperty("fromVersion").GetString().Should().Be("0.4.111");
             result.RootElement.GetProperty("toVersion").GetString().Should().Be("0.4.112-test");
-            File.Exists(Path.Combine(state, "suspension.json")).Should().BeTrue();
-            File.GetUnixFileMode(Path.Combine(state, "suspension.json")).Should().Be(UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            if (preCutoverFailure is null)
+            {
+                File.Exists(Path.Combine(state, "suspension.json")).Should().BeTrue();
+                File.GetUnixFileMode(Path.Combine(state, "suspension.json")).Should().Be(UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+            else File.Exists(Path.Combine(state, "suspension.json")).Should().BeFalse();
         }
         finally
         {

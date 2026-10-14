@@ -120,6 +120,58 @@ public sealed class ClientUpdateVersioningTests
     }
 
     [Fact]
+    public async Task WindowsUpdater_PreActivationResultUsesBoundedCodeAndPreservesProtectedErrorDetails()
+    {
+        var repositoryRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../../"));
+        var updater = await File.ReadAllTextAsync(Path.Combine(repositoryRoot, "src/NetRatel/NetRatel.Client/tools/netratel-update.ps1"));
+        var helperStart = updater.IndexOf("function Write-Result(", StringComparison.Ordinal);
+        var helperEnd = updater.IndexOf("function Set-NetRatelServiceImagePath", helperStart, StringComparison.Ordinal);
+        Assert.True(helperStart >= 0 && helperEnd > helperStart);
+        var producer = updater.Split('\n').Single(line => line.Contains("Write-Result \"FailedPreActivation\"", StringComparison.Ordinal));
+        var root = Path.Combine(Path.GetTempPath(), $"netratel-updater-result-contract-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var resultPath = Path.Combine(root, "result.json");
+        var harnessPath = Path.Combine(root, "verify.ps1");
+        await File.WriteAllTextAsync(harnessPath, $$"""
+            $ErrorActionPreference = 'Stop'
+            $script:TrustedOutputsReady = $true
+            $script:UpdateLockAcquired = $true
+            $script:AttemptId = '{{Guid.NewGuid():D}}'
+            $script:ReleaseId = '{{Guid.NewGuid():D}}'
+            $script:ResultPath = {{PowerShellLiteral(resultPath)}}
+            {{updater[helperStart..helperEnd]}}
+            try { throw ('x' * 4096) } catch {
+            {{producer}}
+            }
+            """);
+        try
+        {
+            using var process = new Process { StartInfo = new ProcessStartInfo(OperatingSystem.IsWindows()
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe") : "pwsh")
+                { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false } };
+            process.StartInfo.ArgumentList.Add("-NoProfile");
+            process.StartInfo.ArgumentList.Add("-NonInteractive");
+            process.StartInfo.ArgumentList.Add("-File");
+            process.StartInfo.ArgumentList.Add(harnessPath);
+            try { process.Start(); }
+            catch (System.ComponentModel.Win32Exception) { Assert.Skip("PowerShell is required to execute the native Windows result writer."); }
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            try { await process.WaitForExitAsync(timeout.Token); }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+                if (!process.HasExited) { process.Kill(entireProcessTree: true); await process.WaitForExitAsync(); }
+                throw new TimeoutException("Native Windows result writer did not finish within 20 seconds.");
+            }
+            Assert.True(process.ExitCode == 0, await process.StandardError.ReadToEndAsync());
+            using var result = JsonDocument.Parse(await File.ReadAllTextAsync(resultPath));
+            Assert.Equal("FailedPreActivation", result.RootElement.GetProperty("state").GetString());
+            Assert.Equal("native_pre_activation_failed", result.RootElement.GetProperty("failureCode").GetString());
+            Assert.Equal(new string('x', 1024), result.RootElement.GetProperty("error").GetString());
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public void WindowsUpdater_Sets_And_Verifies_The_Service_ImagePath_Without_ScExe_Quoting()
     {
         var repositoryRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../../"));
