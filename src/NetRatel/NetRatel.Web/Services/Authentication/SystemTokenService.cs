@@ -21,8 +21,7 @@ public class SystemTokenService : ISystemTokenService
             return _token;
 
         var client = _factory.CreateClient("SystemApiNoAuth");
-        var apiBase = _config["ApiBaseUrl"] ?? "http://localhost:5005/";
-        var request = new HttpRequestMessage(HttpMethod.Post, $"{apiBase.TrimEnd('/')}/api/v1/system/token");
+        var request = new HttpRequestMessage(HttpMethod.Post, $"{client.BaseAddress!.AbsoluteUri.TrimEnd('/')}/api/v1/system/token");
         var secret = _config["SystemTokenSecret"] ?? string.Empty;
         request.Headers.Add("X-System-Secret", secret);
 

@@ -98,6 +98,10 @@ jobs:
           dotnet publish src/NetRatel/NetRatel.Mcp/NetRatel.Mcp.csproj --configuration Release --no-restore --runtime linux-x64 --self-contained false --output artifacts/mcp-stdio/netratel-mcp-linux-x64
           cp LICENSE NOTICE artifacts/cli/netratel-cli-linux-x64/
           cp LICENSE NOTICE artifacts/mcp-stdio/netratel-mcp-linux-x64/
+          cp docs/integrations/CLI_AND_MCP.md artifacts/cli/netratel-cli-linux-x64/
+          cp docs/integrations/CLI_AND_MCP.md artifacts/mcp-stdio/netratel-mcp-linux-x64/
+          python3 tools/ci/prepare-bundle-documentation.py --bundle artifacts/cli/netratel-cli-linux-x64 --commit "$GITHUB_SHA" --document CLI_AND_MCP.md=docs/integrations/CLI_AND_MCP.md
+          python3 tools/ci/prepare-bundle-documentation.py --bundle artifacts/mcp-stdio/netratel-mcp-linux-x64 --commit "$GITHUB_SHA" --document CLI_AND_MCP.md=docs/integrations/CLI_AND_MCP.md
           python3 tools/ci/generate-runtime-sbom.py \
             --project-assets src/NetRatel/NetRatel.Cli/obj/project.assets.json \
             --project-assets src/NetRatel/NetRatel.Mcp/obj/project.assets.json \
@@ -111,10 +115,11 @@ jobs:
           cp "artifacts/cli/NetRatel.Cli.${VERSION}.nupkg" artifacts/
           tar -C artifacts/cli -czf "artifacts/netratel-cli-${VERSION}-linux-x64.tar.gz" netratel-cli-linux-x64
           tar -C artifacts/mcp-stdio -czf "artifacts/netratel-mcp-stdio-${VERSION}-linux-x64.tar.gz" netratel-mcp-linux-x64
-          cp release/compose.images.yaml release/compose.external-postgres.yaml release/compose.public-https.yaml release/nginx.public-https.conf release/compose.mcp-http.yaml release/.env.images.example release/INSTALL.md LICENSE NOTICE artifacts/release-bundle/
+          cp release/compose.images.yaml release/compose.external-postgres.yaml release/compose.public-https.yaml release/nginx.public-https.conf release/compose.mcp-http.yaml release/compose.mcp-http.ports.yaml release/compose.mcp-http.config.yaml release/compose.mcp-http.secrets.yaml release/compose.setup.yaml release/.env.mcp-http.example release/.env.mcp-http.outbound.example release/.env.mcp-http.api.example release/.env.images.example release/INSTALL.md LICENSE NOTICE artifacts/release-bundle/
           python3 tools/ci/product-version.py --manifest-output artifacts/release-bundle/release-manifest.json
           cp -a docs artifacts/release-bundle/
           cp README.md artifacts/release-bundle/
+          python3 tools/ci/prepare-bundle-documentation.py --bundle artifacts/release-bundle --commit "$GITHUB_SHA"
           tar -C artifacts/release-bundle -czf "artifacts/netratel-compose-${VERSION}.tar.gz" .
           tools/ci/verify-release-local-first-profiles.sh --bundle "artifacts/netratel-compose-${VERSION}.tar.gz"
       - env:

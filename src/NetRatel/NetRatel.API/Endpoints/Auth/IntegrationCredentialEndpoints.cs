@@ -120,8 +120,7 @@ public static class IntegrationCredentialEndpoints
             [FromBody] CreateIntegrationCredentialRequest request,
             ClaimsPrincipal principal,
             IIntegrationCredentialService credentials,
-            IEffectiveAccessService access,
-            OrchestratorDbContext applicationDb,
+            IIntegrationCredentialGrantValidator validator,
             HttpContext context,
             CancellationToken ct) =>
         {
@@ -133,52 +132,16 @@ public static class IntegrationCredentialEndpoints
 
             var grants = request.Grants ?? [];
             var instancePermissions = request.InstancePermissions ?? [];
-            if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Trim().Length > 128)
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["name"] = ["Enter an integration name of at most 128 characters."] });
-            if (!Enum.IsDefined(request.Purpose))
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["purpose"] = ["Choose a supported connection type."] });
-            var now = DateTimeOffset.UtcNow;
-            if (request.ExpiresAtUtc <= now || request.ExpiresAtUtc > now.AddDays(365))
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["expiresAtUtc"] = ["Choose an expiry after now and within one year."] });
-            if (request.Purpose == IntegrationCredentialPurpose.HttpMcp &&
-                !McpResourceUri.TryNormalize(request.Resource, out _))
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["resource"] = ["Enter the public HTTPS MCP server URL ending in /mcp, without a query, fragment, or user information."] });
-            if (request.Purpose == IntegrationCredentialPurpose.Api && !string.IsNullOrWhiteSpace(request.Resource))
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["resource"] = ["API integrations do not use an HTTP MCP server URL."] });
-            if ((grants.Count == 0 && instancePermissions.Count == 0) || grants.Count > 64 ||
-                grants.Distinct().Count() != grants.Count ||
-                grants.Any(grant => grant.TenantId <= 0 || string.IsNullOrWhiteSpace(grant.Permission) ||
-                    !NetRatelPermissions.All.Contains(grant.Permission.Trim()) ||
-                    string.Equals(grant.Permission.Trim(), NetRatelPermissions.IntegrationManagement, StringComparison.Ordinal)))
+            var create = new IntegrationCredentialCreateRequest(request.Name, request.Purpose, request.ExpiresAtUtc,
+                grants, request.Resource, instancePermissions);
+            try
             {
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["grants"] = ["Choose at least one permission, with no duplicate or nondelegable tenant grants."] });
+                await validator.ValidateAsync(principal, create, ct).ConfigureAwait(false);
             }
-            if (instancePermissions.Count > 32 || instancePermissions.Distinct(StringComparer.Ordinal).Count() != instancePermissions.Count ||
-                instancePermissions.Any(permission => string.IsNullOrWhiteSpace(permission) ||
-                    !NetRatelPermissions.All.Contains(permission.Trim()) ||
-                    string.Equals(permission.Trim(), NetRatelPermissions.IntegrationManagement, StringComparison.Ordinal)))
+            catch (IntegrationCredentialGrantValidationException exception)
             {
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["instancePermissions"] = ["Choose distinct, delegable server-level permissions; integration.manage cannot be delegated."] });
-            }
-
-            var tenantIds = grants.Select(grant => grant.TenantId).Distinct().ToArray();
-            var existingTenantCount = await applicationDb.Tenants.CountAsync(tenant => tenantIds.Contains(tenant.Id), ct).ConfigureAwait(false);
-            if (existingTenantCount != tenantIds.Length)
-            {
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["grants"] = ["Every credential grant must identify an existing tenant."] });
-            }
-
-            foreach (var grant in grants)
-            {
-                if (!await access.AuthorizeAsync(principal, grant.Permission.Trim(), grant.TenantId, ct).ConfigureAwait(false))
-                {
-                    return Results.Forbid();
-                }
-            }
-            foreach (var permission in instancePermissions)
-            {
-                if (!await access.AuthorizeAsync(principal, permission.Trim(), tenantId: null, ct).ConfigureAwait(false))
-                    return Results.Forbid();
+                return exception.Forbidden ? Results.Forbid() : Results.ValidationProblem(
+                    new Dictionary<string, string[]> { [exception.Field] = ["Review the credential fields and selected access, then retry."] });
             }
 
             try

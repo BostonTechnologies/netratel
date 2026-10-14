@@ -538,7 +538,7 @@ def finalize_bundle(directory, version, revision, images, input_receipt):
         archive = source_archive
         with tarfile.open(archive) as source:
             source.extractall(bundle, filter="data")
-        for required in ("INSTALL.md", "compose.images.yaml", "compose.mcp-http.yaml", ".env.images.example", "LICENSE", "NOTICE"):
+        for required in ("INSTALL.md", "compose.images.yaml", "compose.mcp-http.yaml", "compose.mcp-http.ports.yaml", "compose.mcp-http.config.yaml", "compose.mcp-http.secrets.yaml", "compose.setup.yaml", ".env.mcp-http.example", ".env.mcp-http.outbound.example", ".env.mcp-http.api.example", ".env.images.example", "LICENSE", "NOTICE"):
             if not (bundle / required).is_file():
                 raise ValueError(f"Bundle lacks {required}")
         lines = (bundle / ".env.images.example").read_text().splitlines()

@@ -35,3 +35,13 @@ Read this file at the start of every task in this repository, especially before 
 - Do not rename or clone generic CI tests and jobs for a release candidate. Extend the existing generic checks when coverage changes.
 - For a version bump, verify that changing only `Directory.Build.props` updates every generated version output. Keep release notes and historical evidence separate from configuration.
 - Preserve partial-publication evidence and journals for recovery. Do not claim release completion from a passed rehearsal, a tag, or a published release page alone.
+
+## Documentation placement and integrity
+
+- Before creating documentation, inspect `docs/README.md` and the existing category tree. Update the existing canonical guide first; otherwise put the new document inside the closest existing category.
+- Do not add ad hoc reports, plans, release notes, troubleshooting notes or setup guides directly to `docs/` or the repository root. A new category needs a clear durable purpose and an entry in `docs/README.md`.
+- HTTP MCP documentation belongs under `docs/mcp-http/`; deployment instructions belong under `docs/deployment/`. CLI/stdio and shared tooling configuration belong under `docs/integrations/`.
+- The only docs-root files are `README.md` and the distribution-required legal notice `THIRD-PARTY-NOTICES.txt`. Do not create redirect stubs for moved documents. Record old-to-new destinations in `docs/implementation/documentation-move-map.md`.
+- Move documents with all inbound/outbound links, generated/distribution references and assets updated. Preserve legal notices, published assets/tags, useful content and historical evidence; check path case on Linux.
+- Keep current instructions distinct from historical evidence and implementation plans. Never include real credentials, private deployment values or unredacted logs in examples.
+- Run `tools/ci/validate-layout.sh` for documentation placement/local-link validation. Keep this check lightweight and part of existing fast CI; do not add an external-link crawler or mandatory deployment acceptance.

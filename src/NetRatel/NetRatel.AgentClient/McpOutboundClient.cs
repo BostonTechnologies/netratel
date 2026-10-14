@@ -130,6 +130,9 @@ public sealed class NetRatelMcpOutboundOptions
     {
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(configuration);
+        configuration = NetRatelConfigurationService.ResolveSecretReferences(configuration);
+        var validation = new AgentClientConfigurationValidator(ConfigurationSurface.HttpMcpOutbound).Validate(null, configuration);
+        if (validation.Failed) throw new AgentClientValidationException(string.Join(" ", validation.Failures));
 
         if (!Uri.TryCreate(configuration.ApiBaseUrl, UriKind.Absolute, out var configuredApiBaseUrl) || !Equivalent(target.ApiBaseUri, configuredApiBaseUrl))
         {
@@ -157,7 +160,7 @@ public sealed class NetRatelMcpOutboundOptions
             Required(configuration.OidcClientId, "oidcClientId"),
             Required(configuration.OidcUsername, "oidcUsername"),
             Required(configuration.OidcAppPassword, "oidcAppPassword"),
-            Required(configuration.OidcScope, "oidcScope"));
+            string.IsNullOrWhiteSpace(configuration.OidcScope) ? AgentClientConfiguration.DefaultScope : configuration.OidcScope);
     }
 
     private static NetRatelMcpOutboundOptions CreateApiM2MFromIsolatedConfiguration(NetRatelMcpTarget target, AgentClientConfiguration configuration)
@@ -247,7 +250,10 @@ public sealed class NetRatelMcpAccessTokenCache
     private bool IsUsable() => !string.IsNullOrWhiteSpace(_accessToken) && _expiresAt > DateTimeOffset.UtcNow.AddSeconds(30);
 }
 
-public sealed record NetRatelMcpAccessToken(string Value, DateTimeOffset ExpiresAt);
+public sealed record NetRatelMcpAccessToken(string Value, DateTimeOffset ExpiresAt)
+{
+    public override string ToString() => $"NetRatelMcpAccessToken {{ ExpiresAt = {ExpiresAt} }}";
+}
 
 public sealed class NetRatelMcpOutboundClient(
     IHttpClientFactory httpClientFactory,
@@ -359,7 +365,7 @@ public sealed class NetRatelMcpOutboundClient(
 
     private static void ValidateRelativeApiPath(string path)
     {
-        if (string.IsNullOrWhiteSpace(path) || !path.StartsWith("/", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal))
+        if (string.IsNullOrWhiteSpace(path) || !path.StartsWith("/", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal) || path.Contains('\\'))
         {
             throw new AgentClientValidationException("MCP outbound API paths must be root-relative paths.");
         }
@@ -385,8 +391,9 @@ public static class NetRatelMcpOutboundServiceCollectionExtensions
         {
             client.BaseAddress = options.Target.ApiBaseUri;
             client.Timeout = options.ApiTimeout;
-        });
-        services.AddHttpClient(NetRatelMcpOutboundClient.TokenHttpClientName, client => client.Timeout = options.TokenTimeout);
+        }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+        services.AddHttpClient(NetRatelMcpOutboundClient.TokenHttpClientName, client => client.Timeout = options.TokenTimeout)
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
         services.AddSingleton<INetRatelMcpOutboundClient, NetRatelMcpOutboundClient>();
         services.AddSingleton<IMcpOperatorTaskV2Client, McpOperatorTaskV2Client>();
         services.AddSingleton<IMcpOperatorRequestV2Client, McpOperatorRequestV2Client>();

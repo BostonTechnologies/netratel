@@ -17,7 +17,30 @@ public interface IM2MDeploymentProfileResolver : IServiceClientDeploymentCatalog
 }
 
 /// <summary>One deployment boundary adapts the historical underscore environment alias into one complete profile.</summary>
-public sealed class M2MDeploymentClientsOptions : Dictionary<string, M2MClientRegistration> { }
+public sealed class M2MDeploymentClientsOptions : Dictionary<string, M2MClientRegistration>
+{
+    public static M2MDeploymentClientsOptions FromConfiguration(IConfiguration configuration)
+    {
+        var clients = configuration.GetSection("M2MClients").Get<M2MDeploymentClientsOptions>() ?? new();
+        ResolveSecretSources(configuration, clients);
+        return clients;
+    }
+
+    public static void ResolveSecretSources(IConfiguration configuration, M2MDeploymentClientsOptions clients)
+    {
+        foreach (var id in clients.Keys.ToArray())
+        {
+            var metadata = clients[id];
+            var selected = NetRatel.Shared.Connectivity.SecretFileReference.Select(configuration,
+                $"M2MClients:{id}:Secret", $"M2MClients:{id}:SecretFile", $"M2MClients:{id}:Secret_FILE");
+            clients[id] = new M2MClientRegistration
+            {
+                Secret = selected.Inline, SecretFile = selected.File,
+                AllowedAudiences = metadata.AllowedAudiences, AllowedScopes = metadata.AllowedScopes
+            };
+        }
+    }
+}
 
 public sealed class M2MDeploymentOptionsValidator : IValidateOptions<M2MOptions>
 {
@@ -60,7 +83,7 @@ public sealed class M2MDeploymentProfileResolver(IOptionsMonitor<M2MOptions> set
 {
     public M2MDeploymentProfileResolver(IConfiguration configuration) : this(
         new FixedMonitor<M2MOptions>(configuration.GetSection("M2M").Get<M2MOptions>() ?? new() { Authority = "", Audience = "" }),
-        new FixedMonitor<M2MDeploymentClientsOptions>(configuration.GetSection("M2MClients").Get<M2MDeploymentClientsOptions>() ?? new())) { }
+        new FixedMonitor<M2MDeploymentClientsOptions>(M2MDeploymentClientsOptions.FromConfiguration(configuration))) { }
     public M2MDeploymentProfile? Resolve(string clientId) => List().SingleOrDefault(x => x.ClientId == clientId);
     public bool OwnsIdentity(string clientId)
     {
@@ -82,6 +105,9 @@ public sealed class M2MDeploymentProfileResolver(IOptionsMonitor<M2MOptions> set
             .Select(x => x[1]).Distinct(StringComparer.Ordinal).ToArray();
         foreach (var prefix in prefixes)
         {
+            // The host's typed profile has already selected its provider/secret source.
+            // Retain the raw-environment adapter only for otherwise unrepresented aliases.
+            if (profiles.ContainsKey(prefix)) continue;
             var fallback = profiles.GetValueOrDefault(prefix) ?? new();
             var secret = environment.SingleOrDefault(x => x.Key == $"M2MClients__{prefix}__Secret").Value;
             profiles[prefix] = new()

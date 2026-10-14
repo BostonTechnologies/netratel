@@ -21,7 +21,10 @@ public sealed record IntegrationCredentialSecret(
     string PublicId,
     string TokenPrefix,
     string Secret,
-    DateTimeOffset ExpiresAtUtc);
+    DateTimeOffset ExpiresAtUtc)
+{
+    public override string ToString() => $"Integration credential {CredentialId} (secret redacted)";
+}
 
 public sealed record IntegrationCredentialSummary(
     string Id,
@@ -71,7 +74,7 @@ public interface IIntegrationCredentialService
 }
 
 /// <summary>Owns opaque credential generation, one-way verification, and revocation.</summary>
-public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db) : IIntegrationCredentialService, IIntegrationCredentialCurrentVerifier
+public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, TimeProvider? clock = null) : IIntegrationCredentialService, IIntegrationCredentialCurrentVerifier
 {
     public const string ApiTokenPrefix = "nrt_ic_";
     private static readonly TimeSpan MaximumLifetime = TimeSpan.FromDays(365);
@@ -80,7 +83,7 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db) :
     {
         var name = request.Name?.Trim();
         var resource = request.Resource?.Trim();
-        var now = DateTimeOffset.UtcNow;
+        var now = (clock ?? TimeProvider.System).GetUtcNow();
         var suppliedGrants = request.Grants ?? [];
         var suppliedInstancePermissions = request.InstancePermissions ?? [];
         var grants = suppliedGrants
@@ -175,7 +178,7 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db) :
 
         if (credential.RevokedAtUtc is null)
         {
-            credential.RevokedAtUtc = DateTimeOffset.UtcNow;
+            credential.RevokedAtUtc = (clock ?? TimeProvider.System).GetUtcNow();
             credential.RevokedByPrincipalId = revokedByPrincipalId;
             await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -190,13 +193,13 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db) :
             return null;
         }
 
-        var now = DateTimeOffset.UtcNow;
+        var now = (clock ?? TimeProvider.System).GetUtcNow();
         var credential = await db.IntegrationCredentials
             .Include(candidate => candidate.Grants)
             .Include(candidate => candidate.InstanceGrants)
             .SingleOrDefaultAsync(candidate => candidate.SecretHash == Hash(secret) && candidate.Purpose == purpose &&
                 candidate.RevokedAtUtc == null && candidate.ExpiresAtUtc > now, cancellationToken).ConfigureAwait(false);
-        if (credential is null)
+        if (credential is null || !await PairingDeliveryIsCurrentAsync(credential, now, cancellationToken).ConfigureAwait(false))
         {
             return null;
         }
@@ -225,13 +228,14 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db) :
         if (string.IsNullOrWhiteSpace(credentialId))
             return null;
 
-        var now = DateTimeOffset.UtcNow;
+        var now = (clock ?? TimeProvider.System).GetUtcNow();
         var credential = await db.IntegrationCredentials
             .Include(candidate => candidate.Grants)
             .Include(candidate => candidate.InstanceGrants)
             .SingleOrDefaultAsync(candidate => candidate.Id == credentialId && candidate.Purpose == purpose &&
                 candidate.RevokedAtUtc == null, cancellationToken).ConfigureAwait(false);
-        if (credential is null || credential.ExpiresAtUtc <= now)
+        if (credential is null || credential.ExpiresAtUtc <= now ||
+            !await PairingDeliveryIsCurrentAsync(credential, now, cancellationToken).ConfigureAwait(false))
             return null;
 
         var localOwner = await db.Users.SingleOrDefaultAsync(user => user.PrincipalId == credential.OwnerPrincipalId, cancellationToken).ConfigureAwait(false);
@@ -244,6 +248,14 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db) :
             Resource = credential.Resource,
             InstancePermissions = credential.InstanceGrants.Select(grant => grant.Permission).ToArray()
         };
+    }
+
+    private Task<bool> PairingDeliveryIsCurrentAsync(IntegrationCredential credential, DateTimeOffset now, CancellationToken ct)
+    {
+        if (credential.PairingRequestId is null || credential.PairingAcknowledgedAtUtc is not null) return Task.FromResult(true);
+        // Enforce the orphan deadline on every authentication, even if periodic cleanup cannot run.
+        return db.IntegrationPairingRequests.AsNoTracking().AnyAsync(request => request.Id == credential.PairingRequestId &&
+            request.CredentialId == credential.Id && request.State == IntegrationPairingState.Issued && request.DeliveryExpiresAtUtc > now, ct);
     }
 
     public static string Hash(string secret) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(secret)));

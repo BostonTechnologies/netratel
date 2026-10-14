@@ -29,6 +29,23 @@ printf '%s\n' 'bostec.service-link.incident-only.v1' 'bostec-service-link.incide
 git -C "$accepted_fixture" add README.md
 "$accepted_fixture/tools/ci/check-public-disclosure.sh" >/dev/null
 
+# Only reviewed product templates are public; similarly named private settings
+# remain outside the exact allowlist.
+for template in .env.mcp-http.example .env.mcp-http.outbound.example .env.mcp-http.api.example \
+  compose.mcp-http.yaml compose.mcp-http.config.yaml compose.mcp-http.ports.yaml compose.mcp-http.secrets.yaml compose.setup.yaml; do
+  printf '# Synthetic public template\n' > "$accepted_fixture/$template"
+  git -C "$accepted_fixture" add "$template"
+done
+"$accepted_fixture/tools/ci/check-public-disclosure.sh" >/dev/null
+
+private_mcp_fixture="$(new_fixture private-mcp-settings)"
+printf 'synthetic private settings only\n' > "$private_mcp_fixture/.env.mcp-http.private"
+git -C "$private_mcp_fixture" add .env.mcp-http.private
+if "$private_mcp_fixture/tools/ci/check-public-disclosure.sh" >/dev/null 2>&1; then
+  echo "Disclosure gate accepted unlisted private MCP configuration." >&2
+  exit 1
+fi
+
 forbidden_path_fixture="$(new_fixture forbidden-path)"
 printf 'synthetic only\n' > "$forbidden_path_fixture/.env"
 git -C "$forbidden_path_fixture" add .env

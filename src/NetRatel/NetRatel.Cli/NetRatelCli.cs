@@ -1,3 +1,4 @@
+using NetRatel.AgentClient;
 using System.CommandLine;
 using System.CommandLine.Invocation;
 using System.CommandLine.Parsing;
@@ -64,6 +65,9 @@ internal static partial class NetRatelCli
         };
 
         globals.AddTo(root);
+        root.AddCommand(BuildSetupCommand(runtime, globals, "setup", "Explicit Termina client or HTTP hosting setup.", "setup"));
+        root.AddCommand(BuildSetupCommand(runtime, globals, "doctor", "Bounded read-only configuration and transport checks.", "doctor"));
+        root.AddCommand(BuildProfileCommand(runtime));
         root.AddCommand(BuildAuthCommand(runtime, globals));
         root.AddCommand(BuildConfigCommand(runtime, globals));
         root.AddCommand(BuildHealthCommand(runtime, globals));
@@ -1617,12 +1621,15 @@ internal static partial class NetRatelCli
     {
         var auth = new Command("auth", "Configure and inspect explicit OIDC or integration-credential authentication.");
 
+        auth.AddCommand(BuildSetupCommand(runtime, globals, "login", "Explicit browser-approved login through the shared setup wizard.", "setup"));
+
         var configure = new Command("configure", "Persist local CLI authentication settings.");
         configure.SetHandler(async ctx =>
         {
             var config = LoadConfig(ctx, globals, requireAuth: false);
             var store = new CliConfigStore(ctx.ParseResult.GetValueForOption(globals.ConfigPath));
-            store.Save(config.File.Merge(config.Overrides));
+            var effective = config.File.Merge(config.Overrides).ToAgent();
+            new NetRatelConfigurationService().SaveProfile(store.Path, effective, ConfigurationSurface.Cli, replace: File.Exists(store.Path));
             await WriteJsonAsync(runtime, new { saved = true, path = store.Path }, ctx, globals).ConfigureAwait(false);
         });
         auth.AddCommand(configure);
@@ -1669,6 +1676,7 @@ internal static partial class NetRatelCli
     private static Command BuildConfigCommand(CliRuntime runtime, GlobalOptions globals)
     {
         var config = new Command("config", "Read and edit local NetRatel CLI config.");
+        config.AddCommand(BuildSetupCommand(runtime, globals, "validate", "Validate effective configuration and print redacted source diagnostics.", "config", "validate"));
         var keyArg = new Argument<string>("key");
         var valueArg = new Argument<string>("value");
 
@@ -1695,7 +1703,7 @@ internal static partial class NetRatelCli
             var store = new CliConfigStore(ctx.ParseResult.GetValueForOption(globals.ConfigPath));
             if (NormalizeConfigKey(ctx.ParseResult.GetValueForArgument(keyArg)) is "integrationCredential")
             {
-                throw new CliValidationException("Set an integration credential through NETRATEL_CLI_INTEGRATION_TOKEN or a protected config file, not a command-line argument.");
+                throw new CliValidationException("Set credentials through dedicated environment variables or a protected secret file, not a command-line argument.");
             }
             var current = store.Load();
             var updated = SetConfigValue(current, ctx.ParseResult.GetValueForArgument(keyArg), ctx.ParseResult.GetValueForArgument(valueArg));
@@ -3349,18 +3357,30 @@ internal static partial class NetRatelCli
 
     private static LoadedConfig LoadConfig(CliInvocationContext ctx, GlobalOptions globals, bool requireAuth = true)
     {
-        var store = new CliConfigStore(ctx.ParseResult.GetValueForOption(globals.ConfigPath));
-        var file = store.Load();
-        var env = CliConfig.FromEnvironment(Environment.GetEnvironmentVariable);
-        var overrides = new CliConfig(
-            ctx.ParseResult.GetValueForOption(globals.ApiBaseUrl),
-            ctx.ParseResult.GetValueForOption(globals.TokenUrl),
-            ctx.ParseResult.GetValueForOption(globals.ClientId),
-            ctx.ParseResult.GetValueForOption(globals.Username),
-            ctx.ParseResult.GetValueForOption(globals.AppPassword),
-            ctx.ParseResult.GetValueForOption(globals.Scope));
-        var merged = file.Merge(env).Merge(overrides);
-        return new LoadedConfig(file, env.Merge(overrides), requireAuth ? merged.Resolve() : null);
+        try
+        {
+            var explicitPath = ctx.ParseResult.GetValueForOption(globals.ConfigPath);
+            var store = new CliConfigStore(explicitPath);
+            var file = store.Load();
+            var env = CliConfig.FromEnvironment(Environment.GetEnvironmentVariable);
+            var overrides = new CliConfig(
+                ctx.ParseResult.GetValueForOption(globals.ApiBaseUrl),
+                ctx.ParseResult.GetValueForOption(globals.TokenUrl),
+                ctx.ParseResult.GetValueForOption(globals.ClientId),
+                ctx.ParseResult.GetValueForOption(globals.Username),
+                null,
+                ctx.ParseResult.GetValueForOption(globals.Scope));
+            var effective = new NetRatelConfigurationService().Load(new(ConfigurationSurface.Cli,
+                explicitPath, CommandOptions: overrides.ToAgent()),
+                allowCreate: ctx.ParseResult.CommandResult.Command.Name == "configure");
+            var merged = CliConfig.FromAgent(effective.Configuration);
+            // Compatibility adapter for the published password option. New commands use secret-file/env input.
+            if (ctx.ParseResult.GetValueForOption(globals.AppPassword) is { } legacyPassword)
+                merged = merged with { OidcAppPassword = legacyPassword, OidcAppPasswordFile = null };
+            // Keep legacy command return shape while consuming the shared immutable effective values.
+            return new LoadedConfig(CliConfig.Empty, merged, requireAuth ? merged.Resolve() : null);
+        }
+        catch (AgentClientValidationException exception) { throw new CliValidationException(exception.Message); }
     }
 
     private static async Task WriteResponseBodyAsync(CliRuntime runtime, string body, int statusCode, CliInvocationContext ctx, GlobalOptions globals)
@@ -3405,6 +3425,7 @@ internal static partial class NetRatelCli
     private static (string Code, string Message, int ExitCode, string? ResponseBody) MapException(Exception exception) => exception switch
     {
         CliValidationException ex => ("validation_error", ex.Message, CliExitCodes.ValidationError, null),
+        AgentClientValidationException ex => ("validation_error", ex.Message, CliExitCodes.ValidationError, null),
         CliRemoteException ex => (ex.Code, ex.Message, ex.StatusCode is 401 or 403 ? CliExitCodes.AuthError : CliExitCodes.RemoteError, ex.ResponseBody),
         HttpRequestException ex => ("remote_request_failed", ex.Message, CliExitCodes.RemoteError, null),
         TaskCanceledException => ("remote_timeout", "Remote request timed out.", CliExitCodes.RemoteError, null),
@@ -3534,6 +3555,7 @@ internal static partial class NetRatelCli
 
     private static CliConfig Redact(CliConfig config) => config with
     {
+        ApiM2MClientSecret = string.IsNullOrWhiteSpace(config.ApiM2MClientSecret) ? null : "***",
         OidcAppPassword = string.IsNullOrWhiteSpace(config.OidcAppPassword) ? null : "***",
         IntegrationCredential = string.IsNullOrWhiteSpace(config.IntegrationCredential) ? null : "***"
     };
@@ -3590,7 +3612,7 @@ internal static partial class NetRatelCli
         public Option<string?> TokenUrl { get; } = new("--token-url") { Description = "Oidc token URL." };
         public Option<string?> ClientId { get; } = new("--client-id") { Description = "Oidc client id." };
         public Option<string?> Username { get; } = new("--username") { Description = "Oidc service username." };
-        public Option<string?> AppPassword { get; } = new("--app-password") { Description = "Oidc service-user app password." };
+        public Option<string?> AppPassword { get; } = new("--app-password") { Description = "[Deprecated] Legacy OIDC app password. Prefer NETRATEL_CLI_OIDC_APP_PASSWORD_FILE to avoid process arguments." };
         public Option<string?> Scope { get; } = new("--scope") { Description = "Oidc OAuth scope." };
         public Option<string?> ConfigPath { get; } = new("--config") { Description = "CLI config file path." };
         public Option<string> Output { get; } = new("--output") { Description = "Output format: json or text.", DefaultValueFactory = _ => "json" };

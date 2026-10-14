@@ -396,6 +396,13 @@ namespace NetRatel.Infrastructure.Identity.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");
 
+                    b.Property<DateTimeOffset?>("PairingAcknowledgedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PairingRequestId")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
                     b.Property<string>("PublicId")
                         .IsRequired()
                         .HasMaxLength(24)
@@ -470,6 +477,101 @@ namespace NetRatel.Infrastructure.Identity.Migrations
                     b.HasKey("CredentialId", "Permission");
 
                     b.ToTable("IntegrationCredentialInstanceGrants", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Identity.IntegrationPairingRequest", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("ApprovedGrantsJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ApprovedInstancePermissionsJson")
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("CredentialExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CredentialId")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTimeOffset?>("DeliveryExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("DeviceCapabilityHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<DateTimeOffset>("NextPollAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("OwnerPrincipalId")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<int>("PollIntervalSeconds")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ProtectedDelivery")
+                        .HasMaxLength(4096)
+                        .HasColumnType("character varying(4096)");
+
+                    b.Property<string>("PublicOrigin")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<int>("Purpose")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("RequestedPermissionsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Resource")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("State")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("UserCodeHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeviceCapabilityHash")
+                        .IsUnique();
+
+                    b.HasIndex("UserCodeHash")
+                        .IsUnique();
+
+                    b.HasIndex("State", "DeliveryExpiresAtUtc");
+
+                    b.HasIndex("State", "ExpiresAtUtc");
+
+                    b.ToTable("IntegrationPairingRequests", (string)null);
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Identity.LocalUser", b =>

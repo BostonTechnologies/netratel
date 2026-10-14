@@ -911,7 +911,10 @@ public sealed class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture postgres)
                 ["NetRatel:Mcp:Http:Authority"] = "https://auth.dev.example",
                 ["NetRatel:Mcp:Http:Audience"] = "https://mcp.dev.example/mcp",
                 ["NetRatel:Mcp:Http:RequiredScopes:0"] = "mcp:read",
-                ["NetRatel:Mcp:Http:RequiredGroups:0"] = "netratel-operators",
+                ["NetRatel:Mcp:Http:RequiredGroups:0"] = "netratel-operators"
+            })
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
                 [NetRatelMcpHttpOptions.InstanceEnvironmentVariable] = "dev",
                 [NetRatelMcpHttpOptions.ConfigurationPathEnvironmentVariable] = "/run/netratel-mcp/agent.json",
                 [NetRatelMcpHttpOptions.DevApiBaseUrlEnvironmentVariable] = "https://netratel-dev-api.example",
@@ -928,6 +931,30 @@ public sealed class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture postgres)
         options.PublicResourceUri.Should().Be("https://mcp.dev.example/mcp");
         options.RequiredScopes.Should().ContainSingle().Which.Should().Be("mcp:read");
         options.RequiredGroups.Should().ContainSingle().Which.Should().Be("netratel-operators");
+    }
+
+    [Fact]
+    public void Configuration_prefers_canonical_section_keys_to_aliases_in_the_same_provider()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["NetRatel:Mcp:Http:Instance"] = "prod",
+                ["NetRatel:Mcp:Http:ConfigurationPath"] = "/canonical/agent.json",
+                ["NetRatel:Mcp:Http:DevApiBaseUrl"] = "https://canonical-dev.example",
+                ["NetRatel:Mcp:Http:ProdApiBaseUrl"] = "https://canonical-prod.example",
+                [NetRatelMcpHttpOptions.InstanceEnvironmentVariable] = "dev",
+                [NetRatelMcpHttpOptions.ConfigurationPathEnvironmentVariable] = "/alias/agent.json",
+                [NetRatelMcpHttpOptions.DevApiBaseUrlEnvironmentVariable] = "https://alias-dev.example",
+                [NetRatelMcpHttpOptions.ProdApiBaseUrlEnvironmentVariable] = "https://alias-prod.example"
+            }).Build();
+
+        var options = NetRatelMcpHttpOptions.FromConfiguration(configuration);
+
+        options.Instance.Should().Be("prod");
+        options.ConfigurationPath.Should().Be("/canonical/agent.json");
+        options.DevApiBaseUrl.Should().Be("https://canonical-dev.example");
+        options.ProdApiBaseUrl.Should().Be("https://canonical-prod.example");
     }
 
     [Fact]

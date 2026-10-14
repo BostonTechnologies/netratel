@@ -1,3 +1,4 @@
+using NetRatel.AgentClient;
 using System.Text.Json;
 
 internal sealed class CliConfigStore
@@ -25,25 +26,14 @@ internal sealed class CliConfigStore
 
     public CliConfig Load()
     {
-        if (!File.Exists(Path))
-        {
-            return CliConfig.Empty;
-        }
-
-        var json = File.ReadAllText(Path);
-        return JsonSerializer.Deserialize<CliConfig>(json, CliConfig.JsonOptions) ?? CliConfig.Empty;
+        try { return CliConfig.FromAgent(new AgentClientConfigurationStore(Path).Load()); }
+        catch (AgentClientValidationException exception) { throw new CliValidationException(exception.Message); }
     }
 
     public void Save(CliConfig config)
     {
-        var directory = System.IO.Path.GetDirectoryName(Path);
-        if (!string.IsNullOrWhiteSpace(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
-        File.WriteAllText(Path, JsonSerializer.Serialize(config, CliConfig.JsonOptions) + Environment.NewLine);
-        TryRestrictPermissions(Path);
+        try { new AgentClientConfigurationStore(Path).Save(config.ToAgent()); }
+        catch (AgentClientValidationException exception) { throw new CliValidationException(exception.Message); }
     }
 
     private static string? ExpandPath(string? path)

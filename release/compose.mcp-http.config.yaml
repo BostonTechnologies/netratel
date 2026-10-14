@@ -1,0 +1,13 @@
+# Legacy isolated JSON identity; preserve its credentials and target.
+# Additional secret-file references in that JSON need explicit matching mounts.
+services:
+  mcp-http:
+    environment:
+      NETRATEL_MCP_CONFIG: /run/netratel-mcp-secrets/mcp-outbound.json
+    volumes:
+      - type: bind
+        source: ${NETRATEL_MCP_OUTBOUND_CONFIG_FILE:?set the absolute protected JSON file path}
+        target: /run/netratel-mcp-secrets/mcp-outbound.json
+        read_only: true
+        bind:
+          create_host_path: false

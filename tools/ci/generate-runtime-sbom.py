@@ -129,6 +129,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--project-assets", action="append", required=True, type=Path)
     parser.add_argument("--distribution", action="append", required=True, type=Path)
+    parser.add_argument("--distribution-root", type=Path,
+                        help="Common root for nested distributions; emits one coherent file inventory")
     parser.add_argument("--runtime-graph", action="append", type=Path,
                         help="Exact post-link/prebundle .deps.json; one per distribution when supplied")
     parser.add_argument("--runtime")
@@ -147,6 +149,9 @@ def main() -> int:
         parser.error("each distribution must have one matching --runtime-graph input")
     if len({path.name for path in args.distribution}) != len(args.distribution):
         parser.error("distribution basenames must be unique")
+    if args.distribution_root and (not args.distribution_root.is_dir() or
+            any(not path.resolve().is_relative_to(args.distribution_root.resolve()) for path in args.distribution)):
+        parser.error("each nested distribution must be inside --distribution-root")
 
     root_id = spdx_id(args.name, "Package")
     dependency_packages = {
@@ -157,10 +162,15 @@ def main() -> int:
     }
     files = []
     relationships = []
+    inventoried_files = set()
     for directory in args.distribution:
         for path in sorted(candidate for candidate in directory.rglob("*") if candidate.is_file()):
-            relative = path.relative_to(directory).as_posix()
-            file_name = f"./{directory.name}/{relative}"
+            inventory_root = args.distribution_root or directory
+            relative = path.relative_to(inventory_root).as_posix()
+            file_name = f"./{inventory_root.name}/{relative}"
+            if file_name in inventoried_files:
+                continue
+            inventoried_files.add(file_name)
             file_id = spdx_id(file_name, "File")
             files.append(
                 {

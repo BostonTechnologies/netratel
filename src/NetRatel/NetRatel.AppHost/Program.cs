@@ -10,6 +10,6 @@ builder.AddProject<Projects.NetRatel_Web>("netratel-web")
     .WaitFor(api)
     .WithEnvironment("ApiBaseUrl", api.GetEndpoint("https"))
     .WithEnvironment("NetRatelApi__BaseUrl", api.GetEndpoint("https"))
-    .WithEnvironment("ReverseProxy__Clusters__apiCluster__Destinations__api1__Address", api.GetEndpoint("https"));
+    .WithEnvironment("WebGateway__Topology", "LocalProcess");
 
 builder.Build().Run();

@@ -49,17 +49,19 @@ public sealed class ClientUpdateWebRoutingTests(ApiFactory factory)
             }
         }
 
-        // Load the shipped routes, change only the destination transport to the authenticated API fixture.
+        // Compose the production generated defaults and shipped/operator settings,
+        // changing only the destination transport to the authenticated API fixture.
         var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../../"));
         var configuration = new ConfigurationBuilder().AddJsonFile(Path.Combine(root,
             "src/NetRatel/NetRatel.Web/appsettings.json")).Build();
+        using var gatewayConfiguration = WebGatewayConfiguration.Create(configuration, WebGatewayOptions.Resolve(configuration));
         using var web = await new HostBuilder().ConfigureWebHost(builder => builder.UseTestServer()
             .ConfigureServices(services =>
             {
                 services.AddRouting();
                 services.AddAuthentication("browser").AddCookie("browser");
                 services.AddAuthorization();
-                services.AddReverseProxy().LoadFromConfig(configuration.GetSection("ReverseProxy"));
+                services.AddReverseProxy().LoadFromConfig(gatewayConfiguration.GetSection("ReverseProxy"));
                 services.AddSingleton<IForwarderHttpClientFactory>(new ApiTransport(factory.Server));
             })
             .Configure(app =>

@@ -92,6 +92,7 @@ public static class ApiEndpointRegistrationExtensions
         app.MapAgentAuthEndpoints();
         app.MapLocalAuthenticationEndpoints();
         app.MapIntegrationCredentialEndpoints();
+        app.MapIntegrationPairingEndpoints();
         app.MapMcpLocalDelegationEndpoints();
         app.MapDeploymentBrandingEndpoints();
         app.MapAccessAdministrationEndpoints();
@@ -102,6 +103,7 @@ public static class ApiEndpointRegistrationExtensions
 
         app.MapSystemEndpoints();
         app.MapMachineTokenAuthenticationStatusEndpoints();
+        app.MapAiAgentSelfStatusEndpoints();
         app.MapAiAgentOpsEndpoints();
 
         return app;

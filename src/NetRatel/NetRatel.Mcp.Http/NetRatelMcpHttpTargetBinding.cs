@@ -18,10 +18,19 @@ public sealed record NetRatelMcpHttpTargetBinding(
     public static NetRatelMcpHttpTargetBinding Resolve(NetRatelMcpHttpOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
-        var configurationPath = string.IsNullOrWhiteSpace(options.ConfigurationPath)
+        var configurationPath = options.ConfigurationSource is null && string.IsNullOrWhiteSpace(options.ConfigurationPath)
             ? Environment.GetEnvironmentVariable(ConfigurationEnvironmentVariable)
             : options.ConfigurationPath;
-        var configuration = AgentClientConfigurationResolver.LoadIsolated(configurationPath);
+        var request = new ConfigurationRequest(
+            ConfigurationSurface.HttpMcpOutbound,
+            options.ConfigurationSource is not null ? configurationPath : string.IsNullOrWhiteSpace(configurationPath) ? null : configurationPath);
+        var service = new NetRatelConfigurationService();
+        var effective = options.ConfigurationSource is { } source ? service.Load(request, source) : service.Load(request);
+        var validation = effective.Validate();
+        if (!validation.IsValid) throw new AgentClientValidationException(string.Join(" ", validation.Errors));
+        var configuration = effective.Configuration;
+        if (!string.IsNullOrWhiteSpace(configuration.Instance) && !string.Equals(configuration.Instance, options.Instance.Trim(), StringComparison.OrdinalIgnoreCase))
+            throw new AgentClientValidationException("The isolated outbound Instance must match the HTTP host's selected dev/prod instance.");
         var expectedApiBaseUrl = options.Instance.Trim().ToLowerInvariant() switch
         {
             "dev" => options.DevApiBaseUrl,
@@ -41,12 +50,12 @@ public sealed record NetRatelMcpHttpTargetBinding(
             configuredTarget,
             new Uri("netratel://server/status", UriKind.Absolute),
             NetRatelMcpCatalog.Revision);
-        return new NetRatelMcpHttpTargetBinding(target, NetRatelMcpOutboundOptions.FromIsolatedConfiguration(target, configuration), configurationPath!);
+        return new NetRatelMcpHttpTargetBinding(target, NetRatelMcpOutboundOptions.FromIsolatedConfiguration(target, configuration), effective.ConfigurationPath ?? "environment");
     }
 
     private static Uri ParseHttpsUri(string? value, string name)
     {
-        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment))
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps || !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment))
         {
             throw new AgentClientValidationException($"{name} must be an absolute HTTPS URI without a query or fragment.");
         }

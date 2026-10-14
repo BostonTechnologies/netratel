@@ -31,6 +31,6 @@ supplied legacy identity is never authoritative.
 ## Future Akka work
 
 Future agent-facing functionality must use the authenticated gateway and
-PostgreSQL durable authority. For the removed remote-support protocol and
-rebuild constraints, see
-[`remote-support-legacy-spec-and-retirement.md`](docs/akka-migration/remote-support-legacy-spec-and-retirement.md).
+PostgreSQL durable authority. For the supported runtime boundaries, see
+[architecture](docs/implementation/ARCHITECTURE.md). Removed protocol details
+remain historical repository context and are not a current deployment contract.

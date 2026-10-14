@@ -46,6 +46,8 @@ public static class DependencyInjection
         services.AddScoped<IApplicationPrincipalResolver, ApplicationPrincipalResolver>();
         services.AddScoped<IEffectiveAccessService, EffectiveAccessService>();
         services.AddScoped<IIntegrationCredentialService, IntegrationCredentialService>();
+        services.AddScoped<IIntegrationCredentialGrantValidator, IntegrationCredentialGrantValidator>();
+        services.AddScoped<IntegrationPairingService>();
         services.AddScoped<IIntegrationCredentialCurrentVerifier, IntegrationCredentialService>();
         services.AddScoped<IMcpOperationObjectTargetResolver, McpOperationObjectTargetResolver>();
         services.AddScoped<IDeploymentBrandingService, DeploymentBrandingService>();

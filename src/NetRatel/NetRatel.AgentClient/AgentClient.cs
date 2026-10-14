@@ -147,7 +147,7 @@ public sealed class NetRatelAgentClient(AgentClientConfiguration configuration, 
 
     private async Task<HttpClient> CreateClientAsync(ResolvedAgentClientConfiguration config, bool authenticated, CancellationToken ct)
     {
-        var client = _handlerFactory is null ? new HttpClient() : new HttpClient(_handlerFactory(), disposeHandler: true);
+        var client = _handlerFactory is null ? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) : new HttpClient(_handlerFactory(), disposeHandler: true);
         client.BaseAddress = config.ApiBaseUrl;
         client.Timeout = TimeSpan.FromSeconds(60);
         if (authenticated) client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetAccessTokenAsync(ct).ConfigureAwait(false));
@@ -173,7 +173,7 @@ public sealed class NetRatelAgentClient(AgentClientConfiguration configuration, 
         {
             if (HasUsableAccessToken()) return _accessToken!;
 
-            using var client = _handlerFactory is null ? new HttpClient() : new HttpClient(_handlerFactory(), disposeHandler: true);
+            using var client = _handlerFactory is null ? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) : new HttpClient(_handlerFactory(), disposeHandler: true);
             client.Timeout = TimeSpan.FromSeconds(30);
             var tokenUrl = config.AuthenticationMode is AgentClientAuthenticationMode.ApiM2MClientSecret
                 ? config.ApiM2MTokenUrl
@@ -197,7 +197,7 @@ public sealed class NetRatelAgentClient(AgentClientConfiguration configuration, 
                 };
             using var response = await client.PostAsync(tokenUrl, new FormUrlEncodedContent(tokenRequest), ct).ConfigureAwait(false);
             var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode) throw new AgentClientRemoteException("auth_token_failed", $"Oidc token mint failed with HTTP {(int)response.StatusCode}.", (int)response.StatusCode, body);
+            if (!response.IsSuccessStatusCode) throw new AgentClientRemoteException("auth_token_failed", $"NetRatel token request failed with HTTP {(int)response.StatusCode}.", (int)response.StatusCode, null);
             using var document = JsonDocument.Parse(body);
             _accessToken = document.RootElement.GetProperty("access_token").GetString() ?? throw new AgentClientValidationException("Oidc token response did not include access_token.");
             var expiresIn = document.RootElement.TryGetProperty("expires_in", out var expires) && expires.TryGetInt32(out var seconds)

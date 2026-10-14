@@ -1069,7 +1069,7 @@ class RuntimeSelectorRetirementTests(unittest.TestCase):
         member(relative, content, "generated installer has no retired client defaults",
                "private static void AssertNoRetiredDefaults(")
 
-        relative = "docs/RC11_AKKA_RUNTIME_REFACTOR.md"
+        relative = "docs/implementation/RC11_AKKA_RUNTIME_REFACTOR.md"
         content = (ROOT / relative).read_text(encoding="utf-8")
         marker(relative, content, "bounded report-only refactor inventory",
                "<!-- RETIRED_SELECTOR_INVENTORY_BEGIN -->", "<!-- RETIRED_SELECTOR_INVENTORY_END -->")
@@ -1187,7 +1187,7 @@ class RuntimeSelectorRetirementTests(unittest.TestCase):
         self.assertIn('disabledConfiguration["NetRatelAkkaMigration:AuthorityMode"] = "Authority";', source)
 
     def test_review_inventory_lists_exact_retired_api_and_client_selector_names(self):
-        source = (ROOT / "docs/RC11_AKKA_RUNTIME_REFACTOR.md").read_text(encoding="utf-8")
+        source = (ROOT / "docs/implementation/RC11_AKKA_RUNTIME_REFACTOR.md").read_text(encoding="utf-8")
         start, end = self._marker_region(
             source,
             "<!-- RETIRED_SELECTOR_INVENTORY_BEGIN -->",
@@ -1247,7 +1247,7 @@ class RuntimeSelectorRetirementTests(unittest.TestCase):
         job_contracts = (ROOT / "src/NetRatel/NetRatel.Application/Jobs/JobRuntimeContracts.cs").read_text()
         self.assertEqual(2, job_contracts.count('string SourceSystem = "akka-job-shadow-event"'),
                          "The deployed run/step source identity must remain stable for idempotent replay.")
-        inventory = (ROOT / "docs/RC11_AKKA_RUNTIME_REFACTOR.md").read_text()
+        inventory = (ROOT / "docs/implementation/RC11_AKKA_RUNTIME_REFACTOR.md").read_text()
         self.assertIn("`akka-job-shadow-event`", inventory)
 
     def test_web_realtime_consumer_uses_the_normalized_fanout_contract_type(self):
@@ -1802,7 +1802,7 @@ class DistributionTests(unittest.TestCase):
         archive = self.root / f"netratel-compose-{version}.tar.gz"
         manifest = json.dumps({"version": version}).encode()
         with tarfile.open(archive, "w:gz") as target:
-            for name in ("compose.images.yaml", "compose.external-postgres.yaml", "compose.public-https.yaml", "nginx.public-https.conf", "compose.mcp-http.yaml", ".env.images.example", "INSTALL.md"):
+            for name in ("compose.images.yaml", "compose.external-postgres.yaml", "compose.public-https.yaml", "nginx.public-https.conf", "compose.mcp-http.yaml", "compose.mcp-http.ports.yaml", "compose.mcp-http.config.yaml", "compose.mcp-http.secrets.yaml", "compose.setup.yaml", ".env.mcp-http.example", ".env.mcp-http.outbound.example", ".env.mcp-http.api.example", ".env.images.example", "INSTALL.md"):
                 target.add(ROOT / "release" / name, arcname=name)
             manifest_info = tarfile.TarInfo("release-manifest.json")
             manifest_info.size = len(manifest)
@@ -1811,6 +1811,35 @@ class DistributionTests(unittest.TestCase):
             for name in ("LICENSE", "NOTICE"):
                 target.add(ROOT / name, arcname=name)
         return archive
+
+    def test_nested_container_tools_have_one_complete_sbom_file_inventory(self):
+        distribution = self.root / "out"
+        assets = []
+        distributions = []
+        for name, path, dependency in (("NetRatel.Mcp.Http", distribution, "Example.Http"),
+                ("NetRatel.Cli", distribution / "tooling" / "cli", "Example.Terminal"),
+                ("NetRatel.Mcp", distribution / "tooling" / "stdio", "Example.Protocol")):
+            path.mkdir(parents=True, exist_ok=True)
+            asset = self.root / (name + ".assets.json")
+            asset.write_text(json.dumps({"project": {"restore": {"projectName": name}}, "packageFolders": {}, "targets": {"net10.0": {}}}))
+            (path / (name + ".deps.json")).write_text(json.dumps({"runtimeTarget": {"name": "net10.0"},
+                "targets": {"net10.0": {name + "/1.0.0": {}, dependency + "/1.0.0": {}}},
+                "libraries": {name + "/1.0.0": {"type": "project"}, dependency + "/1.0.0": {"type": "package"}}}))
+            (path / (name + ".dll")).write_text("distribution fixture: " + name)
+            assets += ["--project-assets", str(asset)]
+            distributions += ["--distribution", str(path)]
+        output = self.root / "runtime.spdx.json"
+        result = subprocess.run([sys.executable, str(ROOT / "tools/ci/generate-runtime-sbom.py"),
+            *assets, *distributions, "--distribution-root", str(distribution), "--name", "NetRatel.Mcp.Http", "--version", "1.0.0", "--output", str(output)],
+            capture_output=True, text=True)
+        self.assertEqual(0, result.returncode, result.stderr)
+        document = json.loads(output.read_text())
+        file_names = [item["fileName"] for item in document["files"]]
+        self.assertEqual(len(file_names), len(set(file_names)))
+        self.assertIn("./out/tooling/cli/NetRatel.Cli.dll", file_names)
+        self.assertIn("./out/tooling/stdio/NetRatel.Mcp.dll", file_names)
+        self.assertTrue({"Example.Http", "Example.Terminal", "Example.Protocol"}.issubset({item["name"] for item in document["packages"]}))
+        self.verifier.verify(document, self.root)
 
     def test_paginated_gh_json_is_parsed_without_slurp(self):
         self.assertEqual(

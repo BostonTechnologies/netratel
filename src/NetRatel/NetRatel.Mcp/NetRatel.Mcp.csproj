@@ -14,4 +14,5 @@
     <ProjectReference Include="..\NetRatel.Shared\NetRatel.Shared.csproj" />
     <ProjectReference Include="..\NetRatel.Mcp.Core\NetRatel.Mcp.Core.csproj" />
   </ItemGroup>
+  <ItemGroup><ProjectReference Include="../NetRatel.Setup/NetRatel.Setup.csproj" /></ItemGroup>
 </Project>

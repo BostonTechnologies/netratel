@@ -153,6 +153,8 @@ public sealed class AccessAdministrationEndpointTests
             .AddEntityFrameworkStores<NetRatelIdentityDbContext>();
         builder.Services.AddScoped<IEffectiveAccessService, EffectiveAccessService>();
         builder.Services.AddScoped<IIntegrationCredentialService, IntegrationCredentialService>();
+        builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddScoped<IIntegrationCredentialGrantValidator, IntegrationCredentialGrantValidator>();
         builder.Services.AddScoped<InstanceAdministratorInvariant>();
         builder.Services.AddScoped<IAuthorizationHandler, EffectiveAccessHandler>();
 

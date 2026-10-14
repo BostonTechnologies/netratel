@@ -31,12 +31,7 @@ public static class SetupWebApplicationExtensions
 
     public static void AddSetupShell(this IServiceCollection services, IConfiguration configuration)
     {
-        var apiBaseUrl = configuration["ApiBaseUrl"] ?? "http://api:9222";
-        if (!Uri.TryCreate(apiBaseUrl, UriKind.Absolute, out var apiBaseUri) || apiBaseUri.Scheme is not ("https" or "http"))
-        {
-            throw new InvalidOperationException("ApiBaseUrl must be an absolute HTTP or HTTPS URI for the bootstrap setup shell.");
-        }
-
+        var apiBaseUri = NetRatel.Web.Configuration.WebGatewayOptions.ResolveApiBaseUri(configuration);
         services.AddHttpClient(SetupApiClientName, client => client.BaseAddress = apiBaseUri);
     }
 

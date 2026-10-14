@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Http.Features;
 using NetRatel.Shared.SystemPairing;
+using NetRatel.Shared.Connectivity;
 
 namespace NetRatel.API.Middleware;
 
@@ -9,8 +10,11 @@ public sealed class PairingRequestBodyLimitMiddleware(RequestDelegate next)
     public const long MaximumBytes = 65536;
     public async Task InvokeAsync(HttpContext http)
     {
-        var path = http.Request.Path.Value;
-        var isPairing = path is not null && (path.StartsWith(PairingProtocol.Route, StringComparison.Ordinal) || path.StartsWith(PairingProtocol.AdminRoute, StringComparison.Ordinal));
+        var path = http.Request.Path;
+        var isPairing = path.StartsWithSegments(PairingProtocol.Route, StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWithSegments(PairingProtocol.AdminRoute, StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWithSegments(IntegrationPairingProtocol.Route, StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWithSegments(IntegrationPairingProtocol.AccountRoute, StringComparison.OrdinalIgnoreCase);
         if (!isPairing || HttpMethods.IsGet(http.Request.Method) || HttpMethods.IsHead(http.Request.Method)) { await next(http).ConfigureAwait(false); return; }
         if (http.Request.ContentLength > MaximumBytes) { await RejectAsync(http); return; }
         if (http.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } feature) feature.MaxRequestBodySize = MaximumBytes;
