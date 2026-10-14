@@ -357,9 +357,12 @@ public sealed class NetRatelConfigurationService
     internal static bool HasSecrets(AgentClientConfiguration configuration) => Values(configuration).Any(pair => IsSecret(pair.Key) && !string.IsNullOrWhiteSpace(pair.Value));
     private static void EnsureCredentialBindings(AgentClientConfiguration previous, AgentClientConfiguration configuration)
     {
-        if (HasSecrets(previous) && previous.ApiBaseUrl is { Length: > 0 } && !Equivalent(previous.ApiBaseUrl, configuration.ApiBaseUrl))
+        if (HasSecrets(previous) && previous.ApiBaseUrl is { Length: > 0 } &&
+            !string.Equals(previous.ApiBaseUrl, configuration.ApiBaseUrl, StringComparison.Ordinal) &&
+            !Equivalent(previous.ApiBaseUrl, configuration.ApiBaseUrl))
             throw new AgentClientValidationException("Changing a credential's approved target requires explicit reauthorization/rebind; the existing profile credential cannot be sent to the new URL.");
         if ((!string.IsNullOrWhiteSpace(previous.OidcAppPassword) || !string.IsNullOrWhiteSpace(previous.OidcAppPasswordFile)) &&
+            !string.Equals(previous.OidcTokenUrl, configuration.OidcTokenUrl, StringComparison.Ordinal) &&
             !Equivalent(previous.OidcTokenUrl, configuration.OidcTokenUrl))
             throw new AgentClientValidationException("Changing a credential's token endpoint requires explicit reauthorization/rebind; its password cannot be sent to a new issuer.");
     }
