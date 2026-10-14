@@ -63,6 +63,8 @@ jobs:
         run: dotnet restore NetRatel.sln
       - name: Build Release solution
         run: dotnet build NetRatel.sln --configuration Release --no-restore
+      - name: Prepare fast regression containers
+        run: bash tools/ci/prepare-fast-test-containers.sh
       - name: Run fast regressions (Core, API, Components)
         run: bash tools/ci/run-fast-regressions.sh TestResults/fast
       - name: Retain fast regression receipts

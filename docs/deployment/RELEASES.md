@@ -132,6 +132,14 @@ selection applies to tag-build validation, with real CLI/stdio/native packaging
 and integrity checks retained. Packaging/publication costs are measured
 separately; the under-20-minute acceptance applies to required PR/main runs.
 
+Before the fast assemblies start, `tools/ci/prepare-fast-test-containers.sh`
+prepares their PostgreSQL and Testcontainers resource-reaper images sequentially.
+One 120-second deadline covers the daemon probe, cache checks, single missing-image
+pulls and final image inspections, with a five-second termination grace. Preparation
+failures stop the required job. Its separate duration and image identities make
+cold dependency preparation visible without changing test selection or the
+20-minute job cap.
+
 Use [integration-validation.yml](../../.github/workflows/integration-validation.yml)
 only through explicit `workflow_dispatch` to select one functional suite at an
 actual source ref, compatible peer and artifact identity. There is no implicit

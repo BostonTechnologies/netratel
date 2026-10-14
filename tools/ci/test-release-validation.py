@@ -180,6 +180,160 @@ class MtpTestReceiptTests(unittest.TestCase):
             self.verifier.validate_success_report(self.report)
 
 
+class FastTestContainerPreparationTests(unittest.TestCase):
+    images = (
+        "postgres:16-alpine",
+        "testcontainers/ryuk:0.14.0@sha256:7c1a8a9a47c780ed0f983770a662f80deb115d95cce3e2daa3d12115b8cd28f0",
+    )
+
+    def prepare(self, scenario, deadline=None):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            fake_bin = directory / "bin"
+            fake_bin.mkdir()
+            fake_docker = fake_bin / "docker"
+            fake_docker.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, pathlib, signal, subprocess, sys, time\n"
+                "args = sys.argv[1:]\n"
+                "root = pathlib.Path(os.environ['NETRATEL_CONTAINER_TEST_ROOT'])\n"
+                "mode = os.environ['NETRATEL_CONTAINER_TEST_SCENARIO']\n"
+                "with (root / 'commands.jsonl').open('a') as log:\n"
+                "    log.write(json.dumps(args) + '\\n')\n"
+                "if args[0] == 'info':\n"
+                "    sys.exit(8 if mode == 'daemon' else 0)\n"
+                "state_path = root / 'state.json'\n"
+                "state = json.loads(state_path.read_text()) if state_path.exists() else {}\n"
+                "image = args[-1]\n"
+                "entry = state.setdefault(image, {'cached': mode == 'cached' or (mode in ('kill', 'mixed') and image.startswith('postgres:')), 'inspects': 0})\n"
+                "if args[:2] == ['image', 'inspect']:\n"
+                "    entry['inspects'] += 1\n"
+                "    state_path.write_text(json.dumps(state))\n"
+                "    if not entry['cached']: sys.exit(1)\n"
+                "    if mode == 'inspect' and entry['inspects'] == 2: sys.exit(9)\n"
+                "    print('invalid' if mode == 'identity' else 'sha256:' + 'a' * 64)\n"
+                "elif args[:2] == ['pull', '--quiet']:\n"
+                "    if mode == 'pull': sys.exit(7)\n"
+                "    if mode == 'deadline' and image.startswith('postgres:'): time.sleep(1.1)\n"
+                "    if mode in ('deadline', 'kill', 'mixed') and image.startswith('testcontainers/'):\n"
+                "        child_code = 'import signal, time; '\n"
+                "        if mode == 'kill':\n"
+                "            signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "        if mode in ('kill', 'mixed'):\n"
+                "            child_code += 'signal.signal(signal.SIGTERM, signal.SIG_IGN); '\n"
+                "        child = subprocess.Popen([sys.executable, '-c', child_code + 'time.sleep(60)'])\n"
+                "        (root / 'pids.json').write_text(json.dumps([os.getpid(), child.pid]))\n"
+                "        time.sleep(60)\n"
+                "    entry['cached'] = True\n"
+                "    state_path.write_text(json.dumps(state))\n"
+                "else:\n"
+                "    sys.exit(10)\n",
+                encoding="utf-8",
+            )
+            fake_docker.chmod(0o755)
+            fake_dotnet = fake_bin / "dotnet"
+            fake_dotnet.write_text(
+                "#!/usr/bin/env python3\n"
+                "import os, pathlib\n"
+                "(pathlib.Path(os.environ['NETRATEL_CONTAINER_TEST_ROOT']) / 'tests-started').touch()\n",
+                encoding="utf-8",
+            )
+            fake_dotnet.chmod(0o755)
+            environment = {
+                **os.environ,
+                "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
+                "NETRATEL_CONTAINER_TEST_ROOT": str(directory),
+                "NETRATEL_CONTAINER_TEST_SCENARIO": scenario,
+                "GITHUB_STEP_SUMMARY": str(directory / "summary.md"),
+            }
+            arguments = [] if deadline is None else [str(value) for value in deadline] if isinstance(deadline, tuple) else [str(deadline)]
+            started = time.monotonic()
+            live_children = []
+            try:
+                completed = subprocess.run(
+                    ["bash", "-c", 'bash tools/ci/prepare-fast-test-containers.sh "$@" && dotnet test', "prepare", *arguments],
+                    cwd=ROOT, env=environment, check=False, capture_output=True, text=True, timeout=10,
+                )
+            finally:
+                elapsed = time.monotonic() - started
+                pids_path = directory / "pids.json"
+                if pids_path.exists():
+                    for pid in json.loads(pids_path.read_text()):
+                        process_stat = Path(f"/proc/{pid}/stat")
+                        if process_stat.exists() and process_stat.read_text().rsplit(")", 1)[1].split()[0] != "Z":
+                            live_children.append(pid)
+                            try:
+                                os.kill(pid, 9)  # Do not leak a failing fixture's sleep process.
+                            except ProcessLookupError:
+                                pass
+            commands_path = directory / "commands.jsonl"
+            commands = [json.loads(line) for line in commands_path.read_text().splitlines()] if commands_path.exists() else []
+            return completed, commands, elapsed, live_children, (directory / "tests-started").exists()
+
+    def test_cold_and_cached_images_are_ready_before_tests_without_repeated_pulls(self):
+        for scenario in ("cold", "cached"):
+            with self.subTest(scenario=scenario):
+                completed, commands, _, children, tests_started = self.prepare(scenario)
+                self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+                self.assertTrue(tests_started)
+                self.assertEqual([], children)
+                pulls = [args for args in commands if args[0] == "pull"]
+                self.assertEqual([["pull", "--quiet", image] for image in self.images] if scenario == "cold" else [], pulls)
+                self.assertEqual("info", commands[0][0])
+                for image in self.images:
+                    self.assertEqual(2, sum(args[:2] == ["image", "inspect"] and args[-1] == image for args in commands))
+                    self.assertIn(f"Fast regression container ready: {image} id=sha256:", completed.stdout)
+                self.assertIn("status=ready", completed.stdout)
+
+    def test_daemon_pull_and_readiness_failures_stop_before_tests_and_do_not_retry(self):
+        for scenario, expected_status in (("daemon", 8), ("pull", 7), ("inspect", 9), ("identity", 1)):
+            with self.subTest(scenario=scenario):
+                completed, commands, _, children, tests_started = self.prepare(scenario)
+                self.assertEqual(expected_status, completed.returncode, completed.stdout + completed.stderr)
+                self.assertFalse(tests_started)
+                self.assertEqual([], children)
+                self.assertNotIn(self.images[1], [args[-1] for args in commands])
+                self.assertLessEqual(sum(args[0] == "pull" for args in commands), 1)
+                self.assertIn(f"status=failed({expected_status})", completed.stdout)
+
+    def test_one_deadline_covers_both_images_and_terminates_docker_descendants(self):
+        completed, commands, elapsed, children, tests_started = self.prepare("deadline", 2)
+        self.assertEqual(137, completed.returncode, completed.stdout + completed.stderr)
+        self.assertEqual([["pull", "--quiet", image] for image in self.images], [args for args in commands if args[0] == "pull"])
+        self.assertLess(elapsed, 9)
+        self.assertFalse(tests_started)
+        self.assertEqual([], children, "The timed-out Docker process and its child must stop.")
+
+    def test_kill_grace_stops_term_ignoring_docker_descendants(self):
+        for scenario in ("kill", "mixed"):
+            with self.subTest(scenario=scenario):
+                completed, _, elapsed, children, tests_started = self.prepare(scenario, 1)
+                self.assertEqual(137, completed.returncode, completed.stdout + completed.stderr)
+                self.assertLess(elapsed, 8)
+                self.assertFalse(tests_started)
+                self.assertEqual([], children, "Docker descendants that ignore TERM must stop after the kill grace even if their parent exits.")
+
+    def test_invalid_deadlines_fail_before_docker_and_workflows_keep_required_stage_order(self):
+        for deadline in (0, 121, "invalid", (1, 2)):
+            with self.subTest(deadline=deadline):
+                completed, commands, _, _, tests_started = self.prepare("cold", deadline)
+                self.assertEqual(2, completed.returncode)
+                self.assertEqual([], commands)
+                self.assertFalse(tests_started)
+        helper = ROOT / "tools/ci/prepare-fast-test-containers.sh"
+        self.assertIn('--signal=TERM --kill-after=5s "${deadline}s"', helper.read_text())
+        self.assertNotIn("--foreground", helper.read_text())
+        for relative in (".github/workflows/public-pr-validation.yml", ".github/workflows/release-build.yml"):
+            workflow = (ROOT / relative).read_text()
+            with self.subTest(workflow=relative):
+                prepare = workflow.index("- name: Prepare fast regression containers")
+                self.assertEqual(1, workflow.count("bash tools/ci/prepare-fast-test-containers.sh"))
+                self.assertLess(workflow.index("- name: Build Release solution"), prepare)
+                self.assertLess(prepare, workflow.index("- name: Run fast regressions (Core, API, Components)"))
+                self.assertIn("timeout-minutes: 20", workflow[:prepare])
+                self.assertNotIn("continue-on-error", workflow[prepare:workflow.index("- name: Retain fast regression receipts")])
+
+
 class MtpCiRunnerSelectionTests(unittest.TestCase):
     def test_ci_uses_sdk10_mtp_selectors_and_requires_each_generic_test_assembly(self):
         helper = ROOT / "tools/ci/run-fast-regressions.sh"
