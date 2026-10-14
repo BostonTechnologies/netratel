@@ -105,6 +105,9 @@ public sealed class M2MDeploymentProfileResolver(IOptionsMonitor<M2MOptions> set
             .Select(x => x[1]).Distinct(StringComparer.Ordinal).ToArray();
         foreach (var prefix in prefixes)
         {
+            // The host's typed profile has already selected its provider/secret source.
+            // Retain the raw-environment adapter only for otherwise unrepresented aliases.
+            if (profiles.ContainsKey(prefix)) continue;
             var fallback = profiles.GetValueOrDefault(prefix) ?? new();
             var secret = environment.SingleOrDefault(x => x.Key == $"M2MClients__{prefix}__Secret").Value;
             profiles[prefix] = new()
