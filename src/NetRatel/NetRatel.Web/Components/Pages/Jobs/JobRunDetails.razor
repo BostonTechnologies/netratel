@@ -1,6 +1,7 @@
 @page "/jobs/{JobId:long}/runs/{RunId:long}"
 
 @using System.Text.Json
+@using NetRatel.Shared
 @using NetRatel.Shared.Contracts.Tasks
 @using NetRatel.Shared.Utils
 @using NetRatel.Web.Services.ClientTasks
@@ -107,7 +108,7 @@
                                     <MudTabPanel Text="Diagnostics">
                                         <MudStack Spacing="2" Class="job-run-diagnostics">
                                             <MudText Typo="Typo.body2">@GetStepSummary(step)</MudText>
-                                            <MudText Typo="Typo.caption" Color="Color.Secondary">Started @FormatTimestamp(step.StartedAtMicros) · Completed @FormatTimestamp(step.CompletedAtMicros)</MudText>
+                                            <MudText Typo="Typo.caption" Color="Color.Secondary">Started @FormatTimestamp(step.StartedAtMicros) · @(step.Status == JobStepRunStatusDto.Unknown ? "Reconciled" : "Completed") @FormatTimestamp(step.CompletedAtMicros)</MudText>
                                             @if (!string.IsNullOrWhiteSpace(step.Error))
                                             {
                                                 <pre class="job-run-diagnostic-text">@BoundText(step.Error)</pre>
@@ -139,7 +140,7 @@
         <details class="job-run-details">
             <summary>Run details and inputs</summary>
             <MudStack Spacing="2" Class="pa-3">
-                <MudText Typo="Typo.caption">Started by @(_run.StartedBy ?? "Unknown") · Created @FormatTimestamp(_run.CreatedAtMicros) · Started @FormatTimestamp(_run.StartedAtMicros) · Completed @FormatTimestamp(_run.CompletedAtMicros)</MudText>
+                <MudText Typo="Typo.caption">Started by @(_run.StartedBy ?? "Unknown") · Created @FormatTimestamp(_run.CreatedAtMicros) · Started @FormatTimestamp(_run.StartedAtMicros) · @(_run.Status == JobRunStatusDto.Unknown ? "Reconciled" : "Completed") @FormatTimestamp(_run.CompletedAtMicros)</MudText>
                 <MudText Typo="Typo.caption" Color="Color.Secondary">Agent ID: @(_run.AgentId?.ToString() ?? "Not recorded") · Client identity: @(string.IsNullOrWhiteSpace(_run.ClientIdentity) ? "Not recorded" : _run.ClientIdentity)</MudText>
                 @if (!string.IsNullOrWhiteSpace(_run.Error))
                 {
@@ -424,11 +425,13 @@
         return !string.IsNullOrWhiteSpace(host) ? host : "Target unknown";
     }
 
-    private string GetEnvironmentSummary() => _run?.Environment is NetRatel.Shared.ClientEnvironment.Dev ? "Dev"
-        : _run?.Environment is NetRatel.Shared.ClientEnvironment.Prod ? "Prod" : "Environment unknown";
+    private string GetEnvironmentSummary() => _run?.Environment is { } environment ? environment.ToShortLabel() : "Environment not recorded";
 
     private static string GetStepWindowLabel(JobStepRunDto step) => step.Status == JobStepRunStatusDto.Unknown ? "Outcome unknown"
-        : step.StartedAtMicros is null ? "Not started" : step.CompletedAtMicros is null ? "In progress" : FormatDuration(step.CompletedAtMicros.Value - step.StartedAtMicros.Value);
+        : step.Status == JobStepRunStatusDto.Skipped ? "Skipped"
+        : step.StartedAtMicros is null ? "Start not captured"
+        : step.CompletedAtMicros is null ? (step.Status is JobStepRunStatusDto.Pending or JobStepRunStatusDto.Running ? "In progress" : "Duration not captured")
+        : FormatDuration(step.CompletedAtMicros.Value - step.StartedAtMicros.Value);
 
     private string GetOutputEmptyMessage(StepState state)
     {
@@ -437,7 +440,7 @@
         if (state.Step.Status == JobStepRunStatusDto.Unknown) return "No further output was captured. The execution outcome is unknown.";
         if (state.Step.Status == JobStepRunStatusDto.Skipped) return "This step was skipped; no output was captured.";
         if (state.Step.StartedAtMicros is null) return _run is not null && IsRunTerminal(_run)
-            ? "This step did not start; no output was captured." : "Waiting for this step to start.";
+            ? "Start was not captured. No output was captured." : "Waiting for step execution evidence.";
         return state.Step.CompletedAtMicros is null && _run is not null && !IsRunTerminal(_run)
             ? "Waiting for output. No output has been captured yet." : "Execution finished without captured output.";
     }

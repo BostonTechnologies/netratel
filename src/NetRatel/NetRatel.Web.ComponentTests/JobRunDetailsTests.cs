@@ -55,26 +55,36 @@ public sealed class JobRunDetailsTests : AsyncBunitContext
     }
 
     [Theory]
-    [InlineData(JobRunStatusDto.Pending, JobStepRunStatusDto.Pending, null, null, "Waiting for this step to start.")]
+    [InlineData(JobRunStatusDto.Pending, JobStepRunStatusDto.Pending, null, null, "Waiting for step execution evidence.")]
     [InlineData(JobRunStatusDto.Running, JobStepRunStatusDto.Running, 100L, null, "Waiting for output. No output has been captured yet.")]
     [InlineData(JobRunStatusDto.Succeeded, JobStepRunStatusDto.Succeeded, 100L, 200L, "Execution finished without captured output.")]
-    [InlineData(JobRunStatusDto.Unknown, JobStepRunStatusDto.Unknown, 100L, 200L, "No further output was captured. The execution outcome is unknown.")]
+    [InlineData(JobRunStatusDto.Failed, JobStepRunStatusDto.Failed, null, 1801000000L, "Start was not captured. No output was captured.")]
+    [InlineData(JobRunStatusDto.Unknown, JobStepRunStatusDto.Unknown, 1000000L, 1801000000L, "No further output was captured. The execution outcome is unknown.")]
     public void Empty_output_uses_execution_evidence_and_never_invents_an_exit_code(
         JobRunStatusDto runStatus, JobStepRunStatusDto stepStatus, long? started, long? completed, string expected)
     {
-        _transport.Run = _transport.Run with { Status = runStatus, Environment = null, TargetDisplayName = null, TargetHostName = null,
+        _transport.Run = _transport.Run with { Status = runStatus, StartedAtMicros = started, CompletedAtMicros = completed, Environment = null, TargetDisplayName = null, TargetHostName = null,
             TargetName = null, ClientDisplayName = null, ClientIdentity = "legacy-technical-identity" };
         _transport.Steps = [_transport.Steps[0] with { Status = stepStatus, StartedAtMicros = started, CompletedAtMicros = completed }];
         _transport.Log = new("task-1", null, null, null, []);
         var cut = Render<JobRunDetails>(parameters => parameters.Add(page => page.RunId, 9).Add(page => page.JobId, 42));
         cut.WaitForAssertion(() => cut.Markup.Should().Contain(expected));
-        cut.Markup.Should().Contain("Environment unknown").And.Contain("Target unknown");
+        cut.Markup.Should().Contain("Environment not recorded").And.Contain("Target unknown");
         cut.FindAll(".mud-tab").Single(tab => tab.TextContent == "Diagnostics").Click();
         cut.WaitForAssertion(() => cut.Markup.Should().Contain("Exit code was not captured."));
         cut.Markup.Should().NotContain("Exit code: 0");
+        if (runStatus == JobRunStatusDto.Failed && started is null)
+        {
+            cut.Find(".job-run-step-time").TextContent.Should().Be("Start not captured");
+            cut.Markup.Should().NotContain("This step did not start");
+        }
         if (runStatus == JobRunStatusDto.Unknown)
         {
             cut.Markup.Should().Contain("Execution outcome is unknown. No terminal receipt was captured.");
+            cut.Find(".job-run-context").TextContent.Should().Contain("Duration unknown").And.NotContain("30m");
+            cut.Find(".job-run-step-time").TextContent.Should().Be("Outcome unknown");
+            cut.Find(".job-run-diagnostics").TextContent.Should().Contain("Reconciled").And.NotContain("Completed");
+            cut.Find(".job-run-details").TextContent.Should().Contain("Reconciled").And.NotContain("Completed");
             cut.FindAll("button").Should().NotContain(button => button.TextContent.Contains("Cancel run"));
             _stream.Subscriptions.Should().Be(0);
         }
@@ -83,7 +93,7 @@ public sealed class JobRunDetailsTests : AsyncBunitContext
     [Fact]
     public void Diagnostics_prefers_the_durable_native_exit_receipt_over_legacy_log_defaults()
     {
-        _transport.Run = _transport.Run with { Status = JobRunStatusDto.Failed };
+        _transport.Run = _transport.Run with { Status = JobRunStatusDto.Failed, Environment = ClientEnvironment.Both };
         _transport.Steps = [_transport.Steps[0] with { Status = JobStepRunStatusDto.Failed, ExitCode = 7, CompletedAtMicros = 200 }];
         _transport.Log = _transport.Log with { ExitCode = 0 };
         var cut = Render<JobRunDetails>(parameters => parameters.Add(page => page.RunId, 9).Add(page => page.JobId, 42));
@@ -91,6 +101,7 @@ public sealed class JobRunDetailsTests : AsyncBunitContext
         cut.FindAll(".mud-tab").Single(tab => tab.TextContent == "Diagnostics").Click();
         cut.WaitForAssertion(() => cut.Markup.Should().Contain("Exit code: 7"));
         cut.Markup.Should().NotContain("Exit code: 0");
+        cut.Find(".job-run-context").TextContent.Should().Contain("Dev + Prod");
         _stream.Subscriptions.Should().Be(0);
     }
 

@@ -96,7 +96,7 @@
                     </MudTd>
                     <MudTd>
                         <MudText Typo="Typo.caption">Queued @FormatTimestamp(context.Created)</MudText>
-                        <MudText Typo="Typo.caption" Color="Color.Secondary">@(context.StartedAt is { } started ? "Started " + FormatTimestamp(started) : TaskPresentation.IsTerminal(context.Status) && context.Status != "Skipped" ? "Start not recorded" : "Not started")</MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">@(context.StartedAt is { } started ? "Started " + FormatTimestamp(started) : TaskPresentation.MissingStart(context.Status) == "Not started" ? "Not started" : "Start not recorded")</MudText>
                     </MudTd>
                     <MudTd>@TaskPresentation.Runtime(context.StartedAt, context.CompletedAt, context.Status)</MudTd>
                     <MudTd Style="text-align: right;">

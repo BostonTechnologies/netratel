@@ -43,7 +43,7 @@
                 <MudStack Row="true" Spacing="2" Wrap="Wrap.Wrap" Class="task-detail-timing">
                     <MudText Typo="Typo.caption">Queued: @FormatTimestamp(_task.Created)</MudText>
                     <MudText Typo="Typo.caption" data-testid="task-started">Started: @FormatTimestamp(_task.StartedAt, MissingStart(_task.Status))</MudText>
-                    <MudText Typo="Typo.caption">Completed: @FormatTimestamp(_task.CompletedAt, IsTerminal(_task) ? "Not recorded" : "Waiting")</MudText>
+                    <MudText Typo="Typo.caption">@(_task.Status == "Unknown" ? "Reconciled" : "Completed"): @FormatTimestamp(_task.CompletedAt, IsTerminal(_task) ? "Not recorded" : "Waiting")</MudText>
                     <MudText Typo="Typo.caption" data-testid="task-runtime">Runtime: @TaskPresentation.Runtime(_task.StartedAt, _task.CompletedAt, _task.Status)</MudText>
                     @if (_task.ExitCode is not null)
                     {
@@ -373,7 +373,7 @@
     };
 
     private static bool IsTerminal(TaskDto? task) => TaskPresentation.IsTerminal(task?.Status);
-    private static string MissingStart(string status) => TaskPresentation.IsTerminal(status) && status != "Skipped" ? "Not recorded" : "Not started";
+    private static string MissingStart(string status) => TaskPresentation.MissingStart(status);
     private static string FormatTimestamp(DateTimeOffset? ts, string missing = "Waiting")
         => ts is null ? missing : ts.Value.ToLocalTime().ToString("g");
     private static string BoundOutput(string? value)

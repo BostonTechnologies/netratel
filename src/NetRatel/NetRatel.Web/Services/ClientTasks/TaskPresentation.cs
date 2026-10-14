@@ -35,7 +35,9 @@ internal static class TaskPresentation
 
     public static string Runtime(DateTimeOffset? start, DateTimeOffset? end, string status)
     {
-        if (start is null) return IsTerminal(status) && status != "Skipped" ? "Not recorded" : "Not started";
+        // Reconciliation closes the ledger; its deadline is not a measured process finish.
+        if (string.Equals(status, "Unknown", StringComparison.OrdinalIgnoreCase)) return "Not recorded";
+        if (start is null) return MissingStart(status);
         if (end is null && IsTerminal(status)) return "Not recorded";
         var elapsed = (end ?? DateTimeOffset.UtcNow) - start.Value;
         if (elapsed < TimeSpan.Zero) return "Not recorded";
@@ -43,6 +45,9 @@ internal static class TaskPresentation
         if (elapsed.TotalMinutes >= 1) return elapsed.ToString(@"mm\:ss");
         return $"{elapsed.TotalSeconds:0.0} s";
     }
+
+    public static string MissingStart(string status) =>
+        status is "Pending" or "Accepted" or "Skipped" ? "Not started" : "Not recorded";
 
     public static string ConciseReason(string? reason)
     {

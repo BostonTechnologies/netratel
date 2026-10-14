@@ -141,6 +141,22 @@ public sealed class TaskOutputAndHistoryTests : AsyncBunitContext
     }
 
     [Fact]
+    public void UnknownOutcome_DoesNotRenderReconciliationDeadlineAsMeasuredRuntime()
+    {
+        ConfigureTaskApi(CreateTask("Unknown", "No terminal execution receipt was received.", null) with
+        {
+            StartedAt = DateTimeOffset.UtcNow.AddMinutes(-30), CompletedAt = DateTimeOffset.UtcNow, ExitCode = null
+        });
+        var cut = Render<TaskDetailPage>(parameters => parameters.Add(x => x.TaskId, 101));
+        cut.WaitForAssertion(() =>
+        {
+            cut.Markup.Should().Contain("Outcome unknown").And.Contain("Reconciled:");
+            cut.Find("[data-testid='task-runtime']").TextContent.Should().Be("Runtime: Not recorded");
+            cut.Markup.Should().NotContain("Exit 0");
+        });
+    }
+
+    [Fact]
     public async Task TaskSnapshot_RecoversLogFailure_DeduplicatesOrdersAndBoundsOutput_AndKeepsSelectedTab()
     {
         var stream = new FixtureTaskStream();
