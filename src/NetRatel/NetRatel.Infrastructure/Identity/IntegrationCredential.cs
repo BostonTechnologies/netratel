@@ -27,6 +27,10 @@ public sealed class IntegrationCredential
 
     public string Name { get; set; } = string.Empty;
 
+    /// <summary>Non-secret correlation retained after the bounded pairing request is purged.</summary>
+    public string? PairingRequestId { get; set; }
+    public DateTimeOffset? PairingAcknowledgedAtUtc { get; set; }
+
     public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
 
     public DateTimeOffset ExpiresAtUtc { get; set; }

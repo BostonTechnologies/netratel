@@ -18,6 +18,7 @@ public sealed class NetRatelIdentityDbContext(DbContextOptions<NetRatelIdentityD
     public DbSet<AccessRole> AccessRoles => Set<AccessRole>();
     public DbSet<AccessRolePermission> AccessRolePermissions => Set<AccessRolePermission>();
     public DbSet<PrincipalRoleAssignment> PrincipalRoleAssignments => Set<PrincipalRoleAssignment>();
+    public DbSet<IntegrationPairingRequest> IntegrationPairingRequests => Set<IntegrationPairingRequest>();
     public DbSet<IntegrationCredential> IntegrationCredentials => Set<IntegrationCredential>();
     public DbSet<IntegrationCredentialGrant> IntegrationCredentialGrants => Set<IntegrationCredentialGrant>();
     public DbSet<IntegrationCredentialInstanceGrant> IntegrationCredentialInstanceGrants => Set<IntegrationCredentialInstanceGrant>();
@@ -91,6 +92,26 @@ public sealed class NetRatelIdentityDbContext(DbContextOptions<NetRatelIdentityD
                 .OnDelete(DeleteBehavior.Restrict);
         });
 
+        builder.Entity<IntegrationPairingRequest>(entity =>
+        {
+            entity.ToTable("IntegrationPairingRequests");
+            entity.HasKey(request => request.Id);
+            entity.Property(request => request.Id).HasMaxLength(32);
+            entity.Property(request => request.UserCodeHash).HasMaxLength(64).IsRequired();
+            entity.Property(request => request.DeviceCapabilityHash).HasMaxLength(64).IsRequired();
+            entity.Property(request => request.PublicOrigin).HasMaxLength(2048).IsRequired();
+            entity.Property(request => request.Name).HasMaxLength(128).IsRequired();
+            entity.Property(request => request.Resource).HasMaxLength(2048);
+            entity.Property(request => request.OwnerPrincipalId).HasMaxLength(32);
+            entity.Property(request => request.CredentialId).HasMaxLength(32);
+            entity.Property(request => request.ProtectedDelivery).HasMaxLength(4096);
+            entity.Property(request => request.Revision).IsConcurrencyToken();
+            entity.HasIndex(request => request.UserCodeHash).IsUnique();
+            entity.HasIndex(request => request.DeviceCapabilityHash).IsUnique();
+            entity.HasIndex(request => new { request.State, request.ExpiresAtUtc });
+            entity.HasIndex(request => new { request.State, request.DeliveryExpiresAtUtc });
+        });
+
         builder.Entity<IntegrationCredential>(entity =>
         {
             entity.ToTable("IntegrationCredentials");
@@ -102,6 +123,7 @@ public sealed class NetRatelIdentityDbContext(DbContextOptions<NetRatelIdentityD
             entity.Property(credential => credential.OwnerPrincipalId).HasMaxLength(32).IsRequired();
             entity.Property(credential => credential.Resource).HasMaxLength(2048);
             entity.Property(credential => credential.Name).HasMaxLength(128).IsRequired();
+            entity.Property(credential => credential.PairingRequestId).HasMaxLength(32);
             entity.HasIndex(credential => credential.PublicId).IsUnique();
             entity.HasIndex(credential => credential.SecretHash).IsUnique();
             entity.HasIndex(credential => new { credential.OwnerPrincipalId, credential.CreatedAtUtc });
