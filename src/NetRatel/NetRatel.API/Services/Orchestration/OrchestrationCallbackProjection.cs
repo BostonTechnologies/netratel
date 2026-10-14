@@ -10,13 +10,31 @@ namespace NetRatel.API.Services.Orchestration;
 
 public static class OrchestrationCallbackProjection
 {
-    public static string ResultHash(JobRunDetails details) => Convert.ToHexStringLower(SHA256.HashData(
-        JsonSerializer.SerializeToUtf8Bytes(new
+    public static string ResultHash(JobRunDetails details)
+    {
+        // Keep typed scalar values: converting timestamps through JsonNode would
+        // re-escape their UTC offset and change already published terminal hashes.
+        static Dictionary<string, object?> Shape(object value, params string[] newEvidence)
         {
-            details.Run,
+            var fields = new Dictionary<string, object?>();
+            foreach (var property in value.GetType().GetProperties())
+            {
+                var field = property.GetValue(value);
+                if (field is null && newEvidence.Contains(property.Name)) continue;
+                fields.Add(property.Name, field);
+            }
+            return fields;
+        }
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            Run = Shape(details.Run, "Environment", "TargetDisplayName", "TargetHostName", "TargetName"),
             Steps = details.Steps.OrderBy(x => x.Id),
-            Activities = details.Activities.OrderBy(x => x.Id)
-        })));
+            Activities = details.Activities.OrderBy(x => x.Id).Select(activity => Shape(activity,
+                "Environment", "StartedAtUtc", "ExitCode", "TargetDisplayName", "TargetHostName", "TargetName",
+                "ScriptName", "ScriptType", "CommandLabel", "ScriptContentHash"))
+        });
+        return Convert.ToHexStringLower(SHA256.HashData(bytes));
+    }
 
     public static async Task<bool> TerminalReadyAsync(OrchestratorDbContext db, JobRunDetails details, CancellationToken ct)
     {
@@ -37,13 +55,13 @@ public static class OrchestrationCallbackProjection
             // The accepted terminal run body is immutable. This one-statement
             // guard prevents a stale Running reader from regressing its request.
             return await db.Requests.Where(x => x.Id == requestId && (terminal ||
-                    x.Status != "Completed" && x.Status != "Failed" && x.Status != "Cancelled" && x.Status != "TimedOut"))
+                    x.Status != "Completed" && x.Status != "Failed" && x.Status != "Cancelled" && x.Status != "TimedOut" && x.Status != "Unknown"))
                 .ExecuteUpdateAsync(update => update.SetProperty(x => x.Status, status)
                     .SetProperty(x => x.ResultMessage, message).SetProperty(x => x.ResultData, resultJson)
                     .SetProperty(x => x.UpdatedAtUtc, now), ct) == 1;
         }
         var current = await requests.GetAsync(requestId, ct);
-        if (current is null || !terminal && current.Status is "Completed" or "Failed" or "Cancelled" or "TimedOut") return false;
+        if (current is null || !terminal && current.Status is "Completed" or "Failed" or "Cancelled" or "TimedOut" or "Unknown") return false;
         return await requests.UpdateAsync(new(requestId, null, null, null, null, status, message, resultJson, null, null), ct) is not null;
     }
 
@@ -70,13 +88,14 @@ public static class OrchestrationCallbackProjection
         JobRunState.Succeeded => "succeeded",
         JobRunState.Cancelled => "failed",
         JobRunState.TimedOut => "failed",
+        JobRunState.Unknown => "unknown",
         _ => "failed"
     };
 
     public static string RequestStatus(JobRunState state) => state switch
     {
         JobRunState.Pending => "Accepted", JobRunState.Running => "Processing", JobRunState.Succeeded => "Completed",
-        JobRunState.Cancelled => "Cancelled", JobRunState.TimedOut => "TimedOut", _ => "Failed"
+        JobRunState.Cancelled => "Cancelled", JobRunState.TimedOut => "TimedOut", JobRunState.Unknown => "Unknown", _ => "Failed"
     };
 
     public static NetRatelExternalServiceCallbackRequest Build(RequestInfo request, JobRunDetails details, ManagedOrchestrationRequestBinding binding)
@@ -90,7 +109,7 @@ public static class OrchestrationCallbackProjection
             NetRatelRequestId = request.Id.ToString(CultureInfo.InvariantCulture), NetRatelRunId = binding.ExecutionId,
             ExecutionId = binding.ExecutionId!, Status = Status(run.Status), Message = run.Error ?? (run.Status is JobRunState.Cancelled or JobRunState.TimedOut ? $"Job execution {run.Status}." : null),
             ResultJson = results.Length == 0 ? null : JsonSerializer.Serialize(new { activities = results }),
-            ErrorJson = run.Status is JobRunState.Failed or JobRunState.TimedOut or JobRunState.Cancelled ? JsonSerializer.Serialize(new { state = run.Status.ToString(), message = run.Error ?? $"Job execution {run.Status}." }) : null,
+            ErrorJson = run.Status is JobRunState.Failed or JobRunState.TimedOut or JobRunState.Cancelled or JobRunState.Unknown ? JsonSerializer.Serialize(new { state = run.Status.ToString(), message = run.Error ?? $"Job execution {run.Status}." }) : null,
             StartedAtUtc = run.StartedAtUtc, CompletedAtUtc = run.CompletedAtUtc
         };
     }

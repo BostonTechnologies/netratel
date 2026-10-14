@@ -1,3 +1,5 @@
+using NetRatel.Shared;
+
 namespace NetRatel.Infrastructure.Persistence;
 
 public sealed class JobTaskActivityRecord
@@ -14,6 +16,17 @@ public sealed class JobTaskActivityRecord
     public string Status { get; set; } = string.Empty;
     public string? Error { get; set; }
     public string? ResultJson { get; set; }
+    // Captured when dispatched. Historical records retain null where evidence is absent.
+    public ClientEnvironment? Environment { get; set; }
+    public DateTimeOffset? StartedAtUtc { get; set; }
+    public int? ExitCode { get; set; }
+    public string? TargetDisplayName { get; set; }
+    public string? TargetHostName { get; set; }
+    public string? TargetName { get; set; }
+    public string? ScriptName { get; set; }
+    public string? ScriptType { get; set; }
+    public string? CommandLabel { get; set; }
+    public string? ScriptContentHash { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; }
     public DateTimeOffset? CompletedAtUtc { get; set; }
     public JobRunRecord? JobRun { get; set; }

@@ -9,6 +9,7 @@ using NetRatel.Client.Service.Shells;
 using NetRatel.Client.Service.Tasks;
 using NetRatel.Shared.Contracts.Execution;
 using NetRatel.Shared.Contracts.Tasks;
+using NetRatel.Shared.Service.Shells;
 using Xunit;
 
 namespace NetRatel.Tests.Client;
@@ -156,7 +157,7 @@ public sealed class CommandCancellationTests
         await process.WaitUntilRunningAsync();
         manager.CancelGatewayCommand("running").Should().BeTrue();
         (await terminal.Task.WaitAsync(TimeSpan.FromSeconds(5))).Should().Be("cancelled");
-        statuses.Should().Equal("started", "cancelled");
+        statuses.Where(status => status != "progress").Should().Equal("started", "cancelled");
         await process.AssertChildExitedAsync();
         if (taskKind == TaskKinds.Legacy_ExecPs) await process.AssertPrivateLegacyScriptDeletedAsync();
     }
@@ -175,7 +176,10 @@ public sealed class CommandCancellationTests
             await process.WaitUntilRunningAsync();
             if (cancel) cancellation.Cancel();
             var result = await running.WaitAsync(TimeSpan.FromSeconds(8));
-            result.ExitCode.Should().Be(-1);
+            result.ExitCode.Should().BeNull();
+            result.ProcessStarted.Should().BeTrue();
+            result.Cancelled.Should().Be(cancel);
+            result.TimedOut.Should().Be(!cancel);
             result.Output.Should().Contain("before-output");
             result.Error.Should().Contain("before-error");
             result.Error.Should().Contain(cancel ? "Cancelled" : "Timed out after 3s");
@@ -188,6 +192,72 @@ public sealed class CommandCancellationTests
             // Even an assertion failure must not leave the test's shell running.
             await running.WaitAsync(TimeSpan.FromSeconds(8));
         }
+    }
+
+    [Fact]
+    public async Task Pending_started_receipt_does_not_block_physical_cancellation_and_stream_drain()
+    {
+        await using var process = new ShellProcessFixture();
+        using var cancellation = new CancellationTokenSource();
+        var acknowledgement = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var runner = new ExternalShellRunner();
+        var execution = runner.RunShellCommandAsync(process.Payload(), cancellation.Token,
+            new ExternalShellRunner.ExecutionObserver(() => acknowledgement.Task, (_, _) => Task.CompletedTask));
+        try
+        {
+            await process.WaitUntilRunningAsync();
+            cancellation.Cancel();
+            await process.AssertChildExitedAsync();
+            execution.IsCompleted.Should().BeFalse("result publication remains ordered behind the pending receipt");
+            acknowledgement.TrySetResult();
+            var result = await execution.WaitAsync(TimeSpan.FromSeconds(5));
+            result.Cancelled.Should().BeTrue();
+            result.ExitCode.Should().BeNull();
+            result.Output.Should().Contain("before-output");
+            result.Error.Should().Contain("before-error");
+        }
+        finally
+        {
+            acknowledgement.TrySetResult();
+            cancellation.Cancel();
+            await process.StopChildAsync();
+            await execution.WaitAsync(TimeSpan.FromSeconds(8));
+        }
+    }
+
+    [Fact]
+    public async Task Failed_native_termination_publishes_unknown_outcome_with_captured_output_and_no_exit_receipt()
+    {
+        await using var process = new ShellProcessFixture();
+        var outputSeen = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var terminal = new TaskCompletionSource<(string Status, string? Result, int? Code)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var runner = new ExternalShellRunner(null, ShellExecutableResolver.Resolve,
+            _ => throw new System.ComponentModel.Win32Exception(5, "termination denied by disposable test adapter"));
+        using var manager = new ClientTaskManager(runner, (_, status, result, code) =>
+        {
+            if (status == "progress" && result?.Contains("before-output", StringComparison.Ordinal) == true) outputSeen.TrySetResult();
+            if (status is "failed" or "cancelled" or "completed") terminal.TrySetResult((status, result, code));
+            return Task.CompletedTask;
+        }, _ => { });
+        manager.Start(1, 0);
+        try
+        {
+            manager.EnqueueGatewayCommand("unknown-termination", TaskKinds.ExecShellCommand,
+                JsonSerializer.Serialize(process.Payload()), 1, 0).Should().BeTrue();
+            await process.WaitUntilRunningAsync();
+            await outputSeen.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            manager.CancelGatewayCommand("unknown-termination").Should().BeTrue();
+            var receipt = await terminal.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            receipt.Status.Should().Be("failed", "the wire terminal can carry an explicitly unknown physical outcome");
+            receipt.Code.Should().BeNull();
+            using var result = JsonDocument.Parse(receipt.Result!);
+            result.RootElement.GetProperty("outcomeUnknown").GetBoolean().Should().BeTrue();
+            result.RootElement.GetProperty("cancelled").GetBoolean().Should().BeFalse();
+            result.RootElement.GetProperty("timedOut").GetBoolean().Should().BeFalse();
+            result.RootElement.GetProperty("processStarted").GetBoolean().Should().BeTrue();
+            result.RootElement.GetProperty("stdout").EnumerateArray().Select(line => line.GetString()).Should().Contain("before-output");
+        }
+        finally { await process.StopChildAsync(); }
     }
 
     [Fact]

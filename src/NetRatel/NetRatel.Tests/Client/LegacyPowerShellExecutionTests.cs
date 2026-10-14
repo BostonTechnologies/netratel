@@ -99,8 +99,8 @@ public sealed class LegacyPowerShellExecutionTests
                 TimeoutSeconds = 5
             }), 1, 0).Should().BeTrue();
         (await valid.Task.WaitAsync(TimeSpan.FromSeconds(10))).Should().Contain("recovered");
-        statuses.Where(item => item.Id == "missing").Select(item => item.Status).Should().Equal("started", "failed");
-        statuses.Where(item => item.Id == "valid").Select(item => item.Status).Should().Equal("started", "completed");
+        statuses.Where(item => item.Id == "missing").Select(item => item.Status).Should().Equal("failed");
+        statuses.Where(item => item.Id == "valid" && item.Status != "progress").Select(item => item.Status).Should().Equal("started", "completed");
     }
 
     private static async Task<(string Status, string? ReturnData, int? ExitCode)> ExecuteAsync(string kind, string script)

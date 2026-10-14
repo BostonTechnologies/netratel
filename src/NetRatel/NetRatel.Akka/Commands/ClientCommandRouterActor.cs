@@ -142,7 +142,8 @@ public sealed class ClientCommandRouterActor : ReceiveActor
         status is CommandLifecycleStatus.Created or
             CommandLifecycleStatus.Dispatched or
             CommandLifecycleStatus.Accepted or
-            CommandLifecycleStatus.Started;
+            CommandLifecycleStatus.Started or
+            CommandLifecycleStatus.Progress;
 
     private static bool IsTerminal(CommandLifecycleStatus? status) =>
         status is CommandLifecycleStatus.Completed or

@@ -27,6 +27,69 @@ namespace NetRatel.Tests.API;
 
 public sealed partial class AgentCommandJobControlGatewayServiceTests
 {
+    [Fact]
+    public async Task Command_progress_keeps_started_execution_active_and_nullable_exit_evidence()
+    {
+        await using var fixture = await ClockFixture.CreateAsync();
+        using var call = await fixture.ConnectAsync();
+        foreach (var (status, order) in new[]
+        {
+            (CommandShadowStatus.Accepted, 3UL), (CommandShadowStatus.Started, 4UL),
+            (CommandShadowStatus.Progress, 5UL), (CommandShadowStatus.Progress, 6UL)
+        })
+        {
+            await call.RequestStream.WriteAsync(fixture.Lifecycle(order - 2, order, status, fixture.RequestedAt.AddMinutes(-2)));
+            await fixture.ReadProjectionsAsync(3);
+            if (status == CommandShadowStatus.Started)
+                fixture.LastJobProjection!.StartedAtUtc.Should().Be(fixture.Clock.Now);
+            else
+                fixture.LastJobProjection!.StartedAtUtc.Should().BeNull();
+            fixture.LastJobProjection.ExitCode.Should().BeNull();
+        }
+        (await fixture.StateAsync()).CurrentStatus.Should().Be(CommandLifecycleStatus.Progress);
+        var terminal = fixture.Lifecycle(5, 7, CommandShadowStatus.Completed, fixture.RequestedAt.AddMinutes(-10));
+        terminal.Lifecycle.ExitCode = 0;
+        await call.RequestStream.WriteAsync(terminal);
+        await fixture.ReadProjectionsAsync(3);
+        fixture.LastJobProjection!.ExitCode.Should().Be(0);
+        fixture.LastJobProjection.Status.Should().Be("Completed");
+        (await fixture.StateAsync()).CurrentStatus.Should().Be(CommandLifecycleStatus.Completed);
+    }
+
+    [Fact]
+    public async Task Command_failure_before_execution_preserves_null_start_and_exit()
+    {
+        await using var fixture = await ClockFixture.CreateAsync();
+        using var call = await fixture.ConnectAsync();
+        await call.RequestStream.WriteAsync(fixture.Lifecycle(1, 3, CommandShadowStatus.Accepted, fixture.RequestedAt));
+        await fixture.ReadProjectionsAsync(3);
+        fixture.LastJobProjection!.Status.Should().Be("Accepted");
+        await call.RequestStream.WriteAsync(fixture.Lifecycle(2, 4, CommandShadowStatus.Failed, fixture.RequestedAt));
+        await fixture.ReadProjectionsAsync(3);
+        fixture.LastJobProjection!.StartedAtUtc.Should().BeNull();
+        fixture.LastJobProjection.ExitCode.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("{\"outcomeUnknown\":true}", "Unknown")]
+    [InlineData("{\"timedOut\":true}", "TimedOut")]
+    public async Task Native_terminal_evidence_distinguishes_uncertainty_and_timeout(string resultJson, string expectedStatus)
+    {
+        await using var fixture = await ClockFixture.CreateAsync();
+        using var call = await fixture.ConnectAsync();
+        await call.RequestStream.WriteAsync(fixture.Lifecycle(1, 3, CommandShadowStatus.Accepted, fixture.RequestedAt));
+        await fixture.ReadProjectionsAsync(3);
+        await call.RequestStream.WriteAsync(fixture.Lifecycle(2, 4, CommandShadowStatus.Started, fixture.RequestedAt));
+        await fixture.ReadProjectionsAsync(3);
+        var terminal = fixture.Lifecycle(3, 5, CommandShadowStatus.Failed, fixture.RequestedAt);
+        terminal.Lifecycle.ResultJson = resultJson;
+        await call.RequestStream.WriteAsync(terminal);
+        await fixture.ReadProjectionsAsync(3);
+        fixture.LastJobProjection!.Status.Should().Be(expectedStatus);
+        fixture.LastJobProjection.ExitCode.Should().BeNull();
+        fixture.LastOperatorCommandState.Should().Be(expectedStatus == "Unknown" ? McpOperatorCommandState.Unknown : McpOperatorCommandState.Failed);
+    }
+
     [Theory]
     [InlineData(-22)]
     [InlineData(86400)]
@@ -118,6 +181,8 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
         public ReceiptClock Clock { get; } = new();
         public int ProjectionCount;
         public int JobProjections;
+        public UpdateJobTaskActivityStatusCommand? LastJobProjection { get; private set; }
+        public McpOperatorCommandState? LastOperatorCommandState { get; private set; }
         private readonly Channel<ClockProjection> projections = Channel.CreateUnbounded<ClockProjection>();
         private readonly AgentCommandGatewaySessionRegistry sessions = new();
         private ActorSystem system = null!;
@@ -225,10 +290,15 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
             DateTimeOffset? timestamp;
             if (store == "job" && method == nameof(IJobRunService.UpdateTaskActivityStatusAsync))
             {
-                timestamp = ((UpdateJobTaskActivityStatusCommand)args![0]!).CompletedAtUtc;
+                LastJobProjection = (UpdateJobTaskActivityStatusCommand)args![0]!;
+                timestamp = LastJobProjection.CompletedAtUtc;
                 Interlocked.Increment(ref JobProjections);
             }
-            else if (store == "command" && method == nameof(IMcpOperatorCommandStore.RecordLifecycleAsync)) timestamp = (DateTimeOffset)args![4]!;
+            else if (store == "command" && method == nameof(IMcpOperatorCommandStore.RecordLifecycleAsync))
+            {
+                LastOperatorCommandState = (McpOperatorCommandState)args![3]!;
+                timestamp = (DateTimeOffset)args[4]!;
+            }
             else if (store == "task" && method == nameof(IMcpOperatorTaskStore.RecordLifecycleAsync)) timestamp = (DateTimeOffset)args![5]!;
             else throw new NotSupportedException(method);
             Interlocked.Increment(ref ProjectionCount);

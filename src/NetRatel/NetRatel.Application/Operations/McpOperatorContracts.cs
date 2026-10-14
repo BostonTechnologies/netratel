@@ -796,7 +796,8 @@ public enum McpOperatorCommandState : short
     Completed = 5,
     Failed = 6,
     CancelRequested = 7,
-    Cancelled = 8
+    Cancelled = 8,
+    Unknown = 9
 }
 
 /// <summary>Immutable operator-visible ownership view for one admitted command.</summary>

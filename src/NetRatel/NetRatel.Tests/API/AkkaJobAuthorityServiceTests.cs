@@ -15,6 +15,20 @@ namespace NetRatel.Tests.API;
 
 public sealed class AkkaJobAuthorityServiceTests
 {
+    [Theory]
+    [InlineData("outcomeUnknown", "Unknown physical outcome; native termination could not be confirmed.")]
+    [InlineData("timedOut", "Execution timed out.")]
+    [InlineData("cancelled", "Execution cancelled.")]
+    public void Confirmed_outcome_reason_precedes_earlier_stderr_warning(string flag, string expected)
+    {
+        var result = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object>
+        {
+            ["stderr"] = new[] { "Earlier harmless warning." },
+            [flag] = true
+        });
+        TaskResultSummary.Failure(result).Should().Be(expected);
+    }
+
     [Fact]
     public async Task AcceptedDurableTransitions_ArePublishedThroughTheCurrentSignalRFanout()
     {
@@ -59,7 +73,7 @@ public sealed class AkkaJobAuthorityServiceTests
         await action.Should().ThrowAsync<AgentJobGatewaySessionUnavailableException>();
         runs.Run!.Status.Should().Be(JobRunState.Failed);
         runs.Run.Error.Should().Be("The agent job gateway became unavailable before dispatch.");
-        runs.Step!.Status.Should().Be(JobStepRunState.Failed);
+        runs.Step!.Status.Should().Be(JobStepRunState.Skipped);
         runs.Activity!.Status.Should().Be("Failed");
     }
 
@@ -85,7 +99,7 @@ public sealed class AkkaJobAuthorityServiceTests
             .WithMessage("Job authority lifecycle transition was rejected: *");
         runs.Run!.Status.Should().Be(JobRunState.Failed);
         runs.Run.Error.Should().Be("The job authority rejected the pre-dispatch lifecycle transition.");
-        runs.Step!.Status.Should().Be(JobStepRunState.Failed);
+        runs.Step!.Status.Should().Be(JobStepRunState.Skipped);
         gateway.DispatchCount.Should().Be(0);
     }
 
@@ -117,11 +131,11 @@ public sealed class AkkaJobAuthorityServiceTests
             step.Id,
             step.Ordinal,
             activity.RequestId,
-            "test-correlation",
+             $"akka-job-{run.Id}",
             JobGatewayLifecycleStatus.Failed,
             3,
             3,
-            now.AddSeconds(-1),
+            activity.CreatedAtUtc,
             now,
             0,
             result,
@@ -160,11 +174,11 @@ public sealed class AkkaJobAuthorityServiceTests
             step.Id,
             step.Ordinal,
             activity.RequestId,
-            "test-correlation",
+             $"akka-job-{run.Id}",
             JobGatewayLifecycleStatus.Completed,
             3,
             3,
-            now.AddSeconds(-1),
+            activity.CreatedAtUtc,
             now,
             100,
             result,
@@ -174,6 +188,71 @@ public sealed class AkkaJobAuthorityServiceTests
         runs.Activity.Error.Should().BeNull();
         runs.Activity.ResultJson.Should().Be(result);
     }
+
+    [Fact]
+    public async Task AcceptedAndStarted_AdvanceActivityWithoutInventingDispatchStart_DespiteAgentClockSkew()
+    {
+        var agent = Guid.NewGuid(); var runs = new InMemoryRuns(); var service = CreateAuthority(agent, runs);
+        await service.StartAsync(41, new("test", null, null), CancellationToken.None);
+        runs.Run!.StartedAtUtc.Should().BeNull(); runs.Step!.StartedAtUtc.Should().BeNull();
+        var accepted = Lifecycle(runs, JobGatewayLifecycleStatus.Accepted, 3) with { StatusAtUtc = DateTimeOffset.UtcNow.AddHours(-4) };
+        await service.RecordLifecycleAsync(new(7, agent), accepted, CancellationToken.None);
+        runs.Activity!.Status.Should().Be("Accepted"); runs.Activity.StartedAtUtc.Should().BeNull(); runs.Step!.Status.Should().Be(JobStepRunState.Pending);
+        await service.RecordLifecycleAsync(new(7, agent), Lifecycle(runs, JobGatewayLifecycleStatus.Started, 4), CancellationToken.None);
+        runs.Activity.Status.Should().Be("Running"); runs.Activity.StartedAtUtc.Should().NotBeNull(); runs.Run.StartedAtUtc.Should().NotBeNull();
+    }
+
+    [Theory]
+    [InlineData(JobGatewayLifecycleStatus.Failed, JobRunState.Failed, JobStepRunState.Failed, "Failed")]
+    [InlineData(JobGatewayLifecycleStatus.Cancelled, JobRunState.Cancelled, JobStepRunState.Cancelled, "Cancelled")]
+    public async Task NativeTerminalBeforeStart_PreservesNullEvidenceAndSkipsLaterSteps(JobGatewayLifecycleStatus status, JobRunState runStatus, JobStepRunState stepStatus, string activityStatus)
+    {
+        var agent = Guid.NewGuid(); var runs = new InMemoryRuns(); var service = CreateAuthority(agent, runs, new OneStepDefinitions(agent, 2));
+        await service.StartAsync(41, new("test", null, null), CancellationToken.None);
+        await service.RecordLifecycleAsync(new(7, agent), Lifecycle(runs, status, 3, "{\"error\":\"validation rejected\"}", null), CancellationToken.None);
+        runs.Run!.Status.Should().Be(runStatus); runs.Run.StartedAtUtc.Should().BeNull();
+        runs.Steps.OrderBy(x => x.Ordinal).Select(x => x.Status).Should().Equal(stepStatus, JobStepRunState.Skipped);
+        runs.Steps.Should().OnlyContain(x => x.StartedAtUtc == null);
+        runs.Activity!.Status.Should().Be(activityStatus); runs.Activity.ExitCode.Should().BeNull(); runs.Activity.StartedAtUtc.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task PersistedRuntimeOverridesAndEnvironment_AreUsedForThePhysicalDispatch()
+    {
+        var agent = Guid.NewGuid(); var runs = new InMemoryRuns(); var gateway = new AvailableGateway();
+        var service = CreateAuthority(agent, runs, new OneStepDefinitions(agent, optionsJson: "{\"executionEnvironment\":2,\"executionPolicy\":{\"expectedRuntimeSeconds\":30,\"hardTimeoutSeconds\":50}}"), gateway);
+        await service.StartAsync(41, new("test", null, null, 70, 10, 90), CancellationToken.None);
+        using var payload = System.Text.Json.JsonDocument.Parse(gateway.LastDispatch!.PayloadJson);
+        payload.RootElement.GetProperty("TimeoutSeconds").GetInt32().Should().Be(90);
+        gateway.LastDispatch.Environment.Should().Be(2); runs.Run!.Environment.Should().Be(NetRatel.Shared.ClientEnvironment.Prod);
+        runs.Activity!.Environment.Should().Be(NetRatel.Shared.ClientEnvironment.Prod);
+    }
+
+    [Fact]
+    public async Task ExactLifecycleRetries_DoNotDuplicateOutputOrDispatchAndChangedEvidenceIsRejected()
+    {
+        var agent = Guid.NewGuid(); var runs = new InMemoryRuns(); var gateway = new AvailableGateway(); var service = CreateAuthority(agent, runs, gateway: gateway);
+        await service.StartAsync(41, new("test", null, null), CancellationToken.None);
+        await service.RecordLifecycleAsync(new(7, agent), Lifecycle(runs, JobGatewayLifecycleStatus.Started, 3), CancellationToken.None);
+        var progress = Lifecycle(runs, JobGatewayLifecycleStatus.Progress, 4, "{\"stdout\":[\"first line\"],\"stderr\":[],\"outputSequence\":1}") ;
+        await service.RecordLifecycleAsync(new(7, agent), progress, CancellationToken.None);
+        await service.RecordLifecycleAsync(new(7, agent), progress with { ReceivedAtUtc = DateTimeOffset.UtcNow.AddSeconds(5) }, CancellationToken.None);
+        runs.Logs.Should().ContainSingle().Which.Message.Should().Be("first line");
+        var changed = () => service.RecordLifecycleAsync(new(7, agent), progress with { ResultJson = "{}" }, CancellationToken.None);
+        await changed.Should().ThrowAsync<InvalidOperationException>().WithMessage("*retry differs*");
+        var terminal = Lifecycle(runs, JobGatewayLifecycleStatus.Completed, 5, "{\"stdout\":[\"first line\"],\"exitCode\":0,\"outputStreamed\":true}", 0);
+        await service.RecordLifecycleAsync(new(7, agent), terminal, CancellationToken.None);
+        await service.RecordLifecycleAsync(new(7, agent), terminal, CancellationToken.None);
+        runs.Logs.Should().ContainSingle(); gateway.DispatchCount.Should().Be(1); runs.Activity!.ExitCode.Should().Be(0);
+    }
+
+    private static AkkaJobAuthorityService CreateAuthority(Guid agent, InMemoryRuns runs, IJobDefinitionService? definitions = null, AvailableGateway? gateway = null) =>
+        new(definitions ?? new OneStepDefinitions(agent), runs, new JobTaskBridge(new EmptyScripts(), NullLogger<JobTaskBridge>.Instance),
+            gateway ?? new AvailableGateway(), new AcceptingRouter(), new RecordingRealtimeFanoutSink(), new JobAuthorityIdGenerator(), new TestHostEnvironment());
+
+    private static JobLifecycleUpdateEnvelope Lifecycle(InMemoryRuns runs, JobGatewayLifecycleStatus status, ulong sequence, string? result = null, int? exitCode = null) =>
+        new(runs.Run!.Id, runs.Step!.JobStepId!.Value, runs.Step.Id, runs.Step.Ordinal, runs.Activity!.RequestId,
+             $"akka-job-{runs.Run.Id}", status, sequence, sequence, runs.Activity.CreatedAtUtc, DateTimeOffset.UtcNow, 0, result, exitCode);
 
     private sealed class VanishingGateway(ClientKey client) : IAgentJobGatewaySessionRegistry
     {
@@ -186,10 +265,12 @@ public sealed class AkkaJobAuthorityServiceTests
     private sealed class AvailableGateway : IAgentJobGatewaySessionRegistry
     {
         public int DispatchCount { get; private set; }
+        public JobGatewayStepDispatch? LastDispatch { get; private set; }
         public AgentJobGatewayRegistration Register(ClientKey _, Guid __, ulong ___, bool provisional = false) => throw new NotSupportedException();
         public bool IsAvailable(ClientKey _) => true;
-        public Task DispatchAsync(ClientKey _, JobGatewayStepDispatch __, CancellationToken ___)
+        public Task DispatchAsync(ClientKey _, JobGatewayStepDispatch dispatch, CancellationToken ___)
         {
+            LastDispatch = dispatch;
             DispatchCount++;
             return Task.CompletedTask;
         }
@@ -199,9 +280,14 @@ public sealed class AkkaJobAuthorityServiceTests
     private sealed class OneStepDefinitions : IJobDefinitionService
     {
         private readonly JobDefinitionInfo _definition;
+        private readonly IReadOnlyList<JobStepInfo> _steps;
         private static readonly JobStepInfo Step = new(42, 41, 1, JobStepKind.RunCommand, "sh", "true", null, null, true);
-        public OneStepDefinitions(Guid agentId) => _definition = new(41, "test", "/", null, 7, string.Empty, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null, agentId);
-        public Task<JobDefinitionDetails?> GetDetailsAsync(ulong id, CancellationToken ct = default) => Task.FromResult<JobDefinitionDetails?>(id == 41 ? new(_definition, [], [Step]) : null);
+        public OneStepDefinitions(Guid agentId, int stepCount = 1, string? optionsJson = null)
+        {
+            _definition = new(41, "test", "/", null, 7, string.Empty, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, optionsJson, agentId);
+            _steps = Enumerable.Range(1, stepCount).Select(i => Step with { Id = (ulong)(41 + i), Ordinal = i }).ToList();
+        }
+        public Task<JobDefinitionDetails?> GetDetailsAsync(ulong id, CancellationToken ct = default) => Task.FromResult<JobDefinitionDetails?>(id == 41 ? new(_definition, [], _steps) : null);
         public Task<IReadOnlyList<JobDefinitionInfo>> ListAsync(CancellationToken ct = default) => Task.FromResult<IReadOnlyList<JobDefinitionInfo>>([_definition]);
         public Task<JobDefinitionInfo?> GetAsync(ulong id, CancellationToken ct = default) => Task.FromResult(id == 41 ? _definition : null);
         public Task<JobDefinitionInfo> CreateAsync(CreateJobDefinitionCommand c, CancellationToken ct = default) => throw new NotSupportedException();
@@ -211,7 +297,7 @@ public sealed class AkkaJobAuthorityServiceTests
         public Task<JobParameterInfo?> AddParamAsync(AddJobParameterCommand c, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<JobParameterInfo?> UpdateParamAsync(UpdateJobParameterCommand c, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<bool> DeleteParamAsync(ulong id, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task<IReadOnlyList<JobStepInfo>> ListStepsAsync(ulong id, CancellationToken ct = default) => Task.FromResult<IReadOnlyList<JobStepInfo>>([Step]);
+        public Task<IReadOnlyList<JobStepInfo>> ListStepsAsync(ulong id, CancellationToken ct = default) => Task.FromResult(_steps);
         public Task<JobStepInfo?> AddStepAsync(AddJobStepCommand c, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<JobStepInfo?> UpdateStepAsync(UpdateJobStepCommand c, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<JobStepInfo?> ReorderStepAsync(ulong id, int ordinal, CancellationToken ct = default) => throw new NotSupportedException();
@@ -232,11 +318,17 @@ public sealed class AkkaJobAuthorityServiceTests
     private sealed class InMemoryRuns : IJobRunService
     {
         public JobRunInfo? Run { get; private set; }
-        public JobStepRunInfo? Step { get; private set; }
+        public List<JobStepRunInfo> Steps { get; } = [];
+        public List<JobTaskLogInfo> Logs { get; } = [];
+        public JobStepRunInfo? Step => Steps.OrderBy(x => x.Ordinal).FirstOrDefault();
         public JobTaskActivityInfo? Activity { get; private set; }
-        public Task<JobRunInfo> UpsertRunAsync(UpsertJobRunCommand c, CancellationToken ct = default) => Task.FromResult(Run = new(c.RunId, c.JobId, c.TenantId, c.ClientIdentity, c.StartedBy, c.Status, c.CurrentStepOrdinal, c.CreatedAtUtc, c.StartedAtUtc, c.CompletedAtUtc, c.Error, c.InputsJson, c.OptionsJson, c.AgentId));
-        public Task<JobStepRunInfo> UpsertStepRunAsync(UpsertJobStepRunCommand c, CancellationToken ct = default) => Task.FromResult(Step = new(c.StepRunId, c.JobRunId, c.JobStepId, c.Status, c.Ordinal, c.TaskRequestId, c.Error, c.StartedAtUtc, c.CompletedAtUtc));
-        public Task<JobTaskActivityInfo> CreateTaskActivityAsync(CreateJobTaskActivityCommand c, CancellationToken ct = default) => Task.FromResult(Activity = new(1, c.RequestId, c.JobRunId, c.JobStepId, c.ClientIdentity, c.TenantId, c.TaskType, c.Status, c.Error, c.CreatedAtUtc, c.CompletedAtUtc, c.AgentId));
+        public Task<JobRunInfo> UpsertRunAsync(UpsertJobRunCommand c, CancellationToken ct = default) => Task.FromResult(Run = new(c.RunId, c.JobId, c.TenantId, c.ClientIdentity, c.StartedBy, c.Status, c.CurrentStepOrdinal, c.CreatedAtUtc, c.StartedAtUtc, c.CompletedAtUtc, c.Error, c.InputsJson, c.OptionsJson, c.AgentId, c.Environment, c.TargetDisplayName, c.TargetHostName, c.TargetName));
+        public Task<JobStepRunInfo> UpsertStepRunAsync(UpsertJobStepRunCommand c, CancellationToken ct = default)
+        {
+            var step = new JobStepRunInfo(c.StepRunId, c.JobRunId, c.JobStepId, c.Status, c.Ordinal, c.TaskRequestId, c.Error, c.StartedAtUtc, c.CompletedAtUtc);
+            Steps.RemoveAll(x => x.Id == c.StepRunId); Steps.Add(step); return Task.FromResult(step);
+        }
+        public Task<JobTaskActivityInfo> CreateTaskActivityAsync(CreateJobTaskActivityCommand c, CancellationToken ct = default) => Task.FromResult(Activity = new(1, c.RequestId, c.JobRunId, c.JobStepId, c.ClientIdentity, c.TenantId, c.TaskType, c.Status, c.Error, c.CreatedAtUtc, c.CompletedAtUtc, c.AgentId, c.ResultJson, c.Environment, c.StartedAtUtc, c.ExitCode, c.TargetDisplayName, c.TargetHostName, c.TargetName, c.ScriptName, c.ScriptType, c.CommandLabel, c.ScriptContentHash));
         public Task<JobTaskActivityInfo?> UpdateTaskActivityStatusAsync(UpdateJobTaskActivityStatusCommand c, CancellationToken ct = default)
         {
             Activity = Activity! with
@@ -244,20 +336,28 @@ public sealed class AkkaJobAuthorityServiceTests
                 Status = c.Status,
                 Error = c.Error ?? Activity.Error,
                 CompletedAtUtc = c.CompletedAtUtc,
-                ResultJson = c.ResultJson ?? Activity.ResultJson
+                ResultJson = c.ResultJson ?? Activity.ResultJson,
+                StartedAtUtc = c.StartedAtUtc ?? Activity.StartedAtUtc,
+                ExitCode = c.ExitCode ?? Activity.ExitCode
             };
             return Task.FromResult<JobTaskActivityInfo?>(Activity);
         }
         public Task<JobRunInfo?> GetAsync(ulong id, CancellationToken ct = default) => Task.FromResult(Run?.Id == id ? Run : null);
-        public Task<JobRunDetails?> GetDetailsAsync(ulong id, CancellationToken ct = default) => Task.FromResult<JobRunDetails?>(Run?.Id == id && Step is not null ? new(Run, [Step], Activity is null ? [] : [Activity]) : Run?.Id == id ? new(Run, [], []) : null);
+        public Task<JobRunDetails?> GetDetailsAsync(ulong id, CancellationToken ct = default) => Task.FromResult<JobRunDetails?>(Run?.Id == id && Step is not null ? new(Run, Steps.ToArray(), Activity is null ? [] : [Activity]) : Run?.Id == id ? new(Run, [], []) : null);
         public Task<IReadOnlyList<JobRunInfo>> ListAsync(CancellationToken ct = default) => Task.FromResult<IReadOnlyList<JobRunInfo>>(Run is null ? [] : [Run]);
         public Task DeleteAsync(ulong id, CancellationToken ct = default) => Task.CompletedTask;
         public Task<JobTaskActivityInfo?> GetActivityByIdAsync(ulong id, CancellationToken ct = default) => Task.FromResult(Activity);
         public Task<JobTaskActivityInfo?> GetActivityByRequestIdAsync(string id, CancellationToken ct = default) => Task.FromResult(Activity);
         public Task<IReadOnlyList<JobTaskActivityInfo>> ListTaskActivitiesAsync(CancellationToken ct = default) => Task.FromResult<IReadOnlyList<JobTaskActivityInfo>>(Activity is null ? [] : [Activity]);
-        public Task<IReadOnlyList<JobTaskLogInfo>> GetLogsByRequestIdAsync(string id, CancellationToken ct = default) => Task.FromResult<IReadOnlyList<JobTaskLogInfo>>([]);
+        public Task<IReadOnlyList<JobTaskLogInfo>> GetLogsByRequestIdAsync(string id, CancellationToken ct = default) => Task.FromResult<IReadOnlyList<JobTaskLogInfo>>(Logs.Where(x => x.RequestId == id).ToList());
         public Task<JobTaskActivityInfo> UpsertTaskActivityAsync(UpsertJobTaskActivityCommand c, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task<JobTaskLogInfo> AppendTaskLogAsync(AppendJobTaskLogCommand c, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<JobTaskLogInfo> AppendTaskLogAsync(AppendJobTaskLogCommand c, CancellationToken ct = default)
+        {
+            var existing = Logs.FirstOrDefault(x => x.RequestId == c.RequestId && x.Sequence == c.Sequence && x.Stream == c.Stream);
+            if (existing is not null) return Task.FromResult(existing);
+            var log = new JobTaskLogInfo(Logs.Count + 1, c.RequestId, c.JobTaskActivityId, c.ClientIdentity, c.TenantId, c.Stream, c.Message, c.Sequence, c.TimestampUtc);
+            Logs.Add(log); return Task.FromResult(log);
+        }
     }
 
     private sealed class AcceptingRouter : IJobRuntimeRouter

@@ -69,7 +69,7 @@ public sealed class JobRunReconciliationService
                 await _jobRuns.UpdateTaskActivityStatusAsync(
                     new UpdateJobTaskActivityStatusCommand(
                         activity.RequestId,
-                        "TimedOut",
+                        "Unknown",
                         message,
                         now),
                     ct).ConfigureAwait(false);
@@ -96,7 +96,7 @@ public sealed class JobRunReconciliationService
                     step.Id,
                     step.JobRunId,
                     step.JobStepId.Value,
-                    JobStepRunState.Failed,
+                    step.TaskRequestId is null ? JobStepRunState.Skipped : JobStepRunState.Unknown,
                     step.Ordinal,
                     step.TaskRequestId,
                     message,
@@ -114,30 +114,32 @@ public sealed class JobRunReconciliationService
                 run.TenantId,
                 run.ClientIdentity,
                 run.StartedBy,
-                JobRunState.TimedOut,
+                JobRunState.Unknown,
                 run.CurrentStepOrdinal,
                 run.CreatedAtUtc,
                 run.StartedAtUtc,
                 now,
                 message,
                 run.InputsJson,
-                run.OptionsJson),
+                run.OptionsJson, run.AgentId, run.Environment, run.TargetDisplayName, run.TargetHostName, run.TargetName),
             ct).ConfigureAwait(false);
 
         return true;
     }
 
     private static bool IsTerminal(JobRunState status)
-        => status is JobRunState.Succeeded or JobRunState.Failed or JobRunState.Cancelled or JobRunState.TimedOut;
+        => status is JobRunState.Succeeded or JobRunState.Failed or JobRunState.Cancelled or JobRunState.TimedOut or JobRunState.Unknown;
 
     private static bool IsTerminal(JobStepRunState status)
-        => status is JobStepRunState.Succeeded or JobStepRunState.Failed or JobStepRunState.Skipped;
+        => status is JobStepRunState.Succeeded or JobStepRunState.Failed or JobStepRunState.Skipped or JobStepRunState.Cancelled or JobStepRunState.TimedOut or JobStepRunState.Unknown;
 
     private static bool IsTerminalTaskStatus(string? status)
         => string.Equals(status, TaskStatuses.Completed, StringComparison.OrdinalIgnoreCase) ||
            string.Equals(status, TaskStatuses.Failed, StringComparison.OrdinalIgnoreCase) ||
            string.Equals(status, TaskStatuses.Cancelled, StringComparison.OrdinalIgnoreCase) ||
-           string.Equals(status, TaskStatuses.TimedOut, StringComparison.OrdinalIgnoreCase);
+           string.Equals(status, TaskStatuses.TimedOut, StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(status, "Unknown", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(status, "Skipped", StringComparison.OrdinalIgnoreCase);
 
 }
 

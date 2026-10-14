@@ -6,6 +6,7 @@ public sealed record ExecutionLogDto(
     string? RequestId,
     string? Plain,
     string? Html,
-    int ExitCode,
-    IReadOnlyList<TaskLogDto> Logs
+    int? ExitCode,
+    IReadOnlyList<TaskLogDto> Logs,
+    bool Truncated = false
 );

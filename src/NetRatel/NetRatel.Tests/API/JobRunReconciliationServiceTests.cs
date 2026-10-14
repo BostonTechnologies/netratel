@@ -20,11 +20,11 @@ public sealed class JobRunReconciliationServiceTests
         var count = await service.ReconcileAsync(now, TimeSpan.FromMinutes(5));
 
         count.Should().Be(1);
-        store.Run!.Status.Should().Be(JobRunState.TimedOut);
+        store.Run!.Status.Should().Be(JobRunState.Unknown);
         store.Run.Error.Should().Contain("timed out");
-        store.Step!.Status.Should().Be(JobStepRunState.Failed);
+        store.Step!.Status.Should().Be(JobStepRunState.Unknown);
         store.Step.TaskRequestId.Should().Be("req-1");
-        store.Activity!.Status.Should().Be("TimedOut");
+        store.Activity!.Status.Should().Be("Unknown");
     }
 
     [Fact]
@@ -42,7 +42,7 @@ public sealed class JobRunReconciliationServiceTests
         count.Should().Be(1);
         store.Run!.Status.Should().Be(JobRunState.Failed);
         store.Step!.Status.Should().Be(JobStepRunState.Running);
-        store.Activity!.Status.Should().Be("TimedOut");
+        store.Activity!.Status.Should().Be("Unknown");
     }
 
     private sealed class FakeJobRunService : IJobRunService

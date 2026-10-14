@@ -171,26 +171,28 @@ public sealed class AgentCommandGatewayClient(
                 {
                     "accepted" => CommandShadowStatus.Accepted,
                     "started" => CommandShadowStatus.Started,
+                    "progress" => CommandShadowStatus.Progress,
                     "completed" => CommandShadowStatus.Completed,
                     "failed" => CommandShadowStatus.Failed,
                     "cancelled" => CommandShadowStatus.Cancelled,
                     _ => throw new InvalidOperationException($"Unsupported gateway command status '{status}'.")
                 };
                 var now = DateTimeOffset.UtcNow;
+                var update = new CommandLifecycleUpdate
+                {
+                    CommandId = commandId,
+                    CorrelationId = cursor.CorrelationId,
+                    RequestTimestamp = Timestamp.FromDateTimeOffset(cursor.RequestTimestamp),
+                    StatusTimestamp = Timestamp.FromDateTimeOffset(now),
+                    Version = cursor.NextVersion,
+                    Sequence = cursor.NextSequence,
+                    Status = mapped,
+                    ResultJson = resultJson ?? string.Empty
+                };
+                if (exitCode.HasValue) update.ExitCode = exitCode.Value;
                 await WriteLockedAsync(new AgentCommandFrame
                 {
-                    Lifecycle = new CommandLifecycleUpdate
-                    {
-                        CommandId = commandId,
-                        CorrelationId = cursor.CorrelationId,
-                        RequestTimestamp = Timestamp.FromDateTimeOffset(cursor.RequestTimestamp),
-                        StatusTimestamp = Timestamp.FromDateTimeOffset(now),
-                        Version = cursor.NextVersion,
-                        Sequence = cursor.NextSequence,
-                        Status = mapped,
-                        ResultJson = resultJson ?? string.Empty,
-                        ExitCode = exitCode ?? 0
-                    }
+                    Lifecycle = update
                 }).ConfigureAwait(false);
                 _cursors[commandId] = cursor with { NextVersion = cursor.NextVersion + 1, NextSequence = cursor.NextSequence + 1 };
             }

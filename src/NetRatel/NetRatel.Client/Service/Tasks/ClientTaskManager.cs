@@ -266,8 +266,6 @@ public sealed class ClientTaskManager : IDisposable
             workItem.Payload,
             workItem.CommandId);
 
-        await SafeStatusAsync(task, TaskStatuses.Processing, "Starting…").ConfigureAwait(false);
-
         ITaskLogSink sink = NullTaskLogSink.Instance;
 
         var rawType = task.TaskType;
@@ -303,18 +301,22 @@ public sealed class ClientTaskManager : IDisposable
                 break;
 
             case TaskKinds.OsInfo:
+                await SafeStatusAsync(task, TaskStatuses.Processing, "Executing…").ConfigureAwait(false);
                 await HandleOsInfoAsync(task, sink, ct).ConfigureAwait(false);
                 break;
 
             case TaskKinds.ProcessesList:
+                await SafeStatusAsync(task, TaskStatuses.Processing, "Executing…").ConfigureAwait(false);
                 await HandleProcessesListAsync(task, sink, ct).ConfigureAwait(false);
                 break;
 
             case TaskKinds.ProcessesTopCpu:
+                await SafeStatusAsync(task, TaskStatuses.Processing, "Executing…").ConfigureAwait(false);
                 await HandleTopCpuAsync(task, sink, ct).ConfigureAwait(false);
                 break;
 
             case TaskKinds.DiskFree:
+                await SafeStatusAsync(task, TaskStatuses.Processing, "Executing…").ConfigureAwait(false);
                 await HandleDiskFreeAsync(task, sink, ct).ConfigureAwait(false);
                 break;
 
@@ -379,14 +381,15 @@ public sealed class ClientTaskManager : IDisposable
         try { payload = JsonSerializer.Deserialize(task.Payload ?? "null", TaskPayloadJsonContext.Default.ClientServiceControlPayload); }
         catch (JsonException)
         {
-            await SafeStatusAsync(task, TaskStatuses.Failed, "Invalid service operation.", "{\"errorCode\":\"invalid_service_operation\"}", 1).ConfigureAwait(false);
+            await SafeStatusAsync(task, TaskStatuses.Failed, "Invalid service operation.", "{\"errorCode\":\"invalid_service_operation\"}", null).ConfigureAwait(false);
             return;
         }
         if (payload is null || !string.Equals(task.RequestId, payload.OperationId.ToString("N"), StringComparison.Ordinal))
         {
-            await SafeStatusAsync(task, TaskStatuses.Failed, "Invalid service operation identity.", "{\"errorCode\":\"invalid_service_operation\"}", 1).ConfigureAwait(false);
+            await SafeStatusAsync(task, TaskStatuses.Failed, "Invalid service operation identity.", "{\"errorCode\":\"invalid_service_operation\"}", null).ConfigureAwait(false);
             return;
         }
+        await SafeStatusAsync(task, TaskStatuses.Processing, "Executing service operation…").ConfigureAwait(false);
         var result = await new ClientServiceControlExecutor().ExecuteAsync(payload, cancellationToken).ConfigureAwait(false);
         await SafeStatusAsync(task, result.Success ? TaskStatuses.Completed : TaskStatuses.Failed,
             result.Success ? "Service operation completed." : "Service operation failed.",
@@ -428,19 +431,17 @@ public sealed class ClientTaskManager : IDisposable
         try
         {
             LogManager.WriteLog($"[Command] Executing shell command requestId={task.RequestId} preferred={payload.Preferred} timeout={payload.TimeoutSeconds?.ToString() ?? "default"}");
-            var result = await _shellRunner.RunShellCommandAsync(payload, ct).ConfigureAwait(false);
+            var result = await _shellRunner.RunShellCommandAsync(payload, ct, CreateExecutionObserver(task)).ConfigureAwait(false);
             LogManager.WriteLog($"[Command] Shell command finished requestId={task.RequestId} exitCode={result.ExitCode} stdout={result.Output.Count} stderr={result.Error.Count} shell={result.ShellPath} cwd={result.WorkingDirectory}");
-            if (ct.IsCancellationRequested)
-            {
-                await PublishCancelledAsync(task, sink, "Cancelled").ConfigureAwait(false);
-                return;
-            }
-
             await EmitResultAsync(task, sink, result).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             await PublishCancelledAsync(task, sink, "Cancelled").ConfigureAwait(false);
+        }
+        catch (ExternalShellRunner.ExecutionOutcomeUnknownException exception)
+        {
+            await EmitResultAsync(task, sink, exception.Execution).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -503,19 +504,17 @@ public sealed class ClientTaskManager : IDisposable
         try
         {
             LogManager.WriteLog($"[Command] Executing library script requestId={task.RequestId} scriptId={payload.ScriptId} scriptType={payload.ScriptType} preferred={payload.Preferred} contentHash={ComputeContentHash(content)}");
-            var result = await _shellRunner.RunLibraryScriptAsync(payload, content, ct, mergedParams).ConfigureAwait(false);
+            var result = await _shellRunner.RunLibraryScriptAsync(payload, content, ct, mergedParams, CreateExecutionObserver(task)).ConfigureAwait(false);
             LogManager.WriteLog($"[Command] Library script finished requestId={task.RequestId} exitCode={result.ExitCode} stdout={result.Output.Count} stderr={result.Error.Count} shell={result.ShellPath} cwd={result.WorkingDirectory}");
-            if (ct.IsCancellationRequested)
-            {
-                await PublishCancelledAsync(task, sink, "Cancelled").ConfigureAwait(false);
-                return;
-            }
-
             await EmitResultAsync(task, sink, result).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             await PublishCancelledAsync(task, sink, "Cancelled").ConfigureAwait(false);
+        }
+        catch (ExternalShellRunner.ExecutionOutcomeUnknownException exception)
+        {
+            await EmitResultAsync(task, sink, exception.Execution).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -548,42 +547,50 @@ public sealed class ClientTaskManager : IDisposable
         var remainingBytes = MaximumGatewayResultBytes;
         var stdout = BoundOutput(res.Output, ref remainingBytes, out var stdoutTruncated);
         var stderr = BoundOutput(res.Error, ref remainingBytes, out var stderrTruncated);
-        await AppendOutputLogsAsync(sink, stdout, stderr).ConfigureAwait(false);
+        _ = sink;
 
         var payload = JsonSerializer.Serialize(new
         {
             exitCode = res.ExitCode,
             stdout,
             stderr,
-            outputTruncated = stdoutTruncated || stderrTruncated,
+            outputTruncated = res.OutputTruncated || stdoutTruncated || stderrTruncated,
+            outputStreamed = true,
+            processStarted = res.ProcessStarted,
+            cancelled = res.Cancelled,
+            timedOut = res.TimedOut,
+            outcomeUnknown = res.OutcomeUnknown,
             diagnostics = new
             {
                 shellPath = res.ShellPath,
-                arguments = res.Arguments,
+                // Raw arguments can contain private command or parameter values.
+                arguments = (string?)null,
                 workingDirectory = res.WorkingDirectory,
-                durationMs = res.DurationMs
+                durationMs = res.DurationMs,
+                cancelled = res.Cancelled,
+                timedOut = res.TimedOut
             }
         });
-        await SafeStatusAsync(task, res.Success ? TaskStatuses.Completed : TaskStatuses.Failed, res.Success ? "OK" : "Failed", payload, res.ExitCode).ConfigureAwait(false);
+        await SafeStatusAsync(task, res.Cancelled ? TaskStatuses.Cancelled : res.Success ? TaskStatuses.Completed : TaskStatuses.Failed, res.TimedOut ? "Timed out" : res.Cancelled ? "Cancelled" : res.Success ? "OK" : "Failed", payload, res.ExitCode).ConfigureAwait(false);
     }
 
-    private static async Task AppendOutputLogsAsync(ITaskLogSink sink, IReadOnlyList<string> stdout, IReadOnlyList<string> stderr)
+    private ExternalShellRunner.ExecutionObserver CreateExecutionObserver(CommandExecutionContext task)
     {
-        if (stdout.Count > 0)
-        {
-            var outputEntries = stdout
-                .Select((line, index) => ("stdout", line, (ulong)index + 1))
-                .ToList();
-            await sink.AppendBatchAsync(outputEntries).ConfigureAwait(false);
-        }
-
-        if (stderr.Count > 0)
-        {
-            var errorEntries = stderr
-                .Select((line, index) => ("stderr", line, (ulong)index + 1))
-                .ToList();
-            await sink.AppendBatchAsync(errorEntries).ConfigureAwait(false);
-        }
+        long sequence = 0;
+        return new ExternalShellRunner.ExecutionObserver(
+            () => SafeStatusAsync(task, TaskStatuses.Processing, "Executing…"),
+            async (stream, line) =>
+            {
+                var payload = JsonSerializer.Serialize(new
+                {
+                    stdout = stream == "stdout" ? new[] { line } : Array.Empty<string>(),
+                    stderr = stream == "stderr" ? new[] { line } : Array.Empty<string>(),
+                    outputSequence = ++sequence,
+                    outputTruncated = false
+                });
+                try { await _gatewayStatusPublisher(task.RequestId, "progress", payload, null).ConfigureAwait(false); }
+                catch (Exception ex) { _logError($"Output update failed for command {task.RequestId}: {ex}"); }
+            });
     }
 
     private static IReadOnlyList<string> BoundOutput(IReadOnlyList<string> lines, ref int remainingBytes, out bool truncated)
@@ -593,7 +600,8 @@ public sealed class ClientTaskManager : IDisposable
         foreach (var line in lines)
         {
             var redacted = OperatorOutputRedactor.Redact(line);
-            var bytes = Encoding.UTF8.GetByteCount(redacted);
+            // Account for JSON escaping and separators, not only the raw text.
+            var bytes = Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(redacted)) + 1;
             if (bytes <= remainingBytes)
             {
                 bounded.Add(redacted);
@@ -604,11 +612,17 @@ public sealed class ClientTaskManager : IDisposable
             truncated = true;
             if (remainingBytes > 0)
             {
-                var length = Math.Min(redacted.Length, remainingBytes);
-                while (length > 0 && Encoding.UTF8.GetByteCount(redacted.AsSpan(0, length)) > remainingBytes)
-                    length--;
-                if (length > 0)
-                    bounded.Add(redacted[..length]);
+                var low = 0;
+                var high = Math.Min(redacted.Length, remainingBytes);
+                while (low < high)
+                {
+                    var middle = (low + high + 1) / 2;
+                    if (Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(redacted[..middle])) + 1 <= remainingBytes)
+                        low = middle;
+                    else high = middle - 1;
+                }
+                if (low > 0 && low < redacted.Length && char.IsHighSurrogate(redacted[low - 1])) low--;
+                if (low > 0) bounded.Add(redacted[..low]);
             }
             remainingBytes = 0;
             break;
@@ -616,7 +630,7 @@ public sealed class ClientTaskManager : IDisposable
         return bounded;
     }
 
-    private async Task PublishFailureAsync(CommandExecutionContext task, ITaskLogSink sink, string message, string? detail, string? payload = null, int? exitCode = 1)
+    private async Task PublishFailureAsync(CommandExecutionContext task, ITaskLogSink sink, string message, string? detail, string? payload = null, int? exitCode = null)
     {
         var errorText = OperatorOutputRedactor.Redact(string.IsNullOrWhiteSpace(detail) ? message : detail!);
         try
@@ -660,7 +674,7 @@ public sealed class ClientTaskManager : IDisposable
 
         var returnData = JsonSerializer.Serialize(new
         {
-            exitCode = -1,
+            exitCode = (int?)null,
             stdout = Array.Empty<string>(),
             stderr = new[] { reason },
             diagnostics = new
@@ -670,7 +684,7 @@ public sealed class ClientTaskManager : IDisposable
             }
         });
 
-        await SafeStatusAsync(task, TaskStatuses.Cancelled, reason, returnData, -1).ConfigureAwait(false);
+        await SafeStatusAsync(task, TaskStatuses.Cancelled, reason, returnData, null).ConfigureAwait(false);
     }
 
     private async Task SafeStatusAsync(CommandExecutionContext task, string status, string? message, string? returnData = null, int? exitCode = null)
@@ -713,21 +727,21 @@ public sealed class ClientTaskManager : IDisposable
         ct.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(script))
         {
-            await SafeStatusAsync(task, TaskStatuses.Failed, "Missing PowerShell script", null, 1).ConfigureAwait(false);
+            await SafeStatusAsync(task, TaskStatuses.Failed, "Missing PowerShell script", null, null).ConfigureAwait(false);
             return;
         }
 
         try
         {
             var (execution, returnData) = await LegacyPowerShellAdapter.ExecuteAsync(
-                _shellRunner, script, MaximumGatewayResultBytes, ct).ConfigureAwait(false);
+                _shellRunner, script, MaximumGatewayResultBytes, ct, CreateExecutionObserver(task)).ConfigureAwait(false);
             var remainingBytes = MaximumGatewayResultBytes;
             var stdout = BoundOutput(execution.Output, ref remainingBytes, out _);
             var stderr = BoundOutput(execution.Error, ref remainingBytes, out _);
-            await AppendOutputLogsAsync(sink, stdout, stderr).ConfigureAwait(false);
-            if (ct.IsCancellationRequested)
+            _ = sink;
+            if (execution.Cancelled || execution.TimedOut)
             {
-                await PublishCancelledAsync(task, sink, "Cancelled").ConfigureAwait(false);
+                await EmitResultAsync(task, sink, execution).ConfigureAwait(false);
                 return;
             }
 
@@ -748,10 +762,14 @@ public sealed class ClientTaskManager : IDisposable
         {
             await PublishCancelledAsync(task, sink, "Cancelled").ConfigureAwait(false);
         }
+        catch (ExternalShellRunner.ExecutionOutcomeUnknownException exception)
+        {
+            await EmitResultAsync(task, sink, exception.Execution).ConfigureAwait(false);
+        }
         catch (Exception exception)
         {
             await SafeStatusAsync(task, TaskStatuses.Failed, "PowerShell execution failed.",
-                OperatorOutputRedactor.Redact(exception.Message), 1).ConfigureAwait(false);
+                OperatorOutputRedactor.Redact(exception.Message), null).ConfigureAwait(false);
         }
     }
 
@@ -903,7 +921,6 @@ public sealed class ClientTaskManager : IDisposable
 
     private async Task HandleExecShAsync(CommandExecutionContext task, ITaskLogSink sink, CancellationToken ct)
     {
-        _ = sink;
         ct.ThrowIfCancellationRequested();
         string? script = null;
         try
@@ -911,51 +928,41 @@ public sealed class ClientTaskManager : IDisposable
             if (!string.IsNullOrWhiteSpace(task.Payload))
             {
                 using var doc = JsonDocument.Parse(task.Payload);
-                if (doc.RootElement.TryGetProperty("script", out var s) && s.ValueKind == JsonValueKind.String)
-                    script = s.GetString();
+                if (doc.RootElement.TryGetProperty("script", out var value) && value.ValueKind == JsonValueKind.String)
+                    script = value.GetString();
             }
         }
-        catch { }
+        catch (JsonException) { }
         if (string.IsNullOrWhiteSpace(script))
         {
-            await SafeStatusAsync(task, TaskStatuses.Failed, "Missing script", null).ConfigureAwait(false);
+            await PublishFailureAsync(task, sink, "Missing script", null).ConfigureAwait(false);
+            return;
+        }
+        if (OperatingSystem.IsWindows())
+        {
+            await PublishFailureAsync(task, sink, "sh not available on Windows", null).ConfigureAwait(false);
             return;
         }
         try
         {
-            var isWindows = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows);
-            if (isWindows)
+            var result = await _shellRunner.RunShellCommandAsync(new ExecShellCommandPayload
             {
-                await SafeStatusAsync(task, TaskStatuses.Failed, "sh not available on Windows", null).ConfigureAwait(false);
-                return;
-            }
-            using var process = new Process
-            {
-                StartInfo = new ProcessStartInfo
-                {
-                    FileName = "/bin/bash",
-                    Arguments = "-lc \"" + script.Replace("\"", "\\\"") + "\"",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                }
-            };
-            process.Start();
-            string stdout = await process.StandardOutput.ReadToEndAsync().ConfigureAwait(false);
-            string stderr = await process.StandardError.ReadToEndAsync().ConfigureAwait(false);
-            process.WaitForExit();
-            var payload = new { exitCode = process.ExitCode, stdout, stderr };
-            await SafeStatusAsync(
-                task,
-                process.ExitCode == 0 ? TaskStatuses.Completed : TaskStatuses.Failed,
-                process.ExitCode == 0 ? "OK" : "Failed",
-                JsonSerializer.Serialize(payload),
-                process.ExitCode).ConfigureAwait(false);
+                Preferred = ShellExecutor.Bash,
+                Command = script
+            }, ct, CreateExecutionObserver(task)).ConfigureAwait(false);
+            await EmitResultAsync(task, sink, result).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await PublishCancelledAsync(task, sink, "Cancelled").ConfigureAwait(false);
+        }
+        catch (ExternalShellRunner.ExecutionOutcomeUnknownException exception)
+        {
+            await EmitResultAsync(task, sink, exception.Execution).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            await SafeStatusAsync(task, TaskStatuses.Failed, ex.Message, null).ConfigureAwait(false);
+            await PublishFailureAsync(task, sink, "Shell command execution failed.", ex.Message).ConfigureAwait(false);
         }
     }
 }

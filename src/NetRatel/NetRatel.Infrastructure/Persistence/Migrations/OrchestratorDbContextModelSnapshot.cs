@@ -2769,6 +2769,45 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("Jobs", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.JobGatewayLifecycleReceiptRecord", b =>
+                {
+                    b.Property<long>("JobRunId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("JobStepRunId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("LifecycleSequence")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("ClientReportedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("ClientStartedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("LifecycleStatus")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("PayloadHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset>("ReceivedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("RequestedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("Version")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("JobRunId", "JobStepRunId", "LifecycleSequence");
+
+                    b.ToTable("JobGatewayLifecycleReceipts", (string)null);
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.JobParameterDefinition", b =>
                 {
                     b.Property<long>("Id")
@@ -2879,6 +2918,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<int>("CurrentStepOrdinal")
                         .HasColumnType("integer");
 
+                    b.Property<int?>("Environment")
+                        .HasColumnType("integer");
+
                     b.Property<string>("Error")
                         .HasColumnType("text");
 
@@ -2900,6 +2942,15 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
                     b.Property<int>("Status")
                         .HasColumnType("integer");
+
+                    b.Property<string>("TargetDisplayName")
+                        .HasColumnType("text");
+
+                    b.Property<string>("TargetHostName")
+                        .HasColumnType("text");
+
+                    b.Property<string>("TargetName")
+                        .HasColumnType("text");
 
                     b.Property<int?>("TenantId")
                         .HasColumnType("integer");
@@ -3111,14 +3162,23 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("CommandLabel")
+                        .HasColumnType("text");
+
                     b.Property<DateTimeOffset?>("CompletedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<int?>("Environment")
+                        .HasColumnType("integer");
+
                     b.Property<string>("Error")
                         .HasColumnType("text");
+
+                    b.Property<int?>("ExitCode")
+                        .HasColumnType("integer");
 
                     b.Property<long?>("JobRunId")
                         .HasColumnType("bigint");
@@ -3133,8 +3193,29 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<string>("ResultJson")
                         .HasColumnType("text");
 
+                    b.Property<string>("ScriptContentHash")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ScriptName")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ScriptType")
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("StartedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("Status")
                         .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("TargetDisplayName")
+                        .HasColumnType("text");
+
+                    b.Property<string>("TargetHostName")
+                        .HasColumnType("text");
+
+                    b.Property<string>("TargetName")
                         .HasColumnType("text");
 
                     b.Property<string>("TaskType")
@@ -6849,6 +6930,15 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .HasForeignKey("TenantId", "FlowId")
                         .HasPrincipalKey("TenantId", "Id")
                         .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.JobGatewayLifecycleReceiptRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.JobRunRecord", null)
+                        .WithMany()
+                        .HasForeignKey("JobRunId")
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });
 

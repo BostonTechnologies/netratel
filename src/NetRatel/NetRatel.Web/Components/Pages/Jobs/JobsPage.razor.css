@@ -14,3 +14,10 @@
 @media (pointer: coarse) {
     .jobs-console ::deep .jobs-row-actions .mud-icon-button { width: 44px; height: 44px; }
 }
+
+.jobs-console ::deep .jobs-table table { table-layout: fixed; width: 100%; }
+.jobs-console ::deep .jobs-table td { overflow-wrap: anywhere; }
+.jobs-console ::deep .jobs-table th:nth-last-child(2) { width: 150px; }
+.jobs-console ::deep .jobs-table th:last-child { width: 170px; }
+.jobs-console ::deep .jobs-runs-table th:last-child { width: 64px; }
+.jobs-console ::deep .jobs-definition-description { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }

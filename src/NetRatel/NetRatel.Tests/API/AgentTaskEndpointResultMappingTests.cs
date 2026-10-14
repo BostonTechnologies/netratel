@@ -2,6 +2,8 @@ using System.Text.Json;
 using AwesomeAssertions;
 using NetRatel.API.Endpoints;
 using NetRatel.Application.Jobs;
+using NetRatel.Infrastructure.Persistence;
+using NetRatel.Shared;
 using NetRatel.Shared.Contracts.Execution;
 using NetRatel.Shared.Contracts.Services;
 using NetRatel.Shared.Contracts.Tasks;
@@ -112,6 +114,54 @@ public sealed class AgentTaskEndpointResultMappingTests
         task.ReturnData.Should().Be(legacyResult);
         task.StatusMessage.Should().Be("permission denied");
         task.ExitCode.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Command_title_redacts_private_assignments_before_truncation_without_altering_dispatch()
+    {
+        var secret = new string('s', 200);
+        var command = $"echo safe client_secret={secret} public-label";
+        var request = new TaskCreateRequestDto { TaskType = TaskKinds.ExecShellCommand, ShellCommand = new() { Command = command } };
+        var prepared = await AgentTaskEndpoints.BuildPayloadAsync(request, request.TaskType, null!, CancellationToken.None);
+        var metadata = AgentTaskEndpoints.BuildExecutionMetadata(request.TaskType, prepared.Value!, prepared.ScriptName);
+
+        metadata.CommandLabel.Should().Be("echo safe client_secret=[REDACTED] public-label");
+        metadata.CommandLabel.Should().NotContain(secret);
+        JsonSerializer.Deserialize<ExecShellCommandPayload>(prepared.Value!)!.Command.Should().Be(command);
+    }
+
+    [Fact]
+    public void Map_preserves_recorded_context_and_does_not_invent_historical_start_environment_or_exit()
+    {
+        var historical = AgentTaskEndpoints.Map(CreateActivity("Pending", null), null);
+        historical.Environment.Should().BeNull();
+        historical.StartedAt.Should().BeNull();
+        historical.ExitCode.Should().BeNull();
+        historical.ClientDisplayName.Should().Be("Historical target: client");
+
+        var created = DateTimeOffset.UtcNow;
+        var agentId = Guid.NewGuid();
+        var activity = CreateActivity("Failed", null) with
+        {
+            AgentId = agentId,
+            CreatedAtUtc = created,
+            Environment = ClientEnvironment.Dev,
+            StartedAtUtc = created.AddSeconds(1),
+            ExitCode = 23,
+            TargetDisplayName = "stored-host",
+            TargetHostName = "stored-host",
+            ScriptName = "Script at dispatch",
+            ScriptType = "PowerShell"
+        };
+        var currentAgent = new Agent { Id = agentId, TenantId = 3, Name = "renamed-agent", DeviceInfoJson = """{"hostName":"renamed-host"}""" };
+        var recorded = AgentTaskEndpoints.Map(activity, currentAgent);
+        recorded.ClientDisplayName.Should().Be("stored-host");
+        recorded.ClientName.Should().BeNull();
+        recorded.Environment.Should().Be(ClientEnvironment.Dev);
+        recorded.StartedAt.Should().Be(created.AddSeconds(1));
+        recorded.ExitCode.Should().Be(23);
+        recorded.ScriptName.Should().Be("Script at dispatch");
+        recorded.ScriptType.Should().Be("PowerShell");
     }
 
     private static JobTaskActivityInfo CreateActivity(string status, string? error, string? resultJson = null) => new(

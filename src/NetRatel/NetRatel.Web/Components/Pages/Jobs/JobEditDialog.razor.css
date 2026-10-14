@@ -15,9 +15,20 @@
 .jobs-editor-container ::deep .mud-table-cell { overflow-wrap: anywhere; }
 .jobs-editor-container ::deep .mud-typography-h6 { font-size: 1rem; }
 .jobs-editor-container ::deep .mud-input { font-size: 0.875rem; }
-@media (min-width: 960px) {
-    .jobs-editor-container { max-height: calc(100dvh - 200px); overflow-y: auto; }
-}
+.jobs-editor-container { min-width: 0; }
+.jobs-editor-container ::deep .mud-grid-item { min-width: 0; }
+.jobs-editor-container ::deep .jobs-editor-steps table { table-layout: fixed; width: 100%; }
+.jobs-editor-container ::deep .jobs-editor-steps th:first-child { width: 48px; }
+.jobs-editor-container ::deep .jobs-editor-steps th:nth-child(3) { width: 76px; }
+.jobs-editor-container ::deep .jobs-editor-steps th:last-child { width: 160px; }
+.jobs-editor-container ::deep .jobs-editor-step-actions { padding-left: 2px; padding-right: 2px; }
+.jobs-editor-container ::deep .jobs-editor-step-summary { overflow-wrap: anywhere; }
+.jobs-editor-row-actions { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 0; }
+.jobs-editor-container ::deep .jobs-editor-row-actions .mud-icon-button { width: 34px; height: 34px; }
 @media (max-width: 959px) {
     .jobs-editor-container ::deep .mud-table-container { min-height: 220px; }
+    .jobs-editor-row-actions { justify-content: flex-start; }
+}
+@media (pointer: coarse) {
+    .jobs-editor-container ::deep .jobs-editor-row-actions .mud-icon-button { width: 44px; height: 44px; }
 }

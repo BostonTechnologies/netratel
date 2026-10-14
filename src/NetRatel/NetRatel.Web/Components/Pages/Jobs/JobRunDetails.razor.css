@@ -1,0 +1,31 @@
+
+.job-run-page { min-width: 0; padding-bottom: 1rem; }
+.job-run-header { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; padding: .5rem 0; border-bottom: 1px solid var(--mud-palette-divider); }
+.job-run-title { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; min-width: 0; flex: 1; }
+.job-run-title ::deep h6 { overflow-wrap: anywhere; }
+.job-run-actions { display: flex; flex-wrap: wrap; gap: .25rem; align-items: center; }
+.job-run-header ::deep .job-run-context { width: 100%; overflow-wrap: anywhere; }
+::deep .job-run-summary { overflow-wrap: anywhere; }
+.job-run-execution { min-width: 0; }
+.job-run-execution ::deep .job-run-step-panel { border-bottom: 1px solid var(--mud-palette-divider); background: var(--mud-palette-surface); }
+.job-run-step-header { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .75rem; width: 100%; }
+.job-run-step-name { flex: 1; min-width: 8rem; overflow-wrap: anywhere; font-size: .875rem; }
+.job-run-step-time { color: var(--mud-palette-text-secondary); font-size: .75rem; }
+.job-run-execution ::deep .mud-expand-panel-header { min-height: 44px; padding: .5rem .75rem; }
+.job-run-execution ::deep .mud-expand-panel-content { padding: 0 .75rem .75rem; }
+.job-run-execution ::deep .mud-tab { min-height: 36px; text-transform: none; }
+.job-run-output, .job-run-diagnostic-text { margin: .75rem 0 0; max-height: min(55dvh, 540px); overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: .85rem/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--mud-palette-text-primary); background: var(--mud-palette-background-gray); border: 1px solid var(--mud-palette-divider); border-radius: var(--netratel-radius-surface, 7px); padding: 1rem; }
+.job-run-output { min-height: 160px; }
+.job-run-output:focus-visible { outline: 2px solid var(--mud-palette-primary); outline-offset: 2px; }
+.job-run-empty-output { padding: 1.5rem .5rem; }
+.job-run-diagnostics { padding-top: .75rem; }
+.job-run-details { border: 1px solid var(--mud-palette-divider); border-radius: var(--netratel-radius-surface, 7px); }
+.job-run-details summary { cursor: pointer; padding: .75rem; font-size: .875rem; }
+.job-run-details ::deep .mud-table-cell { overflow-wrap: anywhere; }
+@media (max-width: 599px) {
+    .job-run-header { align-items: flex-start; }
+    .job-run-title { flex-basis: 100%; }
+    .job-run-actions { width: 100%; }
+    .job-run-step-time { width: 100%; }
+    .job-run-output { padding: .75rem; min-height: 120px; }
+}

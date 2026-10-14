@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -11,6 +12,8 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Threading.Channels;
+using NetRatel.Shared.Security;
 using NetRatel.Client.Service.Logging;
 using NetRatel.Shared.Contracts.Execution;
 using NetRatel.Shared.Contracts.Tasks;
@@ -23,13 +26,19 @@ namespace NetRatel.Client.Service.Shells
     public sealed class ExternalShellRunner
     {
         private readonly Func<string, string?> _resolveExecutable;
+        private readonly Action<Process> _terminateProcess;
         private string? FindShell(string keyword) => _resolveExecutable(keyword);
 
         public sealed class RunResult
         {
-            public int ExitCode { get; set; }
+            public int? ExitCode { get; set; }
+            public bool ProcessStarted { get; set; }
+            public bool Cancelled { get; set; }
+            public bool TimedOut { get; set; }
+            public bool OutputTruncated { get; set; }
+            public bool OutcomeUnknown { get; set; }
             // Stderr also carries warnings and progress; the process exit code owns success.
-            public bool Success => ExitCode == 0;
+            public bool Success => ExitCode == 0 && !Cancelled && !TimedOut && !OutcomeUnknown;
             public List<string> Output { get; } = new();
             public List<string> Error { get; } = new();
             public string? ShellPath { get; set; }
@@ -38,6 +47,14 @@ namespace NetRatel.Client.Service.Shells
             public double DurationMs { get; set; }
         }
 
+        public sealed class ExecutionOutcomeUnknownException(string message, RunResult execution, Exception cause)
+            : IOException(message, cause)
+        {
+            public RunResult Execution { get; } = execution;
+        }
+
+        public sealed record ExecutionObserver(Func<Task> Started, Func<string, string, Task> Output);
+
         private readonly TimeSpan _defaultTimeout;
 
         public ExternalShellRunner(TimeSpan? defaultTimeout = null)
@@ -45,29 +62,32 @@ namespace NetRatel.Client.Service.Shells
         {
         }
 
-        internal ExternalShellRunner(TimeSpan? defaultTimeout, Func<string, string?> resolveExecutable)
+        internal ExternalShellRunner(TimeSpan? defaultTimeout, Func<string, string?> resolveExecutable, Action<Process>? terminateProcess = null)
         {
             _defaultTimeout = defaultTimeout ?? TimeSpan.FromMinutes(5);
             _resolveExecutable = resolveExecutable;
+            _terminateProcess = terminateProcess ?? (process => process.Kill(entireProcessTree: true));
         }
 
-        public Task<RunResult> RunShellCommandAsync(ExecShellCommandPayload payload, CancellationToken ct)
-            => RunByPreferenceAsync(payload.Preferred, payload.Command, payload.WorkingDirectory, payload.TimeoutSeconds, ct);
+        public Task<RunResult> RunShellCommandAsync(ExecShellCommandPayload payload, CancellationToken ct, ExecutionObserver? observer = null)
+            => RunByPreferenceAsync(payload.Preferred, payload.Command, payload.WorkingDirectory, payload.TimeoutSeconds, ct, observer);
 
         public Task<RunResult> RunLibraryScriptAsync(
             ExecLibraryScriptPayload payload,
             string scriptContent,
             CancellationToken ct,
-            IReadOnlyDictionary<string, string>? parameters)
-            => RunScriptByTypeAsync(payload.ScriptType, payload.Preferred, scriptContent, payload.WorkingDirectory, payload.TimeoutSeconds, ct, parameters);
+            IReadOnlyDictionary<string, string>? parameters,
+            ExecutionObserver? observer = null)
+            => RunScriptByTypeAsync(payload.ScriptType, payload.Preferred, scriptContent, payload.WorkingDirectory, payload.TimeoutSeconds, ct, parameters, observer);
 
         public Task<RunResult> RunPowerShellScriptAsync(
             string content,
             ShellExecutor preferred,
             string? workingDirectory,
             int? timeoutSeconds,
-            CancellationToken ct)
-            => RunPowerShellScriptFileAsync(preferred, content, workingDirectory, timeoutSeconds, ct, parameters: null);
+            CancellationToken ct,
+            ExecutionObserver? observer = null)
+            => RunPowerShellScriptFileAsync(preferred, content, workingDirectory, timeoutSeconds, ct, parameters: null, observer: observer);
 
         internal Task<RunResult> RunPowerShellScriptAsync(
             string content,
@@ -75,30 +95,31 @@ namespace NetRatel.Client.Service.Shells
             string? workingDirectory,
             int? timeoutSeconds,
             CancellationToken ct,
-            string requirementsContent)
+            string requirementsContent,
+            ExecutionObserver? observer = null)
             => RunPowerShellScriptFileAsync(preferred, content, workingDirectory, timeoutSeconds, ct,
-                parameters: null, requirementsContent);
+                parameters: null, requirementsContent, observer);
 
-        private Task<RunResult> RunByPreferenceAsync(ShellExecutor pref, string command, string? cwd, int? timeoutSec, CancellationToken ct)
+        private Task<RunResult> RunByPreferenceAsync(ShellExecutor pref, string command, string? cwd, int? timeoutSec, CancellationToken ct, ExecutionObserver? observer)
         {
             var timeout = TimeSpan.FromSeconds(timeoutSec ?? (int)_defaultTimeout.TotalSeconds);
 
             switch (pref)
             {
-                case ShellExecutor.Pwsh: return RunPwshCommandAsync(command, cwd, timeout, ct);
-                case ShellExecutor.WindowsPowerShell: return RunWinPSCommandAsync(command, cwd, timeout, ct);
-                case ShellExecutor.Bash: return RunBashCommandAsync(command, cwd, timeout, ct);
-                case ShellExecutor.Cmd: return RunCmdCommandAsync(command, cwd, timeout, ct);
+                case ShellExecutor.Pwsh: return RunPwshCommandAsync(command, cwd, timeout, ct, observer);
+                case ShellExecutor.WindowsPowerShell: return RunWinPSCommandAsync(command, cwd, timeout, ct, observer);
+                case ShellExecutor.Bash: return RunBashCommandAsync(command, cwd, timeout, ct, observer);
+                case ShellExecutor.Cmd: return RunCmdCommandAsync(command, cwd, timeout, ct, observer);
             }
 
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
                 if (FindShell("pwsh") is not null || FindShell("powershell") is not null)
-                    return RunViaTempPs1Async(ResolvePowerShellHost(ShellExecutor.Auto, command, FindShell, isWindows: true), command, timeout, cwd, ct);
-                return RunCmdCommandAsync(command, cwd, timeout, ct);
+                    return RunViaTempPs1Async(ResolvePowerShellHost(ShellExecutor.Auto, command, FindShell, isWindows: true), command, timeout, cwd, ct, observer);
+                return RunCmdCommandAsync(command, cwd, timeout, ct, observer);
             }
 
-            return RunBashCommandAsync(command, cwd, timeout, ct);
+            return RunBashCommandAsync(command, cwd, timeout, ct, observer);
         }
 
         private Task<RunResult> RunScriptByTypeAsync(
@@ -108,20 +129,21 @@ namespace NetRatel.Client.Service.Shells
             string? cwd,
             int? timeoutSec,
             CancellationToken ct,
-            IReadOnlyDictionary<string, string>? parameters)
+            IReadOnlyDictionary<string, string>? parameters,
+            ExecutionObserver? observer)
         {
             switch (type)
             {
                 case ScriptType.PowerShell:
-                    return RunPowerShellScriptFileAsync(pref, content, cwd, timeoutSec, ct, parameters);
+                    return RunPowerShellScriptFileAsync(pref, content, cwd, timeoutSec, ct, parameters, observer: observer);
                 case ScriptType.Bash:
                     var bashPreference = pref == ShellExecutor.Auto ? ShellExecutor.Bash : pref;
                     if (bashPreference == ShellExecutor.Bash)
                     {
-                        return RunBashScriptAsync(content, cwd, timeoutSec, ct, parameters);
+                        return RunBashScriptAsync(content, cwd, timeoutSec, ct, parameters, observer: observer);
                     }
 
-                    return RunByPreferenceAsync(bashPreference, content, cwd, timeoutSec, ct);
+                    return RunByPreferenceAsync(bashPreference, content, cwd, timeoutSec, ct, observer);
                 case ScriptType.Python:
                 case ScriptType.JavaScript:
                 case ScriptType.TypeScript:
@@ -129,7 +151,7 @@ namespace NetRatel.Client.Service.Shells
                 case ScriptType.Json:
                     return RunByPreferenceAsync(
                         RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? ShellExecutor.Cmd : ShellExecutor.Bash,
-                        content, cwd, timeoutSec, ct);
+                        content, cwd, timeoutSec, ct, observer);
                 default:
                     throw new NotSupportedException($"Unsupported ScriptType: {type}");
             }
@@ -142,7 +164,8 @@ namespace NetRatel.Client.Service.Shells
             int? timeoutSec,
             CancellationToken ct,
             IReadOnlyDictionary<string, string>? parameters,
-            string? requirementsContent = null)
+            string? requirementsContent = null,
+            ExecutionObserver? observer = null)
         {
             var timeout = TimeSpan.FromSeconds(timeoutSec ?? (int)_defaultTimeout.TotalSeconds);
             var scriptPath = WritePrivateTemp(".ps1", content);
@@ -193,7 +216,7 @@ namespace NetRatel.Client.Service.Shells
                 var fileToRun = wrapperPath ?? scriptPath;
                 var argsText = $"-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {QuoteArgument(fileToRun)}";
                 LogManager.WriteLog($"[Shell] {shellPath} {MaskArgumentsForLog(argsText)}");
-                return await StartAsync(shellPath, argsText, cwd, timeout, ct, outputEncoding: Encoding.UTF8).ConfigureAwait(false);
+                return await StartAsync(shellPath, argsText, cwd, timeout, ct, outputEncoding: Encoding.UTF8, observer: observer).ConfigureAwait(false);
             }
             finally
             {
@@ -205,26 +228,27 @@ namespace NetRatel.Client.Service.Shells
             }
         }
 
-        private Task<RunResult> RunPwshCommandAsync(string command, string? cwd, TimeSpan timeout, CancellationToken ct)
-            => RunViaTempPs1Async(ResolvePowerShellHost(ShellExecutor.Pwsh, command, FindShell, OperatingSystem.IsWindows()), command, timeout, cwd, ct);
+        private Task<RunResult> RunPwshCommandAsync(string command, string? cwd, TimeSpan timeout, CancellationToken ct, ExecutionObserver? observer)
+            => RunViaTempPs1Async(ResolvePowerShellHost(ShellExecutor.Pwsh, command, FindShell, OperatingSystem.IsWindows()), command, timeout, cwd, ct, observer);
 
-        private Task<RunResult> RunWinPSCommandAsync(string command, string? cwd, TimeSpan timeout, CancellationToken ct)
-            => RunViaTempPs1Async(ResolvePowerShellHost(ShellExecutor.WindowsPowerShell, command, FindShell, OperatingSystem.IsWindows()), command, timeout, cwd, ct);
+        private Task<RunResult> RunWinPSCommandAsync(string command, string? cwd, TimeSpan timeout, CancellationToken ct, ExecutionObserver? observer)
+            => RunViaTempPs1Async(ResolvePowerShellHost(ShellExecutor.WindowsPowerShell, command, FindShell, OperatingSystem.IsWindows()), command, timeout, cwd, ct, observer);
 
-        private Task<RunResult> RunBashCommandAsync(string command, string? cwd, TimeSpan timeout, CancellationToken ct)
-            => RunDirectAsync((FindShell("bash") ?? FindShell("sh")) ?? Throw("bash/sh"), "-lc", command, timeout, cwd, ct);
+        private Task<RunResult> RunBashCommandAsync(string command, string? cwd, TimeSpan timeout, CancellationToken ct, ExecutionObserver? observer)
+            => RunDirectAsync((FindShell("bash") ?? FindShell("sh")) ?? Throw("bash/sh"), "-lc", command, timeout, cwd, ct, observer);
 
         private Task<RunResult> RunBashScriptAsync(
             string script,
             string? cwd,
             int? timeoutSeconds,
             CancellationToken ct,
-            IReadOnlyDictionary<string, string>? parameters)
+            IReadOnlyDictionary<string, string>? parameters,
+            ExecutionObserver? observer)
         {
             var timeout = TimeSpan.FromSeconds(timeoutSeconds ?? (int)_defaultTimeout.TotalSeconds);
             var environment = CreateBashParameterEnvironment(parameters);
             var shellPath = (FindShell("bash") ?? FindShell("sh")) ?? Throw("bash/sh");
-            return RunDirectAsync(shellPath, "-lc", script, timeout, cwd, ct, environment);
+            return RunDirectAsync(shellPath, "-lc", script, timeout, cwd, ct, observer, environment);
         }
 
         private static Dictionary<string, string>? CreateBashParameterEnvironment(
@@ -252,10 +276,10 @@ namespace NetRatel.Client.Service.Shells
             return environment;
         }
 
-        private Task<RunResult> RunCmdCommandAsync(string command, string? cwd, TimeSpan timeout, CancellationToken ct)
+        private Task<RunResult> RunCmdCommandAsync(string command, string? cwd, TimeSpan timeout, CancellationToken ct, ExecutionObserver? observer)
         {
             var path = FindShell("cmd") ?? Throw("cmd");
-            return RunDirectAsync(path, "/d /s /c", command, timeout, cwd, ct);
+            return RunDirectAsync(path, "/d /s /c", command, timeout, cwd, ct, observer);
         }
 
         private static string Throw(string what) => throw new InvalidOperationException($"Required shell not found: {what}");
@@ -586,7 +610,7 @@ namespace NetRatel.Client.Service.Shells
             }
         }
 
-        private async Task<RunResult> RunViaTempPs1Async(string shellPath, string command, TimeSpan timeout, string? cwd, CancellationToken ct)
+        private async Task<RunResult> RunViaTempPs1Async(string shellPath, string command, TimeSpan timeout, string? cwd, CancellationToken ct, ExecutionObserver? observer)
         {
             var ps1 = WritePrivateTemp(".ps1", WrapPSBlock(command));
             try
@@ -596,7 +620,7 @@ namespace NetRatel.Client.Service.Shells
                 args.Append("-File ").Append(QuoteArgument(ps1));
                 var argsText = args.ToString();
                 LogManager.WriteLog($"[Shell] {shellPath} {MaskArgumentsForLog(argsText)}");
-                return await StartAsync(shellPath, argsText, cwd, timeout, ct, outputEncoding: Encoding.UTF8).ConfigureAwait(false);
+                return await StartAsync(shellPath, argsText, cwd, timeout, ct, outputEncoding: Encoding.UTF8, observer: observer).ConfigureAwait(false);
             }
             finally
             {
@@ -611,10 +635,11 @@ namespace NetRatel.Client.Service.Shells
             TimeSpan timeout,
             string? cwd,
             CancellationToken ct,
+            ExecutionObserver? observer,
             IReadOnlyDictionary<string, string>? environment = null)
         {
             string args = $"{argPrefix} {QuoteArgument(command)}";
-            return StartAsync(shellPath, args, cwd, timeout, ct, environment);
+            return StartAsync(shellPath, args, cwd, timeout, ct, environment, observer: observer);
         }
 
         internal static string ResolvePowerShellHost(
@@ -765,8 +790,10 @@ namespace NetRatel.Client.Service.Shells
 
         private static string ResolveWorkingDirectory(string? cwd)
         {
-            if (!string.IsNullOrWhiteSpace(cwd) && Directory.Exists(cwd))
+            if (!string.IsNullOrWhiteSpace(cwd))
             {
+                if (!Directory.Exists(cwd))
+                    throw new DirectoryNotFoundException("The selected working directory does not exist.");
                 return cwd;
             }
 
@@ -812,9 +839,12 @@ namespace NetRatel.Client.Service.Shells
             TimeSpan timeout,
             CancellationToken ct,
             IReadOnlyDictionary<string, string>? environment = null,
-            Encoding? outputEncoding = null)
+            Encoding? outputEncoding = null,
+            ExecutionObserver? observer = null)
         {
             ct.ThrowIfCancellationRequested();
+            if (timeout <= TimeSpan.Zero || timeout.TotalMilliseconds > uint.MaxValue - 1)
+                throw new InvalidOperationException("Execution timeout must be positive and supported by the process timer.");
             var res = new RunResult();
             var resolvedCwd = ResolveWorkingDirectory(cwd);
             var psi = new ProcessStartInfo(fileName, arguments)
@@ -844,27 +874,68 @@ namespace NetRatel.Client.Service.Shells
             var tcsOut = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var tcsErr = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-            proc.OutputDataReceived += (_, e) =>
+            // One serial publisher orders both streams. Capture and the publication
+            // queue share a fixed budget so a noisy child cannot grow memory forever.
+            var output = Channel.CreateUnbounded<(string Stream, string Text)>();
+            var captureLock = new object();
+            var remainingBytes = 48 * 1024;
+            var remainingLines = 1024;
+            var captureStopped = false;
+            void Capture(string stream, string? text, TaskCompletionSource end)
             {
-                if (e.Data is null)
+                if (text is null) { end.TrySetResult(); return; }
+                lock (captureLock)
                 {
-                    tcsOut.TrySetResult();
-                    return;
+                    if (captureStopped) return;
+                    if (remainingBytes == 0 || remainingLines == 0)
+                    {
+                        res.OutputTruncated = true;
+                        return;
+                    }
+                    text = OperatorOutputRedactor.Redact(text);
+                    var length = Math.Min(text.Length, Math.Min(4096, remainingBytes));
+                    while (length > 0 && Encoding.UTF8.GetByteCount(text.AsSpan(0, length)) > remainingBytes) length--;
+                    if (length < text.Length) res.OutputTruncated = true;
+                    // Do not split the UTF-16 pair of a Unicode character.
+                    if (length > 0 && length < text.Length && char.IsHighSurrogate(text[length - 1])) length--;
+                    text = text[..length];
+                    remainingBytes -= Encoding.UTF8.GetByteCount(text);
+                    remainingLines--;
+                    (stream == "stdout" ? res.Output : res.Error).Add(text);
+                    output.Writer.TryWrite((stream, text));
                 }
-                lock (res.Output) res.Output.Add(e.Data);
-            };
-
-            proc.ErrorDataReceived += (_, e) =>
-            {
-                if (e.Data is null)
-                {
-                    tcsErr.TrySetResult();
-                    return;
-                }
-                lock (res.Error) res.Error.Add(e.Data);
-            };
+            }
+            proc.OutputDataReceived += (_, e) => Capture("stdout", e.Data, tcsOut);
+            proc.ErrorDataReceived += (_, e) => Capture("stderr", e.Data, tcsErr);
 
             if (!proc.Start()) throw new InvalidOperationException($"Failed to start: {fileName}");
+            res.ProcessStarted = true;
+            async Task PublishOutputAsync()
+            {
+                if (observer is not null) await observer.Started().ConfigureAwait(false);
+                await foreach (var line in output.Reader.ReadAllAsync())
+                    if (observer is not null) await observer.Output(line.Stream, line.Text).ConfigureAwait(false);
+            }
+            var publisher = PublishOutputAsync();
+            async Task<ExecutionOutcomeUnknownException> UnknownOutcomeAsync(Exception cause)
+            {
+                lock (captureLock)
+                {
+                    // Freeze the bounded snapshot before detaching a process whose
+                    // physical termination could not be proven.
+                    captureStopped = true;
+                    res.OutcomeUnknown = true;
+                    res.Cancelled = false;
+                    res.TimedOut = false;
+                    res.ExitCode = null;
+                    res.Error.Add("Native process termination could not be confirmed; the physical outcome is unknown.");
+                }
+                sw.Stop();
+                res.DurationMs = sw.Elapsed.TotalMilliseconds;
+                output.Writer.TryComplete();
+                await publisher.ConfigureAwait(false);
+                return new ExecutionOutcomeUnknownException("Native process termination could not be confirmed.", res, cause);
+            }
             proc.BeginOutputReadLine();
             proc.BeginErrorReadLine();
 
@@ -877,10 +948,16 @@ namespace NetRatel.Client.Service.Shells
             }
             catch (OperationCanceledException) when (cts.IsCancellationRequested)
             {
-                try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); }
+                res.Cancelled = ct.IsCancellationRequested;
+                res.TimedOut = !res.Cancelled;
+                try { if (!proc.HasExited) _terminateProcess(proc); }
                 catch (InvalidOperationException) when (proc.HasExited)
                 {
                     LogManager.WriteLog("[Shell] Process exited before cancellation termination; awaiting redirected-stream cleanup.");
+                }
+                catch (Exception exception) when (exception is Win32Exception or InvalidOperationException or NotSupportedException)
+                {
+                    throw await UnknownOutcomeAsync(exception).ConfigureAwait(false);
                 }
                 // Do not reuse the cancelled execution token for cleanup. Reap the
                 // process and drain both redirected streams, with an independent bound.
@@ -892,12 +969,15 @@ namespace NetRatel.Client.Service.Shells
                 }
                 catch (OperationCanceledException) when (cleanup.IsCancellationRequested)
                 {
-                    throw new IOException("Shell process termination or redirected-stream cleanup exceeded its five-second bound.");
+                    throw await UnknownOutcomeAsync(new IOException("Shell process termination or redirected-stream cleanup exceeded its five-second bound.")).ConfigureAwait(false);
                 }
-                res.ExitCode = -1;
-                lock (res.Error) res.Error.Add(ct.IsCancellationRequested ? "Cancelled" : $"Timed out after {timeout.TotalSeconds:n0}s");
+                // A killed process has no command exit receipt; never fabricate -1.
+                res.ExitCode = null;
                 sw.Stop();
                 res.DurationMs = sw.Elapsed.TotalMilliseconds;
+                output.Writer.TryComplete();
+                await publisher.ConfigureAwait(false);
+                lock (res.Error) res.Error.Add(res.Cancelled ? "Cancelled" : $"Timed out after {timeout.TotalSeconds:n0}s");
                 return res;
             }
 
@@ -905,6 +985,8 @@ namespace NetRatel.Client.Service.Shells
             sw.Stop();
             res.ExitCode = proc.ExitCode;
             res.DurationMs = sw.Elapsed.TotalMilliseconds;
+            output.Writer.TryComplete();
+            await publisher.ConfigureAwait(false);
             if (res.ExitCode != 0 && res.Output.Count == 0 && res.Error.Count == 0)
             {
                 res.Error.Add($"Process exited with code {res.ExitCode} without emitting stdout/stderr.");

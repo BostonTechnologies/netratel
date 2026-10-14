@@ -173,13 +173,14 @@ public sealed class JobApiClient : IJobApiClient
     {
         try
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(TimeSpan.FromSeconds(30));
 
             var response = await _http.PostAsJsonAsync($"/api/v1/jobruns/start/{jobId}", request, cts.Token);
             response.EnsureSuccessStatusCode();
             return (await response.Content.ReadFromJsonAsync<JobRunDto>(cancellationToken: cts.Token))!;
         }
-        catch (TaskCanceledException ex)
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
             throw new InvalidOperationException("The job start request was canceled or timed out.", ex);
         }

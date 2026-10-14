@@ -21,12 +21,13 @@ public record JobDto(
     long UpdatedAtMicros,
     string? TenantDisplayName = null,
     string? ClientDisplayName = null,
-    ClientEnvironment Environment = ClientEnvironment.None,
+    ClientEnvironment? Environment = null,
     int ExpectedRuntimeSeconds = 1800,
     int GraceSeconds = 0,
     int HardTimeoutSeconds = 1800,
     JobScheduleDto? Schedule = null,
-    Guid? AgentId = null
+    Guid? AgentId = null,
+    string? StepSummary = null
 );
 
 public record JobParamDto(
@@ -73,7 +74,8 @@ public record CreateJobRequest(
     int? GraceSeconds = null,
     int? HardTimeoutSeconds = null,
     JobScheduleDto? Schedule = null,
-    Guid? AgentId = null
+    Guid? AgentId = null,
+    ClientEnvironment? Environment = null
 );
 
 public record UpdateJobRequest(
@@ -86,7 +88,8 @@ public record UpdateJobRequest(
     int? GraceSeconds = null,
     int? HardTimeoutSeconds = null,
     JobScheduleDto? Schedule = null,
-    Guid? AgentId = null
+    Guid? AgentId = null,
+    ClientEnvironment? Environment = null
 );
 
 public record AddJobParamRequest(

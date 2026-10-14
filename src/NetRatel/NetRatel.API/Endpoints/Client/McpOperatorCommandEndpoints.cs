@@ -493,7 +493,7 @@ public static class McpOperatorCommandEndpoints
     private static bool HasPlanCredentials(string? token, string? key) => IsOpaqueCredential(token) && IsOpaqueCredential(key);
     private static bool IsOpaqueCredential(string? value) => value is { Length: >= 32 and <= 128 } && value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_');
     private static bool IsCommandId(string? value) => value is { Length: 32 } && value.All(char.IsAsciiHexDigit);
-    private static bool IsTerminal(McpOperatorCommandState state) => state is McpOperatorCommandState.Completed or McpOperatorCommandState.Failed or McpOperatorCommandState.Cancelled;
+    private static bool IsTerminal(McpOperatorCommandState state) => state is McpOperatorCommandState.Completed or McpOperatorCommandState.Failed or McpOperatorCommandState.Cancelled or McpOperatorCommandState.Unknown;
     private static string CommandLocation(int tenantId, Guid agentId, string commandId) => $"/api/v2/mcp/operator/agents/{tenantId}/{agentId:D}/commands/{commandId}";
 
     private static async Task<IResult> ReplayAsync(McpOperatorConfirmationAdmission confirmation, IMcpOperatorCommandStore commands, McpOperatorCommandContext context, CancellationToken cancellationToken)

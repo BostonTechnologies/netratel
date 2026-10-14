@@ -10,7 +10,8 @@ public enum JobRunStatusDto
     Succeeded = 2,
     Failed = 3,
     Cancelled = 4,
-    TimedOut = 5
+    TimedOut = 5,
+    Unknown = 6
 }
 
 public enum JobStepRunStatusDto
@@ -19,7 +20,10 @@ public enum JobStepRunStatusDto
     Running = 1,
     Succeeded = 2,
     Failed = 3,
-    Skipped = 4
+    Skipped = 4,
+    Cancelled = 5,
+    TimedOut = 6,
+    Unknown = 7
 }
 
 public sealed record JobRunOptionDto(string Name, string Value, string? Source = null);
@@ -41,8 +45,11 @@ public record JobRunDto(
     IReadOnlyList<JobRunOptionDto>? Options = null,
     string? TenantDisplayName = null,
     string? ClientDisplayName = null,
-    ClientEnvironment Environment = ClientEnvironment.None,
-    Guid? AgentId = null
+    ClientEnvironment? Environment = null,
+    Guid? AgentId = null,
+    string? TargetDisplayName = null,
+    string? TargetHostName = null,
+    string? TargetName = null
 );
 
 public record JobStepRunDto(
@@ -55,7 +62,11 @@ public record JobStepRunDto(
     long? StartedAtMicros,
     long? CompletedAtMicros,
     string? Error,
-    string? LogText = null
+    string? LogText = null,
+    string? ScriptName = null,
+    string? ScriptType = null,
+    string? CommandLabel = null,
+    int? ExitCode = null
 );
 
 public sealed record PagedJobRunsDto(
@@ -72,5 +83,6 @@ public record RunJobRequest(
     string? ClientIdentityOverride,
     int? ExpectedRuntimeSeconds = null,
     int? GraceSeconds = null,
-    int? HardTimeoutSeconds = null
+    int? HardTimeoutSeconds = null,
+    ClientEnvironment? Environment = null
 );

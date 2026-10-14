@@ -1,5 +1,6 @@
 @using System.Linq
 @using System.Text.Json
+@using NetRatel.Shared
 @using NetRatel.Shared.Contracts.Jobs
 
 @inject IJobApiClient JobApi
@@ -137,18 +138,15 @@
                         <MudPaper Class="run-job-panel pa-3" Elevation="0">
                             <MudStack Spacing="2">
                                 <MudText Typo="Typo.subtitle1">Launch Profile</MudText>
-                                <MudTextField @bind-Value="_clientIdentityOverride"
-                                              Label="Client identity override"
-                                              Placeholder="Optional"
-                                              Variant="Variant.Outlined"
-                                              Margin="Margin.Dense" />
+                                <MudText Typo="Typo.body2">Target: @(string.IsNullOrWhiteSpace(_job.ClientDisplayName) ? "Target label unavailable" : _job.ClientDisplayName)</MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">@(_job.TenantDisplayName ?? (_job.TenantId is int tenantId ? $"Tenant #{tenantId}" : "Tenant unknown")) · @(_job.Environment?.ToShortLabel() ?? "Environment unknown")</MudText>
                                 <MudTextField @bind-Value="_startedBy"
                                               Label="Started by"
                                               Required="true"
                                               Variant="Variant.Outlined"
                                               Margin="Margin.Dense" />
                                 <MudAlert Severity="Severity.Info" Variant="Variant.Text">
-                                    The run will be created immediately and you will be redirected into its live execution trace.
+                                    Submit the run and follow its execution. Output appears when the agent begins execution.
                                 </MudAlert>
                             </MudStack>
                         </MudPaper>
@@ -174,7 +172,6 @@
     private JobDto? _job;
     private List<JobParamDto>? _params;
     private readonly Dictionary<string, string?> _values = new(StringComparer.OrdinalIgnoreCase);
-    private string? _clientIdentityOverride;
     private string _startedBy = "ui";
     private bool _isSubmitting;
     private bool _parameterLoadFailed;
@@ -192,7 +189,6 @@
         _job = Job;
         _params = null;
         _values.Clear();
-        _clientIdentityOverride = null;
         _startedBy = "ui";
         _isSubmitting = false;
         _parameterLoadFailed = false;
@@ -292,10 +288,11 @@
             var request = new RunJobRequest(
                 _startedBy,
                 json,
-                _clientIdentityOverride);
+                ClientIdentityOverride: null,
+                Environment: _job.Environment);
 
             var run = await JobApi.RunJobAsync(_job.Id, request);
-            Snackbar.Add($"Run started: {run.Id} ({run.Status})", Severity.Success);
+            Snackbar.Add($"Run #{run.Id} submitted.", Severity.Success);
 
             if (OnRunCompleted.HasDelegate)
                 await OnRunCompleted.InvokeAsync(run);

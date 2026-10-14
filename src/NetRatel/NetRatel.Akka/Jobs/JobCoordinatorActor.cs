@@ -193,13 +193,13 @@ public sealed class JobCoordinatorActor : ReceiveActor
         status is JobRunState.Pending or JobRunState.Running;
 
     private static bool IsFailure(JobRunState? status) =>
-        status is JobRunState.Failed or JobRunState.TimedOut;
+        status is JobRunState.Failed or JobRunState.TimedOut or JobRunState.Unknown;
 
     private static bool IsTerminal(JobRunState? status) =>
         status is JobRunState.Succeeded or
             JobRunState.Failed or
             JobRunState.Cancelled or
-            JobRunState.TimedOut;
+            JobRunState.TimedOut or JobRunState.Unknown;
 
     private static ulong IncrementSaturating(ulong value) =>
         value == ulong.MaxValue ? value : value + 1;

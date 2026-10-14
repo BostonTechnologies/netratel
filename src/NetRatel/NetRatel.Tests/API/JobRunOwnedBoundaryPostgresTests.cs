@@ -36,6 +36,65 @@ namespace NetRatel.Tests.API;
 [Collection(PostgreSqlPersistenceCollection.Name)]
 public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixture postgres)
 {
+    [Fact]
+    public async Task CommittedLifecycleReceipts_ReplayAcrossIndependentActorsWithoutDuplicatingOutputOrPhysicalDispatch()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var ct = deadline.Token;
+        await using var h = await Harness.CreateAsync(await postgres.CreateDatabaseAsync(ct), ct);
+        var run = await h.StartAsync(ct);
+        Assert.Null(run.StartedAtUtc);
+        var nativeStartedAt = h.Clock.GetUtcNow().AddHours(-3);
+        await h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Started, 3, null, false, ct,
+            reportedAt: nativeStartedAt, startedAt: nativeStartedAt);
+        const string delta = "{\"stdout\":[\"live output\"],\"stderr\":[],\"outputSequence\":1}";
+        await h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Progress, 4, delta, false, ct);
+        var committed = await h.DurableSnapshotAsync(run.Id, ct);
+        await h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Progress, 4, delta, true, ct);
+        Assert.Equal(committed, await h.DurableSnapshotAsync(run.Id, ct));
+        const string completed = "{\"stdout\":[\"live output\"],\"exitCode\":0,\"outputStreamed\":true}";
+        await h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Completed, 5, completed, false, ct);
+        await h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Completed, 5, completed, true, ct);
+        await using var scope = h.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        var details = await h.DetailsAsync(run.Id, ct);
+        Assert.Equal(JobRunState.Succeeded, details.Run.Status);
+        Assert.Equal("Completed", Assert.Single(details.Activities).Status);
+        Assert.Equal("live output", Assert.Single(await db.JobTaskLogs.AsNoTracking().ToListAsync(ct)).Message);
+        Assert.Equal(3, await db.Set<JobGatewayLifecycleReceiptRecord>().CountAsync(ct));
+        var startedEvidence = await db.Set<JobGatewayLifecycleReceiptRecord>().SingleAsync(x => x.LifecycleStatus == (int)JobGatewayLifecycleStatus.Started, ct);
+        Assert.True(startedEvidence.ClientReportedAtUtc < startedEvidence.RequestedAtUtc);
+        Assert.Equal(startedEvidence.ClientReportedAtUtc, startedEvidence.ClientStartedAtUtc);
+        Assert.Equal(startedEvidence.ReceivedAtUtc, details.Run.StartedAtUtc);
+        Assert.Equal(1, h.Gateway.Dispatches);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Completed, 5, "{}", true, ct));
+    }
+
+    [Fact]
+    public async Task CancellationIntent_PreservesCompletedCurrentCommandAndSkipsRemainingWorkflow()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var ct = deadline.Token;
+        await using var h = await Harness.CreateAsync(await postgres.CreateDatabaseAsync(ct), ct);
+        await using (var scope = h.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            db.JobSteps.Add(new() { Id = 43, JobId = 41, Ordinal = 2, Type = 0, Runner = "bash", Command = "true", Enabled = true });
+            await db.SaveChangesAsync(ct);
+        }
+        var run = await h.StartAsync(ct);
+        await h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Started, 3, null, false, ct);
+        Assert.True(await h.CancelAsync(run.Id, true, ct));
+        await h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Completed, 4, "{\"stdout\":[\"effect completed\"],\"exitCode\":0}", false, ct);
+        var details = await h.DetailsAsync(run.Id, ct);
+        Assert.Equal(JobRunState.Cancelled, details.Run.Status);
+        Assert.Equal(new[] { JobStepRunState.Succeeded, JobStepRunState.Skipped }, details.Steps.Select(x => x.Status));
+        var activity = Assert.Single(details.Activities);
+        Assert.Equal("Completed", activity.Status); Assert.Equal(0, activity.ExitCode);
+        Assert.Null(details.Steps.Last().StartedAtUtc);
+        Assert.Equal(1, h.Gateway.Dispatches);
+    }
+
     [Theory]
     [InlineData("", false)]
     [InlineData("", true)]
@@ -70,8 +129,8 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         }
 
         var terminal = await h.DetailsAsync(run.Id, ct);
-        var expectedRun = recoverAtDeadline ? JobRunState.TimedOut : JobRunState.Succeeded;
-        var expectedStep = recoverAtDeadline ? JobStepRunState.Failed : JobStepRunState.Succeeded;
+        var expectedRun = recoverAtDeadline ? JobRunState.Unknown : JobRunState.Succeeded;
+        var expectedStep = recoverAtDeadline ? JobStepRunState.Unknown : JobStepRunState.Succeeded;
         Assert.Equal(expectedRun, terminal.Run.Status);
         Assert.Equal(expectedStep, Assert.Single(terminal.Steps).Status);
         Assert.Equal(legacyClientIdentity, terminal.Run.ClientIdentity);
@@ -179,7 +238,7 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         }
         await h.RecoverAsync(runId, true, ct); // The same replica must reload after rollback and reacquire ownership.
         var terminal = await h.DetailsAsync(runId, ct);
-        Assert.Equal(recordedHistory ? JobRunState.TimedOut : JobRunState.Failed, terminal.Run.Status);
+        Assert.Equal(recordedHistory ? JobRunState.Unknown : JobRunState.Failed, terminal.Run.Status);
         Assert.Equal(string.Empty, terminal.Run.ClientIdentity);
         Assert.True(await h.TerminalReadyAsync(terminal, ct));
         Assert.Equal(controlBefore.NativeDeadlineUtc, (await h.ControlAsync(runId, ct)).NativeDeadlineUtc);
@@ -215,12 +274,12 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         await Task.WhenAll(first, second).WaitAsync(ct);
         if (cancelSecond is not null) Assert.False(await cancelSecond);
         var details = await h.DetailsAsync(run.Id, ct);
-        Assert.Equal(cancelFirst ? JobRunState.Cancelled : JobRunState.Succeeded, details.Run.Status);
+        Assert.Equal(JobRunState.Succeeded, details.Run.Status);
         Assert.Contains("original native result", Assert.Single(details.Activities).ResultJson!);
         Assert.True(await h.TerminalReadyAsync(details, ct));
         // A late higher-sequence native receipt cannot change the accepted terminal body.
         var hash = OrchestrationCallbackProjection.ResultHash(details);
-        await h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Completed, 9, "{\"stdout\":[\"late\"]}", true, ct);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Completed, 9, "{\"stdout\":[\"late\"]}", true, ct));
         Assert.Equal(hash, OrchestrationCallbackProjection.ResultHash(await h.DetailsAsync(run.Id, ct)));
     }
 
@@ -378,7 +437,7 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         await h.AdvanceWithPresenceHeartbeatsAsync(original.AddMilliseconds(1), ct);
         await h.RecoverAsync(runId, true, ct);
         var terminal = await h.DetailsAsync(runId, ct);
-        Assert.Equal(JobRunState.TimedOut, terminal.Run.Status);
+        Assert.Equal(JobRunState.Unknown, terminal.Run.Status);
         Assert.Contains("physical outcome is unknown", terminal.Run.Error!);
         Assert.Equal(original, (await h.ControlAsync(runId, ct)).NativeDeadlineUtc);
         Assert.Equal(1, h.Gateway.Dispatches);
@@ -415,7 +474,7 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         }
         await h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Completed, 4, "{\"stdout\":[\"historical native receipt\"]}", false, ct);
         var completed = await h.DetailsAsync(run.Id, ct);
-        Assert.Equal(cancelFirst ? JobRunState.Cancelled : JobRunState.Succeeded, completed.Run.Status);
+        Assert.Equal(JobRunState.Succeeded, completed.Run.Status);
         Assert.Null((await h.ControlAsync(run.Id, ct)).NativeDeadlineUtc);
         Assert.Contains("historical native receipt", Assert.Single(completed.Activities).ResultJson!);
         Assert.True(await h.TerminalReadyAsync(completed, ct));
@@ -771,15 +830,16 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         { await using var scope = Services.CreateAsyncScope(); return await Authority(scope.ServiceProvider, replica).CancelAsync(runId, "operator-cancelled", ct); }
         public async Task RecoverAsync(ulong runId, bool replica, CancellationToken ct)
         { await using var scope = Services.CreateAsyncScope(); await Authority(scope.ServiceProvider, replica).RecoverAsync(runId, ct); }
-        public async Task LifecycleAsync(ulong runId, JobGatewayLifecycleStatus status, ulong sequence, string? result, bool replica, CancellationToken ct)
+        public async Task LifecycleAsync(ulong runId, JobGatewayLifecycleStatus status, ulong sequence, string? result, bool replica, CancellationToken ct,
+            DateTimeOffset? reportedAt = null, DateTimeOffset? startedAt = null)
         {
             await using var scope = Services.CreateAsyncScope();
             var details = (await scope.ServiceProvider.GetRequiredService<IJobRunService>().GetDetailsAsync(runId, ct))!;
-            var step = Assert.Single(details.Steps);
+            var step = details.Steps.First(x => x.TaskRequestId is not null);
             await Authority(scope.ServiceProvider, replica).RecordLifecycleAsync(new(7, AgentId), new(runId, step.JobStepId!.Value,
-                step.Id, step.Ordinal, step.TaskRequestId!, "actual-boundary", status, sequence, sequence,
-                details.Run.StartedAtUtc!.Value, Clock.GetUtcNow(), 100, result, status == JobGatewayLifecycleStatus.Failed ? 1 : 0,
-                AuthenticatedOwner: CommittedOwner.Owner), ct);
+                step.Id, step.Ordinal, step.TaskRequestId!, $"akka-job-{runId}", status, sequence, sequence,
+                details.Activities.Single().CreatedAtUtc, reportedAt ?? Clock.GetUtcNow(), 100, result, status == JobGatewayLifecycleStatus.Failed ? 1 : 0,
+                AuthenticatedOwner: CommittedOwner.Owner, StartedAtUtc: startedAt), ct);
         }
         public async Task<JobRunDetails> DetailsAsync(ulong runId, CancellationToken ct)
         { await using var scope = Services.CreateAsyncScope(); return (await scope.ServiceProvider.GetRequiredService<IJobRunService>().GetDetailsAsync(runId, ct))!; }

@@ -8,7 +8,7 @@ public sealed record TaskDto(
     string RequestId,
     string ClientIdentity,
     int? TenantId,
-    ClientEnvironment Environment,
+    ClientEnvironment? Environment,
     string TaskType,
     string Status,
     string? StatusMessage,
@@ -20,7 +20,11 @@ public sealed record TaskDto(
     string? ClientDisplayName = null,
     string? ClientHostName = null,
     string? ClientName = null,
-    Guid? AgentId = null
+    Guid? AgentId = null,
+    string? ScriptName = null,
+    string? ScriptType = null,
+    string? CommandLabel = null,
+    string? TenantName = null
 );
 
 public sealed record TaskHistoryItemDto(
@@ -35,7 +39,14 @@ public sealed record TaskHistoryItemDto(
     string? ClientDisplayName,
     string? ClientHostName,
     string? ClientName,
-    Guid? AgentId);
+    Guid? AgentId,
+    ClientEnvironment? Environment = null,
+    DateTimeOffset? StartedAt = null,
+    int? ExitCode = null,
+    string? ScriptName = null,
+    string? ScriptType = null,
+    string? CommandLabel = null,
+    string? TenantName = null);
 
 public sealed record TaskHistoryPageDto(
     IReadOnlyList<TaskHistoryItemDto> Items,
