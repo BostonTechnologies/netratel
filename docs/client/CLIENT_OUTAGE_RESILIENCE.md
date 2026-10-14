@@ -66,6 +66,79 @@ still-pending controlled update can consume one immediate bounded attempt
 ahead of an inherited slow deadline; repeated starts of the same candidate
 cannot consume it again or bypass an active Retry-After floor.
 
+Bare gRPC `Unknown` follows backend recovery. Typed TLS/trust, permission and
+nonrecoverable authentication causes still require attention, including when
+wrapped by `Unknown`. A backend interruption does not justify deleting the
+identity, enrolling again, or stopping the service.
+
+## Update outcomes and result delivery
+
+The native updater's installation result and the API's acknowledgement are
+separate records. Protected `result-delivery.json` retains the original result,
+attempt/release identity, delivery status, last bounded error code and next
+retry eligibility beside the existing update-state files. An unresolved result
+fences a newer activation so its evidence cannot be overwritten. A matching
+authoritative Resume can release a delivered conflict's fence after its original
+result and receipt have been archived, while retaining the unresolved
+reconciliation status. Delivery never
+launches the native updater again.
+
+One delivery worker uses bounded requests and capped backoff with jitter for
+transport failures, HTTP 429/5xx and unclassified plain 404 responses. Plain 404
+can indicate an older Web route rather than a missing domain attempt. A rejected
+access token permits one refresh within an operation. Structured permanent
+rejections and authority conflicts retain the evidence and require inspection;
+they do not generate a request every 30 seconds indefinitely.
+
+The result API accepts only client-reportable progress/failure states. Native
+validation or service-stop failure after `Activating` can truthfully report
+`FailedPreActivation` because cutover has not happened. Only bound authoritative
+gateway confirmation can establish `Accepted`. An identical committed result is
+an acknowledgement replay: it does not rewrite outcome timestamps, repeat
+activity events, increment policy/catalog revisions or restore a suspension
+cleared by operator Resume. Failed-release suppression remains effective.
+
+A confirmation committed before its response or local readiness marker is lost
+can be replayed for the matching candidate and current presence owner. The
+attempt, release, version, nonce and connection epoch remain bound. If the
+native updater physically rolls back after server confirmation, Activity retains
+the immutable confirmation and separate rollback reconciliation evidence. The
+attempt's target and last observed running version are separate. Online alone
+does not verify installation of the target.
+
+Before taking operator action, inspect the protected request/state/activation,
+ready/result/delivery/presence/policy/suspension records, sanitized
+`UpdateManagement`/`UpdateService` logs, service journal and actual executable or
+`current` link. Do not publish admission nonces, access/refresh tokens, enrollment
+data or raw credential stores. Preserve unresolved evidence while repairing an
+identified routing, authentication or installation problem; Resume is a policy
+action and does not prove installation or reconcile contradictory results.
+
+### Owner retest for issue #250
+
+After an approved deployment, record the API/Web/client versions and inspect
+each reported client individually: its actual executable/current
+link, observed version, historical attempt, verification time and suspension
+reason. Keep the 13 October rollback outcomes separate from the 14 October
+gateway interruption. Resolve the unnamed second log's agent identity before
+assigning it to a host, and verify the deployed UI timezone before comparing
+UI timestamps with UTC logs.
+
+For attempt `414118ca-148f-45ef-9e76-67bd6ae594fe`, retrieve the original
+notification Error/StackTrace and inner exception, submitted state, actual HTTP
+response, persisted attempt/release/agent/policy records and request traces.
+Check that delivery is durably acknowledged or has one explicit reconciliation
+outcome, with repeated fault occurrences retained. Confirm ordinary recovery
+through an observed backend return without false authentication attention.
+Production outage injection, fleet restarts, blind Resume, identity/journal
+deletion and release/rollout are outside this source-fix authorization. A later
+canary update requires separate approval.
+
+The source fixes and deterministic regressions establish the contract defects;
+they do not identify the deployed exception, ingress failure or original native
+rollback cause. Those incident attributions and installed-host acceptance remain
+pending production evidence. Tracking: [issue #250](https://github.com/BostonTechnologies/netratel/issues/250).
+
 ## Native authentication and rollback
 
 Deploy the backend before the client for the complete refresh-rotation

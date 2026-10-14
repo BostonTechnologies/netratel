@@ -491,6 +491,24 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
     }
 
     [Fact]
+    public async Task Activity_keeps_confirmation_authority_distinct_from_reported_rollback_and_observed_running_version()
+    {
+        _artifacts.HistoryStatus = "Accepted";
+        _artifacts.HistoryReconciliationRequired = true;
+        var cut = Render<ClientsMgmt>();
+        await cut.WaitForAssertionAsync(() => cut.FindAll(".mud-tab").Should().NotBeEmpty());
+        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Activity").ClickAsync(new()));
+        await cut.InvokeAsync(() => _activity.SendAsync("ready"));
+        await cut.WaitForAssertionAsync(() => cut.Markup.Should().Contain("Reconciliation required"));
+        await cut.InvokeAsync(() => cut.Find("button.mud-table-row-expander").ClickAsync(new()));
+        cut.Markup.Should().Contain("Target 0.4.102").And.Contain("Running observed: 0.4.101")
+            .And.Contain("Accepted").And.Contain("Installation: previous version restored")
+            .And.Contain("Server report: conflicts with accepted confirmation")
+            .And.Contain("Automatic updates suspended").And.Contain("Reported installation: RolledBack")
+            .And.Contain("2026-10-14 06:12:00 UTC").And.Contain("before resuming automatic updates");
+    }
+
+    [Fact]
     public async Task Activity_preserves_the_current_page_and_clamps_only_when_the_final_page_disappears()
     {
         _artifacts.HistoryTotal = 21;
@@ -749,6 +767,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         public int AttemptPageRequests { get; private set; }
         public string HistoryStatus { get; set; } = "RolledBack";
         public bool HistoryPurged { get; set; }
+        public bool HistoryReconciliationRequired { get; set; }
         public int HistoryTotal { get; set; } = 1;
         public int LastHistoryPage { get; private set; }
         public string? LastHistoryStatus { get; private set; }
@@ -849,7 +868,18 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
                         Status = HistoryStatus,
                         LocalPackagePurged = HistoryPurged,
                         FailureCode = "activation_timeout",
-                        UpdatedAtUtc = DateTimeOffset.UtcNow
+                        UpdatedAtUtc = DateTimeOffset.UtcNow,
+                        FromVersion = "0.4.101",
+                        ObservedRunningVersion = HistoryReconciliationRequired ? "0.4.101" : null,
+                        ObservedAtUtc = HistoryReconciliationRequired ? new DateTimeOffset(2026, 10, 14, 8, 12, 0, TimeSpan.FromHours(2)) : null,
+                        ConfirmationId = HistoryReconciliationRequired ? Guid.NewGuid() : null,
+                        ConfirmedAtUtc = HistoryReconciliationRequired ? DateTimeOffset.UtcNow.AddMinutes(-5) : null,
+                        ReconciliationState = HistoryReconciliationRequired ? "accepted_authority_conflict" : null,
+                        ReportedState = HistoryReconciliationRequired ? "RolledBack" : null,
+                        ReportedFailureCode = HistoryReconciliationRequired ? "acknowledgement_timeout" : null,
+                        ReportedAtUtc = HistoryReconciliationRequired ? DateTimeOffset.UtcNow : null,
+                        SuspendedAtUtc = HistoryReconciliationRequired ? DateTimeOffset.UtcNow : null,
+                        SuspensionReason = HistoryReconciliationRequired ? "accepted_authority_conflict" : null
                     }
                 ]
             });

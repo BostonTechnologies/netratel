@@ -132,11 +132,13 @@ function Write-UpdateLog($message) {
     }
 }
 
-function Write-Result($status, $message, $errorText = $null) {
+function Write-Result($status, $message, $failureCode = $null, $errorText = $null) {
     if (-not $script:TrustedOutputsReady -or -not $script:UpdateLockAcquired) {
         Write-Host "[UpdateService] Result not written because updater output paths have not passed trust validation. status=$status"
         return
     }
+    if ($null -eq $errorText) { $errorText = $failureCode }
+    if ($null -ne $errorText -and ([string]$errorText).Length -gt 1024) { $errorText = ([string]$errorText).Substring(0, 1024) }
     $payload = @{
         schema = "netratel.update.result.v2"
         attemptId = $script:AttemptId
@@ -146,7 +148,7 @@ function Write-Result($status, $message, $errorText = $null) {
         toVersion = $script:ToVersion
         version = $script:ToVersion
         state = $status
-        failureCode = $errorText
+        failureCode = $failureCode
         message = $message
         previousTarget = $script:PreviousPath
         activeTarget = $script:ActivePath
@@ -1077,7 +1079,7 @@ catch {
         Invoke-NetRatelRollback "post_cutover_failure"
     }
     else {
-        Write-Result "FailedPreActivation" "NetRatel client update failed." $_.Exception.Message
+        Write-Result "FailedPreActivation" "NetRatel client update failed." "native_pre_activation_failed" $_.Exception.Message
     }
     throw
 }

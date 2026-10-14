@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.API.Gateway;
 using NetRatel.API.Models;
@@ -14,6 +15,20 @@ public sealed record ClientUpdateClaimResult(Guid AttemptId, Guid ReleaseId, str
 public sealed record ClientUpdateActivationResult(bool Accepted, string Reason, Guid? ConfirmationId = null);
 public sealed record ClientUpdateResumeEligibility(bool IsEligible, string? FailureCode, long? PolicyRevision = null);
 public sealed record ClientUpdateResumeResult(bool Resumed, string? FailureCode, long? PolicyRevision = null);
+
+[JsonConverter(typeof(JsonStringEnumConverter<ClientUpdateReportOutcome>))]
+public enum ClientUpdateReportOutcome
+{
+    [JsonStringEnumMemberName("applied")] Applied,
+    [JsonStringEnumMemberName("duplicate")] Duplicate,
+    [JsonStringEnumMemberName("invalid_state")] InvalidState,
+    [JsonStringEnumMemberName("not_found")] NotFound,
+    [JsonStringEnumMemberName("conflict")] Conflict
+}
+
+public sealed record ClientUpdateReportResult(
+    ClientUpdateReportOutcome Outcome, string Code, string? State = null,
+    Guid? ConfirmationId = null, bool SuspensionActive = false, long? PolicyRevision = null);
 public sealed record ClientPackPublishItem(ClientArtifactSummaryDto Artifact, string ManifestJson);
 
 /// <summary>
@@ -39,6 +54,11 @@ public interface IClientUpdateActivationAuthority
         Guid connectionId,
         long connectionEpoch,
         CancellationToken cancellationToken);
+
+    // A committed reconnect can change the observed running version even when
+    // the client has no activation context, such as after a native rollback.
+    Task NotifyPresenceObservedAsync(AuthenticatedAgentIdentity identity, CancellationToken cancellationToken) =>
+        Task.CompletedTask;
 }
 
 public interface IClientUpdatePublisher
@@ -244,6 +264,7 @@ public sealed class ClientUpdateAuthorityService(
     {
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         await ClientReleaseDeletionService.LockAdmissionsAsync(db, cancellationToken).ConfigureAwait(false);
+        await LockAgentUpdateAsync(identity.TenantId, identity.AgentId, cancellationToken).ConfigureAwait(false);
         var release = await db.ClientUpdateReleases.SingleOrDefaultAsync(
             x => x.PublicId == releasePublicId && x.Enabled,
             cancellationToken).ConfigureAwait(false);
@@ -282,108 +303,59 @@ public sealed class ClientUpdateAuthorityService(
         }
         var nonceHash = HashNonce(admissionNonce);
         var now = timeProvider.GetUtcNow();
-        var attempt = await db.ClientUpdateAttempts.SingleOrDefaultAsync(
-            x => x.AgentId == identity.AgentId && x.ReleaseId == release.Id,
-            cancellationToken).ConfigureAwait(false);
-        if (attempt is null)
+        // Admission identities are immutable. A restart that needs a new nonce
+        // gets a fresh attempt, retaining every old result for safe replay.
+        var attempt = await db.ClientUpdateAttempts.AsNoTracking()
+            .Where(candidate => candidate.AgentId == identity.AgentId && candidate.ReleaseId == release.Id &&
+                candidate.AdmissionNonceHash == nonceHash)
+            .OrderByDescending(candidate => candidate.Id).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (attempt is not null)
         {
-            attempt = new ClientUpdateAttemptRecord
-            {
-                PublicId = Guid.NewGuid(),
-                ReleaseId = release.Id,
-                ReleaseRecordId = release.Id,
-                TenantId = identity.TenantId,
-                AgentId = identity.AgentId,
-                FromVersion = current.ToNormalizedString(),
-                TargetVersion = release.Version,
-                RuntimeId = release.RuntimeId,
-                State = ClientUpdateAttemptState.Claimed,
-                AdmissionNonceHash = nonceHash,
-                CreatedAtUtc = now,
-                UpdatedAtUtc = now
-            };
-            db.ClientUpdateAttempts.Add(attempt);
-        }
-        else if (attempt.State == ClientUpdateAttemptState.FailedPreActivation)
-        {
-            ReissueClaim(attempt, nonceHash, now);
-        }
-        else if (attempt.State == ClientUpdateAttemptState.Downloading)
-        {
-            logger.LogInformation(
-                "Reissuing interrupted downloading client update claim {AttemptId} for agent {AgentId}",
-                attempt.PublicId,
-                identity.AgentId);
-            ReissueClaim(attempt, nonceHash, now);
-        }
-        else if (IsStaleClaimedAttempt(attempt, now))
-        {
-            logger.LogWarning(
-                "Recovering stale claimed client update claim {AttemptId} for agent {AgentId} after {Age}",
-                attempt.PublicId,
-                identity.AgentId,
-                now - attempt.UpdatedAtUtc);
-            ReissueClaim(attempt, nonceHash, now);
-        }
-        else if (attempt.State is not ClientUpdateAttemptState.Accepted and not ClientUpdateAttemptState.RolledBack and not ClientUpdateAttemptState.RollbackUnverified)
-        {
-            if (!string.Equals(attempt.AdmissionNonceHash, nonceHash, StringComparison.Ordinal))
-            {
-                ClientUpdateTelemetry.ClaimObserved("rejected");
-                return null;
-            }
-        }
-        else
-        {
-            ClientUpdateTelemetry.ClaimObserved("ineligible");
-            return null;
-        }
-
-        try
-        {
-            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (DbUpdateException exception) when (DatabaseExceptionClassifier.IsUniqueViolation(exception))
-        {
-            db.ChangeTracker.Clear();
-            attempt = await db.ClientUpdateAttempts.SingleAsync(
-                x => x.AgentId == identity.AgentId && x.ReleaseId == release.Id,
-                cancellationToken).ConfigureAwait(false);
-            if (attempt.State is ClientUpdateAttemptState.Accepted or ClientUpdateAttemptState.RolledBack or ClientUpdateAttemptState.RollbackUnverified)
+            if (attempt.State is ClientUpdateAttemptState.Accepted or ClientUpdateAttemptState.RolledBack or ClientUpdateAttemptState.RollbackUnverified ||
+                await db.ClientUpdateAttempts.AsNoTracking().AnyAsync(candidate => candidate.AgentId == identity.AgentId &&
+                    candidate.TenantId == identity.TenantId && candidate.Id > attempt.Id, cancellationToken).ConfigureAwait(false))
             {
                 ClientUpdateTelemetry.ClaimObserved("ineligible");
                 return null;
             }
-            if (attempt.State == ClientUpdateAttemptState.FailedPreActivation)
+            if (attempt.State != ClientUpdateAttemptState.FailedPreActivation)
             {
-                ReissueClaim(attempt, nonceHash, now);
-                await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return new ClientUpdateClaimResult(attempt.PublicId, release.PublicId, admissionNonce, release.Version);
             }
-            else if (attempt.State == ClientUpdateAttemptState.Downloading)
-            {
-                logger.LogInformation(
-                    "Reissuing interrupted downloading client update claim {AttemptId} for agent {AgentId}",
-                    attempt.PublicId,
-                    identity.AgentId);
-                ReissueClaim(attempt, nonceHash, now);
-                await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-            }
-            else if (IsStaleClaimedAttempt(attempt, now))
-            {
-                logger.LogWarning(
-                    "Recovering stale claimed client update claim {AttemptId} for agent {AgentId} after {Age}",
-                    attempt.PublicId,
-                    identity.AgentId,
-                    now - attempt.UpdatedAtUtc);
-                ReissueClaim(attempt, nonceHash, now);
-                await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-            }
-            else if (!string.Equals(attempt.AdmissionNonceHash, nonceHash, StringComparison.Ordinal))
-            {
-                ClientUpdateTelemetry.ClaimObserved("rejected");
-                return null;
-            }
+            // Older clients retain their nonce after an acknowledged staging
+            // failure. Give that explicit retry a new immutable attempt as well.
         }
+        var latest = await db.ClientUpdateAttempts.AsNoTracking()
+            .Where(candidate => candidate.AgentId == identity.AgentId && candidate.ReleaseId == release.Id)
+            .OrderByDescending(candidate => candidate.Id).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (latest is not null && latest.State != ClientUpdateAttemptState.FailedPreActivation &&
+            latest.State != ClientUpdateAttemptState.Downloading && !IsStaleClaimedAttempt(latest, now))
+        {
+            ClientUpdateTelemetry.ClaimObserved("rejected");
+            return null;
+        }
+        if (latest is not null && latest.State is ClientUpdateAttemptState.Claimed or ClientUpdateAttemptState.Downloading)
+        {
+            // The replaced generation never crossed cutover. Finish its history so
+            // abandoned downloads cannot block package purging or remain in progress.
+            await db.ClientUpdateAttempts.Where(candidate => candidate.Id == latest.Id)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(candidate => candidate.State, ClientUpdateAttemptState.FailedPreActivation)
+                    .SetProperty(candidate => candidate.FailureCode, "admission_superseded")
+                    .SetProperty(candidate => candidate.Message, "A fresh authenticated admission replaced the interrupted update attempt.")
+                    .SetProperty(candidate => candidate.UpdatedAtUtc, now), cancellationToken).ConfigureAwait(false);
+        }
+        attempt = new ClientUpdateAttemptRecord
+        {
+            PublicId = Guid.NewGuid(), ReleaseId = release.Id, ReleaseRecordId = release.Id,
+            TenantId = identity.TenantId, AgentId = identity.AgentId,
+            FromVersion = current.ToNormalizedString(), TargetVersion = release.Version, RuntimeId = release.RuntimeId,
+            State = ClientUpdateAttemptState.Claimed, AdmissionNonceHash = nonceHash,
+            CreatedAtUtc = now, UpdatedAtUtc = now
+        };
+        db.ClientUpdateAttempts.Add(attempt);
+        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await ClientUpdateActivityNotifications.NotifyAsync(db, identity.TenantId, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         ClientUpdateTelemetry.ClaimObserved("eligible");
@@ -401,19 +373,45 @@ public sealed class ClientUpdateAuthorityService(
         CancellationToken cancellationToken)
     {
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await LockAgentUpdateAsync(identity.TenantId, identity.AgentId, cancellationToken).ConfigureAwait(false);
         var attempt = await db.ClientUpdateAttempts.AsNoTracking().Include(x => x.Release).SingleOrDefaultAsync(
-            x => x.PublicId == attemptId,
+            x => x.PublicId == attemptId && x.TenantId == identity.TenantId && x.AgentId == identity.AgentId,
             cancellationToken).ConfigureAwait(false);
         if (attempt is null) return new(false, "attempt_not_found");
-        if (attempt.Release?.PublicId != releaseId) return new(false, "release_mismatch");
-        if (attempt.TenantId != identity.TenantId || attempt.AgentId != identity.AgentId) return new(false, "agent_mismatch");
-        if (attempt.State is not ClientUpdateAttemptState.Activating and not ClientUpdateAttemptState.GatewayReadmitted)
+        if (await db.ClientUpdateAttempts.AsNoTracking().AnyAsync(candidate =>
+                candidate.TenantId == identity.TenantId && candidate.AgentId == identity.AgentId &&
+                candidate.Id > attempt.Id, cancellationToken).ConfigureAwait(false))
+            return new(false, "newer_attempt_exists");
+        if ((attempt.PurgedReleasePublicId ?? attempt.Release?.PublicId) != releaseId) return new(false, "release_mismatch");
+        if (attempt.State is not ClientUpdateAttemptState.Activating and not ClientUpdateAttemptState.GatewayReadmitted and
+            not ClientUpdateAttemptState.Accepted)
             return new(false, "invalid_attempt_state");
         if (!IsAdmissionNonce(nonce) || !CryptographicOperations.FixedTimeEquals(
                 Convert.FromHexString(attempt.AdmissionNonceHash),
                 Convert.FromHexString(HashNonce(nonce)))) return new(false, "nonce_mismatch");
         if (!string.Equals(attempt.TargetVersion, RemoveBuildMetadata(agentVersion), StringComparison.OrdinalIgnoreCase))
             return new(false, "version_mismatch");
+        if (connectionId == Guid.Empty || connectionEpoch <= 0) return new(false, "invalid_presence_connection");
+        if (attempt.State == ClientUpdateAttemptState.Accepted && !attempt.ConfirmationId.HasValue)
+            return new(false, "confirmation_missing");
+        if (attempt.GatewayConnectionId == connectionId && attempt.GatewayConnectionEpoch == connectionEpoch)
+            return new(true, "accepted", attempt.ConfirmationId);
+        if (attempt.GatewayConnectionEpoch >= connectionEpoch)
+            return new(false, "presence_epoch_mismatch");
+
+        // A committed confirmation can be lost before the client writes readiness.
+        // Rebind the authenticated target to its newer presence session without
+        // changing the accepted outcome or manufacturing a new confirmation.
+        if (attempt.State == ClientUpdateAttemptState.Accepted)
+        {
+            await db.ClientUpdateAttempts.Where(x => x.Id == attempt.Id)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(x => x.GatewayConnectionId, connectionId)
+                    .SetProperty(x => x.GatewayConnectionEpoch, connectionEpoch), cancellationToken)
+                .ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return new(true, "accepted", attempt.ConfirmationId);
+        }
 
         var readmittedAtUtc = timeProvider.GetUtcNow();
         var affected = await db.ClientUpdateAttempts
@@ -424,7 +422,7 @@ public sealed class ClientUpdateAuthorityService(
                 .SetProperty(x => x.State, ClientUpdateAttemptState.GatewayReadmitted)
                 .SetProperty(x => x.GatewayConnectionId, connectionId)
                 .SetProperty(x => x.GatewayConnectionEpoch, connectionEpoch)
-                .SetProperty(x => x.ReadmittedAtUtc, readmittedAtUtc)
+                .SetProperty(x => x.ReadmittedAtUtc, attempt.ReadmittedAtUtc ?? readmittedAtUtc)
                 .SetProperty(x => x.UpdatedAtUtc, readmittedAtUtc), cancellationToken)
             .ConfigureAwait(false);
         if (affected == 1)
@@ -445,15 +443,6 @@ public sealed class ClientUpdateAuthorityService(
         attempt.State == ClientUpdateAttemptState.Claimed &&
         now - attempt.UpdatedAtUtc >= StaleClaimRecoveryDelay;
 
-    private static void ReissueClaim(ClientUpdateAttemptRecord attempt, string nonceHash, DateTimeOffset now)
-    {
-        attempt.State = ClientUpdateAttemptState.Claimed;
-        attempt.AdmissionNonceHash = nonceHash;
-        attempt.FailureCode = null;
-        attempt.Message = null;
-        attempt.UpdatedAtUtc = now;
-    }
-
     public async Task<ClientUpdateActivationResult> ConfirmAsync(
         AuthenticatedAgentIdentity identity,
         Guid attemptId,
@@ -462,13 +451,23 @@ public sealed class ClientUpdateAuthorityService(
         CancellationToken cancellationToken)
     {
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await LockAgentUpdateAsync(identity.TenantId, identity.AgentId, cancellationToken).ConfigureAwait(false);
         var attempt = await db.ClientUpdateAttempts.AsNoTracking().SingleOrDefaultAsync(
             x => x.PublicId == attemptId && x.TenantId == identity.TenantId && x.AgentId == identity.AgentId,
             cancellationToken).ConfigureAwait(false);
         if (attempt is null) return new(false, "attempt_not_found");
-        if (attempt.State != ClientUpdateAttemptState.GatewayReadmitted) return new(false, "invalid_attempt_state");
+        if (await db.ClientUpdateAttempts.AsNoTracking().AnyAsync(candidate =>
+                candidate.TenantId == identity.TenantId && candidate.AgentId == identity.AgentId &&
+                candidate.Id > attempt.Id, cancellationToken).ConfigureAwait(false))
+            return new(false, "newer_attempt_exists");
+        if (attempt.State is not ClientUpdateAttemptState.GatewayReadmitted and not ClientUpdateAttemptState.Accepted)
+            return new(false, "invalid_attempt_state");
         if (attempt.GatewayConnectionId != connectionId) return new(false, "presence_connection_mismatch");
         if (attempt.GatewayConnectionEpoch != connectionEpoch) return new(false, "presence_epoch_mismatch");
+        if (attempt.State == ClientUpdateAttemptState.Accepted)
+            return attempt.ConfirmationId.HasValue
+                ? new(true, "accepted", attempt.ConfirmationId)
+                : new(false, "confirmation_missing");
 
         var now = timeProvider.GetUtcNow();
         var confirmationId = Guid.NewGuid();
@@ -490,62 +489,146 @@ public sealed class ClientUpdateAuthorityService(
         return new(true, "accepted", confirmationId);
     }
 
-    public async Task ReportAsync(
+    public async Task NotifyPresenceObservedAsync(AuthenticatedAgentIdentity identity, CancellationToken cancellationToken)
+    {
+        if (await db.ClientUpdateAttempts.AsNoTracking().AnyAsync(attempt =>
+                attempt.TenantId == identity.TenantId && attempt.AgentId == identity.AgentId,
+                cancellationToken).ConfigureAwait(false))
+            await ClientUpdateActivityNotifications.NotifyAsync(db, identity.TenantId, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<ClientUpdateReportResult> ReportAsync(
         AuthenticatedAgentIdentity identity,
         Guid attemptId,
         ClientUpdateAttemptState state,
         string? failureCode,
         string? message,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? admissionNonce = null)
     {
+        if (!IsClientReportableState(state))
+            return new(ClientUpdateReportOutcome.InvalidState, "invalid_report_state");
+        if (failureCode?.Length > 64 || message?.Length > 4096)
+            return new(ClientUpdateReportOutcome.InvalidState, "invalid_report_details");
+
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await LockAgentUpdateAsync(identity.TenantId, identity.AgentId, cancellationToken).ConfigureAwait(false);
         var attempt = await (db.Database.IsNpgsql()
                 ? db.ClientUpdateAttempts.FromSqlInterpolated(
                     $"SELECT * FROM \"ClientUpdateAttempts\" WHERE \"PublicId\" = {attemptId} AND \"TenantId\" = {identity.TenantId} AND \"AgentId\" = {identity.AgentId} FOR UPDATE")
                 : db.ClientUpdateAttempts.Where(candidate =>
                     candidate.PublicId == attemptId && candidate.TenantId == identity.TenantId && candidate.AgentId == identity.AgentId))
-            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false)
-            ?? throw new KeyNotFoundException("Update attempt was not found.");
-        if (!IsAllowedTransition(attempt.State, state))
-            throw new InvalidOperationException($"Update attempt transition {attempt.State} -> {state} is not allowed.");
-        attempt.State = state;
-        attempt.FailureCode = failureCode;
-        attempt.Message = message;
-        attempt.UpdatedAtUtc = timeProvider.GetUtcNow();
+            .AsNoTracking().SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (attempt is null) return new(ClientUpdateReportOutcome.NotFound, "attempt_not_found");
+        var agentState = await db.AgentClientUpdateStates.AsNoTracking().SingleOrDefaultAsync(
+            candidate => candidate.AgentId == identity.AgentId && candidate.TenantId == identity.TenantId,
+            cancellationToken).ConfigureAwait(false);
+        ClientUpdateReportResult Result(ClientUpdateReportOutcome outcome, string code) => new(
+            outcome, code, attempt.State.ToString(), attempt.ConfirmationId,
+            agentState?.SuspendedAtUtc.HasValue == true, agentState?.PolicyRevision);
 
-        if (state is ClientUpdateAttemptState.RolledBack or ClientUpdateAttemptState.RollbackUnverified)
+        // New clients bind reports to the admission generation. Older clients retain
+        // the existing attempt-only contract, while authority state still fences them.
+        if (admissionNonce is not null && (!IsAdmissionNonce(admissionNonce) ||
+            !string.Equals(attempt.AdmissionNonceHash, HashNonce(admissionNonce), StringComparison.Ordinal)))
+            return Result(ClientUpdateReportOutcome.Conflict, "admission_mismatch");
+        if (attempt.State == state)
+            return string.Equals(attempt.FailureCode, failureCode, StringComparison.Ordinal) &&
+                string.Equals(attempt.Message, message, StringComparison.Ordinal)
+                ? Result(ClientUpdateReportOutcome.Duplicate, "report_duplicate")
+                : Result(ClientUpdateReportOutcome.Conflict, "state_conflict");
+
+        var now = timeProvider.GetUtcNow();
+        async Task<bool> HasNewerAttemptAsync() => await db.ClientUpdateAttempts.AsNoTracking().AnyAsync(candidate =>
+            candidate.TenantId == identity.TenantId && candidate.AgentId == identity.AgentId &&
+            candidate.Id > attempt.Id, cancellationToken).ConfigureAwait(false);
+        async Task SuspendAsync()
         {
-            var agentState = await db.AgentClientUpdateStates.FindAsync([identity.AgentId], cancellationToken).ConfigureAwait(false);
+            // Resume fences delayed observations from the earlier outcome. A later
+            // fresh attempt can suspend normally; replaying the old one cannot.
+            var outcomeAtUtc = attempt.ConfirmedAtUtc ?? attempt.UpdatedAtUtc;
+            if (agentState?.ResumedAtUtc is not null && agentState.ResumedAtUtc >= outcomeAtUtc) return;
+            var releasePublicId = attempt.PurgedReleasePublicId ??
+                await db.ClientUpdateReleases.AsNoTracking()
+                    .Where(candidate => candidate.Id == attempt.ReleaseRecordId).Select(candidate => candidate.PublicId)
+                    .SingleAsync(cancellationToken).ConfigureAwait(false);
+            var policyRevision = (agentState?.PolicyRevision ?? 0) + 1;
             if (agentState is null)
             {
-                agentState = new AgentClientUpdateStateRecord { AgentId = identity.AgentId, TenantId = identity.TenantId };
+                agentState = new AgentClientUpdateStateRecord
+                {
+                    AgentId = identity.AgentId, TenantId = identity.TenantId, SuspendedAtUtc = now,
+                    SuspensionReason = failureCode ?? state.ToString(), SuspensionAttemptId = attempt.PublicId,
+                    SuppressedReleaseId = releasePublicId, PolicyRevision = policyRevision
+                };
                 db.AgentClientUpdateStates.Add(agentState);
+                await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             }
-            agentState.SuspendedAtUtc = timeProvider.GetUtcNow();
-            agentState.SuspensionReason = failureCode ?? state.ToString();
-            agentState.SuspensionAttemptId = attempt.PublicId;
-            // Terminal reports can be replayed after the local package was purged. The
-            // historical public identity survives independently of the nullable live FK.
-            agentState.SuppressedReleaseId = attempt.PurgedReleasePublicId ??
-                await db.ClientUpdateReleases.AsNoTracking()
-                    .Where(x => x.Id == attempt.ReleaseRecordId).Select(x => x.PublicId)
-                    .SingleAsync(cancellationToken).ConfigureAwait(false);
-            agentState.PolicyRevision++;
+            else
+            {
+                await db.AgentClientUpdateStates.Where(candidate => candidate.AgentId == identity.AgentId && candidate.TenantId == identity.TenantId)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(candidate => candidate.SuspendedAtUtc, now)
+                        .SetProperty(candidate => candidate.SuspensionReason, failureCode ?? state.ToString())
+                        .SetProperty(candidate => candidate.SuspensionAttemptId, attempt.PublicId)
+                        .SetProperty(candidate => candidate.SuppressedReleaseId, releasePublicId)
+                        .SetProperty(candidate => candidate.PolicyRevision, policyRevision), cancellationToken).ConfigureAwait(false);
+                agentState.SuspendedAtUtc = now;
+                agentState.PolicyRevision = policyRevision;
+            }
             var revision = await IncrementRevisionAsync(cancellationToken).ConfigureAwait(false);
-            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             await NotifyAsync(revision, cancellationToken).ConfigureAwait(false);
         }
-        else
+        if (attempt.State == ClientUpdateAttemptState.Accepted &&
+            state is ClientUpdateAttemptState.RolledBack or ClientUpdateAttemptState.RollbackUnverified)
         {
-            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            // Confirmation is an immutable authority receipt. Keep the native
+            // observation beside it so a lost ready response cannot hide rollback.
+            if (attempt.ReportedAtUtc is null)
+            {
+                await db.ClientUpdateAttempts.Where(candidate => candidate.Id == attempt.Id)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(candidate => candidate.ReconciliationState, "accepted_authority_conflict")
+                        .SetProperty(candidate => candidate.ReportedState, state)
+                        .SetProperty(candidate => candidate.ReportedFailureCode, failureCode)
+                        .SetProperty(candidate => candidate.ReportedMessage, message)
+                        .SetProperty(candidate => candidate.ReportedAtUtc, now), cancellationToken).ConfigureAwait(false);
+                if (!await HasNewerAttemptAsync().ConfigureAwait(false))
+                    await SuspendAsync().ConfigureAwait(false);
+                await ClientUpdateActivityNotifications.NotifyAsync(db, identity.TenantId, cancellationToken).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                await RefreshCatalogSafelyAsync(cancellationToken).ConfigureAwait(false);
+            }
+            else if (attempt.ReportedState != state || attempt.ReportedFailureCode != failureCode || attempt.ReportedMessage != message)
+            {
+                logger.LogWarning("Distinct rollback observation conflicts with retained update evidence for tenant {TenantId}, agent {AgentId}, attempt {AttemptId}, state {ReportedState}, code {FailureCode}",
+                    identity.TenantId, identity.AgentId, attemptId, state, failureCode);
+            }
+            return Result(ClientUpdateReportOutcome.Conflict, "accepted_authority_conflict");
         }
+        if (!IsAllowedTransition(attempt.State, state))
+            return Result(ClientUpdateReportOutcome.Conflict, "state_conflict");
+        if (await HasNewerAttemptAsync().ConfigureAwait(false))
+            return Result(ClientUpdateReportOutcome.Conflict, "newer_attempt_exists");
+
+        await db.ClientUpdateAttempts.Where(candidate => candidate.Id == attempt.Id)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(candidate => candidate.State, state)
+                .SetProperty(candidate => candidate.FailureCode, failureCode)
+                .SetProperty(candidate => candidate.Message, message)
+                .SetProperty(candidate => candidate.UpdatedAtUtc, now), cancellationToken).ConfigureAwait(false);
+        attempt.State = state;
+
+        if (state is ClientUpdateAttemptState.RolledBack or ClientUpdateAttemptState.RollbackUnverified)
+            await SuspendAsync().ConfigureAwait(false);
         await ClientUpdateActivityNotifications.NotifyAsync(db, identity.TenantId, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         ClientUpdateTelemetry.OutcomeObserved(state);
         if (state is ClientUpdateAttemptState.RolledBack or ClientUpdateAttemptState.RollbackUnverified &&
             attempt.ReadmittedAtUtc.HasValue)
-            ClientUpdateTelemetry.ActivationCompleted(timeProvider.GetUtcNow() - attempt.ReadmittedAtUtc.Value, "rollback");
+            ClientUpdateTelemetry.ActivationCompleted(now - attempt.ReadmittedAtUtc.Value, "rollback");
         await RefreshCatalogSafelyAsync(cancellationToken).ConfigureAwait(false);
+        return Result(ClientUpdateReportOutcome.Applied, "report_applied");
     }
 
     public async Task DisableReleaseAsync(Guid releaseId, string? disabledBy, CancellationToken cancellationToken)
@@ -566,6 +649,7 @@ public sealed class ClientUpdateAuthorityService(
     public async Task ResumeAsync(int tenantId, Guid agentId, string? resumedBy, CancellationToken cancellationToken)
     {
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await LockAgentUpdateAsync(tenantId, agentId, cancellationToken).ConfigureAwait(false);
         var state = await db.AgentClientUpdateStates.SingleOrDefaultAsync(
             x => x.TenantId == tenantId && x.AgentId == agentId,
             cancellationToken).ConfigureAwait(false) ?? throw new KeyNotFoundException("Agent update state was not found.");
@@ -621,6 +705,7 @@ public sealed class ClientUpdateAuthorityService(
         if (!eligibility.IsEligible) return new(false, eligibility.FailureCode, eligibility.PolicyRevision);
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await LockAgentUpdateAsync(tenantId, agentId, cancellationToken).ConfigureAwait(false);
         var state = await db.AgentClientUpdateStates.SingleOrDefaultAsync(
             candidate => candidate.TenantId == tenantId && candidate.AgentId == agentId,
             cancellationToken).ConfigureAwait(false);
@@ -646,6 +731,30 @@ public sealed class ClientUpdateAuthorityService(
 
     public Task<bool> IsArtifactPublishedAsync(string runtimeId, string version, CancellationToken cancellationToken) =>
         db.ClientUpdateReleases.AnyAsync(x => x.RuntimeId == runtimeId && x.Version == version, cancellationToken);
+
+    private async Task LockAgentUpdateAsync(int tenantId, Guid agentId, CancellationToken cancellationToken)
+    {
+        if (db.Database.IsNpgsql())
+        {
+            var key = $"netratel_client_update:{tenantId}:{agentId:D}";
+            await db.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT pg_advisory_xact_lock(hashtextextended({key}, 0))", cancellationToken).ConfigureAwait(false);
+        }
+        // Service calls may share a context in tests or operator flows. Reload authority
+        // rows after taking the lock instead of trusting an earlier tracked snapshot.
+        foreach (var entry in db.ChangeTracker.Entries().Where(entry => entry.State == EntityState.Unchanged &&
+                     (entry.Entity is ClientUpdateAttemptRecord attempt && attempt.AgentId == agentId ||
+                      entry.Entity is AgentClientUpdateStateRecord state && state.AgentId == agentId)).ToArray())
+            entry.State = EntityState.Detached;
+    }
+
+    internal static bool IsClientReportableState(ClientUpdateAttemptState state) => state is
+        ClientUpdateAttemptState.Downloading or ClientUpdateAttemptState.Staged or ClientUpdateAttemptState.Activating or
+        ClientUpdateAttemptState.FailedPreActivation or ClientUpdateAttemptState.RolledBack or ClientUpdateAttemptState.RollbackUnverified;
+
+    internal static bool TryParseReportState(string? value, out ClientUpdateAttemptState state) =>
+        Enum.TryParse(value, true, out state) && IsClientReportableState(state) &&
+        string.Equals(Enum.GetName(state), value, StringComparison.OrdinalIgnoreCase);
 
     private async Task<long> IncrementRevisionAsync(CancellationToken cancellationToken)
     {
@@ -685,6 +794,7 @@ public sealed class ClientUpdateAuthorityService(
             (ClientUpdateAttemptState.Claimed, ClientUpdateAttemptState.Downloading or ClientUpdateAttemptState.FailedPreActivation) => true,
             (ClientUpdateAttemptState.Downloading, ClientUpdateAttemptState.Staged or ClientUpdateAttemptState.FailedPreActivation) => true,
             (ClientUpdateAttemptState.Staged, ClientUpdateAttemptState.Activating or ClientUpdateAttemptState.FailedPreActivation) => true,
+            (ClientUpdateAttemptState.Activating, ClientUpdateAttemptState.FailedPreActivation) => true,
             (ClientUpdateAttemptState.Activating or ClientUpdateAttemptState.GatewayReadmitted,
                 ClientUpdateAttemptState.RolledBack or ClientUpdateAttemptState.RollbackUnverified) => true,
             _ when current == next => true,

@@ -36,6 +36,7 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
     private const string TenantPromptsAndAiFlowContinuationsMigration = "20261013081704_AddTenantPromptsAndAiFlowContinuations";
     private const string LocalClientReleaseDeletionMigration = "20261013144538_AddLocalClientReleaseDeletion";
     private const string ExecutionContextAndLifecycleReceiptsMigration = "20261014141807_AddExecutionContextAndLifecycleReceipts";
+    private const string ClientUpdateReconciliationEvidenceMigration = "20261014203629_AddClientUpdateReconciliationEvidence";
 
     [Fact]
     public async Task True_foundation_upgrade_preserves_legacy_jobs_and_matches_fresh_pre_pairing_schema()
@@ -187,7 +188,8 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
             .Append(ReceiverEvidenceMigration).Append(NativeRefreshExchangeMigration).Order(StringComparer.Ordinal).ToArray();
         migrations.Should().Equal(expected.Append(PairingCutoverMigration).Append(ClientMetadataAndOffboardingMigration)
                 .Append(NotificationConnectorsMigration).Append(ClientOperationsAndNetclawMigration).Append(TenantPromptsAndAiFlowContinuationsMigration)
-                .Append(LocalClientReleaseDeletionMigration).Append(ExecutionContextAndLifecycleReceiptsMigration),
+                .Append(LocalClientReleaseDeletionMigration).Append(ExecutionContextAndLifecycleReceiptsMigration)
+                .Append(ClientUpdateReconciliationEvidenceMigration),
             "registered history retains the exact historical ownership range followed by pairing, client metadata/offboarding, notification connectors, client operations, Netclaw investigations, tenant prompts, AI flow continuations and local client release deletion");
         // These historical Down/Up proofs explicitly stop at the shipped native-refresh range.
         // Later pairing, client metadata/offboarding, notification connector, client operation,
@@ -375,7 +377,7 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
         await using var db = Context(database);
         (await db.Database.GetAppliedMigrationsAsync(ct)).Should().Equal(plan.CurrentMigrationIds);
         (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal(
-            [PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration, ClientOperationsAndNetclawMigration, TenantPromptsAndAiFlowContinuationsMigration, LocalClientReleaseDeletionMigration, ExecutionContextAndLifecycleReceiptsMigration],
+            [PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration, ClientOperationsAndNetclawMigration, TenantPromptsAndAiFlowContinuationsMigration, LocalClientReleaseDeletionMigration, ExecutionContextAndLifecycleReceiptsMigration, ClientUpdateReconciliationEvidenceMigration],
             "the historical range leaves exactly the later pairing, client metadata/offboarding, notification connector, client operation, Netclaw investigation, tenant prompt, AI flow continuation and local client release deletion migrations unapplied");
         db.Database.HasPendingModelChanges().Should().BeFalse();
     }

@@ -11,6 +11,7 @@ public sealed class OperationalRecoveryPolicyTests
 {
     [Theory]
     [InlineData(StatusCode.DataLoss, false)]
+    [InlineData(StatusCode.Unknown, false)]
     [InlineData(StatusCode.Unavailable, false)]
     [InlineData(StatusCode.Unauthenticated, false)]
     [InlineData(StatusCode.PermissionDenied, true)]
@@ -19,11 +20,26 @@ public sealed class OperationalRecoveryPolicyTests
         OperationalRecoveryFailure.RequiresAttention(new RpcException(new Status(status, "redacted"))).Should().Be(attention);
     }
 
-    [Fact]
-    public void DataLoss_WithTypedTrustFailureStillRequiresAttention()
+    [Theory]
+    [InlineData(StatusCode.DataLoss)]
+    [InlineData(StatusCode.Unknown)]
+    public void RpcFailure_WithTypedTrustFailureStillRequiresAttention(StatusCode status)
     {
         OperationalRecoveryFailure.RequiresAttention(new RpcException(
-            new Status(StatusCode.DataLoss, "redacted", new AuthenticationException("redacted")))).Should().BeTrue();
+            new Status(status, "redacted", new HttpRequestException(HttpRequestError.SecureConnectionError,
+                "redacted", new AuthenticationException("redacted"))))).Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("permission")]
+    [InlineData("revoked")]
+    public void Unknown_WithTypedAuthorizationDenialStillRequiresAttention(string cause)
+    {
+        Exception denial = cause == "permission"
+            ? new RpcException(new Status(StatusCode.PermissionDenied, "redacted"))
+            : new NetRatel.Application.ClientAuth.AgentClientAuthException("redacted", 401, code: "invalid_grant");
+        OperationalRecoveryFailure.RequiresAttention(new RpcException(
+            new Status(StatusCode.Unknown, "redacted", new IOException("redacted", denial)))).Should().BeTrue();
     }
 
     [Theory]

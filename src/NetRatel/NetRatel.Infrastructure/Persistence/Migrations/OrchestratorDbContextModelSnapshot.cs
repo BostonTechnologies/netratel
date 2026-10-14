@@ -1565,11 +1565,29 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset?>("ReadmittedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("ReconciliationState")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<int>("ReleaseId")
                         .HasColumnType("integer");
 
                     b.Property<int?>("ReleaseRecordId")
                         .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("ReportedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ReportedFailureCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("ReportedMessage")
+                        .HasMaxLength(4096)
+                        .HasColumnType("character varying(4096)");
+
+                    b.Property<short?>("ReportedState")
+                        .HasColumnType("smallint");
 
                     b.Property<string>("RuntimeId")
                         .IsRequired()
@@ -1597,8 +1615,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("ReleaseRecordId");
 
-                    b.HasIndex("AgentId", "ReleaseId")
-                        .IsUnique();
+                    b.HasIndex("AgentId", "ReleaseId");
+
+                    b.HasIndex("AgentId", "ReleaseId", "AdmissionNonceHash");
 
                     b.HasIndex("TenantId", "AgentId", "UpdatedAtUtc");
 

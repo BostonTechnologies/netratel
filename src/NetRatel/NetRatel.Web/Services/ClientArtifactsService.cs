@@ -786,6 +786,22 @@ public sealed class ClientUpdateHistoryItemModel
     public string ClientDisplayName { get; set; } = string.Empty;
     public string? ClientHostName { get; set; }
     public bool LocalPackagePurged { get; set; }
+    public string? FromVersion { get; set; }
+    public string? ObservedRunningVersion { get; set; }
+    public DateTimeOffset? ObservedAtUtc { get; set; }
+    public bool PresenceActive { get; set; }
+    public DateTimeOffset? ConfirmedAtUtc { get; set; }
+    public Guid? ConfirmationId { get; set; }
+    public string? ReconciliationState { get; set; }
+    public string? ReportedState { get; set; }
+    public string? ReportedFailureCode { get; set; }
+    public string? ReportedMessage { get; set; }
+    public DateTimeOffset? ReportedAtUtc { get; set; }
+    public DateTimeOffset? SuspendedAtUtc { get; set; }
+    public string? SuspensionReason { get; set; }
+    public long PolicyRevision { get; set; }
+    public DateTimeOffset? ResumedAtUtc { get; set; }
+    public string? ResumedBy { get; set; }
 }
 
 public sealed class AgentClientUpdateStateModel

@@ -58,6 +58,13 @@ public sealed class ClientUpdateAttemptRecord
     public DateTimeOffset? ConfirmedAtUtc { get; set; }
     public string? FailureCode { get; set; }
     public string? Message { get; set; }
+    // The authenticated native outcome may arrive after activation was confirmed.
+    // Keep that contradictory physical evidence apart from immutable authority.
+    public string? ReconciliationState { get; set; }
+    public ClientUpdateAttemptState? ReportedState { get; set; }
+    public string? ReportedFailureCode { get; set; }
+    public string? ReportedMessage { get; set; }
+    public DateTimeOffset? ReportedAtUtc { get; set; }
 }
 
 public sealed class AgentClientUpdateStateRecord

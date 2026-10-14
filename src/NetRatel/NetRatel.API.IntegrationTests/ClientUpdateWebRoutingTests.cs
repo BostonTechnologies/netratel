@@ -90,8 +90,16 @@ public sealed class ClientUpdateWebRoutingTests(ApiFactory factory)
         using var repeated = await client.PostAsJsonAsync(claimPath, claimBody);
         Assert.Equal(claim, await repeated.Content.ReadFromJsonAsync<ClientUpdateClaimResult>());
         var resultPath = $"/api/v2/agent-updates/attempts/{claim.AttemptId}/result";
-        using var result = await client.PostAsJsonAsync(resultPath, new { state = "FailedPreActivation", failureCode = "controlled_failure", message = "regression" });
+        // The coordinator marks Activating before the native updater validates its
+        // immutable target. A target_exists failure is still before cutover.
+        foreach (var state in new[] { "Downloading", "Staged", "Activating" })
+        {
+            using var progressResponse = await client.PostAsJsonAsync(resultPath, new { state });
+            Assert.Equal(HttpStatusCode.Accepted, progressResponse.StatusCode);
+        }
+        using var result = await client.PostAsJsonAsync(resultPath, new { state = "FailedPreActivation", failureCode = "target_exists", message = "Immutable target version already exists." });
         Assert.Equal(HttpStatusCode.Accepted, result.StatusCode);
+        Assert.Equal(ClientUpdateReportOutcome.Applied, (await result.Content.ReadFromJsonAsync<ClientUpdateReportResult>())!.Outcome);
 
         await using (var scope = factory.Services.CreateAsyncScope())
         {
@@ -100,19 +108,39 @@ public sealed class ClientUpdateWebRoutingTests(ApiFactory factory)
             Assert.Equal(tenantId, attempt.TenantId);
             Assert.Equal(agentId, attempt.AgentId);
             Assert.Equal(ClientUpdateAttemptState.FailedPreActivation, attempt.State);
-            Assert.Equal("controlled_failure", attempt.FailureCode);
-            Assert.Equal("regression", attempt.Message);
+            Assert.Equal("target_exists", attempt.FailureCode);
+            Assert.Equal("Immutable target version already exists.", attempt.Message);
         }
 
         using var repeatedResult = await client.PostAsJsonAsync(resultPath,
-            new { state = "FailedPreActivation", failureCode = "controlled_failure", message = "regression" });
+            new { state = "FailedPreActivation", failureCode = "target_exists", message = "Immutable target version already exists." });
         Assert.Equal(HttpStatusCode.Accepted, repeatedResult.StatusCode);
-        using var recoveredClaim = await client.PostAsJsonAsync(claimPath, claimBody);
-        Assert.Equal(claim, await recoveredClaim.Content.ReadFromJsonAsync<ClientUpdateClaimResult>());
+        Assert.Equal(ClientUpdateReportOutcome.Duplicate, (await repeatedResult.Content.ReadFromJsonAsync<ClientUpdateReportResult>())!.Outcome);
+        using var recoveredClaim = await client.PostAsJsonAsync(claimPath, new
+        {
+            runtimeId = "linux-x64", currentVersion = "91.2.3", channel = "stable", admissionNonce = nonce
+        });
+        var recovery = await recoveredClaim.Content.ReadFromJsonAsync<ClientUpdateClaimResult>();
+        Assert.NotNull(recovery);
+        Assert.NotEqual(claim.AttemptId, recovery.AttemptId);
+        resultPath = $"/api/v2/agent-updates/attempts/{recovery.AttemptId}/result";
         using var progress = await client.PostAsJsonAsync(resultPath, new { state = "Downloading" });
         Assert.Equal(HttpStatusCode.Accepted, progress.StatusCode);
-        using var invalidState = await client.PostAsJsonAsync(resultPath, new { state = "Accepted" });
-        Assert.Equal(HttpStatusCode.BadRequest, invalidState.StatusCode);
+        foreach (var state in new[] { "Accepted", "GatewayReadmitted", "Claimed", "99", "3", "Downloading, Staged" })
+        {
+            using var invalidState = await client.PostAsJsonAsync(resultPath, new { state });
+            Assert.Equal(HttpStatusCode.BadRequest, invalidState.StatusCode);
+            Assert.Equal("invalid_report_state", (await invalidState.Content.ReadFromJsonAsync<ClientUpdateReportResult>())!.Code);
+        }
+        // Direct API uses the same structured contract as the existing Web/YARP route.
+        using var direct = factory.CreateClient();
+        direct.DefaultRequestHeaders.Authorization = client.DefaultRequestHeaders.Authorization;
+        using var conflict = await direct.PostAsJsonAsync(resultPath, new { state = "RolledBack", failureCode = "activation_timeout" });
+        Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
+        Assert.Equal("state_conflict", (await conflict.Content.ReadFromJsonAsync<ClientUpdateReportResult>())!.Code);
+        using var missing = await direct.PostAsJsonAsync($"/api/v2/agent-updates/attempts/{Guid.NewGuid()}/result", new { state = "FailedPreActivation" });
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+        Assert.Equal("attempt_not_found", (await missing.Content.ReadFromJsonAsync<ClientUpdateReportResult>())!.Code);
 
         client.DefaultRequestHeaders.Authorization = null;
         using var anonymous = await client.PostAsJsonAsync(claimPath, claimBody);
@@ -126,15 +154,19 @@ public sealed class ClientUpdateWebRoutingTests(ApiFactory factory)
         using var wrongTenant = await client.PostAsJsonAsync(claimPath, claimBody);
         Assert.Equal(HttpStatusCode.Conflict, wrongTenant.StatusCode);
         using var wrongResult = await client.PostAsJsonAsync(resultPath, new { state = "Downloading" });
-        Assert.False(wrongResult.IsSuccessStatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, wrongResult.StatusCode);
+        Assert.Equal("attempt_not_found", (await wrongResult.Content.ReadFromJsonAsync<ClientUpdateReportResult>())!.Code);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", factory.CreateAgentBearerToken(tenantId, Guid.NewGuid()));
         using var wrongAgent = await client.PostAsJsonAsync(resultPath, new { state = "FailedPreActivation" });
-        Assert.False(wrongAgent.IsSuccessStatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, wrongAgent.StatusCode);
+        Assert.Equal("attempt_not_found", (await wrongAgent.Content.ReadFromJsonAsync<ClientUpdateReportResult>())!.Code);
         await using (var scope = factory.Services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
-            var attempt = await db.ClientUpdateAttempts.AsNoTracking().SingleAsync(x => x.PublicId == claim.AttemptId);
+            var attempt = await db.ClientUpdateAttempts.AsNoTracking().SingleAsync(x => x.PublicId == recovery.AttemptId);
             Assert.Equal(ClientUpdateAttemptState.Downloading, attempt.State);
+            Assert.Equal(ClientUpdateAttemptState.FailedPreActivation, (await db.ClientUpdateAttempts.AsNoTracking()
+                .SingleAsync(x => x.PublicId == claim.AttemptId)).State);
         }
 
         foreach (var path in new[] { "/api/v2/unknown", "/api/v2/agent-updates-extra/releases/claim" })

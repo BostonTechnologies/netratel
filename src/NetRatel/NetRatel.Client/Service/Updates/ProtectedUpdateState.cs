@@ -3,11 +3,26 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Text.Json;
 
 namespace NetRatel.Client.Service.Updates;
 
 internal static class ProtectedUpdateState
 {
+    internal static void AtomicWriteJson<T>(string path, T value)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
+        var temporary = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            File.WriteAllText(temporary, JsonSerializer.Serialize(value,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            File.Move(temporary, path, true);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
     public static bool IsProtectedFile(string path)
     {
         if (!Path.IsPathFullyQualified(path) || !File.Exists(path)) return false;

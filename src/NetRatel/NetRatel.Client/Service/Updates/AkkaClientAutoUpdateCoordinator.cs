@@ -59,6 +59,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
     private readonly bool? _enabled;
     private readonly Action<string> _writeLog;
     private readonly object _offerGate = new();
+    private readonly ClientUpdateResultDelivery _resultDelivery;
     private UpdateAttempt? _selectedAttempt;
     private readonly Dictionary<Guid, UpdateAttempt> _attempts = new();
     private CancellationTokenSource? _attemptCancellation;
@@ -102,6 +103,8 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
         _presencePath = Path.Combine(_stateDirectory, "presence.json");
         _activationPath = Path.Combine(_stateDirectory, "activation.json");
         _policyRevision = ReadPolicyRevision();
+        _resultDelivery = new ClientUpdateResultDelivery(_stateDirectory, _resultPath, _requestPath, _readyPath,
+            _suspensionPath, _tokenService, _apiClient, _timeProvider, _offerGate, _writeLog);
         _processor = Task.Run(() => ProcessAsync(_stopping.Token));
     }
 
@@ -209,7 +212,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
         try
         {
             AtomicWriteJson(_presencePath, new { version = _currentVersion, acknowledgedAtUtc = DateTimeOffset.UtcNow });
-            ApplyPolicy(policy);
+            lock (_offerGate) ApplyPolicy(policy);
             ApplyConfirmation(confirmation);
         }
         catch (Exception exception)
@@ -223,7 +226,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
             if (offer is null || !Guid.TryParse(offer.ReleaseId, out var releaseId) || releaseId == Guid.Empty ||
                 !string.Equals(offer.RuntimeId, _runtimeId, StringComparison.OrdinalIgnoreCase) ||
                 !ClientUpdateVersioning.IsNewerVersion(offer.Version, _currentVersion) ||
-                File.Exists(_suspensionPath) || policy is { AutoUpdateEnabled: false } or { Suspended: true } ||
+                _resultDelivery.HasUnresolvedResult || File.Exists(_suspensionPath) || policy is { AutoUpdateEnabled: false } or { Suspended: true } ||
                 policy?.SuppressedReleaseId == offer.ReleaseId)
             {
                 if (_selectedAttempt is { } withdrawn) withdrawn.Queued = false;
@@ -353,10 +356,10 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
 
     private async Task MonitorResultsAsync(CancellationToken cancellationToken)
     {
-        await ConsumeResultAsync(cancellationToken).ConfigureAwait(false);
+        await _resultDelivery.DeliverPendingAsync(cancellationToken).ConfigureAwait(false);
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(30), _timeProvider);
         while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
-            await ConsumeResultAsync(cancellationToken).ConfigureAwait(false);
+            await _resultDelivery.DeliverPendingAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private async Task StageAsync(UpdateAttempt attempt, CancellationToken cancellationToken)
@@ -397,7 +400,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
                     break;
                 case UpdatePhase.DownloadingReport:
                     attempt.Operation = "state/result-reporting(Downloading)";
-                    await ReportStateAsync(attempt.Claim!.AttemptId, "Downloading", null, null, token.AccessToken, cancellationToken).ConfigureAwait(false);
+                    await ReportStateAsync(attempt.Claim!.AttemptId, "Downloading", null, null, attempt.AdmissionNonce, token.AccessToken, cancellationToken).ConfigureAwait(false);
                     attempt.Phase = UpdatePhase.Download;
                     break;
                 case UpdatePhase.Download:
@@ -428,11 +431,12 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
                     break;
                 case UpdatePhase.StagedReport:
                     attempt.Operation = "state/result-reporting(Staged)";
-                    await ReportStateAsync(attempt.Claim!.AttemptId, "Staged", null, null, token.AccessToken, cancellationToken).ConfigureAwait(false);
+                    await ReportStateAsync(attempt.Claim!.AttemptId, "Staged", null, null, attempt.AdmissionNonce, token.AccessToken, cancellationToken).ConfigureAwait(false);
                     attempt.Phase = UpdatePhase.Request;
                     break;
                 case UpdatePhase.Request:
                     attempt.Operation = "activation-request";
+                    if (_resultDelivery.HasUnresolvedResult) return;
                     Directory.CreateDirectory(_stateDirectory);
                     if (File.Exists(_readyPath)) File.Delete(_readyPath);
                     var claimContext = attempt.Claim!;
@@ -444,7 +448,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
                     break;
                 case UpdatePhase.ActivatingReport:
                     attempt.Operation = "state/result-reporting(Activating)";
-                    await ReportStateAsync(attempt.Claim!.AttemptId, "Activating", null, null, token.AccessToken, cancellationToken).ConfigureAwait(false);
+                    await ReportStateAsync(attempt.Claim!.AttemptId, "Activating", null, null, attempt.AdmissionNonce, token.AccessToken, cancellationToken).ConfigureAwait(false);
                     attempt.Phase = UpdatePhase.Handover;
                     break;
                 case UpdatePhase.Handover:
@@ -452,7 +456,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
                     lock (_offerGate)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-                        if (_selectedAttempt != attempt || _disposed || _handoverStarted || File.Exists(_suspensionPath)) return;
+                        if (_selectedAttempt != attempt || _disposed || _handoverStarted || _resultDelivery.HasUnresolvedResult || File.Exists(_suspensionPath)) return;
                         // Fence every offer before invoking the native updater. An uncertain
                         // launch outcome must never cause a second activation.
                         _handoverStarted = true;
@@ -473,10 +477,16 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
     {
         var failure = attempt.StagingFailure!;
         await ReportStateAsync(attempt.Claim!.AttemptId, "FailedPreActivation", FailureCode(failure),
-            "Artifact staging failed; see client update diagnostics.", accessToken, cancellationToken).ConfigureAwait(false);
+            "Artifact staging failed; see client update diagnostics.", attempt.AdmissionNonce, accessToken, cancellationToken).ConfigureAwait(false);
         attempt.StagingFailure = null;
         attempt.Phase = IsRecoverable(failure, "download/verification") ? UpdatePhase.Claim : UpdatePhase.Terminal;
-        if (attempt.Phase == UpdatePhase.Claim) attempt.Claim = null;
+        if (attempt.Phase == UpdatePhase.Claim)
+        {
+            attempt.Claim = null;
+            // An acknowledged failed attempt is immutable. A new staging generation
+            // needs a fresh admission context; response-loss retries retain the old one.
+            attempt.AdmissionNonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+        }
         else attempt.TerminalFailure = failure;
     }
 
@@ -652,6 +662,10 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
             RecordActivationForRequest("confirmation_rejected", errorCode: "confirmation_mismatch");
             return;
         }
+        var existingReady = ReadJson<PendingReady>(_readyPath);
+        if (existingReady is { Schema: "netratel.update.ready.v2" } && existingReady.AttemptId == attemptId &&
+            existingReady.ReleaseId == releaseId && existingReady.Version == _currentVersion &&
+            existingReady.ConfirmationId == confirmationId && ProtectedUpdateState.IsProtectedFile(_readyPath)) return;
         RecordActivation(request, "confirmation_received", confirmationReceivedAtUtc: DateTimeOffset.UtcNow);
         AtomicWriteJson(_readyPath, new
         {
@@ -668,51 +682,24 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
     private void ApplyPolicy(ClientUpdatePolicy? policy)
     {
         if (policy is null || policy.Revision <= _policyRevision) return;
+        var previous = ReadJson<PolicyState>(_policyPath);
         _policyRevision = policy.Revision;
-        AtomicWriteJson(_policyPath, new { revision = _policyRevision, updatedAtUtc = DateTimeOffset.UtcNow });
-        if (policy.ResumeRequested && !policy.Suspended && File.Exists(_suspensionPath)) File.Delete(_suspensionPath);
-    }
-
-    private async Task ConsumeResultAsync(CancellationToken cancellationToken)
-    {
-        var result = ReadJson<UpdateResult>(_resultPath);
-        if (result is null || result.AttemptId == Guid.Empty) return;
-        if (string.Equals(result.State, "Accepted", StringComparison.OrdinalIgnoreCase))
-        {
-            File.Move(_resultPath, Path.Combine(_stateDirectory, $"result-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}.consumed.json"), true);
-            return;
-        }
-        if (result.State is "RolledBack" or "RollbackUnverified")
-            AtomicWriteJson(_suspensionPath, new { result.AttemptId, result.ReleaseId, reason = result.FailureCode, suspendedAtUtc = DateTimeOffset.UtcNow });
-        var operation = "agent-authentication";
-        try
-        {
-            var token = await _tokenService.GetAccessTokenAsync(cancellationToken).ConfigureAwait(false);
-            operation = "state/result-reporting";
-            using var request = new HttpRequestMessage(HttpMethod.Post, $"/api/v2/agent-updates/attempts/{result.AttemptId}/result")
-            {
-                Content = JsonContent.Create(new { state = result.State, result.FailureCode, result.Message })
-            };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);
-            using var response = await _apiClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            File.Move(_resultPath, Path.Combine(_stateDirectory, $"result-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}.consumed.json"), true);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
-        {
-            _writeLog($"[UpdateManagement] current={_currentVersion} target={ReadJson<UpdateRequest>(_requestPath)?.ToVersion ?? "unknown"} " +
-                $"runtime={_runtimeId} release={result.ReleaseId} attempt={result.AttemptId} stage={operation} " +
-                $"endpoint={(operation == "agent-authentication" ? "agent-token" : "/api/v2/agent-updates/attempts/{attemptId}/result")} " +
-                $"code={FailureCode(exception)} retry=deferred nextDelaySeconds=30");
-        }
+        var resumed = policy.ResumeRequested && !policy.Suspended;
+        var resumeAttemptId = resumed
+            ? ReadJson<UpdateResult>(_resultPath)?.AttemptId ?? ReadJson<UpdateResult>(_suspensionPath)?.AttemptId ?? previous?.ResumeAttemptId
+            : previous?.ResumeAttemptId;
+        AtomicWriteJson(_policyPath, new PolicyState(_policyRevision, resumeAttemptId,
+            resumed ? _timeProvider.GetUtcNow() : previous?.ResumedAtUtc,
+            resumed ? _policyRevision : previous?.ResumeRevision));
+        if (resumed && File.Exists(_suspensionPath)) File.Delete(_suspensionPath);
     }
 
     private async Task ReportStateAsync(Guid attemptId, string state, string? failureCode, string? message,
-        string accessToken, CancellationToken cancellationToken)
+        string admissionNonce, string accessToken, CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, $"/api/v2/agent-updates/attempts/{attemptId:D}/result")
         {
-            Content = JsonContent.Create(new { state, failureCode, message })
+            Content = JsonContent.Create(new { state, failureCode, message, admissionNonce })
         };
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         using var response = await _apiClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
@@ -840,14 +827,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
         catch { return default; }
     }
 
-    private static void AtomicWriteJson<T>(string path, T value)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
-        var temporary = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(value, JsonOptions));
-        File.Move(temporary, path, true);
-        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-    }
+    private static void AtomicWriteJson<T>(string path, T value) => ProtectedUpdateState.AtomicWriteJson(path, value);
 
     private void RecordActivationForRequest(
         string stage,
@@ -912,7 +892,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
     private sealed class UpdateAttempt(ClientUpdateOffer offer)
     {
         internal ClientUpdateOffer Offer { get; } = offer;
-        internal string AdmissionNonce { get; } = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+        internal string AdmissionNonce { get; set; } = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
         internal ClaimResponse? Claim { get; set; }
         internal Guid? AttemptId { get; set; }
         internal UpdatePhase Phase { get; set; }
@@ -927,7 +907,8 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
     }
 
     private sealed record ClaimResponse(Guid AttemptId, Guid ReleaseId, string AdmissionNonce, string TargetVersion);
-    private sealed record PolicyState(long Revision);
+    private sealed record PolicyState(long Revision, Guid? ResumeAttemptId = null,
+        DateTimeOffset? ResumedAtUtc = null, long? ResumeRevision = null);
     private sealed record UpdateRequest(string Schema, Guid AttemptId, Guid ReleaseId, string AdmissionNonce,
         string RuntimeId, string FromVersion, string ToVersion, string PackagePath, string Sha256,
         string ReadyPath, string PresencePath, string ResultPath, string LogPath, DateTimeOffset RequestedAtUtc);
