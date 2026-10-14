@@ -753,7 +753,8 @@ public sealed class AkkaJobAuthorityService(
         {
             JobRunId = checked((long)lifecycle.JobRunId), JobStepRunId = checked((long)lifecycle.JobStepRunId),
             LifecycleSequence = checked((long)lifecycle.LifecycleSequence), Version = checked((long)lifecycle.Version),
-            PayloadHash = hash, ReceivedAtUtc = LifecycleReceiptTime(lifecycle)
+            PayloadHash = hash, ReceivedAtUtc = LifecycleReceiptTime(lifecycle), RequestedAtUtc = lifecycle.RequestedAtUtc,
+            ClientReportedAtUtc = lifecycle.StatusAtUtc, ClientStartedAtUtc = lifecycle.StartedAtUtc, LifecycleStatus = (int)lifecycle.Status
         });
         await db.SaveChangesAsync(ct);
     }
@@ -952,7 +953,7 @@ public sealed record JobLifecycleUpdateEnvelope(
     DateTimeOffset? ReceivedAtUtc = null,
     DateTimeOffset? StartedAtUtc = null);
 
-public enum JobGatewayLifecycleStatus { Accepted, Started, Progress, Completed, Failed, Cancelled }
+public enum JobGatewayLifecycleStatus { Accepted = 0, Started = 1, Progress = 2, Completed = 3, Failed = 4, Cancelled = 5 }
 
 public sealed class JobAuthorityIdGenerator
 {

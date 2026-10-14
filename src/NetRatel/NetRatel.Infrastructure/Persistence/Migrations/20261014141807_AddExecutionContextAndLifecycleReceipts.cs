@@ -104,7 +104,11 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     LifecycleSequence = table.Column<long>(type: "bigint", nullable: false),
                     Version = table.Column<long>(type: "bigint", nullable: false),
                     PayloadHash = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
-                    ReceivedAtUtc = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
+                    ReceivedAtUtc = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                    RequestedAtUtc = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                    ClientReportedAtUtc = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                    ClientStartedAtUtc = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                    LifecycleStatus = table.Column<int>(type: "integer", nullable: false)
                 },
                 constraints: table =>
                 {

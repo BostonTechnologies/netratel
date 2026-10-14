@@ -103,7 +103,7 @@ public sealed class JobRunDetailsTests : AsyncBunitContext
         var failed = _transport.Run with { Status = JobRunStatusDto.Failed, Error = failure };
         var steps = new[] { _transport.Steps[0] with { Status = JobStepRunStatusDto.Failed, Error = failure, CompletedAtMicros = 200 } };
         await _stream.SendAsync(failed, steps, [Line(1, new string('x', 300_000))]);
-        cut.WaitForAssertion(() => cut.Find(".job-run-output").TextContent.Length.Should().BeLessThanOrEqualTo(256 * 1024));
+        cut.WaitForAssertion(() => cut.Find(".job-run-output").TextContent.Length.Should().Be(256 * 1024));
         cut.Markup.Should().Contain("Some output was omitted from this view.");
         cut.Markup.Should().NotContain("Run error:").And.NotContain("Step error:").And.NotContain("mud-alert-filled-error");
         cut.FindAll("button").Should().NotContain(button => button.TextContent.Contains("Cancel run"));

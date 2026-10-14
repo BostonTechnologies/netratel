@@ -44,7 +44,9 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         await using var h = await Harness.CreateAsync(await postgres.CreateDatabaseAsync(ct), ct);
         var run = await h.StartAsync(ct);
         Assert.Null(run.StartedAtUtc);
-        await h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Started, 3, null, false, ct);
+        var nativeStartedAt = h.Clock.GetUtcNow().AddHours(-3);
+        await h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Started, 3, null, false, ct,
+            reportedAt: nativeStartedAt, startedAt: nativeStartedAt);
         const string delta = "{\"stdout\":[\"live output\"],\"stderr\":[],\"outputSequence\":1}";
         await h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Progress, 4, delta, false, ct);
         var committed = await h.DurableSnapshotAsync(run.Id, ct);
@@ -60,6 +62,10 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         Assert.Equal("Completed", Assert.Single(details.Activities).Status);
         Assert.Equal("live output", Assert.Single(await db.JobTaskLogs.AsNoTracking().ToListAsync(ct)).Message);
         Assert.Equal(3, await db.Set<JobGatewayLifecycleReceiptRecord>().CountAsync(ct));
+        var startedEvidence = await db.Set<JobGatewayLifecycleReceiptRecord>().SingleAsync(x => x.LifecycleStatus == (int)JobGatewayLifecycleStatus.Started, ct);
+        Assert.True(startedEvidence.ClientReportedAtUtc < startedEvidence.RequestedAtUtc);
+        Assert.Equal(startedEvidence.ClientReportedAtUtc, startedEvidence.ClientStartedAtUtc);
+        Assert.Equal(startedEvidence.ReceivedAtUtc, details.Run.StartedAtUtc);
         Assert.Equal(1, h.Gateway.Dispatches);
         await Assert.ThrowsAsync<InvalidOperationException>(() => h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Completed, 5, "{}", true, ct));
     }
@@ -824,15 +830,16 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         { await using var scope = Services.CreateAsyncScope(); return await Authority(scope.ServiceProvider, replica).CancelAsync(runId, "operator-cancelled", ct); }
         public async Task RecoverAsync(ulong runId, bool replica, CancellationToken ct)
         { await using var scope = Services.CreateAsyncScope(); await Authority(scope.ServiceProvider, replica).RecoverAsync(runId, ct); }
-        public async Task LifecycleAsync(ulong runId, JobGatewayLifecycleStatus status, ulong sequence, string? result, bool replica, CancellationToken ct)
+        public async Task LifecycleAsync(ulong runId, JobGatewayLifecycleStatus status, ulong sequence, string? result, bool replica, CancellationToken ct,
+            DateTimeOffset? reportedAt = null, DateTimeOffset? startedAt = null)
         {
             await using var scope = Services.CreateAsyncScope();
             var details = (await scope.ServiceProvider.GetRequiredService<IJobRunService>().GetDetailsAsync(runId, ct))!;
             var step = details.Steps.First(x => x.TaskRequestId is not null);
             await Authority(scope.ServiceProvider, replica).RecordLifecycleAsync(new(7, AgentId), new(runId, step.JobStepId!.Value,
                 step.Id, step.Ordinal, step.TaskRequestId!, $"akka-job-{runId}", status, sequence, sequence,
-                details.Activities.Single().CreatedAtUtc, Clock.GetUtcNow(), 100, result, status == JobGatewayLifecycleStatus.Failed ? 1 : 0,
-                AuthenticatedOwner: CommittedOwner.Owner), ct);
+                details.Activities.Single().CreatedAtUtc, reportedAt ?? Clock.GetUtcNow(), 100, result, status == JobGatewayLifecycleStatus.Failed ? 1 : 0,
+                AuthenticatedOwner: CommittedOwner.Owner, StartedAtUtc: startedAt), ct);
         }
         public async Task<JobRunDetails> DetailsAsync(ulong runId, CancellationToken ct)
         { await using var scope = Services.CreateAsyncScope(); return (await scope.ServiceProvider.GetRequiredService<IJobRunService>().GetDetailsAsync(runId, ct))!; }

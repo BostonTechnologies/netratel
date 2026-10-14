@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Jobs;
@@ -13,23 +12,28 @@ public static class OrchestrationCallbackProjection
 {
     public static string ResultHash(JobRunDetails details)
     {
-        var document = JsonSerializer.SerializeToNode(new
+        // Keep typed scalar values: converting timestamps through JsonNode would
+        // re-escape their UTC offset and change already published terminal hashes.
+        static Dictionary<string, object?> Shape(object value, params string[] newEvidence)
         {
-            details.Run,
-            Steps = details.Steps.OrderBy(x => x.Id),
-            Activities = details.Activities.OrderBy(x => x.Id)
-        })!.AsObject();
-        // Existing publication hashes predate nullable execution evidence. Keep
-        // their exact original JSON shape while hashing all newly captured values.
-        static void RemoveAbsentEvidence(JsonObject value, params string[] properties)
-        {
-            foreach (var name in properties) if (value[name] is null) value.Remove(name);
+            var fields = new Dictionary<string, object?>();
+            foreach (var property in value.GetType().GetProperties())
+            {
+                var field = property.GetValue(value);
+                if (field is null && newEvidence.Contains(property.Name)) continue;
+                fields.Add(property.Name, field);
+            }
+            return fields;
         }
-        RemoveAbsentEvidence(document["Run"]!.AsObject(), "Environment", "TargetDisplayName", "TargetHostName", "TargetName");
-        foreach (var activity in document["Activities"]!.AsArray())
-            RemoveAbsentEvidence(activity!.AsObject(), "Environment", "StartedAtUtc", "ExitCode", "TargetDisplayName", "TargetHostName", "TargetName",
-                "ScriptName", "ScriptType", "CommandLabel", "ScriptContentHash");
-        return Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(document)));
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            Run = Shape(details.Run, "Environment", "TargetDisplayName", "TargetHostName", "TargetName"),
+            Steps = details.Steps.OrderBy(x => x.Id),
+            Activities = details.Activities.OrderBy(x => x.Id).Select(activity => Shape(activity,
+                "Environment", "StartedAtUtc", "ExitCode", "TargetDisplayName", "TargetHostName", "TargetName",
+                "ScriptName", "ScriptType", "CommandLabel", "ScriptContentHash"))
+        });
+        return Convert.ToHexStringLower(SHA256.HashData(bytes));
     }
 
     public static async Task<bool> TerminalReadyAsync(OrchestratorDbContext db, JobRunDetails details, CancellationToken ct)

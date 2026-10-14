@@ -48,7 +48,7 @@ public sealed class AgentTaskHistoryEndpointPostgresTests : IAsyncLifetime
     [Fact]
     public async Task History_ProjectsOnlySummaryFieldsAndKeepsPersistedResultsOutOfRows()
     {
-        await SeedAsync();
+        await SeedAsync(includeTargetCases: false);
         using var app = await BuildAppAsync();
         var client = app.GetTestClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
@@ -123,7 +123,7 @@ public sealed class AgentTaskHistoryEndpointPostgresTests : IAsyncLifetime
         snapshotHistory.ScriptName.Should().Be(snapshot.ScriptName);
     }
 
-    private async Task SeedAsync()
+    private async Task SeedAsync(bool includeTargetCases = true)
     {
         const int tenantId = 91;
         await using var db = new OrchestratorDbContext(_options);
@@ -151,6 +151,11 @@ public sealed class AgentTaskHistoryEndpointPostgresTests : IAsyncLifetime
             CreatedAtUtc = DateTimeOffset.UtcNow,
             CompletedAtUtc = DateTimeOffset.UtcNow
         });
+        if (!includeTargetCases)
+        {
+            await db.SaveChangesAsync();
+            return;
+        }
         var privateAgentId = Guid.NewGuid();
         db.Tenants.Add(new Tenant { Id = 92, Name = "Private tenant" });
         db.Agents.Add(new Agent { Id = privateAgentId, TenantId = 92, Name = "Private agent", DeviceInfoJson = """{"hostName":"private-host"}""" });

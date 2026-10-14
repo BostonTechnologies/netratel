@@ -530,8 +530,8 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
         => row => new JobTaskActivityInfo(
             (ulong)row.Id,
             row.RequestId,
-            row.JobRunId == null ? null : (ulong?)row.JobRunId.Value,
-            row.JobStepId == null ? null : (ulong?)row.JobStepId.Value,
+            (ulong?)row.JobRunId,
+            (ulong?)row.JobStepId,
             row.ClientIdentity,
             row.TenantId,
             row.TaskType,
@@ -556,7 +556,7 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
         => row => new JobTaskLogInfo(
             row.Id,
             row.RequestId,
-            row.JobTaskActivityId == null ? null : (ulong?)row.JobTaskActivityId.Value,
+            (ulong?)row.JobTaskActivityId,
             row.ClientIdentity,
             row.TenantId,
             row.Stream,

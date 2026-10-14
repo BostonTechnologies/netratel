@@ -2780,12 +2780,24 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<long>("LifecycleSequence")
                         .HasColumnType("bigint");
 
+                    b.Property<DateTimeOffset>("ClientReportedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("ClientStartedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("LifecycleStatus")
+                        .HasColumnType("integer");
+
                     b.Property<string>("PayloadHash")
                         .IsRequired()
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
 
                     b.Property<DateTimeOffset>("ReceivedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("RequestedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<long>("Version")

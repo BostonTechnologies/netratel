@@ -11,6 +11,10 @@ public sealed class JobGatewayLifecycleReceiptRecord
     public long Version { get; set; }
     public string PayloadHash { get; set; } = string.Empty;
     public DateTimeOffset ReceivedAtUtc { get; set; }
+    public DateTimeOffset RequestedAtUtc { get; set; }
+    public DateTimeOffset ClientReportedAtUtc { get; set; }
+    public DateTimeOffset? ClientStartedAtUtc { get; set; }
+    public int LifecycleStatus { get; set; }
 }
 
 public static class JobGatewayLifecycleReceiptModelConfiguration

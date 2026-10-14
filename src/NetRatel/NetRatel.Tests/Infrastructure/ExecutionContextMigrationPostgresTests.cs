@@ -21,10 +21,10 @@ public sealed class ExecutionContextMigrationPostgresTests(PostgreSqlPersistence
             INSERT INTO "Jobs" ("Id","Name","FolderPath","ClientIdentity","CreatedAtUtc","UpdatedAtUtc")
             VALUES (41,'historical job','/','historical-client','2026-10-01T10:00:00Z','2026-10-01T10:00:00Z');
             INSERT INTO "JobRuns" ("Id","JobId","ClientIdentity","StartedBy","Status","CurrentStepOrdinal","CreatedAtUtc","OptionsJson")
-            VALUES (51,41,'historical-client','operator',3,1,'2026-10-01T10:00:00Z','{"historical":true}');
+            VALUES (51,41,'historical-client','operator',3,1,'2026-10-01T10:00:00Z',{0});
             INSERT INTO "JobTaskActivities" ("Id","RequestId","JobRunId","ClientIdentity","TaskType","Status","CreatedAtUtc","ResultJson")
-            VALUES (61,'historical-request',51,'historical-client','exec-library-script','Failed','2026-10-01T10:00:00Z','{"stderr":["original failure"]}');
-            """, ct);
+            VALUES (61,'historical-request',51,'historical-client','exec-library-script','Failed','2026-10-01T10:00:00Z',{1});
+            """, new object[] { "{\"historical\":true}", "{\"stderr\":[\"original failure\"]}" }, ct);
         await db.Database.MigrateAsync(ct);
         Assert.False(db.Database.HasPendingModelChanges());
         var run = await db.JobRuns.AsNoTracking().SingleAsync(ct);
