@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Configuration;
+using System.Text;
 using NetRatel.API.Security.M2M;
+using NetRatel.AgentClient;
 using NetRatel.Shared.Connectivity;
 using NetRatel.Shared.Operations;
 using Xunit;
@@ -16,6 +18,7 @@ public sealed class DeploymentSecretFileTests : IDisposable
     public void Deployment_service_identity_reads_explicit_file_and_preserves_its_scope()
     {
         var secret = Write("m2m.secret", new string('s', 40));
+        File.WriteAllText(secret, new string('s', 40) + "\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["M2M:Authority"] = "https://netratel.example.invalid",
@@ -29,6 +32,12 @@ public sealed class DeploymentSecretFileTests : IDisposable
         Assert.NotNull(profile);
         Assert.Equal(new string('s', 40), profile.Secret);
         Assert.Equal(["netratel.api"], profile.AllowedScopes);
+        Assert.Equal(ConfigurationFileStorage.ReadText(secret, secret: true).TrimEnd('\r', '\n'), profile.Secret);
+        var material = Convert.ToBase64String(new byte[32]);
+        var key = Write("bom-delegation.key", material);
+        File.WriteAllText(key, material + "\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+        Assert.Equal(material, SecretFileReference.Read(key, "delegation"));
+        Delegation(key).EnsureValid();
     }
 
     [Fact]

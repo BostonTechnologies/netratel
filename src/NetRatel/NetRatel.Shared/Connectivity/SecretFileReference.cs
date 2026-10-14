@@ -69,7 +69,8 @@ public static class SecretFileReference
             }
             if (length > maximumBytes)
                 throw new InvalidOperationException($"{setting} secret file exceeds the size limit.");
-            var value = new UTF8Encoding(false, true).GetString(buffer, 0, length).TrimEnd('\r', '\n');
+            var offset = length >= 3 && buffer[0] == 0xef && buffer[1] == 0xbb && buffer[2] == 0xbf ? 3 : 0;
+            var value = new UTF8Encoding(false, true).GetString(buffer, offset, length - offset).TrimEnd('\r', '\n');
             if (string.IsNullOrWhiteSpace(value) || value.Any(char.IsControl))
                 throw new InvalidOperationException($"{setting} secret file must contain one non-empty value.");
             return value;
