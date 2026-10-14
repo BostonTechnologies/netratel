@@ -22,7 +22,14 @@ builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogL
 var configurationPath = AgentClientConfigurationResolver.GetMcpConfigurationPath(Environment.GetEnvironmentVariable);
 var effective = new NetRatelConfigurationService().Load(new(ConfigurationSurface.StdioMcp, configurationPath));
 var validation = effective.Validate();
-if (!validation.IsValid) throw new AgentClientValidationException("NetRatel MCP configuration is invalid. Run NetRatel.Mcp config validate or setup explicitly.");
+if (!validation.IsValid)
+{
+    // Typed validation returns fixed field diagnostics, never supplied values or exception text.
+    foreach (var error in validation.Errors)
+        await Console.Error.WriteLineAsync(error);
+    await Console.Error.WriteLineAsync("NetRatel MCP configuration is invalid. Run NetRatel.Mcp config validate or setup explicitly.");
+    return validation.ExitCode;
+}
 var configuration = effective.Configuration;
 var configurationStore = new AgentClientConfigurationStore(effective.ConfigurationPath, readOnly: effective.ConfigurationPath is null);
 var apiBaseUri = Uri.TryCreate(configuration.ApiBaseUrl ?? AgentClientConfiguration.DefaultApiBaseUrl, UriKind.Absolute, out var configuredApiBaseUri)

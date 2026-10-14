@@ -178,6 +178,37 @@ public sealed class SharedHeadlessConfigurationTests
         load.Should().Throw<AgentClientValidationException>().WithMessage("*explicitly selected*does not exist*");
     }
 
+    [Theory]
+    [InlineData(true, "ApiBaseUrl must be an absolute HTTPS URL")]
+    [InlineData(false, "OidcTokenUrl must be an absolute HTTPS URL")]
+    public void Unchanged_malformed_endpoint_reports_syntax_error_and_a_different_endpoint_requires_reauthorization(bool malformedApi, string expectedError)
+    {
+        using var files = new ScratchFiles();
+        var path = files.Path("invalid-endpoint.json");
+        var configuration = new AgentClientConfiguration("https://selected.example/", "https://issuer.example/token",
+            "application", "service", "synthetic-private-password", null);
+        configuration = malformedApi
+            ? configuration with { ApiBaseUrl = "not-an-absolute-uri" }
+            : configuration with { OidcTokenUrl = "not-an-absolute-uri" };
+        new AgentClientConfigurationStore(path).Save(configuration);
+        var service = new NetRatelConfigurationService();
+
+        var effective = service.Load(new(ConfigurationSurface.StdioMcp, path, GetEnvironmentVariable: _ => null));
+        var validation = effective.Validate();
+
+        validation.IsValid.Should().BeFalse();
+        validation.Errors.Should().ContainSingle().Which.Should().StartWith(expectedError);
+        validation.Errors.Should().NotContain(error => error.Contains("synthetic-private-password", StringComparison.Ordinal));
+        effective.Configuration.OidcAppPassword.Should().Be("synthetic-private-password");
+
+        var changed = malformedApi
+            ? AgentClientConfiguration.Empty with { ApiBaseUrl = "https://different.example/" }
+            : AgentClientConfiguration.Empty with { OidcTokenUrl = "https://different-issuer.example/token" };
+        var loadChanged = () => service.Load(new(ConfigurationSurface.StdioMcp, path,
+            CommandOptions: changed, GetEnvironmentVariable: _ => null));
+        loadChanged.Should().Throw<AgentClientValidationException>().WithMessage("*reauthorization/rebind*");
+    }
+
     [Fact]
     public void Higher_environment_secret_file_replaces_lower_inline_secret_and_diagnostics_redact()
     {

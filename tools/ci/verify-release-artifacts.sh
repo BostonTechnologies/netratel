@@ -184,9 +184,20 @@ if ! printf '%s\n%s\n%s\n' "$mcp_initialize_response" "$mcp_tools_response" "$mc
 fi
 
 invalid_mcp_config="$release_extract_dir/invalid-mcp-config.json"
-printf '%s\n' '{"apiBaseUrl":"not-an-absolute-uri"}' > "$invalid_mcp_config"
-invalid_mcp_output="$(NETRATEL_MCP_CONFIG="$invalid_mcp_config" timeout 10s dotnet "$mcp_assembly" </dev/null 2>&1 || true)"
-grep -Fq 'NetRatel MCP API base URL must be absolute.' <<<"$invalid_mcp_output" || {
+jq '.apiBaseUrl = "not-an-absolute-uri"' "$mcp_config" > "$invalid_mcp_config"
+invalid_mcp_status=0
+NETRATEL_MCP_CONFIG="$invalid_mcp_config" timeout 10s dotnet "$mcp_assembly" </dev/null \
+  > "$release_extract_dir/invalid-mcp.stdout" 2> "$release_extract_dir/invalid-mcp.stderr" || invalid_mcp_status=$?
+[[ "$invalid_mcp_status" == 2 ]] || {
+  echo "stdio MCP archive did not reject invalid configuration with exit 2 (exit=$invalid_mcp_status)." >&2
+  exit 1
+}
+[[ ! -s "$release_extract_dir/invalid-mcp.stdout" ]] || {
+  echo "stdio MCP archive wrote non-protocol stdout for invalid configuration." >&2
+  exit 1
+}
+grep -Fq 'ApiBaseUrl must be an absolute HTTPS URL without user information, query or fragment' \
+  "$release_extract_dir/invalid-mcp.stderr" || {
   echo "stdio MCP archive did not report an actionable invalid API URL diagnostic." >&2
   exit 1
 }
