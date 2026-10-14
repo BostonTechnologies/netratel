@@ -183,7 +183,8 @@
         </MudDropContainer>
     }
 </section>
-<MudDialog @ref="_leaveDialog" @onkeydown="UnsavedDialogKeyDown" data-testid="flow-unsaved-dialog" Visible="@(_pendingLeave is not null)" VisibleChanged="LeaveDialogVisibleChanged" AriaLabel="Unsaved changes" Options="_leaveOptions">
+@{ var leaveDialogGeneration = _leaveDialogGeneration; }
+<MudDialog @key="leaveDialogGeneration" @ref="_leaveDialog" @onkeydown="UnsavedDialogKeyDown" data-testid="flow-unsaved-dialog" Visible="@(_pendingLeave is not null)" VisibleChanged="@(visible => LeaveDialogVisibleChanged(leaveDialogGeneration, visible))" AriaLabel="Unsaved changes" Options="_leaveOptions">
     <TitleContent><MudText Typo="Typo.h6">Unsaved changes</MudText></TitleContent>
     <DialogContent><div data-testid="flow-unsaved"><MudText>Unsaved changes are kept while you decide. Save your draft before leaving, discard the changes, or keep editing.</MudText>
         @if (_error is not null) { <MudAlert Severity="Severity.Error" Dense="true" Class="mt-2" data-testid="flow-unsaved-error">@_error</MudAlert> }
@@ -223,6 +224,7 @@
     private FlowNodeKind? _paletteSelection;
     private Func<Task>? _pendingLeave;
     private bool _closingLeave;
+    private int _leaveDialogGeneration;
     private IJSObjectReference? _module;
     private static readonly FlowNodeKind[] _nodeKinds = Enum.GetValues<FlowNodeKind>();
     private static readonly DialogOptions _leaveOptions = new() { FullWidth = true, MaxWidth = MaxWidth.Small, BackdropClick = false, CloseOnEscapeKey = false };
@@ -344,7 +346,7 @@
     {
         if (_busy || _disposed || _pendingLeave is not null) return;
         if (_pendingDelete is not null) await KeepNodeAsync();
-        if (_dirty) { _pendingLeave = destination; await InvokeAsync(StateHasChanged); return; }
+        if (_dirty) { ++_leaveDialogGeneration; _pendingLeave = destination; await InvokeAsync(StateHasChanged); return; }
         await destination();
     }
     private Task BeforeNavigation(LocationChangingContext context)
@@ -364,8 +366,9 @@
         if (_canvas is not null) await _canvas.FocusAsync();
     }
     private Task UnsavedDialogKeyDown(KeyboardEventArgs args) => args.Key == "Escape" && !_busy ? KeepEditingAsync() : Task.CompletedTask;
-    private Task LeaveDialogVisibleChanged(bool visible)
+    private Task LeaveDialogVisibleChanged(int generation, bool visible)
     {
+        if (generation != _leaveDialogGeneration) return Task.CompletedTask;
         if (!visible && !_closingLeave && !_busy && !_disposed) _pendingLeave = null;
         return Task.CompletedTask;
     }
