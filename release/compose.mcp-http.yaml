@@ -1,29 +1,47 @@
 name: netratel
 
-# Optional HTTP MCP deployment overlay. It is intentionally not included by
-# compose.images.yaml. Select either reviewed external OIDC (the established
-# default) or explicit local credential mode; they are not silently mixed.
+# Explicit HTTP MCP overlay: selecting this file enables the Web MCP route.
+# MCP is private by default; compose.mcp-http.ports.yaml opts into port binding.
+# See docs/mcp-http/configuration.md for container keys and isolated outbound inputs.
 services:
-  api:
+  web:
     environment:
+      ApiBaseUrl: ${NETRATEL_WEB_API_BACKEND_URL:-http://api:9222/}
+      NETRATEL_PUBLIC_ORIGIN: ${NETRATEL_PUBLIC_ORIGIN:-}
+      WebGateway__Topology: Compose
+      WebGateway__Mcp__Enabled: "true"
+      WebGateway__Mcp__BackendUrl: ${NETRATEL_WEB_MCP_BACKEND_URL:-http://mcp-http:9224/}
+      WebGateway__Mcp__AuthenticationMode: ${NETRATEL_MCP_AUTHENTICATION_MODE:-Oidc}
+  api:
+    env_file:
+      - path: ${NETRATEL_MCP_API_ENV_FILE:-./mcp-http.api.env}
+        required: false
+    environment:
+      Integration__HttpMcp__PublicResourceUri: ${NETRATEL_MCP_PUBLIC_RESOURCE_URI:-${NETRATEL_PUBLIC_ORIGIN:-}/mcp}
       NetRatel__Mcp__Delegation__Enabled: ${NETRATEL_MCP_DELEGATION_ENABLED:-false}
       NetRatel__Mcp__Delegation__Issuer: ${NETRATEL_MCP_DELEGATION_ISSUER:-}
       NetRatel__Mcp__Delegation__Audience: ${NETRATEL_MCP_DELEGATION_AUDIENCE:-}
       NetRatel__Mcp__Delegation__ServicePrincipal: ${NETRATEL_MCP_DELEGATION_SERVICE_PRINCIPAL:-netratel-mcp-http}
       NetRatel__Mcp__Delegation__KeyId: ${NETRATEL_MCP_DELEGATION_KEY_ID:-}
       NetRatel__Mcp__Delegation__SharedKeyBase64: ${NETRATEL_MCP_DELEGATION_KEY_BASE64:-}
+      NetRatel__Mcp__Delegation__SharedKeyBase64File: ${NETRATEL_MCP_DELEGATION_KEY_FILE:-}
   mcp-http:
     image: ${NETRATEL_MCP_HTTP_IMAGE:?set the approved HTTP MCP image digest}
-    ports:
-      - "${NETRATEL_MCP_HTTP_PORT:-9224}:9224"
+    restart: unless-stopped
+    # A dedicated actual-key env file supports environment-only outbound config.
+    # No empty outbound defaults are injected over a legacy JSON identity.
+    env_file:
+      - path: ${NETRATEL_MCP_OUTBOUND_ENV_FILE:-./mcp-http.outbound.env}
+        required: false
     environment:
-      NETRATEL_MCP_INSTANCE: ${NETRATEL_MCP_INSTANCE:?set NETRATEL_MCP_INSTANCE to dev or prod}
+      ASPNETCORE_URLS: http://+:9224
+      NETRATEL_MCP_INSTANCE: ${NETRATEL_MCP_INSTANCE:-prod}
       NETRATEL_MCP_DEV_API_BASE_URL: ${NETRATEL_MCP_DEV_API_BASE_URL:-}
-      NETRATEL_MCP_PROD_API_BASE_URL: ${NETRATEL_MCP_PROD_API_BASE_URL:-}
-      NetRatel__Mcp__Http__PublicResourceUri: ${NETRATEL_MCP_PUBLIC_RESOURCE_URI:?set the public HTTPS /mcp resource URI}
+      NETRATEL_MCP_PROD_API_BASE_URL: ${NETRATEL_MCP_PROD_API_BASE_URL:-${NETRATEL_PUBLIC_ORIGIN:-}}
+      NetRatel__Mcp__Http__PublicResourceUri: ${NETRATEL_MCP_PUBLIC_RESOURCE_URI:-${NETRATEL_PUBLIC_ORIGIN:-}/mcp}
       NetRatel__Mcp__Http__LocalCredentialMode: ${NETRATEL_MCP_LOCAL_CREDENTIAL_MODE:-false}
       NetRatel__Mcp__Http__Authority: ${NETRATEL_MCP_OIDC_AUTHORITY:-}
-      NetRatel__Mcp__Http__Audience: ${NETRATEL_MCP_AUDIENCE:-}
+      NetRatel__Mcp__Http__Audience: ${NETRATEL_MCP_AUDIENCE:-${NETRATEL_MCP_PUBLIC_RESOURCE_URI:-${NETRATEL_PUBLIC_ORIGIN:-}/mcp}}
       NetRatel__Mcp__Http__RequiredGroups__0: ${NETRATEL_MCP_REQUIRED_GROUP:-}
       NetRatel__Mcp__Http__RequiredScopes__0: ${NETRATEL_MCP_REQUIRED_SCOPE:-}
       NetRatel__Mcp__Delegation__Enabled: ${NETRATEL_MCP_DELEGATION_ENABLED:-false}
@@ -32,3 +50,4 @@ services:
       NetRatel__Mcp__Delegation__ServicePrincipal: ${NETRATEL_MCP_DELEGATION_SERVICE_PRINCIPAL:-netratel-mcp-http}
       NetRatel__Mcp__Delegation__KeyId: ${NETRATEL_MCP_DELEGATION_KEY_ID:-}
       NetRatel__Mcp__Delegation__SharedKeyBase64: ${NETRATEL_MCP_DELEGATION_KEY_BASE64:-}
+      NetRatel__Mcp__Delegation__SharedKeyBase64File: ${NETRATEL_MCP_DELEGATION_KEY_FILE:-}
