@@ -52,7 +52,7 @@ public sealed class McpOperatorTaskStore(OrchestratorDbContext db) : IMcpOperato
                 candidate.AgentId == access.AgentId &&
                 candidate.Subject == access.Principal.Subject &&
                 candidate.ClientId == ClientId(access.Principal) &&
-                candidate.State != "Completed" && candidate.State != "Failed" && candidate.State != "Cancelled", cancellationToken).ConfigureAwait(false);
+                candidate.State != "Completed" && candidate.State != "Failed" && candidate.State != "Cancelled" && candidate.State != "TimedOut", cancellationToken).ConfigureAwait(false);
             if (active >= constraints.MaxConcurrentCommands!.Value)
                 throw new McpOperatorTaskLimitException("task_concurrency_limit_reached");
 
@@ -402,8 +402,8 @@ public sealed class McpOperatorTaskStore(OrchestratorDbContext db) : IMcpOperato
     private static bool IsSha256(string? value) => value is { Length: 64 } && value.All(char.IsAsciiHexDigit);
     private static bool IsShell(string? value) => value is { Length: > 0 and <= 32 } && value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_');
     private static bool IsCorrelationId(string? value) => value is { Length: > 0 and <= 128 } && value.All(character => !char.IsControl(character));
-    private static bool IsTerminal(string state) => state is "Completed" or "Failed" or "Cancelled";
-    private static bool IsKnownState(string state) => state is "Processing" or "Completed" or "Failed" or "Cancelled";
+    private static bool IsTerminal(string state) => state is "Completed" or "Failed" or "Cancelled" or "TimedOut" or "Unknown";
+    private static bool IsKnownState(string state) => state is "Accepted" or "Processing" or "Completed" or "Failed" or "Cancelled" or "TimedOut" or "Unknown";
 
     private static string? BoundSummary(string? value)
     {

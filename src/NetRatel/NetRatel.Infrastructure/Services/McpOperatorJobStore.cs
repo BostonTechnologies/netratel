@@ -692,7 +692,7 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
 
     private async Task<bool> HasActiveRunsAsync(long jobId, CancellationToken cancellationToken)
         => await _db.JobRuns.AnyAsync(run => run.JobId == jobId && run.Status != (int)JobRunState.Succeeded && run.Status != (int)JobRunState.Failed &&
-            run.Status != (int)JobRunState.Cancelled && run.Status != (int)JobRunState.TimedOut, cancellationToken).ConfigureAwait(false);
+            run.Status != (int)JobRunState.Cancelled && run.Status != (int)JobRunState.TimedOut && run.Status != (int)JobRunState.Unknown, cancellationToken).ConfigureAwait(false);
 
     private async Task SaveWithConcurrencyAsync(CancellationToken cancellationToken)
     {
@@ -730,7 +730,7 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
     private static string ClientId(McpOperatorPrincipal principal) => principal.ClientId ?? string.Empty;
     private static bool IsSafe(string? value, int maximum) => value is { Length: > 0 } && value.Length <= maximum && !value.Any(char.IsControl);
     private static bool IsSha256(string? value) => value is { Length: 64 } && value.All(char.IsAsciiHexDigit);
-    private static bool IsTerminal(JobRunState state) => state is JobRunState.Succeeded or JobRunState.Failed or JobRunState.Cancelled or JobRunState.TimedOut;
+    private static bool IsTerminal(JobRunState state) => state is JobRunState.Succeeded or JobRunState.Failed or JobRunState.Cancelled or JobRunState.TimedOut or JobRunState.Unknown;
     private static bool LooksSensitive(string value) => value.Contains("password", StringComparison.OrdinalIgnoreCase) || value.Contains("secret", StringComparison.OrdinalIgnoreCase) || value.Contains("token", StringComparison.OrdinalIgnoreCase) || value.Contains("key", StringComparison.OrdinalIgnoreCase);
 
     private static string NormalizeText(string? value, int maximum, string name)

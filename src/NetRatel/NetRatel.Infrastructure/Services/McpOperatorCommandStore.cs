@@ -58,7 +58,8 @@ public sealed class McpOperatorCommandStore(OrchestratorDbContext db) : IMcpOper
                  candidate.State == McpOperatorCommandState.Dispatched ||
                  candidate.State == McpOperatorCommandState.Accepted ||
                  candidate.State == McpOperatorCommandState.Started ||
-                 candidate.State == McpOperatorCommandState.CancelRequested),
+                 candidate.State == McpOperatorCommandState.CancelRequested ||
+                 candidate.State == McpOperatorCommandState.Unknown),
                 cancellationToken).ConfigureAwait(false);
             if (concurrent >= constraints.MaxConcurrentCommands!.Value)
                 throw new McpOperatorCommandLimitException("command_concurrency_limit_reached");
@@ -221,7 +222,7 @@ public sealed class McpOperatorCommandStore(OrchestratorDbContext db) : IMcpOper
                     McpOperatorJsonContext.Default.McpOperatorCommandOutput);
             record.State = state;
             record.LastUpdatedAtUtc = now;
-            record.FailureCode = state == McpOperatorCommandState.Failed ? BoundedFailureCode(failureCode) : null;
+            record.FailureCode = state is McpOperatorCommandState.Failed or McpOperatorCommandState.Unknown ? BoundedFailureCode(failureCode) : null;
             record.Version++;
             try
             {
@@ -284,7 +285,7 @@ public sealed class McpOperatorCommandStore(OrchestratorDbContext db) : IMcpOper
         record.CommandHash == request.CommandHash;
 
     private static bool IsTerminal(McpOperatorCommandState state) =>
-        state is McpOperatorCommandState.Completed or McpOperatorCommandState.Failed or McpOperatorCommandState.Cancelled;
+        state is McpOperatorCommandState.Completed or McpOperatorCommandState.Failed or McpOperatorCommandState.Cancelled or McpOperatorCommandState.Unknown;
 
     private static bool IsCommandId(string? value) =>
         value is { Length: 32 and <= MaximumCommandIdLength } && value.All(char.IsAsciiHexDigit);

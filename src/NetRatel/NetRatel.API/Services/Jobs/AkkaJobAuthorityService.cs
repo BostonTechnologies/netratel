@@ -1,4 +1,9 @@
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using NetRatel.API.Services.AgentDirectory;
+using NetRatel.Shared;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.API.Services.Orchestration;
@@ -51,6 +56,8 @@ public sealed class AkkaJobAuthorityService(
     private OwnerKey? _acceptedPhysicalOwner;
     private JobRunMutationBoundary? _boundary;
     private readonly List<(IJobObservation Observation, JobMessageResult Result)> _committedFanout = [];
+    private readonly Dictionary<ulong, long> _fixtureSequences = [];
+    private readonly Dictionary<(ulong Run, ulong Step, ulong Sequence), string> _fixtureReceipts = [];
 
     private async Task<T> OwnAsync<T>(ulong runId, Func<CancellationToken, Task<T>> operation, CancellationToken ct)
     {
@@ -172,7 +179,16 @@ public sealed class AkkaJobAuthorityService(
         // physical owner inside the existing intent transaction before writes.
         _ = await RequireDispatchOwnerAsync(client, cancellationToken);
         var createdAt = prepared?.CreatedAtUtc ?? _clock.GetUtcNow();
-        var runtimePolicy = JobExecutionRuntimePolicy.FromJobAndRequest(definition.Job, request);
+        var runtimePolicy = prepared is null ? JobExecutionRuntimePolicy.FromJobAndRequest(definition.Job, request)
+            : JobExecutionRuntimePolicy.FromOptions(prepared.OptionsJson);
+        var executionEnvironment = prepared is null ? request.Environment ?? JobExecutionContextPolicy.FromJob(definition.Job)
+            : prepared.Environment ?? JobExecutionContextPolicy.FromOptions(prepared.OptionsJson);
+        if (executionEnvironment is { } selected && !Enum.IsDefined(selected))
+            throw new InvalidOperationException("The selected execution environment is invalid.");
+        var target = db is null ? null : await db.Agents.AsNoTracking()
+            .SingleAsync(x => x.Id == agentId && x.TenantId == client.TenantId, cancellationToken);
+        var presentation = target is null ? null : AgentDirectoryPresentation.Create(target.TenantId, target.Id, target.Name,
+            target.IsEnabled, target.DeviceInfoJson, string.Empty, target.Tags, target.FriendlyName);
         var run = await jobRuns.UpsertRunAsync(new UpsertJobRunCommand(
             runId,
             definition.Job.Id,
@@ -185,8 +201,9 @@ public sealed class AkkaJobAuthorityService(
             null,
             null,
             null,
-            request.InputsJson,
-            JobExecutionRuntimePolicy.MergeOptionsJson(definition.Job.OptionsJson, runtimePolicy), agentId), cancellationToken).ConfigureAwait(false);
+            prepared?.InputsJson ?? request.InputsJson,
+            JobExecutionContextPolicy.MergeOptionsJson(JobExecutionRuntimePolicy.MergeOptionsJson(prepared?.OptionsJson ?? definition.Job.OptionsJson, runtimePolicy), executionEnvironment), agentId,
+            executionEnvironment, presentation?.DisplayName, presentation?.HostName, target?.Name), cancellationToken).ConfigureAwait(false);
 
         if (recordedRequestId is { } bindingRequestId) await managedGuard!.BindRunAsync(bindingRequestId, run, cancellationToken);
         if (db is not null && prepared is null)
@@ -245,13 +262,15 @@ public sealed class AkkaJobAuthorityService(
                 !await ClientConnectionEpochStore.LockEffectiveOwnerAsync(db, owner, _clock, cancellationToken))
                 throw new AgentJobGatewaySessionUnavailableException(client);
             _acceptedPhysicalOwner = owner;
+            if (await IsCommittedLifecycleRetryAsync(lifecycle, cancellationToken)) return;
             var dispatch = await db.Set<JobRunControlRecord>().AsNoTracking()
                 .SingleAsync(x => x.RunId == checked((long)run.Id), cancellationToken);
             if (dispatch.DispatchOwnerConnectionId != owner.ConnectionId || dispatch.DispatchOwnerEpoch != owner.Epoch)
                 throw new InvalidOperationException("The job lifecycle differs from its accepted dispatch owner.");
         }
-        if (IsTerminal(run.Status)) return; // Accepted terminal versions are immutable.
-        if (lifecycle.LifecycleSequence == 0 || lifecycle.Version == 0 || lifecycle.StatusAtUtc < lifecycle.RequestedAtUtc)
+        if (db is null && await IsCommittedLifecycleRetryAsync(lifecycle, cancellationToken)) return;
+        if (IsTerminal(run.Status)) throw new InvalidOperationException("A terminal job run cannot accept new native lifecycle evidence.");
+        if (lifecycle.LifecycleSequence == 0 || lifecycle.Version == 0)
         {
             throw new InvalidOperationException("The job lifecycle version, sequence, or timestamps are invalid.");
         }
@@ -264,14 +283,18 @@ public sealed class AkkaJobAuthorityService(
         {
             throw new InvalidOperationException("The job lifecycle request does not match the dispatched step.");
         }
-        var control = await EnsureControlAsync(run.Id, cancellationToken);
-        if (control?.CancellationRequestedAtUtc is not null && lifecycle.Status is JobGatewayLifecycleStatus.Completed or JobGatewayLifecycleStatus.Failed or JobGatewayLifecycleStatus.Cancelled)
-        {
-            await FinishRunAsync(run, stepRun, lifecycle, JobRunState.Cancelled, JobStepRunState.Failed, cancellationToken,
-                "Cancellation was recorded before the native terminal receipt.");
-            return;
-        }
-
+        if (stepRun.JobStepId != lifecycle.JobStepId || lifecycle.CorrelationId != $"akka-job-{run.Id}")
+            throw new InvalidOperationException("The job lifecycle definition or correlation does not match the dispatch.");
+        var taskActivity = details.Activities.SingleOrDefault(x => x.RequestId == lifecycle.RequestId);
+        if (taskActivity is null || taskActivity.CreatedAtUtc.UtcTicks / 10 != lifecycle.RequestedAtUtc.UtcTicks / 10)
+            throw new InvalidOperationException("The job lifecycle request timestamp does not match the dispatch.");
+        if (IsTerminal(stepRun.Status) ||
+            lifecycle.Status == JobGatewayLifecycleStatus.Accepted && stepRun.Status != JobStepRunState.Pending ||
+            lifecycle.Status == JobGatewayLifecycleStatus.Started && stepRun.StartedAtUtc is not null ||
+            lifecycle.Status == JobGatewayLifecycleStatus.Progress && stepRun.StartedAtUtc is null && lifecycle.StartedAtUtc is null)
+            throw new InvalidOperationException("The job lifecycle does not follow the recorded native execution state.");
+        await PrepareLifecycleReceiptAsync(lifecycle, cancellationToken);
+        await AppendLifecycleOutputAsync(run, stepRun, lifecycle, cancellationToken);
         NetRatelAkkaTelemetry.RecordAuthorityRequest(Feature, Authority, environment.EnvironmentName);
         using var activity = NetRatelAkkaTelemetry.StartAuthorityActivity(Feature, Authority, lifecycle.Status.ToString(), environment.EnvironmentName);
 
@@ -286,10 +309,11 @@ public sealed class AkkaJobAuthorityService(
                 await CompleteStepAsync(run, stepRun, lifecycle, client, cancellationToken).ConfigureAwait(false);
                 break;
             case JobGatewayLifecycleStatus.Failed:
-                await FinishRunAsync(run, stepRun, lifecycle, JobRunState.Failed, JobStepRunState.Failed, cancellationToken).ConfigureAwait(false);
+                await FinishRunAsync(run, stepRun, lifecycle, HasResultFlag(lifecycle.ResultJson, "outcomeUnknown") ? JobRunState.Unknown : HasResultFlag(lifecycle.ResultJson, "timedOut") ? JobRunState.TimedOut : JobRunState.Failed,
+                    HasResultFlag(lifecycle.ResultJson, "outcomeUnknown") ? JobStepRunState.Unknown : HasResultFlag(lifecycle.ResultJson, "timedOut") ? JobStepRunState.TimedOut : JobStepRunState.Failed, cancellationToken).ConfigureAwait(false);
                 break;
             case JobGatewayLifecycleStatus.Cancelled:
-                await FinishRunAsync(run, stepRun, lifecycle, JobRunState.Cancelled, JobStepRunState.Failed, cancellationToken).ConfigureAwait(false);
+                await FinishRunAsync(run, stepRun, lifecycle, JobRunState.Cancelled, JobStepRunState.Cancelled, cancellationToken).ConfigureAwait(false);
                 break;
             default:
                 throw new InvalidOperationException($"Unsupported agent job lifecycle status '{lifecycle.Status}'.");
@@ -374,7 +398,7 @@ public sealed class AkkaJobAuthorityService(
             var completedAt = _clock.GetUtcNow();
             var completed = await jobRuns.UpsertRunAsync(new UpsertJobRunCommand(
                 run.Id, run.JobId, run.TenantId, run.ClientIdentity, run.StartedBy, JobRunState.Succeeded, run.CurrentStepOrdinal,
-                run.CreatedAtUtc, run.StartedAtUtc ?? completedAt, completedAt, null, run.InputsJson, run.OptionsJson, run.AgentId), cancellationToken).ConfigureAwait(false);
+                run.CreatedAtUtc, run.StartedAtUtc, completedAt, null, run.InputsJson, run.OptionsJson, run.AgentId, run.Environment, run.TargetDisplayName, run.TargetHostName, run.TargetName), cancellationToken).ConfigureAwait(false);
             await RecordRunAsync(completed, JobRunState.Succeeded, completed.CurrentStepOrdinal, completed.CreatedAtUtc, completed.StartedAtUtc, completed.CompletedAtUtc, checked((long)nextSequence), cancellationToken).ConfigureAwait(false);
             await MarkTerminalReadyAsync(completed.Id, cancellationToken);
             NetRatelAkkaTelemetry.JobAuthorityCompleted(Authority, environment.EnvironmentName);
@@ -402,20 +426,27 @@ public sealed class AkkaJobAuthorityService(
             run,
             step,
             JobTemplateHelper.ParseInputs(run.InputsJson),
-            JobExecutionRuntimePolicy.FromJob(definition.Job),
+            JobExecutionRuntimePolicy.FromOptions(run.OptionsJson),
             cancellationToken).ConfigureAwait(false);
         if (!invocation.Success || string.IsNullOrWhiteSpace(invocation.TaskType) || invocation.PayloadJson is null)
         {
-            throw new InvalidOperationException(invocation.Error ?? "The job step could not be translated for gateway execution.");
+            await FailBeforeDispatchAsync(run, cancellationToken, invocation.Error ?? "The job step could not be translated for gateway execution.");
+            return (await jobRuns.GetAsync(run.Id, cancellationToken))!;
         }
 
         // Preparation reads above do not authorize dispatch. The exact durable
         // owner FOR SHARE is held through this transaction's accepted intent.
-        var dispatchOwner = await RequireDispatchOwnerAsync(client, cancellationToken);
+        OwnerKey? dispatchOwner;
+        try { dispatchOwner = await RequireDispatchOwnerAsync(client, cancellationToken); }
+        catch (AgentJobGatewaySessionUnavailableException)
+        {
+            await FailBeforeDispatchAsync(run, cancellationToken, "The agent job gateway became unavailable before dispatch.");
+            return (await jobRuns.GetAsync(run.Id, cancellationToken))!;
+        }
         var now = _clock.GetUtcNow();
         var running = await jobRuns.UpsertRunAsync(new UpsertJobRunCommand(
             run.Id, run.JobId, run.TenantId, run.ClientIdentity, run.StartedBy, JobRunState.Running, next.Ordinal,
-            run.CreatedAtUtc, run.StartedAtUtc ?? now, null, null, run.InputsJson, run.OptionsJson, run.AgentId), cancellationToken).ConfigureAwait(false);
+            run.CreatedAtUtc, run.StartedAtUtc, null, null, run.InputsJson, run.OptionsJson, run.AgentId, run.Environment, run.TargetDisplayName, run.TargetHostName, run.TargetName), cancellationToken).ConfigureAwait(false);
         try
         {
             await RecordRunAsync(running, JobRunState.Running, next.Ordinal, running.CreatedAtUtc, running.StartedAtUtc, null, checked((long)(nextSequence - 1)), cancellationToken).ConfigureAwait(false);
@@ -426,7 +457,9 @@ public sealed class AkkaJobAuthorityService(
             throw;
         }
         var activity = await jobRuns.CreateTaskActivityAsync(new CreateJobTaskActivityCommand(
-            Guid.NewGuid().ToString("N"), run.Id, step.Id, run.ClientIdentity, run.TenantId, invocation.TaskType, "Pending", null, now, null, run.AgentId), cancellationToken).ConfigureAwait(false);
+            Guid.NewGuid().ToString("N"), run.Id, step.Id, run.ClientIdentity, run.TenantId, invocation.TaskType, "Pending", null, now, null, run.AgentId,
+            Environment: run.Environment, TargetDisplayName: run.TargetDisplayName, TargetHostName: run.TargetHostName, TargetName: run.TargetName,
+            ScriptName: invocation.ScriptName, ScriptType: invocation.ScriptType, CommandLabel: invocation.CommandLabel, ScriptContentHash: invocation.ScriptContentHash), cancellationToken).ConfigureAwait(false);
         var pendingStep = await jobRuns.UpsertStepRunAsync(new UpsertJobStepRunCommand(
             next.Id, run.Id, step.Id, JobStepRunState.Pending, next.Ordinal, activity.RequestId, null, null, null), cancellationToken).ConfigureAwait(false);
         if (db is not null)
@@ -438,7 +471,7 @@ public sealed class AkkaJobAuthorityService(
             control.DispatchOwnerEpoch = dispatchOwner.Value.Epoch;
             // Conservative, immutable dispatch-time reconciliation boundary.
             // Native payload timeout still starts at physical process execution.
-            control.NativeDeadlineUtc = now.Add(JobExecutionRuntimePolicy.FromJob(definition.Job).HardTimeout);
+            control.NativeDeadlineUtc = now.Add(JobExecutionRuntimePolicy.FromOptions(run.OptionsJson).HardTimeout);
             control.Revision++;
             await db.SaveChangesAsync(cancellationToken);
         }
@@ -449,7 +482,7 @@ public sealed class AkkaJobAuthorityService(
                 await managedGuard!.AuthorizeDispatchAsync(run, definition.Job, cancellationToken);
             await sessions.DispatchAsync(client, new JobGatewayStepDispatch(
                 run.Id, step.Id, next.Id, next.Ordinal, activity.RequestId, $"akka-job-{run.Id}", invocation.TaskType, invocation.PayloadJson,
-                Environment: 0, nextVersion, nextSequence, now, ExpectedOwner: dispatchOwner), cancellationToken).ConfigureAwait(false);
+                Environment: (int)(run.Environment ?? ClientEnvironment.None), nextVersion, nextSequence, now, ExpectedOwner: dispatchOwner), cancellationToken).ConfigureAwait(false);
             await BeginAfterTransportAsync(cancellationToken);
             if (db is not null)
             {
@@ -516,7 +549,7 @@ public sealed class AkkaJobAuthorityService(
             await jobRuns.UpdateTaskActivityStatusAsync(new(activity.RequestId, "Cancelled", error, now), ct);
         var terminal = await jobRuns.UpsertRunAsync(new(run.Id, run.JobId, run.TenantId, run.ClientIdentity,
             run.StartedBy, JobRunState.Cancelled, run.CurrentStepOrdinal, run.CreatedAtUtc, run.StartedAtUtc, now,
-            error, run.InputsJson, run.OptionsJson, run.AgentId), ct);
+            error, run.InputsJson, run.OptionsJson, run.AgentId, run.Environment, run.TargetDisplayName, run.TargetHostName, run.TargetName), ct);
         await RecordRunAsync(terminal, terminal.Status, terminal.CurrentStepOrdinal, terminal.CreatedAtUtc,
             terminal.StartedAtUtc, terminal.CompletedAtUtc, sequence, ct);
         await MarkTerminalReadyAsync(run.Id, ct);
@@ -536,15 +569,16 @@ public sealed class AkkaJobAuthorityService(
         var jobStepId = pendingStep.JobStepId
             ?? throw new InvalidOperationException("A dispatched job step must retain its definition identifier.");
         var failedStep = await jobRuns.UpsertStepRunAsync(new UpsertJobStepRunCommand(
-            pendingStep.Id, running.Id, jobStepId, JobStepRunState.Failed, pendingStep.Ordinal,
-            activity.RequestId, error, pendingStep.StartedAtUtc ?? completedAt, completedAt), cancellationToken).ConfigureAwait(false);
+            pendingStep.Id, running.Id, jobStepId, JobStepRunState.Skipped, pendingStep.Ordinal,
+            activity.RequestId, error, pendingStep.StartedAtUtc, completedAt), cancellationToken).ConfigureAwait(false);
         var failedRun = await jobRuns.UpsertRunAsync(new UpsertJobRunCommand(
             running.Id, running.JobId, running.TenantId, running.ClientIdentity, running.StartedBy,
-            JobRunState.Failed, failedStep.Ordinal, running.CreatedAtUtc, running.StartedAtUtc ?? completedAt,
-            completedAt, error, running.InputsJson, running.OptionsJson, running.AgentId), cancellationToken).ConfigureAwait(false);
+            JobRunState.Failed, failedStep.Ordinal, running.CreatedAtUtc, running.StartedAtUtc,
+            completedAt, error, running.InputsJson, running.OptionsJson, running.AgentId, running.Environment, running.TargetDisplayName, running.TargetHostName, running.TargetName), cancellationToken).ConfigureAwait(false);
         await jobRuns.UpdateTaskActivityStatusAsync(new UpdateJobTaskActivityStatusCommand(
             activity.RequestId, "Failed", error, completedAt), cancellationToken).ConfigureAwait(false);
         await RecordStepAsync(failedRun, failedStep, checked((long)nextSequence), cancellationToken).ConfigureAwait(false);
+        await SkipRemainingStepsAsync(running, failedStep.Id, error, completedAt, cancellationToken);
         await RecordRunAsync(failedRun, JobRunState.Failed, failedRun.CurrentStepOrdinal, failedRun.CreatedAtUtc,
             failedRun.StartedAtUtc, failedRun.CompletedAtUtc, checked((long)nextSequence + 1), cancellationToken).ConfigureAwait(false);
         await MarkTerminalReadyAsync(failedRun.Id, cancellationToken);
@@ -562,8 +596,8 @@ public sealed class AkkaJobAuthorityService(
             {
                 var stepId = step.JobStepId ?? throw new InvalidOperationException("The nonterminal job step has no definition identifier.");
                 closedSteps.Add(await jobRuns.UpsertStepRunAsync(new UpsertJobStepRunCommand(
-                    step.Id, step.JobRunId, stepId, JobStepRunState.Failed, step.Ordinal,
-                    step.TaskRequestId, error, step.StartedAtUtc ?? completedAt, completedAt), cancellationToken).ConfigureAwait(false));
+                    step.Id, step.JobRunId, stepId, JobStepRunState.Skipped, step.Ordinal,
+                    step.TaskRequestId, error, step.StartedAtUtc, completedAt), cancellationToken).ConfigureAwait(false));
             }
 
             foreach (var activity in details.Activities.Where(activity => !IsTerminalTaskActivity(activity.Status)))
@@ -575,8 +609,8 @@ public sealed class AkkaJobAuthorityService(
 
         var failed = await jobRuns.UpsertRunAsync(new UpsertJobRunCommand(
             run.Id, run.JobId, run.TenantId, run.ClientIdentity, run.StartedBy,
-            JobRunState.Failed, run.CurrentStepOrdinal, run.CreatedAtUtc, run.StartedAtUtc ?? completedAt,
-            completedAt, error, run.InputsJson, run.OptionsJson, run.AgentId), cancellationToken).ConfigureAwait(false);
+            JobRunState.Failed, run.CurrentStepOrdinal, run.CreatedAtUtc, run.StartedAtUtc,
+            completedAt, error, run.InputsJson, run.OptionsJson, run.AgentId, run.Environment, run.TargetDisplayName, run.TargetHostName, run.TargetName), cancellationToken).ConfigureAwait(false);
         if (db is not null)
         {
             var sequence = await NextOwnedSequenceAsync(run.Id, cancellationToken);
@@ -591,47 +625,142 @@ public sealed class AkkaJobAuthorityService(
 
     private async Task UpdateRunningAsync(JobRunInfo run, JobStepRunInfo stepRun, JobLifecycleUpdateEnvelope lifecycle, CancellationToken cancellationToken)
     {
-        var now = lifecycle.StatusAtUtc;
-        await jobRuns.UpsertStepRunAsync(new UpsertJobStepRunCommand(stepRun.Id, run.Id, stepRun.JobStepId ?? lifecycle.JobStepId,
-            JobStepRunState.Running, stepRun.Ordinal, stepRun.TaskRequestId, null, stepRun.StartedAtUtc ?? now, null), cancellationToken).ConfigureAwait(false);
+        var now = LifecycleReceiptTime(lifecycle);
+        var accepted = lifecycle.Status == JobGatewayLifecycleStatus.Accepted;
+        var started = stepRun.StartedAtUtc ?? (lifecycle.Status == JobGatewayLifecycleStatus.Started || lifecycle.StartedAtUtc is not null ? now : (DateTimeOffset?)null);
+        var step = await jobRuns.UpsertStepRunAsync(new UpsertJobStepRunCommand(stepRun.Id, run.Id, stepRun.JobStepId ?? lifecycle.JobStepId,
+            accepted ? JobStepRunState.Pending : JobStepRunState.Running, stepRun.Ordinal, stepRun.TaskRequestId, null, started, null), cancellationToken).ConfigureAwait(false);
         var running = await jobRuns.UpsertRunAsync(new UpsertJobRunCommand(run.Id, run.JobId, run.TenantId, run.ClientIdentity, run.StartedBy,
-            JobRunState.Running, stepRun.Ordinal, run.CreatedAtUtc, run.StartedAtUtc ?? now, null, null, run.InputsJson, run.OptionsJson, run.AgentId), cancellationToken).ConfigureAwait(false);
-        await RecordStepAsync(running, stepRun with { Status = JobStepRunState.Running, StartedAtUtc = stepRun.StartedAtUtc ?? now }, checked((long)lifecycle.LifecycleSequence), cancellationToken).ConfigureAwait(false);
+            JobRunState.Running, stepRun.Ordinal, run.CreatedAtUtc, run.StartedAtUtc ?? started, null, null, run.InputsJson, run.OptionsJson, run.AgentId,
+            run.Environment, run.TargetDisplayName, run.TargetHostName, run.TargetName), cancellationToken).ConfigureAwait(false);
+        await jobRuns.UpdateTaskActivityStatusAsync(new(lifecycle.RequestId, accepted ? "Accepted" : "Running", null, null,
+            StartedAtUtc: started), cancellationToken);
+        await RecordStepAsync(running, step, checked((long)lifecycle.LifecycleSequence), cancellationToken).ConfigureAwait(false);
+        if (run.StartedAtUtc != running.StartedAtUtc)
+            await RecordRunAsync(running, running.Status, running.CurrentStepOrdinal, running.CreatedAtUtc, running.StartedAtUtc,
+                null, checked((long)lifecycle.LifecycleSequence), cancellationToken);
     }
 
     private async Task CompleteStepAsync(JobRunInfo run, JobStepRunInfo stepRun, JobLifecycleUpdateEnvelope lifecycle, ClientKey client, CancellationToken cancellationToken)
     {
-        var now = lifecycle.StatusAtUtc;
+        var now = LifecycleReceiptTime(lifecycle);
+        var started = stepRun.StartedAtUtc ?? (lifecycle.StartedAtUtc is not null ? now : (DateTimeOffset?)null);
         var completed = await jobRuns.UpsertStepRunAsync(new UpsertJobStepRunCommand(stepRun.Id, run.Id, stepRun.JobStepId ?? lifecycle.JobStepId,
-            JobStepRunState.Succeeded, stepRun.Ordinal, stepRun.TaskRequestId, null, stepRun.StartedAtUtc ?? now, now), cancellationToken).ConfigureAwait(false);
+            JobStepRunState.Succeeded, stepRun.Ordinal, stepRun.TaskRequestId, null, started, now), cancellationToken).ConfigureAwait(false);
         await jobRuns.UpdateTaskActivityStatusAsync(new UpdateJobTaskActivityStatusCommand(
-            lifecycle.RequestId,
-            "Completed",
-            null,
-            now,
-            lifecycle.ResultJson), cancellationToken).ConfigureAwait(false);
+            lifecycle.RequestId, "Completed", null, now, lifecycle.ResultJson, StartedAtUtc: started, ExitCode: lifecycle.ExitCode), cancellationToken).ConfigureAwait(false);
         await RecordStepAsync(run, completed, checked((long)lifecycle.LifecycleSequence), cancellationToken).ConfigureAwait(false);
+        var control = await EnsureControlAsync(run.Id, cancellationToken);
+        var details = await jobRuns.GetDetailsAsync(run.Id, cancellationToken);
+        if (control?.CancellationRequestedAtUtc is not null && details!.Steps.Any(x => x.Status == JobStepRunState.Pending))
+        {
+            const string reason = "Cancellation was requested after the current command completed; remaining steps were not dispatched.";
+            await SkipRemainingStepsAsync(run, completed.Id, reason, now, cancellationToken);
+            var cancelled = await jobRuns.UpsertRunAsync(new(run.Id, run.JobId, run.TenantId, run.ClientIdentity, run.StartedBy,
+                JobRunState.Cancelled, completed.Ordinal, run.CreatedAtUtc, run.StartedAtUtc ?? started, now, reason,
+                run.InputsJson, run.OptionsJson, run.AgentId, run.Environment, run.TargetDisplayName, run.TargetHostName, run.TargetName), cancellationToken);
+            await RecordRunAsync(cancelled, cancelled.Status, cancelled.CurrentStepOrdinal, cancelled.CreatedAtUtc,
+                cancelled.StartedAtUtc, cancelled.CompletedAtUtc, 0, cancellationToken);
+            await MarkTerminalReadyAsync(run.Id, cancellationToken);
+            NetRatelAkkaTelemetry.SetJobsAuthorityRunning(0);
+            return;
+        }
         await DispatchNextAsync(run.Id, client, lifecycle.Version + 2, lifecycle.LifecycleSequence + 2, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task FinishRunAsync(JobRunInfo run, JobStepRunInfo stepRun, JobLifecycleUpdateEnvelope lifecycle, JobRunState runState, JobStepRunState stepState, CancellationToken cancellationToken, string? terminalReason = null)
     {
-        var now = lifecycle.StatusAtUtc;
+        var now = LifecycleReceiptTime(lifecycle);
+        var started = stepRun.StartedAtUtc ?? (lifecycle.StartedAtUtc is not null ? now : (DateTimeOffset?)null);
+        var summary = terminalReason ?? TaskResultSummary.Failure(lifecycle.ResultJson);
         var step = await jobRuns.UpsertStepRunAsync(new UpsertJobStepRunCommand(stepRun.Id, run.Id, stepRun.JobStepId ?? lifecycle.JobStepId,
-            stepState, stepRun.Ordinal, stepRun.TaskRequestId, lifecycle.ResultJson, stepRun.StartedAtUtc ?? now, now), cancellationToken).ConfigureAwait(false);
-        var terminal = await jobRuns.UpsertRunAsync(new UpsertJobRunCommand(run.Id, run.JobId, run.TenantId, run.ClientIdentity, run.StartedBy,
-            runState, step.Ordinal, run.CreatedAtUtc, run.StartedAtUtc ?? now, now, terminalReason ?? lifecycle.ResultJson, run.InputsJson, run.OptionsJson, run.AgentId), cancellationToken).ConfigureAwait(false);
+            stepState, stepRun.Ordinal, stepRun.TaskRequestId, summary, started, now), cancellationToken).ConfigureAwait(false);
         await jobRuns.UpdateTaskActivityStatusAsync(new UpdateJobTaskActivityStatusCommand(
-            lifecycle.RequestId,
-            runState == JobRunState.Cancelled ? "Cancelled" : "Failed",
-            TaskResultSummary.Failure(lifecycle.ResultJson),
-            now,
-            lifecycle.ResultJson), cancellationToken).ConfigureAwait(false);
-        await RecordStepAsync(terminal, step, checked((long)lifecycle.LifecycleSequence), cancellationToken).ConfigureAwait(false);
+            lifecycle.RequestId, runState.ToString(), summary, now, lifecycle.ResultJson, StartedAtUtc: started, ExitCode: lifecycle.ExitCode), cancellationToken).ConfigureAwait(false);
+        await RecordStepAsync(run, step, checked((long)lifecycle.LifecycleSequence), cancellationToken).ConfigureAwait(false);
+        await SkipRemainingStepsAsync(run, step.Id, summary, now, cancellationToken);
+        var terminal = await jobRuns.UpsertRunAsync(new UpsertJobRunCommand(run.Id, run.JobId, run.TenantId, run.ClientIdentity, run.StartedBy,
+            runState, step.Ordinal, run.CreatedAtUtc, run.StartedAtUtc ?? started, now, summary, run.InputsJson, run.OptionsJson, run.AgentId,
+            run.Environment, run.TargetDisplayName, run.TargetHostName, run.TargetName), cancellationToken).ConfigureAwait(false);
         await RecordRunAsync(terminal, runState, terminal.CurrentStepOrdinal, terminal.CreatedAtUtc, terminal.StartedAtUtc, terminal.CompletedAtUtc, checked((long)lifecycle.LifecycleSequence + 1), cancellationToken).ConfigureAwait(false);
         await MarkTerminalReadyAsync(terminal.Id, cancellationToken);
         NetRatelAkkaTelemetry.SetJobsAuthorityRunning(0);
     }
+
+    private async Task SkipRemainingStepsAsync(JobRunInfo run, ulong completedStepId, string reason, DateTimeOffset completedAt, CancellationToken ct)
+    {
+        var details = await jobRuns.GetDetailsAsync(run.Id, ct) ?? throw new InvalidOperationException("The job projection disappeared.");
+        foreach (var step in details.Steps.Where(x => x.Id != completedStepId && !IsTerminal(x.Status) && x.JobStepId is not null))
+        {
+            // Pending work without a dispatch request never acquired a physical outcome.
+            var closed = await jobRuns.UpsertStepRunAsync(new(step.Id, run.Id, step.JobStepId!.Value,
+                step.TaskRequestId is null ? JobStepRunState.Skipped : JobStepRunState.Unknown, step.Ordinal,
+                step.TaskRequestId, reason, step.StartedAtUtc, completedAt), ct);
+            await RecordStepAsync(run, closed, 0, ct);
+            if (step.TaskRequestId is { } requestId)
+                await jobRuns.UpdateTaskActivityStatusAsync(new(requestId, "Unknown", reason, completedAt), ct);
+        }
+    }
+
+    private DateTimeOffset LifecycleReceiptTime(JobLifecycleUpdateEnvelope lifecycle) => lifecycle.ReceivedAtUtc ?? _clock.GetUtcNow();
+
+    private static bool HasResultFlag(string? resultJson, string name)
+    {
+        if (string.IsNullOrWhiteSpace(resultJson)) return false;
+        try
+        {
+            using var document = JsonDocument.Parse(resultJson);
+            return document.RootElement.ValueKind == JsonValueKind.Object && document.RootElement.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;
+        }
+        catch (JsonException) { return false; }
+    }
+
+    private static string LifecyclePayloadHash(JobLifecycleUpdateEnvelope lifecycle) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(lifecycle with { ReceivedAtUtc = null })))).ToLowerInvariant();
+
+    private async Task<bool> IsCommittedLifecycleRetryAsync(JobLifecycleUpdateEnvelope lifecycle, CancellationToken ct)
+    {
+        var hash = LifecyclePayloadHash(lifecycle);
+        if (db is null)
+        {
+            if (!_fixtureReceipts.TryGetValue((lifecycle.JobRunId, lifecycle.JobStepRunId, lifecycle.LifecycleSequence), out var existing)) return false;
+            if (existing != hash) throw new InvalidOperationException("The job lifecycle retry differs from its committed evidence.");
+            return true;
+        }
+        var receipt = await db.Set<JobGatewayLifecycleReceiptRecord>().AsNoTracking().SingleOrDefaultAsync(x =>
+            x.JobRunId == checked((long)lifecycle.JobRunId) && x.JobStepRunId == checked((long)lifecycle.JobStepRunId) &&
+            x.LifecycleSequence == checked((long)lifecycle.LifecycleSequence), ct);
+        if (receipt is null) return false;
+        if (receipt.PayloadHash != hash || receipt.Version != checked((long)lifecycle.Version))
+            throw new InvalidOperationException("The job lifecycle retry differs from its committed evidence.");
+        return true;
+    }
+
+    private async Task PrepareLifecycleReceiptAsync(JobLifecycleUpdateEnvelope lifecycle, CancellationToken ct)
+    {
+        var hash = LifecyclePayloadHash(lifecycle);
+        if (db is null)
+        {
+            _fixtureReceipts[(lifecycle.JobRunId, lifecycle.JobStepRunId, lifecycle.LifecycleSequence)] = hash;
+            return;
+        }
+        var latest = await db.Set<JobGatewayLifecycleReceiptRecord>().AsNoTracking().Where(x =>
+            x.JobRunId == checked((long)lifecycle.JobRunId) && x.JobStepRunId == checked((long)lifecycle.JobStepRunId))
+            .OrderByDescending(x => x.LifecycleSequence).FirstOrDefaultAsync(ct);
+        if (latest is not null && (checked((long)lifecycle.LifecycleSequence) != latest.LifecycleSequence + 1 || checked((long)lifecycle.Version) != latest.Version + 1))
+            throw new InvalidOperationException("The job lifecycle version or sequence is not the next recorded evidence.");
+        db.Set<JobGatewayLifecycleReceiptRecord>().Add(new()
+        {
+            JobRunId = checked((long)lifecycle.JobRunId), JobStepRunId = checked((long)lifecycle.JobStepRunId),
+            LifecycleSequence = checked((long)lifecycle.LifecycleSequence), Version = checked((long)lifecycle.Version),
+            PayloadHash = hash, ReceivedAtUtc = LifecycleReceiptTime(lifecycle)
+        });
+        await db.SaveChangesAsync(ct);
+    }
+
+    private Task AppendLifecycleOutputAsync(JobRunInfo run, JobStepRunInfo step, JobLifecycleUpdateEnvelope lifecycle, CancellationToken ct) =>
+        TaskLifecycleOutput.AppendAsync(jobRuns, new ClientKey(run.TenantId!.Value, run.AgentId!.Value), lifecycle.RequestId,
+            lifecycle.ResultJson, LifecycleReceiptTime(lifecycle), ct);
 
     private static string ObservationClientIdentity(JobRunInfo run)
     {
@@ -646,17 +775,20 @@ public sealed class AkkaJobAuthorityService(
 
     private async Task RecordRunAsync(JobRunInfo run, JobRunState status, int currentOrdinal, DateTimeOffset createdAtUtc, DateTimeOffset? startedAtUtc, DateTimeOffset? completedAtUtc, long sourceEventId, CancellationToken cancellationToken)
     {
+        sourceEventId = await NextOwnedSequenceAsync(run.Id, cancellationToken);
         var observation = new JobRunObservation(
             sourceEventId, run.Id, run.JobId, run.TenantId, ObservationClientIdentity(run), run.StartedBy, status, currentOrdinal,
             createdAtUtc, startedAtUtc, completedAtUtc, _clock.GetUtcNow(), $"akka-job-authority:{run.Id}", true);
         var result = _owner is null ? await jobRouter.RecordAsync(new RecordJobObservation(observation), cancellationToken).ConfigureAwait(false)
             : await _owner.RecordAsync(observation, _boundary!.Observations, cancellationToken);
         RequireAccepted(result);
+        if (db is null) _fixtureSequences[run.Id] = sourceEventId;
         PublishFanout(observation, result);
     }
 
     private async Task RecordStepAsync(JobRunInfo run, JobStepRunInfo step, long sourceEventId, CancellationToken cancellationToken)
     {
+        sourceEventId = await NextOwnedSequenceAsync(run.Id, cancellationToken);
         var observation = new JobStepObservation(
             sourceEventId, run.Id, run.JobId, run.TenantId, ObservationClientIdentity(run), step.Id, step.JobStepId,
             step.Status, step.Ordinal, step.TaskRequestId, step.StartedAtUtc, step.CompletedAtUtc, _clock.GetUtcNow(),
@@ -664,6 +796,7 @@ public sealed class AkkaJobAuthorityService(
         var result = _owner is null ? await jobRouter.RecordAsync(new RecordJobObservation(observation), cancellationToken).ConfigureAwait(false)
             : await _owner.RecordAsync(observation, _boundary!.Observations, cancellationToken);
         RequireAccepted(result);
+        if (db is null) _fixtureSequences[run.Id] = sourceEventId;
         PublishFanout(observation, result);
     }
 
@@ -715,16 +848,18 @@ public sealed class AkkaJobAuthorityService(
     }
 
     private static bool IsTerminal(JobRunState state) =>
-        state is JobRunState.Succeeded or JobRunState.Failed or JobRunState.Cancelled or JobRunState.TimedOut;
+        state is JobRunState.Succeeded or JobRunState.Failed or JobRunState.Cancelled or JobRunState.TimedOut or JobRunState.Unknown;
 
     private static bool IsTerminal(JobStepRunState state) =>
-        state is JobStepRunState.Succeeded or JobStepRunState.Failed or JobStepRunState.Skipped;
+        state is JobStepRunState.Succeeded or JobStepRunState.Failed or JobStepRunState.Skipped or JobStepRunState.Cancelled or JobStepRunState.TimedOut or JobStepRunState.Unknown;
 
     private static bool IsTerminalTaskActivity(string? status) =>
         string.Equals(status, "Completed", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(status, "Failed", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(status, "Cancelled", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(status, "TimedOut", StringComparison.OrdinalIgnoreCase);
+        string.Equals(status, "TimedOut", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(status, "Unknown", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(status, "Skipped", StringComparison.OrdinalIgnoreCase);
 
     private async Task MarkTerminalReadyAsync(ulong runId, CancellationToken ct)
     {
@@ -752,7 +887,7 @@ public sealed class AkkaJobAuthorityService(
     }
 
     private async Task<long> NextOwnedSequenceAsync(ulong runId, CancellationToken ct) =>
-        db is null ? 1 : (await db.JobShadowObservations.Where(x => x.JobRunId == runId)
+        db is null ? _fixtureSequences.GetValueOrDefault(runId) + 1 : (await db.JobShadowObservations.Where(x => x.JobRunId == runId)
             .MaxAsync(x => (long?)x.SourceEventId, ct) ?? 0) + 1;
 
     public async Task RecoverAsync(ulong jobRunId, CancellationToken cancellationToken)
@@ -775,8 +910,7 @@ public sealed class AkkaJobAuthorityService(
                     await CancelOwnedAsync(run.Id, control.CancellationReason ?? "operator-cancelled", ct);
                 return false;
             }
-            var status = control.CancellationRequestedAtUtc is not null ? JobRunState.Cancelled :
-                provenUndispatched ? JobRunState.Failed : JobRunState.TimedOut;
+            var status = provenUndispatched ? (control.CancellationRequestedAtUtc is not null ? JobRunState.Cancelled : JobRunState.Failed) : JobRunState.Unknown;
             var error = provenUndispatched ? "The process stopped before physical dispatch; the recorded run was not replayed." :
                 legacyCancellation ? "Cancellation was durably requested for a historical run with no recorded dispatch deadline; the physical outcome is unknown and no dispatch was replayed." :
                 "The original conservative dispatch reconciliation deadline elapsed without a durable native terminal receipt; the physical outcome is unknown and no dispatch was replayed.";
@@ -786,13 +920,13 @@ public sealed class AkkaJobAuthorityService(
             foreach (var step in details.Steps.Where(x => !IsTerminal(x.Status) && x.JobStepId is not null))
             {
                 var closed = await jobRuns.UpsertStepRunAsync(new(step.Id, run.Id, step.JobStepId!.Value,
-                    JobStepRunState.Failed, step.Ordinal, step.TaskRequestId, error, step.StartedAtUtc, now), ct);
+                    step.TaskRequestId is null || provenUndispatched ? JobStepRunState.Skipped : JobStepRunState.Unknown, step.Ordinal, step.TaskRequestId, error, step.StartedAtUtc, now), ct);
                 await RecordStepAsync(run, closed, sequence++, ct);
             }
             foreach (var activity in details.Activities.Where(x => !IsTerminalTaskActivity(x.Status)))
-                await jobRuns.UpdateTaskActivityStatusAsync(new(activity.RequestId, status == JobRunState.Cancelled ? "Cancelled" : "Failed", error, now), ct);
+                await jobRuns.UpdateTaskActivityStatusAsync(new(activity.RequestId, status == JobRunState.Cancelled ? "Cancelled" : provenUndispatched ? "Failed" : "Unknown", error, now), ct);
             var terminal = await jobRuns.UpsertRunAsync(new(run.Id, run.JobId, run.TenantId, run.ClientIdentity,
-                run.StartedBy, status, run.CurrentStepOrdinal, run.CreatedAtUtc, run.StartedAtUtc, now, error, run.InputsJson, run.OptionsJson, run.AgentId), ct);
+                run.StartedBy, status, run.CurrentStepOrdinal, run.CreatedAtUtc, run.StartedAtUtc, now, error, run.InputsJson, run.OptionsJson, run.AgentId, run.Environment, run.TargetDisplayName, run.TargetHostName, run.TargetName), ct);
             await RecordRunAsync(terminal, status, terminal.CurrentStepOrdinal, terminal.CreatedAtUtc, terminal.StartedAtUtc, now, sequence, ct);
             await MarkTerminalReadyAsync(run.Id, ct);
             return true;
@@ -813,8 +947,10 @@ public sealed record JobLifecycleUpdateEnvelope(
     DateTimeOffset StatusAtUtc,
     double ProgressPercent,
     string? ResultJson,
-    int ExitCode,
-    OwnerKey? AuthenticatedOwner = null);
+    int? ExitCode,
+    OwnerKey? AuthenticatedOwner = null,
+    DateTimeOffset? ReceivedAtUtc = null,
+    DateTimeOffset? StartedAtUtc = null);
 
 public enum JobGatewayLifecycleStatus { Accepted, Started, Progress, Completed, Failed, Cancelled }
 

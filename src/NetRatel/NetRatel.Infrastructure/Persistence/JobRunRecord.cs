@@ -6,6 +6,11 @@ public sealed class JobRunRecord
     public long JobId { get; set; }
     public int? TenantId { get; set; }
     public Guid? AgentId { get; set; }
+    // Nullable for historical runs; populated only from accepted invocation context.
+    public NetRatel.Shared.ClientEnvironment? Environment { get; set; }
+    public string? TargetDisplayName { get; set; }
+    public string? TargetHostName { get; set; }
+    public string? TargetName { get; set; }
     // Retained only to display historical runs that predate Agent targeting.
     public string ClientIdentity { get; set; } = string.Empty;
     public string StartedBy { get; set; } = string.Empty;

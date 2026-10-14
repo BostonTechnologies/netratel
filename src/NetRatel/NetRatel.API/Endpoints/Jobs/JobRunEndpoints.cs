@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.API.Services.Jobs;
+using NetRatel.API.Services;
 using NetRatel.Application.Events;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Tenants;
@@ -12,11 +13,12 @@ using NetRatel.Shared.Contracts.Tasks;
 namespace NetRatel.API.Endpoints;
 
 /// <summary>Akka-authoritative job execution with PostgreSQL run history.</summary>
-public static class JobRunEndpoints
+public static partial class JobRunEndpoints
 {
     public static IEndpointRouteBuilder MapJobRunEndpoints(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/v1/jobruns").WithTags("Job Runs").RequireAuthorization();
+        group.MapGet("/{id:long}/stream", StreamRunAsync);
         group.MapPost("/start/{jobId:long}", async (ulong jobId, [FromBody] RunJobRequest request, HttpContext http, IJobDefinitionService jobs, [FromServices] IEffectiveAccessService access, IAkkaJobAuthorityService authority, IEventRecorder events, ICorrelationContext correlation, CancellationToken ct) =>
         {
             var job = await jobs.GetAsync(jobId, ct); if (job is null) return Results.NotFound();
@@ -67,21 +69,23 @@ public static class JobRunEndpoints
         {
             var detail = await runs.GetDetailsAsync(id, ct); if (detail is null) return Results.NotFound();
             if (!await CanManageAsync(http, access, detail.Run.TenantId, ct)) return Results.Forbid();
-            return Results.Ok(detail.Steps.OrderBy(x => x.Ordinal).Select(x => new JobStepRunDto(x.Id, x.JobRunId, x.JobStepId, (JobStepRunStatusDto)x.Status, x.Ordinal, x.TaskRequestId, Micros(x.StartedAtUtc), Micros(x.CompletedAtUtc), x.Error, detail.Activities.FirstOrDefault(a => a.RequestId == x.TaskRequestId)?.Error)));
+            return Results.Ok(detail.Steps.OrderBy(x => x.Ordinal).Select(x => MapStepRun(x, detail.Activities.FirstOrDefault(a => a.RequestId == x.TaskRequestId))));
         });
         group.MapGet("/{id:long}/steps/{ordinal:int}/logs", async (ulong id, int ordinal, HttpContext http, [FromServices] IEffectiveAccessService access, IJobRunService runs, CancellationToken ct) =>
         {
             var detail = await runs.GetDetailsAsync(id, ct); var step = detail?.Steps.FirstOrDefault(x => x.Ordinal == ordinal); if (step is null) return Results.NotFound();
             if (!await CanManageAsync(http, access, detail!.Run.TenantId, ct)) return Results.Forbid();
-            if (string.IsNullOrWhiteSpace(step.TaskRequestId)) return Results.Ok(new { logs = Array.Empty<TaskLogDto>() });
-            return Results.Ok(new { logs = await runs.GetLogsByRequestIdAsync(step.TaskRequestId, ct) });
+            var activity = detail.Activities.FirstOrDefault(x => x.RequestId == step.TaskRequestId && x.TenantId == detail.Run.TenantId);
+            var logs = activity is null || string.IsNullOrWhiteSpace(step.TaskRequestId)
+                ? Array.Empty<JobTaskLogInfo>() : (await runs.GetLogsByRequestIdAsync(step.TaskRequestId, ct)).Where(x => x.TenantId == detail.Run.TenantId).ToArray();
+            return Results.Ok(ExecutionLogBuilder.BuildExecutionLog(activity, logs));
         });
         return app;
     }
     private static async Task<List<JobRunDto>> BuildAsync(IJobRunService runs, IJobDefinitionService jobs, ITenantService tenants, OrchestratorDbContext db, CancellationToken ct)
     {
         var jobNames = (await jobs.ListAsync(ct)).ToDictionary(x => x.Id, x => x.Name); var tenantNames = (await tenants.ListAsync(ct)).ToDictionary(x => x.TenantId, x => x.Name); var agents = await db.Agents.AsNoTracking().ToDictionaryAsync(x => x.Id, ct);
-        return (await runs.ListAsync(ct)).Select(run => { jobNames.TryGetValue(run.JobId, out var job); tenantNames.TryGetValue(run.TenantId ?? -1, out var tenant); agents.TryGetValue(run.AgentId ?? Guid.Empty, out var agent); return Map(run, job ?? string.Empty, tenant, agent?.Name); }).ToList();
+        return (await runs.ListAsync(ct)).Select(run => { jobNames.TryGetValue(run.JobId, out var job); tenantNames.TryGetValue(run.TenantId ?? -1, out var tenant); agents.TryGetValue(run.AgentId ?? Guid.Empty, out var agent); return Map(run, job ?? string.Empty, tenant, agent?.TenantId == run.TenantId ? agent?.Name : null); }).ToList();
     }
     private static Task<bool> CanManageAsync(HttpContext http, IEffectiveAccessService access, int? tenantId, CancellationToken ct) =>
         access.AuthorizeAsync(http.User, NetRatelPermissions.JobManagement, tenantId, ct);
@@ -92,7 +96,7 @@ public static class JobRunEndpoints
             if (await access.AuthorizeAsync(principal, NetRatelPermissions.JobManagement, run.TenantId, ct)) visible.Add(run);
         return visible;
     }
-    private static JobRunDto Map(JobRunInfo run, string jobName, string? tenantName, string? agentName) => new(run.Id, run.JobId, jobName, run.TenantId, run.ClientIdentity, run.StartedBy, (JobRunStatusDto)run.Status, run.CurrentStepOrdinal, Micros(run.CreatedAtUtc)!.Value, Micros(run.StartedAtUtc), Micros(run.CompletedAtUtc), run.Error, run.InputsJson, JobTemplateHelper.BuildOptions(run.OptionsJson, run.InputsJson), tenantName, agentName ?? (run.AgentId is null ? "Legacy target unavailable" : null), NetRatel.Shared.ClientEnvironment.None, run.AgentId);
-    private static bool Terminal(JobRunState s) => s is JobRunState.Succeeded or JobRunState.Failed or JobRunState.Cancelled or JobRunState.TimedOut;
+    internal static JobRunDto Map(JobRunInfo run, string jobName, string? tenantName, string? agentName) => new(run.Id, run.JobId, jobName, run.TenantId, run.ClientIdentity, run.StartedBy, (JobRunStatusDto)run.Status, run.CurrentStepOrdinal, Micros(run.CreatedAtUtc)!.Value, Micros(run.StartedAtUtc), Micros(run.CompletedAtUtc), run.Error, run.InputsJson, JobTemplateHelper.BuildOptions(run.OptionsJson, run.InputsJson), tenantName, run.TargetHostName ?? run.TargetDisplayName ?? run.TargetName ?? (string.IsNullOrWhiteSpace(agentName) ? null : $"Linked target: {agentName}"), run.Environment, run.AgentId, run.TargetDisplayName, run.TargetHostName, run.TargetName);
+    private static bool Terminal(JobRunState s) => s is JobRunState.Succeeded or JobRunState.Failed or JobRunState.Cancelled or JobRunState.TimedOut or JobRunState.Unknown;
     private static long? Micros(DateTimeOffset? value) => value?.ToUnixTimeMilliseconds() * 1000;
 }

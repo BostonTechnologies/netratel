@@ -72,7 +72,7 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
         }
 
         _db.JobRuns.Remove(run);
-        await _db.SaveChangesAsync(ct);
+        await SaveAndNotifyAsync(ct);
     }
 
     public async Task<JobTaskActivityInfo?> GetActivityByRequestIdAsync(string requestId, CancellationToken ct = default)
@@ -119,6 +119,10 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
         row.JobId = (long)command.JobId;
         row.TenantId = command.TenantId;
         row.AgentId = command.AgentId;
+        row.Environment = command.Environment ?? row.Environment;
+        row.TargetDisplayName = command.TargetDisplayName ?? row.TargetDisplayName;
+        row.TargetHostName = command.TargetHostName ?? row.TargetHostName;
+        row.TargetName = command.TargetName ?? row.TargetName;
         row.ClientIdentity = command.ClientIdentity.Trim();
         row.StartedBy = command.StartedBy.Trim();
         row.Status = (int)command.Status;
@@ -136,7 +140,7 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
         row.InputsJson = command.InputsJson;
         row.OptionsJson = command.OptionsJson;
 
-        await _db.SaveChangesAsync(ct);
+        await SaveAndNotifyAsync(ct);
         return Map(row);
     }
 
@@ -164,7 +168,7 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
             row.CompletedAtUtc = command.CompletedAtUtc;
         }
 
-        await _db.SaveChangesAsync(ct);
+        await SaveAndNotifyAsync(ct);
         return Map(row);
     }
 
@@ -183,7 +187,7 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
 
             try
             {
-                await _db.SaveChangesAsync(ct);
+                await SaveAndNotifyAsync(ct);
                 return Map(row);
             }
             catch (DbUpdateException ex) when (IsUniqueViolation(ex))
@@ -208,7 +212,7 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
 
         var finalRow = BuildTaskActivity(command, await AllocateNextTaskActivityIdAsync(ct));
         _db.JobTaskActivities.Add(finalRow);
-        await _db.SaveChangesAsync(ct);
+        await SaveAndNotifyAsync(ct);
         return Map(finalRow);
     }
 
@@ -231,7 +235,7 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
 
             try
             {
-                await _db.SaveChangesAsync(ct);
+                await SaveAndNotifyAsync(ct);
                 return Map(row);
             }
             catch (DbUpdateException ex) when (IsUniqueViolation(ex))
@@ -259,7 +263,7 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
             ApplyTaskActivity(finalRow, command);
         }
 
-        await _db.SaveChangesAsync(ct);
+        await SaveAndNotifyAsync(ct);
         return Map(finalRow);
     }
 
@@ -289,7 +293,7 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
         };
 
         _db.JobTaskLogs.Add(row);
-        await _db.SaveChangesAsync(ct);
+        await SaveAndNotifyAsync(ct);
         return Map(row);
     }
 
@@ -320,15 +324,60 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
             row.CompletedAtUtc = command.CompletedAtUtc;
         }
 
-        await _db.SaveChangesAsync(ct);
+        if (command.StartedAtUtc.HasValue)
+        {
+            row.StartedAtUtc ??= command.StartedAtUtc;
+        }
+        if (command.ExitCode.HasValue)
+        {
+            row.ExitCode = command.ExitCode;
+        }
+
+        await SaveAndNotifyAsync(ct);
         return Map(row);
+    }
+
+    private async Task SaveAndNotifyAsync(CancellationToken ct)
+    {
+        // Capture changed keys before SaveChanges clears tracking state. Notifications
+        // inside an authority transaction remain invisible until its commit.
+        var changed = _db.ChangeTracker.Entries()
+            .Where(x => x.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+            .Select(x => x.Entity).ToArray();
+        await _db.SaveChangesAsync(ct);
+        if (!_db.Database.IsNpgsql()) return;
+        var keys = new HashSet<(int? TenantId, ulong? RunId, string? RequestId)>();
+        foreach (var entity in changed)
+        {
+            switch (entity)
+            {
+                case JobRunRecord run:
+                    keys.Add((run.TenantId, (ulong)run.Id, null));
+                    break;
+                case JobStepRunRecord step:
+                    var tenant = await _db.JobRuns.AsNoTracking().Where(x => x.Id == step.JobRunId)
+                        .Select(x => x.TenantId).FirstOrDefaultAsync(ct);
+                    keys.Add((tenant, (ulong)step.JobRunId, step.TaskRequestId));
+                    break;
+                case JobTaskActivityRecord activity:
+                    keys.Add((activity.TenantId, (ulong?)activity.JobRunId, activity.RequestId));
+                    break;
+                case JobTaskLogRecord log:
+                    var runId = await _db.JobTaskActivities.AsNoTracking().Where(x => x.RequestId == log.RequestId)
+                        .Select(x => x.JobRunId).FirstOrDefaultAsync(ct);
+                    keys.Add((log.TenantId, (ulong?)runId, log.RequestId));
+                    break;
+            }
+        }
+        foreach (var key in keys)
+            await ExecutionActivityNotifications.NotifyAsync(_db, key.TenantId, key.RunId, key.RequestId, ct);
     }
 
     private static string? NormalizeNullable(string? value)
         => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     private static bool IsTerminal(string status)
-        => status is "Completed" or "Failed" or "Cancelled";
+        => status is "Completed" or "Failed" or "Cancelled" or "TimedOut" or "Unknown" or "Skipped";
 
     private async Task<long> AllocateNextTaskActivityIdAsync(CancellationToken ct)
         => (await _db.JobTaskActivities.MaxAsync(x => (long?)x.Id, ct) ?? 0L) + 1L;
@@ -348,7 +397,17 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
             Error = NormalizeNullable(command.Error),
             ResultJson = NormalizeNullable(command.ResultJson),
             CreatedAtUtc = command.CreatedAtUtc,
-            CompletedAtUtc = command.CompletedAtUtc
+            CompletedAtUtc = command.CompletedAtUtc,
+            Environment = command.Environment,
+            StartedAtUtc = command.StartedAtUtc,
+            ExitCode = command.ExitCode,
+            TargetDisplayName = command.TargetDisplayName,
+            TargetHostName = command.TargetHostName,
+            TargetName = command.TargetName,
+            ScriptName = command.ScriptName,
+            ScriptType = command.ScriptType,
+            CommandLabel = command.CommandLabel,
+            ScriptContentHash = command.ScriptContentHash
         };
 
     private static JobTaskActivityRecord BuildTaskActivity(UpsertJobTaskActivityCommand command, long id)
@@ -378,6 +437,16 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
         }
         row.CreatedAtUtc = command.CreatedAtUtc;
         row.CompletedAtUtc = command.CompletedAtUtc;
+        row.Environment ??= command.Environment;
+        row.StartedAtUtc ??= command.StartedAtUtc;
+        row.ExitCode ??= command.ExitCode;
+        row.TargetDisplayName ??= command.TargetDisplayName;
+        row.TargetHostName ??= command.TargetHostName;
+        row.TargetName ??= command.TargetName;
+        row.ScriptName ??= command.ScriptName;
+        row.ScriptType ??= command.ScriptType;
+        row.CommandLabel ??= command.CommandLabel;
+        row.ScriptContentHash ??= command.ScriptContentHash;
     }
 
     private static long ResolveRequestedOrAllocatedActivityId(UpsertJobTaskActivityCommand command, long allocatedId)
@@ -401,7 +470,11 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
             row.Error,
             row.InputsJson,
             row.OptionsJson,
-            row.AgentId);
+            row.AgentId,
+            row.Environment,
+            row.TargetDisplayName,
+            row.TargetHostName,
+            row.TargetName);
 
     private static JobStepRunInfo Map(JobStepRunRecord row)
         => new(
@@ -429,7 +502,17 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
             row.CreatedAtUtc,
             row.CompletedAtUtc,
             row.AgentId,
-            row.ResultJson);
+            row.ResultJson,
+            row.Environment,
+            row.StartedAtUtc,
+            row.ExitCode,
+            row.TargetDisplayName,
+            row.TargetHostName,
+            row.TargetName,
+            row.ScriptName,
+            row.ScriptType,
+            row.CommandLabel,
+            row.ScriptContentHash);
 
     private static JobTaskLogInfo Map(JobTaskLogRecord row)
         => new(
@@ -457,7 +540,17 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
             row.CreatedAtUtc,
             row.CompletedAtUtc,
             row.AgentId,
-            row.ResultJson);
+            row.ResultJson,
+            row.Environment,
+            row.StartedAtUtc,
+            row.ExitCode,
+            row.TargetDisplayName,
+            row.TargetHostName,
+            row.TargetName,
+            row.ScriptName,
+            row.ScriptType,
+            row.CommandLabel,
+            row.ScriptContentHash);
 
     private static System.Linq.Expressions.Expression<Func<JobTaskLogRecord, JobTaskLogInfo>> MapLog()
         => row => new JobTaskLogInfo(
@@ -486,5 +579,9 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
             row.Error,
             row.InputsJson,
             row.OptionsJson,
-            row.AgentId);
+            row.AgentId,
+            row.Environment,
+            row.TargetDisplayName,
+            row.TargetHostName,
+            row.TargetName);
 }

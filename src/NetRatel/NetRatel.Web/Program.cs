@@ -114,6 +114,7 @@ builder.Services.AddScoped<RequestApiService>();
 builder.Services.AddScoped<RequestStreamService>();
 builder.Services.AddScoped<IRequestStreamService>(sp => sp.GetRequiredService<RequestStreamService>());
 builder.Services.AddScoped<TaskApiService>();
+builder.Services.AddScoped<ITaskExecutionStream, TaskExecutionStream>();
 builder.Services.AddScoped<FileSystemApiService>();
 builder.Services.AddScoped<GatewayFileSystemApiService>();
 builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
@@ -134,6 +135,7 @@ builder.Services.AddScoped<ITenantApiService>(sp => sp.GetRequiredService<Tenant
 builder.Services.AddScoped<IClientApiService>(sp => sp.GetRequiredService<ClientApiService>());
 builder.Services.AddScoped<IScriptLibraryService>(sp => sp.GetRequiredService<ScriptService>());
 builder.Services.AddScoped<IJobApiClient, JobApiClient>();
+builder.Services.AddScoped<IJobRunStreamService, JobRunStreamService>();
 builder.Services.AddScoped<INetRatelNotificationApiClient, NetRatelNotificationApiClient>();
 builder.Services.AddScoped<INotificationConnectorApiService, NotificationConnectorApiService>();
 builder.Services.AddScoped<IGlobalSearchService, GlobalSearchService>();

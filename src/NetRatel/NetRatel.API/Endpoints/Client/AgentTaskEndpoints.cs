@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -11,6 +13,7 @@ using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared;
 using NetRatel.Shared.Contracts.Execution;
 using NetRatel.Shared.Contracts.Tasks;
+using NetRatel.Shared.Security;
 
 namespace NetRatel.API.Endpoints;
 
@@ -26,13 +29,17 @@ public static class AgentTaskEndpoints
             .WithTags("Agent Tasks")
             .RequireAuthorization();
 
-        group.MapGet("", async ([FromQuery] string? requestId, HttpContext http, [FromServices] IEffectiveAccessService access, IJobRunService runs, CancellationToken ct) =>
+        group.MapGet("", async ([FromQuery] string? requestId, HttpContext http, [FromServices] IEffectiveAccessService access, IJobRunService runs, [FromServices] OrchestratorDbContext db, CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(requestId))
                 return Results.StatusCode(StatusCodes.Status410Gone);
 
             var activity = await runs.GetActivityByRequestIdAsync(requestId, ct);
-            return activity is null ? Results.NotFound() : !await CanExecuteAsync(http, access, activity.TenantId, ct) ? Results.Forbid() : Results.Ok(new[] { Map(activity, null) });
+            if (activity is null) return Results.NotFound();
+            if (!await CanExecuteAsync(http, access, activity.TenantId, ct)) return Results.Forbid();
+            var agent = await ResolveAgentAsync(db, activity, ct);
+            var tenantName = await ResolveTenantNameAsync(db, activity.TenantId, ct);
+            return Results.Ok(new[] { Map(activity, agent, tenantName) });
         });
 
         group.MapGet("/recent", async (
@@ -47,19 +54,25 @@ public static class AgentTaskEndpoints
             [FromServices] OrchestratorDbContext db,
             CancellationToken ct) =>
         {
-            var agents = await db.Agents.AsNoTracking().ToDictionaryAsync(x => x.Id, ct);
             var activities = await runs.ListTaskActivitiesAsync(ct);
 
             var visible = await FilterAuthorizedAsync(activities, activity => activity.TenantId, http.User, access, ct);
-            var payload = visible
+            var selected = visible
                 .Where(x => !tenantId.HasValue || x.TenantId == tenantId)
                 .Where(x => !agentId.HasValue || x.AgentId == agentId)
                 .Where(x => string.IsNullOrWhiteSpace(taskType) || string.Equals(x.TaskType, taskType, StringComparison.OrdinalIgnoreCase))
                 .Where(x => string.IsNullOrWhiteSpace(status) || string.Equals(x.Status, status, StringComparison.OrdinalIgnoreCase))
                 .Take(Math.Clamp(limit ?? 25, 1, 100))
-                .Select(x => Map(x, x.AgentId is { } id && agents.TryGetValue(id, out var agent) ? agent : null))
                 .ToList();
-            return Results.Ok(payload);
+            var tenants = selected.Where(x => x.TenantId.HasValue).Select(x => x.TenantId!.Value).Distinct().ToArray();
+            var agentIds = selected.Where(x => x.AgentId.HasValue).Select(x => x.AgentId!.Value).Distinct().ToArray();
+            var agents = await db.Agents.AsNoTracking()
+                .Where(x => tenants.Contains(x.TenantId) && agentIds.Contains(x.Id))
+                .ToDictionaryAsync(x => (x.TenantId, x.Id), ct);
+            var tenantNames = await db.Tenants.AsNoTracking().Where(x => tenants.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+            return Results.Ok(selected.Select(x => Map(x,
+                x.TenantId is { } tenant && x.AgentId is { } id && agents.TryGetValue((tenant, id), out var agent) ? agent : null,
+                x.TenantId is { } tenantIdValue && tenantNames.TryGetValue(tenantIdValue, out var name) ? name : null)).ToList());
         });
 
         group.MapGet("/history", async (
@@ -91,13 +104,12 @@ public static class AgentTaskEndpoints
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["page"] = ["Page is too large."] });
             }
 
-            var query = BuildHistoryQuery(db, search, tenantId, agentId, taskType, status, requestId);
-            var visible = await FilterAuthorizedAsync(await query.ToListAsync(ct), row => row.TenantId, http.User, access, ct);
-            var total = visible.Count;
-            var items = visible
-                .Skip(resolvedPage * resolvedPageSize)
-                .Take(resolvedPageSize)
-                .ToList();
+            // Establish the visible activity tenants before resolving directory metadata.
+            var activityTenants = await db.JobTaskActivities.AsNoTracking().Select(x => x.TenantId).Distinct().ToListAsync(ct);
+            var authorizedTenants = await FilterAuthorizedAsync(activityTenants, id => id, http.User, access, ct);
+            var query = BuildHistoryQuery(db, authorizedTenants.ToArray(), search, tenantId, agentId, taskType, status, requestId);
+            var total = await query.CountAsync(ct);
+            var items = await query.Skip(resolvedPage * resolvedPageSize).Take(resolvedPageSize).ToListAsync(ct);
 
             return Results.Ok(new TaskHistoryPageDto(
                 items.Select(MapHistoryItem).ToList(),
@@ -111,10 +123,8 @@ public static class AgentTaskEndpoints
             var activity = await runs.GetActivityByIdAsync(id, ct);
             if (activity is null) return Results.NotFound();
             if (!await CanExecuteAsync(http, access, activity.TenantId, ct)) return Results.Forbid();
-            var agent = activity.AgentId is { } agentId
-                ? await db.Agents.AsNoTracking().SingleOrDefaultAsync(x => x.Id == agentId, ct)
-                : null;
-            return Results.Ok(Map(activity, agent));
+            var agent = await ResolveAgentAsync(db, activity, ct);
+            return Results.Ok(Map(activity, agent, await ResolveTenantNameAsync(db, activity.TenantId, ct)));
         });
 
         group.MapPost("", async (
@@ -134,6 +144,8 @@ public static class AgentTaskEndpoints
             if (!await CanExecuteAsync(http, access, request.TenantId, ct)) return Results.Forbid();
             if (string.IsNullOrWhiteSpace(request.TaskType))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["taskType"] = ["TaskType is required."] });
+            if (!Enum.IsDefined(request.Environment))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["environment"] = ["Environment must be None, Dev, Prod, or Both."] });
 
             var agent = await db.Agents.SingleOrDefaultAsync(x => x.TenantId == request.TenantId && x.Id == request.AgentId, ct);
             if (agent is null) return Results.NotFound(new { code = "agent_not_found" });
@@ -149,8 +161,24 @@ public static class AgentTaskEndpoints
             if (payload.Error is not null) return Results.BadRequest(payload.Error);
 
             var requestId = string.IsNullOrWhiteSpace(request.RequestId) ? Guid.NewGuid().ToString("N") : request.RequestId.Trim();
+            // A caller-selected key must not reveal or re-dispatch an existing execution.
+            if (await runs.GetActivityByRequestIdAsync(requestId, ct) is not null)
+                return Results.Conflict(new { code = "request_id_in_use" });
+            var presentation = CreatePresentation(agent);
+            var metadata = BuildExecutionMetadata(taskType, payload.Value!, payload.ScriptName);
             var created = await runs.CreateTaskActivityAsync(new CreateJobTaskActivityCommand(
-                requestId, null, null, string.Empty, request.TenantId, taskType, "Pending", null, DateTimeOffset.UtcNow, null, request.AgentId), ct);
+                requestId, null, null, string.Empty, request.TenantId, taskType, "Pending", null, DateTimeOffset.UtcNow, null, request.AgentId,
+                Environment: request.Environment,
+                TargetDisplayName: presentation.HostName ?? presentation.DisplayName,
+                TargetHostName: presentation.HostName,
+                TargetName: ConfiguredName(presentation),
+                ScriptName: metadata.ScriptName,
+                ScriptType: metadata.ScriptType,
+                CommandLabel: metadata.CommandLabel,
+                ScriptContentHash: metadata.ScriptContentHash), ct);
+
+            if (created.TenantId != request.TenantId || created.AgentId != request.AgentId)
+                return Results.Conflict(new { code = "request_id_in_use" });
 
             await commands.DispatchAsync(target, requestId, correlation.Current ?? $"netratel-task-{requestId}", taskType, payload.Value!, (int)request.Environment, ct);
             await events.RecordAsync(new DomainEvent
@@ -164,7 +192,7 @@ public static class AgentTaskEndpoints
                 Message = $"Task {taskType} submitted for agent {agent.Name ?? request.AgentId.Value.ToString()}.",
                 Payload = new { requestId, request.TenantId, request.AgentId, taskType, environment = request.Environment.ToString() }
             }, ct);
-            return Results.Created($"/api/v2/tasks/{created.Id}", Map(created, agent));
+            return Results.Created($"/api/v2/tasks/{created.Id}", Map(created, agent, await ResolveTenantNameAsync(db, created.TenantId, ct)));
         });
 
         group.MapGet("/{id:long}/logs", async (ulong id, [FromQuery] long sinceId, [FromQuery] string? stream, HttpContext http, [FromServices] IEffectiveAccessService access, IJobRunService runs, CancellationToken ct) =>
@@ -203,7 +231,7 @@ public static class AgentTaskEndpoints
         return visible;
     }
 
-    internal static async Task<(string? Value, string? Error)> BuildPayloadAsync(TaskCreateRequestDto request, string taskType, IScriptService scripts, CancellationToken ct)
+    internal static async Task<PreparedTaskPayload> BuildPayloadAsync(TaskCreateRequestDto request, string taskType, IScriptService scripts, CancellationToken ct)
     {
         if (request.TaskType is TaskKinds.Legacy_RunPowerShell or TaskKinds.Legacy_ExecPs)
         {
@@ -247,7 +275,7 @@ public static class AgentTaskEndpoints
             var script = await scripts.GetAsync((ulong)scriptId, ct);
             if (script is null) return (null, $"Script {scriptId} not found.");
             var type = request.ScriptType ?? (Enum.TryParse<ScriptType>(script.ScriptType, true, out var parsed) ? parsed : ScriptType.PowerShell);
-            return (JsonSerializer.Serialize(new ExecLibraryScriptPayload { ScriptId = scriptId, ScriptType = type, ScriptContent = script.Content, Preferred = request.Preferred, Parameters = request.Parameters, WorkingDirectory = request.WorkingDirectory, TimeoutSeconds = request.TimeoutSeconds }), null);
+            return new PreparedTaskPayload(JsonSerializer.Serialize(new ExecLibraryScriptPayload { ScriptId = scriptId, ScriptType = type, ScriptContent = script.Content, Preferred = request.Preferred, Parameters = request.Parameters, WorkingDirectory = request.WorkingDirectory, TimeoutSeconds = request.TimeoutSeconds }), null, script.Name);
         }
         return taskType is TaskKinds.OsInfo or TaskKinds.ProcessesList or TaskKinds.ProcessesTopCpu or TaskKinds.DiskFree
             ? (request.Payload ?? string.Empty, null)
@@ -262,43 +290,81 @@ public static class AgentTaskEndpoints
         _ => value
     };
 
-    internal static TaskDto Map(JobTaskActivityInfo activity, Agent? agent)
+    private static Task<Agent?> ResolveAgentAsync(OrchestratorDbContext db, JobTaskActivityInfo activity, CancellationToken ct) =>
+        activity.TenantId is { } tenantId && activity.AgentId is { } agentId
+            ? db.Agents.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == agentId, ct)
+            : Task.FromResult<Agent?>(null);
+
+    private static Task<string?> ResolveTenantNameAsync(OrchestratorDbContext db, int? tenantId, CancellationToken ct) =>
+        tenantId is { } id
+            ? db.Tenants.AsNoTracking().Where(x => x.Id == id).Select(x => (string?)x.Name).SingleOrDefaultAsync(ct)
+            : Task.FromResult<string?>(null);
+
+    private static AgentDirectoryPresentation CreatePresentation(Agent agent) =>
+        AgentDirectoryPresentation.Create(agent.TenantId, agent.Id, agent.Name, agent.IsEnabled,
+            agent.DeviceInfoJson, string.Empty, agent.Tags, agent.FriendlyName);
+
+    private static string? ConfiguredName(AgentDirectoryPresentation presentation) =>
+        !string.Equals(presentation.HostName ?? presentation.DisplayName, presentation.DisplayName, StringComparison.OrdinalIgnoreCase)
+            ? presentation.DisplayName : null;
+
+    internal static TaskDto Map(JobTaskActivityInfo activity, Agent? agent, string? tenantName = null)
     {
         var output = ProjectOutput(activity);
-        var presentation = agent is null
-            ? null
-            : AgentDirectoryPresentation.Create(
-                agent.TenantId,
-                agent.Id,
-                agent.Name,
-                agent.IsEnabled,
-                agent.DeviceInfoJson,
-                string.Empty);
-        var primaryTarget = presentation?.HostName ?? presentation?.DisplayName;
-        var configuredName = presentation is not null &&
-                             !string.Equals(primaryTarget, presentation.DisplayName, StringComparison.OrdinalIgnoreCase)
-            ? presentation.DisplayName
-            : null;
-
+        // Directory metadata must belong to the activity's authorized target.
+        var presentation = agent is not null && agent.TenantId == activity.TenantId && agent.Id == activity.AgentId
+            ? CreatePresentation(agent) : null;
+        var hasTargetSnapshot = activity.TargetDisplayName is not null;
         return new(
             activity.Id > int.MaxValue ? 0 : (int)activity.Id,
             activity.RequestId,
             activity.ClientIdentity,
             activity.TenantId,
-            ClientEnvironment.None,
+            activity.Environment,
             activity.TaskType,
             activity.Status,
             output.StatusMessage,
             output.ResultJson,
             activity.CreatedAtUtc,
-            null,
+            activity.StartedAtUtc,
             activity.CompletedAtUtc,
-            output.ExitCode,
-            primaryTarget,
-            presentation?.HostName,
-            configuredName,
-            activity.AgentId);
+            activity.ExitCode ?? output.ExitCode,
+            hasTargetSnapshot ? activity.TargetDisplayName : presentation?.HostName ?? presentation?.DisplayName ?? LegacyTargetLabel(activity.AgentId, activity.ClientIdentity),
+            hasTargetSnapshot ? activity.TargetHostName : presentation?.HostName,
+            hasTargetSnapshot ? activity.TargetName : presentation is null ? null : ConfiguredName(presentation),
+            activity.AgentId,
+            activity.ScriptName,
+            activity.ScriptType,
+            activity.CommandLabel,
+            tenantName);
     }
+
+    private static string? LegacyTargetLabel(Guid? agentId, string? clientIdentity) =>
+        agentId is null && !string.IsNullOrWhiteSpace(clientIdentity) ? $"Historical target: {clientIdentity.Trim()}" : null;
+
+    internal static ExecutionMetadata BuildExecutionMetadata(string taskType, string payload, string? scriptName)
+    {
+        if (taskType == TaskKinds.ExecLibraryScript)
+        {
+            var invocation = JsonSerializer.Deserialize<ExecLibraryScriptPayload>(payload)!;
+            return new(scriptName ?? "PowerShell script", invocation.ScriptType.ToString(), null,
+                invocation.ScriptContent is null ? null : Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(invocation.ScriptContent))).ToLowerInvariant());
+        }
+        if (taskType == TaskKinds.ExecShellCommand)
+        {
+            var invocation = JsonSerializer.Deserialize<ExecShellCommandPayload>(payload)!;
+            var command = OperatorOutputRedactor.Redact(invocation.Command).Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
+            return new(null, null, command?.Length > 160 ? command[..157] + "..." : command, null);
+        }
+        return new(null, null, null, null);
+    }
+
+    internal sealed record PreparedTaskPayload(string? Value, string? Error, string? ScriptName = null)
+    {
+        public static implicit operator PreparedTaskPayload((string? Value, string? Error) result) => new(result.Value, result.Error);
+    }
+
+    internal sealed record ExecutionMetadata(string? ScriptName, string? ScriptType, string? CommandLabel, string? ScriptContentHash);
 
     private static TaskOutputProjection ProjectOutput(JobTaskActivityInfo activity)
     {
@@ -411,6 +477,7 @@ public static class AgentTaskEndpoints
 
     private static IQueryable<TaskHistoryRow> BuildHistoryQuery(
         OrchestratorDbContext db,
+        int?[] authorizedTenants,
         string? search,
         int? tenantId,
         Guid? agentId,
@@ -418,7 +485,8 @@ public static class AgentTaskEndpoints
         string? status,
         string? requestId)
     {
-        IQueryable<JobTaskActivityRecord> activities = db.JobTaskActivities.AsNoTracking();
+        IQueryable<JobTaskActivityRecord> activities = db.JobTaskActivities.AsNoTracking()
+            .Where(activity => authorizedTenants.Contains(activity.TenantId));
         if (tenantId.HasValue)
         {
             activities = activities.Where(activity => activity.TenantId == tenantId.Value);
@@ -441,9 +509,12 @@ public static class AgentTaskEndpoints
         }
 
         var query = from activity in activities
-                    join agent in db.Agents.AsNoTracking() on activity.AgentId equals (Guid?)agent.Id into agentRows
+                    join agent in db.Agents.AsNoTracking()
+                        on new { activity.TenantId, activity.AgentId } equals new { TenantId = (int?)agent.TenantId, AgentId = (Guid?)agent.Id } into agentRows
                     from agent in agentRows.DefaultIfEmpty()
-                    select new { Activity = activity, Agent = agent };
+                    join tenant in db.Tenants.AsNoTracking() on activity.TenantId equals (int?)tenant.Id into tenantRows
+                    from tenant in tenantRows.DefaultIfEmpty()
+                    select new { Activity = activity, Agent = agent, TenantName = tenant == null ? null : tenant.Name };
 
         if (!string.IsNullOrWhiteSpace(search))
         {
@@ -453,12 +524,18 @@ public static class AgentTaskEndpoints
                     EF.Functions.ILike(row.Activity.RequestId, like) || EF.Functions.ILike(row.Activity.TaskType, like) ||
                     EF.Functions.ILike(row.Activity.Status, like) || EF.Functions.ILike(row.Activity.ClientIdentity, like) ||
                     (row.Agent != null && row.Agent.Name != null && EF.Functions.ILike(row.Agent.Name, like)) ||
-                    (row.Agent != null && row.Agent.DeviceInfoJson != null && EF.Functions.ILike(row.Agent.DeviceInfoJson, like)))
+                    (row.Agent != null && row.Agent.DeviceInfoJson != null && EF.Functions.ILike(row.Agent.DeviceInfoJson, like)) ||
+                    (row.Activity.TargetDisplayName != null && EF.Functions.ILike(row.Activity.TargetDisplayName, like)) ||
+                    (row.Activity.ScriptName != null && EF.Functions.ILike(row.Activity.ScriptName, like)) ||
+                    (row.Activity.CommandLabel != null && EF.Functions.ILike(row.Activity.CommandLabel, like)))
                 : query.Where(row =>
                     EF.Functions.Like(row.Activity.RequestId.ToUpper(), like.ToUpper(), "\\") || EF.Functions.Like(row.Activity.TaskType.ToUpper(), like.ToUpper(), "\\") ||
                     EF.Functions.Like(row.Activity.Status.ToUpper(), like.ToUpper(), "\\") || EF.Functions.Like(row.Activity.ClientIdentity.ToUpper(), like.ToUpper(), "\\") ||
                     (row.Agent != null && row.Agent.Name != null && EF.Functions.Like(row.Agent.Name.ToUpper(), like.ToUpper(), "\\")) ||
-                    (row.Agent != null && row.Agent.DeviceInfoJson != null && EF.Functions.Like(row.Agent.DeviceInfoJson.ToUpper(), like.ToUpper(), "\\")));
+                    (row.Agent != null && row.Agent.DeviceInfoJson != null && EF.Functions.Like(row.Agent.DeviceInfoJson.ToUpper(), like.ToUpper(), "\\")) ||
+                    (row.Activity.TargetDisplayName != null && EF.Functions.Like(row.Activity.TargetDisplayName.ToUpper(), like.ToUpper(), "\\")) ||
+                    (row.Activity.ScriptName != null && EF.Functions.Like(row.Activity.ScriptName.ToUpper(), like.ToUpper(), "\\")) ||
+                    (row.Activity.CommandLabel != null && EF.Functions.Like(row.Activity.CommandLabel.ToUpper(), like.ToUpper(), "\\")));
         }
 
         return query
@@ -467,6 +544,7 @@ public static class AgentTaskEndpoints
             .Select(row => new TaskHistoryRow(
             row.Activity.Id,
             row.Activity.RequestId,
+            row.Activity.ClientIdentity,
             row.Activity.TenantId,
             row.Activity.TaskType,
             row.Activity.Status,
@@ -475,8 +553,20 @@ public static class AgentTaskEndpoints
             row.Activity.CompletedAtUtc,
             row.Activity.AgentId,
             row.Agent == null ? null : row.Agent.Name,
+            row.Agent == null ? null : row.Agent.FriendlyName,
             row.Agent == null ? null : row.Agent.DeviceInfoJson,
-            row.Agent != null && row.Agent.IsEnabled));
+            row.Agent != null && row.Agent.IsEnabled,
+            row.Agent != null,
+            row.Activity.Environment,
+            row.Activity.StartedAtUtc,
+            row.Activity.ExitCode,
+            row.Activity.TargetDisplayName,
+            row.Activity.TargetHostName,
+            row.Activity.TargetName,
+            row.Activity.ScriptName,
+            row.Activity.ScriptType,
+            row.Activity.CommandLabel,
+            row.TenantName));
     }
 
     private static TaskHistoryItemDto MapHistoryItem(TaskHistoryRow row)
@@ -494,7 +584,7 @@ public static class AgentTaskEndpoints
             row.CreatedAtUtc,
             row.CompletedAtUtc,
             row.AgentId));
-        var presentation = row.AgentId is not { } agentId
+        var presentation = row.AgentId is not { } agentId || !row.AgentExists
             ? null
             : AgentDirectoryPresentation.Create(
                 row.TenantId ?? 0,
@@ -502,13 +592,15 @@ public static class AgentTaskEndpoints
                 row.AgentName,
                 row.AgentIsEnabled,
                 row.AgentDeviceInfoJson,
-                string.Empty);
+                string.Empty,
+                friendlyName: row.AgentFriendlyName);
         var primaryTarget = presentation?.HostName ?? presentation?.DisplayName;
         var configuredName = presentation is not null &&
                              !string.Equals(primaryTarget, presentation.DisplayName, StringComparison.OrdinalIgnoreCase)
             ? presentation.DisplayName
             : null;
 
+        var hasTargetSnapshot = row.TargetDisplayName is not null;
         return new TaskHistoryItemDto(
             row.Id > int.MaxValue ? 0 : (int)row.Id,
             row.RequestId,
@@ -518,15 +610,23 @@ public static class AgentTaskEndpoints
             output.StatusMessage,
             row.CreatedAtUtc,
             row.CompletedAtUtc,
-            primaryTarget,
-            presentation?.HostName,
-            configuredName,
-            row.AgentId);
+            hasTargetSnapshot ? row.TargetDisplayName : primaryTarget ?? LegacyTargetLabel(row.AgentId, row.ClientIdentity),
+            hasTargetSnapshot ? row.TargetHostName : presentation?.HostName,
+            hasTargetSnapshot ? row.TargetName : configuredName,
+            row.AgentId,
+            row.Environment,
+            row.StartedAtUtc,
+            row.ExitCode,
+            row.ScriptName,
+            row.ScriptType,
+            row.CommandLabel,
+            row.TenantName);
     }
 
     private sealed record TaskHistoryRow(
         long Id,
         string RequestId,
+        string ClientIdentity,
         int? TenantId,
         string TaskType,
         string Status,
@@ -535,7 +635,19 @@ public static class AgentTaskEndpoints
         DateTimeOffset? CompletedAtUtc,
         Guid? AgentId,
         string? AgentName,
+        string? AgentFriendlyName,
         string? AgentDeviceInfoJson,
-        bool AgentIsEnabled);
+        bool AgentIsEnabled,
+        bool AgentExists,
+        ClientEnvironment? Environment,
+        DateTimeOffset? StartedAtUtc,
+        int? ExitCode,
+        string? TargetDisplayName,
+        string? TargetHostName,
+        string? TargetName,
+        string? ScriptName,
+        string? ScriptType,
+        string? CommandLabel,
+        string? TenantName);
 
 }

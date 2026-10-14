@@ -7,10 +7,13 @@
 @using NetRatel.Shared.Contracts
 @using NetRatel.Web.Models.Clients
 @using NetRatel.Web.Services.Clients
+@using NetRatel.Web.Services.Script
+@using NetRatel.Shared.Contracts.Scripts
 
 @inject IJobApiClient JobApi
 @inject ITenantApiService TenantApi
 @inject ClientPresentationService ClientPresentation
+@inject IScriptLibraryService ScriptLibrary
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 
@@ -20,7 +23,7 @@
             @if (_createdInWorkspace)
             {
                 <MudText Typo="Typo.caption" Color="Color.Secondary" Class="jobs-editor-saved" role="status">
-                    Job #@_jobId created. Add steps or parameters below, then Save to finish.
+                    Job #@_jobId created. Steps and parameters save as you edit them. Save finishes the definition and enables its schedule.
                 </MudText>
             }
             @if (!string.IsNullOrWhiteSpace(_validationMessage))
@@ -41,7 +44,7 @@
             }
             <fieldset class="jobs-editor-fields" disabled="@(_isSaving || _isLoading)">
             <MudGrid Spacing="2" Class="flex-grow-1 jobs-editor-layout ma-0">
-                <MudItem xs="12" md="4" Class="d-flex">
+                <MudItem xs="12" md="3" Class="d-flex">
                     <MudPaper Elevation="0" Class="pa-3 jobs-editor-panel jobs-editor-sidebar">
                         <MudStack Spacing="2">
                             <MudTabs KeepPanelsAlive="true" Elevation="0" TabPanelsClass="pt-2" Color="Color.Default" Class="jobs-editor-definition-tabs">
@@ -54,6 +57,9 @@
                                                       Required="true"
                                                       Adornment="Adornment.Start"
                                                       AdornmentIcon="@Icons.Material.Filled.Work" />
+
+                                        <MudTextField @bind-Value="_description" Label="Description" Variant="Variant.Outlined"
+                                                      Margin="Margin.Dense" Lines="2" />
 
                                         <MudAutocomplete T="TenantDto"
                                                          Label="Tenant"
@@ -68,7 +74,7 @@
                                                          Clearable="true"
                                                          Required="true" />
 
-                                        <MudSelect T="ClientEnvironment"
+                                        <MudSelect T="ClientEnvironment?"
                                                    Label="Environment"
                                                    Value="_environment"
                                                    ValueChanged="OnEnvironmentChanged"
@@ -77,7 +83,7 @@
                                                    Disabled="@(_selectedTenant == null)">
                                             @foreach (var env in _environments)
                                             {
-                                                <MudSelectItem Value="@env">@env.ToShortLabel()</MudSelectItem>
+                                                <MudSelectItem T="ClientEnvironment?" Value="@env">@(env?.ToShortLabel() ?? "Unspecified")</MudSelectItem>
                                             }
                                         </MudSelect>
 
@@ -185,7 +191,7 @@
 
                                         <MudPaper Class="pa-2 jobs-editor-folder-preview" Outlined="true">
                                             <MudText Typo="Typo.caption" Class="jobs-editor-field-caption">Timezone</MudText>
-                                            <MudText Typo="Typo.body2">@ScheduleTimeZoneId</MudText>
+                                            <MudText Typo="Typo.body2">@_scheduleTimeZoneId</MudText>
                                         </MudPaper>
                                     </MudStack>
                                 </MudTabPanel>
@@ -194,12 +200,12 @@
                     </MudPaper>
                 </MudItem>
 
-                <MudItem xs="12" md="8" Class="d-flex">
+                <MudItem xs="12" md="9" Class="d-flex">
                     <MudTabs @bind-ActivePanelIndex="_detailsTab" KeepPanelsAlive="true" Elevation="0" TabPanelsClass="pa-0" Color="Color.Default" Class="flex-grow-1 jobs-editor-tabs">
 
                 <!-- STEPS TAB -->
                 <MudTabPanel Text="Steps" Icon="@Icons.Material.Filled.PlaylistPlay" BadgeData="@(_steps.Count > 0 ? _steps.Count : null)" BadgeColor="Color.Secondary">
-                    <MudTable Items="_steps" Dense="true" Hover="true" FixedHeader="true" Height="min(360px, calc(100dvh - 270px))" Style="background: transparent;">
+                    <MudTable Items="_steps" Dense="true" Hover="true" Breakpoint="Breakpoint.Md" FixedHeader="true" Height="min(520px, calc(100dvh - 230px))" Class="jobs-editor-steps" Style="background: transparent;">
                         <ToolBarContent>
                             <MudText Typo="Typo.h6">Steps</MudText>
                             <MudSpacer />
@@ -209,29 +215,30 @@
                         </ToolBarContent>
                         <HeaderContent>
                             <MudTh>#</MudTh>
-                            <MudTh>Action</MudTh>
+                            <MudTh>Step</MudTh>
                             <MudTh>Enabled</MudTh>
-                            <MudTh>Details</MudTh>
                             <MudTh Style="text-align:right">Actions</MudTh>
                         </HeaderContent>
                         <RowTemplate>
-                            <MudTd><b>@context.Ordinal</b></MudTd>
-                            <MudTd>
-                                <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Text">@context.Type</MudChip>
+                            <MudTd DataLabel="Order"><b>@context.Ordinal</b></MudTd>
+                            <MudTd DataLabel="Step" Class="jobs-editor-step-summary">
+                                <MudText Typo="Typo.body2">@GetStepSummary(context)</MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">@GetStepTypeLabel(context)</MudText>
                             </MudTd>
-                            <MudTd>
+                            <MudTd DataLabel="Enabled">
                                 <MudSwitch T="bool"
                                            Value="context.Enabled"
                                            ValueChanged="@(async (bool value) => await RunDetailsActionAsync(() => ToggleStepEnabledAsync(context, value)))"
                                            Color="Color.Primary"
                                            Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed)" />
                             </MudTd>
-                            <MudTd><MudText Typo="Typo.body2" Class="mud-text-secondary">@GetStepSummary(context)</MudText></MudTd>
-                            <MudTd Style="text-align:right">
-                                <MudIconButton Icon="@Icons.Material.Filled.ArrowUpward" Size="Size.Small" OnClick="@(() => RunDetailsActionAsync(() => MoveStepAsync(context, -1)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed || !CanMove(context, -1))"/>
-                                <MudIconButton Icon="@Icons.Material.Filled.ArrowDownward" Size="Size.Small" OnClick="@(() => RunDetailsActionAsync(() => MoveStepAsync(context, 1)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed || !CanMove(context, 1))"/>
-                                <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => RunDetailsActionAsync(() => EditStepAsync(context)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed)" />
-                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => RunDetailsActionAsync(() => DeleteStepAsync(context)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed)" />
+                            <MudTd DataLabel="Actions" Class="jobs-editor-step-actions">
+                                <span class="jobs-editor-row-actions">
+                                <MudIconButton Icon="@Icons.Material.Filled.ArrowUpward" Size="Size.Small" aria-label="@($"Move step {context.Ordinal} up")" OnClick="@(() => RunDetailsActionAsync(() => MoveStepAsync(context, -1)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed || !CanMove(context, -1))"/>
+                                <MudIconButton Icon="@Icons.Material.Filled.ArrowDownward" Size="Size.Small" aria-label="@($"Move step {context.Ordinal} down")" OnClick="@(() => RunDetailsActionAsync(() => MoveStepAsync(context, 1)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed || !CanMove(context, 1))"/>
+                                <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" aria-label="@($"Edit step {context.Ordinal}")" OnClick="@(() => RunDetailsActionAsync(() => EditStepAsync(context)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed)" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" aria-label="@($"Delete step {context.Ordinal}")" OnClick="@(() => RunDetailsActionAsync(() => DeleteStepAsync(context)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed)" />
+                                </span>
                             </MudTd>
                         </RowTemplate>
                         <NoRecordsContent>
@@ -299,7 +306,12 @@
         </div>
     </DialogContent>
     <DialogActions>
-        <MudButton OnClick="CancelAsync" Disabled="@(_isSaving || _detailsBusy)">Cancel</MudButton>
+        @if (_createdInWorkspace)
+        {
+            <MudButton OnClick="DeleteCreatedDraftAsync" Color="Color.Error" Disabled="@(_isSaving || _detailsBusy)">Delete draft</MudButton>
+            <MudSpacer />
+        }
+        <MudButton OnClick="CancelAsync" Disabled="@(_isSaving || _detailsBusy)">@(_createdInWorkspace ? "Close draft" : "Cancel")</MudButton>
         <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SaveAsync" Disabled="@(_isSaving || _isLoading || _detailsBusy)" StartIcon="@Icons.Material.Filled.Save">
             @(_isSaving ? "Saving…" : _jobId == null ? "Create and add steps" : "Save")
         </MudButton>
@@ -331,14 +343,15 @@
     private string _savedDefinition = string.Empty;
     private string DefinitionSnapshot => System.Text.Json.JsonSerializer.Serialize(new
     {
-        Name = _name, TenantId = _selectedTenant?.Id, Environment = _environment,
+        Name = _name, Description = _description, TenantId = _selectedTenant?.Id, Environment = _environment,
         AgentId = _selectedClient?.AgentId ?? _rawAgentId, Folder = _folderSubfolder,
         ExpectedMinutes = _expectedRuntimeMinutes, GraceMinutes = _graceRuntimeMinutes,
-        ScheduleEnabled = _scheduleEnabled, SchedulePreset = _schedulePreset, ScheduleTime = _scheduleTime,
+        ScheduleEnabled = _scheduleEnabled, ScheduleTimeZone = _scheduleTimeZoneId, SchedulePreset = _schedulePreset, ScheduleTime = _scheduleTime,
         ScheduleDays = _selectedScheduleDays.OrderBy(day => day).ToArray()
     });
     private bool HasDefinitionChanges => DefinitionSnapshot != _savedDefinition;
     private string _name = string.Empty;
+    private string? _description;
     private string? _validationMessage;
     private string? _suggestedFolderNormalized;
     private string _folderSubfolder = string.Empty;
@@ -347,7 +360,19 @@
     private bool _isCloneDraft;
     private int _expectedRuntimeMinutes = 30;
     private int _graceRuntimeMinutes;
-    private const string ScheduleTimeZoneId = "Africa/Johannesburg";
+    private string _scheduleTimeZoneId = "Africa/Johannesburg";
+    private int? _originalExpectedSeconds;
+    private int? _originalGraceSeconds;
+    private int? _originalHardTimeoutSeconds;
+    private int _loadedExpectedMinutes;
+    private int _loadedGraceMinutes;
+    private int EffectiveExpectedSeconds => _originalExpectedSeconds.HasValue && _expectedRuntimeMinutes == _loadedExpectedMinutes
+        ? _originalExpectedSeconds.Value : _expectedRuntimeMinutes * 60;
+    private int EffectiveGraceSeconds => _originalGraceSeconds.HasValue && _graceRuntimeMinutes == _loadedGraceMinutes
+        ? _originalGraceSeconds.Value : _graceRuntimeMinutes * 60;
+    private int EffectiveHardTimeoutSeconds => _originalHardTimeoutSeconds.HasValue && _expectedRuntimeMinutes == _loadedExpectedMinutes && _graceRuntimeMinutes == _loadedGraceMinutes
+        ? _originalHardTimeoutSeconds.Value : EffectiveExpectedSeconds + EffectiveGraceSeconds;
+    private readonly Dictionary<ulong, ScriptSummaryDto> _scriptSummaries = new();
     private static readonly DayOfWeek[] ScheduleDays =
     [
         DayOfWeek.Monday,
@@ -359,6 +384,7 @@
         DayOfWeek.Sunday
     ];
     private bool _scheduleEnabled;
+    private bool _hadSchedule;
     private SchedulePreset _schedulePreset = SchedulePreset.EveryDay;
     private TimeSpan? _scheduleTime = new(8, 0, 0);
     private HashSet<DayOfWeek> _selectedScheduleDays = ScheduleDays.ToHashSet();
@@ -367,8 +393,8 @@
     private List<TenantDto> _tenants = new();
     private TenantDto? _selectedTenant;
 
-    private ClientEnvironment[] _environments = new[] { ClientEnvironment.Dev, ClientEnvironment.Prod };
-    private ClientEnvironment _environment = ClientEnvironment.Dev;
+    private ClientEnvironment?[] _environments = [null, ClientEnvironment.None, ClientEnvironment.Dev, ClientEnvironment.Prod, ClientEnvironment.Both];
+    private ClientEnvironment? _environment = ClientEnvironment.Dev;
 
     private ClientPresentationModel? _selectedClient;
     private Guid? _rawAgentId;
@@ -428,8 +454,9 @@
             }
 
             _name = job.Name;
+            _description = job.Description;
             _rawAgentId = job.AgentId;
-            _environment = job.Environment is ClientEnvironment.None ? _environment : job.Environment;
+            _environment = job.Environment;
             ApplyRuntimePolicy(job);
             ApplySchedule(job.Schedule);
 
@@ -471,8 +498,9 @@
             var job = details.Job;
 
             _name = $"{job.Name} (copy)";
+            _description = job.Description;
             _rawAgentId = job.AgentId;
-            _environment = job.Environment is ClientEnvironment.None ? ClientEnvironment.Dev : job.Environment;
+            _environment = job.Environment;
             ApplyRuntimePolicy(job);
             ApplySchedule(job.Schedule);
 
@@ -494,6 +522,7 @@
             _params = details.Params.OrderBy(p => p.Name).ToList();
             _steps = details.Steps.OrderBy(s => s.Ordinal).ToList();
 
+            await LoadScriptSummariesAsync();
             _isCloneDraft = true;
         }
         catch (Exception ex)
@@ -533,7 +562,7 @@
         StateHasChanged();
     }
 
-    private void OnEnvironmentChanged(ClientEnvironment env)
+    private void OnEnvironmentChanged(ClientEnvironment? env)
     {
         _environment = env;
         _selectedClient = null;
@@ -704,14 +733,15 @@
                 var req = new CreateJobRequest(
                     _name,
                     lockedFolder,
-                    null,
+                    _description,
                     finalTenantId,
                     string.Empty,
-                    ExpectedRuntimeSeconds: _expectedRuntimeMinutes * 60,
-                    GraceSeconds: _graceRuntimeMinutes * 60,
-                    HardTimeoutSeconds: (_expectedRuntimeMinutes + _graceRuntimeMinutes) * 60,
-                    Schedule: schedule,
-                    AgentId: finalAgentId);
+                    ExpectedRuntimeSeconds: EffectiveExpectedSeconds,
+                    GraceSeconds: EffectiveGraceSeconds,
+                    HardTimeoutSeconds: EffectiveHardTimeoutSeconds,
+                    Schedule: null,
+                    AgentId: finalAgentId,
+                    Environment: _environment);
                 job = await JobApi.CreateJobAsync(req);
                 if (job.Id == 0) throw new InvalidOperationException("The server did not return a saved job ID.");
                 _jobId = job.Id;
@@ -752,14 +782,15 @@
                 var req = new UpdateJobRequest(
                     _name,
                     lockedFolder,
-                    null,
+                    _description,
                     finalTenantId,
                     string.Empty,
-                    ExpectedRuntimeSeconds: _expectedRuntimeMinutes * 60,
-                    GraceSeconds: _graceRuntimeMinutes * 60,
-                    HardTimeoutSeconds: (_expectedRuntimeMinutes + _graceRuntimeMinutes) * 60,
+                    ExpectedRuntimeSeconds: EffectiveExpectedSeconds,
+                    GraceSeconds: EffectiveGraceSeconds,
+                    HardTimeoutSeconds: EffectiveHardTimeoutSeconds,
                     Schedule: schedule,
-                    AgentId: finalAgentId);
+                    AgentId: finalAgentId,
+                    Environment: _environment);
                 job = await JobApi.UpdateJobAsync(_jobId.Value, req);
                 _savedDefinition = DefinitionSnapshot;
                 _savedJob = job;
@@ -806,11 +837,18 @@
     {
         _expectedRuntimeMinutes = Math.Max(1, (int)Math.Ceiling(job.ExpectedRuntimeSeconds / 60d));
         _graceRuntimeMinutes = Math.Max(0, (int)Math.Ceiling(job.GraceSeconds / 60d));
+        _originalExpectedSeconds = job.ExpectedRuntimeSeconds;
+        _originalGraceSeconds = job.GraceSeconds;
+        _originalHardTimeoutSeconds = job.HardTimeoutSeconds;
+        _loadedExpectedMinutes = _expectedRuntimeMinutes;
+        _loadedGraceMinutes = _graceRuntimeMinutes;
     }
 
     private void ApplySchedule(JobScheduleDto? schedule)
     {
-        if (schedule is null || !schedule.Enabled)
+        _hadSchedule = schedule is not null;
+        _scheduleTimeZoneId = string.IsNullOrWhiteSpace(schedule?.TimeZoneId) ? "Africa/Johannesburg" : schedule.TimeZoneId;
+        if (schedule is null)
         {
             _scheduleEnabled = false;
             _schedulePreset = SchedulePreset.EveryDay;
@@ -819,7 +857,7 @@
             return;
         }
 
-        _scheduleEnabled = true;
+        _scheduleEnabled = schedule.Enabled;
         _scheduleTime = TimeSpan.TryParse(schedule.TimeOfDay, out var parsedTime)
             ? parsedTime
             : new TimeSpan(8, 0, 0);
@@ -840,7 +878,7 @@
 
     private JobScheduleDto? BuildScheduleRequest()
     {
-        if (!_scheduleEnabled)
+        if (!_scheduleEnabled && !_hadSchedule)
         {
             return null;
         }
@@ -860,8 +898,8 @@
         }
 
         return new JobScheduleDto(
-            true,
-            ScheduleTimeZoneId,
+            _scheduleEnabled,
+            _scheduleTimeZoneId,
             $"{_scheduleTime.Value.Hours:00}:{_scheduleTime.Value.Minutes:00}",
             days.Select(day => day.ToString()).ToList());
     }
@@ -890,14 +928,36 @@
     private async Task CancelAsync()
     {
         if (_isSaving || _detailsBusy) return;
+        if (_createdInWorkspace && _savedJob is not null)
+        {
+            var close = await DialogService.ShowMessageBoxAsync("Close saved draft?",
+                $"Job #{_jobId} and its saved steps and parameters will remain. Unsaved definition changes will be discarded; its schedule is enabled only when you choose Save.",
+                yesText: "Keep draft and close", cancelText: "Keep editing");
+            if (close is true) MudDialog.Close(DialogResult.Ok(_savedJob));
+            return;
+        }
         if (HasDefinitionChanges && await DialogService.ShowMessageBoxAsync(
                 "Discard unsaved definition?", "Unsaved definition changes will be discarded. Saved steps and parameters are retained.",
                 yesText: "Discard", cancelText: "Keep editing") is not true)
             return;
-        if (_createdInWorkspace && _savedJob is not null)
+        MudDialog.Cancel();
+    }
+
+    private async Task DeleteCreatedDraftAsync()
+    {
+        if (!_createdInWorkspace || !_jobId.HasValue || _isSaving || _detailsBusy) return;
+        var confirm = await DialogService.ShowMessageBoxAsync("Delete created draft?",
+            "This deletes the new job and its saved steps and parameters. The source job of a copy is kept.",
+            yesText: "Delete draft", cancelText: "Keep editing");
+        if (confirm is not true) return;
+        _isSaving = true;
+        try
+        {
+            await JobApi.DeleteJobAsync(_jobId.Value);
             MudDialog.Close(DialogResult.Ok(_savedJob));
-        else
-            MudDialog.Cancel();
+        }
+        catch (Exception ex) { _validationMessage = $"Could not delete draft: {ex.Message}"; }
+        finally { _isSaving = false; }
     }
 
     public void Dispose()
@@ -914,6 +974,7 @@
             var steps = (await JobApi.GetJobStepsAsync(jobId)).OrderBy(s => s.Ordinal).ToList();
             _params = parameters;
             _steps = steps;
+            await LoadScriptSummariesAsync();
             _detailsLoadFailed = false;
         }
         catch
@@ -1023,9 +1084,35 @@
         return newOrdinal > 0 && newOrdinal <= _steps.Count;
     }
 
+    private async Task LoadScriptSummariesAsync()
+    {
+        foreach (var id in _steps.Where(step => step.ScriptId.HasValue).Select(step => step.ScriptId!.Value).Distinct())
+        {
+            if (_scriptSummaries.ContainsKey(id)) continue;
+            try
+            {
+                var script = await ScriptLibrary.GetByIdAsync(id, _disposeCts.Token);
+                if (script is not null) _scriptSummaries[id] = script;
+            }
+            catch (OperationCanceledException) when (_disposeCts.IsCancellationRequested) { return; }
+            catch { /* The persisted script ID remains a useful fallback when its source is unavailable. */ }
+        }
+    }
+
     private string GetStepSummary(JobStepDto step)
-        => step.Type == JobStepTypeDto.RunCommand
-            ? (string.IsNullOrWhiteSpace(step.Command) ? "RunCommand" : step.Command)
-            : step.Type.ToString();
+    {
+        var summary = step.Type switch
+        {
+            JobStepTypeDto.RunCommand => string.IsNullOrWhiteSpace(step.Command) ? "Shell command" : step.Command,
+            JobStepTypeDto.LibraryScript when step.ScriptId is { } id =>
+                _scriptSummaries.TryGetValue(id, out var script) ? script.Name : $"Library script #{id}",
+            JobStepTypeDto.HttpAction => "HTTP action",
+            _ => step.Type.ToString()
+        };
+        return summary.Length > 180 ? summary[..177] + "..." : summary;
+    }
+
+    private string GetStepTypeLabel(JobStepDto step) => step.Type == JobStepTypeDto.LibraryScript && step.ScriptId is { } id && _scriptSummaries.TryGetValue(id, out var script)
+        ? script.ScriptType ?? "Library script" : step.Runner ?? step.Type.ToString();
     private string GetParamDefault(JobParamDto param) => param.Default ?? "-";
 }

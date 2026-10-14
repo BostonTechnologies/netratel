@@ -439,6 +439,7 @@ enum CommandShadowStatus {
   COMMAND_SHADOW_STATUS_COMPLETED = 5;
   COMMAND_SHADOW_STATUS_FAILED = 6;
   COMMAND_SHADOW_STATUS_CANCELLED = 7;
+  COMMAND_SHADOW_STATUS_PROGRESS = 8;
 }
 
 message CommandShadowPublishSummary {
@@ -498,7 +499,7 @@ message CommandLifecycleUpdate {
   uint64 version = 5;
   CommandShadowStatus status = 6;
   string result_json = 7;
-  int32 exit_code = 8;
+  optional int32 exit_code = 8;
   uint64 sequence = 9;
 }
 
@@ -531,11 +532,25 @@ message GatewayJobFrame {
     JobConnectAccepted accepted = 10;
     JobStepDispatch dispatch = 11;
     JobCancel cancel = 12;
+    JobLifecycleReceipt receipt = 13;
   }
 }
 
 message AgentJobHello { repeated string capabilities = 1; }
-message JobConnectAccepted { string job_authority = 1; }
+message JobConnectAccepted {
+  string job_authority = 1;
+  repeated string capabilities = 2;
+}
+
+// Emitted only after the authority commits the immutable lifecycle evidence.
+// A successful transport write alone is not this acknowledgement.
+message JobLifecycleReceipt {
+  uint64 job_run_id = 1;
+  uint64 job_step_run_id = 2;
+  string request_id = 3;
+  uint64 version = 4;
+  uint64 lifecycle_sequence = 5;
+}
 
 enum JobLifecycleStatus {
   JOB_LIFECYCLE_STATUS_UNSPECIFIED = 0;
@@ -576,11 +591,16 @@ message JobLifecycleUpdate {
   JobLifecycleStatus status = 6;
   uint64 version = 7;
   uint64 lifecycle_sequence = 8;
+  // Server-origin dispatch identity. This is not on the agent's clock.
   google.protobuf.Timestamp requested_at_utc = 9;
+  // Agent event time, retained as evidence even after a wall-clock correction.
+  // Ordering is determined by the fenced lifecycle sequence, not timestamps.
   google.protobuf.Timestamp status_at_utc = 10;
   double progress_percent = 11;
   string result_json = 12;
-  int32 exit_code = 13;
+  optional int32 exit_code = 13;
+  // Present only when the agent observed execution start.
+  google.protobuf.Timestamp started_at_utc = 15;
 }
 
 message JobCancel {

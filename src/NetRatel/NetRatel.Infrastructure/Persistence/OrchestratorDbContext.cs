@@ -175,6 +175,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
         modelBuilder.ConfigurePairingModel();
         modelBuilder.ConfigureManagedOrchestrationModel();
         modelBuilder.ConfigureJobRunControlModel();
+        modelBuilder.ConfigureJobGatewayLifecycleReceiptModel();
         modelBuilder.ConfigureClientConnectionOwnershipModel();
         modelBuilder.Entity<ClientConnectionEpochRecord>(entity =>
         {

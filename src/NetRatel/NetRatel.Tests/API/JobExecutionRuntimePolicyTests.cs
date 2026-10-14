@@ -50,6 +50,29 @@ public sealed class JobExecutionRuntimePolicyTests
         policy.HardTimeoutSeconds.Should().Be(150);
     }
 
+    [Theory]
+    [InlineData(null, null, null, 120, 30, 500)]
+    [InlineData(200, 40, null, 200, 40, 500)]
+    [InlineData(200, 40, 600, 200, 40, 600)]
+    public void RuntimeRequest_MergesEachSelectedValueWithTheStoredDefinition(int? expected, int? grace, int? hard, int effectiveExpected, int effectiveGrace, int effectiveHard)
+    {
+        var job = new JobDefinitionInfo(1, "job", "/", null, 7, "", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            "{\"executionPolicy\":{\"expectedRuntimeSeconds\":120,\"graceSeconds\":30,\"hardTimeoutSeconds\":500}}");
+        var request = new NetRatel.Shared.Contracts.Jobs.RunJobRequest("test", null, null, expected, grace, hard);
+        var policy = JobExecutionRuntimePolicy.FromJobAndRequest(job, request);
+        policy.Should().Be(new JobExecutionRuntimePolicy(effectiveExpected, effectiveGrace, effectiveHard));
+        JobExecutionRuntimePolicy.FromOptions(JobExecutionRuntimePolicy.MergeOptionsJson(job.OptionsJson, policy)).Should().Be(policy);
+    }
+
+    [Fact]
+    public void ExecutionContext_PreservesUnknownHistoryAndRoundTripsSelectedEnvironment()
+    {
+        JobExecutionContextPolicy.FromOptions(null).Should().BeNull();
+        JobExecutionContextPolicy.FromOptions("{}").Should().BeNull();
+        JobExecutionContextPolicy.FromOptions(JobExecutionContextPolicy.MergeOptionsJson("{\"unrelated\":true}", NetRatel.Shared.ClientEnvironment.Dev))
+            .Should().Be(NetRatel.Shared.ClientEnvironment.Dev);
+    }
+
     [Fact]
     public void ResultPayloadHasSuccessfulExitCode_Treats_ExitZero_As_Success()
     {

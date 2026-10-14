@@ -79,7 +79,7 @@ namespace NetRatel.Web.Services.ClientTasks
 
         public async Task<TaskDto?> GetByRequestIdAsync(string requestId, CancellationToken cancellationToken = default)
         {
-            var rsp = await _http.GetAsync($"/api/v2/tasks?requestId={Uri.EscapeDataString(requestId)}", cancellationToken)
+            using var rsp = await _http.GetAsync($"/api/v2/tasks?requestId={Uri.EscapeDataString(requestId)}", cancellationToken)
                                  .ConfigureAwait(false);
 
             if (!rsp.IsSuccessStatusCode) return null;

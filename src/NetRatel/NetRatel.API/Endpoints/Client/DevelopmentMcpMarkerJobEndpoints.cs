@@ -300,7 +300,7 @@ public static class DevelopmentMcpMarkerJobEndpoints
         string.Equals(definition.Content, DevelopmentMcpScriptEndpoints.Content(record.Marker, record.Shell, record.ExecutionMode), StringComparison.Ordinal) &&
         string.Equals(definition.ScriptType, record.Shell == "sh" ? "bash" : "powershell", StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsTerminal(JobRunState status) => status is JobRunState.Succeeded or JobRunState.Failed or JobRunState.Cancelled or JobRunState.TimedOut;
+    private static bool IsTerminal(JobRunState status) => status is JobRunState.Succeeded or JobRunState.Failed or JobRunState.Cancelled or JobRunState.TimedOut or JobRunState.Unknown;
     private static string Folder(int tenantId, Guid agentId) => $"/mcp-dev/{tenantId}/{agentId:N}/jobs/";
     private static string MarkerJobPath(int tenantId, Guid agentId, ulong jobId) => $"/api/v2/development/mcp/agents/{tenantId}/{agentId:D}/marker-jobs/{jobId}";
     private static IResult TargetRejected(string code) => Results.Problem(statusCode: StatusCodes.Status403Forbidden, title: "Development target is not eligible for this operation.", extensions: new Dictionary<string, object?> { ["code"] = code });

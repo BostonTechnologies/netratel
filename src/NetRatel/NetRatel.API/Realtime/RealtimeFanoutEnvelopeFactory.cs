@@ -31,7 +31,7 @@ internal static class RealtimeFanoutEnvelopeFactory
     private static RealtimeFanoutEventType ToEventType(JobRunState? status) => status switch
     {
         JobRunState.Succeeded => RealtimeFanoutEventType.Completed,
-        JobRunState.Failed or JobRunState.TimedOut => RealtimeFanoutEventType.Failed,
+        JobRunState.Failed or JobRunState.TimedOut or JobRunState.Unknown => RealtimeFanoutEventType.Failed,
         JobRunState.Cancelled => RealtimeFanoutEventType.Cancelled,
         _ => RealtimeFanoutEventType.Updated
     };
@@ -41,7 +41,7 @@ internal static class RealtimeFanoutEnvelopeFactory
         JobRunState.Pending => RealtimeFanoutStatus.Pending,
         JobRunState.Running => RealtimeFanoutStatus.Active,
         JobRunState.Succeeded => RealtimeFanoutStatus.Completed,
-        JobRunState.Failed or JobRunState.TimedOut => RealtimeFanoutStatus.Failed,
+        JobRunState.Failed or JobRunState.TimedOut or JobRunState.Unknown => RealtimeFanoutStatus.Failed,
         JobRunState.Cancelled => RealtimeFanoutStatus.Cancelled,
         _ => RealtimeFanoutStatus.Unknown
     };

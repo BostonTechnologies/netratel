@@ -133,6 +133,7 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
     public async Task Connect_ChecksOwnershipAfterAwaitedLifecycleProcessing(string gateway)
     {
         using var fixture = await Fixture.CreateAsync(gateway);
+        fixture.EnableJobReceipts = true;
         fixture.BlockLifecycle = true;
         using var old = fixture.Connect();
         await old.SendHello();
@@ -156,7 +157,7 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
     }
 
     private sealed record GatewayCall(Func<Task> SendHello, Func<Task> SendLifecycle,
-        Func<CancellationToken, Task<bool>> Read, Action Close) : IDisposable
+        Func<CancellationToken, Task<bool>> Read, Action Close, Func<GatewayJobFrame>? CurrentJobFrame = null) : IDisposable
     {
         public void Dispose() => Close();
     }
@@ -167,6 +168,10 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
         public Guid ConnectionId { get; } = Guid.NewGuid();
         public BlockingPresence Presence { get; private set; } = null!;
         public bool BlockLifecycle { get; set; }
+        public bool EnableJobReceipts { get; set; }
+        public DateTimeOffset? JobRequestedAt { get; set; }
+        public DateTimeOffset? JobStatusAt { get; set; }
+        public JobLifecycleUpdateEnvelope? RecordedJobLifecycle { get; private set; }
         public int LifecycleCalls;
         public int ProjectionCalls;
         public TaskCompletionSource LifecycleBlocked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -177,7 +182,7 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
         private IHost _host = null!;
         private GrpcChannel _channel = null!;
 
-        public static async Task<Fixture> CreateAsync(string gateway)
+        public static async Task<Fixture> CreateAsync(string gateway, TimeProvider? clock = null)
         {
             var fixture = new Fixture(gateway);
             fixture.Presence = new BlockingPresence(fixture.Client, fixture.ConnectionId);
@@ -189,7 +194,7 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
                     services.AddRouting();
                     services.AddAuthorization(options => options.AddPolicy("AgentGatewayAccess", policy => policy.RequireAuthenticatedUser()));
                     services.AddGrpc();
-                    services.AddSingleton(TimeProvider.System);
+                    services.AddSingleton(clock ?? TimeProvider.System);
                     services.AddSingleton<IClientPresenceRouter>(fixture.Presence);
                     services.AddSingleton(Stub<IAgentManagementService>((method, _) => method == nameof(IAgentManagementService.GetAsync)
                         ? Task.FromResult<AgentDetailDto?>(new(fixture.Client.TenantId, fixture.Client.AgentId, "test", true, null, DateTimeOffset.UtcNow, null, null, null, null))
@@ -199,8 +204,8 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
                     services.AddSingleton<IAgentControlSessionRegistry>(fixture._controls);
                     services.AddSingleton(Stub<IClientCommandRouter>((method, _) => method == nameof(IClientCommandRouter.RecordAsync)
                         ? fixture.RecordCommandAsync() : throw new NotSupportedException(method)));
-                    services.AddSingleton(Stub<IAkkaJobAuthorityService>((method, _) => method == nameof(IAkkaJobAuthorityService.RecordLifecycleAsync)
-                        ? fixture.RecordLifecycleAsync() : throw new NotSupportedException(method)));
+                    services.AddSingleton(Stub<IAkkaJobAuthorityService>((method, arguments) => method == nameof(IAkkaJobAuthorityService.RecordLifecycleAsync)
+                        ? fixture.RecordLifecycleAsync((JobLifecycleUpdateEnvelope)arguments![1]!) : throw new NotSupportedException(method)));
                     services.AddSingleton(Stub<IMcpOperatorCommandStore>(fixture.RecordProjection));
                     services.AddSingleton(Stub<IMcpOperatorTaskStore>(fixture.RecordProjection));
                     services.AddSingleton(Stub<IJobRunService>(fixture.RecordProjection));
@@ -237,8 +242,9 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
             return fixture;
         }
 
-        private async Task RecordLifecycleAsync()
+        private async Task RecordLifecycleAsync(JobLifecycleUpdateEnvelope? lifecycle = null)
         {
+            RecordedJobLifecycle = lifecycle;
             Interlocked.Increment(ref LifecycleCalls);
             if (BlockLifecycle)
             {
@@ -328,7 +334,12 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
                     ConnectionId = ConnectionId.ToString("D"),
                     ConnectionEpoch = 5
                 };
-                return new GatewayCall(() => { var frame = Frame(); frame.Hello = new AgentJobHello(); return call.RequestStream.WriteAsync(frame); },
+                return new GatewayCall(() =>
+                    {
+                        var frame = Frame(); frame.Hello = new AgentJobHello();
+                        if (EnableJobReceipts) frame.Hello.Capabilities.Add("lifecycle-receipts-v1");
+                        return call.RequestStream.WriteAsync(frame);
+                    },
                     () =>
                     {
                         var frame = Frame(); frame.Sequence = 1; frame.Lifecycle = new JobLifecycleUpdate
@@ -342,10 +353,10 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
                             Version = 1,
                             LifecycleSequence = 1,
                             Status = JobLifecycleStatus.Accepted,
-                            RequestedAtUtc = timestamp,
-                            StatusAtUtc = timestamp
+                            RequestedAtUtc = JobRequestedAt is { } requestedAt ? Timestamp.FromDateTimeOffset(requestedAt) : timestamp,
+                            StatusAtUtc = JobStatusAt is { } statusAt ? Timestamp.FromDateTimeOffset(statusAt) : timestamp
                         }; return call.RequestStream.WriteAsync(frame);
-                    }, call.ResponseStream.MoveNext, call.Dispose);
+                    }, call.ResponseStream.MoveNext, call.Dispose, () => call.ResponseStream.Current);
             }
             var control = new AgentControlGateway.AgentControlGatewayClient(_channel).Connect();
             return new GatewayCall(() => control.RequestStream.WriteAsync(new AgentControlFrame

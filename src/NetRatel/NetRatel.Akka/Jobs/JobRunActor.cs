@@ -250,11 +250,13 @@ public sealed class JobRunActor : ReceiveActor
             (JobRunState.Pending, JobRunState.Failed) => true,
             (JobRunState.Pending, JobRunState.Cancelled) => true,
             (JobRunState.Pending, JobRunState.TimedOut) => true,
+            (JobRunState.Pending, JobRunState.Unknown) => true,
             (JobRunState.Running, JobRunState.Running) => true,
             (JobRunState.Running, JobRunState.Succeeded) => true,
             (JobRunState.Running, JobRunState.Failed) => true,
             (JobRunState.Running, JobRunState.Cancelled) => true,
             (JobRunState.Running, JobRunState.TimedOut) => true,
+            (JobRunState.Running, JobRunState.Unknown) => true,
             _ => false
         };
     }
@@ -295,9 +297,16 @@ public sealed class JobRunActor : ReceiveActor
             (JobStepRunState.Pending, JobStepRunState.Running) => true,
             (JobStepRunState.Pending, JobStepRunState.Skipped) => true,
             (JobStepRunState.Pending, JobStepRunState.Failed) => true,
+            (JobStepRunState.Pending, JobStepRunState.Succeeded) => true,
+            (JobStepRunState.Pending, JobStepRunState.Cancelled) => true,
+            (JobStepRunState.Pending, JobStepRunState.TimedOut) => true,
+            (JobStepRunState.Pending, JobStepRunState.Unknown) => true,
             (JobStepRunState.Running, JobStepRunState.Running) => true,
             (JobStepRunState.Running, JobStepRunState.Succeeded) => true,
             (JobStepRunState.Running, JobStepRunState.Failed) => true,
+            (JobStepRunState.Running, JobStepRunState.Cancelled) => true,
+            (JobStepRunState.Running, JobStepRunState.TimedOut) => true,
+            (JobStepRunState.Running, JobStepRunState.Unknown) => true,
             _ => false
         };
     }
@@ -472,7 +481,8 @@ public sealed class JobRunActor : ReceiveActor
         status is JobRunState.Succeeded or
             JobRunState.Failed or
             JobRunState.Cancelled or
-            JobRunState.TimedOut;
+            JobRunState.TimedOut or
+            JobRunState.Unknown;
 
     private sealed class MutableStepState(ulong jobStepRunId)
     {

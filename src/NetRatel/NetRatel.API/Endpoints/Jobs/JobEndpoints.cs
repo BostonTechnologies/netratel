@@ -4,10 +4,12 @@ using NetRatel.Application.Events;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Tenants;
 using NetRatel.API.Services.Jobs;
+using NetRatel.API.Services.AgentDirectory;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Shared;
 using NetRatel.Shared.Contracts.Jobs;
+using NetRatel.Shared.Security;
 
 namespace NetRatel.API.Endpoints;
 
@@ -22,21 +24,24 @@ public static class JobEndpoints
             var agentLookup = await db.Agents.AsNoTracking().ToDictionaryAsync(x => x.Id, ct);
             var tenantLookup = (await tenants.ListAsync(ct)).ToDictionary(x => x.TenantId, x => x.Name);
             var visible = await FilterAuthorizedAsync(await jobs.ListAsync(ct), http.User, access, ct);
+            var summaries = await BuildSummariesAsync(db, visible.Select(x => x.Id).ToArray(), ct);
             var list = visible.Where(x => string.IsNullOrWhiteSpace(folder) || x.FolderPath.StartsWith(NormalizeFolder(folder), StringComparison.OrdinalIgnoreCase))
-                .Select(x => MapJob(x, tenantLookup, agentLookup)).Where(x => Matches(x, search)).OrderBy(x => x.FolderPath).ThenBy(x => x.Name).ToList();
+                .Select(x => MapJob(x, tenantLookup, agentLookup, summaries.GetValueOrDefault(x.Id))).Where(x => Matches(x, search)).OrderBy(x => x.FolderPath).ThenBy(x => x.Name).ToList();
             return Results.Ok(list);
         });
         group.MapGet("/{id:long}", async (ulong id, HttpContext http, IJobDefinitionService jobs, [FromServices] IEffectiveAccessService access, ITenantService tenants, [FromServices] OrchestratorDbContext db, CancellationToken ct) =>
         {
             var job = await jobs.GetAsync(id, ct); if (job is null) return Results.NotFound();
             if (!await CanManageAsync(http, access, job.TenantId, ct)) return Results.Forbid();
-            return Results.Ok(MapJob(job, (await tenants.ListAsync(ct)).ToDictionary(x => x.TenantId, x => x.Name), await db.Agents.AsNoTracking().ToDictionaryAsync(x => x.Id, ct)));
+            var summaries = await BuildSummariesAsync(db, [id], ct);
+            return Results.Ok(MapJob(job, (await tenants.ListAsync(ct)).ToDictionary(x => x.TenantId, x => x.Name), await db.Agents.AsNoTracking().ToDictionaryAsync(x => x.Id, ct), summaries.GetValueOrDefault(id)));
         });
         group.MapGet("/{id:long}/details", async (ulong id, HttpContext http, IJobDefinitionService jobs, [FromServices] IEffectiveAccessService access, ITenantService tenants, [FromServices] OrchestratorDbContext db, CancellationToken ct) =>
         {
             var detail = await jobs.GetDetailsAsync(id, ct); if (detail is null) return Results.NotFound();
             if (!await CanManageAsync(http, access, detail.Job.TenantId, ct)) return Results.Forbid();
-            var dto = MapJob(detail.Job, (await tenants.ListAsync(ct)).ToDictionary(x => x.TenantId, x => x.Name), await db.Agents.AsNoTracking().ToDictionaryAsync(x => x.Id, ct));
+            var summaries = await BuildSummariesAsync(db, [id], ct);
+            var dto = MapJob(detail.Job, (await tenants.ListAsync(ct)).ToDictionary(x => x.TenantId, x => x.Name), await db.Agents.AsNoTracking().ToDictionaryAsync(x => x.Id, ct), summaries.GetValueOrDefault(id));
             return Results.Ok(new JobWithDetailsDto(dto, detail.Steps.Select(MapStep).ToList(), detail.Params.Select(MapParam).ToList()));
         });
         group.MapPost("/", async ([FromBody] CreateJobRequest request, HttpContext http, [FromServices] IEffectiveAccessService access, IJobDefinitionService jobs, [FromServices] OrchestratorDbContext db, IEventRecorder events, ICorrelationContext correlation, CancellationToken ct) =>
@@ -44,7 +49,9 @@ public static class JobEndpoints
             if (!await CanManageAsync(http, access, request.TenantId, ct)) return Results.Forbid();
             var targetError = await ValidateTargetAsync(db, request.TenantId, request.AgentId, ct); if (targetError is not null) return targetError;
             if (string.IsNullOrWhiteSpace(request.Name)) return Results.BadRequest("Name is required.");
+            if (request.Environment is { } environment && !Enum.IsDefined(environment)) return Results.ValidationProblem(new Dictionary<string, string[]> { ["environment"] = ["Environment is invalid."] });
             var options = JobSchedulePolicy.MergeOptionsJson(JobExecutionRuntimePolicy.MergeOptionsJson(null, JobExecutionRuntimePolicy.FromValues(request.ExpectedRuntimeSeconds, request.GraceSeconds, request.HardTimeoutSeconds)), request.Schedule);
+            options = JobExecutionContextPolicy.MergeOptionsJson(options, request.Environment);
             var created = await jobs.CreateAsync(new CreateJobDefinitionCommand(request.Name.Trim(), NormalizeFolder(request.FolderPath), request.Description, request.TenantId, string.Empty, options, request.AgentId), ct);
             await RecordAsync(events, correlation, NetRatelEventTypes.Job.Created, created, "created", ct);
             return Results.Created($"/api/v1/jobs/{created.Id}", MapJob(created, new Dictionary<int, string>(), await db.Agents.AsNoTracking().ToDictionaryAsync(x => x.Id, ct)));
@@ -57,6 +64,8 @@ public static class JobEndpoints
             if (!await CanManageAsync(http, access, targetTenant, ct)) return Results.Forbid();
             var targetError = await ValidateTargetAsync(db, targetTenant, targetAgent, ct); if (targetError is not null) return targetError;
             var options = JobSchedulePolicy.MergeOptionsJson(JobExecutionRuntimePolicy.MergeOptionsJson(current.OptionsJson, JobExecutionRuntimePolicy.FromValues(request.ExpectedRuntimeSeconds, request.GraceSeconds, request.HardTimeoutSeconds)), request.Schedule);
+            if (request.Environment is { } environment && !Enum.IsDefined(environment)) return Results.ValidationProblem(new Dictionary<string, string[]> { ["environment"] = ["Environment is invalid."] });
+            options = JobExecutionContextPolicy.MergeOptionsJson(options, request.Environment);
             var updated = await jobs.UpdateAsync(new UpdateJobDefinitionCommand(id, request.Name, request.FolderPath is null ? null : NormalizeFolder(request.FolderPath), request.Description, targetTenant, string.Empty, options, targetAgent), ct);
             await RecordAsync(events, correlation, NetRatelEventTypes.Job.StateChanged, updated!, "updated", ct);
             return Results.Ok(MapJob(updated!, new Dictionary<int, string>(), await db.Agents.AsNoTracking().ToDictionaryAsync(x => x.Id, ct)));
@@ -134,11 +143,36 @@ public static class JobEndpoints
     private static Task<JobScope?> JobScopeForStepAsync(OrchestratorDbContext db, ulong stepId, CancellationToken ct) =>
         db.JobSteps.AsNoTracking().Where(x => x.Id == (long)stepId).Select(x => new JobScope(x.Job.TenantId)).SingleOrDefaultAsync(ct);
     private sealed record JobScope(int? TenantId);
-    private static JobDto MapJob(JobDefinitionInfo job, IReadOnlyDictionary<int, string> tenants, IReadOnlyDictionary<Guid, Agent> agents)
+    private static JobDto MapJob(JobDefinitionInfo job, IReadOnlyDictionary<int, string> tenants, IReadOnlyDictionary<Guid, Agent> agents, string? summary = null)
     {
         agents.TryGetValue(job.AgentId ?? Guid.Empty, out var agent); tenants.TryGetValue(job.TenantId ?? -1, out var tenant);
+        if (agent?.TenantId != job.TenantId) agent = null;
+        var target = agent is null ? null : AgentDirectoryPresentation.Create(agent.TenantId, agent.Id,
+            agent.Name, agent.IsEnabled, agent.DeviceInfoJson, tenant, agent.Tags, agent.FriendlyName);
         var policy = JobExecutionRuntimePolicy.FromJob(job);
-        return new(job.Id, job.Name, job.FolderPath, job.Description, job.TenantId, job.ClientIdentity, job.CreatedAtUtc.ToUnixTimeMilliseconds() * 1000, job.UpdatedAtUtc.ToUnixTimeMilliseconds() * 1000, tenant, agent?.Name ?? (job.AgentId is null ? "Legacy target unavailable" : null), ClientEnvironment.None, policy.ExpectedRuntimeSeconds, policy.GraceSeconds, policy.HardTimeoutSeconds, JobSchedulePolicy.FromJob(job)?.ToDto(), job.AgentId);
+        return new(job.Id, job.Name, job.FolderPath, job.Description, job.TenantId, job.ClientIdentity, job.CreatedAtUtc.ToUnixTimeMilliseconds() * 1000, job.UpdatedAtUtc.ToUnixTimeMilliseconds() * 1000, tenant, target?.HostName ?? target?.DisplayName ?? agent?.Name, JobExecutionContextPolicy.FromJob(job), policy.ExpectedRuntimeSeconds, policy.GraceSeconds, policy.HardTimeoutSeconds, JobSchedulePolicy.FromJob(job)?.ToDto(), job.AgentId, summary);
+    }
+    private static async Task<Dictionary<ulong, string>> BuildSummariesAsync(OrchestratorDbContext db, ulong[] jobIds, CancellationToken ct)
+    {
+        var ids = jobIds.Select(x => checked((long)x)).ToArray();
+        var steps = await (from step in db.JobSteps.AsNoTracking()
+            where ids.Contains(step.JobId) && step.Enabled
+            join script in db.Scripts.AsNoTracking() on step.ScriptId equals (long?)script.Id into scripts
+            from script in scripts.DefaultIfEmpty()
+            orderby step.Ordinal
+            select new { step.JobId, step.Type, step.Command, step.Runner, step.ScriptId,
+                ScriptName = script == null ? null : script.Name, ScriptType = script == null ? null : script.ScriptType }).ToListAsync(ct);
+        return steps.GroupBy(x => x.JobId).ToDictionary(x => (ulong)x.Key, group =>
+            string.Join(" → ", group.Take(4).Select(step => step.Type == (int)JobStepKind.LibraryScript
+                ? $"{step.ScriptName ?? $"Missing library script #{step.ScriptId}"} ({step.ScriptType ?? "type unknown"})"
+                : step.Type == (int)JobStepKind.RunCommand ? CommandSummary(step.Command, step.Runner) : "HTTP action")) +
+            (group.Count() > 4 ? $" · {group.Count()} steps" : string.Empty));
+    }
+    private static string CommandSummary(string? command, string? runner)
+    {
+        var label = OperatorOutputRedactor.Redact(command ?? "Command").Replace('\r', ' ').Replace('\n', ' ').Trim();
+        if (label.Length > 80) label = label[..80] + "…";
+        return string.IsNullOrWhiteSpace(runner) ? label : $"{runner}: {label}";
     }
     private static bool Matches(JobDto job, string? search) => string.IsNullOrWhiteSpace(search) || ($"{job.Name} {job.FolderPath} {job.TenantDisplayName} {job.ClientDisplayName}").Contains(search.Trim(), StringComparison.OrdinalIgnoreCase);
     private static JobParamDto MapParam(JobParameterInfo p) => new(p.Id, p.JobId, p.Name, p.Type, p.Required, p.DefaultValue, p.Description, p.OptionsJson);

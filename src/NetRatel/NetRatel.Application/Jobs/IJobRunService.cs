@@ -1,3 +1,5 @@
+using NetRatel.Shared;
+
 namespace NetRatel.Application.Jobs;
 
 public enum JobRunState
@@ -7,7 +9,8 @@ public enum JobRunState
     Succeeded = 2,
     Failed = 3,
     Cancelled = 4,
-    TimedOut = 5
+    TimedOut = 5,
+    Unknown = 6
 }
 
 public enum JobStepRunState
@@ -16,7 +19,10 @@ public enum JobStepRunState
     Running = 1,
     Succeeded = 2,
     Failed = 3,
-    Skipped = 4
+    Skipped = 4,
+    Cancelled = 5,
+    TimedOut = 6,
+    Unknown = 7
 }
 
 public sealed record JobRunInfo(
@@ -33,7 +39,11 @@ public sealed record JobRunInfo(
     string? Error,
     string? InputsJson,
     string? OptionsJson,
-    Guid? AgentId = null);
+    Guid? AgentId = null,
+    NetRatel.Shared.ClientEnvironment? Environment = null,
+    string? TargetDisplayName = null,
+    string? TargetHostName = null,
+    string? TargetName = null);
 
 public sealed record JobStepRunInfo(
     ulong Id,
@@ -59,7 +69,17 @@ public sealed record JobTaskActivityInfo(
     DateTimeOffset CreatedAtUtc,
     DateTimeOffset? CompletedAtUtc,
     Guid? AgentId = null,
-    string? ResultJson = null);
+    string? ResultJson = null,
+    ClientEnvironment? Environment = null,
+    DateTimeOffset? StartedAtUtc = null,
+    int? ExitCode = null,
+    string? TargetDisplayName = null,
+    string? TargetHostName = null,
+    string? TargetName = null,
+    string? ScriptName = null,
+    string? ScriptType = null,
+    string? CommandLabel = null,
+    string? ScriptContentHash = null);
 
 public sealed record JobTaskLogInfo(
     long Id,
@@ -86,7 +106,11 @@ public sealed record UpsertJobRunCommand(
     string? Error,
     string? InputsJson,
     string? OptionsJson,
-    Guid? AgentId = null);
+    Guid? AgentId = null,
+    NetRatel.Shared.ClientEnvironment? Environment = null,
+    string? TargetDisplayName = null,
+    string? TargetHostName = null,
+    string? TargetName = null);
 
 public sealed record UpsertJobStepRunCommand(
     ulong StepRunId,
@@ -112,7 +136,17 @@ public sealed record UpsertJobTaskActivityCommand(
     DateTimeOffset CreatedAtUtc,
     DateTimeOffset? CompletedAtUtc,
     Guid? AgentId = null,
-    string? ResultJson = null);
+    string? ResultJson = null,
+    ClientEnvironment? Environment = null,
+    DateTimeOffset? StartedAtUtc = null,
+    int? ExitCode = null,
+    string? TargetDisplayName = null,
+    string? TargetHostName = null,
+    string? TargetName = null,
+    string? ScriptName = null,
+    string? ScriptType = null,
+    string? CommandLabel = null,
+    string? ScriptContentHash = null);
 
 public sealed record CreateJobTaskActivityCommand(
     string RequestId,
@@ -126,7 +160,17 @@ public sealed record CreateJobTaskActivityCommand(
     DateTimeOffset CreatedAtUtc,
     DateTimeOffset? CompletedAtUtc,
     Guid? AgentId = null,
-    string? ResultJson = null);
+    string? ResultJson = null,
+    ClientEnvironment? Environment = null,
+    DateTimeOffset? StartedAtUtc = null,
+    int? ExitCode = null,
+    string? TargetDisplayName = null,
+    string? TargetHostName = null,
+    string? TargetName = null,
+    string? ScriptName = null,
+    string? ScriptType = null,
+    string? CommandLabel = null,
+    string? ScriptContentHash = null);
 
 public sealed record AppendJobTaskLogCommand(
     string RequestId,
@@ -143,7 +187,9 @@ public sealed record UpdateJobTaskActivityStatusCommand(
     string Status,
     string? Error,
     DateTimeOffset? CompletedAtUtc,
-    string? ResultJson = null);
+    string? ResultJson = null,
+    DateTimeOffset? StartedAtUtc = null,
+    int? ExitCode = null);
 
 public sealed record JobRunDetails(
     JobRunInfo Run,

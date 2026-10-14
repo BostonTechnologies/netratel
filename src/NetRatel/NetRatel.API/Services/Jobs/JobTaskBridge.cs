@@ -52,7 +52,7 @@ public sealed class JobTaskBridge
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
         return build.Success
-            ? new(true, build.Invocation.TaskType, build.Invocation.Payload, null)
+            ? new(true, build.Invocation.TaskType, build.Invocation.Payload, null, build.Invocation.ScriptName, build.Invocation.ScriptType, build.Invocation.CommandLabel, build.Invocation.ScriptContentHash)
             : new(false, null, null, build.Error);
     }
 
@@ -246,7 +246,7 @@ public sealed class JobTaskBridge
 
         payload.TimeoutSeconds = runtimePolicy.HardTimeoutSeconds;
 
-        invocation = new TaskInvocation(TaskKinds.ExecShellCommand, JsonSerializer.Serialize(payload));
+        invocation = new TaskInvocation(TaskKinds.ExecShellCommand, JsonSerializer.Serialize(payload), CommandLabel: $"{payload.Preferred} command");
 
         _logger.LogDebug(
             "JobRun {RunId} step {Ordinal}: ExecShellCommand payload {@Payload}",
@@ -353,7 +353,7 @@ public sealed class JobTaskBridge
             runtimePolicy.GraceSeconds,
             runtimePolicy.HardTimeoutSeconds);
 
-        var invocation = new TaskInvocation(TaskKinds.ExecLibraryScript, JsonSerializer.Serialize(payload));
+        var invocation = new TaskInvocation(TaskKinds.ExecLibraryScript, JsonSerializer.Serialize(payload), execution.Script.Name, payload.ScriptType.ToString(), execution.Script.Name, ComputeContentHash(execution.Script.Content));
 
         _logger.LogDebug(
             "JobRun {RunId} step {Ordinal}: ExecLibraryScript payload {@Payload}",
@@ -493,11 +493,15 @@ public sealed class JobTaskBridge
         };
     }
 
-    private readonly record struct TaskInvocation(string TaskType, string Payload);
+    private readonly record struct TaskInvocation(string TaskType, string Payload, string? ScriptName = null, string? ScriptType = null, string? CommandLabel = null, string? ScriptContentHash = null);
 }
 
 public sealed record JobGatewayTaskInvocation(
     bool Success,
     string? TaskType,
     string? PayloadJson,
-    string? Error);
+    string? Error,
+    string? ScriptName = null,
+    string? ScriptType = null,
+    string? CommandLabel = null,
+    string? ScriptContentHash = null);

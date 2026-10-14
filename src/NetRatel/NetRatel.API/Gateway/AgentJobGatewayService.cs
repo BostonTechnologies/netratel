@@ -21,7 +21,8 @@ public sealed class AgentJobGatewayService(
     IAgentJobGatewaySessionRegistry sessions,
     IAkkaJobAuthorityService jobs,
     IHostEnvironment environment,
-    ILogger<AgentJobGatewayService> logger)
+    ILogger<AgentJobGatewayService> logger,
+    TimeProvider clock)
     : AgentJobGateway.AgentJobGatewayBase
 {
     private const string Authority = "akka";
@@ -75,7 +76,7 @@ public sealed class AgentJobGatewayService(
                 ConnectionEpoch = session.ConnectionEpoch,
                 ConnectionId = session.ConnectionId.ToString("D"),
                 Sequence = 0,
-                Accepted = new JobConnectAccepted { JobAuthority = Authority }
+                Accepted = new JobConnectAccepted { JobAuthority = Authority, Capabilities = { "lifecycle-receipts-v1" } }
             }, admissionCancellation.Token).ConfigureAwait(false);
             logger.LogInformation("Job gateway admitted. authority={Authority} tenantId={TenantId} agentId={AgentId}", Authority, session.Client.TenantId, session.Client.AgentId);
 
@@ -106,18 +107,19 @@ public sealed class AgentJobGatewayService(
         if (frame.PayloadCase != AgentJobFrame.PayloadOneofCase.Hello || frame.Sequence != 0 ||
             !string.Equals(frame.ProtocolVersion, NetRatelAkkaOptions.ProtocolVersion, StringComparison.Ordinal) || frame.TenantId != identity.TenantId ||
             !Guid.TryParse(frame.ClientId, out var agentId) || agentId != identity.AgentId ||
-            !Guid.TryParse(frame.ConnectionId, out var connectionId) || connectionId == Guid.Empty || frame.ConnectionEpoch == 0)
+            !Guid.TryParse(frame.ConnectionId, out var connectionId) || connectionId == Guid.Empty || frame.ConnectionEpoch == 0 || frame.ConnectionEpoch > long.MaxValue)
         {
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The job gateway hello does not match the authenticated agent identity."));
         }
 
         var client = new ClientKey(identity.TenantId, identity.AgentId);
         await RequirePresenceAsync(client, connectionId, frame.ConnectionEpoch, cancellationToken).ConfigureAwait(false);
-        return new ValidatedSession(client, connectionId, frame.ConnectionEpoch);
+        return new ValidatedSession(client, connectionId, frame.ConnectionEpoch, frame.Hello.Capabilities.Contains("lifecycle-receipts-v1"));
     }
 
     private async Task<ulong> ProcessInboundAsync(AgentJobFrame frame, ValidatedSession session, ulong lastSequence, AgentJobGatewayRegistration registration, CancellationToken cancellationToken)
     {
+        var receivedAtUtc = clock.GetUtcNow();
         if (!MatchesSession(frame, session) || frame.Sequence == 0 || frame.Sequence <= lastSequence ||
             frame.PayloadCase != AgentJobFrame.PayloadOneofCase.Lifecycle)
         {
@@ -129,27 +131,28 @@ public sealed class AgentJobGatewayService(
         RequireCurrent(registration);
         var update = frame.Lifecycle;
         if (!TryMapStatus(update.Status, out var status) || update.JobRunId == 0 || update.JobStepId == 0 || update.JobStepRunId == 0 ||
-            update.Ordinal < 0 || string.IsNullOrWhiteSpace(update.RequestId) || string.IsNullOrWhiteSpace(update.CorrelationId) ||
+            update.Ordinal < 0 || string.IsNullOrWhiteSpace(update.RequestId) || update.RequestId.Length > 256 ||
+            string.IsNullOrWhiteSpace(update.CorrelationId) || update.CorrelationId.Length > 256 ||
+            !double.IsFinite(update.ProgressPercent) || update.ProgressPercent < 0 || update.ProgressPercent > 100 ||
             update.Version == 0 || update.LifecycleSequence == 0 || update.RequestedAtUtc is null || update.StatusAtUtc is null)
         {
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The job lifecycle payload is invalid."));
         }
+        if (System.Text.Encoding.UTF8.GetByteCount(update.ResultJson) > 64 * 1024)
+            throw new RpcException(new Status(StatusCode.ResourceExhausted, "The job lifecycle result exceeds its bounded transport limit."));
 
         DateTimeOffset requestedAt;
         DateTimeOffset statusAt;
+        DateTimeOffset? startedAt;
         try
         {
             requestedAt = update.RequestedAtUtc.ToDateTimeOffset();
             statusAt = update.StatusAtUtc.ToDateTimeOffset();
+            startedAt = update.StartedAtUtc?.ToDateTimeOffset();
         }
         catch (InvalidOperationException)
         {
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The job lifecycle timestamps are invalid."));
-        }
-
-        if (statusAt < requestedAt)
-        {
-            throw new RpcException(new Status(StatusCode.InvalidArgument, "The job lifecycle timestamps are chronologically invalid."));
         }
 
         try
@@ -169,10 +172,23 @@ public sealed class AgentJobGatewayService(
                 statusAt,
                 update.ProgressPercent,
                 string.IsNullOrWhiteSpace(update.ResultJson) ? null : update.ResultJson,
-                update.ExitCode,
+                update.HasExitCode ? update.ExitCode : null,
                 AuthenticatedOwner: new OwnerKey(session.Client, session.ConnectionId,
-                    checked((long)session.ConnectionEpoch))), cancellationToken).ConfigureAwait(false);
+                    checked((long)session.ConnectionEpoch)),
+                ReceivedAtUtc: receivedAtUtc,
+                StartedAtUtc: startedAt), cancellationToken).ConfigureAwait(false);
             RequireCurrent(registration);
+            if (session.SupportsReceipts)
+            {
+                await registration.PublishReceiptAsync(new JobLifecycleReceipt
+                {
+                    JobRunId = update.JobRunId,
+                    JobStepRunId = update.JobStepRunId,
+                    RequestId = update.RequestId,
+                    Version = update.Version,
+                    LifecycleSequence = update.LifecycleSequence
+                }, cancellationToken).ConfigureAwait(false);
+            }
         }
         catch (Exception exception) when (exception is InvalidOperationException or KeyNotFoundException)
         {
@@ -262,5 +278,5 @@ public sealed class AgentJobGatewayService(
             throw new RpcException(new Status(StatusCode.Aborted, "The gateway registration is no longer current."));
     }
 
-    private sealed record ValidatedSession(ClientKey Client, Guid ConnectionId, ulong ConnectionEpoch);
+    private sealed record ValidatedSession(ClientKey Client, Guid ConnectionId, ulong ConnectionEpoch, bool SupportsReceipts);
 }

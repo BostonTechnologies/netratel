@@ -174,6 +174,9 @@ public sealed class AgentCommandGatewayService(
             var statusTimestamp = result.CurrentStatusTimestamp
                 ?? throw new RpcException(new Status(StatusCode.FailedPrecondition, "The committed command lifecycle timestamp is unavailable."));
             var safeResult = BoundResult(lifecycle.ResultJson);
+            var outcomeUnknown = status == CommandLifecycleStatus.Failed && HasResultFlag(safeResult, "outcomeUnknown");
+            var timedOut = status == CommandLifecycleStatus.Failed && HasResultFlag(safeResult, "timedOut");
+            var taskStatus = outcomeUnknown ? "Unknown" : timedOut ? "TimedOut" : MapTaskActivityStatus(status);
             if (serviceControl is not null)
             {
                 await serviceControl.RecordLifecycleAsync(session.Client, lifecycle.CommandId, status,
@@ -185,25 +188,27 @@ public sealed class AgentCommandGatewayService(
                 lifecycle.CommandId,
                 session.Client.TenantId,
                 session.Client.AgentId,
-                MapOperatorCommandState(status),
+                outcomeUnknown ? McpOperatorCommandState.Unknown : MapOperatorCommandState(status),
                 statusTimestamp,
-                status == CommandLifecycleStatus.Failed ? "agent_command_failed" : null,
+                outcomeUnknown ? "agent_command_outcome_unknown" : timedOut ? "agent_command_timed_out" : status == CommandLifecycleStatus.Failed ? "agent_command_failed" : null,
                 cancellationToken,
                 lifecycle.ResultJson,
-                status is CommandLifecycleStatus.Completed or CommandLifecycleStatus.Failed ? lifecycle.ExitCode : null).ConfigureAwait(false);
+                !outcomeUnknown && (status is CommandLifecycleStatus.Completed or CommandLifecycleStatus.Failed) && lifecycle.HasExitCode ? lifecycle.ExitCode : null).ConfigureAwait(false);
             RequireCurrent(registration);
             await operatorTasks.RecordLifecycleAsync(
                 lifecycle.CommandId,
                 session.Client.TenantId,
                 session.Client.AgentId,
-                MapTaskActivityStatus(status),
+                taskStatus,
                 safeResult,
                 statusTimestamp,
                 cancellationToken).ConfigureAwait(false);
             RequireCurrent(registration);
             if (result.Disposition == CommandMessageDisposition.Accepted)
             {
-                var taskStatus = MapTaskActivityStatus(status);
+                await TaskLifecycleOutput.AppendAsync(jobRuns, session.Client, lifecycle.CommandId,
+                    safeResult, statusTimestamp, cancellationToken).ConfigureAwait(false);
+                RequireCurrent(registration);
                 RequireCurrent(registration);
                 await jobRuns.UpdateTaskActivityStatusAsync(new UpdateJobTaskActivityStatusCommand(
                     lifecycle.CommandId,
@@ -212,7 +217,9 @@ public sealed class AgentCommandGatewayService(
                     status is CommandLifecycleStatus.Completed or CommandLifecycleStatus.Failed or CommandLifecycleStatus.Cancelled
                         ? statusTimestamp
                         : null,
-                    IsTerminal(taskStatus) ? safeResult : null), cancellationToken).ConfigureAwait(false);
+                    IsTerminal(taskStatus) ? safeResult : null,
+                    StartedAtUtc: status == CommandLifecycleStatus.Started ? statusTimestamp : null,
+                    ExitCode: !outcomeUnknown && IsTerminal(taskStatus) && lifecycle.HasExitCode ? lifecycle.ExitCode : null), cancellationToken).ConfigureAwait(false);
                 RequireCurrent(registration);
             }
             NetRatelAkkaTelemetry.RecordAuthorityEvent(Feature, Authority, environment.EnvironmentName);
@@ -271,19 +278,21 @@ public sealed class AgentCommandGatewayService(
         {
             CommandShadowStatus.Accepted => CommandLifecycleStatus.Accepted,
             CommandShadowStatus.Started => CommandLifecycleStatus.Started,
+            CommandShadowStatus.Progress => CommandLifecycleStatus.Progress,
             CommandShadowStatus.Completed => CommandLifecycleStatus.Completed,
             CommandShadowStatus.Failed => CommandLifecycleStatus.Failed,
             CommandShadowStatus.Cancelled => CommandLifecycleStatus.Cancelled,
             _ => default
         };
-        return status is CommandShadowStatus.Accepted or CommandShadowStatus.Started or CommandShadowStatus.Completed or CommandShadowStatus.Failed or CommandShadowStatus.Cancelled;
+        return status is CommandShadowStatus.Accepted or CommandShadowStatus.Started or CommandShadowStatus.Progress or CommandShadowStatus.Completed or CommandShadowStatus.Failed or CommandShadowStatus.Cancelled;
     }
 
     private static string MapTaskActivityStatus(CommandLifecycleStatus status) =>
-        status is CommandLifecycleStatus.Accepted or CommandLifecycleStatus.Started
+        status is CommandLifecycleStatus.Started or CommandLifecycleStatus.Progress
             ? "Processing"
             : status switch
             {
+                CommandLifecycleStatus.Accepted => "Accepted",
                 CommandLifecycleStatus.Completed => "Completed",
                 CommandLifecycleStatus.Failed => "Failed",
                 CommandLifecycleStatus.Cancelled => "Cancelled",
@@ -294,6 +303,7 @@ public sealed class AgentCommandGatewayService(
     {
         CommandLifecycleStatus.Accepted => McpOperatorCommandState.Accepted,
         CommandLifecycleStatus.Started => McpOperatorCommandState.Started,
+        CommandLifecycleStatus.Progress => McpOperatorCommandState.Started,
         CommandLifecycleStatus.Completed => McpOperatorCommandState.Completed,
         CommandLifecycleStatus.Failed => McpOperatorCommandState.Failed,
         CommandLifecycleStatus.Cancelled => McpOperatorCommandState.Cancelled,
@@ -310,8 +320,20 @@ public sealed class AgentCommandGatewayService(
         return redacted;
     }
 
+    private static bool HasResultFlag(string? json, string flag)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return false;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            return document.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                document.RootElement.TryGetProperty(flag, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.True;
+        }
+        catch (System.Text.Json.JsonException) { return false; }
+    }
+
     private static bool IsTerminal(string status)
-        => status is "Completed" or "Failed" or "Cancelled";
+        => status is "Completed" or "Failed" or "Cancelled" or "TimedOut" or "Unknown";
 
     private static async Task WriteOutboundAsync(AgentCommandGatewayRegistration registration, IServerStreamWriter<GatewayCommandFrame> responseStream, CancellationToken cancellationToken)
     {

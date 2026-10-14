@@ -22,6 +22,19 @@ internal static class TaskResultSummary
                 return Fallback;
             }
 
+            // Physical outcome flags own the concise reason. Earlier stderr can
+            // be ordinary warnings and must not disguise an unknown/cancelled run.
+            foreach (var (flag, reason) in new[]
+            {
+                ("outcomeUnknown", "Unknown physical outcome; native termination could not be confirmed."),
+                ("timedOut", "Execution timed out."),
+                ("cancelled", "Execution cancelled.")
+            })
+            {
+                if (root.TryGetProperty(flag, out var outcome) && outcome.ValueKind == JsonValueKind.True)
+                    return reason;
+            }
+
             foreach (var propertyName in new[] { "stderr", "error", "message", "code" })
             {
                 if (!root.TryGetProperty(propertyName, out var value))

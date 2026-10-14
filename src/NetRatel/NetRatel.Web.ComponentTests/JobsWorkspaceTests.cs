@@ -167,7 +167,7 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
     {
         var (cut, _) = await OpenEditorAsync(jobId: 42);
         Name(cut).Change("Retained edit");
-        await cut.InvokeAsync(() => cut.FindComponent<MudSelect<ClientEnvironment>>().Instance.ValueChanged.InvokeAsync(ClientEnvironment.Prod));
+        await cut.InvokeAsync(() => cut.FindComponents<MudSelect<ClientEnvironment?>>().Single(select => select.Instance.Label == "Environment").Instance.ValueChanged.InvokeAsync(ClientEnvironment.Prod));
         Button(cut, "Save").Click();
         cut.WaitForAssertion(() => cut.Markup.Should().Contain("Please select an Agent."));
         _transport.UpdateCalls.Should().Be(0);
@@ -224,13 +224,59 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
     [Fact]
     public async Task Clone_creates_new_identity_and_copies_steps_and_parameters_without_running()
     {
-        var (cut, _) = await OpenEditorAsync(cloneId: 42);
+        _transport.Job = _transport.Job with
+        {
+            Description = "Preserve the workflow description", Environment = ClientEnvironment.Both,
+            ExpectedRuntimeSeconds = 61, GraceSeconds = 5, HardTimeoutSeconds = 149,
+            Schedule = new(true, "UTC", "09:15", ["Tuesday", "Thursday"])
+        };
+        var (cut, reference) = await OpenEditorAsync(cloneId: 42);
         Name(cut).GetAttribute("value").Should().Be("Nightly backup (copy)");
         Button(cut, "Create and add steps").Click();
         cut.WaitForAssertion(() => _transport.StepJobId.Should().Be(43));
         _transport.ParamJobId.Should().Be(43);
         _transport.CreateCalls.Should().Be(1);
+        _transport.Create!.Description.Should().Be("Preserve the workflow description");
+        _transport.Create.Environment.Should().Be(ClientEnvironment.Both);
+        _transport.Create.ExpectedRuntimeSeconds.Should().Be(61);
+        _transport.Create.GraceSeconds.Should().Be(5);
+        _transport.Create.HardTimeoutSeconds.Should().Be(149);
+        _transport.Create.Schedule.Should().BeNull("a draft must not start scheduled execution while its steps are being copied");
+        Button(cut, "Save").Click();
+        (await reference.Result)!.Canceled.Should().BeFalse();
+        _transport.Update!.Schedule!.TimeZoneId.Should().Be("UTC");
+        _transport.Update.Schedule.TimeOfDay.Should().Be("09:15");
+        _transport.Update.Schedule.DaysOfWeek.Should().Equal("Tuesday", "Thursday");
+        _transport.Update.Description.Should().Be(_transport.Create.Description);
+        _transport.Update.Environment.Should().Be(_transport.Create.Environment);
+        _transport.Update.ExpectedRuntimeSeconds.Should().Be(61);
+        _transport.Update.GraceSeconds.Should().Be(5);
+        _transport.Update.HardTimeoutSeconds.Should().Be(149);
         _transport.RunCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task New_editor_cancel_has_no_server_draft_and_created_draft_close_is_explicit()
+    {
+        var (unsaved, unsavedReference) = await OpenEditorAsync();
+        Button(unsaved, "Cancel").Click();
+        (await unsavedReference.Result)!.Canceled.Should().BeTrue();
+        _transport.CreateCalls.Should().Be(0);
+
+        var (draft, reference) = await OpenEditorAsync(cloneId: 42);
+        Button(draft, "Create and add steps").Click();
+        draft.WaitForAssertion(() => draft.Markup.Should().Contain("Job #43 created"));
+        Button(draft, "Close draft").Click();
+        _dialogs.WaitForElement(".mud-message-box");
+        Button(_dialogs, "Keep editing").Click();
+        _transport.DeleteCalls.Should().Be(0);
+        Button(draft, "Close draft").Click();
+        _dialogs.WaitForElement(".mud-message-box");
+        Button(_dialogs, "Keep draft and close").Click();
+        (await reference.Result)!.Canceled.Should().BeFalse();
+        _transport.CreateCalls.Should().Be(1);
+        _transport.UpdateCalls.Should().Be(0);
+        _transport.Create!.Schedule.Should().BeNull();
     }
 
     [Theory]
@@ -298,7 +344,7 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
 
     private sealed class JobTransport : HttpMessageHandler, IHttpClientFactory
     {
-        public JobDto Job { get; private set; } = new(42, "Nightly backup", "/Fixture/Backups/", null, 7, "fixture-host", 0, 0,
+        public JobDto Job { get; set; } = new(42, "Nightly backup", "/Fixture/Backups/", null, 7, "fixture-host", 0, 0,
             Environment: ClientEnvironment.Dev, Schedule: new(true, "Africa/Johannesburg", "08:00", ["Monday", "Wednesday", "Friday"]), AgentId: AgentId);
         private List<JobStepDto> _steps = [new(1, 42, 1, JobStepTypeDto.RunCommand, "bash", "echo backup", null, null, true)];
         private List<JobParamDto> _parameters = [new(1, 42, "Path", "string", true, "/fixture/backup", null, null)];
@@ -312,6 +358,7 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
         public ulong? StepJobId { get; private set; }
         public ulong? ParamJobId { get; private set; }
         public UpdateJobRequest? Update { get; private set; }
+        public CreateJobRequest? Create { get; private set; }
         public bool FailSave { get; set; }
         public bool FailParams { get; set; }
         public bool FailCloneParamCopy { get; set; }
@@ -340,7 +387,11 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
                     CreateCalls++;
                     if (FailSave) return new(HttpStatusCode.BadRequest);
                     var body = (await request.Content!.ReadFromJsonAsync<CreateJobRequest>(cancellationToken))!;
-                    Job = Job with { Id = 43, Name = body.Name, FolderPath = body.FolderPath, Schedule = body.Schedule, AgentId = body.AgentId };
+                    Create = body;
+                    Job = Job with { Id = 43, Name = body.Name, Description = body.Description, FolderPath = body.FolderPath,
+                        Schedule = body.Schedule, AgentId = body.AgentId, Environment = body.Environment,
+                        ExpectedRuntimeSeconds = body.ExpectedRuntimeSeconds ?? 1800, GraceSeconds = body.GraceSeconds ?? 0,
+                        HardTimeoutSeconds = body.HardTimeoutSeconds ?? 1800 };
                     _steps = []; _parameters = [];
                     return PendingCreate is null ? Ok(Job) : await PendingCreate.Task.WaitAsync(cancellationToken);
                 }

@@ -24,7 +24,7 @@ public sealed record JobExecutionRuntimePolicy(
         return FromValues(
             request.ExpectedRuntimeSeconds ?? jobPolicy.ExpectedRuntimeSeconds,
             request.GraceSeconds ?? jobPolicy.GraceSeconds,
-            request.HardTimeoutSeconds);
+            request.HardTimeoutSeconds ?? jobPolicy.HardTimeoutSeconds);
     }
 
     public static JobExecutionRuntimePolicy FromJobAndIngest(JobDefinitionInfo job, NetRatelIngestRequest request)
@@ -33,19 +33,21 @@ public sealed record JobExecutionRuntimePolicy(
         return FromValues(
             request.ExpectedRuntimeSeconds ?? jobPolicy.ExpectedRuntimeSeconds,
             request.GraceSeconds ?? jobPolicy.GraceSeconds,
-            request.HardTimeoutSeconds);
+            request.HardTimeoutSeconds ?? jobPolicy.HardTimeoutSeconds);
     }
 
-    public static JobExecutionRuntimePolicy FromJob(JobDefinitionInfo job)
+    public static JobExecutionRuntimePolicy FromJob(JobDefinitionInfo job) => FromOptions(job.OptionsJson);
+
+    public static JobExecutionRuntimePolicy FromOptions(string? optionsJson)
     {
-        if (string.IsNullOrWhiteSpace(job.OptionsJson))
+        if (string.IsNullOrWhiteSpace(optionsJson))
         {
             return FromValues(null, null, null);
         }
 
         try
         {
-            using var doc = JsonDocument.Parse(job.OptionsJson);
+            using var doc = JsonDocument.Parse(optionsJson);
             var root = doc.RootElement;
             var policy = root.TryGetProperty("executionPolicy", out var nested) && nested.ValueKind == JsonValueKind.Object
                 ? nested

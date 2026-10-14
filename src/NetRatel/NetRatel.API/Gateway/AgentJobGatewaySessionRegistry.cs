@@ -96,7 +96,7 @@ public sealed class AgentJobGatewaySessionRegistry : IAgentJobGatewaySessionRegi
                 ((ICollection<KeyValuePair<ClientKey, AgentJobGatewaySession>>)_sessions)
                     .Remove(new KeyValuePair<ClientKey, AgentJobGatewaySession>(client, session));
                 session.Complete();
-            });
+            }, session.PublishReceiptAsync);
     }
 
     public bool IsAvailable(ClientKey client) => _sessions.TryGetValue(client, out var session) && session.IsActive;
@@ -140,7 +140,8 @@ public sealed class AgentJobGatewayRegistration(
     CancellationToken completionToken,
     Func<bool> isCurrent,
     Func<bool> activate,
-    Action unregister) : IDisposable
+    Action unregister,
+    Func<JobLifecycleReceipt, CancellationToken, Task>? publishReceipt = null) : IDisposable
 {
     private int _disposed;
 
@@ -149,6 +150,11 @@ public sealed class AgentJobGatewayRegistration(
     public CancellationToken CompletionToken { get; } = completionToken;
     public bool IsCurrent => Volatile.Read(ref _disposed) == 0 && !CompletionToken.IsCancellationRequested && isCurrent();
     public bool Activate() => IsCurrent && activate();
+
+    public Task PublishReceiptAsync(JobLifecycleReceipt receipt, CancellationToken cancellationToken) =>
+        IsCurrent && publishReceipt is not null
+            ? publishReceipt(receipt, cancellationToken)
+            : throw new InvalidOperationException("The gateway receipt registration is no longer current.");
 
     public void Dispose()
     {
@@ -173,6 +179,7 @@ internal sealed class AgentJobGatewaySession(ClientKey client, Guid connectionId
     private int _active;
     private int _completed;
     private long _outboundSequence;
+    private readonly SemaphoreSlim _writeGate = new(1, 1);
 
     public ChannelReader<GatewayJobFrame> Reader => _outbound.Reader;
     public Guid RegistrationId { get; } = Guid.NewGuid();
@@ -190,7 +197,6 @@ internal sealed class AgentJobGatewaySession(ClientKey client, Guid connectionId
             ClientId = client.AgentId.ToString("D"),
             ConnectionEpoch = connectionEpoch,
             ConnectionId = connectionId.ToString("D"),
-            Sequence = NextSequence(),
             Dispatch = new JobStepDispatch
             {
                 JobRunId = dispatch.JobRunId,
@@ -217,8 +223,18 @@ internal sealed class AgentJobGatewaySession(ClientKey client, Guid connectionId
             ClientId = client.AgentId.ToString("D"),
             ConnectionEpoch = connectionEpoch,
             ConnectionId = connectionId.ToString("D"),
-            Sequence = NextSequence(),
             Cancel = new JobCancel { JobRunId = jobRunId, Reason = reason }
+        }, cancellationToken);
+
+    public Task PublishReceiptAsync(JobLifecycleReceipt receipt, CancellationToken cancellationToken) =>
+        WriteAsync(new GatewayJobFrame
+        {
+            ProtocolVersion = "1.0",
+            TenantId = client.TenantId,
+            ClientId = client.AgentId.ToString("D"),
+            ConnectionEpoch = connectionEpoch,
+            ConnectionId = connectionId.ToString("D"),
+            Receipt = receipt
         }, cancellationToken);
 
     public void Complete()
@@ -229,8 +245,20 @@ internal sealed class AgentJobGatewaySession(ClientKey client, Guid connectionId
         _completion.Cancel();
     }
 
-    private Task WriteAsync(GatewayJobFrame frame, CancellationToken cancellationToken) =>
-        _outbound.Writer.WriteAsync(frame, cancellationToken).AsTask();
+    private async Task WriteAsync(GatewayJobFrame frame, CancellationToken cancellationToken)
+    {
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // Sequence allocation and enqueue are atomic across dispatch/cancel/receipts.
+            frame.Sequence = NextSequence();
+            await _outbound.Writer.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
 
     private ulong NextSequence() => checked((ulong)Interlocked.Increment(ref _outboundSequence));
 }

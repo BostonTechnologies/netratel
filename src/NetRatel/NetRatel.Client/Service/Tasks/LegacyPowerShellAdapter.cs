@@ -19,7 +19,8 @@ internal static class LegacyPowerShellAdapter
         ExternalShellRunner runner,
         string script,
         int maximumResultBytes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ExternalShellRunner.ExecutionObserver? observer = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var scriptPath = ExternalShellRunner.WritePrivateTemp(".ps1", script);
@@ -29,7 +30,7 @@ internal static class LegacyPowerShellAdapter
             resultPath = ExternalShellRunner.WritePrivateTemp(".json", string.Empty);
             var execution = await runner.RunPowerShellScriptAsync(
                 BuildWrapper(scriptPath, resultPath), ShellExecutor.Auto, null, null, cancellationToken,
-                requirementsContent: script).ConfigureAwait(false);
+                requirementsContent: script, observer: observer).ConfigureAwait(false);
             if (!execution.Success || cancellationToken.IsCancellationRequested)
                 return (execution, null);
 

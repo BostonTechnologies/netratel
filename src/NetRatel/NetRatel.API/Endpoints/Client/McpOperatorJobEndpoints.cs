@@ -617,7 +617,7 @@ public static class McpOperatorJobEndpoints
     private static bool HasPlan(string? plan, string? key) => IsOpaque(plan) && IsOpaque(key);
     private static bool IsOpaque(string? value) => value is { Length: >= 32 and <= 128 } && value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_');
     private static bool IsIdentifier(string? value, int maximum) => value is { Length: > 0 } && value.Length <= maximum && (char.IsAsciiLetter(value[0]) || value[0] == '_') && value.All(character => char.IsAsciiLetterOrDigit(character) || character == '_');
-    private static bool IsTerminal(string state) => state is nameof(JobRunState.Succeeded) or nameof(JobRunState.Failed) or nameof(JobRunState.Cancelled) or nameof(JobRunState.TimedOut);
+    private static bool IsTerminal(string state) => state is nameof(JobRunState.Succeeded) or nameof(JobRunState.Failed) or nameof(JobRunState.Cancelled) or nameof(JobRunState.TimedOut) or nameof(JobRunState.Unknown);
 
     internal static IReadOnlyList<McpOperatorJobLogLine> ProjectActivityLogs(
         JobTaskActivityInfo activity, IReadOnlyList<JobTaskLogInfo> persisted, int limit)

@@ -19,7 +19,8 @@ public enum CommandLifecycleStatus
     Started = 3,
     Completed = 4,
     Failed = 5,
-    Cancelled = 6
+    Cancelled = 6,
+    Progress = 7
 }
 
 public enum CommandMessageDisposition

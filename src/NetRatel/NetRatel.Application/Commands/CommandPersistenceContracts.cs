@@ -84,6 +84,11 @@ public static class CommandLifecycleRules
             (CommandLifecycleStatus.Started, CommandLifecycleStatus.Completed) => true,
             (CommandLifecycleStatus.Started, CommandLifecycleStatus.Failed) => true,
             (CommandLifecycleStatus.Started, CommandLifecycleStatus.Cancelled) => true,
+            (CommandLifecycleStatus.Started, CommandLifecycleStatus.Progress) => true,
+            (CommandLifecycleStatus.Progress, CommandLifecycleStatus.Progress) => true,
+            (CommandLifecycleStatus.Progress, CommandLifecycleStatus.Completed) => true,
+            (CommandLifecycleStatus.Progress, CommandLifecycleStatus.Failed) => true,
+            (CommandLifecycleStatus.Progress, CommandLifecycleStatus.Cancelled) => true,
             _ => false
         };
 
