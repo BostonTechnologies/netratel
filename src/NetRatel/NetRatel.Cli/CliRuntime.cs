@@ -17,7 +17,7 @@ internal sealed class CliRuntime
 
     public HttpClient CreateHttpClient(Uri baseAddress)
     {
-        var client = _handlerFactory is null ? new HttpClient() : new HttpClient(_handlerFactory(), disposeHandler: true);
+        var client = _handlerFactory is null ? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) : new HttpClient(_handlerFactory(), disposeHandler: true);
         client.BaseAddress = baseAddress;
         client.Timeout = TimeSpan.FromSeconds(60);
         return client;
@@ -40,7 +40,11 @@ internal sealed class CliRuntime
         {
             var agentClient = new NetRatelAgentClient(new AgentClientConfiguration(
                 config.ApiBaseUrl.ToString(), config.OidcTokenUrl, config.OidcClientId,
-                config.OidcUsername, config.OidcAppPassword, config.OidcScope), _handlerFactory);
+                config.OidcUsername, config.OidcAppPassword, config.OidcScope)
+            {
+                ApiM2MTokenUrl = config.ApiM2MTokenUrl, ApiM2MClientId = config.ApiM2MClientId,
+                ApiM2MClientSecret = config.ApiM2MClientSecret, ApiM2MScope = config.ApiM2MScope
+            }, _handlerFactory);
             return _accessToken = await agentClient.GetAccessTokenAsync(ct).ConfigureAwait(false);
         }
         catch (AgentClientRemoteException ex)

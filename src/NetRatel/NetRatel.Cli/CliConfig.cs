@@ -1,3 +1,4 @@
+using NetRatel.AgentClient;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -10,6 +11,22 @@ internal sealed record CliConfig(
     string? OidcScope)
 {
     public string? IntegrationCredential { get; init; }
+    public string? AuthenticationMode { get; init; }
+    public string? ProfileName { get; init; }
+    public string? Instance { get; init; }
+    public string? DefaultTenantId { get; init; }
+    public string? CredentialPurpose { get; init; }
+    public string? ApprovedOrigin { get; init; }
+    public string? ApprovedTarget { get; init; }
+    public string? ApprovedTokenEndpoint { get; init; }
+    public string? IntegrationCredentialFile { get; init; }
+    public string? OidcAppPasswordFile { get; init; }
+    public string? ApiM2MClientSecretFile { get; init; }
+    public string? ApiM2MTokenUrl { get; init; }
+    public string? ApiM2MClientId { get; init; }
+    public string? ApiM2MClientSecret { get; init; }
+    public string? ApiM2MScope { get; init; }
+    public override string ToString() => "CliConfig (credential values omitted)";
     public const string DefaultApiBaseUrl = "https://netratel.example.invalid";
     public const string DefaultScope = "openid profile email";
     public const string ApiBaseUrlEnvironmentVariable = "NETRATEL_CLI_API_BASE_URL";
@@ -29,65 +46,66 @@ internal sealed record CliConfig(
     public static CliConfig Empty { get; } = new(null, null, null, null, null, null);
 
     public static CliConfig FromEnvironment(Func<string, string?> getEnvironmentVariable)
-    {
-        ArgumentNullException.ThrowIfNull(getEnvironmentVariable);
+        => FromAgent(NetRatelConfigurationService.ReadEnvironment(ConfigurationSurface.Cli, getEnvironmentVariable));
 
-        return new CliConfig(
-            ReadEnvironmentVariable(getEnvironmentVariable, ApiBaseUrlEnvironmentVariable, "BT_NetRatel_API_BASE_URL"),
-            ReadEnvironmentVariable(getEnvironmentVariable, OidcTokenUrlEnvironmentVariable, "BT_OIDC_TOKEN_URL"),
-            ReadEnvironmentVariable(getEnvironmentVariable, OidcClientIdEnvironmentVariable, "BT_OIDC_CLIENT_ID"),
-            ReadEnvironmentVariable(getEnvironmentVariable, OidcUsernameEnvironmentVariable, "BT_OIDC_USERNAME"),
-            ReadEnvironmentVariable(getEnvironmentVariable, OidcAppPasswordEnvironmentVariable, "BT_OIDC_APP_PASSWORD"),
-            ReadEnvironmentVariable(getEnvironmentVariable, OidcScopeEnvironmentVariable, "BT_OIDC_SCOPE"))
-        {
-            // The generic name was published with P06; the CLI-specific name
-            // takes precedence while retaining that documented secret-injection
-            // path for current users.
-            IntegrationCredential = Pick(getEnvironmentVariable(IntegrationCredentialEnvironmentVariable), getEnvironmentVariable("NETRATEL_INTEGRATION_TOKEN"))
-        };
-    }
-
-    public CliConfig Merge(CliConfig next) => this with
+    public AgentClientConfiguration ToAgent() => new(ApiBaseUrl, OidcTokenUrl, OidcClientId, OidcUsername, OidcAppPassword, OidcScope)
     {
-        ApiBaseUrl = Pick(next.ApiBaseUrl, ApiBaseUrl),
-        OidcTokenUrl = Pick(next.OidcTokenUrl, OidcTokenUrl),
-        OidcClientId = Pick(next.OidcClientId, OidcClientId),
-        OidcUsername = Pick(next.OidcUsername, OidcUsername),
-        OidcAppPassword = Pick(next.OidcAppPassword, OidcAppPassword),
-        OidcScope = Pick(next.OidcScope, OidcScope),
-        IntegrationCredential = Pick(next.IntegrationCredential, IntegrationCredential)
+        IntegrationCredential = IntegrationCredential,
+        AuthenticationMode = AuthenticationMode,
+        ProfileName = ProfileName,
+        Instance = Instance,
+        DefaultTenantId = DefaultTenantId,
+        CredentialPurpose = CredentialPurpose,
+        ApprovedOrigin = ApprovedOrigin,
+        ApprovedTarget = ApprovedTarget,
+        ApprovedTokenEndpoint = ApprovedTokenEndpoint,
+        IntegrationCredentialFile = IntegrationCredentialFile,
+        OidcAppPasswordFile = OidcAppPasswordFile,
+        ApiM2MClientSecretFile = ApiM2MClientSecretFile,
+        ApiM2MTokenUrl = ApiM2MTokenUrl,
+        ApiM2MClientId = ApiM2MClientId,
+        ApiM2MClientSecret = ApiM2MClientSecret,
+        ApiM2MScope = ApiM2MScope,
     };
+
+    public static CliConfig FromAgent(AgentClientConfiguration config) => new(config.ApiBaseUrl, config.OidcTokenUrl, config.OidcClientId, config.OidcUsername, config.OidcAppPassword, config.OidcScope)
+    {
+        IntegrationCredential = config.IntegrationCredential,
+        AuthenticationMode = config.AuthenticationMode,
+        ProfileName = config.ProfileName,
+        Instance = config.Instance,
+        DefaultTenantId = config.DefaultTenantId,
+        CredentialPurpose = config.CredentialPurpose,
+        ApprovedOrigin = config.ApprovedOrigin,
+        ApprovedTarget = config.ApprovedTarget,
+        ApprovedTokenEndpoint = config.ApprovedTokenEndpoint,
+        IntegrationCredentialFile = config.IntegrationCredentialFile,
+        OidcAppPasswordFile = config.OidcAppPasswordFile,
+        ApiM2MClientSecretFile = config.ApiM2MClientSecretFile,
+        ApiM2MTokenUrl = config.ApiM2MTokenUrl,
+        ApiM2MClientId = config.ApiM2MClientId,
+        ApiM2MClientSecret = config.ApiM2MClientSecret,
+        ApiM2MScope = config.ApiM2MScope,
+    };
+
+    public CliConfig Merge(CliConfig next) => FromAgent(ToAgent().Merge(next.ToAgent()));
 
     public ResolvedCliConfig Resolve()
     {
-        static string Require(string? value, string name)
-            => string.IsNullOrWhiteSpace(value) ? throw new CliValidationException($"{name} is required.") : value;
-
-        var hasIntegrationCredential = !string.IsNullOrWhiteSpace(IntegrationCredential);
-        var hasOidcConfiguration = !string.IsNullOrWhiteSpace(OidcTokenUrl) || !string.IsNullOrWhiteSpace(OidcClientId) ||
-            !string.IsNullOrWhiteSpace(OidcUsername) || !string.IsNullOrWhiteSpace(OidcAppPassword) || !string.IsNullOrWhiteSpace(OidcScope);
-        if (hasIntegrationCredential && hasOidcConfiguration)
+        try
         {
-            throw new CliValidationException("Integration credentials cannot be combined with OIDC configuration.");
-        }
-
-        var apiBaseUrl = new Uri(string.IsNullOrWhiteSpace(ApiBaseUrl) ? DefaultApiBaseUrl : ApiBaseUrl, UriKind.Absolute);
-        if (hasIntegrationCredential)
-        {
-            return new ResolvedCliConfig(apiBaseUrl, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty)
+            var resolved = ToAgent().Resolve();
+            return new ResolvedCliConfig(resolved.ApiBaseUrl, resolved.OidcTokenUrl, resolved.OidcClientId, resolved.OidcUsername, resolved.OidcAppPassword, resolved.OidcScope)
             {
-                AuthenticationMode = CliAuthenticationMode.IntegrationCredential,
-                IntegrationCredential = IntegrationCredential
+                AuthenticationMode = (CliAuthenticationMode)resolved.AuthenticationMode,
+                IntegrationCredential = resolved.IntegrationCredential,
+                ApiM2MTokenUrl = resolved.ApiM2MTokenUrl,
+                ApiM2MClientId = resolved.ApiM2MClientId,
+                ApiM2MClientSecret = resolved.ApiM2MClientSecret,
+                ApiM2MScope = resolved.ApiM2MScope
             };
         }
-
-        return new ResolvedCliConfig(
-            apiBaseUrl,
-            Require(OidcTokenUrl, OidcTokenUrlEnvironmentVariable),
-            Require(OidcClientId, OidcClientIdEnvironmentVariable),
-            Require(OidcUsername, OidcUsernameEnvironmentVariable),
-            Require(OidcAppPassword, OidcAppPasswordEnvironmentVariable),
-            string.IsNullOrWhiteSpace(OidcScope) ? DefaultScope : OidcScope);
+        catch (AgentClientValidationException exception) { throw new CliValidationException(exception.Message); }
     }
 
     private static string? ReadEnvironmentVariable(Func<string, string?> getEnvironmentVariable, string canonicalName, string compatibilityAlias)
@@ -100,7 +118,8 @@ internal sealed record CliConfig(
 internal enum CliAuthenticationMode
 {
     Oidc,
-    IntegrationCredential
+    IntegrationCredential,
+    ApiM2MClientSecret
 }
 
 internal sealed record ResolvedCliConfig(
@@ -113,4 +132,9 @@ internal sealed record ResolvedCliConfig(
 {
     public CliAuthenticationMode AuthenticationMode { get; init; } = CliAuthenticationMode.Oidc;
     public string? IntegrationCredential { get; init; }
+    public string? ApiM2MTokenUrl { get; init; }
+    public string? ApiM2MClientId { get; init; }
+    public string? ApiM2MClientSecret { get; init; }
+    public string? ApiM2MScope { get; init; }
+    public override string ToString() => $"ResolvedCliConfig {{ ApiBaseUrl = {ApiBaseUrl}, AuthenticationMode = {AuthenticationMode} }}";
 }

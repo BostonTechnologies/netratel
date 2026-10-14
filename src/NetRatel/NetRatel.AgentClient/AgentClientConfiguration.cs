@@ -30,6 +30,21 @@ public sealed record AgentClientConfiguration(
     /// </summary>
     public string? IntegrationCredential { get; init; }
 
+    public string? AuthenticationMode { get; init; }
+    public string? ProfileName { get; init; }
+    public string? Instance { get; init; }
+    public string? DefaultTenantId { get; init; }
+    public string? CredentialPurpose { get; init; }
+    public string? ApprovedOrigin { get; init; }
+    public string? ApprovedTarget { get; init; }
+    public string? ApprovedTokenEndpoint { get; init; }
+    public string? IntegrationCredentialFile { get; init; }
+    public string? OidcAppPasswordFile { get; init; }
+    public string? ApiM2MClientSecretFile { get; init; }
+
+    // Records containing credentials must never print their generated property list.
+    public override string ToString() => "AgentClientConfiguration (credential values omitted)";
+
     public const string DefaultApiBaseUrl = "https://netratel.example.invalid";
     public const string DefaultScope = "openid profile email";
     public const string ApiBaseUrlEnvironmentVariable = "NETRATEL_AGENT_CLIENT_API_BASE_URL";
@@ -49,80 +64,56 @@ public sealed record AgentClientConfiguration(
     public static AgentClientConfiguration FromEnvironment(Func<string, string?> getEnvironmentVariable)
     {
         ArgumentNullException.ThrowIfNull(getEnvironmentVariable);
-
-        return new AgentClientConfiguration(
-            ReadEnvironmentVariable(getEnvironmentVariable, ApiBaseUrlEnvironmentVariable, "BT_NetRatel_API_BASE_URL"),
-            ReadEnvironmentVariable(getEnvironmentVariable, OidcTokenUrlEnvironmentVariable, "BT_OIDC_TOKEN_URL"),
-            ReadEnvironmentVariable(getEnvironmentVariable, OidcClientIdEnvironmentVariable, "BT_OIDC_CLIENT_ID"),
-            ReadEnvironmentVariable(getEnvironmentVariable, OidcUsernameEnvironmentVariable, "BT_OIDC_USERNAME"),
-            ReadEnvironmentVariable(getEnvironmentVariable, OidcAppPasswordEnvironmentVariable, "BT_OIDC_APP_PASSWORD"),
-            ReadEnvironmentVariable(getEnvironmentVariable, OidcScopeEnvironmentVariable, "BT_OIDC_SCOPE"))
-        {
-            IntegrationCredential = getEnvironmentVariable(IntegrationCredentialEnvironmentVariable)
-        };
+        return NetRatelConfigurationService.ReadEnvironment(ConfigurationSurface.AgentClient, getEnvironmentVariable);
     }
 
     public AgentClientConfiguration Merge(AgentClientConfiguration next) => this with
     {
-        ApiBaseUrl = Pick(next.ApiBaseUrl, ApiBaseUrl),
-        OidcTokenUrl = Pick(next.OidcTokenUrl, OidcTokenUrl),
-        OidcClientId = Pick(next.OidcClientId, OidcClientId),
-        OidcUsername = Pick(next.OidcUsername, OidcUsername),
-        OidcAppPassword = Pick(next.OidcAppPassword, OidcAppPassword),
-        OidcScope = Pick(next.OidcScope, OidcScope),
-        ApiM2MTokenUrl = Pick(next.ApiM2MTokenUrl, ApiM2MTokenUrl),
-        ApiM2MClientId = Pick(next.ApiM2MClientId, ApiM2MClientId),
-        ApiM2MClientSecret = Pick(next.ApiM2MClientSecret, ApiM2MClientSecret),
-        ApiM2MScope = Pick(next.ApiM2MScope, ApiM2MScope),
-        IntegrationCredential = Pick(next.IntegrationCredential, IntegrationCredential)
+        ApiBaseUrl = next.ApiBaseUrl ?? ApiBaseUrl,
+        OidcTokenUrl = next.OidcTokenUrl ?? OidcTokenUrl,
+        OidcClientId = next.OidcClientId ?? OidcClientId,
+        OidcUsername = next.OidcUsername ?? OidcUsername,
+        OidcAppPassword = next.OidcAppPassword ?? OidcAppPassword,
+        OidcScope = next.OidcScope ?? OidcScope,
+        ApiM2MTokenUrl = next.ApiM2MTokenUrl ?? ApiM2MTokenUrl,
+        ApiM2MClientId = next.ApiM2MClientId ?? ApiM2MClientId,
+        ApiM2MClientSecret = next.ApiM2MClientSecret ?? ApiM2MClientSecret,
+        ApiM2MScope = next.ApiM2MScope ?? ApiM2MScope,
+        IntegrationCredential = next.IntegrationCredential ?? IntegrationCredential,
+        AuthenticationMode = next.AuthenticationMode ?? AuthenticationMode,
+        ProfileName = next.ProfileName ?? ProfileName,
+        Instance = next.Instance ?? Instance,
+        DefaultTenantId = next.DefaultTenantId ?? DefaultTenantId,
+        CredentialPurpose = next.CredentialPurpose ?? CredentialPurpose,
+        ApprovedOrigin = next.ApprovedOrigin ?? ApprovedOrigin,
+        ApprovedTarget = next.ApprovedTarget ?? ApprovedTarget,
+        ApprovedTokenEndpoint = next.ApprovedTokenEndpoint ?? ApprovedTokenEndpoint,
+        IntegrationCredentialFile = next.IntegrationCredentialFile ?? IntegrationCredentialFile,
+        OidcAppPasswordFile = next.OidcAppPasswordFile ?? OidcAppPasswordFile,
+        ApiM2MClientSecretFile = next.ApiM2MClientSecretFile ?? ApiM2MClientSecretFile
     };
 
     public ResolvedAgentClientConfiguration Resolve()
     {
-        static string Require(string? value, string name) => string.IsNullOrWhiteSpace(value)
-            ? throw new AgentClientValidationException($"{name} is required.")
-            : value;
+        var configuration = NetRatelConfigurationService.ResolveSecretReferences(this);
+        var result = new AgentClientConfigurationValidator().Validate(null, configuration);
+        if (result.Failed)
+            throw new AgentClientValidationException(string.Join(" ", result.Failures));
 
-        var hasIntegrationCredential = !string.IsNullOrWhiteSpace(IntegrationCredential);
-        var hasOidcConfiguration = !string.IsNullOrWhiteSpace(OidcTokenUrl) || !string.IsNullOrWhiteSpace(OidcClientId) ||
-            !string.IsNullOrWhiteSpace(OidcUsername) || !string.IsNullOrWhiteSpace(OidcAppPassword) || !string.IsNullOrWhiteSpace(OidcScope);
-        var hasApiM2MConfiguration = !string.IsNullOrWhiteSpace(ApiM2MTokenUrl) || !string.IsNullOrWhiteSpace(ApiM2MClientId) ||
-            !string.IsNullOrWhiteSpace(ApiM2MClientSecret) || !string.IsNullOrWhiteSpace(ApiM2MScope);
-        if ((hasIntegrationCredential && (hasOidcConfiguration || hasApiM2MConfiguration)) ||
-            (hasOidcConfiguration && hasApiM2MConfiguration))
+        var apiBaseUrl = new Uri(string.IsNullOrWhiteSpace(configuration.ApiBaseUrl) ? DefaultApiBaseUrl : configuration.ApiBaseUrl, UriKind.Absolute);
+        var mode = NetRatelConfigurationService.AuthenticationModeOf(configuration);
+        return new ResolvedAgentClientConfiguration(apiBaseUrl,
+            configuration.OidcTokenUrl ?? string.Empty, configuration.OidcClientId ?? string.Empty,
+            configuration.OidcUsername ?? string.Empty, configuration.OidcAppPassword ?? string.Empty,
+            string.IsNullOrWhiteSpace(configuration.OidcScope) ? DefaultScope : configuration.OidcScope)
         {
-            throw new AgentClientValidationException("Select exactly one authentication mode; integration credential, OIDC, and API M2M settings cannot be combined.");
-        }
-
-        var apiBaseUrl = new Uri(string.IsNullOrWhiteSpace(ApiBaseUrl) ? DefaultApiBaseUrl : ApiBaseUrl, UriKind.Absolute);
-        if (hasIntegrationCredential)
-        {
-            return new ResolvedAgentClientConfiguration(apiBaseUrl, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty)
-            {
-                AuthenticationMode = AgentClientAuthenticationMode.IntegrationCredential,
-                IntegrationCredential = IntegrationCredential
-            };
-        }
-
-        if (hasApiM2MConfiguration)
-        {
-            return new ResolvedAgentClientConfiguration(apiBaseUrl, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty)
-            {
-                AuthenticationMode = AgentClientAuthenticationMode.ApiM2MClientSecret,
-                ApiM2MTokenUrl = Require(ApiM2MTokenUrl, "apiM2MTokenUrl"),
-                ApiM2MClientId = Require(ApiM2MClientId, "apiM2MClientId"),
-                ApiM2MClientSecret = Require(ApiM2MClientSecret, "apiM2MClientSecret"),
-                ApiM2MScope = Require(ApiM2MScope, "apiM2MScope")
-            };
-        }
-
-        return new ResolvedAgentClientConfiguration(
-            apiBaseUrl,
-            Require(OidcTokenUrl, OidcTokenUrlEnvironmentVariable),
-            Require(OidcClientId, OidcClientIdEnvironmentVariable),
-            Require(OidcUsername, OidcUsernameEnvironmentVariable),
-            Require(OidcAppPassword, OidcAppPasswordEnvironmentVariable),
-            string.IsNullOrWhiteSpace(OidcScope) ? DefaultScope : OidcScope);
+            AuthenticationMode = mode,
+            IntegrationCredential = configuration.IntegrationCredential,
+            ApiM2MTokenUrl = configuration.ApiM2MTokenUrl,
+            ApiM2MClientId = configuration.ApiM2MClientId,
+            ApiM2MClientSecret = configuration.ApiM2MClientSecret,
+            ApiM2MScope = configuration.ApiM2MScope
+        };
     }
 
     private static string? ReadEnvironmentVariable(Func<string, string?> getEnvironmentVariable, string canonicalName, string compatibilityAlias)
@@ -146,29 +137,41 @@ public sealed record ResolvedAgentClientConfiguration(Uri ApiBaseUrl, string Oid
     public string? ApiM2MClientId { get; init; }
     public string? ApiM2MClientSecret { get; init; }
     public string? ApiM2MScope { get; init; }
+    public override string ToString() => $"ResolvedAgentClientConfiguration {{ ApiBaseUrl = {ApiBaseUrl}, AuthenticationMode = {AuthenticationMode} }}";
 }
 
 public sealed class AgentClientConfigurationStore
 {
-    public AgentClientConfigurationStore(string? path = null) => Path = path ?? DefaultPath;
+    private readonly bool _readOnly;
+    private readonly bool _hasSelectedFile;
+    public AgentClientConfigurationStore(string? path = null, bool readOnly = false)
+    {
+        Path = path ?? DefaultPath;
+        _readOnly = readOnly;
+        _hasSelectedFile = path is not null || !readOnly;
+    }
     public string Path { get; }
     public static string DefaultPath => System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "netratel", "cli.json");
 
-    public AgentClientConfiguration Load() => !File.Exists(Path)
+    public AgentClientConfiguration Load() => !_hasSelectedFile || !File.Exists(Path)
         ? AgentClientConfiguration.Empty
-        : JsonSerializer.Deserialize<AgentClientConfiguration>(File.ReadAllText(Path), AgentClientConfiguration.JsonOptions) ?? AgentClientConfiguration.Empty;
+        : NetRatelConfigurationService.ReadConfiguration(Path);
 
     public void Save(AgentClientConfiguration configuration)
     {
-        var directory = System.IO.Path.GetDirectoryName(Path);
-        if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
-        File.WriteAllText(Path, JsonSerializer.Serialize(configuration, AgentClientConfiguration.JsonOptions) + Environment.NewLine);
-        if (!OperatingSystem.IsWindows())
-        {
-            try { File.SetUnixFileMode(Path, UnixFileMode.UserRead | UnixFileMode.UserWrite); }
-            catch { /* Best effort on filesystems without Unix mode support. */ }
-        }
+        if (_readOnly) throw new AgentClientValidationException("Configuration is externally managed and has no writable selected file. Export a reviewed profile through explicit setup; deployment settings require recreation/restart.");
+        var existed = File.Exists(Path);
+        var before = existed ? ConfigurationFileStorage.Hash(Path) : string.Empty;
+        var previous = Load();
+        if (NetRatelConfigurationService.HasSecrets(previous) && !NetRatelConfigurationService.Equivalent(previous.ApiBaseUrl, configuration.ApiBaseUrl))
+            throw new AgentClientValidationException("Changing a credential's target requires explicit reauthorization/rebind through setup. Existing credentials will not be sent to a new URL.");
+        if ((!string.IsNullOrWhiteSpace(previous.OidcAppPassword) || !string.IsNullOrWhiteSpace(previous.OidcAppPasswordFile)) &&
+            !NetRatelConfigurationService.Equivalent(previous.OidcTokenUrl, configuration.OidcTokenUrl))
+            throw new AgentClientValidationException("Changing a credential's token endpoint requires explicit reauthorization/rebind through setup.");
+        ConfigurationFileStorage.WriteAtomic(Path, JsonSerializer.Serialize(configuration, AgentClientConfiguration.JsonOptions) + Environment.NewLine,
+            replace: existed, expectedHash: before);
     }
+
 }
 
 public static class AgentClientConfigurationResolver
@@ -201,22 +204,24 @@ public static class AgentClientConfigurationResolver
 
     public static AgentClientConfiguration LoadMcpIsolatedConfiguration(Func<string, string?> getEnvironmentVariable)
     {
-        return LoadIsolated(GetMcpConfigurationPath(getEnvironmentVariable));
+        var path = GetMcpConfigurationPath(getEnvironmentVariable);
+        // Preserve the actionable legacy error when neither isolated input is supplied.
+        var effective = new NetRatelConfigurationService().Load(new(ConfigurationSurface.StdioMcp, path, GetEnvironmentVariable: getEnvironmentVariable));
+        if (effective.Configuration == AgentClientConfiguration.Empty)
+            throw new AgentClientValidationException("NETRATEL_MCP_CONFIG is required unless dedicated NetRatel:Mcp:Outbound environment settings are supplied.");
+        return effective.Configuration;
     }
 
     public static string? GetMcpConfigurationPath(Func<string, string?> getEnvironmentVariable)
     {
         ArgumentNullException.ThrowIfNull(getEnvironmentVariable);
-        return Pick(
-            getEnvironmentVariable("NETRATEL_MCP_CONFIG"),
-            getEnvironmentVariable("NetRatel_MCP_CONFIG"));
+        var selected = getEnvironmentVariable("NETRATEL_MCP_CONFIG") ?? getEnvironmentVariable("NetRatel_MCP_CONFIG");
+        return string.IsNullOrWhiteSpace(selected) ? null : selected;
     }
 
     public static AgentClientConfiguration Load(string? configPath = null)
     {
-        var file = new AgentClientConfigurationStore(configPath).Load();
-        var environment = AgentClientConfiguration.FromEnvironment(Environment.GetEnvironmentVariable);
-        return file.Merge(environment);
+        return new NetRatelConfigurationService().Load(new(ConfigurationSurface.AgentClient, configPath)).Configuration;
     }
 
     private static string? Pick(string? primary, string? fallback)

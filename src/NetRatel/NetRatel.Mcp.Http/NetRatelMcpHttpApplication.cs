@@ -42,8 +42,7 @@ public static class NetRatelMcpHttpApplication
             .ValidateOnStart();
         builder.Services.AddSingleton(httpOptions);
 
-        var delegationOptions = builder.Configuration.GetSection(McpOperatorDelegationOptions.SectionName).Get<McpOperatorDelegationOptions>()
-            ?? new McpOperatorDelegationOptions();
+        var delegationOptions = McpOperatorDelegationOptions.FromConfiguration(builder.Configuration);
         delegationOptions.EnsureValid();
         if (httpOptions.IsOperatorSurfaceEnabled && !delegationOptions.Enabled)
         {

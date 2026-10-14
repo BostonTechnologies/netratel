@@ -14,7 +14,8 @@ public static class ServiceIdentityServiceCollectionExtensions
     {
         services.AddNetRatelServiceIdentity(configuration);
         services.AddOptions<M2MOptions>().ValidateOnStart();
-        services.AddOptions<M2MDeploymentClientsOptions>().Bind(configuration.GetSection("M2MClients")).ValidateOnStart();
+        services.AddOptions<M2MDeploymentClientsOptions>().Bind(configuration.GetSection("M2MClients"))
+            .PostConfigure(clients => M2MDeploymentClientsOptions.ResolveSecretSources(configuration, clients)).ValidateOnStart();
         services.AddSingleton<IValidateOptions<M2MOptions>, M2MDeploymentOptionsValidator>();
         services.AddSingleton<IValidateOptions<M2MDeploymentClientsOptions>, M2MDeploymentClientsValidator>();
         services.AddSingleton<IM2MDeploymentProfileResolver>(sp => new M2MDeploymentProfileResolver(

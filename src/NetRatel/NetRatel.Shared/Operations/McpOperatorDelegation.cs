@@ -2,6 +2,8 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.Extensions.Configuration;
+using NetRatel.Shared.Connectivity;
 
 namespace NetRatel.Shared.Operations;
 
@@ -33,6 +35,36 @@ public sealed class McpOperatorDelegationOptions
     /// <summary>Base64-encoded, at least 256-bit HMAC key supplied by the secret store.</summary>
     public string SharedKeyBase64 { get; set; } = string.Empty;
 
+    public string SharedKeyBase64File { get; set; } = string.Empty;
+
+    private readonly object _keyGate = new();
+    private string? _loadedFileKey;
+    private string? _loadedFilePath;
+
+    private string KeyMaterial()
+    {
+        if (string.IsNullOrEmpty(SharedKeyBase64File)) return SharedKeyBase64;
+        if (!string.IsNullOrEmpty(SharedKeyBase64))
+            throw new InvalidOperationException($"{SectionName}:SharedKeyBase64 must select either an inline secret or a secret file.");
+        lock (_keyGate)
+        {
+            if (_loadedFilePath is not null && _loadedFilePath != SharedKeyBase64File)
+                throw new InvalidOperationException("Delegation key file changes require a new serving process.");
+            _loadedFilePath = SharedKeyBase64File;
+            return _loadedFileKey ??= SecretFileReference.Read(SharedKeyBase64File, $"{SectionName}:SharedKeyBase64");
+        }
+    }
+
+    public static McpOperatorDelegationOptions FromConfiguration(IConfiguration configuration)
+    {
+        var options = configuration.GetSection(SectionName).Get<McpOperatorDelegationOptions>() ?? new();
+        var selected = SecretFileReference.Select(configuration, $"{SectionName}:SharedKeyBase64", $"{SectionName}:SharedKeyBase64File",
+            $"{SectionName}:SharedKeyBase64_FILE", "NETRATEL_MCP_DELEGATION_KEY_FILE");
+        options.SharedKeyBase64 = selected.Inline;
+        options.SharedKeyBase64File = selected.File;
+        return options;
+    }
+
     public int LifetimeSeconds { get; set; } = 90;
 
     public void EnsureValid()
@@ -50,7 +82,7 @@ public sealed class McpOperatorDelegationOptions
         byte[] key;
         try
         {
-            key = Convert.FromBase64String(SharedKeyBase64);
+            key = Convert.FromBase64String(KeyMaterial());
         }
         catch (FormatException exception)
         {
@@ -64,7 +96,7 @@ public sealed class McpOperatorDelegationOptions
     internal SymmetricSecurityKey CreateSigningKey()
     {
         EnsureValid();
-        return new SymmetricSecurityKey(Convert.FromBase64String(SharedKeyBase64))
+        return new SymmetricSecurityKey(Convert.FromBase64String(KeyMaterial()))
         {
             KeyId = KeyId
         };

@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using NetRatel.AgentClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using NetRatel.Shared.Operations;
@@ -23,6 +24,8 @@ public sealed class NetRatelMcpHttpOptions
     public const string ConfigurationPathEnvironmentVariable = "NETRATEL_MCP_CONFIG";
     public const string DevApiBaseUrlEnvironmentVariable = "NETRATEL_MCP_DEV_API_BASE_URL";
     public const string ProdApiBaseUrlEnvironmentVariable = "NETRATEL_MCP_PROD_API_BASE_URL";
+
+    internal IConfiguration? ConfigurationSource { get; private set; }
 
     [Required] public string Instance { get; set; } = string.Empty;
     /// <summary>
@@ -78,6 +81,7 @@ public sealed class NetRatelMcpHttpOptions
 
         return new NetRatelMcpHttpOptions
         {
+            ConfigurationSource = configuration,
             Instance = ValueOrConfigured(configuration, InstanceEnvironmentVariable, configured.Instance),
             OperatorSurfaceEnabled = configured.OperatorSurfaceEnabled,
             ConfigurationPath = ValueOrConfigured(configuration, ConfigurationPathEnvironmentVariable, configured.ConfigurationPath),
@@ -88,8 +92,8 @@ public sealed class NetRatelMcpHttpOptions
             Authority = configured.Authority,
             RequireHttpsMetadata = configured.RequireHttpsMetadata,
             Audience = configured.Audience,
-            RequiredGroups = configured.RequiredGroups,
-            RequiredScopes = configured.RequiredScopes,
+            RequiredGroups = ResolveArray(configuration, nameof(RequiredGroups), configured.RequiredGroups),
+            RequiredScopes = ResolveArray(configuration, nameof(RequiredScopes), configured.RequiredScopes),
             DevelopmentWriteScope = configured.DevelopmentWriteScope,
             DevelopmentOnboardingScope = configured.DevelopmentOnboardingScope,
             ReadScope = configured.ReadScope,
@@ -97,13 +101,53 @@ public sealed class NetRatelMcpHttpOptions
             FilesScope = configured.FilesScope,
             ExecuteScope = configured.ExecuteScope,
             AdminScope = configured.AdminScope,
-            AllowedOrigins = configured.AllowedOrigins,
+            AllowedOrigins = ResolveArray(configuration, nameof(AllowedOrigins), configured.AllowedOrigins),
             MaxRequestBodyBytes = configured.MaxRequestBodyBytes
         };
     }
 
     private static string ValueOrConfigured(IConfiguration configuration, string key, string configured)
-        => string.IsNullOrWhiteSpace(configuration[key]) ? configured : configuration[key]!;
+    {
+        var canonical = $"{SectionName}:{key switch
+        {
+            InstanceEnvironmentVariable => nameof(Instance),
+            ConfigurationPathEnvironmentVariable => nameof(ConfigurationPath),
+            DevApiBaseUrlEnvironmentVariable => nameof(DevApiBaseUrl),
+            ProdApiBaseUrlEnvironmentVariable => nameof(ProdApiBaseUrl),
+            _ => key
+        }}";
+        if (configuration is not IConfigurationRoot root) return configuration[canonical] ?? configuration[key] ?? configured;
+        var value = configured;
+        foreach (var provider in root.Providers)
+        {
+            if (provider.TryGet(canonical, out var canonicalValue)) value = canonicalValue ?? string.Empty;
+            else if (provider.TryGet(key, out var aliasValue)) value = aliasValue ?? string.Empty;
+        }
+        return value;
+    }
+
+    private static string[] ResolveArray(IConfiguration configuration, string name, string[] fallback)
+    {
+        if (configuration is not IConfigurationRoot root) return fallback;
+        var path = SectionName + ":" + name;
+        foreach (var provider in root.Providers.Reverse())
+        {
+            var keys = provider.GetChildKeys([], path).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            if (keys.Length == 0)
+            {
+                if (!provider.TryGet(path, out var value)) continue;
+                if (string.IsNullOrEmpty(value)) return []; // Explicit empty JSON array or environment value.
+                throw new AgentClientValidationException(path + " must be an array with consecutive numeric keys starting at zero.");
+            }
+            var indexed = keys.Select(key => int.TryParse(key, out var index) && index >= 0
+                ? (Key: key, Index: index) : throw new AgentClientValidationException(path + " has an invalid array key.")).OrderBy(item => item.Index).ToArray();
+            if (!indexed.Select(item => item.Index).SequenceEqual(Enumerable.Range(0, indexed.Length)))
+                throw new AgentClientValidationException(path + " must replace the whole array with consecutive indices starting at zero.");
+            return indexed.Select(item => provider.TryGet(path + ":" + item.Key, out var value) && value is not null
+                ? value : throw new AgentClientValidationException(path + " contains an invalid array value.")).ToArray();
+        }
+        return fallback;
+    }
 
     public string RequiredScopeFor(McpOperationAccessScope scope) => scope switch
     {
@@ -182,6 +226,8 @@ public sealed class NetRatelMcpHttpOptionsValidator : IValidateOptions<NetRatelM
         }
         if (options.AllowedOrigins.Any(origin => !IsOrigin(origin)))
             failures.Add("NetRatel:Mcp:Http:AllowedOrigins must contain absolute HTTPS origins only.");
+        if (options.AllowedOrigins.Distinct(StringComparer.Ordinal).Count() != options.AllowedOrigins.Length)
+            failures.Add("NetRatel:Mcp:Http:AllowedOrigins must not contain duplicates.");
 
         return failures.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(failures);
     }

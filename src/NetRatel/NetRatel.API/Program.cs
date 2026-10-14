@@ -1,3 +1,4 @@
+using NetRatel.API.Endpoints.Auth;
 ﻿using NetRatel.API.Endpoints.Client;
 using NetRatel.Infrastructure.Netclaw;
 using NetRatel.API.Services.Monitoring;
@@ -188,8 +189,7 @@ builder.Services.AddSingleton(aiAgentOpsLogBuffer);
 builder.Logging.AddProvider(new AiAgentOpsLoggerProvider(aiAgentOpsLogBuffer));
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICorrelationContext, HttpCorrelationContext>();
-var mcpDelegationOptions = builder.Configuration.GetSection(McpOperatorDelegationOptions.SectionName).Get<McpOperatorDelegationOptions>()
-    ?? new McpOperatorDelegationOptions();
+var mcpDelegationOptions = McpOperatorDelegationOptions.FromConfiguration(builder.Configuration);
 mcpDelegationOptions.EnsureValid();
 builder.Services.AddSingleton(mcpDelegationOptions);
 builder.Services.AddSingleton<McpOperatorDelegationTokenService>();
@@ -208,6 +208,8 @@ builder.Services.AddResponseCompression(options =>
     options.ExcludedMimeTypes = new[] { "text/event-stream" };
 });
 
+
+builder.Services.AddIntegrationPairing();
 
 // Add services to the container.
 builder.Services
@@ -519,6 +521,22 @@ builder.Services.AddAuthorization(options =>
         .RequireAuthenticatedUser()
         .RequireAssertion(context => IntegrationCredentialAuthorizationBoundary.AllowsDefaultAuthenticatedRoute(context.User))
         .Build();
+
+    options.AddPolicy(AiAgentSelfStatusEndpoints.Policy, policy =>
+    {
+        policy.AddAuthenticationSchemes("Bearer", "M2M");
+        policy.RequireAuthenticatedUser();
+        policy.RequireAssertion(async context =>
+        {
+            if (context.User.HasClaim("auth_mode", "integration_credential"))
+                return await AiAgentSelfStatusEndpoints.HasCurrentIntegrationGrantAsync(context).ConfigureAwait(false);
+            if (IsAgentPrincipal(context.User) || context.User.HasClaim("token_use", "netratel_service") ||
+                context.User.HasClaim("auth_mode", "service") || context.User.HasClaim("token_use", "system")) return false;
+            if (HasAllowedM2MClient(context.User, m2m.AllowedCallerClientIds, m2m.Audience)) return true;
+            return context.User.HasClaim("auth_mode", "machine_token") || context.User.Identities.Any(identity => identity.IsAuthenticated &&
+                (identity.AuthenticationType == "Oidc" || identity.AuthenticationType == LocalAuthenticationOptions.Scheme));
+        });
+    });
 
     options.AddPolicy("McpLocalDelegationExchange", policy =>
     {
