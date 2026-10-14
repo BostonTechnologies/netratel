@@ -48,6 +48,8 @@ using NetRatel.Shared.Authentication;
 using NetRatel.Web.Services.Pairing;
 
 var builder = WebApplication.CreateBuilder(args);
+var gatewayOptions = WebGatewayOptions.Resolve(builder.Configuration);
+builder.Services.AddSingleton(gatewayOptions);
 // Public install URLs are bearer capabilities; suppress raw-path request/forwarder logs.
 builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
 builder.Logging.AddFilter("Yarp.ReverseProxy", LogLevel.Warning);
@@ -325,7 +327,7 @@ builder.Services.AddHttpClient("TokenClient", c =>
 
 builder.Services.AddHttpClient("OrchestratorApi", c =>
 {
-    c.BaseAddress = new Uri(builder.Configuration["ApiBaseUrl"] ?? "https://localhost:5001/");
+    c.BaseAddress = gatewayOptions.ApiBaseUri;
     c.Timeout = Timeout.InfiniteTimeSpan;
 })
 .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
@@ -336,7 +338,7 @@ builder.Services.AddHttpClient("OrchestratorApi", c =>
 builder.Services.AddScoped<IPairingApiClient, PairingApiClient>();
 builder.Services.AddHttpClient("PairingApi", c =>
 {
-    c.BaseAddress = new Uri(builder.Configuration["ApiBaseUrl"] ?? "https://localhost:5001/");
+    c.BaseAddress = gatewayOptions.ApiBaseUri;
     c.Timeout = TimeSpan.FromSeconds(45);
 })
 .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
@@ -345,7 +347,7 @@ builder.Services.AddHttpClient("PairingApi", c =>
 
 builder.Services.AddHttpClient("OrchestratorApiStreaming", c =>
 {
-    c.BaseAddress = new Uri(builder.Configuration["ApiBaseUrl"] ?? "https://localhost:5001/");
+    c.BaseAddress = gatewayOptions.ApiBaseUri;
     c.Timeout = Timeout.InfiniteTimeSpan;
 })
 .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
@@ -353,8 +355,8 @@ builder.Services.AddHttpClient("OrchestratorApiStreaming", c =>
 .AddHttpMessageHandler<TokenAuthorizationHandler>()
 .RemoveAllResilienceHandlers();
 
-builder.Services.AddFlowsApiClient(builder.Configuration);
-builder.Services.AddMonitoringApiClient(builder.Configuration);
+builder.Services.AddFlowsApiClient(gatewayOptions.ApiBaseUri);
+builder.Services.AddMonitoringApiClient(gatewayOptions.ApiBaseUri);
 builder.Services.AddHttpClient("Bff", (sp, c) =>
 {
     var accessor = sp.GetRequiredService<IHttpContextAccessor>();
@@ -374,7 +376,7 @@ builder.Services.AddHttpClient("Bff", (sp, c) =>
 var webClientDownloadName = typeof(IWebClientDownloadService).Name;
 builder.Services.AddHttpClient(webClientDownloadName, c =>
 {
-    c.BaseAddress = new Uri(builder.Configuration["ApiBaseUrl"] ?? "https://localhost:5001/");
+    c.BaseAddress = gatewayOptions.ApiBaseUri;
 })
 .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
 .AddHttpMessageHandler<RedirectReissueHandler>()
@@ -384,7 +386,7 @@ builder.Services.AddScoped<IWebClientDownloadService>(sp => new WebClientDownloa
 
 builder.Services.AddHttpClient("SystemApi", c =>
 {
-    c.BaseAddress = new Uri(builder.Configuration["ApiBaseUrl"] ?? "https://localhost:5001/");
+    c.BaseAddress = gatewayOptions.ApiBaseUri;
 })
 .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
 .AddHttpMessageHandler<RedirectReissueHandler>()
@@ -392,7 +394,7 @@ builder.Services.AddHttpClient("SystemApi", c =>
 
 builder.Services.AddHttpClient("SystemApiNoAuth", c =>
 {
-    c.BaseAddress = new Uri(builder.Configuration["ApiBaseUrl"] ?? "https://localhost:5001/");
+    c.BaseAddress = gatewayOptions.ApiBaseUri;
 })
 .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
 .AddHttpMessageHandler<RedirectReissueHandler>();
@@ -409,11 +411,16 @@ builder.Services.AddScoped<IHttpClientFactory, OperatorApiHttpClientFactory>();
 
 #endregion
 
-// Add YARP reverse proxy configuration
-builder.Services.AddReverseProxy()
-        .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"));
+// YARP receives one composed snapshot. Generated destinations stay fixed until restart;
+// operator ReverseProxy file changes are validated before YARP activates them.
+ILogger? gatewayLogger = null;
+var gatewayConfiguration = WebGatewayConfiguration.Create(builder.Configuration, gatewayOptions,
+    exception => gatewayLogger?.LogError(exception, "Gateway configuration reload rejected; retaining the prior routes."));
+builder.Services.AddReverseProxy().LoadFromConfig(gatewayConfiguration.GetSection("ReverseProxy"));
 
 var app = builder.Build();
+gatewayLogger = app.Logger;
+app.Lifetime.ApplicationStopped.Register(gatewayConfiguration.Dispose);
 
 app.MapDefaultEndpoints();
 
@@ -548,9 +555,9 @@ app.MapScalarApiReference(
     (options, context) =>
     {
         var request = context.Request;
-        var openApiUrl = $"{request.Scheme}://{request.Host}{request.PathBase}/api/openapi/v1.json";
+        var openApiUrl = $"{request.PathBase}/api/openapi/v1.json";
         options.AddDocument("v1", "NetRatel API", openApiUrl, isDefault: true);
-        options.Servers = new[] { new ScalarServer(ScalarApiReferenceOptions.BuildPublicServerUrl(request)) };
+        options.Servers = new[] { new ScalarServer(ScalarApiReferenceOptions.BuildPublicServerUrl(request, gatewayOptions.PublicOrigin)) };
     }).AllowAnonymous();
 app.MapReverseProxy().AllowAnonymous();
 app.MapRazorPages();

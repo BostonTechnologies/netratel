@@ -1,4 +1,5 @@
-﻿using System.Net;
+﻿using NetRatel.Web.Configuration;
+using System.Net;
 using System.Net.Http;
 using NetRatel.Web.Services.Authentication;
 using Microsoft.Extensions.Logging;
@@ -17,7 +18,7 @@ public sealed class UploadsApiClient : IDisposable, IUploadsApiClient
     private readonly HttpMessageHandler _rootHandler; // so we can dispose properly
 
     public UploadsApiClient(
-        IConfiguration cfg,
+        WebGatewayOptions gatewayOptions,
         OperatorApiCredentialProvider credentials,
         ILogger<TokenAuthorizationHandler> tokenLogger)
     {
@@ -48,7 +49,7 @@ public sealed class UploadsApiClient : IDisposable, IUploadsApiClient
 
         Http = new HttpClient(forwarding, disposeHandler: false)
         {
-            BaseAddress = new Uri(cfg["ApiBaseUrl"] ?? "https://localhost:5001/"),
+            BaseAddress = gatewayOptions.ApiBaseUri,
             Timeout = Timeout.InfiniteTimeSpan // critical for streaming uploads
         };
     }
