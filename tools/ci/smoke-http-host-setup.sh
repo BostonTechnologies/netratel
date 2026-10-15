@@ -43,7 +43,7 @@ cleanup() {
     for receipt in TestResults/http-host-setup/personal-{saved,reloaded}.json; do
       if [[ -s "$receipt" ]]; then
         jq -r 'if type == "array" then . else .checks // [] end
-          | .[] | "\(.name): \(.status): \(.message)"' "$receipt" >&2 || true
+          | .[] | "\(.name): \(.status): \(.detail // .message // "")"' "$receipt" >&2 || true
       fi
     done
     "${compose[@]}" ps --all >&2 || true
@@ -194,38 +194,6 @@ delivery="$(poll_protocol /api/integration-pairing/v1/poll "$(jq '{deviceCapabil
 credential="$(jq -er '.delivery.secret' <<<"$delivery")"
 [[ "$credential" == nrt_ic_* ]]
 
-stage="saving a personal client with bare HTTP setup inside the serving container"
-printf '%s\n' "$credential" | "${applied[@]}" exec -T \
-  -e NETRATEL_HTTP_HOST_SMOKE_ORIGIN="$NETRATEL_PUBLIC_ORIGIN" mcp-http sh -ceu '
-    umask 077
-    credential_file="$(mktemp)"
-    result_file="$(mktemp)"
-    trap '\''rm -f "$credential_file" "$result_file"'\'' EXIT
-    cat > "$credential_file"
-    setup_status=0
-    dotnet /app/NetRatel.Mcp.Http.dll setup --non-interactive \
-      --instance "$NETRATEL_HTTP_HOST_SMOKE_ORIGIN" --credential-file "$credential_file" > "$result_file" || setup_status=$?
-    if grep -F -q -f "$credential_file" "$result_file"; then
-      echo "Personal setup emitted credential material." >&2; exit 1
-    else
-      test "$?" = 1
-    fi
-    if [ "$setup_status" -ne 0 ]; then cat "$result_file"; exit "$setup_status"; fi
-    profile="$NETRATEL_CLIENT_DIRECTORY/profiles/httpmcpclient/default.json"
-    test -f "$profile"
-    test "$(stat -c %a "$profile")" = 600
-    for secret in "$profile".*.secret; do
-      test -f "$secret"
-      test "$(stat -c %a "$secret")" = 600
-    done
-    cat "$result_file"
-  ' > TestResults/http-host-setup/personal-saved.json
-jq -e '.saved == true and .transport == "HttpMcpClient"
-  and .path == "/var/lib/netratel/clients/profiles/httpmcpclient/default.json"
-  and (.checks | length >= 5 and all(.[]; .status == "completed"))
-  and (.launch | fromjson | .credentialFile | startswith("/var/lib/netratel/clients/profiles/httpmcpclient/"))' \
-  TestResults/http-host-setup/personal-saved.json >/dev/null
-
 mcp_session=""
 verification_phase=initial
 redact_mcp_response() {
@@ -292,6 +260,38 @@ verify_mcp() {
 }
 stage="verifying authenticated catalog and a real API-backed read"
 verify_mcp
+
+stage="saving a personal client with bare HTTP setup inside the serving container"
+printf '%s\n' "$credential" | "${applied[@]}" exec -T \
+  -e NETRATEL_HTTP_HOST_SMOKE_ORIGIN="$NETRATEL_PUBLIC_ORIGIN" mcp-http sh -ceu '
+    umask 077
+    credential_file="$(mktemp)"
+    result_file="$(mktemp)"
+    trap '\''rm -f "$credential_file" "$result_file"'\'' EXIT
+    cat > "$credential_file"
+    setup_status=0
+    dotnet /app/NetRatel.Mcp.Http.dll setup --non-interactive \
+      --instance "$NETRATEL_HTTP_HOST_SMOKE_ORIGIN" --credential-file "$credential_file" > "$result_file" || setup_status=$?
+    if grep -F -q -f "$credential_file" "$result_file"; then
+      echo "Personal setup emitted credential material." >&2; exit 1
+    else
+      test "$?" = 1
+    fi
+    if [ "$setup_status" -ne 0 ]; then cat "$result_file"; exit "$setup_status"; fi
+    profile="$NETRATEL_CLIENT_DIRECTORY/profiles/httpmcpclient/default.json"
+    test -f "$profile"
+    test "$(stat -c %a "$profile")" = 600
+    for secret in "$profile".*.secret; do
+      test -f "$secret"
+      test "$(stat -c %a "$secret")" = 600
+    done
+    cat "$result_file"
+  ' > TestResults/http-host-setup/personal-saved.json
+jq -e '.saved == true and .transport == "HttpMcpClient"
+  and .path == "/var/lib/netratel/clients/profiles/httpmcpclient/default.json"
+  and (.checks | length >= 5 and all(.[]; .status == "completed"))
+  and (.launch | fromjson | .credentialFile | startswith("/var/lib/netratel/clients/profiles/httpmcpclient/"))' \
+  TestResults/http-host-setup/personal-saved.json >/dev/null
 
 stage="resuming from a recreated tooling container with the equivalent /mcp input"
 "${setup[@]}" run --rm --no-deps -T mcp-http setup --mode host --non-interactive \

@@ -83,7 +83,7 @@ public sealed class SetupViewModel(SetupSession session) : ReactiveViewModel
                 }
                 else if (Authentication is "External authentication" or "Use existing authentication")
                 {
-                    if (Authentication == "Use existing authentication" || Session.HasConfiguredAuthentication) Session.UseExternalConfiguration();
+                    if (Authentication == "Use existing authentication") Session.UseExternalConfiguration();
                     else Session.UseGuidedExternalConfiguration(AgentClientConfiguration.Empty with
                     {
                         ApiBaseUrl = Session.CanonicalTarget, ProfileName = Profile, Instance = Session.Configuration.Instance ?? "prod", AuthenticationMode = "Oidc",

@@ -16,6 +16,9 @@ public sealed record SetupCheck(string Name, string Status, string Detail);
 /// <summary>Headless setup operations shared by the TUI and noninteractive entry points.</summary>
 public sealed class SetupSession : IAsyncDisposable
 {
+    // The production HTTP catalog is approximately 331 KiB; keep a bounded
+    // response budget that also admits the complete advertised tool schemas.
+    private const int MaximumMcpResponseCharacters = 512 * 1024;
     private readonly NetRatelConfigurationService _configuration = new();
     private readonly HttpClient _http;
     private readonly Func<string, string?> _environment;
@@ -216,9 +219,8 @@ public sealed class SetupSession : IAsyncDisposable
         response.EnsureSuccessStatusCode();
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
         if (!document.RootElement.TryGetProperty("issuer", out var issuer) || !NetRatelConfigurationService.Equivalent(issuer.GetString(), raw) ||
-            !document.RootElement.TryGetProperty("token_endpoint", out var endpoint) || !Uri.TryCreate(endpoint.GetString(), UriKind.Absolute, out var token) || token.Scheme != "https" || token.UserInfo.Length != 0 || token.Query.Length != 0 || token.Fragment.Length != 0 ||
-            !NetRatelConfigurationService.Equivalent(token.GetLeftPart(UriPartial.Authority), authority.GetLeftPart(UriPartial.Authority)))
-            throw new AgentClientValidationException("The existing OIDC provider did not advertise a matching issuer and trusted same-origin token endpoint. Review provider metadata before retrying.");
+            !document.RootElement.TryGetProperty("token_endpoint", out var endpoint) || !Uri.TryCreate(endpoint.GetString(), UriKind.Absolute, out var token) || token.Scheme != "https" || token.UserInfo.Length != 0 || token.Fragment.Length != 0)
+            throw new AgentClientValidationException("The existing OIDC provider did not advertise a matching issuer and trusted HTTPS token endpoint. Review provider metadata before retrying.");
         ct.ThrowIfCancellationRequested();
         var scopes = Capabilities?.HttpMcpRequiredScopes ?? [];
         return (token.AbsoluteUri, scopes.Count == 0 ? AgentClientConfiguration.DefaultScope : string.Join(' ', scopes));
@@ -233,6 +235,7 @@ public sealed class SetupSession : IAsyncDisposable
                 throw new AgentClientValidationException(property.Name + " is externally managed. Keep its selected source or change that source explicitly.");
         if (!new AgentClientConfigurationValidator(Surface).Validate(null, supplied).Succeeded)
             throw new AgentClientValidationException("Complete the provider fields shown below using your approved external-provider application account.");
+        _reuseExistingConfiguration = false;
         Configuration = supplied;
     }
     public void Review() => _reviewHash = File.Exists(Path) ? ConfigurationFileStorage.Hash(Path) : string.Empty;
@@ -358,18 +361,28 @@ public sealed class SetupSession : IAsyncDisposable
         using var reader = new StreamReader(stream);
         if (response.Content.Headers.ContentType?.MediaType == "text/event-stream")
         {
-            var size = 0;
-            while (await reader.ReadLineAsync(bound.Token) is { } line)
+            var size = 0; var line = new System.Text.StringBuilder(); var chunk = new char[4096];
+            JsonElement? TakeDataLine()
             {
-                size += line.Length;
-                if (size > 262144) throw new AgentClientValidationException("MCP response exceeds the setup validation bound.");
-                if (!line.StartsWith("data:", StringComparison.Ordinal)) continue;
-                using var document = JsonDocument.Parse(line[5..].TrimStart());
-                return ((int)response.StatusCode, assigned, document.RootElement.Clone());
+                var text = line.ToString(); line.Clear();
+                if (!text.StartsWith("data:", StringComparison.Ordinal)) return null;
+                using var document = JsonDocument.Parse(text[5..].Trim());
+                return document.RootElement.Clone();
             }
-            return ((int)response.StatusCode, assigned, null);
+            while (true)
+            {
+                var read = await reader.ReadAsync(chunk.AsMemory(), bound.Token);
+                if (read == 0) break;
+                for (var index = 0; index < read; index++)
+                {
+                    if (++size > MaximumMcpResponseCharacters) throw new AgentClientValidationException("MCP response exceeds the setup validation bound.");
+                    if (chunk[index] != '\n') { line.Append(chunk[index]); continue; }
+                    if (TakeDataLine() is { } data) return ((int)response.StatusCode, assigned, data);
+                }
+            }
+            return ((int)response.StatusCode, assigned, TakeDataLine());
         }
-        var buffer = new char[262145]; var count = 0;
+        var buffer = new char[MaximumMcpResponseCharacters + 1]; var count = 0;
         while (count < buffer.Length)
         {
             var read = await reader.ReadAsync(buffer.AsMemory(count), bound.Token);

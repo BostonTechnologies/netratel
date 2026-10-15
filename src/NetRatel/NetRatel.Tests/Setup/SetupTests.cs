@@ -56,19 +56,53 @@ public sealed class SetupTests
     }
 
     [Fact]
-    public async Task Http_client_oidc_discovery_selects_guided_provider_authentication_without_local_pairing()
+    public async Task Http_client_oidc_discovery_uses_the_advertised_cross_authority_token_endpoint_and_preserves_its_query()
     {
-        using var directory = new TempDirectory(); var paired = false;
+        using var directory = new TempDirectory(); var paired = false; var tokenRequests = 0;
+        await using var session = new SetupSession(ConfigurationSurface.HttpMcpClient, System.IO.Path.Combine(directory.Path, "client.json"), "test", new StubHandler(async request =>
+        {
+            if (request.RequestUri!.Host == "identity.example") return Json(new { issuer = "https://identity.example/realms/netratel", token_endpoint = "https://tokens.identity.example/oauth/token?tenant=ops" });
+            if (request.RequestUri.Host == "tokens.identity.example")
+            {
+                tokenRequests++; Assert.Equal("/oauth/token", request.RequestUri.AbsolutePath); Assert.Equal("?tenant=ops", request.RequestUri.Query);
+                Assert.Contains("client_id=personal-app", await request.Content!.ReadAsStringAsync());
+                return Json(new { access_token = "cross-authority-personal-token", expires_in = 60 });
+            }
+            if (request.RequestUri.AbsolutePath == "/mcp") { Assert.Equal("cross-authority-personal-token", request.Headers.Authorization?.Parameter); return await McpReply(request); }
+            if (request.RequestUri.AbsolutePath.EndsWith("start")) paired = true;
+            return Json(new { protocolVersion = 1, publicOrigin = "https://instance.example", pairingSupported = true, verificationUri = "https://instance.example/account/integration-credentials", httpMcpResource = "https://instance.example/mcp", httpMcpAuthenticationMode = "oidc", httpMcpAuthenticationModeKnown = true, httpMcpOidcAuthority = "https://identity.example/realms/netratel", httpMcpRequiredScopes = new[] { "mcp.read" } });
+        }));
+        var model = new SetupViewModel(session) { Origin = "https://instance.example/mcp" }; var input = new VirtualInputSource(); var terminal = new VirtualTerminal(80, 24);
+        var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { DisableDefaults = true }); builder.Logging.ClearProviders();
+        builder.Services.AddTerminaVirtualInput(input); builder.Services.AddTermina("/setup", routes => routes.RegisterRoute<SetupPage, SetupViewModel>("/setup", _ => new SetupPage(), _ => model)); builder.Services.AddSingleton<IAnsiTerminal>(terminal);
+        using var host = builder.Build(); await host.StartAsync();
+        var authentication = WaitFor(model, () => model.Step == SetupStep.Authentication && !model.Busy); input.EnqueueKey(ConsoleKey.Enter); await authentication;
+        Assert.Equal("External authentication", model.Authentication); Assert.True(model.ExternalProviderDiscovered);
+        Assert.Equal("https://tokens.identity.example/oauth/token?tenant=ops", model.ExternalTokenUrl); Assert.Equal("mcp.read", model.ExternalScope); Assert.False(paired);
+        var visible = false; await model.InvokeAsync(() => visible = terminal.Contains("tokens.identity.example/oauth/token?tenant=ops")); Assert.True(visible);
+        model.ExternalClientId = "personal-app"; model.ExternalUsername = "personal-operator"; model.ExternalPassword = "protected-provider-password";
+        await model.NextAsync(); Assert.Equal(SetupStep.Review, model.Step);
+        var checks = await session.VerifyTransientHttpMcpAsync(default); Assert.All(checks, check => Assert.Equal("completed", check.Status)); Assert.Equal(1, tokenRequests); Assert.False(File.Exists(session.Path));
+        input.EnqueueKey(ConsoleKey.Escape); input.Complete(); await host.StopAsync();
+    }
+
+    [Theory]
+    [InlineData("http://tokens.identity.example/token", "https://identity.example/realm")]
+    [InlineData("https://user:password@tokens.identity.example/token", "https://identity.example/realm")]
+    [InlineData("https://tokens.identity.example/token#fragment", "https://identity.example/realm")]
+    [InlineData("https://tokens.identity.example/token", "https://unapproved-issuer.example/realm")]
+    public async Task Oidc_discovery_rejects_unsafe_token_endpoints_and_an_unapproved_issuer(string endpoint, string issuer)
+    {
+        using var directory = new TempDirectory(); var requests = 0;
         await using var session = new SetupSession(ConfigurationSurface.HttpMcpClient, System.IO.Path.Combine(directory.Path, "client.json"), "test", new StubHandler(request =>
         {
-            if (request.RequestUri!.Host == "identity.example") return Task.FromResult(Json(new { issuer = "https://identity.example/realms/netratel", token_endpoint = "https://identity.example/realms/netratel/token" }));
-            if (request.RequestUri.AbsolutePath.EndsWith("start")) paired = true;
-            return Task.FromResult(Json(new { protocolVersion = 1, publicOrigin = "https://instance.example", pairingSupported = true, verificationUri = "https://instance.example/account/integration-credentials", httpMcpResource = "https://instance.example/mcp", httpMcpAuthenticationMode = "oidc", httpMcpAuthenticationModeKnown = true, httpMcpOidcAuthority = "https://identity.example/realms/netratel", httpMcpRequiredScopes = new[] { "mcp.read" } }));
+            requests++; Assert.Equal(HttpMethod.Get, request.Method);
+            if (request.RequestUri!.Host == "identity.example") return Task.FromResult(Json(new { issuer, token_endpoint = endpoint }));
+            return Task.FromResult(Json(new { protocolVersion = 1, publicOrigin = "https://instance.example", pairingSupported = true, verificationUri = "https://instance.example/account/integration-credentials", httpMcpResource = "https://instance.example/mcp", httpMcpAuthenticationMode = "oidc", httpMcpOidcAuthority = "https://identity.example/realm" }));
         }));
-        using var model = new SetupViewModel(session) { Origin = "https://instance.example/mcp" };
-        await model.NextAsync();
-        Assert.Equal(SetupStep.Authentication, model.Step); Assert.Equal("External authentication", model.Authentication); Assert.True(model.ExternalProviderDiscovered);
-        Assert.Equal("https://identity.example/realms/netratel/token", model.ExternalTokenUrl); Assert.Equal("mcp.read", model.ExternalScope); Assert.False(paired); Assert.False(File.Exists(session.Path));
+        await session.DiscoverAsync("https://instance.example", default);
+        await Assert.ThrowsAsync<AgentClientValidationException>(() => session.DiscoverExternalProviderAsync(default));
+        Assert.Equal(2, requests); Assert.False(File.Exists(session.Path));
     }
 
     [Fact]
@@ -608,6 +642,82 @@ public sealed class SetupTests
         Console.WriteLine("Personal HTTP client default profile reloaded and reused without replacing its protected credential: " + expected);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Http_doctor_accepts_the_actual_production_tool_catalog_and_bounds_oversized_responses(bool eventStream, bool oversized)
+    {
+        using var directory = new TempDirectory(); var path = System.IO.Path.Combine(directory.Path, "personal.json");
+        new NetRatelConfigurationService().SaveProfile(path, AgentClientConfiguration.Empty with { ApiBaseUrl = "https://instance.example/mcp", AuthenticationMode = "IntegrationCredential", IntegrationCredential = "nrt_ic_production-catalog", Instance = "prod" }, ConfigurationSurface.HttpMcpClient);
+        var tools = NetRatel.Mcp.Core.NetRatelMcpToolDefinitions.CreateForHttp("prod").Select(tool => tool.ProtocolTool).ToArray();
+        var catalog = System.Text.Json.JsonSerializer.Serialize(new { jsonrpc = "2.0", id = 2, result = new { tools } }, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+        Console.WriteLine($"Production HTTP catalog: {tools.Length} tools, {catalog.Length} characters, {System.Text.Encoding.UTF8.GetByteCount(catalog)} UTF-8 bytes.");
+        var calls = new List<string>(); ResponseProbeStream? responseStream = null;
+        await using var session = new SetupSession(ConfigurationSurface.HttpMcpClient, path, "test", new StubHandler(async request =>
+        {
+            using var body = System.Text.Json.JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            var method = body.RootElement.GetProperty("method").GetString()!; calls.Add(method);
+            if (method != "tools/list") return await McpReply(request);
+            var payload = oversized ? catalog + new string(' ', 1024 * 1024) : catalog;
+            responseStream = new ResponseProbeStream(System.Text.Encoding.UTF8.GetBytes(eventStream ? "event: message\ndata: " + payload + "\n\n" : payload));
+            var content = new StreamContent(responseStream); content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(eventStream ? "text/event-stream" : "application/json");
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+        }));
+        var checks = await session.DoctorAsync(default);
+        if (oversized)
+        {
+            Assert.Equal(new[] { "initialize", "notifications/initialized", "tools/list" }, calls);
+            Assert.Contains(checks, check => check.Name == "transport" && check.Status == "unavailable");
+            Assert.NotNull(responseStream); Assert.True(responseStream.Consumed < responseStream.TotalBytes, "Reject oversized responses before buffering their complete JSON or SSE data line.");
+            Assert.DoesNotContain(checks, check => check.Name == "permitted read-only tool" && check.Status == "completed");
+        }
+        else
+        {
+            Assert.Equal(new[] { "initialize", "notifications/initialized", "tools/list", "tools/call" }, calls);
+            Assert.All(checks, check => Assert.Equal("completed", check.Status));
+            Assert.Contains(checks, check => check.Name == "permitted read-only tool");
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Explicit_external_authentication_edits_guided_values_and_preserves_managed_sources(bool managed)
+    {
+        using var directory = new TempDirectory(); var path = System.IO.Path.Combine(directory.Path, "existing.json");
+        var original = managed
+            ? AgentClientConfiguration.Empty with { ApiBaseUrl = "https://instance.example/mcp", AuthenticationMode = "Oidc", OidcTokenUrl = "https://managed-provider.example/token", OidcClientId = "managed-app", OidcUsername = "operator", OidcAppPassword = "protected-old-provider-password", Instance = "prod" }
+            : AgentClientConfiguration.Empty with { ApiBaseUrl = "https://instance.example/mcp", AuthenticationMode = "IntegrationCredential", IntegrationCredential = "nrt_ic_existing-personal", Instance = "prod" };
+        new NetRatelConfigurationService().SaveProfile(path, original, ConfigurationSurface.HttpMcpClient);
+        string? EnvironmentValue(string key) => managed && key == "NETRATEL_MCP_CLIENT_OIDC_TOKEN_URL" ? "https://managed-provider.example/token" : null;
+        await using var session = new SetupSession(ConfigurationSurface.HttpMcpClient, path, "test", new StubHandler(_ => Task.FromResult(Capabilities())), EnvironmentValue);
+        var model = new SetupViewModel(session); var input = new VirtualInputSource(); var terminal = new VirtualTerminal(80, 24);
+        var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { DisableDefaults = true }); builder.Logging.ClearProviders();
+        builder.Services.AddTerminaVirtualInput(input); builder.Services.AddTermina("/setup", routes => routes.RegisterRoute<SetupPage, SetupViewModel>("/setup", _ => new SetupPage(), _ => model)); builder.Services.AddSingleton<IAnsiTerminal>(terminal);
+        using var host = builder.Build(); await host.StartAsync();
+        await model.NextAsync(); await model.NextAsync(); Assert.Equal(SetupStep.Review, model.Step); Assert.True(session.ReusesExistingConfiguration);
+        await model.BackAsync(); await model.SetAuthenticationAsync("External authentication");
+        var visible = false; await model.InvokeAsync(() => visible = terminal.Contains("Provider HTTPS token endpoint")); Assert.True(visible);
+        var hash = ConfigurationFileStorage.Hash(path);
+        model.ExternalTokenUrl = "https://new-provider.example/oauth/token?tenant=ops"; model.ExternalClientId = "new-personal-app"; model.ExternalUsername = "new-operator"; model.ExternalPassword = "protected-new-provider-password";
+        await model.NextAsync();
+        if (managed)
+        {
+            Assert.Equal(SetupStep.Authentication, model.Step); Assert.Contains("externally managed", model.Status.Value);
+            Assert.Equal("https://managed-provider.example/token", session.Configuration.OidcTokenUrl);
+        }
+        else
+        {
+            Assert.Equal(SetupStep.Review, model.Step); Assert.False(session.ReusesExistingConfiguration); Assert.Null(session.Configuration.IntegrationCredential);
+            Assert.Equal("https://new-provider.example/oauth/token?tenant=ops", session.Configuration.OidcTokenUrl); Assert.Equal("new-personal-app", session.Configuration.OidcClientId);
+            await model.NextAsync(); Assert.True(model.ConfirmReplace); Assert.False(session.Saved);
+        }
+        Assert.Equal(hash, ConfigurationFileStorage.Hash(path)); Assert.False(terminal.Contains("protected-new-provider-password"));
+        input.EnqueueKey(ConsoleKey.Escape); input.Complete(); await host.StopAsync();
+    }
+
     private static async Task<HttpResponseMessage> McpReply(HttpRequestMessage request)
     {
         using var body = System.Text.Json.JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
@@ -645,6 +755,12 @@ public sealed class SetupTests
     }
     private static HttpResponseMessage Capabilities() => Json(new { protocolVersion = 1, publicOrigin = "https://instance.example", pairingSupported = true, verificationUri = "https://instance.example/account/integration-credentials", httpMcpResource = "https://instance.example/mcp" });
     private static HttpResponseMessage Json(object value) => new(HttpStatusCode.OK) { Content = JsonContent.Create(value) };
+    private sealed class ResponseProbeStream(byte[] bytes) : MemoryStream(bytes)
+    {
+        public int TotalBytes { get; } = bytes.Length;
+        public long Consumed { get; private set; }
+        protected override void Dispose(bool disposing) { if (disposing && CanRead) Consumed = Position; base.Dispose(disposing); }
+    }
     private sealed class StubHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> callback) : HttpMessageHandler
     { protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => callback(request); }
     private sealed class TempDirectory : IDisposable

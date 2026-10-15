@@ -405,10 +405,17 @@ public sealed class SharedHeadlessConfigurationTests
         service.Load(new(ConfigurationSurface.StdioMcp, first, GetEnvironmentVariable: _ => null)).Configuration.IntegrationCredential.Should().Be("first-synthetic");
         service.Load(new(ConfigurationSurface.StdioMcp, second, GetEnvironmentVariable: _ => null)).Configuration.IntegrationCredential.Should().Be("second-synthetic");
         var oidc = files.Path("oidc.json");
-        service.SaveProfile(oidc, new("https://selected.example/", "https://issuer.example/token", "application", "service", "private-synthetic", null), ConfigurationSurface.StdioMcp);
+        service.SaveProfile(oidc, new("https://selected.example/", "https://issuer.example/token?tenant=ops", "application", "service", "private-synthetic", null), ConfigurationSurface.StdioMcp);
+        service.Load(new(ConfigurationSurface.StdioMcp, oidc, GetEnvironmentVariable: _ => null)).Validate().IsValid.Should().BeTrue();
         var edit = () => service.Load(new(ConfigurationSurface.StdioMcp, oidc,
             CommandOptions: AgentClientConfiguration.Empty with { OidcTokenUrl = "https://other-issuer.example/token" }, GetEnvironmentVariable: _ => null));
         edit.Should().Throw<AgentClientValidationException>().WithMessage("*token endpoint*reauthorization*");
+        foreach (var changed in new[] { "https://issuer.example/token?tenant=ops/", "https://issuer.example/token?tenant=OPS" })
+        {
+            var queryEdit = () => service.Load(new(ConfigurationSurface.StdioMcp, oidc,
+                CommandOptions: AgentClientConfiguration.Empty with { OidcTokenUrl = changed }, GetEnvironmentVariable: _ => null));
+            queryEdit.Should().Throw<AgentClientValidationException>().WithMessage("*token endpoint*reauthorization*");
+        }
     }
 
     [Fact]

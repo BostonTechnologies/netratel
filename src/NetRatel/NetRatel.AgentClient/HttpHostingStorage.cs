@@ -45,7 +45,8 @@ public static class HttpHostingStorage
     public static void ValidateHostBoundary(string path)
     {
         ConfigurationFileStorage.EnsureSafePath(path);
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            throw new AgentClientValidationException("Native Windows host generation is unavailable because this tool cannot verify a private Windows ACL boundary. On the deployment host run: docker compose -f compose.setup.yaml run --rm --no-deps mcp-http setup --mode host. Personal client setup remains supported.");
         var suppliedVolume = UsesValidatedSetupVolume(path);
         if (suppliedVolume && (RuntimeGroup != 10001 || GetEffectiveUserId() != 10001))
             throw new AgentClientValidationException("Use the supplied setup container identity (UID/GID 10001) for its protected runtime volume.");

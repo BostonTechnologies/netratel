@@ -124,9 +124,10 @@ public sealed class SetupPage(IClipboardService clipboard) : ReactivePage<SetupV
                     _controls.Add(auth); form.WithChild(auth);
                 }
                 if (ViewModel.Authentication == "Existing credential") form.WithChild(Input("Existing credential (masked; never copied)", ViewModel.ManualSecret, value => ViewModel.ManualSecret = value, password: true, externallyManaged: ViewModel.Session.IsExternallyManaged("integrationCredential"), source: ViewModel.Session.SourceName("integrationCredential")));
-                if (ViewModel.Authentication == "External authentication" && !ViewModel.Session.HasConfiguredAuthentication)
+                if (ViewModel.Authentication == "External authentication")
                 {
                     if (ViewModel.ExternalProviderDiscovered) form.WithChild(new TextNode("Existing OIDC provider: " + TerminalText.Safe(ViewModel.Session.Capabilities?.HttpMcpOidcAuthority)).Height(2));
+                    if (ViewModel.ExternalProviderDiscovered && !ViewModel.Advanced) form.WithChild(new TextNode("Provider HTTPS token endpoint: " + TerminalText.Safe(ViewModel.ExternalTokenUrl)).Height(3));
                     if (!ViewModel.ExternalProviderDiscovered || ViewModel.Advanced) form.WithChild(Input("Provider HTTPS token endpoint", ViewModel.ExternalTokenUrl, value => ViewModel.ExternalTokenUrl = value, externallyManaged: ViewModel.Session.IsExternallyManaged("OidcTokenUrl"), source: ViewModel.Session.SourceName("OidcTokenUrl")));
                     form.WithChild(Input("Provider application client ID", ViewModel.ExternalClientId, value => ViewModel.ExternalClientId = value, externallyManaged: ViewModel.Session.IsExternallyManaged("OidcClientId"), source: ViewModel.Session.SourceName("OidcClientId")));
                     form.WithChild(Input("Application account username", ViewModel.ExternalUsername, value => ViewModel.ExternalUsername = value, externallyManaged: ViewModel.Session.IsExternallyManaged("OidcUsername"), source: ViewModel.Session.SourceName("OidcUsername")));

@@ -296,8 +296,8 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
                 using var metadata = await _http.GetAsync(OidcAuthority.TrimEnd('/') + "/.well-known/openid-configuration", ct);
                 metadata.EnsureSuccessStatusCode();
                 using var document = System.Text.Json.JsonDocument.Parse(await metadata.Content.ReadAsStringAsync(ct));
-                if (!document.RootElement.TryGetProperty("issuer", out var issuer) || !NetRatelConfigurationService.Equivalent(issuer.GetString(), OidcAuthority) || !document.RootElement.TryGetProperty("token_endpoint", out var endpoint) || !Uri.TryCreate(endpoint.GetString(), UriKind.Absolute, out var token) || token.Scheme != "https" || token.UserInfo.Length != 0 || token.Query.Length != 0 || token.Fragment.Length != 0 || !NetRatelConfigurationService.Equivalent(token.GetLeftPart(UriPartial.Authority), authority.GetLeftPart(UriPartial.Authority)))
-                    throw new AgentClientValidationException("The configured OIDC provider did not advertise a trusted same-origin token endpoint. Review provider metadata before retrying.");
+                if (!document.RootElement.TryGetProperty("issuer", out var issuer) || !NetRatelConfigurationService.Equivalent(issuer.GetString(), OidcAuthority) || !document.RootElement.TryGetProperty("token_endpoint", out var endpoint) || !Uri.TryCreate(endpoint.GetString(), UriKind.Absolute, out var token) || token.Scheme != "https" || token.UserInfo.Length != 0 || token.Fragment.Length != 0)
+                    throw new AgentClientValidationException("The configured OIDC provider did not advertise a trusted HTTPS token endpoint. Review provider metadata before retrying.");
                 ct.ThrowIfCancellationRequested(); VerificationTokenUrl = token.AbsoluteUri; VerificationScope = RequiredScopes.Length == 0 ? AgentClientConfiguration.DefaultScope : string.Join(' ', Values(RequiredScopes));
                 await InvokeAsync(() => Revision.Value++, ct);
             }
@@ -444,6 +444,8 @@ public sealed class HostingSetupPage(IClipboardService clipboard) : ReactivePage
                 if (ViewModel.AuthMode == "OIDC")
                 {
                     form.WithChild(new TextNode("Existing OIDC provider: " + ViewModel.OidcAuthority + "\nUse your personal application account for the read-only check.").Height(3));
+                    if (ViewModel.VerificationTokenUrl.Length > 0)
+                        form.WithChild(new TextNode("Discovered HTTPS token endpoint: " + ViewModel.VerificationTokenUrl).HeightAuto());
                     form.WithChild(Input("Provider client ID", ViewModel.VerificationClientId, value => ViewModel.VerificationClientId = value));
                     form.WithChild(Input("Personal application account", ViewModel.VerificationUsername, value => ViewModel.VerificationUsername = value));
                     form.WithChild(Input("Application password", ViewModel.VerificationPassword, value => ViewModel.VerificationPassword = value, password: true));
