@@ -17,6 +17,11 @@ case "${1:-http}" in
     exec dotnet /app/tooling/stdio/NetRatel.Mcp.dll "$@"
     ;;
   setup)
+    # The supplied setup Compose service mounts a seeded durable volume here.
+    # Do not invent a writable ephemeral default for arbitrary legacy containers.
+    if [ -z "${NETRATEL_SETUP_DIRECTORY:-}" ] && [ -n "${NETRATEL_SETUP_VOLUME:-}" ]; then
+      export NETRATEL_SETUP_DIRECTORY=/setup-output
+    fi
     shift
     setup_mode=host
     setup_transport=
