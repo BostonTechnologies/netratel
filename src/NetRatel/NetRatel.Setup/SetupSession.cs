@@ -37,6 +37,8 @@ public sealed class SetupSession : IAsyncDisposable
         profile ??= NetRatelConfigurationService.ReadEnvironment(surface, Environment.GetEnvironmentVariable).ProfileName;
         if (path is null && profile is null && surface is ConfigurationSurface.StdioMcp or ConfigurationSurface.HttpMcpOutbound)
             path = AgentClientConfigurationResolver.GetMcpConfigurationPath(Environment.GetEnvironmentVariable);
+        if (path is null && profile is null && surface is ConfigurationSurface.Cli or ConfigurationSurface.AgentClient && File.Exists(AgentClientConfigurationStore.DefaultPath))
+            path = AgentClientConfigurationStore.DefaultPath;
         HasExplicitDestination = path is not null;
         if (path is null)
         {
@@ -78,6 +80,13 @@ public sealed class SetupSession : IAsyncDisposable
         Configuration = selected.Configuration; Sources = selected.Sources;
         _initialConfiguration = Configuration; _initialSources = Sources;
         _origin = null; Capabilities = null; Delivery = null; _reuseExistingConfiguration = false;
+    }
+    public void ValidateDestinationStorage()
+    {
+        // A selected read-only file remains governed by its source. New or
+        // writable profiles must survive the supplied tooling container.
+        if (File.Exists(Path) && !ConfigurationFileStorage.IsWritable(Path) || HasConfiguredAuthentication && Sources.Values.Any(source => source.ExternallyManaged && source.IsSecret)) return;
+        HttpHostingStorage.ValidateWritable(System.IO.Path.GetDirectoryName(Path)!);
     }
     public bool IsExternallyManaged(string key) => Sources.TryGetValue(key.Length > 0 ? char.ToUpperInvariant(key[0]) + key[1..] : key, out var source) && source.ExternallyManaged;
     public string SourceName(string key) => Sources.TryGetValue(key.Length > 0 ? char.ToUpperInvariant(key[0]) + key[1..] : key, out var source) ? source.Source : "managed source";

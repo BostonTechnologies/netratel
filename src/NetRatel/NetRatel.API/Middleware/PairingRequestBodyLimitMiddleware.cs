@@ -15,6 +15,7 @@ public sealed class PairingRequestBodyLimitMiddleware(RequestDelegate next)
             path.StartsWithSegments(PairingProtocol.AdminRoute, StringComparison.OrdinalIgnoreCase) ||
             path.StartsWithSegments(IntegrationPairingProtocol.Route, StringComparison.OrdinalIgnoreCase) ||
             path.StartsWithSegments(IntegrationPairingProtocol.AccountRoute, StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWithSegments(HttpHostSetupProtocol.AccountRoute, StringComparison.OrdinalIgnoreCase) ||
             path.StartsWithSegments(HttpHostSetupProtocol.Route, StringComparison.OrdinalIgnoreCase);
         if (!isPairing || HttpMethods.IsGet(http.Request.Method) || HttpMethods.IsHead(http.Request.Method)) { await next(http).ConfigureAwait(false); return; }
         if (http.Request.ContentLength > MaximumBytes) { await RejectAsync(http); return; }

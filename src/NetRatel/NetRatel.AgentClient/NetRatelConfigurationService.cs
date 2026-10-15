@@ -104,7 +104,7 @@ public sealed class NetRatelConfigurationService
         var path = request.ConfigurationPath;
         if (request.Surface == ConfigurationSurface.HttpMcpOutbound && path == string.Empty) path = null;
         var explicitlySelected = path is not null || profileName is not null;
-        if (path is null && profileName is not null) path = ProfilePath(request.Surface, profileName);
+        if (path is null && profileName is not null) path = ProfilePath(request.Surface, profileName, environment);
         if (path is null && !configurationPathSpecified && request.Surface is ConfigurationSurface.StdioMcp or ConfigurationSurface.HttpMcpOutbound)
         {
             path = AgentClientConfigurationResolver.GetMcpConfigurationPath(environment);
@@ -341,9 +341,16 @@ public sealed class NetRatelConfigurationService
 
     public static string SafeDisplay(string? value) => new((value ?? string.Empty).Where(character => !char.IsControl(character)).Take(2_048).ToArray());
     public static string PurposeFor(ConfigurationSurface surface) => surface == ConfigurationSurface.HttpMcpClient ? "HttpMcp" : "Api";
-    public static string ProfilePath(ConfigurationSurface surface, string profileName)
+    public static string ProfilePath(ConfigurationSurface surface, string profileName, Func<string, string?>? getEnvironmentVariable = null)
     {
         ValidateProfileName(profileName);
+        var environment = getEnvironmentVariable ?? Environment.GetEnvironmentVariable;
+        var configuredRoot = environment("NETRATEL_SETUP_DIRECTORY");
+        if (!string.IsNullOrWhiteSpace(configuredRoot))
+            return Path.Combine(HttpHostingStorage.Resolve(configuredRoot), "profiles", surface.ToString().ToLowerInvariant(), profileName + ".json");
+        if (string.Equals(environment("DOTNET_RUNNING_IN_CONTAINER"), "true", StringComparison.OrdinalIgnoreCase))
+            throw new AgentClientValidationException("No persistent client setup mount is configured. On the deployment host run: docker compose -f compose.setup.yaml run --rm --no-deps mcp-http setup --target " +
+                (surface == ConfigurationSurface.StdioMcp ? "stdio" : surface == ConfigurationSurface.HttpMcpClient ? "http-client" : "cli"));
         return Path.Combine(Path.GetDirectoryName(AgentClientConfigurationStore.DefaultPath)!, "profiles", surface.ToString().ToLowerInvariant(), profileName + ".json");
     }
 

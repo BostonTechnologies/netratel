@@ -311,6 +311,71 @@ public sealed class SetupTests
         input.EnqueueKey(ConsoleKey.Escape); input.Complete(); await host.StopAsync(); await model.CleanupAsync();
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Virtual_host_rerun_accepts_mixed_saved_components_and_approves_the_effective_service_principal(bool adoptOutbound)
+    {
+        using var directory = new TempDirectory();
+        var output = System.IO.Path.Combine(directory.Path, "setup");
+        var request = new HttpHostingSetupRequest(output, "https://instance.example", "https://instance.example")
+        { ExistingM2MCallerClientIds = [] };
+        if (adoptOutbound)
+        {
+            var existing = System.IO.Path.Combine(directory.Path, "existing-outbound.json");
+            ConfigurationFileStorage.WriteAtomic(existing, System.Text.Json.JsonSerializer.Serialize(AgentClientConfiguration.Empty with
+            {
+                ApiBaseUrl = "https://instance.example", ApiM2MTokenUrl = "https://instance.example/connect/token",
+                ApiM2MClientId = "existing-service", ApiM2MClientSecret = "existing-protected-service-secret", ApiM2MScope = "netratel.api", Instance = "prod"
+            }, AgentClientConfiguration.JsonOptions));
+            request = request with { ExistingOutboundConfigurationPath = existing };
+        }
+        else
+        {
+            var key = System.IO.Path.Combine(directory.Path, "existing-delegation.key");
+            ConfigurationFileStorage.WriteAtomic(key, Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)) + "\n");
+            request = request with { ExistingDelegationKeyFile = key, DelegationKeyId = "existing-v1", DelegationIssuer = "existing-issuer", DelegationAudience = "existing-api" };
+        }
+        var setup = new NetRatelHttpHostingSetupService(); setup.Apply(request);
+        var savedFingerprint = setup.PrepareRegistration(request);
+        var originalHashes = Directory.EnumerateFiles(directory.Path, "*", SearchOption.AllDirectories).ToDictionary(path => path, ConfigurationFileStorage.Hash);
+        string? submittedPrincipal = null; string? submittedFingerprint = null;
+        var handler = new StubHandler(async message =>
+        {
+            var route = message.RequestUri!.AbsolutePath;
+            if (route.EndsWith("capabilities")) return Json(new
+            {
+                protocolVersion = 1, publicOrigin = "https://instance.example", resource = "https://instance.example/mcp",
+                verificationUri = "https://instance.example/account/integration-credentials", localCredentialMode = true,
+                requiredGroups = Array.Empty<string>(), requiredScopes = Array.Empty<string>(), existingHostConfigured = true,
+                existingM2MCallerClientIds = adoptOutbound ? Array.Empty<string>() : new[] { "netratel-mcp-http" }
+            });
+            if (route.EndsWith("start"))
+            {
+                using var body = System.Text.Json.JsonDocument.Parse(await message.Content!.ReadAsStringAsync());
+                submittedPrincipal = body.RootElement.GetProperty("servicePrincipal").GetString();
+                submittedFingerprint = body.RootElement.GetProperty("registrationFingerprint").GetString();
+                return Json(new { requestId = "host", userCode = "HOST-CODE", deviceCapability = "host-capability", verificationUri = "https://instance.example/account/integration-credentials", publicOrigin = "https://instance.example", expiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(1), intervalSeconds = 5 });
+            }
+            if (route.EndsWith("poll")) return Json(new { status = "approved", approvalId = "approved", registrationFingerprint = submittedFingerprint });
+            if (route.EndsWith("cancel")) return Json(new { status = "cancelled" });
+            throw new InvalidOperationException("Unexpected hosting request");
+        });
+        var input = new VirtualInputSource(); var terminal = new VirtualTerminal(80, 24);
+        var model = new HostingSetupViewModel(new Dictionary<string, string> { ["--output-directory"] = output, ["--instance"] = "https://instance.example/mcp" }, handler);
+        var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { DisableDefaults = true }); builder.Logging.ClearProviders();
+        builder.Services.AddTerminaVirtualInput(input); builder.Services.AddTermina("/hosting", routes => routes.RegisterRoute<HostingSetupPage, HostingSetupViewModel>("/hosting", services => new HostingSetupPage(services.GetRequiredService<Termina.Clipboard.IClipboardService>()), _ => model)); builder.Services.AddSingleton<IAnsiTerminal>(terminal);
+        using var host = builder.Build(); await host.StartAsync();
+        var reviewed = WaitFor(model.Revision, () => model.Step == HostingSetupStep.Review && !model.Busy);
+        input.EnqueueKey(ConsoleKey.Enter); await reviewed;
+        Assert.Equal(adoptOutbound ? "existing-service" : "netratel-mcp-http", submittedPrincipal);
+        Assert.Equal(savedFingerprint, submittedFingerprint);
+        Assert.DoesNotContain(model.Preview!.Changes, change => change.StartsWith("Replace ", StringComparison.Ordinal));
+        Assert.All(originalHashes, original => Assert.Equal(original.Value, ConfigurationFileStorage.Hash(original.Key)));
+        Assert.Null(model.Result); Assert.False(model.Verified);
+        input.EnqueueKey(ConsoleKey.Escape); input.Complete(); await host.StopAsync(); await model.CleanupAsync();
+    }
+
     [Fact]
     public async Task Lost_acknowledgement_can_retry_saved_delivery_without_overwriting_the_profile()
     {

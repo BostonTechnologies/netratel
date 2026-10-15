@@ -167,9 +167,9 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
                         if (capabilities.ProtocolVersion != HttpHostSetupProtocol.Version || !NetRatelConfigurationService.Equivalent(capabilities.PublicOrigin, address.Origin))
                             throw new AgentClientValidationException("Instance setup metadata is incompatible or belongs to another origin.");
                         ValidateApprovalLink(capabilities.VerificationUri, address.Origin);
-                        var localGeneration = File.Exists(Path.Combine(OutputDirectory, "secrets", "delegation.key")) && File.Exists(Path.Combine(OutputDirectory, "secrets", "outbound-m2m.secret"));
-                        var adoptedGeneration = ExistingOutbound.Length > 0 && ExistingDelegationKeyFile.Length > 0;
-                        if (capabilities.ExistingHostConfigured && !localGeneration && !adoptedGeneration)
+                        var hasDelegation = ExistingDelegationKeyFile.Length > 0 || File.Exists(Path.Combine(OutputDirectory, "secrets", "delegation.key"));
+                        var hasOutbound = ExistingOutbound.Length > 0 || File.Exists(Path.Combine(OutputDirectory, "secrets", "outbound-m2m.secret"));
+                        if (capabilities.ExistingHostConfigured && !(hasDelegation && hasOutbound))
                         { Advanced = true; throw new AgentClientValidationException("This instance already has an HTTP host identity. Reuse its existing setup volume, or select its existing protected outbound configuration and delegation key in Advanced. Setup will not rotate or replace that identity."); }
                         if (!McpResourceUri.TryNormalize(capabilities.Resource, out var resource)) throw new AgentClientValidationException("The instance advertises an invalid canonical MCP resource.");
                         ct.ThrowIfCancellationRequested();
@@ -257,7 +257,7 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
     }
     private async Task BeginApprovalAsync(CancellationToken ct)
     {
-        using var response = await _http.PostAsJsonAsync(PublicOrigin + HttpHostSetupProtocol.Route + "/start", new HttpHostSetupStartRequest(PublicOrigin, Resource, _fingerprint!, string.IsNullOrWhiteSpace(DelegationPrincipal) ? "netratel-mcp-http" : DelegationPrincipal), ct);
+        using var response = await _http.PostAsJsonAsync(PublicOrigin + HttpHostSetupProtocol.Route + "/start", new HttpHostSetupStartRequest(PublicOrigin, Resource, _fingerprint!, _service.PreparedServicePrincipal ?? throw new AgentClientValidationException("Prepare the host generation before requesting administrator approval.")), ct);
         response.EnsureSuccessStatusCode();
         var approval = await response.Content.ReadFromJsonAsync<HttpHostSetupStartResponse>(cancellationToken: ct) ?? throw new AgentClientValidationException("Administrator approval could not start.");
         ValidateApprovalLink(approval.VerificationUri, PublicOrigin);

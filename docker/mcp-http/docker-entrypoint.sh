@@ -22,23 +22,9 @@ case "${1:-http}" in
     if [ -z "${NETRATEL_SETUP_DIRECTORY:-}" ] && [ -n "${NETRATEL_SETUP_VOLUME:-}" ]; then
       export NETRATEL_SETUP_DIRECTORY=/setup-output
     fi
-    shift
-    setup_mode=host
-    setup_transport=
-    if [ "${1:-}" = "--target" ]; then
-      case "${2:-}" in
-        http-host) setup_mode=host ;;
-        cli) setup_mode=client; setup_transport=cli ;;
-        stdio) setup_mode=client; setup_transport=stdio ;;
-        http-client) setup_mode=client; setup_transport=http ;;
-        *) echo "setup --target must be http-host, cli, stdio or http-client" >&2; exit 2 ;;
-      esac
-      shift 2
-    fi
-    if [ -n "$setup_transport" ]; then
-      exec dotnet /app/tooling/cli/netratel.dll setup --mode "$setup_mode" --transport "$setup_transport" "$@"
-    fi
-    exec dotnet /app/tooling/cli/netratel.dll setup --mode "$setup_mode" "$@"
+    # The shared setup boundary infers this distribution's host default and
+    # accepts explicit mode/target/transport options in any argument position.
+    exec dotnet /app/NetRatel.Mcp.Http.dll "$@"
     ;;
   *)
     # Retain historical HTTP host arguments, including --urls overrides.

@@ -60,6 +60,7 @@ public sealed class SetupViewModel(SetupSession session) : ReactiveViewModel
             case SetupStep.Instance:
                 if (Session.Surface != Surface || Session.ProfileName != Profile || Session.Path != Destination)
                     Session.SelectProfile(Surface, Profile, Destination);
+                Session.ValidateDestinationStorage();
                 await Session.DiscoverAsync(Origin, ct);
                 if (Surface == ConfigurationSurface.HttpMcpClient && !Session.HasConfiguredAuthentication)
                 {

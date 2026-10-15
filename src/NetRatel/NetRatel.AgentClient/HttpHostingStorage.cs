@@ -63,7 +63,7 @@ public static class HttpHostingStorage
         // still survives service recreation; the container root layer does not.
         return !string.IsNullOrEmpty(selected.Mount) && selected.Mount != "/" &&
             selected.Type is not ("tmpfs" or "ramfs" or "devtmpfs") &&
-            (selected.Type != "overlay" || UsesSetupVolume(path) && selected.Mount == "/setup-output");
+            (selected.Type != "overlay" || UsesSetupVolume(selected.Mount) && selected.Mount == "/setup-output");
     }
 
     [DllImport("libc", EntryPoint = "getegid")]

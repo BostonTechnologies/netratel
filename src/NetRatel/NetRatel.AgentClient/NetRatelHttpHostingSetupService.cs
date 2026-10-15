@@ -46,12 +46,14 @@ public sealed class NetRatelHttpHostingSetupService
     private const string SecretMount = "/run/netratel-mcp-secrets";
     private string? _reviewedRequestSignature;
     private Dictionary<string, string?>? _reviewedHashes;
+    public string? PreparedServicePrincipal { get; private set; }
 
     /// <summary>Prepare only the independent protected identity generation for browser approval.
     /// Existing identities are reused and no effective configuration is replaced.</summary>
     public string PrepareRegistration(HttpHostingSetupRequest request)
     {
         var bundle = Prepare(request);
+        PreparedServicePrincipal = bundle.ServicePrincipal;
         HttpHostingStorage.ValidateWritable(HttpHostingStorage.Resolve(request.OutputDirectory));
         EnsureGeneration(bundle);
         return RegistrationFingerprint(bundle);
@@ -432,6 +434,7 @@ public sealed class NetRatelHttpHostingSetupService
         if (legacyPath is not null) inputPaths.Add(legacyPath);
         if (existingDelegation is not null) inputPaths.Add(existingDelegation);
         return new(configurationFiles, generatedSecrets.ToArray(), inputPaths.ToArray(), runtimeSecrets, runtimeContent,
+            delegation["NetRatel__Mcp__Delegation__ServicePrincipal"],
             web.Select(pair => $"Web: {pair.Key} = {pair.Value}")
                 .Concat(apiSettings.Select(pair => $"API: {pair.Key} = {pair.Value}"))
                 .Concat(mcp.Select(pair => $"HTTP MCP: {pair.Key} = {pair.Value}"))
@@ -505,6 +508,6 @@ public sealed class NetRatelHttpHostingSetupService
     }
 
     private sealed record Bundle(Dictionary<string, string> Configuration, string[] SecretPaths, string[] InputPaths,
-        Dictionary<string, string> RuntimeSecrets, Dictionary<string, string> RuntimeContent,
+        Dictionary<string, string> RuntimeSecrets, Dictionary<string, string> RuntimeContent, string ServicePrincipal,
         IReadOnlyList<string> SelectedSettings, IReadOnlyList<string> Instructions);
 }

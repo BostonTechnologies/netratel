@@ -14,6 +14,8 @@ public sealed class IntegrationPairingBodyLimitTests
     [InlineData(IntegrationPairingProtocol.Route + "/start", true)]
     [InlineData(HttpHostSetupProtocol.Route + "/start", false)]
     [InlineData(HttpHostSetupProtocol.Route + "/start", true)]
+    [InlineData(HttpHostSetupProtocol.AccountRoute + "/approve", false)]
+    [InlineData(HttpHostSetupProtocol.AccountRoute + "/approve", true)]
     [InlineData("/API/INTEGRATION-PAIRING/V1/start", true)]
     [InlineData(IntegrationPairingProtocol.AccountRoute + "/approve", false)]
     [InlineData(IntegrationPairingProtocol.AccountRoute + "/approve", true)]

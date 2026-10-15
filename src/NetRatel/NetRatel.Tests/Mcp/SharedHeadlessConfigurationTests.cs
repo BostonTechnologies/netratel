@@ -9,6 +9,35 @@ namespace NetRatel.Tests.Mcp;
 
 public sealed class SharedHeadlessConfigurationTests
 {
+    [Theory]
+    [InlineData(ConfigurationSurface.Cli)]
+    [InlineData(ConfigurationSurface.StdioMcp)]
+    [InlineData(ConfigurationSurface.HttpMcpClient)]
+    public void Named_profiles_use_the_configured_persistent_tooling_root_and_explicit_files_keep_precedence(ConfigurationSurface surface)
+    {
+        using var files = new ScratchFiles();
+        string? EnvironmentValue(string key) => key == "NETRATEL_SETUP_DIRECTORY" ? files.Directory : null;
+        var expected = Path.Combine(files.Directory, "profiles", surface.ToString().ToLowerInvariant(), "personal.json");
+        Assert.Equal(expected, NetRatelConfigurationService.ProfilePath(surface, "personal", EnvironmentValue));
+        var service = new NetRatelConfigurationService();
+        var selected = service.Load(new(surface, ProfileName: "personal", GetEnvironmentVariable: EnvironmentValue), allowCreate: true);
+        Assert.Equal(expected, selected.ConfigurationPath);
+        HttpHostingStorage.ValidateWritable(Path.GetDirectoryName(expected)!);
+        Assert.Empty(System.IO.Directory.EnumerateFiles(Path.GetDirectoryName(expected)!));
+        var config = Integration("synthetic-personal-credential") with { ApiBaseUrl = surface == ConfigurationSurface.HttpMcpClient ? "https://selected.example/mcp" : "https://selected.example/" };
+        service.SaveProfile(expected, config, surface);
+        Assert.True(service.Load(new(surface, ProfileName: "personal", GetEnvironmentVariable: EnvironmentValue)).Validate().IsValid);
+        var explicitPath = files.Path("managed.json"); service.SaveProfile(explicitPath, config, surface);
+        Assert.Equal(explicitPath, service.Load(new(surface, explicitPath, GetEnvironmentVariable: EnvironmentValue)).ConfigurationPath);
+    }
+
+    [Fact]
+    public void Container_default_profile_without_a_durable_setup_root_has_one_concrete_remediation()
+    {
+        var error = Assert.Throws<AgentClientValidationException>(() => NetRatelConfigurationService.ProfilePath(ConfigurationSurface.StdioMcp, "default", key => key == "DOTNET_RUNNING_IN_CONTAINER" ? "true" : null));
+        Assert.Contains("docker compose -f compose.setup.yaml run --rm --no-deps mcp-http setup --target stdio", error.Message);
+    }
+
     [Fact]
     public void Environment_only_outbound_uses_dedicated_keys_and_preserves_target_allowlist()
     {

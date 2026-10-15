@@ -72,7 +72,8 @@ Normal stdio MCP stdout contains protocol JSON-RPC only; run setup explicitly wi
             if (options.ContainsKey("--non-interactive"))
             {
                 if (!options.TryGetValue("--instance", out var origin) && !options.TryGetValue("--api-base-url", out origin)) throw new AgentClientValidationException("--instance is required for noninteractive setup.");
-                session.SelectProfile(surface, profile ?? "default", path);
+                session.SelectProfile(surface, profile ?? session.ProfileName, path ?? session.Path);
+                session.ValidateDestinationStorage();
                 await session.DiscoverAsync(origin, ct);
                 if (options.TryGetValue("--credential-file", out var secretPath))
                 {
