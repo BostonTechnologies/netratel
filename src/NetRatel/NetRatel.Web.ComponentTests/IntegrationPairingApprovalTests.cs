@@ -14,6 +14,26 @@ namespace NetRatel.Web.ComponentTests;
 public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
 {
     [Fact]
+    public void Host_approval_reviews_exact_generation_and_keeps_personal_credential_approval_separate()
+    {
+        using var transport = Configure();
+        var panel = Render<HttpHostSetupApprovalPanel>();
+        panel.Find("input").Change("ABCD-EFGH");
+        panel.Find("form").Submit();
+        panel.WaitForAssertion(() => panel.Find("[data-testid='host-setup-fingerprint']").TextContent.Should().Be(new string('A', 64)));
+        panel.Markup.Should().Contain("netratel-mcp-http").And.Contain("https://netratel.example.test/mcp");
+        panel.Find("[data-testid='host-setup-approve']").HasAttribute("disabled").Should().BeTrue();
+        transport.ApprovalRequests.Should().Be(0);
+        transport.HostApprovalRequests.Should().Be(0);
+        panel.Find("[data-testid='host-setup-confirm']").Change(true);
+        panel.Find("[data-testid='host-setup-approve']").Click();
+        panel.WaitForAssertion(() => panel.Find("[data-testid='host-setup-complete']").TextContent.Should().Contain("apply the deployment"));
+        transport.HostApprovalRequests.Should().Be(1);
+        transport.ApprovalRequests.Should().Be(0);
+        panel.Markup.Should().NotContain("nrt_ic_");
+    }
+
+    [Fact]
     public void Code_lookup_reviews_connection_with_empty_grants_and_requires_deliberate_confirmation()
     {
         using var transport = Configure();
@@ -76,6 +96,7 @@ public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
     private sealed class Transport : HttpMessageHandler, IHttpClientFactory
     {
         public int ApprovalRequests { get; private set; }
+        public int HostApprovalRequests { get; private set; }
         public bool RejectApproval { get; set; }
         public bool DurableAuthorityRejection { get; set; }
         public IntegrationPairingApprovalRequest? Approved { get; private set; }
@@ -83,6 +104,17 @@ public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var path = request.RequestUri!.AbsolutePath;
+            if (path.StartsWith(HttpHostSetupProtocol.AccountRoute, StringComparison.Ordinal))
+            {
+                if (path.EndsWith("/lookup", StringComparison.Ordinal)) return new(HttpStatusCode.OK)
+                { Content = JsonContent.Create(new HttpHostSetupReview("host", "ABCD-EFGH", "https://netratel.example.test", "https://netratel.example.test/mcp",
+                    "netratel-mcp-http", new string('A', 64), DateTimeOffset.UtcNow.AddMinutes(10), "pending")) };
+                if (path.EndsWith("/approve", StringComparison.Ordinal))
+                {
+                    HostApprovalRequests++;
+                    return new(HttpStatusCode.OK) { Content = JsonContent.Create(new HttpHostSetupPollResponse("approved", ApprovalId: "host", RegistrationFingerprint: new string('A', 64))) };
+                }
+            }
             if (path.EndsWith("/lookup", StringComparison.Ordinal)) return new(HttpStatusCode.OK)
             { Content = JsonContent.Create(new IntegrationPairingReview("request", "ABCD-EFGH", "CLI profile", PairingCredentialPurpose.Api,
                 "https://netratel.example.test", null, ["telemetry.read"], DateTimeOffset.UtcNow.AddMinutes(10), "pending")) };

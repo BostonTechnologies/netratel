@@ -34,7 +34,11 @@ public sealed class IntegrationPairingServiceTests(PostgreSqlPersistenceFixture 
         fixture.Clock.Advance(TimeSpan.FromSeconds(10));
         var first = (await session.Pairing.PollAsync(started.DeviceCapability)).Delivery!;
         first.ToString().Should().NotContain(first.Secret);
-        first.Grants.Should().Equal(new IntegrationPairingGrant(7, NetRatelPermissions.TelemetryRead));
+        first.Grants.Should().ContainSingle();
+        first.Grants[0].TenantId.Should().Be(7);
+        first.Grants[0].Permission.Should().Be(NetRatelPermissions.TelemetryRead);
+        first.Grants[0].PermissionLabel.Should().Be("Read telemetry");
+        first.Grants[0].TenantName.Should().Be("Tenant A");
         first.InstancePermissions.Should().BeEmpty();
         first.Purpose.Should().Be(PairingCredentialPurpose.Api);
         (await session.Db.IntegrationCredentials.CountAsync()).Should().Be(1);
@@ -184,8 +188,8 @@ public sealed class IntegrationPairingServiceTests(PostgreSqlPersistenceFixture 
         var fixture = new Fixture(await postgres.CreateDatabaseAsync());
         await using var session = fixture.Open();
         await session.Db.Database.MigrateAsync();
-        // The authority check only counts tenant identifiers. Keep this identity-layer fixture small.
-        await session.Db.Database.ExecuteSqlRawAsync("CREATE TABLE \"Tenants\" (\"Id\" integer PRIMARY KEY); INSERT INTO \"Tenants\" (\"Id\") VALUES (7), (8)");
+        // Approval checks identifiers; delivery adds their human-readable names.
+        await session.Db.Database.ExecuteSqlRawAsync("CREATE TABLE \"Tenants\" (\"Id\" integer PRIMARY KEY, \"Name\" text NOT NULL); INSERT INTO \"Tenants\" (\"Id\", \"Name\") VALUES (7, 'Tenant A'), (8, 'Tenant B')");
         session.Db.Users.Add(new LocalUser { Id = "pairing-local", UserName = "owner", PrincipalId = "pairing-owner", IsEnabled = true });
         var role = new AccessRole { Name = "Pairing reader" };
         role.Permissions.Add(new AccessRolePermission { Permission = NetRatelPermissions.TelemetryRead });
@@ -220,7 +224,7 @@ public sealed class IntegrationPairingServiceTests(PostgreSqlPersistenceFixture 
             _application = new(new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(connectionString).Options);
             Credentials = new(Db, clock);
             var access = new EffectiveAccessService(Db, new ConfigurationBuilder().Build());
-            Pairing = new(Db, Credentials, new IntegrationCredentialGrantValidator(Db, _application, access, clock), protection, clock);
+            Pairing = new(Db, Credentials, new IntegrationCredentialGrantValidator(Db, _application, access, clock), protection, clock, applicationDb: _application);
         }
         public async ValueTask DisposeAsync() { await _application.DisposeAsync(); await Db.DisposeAsync(); }
     }

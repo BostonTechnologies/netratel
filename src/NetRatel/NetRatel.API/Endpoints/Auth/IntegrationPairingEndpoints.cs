@@ -32,6 +32,7 @@ public static class IntegrationPairingEndpoints
 
     public static IEndpointRouteBuilder MapIntegrationPairingEndpoints(this IEndpointRouteBuilder app)
     {
+        app.MapHttpHostSetupEndpoints();
         var publicApi = app.MapGroup(IntegrationPairingProtocol.Route).WithTags("Integration credential pairing").AllowAnonymous();
         publicApi.MapGet("/capabilities", async (IDeploymentBrandingService branding, IConfiguration configuration, HttpContext http, CancellationToken ct) =>
         {
@@ -122,6 +123,7 @@ public sealed class IntegrationPairingCleanupWorker(IServiceScopeFactory scopes,
             {
                 await using var scope = scopes.CreateAsyncScope();
                 await scope.ServiceProvider.GetRequiredService<IntegrationPairingService>().CleanupAsync(stoppingToken).ConfigureAwait(false);
+                await scope.ServiceProvider.GetRequiredService<HttpHostSetupService>().CleanupAsync(stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception) { logger.LogWarning("Integration pairing cleanup will resume on the next interval."); }
