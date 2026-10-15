@@ -161,18 +161,19 @@ public static class NetRatelMcpHttpApplication
                     async (nextContext, nextCancellationToken) =>
                     {
                         operationAuthorization.EnsureAuthorized(nextContext.User, nextContext.Params.Name, nextContext.Params.Arguments);
-                        IDisposable delegation;
+                        var propagation = services.GetRequiredService<McpOperatorDelegationPropagation>();
+                        string? assertion;
                         try
                         {
-                            delegation = await services.GetRequiredService<McpOperatorDelegationPropagation>()
-                                .BeginAsync(nextContext.User, nextContext.Params.Name, nextContext.Params.Arguments, nextCancellationToken)
+                            assertion = await propagation
+                                .CreateAssertionAsync(nextContext.User, nextContext.Params.Name, nextContext.Params.Arguments, nextCancellationToken)
                                 .ConfigureAwait(false);
                         }
                         catch (McpLocalCredentialExchangeException exception)
                         {
                             throw new McpException(McpErrorMessage(exception.Failure));
                         }
-                        using (delegation)
+                        using (propagation.Begin(assertion))
                             return await next(nextContext, nextCancellationToken).ConfigureAwait(false);
                     },
                     context,
