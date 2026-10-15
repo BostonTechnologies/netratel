@@ -27,7 +27,9 @@ public sealed record HttpHostingSetupRequest(
     string? DelegationKeyId = null,
     string? DelegationIssuer = null,
     string? DelegationAudience = null,
-    string? ApprovedRegistrationFingerprint = null);
+    string? ApprovedRegistrationFingerprint = null,
+    string ApiServiceAudience = "netratel.api",
+    string? ApiServiceAuthority = null);
 
 public sealed record HttpHostingSetupPreview(
     IReadOnlyList<string> Changes, IReadOnlyList<string> Files,
@@ -232,6 +234,12 @@ public sealed class NetRatelHttpHostingSetupService
         var secretDirectory = Path.Combine(output, "secrets");
         var delegationPath = Path.Combine(secretDirectory, "delegation.key");
         var serviceSecretPath = Path.Combine(secretDirectory, "outbound-m2m.secret");
+        var savedGeneration = File.Exists(Path.Combine(output, ".http-host.setup.json")) || File.Exists(Path.Combine(output, "compose.http-host.yaml"));
+        void RequireSavedSecret(string path)
+        {
+            if (savedGeneration && !File.Exists(path))
+                throw new AgentClientValidationException("The saved host generation is missing an original protected secret. Restore that same generation from its protected runtime backup or perform an explicit coordinated rotation; setup will not generate a replacement.");
+        }
         string? existingDelegation = null;
         if (request.ExistingDelegationKeyFile is not null)
         {
@@ -243,8 +251,8 @@ public sealed class NetRatelHttpHostingSetupService
                 throw new AgentClientValidationException("An existing delegation generation requires its explicit DelegationKeyId, DelegationIssuer and DelegationAudience; setup never infers or rotates these values.");
             ValidateExistingSecret(existingDelegation, ownerOnly: false);
         }
-        else ValidateExistingSecret(delegationPath);
-        if (request.ExistingOutboundConfigurationPath is null) ValidateExistingSecret(serviceSecretPath);
+        else { RequireSavedSecret(delegationPath); ValidateExistingSecret(delegationPath); }
+        if (request.ExistingOutboundConfigurationPath is null) { RequireSavedSecret(serviceSecretPath); ValidateExistingSecret(serviceSecretPath); }
 
         var keyId = Identifier(request.DelegationKeyId ?? "deployment-v1", "DelegationKeyId");
         var issuer = Identifier(request.DelegationIssuer ?? "netratel-mcp-" + request.Instance, "DelegationIssuer");
@@ -331,8 +339,13 @@ public sealed class NetRatelHttpHostingSetupService
         {
             if (request.DelegationServicePrincipal is not null && request.DelegationServicePrincipal != ServicePrincipal)
                 throw new AgentClientValidationException("A newly provisioned outbound identity uses netratel-mcp-http. To preserve another service principal, select its existing outbound configuration.");
-            apiSettings["M2M__Authority"] = new Uri(api).GetLeftPart(UriPartial.Authority);
-            apiSettings["M2M__Audience"] = "netratel.api";
+            // Global issuer/audience belong to the existing API deployment. Register
+            // only this service under its effective discovered audience; do not rebind
+            // unrelated callers or their token-validation configuration.
+            var serviceAudience = request.ApiServiceAudience;
+            if (string.IsNullOrWhiteSpace(serviceAudience) || serviceAudience.Length > 128 || serviceAudience.Any(char.IsWhiteSpace) ||
+                serviceAudience.Any(char.IsControl) || serviceAudience.Contains('$') || serviceAudience.Contains('\''))
+                throw new AgentClientValidationException("The existing API service audience must be a nonempty bounded scope token.");
             var callerIds = (request.ExistingM2MCallerClientIds ?? ["netratel.cli", "netratel.client.artifacts"])
                 .Append(ServicePrincipal).Distinct(StringComparer.Ordinal).ToArray();
             if (callerIds.Length > 128 || callerIds.Any(id => string.IsNullOrWhiteSpace(id) || id.Length > 128 || id.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not '.' and not '-' and not '_')))
@@ -340,8 +353,8 @@ public sealed class NetRatelHttpHostingSetupService
             for (var index = 0; index < callerIds.Length; index++) apiSettings[$"M2M__AllowedCallerClientIds__{index}"] = callerIds[index];
             apiSettings[$"M2MClients__{ServicePrincipal}__SecretFile"] = SecretMount + "/outbound-m2m.secret";
             apiSettings[$"M2MClients__{ServicePrincipal}__Secret"] = "";
-            apiSettings[$"M2MClients__{ServicePrincipal}__AllowedAudiences__0"] = "netratel.api";
-            apiSettings[$"M2MClients__{ServicePrincipal}__AllowedScopes__0"] = "netratel.api";
+            apiSettings[$"M2MClients__{ServicePrincipal}__AllowedAudiences__0"] = serviceAudience;
+            apiSettings[$"M2MClients__{ServicePrincipal}__AllowedScopes__0"] = serviceAudience;
             mcp["NETRATEL_MCP_CONFIG"] = "";
             mcp["NetRatel__Mcp__Http__ConfigurationPath"] = "";
             mcp["NetRatel__Mcp__Outbound__AuthenticationMode"] = "ApiM2MClientSecret";
@@ -349,7 +362,7 @@ public sealed class NetRatelHttpHostingSetupService
             mcp["NetRatel__Mcp__Outbound__ApiM2MTokenUrl"] = new Uri(new Uri(api), "/connect/token").AbsoluteUri;
             mcp["NetRatel__Mcp__Outbound__ApiM2MClientId"] = ServicePrincipal;
             mcp["NetRatel__Mcp__Outbound__ApiM2MClientSecretFile"] = SecretMount + "/outbound-m2m.secret";
-            mcp["NetRatel__Mcp__Outbound__ApiM2MScope"] = "netratel.api";
+            mcp["NetRatel__Mcp__Outbound__ApiM2MScope"] = serviceAudience;
             foreach (var alternative in new[] { "OidcTokenUrl", "OidcClientId", "OidcUsername", "OidcAppPassword", "OidcAppPasswordFile", "OidcScope", "IntegrationCredential", "IntegrationCredentialFile" })
                 mcp["NetRatel__Mcp__Outbound__" + alternative] = "";
         }

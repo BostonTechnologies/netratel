@@ -215,6 +215,44 @@ public sealed class HttpHostingSetupTests : IDisposable
     }
 
     [Fact]
+    public void New_host_registration_preserves_existing_api_m2m_issuer_audience_and_callers()
+    {
+        var service = new NetRatelHttpHostingSetupService();
+        var request = Request with { ApiServiceAuthority = "https://issuer.example.invalid", ApiServiceAudience = "custom.api",
+            ExistingM2MCallerClientIds = ["custom.worker", "custom.reports", "netratel.cli"] };
+        service.Apply(request);
+        var api = File.ReadAllText(Path.Combine(_directory, "api.env"));
+        var mcp = File.ReadAllText(Path.Combine(_directory, "mcp-http.env"));
+        Assert.DoesNotContain("M2M__Authority=", api);
+        Assert.DoesNotContain("M2M__Audience=", api);
+        Assert.Contains("M2M__AllowedCallerClientIds__0='custom.worker'", api);
+        Assert.Contains("M2M__AllowedCallerClientIds__1='custom.reports'", api);
+        Assert.Contains("M2M__AllowedCallerClientIds__2='netratel.cli'", api);
+        Assert.Contains("M2M__AllowedCallerClientIds__3='netratel-mcp-http'", api);
+        Assert.Contains("M2MClients__netratel-mcp-http__AllowedAudiences__0='custom.api'", api);
+        Assert.Contains("M2MClients__netratel-mcp-http__AllowedScopes__0='custom.api'", api);
+        Assert.Contains("ApiM2MScope='custom.api'", mcp);
+        var saved = NetRatelHttpHostingSetupService.LoadRequest(_directory);
+        Assert.Equal(request.ApiServiceAudience, saved!.ApiServiceAudience);
+        Assert.Equal(request.ApiServiceAuthority, saved.ApiServiceAuthority);
+    }
+
+    [Theory]
+    [InlineData("delegation.key")]
+    [InlineData("outbound-m2m.secret")]
+    public void Missing_original_in_a_saved_generation_requires_recovery_without_automatic_rotation(string file)
+    {
+        var service = new NetRatelHttpHostingSetupService();
+        service.Apply(Request);
+        var original = Path.Combine(_directory, "secrets", file);
+        var backup = File.ReadAllText(Path.Combine(_directory, "runtime", file));
+        File.Delete(original);
+        Assert.Contains("same generation", Assert.Throws<AgentClientValidationException>(() => service.PrepareRegistration(Request)).Message);
+        Assert.False(File.Exists(original));
+        Assert.Equal(backup, File.ReadAllText(Path.Combine(_directory, "runtime", file)));
+    }
+
+    [Fact]
     public void Saved_advanced_host_settings_resume_the_same_identity_and_reject_instance_rebinding()
     {
         var service = new NetRatelHttpHostingSetupService();
