@@ -19,7 +19,7 @@ services:
     environment:
       Integration__HttpMcp__PublicResourceUri: ${NETRATEL_MCP_PUBLIC_RESOURCE_URI:-${NETRATEL_PUBLIC_ORIGIN:-}/mcp}
       # Expose the selected MCP ingress mode to URL-first host discovery.
-      Integration__HttpMcp__AuthenticationMode: ${NETRATEL_MCP_AUTHENTICATION_MODE:-}
+      Integration__HttpMcp__AuthenticationMode: ${NETRATEL_MCP_AUTHENTICATION_MODE:-Oidc}
       Integration__HttpMcp__Authority: ${NETRATEL_MCP_OIDC_AUTHORITY:-}
       Integration__HttpMcp__RequiredGroups__0: ${NETRATEL_MCP_REQUIRED_GROUP:-}
       Integration__HttpMcp__RequiredScopes__0: ${NETRATEL_MCP_REQUIRED_SCOPE:-}
