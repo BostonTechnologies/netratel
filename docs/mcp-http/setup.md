@@ -4,140 +4,76 @@ Start with a working Web/API instance and its verified image bundle. HTTP MCP is
 
 Client connection and host administration are separate setup modes. Browser client approval creates a scoped API-purpose or HttpMcp-purpose personal credential. Host setup prepares deployment-owned ingress, outbound service identity, API delegation and persistent Web/API/MCP configuration; it does not borrow a human's HttpMcp bearer.
 
-## Prepare a coordinated deployment bundle
+## Start with the instance Web URL
 
-The explicit host wizard runs before an HTTP server is configured. Native CLI tooling supports:
+Run setup from the verified release bundle directory. The standalone tooling service uses the HTTP MCP image already pinned in `.env`; it does not start the serving stack or need its unrelated interpolation values. For the bundled public HTTPS stack, retain its actual existing Compose files in the generated apply action:
+
+```sh
+export NETRATEL_SETUP_COMPOSE_FILES='compose.images.yaml,compose.public-https.yaml,compose.mcp-http.yaml'
+docker compose --env-file .env -f compose.setup.yaml run --rm --no-deps mcp-http
+```
+
+Use the files selected by the actual deployment: include an existing external-database or other overlay, or omit the bundled HTTPS overlay when a separately managed ingress already supplies HTTPS. The comma-separated selection is deployment context; the wizard still starts with one Web URL.
+
+The service defaults to `setup --target http-host`. The equivalent explicit command is:
+
+```sh
+docker compose --env-file .env -f compose.setup.yaml run --rm --no-deps \
+  mcp-http setup --mode host
+```
+
+The first page has one input, **Instance web URL**, with keyboard focus ready for paste. Enter either `https://netratel.example.invalid` or `https://netratel.example.invalid/mcp`, with or without a trailing slash, then press Enter. Setup retains the explicit HTTPS host/port, derives the API origin and canonical `/mcp` resource, and discovers the instance. Unknown paths, embedded credentials, query strings and fragments require correction rather than being silently discarded.
+
+Follow Next to discover, authorize, review, save/apply and verify. Use the displayed browser link and code to approve from the instance's signed-in administrator session; a browser on another device works for a browserless container. Client approval and host approval are separate: host setup prepares or adopts a dedicated outbound service identity and its API delegation. A personal HttpMcp bearer is never stored as that identity.
+
+Setup selects the supported authentication mode from discovery and preserves an existing managed/OIDC configuration. If external-provider details are still needed, enter them when prompted after discovery. **Advanced** contains alternate storage, explicit API/backend targets, profiles, ports, split-host/resource overrides and existing protected identity inputs. Normal setup does not ask for those details on its first page.
+
+The standalone service creates and reuses the persistent Docker volume `netratel-http-host-setup` at `/setup-output`. It does not ask for a directory or require operator UID/GID flags. Keep this volume when recreating tooling and serving containers. Native tooling uses its configured location first, then the per-user application-data directory `NetRatel/http-host`; the final review shows the resolved path. An explicit output directory remains available through Advanced or `--output-directory`.
+
+The native CLI and stdio distributions support the same explicit host mode:
 
 ```sh
 netratel setup --mode host
-```
-
-The stdio distribution also accepts explicit `setup --mode host` before normal protocol startup. For example, from its extracted framework-dependent archive:
-
-```sh
 dotnet /path/to/NetRatel.Mcp.dll setup --mode host
+dotnet /path/to/NetRatel.Mcp.Http.dll setup --mode host
 ```
 
-Choose an absolute persistent output directory, the trusted public HTTPS origin, the selected HTTPS API target and ingress mode. Private Compose backends default to `http://api:9222/` and `http://mcp-http:9224/`; advanced settings retain explicit reviewed destinations. External OIDC additionally requires its HTTPS authority, groups and scopes. Review the redacted changes and explicitly confirm replacing any existing configuration.
+Normal server or stdio protocol startup never opens a wizard.
 
-For a first-run container, use the standalone [setup Compose file](../../release/compose.setup.yaml), without the serving base or unrelated required interpolation. Set the approved existing HTTP MCP image digest in `.env`; keep that image's tooling dependencies, SBOM and notices together.
+## Apply the reviewed configuration, then resume verification
+
+Saving configuration is a local step. When Web/API/MCP need recreation, setup displays **deployment apply pending**, with one complete apply command for the deployment host. Review and run the command from the deployment directory, then return to **Verify**. Do not report Connected from a saved file or a successful browser approval.
+
+The standard generated configuration includes protected runtime exports of the same generation for API UID `1654` and MCP UID `10001`, their read-only mounts and a restricted supplemental group. Setup originals remain owner-only; runtime exports grant only the required readers access. There is no manual secret copying, group creation, YAML bind-source repair or world-readable secret workaround in the supported path. The tooling container has no Docker socket and cannot recreate another container itself.
+
+Use the exact generated command. It exports only the generated non-secret Compose overlay, retains the selected image/ingress/database files and recreates Web, API and MCP. Do not print a complete secret-bearing `docker compose config`; use `config --quiet` if inspecting configuration. Compose `2.24.4` or newer supports the generated `!override` maps/lists, which prevent stale MCP environment aliases or outbound credentials from surviving an earlier overlay.
+
+Rerun the same setup command after recreation or an interrupted terminal session. It reuses the saved origin, identity and delegation generation; it does not rotate them or provision duplicates. Review an intentional replacement explicitly. Existing read-only/environment-managed settings remain managed by their source rather than being overwritten.
+
+Verification uses the selected effective configuration and actual transport: compatible discovery and HTTPS reachability, canonical public MCP routing, applicable authentication, MCP initialize/catalog and a permitted read-only API-backed operation through outbound/delegation. A 200 HTML fallback, 401/403, open port, file write or unexecuted check cannot complete verification. A rejected/expired approval, disabled MCP, wrong route, incompatible instance or unconfigured host leaves a specific next action and a bounded Retry/Verify step. Temporary personal verification credentials remain separate from persistent host identity.
+
+In local-credential mode, Verify requests a second, personal HttpMcp browser approval after deployment apply. That temporary credential remains in memory and is cancelled/revoked when setup exits; host administrator approval alone cannot supply it. OIDC verification uses its selected provider and requests any required application-account details separately.
+
+The final summary distinguishes configuration saved, deployment apply pending, authenticated and end-to-end verified, and shows the persistent location. Back up the setup volume/generation along with the existing deployment configuration. A container restart retains old environment values; changes requiring recreation must use the displayed apply action.
+
+## Advanced and headless hosting
+
+Existing automation remains explicit. For a reviewed generation-only local-mode setup:
 
 ```sh
-mkdir -m 700 mcp-setup
-export NETRATEL_SETUP_OUTPUT_DIRECTORY="$PWD/mcp-setup"
-export NETRATEL_SETUP_UID="$(id -u)"
-export NETRATEL_SETUP_GID="$(id -g)"
-docker compose --env-file .env -f compose.setup.yaml run --rm --no-deps \
-  mcp-http setup --target http-host
-```
-
-The selected UID/GID must own the writable output directory. The image serving UID is `10001`; API uses `1654`. Setup can run as the operator's UID without root, a shell editor, package installation or a Docker socket. In the wizard, choose `/setup-output` as the container output directory. The standalone Compose file supplies its absolute host path through `NETRATEL_SETUP_HOST_OUTPUT_DIRECTORY`, so generated bind mounts reference the host directory, not an ephemeral container path. Interactive setup uses a TTY; normal stdio serving uses pipes.
-
-The equivalent noninteractive command is explicit about reviewed inputs:
-
-```sh
-docker compose --env-file .env -f compose.setup.yaml run --rm --no-deps -T \
-  mcp-http setup --target http-host --non-interactive \
-  --output-directory /setup-output \
+netratel setup --mode host --non-interactive \
   --public-origin https://netratel.example.invalid \
-  --api-base-url https://netratel.example.invalid
+  --api-base-url https://netratel.example.invalid \
+  --output-directory /absolute/path/to/reviewed-output
 ```
 
-Headless host options also include `--auth-mode local|oidc`, `--required-groups CSV`, `--required-scopes CSV`, `--oidc-authority HTTPS`, `--instance-name dev|prod`, `--resource HTTPS_MCP_URL`, `--listen-port PORT`, `--allowed-origins CSV`, `--existing-outbound-config PATH`, `--existing-m2m-callers CSV`, `--delegation-principal NAME`, and existing-generation inputs `--delegation-key-file PATH`, `--delegation-key-id ID`, `--delegation-issuer ID`, `--delegation-audience ID`. Use the existing outbound option for a supported private JSON identity and mount its secret references deliberately; setup rejects a target rebind. An OIDC deployment must explicitly select OIDC and supply its required group/scope values. An explicit resource path such as `/prefix/mcp` requires a reviewed ingress/YARP mapping to the host's actual `/mcp` endpoint; generated routing defaults remain `/mcp`. An existing OIDC outbound identity also requires an explicit delegation service principal matching the issued service token subject; the login username alone does not establish that identity. An M2M delegation principal must match its actual client ID. Use `--replace` only after reviewing an intended replacement.
+Generation-only success does not establish live readiness. Use the interactive verification/resume path against the applied deployment before declaring it connected. Preserve the configured public origin, selected HTTPS API allowlist and native gateway exposure. Web's private Compose defaults `http://api:9222/` and `http://mcp-http:9224/` describe its internal hops; they do not replace MCP's trusted outbound HTTPS API target.
 
-The output contains `web.env`, `api.env`, `mcp-http.env`, `compose.http-host.yaml` and `.gitignore`. Fresh setup also creates `secrets/delegation.key` and, for a newly provisioned M2M identity, `secrets/outbound-m2m.secret`. Supplying an existing delegation key preserves its original protected source and creates no replacement key in the output directory. Secret values live only in owner-only files; environment files contain references. Fresh setup generates independent random material once. When supplying `--delegation-key-file`, also supply its existing key ID, issuer and audience explicitly; setup validates and snapshots that source and metadata instead of inferring or rotating them. The generated API and MCP mounts reference the chosen existing file at the stable container destination `/run/netratel-mcp-secrets/delegation.key`. Repeating setup with the same inputs reuses the existing generation and files; conflicting files require explicit review. Existing outbound configuration remains isolated and is mounted without copying its credentials into Web or a human client profile. A new identity uses `netratel-mcp-http`; an existing different service principal requires its matching existing outbound JSON. When running setup inside a container, existing JSON, delegation key and referenced secret files must be deliberately mounted at the same absolute paths used on the host for the generated binds; setup cannot infer input host paths. Native tooling is an alternative when those input mount paths differ.
+Headless host options include `--auth-mode local|oidc`, `--required-groups CSV`, `--required-scopes CSV`, `--oidc-authority HTTPS`, `--instance-name dev|prod`, `--resource HTTPS_MCP_URL`, `--listen-port PORT`, `--allowed-origins CSV`, `--existing-outbound-config PATH`, `--existing-m2m-callers CSV`, `--delegation-principal NAME`, and existing-generation inputs `--delegation-key-file PATH`, `--delegation-key-id ID`, `--delegation-issuer ID`, `--delegation-audience ID`. Supplied options seed the interactive wizard too. Use `--replace` only for a reviewed replacement.
 
-The generated API configuration provisions the actual `M2M` / `M2MClients` service registration, selected allowed callers and secret reference. Review the current deployment's allowed caller list before applying; preserve unrelated service identities. Human client pairing never provisions deployment credentials. API/MCP recreation applies that registration; the setup process cannot change another container's environment.
+An explicit resource such as `/prefix/mcp` requires a matching reviewed ingress/YARP mapping; the common deployment remains `/mcp`. Existing OIDC outbound identity needs a delegation principal matching the issued token subject, and M2M delegation needs its actual client ID. Existing protected JSON/key sources must remain accessible for reviewed setup and reuse. Setup preserves those managed originals, prepares protected runtime exports and remaps only their runtime references; it rejects a target rebind and does not rotate the adopted generation. Native tooling is available when custom input mounts differ between the host and a tooling container.
 
-## Apply and persist
-
-Use Docker Compose `2.24.4` or later. The generated final overlay embeds the reviewed non-secret Web/API/MCP settings and protected secret-file references. Web/API values compose additively, preserving unrelated database, browser auth and gateway settings. MCP uses a complete reviewed `environment: !override` map and `env_file: !override` list so earlier outbound credentials and aliases cannot survive unnoticed. Add additional MCP runtime settings through a later explicit reviewed override.
-
-Compose `environment` values take precedence over `env_file`. The generated `web.env`, `api.env` and `mcp-http.env` remain reusable configuration exports; changing those exports alone does not change values already embedded in `compose.http-host.yaml`. Re-run setup with the reviewed inputs or update the reviewed final overlay, then recreate the affected containers. The final YAML contains secret references, never actual credential/signing-key values.
-
-Export the generated owner-only secret material through the deployment's protected secret store with read access for API UID `1654` and MCP UID `10001`. Keep the generation consistent, mounted read-only and unwritable by unrelated users. Retain the owner-only setup originals for idempotent reuse. **Before `config` or `up`, update the generated overlay's bind-source paths**: API mounts must point to API-readable protected runtime exports, and MCP mounts to MCP-readable exports of the **same generation and bytes**. Keep their container destinations `/run/netratel-mcp-secrets/delegation.key` and `/run/netratel-mcp-secrets/outbound-m2m.secret` and `read_only: true` unchanged. For example, provide separate `0600` exports owned by UID `1654` and UID `10001`, respectively, or a deliberately restricted shared-group export. The delegation file is identical on both services; the newly provisioned outbound service secret is likewise identical at its API and MCP references. Apply the source-path change through the deployment's reviewed configuration mechanism. The generated bindings initially reference the setup-owned originals, so exporting copies alone does not make the stack use them. Do not make secrets world-readable to resolve a UID mismatch.
-
-**A fresh generated overlay is not ready to apply until runtime secret access is configured.** Its `0600` originals are owned by the setup user; API UID `1654` cannot read originals owned by tooling UID `10001`. Running setup as the operator's UID/GID, as shown above, lets that operator prepare separate runtime exports without root or changing the originals.
-
-For Linux bind mounts with matching host/container UID and GID numbers, an existing restricted group provides one concrete non-root option. The group must contain **only approved secret readers**, and the operator must belong to it. The example uses the operator's primary group; if that group is not restricted, select another existing approved group and use its numeric GID instead. Setup does not create groups or change group membership. Deployments with UID/GID remapping must use their secret store's supported identity mapping.
-
-```sh
-export NETRATEL_MCP_RUNTIME_SECRET_GID="$(id -g)"
-mkdir -m 700 mcp-runtime-secrets
-install -m 640 -g "$NETRATEL_MCP_RUNTIME_SECRET_GID" \
-  mcp-setup/secrets/delegation.key mcp-runtime-secrets/delegation.key
-install -m 640 -g "$NETRATEL_MCP_RUNTIME_SECRET_GID" \
-  mcp-setup/secrets/outbound-m2m.secret mcp-runtime-secrets/outbound-m2m.secret
-export NETRATEL_MCP_RUNTIME_SECRETS_DIRECTORY="$PWD/mcp-runtime-secrets"
-```
-
-These copies grant the selected group read access, never write access; the setup originals remain `0600`. For an existing identity or delegation generation, copy the explicitly selected existing files instead, preserving their exact bytes and references. Do not generate replacement material for this access step.
-
-Save the following reviewed deployment override as `mcp-runtime-secrets.yaml`. Its individual bind mounts replace the generated mounts at the same container destinations, and its numeric supplemental group lets both serving UIDs read the protected exports. Keep additional existing secret references mounted deliberately when using an outbound JSON identity.
-
-```yaml
-services:
-  api:
-    group_add:
-      - "${NETRATEL_MCP_RUNTIME_SECRET_GID:?set the approved numeric secret-reader GID}"
-    volumes:
-      - type: bind
-        source: ${NETRATEL_MCP_RUNTIME_SECRETS_DIRECTORY:?set the absolute runtime export directory}/delegation.key
-        target: /run/netratel-mcp-secrets/delegation.key
-        read_only: true
-        bind:
-          create_host_path: false
-      - type: bind
-        source: ${NETRATEL_MCP_RUNTIME_SECRETS_DIRECTORY:?set the absolute runtime export directory}/outbound-m2m.secret
-        target: /run/netratel-mcp-secrets/outbound-m2m.secret
-        read_only: true
-        bind:
-          create_host_path: false
-  mcp-http:
-    group_add:
-      - "${NETRATEL_MCP_RUNTIME_SECRET_GID:?set the approved numeric secret-reader GID}"
-    volumes:
-      - type: bind
-        source: ${NETRATEL_MCP_RUNTIME_SECRETS_DIRECTORY:?set the absolute runtime export directory}/delegation.key
-        target: /run/netratel-mcp-secrets/delegation.key
-        read_only: true
-        bind:
-          create_host_path: false
-      - type: bind
-        source: ${NETRATEL_MCP_RUNTIME_SECRETS_DIRECTORY:?set the absolute runtime export directory}/outbound-m2m.secret
-        target: /run/netratel-mcp-secrets/outbound-m2m.secret
-        read_only: true
-        bind:
-          create_host_path: false
-```
-
-This example covers fresh setup's API M2M identity. For a preserved JSON identity, omit the `outbound-m2m.secret` mounts and provide the MCP-readable JSON and any referenced secret exports at their reviewed destinations instead. Keep these deployment variables in the operator's environment or untracked deployment `.env` file. Recreate containers after replacing bind-mounted exports so they use the selected files and generation.
-
-Apply the setup overlay after the MCP overlay, together with the deployment's existing HTTPS and database overlays. Example for a bundled PostgreSQL/public HTTPS stack:
-
-```sh
-docker compose --env-file .env \
-  -f compose.images.yaml -f compose.public-https.yaml \
-  -f compose.mcp-http.yaml -f mcp-setup/compose.http-host.yaml \
-  -f mcp-runtime-secrets.yaml config --quiet
-docker compose --env-file .env \
-  -f compose.images.yaml -f compose.public-https.yaml \
-  -f compose.mcp-http.yaml -f mcp-setup/compose.http-host.yaml \
-  -f mcp-runtime-secrets.yaml up -d --force-recreate
-```
-
-Keep the reviewed immutable image digests and existing native gateway exposure. The generated overlay prepares settings only; it does not install certificates, alter ingress or claim live checks passed. Configure the selected public/trusted HTTPS API target consistently. Private Web-to-API/MCP HTTP does not satisfy MCP outbound HTTPS validation.
-
-An already running tooling container can perform the same explicit setup if an operator has deliberately mounted a writable persistent output path:
-
-```sh
-docker compose --env-file .env -f compose.images.yaml -f compose.mcp-http.yaml \
-  exec mcp-http setup --target http-host
-```
-
-Choose that mounted output path in the wizard. The normal serving deployment does not provide a writable setup mount automatically; add it explicitly or use the standalone one-shot flow. Inject `NETRATEL_SETUP_HOST_OUTPUT_DIRECTORY` with the actual host path when the generated bundle will be applied on the host. A read-only secret mount cannot be edited by setup.
-
-Back up protected deployment configuration and secret generations. Keep them separate from browser Data Protection, native AgentAuth signing keys, human credentials and application data backups. Changing environment requires recreation, not a simple restart. Mounted runtime option/secret changes require process restart; Web's supported YARP file reload is a separate [routing contract](../deployment/web-gateway.md).
+The generated `web.env`, `api.env` and `mcp-http.env` are configuration exports. The apply overlay embeds their reviewed non-secret values and secret references; editing an export alone does not replace an environment value embedded in that overlay. Rerun setup with reviewed inputs to regenerate and apply. Keep browser Data Protection, native AgentAuth signing keys, personal credentials and host service/delegation generations in their separate namespaces and backups.
 
 ## Manual Docker/environment configuration
 

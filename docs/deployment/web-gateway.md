@@ -31,6 +31,8 @@ The optional Compose MCP overlay configures **both** the MCP service and Web. Se
 | `WebGateway__Mcp__AuthenticationMode` | `LocalCredential` or `Oidc`; OIDC additionally needs the exact protected-resource metadata route |
 | `WebGateway__Mcp__ActivityTimeout` | MCP proxy activity budget; default `00:05:00` |
 
+The [URL-first HTTP MCP host wizard](../mcp-http/setup.md) asks for the instance Web URL, discovers the supported authentication mode and generates the coordinated Web/API/MCP overlay. A root URL and the same origin's `/mcp` URL normalize to that common deployment. Storage and private Compose backend addresses are defaults; use Advanced only for an intentionally different topology. Saving does not update other containers: run its exact generated apply action on the deployment host, retaining existing ingress/database overlays, then resume the actual transport verification. The final Connected state requires authenticated MCP plus a read-only API-backed call through the dedicated host identity/delegation.
+
 One effective YARP configuration combines generated defaults with `ReverseProxy`. Same-ID scalar fields explicitly override generated fields while omitted fields remain. Collection fields (transforms, methods, hosts, headers, query parameters and destinations) replace completely per configuration provider. The composer creates one effective result rather than relying on multiple YARP providers to merge partial objects. Custom route/cluster IDs remain available. Advanced operators may deliberately choose a proxy destination different from `ApiBaseUrl`; that affects proxy calls, while Web API clients retain `ApiBaseUrl`.
 
 Disabling MCP removes generated MCP exposure and performs no backend discovery. It preserves a manually configured explicit MCP route. A selected but unavailable backend returns a proxy failure, not the Blazor HTML page or another instance. `ReverseProxy:RemovedRoutes` and `ReverseProxy:RemovedClusters` are string arrays applied last. Removing a cluster still referenced by an active route is invalid. Scalar values compose by case-insensitive route/cluster ID; explicit destination and list values replace their generated/provider values. Check the effective configuration before applying a custom allowlist.
@@ -64,6 +66,7 @@ The generated configuration additionally exposes these narrowly scoped onboardin
 | --- | --- |
 | `/api/integration-pairing/v1/capabilities` (`GET`) | Pairing capability discovery |
 | `/api/integration-pairing/v1/start`, `/poll`, `/cancel`, `/acknowledge` (each `POST` under that prefix) | Bounded credential-pairing protocol |
+| `/api/http-host-setup/v1/capabilities` (`GET`), `/start`, `/poll`, `/cancel` (`POST`) | Origin-bound administrator approval of a specific deployment-host generation; distinct from personal credential pairing |
 | `/api/v2/account/integration-credentials/{**catch-all}` | Existing interactive account credential management |
 | `/api/v2/mcp/local-delegation/authenticate`, `/exchange` (`POST`) | Local MCP ingress check and per-call delegation |
 | `/api/v2/mcp/operator/{**catch-all}` | Authorized production operator API |

@@ -83,16 +83,28 @@ For standalone Client Docker deployments, set
 `NetRatelCLIENT__Client__ApiBaseUrl` and `NetRatelCLIENT__Gateway__Endpoint`.
 See [configuration](docs/deployment/CONFIGURATION.md) for precedence and split REST hosts.
 
-Optional HTTP MCP is not enabled by default. Its external-OIDC mode requires
-separate OIDC audience, scope, group and target API configuration in `.env`.
-Use both `-f compose.images.yaml -f compose.mcp-http.yaml` with `--env-file
-.env` for config, pull and startup.
+Optional HTTP MCP is not enabled by default. From this bundle directory, start
+the standalone URL-first host wizard:
 
-An explicit local-credential HTTP MCP alternative is documented in
-`docs/mcp-http/local-credential-mode.md` in this bundle. It requires a
-canonical HTTPS resource URL and a paired API/MCP delegation key; it does not
-use or emulate an OIDC authority. Do not enable both identity modes for one
-MCP host.
+```sh
+export NETRATEL_SETUP_COMPOSE_FILES='compose.images.yaml,compose.public-https.yaml,compose.mcp-http.yaml'
+docker compose --env-file .env -f compose.setup.yaml run --rm --no-deps \
+  mcp-http setup --mode host
+```
+
+Select only the Compose files used by the actual deployment; include the
+external-database or other existing overlays where applicable. The first page
+asks for the instance Web URL; the root and `/mcp` forms both work. Approve the
+host in the signed-in administrator browser, review and save, then run the
+complete generated apply command on the deployment host and resume Verify.
+The supported setup service manages persistent storage and protected runtime
+secret access automatically. Keep its `netratel-http-host-setup` volume.
+
+Host service identity, delegation and personal client approval remain separate.
+An existing OIDC deployment retains its mode; local credential mode does not
+invent an OIDC authority. See [HTTP MCP setup](docs/mcp-http/setup.md) for the
+guided flow and advanced/manual alternatives. Declare readiness only after
+the real authenticated MCP and API-backed read checks pass.
 
 Back up PostgreSQL, signing keys and Data Protection volumes together. Do not
 delete persistent volumes during upgrades. No local administrator credentials or
