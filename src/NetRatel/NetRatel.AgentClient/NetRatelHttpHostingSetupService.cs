@@ -55,6 +55,7 @@ public sealed class NetRatelHttpHostingSetupService
         var bundle = Prepare(request);
         PreparedServicePrincipal = bundle.ServicePrincipal;
         HttpHostingStorage.ValidateWritable(HttpHostingStorage.Resolve(request.OutputDirectory));
+        HttpHostingStorage.ValidateHostBoundary(HttpHostingStorage.Resolve(request.OutputDirectory));
         EnsureGeneration(bundle);
         return RegistrationFingerprint(bundle);
     }
@@ -89,10 +90,10 @@ public sealed class NetRatelHttpHostingSetupService
     {
         var output = HttpHostingStorage.Resolve(request.OutputDirectory);
         var files = Environment.GetEnvironmentVariable("NETRATEL_SETUP_COMPOSE_FILES") ??
-            (HttpHostingStorage.UsesSetupVolume(output) ? "compose.images.yaml,compose.mcp-http.yaml" : "compose.yaml,compose.mcp-http.yaml");
+            (HttpHostingStorage.UsesValidatedSetupVolume(output) ? "compose.images.yaml,compose.mcp-http.yaml" : "compose.yaml,compose.mcp-http.yaml");
         var compose = string.Join(" ", files.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(file => "-f " + ShellQuote(file)));
-        var overlay = HttpHostingStorage.UsesSetupVolume(output) ? ".netratel.http-host.yaml" : Path.Combine(request.ComposeOutputDirectory ?? output, "compose.http-host.yaml");
-        var extract = HttpHostingStorage.UsesSetupVolume(output)
+        var overlay = HttpHostingStorage.UsesValidatedSetupVolume(output) ? ".netratel.http-host.yaml" : Path.Combine(request.ComposeOutputDirectory ?? output, "compose.http-host.yaml");
+        var extract = HttpHostingStorage.UsesValidatedSetupVolume(output)
             ? "docker compose -f compose.setup.yaml run --rm --no-deps --entrypoint cat mcp-http /setup-output/compose.http-host.yaml > " + ShellQuote(overlay) + " && " : "";
         return extract + "docker compose " + compose + " -f " + ShellQuote(overlay) + " up -d web api mcp-http";
     }
@@ -133,6 +134,7 @@ public sealed class NetRatelHttpHostingSetupService
         }
         var bundle = Prepare(request);
         HttpHostingStorage.ValidateWritable(HttpHostingStorage.Resolve(request.OutputDirectory));
+        HttpHostingStorage.ValidateHostBoundary(HttpHostingStorage.Resolve(request.OutputDirectory));
         if (request.ApprovedRegistrationFingerprint is not null &&
             (bundle.SecretPaths.Concat(bundle.InputPaths).Any(path => !File.Exists(path)) ||
              !string.Equals(request.ApprovedRegistrationFingerprint, RegistrationFingerprint(bundle), StringComparison.Ordinal)))
@@ -156,7 +158,7 @@ public sealed class NetRatelHttpHostingSetupService
         if (!OperatingSystem.IsWindows())
         {
             var output = HttpHostingStorage.Resolve(request.OutputDirectory);
-            if (HttpHostingStorage.UsesSetupVolume(output))
+            if (HttpHostingStorage.UsesValidatedSetupVolume(output))
                 File.SetUnixFileMode(output, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.GroupExecute);
         }
         foreach (var (export, source) in bundle.RuntimeSecrets)
@@ -200,6 +202,7 @@ public sealed class NetRatelHttpHostingSetupService
         ArgumentNullException.ThrowIfNull(request);
         var output = HttpHostingStorage.Resolve(request.OutputDirectory);
         ConfigurationFileStorage.EnsureSafePath(output);
+        HttpHostingStorage.ValidateHostBoundary(output);
         var composeOutput = request.ComposeOutputDirectory ?? output;
         if (!Path.IsPathFullyQualified(composeOutput) || composeOutput.Any(char.IsControl))
             throw new AgentClientValidationException("ComposeOutputDirectory must be the explicit absolute host path of the persistent setup output mount.");
@@ -378,7 +381,7 @@ public sealed class NetRatelHttpHostingSetupService
             [Path.Combine(runtime, "delegation.key")] = existingDelegation ?? delegationPath,
             [Path.Combine(runtime, legacyPath is null ? "outbound-m2m.secret" : "mcp-outbound.json")] = legacyPath ?? serviceSecretPath
         };
-        var useVolume = HttpHostingStorage.UsesSetupVolume(output);
+        var useVolume = HttpHostingStorage.UsesValidatedSetupVolume(output);
         var runtimeContent = new Dictionary<string, string>();
         var extraMounts = new Dictionary<string, string>();
         if (legacyConfiguration is not null)
@@ -440,6 +443,8 @@ public sealed class NetRatelHttpHostingSetupService
             web.Select(pair => $"Web: {pair.Key} = {pair.Value}")
                 .Concat(apiSettings.Select(pair => $"API: {pair.Key} = {pair.Value}"))
                 .Concat(mcp.Select(pair => $"HTTP MCP: {pair.Key} = {pair.Value}"))
+                .Append($"Runtime secret readers: reviewed container GID {HttpHostingStorage.RuntimeGroup}; " +
+                    (useVolume ? "supplied private setup volume (owner/group access only)." : "native output boundary remains owner-only (0700); the local group cannot traverse it."))
                 .ToArray(), instructions);
     }
 

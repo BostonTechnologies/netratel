@@ -648,5 +648,5 @@ public sealed class SetupTests
     private sealed class StubHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> callback) : HttpMessageHandler
     { protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => callback(request); }
     private sealed class TempDirectory : IDisposable
-    { public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "netratel-setup-" + Guid.NewGuid().ToString("N")); public TempDirectory() => Directory.CreateDirectory(Path); public void Dispose() => Directory.Delete(Path, true); }
+    { public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "netratel-setup-" + Guid.NewGuid().ToString("N")); public TempDirectory() { if (OperatingSystem.IsWindows()) Directory.CreateDirectory(Path); else Directory.CreateDirectory(Path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute); } public void Dispose() => Directory.Delete(Path, true); }
 }

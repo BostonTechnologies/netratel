@@ -40,6 +40,12 @@ cleanup() {
   local status=$?
   if (( status != 0 )); then
     echo "::error title=HTTP host setup smoke failed::${stage}" >&2
+    for receipt in TestResults/http-host-setup/personal-{saved,reloaded}.json; do
+      if [[ -s "$receipt" ]]; then
+        jq -r 'if type == "array" then . else .checks // [] end
+          | .[] | "\(.name): \(.status): \(.message)"' "$receipt" >&2 || true
+      fi
+    done
     "${compose[@]}" ps --all >&2 || true
   fi
   "${applied[@]}" down --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
@@ -196,13 +202,15 @@ printf '%s\n' "$credential" | "${applied[@]}" exec -T \
     result_file="$(mktemp)"
     trap '\''rm -f "$credential_file" "$result_file"'\'' EXIT
     cat > "$credential_file"
+    setup_status=0
     dotnet /app/NetRatel.Mcp.Http.dll setup --non-interactive \
-      --instance "$NETRATEL_HTTP_HOST_SMOKE_ORIGIN" --credential-file "$credential_file" > "$result_file"
+      --instance "$NETRATEL_HTTP_HOST_SMOKE_ORIGIN" --credential-file "$credential_file" > "$result_file" || setup_status=$?
     if grep -F -q -f "$credential_file" "$result_file"; then
       echo "Personal setup emitted credential material." >&2; exit 1
     else
       test "$?" = 1
     fi
+    if [ "$setup_status" -ne 0 ]; then cat "$result_file"; exit "$setup_status"; fi
     profile="$NETRATEL_CLIENT_DIRECTORY/profiles/httpmcpclient/default.json"
     test -f "$profile"
     test "$(stat -c %a "$profile")" = 600

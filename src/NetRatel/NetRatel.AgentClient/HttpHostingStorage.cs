@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices;
 
 namespace NetRatel.AgentClient;
@@ -39,9 +41,46 @@ public static class HttpHostingStorage
         }
     }
 
+    /// <summary>Keep host-side group-readable runtime exports behind a private owner boundary.</summary>
+    public static void ValidateHostBoundary(string path)
+    {
+        ConfigurationFileStorage.EnsureSafePath(path);
+        if (OperatingSystem.IsWindows()) return;
+        var suppliedVolume = UsesValidatedSetupVolume(path);
+        if (suppliedVolume && (RuntimeGroup != 10001 || GetEffectiveUserId() != 10001))
+            throw new AgentClientValidationException("Use the supplied setup container identity (UID/GID 10001) for its protected runtime volume.");
+        if (!Directory.Exists(path)) return; // Atomic storage creates new directories as owner-only.
+        var allowed = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+        if (suppliedVolume) allowed |= UnixFileMode.GroupRead | UnixFileMode.GroupExecute;
+        if ((File.GetUnixFileMode(path) & ~allowed) != 0 || DirectoryOwner(path) != GetEffectiveUserId())
+            throw new AgentClientValidationException("Host setup requires an owner-only output directory owned by this user. Use the per-user default, a new private Advanced directory, or the supplied compose.setup.yaml volume; existing permissions were not changed.");
+    }
+
+    private static uint DirectoryOwner(string path)
+    {
+        try
+        {
+            var start = new ProcessStartInfo("/usr/bin/stat") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+            if (OperatingSystem.IsLinux()) { start.ArgumentList.Add("--format=%u"); start.ArgumentList.Add("--"); }
+            else { start.ArgumentList.Add("-f"); start.ArgumentList.Add("%u"); }
+            start.ArgumentList.Add(path);
+            using var process = Process.Start(start)!;
+            if (!process.WaitForExit(2000)) { process.Kill(entireProcessTree: true); throw new IOException(); }
+            if (process.ExitCode != 0 || !uint.TryParse(process.StandardOutput.ReadToEnd().Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var owner)) throw new IOException();
+            return owner;
+        }
+        catch (Exception exception) when (exception is IOException or System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            throw new AgentClientValidationException("The private output directory ownership could not be verified. Use the supplied compose.setup.yaml volume or restore the system stat utility before retrying.");
+        }
+    }
+
     public static bool UsesSetupVolume(string path) =>
         string.Equals(Path.GetFullPath(path), "/setup-output", StringComparison.Ordinal) &&
         !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("NETRATEL_SETUP_VOLUME"));
+
+    public static bool UsesValidatedSetupVolume(string path) =>
+        IsContainer && UsesSetupVolume(path) && IsMounted(path);
 
     public static bool UsesClientVolume(string path) =>
         string.Equals(Path.GetFullPath(path), "/var/lib/netratel/clients", StringComparison.Ordinal) &&
@@ -69,6 +108,9 @@ public static class HttpHostingStorage
             selected.Type is not ("tmpfs" or "ramfs" or "devtmpfs") &&
             (selected.Type != "overlay" || UsesSetupVolume(selected.Mount) || UsesClientVolume(selected.Mount));
     }
+
+    [DllImport("libc", EntryPoint = "geteuid")]
+    private static extern uint GetEffectiveUserId();
 
     [DllImport("libc", EntryPoint = "getegid")]
     private static extern uint GetEffectiveGroupId();

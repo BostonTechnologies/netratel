@@ -75,6 +75,8 @@ Include an existing external-database or other overlay, or omit the bundled HTTP
 
 The host flow creates/reuses `netratel-http-host-setup` at `/setup-output`; native hosting uses its configured location first, then per-user application data `NetRatel/http-host`. It does not ask for a directory or require operator UID/GID flags in the supported container flow. Keep the host volume when recreating services. CLI and stdio distributions also support explicit `netratel setup --mode host` and `dotnet NetRatel.Mcp.dll setup --mode host`. Normal serving never opens setup automatically.
 
+Native host output uses a private directory owned by the current user. The default creates it automatically. An existing Advanced directory must remain owner-only (`0700`); a shared directory is rejected before identity material is created. Review shows the runtime reader group and its storage boundary. The supplied setup volume uses its fixed non-root identity and protected API/MCP exports.
+
 ## Apply host configuration, then resume verification
 
 Saving configuration is a local step. When Web/API/MCP need recreation, setup displays **deployment apply pending**, with one complete apply command for the deployment host. Review and run the command from the deployment directory, then return to **Verify**. Do not report Connected from a saved file or a successful browser approval.

@@ -46,7 +46,7 @@ public sealed class HttpHostingSetupTests : IDisposable
     [Fact]
     public void Existing_output_requires_reviewed_replacement_before_secrets_are_created()
     {
-        Directory.CreateDirectory(_directory);
+        CreatePrivateDirectory(_directory);
         var existing = Path.Combine(_directory, "web.env");
         ConfigurationFileStorage.WriteAtomic(existing, "OWNER_MANAGED=keep-until-reviewed\n");
         var service = new NetRatelHttpHostingSetupService();
@@ -89,7 +89,7 @@ public sealed class HttpHostingSetupTests : IDisposable
     [Fact]
     public void Existing_json_identity_is_preserved_without_provisioning_a_different_secret()
     {
-        Directory.CreateDirectory(_directory);
+        CreatePrivateDirectory(_directory);
         var source = Path.Combine(_directory, "existing-outbound.json");
         const string credential = "existing-deployment-owned-secret";
         var configuration = AgentClientConfiguration.Empty with
@@ -152,7 +152,7 @@ public sealed class HttpHostingSetupTests : IDisposable
     [Fact]
     public void Existing_file_referenced_identity_exports_readable_copies_without_changing_managed_source()
     {
-        Directory.CreateDirectory(_directory);
+        CreatePrivateDirectory(_directory);
         var secret = Path.Combine(_directory, "owner-managed.secret");
         var source = Path.Combine(_directory, "owner-managed.json");
         ConfigurationFileStorage.WriteAtomic(secret, "existing-outbound-service-credential\n");
@@ -300,6 +300,32 @@ public sealed class HttpHostingSetupTests : IDisposable
         ConfigurationFileStorage.WriteAtomic(Path.Combine(_directory, "runtime", "delegation.key"), "different generation\n", replace: true);
         Assert.Contains("runtime export does not match", Assert.Throws<AgentClientValidationException>(() => service.Apply(Request)).Message);
         Assert.Throws<AgentClientValidationException>(() => HttpHostingStorage.Resolve(Path.GetPathRoot(_directory)!));
+    }
+
+    [Fact]
+    public void Broad_native_output_is_rejected_before_identity_or_runtime_secret_creation()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        Directory.CreateDirectory(_directory);
+        var broad = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+            UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
+        File.SetUnixFileMode(_directory, broad);
+        var service = new NetRatelHttpHostingSetupService();
+        Assert.Contains("owner-only output directory", Assert.Throws<AgentClientValidationException>(() => service.PrepareRegistration(Request)).Message);
+        Assert.Throws<AgentClientValidationException>(() => service.Apply(Request));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(_directory));
+        Assert.Equal(broad, File.GetUnixFileMode(_directory));
+        File.SetUnixFileMode(_directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var preview = service.Preview(Request);
+        Assert.Contains(preview.Changes, change => change.Contains("container GID", StringComparison.Ordinal) && change.Contains("owner-only (0700)", StringComparison.Ordinal));
+        service.Apply(Request);
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, File.GetUnixFileMode(_directory));
+    }
+
+    private static void CreatePrivateDirectory(string path)
+    {
+        if (OperatingSystem.IsWindows()) Directory.CreateDirectory(path);
+        else Directory.CreateDirectory(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
     public void Dispose()
