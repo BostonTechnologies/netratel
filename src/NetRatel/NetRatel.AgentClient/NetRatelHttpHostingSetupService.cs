@@ -307,6 +307,7 @@ public sealed class NetRatelHttpHostingSetupService
             for (var index = 0; index < scopes.Count; index++) mcp[$"NetRatel__Mcp__Http__RequiredScopes__{index}"] = scopes[index];
         }
         string? legacyPath = null;
+        IReadOnlyList<string>? effectiveCallerIds = request.ExistingM2MCallerClientIds;
         var legacySecrets = new List<string>();
         AgentClientConfiguration? legacyConfiguration = null;
         if (request.ExistingOutboundConfigurationPath is not null)
@@ -350,6 +351,7 @@ public sealed class NetRatelHttpHostingSetupService
                 .Append(ServicePrincipal).Distinct(StringComparer.Ordinal).ToArray();
             if (callerIds.Length > 128 || callerIds.Any(id => string.IsNullOrWhiteSpace(id) || id.Length > 128 || id.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not '.' and not '-' and not '_')))
                 throw new AgentClientValidationException("M2M caller IDs must be explicit nonempty client identity tokens.");
+            effectiveCallerIds = callerIds;
             for (var index = 0; index < callerIds.Length; index++) apiSettings[$"M2M__AllowedCallerClientIds__{index}"] = callerIds[index];
             apiSettings[$"M2MClients__{ServicePrincipal}__SecretFile"] = SecretMount + "/outbound-m2m.secret";
             apiSettings[$"M2MClients__{ServicePrincipal}__Secret"] = "";
@@ -409,7 +411,8 @@ public sealed class NetRatelHttpHostingSetupService
             {
                 OutputDirectory = output, PublicOrigin = origin, ApiBaseUrl = api, PublicResourceUri = resource,
                 ComposeOutputDirectory = composeOutput, ApprovedRegistrationFingerprint = null,
-                RequiredGroups = groups.ToArray(), RequiredScopes = scopes.ToArray(), AllowedOrigins = origins.ToArray()
+                RequiredGroups = groups.ToArray(), RequiredScopes = scopes.ToArray(), AllowedOrigins = origins.ToArray(),
+                ExistingM2MCallerClientIds = effectiveCallerIds?.ToArray()
             }, new JsonSerializerOptions { WriteIndented = true }) + "\n",
             [Path.Combine(output, ".gitignore")] = "secrets/\nruntime/\n*.env\n.http-host.setup.json\n"
         };

@@ -210,6 +210,14 @@ public sealed class HttpHostingSetupTests : IDisposable
         Assert.Equal(secret, File.ReadAllText(Path.Combine(_directory, "runtime", "outbound-m2m.secret")));
         Assert.Contains("group_add:", File.ReadAllText(Path.Combine(_directory, "compose.http-host.yaml")));
         Assert.Contains("up -d web api mcp-http", NetRatelHttpHostingSetupService.ApplyCommand(approved));
+        var resumed = NetRatelHttpHostingSetupService.LoadRequest(_directory)! with
+        {
+            // After recreation discovery includes the dedicated host registration.
+            ExistingM2MCallerClientIds = ["netratel.cli", "netratel.client.artifacts", "netratel-mcp-http"]
+        };
+        Assert.Equal(fingerprint, service.PrepareRegistration(resumed));
+        Assert.DoesNotContain(service.Preview(resumed).Changes, change => change.StartsWith("Replace ", StringComparison.Ordinal));
+        service.Apply(resumed);
         service.Preview(approved with { ListeningPort = 9444 });
         Assert.Contains("changed after administrator approval", Assert.Throws<AgentClientValidationException>(() => service.Apply(approved with { ListeningPort = 9444 }, replace: true)).Message);
     }
