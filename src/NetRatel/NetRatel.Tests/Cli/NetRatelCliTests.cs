@@ -8,6 +8,47 @@ namespace NetRatel.Tests.Cli;
 
 public sealed class NetRatelCliTests
 {
+    [Theory]
+    [InlineData("--token-url")]
+    [InlineData("--client-id")]
+    [InlineData("--username")]
+    [InlineData("--scope")]
+    public async Task Setup_wrapper_rejects_global_provider_options_instead_of_silently_ignoring_them(string option)
+    {
+        var output = new StringWriter();
+        var errors = new StringWriter();
+        var code = await NetRatelCli.RunAsync([option, "do-not-echo-provider-value", "setup", "--non-interactive"], new CliRuntime { Out = output, Error = errors });
+        code.Should().Be(CliExitCodes.ValidationError);
+        output.ToString().Should().BeEmpty();
+        errors.ToString().Should().Contain("guided External authentication fields or dedicated environment settings").And.NotContain("do-not-echo-provider-value");
+    }
+
+    [Fact]
+    public async Task Setup_wrapper_forwards_explicit_host_target_and_existing_service_audience()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "netratel-cli-host-" + Guid.NewGuid().ToString("N"));
+        var output = new StringWriter();
+        var errors = new StringWriter();
+        try
+        {
+            var code = await NetRatelCli.RunAsync([
+                "setup", "--instance", "https://instance.example/mcp", "--target", "http-host", "--mode", "host",
+                "--non-interactive", "--output-directory", directory, "--api-m2m-audience", "custom.api",
+                "--existing-m2m-callers", "existing.client"
+            ], new CliRuntime { Out = output, Error = errors });
+            code.Should().Be(0, errors.ToString());
+            errors.ToString().Should().BeEmpty();
+            using var result = JsonDocument.Parse(output.ToString());
+            result.RootElement.GetProperty("state").GetString().Should().Be("configuration-written-apply-and-live-verification-pending");
+            var api = await File.ReadAllTextAsync(Path.Combine(directory, "api.env"));
+            api.Should().Contain("M2MClients__netratel_mcp_http__AllowedAudiences__0='custom.api'");
+            api.Should().Contain("M2M__AllowedCallerClientIds__0='existing.client'");
+            api.Should().NotContain("\nM2M__Authority=").And.NotContain("\nM2M__Audience=");
+            (await File.ReadAllTextAsync(Path.Combine(directory, "mcp-http.env"))).Should().Contain("ApiM2MScope='custom.api'");
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+    }
+
     [Fact]
     public void CliConfig_uses_an_explicit_integration_credential_without_oidc_fallback()
     {

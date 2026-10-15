@@ -1,15 +1,20 @@
-# Standalone one-shot tooling service; do not combine with the serving base.
-# Precreate an absolute output directory and give the selected UID/GID ownership.
+# Standalone one-shot tooling; run on the deployment host without the serving base.
+# The image seeds this durable volume for the non-root tooling identity (UID 10001).
 services:
   mcp-http:
     image: ${NETRATEL_MCP_HTTP_IMAGE:-netratel-mcp-http:local}
-    user: "${NETRATEL_SETUP_UID:-10001}:${NETRATEL_SETUP_GID:-10001}"
     command: ["setup", "--target", "http-host"]
     environment:
-      NETRATEL_SETUP_HOST_OUTPUT_DIRECTORY: ${NETRATEL_SETUP_OUTPUT_DIRECTORY:?set an absolute persistent writable output directory}
+      NETRATEL_SETUP_DIRECTORY: /setup-output
+      NETRATEL_CLIENT_DIRECTORY: /var/lib/netratel/clients
+      NETRATEL_CLIENT_VOLUME: ${NETRATEL_CLIENT_VOLUME:-netratel-http-client-data}
+      NETRATEL_SETUP_VOLUME: ${NETRATEL_SETUP_VOLUME:-netratel-http-host-setup}
+      NETRATEL_SETUP_COMPOSE_FILES: ${NETRATEL_SETUP_COMPOSE_FILES:-compose.yaml,compose.mcp-http.yaml}
     volumes:
-      - type: bind
-        source: ${NETRATEL_SETUP_OUTPUT_DIRECTORY:?set an absolute persistent writable output directory}
-        target: /setup-output
-        bind:
-          create_host_path: false
+      - http-host-setup:/setup-output
+      - http-client-data:/var/lib/netratel/clients
+volumes:
+  http-host-setup:
+    name: ${NETRATEL_SETUP_VOLUME:-netratel-http-host-setup}
+  http-client-data:
+    name: ${NETRATEL_CLIENT_VOLUME:-netratel-http-client-data}

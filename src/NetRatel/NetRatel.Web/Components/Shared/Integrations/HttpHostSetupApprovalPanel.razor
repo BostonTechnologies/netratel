@@ -1,0 +1,92 @@
+@implements IDisposable
+@using System.Net.Http.Json
+@using System.Text.Json
+@using NetRatel.Shared.Connectivity
+@inject IHttpClientFactory Clients
+
+<MudPaper Class="pa-4 mb-5" Elevation="0" Outlined="true" data-testid="host-setup-panel">
+    <MudText Typo="Typo.h6">Approve an HTTP MCP host deployment</MudText>
+    <MudText Typo="Typo.body2" Class="mb-3">Instance administrators can approve the protected service identity prepared by host setup. This is separate from connecting a personal CLI or MCP client.</MudText>
+    @if (_error is not null) { <MudAlert Severity="Severity.Error" Class="mb-3" data-testid="host-setup-error">@_error</MudAlert> }
+    @if (_message is not null) { <MudAlert Severity="Severity.Success" Class="mb-3" data-testid="host-setup-complete">@_message</MudAlert> }
+    @if (_review is null)
+    {
+        <EditForm Model="_entry" OnSubmit="LookupAsync">
+            <AntiforgeryToken />
+            <MudStack Row="true" AlignItems="AlignItems.Center">
+                <MudTextField T="string" Label="Host setup verification code" Variant="Variant.Outlined" @bind-Value="_entry.UserCode" Placeholder="ABCD-EFGH" Disabled="_busy" MaxLength="9" data-testid="host-setup-code" />
+                <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Outlined" Color="Color.Primary" Disabled="_busy" data-testid="host-setup-lookup">Review host deployment</MudButton>
+            </MudStack>
+        </EditForm>
+    }
+    else
+    {
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.subtitle1">Confirm host code <strong>@_review.UserCode</strong></MudText>
+            <MudText Typo="Typo.body2">Instance: @_review.PublicOrigin</MudText>
+            <MudText Typo="Typo.body2">MCP resource: @_review.Resource</MudText>
+            <MudText Typo="Typo.body2">Dedicated outbound service: @_review.ServicePrincipal</MudText>
+            <MudText Typo="Typo.body2">Compare this generation fingerprint with the one in the host terminal:</MudText>
+            <code style="overflow-wrap:anywhere" data-testid="host-setup-fingerprint">@_review.RegistrationFingerprint</code>
+            <MudText Typo="Typo.caption">Approval permits applying this exact protected deployment generation. It does not restart services or establish that MCP is connected. Your personal credentials are never used as the outbound host identity.</MudText>
+            <MudCheckBox T="bool" @bind-Value="_confirmed" Label="I recognize this code and fingerprint and authorize this host deployment." Disabled="_busy" data-testid="host-setup-confirm" />
+            <MudStack Row="true">
+                <MudButton OnClick="Reset" Disabled="_busy">Back</MudButton>
+                <MudButton Color="Color.Error" OnClick="@(() => DecideAsync(false))" Disabled="_busy">Deny host deployment</MudButton>
+                <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="@(() => DecideAsync(true))" Disabled="@(_busy || !_confirmed)" data-testid="host-setup-approve">Approve host deployment</MudButton>
+            </MudStack>
+        </MudStack>
+    }
+</MudPaper>
+
+@code {
+    private sealed class CodeEntry { public string UserCode { get; set; } = string.Empty; }
+    private readonly CodeEntry _entry = new();
+    private readonly CancellationTokenSource _lifetime = new();
+    private HttpHostSetupReview? _review;
+    private bool _busy, _confirmed, _disposed;
+    private string? _error, _message;
+
+    private async Task LookupAsync()
+    {
+        if (_busy || _disposed) return;
+        _busy = true; _error = _message = null;
+        try
+        {
+            using var api = Clients.CreateClient("OrchestratorApi");
+            using var response = await api.PostAsJsonAsync(HttpHostSetupProtocol.AccountRoute + "/lookup", new HttpHostSetupCodeRequest(_entry.UserCode), _lifetime.Token);
+            if (!response.IsSuccessStatusCode)
+            { _error = "Sign in as an instance administrator and check the host setup code. Expired requests must be restarted in the terminal."; return; }
+            var review = await response.Content.ReadFromJsonAsync<HttpHostSetupReview>(_lifetime.Token);
+            if (_disposed) return;
+            _review = review; _confirmed = false;
+            if (review is null) _error = "The host request could not be loaded. Retry with the terminal's current code.";
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException or OperationCanceledException)
+        { if (!_disposed) _error = "Could not load the host deployment. The code is preserved; try again."; }
+        finally { if (!_disposed) _busy = false; }
+    }
+
+    private async Task DecideAsync(bool approve)
+    {
+        if (_busy || _disposed || _review is null || approve && !_confirmed) return;
+        _busy = true; _error = null;
+        try
+        {
+            using var api = Clients.CreateClient("OrchestratorApi");
+            using var response = await api.PostAsJsonAsync(HttpHostSetupProtocol.AccountRoute + (approve ? "/approve" : "/deny"),
+                new HttpHostSetupCodeRequest(_review.UserCode), _lifetime.Token);
+            if (_disposed) return;
+            _confirmed = false;
+            if (!response.IsSuccessStatusCode)
+            { _error = "This request or your administrator authority changed. Review the current host setup code again."; return; }
+            _review = null; _entry.UserCode = string.Empty;
+            _message = approve ? "Host generation approved. Return to the terminal to apply the deployment and verify the authenticated connection." : "Host deployment denied. No personal credential was issued.";
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException or OperationCanceledException)
+        { if (!_disposed) { _confirmed = false; _error = "Could not save your decision. Check the terminal status before trying again."; } }
+        finally { if (!_disposed) _busy = false; }
+    }
+    private void Reset() { if (_busy) return; _review = null; _confirmed = false; _error = null; }
+    public void Dispose() { _disposed = true; _lifetime.Cancel(); _lifetime.Dispose(); }
+}

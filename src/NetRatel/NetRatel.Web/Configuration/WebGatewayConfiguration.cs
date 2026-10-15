@@ -181,6 +181,9 @@ public static class WebGatewayConfiguration
         Route("orchestration-request-definitions-route", "/internal/catalog/request-definitions");
         Route("orchestration-ingest-route", "/internal/ingest");
         Route("integrationPairingCapabilitiesRoute", "/api/integration-pairing/v1/capabilities", false, "GET");
+        Route("httpHostSetupCapabilitiesRoute", "/api/http-host-setup/v1/capabilities", false, "GET");
+        foreach (var operation in new[] { "start", "poll", "cancel" })
+            Route($"httpHostSetup{operation}Route", $"/api/http-host-setup/v1/{operation}", false, "POST");
         foreach (var operation in new[] { "start", "poll", "cancel", "acknowledge" })
             Route($"integrationPairing{operation}Route", $"/api/integration-pairing/v1/{operation}", false, "POST");
         Route("integrationCredentialsRoute", "/api/v2/account/integration-credentials/{**catch-all}", true);

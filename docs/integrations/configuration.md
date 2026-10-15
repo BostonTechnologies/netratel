@@ -39,6 +39,8 @@ See the [HTTP MCP reference](../mcp-http/configuration.md) for all ingress, outb
 
 Named profiles live under `~/.config/netratel/profiles/{surface}/{safe-name}.json`, with separate `cli`, `stdiomcp`, `httpmcpoutbound` and `httpmcpclient` directories. Select `ProfileName` in the current namespace or its dedicated `PROFILE_NAME` alias. HTTP MCP clients have the separate `NetRatel__Mcp__Client__` / `NETRATEL_MCP_CLIENT_` namespace.
 
+Supported HTTP MCP containers set `NETRATEL_CLIENT_DIRECTORY=/var/lib/netratel/clients` on a writable persistent personal-data volume. Client profile defaults use `{client-directory}/profiles/{surface}/{safe-name}.json`; this root takes precedence over the legacy `NETRATEL_SETUP_DIRECTORY` fallback. Explicit `--config`, selected profile/file and dedicated client environment settings keep their precedence. Personal defaults never select the host's outbound configuration. A missing durable container mount produces the concrete `compose.setup.yaml ... mcp-http setup --target http-client` remediation before approval/save, rather than failing later under `/app/.config`. See [personal setup and container recovery](../mcp-http/setup.md#persistent-client-storage-and-an-existing-container).
+
 ## Files and secret references
 
 Existing isolated JSON files remain supported. For new files, prefer protected references over embedding credential material:

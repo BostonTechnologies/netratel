@@ -160,6 +160,12 @@ public sealed class FlowEditorTests : AsyncBunitContext
     {
         var cut = RenderEditor();
         await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
+        // Canvas initialization refreshes the palette; wait for that render before dispatching its events.
+        await cut.WaitForAssertionAsync(() =>
+        {
+            cut.FindComponent<FlowCanvas>().Instance.IsReady.Should().BeTrue();
+            cut.Find("[data-testid=flow-add-Condition]").HasAttribute("disabled").Should().BeFalse();
+        });
         cut.FindAll("[data-testid=flow-properties]").Should().BeEmpty();
         await cut.InvokeAsync(() => cut.Find("[data-testid=flow-palette-Condition]").ClickAsync(new()));
         cut.FindAll("[data-testid=flow-node-title]").Should().HaveCount(3);

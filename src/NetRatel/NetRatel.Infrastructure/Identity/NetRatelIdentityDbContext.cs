@@ -19,6 +19,7 @@ public sealed class NetRatelIdentityDbContext(DbContextOptions<NetRatelIdentityD
     public DbSet<AccessRolePermission> AccessRolePermissions => Set<AccessRolePermission>();
     public DbSet<PrincipalRoleAssignment> PrincipalRoleAssignments => Set<PrincipalRoleAssignment>();
     public DbSet<IntegrationPairingRequest> IntegrationPairingRequests => Set<IntegrationPairingRequest>();
+    public DbSet<HttpHostSetupRequest> HttpHostSetupRequests => Set<HttpHostSetupRequest>();
     public DbSet<IntegrationCredential> IntegrationCredentials => Set<IntegrationCredential>();
     public DbSet<IntegrationCredentialGrant> IntegrationCredentialGrants => Set<IntegrationCredentialGrant>();
     public DbSet<IntegrationCredentialInstanceGrant> IntegrationCredentialInstanceGrants => Set<IntegrationCredentialInstanceGrant>();
@@ -90,6 +91,24 @@ public sealed class NetRatelIdentityDbContext(DbContextOptions<NetRatelIdentityD
                 .WithMany()
                 .HasForeignKey(assignment => assignment.RoleId)
                 .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        builder.Entity<HttpHostSetupRequest>(entity =>
+        {
+            entity.ToTable("HttpHostSetupRequests");
+            entity.HasKey(request => request.Id);
+            entity.Property(request => request.Id).HasMaxLength(32);
+            entity.Property(request => request.UserCodeHash).HasMaxLength(64).IsRequired();
+            entity.Property(request => request.DeviceCapabilityHash).HasMaxLength(64).IsRequired();
+            entity.Property(request => request.PublicOrigin).HasMaxLength(2048).IsRequired();
+            entity.Property(request => request.Resource).HasMaxLength(2048).IsRequired();
+            entity.Property(request => request.ServicePrincipal).HasMaxLength(128).IsRequired();
+            entity.Property(request => request.RegistrationFingerprint).HasMaxLength(64).IsRequired();
+            entity.Property(request => request.OwnerPrincipalId).HasMaxLength(32);
+            entity.Property(request => request.Revision).IsConcurrencyToken();
+            entity.HasIndex(request => request.UserCodeHash).IsUnique();
+            entity.HasIndex(request => request.DeviceCapabilityHash).IsUnique();
+            entity.HasIndex(request => request.ExpiresAtUtc);
         });
 
         builder.Entity<IntegrationPairingRequest>(entity =>

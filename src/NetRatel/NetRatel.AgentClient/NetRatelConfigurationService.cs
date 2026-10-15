@@ -104,7 +104,7 @@ public sealed class NetRatelConfigurationService
         var path = request.ConfigurationPath;
         if (request.Surface == ConfigurationSurface.HttpMcpOutbound && path == string.Empty) path = null;
         var explicitlySelected = path is not null || profileName is not null;
-        if (path is null && profileName is not null) path = ProfilePath(request.Surface, profileName);
+        if (path is null && profileName is not null) path = ProfilePath(request.Surface, profileName, environment);
         if (path is null && !configurationPathSpecified && request.Surface is ConfigurationSurface.StdioMcp or ConfigurationSurface.HttpMcpOutbound)
         {
             path = AgentClientConfigurationResolver.GetMcpConfigurationPath(environment);
@@ -341,15 +341,25 @@ public sealed class NetRatelConfigurationService
 
     public static string SafeDisplay(string? value) => new((value ?? string.Empty).Where(character => !char.IsControl(character)).Take(2_048).ToArray());
     public static string PurposeFor(ConfigurationSurface surface) => surface == ConfigurationSurface.HttpMcpClient ? "HttpMcp" : "Api";
-    public static string ProfilePath(ConfigurationSurface surface, string profileName)
+    public static string ProfilePath(ConfigurationSurface surface, string profileName, Func<string, string?>? getEnvironmentVariable = null)
     {
         ValidateProfileName(profileName);
+        var environment = getEnvironmentVariable ?? Environment.GetEnvironmentVariable;
+        var configuredRoot = surface == ConfigurationSurface.HttpMcpOutbound ? null : environment("NETRATEL_CLIENT_DIRECTORY");
+        if (string.IsNullOrWhiteSpace(configuredRoot)) configuredRoot = environment("NETRATEL_SETUP_DIRECTORY");
+        if (!string.IsNullOrWhiteSpace(configuredRoot))
+            return Path.Combine(HttpHostingStorage.Resolve(configuredRoot), "profiles", surface.ToString().ToLowerInvariant(), profileName + ".json");
+        if (string.Equals(environment("DOTNET_RUNNING_IN_CONTAINER"), "true", StringComparison.OrdinalIgnoreCase))
+            throw new AgentClientValidationException("No persistent client setup mount is configured. On the deployment host run: docker compose -f compose.setup.yaml run --rm --no-deps mcp-http setup --target " +
+                (surface == ConfigurationSurface.StdioMcp ? "stdio" : surface == ConfigurationSurface.HttpMcpClient ? "http-client" : "cli"));
         return Path.Combine(Path.GetDirectoryName(AgentClientConfigurationStore.DefaultPath)!, "profiles", surface.ToString().ToLowerInvariant(), profileName + ".json");
     }
 
     public static bool Equivalent(string? left, string? right)
         => Uri.TryCreate(left, UriKind.Absolute, out var a) && Uri.TryCreate(right, UriKind.Absolute, out var b) &&
-           string.Equals(a.AbsoluteUri.TrimEnd('/'), b.AbsoluteUri.TrimEnd('/'), StringComparison.Ordinal);
+           (a.Query.Length > 0 || b.Query.Length > 0
+               ? string.Equals(a.AbsoluteUri, b.AbsoluteUri, StringComparison.Ordinal)
+               : string.Equals(a.AbsoluteUri.TrimEnd('/'), b.AbsoluteUri.TrimEnd('/'), StringComparison.Ordinal));
     internal static bool IsHttps(string? value) => Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme == "https" &&
         string.IsNullOrEmpty(uri.UserInfo) && string.IsNullOrEmpty(uri.Query) && string.IsNullOrEmpty(uri.Fragment);
     internal static bool HasOidc(AgentClientConfiguration configuration) => new[] { configuration.OidcTokenUrl, configuration.OidcClientId, configuration.OidcUsername, configuration.OidcAppPassword, configuration.OidcAppPasswordFile, configuration.OidcScope }.Any(value => !string.IsNullOrWhiteSpace(value));
@@ -421,7 +431,12 @@ public sealed class AgentClientConfigurationValidator(ConfigurationSurface? surf
         if (configuration.AuthenticationMode is { Length: > 0 } && (mode == AgentClientAuthenticationMode.Oidc && (integration || m2m) || mode == AgentClientAuthenticationMode.IntegrationCredential && (oidc || m2m) || mode == AgentClientAuthenticationMode.ApiM2MClientSecret && (oidc || integration)))
             errors.Add("AuthenticationMode conflicts with configured credentials. Remove the other mode's fields; no fallback is performed.");
         void Required(string? value, string field) { if (string.IsNullOrWhiteSpace(value)) errors.Add(field + " is required."); }
-        void TokenUrl(string? value, string field) { if (!NetRatelConfigurationService.IsHttps(value)) errors.Add(field + " must be an absolute HTTPS URL without user information, query or fragment."); }
+        void TokenUrl(string? value, string field, bool allowQuery = false)
+        {
+            var valid = Uri.TryCreate(value, UriKind.Absolute, out var endpoint) && endpoint.Scheme == "https" &&
+                string.IsNullOrEmpty(endpoint.UserInfo) && string.IsNullOrEmpty(endpoint.Fragment) && (allowQuery || string.IsNullOrEmpty(endpoint.Query));
+            if (!valid) errors.Add(field + (allowQuery ? " must be an absolute HTTPS URL without user information or fragment." : " must be an absolute HTTPS URL without user information, query or fragment."));
+        }
         switch (mode)
         {
             case AgentClientAuthenticationMode.IntegrationCredential:
@@ -435,7 +450,7 @@ public sealed class AgentClientConfigurationValidator(ConfigurationSurface? surf
                     errors.Add("ApiM2MTokenUrl must be the selected API target's /connect/token endpoint.");
                 break;
             default:
-                TokenUrl(configuration.OidcTokenUrl, "OidcTokenUrl"); Required(configuration.OidcClientId, "OidcClientId"); Required(configuration.OidcUsername, "OidcUsername"); Required(configuration.OidcAppPassword ?? configuration.OidcAppPasswordFile, "OidcAppPassword");
+                TokenUrl(configuration.OidcTokenUrl, "OidcTokenUrl", allowQuery: true); Required(configuration.OidcClientId, "OidcClientId"); Required(configuration.OidcUsername, "OidcUsername"); Required(configuration.OidcAppPassword ?? configuration.OidcAppPasswordFile, "OidcAppPassword");
                 break;
         }
         if (configuration.Instance is { Length: > 0 } instance && instance is not ("dev" or "prod")) errors.Add("Instance must be dev or prod.");

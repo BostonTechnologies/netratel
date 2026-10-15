@@ -27,6 +27,167 @@ namespace NetRatel.Tests.API;
 public sealed class IntegrationPairingEndpointTests
 {
     [Fact]
+    public async Task Expired_pending_host_requests_do_not_consume_the_active_request_limit()
+    {
+        await using var app = await BuildAppAsync();
+        using var client = app.GetTestClient();
+        var capabilities = (await client.GetFromJsonAsync<HttpHostSetupCapabilities>(HttpHostSetupProtocol.Route + "/capabilities"))!;
+        var now = app.Services.GetRequiredService<TimeProvider>().GetUtcNow();
+        await using (var scope = app.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<NetRatelIdentityDbContext>();
+            db.HttpHostSetupRequests.AddRange(Enumerable.Range(0, 4096).Select(index => new HttpHostSetupRequest
+            {
+                PublicOrigin = capabilities.PublicOrigin, Resource = capabilities.Resource,
+                ServicePrincipal = "netratel-mcp-http", RegistrationFingerprint = new string('A', 64),
+                UserCodeHash = $"existing-code-{index}", DeviceCapabilityHash = $"existing-capability-{index}",
+                State = HttpHostSetupState.Pending, CreatedAtUtc = now.AddMinutes(-10),
+                ExpiresAtUtc = index == 0 ? now.AddMinutes(-1) : now.AddMinutes(10)
+            }));
+            await db.SaveChangesAsync();
+        }
+        var request = new HttpHostSetupStartRequest(capabilities.PublicOrigin, capabilities.Resource, new string('B', 64));
+        using var accepted = await client.PostAsJsonAsync(HttpHostSetupProtocol.Route + "/start", request);
+        accepted.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var limited = await client.PostAsJsonAsync(HttpHostSetupProtocol.Route + "/start", request);
+        limited.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        await using var finalScope = app.Services.CreateAsyncScope();
+        var stored = finalScope.ServiceProvider.GetRequiredService<NetRatelIdentityDbContext>();
+        (await stored.HttpHostSetupRequests.CountAsync()).Should().Be(4097);
+    }
+
+    [Fact]
+    public async Task Host_generation_requires_current_instance_administrator_and_never_issues_a_personal_or_outbound_secret()
+    {
+        await using var app = await BuildAppAsync();
+        using var client = app.GetTestClient();
+        var capabilities = (await client.GetFromJsonAsync<HttpHostSetupCapabilities>(HttpHostSetupProtocol.Route + "/capabilities"))!;
+        capabilities.ExistingHostConfigured.Should().BeFalse();
+        using var wrongOrigin = await client.PostAsJsonAsync(HttpHostSetupProtocol.Route + "/start",
+            new HttpHostSetupStartRequest("https://attacker.example.test", capabilities.Resource, new string('A', 64)));
+        wrongOrigin.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var start = await client.PostAsJsonAsync(HttpHostSetupProtocol.Route + "/start",
+            new HttpHostSetupStartRequest("https://netratel.example.test:443", capabilities.Resource, new string('a', 64)));
+        start.StatusCode.Should().Be(HttpStatusCode.OK);
+        start.Headers.CacheControl!.NoStore.Should().BeTrue();
+        var request = (await start.Content.ReadFromJsonAsync<HttpHostSetupStartResponse>())!;
+        request.VerificationUri.Should().NotContain(request.UserCode).And.NotContain(request.DeviceCapability);
+        var decision = new HttpHostSetupCodeRequest(request.UserCode);
+        (await client.PostAsJsonAsync(HttpHostSetupProtocol.AccountRoute + "/approve", decision)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        client.DefaultRequestHeaders.Add("X-Test-Account", "owner");
+        (await client.PostAsJsonAsync(HttpHostSetupProtocol.AccountRoute + "/approve", decision)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        client.DefaultRequestHeaders.Add("X-NetRatel-Account-Request", "1");
+        (await client.PostAsJsonAsync(HttpHostSetupProtocol.AccountRoute + "/lookup", decision)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        await using (var scope = app.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<NetRatelIdentityDbContext>();
+            db.ApplicationPrincipals.Add(new ApplicationPrincipal { Id = "owner", LocalUserId = "host-owner" });
+            db.Users.Add(new LocalUser { Id = "host-owner", PrincipalId = "owner", IsEnabled = true, IsInstanceAdministrator = true });
+            await db.SaveChangesAsync();
+        }
+        var reviewResponse = await client.PostAsJsonAsync(HttpHostSetupProtocol.AccountRoute + "/lookup", decision);
+        reviewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var review = (await reviewResponse.Content.ReadFromJsonAsync<HttpHostSetupReview>())!;
+        review.RegistrationFingerprint.Should().Be(new string('A', 64));
+        review.ServicePrincipal.Should().Be("netratel-mcp-http");
+        (await client.GetAsync(HttpHostSetupProtocol.AccountRoute + "/approve")).StatusCode.Should().Be(HttpStatusCode.MethodNotAllowed);
+        (await client.PostAsJsonAsync(HttpHostSetupProtocol.AccountRoute + "/approve", decision)).StatusCode.Should().Be(HttpStatusCode.OK);
+        await using (var scope = app.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<NetRatelIdentityDbContext>();
+            (await db.HttpHostSetupRequests.SingleAsync()).NextPollAtUtc = DateTimeOffset.UtcNow.AddSeconds(-1);
+            await db.SaveChangesAsync();
+        }
+        var pollResponse = await client.PostAsJsonAsync(HttpHostSetupProtocol.Route + "/poll", new HttpHostSetupDeviceRequest(request.DeviceCapability));
+        var poll = (await pollResponse.Content.ReadFromJsonAsync<HttpHostSetupPollResponse>())!;
+        poll.Status.Should().Be("approved");
+        poll.ApprovalId.Should().Be(request.RequestId);
+        poll.RegistrationFingerprint.Should().Be(review.RegistrationFingerprint);
+        (await pollResponse.Content.ReadAsStringAsync()).Should().NotContain("nrt_ic_").And.NotContain("secret").And.NotContain("owner");
+        await using (var scope = app.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<NetRatelIdentityDbContext>();
+            (await db.IntegrationCredentials.CountAsync()).Should().Be(0);
+            (await db.Users.SingleAsync()).IsInstanceAdministrator = false;
+            await db.SaveChangesAsync();
+        }
+        var revokedResponse = await client.PostAsJsonAsync(HttpHostSetupProtocol.Route + "/poll", new HttpHostSetupDeviceRequest(request.DeviceCapability));
+        var revoked = (await revokedResponse.Content.ReadFromJsonAsync<HttpHostSetupPollResponse>())!;
+        revoked.Status.Should().Be("denied");
+        revoked.ApprovalId.Should().BeNull();
+        revoked.RegistrationFingerprint.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Host_discovery_preserves_explicit_OIDC_ingress_and_marks_unknown_existing_ingress_for_review()
+    {
+        await using var app = await BuildAppAsync();
+        using var client = app.GetTestClient();
+        app.Configuration["NetRatel:Mcp:Delegation:Enabled"] = "true";
+        app.Configuration["Integration:HttpMcp:AuthenticationMode"] = "";
+        app.Configuration["WebGateway:Mcp:AuthenticationMode"] = " ";
+        var legacy = (await client.GetFromJsonAsync<HttpHostSetupCapabilities>(HttpHostSetupProtocol.Route + "/capabilities"))!;
+        legacy.AuthenticationModeKnown.Should().BeFalse();
+        legacy.ExistingHostConfigured.Should().BeTrue();
+        app.Configuration["WebGateway:Mcp:AuthenticationMode"] = "Oidc";
+        var gatewayConfigured = (await client.GetFromJsonAsync<HttpHostSetupCapabilities>(HttpHostSetupProtocol.Route + "/capabilities"))!;
+        gatewayConfigured.AuthenticationModeKnown.Should().BeTrue();
+        gatewayConfigured.LocalCredentialMode.Should().BeFalse();
+        app.Configuration["Integration:HttpMcp:AuthenticationMode"] = "invalid";
+        (await client.GetAsync(HttpHostSetupProtocol.Route + "/capabilities")).StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var invalidIngress = (await client.GetFromJsonAsync<IntegrationPairingCapabilities>(IntegrationPairingProtocol.Route + "/capabilities"))!;
+        invalidIngress.HttpMcpAuthenticationModeKnown.Should().BeFalse();
+        app.Configuration["Integration:HttpMcp:AuthenticationMode"] = "Oidc";
+        app.Configuration["Integration:HttpMcp:Authority"] = "https://identity.example.test/realms/operators";
+        app.Configuration["Integration:HttpMcp:RequiredGroups:0"] = "mcp-operators";
+        app.Configuration["Integration:HttpMcp:RequiredGroups:1"] = "";
+        app.Configuration["Integration:HttpMcp:RequiredScopes:0"] = "mcp.read";
+        var capabilities = (await client.GetFromJsonAsync<HttpHostSetupCapabilities>(HttpHostSetupProtocol.Route + "/capabilities"))!;
+        capabilities.AuthenticationModeKnown.Should().BeTrue();
+        capabilities.LocalCredentialMode.Should().BeFalse();
+        capabilities.OidcAuthority.Should().Be("https://identity.example.test/realms/operators");
+        capabilities.RequiredGroups.Should().Equal("mcp-operators");
+        capabilities.RequiredScopes.Should().Equal("mcp.read");
+        var personal = (await client.GetFromJsonAsync<IntegrationPairingCapabilities>(IntegrationPairingProtocol.Route + "/capabilities"))!;
+        personal.HttpMcpAuthenticationMode.Should().Be("oidc");
+        personal.HttpMcpOidcAuthority.Should().Be(capabilities.OidcAuthority);
+        personal.HttpMcpRequiredScopes.Should().Equal("mcp.read");
+        personal.HttpMcpAuthenticationModeKnown.Should().BeTrue();
+        var start = await client.PostAsJsonAsync(HttpHostSetupProtocol.Route + "/start",
+            new HttpHostSetupStartRequest(capabilities.PublicOrigin, capabilities.Resource, new string('B', 64)));
+        var request = (await start.Content.ReadFromJsonAsync<HttpHostSetupStartResponse>())!;
+        app.Configuration["Integration:HttpMcp:PublicResourceUri"] = "https://mcp.example.test/changed/mcp";
+        var poll = await client.PostAsJsonAsync(HttpHostSetupProtocol.Route + "/poll", new HttpHostSetupDeviceRequest(request.DeviceCapability));
+        (await poll.Content.ReadFromJsonAsync<HttpHostSetupPollResponse>())!.Status.Should().Be("cancelled");
+    }
+
+    [Theory]
+    [InlineData("netratel-mcp-http", "Secret")]
+    [InlineData("NETRATEL_MCP_HTTP", "SecretFile")]
+    [InlineData("netratel.mcp.http", "Secret_FILE")]
+    public async Task Host_discovery_preserves_existing_api_machine_auth_and_reserves_configured_host_identity(string clientId, string source)
+    {
+        await using var app = await BuildAppAsync();
+        using var client = app.GetTestClient();
+        app.Configuration["Integration:HttpMcp:AuthenticationMode"] = "";
+        app.Configuration["WebGateway:Mcp:AuthenticationMode"] = "";
+        app.Configuration["M2M:Authority"] = "https://issuer.example.test/service";
+        app.Configuration["M2M:Audience"] = "customer.api";
+        app.Configuration["M2M:AllowedCallerClientIds:0"] = "customer.automation";
+        app.Configuration["M2M:AllowedCallerClientIds:1"] = "customer.reports";
+        app.Configuration[$"M2MClients:{clientId}:{source}"] = source == "Secret" ? "existing-protected-secret-do-not-return" : "/protected/do-not-read";
+        var response = await client.GetAsync(HttpHostSetupProtocol.Route + "/capabilities");
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var capabilities = (await response.Content.ReadFromJsonAsync<HttpHostSetupCapabilities>())!;
+        capabilities.ExistingHostConfigured.Should().BeTrue();
+        capabilities.AuthenticationModeKnown.Should().BeFalse();
+        capabilities.ApiServiceAuthority.Should().Be("https://issuer.example.test/service");
+        capabilities.ApiServiceAudience.Should().Be("customer.api");
+        capabilities.ExistingM2MCallerClientIds.Should().Equal("customer.automation", "customer.reports");
+        (await response.Content.ReadAsStringAsync()).Should().NotContain("existing-protected-secret-do-not-return").And.NotContain("/protected/do-not-read");
+    }
+
+    [Fact]
     public async Task Anonymous_capabilities_and_start_use_deployment_origin_and_do_not_enumerate_private_tenants()
     {
         await using var app = await BuildAppAsync();
@@ -136,6 +297,7 @@ public sealed class IntegrationPairingEndpointTests
         builder.Services.AddScoped<IIntegrationCredentialGrantValidator, IntegrationCredentialGrantValidator>();
         builder.Services.AddScoped<IDeploymentBrandingService, DeploymentBrandingService>();
         builder.Services.AddScoped<IntegrationPairingService>();
+        builder.Services.AddScoped<HttpHostSetupService>();
         builder.Services.AddRateLimiter(options =>
         {
             foreach (var policy in new[] { "integration-pairing-start", "integration-pairing-poll", "integration-pairing-account" })

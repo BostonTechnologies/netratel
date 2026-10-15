@@ -172,7 +172,7 @@ public sealed class StdioMcpDoctor(Func<StdioMcpLaunch?>? resolveLaunch = null,
         }
         throw new AgentClientValidationException("The local MCP process exceeded the notification bound.");
     }
-    private static bool IsAuthenticationStatus(JsonElement status) => status.ValueKind == JsonValueKind.Object &&
+    internal static bool IsAuthenticationStatus(JsonElement status) => status.ValueKind == JsonValueKind.Object &&
         status.TryGetProperty("authenticated", out var authenticated) && authenticated.ValueKind == JsonValueKind.True &&
         status.TryGetProperty("authMode", out var mode) && mode.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(mode.GetString()) &&
         status.TryGetProperty("groups", out var groups) && IsStringArray(groups) && status.TryGetProperty("roles", out var roles) && IsStringArray(roles);

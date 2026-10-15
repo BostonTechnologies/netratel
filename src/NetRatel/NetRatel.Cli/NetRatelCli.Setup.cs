@@ -9,13 +9,14 @@ internal static partial class NetRatelCli
         var command = new Command(name, description);
         var options = new Dictionary<string, Option<string?>>();
         command.AddOption(globals.ConfigPath); command.AddOption(globals.ApiBaseUrl); command.AddOption(globals.AppPassword);
-        var setupOptions = new[] { "--profile", "--transport", "--mode", "--instance", "--credential-file", "--public-origin", "--output-directory", "--oidc-authority", "--auth-mode", "--required-groups", "--required-scopes", "--instance-name", "--resource", "--listen-port", "--allowed-origins", "--existing-outbound-config", "--existing-m2m-callers", "--delegation-principal", "--delegation-key-file", "--delegation-key-id", "--delegation-issuer", "--delegation-audience" };
+        var setupOptions = new[] { "--profile", "--transport", "--target", "--mode", "--instance", "--credential-file", "--public-origin", "--output-directory", "--oidc-authority", "--auth-mode", "--required-groups", "--required-scopes", "--instance-name", "--resource", "--listen-port", "--allowed-origins", "--existing-outbound-config", "--existing-m2m-callers", "--api-m2m-audience", "--delegation-principal", "--delegation-key-file", "--delegation-key-id", "--delegation-issuer", "--delegation-audience" };
         foreach (var key in prefix[0] == "setup" ? setupOptions : new[] { "--profile", "--transport" })
         {
             var option = new Option<string?>(key) { Description = key switch
             {
                 "--profile" => "Named profile (letters, digits, dashes or underscores).",
                 "--transport" => "Client transport: cli, stdio or http.",
+                "--target" => "Setup target: cli, stdio, http-client or http-host.",
                 "--mode" => "Setup mode: client or host (deployment administrators).",
                 "--instance" => "Selected instance HTTPS origin.",
                 "--credential-file" => "Import an existing credential from a protected file.",
@@ -31,6 +32,7 @@ internal static partial class NetRatelCli
                 "--allowed-origins" => "Explicit comma-separated hosting browser origins.",
                 "--existing-outbound-config" => "Protected existing outbound authentication JSON.",
                 "--existing-m2m-callers" => "Explicit caller IDs to preserve in the API deployment.",
+                "--api-m2m-audience" => "Current API service audience for the host registration and outbound scope.",
                 "--delegation-principal" => "Explicit existing OIDC delegation service principal.",
                 "--delegation-key-file" => "Protected existing delegation key file; value is never printed.",
                 "--delegation-key-id" => "Existing delegation key ID.",
@@ -45,6 +47,9 @@ internal static partial class NetRatelCli
         command.SetHandler(async ctx =>
         {
             if (ctx.ParseResult.GetValueForOption(globals.AppPassword) is not null) throw new CliValidationException("Setup and diagnostics do not accept --app-password. Use a protected file or dedicated environment setting.");
+            if (new Option[] { globals.TokenUrl, globals.ClientId, globals.Username, globals.Scope }
+                .Any(option => ctx.ParseResult.GetResult(option) is { Implicit: false }))
+                throw new CliValidationException("Setup and diagnostics do not accept global OIDC command options. Use the guided External authentication fields or dedicated environment settings.");
             var arguments = new List<string>(prefix);
             foreach (var (key, option) in options)
                 if (ctx.ParseResult.GetValueForOption(option) is { } value) { arguments.Add(key); arguments.Add(value); }

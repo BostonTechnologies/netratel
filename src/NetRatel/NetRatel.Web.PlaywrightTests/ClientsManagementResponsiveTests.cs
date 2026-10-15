@@ -1634,7 +1634,7 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
             Results.File(ResolvePackageAsset(path), ResolveContentType(path)));
         application.MapGet("/app-site.css", () => Results.File(ResolveWebAsset("wwwroot/app-site.css"), "text/css"));
         application.MapGet("/css/clients-presentation.css", () => Results.File(ResolveWebAsset("wwwroot/css/clients-presentation.css"), "text/css"));
-        application.MapGet("/NetRatel.Web.styles.css", () => Results.File(ResolveWebAsset("obj/{0}/net10.0/scopedcss/bundle/NetRatel.Web.styles.css", "Debug"), "text/css"));
+        application.MapGet("/NetRatel.Web.styles.css", () => Results.File(Path.Combine(AppContext.BaseDirectory, "NetRatel.Web.styles.css"), "text/css"));
         application.MapGet("/js/theme-preference.js", () => Results.File(ResolveWebAsset("wwwroot/js/theme-preference.js"), "text/javascript"));
         application.MapGet("/js/global-search-hotkeys.js", () => Results.File(ResolveWebAsset("wwwroot/js/global-search-hotkeys.js"), "text/javascript"));
         application.MapGet("/js/flows-editor.js", () => Results.File(ResolveWebAsset("wwwroot/js/flows-editor.js"), "text/javascript"));

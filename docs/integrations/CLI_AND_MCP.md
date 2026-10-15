@@ -21,7 +21,11 @@ bundle.
 
 ## Explicit setup and profiles
 
-Run `netratel setup` or `netratel auth login` to connect a client. Setup is explicit; normal commands and MCP startup never open a wizard. Choose the transport and an isolated named profile:
+Run `netratel setup` or `netratel auth login` to connect a client. Setup is explicit; normal commands and MCP startup never open a wizard. The first page asks only for **Instance web URL**, with the textbox focused. Paste the HTTPS Web root or its `/mcp` URL and press Enter. Setup normalizes either form once, infers the invoked surface and uses the persistent default profile; review the derived destination after discovery.
+
+Bare `dotnet NetRatel.Mcp.dll setup` selects a personal stdio client; bare `dotnet NetRatel.Mcp.Http.dll setup` selects a personal HTTP MCP client. Deployment-host provisioning requires explicit `--mode host` or `--target http-host`. Running personal setup inside the supported HTTP MCP container saves to its separate durable client-data volume; it does not create or replace the host's outbound identity.
+
+Alternative transports, isolated profiles and storage paths remain available through Advanced or explicit flags:
 
 ```sh
 netratel setup --transport cli --profile operator
@@ -29,11 +33,11 @@ netratel setup --transport stdio --profile mcp-operator
 netratel setup --transport http --profile http-operator
 ```
 
-Enter the HTTPS instance URL, review the selected instance, then explicitly open/copy the trusted browser approval link. Enter the short code in the signed-in account UX, approve the actual tenants/permissions/expiry, return to the terminal, and review the destination/profile/secret reference before saving. Browser launch is an explicit action, and the link works from a separate machine for SSH/container sessions. The protocol is NetRatel integration-credential pairing; it does not issue an external OAuth/OIDC token. Existing-credential setup remains available for older instances without pairing.
+After discovery, open/copy the trusted browser approval link and use its short code in the signed-in account UX. Approve the actual tenants/permissions/expiry, return to the terminal, then review and save. A sole allowed instance/grant needs no extra choice. The link works from another device for SSH/container sessions, and rejected/expired requests have a bounded retry. The protocol is NetRatel integration-credential pairing; it does not issue an external OAuth/OIDC token. Existing-credential and managed external-provider profiles remain available without resetting their authentication mode. Required external-provider details are requested progressively rather than sending the user to create a JSON file.
 
 CLI and stdio use API-purpose credentials. HTTP MCP client setup uses a separate HttpMcp-purpose credential and canonical `/mcp` resource; it cannot configure the host's outbound service identity. Deleting a local profile does not revoke a server credential. Revoke/rotate from `/account/integration-credentials`.
 
-The Termina setup UI supports keyboard navigation, visible focus, PageUp/PageDown scrolling for long forms and reviews, and explicit Back/Next/Cancel, retains fields after validation errors and marks environment-managed settings read-only. It masks manual secret entry and emits no secrets in generated configuration examples. Cancelling before save preserves the prior profile. Replacing an existing profile requires deliberate confirmation. On a non-TTY, interactive setup exits with code `2` and help on stderr; cancellation exits `130`, other setup failures `3`. Normal stdio serving uses pipes without a TTY and writes JSON-RPC only to stdout.
+The Termina setup UI supports Enter/Next, visible Back/Cancel/Advanced, keyboard navigation and PageUp/PageDown scrolling for long reviews. It retains fields and focus after validation errors and marks environment-managed settings read-only. Native tooling resolves its configured location first, then a writable per-user configuration default. Supported container clients use the personal volume `netratel-http-client-data` at `/var/lib/netratel/clients`; the default HTTP profile is `profiles/httpmcpclient/default.json` beneath it. The summary shows the resolved location. Setup checks storage before approval/save, masks manual secret entry and emits no secrets in examples. Cancelling before save preserves the prior profile; replacing a profile requires deliberate confirmation. On a non-TTY, interactive setup exits with code `2` and help on stderr; cancellation exits `130`, other setup failures `3`. Normal stdio serving uses pipes without a TTY and writes JSON-RPC only to stdout.
 
 The noninteractive existing-credential equivalent reads a protected file:
 
@@ -47,12 +51,12 @@ Use `--replace` only after reviewing replacement of the selected profile. Do not
 
 `netratel config validate` emits redacted structured effective/source information with exit `0` for valid local configuration or `2` for invalid configuration. `netratel doctor` performs bounded read-only checks and reports unavailable/unauthorized stages separately. For stdio, when the shipped executable is available in the current installation, adjacent stdio archive or HTTP tooling image, doctor uses the isolated effective configuration to perform a real MCP initialize, initialized notification, tool listing and offered `netratel_auth` status call. Missing executables or unexecuted protocol checks remain unavailable/pending; denied calls are reported as unauthorized. Incomplete verification exits `2`; saving the profile alone does not complete transport verification. `netratel profile list` lists local profiles; `netratel profile select NAME` prints an explicit config invocation or dedicated selector rather than silently switching every consumer. See [shared configuration](configuration.md) for keys, precedence, origin/purpose binding and atomic persistence.
 
-The stdio distribution and HTTP tooling image provide explicit `setup`, `config validate`, `doctor` and profile commands through their supported executable entry points. The stdio archive ships the `NetRatel.Mcp` apphost and `NetRatel.Mcp.dll`; use the extracted apphost or `dotnet /absolute/path/NetRatel.Mcp.dll`. Setup emits that actual executable when found. A standalone CLI installation without the stdio archive reports that the stdio executable must be installed before its launch snippet can work. The HTTP tooling image uses its `stdio` dispatcher instead. See [HTTP MCP setup](../mcp-http/setup.md) for native/container examples and the separate administrator host flow.
+The stdio distribution and HTTP tooling image provide explicit `setup`, `config validate`, `doctor` and profile commands through their supported executable entry points. The stdio archive ships the `NetRatel.Mcp` apphost and `NetRatel.Mcp.dll`; use the extracted apphost or `dotnet /absolute/path/NetRatel.Mcp.dll`. Setup emits that actual executable when found. A standalone CLI installation without the stdio archive reports that the stdio executable must be installed before its launch snippet can work. The HTTP tooling image uses its `stdio` dispatcher instead; `setup --target cli|stdio|http-client` selects a personal client, while `setup --mode host` or `--target http-host` selects deployment administration. See [HTTP MCP setup](../mcp-http/setup.md) for the URL-first container command, generated apply action and resumable live verification.
 
 ## Integration credentials
 
-An authenticated operator can create a least-privilege credential at
-`/account/integration-credentials`. Select each required tenant and permission
+An authenticated user can open **Admin → Integration** at
+`/account/integration-credentials` to create a least-privilege credential. The Admin group retains each destination's existing permissions; it does not require the Operator role for personal Integration access. Select each required tenant and permission
 individually, a bounded expiry, and an explicit purpose. One credential can
 carry several tenant and server-level grants. The generated secret
 has the `nrt_ic_` prefix, is displayed once, and must be stored in an

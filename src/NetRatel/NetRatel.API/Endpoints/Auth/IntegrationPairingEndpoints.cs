@@ -32,13 +32,35 @@ public static class IntegrationPairingEndpoints
 
     public static IEndpointRouteBuilder MapIntegrationPairingEndpoints(this IEndpointRouteBuilder app)
     {
+        app.MapHttpHostSetupEndpoints();
         var publicApi = app.MapGroup(IntegrationPairingProtocol.Route).WithTags("Integration credential pairing").AllowAnonymous();
-        publicApi.MapGet("/capabilities", async (IDeploymentBrandingService branding, IConfiguration configuration, HttpContext http, CancellationToken ct) =>
+        publicApi.MapGet("/capabilities", async (IDeploymentBrandingService branding, IConfiguration configuration, HttpHostSetupService hostSetup, HttpContext http, CancellationToken ct) =>
         {
             NoStore(http);
             var origin = await PublicOriginAsync(branding, ct).ConfigureAwait(false);
             if (origin is null) return Results.Json(new { status = "not_configured" }, statusCode: 503);
-            try { return Results.Ok(Capabilities(origin, configuration)); }
+            try
+            {
+                var capabilities = Capabilities(origin, configuration);
+                try
+                {
+                    var ingress = await hostSetup.CapabilitiesAsync(ct).ConfigureAwait(false);
+                    capabilities = capabilities with
+                    {
+                        HttpMcpAuthenticationMode = ingress.LocalCredentialMode ? "local" : "oidc",
+                        HttpMcpOidcAuthority = ingress.OidcAuthority,
+                        HttpMcpRequiredScopes = ingress.RequiredScopes,
+                        HttpMcpAuthenticationModeKnown = ingress.AuthenticationModeKnown
+                    };
+                }
+                catch (HttpHostSetupUnavailableException)
+                {
+                    // Invalid host metadata must not disable API/CLI pairing. HTTP clients
+                    // must obtain the deployment's actual mode before selecting authentication.
+                    capabilities = capabilities with { HttpMcpAuthenticationModeKnown = false };
+                }
+                return Results.Ok(capabilities);
+            }
             catch (IntegrationPairingUnavailableException) { return Results.Json(new { status = "not_configured" }, statusCode: 503); }
         });
         publicApi.MapPost("/start", async ([FromBody] IntegrationPairingStartRequest request, IntegrationPairingService pairing,
@@ -122,6 +144,7 @@ public sealed class IntegrationPairingCleanupWorker(IServiceScopeFactory scopes,
             {
                 await using var scope = scopes.CreateAsyncScope();
                 await scope.ServiceProvider.GetRequiredService<IntegrationPairingService>().CleanupAsync(stoppingToken).ConfigureAwait(false);
+                await scope.ServiceProvider.GetRequiredService<HttpHostSetupService>().CleanupAsync(stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception) { logger.LogWarning("Integration pairing cleanup will resume on the next interval."); }

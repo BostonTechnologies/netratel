@@ -5,6 +5,8 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using NetRatel.Infrastructure.Identity.Branding;
+using NetRatel.Infrastructure.Identity.Authorization;
+using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Client;
 using NetRatel.Shared.Connectivity;
 
@@ -15,7 +17,7 @@ public sealed class IntegrationPairingUnavailableException() : Exception("The co
 /// <summary>Durable, capability-bound pairing with one ordinary credential and a bounded retry envelope.</summary>
 public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IIntegrationCredentialService credentials,
     IIntegrationCredentialGrantValidator validator, IDataProtectionProvider protection, TimeProvider clock,
-    IDeploymentBrandingService? branding = null, IConfiguration? configuration = null)
+    IDeploymentBrandingService? branding = null, IConfiguration? configuration = null, OrchestratorDbContext? applicationDb = null)
 {
     private static readonly TimeSpan RequestLifetime = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan DeliveryLifetime = TimeSpan.FromMinutes(5);
@@ -145,7 +147,7 @@ public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IInt
             return new IntegrationPairingPollResponse("issued", request.PollIntervalSeconds,
                 new(request.CredentialId!, secret, request.Name, (PairingCredentialPurpose)request.Purpose, request.Resource,
                     request.CredentialExpiresAtUtc!.Value,
-                    Deserialize<IntegrationCredentialGrantRequest>(request.ApprovedGrantsJson!).Select(grant => new IntegrationPairingGrant(grant.TenantId, grant.Permission)).ToArray(),
+                    await DeliveryGrantsAsync(request, cancellationToken).ConfigureAwait(false),
                     Deserialize<string>(request.ApprovedInstancePermissionsJson!)));
         }, cancellationToken);
 
@@ -253,6 +255,19 @@ public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IInt
     private IntegrationCredentialCreateRequest CreateRequest(IntegrationPairingRequest request) => new(request.Name, request.Purpose,
         request.CredentialExpiresAtUtc!.Value, Deserialize<IntegrationCredentialGrantRequest>(request.ApprovedGrantsJson!), request.Resource,
         Deserialize<string>(request.ApprovedInstancePermissionsJson!));
+
+    private async Task<IReadOnlyList<IntegrationPairingGrant>> DeliveryGrantsAsync(IntegrationPairingRequest request, CancellationToken ct)
+    {
+        var grants = Deserialize<IntegrationCredentialGrantRequest>(request.ApprovedGrantsJson!);
+        var ids = grants.Select(x => x.TenantId).Distinct().ToArray();
+        var names = applicationDb is null ? new Dictionary<int, string>() : await applicationDb.Tenants.AsNoTracking()
+            .Where(x => ids.Contains(x.Id)).Select(x => new { x.Id, x.Name }).ToDictionaryAsync(x => x.Id, x => x.Name, ct).ConfigureAwait(false);
+        return grants.Select(grant => new IntegrationPairingGrant(grant.TenantId, grant.Permission)
+        {
+            TenantName = names.GetValueOrDefault(grant.TenantId),
+            PermissionLabel = IntegrationPermissionCatalog.Delegable.FirstOrDefault(x => x.Id == grant.Permission)?.Label
+        }).ToArray();
+    }
 
     private async Task ExpireAsync(IntegrationPairingRequest request, CancellationToken ct)
     {

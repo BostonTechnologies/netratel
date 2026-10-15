@@ -10,34 +10,34 @@
     <AuthorizeView Context="outerAuthState">
         <Authorized Context="outerAuthState">
             <div class="nav-section-heading"><span>Command</span></div>
-            <MudNavLink Href="/" Match="NavLinkMatch.All" Icon="@Icons.Material.Filled.Dashboard">Dashboard</MudNavLink>
+            <MudNavLink Href="/" Match="NavLinkMatch.All" Icon="@Icons.Material.Filled.Dashboard" aria-label="Dashboard" title="Dashboard">Dashboard</MudNavLink>
 
-            <MudNavGroup Title="Orchestration" Expanded="true" Icon="@Icons.Material.Filled.Workspaces">
-                <MudNavLink Href="/jobs" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Work">Jobs</MudNavLink>
-                <MudNavLink Href="/requests" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Stream">Requests</MudNavLink>
-                <MudNavLink Href="/tasks/new" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.AddTask">New Task</MudNavLink>
-                <MudNavLink Href="/tasks/history" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.History">Task History</MudNavLink>
+            <MudNavGroup Title="Orchestration" UserAttributes="@(Disclosure("Orchestration"))" @bind-Expanded="orchestrationExpanded" Icon="@Icons.Material.Filled.Workspaces">
+                <MudNavLink Href="/jobs" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Work" aria-label="Jobs" title="Jobs">Jobs</MudNavLink>
+                <MudNavLink Href="/requests" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Stream" aria-label="Requests" title="Requests">Requests</MudNavLink>
+                <MudNavLink Href="/tasks/new" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.AddTask" aria-label="New Task" title="New Task">New Task</MudNavLink>
+                <MudNavLink Href="/tasks/history" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.History" aria-label="Task History" title="Task History">Task History</MudNavLink>
             </MudNavGroup>
 
-            <MudNavLink Href="/scriptlibrary" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Code">Script Library</MudNavLink>
+            <MudNavLink Href="/scriptlibrary" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Code" aria-label="Script Library" title="Script Library">Script Library</MudNavLink>
 
             <div class="nav-section-heading"><span>Estate</span></div>
-            <MudNavGroup Title="Estate Management" Expanded="false" Icon="@Icons.Material.Filled.Business">
-                <MudNavLink Href="/clients" Match="@(IsClientInventoryRoute ? NavLinkMatch.Prefix : NavLinkMatch.All)" Icon="@Icons.Material.Filled.Devices">Clients</MudNavLink>
-                <MudNavLink Href="/tenants" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.People">Tenants</MudNavLink>
+            <MudNavGroup Title="Estate Management" UserAttributes="@(Disclosure("Estate Management"))" @bind-Expanded="estateExpanded" Icon="@Icons.Material.Filled.Business">
+                <MudNavLink Href="/clients" Match="@(IsClientInventoryRoute ? NavLinkMatch.Prefix : NavLinkMatch.All)" Icon="@Icons.Material.Filled.Devices" aria-label="Clients" title="Clients">Clients</MudNavLink>
+                <MudNavLink Href="/tenants" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.People" aria-label="Tenants" title="Tenants">Tenants</MudNavLink>
             </MudNavGroup>
-            <MudNavLink Href="/clients/mgmt" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.RocketLaunch">Agent Installers</MudNavLink>
+            <MudNavLink Href="/clients/mgmt" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.RocketLaunch" aria-label="Agent Installers" title="Agent Installers">Agent Installers</MudNavLink>
 
             <div class="nav-section-heading"><span>Signals</span></div>
-            <MudNavLink Href="/notifications" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Notifications">Notifications</MudNavLink>
-            @if (canReadMonitoring) { <MudNavLink Href="/monitoring" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.MonitorHeart">Monitoring</MudNavLink> }
+            <MudNavLink Href="/notifications" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Notifications" aria-label="Notifications" title="Notifications">Notifications</MudNavLink>
+            @if (canReadMonitoring) { <MudNavLink Href="/monitoring" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.MonitorHeart" aria-label="Monitoring" title="Monitoring">Monitoring</MudNavLink> }
             @if (canReadFlows)
             {
-                <MudNavLink Href="/flows" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.AccountTree">Flows</MudNavLink>
+                <MudNavLink Href="/flows" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.AccountTree" aria-label="Flows" title="Flows">Flows</MudNavLink>
             }
-            <MudNavGroup Title="AI Ops" Expanded="false">
-                <MudNavLink Href="/ai/ops" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Insights">Investigations</MudNavLink>
-                <MudNavLink Href="/ai/prompts" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.EditNote">Prompts</MudNavLink>
+            <MudNavGroup Title="AI Ops" UserAttributes="@(Disclosure("AI Ops"))" @bind-Expanded="aiOpsExpanded">
+                <MudNavLink Href="/ai/ops" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Insights" aria-label="Investigations" title="Investigations">Investigations</MudNavLink>
+                <MudNavLink Href="/ai/prompts" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.EditNote" aria-label="Prompts" title="Prompts">Prompts</MudNavLink>
             </MudNavGroup>
         </Authorized>
     </AuthorizeView>
@@ -46,26 +46,25 @@
 
     <AuthorizeView Context="accountAuthState">
         <Authorized Context="accountAuthState">
-            <MudNavLink Href="/account/security" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Person">@userName</MudNavLink>
-            <MudNavLink Href="/account/integration-credentials" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Key">Integration</MudNavLink>
-            <AuthorizeView Roles="Operator" Context="adminAuthState">
-                <Authorized Context="adminAuthState">
-                    <MudNavGroup Title="Admin" Expanded="false" Icon="@Icons.Material.Filled.Settings">
-                        <MudNavLink Href="/admin/app-settings" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Tune">App Settings</MudNavLink>
-                        <MudNavLink Href="/account/integration-credentials" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Lan">System connections</MudNavLink>
-                        <MudNavLink Href="/clients/settings" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Terminal">Client Runtime Settings</MudNavLink>
-                    </MudNavGroup>
-                </Authorized>
-            </AuthorizeView>
-            @if (canAdministerAccess)
-            {
-                <MudNavLink Href="/admin/access" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.AdminPanelSettings">Access</MudNavLink>
-                <MudNavLink Href="/admin/branding" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.BrandingWatermark">Branding</MudNavLink>
-            }
-            <MudNavLink Href="/logout" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Logout">Logout</MudNavLink>
+            <MudNavLink Href="/account/security" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Person" aria-label="@userName" title="@userName">@userName</MudNavLink>
+            <MudNavGroup Title="Admin" UserAttributes="@(Disclosure("Admin"))" @bind-Expanded="adminExpanded" Icon="@Icons.Material.Filled.Settings">
+                <MudNavLink Href="/account/integration-credentials" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Key" aria-label="Integration" title="Integration">Integration</MudNavLink>
+                @if (canAdministerAccess)
+                {
+                    <MudNavLink Href="/admin/access" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.AdminPanelSettings" aria-label="Access" title="Access">Access</MudNavLink>
+                    <MudNavLink Href="/admin/branding" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.BrandingWatermark" aria-label="Branding" title="Branding">Branding</MudNavLink>
+                }
+                <AuthorizeView Roles="Operator" Context="adminAuthState">
+                    <Authorized Context="adminAuthState">
+                        <MudNavLink Href="/admin/app-settings" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Tune" aria-label="App Settings" title="App Settings">App Settings</MudNavLink>
+                        <MudNavLink Href="/clients/settings" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Terminal" aria-label="Client Runtime Settings" title="Client Runtime Settings">Client Runtime Settings</MudNavLink>
+                    </Authorized>
+                </AuthorizeView>
+            </MudNavGroup>
+            <MudNavLink Href="/logout" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Logout" aria-label="Logout" title="Logout">Logout</MudNavLink>
         </Authorized>
         <NotAuthorized>
-            <MudNavLink Href="/login" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Login">Login</MudNavLink>
+            <MudNavLink Href="/login" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Login" aria-label="Login" title="Login">Login</MudNavLink>
         </NotAuthorized>
     </AuthorizeView>
 
@@ -78,13 +77,19 @@
     private bool canAdministerAccess;
     private bool canReadFlows;
     private bool canReadMonitoring;
+    private bool orchestrationExpanded = true;
+    private bool estateExpanded;
+    private bool aiOpsExpanded;
+    private bool adminExpanded;
+
+    private string CurrentPath => (currentUrl ?? string.Empty).Split('?', '#')[0].TrimEnd('/');
     // Client detail routes belong to inventory; management and runtime settings
     // have their own leaves and must never also highlight Clients.
     private bool IsClientInventoryRoute
     {
         get
         {
-            var path = (currentUrl ?? string.Empty).Split('?', '#')[0].TrimEnd('/');
+            var path = CurrentPath;
             return path.Equals("clients", StringComparison.OrdinalIgnoreCase) ||
                 (path.StartsWith("clients/", StringComparison.OrdinalIgnoreCase) &&
                  !IsRouteBranch(path, "clients/mgmt") && !IsRouteBranch(path, "clients/settings"));
@@ -98,6 +103,7 @@
     protected override async Task OnInitializedAsync()
     {
         currentUrl = NavigationManager.ToBaseRelativePath(NavigationManager.Uri);
+        ExpandActiveGroup();
         NavigationManager.LocationChanged += OnLocationChanged;
 
         var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
@@ -121,8 +127,29 @@
 
     private void OnLocationChanged(object? sender, LocationChangedEventArgs e)
     {
+        var previousPath = CurrentPath;
         currentUrl = NavigationManager.ToBaseRelativePath(e.Location);
+        if (!CurrentPath.Equals(previousPath, StringComparison.OrdinalIgnoreCase))
+        {
+            ExpandActiveGroup();
+        }
         StateHasChanged();
+    }
+
+    private static Dictionary<string, object> Disclosure(string label) => new() { ["title"] = label };
+
+    private void ExpandActiveGroup()
+    {
+        var path = CurrentPath;
+        if (new[] { "jobs", "requests", "tasks/new", "tasks/history" }.Any(route => IsRouteBranch(path, route)))
+            orchestrationExpanded = true;
+        if (IsClientInventoryRoute || IsRouteBranch(path, "tenants"))
+            estateExpanded = true;
+        if (new[] { "ai/ops", "ai/prompts" }.Any(route => IsRouteBranch(path, route)))
+            aiOpsExpanded = true;
+        if (new[] { "account/integration-credentials", "admin/access", "admin/branding", "admin/app-settings", "clients/settings" }
+            .Any(route => IsRouteBranch(path, route)))
+            adminExpanded = true;
     }
 
     public void Dispose()

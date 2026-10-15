@@ -17,23 +17,14 @@ case "${1:-http}" in
     exec dotnet /app/tooling/stdio/NetRatel.Mcp.dll "$@"
     ;;
   setup)
-    shift
-    setup_mode=host
-    setup_transport=
-    if [ "${1:-}" = "--target" ]; then
-      case "${2:-}" in
-        http-host) setup_mode=host ;;
-        cli) setup_mode=client; setup_transport=cli ;;
-        stdio) setup_mode=client; setup_transport=stdio ;;
-        http-client) setup_mode=client; setup_transport=http ;;
-        *) echo "setup --target must be http-host, cli, stdio or http-client" >&2; exit 2 ;;
-      esac
-      shift 2
+    # The supplied setup Compose service mounts a seeded durable volume here.
+    # Do not invent a writable ephemeral default for arbitrary legacy containers.
+    if [ -z "${NETRATEL_SETUP_DIRECTORY:-}" ] && [ -n "${NETRATEL_SETUP_VOLUME:-}" ]; then
+      export NETRATEL_SETUP_DIRECTORY=/setup-output
     fi
-    if [ -n "$setup_transport" ]; then
-      exec dotnet /app/tooling/cli/netratel.dll setup --mode "$setup_mode" --transport "$setup_transport" "$@"
-    fi
-    exec dotnet /app/tooling/cli/netratel.dll setup --mode "$setup_mode" "$@"
+    # Bare setup configures a personal HTTP MCP client. Host deployment requires
+    # explicit --mode host or --target http-host, accepted in any argument position.
+    exec dotnet /app/NetRatel.Mcp.Http.dll "$@"
     ;;
   *)
     # Retain historical HTTP host arguments, including --urls overrides.

@@ -220,6 +220,120 @@ public sealed class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture postgres)
         context.CurrentAssertion.Should().BeNull();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Prepared_delegation_reaches_outbound_requests_across_awaits_without_crossing_callers(bool localCredentialMode)
+    {
+        var options = DelegationOptions();
+        var tokens = new McpOperatorDelegationTokenService(options);
+        var context = new McpOperatorDelegationContext();
+        var httpOptions = ValidOptions();
+        httpOptions.LocalCredentialMode = localCredentialMode;
+        var host = HostContext("dev");
+        var callers = new System.Collections.Concurrent.ConcurrentBag<string>();
+        using var clients = new DelegationHttpClientFactory(async (request, cancellationToken) =>
+        {
+            // Both the local exchange and service-token mint must really yield.
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (request.RequestUri!.AbsolutePath == McpLocalDelegationEndpoints.ExchangePath)
+            {
+                var subject = request.Headers.Authorization!.Parameter!["nrt_ic_".Length..];
+                tokens.TryValidate(request.Headers.GetValues(McpLocalDelegationEndpoints.PairingHeaderName).Single(), out var pairing)
+                    .Should().BeTrue();
+                pairing!.Tool.Should().Be("netratel_auth");
+                pairing.Operation.Should().Be("status");
+                var assertion = tokens.Create(new McpOperatorDelegationIdentity(subject, null, null, [], [], ["mcp:read"]),
+                    "netratel_auth", "status", Guid.NewGuid().ToString("N"));
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new { assertion }) };
+            }
+            if (request.RequestUri.AbsolutePath == "/token")
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new { access_token = "gateway-service-token", expires_in = 300 }) };
+
+            request.Headers.Authorization!.Parameter.Should().Be("gateway-service-token");
+            tokens.TryValidate(request.Headers.GetValues(McpOperatorDelegationOptions.HeaderName).Single(), out var delegation)
+                .Should().BeTrue();
+            delegation!.Identity.Subject.Should().Be(request.RequestUri.Segments.Last());
+            callers.Add(delegation.Identity.Subject);
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new { ok = true }) };
+        });
+
+        async Task InvokeAsync(string subject)
+        {
+            var http = new DefaultHttpContext();
+            http.Request.Headers.Authorization = $"Bearer nrt_ic_{subject}";
+            var propagation = new McpOperatorDelegationPropagation(options, tokens, context, host, httpOptions,
+                new HttpContextAccessor { HttpContext = http }, clients, new McpLocalCredentialPairingService(tokens, host, httpOptions));
+            var caller = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", subject)], "test"));
+            var assertion = await propagation.CreateAssertionAsync(caller, "netratel_auth", Arguments("status"), CancellationToken.None);
+            context.CurrentAssertion.Should().BeNull();
+            using (propagation.Begin(assertion))
+            {
+                await Task.Yield();
+                var outbound = DelegatedOutboundClient(clients, host, context);
+                await outbound.GetAsync($"/api/probe/{subject}");
+                context.CurrentAssertion.Should().Be(assertion);
+            }
+            context.CurrentAssertion.Should().BeNull();
+        }
+
+        await Task.WhenAll(InvokeAsync("operator-one"), InvokeAsync("operator-two"));
+        callers.Should().BeEquivalentTo("operator-one", "operator-two");
+        context.CurrentAssertion.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Delegation_scope_restores_previous_caller_after_awaited_failure_or_cancellation(bool cancel)
+    {
+        var options = DelegationOptions();
+        var tokens = new McpOperatorDelegationTokenService(options);
+        var context = new McpOperatorDelegationContext();
+        var host = HostContext("dev");
+        var propagation = new McpOperatorDelegationPropagation(options, tokens, context, host, ValidOptions());
+        using var cancellation = new CancellationTokenSource();
+        using var clients = new DelegationHttpClientFactory(async (request, cancellationToken) =>
+        {
+            await Task.Yield();
+            if (request.RequestUri!.AbsolutePath == "/token")
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new { access_token = "gateway-service-token", expires_in = 300 }) };
+            request.Headers.Contains(McpOperatorDelegationOptions.HeaderName).Should().BeTrue();
+            if (cancel)
+            {
+                cancellation.Cancel();
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+            throw new InvalidOperationException("Synthetic downstream failure.");
+        });
+
+        using (context.Begin("outer-caller"))
+        {
+            async Task InvokeAsync()
+            {
+                var caller = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "inner-caller")], "test"));
+                var assertion = await propagation.CreateAssertionAsync(caller, "netratel_auth", Arguments("status"), cancellation.Token);
+                try
+                {
+                    using (propagation.Begin(assertion))
+                        await DelegatedOutboundClient(clients, host, context).GetAsync("/api/probe", cancellation.Token);
+                }
+                finally
+                {
+                    context.CurrentAssertion.Should().Be("outer-caller");
+                }
+            }
+
+            if (cancel)
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(InvokeAsync);
+            else
+                await Assert.ThrowsAsync<InvalidOperationException>(InvokeAsync);
+            context.CurrentAssertion.Should().Be("outer-caller");
+        }
+        context.CurrentAssertion.Should().BeNull();
+    }
+
     [Fact]
     public async Task Api_delegation_middleware_exposes_only_a_valid_signed_assertion()
     {
@@ -1729,6 +1843,20 @@ public sealed class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture postgres)
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             => Task.FromResult(response);
+    }
+
+    private static NetRatelMcpOutboundClient DelegatedOutboundClient(
+        IHttpClientFactory clients, NetRatelMcpHostContext host, IMcpOperatorDelegationContext context)
+        => new(clients, NetRatelMcpOutboundOptions.CreateApiM2M(host.Target, new Uri("https://api.dev.example/token"),
+            "gateway-service", "synthetic-service-secret", "mcp:read"), new NetRatelMcpAccessTokenCache(), context);
+
+    private sealed class DelegationHttpClientFactory(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send)
+        : HttpMessageHandler, IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new(this, disposeHandler: false) { BaseAddress = new Uri("https://api.dev.example/") };
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => send(request, cancellationToken);
     }
 
     private sealed class ThrowingHttpMessageHandler(Exception exception) : HttpMessageHandler

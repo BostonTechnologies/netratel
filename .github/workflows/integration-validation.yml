@@ -12,6 +12,12 @@ on:
         description: Source ref to test (published-image and upgrade suites use release_tag)
         default: main
         required: true
+      deployment_profile:
+        description: Disposable profile for the deployment suite only
+        type: choice
+        default: oidc
+        options: [oidc, http-host-setup]
+        required: false
       release_tag:
         description: Existing completed public release tag, required for published-image and upgrade suites
         required: false
@@ -158,7 +164,7 @@ jobs:
         if: inputs.suite == 'deployment' || inputs.suite == 'release-images' || inputs.suite == 'upgrade-oidc'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libnss3-tools
       - name: Build source deployment inputs once
-        if: inputs.suite == 'deployment'
+        if: inputs.suite == 'deployment' && inputs.deployment_profile != 'http-host-setup'
         shell: bash
         run: |
           set -euo pipefail
@@ -287,10 +293,19 @@ jobs:
             upgrade-oidc) bash tools/ci/smoke-postgresql-oidc-upgrade.sh ;;
           esac
       - name: Run selected source or release-image OIDC deployment
-        if: inputs.suite == 'deployment' || inputs.suite == 'release-images'
+        if: (inputs.suite == 'deployment' && inputs.deployment_profile != 'http-host-setup') || inputs.suite == 'release-images'
         env:
           NETRATEL_SMOKE_AUTH_ENVIRONMENT: Production
         run: bash tools/ci/smoke-oidc-compose.sh
+      - name: Run disposable URL-first host deployment and resume acceptance
+        if: inputs.suite == 'deployment' && inputs.deployment_profile == 'http-host-setup'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/ci/build-public-image.sh --dockerfile docker/mcp-http/Dockerfile \
+            --image netratel-mcp-http:manual-setup --version "$VERSION" --revision "$SOURCE_SHA"
+          NETRATEL_HTTP_HOST_SETUP_SMOKE_IMAGE=netratel-mcp-http:manual-setup \
+            bash tools/ci/smoke-http-host-setup.sh
       - name: Run selected published HTTP MCP image smoke
         if: inputs.suite == 'release-images'
         run: bash tools/ci/smoke-mcp-http-image.sh

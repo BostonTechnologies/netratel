@@ -17,6 +17,10 @@ public sealed record IntegrationPairingCapabilities(int ProtocolVersion, string 
 {
     public IReadOnlyList<string> AuthenticationMethods { get; init; } = ["browser"];
     public IReadOnlyList<string> ConfigurationCapabilities { get; init; } = ["scoped-integration-credential", "explicit-tenant-grants"];
+    public string HttpMcpAuthenticationMode { get; init; } = "local";
+    public string? HttpMcpOidcAuthority { get; init; }
+    public IReadOnlyList<string> HttpMcpRequiredScopes { get; init; } = [];
+    public bool HttpMcpAuthenticationModeKnown { get; init; } = true;
 }
 public sealed record IntegrationPairingStartRequest(string Name, PairingCredentialPurpose Purpose,
     string? Resource = null, IReadOnlyList<string>? RequestedPermissions = null);
@@ -27,7 +31,11 @@ public sealed record IntegrationPairingDeviceRequest(string DeviceCapability)
 { public override string ToString() => "Pairing device request (capability redacted)"; }
 public sealed record IntegrationPairingAcknowledgeRequest(string DeviceCapability, string CredentialId)
 { public override string ToString() => $"Pairing acknowledgement {CredentialId} (capability redacted)"; }
-public sealed record IntegrationPairingGrant(int TenantId, string Permission);
+public sealed record IntegrationPairingGrant(int TenantId, string Permission)
+{
+    public string? TenantName { get; init; }
+    public string? PermissionLabel { get; init; }
+}
 public sealed record IntegrationPairingDelivery(string CredentialId, string Secret, string Name,
     PairingCredentialPurpose Purpose, string? Resource, DateTimeOffset ExpiresAtUtc,
     IReadOnlyList<IntegrationPairingGrant> Grants, IReadOnlyList<string> InstancePermissions)

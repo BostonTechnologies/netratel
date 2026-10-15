@@ -23,9 +23,18 @@ public sealed class McpOperatorDelegationPropagation(
     McpLocalCredentialPairingService? localPairing = null)
 {
     public IDisposable Begin(ClaimsPrincipal? user, string tool, IDictionary<string, JsonElement>? arguments)
+        => Begin(CreateAssertion(user, tool, arguments));
+
+    // Enter synchronously in the tool caller's execution context, after any
+    // asynchronous exchange has completed. AsyncLocal assignments made inside
+    // an awaited preparation method do not flow back to its caller.
+    public IDisposable Begin(string? assertion)
+        => assertion is null ? EmptyLease.Instance : context.Begin(assertion);
+
+    private string? CreateAssertion(ClaimsPrincipal? user, string tool, IDictionary<string, JsonElement>? arguments)
     {
         if (!options.Enabled)
-            return EmptyLease.Instance;
+            return null;
 
         if (user?.Identity?.IsAuthenticated is not true)
             throw new InvalidOperationException("An authenticated MCP caller is required for delegated operator identity.");
@@ -33,7 +42,7 @@ public sealed class McpOperatorDelegationPropagation(
         var operation = Operation(arguments);
         var target = McpOperationTargetCatalog.Find(Token(tool), operation);
         var targetModel = target?.Model;
-        var assertion = tokens.Create(
+        return tokens.Create(
             IdentityFrom(user),
             new McpOperatorDelegationRequest(
                 Token(tool),
@@ -49,7 +58,6 @@ public sealed class McpOperatorDelegationPropagation(
                 ObjectTargetResolutionEnabled = hostContext.OperatorSurfaceEnabled
             },
             issuedAtUtc: null);
-        return context.Begin(assertion);
     }
 
     /// <summary>
@@ -58,14 +66,14 @@ public sealed class McpOperatorDelegationPropagation(
     /// normal outbound API client receives only the returned assertion plus
     /// its existing gateway credential.
     /// </summary>
-    public async Task<IDisposable> BeginAsync(
+    public async Task<string?> CreateAssertionAsync(
         ClaimsPrincipal? user,
         string tool,
         IDictionary<string, JsonElement>? arguments,
         CancellationToken cancellationToken)
     {
         if (!httpOptions.LocalCredentialMode)
-            return Begin(user, tool, arguments);
+            return CreateAssertion(user, tool, arguments);
         if (user?.Identity?.IsAuthenticated is not true || httpContextAccessor?.HttpContext is not { } http || httpClients is null || localPairing is null)
             throw new InvalidOperationException("A local HTTP MCP credential exchange requires the active request context.");
 
@@ -97,7 +105,7 @@ public sealed class McpOperatorDelegationPropagation(
                 .ReadJsonAsync<McpLocalExecutionResponse>(response.Content, deadline.Token).ConfigureAwait(false);
             if (execution is null || string.IsNullOrWhiteSpace(execution.Assertion))
                 throw new McpLocalCredentialExchangeException(McpLocalCredentialExchangeFailure.ProtocolError);
-            return context.Begin(execution.Assertion);
+            return execution.Assertion;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

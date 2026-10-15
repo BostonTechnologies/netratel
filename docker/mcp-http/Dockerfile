@@ -63,6 +63,10 @@ WORKDIR /app
 COPY --from=build --chown=netratel-mcp:netratel-mcp /out ./
 COPY --chown=netratel-mcp:netratel-mcp LICENSE NOTICE /app/licenses/
 COPY --chown=netratel-mcp:netratel-mcp docker/mcp-http/docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod 755 /app/docker-entrypoint.sh
+# Docker initializes a fresh named setup volume from this owned directory.
+# The serving process and setup tooling both retain the dedicated non-root user.
+RUN mkdir -p /setup-output /var/lib/netratel/clients && \
+    chown netratel-mcp:netratel-mcp /setup-output /var/lib/netratel/clients && \
+    chmod 700 /setup-output /var/lib/netratel/clients && chmod 755 /app/docker-entrypoint.sh
 USER netratel-mcp
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

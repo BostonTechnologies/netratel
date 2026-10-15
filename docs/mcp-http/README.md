@@ -2,7 +2,7 @@
 
 HTTP MCP is an optional bearer-authenticated service. The standard deployment exposes it at the same trusted public HTTPS origin as Web, under `/mcp`, while its listener remains private. Ordinary Web/API and native Client operation does not require MCP.
 
-- [Deploy and set up](setup.md): coordinated Web/API/MCP configuration, explicit administrator setup, persistent mounts and migration.
+- [Connect clients and configure hosting](setup.md): bare HTTP `setup` connects a personal client; explicit `--mode host` provisions the deployment. Both use one Web URL, guided authentication, automatic persistent storage and actual verification.
 - [Configuration reference](configuration.md): every host, outbound, delegation and Compose setting, defaults, secret-file mappings and precedence.
 - [Authentication modes](authentication.md): local integration credentials, browser client approval and explicit external OIDC.
 - [Local credential mode](local-credential-mode.md): the API-bound credential/delegation flow.

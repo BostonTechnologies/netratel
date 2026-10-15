@@ -62,10 +62,10 @@ public sealed class SetupPage(IClipboardService clipboard) : ReactivePage<SetupV
         }
         var content = Layouts.Vertical()
             .WithChild(new TextNode($"NetRatel  ·  {TerminalText.Safe(ViewModel.Profile)}  ·  {TerminalText.Safe(ViewModel.Origin)}").Bold().NoWrap().Height(1))
-            .WithChild(new TextNode($"{(int)ViewModel.Step + 1}/6 {ViewModel.Step}").Height(1))
+            .WithChild(new TextNode(ViewModel.Step == SetupStep.Instance ? "Connect your client" : ViewModel.Step.ToString()).Height(1))
             .WithChild(new PanelNode().WithTitle(ViewModel.Step.ToString()).WithBorder(_monochrome ? BorderStyle.Ascii : BorderStyle.Single).WithContent(body).Fill())
             .WithChild(ViewModel.Status.Select<string, ILayoutNode>(s => new TextNode(TerminalText.Safe(s)).Height(2)).AsLayout(RenderFrameProvider).Height(2))
-            .WithChild(new TextNode("Alt+Left Back  F2 Next  Esc Cancel  Tab Focus  PgUp/Dn Scroll  F6 Advanced").NoWrap().Height(1));
+            .WithChild(new TextNode("Enter Next  Alt+Left Back  Esc Cancel  Tab Focus  PgUp/Dn Scroll").NoWrap().Height(1));
         if (ViewModel.Busy) content.WithChild(new SpinnerNode().Height(1));
         if (ViewModel.ConfirmReplace)
         {
@@ -101,16 +101,39 @@ public sealed class SetupPage(IClipboardService clipboard) : ReactivePage<SetupV
                 form.WithChild(new TextNode("Hosting administrators: setup --mode host --help configures ingress and outbound identities separately.").Height(2));
                 break;
             case SetupStep.Instance:
-                form.WithChild(Input("Instance HTTPS URL", ViewModel.Origin, ViewModel.SetOrigin, externallyManaged: ViewModel.Surface != ConfigurationSurface.HttpMcpClient && ViewModel.Session.IsExternallyManaged("apiBaseUrl"), source: ViewModel.Session.SourceName("apiBaseUrl")));
+                form.WithChild(Input("Instance Web URL", ViewModel.Origin, ViewModel.SetOrigin, externallyManaged: ViewModel.Surface != ConfigurationSurface.HttpMcpClient && ViewModel.Session.IsExternallyManaged("apiBaseUrl"), source: ViewModel.Session.SourceName("apiBaseUrl")));
                 if (ViewModel.Surface == ConfigurationSurface.HttpMcpClient && ViewModel.Session.IsExternallyManaged("apiBaseUrl")) form.WithChild(new TextNode("Canonical MCP resource is read-only: " + TerminalText.Safe(ViewModel.Session.Configuration.ApiBaseUrl)).Height(2));
-                form.WithChild(new TextNode("Next validates TLS and instance capabilities. Use the public HTTPS origin without /mcp.").Height(2));
+                form.WithChild(new TextNode("Paste the instance Web URL, with or without /mcp, then press Enter.").Height(2));
+                if (ViewModel.Advanced)
+                {
+                    var profile = new SelectionListNode<string>(["Change profile / transport"], x => x).WithVisibleRows(1);
+                    profile.SelectionConfirmed.Subscribe(_ => ViewModel.EditProfile()).DisposeWith(_contentSubscriptions);
+                    _controls.Add(profile); form.WithChild(profile);
+                }
                 break;
             case SetupStep.Authentication:
                 if (ViewModel.Session.Capabilities is null) form.WithChild(new TextNode("Pairing unavailable · instance compatibility is unconfirmed. Import only a credential you intend to bind to this selected instance.").Height(3));
-                var auth = new SelectionListNode<string>(["Browser approval", "Existing credential", "External authentication"], x => x).WithVisibleRows(3).WithHighlightedIndex(ViewModel.Authentication == "Existing credential" ? 1 : ViewModel.Authentication == "External authentication" ? 2 : 0);
-                auth.SelectionConfirmed.Subscribe(items => { _ = ViewModel.SetAuthenticationAsync(items.First()); }).DisposeWith(_contentSubscriptions);
-                _controls.Add(auth); form.WithChild(auth);
+                form.WithChild(new TextNode(ViewModel.Authentication).Bold().Height(1));
+                if (ViewModel.Advanced)
+                {
+                    var modes = ViewModel.Session.HasConfiguredAuthentication
+                        ? new[] { "Use existing authentication", "Browser approval", "Existing credential", "External authentication" }
+                        : new[] { "Browser approval", "Existing credential", "External authentication" };
+                    var auth = new SelectionListNode<string>(modes, x => x).WithVisibleRows(modes.Length).WithHighlightedIndex(Math.Max(0, Array.IndexOf(modes, ViewModel.Authentication)));
+                    auth.SelectionConfirmed.Subscribe(items => { _ = ViewModel.SetAuthenticationAsync(items.First()); }).DisposeWith(_contentSubscriptions);
+                    _controls.Add(auth); form.WithChild(auth);
+                }
                 if (ViewModel.Authentication == "Existing credential") form.WithChild(Input("Existing credential (masked; never copied)", ViewModel.ManualSecret, value => ViewModel.ManualSecret = value, password: true, externallyManaged: ViewModel.Session.IsExternallyManaged("integrationCredential"), source: ViewModel.Session.SourceName("integrationCredential")));
+                if (ViewModel.Authentication == "External authentication")
+                {
+                    if (ViewModel.ExternalProviderDiscovered) form.WithChild(new TextNode("Existing OIDC provider: " + TerminalText.Safe(ViewModel.Session.Capabilities?.HttpMcpOidcAuthority)).Height(2));
+                    if (ViewModel.ExternalProviderDiscovered && !ViewModel.Advanced) form.WithChild(new TextNode("Provider HTTPS token endpoint: " + TerminalText.Safe(ViewModel.ExternalTokenUrl)).Height(3));
+                    if (!ViewModel.ExternalProviderDiscovered || ViewModel.Advanced) form.WithChild(Input("Provider HTTPS token endpoint", ViewModel.ExternalTokenUrl, value => ViewModel.ExternalTokenUrl = value, externallyManaged: ViewModel.Session.IsExternallyManaged("OidcTokenUrl"), source: ViewModel.Session.SourceName("OidcTokenUrl")));
+                    form.WithChild(Input("Provider application client ID", ViewModel.ExternalClientId, value => ViewModel.ExternalClientId = value, externallyManaged: ViewModel.Session.IsExternallyManaged("OidcClientId"), source: ViewModel.Session.SourceName("OidcClientId")));
+                    form.WithChild(Input("Application account username", ViewModel.ExternalUsername, value => ViewModel.ExternalUsername = value, externallyManaged: ViewModel.Session.IsExternallyManaged("OidcUsername"), source: ViewModel.Session.SourceName("OidcUsername")));
+                    form.WithChild(Input("Application password", ViewModel.ExternalPassword, value => ViewModel.ExternalPassword = value, password: true, externallyManaged: ViewModel.Session.IsExternallyManaged("OidcAppPassword"), source: ViewModel.Session.SourceName("OidcAppPassword")));
+                    form.WithChild(Input("Provider scopes", ViewModel.ExternalScope, value => ViewModel.ExternalScope = value, externallyManaged: ViewModel.Session.IsExternallyManaged("OidcScope"), source: ViewModel.Session.SourceName("OidcScope")));
+                }
                 if (ViewModel.Session.Pairing is { } pairing)
                 {
                     var link = new CopyableTextNode(clipboard, TerminalText.Safe(pairing.VerificationUri)).WithHint("Enter copies link; F4 explicitly opens browser");
@@ -120,11 +143,11 @@ public sealed class SetupPage(IClipboardService clipboard) : ReactivePage<SetupV
                     form.WithChild(new TextNode("Target: " + TerminalText.Safe(ViewModel.Session.CanonicalTarget)).Height(2));
                     form.WithChild(new TextNode("Tenant and permission approval happens in your signed-in browser.").Height(2));
                 }
-                else form.WithChild(new TextNode(ViewModel.Authentication == "External authentication" ? "Supply explicit OIDC/API M2M environment or protected configuration, then Next validates it. HTTP OAuth clients use the existing external-auth path." : "F2 begins approval. You can use the trusted link on another machine; no loopback callback.").Height(3));
+                else form.WithChild(new TextNode(ViewModel.Authentication == "External authentication" ? "Next validates the selected external provider configuration. Existing managed values retain their source." : ViewModel.Authentication == "Use existing authentication" ? "Next reuses the selected protected configuration and verifies its actual connection." : "Next begins browser approval. Open the displayed link here or on another device.").Height(3));
                 break;
             case SetupStep.Grants:
                 var delivery = ViewModel.Session.Delivery;
-                form.WithChild(new TextNode("Approved grants: " + string.Join(", ", delivery?.Grants.Select(g => $"tenant {g.TenantId}: {TerminalText.Safe(g.Permission)}") ?? [])).Height(3));
+                form.WithChild(new TextNode("Approved grants: " + string.Join(", ", delivery?.Grants.Select(g => $"{TerminalText.Safe(g.TenantName ?? $"Tenant {g.TenantId}")}: {TerminalText.Safe(g.PermissionLabel ?? g.Permission)}") ?? [])).Height(3));
                 form.WithChild(new TextNode("Instance permissions: " + string.Join(", ", delivery?.InstancePermissions.Select(TerminalText.Safe) ?? [])).Height(2));
                 if (ViewModel.Session.IsExternallyManaged("DefaultTenantId"))
                 {
@@ -133,13 +156,13 @@ public sealed class SetupPage(IClipboardService clipboard) : ReactivePage<SetupV
                 }
                 var tenants = new int?[] { null }.Concat(delivery?.Grants.Select(g => (int?)g.TenantId).Distinct() ?? []).ToArray();
                 var selectedTenant = Array.FindIndex(tenants, tenantId => tenantId?.ToString(System.Globalization.CultureInfo.InvariantCulture) == ViewModel.Session.Configuration.DefaultTenantId);
-                var tenant = new SelectionListNode<int?>(tenants, t => t is null ? "No default tenant" : $"Tenant {t}").WithVisibleRows(5).WithHighlightedIndex(Math.Max(0, selectedTenant));
+                var tenant = new SelectionListNode<int?>(tenants, t => t is null ? "No default tenant" : TerminalText.Safe(delivery?.Grants.FirstOrDefault(grant => grant.TenantId == t)?.TenantName ?? $"Tenant {t}")).WithVisibleRows(5).WithHighlightedIndex(Math.Max(0, selectedTenant));
                 tenant.SelectionConfirmed.Subscribe(items => ViewModel.Session.SelectTenant(items.First())).DisposeWith(_contentSubscriptions);
                 _controls.Add(tenant); form.WithChild(tenant);
                 break;
             case SetupStep.Review:
                 form.WithChild(new TextNode($"Profile: {TerminalText.Safe(ViewModel.Profile)}\nInstance: {TerminalText.Safe(ViewModel.Origin)}\nTransport: {ViewModel.Surface}\nTarget: {TerminalText.Safe(ViewModel.Session.CanonicalTarget)}\nDestination: {TerminalText.Safe(ViewModel.Session.Path)}\nSecret storage: separate owner-only secret file\nDefault tenant: {ViewModel.Session.Configuration.DefaultTenantId ?? "none"}").Height(8));
-                form.WithChild(new TextNode("F2 saves atomically. Existing configuration requires an explicit replacement confirmation. Environment-managed values keep their source.").Height(3));
+                form.WithChild(new TextNode(ViewModel.Session.ReusesExistingConfiguration ? "Next verifies the selected existing configuration. Its managed source and protected files are reused without rewriting credentials." : "Next saves atomically. Actual profile replacements require confirmation; managed values retain their source.").Height(3));
                 foreach (var source in ViewModel.Session.Sources.Where(s => s.Value.ExternallyManaged)) form.WithChild(new TextNode(TerminalText.Safe($"{source.Key}: read-only ({source.Value.Source})")).Height(1));
                 break;
             case SetupStep.Finish:
@@ -149,6 +172,23 @@ public sealed class SetupPage(IClipboardService clipboard) : ReactivePage<SetupV
                 var manage = new CopyableTextNode(clipboard, ViewModel.Session.CredentialManagementUrl).WithHint("Credential management and revocation");
                 _controls.Add(manage); form.WithChild(manage.Height(2));
                 break;
+        }
+        if (step == ViewModel.Step)
+        {
+            var choices = step == SetupStep.Authentication && ViewModel.Session.Pairing is not null
+                ? new[] { "Next / retry", "Open browser", "Advanced", "Back", "Cancel" }
+                : step == SetupStep.Instance ? new[] { "Next", "Advanced", "Cancel" } : new[] { step == SetupStep.Finish ? ViewModel.Checks.Count > 0 && ViewModel.Checks.All(check => check.Status == "completed") ? "Finish" : "Retry verification" : "Next", "Advanced", "Back", "Cancel" };
+            var actions = new SelectionListNode<string>(choices, x => "[ " + x + " ]").WithVisibleRows(choices.Length);
+            actions.SelectionConfirmed.Subscribe(items =>
+            {
+                var choice = items.First();
+                if (choice == "Advanced") ViewModel.ToggleAdvanced();
+                else if (choice == "Open browser") ViewModel.OpenBrowser();
+                else if (choice == "Back") _ = ViewModel.BackAsync();
+                else if (choice == "Cancel") ViewModel.RequestShutdown();
+                else _ = ViewModel.NextAsync();
+            }).DisposeWith(_contentSubscriptions);
+            _controls.Add(actions); form.WithChild(actions);
         }
         return form;
     }

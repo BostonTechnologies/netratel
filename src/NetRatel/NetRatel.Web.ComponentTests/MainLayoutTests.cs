@@ -38,7 +38,7 @@ public class MainLayoutTests : AsyncBunitContext
         Services.AddSingleton<INetRatelNotificationApiClient, StubNotificationApiClient>();
         Services.AddSingleton<IGlobalSearchService, StubGlobalSearchService>();
         Services.AddSingleton<IAppBarVersionApiClient, StubAppBarVersionApiClient>();
-        Services.AddSingleton<IAccessAdministrationApiService, StubAccessAdministrationApiService>();
+        Services.AddSingleton<IAccessAdministrationApiService>(new StubAccessAdministrationApiService());
         Services.AddSingleton<IDeploymentBrandingApiService, StubDeploymentBrandingApiService>();
         Services.AddSingleton<IFlowApiService, FakeFlowApi>();
         Services.AddSingleton<IMonitoringApiService, MonitoringTestApi>();
@@ -229,6 +229,73 @@ public class MainLayoutTests : AsyncBunitContext
         });
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void Navigation_AdminKeepsIndependentLeafPermissions(bool isOperator, bool isInstanceAdministrator)
+    {
+        var authorization = AddAuthorization();
+        authorization.SetAuthorized("An operator with a long account name");
+        if (isOperator) authorization.SetRoles("Operator");
+        Services.AddSingleton<IAccessAdministrationApiService>(new StubAccessAdministrationApiService(isInstanceAdministrator));
+        AddConfiguration(new Dictionary<string, string?>());
+        var cut = RenderMainLayout();
+
+        cut.WaitForAssertion(() =>
+        {
+            var admin = Assert.Single(cut.FindAll(".netratel-nav .mud-nav-group[aria-label='Admin']"));
+            var destinations = admin.QuerySelectorAll("a").Select(link => link.GetAttribute("href")).ToArray();
+            var expected = new List<string> { "/account/integration-credentials" };
+            if (isInstanceAdministrator) expected.AddRange(["/admin/access", "/admin/branding"]);
+            if (isOperator) expected.AddRange(["/admin/app-settings", "/clients/settings"]);
+            destinations.Should().Equal(expected);
+            cut.FindAll(".netratel-nav a[href='/account/integration-credentials']").Should().HaveCount(1);
+            admin.QuerySelector("a[href='/account/security']").Should().BeNull();
+            admin.QuerySelector("a[href='/logout']").Should().BeNull();
+            cut.Find(".netratel-nav a[href='/account/security']").GetAttribute("aria-label")
+                .Should().Be("An operator with a long account name");
+        });
+    }
+
+    [Theory]
+    [InlineData("/account/integration-credentials?tab=personal", "Admin")]
+    [InlineData("/admin/access", "Admin")]
+    [InlineData("/clients/settings", "Admin")]
+    [InlineData("/clients/detail/fixture-agent", "Estate Management")]
+    [InlineData("/tenants", "Estate Management")]
+    [InlineData("/ai/prompts", "AI Ops")]
+    public void Navigation_DeepLinksExpandTheirGroupAndUserChoicesSurviveRenders(string route, string groupTitle)
+    {
+        var authorization = AddAuthorization();
+        authorization.SetAuthorized("operator");
+        authorization.SetRoles("Operator");
+        Services.AddSingleton<IAccessAdministrationApiService>(new StubAccessAdministrationApiService(true));
+        AddConfiguration(new Dictionary<string, string?>());
+        var navigation = Services.GetRequiredService<NavigationManager>();
+        navigation.NavigateTo(route);
+        var cut = RenderMainLayout();
+        var groupButton = $".netratel-nav .mud-nav-group[aria-label='{groupTitle}'] > button";
+
+        cut.WaitForAssertion(() => cut.Find(groupButton).GetAttribute("aria-expanded").Should().Be("true"));
+        cut.Find(groupButton).Click();
+        cut.WaitForAssertion(() => cut.Find(groupButton).GetAttribute("aria-expanded").Should().Be("false"));
+
+        // Changing query state rerenders the shell without overriding the user's choice.
+        navigation.NavigateTo(route.Split('?')[0] + "?view=other");
+        cut.WaitForAssertion(() => cut.Find(groupButton).GetAttribute("aria-expanded").Should().Be("false"));
+        navigation.NavigateTo("/notifications");
+        cut.WaitForAssertion(() => cut.Find(groupButton).GetAttribute("aria-expanded").Should().Be("false"));
+        // Navigating back to a leaf makes the destination discoverable again.
+        navigation.NavigateTo(route);
+        cut.WaitForAssertion(() => cut.Find(groupButton).GetAttribute("aria-expanded").Should().Be("true"));
+        if (groupTitle == "Admin")
+        {
+            cut.FindAll(".netratel-nav a.active").Should().HaveCount(1);
+        }
+    }
+
     [Fact]
     public void AppSiteCss_DefinesProfessionalResponsiveShellContract()
     {
@@ -387,7 +454,7 @@ public class MainLayoutTests : AsyncBunitContext
                 "Test"));
     }
 
-    private sealed class StubAccessAdministrationApiService : IAccessAdministrationApiService
+    private sealed class StubAccessAdministrationApiService(bool isInstanceAdministrator = false) : IAccessAdministrationApiService
     {
         public Task<IReadOnlyList<AccessTenantDto>> GetTenantsAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<AccessTenantDto>>([]);
@@ -396,7 +463,7 @@ public class MainLayoutTests : AsyncBunitContext
             Task.FromResult<IReadOnlyList<AccessRoleDto>>([]);
 
         public Task<EffectiveAccessSummaryDto> GetSelfAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult(new EffectiveAccessSummaryDto(null, false, []));
+            Task.FromResult(new EffectiveAccessSummaryDto(null, isInstanceAdministrator, []));
 
         public Task<IReadOnlyList<LocalUserAccessDto>> GetUsersAsync(int? tenantId, CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<LocalUserAccessDto>>([]);

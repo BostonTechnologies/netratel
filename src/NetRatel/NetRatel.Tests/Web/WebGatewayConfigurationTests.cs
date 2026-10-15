@@ -187,7 +187,7 @@ public sealed class WebGatewayConfigurationTests
         source["ApiBaseUrl"] = Address(backend);
         await using var proxy = await Proxy(source);
         using var client = proxy.GetTestClient();
-        foreach (var path in new[] { "/mcp", "/mcp/", "/api/integration-pairing/v1/capabilities", "/api/v1/tenants", "/api/v1/auth/ai-agent/status",
+        foreach (var path in new[] { "/mcp", "/mcp/", "/api/http-host-setup/v1/capabilities", "/api/integration-pairing/v1/capabilities", "/api/v1/tenants", "/api/v1/auth/ai-agent/status",
                      "/api/v2/account/integration-credentials/pairing/lookup", "/api/v2/mcp/operator/auth/status",
                      "/api/v2/agent-updates/check", "/clients/install/capability",
                      "/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-authorization-server" })
@@ -196,7 +196,8 @@ public sealed class WebGatewayConfigurationTests
             response.StatusCode.Should().Be(HttpStatusCode.OK, path);
             (await response.Content.ReadAsStringAsync()).Should().StartWith(path + "|");
         }
-        foreach (var path in new[] { "/api/integration-pairing/v1/start", "/api/integration-pairing/v1/poll",
+        foreach (var path in new[] { "/api/http-host-setup/v1/start", "/api/http-host-setup/v1/poll", "/api/http-host-setup/v1/cancel",
+                     "/api/integration-pairing/v1/start", "/api/integration-pairing/v1/poll",
                      "/api/integration-pairing/v1/cancel", "/api/integration-pairing/v1/acknowledge",
                      "/api/v2/mcp/local-delegation/authenticate", "/api/v2/mcp/local-delegation/exchange" })
         {
@@ -206,7 +207,7 @@ public sealed class WebGatewayConfigurationTests
         }
         (await client.GetStringAsync("/api/openapi/v1.json")).Should().Be("/openapi/v1.json|/api");
         (await client.GetStringAsync("/api/docs")).Should().Be("local docs");
-        foreach (var path in new[] { "/api/v2/unlisted", "/api/unlisted", "/mcp/unrelated",
+        foreach (var path in new[] { "/api/http-host-setup/v1/unlisted", "/api/v2/unlisted", "/api/unlisted", "/mcp/unrelated",
                      "/.well-known/oauth-protected-resource/mcp/unrelated" })
         {
             using var response = await client.GetAsync(path);
