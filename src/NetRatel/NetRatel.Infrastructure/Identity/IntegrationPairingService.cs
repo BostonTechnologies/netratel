@@ -261,7 +261,7 @@ public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IInt
         var grants = Deserialize<IntegrationCredentialGrantRequest>(request.ApprovedGrantsJson!);
         var ids = grants.Select(x => x.TenantId).Distinct().ToArray();
         var names = applicationDb is null ? new Dictionary<int, string>() : await applicationDb.Tenants.AsNoTracking()
-            .Where(x => ids.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.Name, ct).ConfigureAwait(false);
+            .Where(x => ids.Contains(x.Id)).Select(x => new { x.Id, x.Name }).ToDictionaryAsync(x => x.Id, x => x.Name, ct).ConfigureAwait(false);
         return grants.Select(grant => new IntegrationPairingGrant(grant.TenantId, grant.Permission)
         {
             TenantName = names.GetValueOrDefault(grant.TenantId),

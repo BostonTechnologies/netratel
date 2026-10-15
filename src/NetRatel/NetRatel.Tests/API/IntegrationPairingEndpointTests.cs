@@ -139,6 +139,8 @@ public sealed class IntegrationPairingEndpointTests
     {
         await using var app = await BuildAppAsync();
         using var client = app.GetTestClient();
+        app.Configuration["Integration:HttpMcp:AuthenticationMode"] = "";
+        app.Configuration["WebGateway:Mcp:AuthenticationMode"] = "";
         app.Configuration["M2M:Authority"] = "https://issuer.example.test/service";
         app.Configuration["M2M:Audience"] = "customer.api";
         app.Configuration["M2M:AllowedCallerClientIds:0"] = "customer.automation";
