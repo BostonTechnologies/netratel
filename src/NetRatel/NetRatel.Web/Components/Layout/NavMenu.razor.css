@@ -29,6 +29,9 @@
 
 ::deep .mud-nav-link,
 ::deep .mud-nav-group > .mud-nav-link {
+    min-width: 0;
+    align-items: center;
+    position: relative;
     min-height: 36px;
     margin: 0.08rem 0;
     border: 1px solid transparent;
@@ -82,22 +85,69 @@
 }
 
 ::deep .mud-nav-link .mud-nav-link-text {
-    margin-left: 10px;
+    margin-left: 8px;
     min-width: 0;
-    white-space: normal;
-    overflow-wrap: anywhere;
+    flex: 1 1 auto;
+    white-space: nowrap;
+    overflow-wrap: normal;
+    overflow: hidden;
+    text-overflow: ellipsis;
     line-height: 1.3;
 }
 
-::deep .mud-nav-link .mud-icon-root {
+::deep .mud-nav-link .mud-icon-root,
+::deep .mud-nav-link .mud-nav-link-expand-icon {
     width: 20px;
     height: 20px;
     flex-shrink: 0;
 }
 
 ::deep .mud-nav-link:focus-visible {
+    /* The full-label disclosure must escape MudBlazor's ripple clipping. */
+    overflow: visible;
     outline: 2px solid var(--mud-palette-info);
     outline-offset: -2px;
+}
+
+::deep .mud-nav-link:focus-visible > .mud-ripple-effect {
+    display: none;
+}
+
+::deep .mud-collapse-wrapper,
+::deep .mud-collapse-wrapper-inner {
+    min-width: 0;
+}
+
+::deep .mud-collapse-entered > .mud-collapse-wrapper {
+    overflow: visible;
+}
+
+/* Full names remain the controls' accessible names. Mirror hover titles for
+   sighted keyboard users without changing a row's height or width. */
+::deep a.mud-nav-link[aria-label]:focus-visible::after,
+::deep .mud-nav-group > button:focus-visible::after {
+    content: attr(aria-label);
+    position: absolute;
+    left: 2px;
+    right: 2px;
+    top: 100%;
+    z-index: 10;
+    padding: 4px 6px;
+    border: 1px solid var(--mud-palette-divider);
+    border-radius: var(--mud-default-borderradius);
+    background: var(--mud-palette-surface);
+    color: var(--mud-palette-text-primary);
+    font-size: 0.875rem;
+    font-weight: 400;
+    line-height: 1.3;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    pointer-events: none;
+}
+
+::deep .mud-nav-group {
+    position: relative;
+    min-width: 0;
 }
 
 @media (pointer: coarse) {
