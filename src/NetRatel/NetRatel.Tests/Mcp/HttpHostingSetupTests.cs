@@ -43,6 +43,23 @@ public sealed class HttpHostingSetupTests : IDisposable
                 (Path.GetDirectoryName(path) == Path.Combine(_directory, "runtime") ? UnixFileMode.GroupRead : 0), File.GetUnixFileMode(path)));
     }
 
+    [Theory]
+    [InlineData("https://netratel.example.invalid:443", "https://netratel.example.invalid")]
+    [InlineData("https://netratel.example.invalid:8443", "https://netratel.example.invalid:8443")]
+    public void Generated_browser_origins_use_browser_port_serialization_while_instance_authority_is_retained(string enteredOrigin, string browserOrigin)
+    {
+        var service = new NetRatelHttpHostingSetupService();
+        var request = Request with { PublicOrigin = enteredOrigin + "/mcp", ApiBaseUrl = "" };
+        service.Apply(request);
+        var environment = File.ReadAllText(Path.Combine(_directory, "mcp-http.env"));
+        Assert.Contains("AllowedOrigins__0='" + browserOrigin + "'", environment);
+        Assert.Contains("PublicResourceUri='" + enteredOrigin + "/mcp'", environment);
+        var advanced = request with { AllowedOrigins = [enteredOrigin] };
+        Assert.DoesNotContain(service.Preview(advanced).Changes, change => change.StartsWith("Replace ", StringComparison.Ordinal));
+        service.Apply(advanced);
+        Assert.Equal(environment, File.ReadAllText(Path.Combine(_directory, "mcp-http.env")));
+    }
+
     [Fact]
     public void Existing_output_requires_reviewed_replacement_before_secrets_are_created()
     {
@@ -242,8 +259,8 @@ public sealed class HttpHostingSetupTests : IDisposable
         Assert.Contains("M2M__AllowedCallerClientIds__1='custom.reports'", api);
         Assert.Contains("M2M__AllowedCallerClientIds__2='netratel.cli'", api);
         Assert.Contains("M2M__AllowedCallerClientIds__3='netratel-mcp-http'", api);
-        Assert.Contains("M2MClients__netratel-mcp-http__AllowedAudiences__0='custom.api'", api);
-        Assert.Contains("M2MClients__netratel-mcp-http__AllowedScopes__0='custom.api'", api);
+        Assert.Contains("M2MClients__netratel_mcp_http__AllowedAudiences__0='custom.api'", api);
+        Assert.Contains("M2MClients__netratel_mcp_http__AllowedScopes__0='custom.api'", api);
         Assert.Contains("ApiM2MScope='custom.api'", mcp);
         var saved = NetRatelHttpHostingSetupService.LoadRequest(_directory);
         Assert.Equal(request.ApiServiceAudience, saved!.ApiServiceAudience);

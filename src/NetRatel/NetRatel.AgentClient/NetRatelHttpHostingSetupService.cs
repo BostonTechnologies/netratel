@@ -43,6 +43,10 @@ public sealed record HttpHostingSetupResult(IReadOnlyList<string> Files, IReadOn
 public sealed class NetRatelHttpHostingSetupService
 {
     private const string ServicePrincipal = "netratel-mcp-http";
+    // POSIX entrypoint shells discard environment names containing hyphens.
+    // The owning API resolver maps this shell-safe registration alias back to
+    // the unchanged canonical caller identity through its existing alias boundary.
+    private const string RegistrationEnvironmentAlias = "netratel_mcp_http";
     private const string SecretMount = "/run/netratel-mcp-secrets";
     private string? _reviewedRequestSignature;
     private Dictionary<string, string?>? _reviewedHashes;
@@ -233,9 +237,13 @@ public sealed class NetRatelHttpHostingSetupService
         foreach (var values in new[] { groups, scopes })
             if (values.Count > 32 || values.Any(value => string.IsNullOrWhiteSpace(value) || value.Length > 128 || value.Any(char.IsWhiteSpace) || value.Contains('$') || value.Contains('\'')) || values.Distinct(StringComparer.Ordinal).Count() != values.Count)
                 throw new AgentClientValidationException("Groups and scopes must be unique nonempty tokens without whitespace or interpolation characters.");
-        var origins = request.AllowedOrigins ?? [origin];
-        if (origins.Count > 16) throw new AgentClientValidationException("Hosting setup supports up to 16 explicit allowed origins.");
-        foreach (var allowed in origins) Https(allowed, "AllowedOrigins", originOnly: true);
+        var requestedOrigins = request.AllowedOrigins ?? [origin];
+        if (requestedOrigins.Count > 16) throw new AgentClientValidationException("Hosting setup supports up to 16 explicit allowed origins.");
+        // Browser Origin serialization omits the default HTTPS port. Keep the
+        // user's explicit authority in setup/resource identity, and emit wire
+        // origins only after strict origin-only validation.
+        IReadOnlyList<string> origins = requestedOrigins.Select(allowed =>
+            Https(allowed, "AllowedOrigins", originOnly: true).GetLeftPart(UriPartial.Authority)).ToArray();
         var secretDirectory = Path.Combine(output, "secrets");
         var delegationPath = Path.Combine(secretDirectory, "delegation.key");
         var serviceSecretPath = Path.Combine(secretDirectory, "outbound-m2m.secret");
@@ -360,10 +368,10 @@ public sealed class NetRatelHttpHostingSetupService
                 throw new AgentClientValidationException("M2M caller IDs must be explicit nonempty client identity tokens.");
             effectiveCallerIds = callerIds;
             for (var index = 0; index < callerIds.Length; index++) apiSettings[$"M2M__AllowedCallerClientIds__{index}"] = callerIds[index];
-            apiSettings[$"M2MClients__{ServicePrincipal}__SecretFile"] = SecretMount + "/outbound-m2m.secret";
-            apiSettings[$"M2MClients__{ServicePrincipal}__Secret"] = "";
-            apiSettings[$"M2MClients__{ServicePrincipal}__AllowedAudiences__0"] = serviceAudience;
-            apiSettings[$"M2MClients__{ServicePrincipal}__AllowedScopes__0"] = serviceAudience;
+            apiSettings[$"M2MClients__{RegistrationEnvironmentAlias}__SecretFile"] = SecretMount + "/outbound-m2m.secret";
+            apiSettings[$"M2MClients__{RegistrationEnvironmentAlias}__Secret"] = "";
+            apiSettings[$"M2MClients__{RegistrationEnvironmentAlias}__AllowedAudiences__0"] = serviceAudience;
+            apiSettings[$"M2MClients__{RegistrationEnvironmentAlias}__AllowedScopes__0"] = serviceAudience;
             mcp["NETRATEL_MCP_CONFIG"] = "";
             mcp["NetRatel__Mcp__Http__ConfigurationPath"] = "";
             mcp["NetRatel__Mcp__Outbound__AuthenticationMode"] = "ApiM2MClientSecret";

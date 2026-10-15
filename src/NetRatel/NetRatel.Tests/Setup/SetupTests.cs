@@ -565,8 +565,8 @@ public sealed class SetupTests
             await model.NextAsync(); Assert.True(model.ConfirmReplace); Assert.Null(model.Result);
             await model.NextAsync(replace: true); Assert.Equal(HostingSetupStep.Apply, model.Step); Assert.NotNull(model.Result); Assert.False(model.Verified);
             var api = File.ReadAllText(System.IO.Path.Combine(output, "api.env")); var mcp = File.ReadAllText(System.IO.Path.Combine(output, "mcp-http.env"));
-            Assert.Contains("M2MClients__netratel-mcp-http__AllowedAudiences__0='current.api'", api);
-            Assert.Contains("M2MClients__netratel-mcp-http__AllowedScopes__0='current.api'", api);
+            Assert.Contains("M2MClients__netratel_mcp_http__AllowedAudiences__0='current.api'", api);
+            Assert.Contains("M2MClients__netratel_mcp_http__AllowedScopes__0='current.api'", api);
             Assert.Contains("ApiM2MScope='current.api'", mcp); Assert.DoesNotContain("M2M__Authority=", api); Assert.DoesNotContain("M2M__Audience=", api);
             Assert.Equal("current.api", NetRatelHttpHostingSetupService.LoadRequest(output)!.ApiServiceAudience);
             Assert.Equal("https://current-authority.example", NetRatelHttpHostingSetupService.LoadRequest(output)!.ApiServiceAuthority);

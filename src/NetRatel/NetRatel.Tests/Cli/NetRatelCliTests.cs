@@ -41,7 +41,7 @@ public sealed class NetRatelCliTests
             using var result = JsonDocument.Parse(output.ToString());
             result.RootElement.GetProperty("state").GetString().Should().Be("configuration-written-apply-and-live-verification-pending");
             var api = await File.ReadAllTextAsync(Path.Combine(directory, "api.env"));
-            api.Should().Contain("M2MClients__netratel-mcp-http__AllowedAudiences__0='custom.api'");
+            api.Should().Contain("M2MClients__netratel_mcp_http__AllowedAudiences__0='custom.api'");
             api.Should().Contain("M2M__AllowedCallerClientIds__0='existing.client'");
             api.Should().NotContain("\nM2M__Authority=").And.NotContain("\nM2M__Audience=");
             (await File.ReadAllTextAsync(Path.Combine(directory, "mcp-http.env"))).Should().Contain("ApiM2MScope='custom.api'");
