@@ -29,11 +29,13 @@ public sealed class HttpHostSetupService(NetRatelIdentityDbContext db, IEffectiv
         catch (ArgumentException) { throw new HttpHostSetupUnavailableException(); }
         if (!McpResourceUri.TryNormalize(configuration["Integration:HttpMcp:PublicResourceUri"] ?? origin + "/mcp", out var resource))
             throw new HttpHostSetupUnavailableException();
-        var mode = configuration["Integration:HttpMcp:AuthenticationMode"] ?? configuration["WebGateway:Mcp:AuthenticationMode"];
+        var mode = Configured("Integration:HttpMcp:AuthenticationMode") ?? Configured("WebGateway:Mcp:AuthenticationMode");
+        if (mode is not null && !string.Equals(mode, "LocalCredential", StringComparison.OrdinalIgnoreCase) && !string.Equals(mode, "Oidc", StringComparison.OrdinalIgnoreCase))
+            throw new HttpHostSetupUnavailableException();
         var local = mode is not null ? string.Equals(mode, "LocalCredential", StringComparison.OrdinalIgnoreCase) :
             AuthenticationModeConfiguration.Resolve(configuration) != "Oidc";
         return new(HttpHostSetupProtocol.Version, origin, resource!, origin + "/account/integration-credentials?tab=credentials",
-            local, configuration["Integration:HttpMcp:Authority"] ?? configuration["NetRatel:Mcp:Http:Authority"],
+            local, Configured("Integration:HttpMcp:Authority") ?? Configured("NetRatel:Mcp:Http:Authority"),
             Values("RequiredGroups"), Values("RequiredScopes"))
         {
             AuthenticationModeKnown = mode is not null || !string.Equals(configuration["NetRatel:Mcp:Delegation:Enabled"], "true", StringComparison.OrdinalIgnoreCase)
@@ -119,8 +121,9 @@ public sealed class HttpHostSetupService(NetRatelIdentityDbContext db, IEffectiv
         await db.HttpHostSetupRequests.Where(x => ids.Contains(x.Id)).ExecuteDeleteAsync(ct).ConfigureAwait(false);
     }
 
+    private string? Configured(string key) => configuration[key] is { } value && !string.IsNullOrWhiteSpace(value) ? value.Trim() : null;
     private IReadOnlyList<string> Values(string name) => configuration.GetSection("Integration:HttpMcp:" + name).GetChildren()
-        .Select(x => x.Value).OfType<string>().ToArray();
+        .Select(x => x.Value).OfType<string>().Where(value => !string.IsNullOrWhiteSpace(value)).ToArray();
 
     private async Task RequireAdministratorAsync(ClaimsPrincipal actor, CancellationToken ct)
     {
