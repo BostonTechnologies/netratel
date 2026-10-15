@@ -14,6 +14,10 @@ public sealed record HttpHostSetupCapabilities(int ProtocolVersion, string Publi
     IReadOnlyList<string> RequiredGroups, IReadOnlyList<string> RequiredScopes)
 {
     public bool AuthenticationModeKnown { get; init; } = true;
+    public bool ExistingHostConfigured { get; init; }
+    public string? ApiServiceAuthority { get; init; }
+    public string ApiServiceAudience { get; init; } = "netratel.api";
+    public IReadOnlyList<string> ExistingM2MCallerClientIds { get; init; } = [];
 }
 public sealed record HttpHostSetupStartRequest(string PublicOrigin, string Resource, string RegistrationFingerprint,
     string ServicePrincipal = "netratel-mcp-http");

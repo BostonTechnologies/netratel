@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Identity.Branding;
+using NetRatel.Infrastructure.ServiceIdentity;
 using NetRatel.Shared.Authentication;
 using NetRatel.Shared.Client;
 using NetRatel.Shared.Connectivity;
@@ -34,11 +35,20 @@ public sealed class HttpHostSetupService(NetRatelIdentityDbContext db, IEffectiv
             throw new HttpHostSetupUnavailableException();
         var local = mode is not null ? string.Equals(mode, "LocalCredential", StringComparison.OrdinalIgnoreCase) :
             AuthenticationModeConfiguration.Resolve(configuration) != "Oidc";
+        var existingHost = string.Equals(Configured("NetRatel:Mcp:Delegation:Enabled"), "true", StringComparison.OrdinalIgnoreCase) ||
+            configuration.GetSection("M2MClients").GetChildren().Any(client =>
+                ServicePrincipalRegistry.AliasKey(client.Key) == ServicePrincipalRegistry.AliasKey("netratel-mcp-http") &&
+                new[] { "Secret", "SecretFile", "Secret_FILE" }.Any(name => !string.IsNullOrWhiteSpace(client[name])));
         return new(HttpHostSetupProtocol.Version, origin, resource!, origin + "/account/integration-credentials?tab=credentials",
             local, Configured("Integration:HttpMcp:Authority") ?? Configured("NetRatel:Mcp:Http:Authority"),
             Values("RequiredGroups"), Values("RequiredScopes"))
         {
-            AuthenticationModeKnown = mode is not null || !string.Equals(configuration["NetRatel:Mcp:Delegation:Enabled"], "true", StringComparison.OrdinalIgnoreCase)
+            AuthenticationModeKnown = mode is not null || !existingHost,
+            ExistingHostConfigured = existingHost,
+            ApiServiceAuthority = Configured("M2M:Authority"),
+            ApiServiceAudience = Configured("M2M:Audience") ?? "netratel.api",
+            ExistingM2MCallerClientIds = configuration.GetSection("M2M:AllowedCallerClientIds").GetChildren()
+                .Select(child => child.Value).OfType<string>().Where(value => !string.IsNullOrWhiteSpace(value)).ToArray()
         };
     }
 

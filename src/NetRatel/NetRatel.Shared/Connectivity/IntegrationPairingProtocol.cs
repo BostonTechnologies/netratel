@@ -17,6 +17,10 @@ public sealed record IntegrationPairingCapabilities(int ProtocolVersion, string 
 {
     public IReadOnlyList<string> AuthenticationMethods { get; init; } = ["browser"];
     public IReadOnlyList<string> ConfigurationCapabilities { get; init; } = ["scoped-integration-credential", "explicit-tenant-grants"];
+    public string HttpMcpAuthenticationMode { get; init; } = "local";
+    public string? HttpMcpOidcAuthority { get; init; }
+    public IReadOnlyList<string> HttpMcpRequiredScopes { get; init; } = [];
+    public bool HttpMcpAuthenticationModeKnown { get; init; } = true;
 }
 public sealed record IntegrationPairingStartRequest(string Name, PairingCredentialPurpose Purpose,
     string? Resource = null, IReadOnlyList<string>? RequestedPermissions = null);

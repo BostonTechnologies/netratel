@@ -32,6 +32,7 @@ public sealed class IntegrationPairingEndpointTests
         await using var app = await BuildAppAsync();
         using var client = app.GetTestClient();
         var capabilities = (await client.GetFromJsonAsync<HttpHostSetupCapabilities>(HttpHostSetupProtocol.Route + "/capabilities"))!;
+        capabilities.ExistingHostConfigured.Should().BeFalse();
         using var wrongOrigin = await client.PostAsJsonAsync(HttpHostSetupProtocol.Route + "/start",
             new HttpHostSetupStartRequest("https://attacker.example.test", capabilities.Resource, new string('A', 64)));
         wrongOrigin.StatusCode.Should().Be(HttpStatusCode.BadRequest);
@@ -97,12 +98,15 @@ public sealed class IntegrationPairingEndpointTests
         app.Configuration["WebGateway:Mcp:AuthenticationMode"] = " ";
         var legacy = (await client.GetFromJsonAsync<HttpHostSetupCapabilities>(HttpHostSetupProtocol.Route + "/capabilities"))!;
         legacy.AuthenticationModeKnown.Should().BeFalse();
+        legacy.ExistingHostConfigured.Should().BeTrue();
         app.Configuration["WebGateway:Mcp:AuthenticationMode"] = "Oidc";
         var gatewayConfigured = (await client.GetFromJsonAsync<HttpHostSetupCapabilities>(HttpHostSetupProtocol.Route + "/capabilities"))!;
         gatewayConfigured.AuthenticationModeKnown.Should().BeTrue();
         gatewayConfigured.LocalCredentialMode.Should().BeFalse();
         app.Configuration["Integration:HttpMcp:AuthenticationMode"] = "invalid";
         (await client.GetAsync(HttpHostSetupProtocol.Route + "/capabilities")).StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var invalidIngress = (await client.GetFromJsonAsync<IntegrationPairingCapabilities>(IntegrationPairingProtocol.Route + "/capabilities"))!;
+        invalidIngress.HttpMcpAuthenticationModeKnown.Should().BeFalse();
         app.Configuration["Integration:HttpMcp:AuthenticationMode"] = "Oidc";
         app.Configuration["Integration:HttpMcp:Authority"] = "https://identity.example.test/realms/operators";
         app.Configuration["Integration:HttpMcp:RequiredGroups:0"] = "mcp-operators";
@@ -114,12 +118,41 @@ public sealed class IntegrationPairingEndpointTests
         capabilities.OidcAuthority.Should().Be("https://identity.example.test/realms/operators");
         capabilities.RequiredGroups.Should().Equal("mcp-operators");
         capabilities.RequiredScopes.Should().Equal("mcp.read");
+        var personal = (await client.GetFromJsonAsync<IntegrationPairingCapabilities>(IntegrationPairingProtocol.Route + "/capabilities"))!;
+        personal.HttpMcpAuthenticationMode.Should().Be("oidc");
+        personal.HttpMcpOidcAuthority.Should().Be(capabilities.OidcAuthority);
+        personal.HttpMcpRequiredScopes.Should().Equal("mcp.read");
+        personal.HttpMcpAuthenticationModeKnown.Should().BeTrue();
         var start = await client.PostAsJsonAsync(HttpHostSetupProtocol.Route + "/start",
             new HttpHostSetupStartRequest(capabilities.PublicOrigin, capabilities.Resource, new string('B', 64)));
         var request = (await start.Content.ReadFromJsonAsync<HttpHostSetupStartResponse>())!;
         app.Configuration["Integration:HttpMcp:PublicResourceUri"] = "https://mcp.example.test/changed/mcp";
         var poll = await client.PostAsJsonAsync(HttpHostSetupProtocol.Route + "/poll", new HttpHostSetupDeviceRequest(request.DeviceCapability));
         (await poll.Content.ReadFromJsonAsync<HttpHostSetupPollResponse>())!.Status.Should().Be("cancelled");
+    }
+
+    [Theory]
+    [InlineData("netratel-mcp-http", "Secret")]
+    [InlineData("NETRATEL_MCP_HTTP", "SecretFile")]
+    [InlineData("netratel.mcp.http", "Secret_FILE")]
+    public async Task Host_discovery_preserves_existing_api_machine_auth_and_reserves_configured_host_identity(string clientId, string source)
+    {
+        await using var app = await BuildAppAsync();
+        using var client = app.GetTestClient();
+        app.Configuration["M2M:Authority"] = "https://issuer.example.test/service";
+        app.Configuration["M2M:Audience"] = "customer.api";
+        app.Configuration["M2M:AllowedCallerClientIds:0"] = "customer.automation";
+        app.Configuration["M2M:AllowedCallerClientIds:1"] = "customer.reports";
+        app.Configuration[$"M2MClients:{clientId}:{source}"] = source == "Secret" ? "existing-protected-secret-do-not-return" : "/protected/do-not-read";
+        var response = await client.GetAsync(HttpHostSetupProtocol.Route + "/capabilities");
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var capabilities = (await response.Content.ReadFromJsonAsync<HttpHostSetupCapabilities>())!;
+        capabilities.ExistingHostConfigured.Should().BeTrue();
+        capabilities.AuthenticationModeKnown.Should().BeFalse();
+        capabilities.ApiServiceAuthority.Should().Be("https://issuer.example.test/service");
+        capabilities.ApiServiceAudience.Should().Be("customer.api");
+        capabilities.ExistingM2MCallerClientIds.Should().Equal("customer.automation", "customer.reports");
+        (await response.Content.ReadAsStringAsync()).Should().NotContain("existing-protected-secret-do-not-return").And.NotContain("/protected/do-not-read");
     }
 
     [Fact]
