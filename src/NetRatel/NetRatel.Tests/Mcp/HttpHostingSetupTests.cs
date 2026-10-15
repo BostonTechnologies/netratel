@@ -26,6 +26,11 @@ public sealed class HttpHostingSetupTests : IDisposable
         Assert.Contains("NetRatel__Mcp__Http__PublicResourceUri='https://netratel.example.invalid/mcp'", File.ReadAllText(Path.Combine(_directory, "mcp-http.env")));
         Assert.Contains("ApiM2MTokenUrl='https://netratel.example.invalid/connect/token'", File.ReadAllText(Path.Combine(_directory, "mcp-http.env")));
         Assert.Contains("M2M__AllowedCallerClientIds__2='netratel-mcp-http'", File.ReadAllText(Path.Combine(_directory, "api.env")));
+        Assert.Contains("NETRATEL_CLIENT_DIRECTORY='/var/lib/netratel/clients'", File.ReadAllText(Path.Combine(_directory, "mcp-http.env")));
+        Assert.DoesNotContain("NETRATEL_CLIENT_DIRECTORY", File.ReadAllText(Path.Combine(_directory, "api.env")));
+        var overlay = File.ReadAllText(Path.Combine(_directory, "compose.http-host.yaml"));
+        Assert.Contains("source: http-client-data\n        target: /var/lib/netratel/clients", overlay);
+        Assert.Contains("NETRATEL_CLIENT_DIRECTORY", overlay);
         var timestamps = result.Files.ToDictionary(path => path, File.GetLastWriteTimeUtc);
         service.Preview(request);
         service.Apply(request);

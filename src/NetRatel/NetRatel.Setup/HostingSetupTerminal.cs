@@ -52,7 +52,6 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
     private string? _composeOutputDirectory;
     private string? _apiServiceAuthority;
     private string _apiServiceAudience = "netratel.api";
-    private bool _hasSavedRequest;
     private bool _m2mCallersKnown;
     public HostingSetupViewModel(IReadOnlyDictionary<string, string>? options = null, HttpMessageHandler? handler = null)
     {
@@ -182,8 +181,8 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
                         if (OidcAuthority.Length == 0) OidcAuthority = capabilities.OidcAuthority ?? "";
                         if (RequiredGroups.Length == 0) RequiredGroups = string.Join(',', capabilities.RequiredGroups);
                         if (RequiredScopes.Length == 0) RequiredScopes = string.Join(',', capabilities.RequiredScopes);
-                        if (!_hasSavedRequest && !_options.ContainsKey("--api-m2m-audience")) _apiServiceAudience = capabilities.ApiServiceAudience;
-                        if (!_hasSavedRequest) _apiServiceAuthority = capabilities.ApiServiceAuthority;
+                        if (!_options.ContainsKey("--api-m2m-audience")) _apiServiceAudience = capabilities.ApiServiceAudience;
+                        _apiServiceAuthority = capabilities.ApiServiceAuthority;
                         if (!_options.ContainsKey("--existing-m2m-callers")) ExistingM2MCallers = string.Join(',', Values(ExistingM2MCallers).Concat(capabilities.ExistingM2MCallerClientIds).Distinct(StringComparer.Ordinal));
                         _m2mCallersKnown = true;
                     }
@@ -230,7 +229,6 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
         if (_loadedLocation == location) return;
         var saved = NetRatelHttpHostingSetupService.LoadRequest(OutputDirectory, address.Origin);
         _loadedLocation = location;
-        _hasSavedRequest = saved is not null;
         _m2mCallersKnown |= saved?.ExistingM2MCallerClientIds is not null;
         if (saved is null) return;
         if (!_options.ContainsKey("--api-m2m-audience")) _apiServiceAudience = saved.ApiServiceAudience;

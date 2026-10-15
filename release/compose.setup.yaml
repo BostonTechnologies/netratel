@@ -6,10 +6,15 @@ services:
     command: ["setup", "--target", "http-host"]
     environment:
       NETRATEL_SETUP_DIRECTORY: /setup-output
+      NETRATEL_CLIENT_DIRECTORY: /var/lib/netratel/clients
+      NETRATEL_CLIENT_VOLUME: ${NETRATEL_CLIENT_VOLUME:-netratel-http-client-data}
       NETRATEL_SETUP_VOLUME: ${NETRATEL_SETUP_VOLUME:-netratel-http-host-setup}
       NETRATEL_SETUP_COMPOSE_FILES: ${NETRATEL_SETUP_COMPOSE_FILES:-compose.images.yaml,compose.mcp-http.yaml}
     volumes:
       - http-host-setup:/setup-output
+      - http-client-data:/var/lib/netratel/clients
 volumes:
   http-host-setup:
     name: ${NETRATEL_SETUP_VOLUME:-netratel-http-host-setup}
+  http-client-data:
+    name: ${NETRATEL_CLIENT_VOLUME:-netratel-http-client-data}

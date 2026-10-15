@@ -27,6 +27,36 @@ namespace NetRatel.Tests.API;
 public sealed class IntegrationPairingEndpointTests
 {
     [Fact]
+    public async Task Expired_pending_host_requests_do_not_consume_the_active_request_limit()
+    {
+        await using var app = await BuildAppAsync();
+        using var client = app.GetTestClient();
+        var capabilities = (await client.GetFromJsonAsync<HttpHostSetupCapabilities>(HttpHostSetupProtocol.Route + "/capabilities"))!;
+        var now = app.Services.GetRequiredService<TimeProvider>().GetUtcNow();
+        await using (var scope = app.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<NetRatelIdentityDbContext>();
+            db.HttpHostSetupRequests.AddRange(Enumerable.Range(0, 4096).Select(index => new HttpHostSetupRequest
+            {
+                PublicOrigin = capabilities.PublicOrigin, Resource = capabilities.Resource,
+                ServicePrincipal = "netratel-mcp-http", RegistrationFingerprint = new string('A', 64),
+                UserCodeHash = $"existing-code-{index}", DeviceCapabilityHash = $"existing-capability-{index}",
+                State = HttpHostSetupState.Pending, CreatedAtUtc = now.AddMinutes(-10),
+                ExpiresAtUtc = index == 0 ? now.AddMinutes(-1) : now.AddMinutes(10)
+            }));
+            await db.SaveChangesAsync();
+        }
+        var request = new HttpHostSetupStartRequest(capabilities.PublicOrigin, capabilities.Resource, new string('B', 64));
+        using var accepted = await client.PostAsJsonAsync(HttpHostSetupProtocol.Route + "/start", request);
+        accepted.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var limited = await client.PostAsJsonAsync(HttpHostSetupProtocol.Route + "/start", request);
+        limited.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        await using var finalScope = app.Services.CreateAsyncScope();
+        var stored = finalScope.ServiceProvider.GetRequiredService<NetRatelIdentityDbContext>();
+        (await stored.HttpHostSetupRequests.CountAsync()).Should().Be(4097);
+    }
+
+    [Fact]
     public async Task Host_generation_requires_current_instance_administrator_and_never_issues_a_personal_or_outbound_secret()
     {
         await using var app = await BuildAppAsync();

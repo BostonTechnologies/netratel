@@ -345,7 +345,8 @@ public sealed class NetRatelConfigurationService
     {
         ValidateProfileName(profileName);
         var environment = getEnvironmentVariable ?? Environment.GetEnvironmentVariable;
-        var configuredRoot = environment("NETRATEL_SETUP_DIRECTORY");
+        var configuredRoot = surface == ConfigurationSurface.HttpMcpOutbound ? null : environment("NETRATEL_CLIENT_DIRECTORY");
+        if (string.IsNullOrWhiteSpace(configuredRoot)) configuredRoot = environment("NETRATEL_SETUP_DIRECTORY");
         if (!string.IsNullOrWhiteSpace(configuredRoot))
             return Path.Combine(HttpHostingStorage.Resolve(configuredRoot), "profiles", surface.ToString().ToLowerInvariant(), profileName + ".json");
         if (string.Equals(environment("DOTNET_RUNNING_IN_CONTAINER"), "true", StringComparison.OrdinalIgnoreCase))

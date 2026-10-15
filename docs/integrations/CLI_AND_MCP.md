@@ -21,7 +21,11 @@ bundle.
 
 ## Explicit setup and profiles
 
-Run `netratel setup` or `netratel auth login` to connect a client. Setup is explicit; normal commands and MCP startup never open a wizard. The first page asks only for **Instance web URL**, with the textbox focused. Paste the HTTPS Web root or its `/mcp` URL and press Enter. Setup normalizes either form once, infers the invoked surface and uses the persistent default profile; review the derived destination after discovery. Alternative transports, isolated profiles and storage paths remain available through Advanced or explicit flags:
+Run `netratel setup` or `netratel auth login` to connect a client. Setup is explicit; normal commands and MCP startup never open a wizard. The first page asks only for **Instance web URL**, with the textbox focused. Paste the HTTPS Web root or its `/mcp` URL and press Enter. Setup normalizes either form once, infers the invoked surface and uses the persistent default profile; review the derived destination after discovery.
+
+Bare `dotnet NetRatel.Mcp.dll setup` selects a personal stdio client; bare `dotnet NetRatel.Mcp.Http.dll setup` selects a personal HTTP MCP client. Deployment-host provisioning requires explicit `--mode host` or `--target http-host`. Running personal setup inside the supported HTTP MCP container saves to its separate durable client-data volume; it does not create or replace the host's outbound identity.
+
+Alternative transports, isolated profiles and storage paths remain available through Advanced or explicit flags:
 
 ```sh
 netratel setup --transport cli --profile operator
@@ -33,7 +37,7 @@ After discovery, open/copy the trusted browser approval link and use its short c
 
 CLI and stdio use API-purpose credentials. HTTP MCP client setup uses a separate HttpMcp-purpose credential and canonical `/mcp` resource; it cannot configure the host's outbound service identity. Deleting a local profile does not revoke a server credential. Revoke/rotate from `/account/integration-credentials`.
 
-The Termina setup UI supports Enter/Next, visible Back/Cancel/Advanced, keyboard navigation and PageUp/PageDown scrolling for long reviews. It retains fields and focus after validation errors and marks environment-managed settings read-only. Native tooling resolves its configured location first, then a writable per-user application-data default; container tooling uses the supplied persistent setup mount. The summary shows the resolved location. Setup checks storage before saving, masks manual secret entry and emits no secrets in examples. Cancelling before save preserves the prior profile; replacing a profile requires deliberate confirmation. On a non-TTY, interactive setup exits with code `2` and help on stderr; cancellation exits `130`, other setup failures `3`. Normal stdio serving uses pipes without a TTY and writes JSON-RPC only to stdout.
+The Termina setup UI supports Enter/Next, visible Back/Cancel/Advanced, keyboard navigation and PageUp/PageDown scrolling for long reviews. It retains fields and focus after validation errors and marks environment-managed settings read-only. Native tooling resolves its configured location first, then a writable per-user configuration default. Supported container clients use the personal volume `netratel-http-client-data` at `/var/lib/netratel/clients`; the default HTTP profile is `profiles/httpmcpclient/default.json` beneath it. The summary shows the resolved location. Setup checks storage before approval/save, masks manual secret entry and emits no secrets in examples. Cancelling before save preserves the prior profile; replacing a profile requires deliberate confirmation. On a non-TTY, interactive setup exits with code `2` and help on stderr; cancellation exits `130`, other setup failures `3`. Normal stdio serving uses pipes without a TTY and writes JSON-RPC only to stdout.
 
 The noninteractive existing-credential equivalent reads a protected file:
 

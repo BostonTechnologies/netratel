@@ -100,15 +100,18 @@ public sealed class SetupTests
         Assert.Equal(0, await SetupCommand.RunAsync(["setup", "--help"], ConfigurationSurface.HttpMcpOutbound, output, error, interactive: false));
         Assert.Contains("--non-interactive", output.ToString()); Assert.Equal("", error.ToString());
     }
-    [Fact]
-    public async Task Http_host_distribution_defaults_to_host_and_preserves_explicit_client_target()
+    [Theory]
+    [InlineData(false, new[] { "setup" })]
+    [InlineData(false, new[] { "setup", "--target", "http-client" })]
+    [InlineData(false, new[] { "setup", "--mode", "client" })]
+    [InlineData(true, new[] { "setup", "--mode", "host" })]
+    [InlineData(true, new[] { "setup", "--target", "http-host" })]
+    public async Task Http_distribution_preserves_personal_client_default_and_requires_explicit_host_selection(bool hosting, string[] arguments)
     {
         using var output = new StringWriter(); using var error = new StringWriter();
-        Assert.Equal(2, await SetupCommand.RunAsync(["setup"], ConfigurationSurface.HttpMcpOutbound, output, error, interactive: false));
-        Assert.Contains("Interactive hosting setup", error.ToString());
-        error.GetStringBuilder().Clear();
-        Assert.Equal(2, await SetupCommand.RunAsync(["setup", "--target", "http-client"], ConfigurationSurface.HttpMcpOutbound, output, error, interactive: false));
-        Assert.Contains("Interactive setup requires a TTY", error.ToString()); Assert.Equal("", output.ToString());
+        Assert.Equal(2, await SetupCommand.RunAsync(arguments, ConfigurationSurface.HttpMcpOutbound, output, error, interactive: false));
+        Assert.Contains(hosting ? "Interactive hosting setup" : "Interactive setup requires a TTY", error.ToString());
+        Assert.Equal("", output.ToString());
     }
 
     [Fact]
@@ -491,6 +494,120 @@ public sealed class SetupTests
         Assert.Equal("nrt_ic_previous-consumer", session.Configuration.IntegrationCredential);
         Assert.Equal(original, ConfigurationFileStorage.Hash(path)); Assert.Equal(1, cancellations); Assert.Equal(0, acknowledgements);
     }
+    [Fact]
+    public async Task Host_rerun_uses_current_discovered_service_audience_after_review_without_rotating_identity()
+    {
+        using var directory = new TempDirectory();
+        var output = System.IO.Path.Combine(directory.Path, "setup");
+        var original = new HttpHostingSetupRequest(output, "https://instance.example", "https://instance.example")
+        { ApiServiceAudience = "old.api", ApiServiceAuthority = "https://old-authority.example", ExistingM2MCallerClientIds = [] };
+        new NetRatelHttpHostingSetupService().Apply(original);
+        var protectedHashes = Directory.EnumerateFiles(System.IO.Path.Combine(output, "secrets"), "*", SearchOption.AllDirectories)
+            .Concat(Directory.EnumerateFiles(System.IO.Path.Combine(output, "runtime"), "*", SearchOption.AllDirectories))
+            .ToDictionary(path => path, ConfigurationFileStorage.Hash);
+        string? fingerprint = null;
+        var handler = new StubHandler(async request =>
+        {
+            var route = request.RequestUri!.AbsolutePath;
+            if (route.EndsWith("capabilities")) return Json(new
+            {
+                protocolVersion = 1, publicOrigin = "https://instance.example", resource = "https://instance.example/mcp", verificationUri = "https://instance.example/account/integration-credentials", localCredentialMode = true,
+                requiredGroups = Array.Empty<string>(), requiredScopes = Array.Empty<string>(), existingHostConfigured = true,
+                apiServiceAudience = "current.api", apiServiceAuthority = "https://current-authority.example", existingM2MCallerClientIds = new[] { "netratel-mcp-http" }
+            });
+            if (route.EndsWith("start"))
+            {
+                using var body = System.Text.Json.JsonDocument.Parse(await request.Content!.ReadAsStringAsync()); fingerprint = body.RootElement.GetProperty("registrationFingerprint").GetString();
+                return Json(new { requestId = "host", userCode = "HOST-CODE", deviceCapability = "host-capability", verificationUri = "https://instance.example/account/integration-credentials", publicOrigin = "https://instance.example", expiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(1), intervalSeconds = 5 });
+            }
+            if (route.EndsWith("poll")) return Json(new { status = "approved", approvalId = "approved", registrationFingerprint = fingerprint });
+            return Json(new { status = "cancelled" });
+        });
+        using var model = new HostingSetupViewModel(new Dictionary<string, string> { ["--output-directory"] = output, ["--instance"] = "https://instance.example" }, handler);
+        try
+        {
+            await model.NextAsync(); Assert.Equal(HostingSetupStep.Review, model.Step);
+            Assert.Contains(model.Preview!.Changes, change => change.StartsWith("Replace ", StringComparison.Ordinal));
+            await model.NextAsync(); Assert.True(model.ConfirmReplace); Assert.Null(model.Result);
+            await model.NextAsync(replace: true); Assert.Equal(HostingSetupStep.Apply, model.Step); Assert.NotNull(model.Result); Assert.False(model.Verified);
+            var api = File.ReadAllText(System.IO.Path.Combine(output, "api.env")); var mcp = File.ReadAllText(System.IO.Path.Combine(output, "mcp-http.env"));
+            Assert.Contains("M2MClients__netratel-mcp-http__AllowedAudiences__0='current.api'", api);
+            Assert.Contains("M2MClients__netratel-mcp-http__AllowedScopes__0='current.api'", api);
+            Assert.Contains("ApiM2MScope='current.api'", mcp); Assert.DoesNotContain("M2M__Authority=", api); Assert.DoesNotContain("M2M__Audience=", api);
+            Assert.Equal("current.api", NetRatelHttpHostingSetupService.LoadRequest(output)!.ApiServiceAudience);
+            Assert.Equal("https://current-authority.example", NetRatelHttpHostingSetupService.LoadRequest(output)!.ApiServiceAuthority);
+            Assert.All(protectedHashes, entry => Assert.Equal(entry.Value, ConfigurationFileStorage.Hash(entry.Key)));
+        }
+        finally { await model.CleanupAsync(); }
+    }
+
+    [Fact]
+    public async Task Virtual_http_client_approval_saves_and_reloads_the_default_profile_in_personal_persistent_storage()
+    {
+        using var directory = new TempDirectory();
+        var clientRoot = System.IO.Path.Combine(directory.Path, "personal-client-state");
+        var hostRoot = System.IO.Path.Combine(directory.Path, "separate-host-state");
+        string? EnvironmentValue(string key) => key switch
+        {
+            "NETRATEL_CLIENT_DIRECTORY" => clientRoot,
+            "NETRATEL_SETUP_DIRECTORY" => hostRoot,
+            _ => null
+        };
+        var acknowledged = 0;
+        var handler = new StubHandler(async request =>
+        {
+            var route = request.RequestUri!.AbsolutePath;
+            Assert.DoesNotContain("http-host-setup", route);
+            if (route.EndsWith("capabilities")) return Capabilities();
+            if (route.EndsWith("start"))
+            {
+                using var document = System.Text.Json.JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+                Assert.Equal(1, document.RootElement.GetProperty("purpose").GetInt32());
+                return Json(new { requestId = "personal-client", userCode = "CLIENT-CODE", deviceCapability = "personal-client-capability", verificationUri = "https://instance.example/account/integration-credentials", publicOrigin = "https://instance.example", expiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(1), intervalSeconds = 5 });
+            }
+            if (route.EndsWith("poll")) return Json(new { status = "issued", intervalSeconds = 5, delivery = new { credentialId = "personal-credential", secret = "nrt_ic_personal-client-only", name = "default", purpose = 1, resource = "https://instance.example/mcp", expiresAtUtc = DateTimeOffset.UtcNow.AddDays(1), grants = new[] { new { tenantId = 7, tenantName = "Operations", permission = "telemetry.read" } }, instancePermissions = Array.Empty<string>() } });
+            if (route.EndsWith("acknowledge")) { acknowledged++; return Json(new { status = "consumed" }); }
+            Assert.Equal("nrt_ic_personal-client-only", request.Headers.Authorization?.Parameter);
+            return await McpReply(request);
+        });
+        await using var session = new SetupSession(ConfigurationSurface.HttpMcpClient, handler: handler, getEnvironmentVariable: EnvironmentValue);
+        var expected = System.IO.Path.Combine(clientRoot, "profiles", "httpmcpclient", "default.json");
+        Assert.Equal(expected, session.Path); Assert.Equal("default", session.ProfileName);
+        var model = new SetupViewModel(session); var input = new VirtualInputSource(); var terminal = new VirtualTerminal(80, 24);
+        var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { DisableDefaults = true }); builder.Logging.ClearProviders();
+        builder.Services.AddTerminaVirtualInput(input); builder.Services.AddTermina("/setup", routes => routes.RegisterRoute<SetupPage, SetupViewModel>("/setup", _ => new SetupPage(), _ => model)); builder.Services.AddSingleton<IAnsiTerminal>(terminal);
+        using (var host = builder.Build())
+        {
+            await host.StartAsync();
+            var authentication = WaitFor(model, () => model.Step == SetupStep.Authentication && !model.Busy);
+            input.EnqueueString("https://instance.example/mcp/"); input.EnqueueKey(ConsoleKey.Enter); await authentication;
+            var review = WaitFor(model, () => model.Step == SetupStep.Review && !model.Busy);
+            input.EnqueueKey(ConsoleKey.Enter); await review;
+            var finished = WaitFor(model, () => model.Step == SetupStep.Finish && !model.Busy);
+            input.EnqueueKey(ConsoleKey.Enter); await finished;
+            Assert.True(session.Saved); Assert.Equal(1, acknowledged); Assert.All(model.Checks, check => Assert.Equal("completed", check.Status));
+            Assert.False(terminal.Contains("nrt_ic_personal-client-only"));
+            await model.InvokeAsync(() => Console.WriteLine("Rendered personal HTTP client saved and verified screen:\n" + terminal));
+            input.EnqueueKey(ConsoleKey.Escape); input.Complete(); await host.StopAsync();
+        }
+        var persisted = NetRatelConfigurationService.ReadConfiguration(expected);
+        Assert.Equal("HttpMcp", persisted.CredentialPurpose); Assert.Null(persisted.IntegrationCredential); Assert.NotNull(persisted.IntegrationCredentialFile);
+        Assert.StartsWith(clientRoot, persisted.IntegrationCredentialFile); Assert.Equal("nrt_ic_personal-client-only", ConfigurationFileStorage.ReadText(persisted.IntegrationCredentialFile, secret: true).Trim());
+        Assert.False(Directory.Exists(hostRoot));
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(expected));
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(persisted.IntegrationCredentialFile));
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, File.GetUnixFileMode(System.IO.Path.GetDirectoryName(expected)!));
+        }
+        var before = ConfigurationFileStorage.Hash(expected); var secrets = Directory.EnumerateFiles(clientRoot, "*.secret", SearchOption.AllDirectories).ToArray();
+        await using var reloaded = new SetupSession(ConfigurationSurface.HttpMcpClient, handler: handler, getEnvironmentVariable: EnvironmentValue);
+        Assert.Equal(expected, reloaded.Path); Assert.True(reloaded.HasConfiguredAuthentication); Assert.Equal("nrt_ic_personal-client-only", reloaded.Configuration.IntegrationCredential);
+        await reloaded.DiscoverAsync("https://instance.example", default); reloaded.UseExternalConfiguration(); reloaded.Review(); await reloaded.SaveAsync(false, default);
+        Assert.Equal(before, ConfigurationFileStorage.Hash(expected)); Assert.Equal(secrets, Directory.EnumerateFiles(clientRoot, "*.secret", SearchOption.AllDirectories).ToArray()); Assert.Equal(1, acknowledged);
+        Console.WriteLine("Personal HTTP client default profile reloaded and reused without replacing its protected credential: " + expected);
+    }
+
     private static async Task<HttpResponseMessage> McpReply(HttpRequestMessage request)
     {
         using var body = System.Text.Json.JsonDocument.Parse(await request.Content!.ReadAsStringAsync());

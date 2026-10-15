@@ -83,8 +83,21 @@ For standalone Client Docker deployments, set
 `NetRatelCLIENT__Client__ApiBaseUrl` and `NetRatelCLIENT__Gateway__Endpoint`.
 See [configuration](docs/deployment/CONFIGURATION.md) for precedence and split REST hosts.
 
-Optional HTTP MCP is not enabled by default. From this bundle directory, start
-the standalone URL-first host wizard:
+Optional HTTP MCP is not enabled by default. To connect a **personal HTTP MCP
+client** to an already configured instance, use the URL-first personal wizard:
+
+```sh
+docker compose --env-file .env -f compose.setup.yaml run --rm --no-deps \
+  mcp-http setup
+```
+
+Inside the supported serving container, `dotnet NetRatel.Mcp.Http.dll setup`
+opens the same personal flow. Profiles and protected personal credentials use
+the separate persistent `netratel-http-client-data` volume, so Save does not
+target `/app/.config`. Existing explicitly selected client settings remain in
+effect. See [client persistence and existing-container recovery](docs/mcp-http/setup.md#persistent-client-storage-and-an-existing-container).
+
+To provision the **deployment host**, select host mode explicitly:
 
 ```sh
 export NETRATEL_SETUP_COMPOSE_FILES='compose.images.yaml,compose.public-https.yaml,compose.mcp-http.yaml'

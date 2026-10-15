@@ -295,6 +295,8 @@ public sealed class NetRatelHttpHostingSetupService
         {
             ["ASPNETCORE_URLS"] = $"http://+:{request.ListeningPort}",
             ["NETRATEL_MCP_INSTANCE"] = request.Instance,
+            ["NETRATEL_CLIENT_DIRECTORY"] = "/var/lib/netratel/clients",
+            ["NETRATEL_CLIENT_VOLUME"] = Environment.GetEnvironmentVariable("NETRATEL_CLIENT_VOLUME") ?? "netratel-http-client-data",
             [$"NETRATEL_MCP_{request.Instance.ToUpperInvariant()}_API_BASE_URL"] = api,
             ["NetRatel__Mcp__Http__PublicResourceUri"] = resource,
             ["NetRatel__Mcp__Http__LocalCredentialMode"] = request.LocalCredentialMode.ToString().ToLowerInvariant(),
@@ -455,6 +457,7 @@ public sealed class NetRatelHttpHostingSetupService
         string Mount(string path, string target) => $"      - type: bind\n        source: {Quote(path)}\n        target: {Quote(target)}\n        read_only: true\n        bind:\n          create_host_path: false\n";
         var key = setupVolume ? "      - type: volume\n        source: http-host-setup\n        target: /run/netratel-http-host\n        read_only: true\n" : Mount(delegation, SecretMount + "/delegation.key");
         var identity = setupVolume ? "" : Mount(outbound, SecretMount + (legacy ? "/mcp-outbound.json" : "/outbound-m2m.secret"));
+        var client = "      - type: volume\n        source: http-client-data\n        target: /var/lib/netratel/clients\n";
         var group = "    group_add:\n      - " + Quote(HttpHostingStorage.RuntimeGroup.ToString(System.Globalization.CultureInfo.InvariantCulture)) + "\n";
         string EnvironmentMap(Dictionary<string, string> settings, bool replace = false) => "    environment:" + (replace ? " !override\n" : "\n") +
             string.Concat(settings.Select(pair => $"      {Quote(pair.Key)}: {Quote(pair.Value)}\n"));
@@ -464,9 +467,10 @@ public sealed class NetRatelHttpHostingSetupService
         return "# Requires Docker Compose 2.24.4+; apply after compose.mcp-http.yaml.\nservices:\n" +
             $"  web:\n{EnvironmentMap(web)}" +
             $"  api:\n{group}{EnvironmentMap(api)}    volumes:\n{key}" + (legacy ? "" : identity) +
-            $"  mcp-http:\n{group}{EnvironmentMap(mcp, replace: true)}    env_file: !override []\n    healthcheck:\n      test: [\"CMD\", \"curl\", \"--fail\", \"--silent\", \"http://127.0.0.1:{listeningPort}/health/live\"]\n    volumes:\n{key}{identity}" +
+            $"  mcp-http:\n{group}{EnvironmentMap(mcp, replace: true)}    env_file: !override []\n    healthcheck:\n      test: [\"CMD\", \"curl\", \"--fail\", \"--silent\", \"http://127.0.0.1:{listeningPort}/health/live\"]\n    volumes:\n{client}{key}{identity}" +
             (setupVolume ? "" : string.Concat(extraMounts.Select(pair => Mount(pair.Key, pair.Value)))) +
-            (setupVolume ? "volumes:\n  http-host-setup:\n    external: true\n    name: " + Quote(HttpHostingStorage.VolumeName) + "\n" : "");
+            "volumes:\n  http-client-data:\n    name: " + Quote(mcp["NETRATEL_CLIENT_VOLUME"]) + "\n" +
+            (setupVolume ? "  http-host-setup:\n    external: true\n    name: " + Quote(HttpHostingStorage.VolumeName) + "\n" : "");
     }
 
     private static Uri Https(string? value, string field, bool originOnly = false)

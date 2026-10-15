@@ -15,6 +15,7 @@ public static class SetupCommand
 NetRatel setup
   setup [--instance WEB_URL] [--target cli|stdio|http-client|http-host] [--mode client|host]
   First screen: Instance Web URL only; HTTPS root and /mcp addresses are equivalent.
+  The HTTP executable's bare setup configures a personal HTTP MCP client; host deployment requires --mode host or --target http-host.
   Profile, transport, directories and provider settings are available under Advanced.
   setup [--profile NAME] [--config PATH] [--transport cli|stdio|http]
   setup --non-interactive --instance HTTPS_ORIGIN --credential-file PATH [--replace]
@@ -44,8 +45,6 @@ Normal stdio MCP stdout contains protocol JSON-RPC only; run setup explicitly wi
                 options["--transport"] = target switch { "cli" => "cli", "stdio" => "stdio", "http-client" or "http-host" => "http", _ => throw new AgentClientValidationException("Target must be cli, stdio, http-client or http-host.") };
                 if (target == "http-host") options["--mode"] = "host";
             }
-            if (args[0] == "setup" && defaultSurface == ConfigurationSurface.HttpMcpOutbound && !options.ContainsKey("--mode") && !options.ContainsKey("--target") && !options.ContainsKey("--transport"))
-                options["--mode"] = "host";
             var surface = options.TryGetValue("--transport", out var transport) ? transport switch { "cli" => ConfigurationSurface.Cli, "stdio" => ConfigurationSurface.StdioMcp, "http" => ConfigurationSurface.HttpMcpClient, _ => throw new AgentClientValidationException("Transport must be cli, stdio or http.") } : defaultSurface;
             if (args[0] == "setup" && surface == ConfigurationSurface.HttpMcpOutbound) surface = ConfigurationSurface.HttpMcpClient;
             options.TryGetValue("--profile", out var profile); options.TryGetValue("--config", out var path);

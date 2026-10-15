@@ -18,6 +18,7 @@ public sealed class SetupSession : IAsyncDisposable
 {
     private readonly NetRatelConfigurationService _configuration = new();
     private readonly HttpClient _http;
+    private readonly Func<string, string?> _environment;
     private readonly HttpMessageHandler _transport;
     private readonly SemaphoreSlim _saveGate = new(1, 1);
     private bool _saved;
@@ -29,24 +30,26 @@ public sealed class SetupSession : IAsyncDisposable
     private string? _persistedCredentialFile;
     private AgentClientConfiguration _initialConfiguration = AgentClientConfiguration.Empty;
     private IReadOnlyDictionary<string, ConfigurationSettingSource> _initialSources = new Dictionary<string, ConfigurationSettingSource>();
-    public SetupSession(ConfigurationSurface surface, string? path = null, string? profile = null, HttpMessageHandler? handler = null)
+    public SetupSession(ConfigurationSurface surface, string? path = null, string? profile = null, HttpMessageHandler? handler = null, Func<string, string?>? getEnvironmentVariable = null)
     {
+        _environment = getEnvironmentVariable ?? Environment.GetEnvironmentVariable;
         _transport = handler ?? new HttpClientHandler { AllowAutoRedirect = false };
         _http = new HttpClient(_transport, disposeHandler: handler is null) { Timeout = TimeSpan.FromSeconds(12), MaxResponseContentBufferSize = 262144 };
         Surface = surface;
-        profile ??= NetRatelConfigurationService.ReadEnvironment(surface, Environment.GetEnvironmentVariable).ProfileName;
+        profile ??= NetRatelConfigurationService.ReadEnvironment(surface, _environment).ProfileName;
         if (path is null && profile is null && surface is ConfigurationSurface.StdioMcp or ConfigurationSurface.HttpMcpOutbound)
-            path = AgentClientConfigurationResolver.GetMcpConfigurationPath(Environment.GetEnvironmentVariable);
-        if (path is null && profile is null && surface is ConfigurationSurface.Cli or ConfigurationSurface.AgentClient && File.Exists(AgentClientConfigurationStore.DefaultPath))
+            path = AgentClientConfigurationResolver.GetMcpConfigurationPath(_environment);
+        if (path is null && profile is null && surface is ConfigurationSurface.Cli or ConfigurationSurface.AgentClient &&
+            string.IsNullOrWhiteSpace(_environment("NETRATEL_CLIENT_DIRECTORY")) && string.IsNullOrWhiteSpace(_environment("NETRATEL_SETUP_DIRECTORY")) && File.Exists(AgentClientConfigurationStore.DefaultPath))
             path = AgentClientConfigurationStore.DefaultPath;
         HasExplicitDestination = path is not null;
         if (path is null)
         {
             profile ??= "default";
-            path = NetRatelConfigurationService.ProfilePath(surface, profile);
+            path = NetRatelConfigurationService.ProfilePath(surface, profile, _environment);
         }
-        var effective = _configuration.Load(new(surface, path, profile), allowCreate: true);
-        Path = effective.ConfigurationPath ?? NetRatelConfigurationService.ProfilePath(surface, profile ?? "default");
+        var effective = _configuration.Load(new(surface, path, profile, GetEnvironmentVariable: _environment), allowCreate: true);
+        Path = effective.ConfigurationPath ?? NetRatelConfigurationService.ProfilePath(surface, profile ?? "default", _environment);
         ProfileName = effective.ProfileName ?? profile ?? "default";
         Configuration = effective.Configuration;
         Sources = effective.Sources;
@@ -75,8 +78,8 @@ public sealed class SetupSession : IAsyncDisposable
         if (_saved) throw new InvalidOperationException("Start a new setup invocation after saving.");
         if (profile.Length is < 1 or > 64 || !profile.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_'))
             throw new AgentClientValidationException("Profile names use 1–64 letters, digits, dashes or underscores.");
-        var selected = _configuration.Load(new(surface, path, profile), allowCreate: true);
-        Surface = surface; ProfileName = profile; Path = selected.ConfigurationPath ?? NetRatelConfigurationService.ProfilePath(surface, profile);
+        var selected = _configuration.Load(new(surface, path, profile, GetEnvironmentVariable: _environment), allowCreate: true);
+        Surface = surface; ProfileName = profile; Path = selected.ConfigurationPath ?? NetRatelConfigurationService.ProfilePath(surface, profile, _environment);
         Configuration = selected.Configuration; Sources = selected.Sources;
         _initialConfiguration = Configuration; _initialSources = Sources;
         _origin = null; Capabilities = null; Delivery = null; _reuseExistingConfiguration = false;
@@ -198,7 +201,7 @@ public sealed class SetupSession : IAsyncDisposable
     }
     public void UseExternalConfiguration()
     {
-        var result = _configuration.Load(new(Surface, Path, ProfileName), allowCreate: true);
+        var result = _configuration.Load(new(Surface, Path, ProfileName, GetEnvironmentVariable: _environment), allowCreate: true);
         if (!result.Validate().IsValid) throw new AgentClientValidationException("External authentication is incomplete. Supply OIDC or API M2M flags/environment/file configuration, then run config validate.");
         if (!string.Equals(result.Configuration.ApiBaseUrl?.TrimEnd('/'), CanonicalTarget.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
             throw new AgentClientValidationException("External authentication is bound to a different instance/resource. Select its configured target or explicitly reauthorize and update its source before setup.");
@@ -243,13 +246,13 @@ public sealed class SetupSession : IAsyncDisposable
                 ct.ThrowIfCancellationRequested();
                 if (_reuseExistingConfiguration)
                 {
-                    var current = _configuration.Load(new(Surface, Path, ProfileName), allowCreate: true);
+                    var current = _configuration.Load(new(Surface, Path, ProfileName, GetEnvironmentVariable: _environment), allowCreate: true);
                     if (!current.Validate().IsValid || current.Configuration != Configuration || _reviewHash != (File.Exists(Path) ? ConfigurationFileStorage.Hash(Path) : string.Empty))
                         throw new AgentClientValidationException("The selected configuration changed after review. Reload its managed source before verification.");
                 }
                 else _configuration.SaveProfile(Path, Configuration, Surface, replace: replace, explicitRebind: Delivery is not null, expectedExistingHash: _reviewHash);
                 _persistedCredentialFile = File.Exists(Path) ? NetRatelConfigurationService.ReadConfiguration(Path).IntegrationCredentialFile : null;
-                Configuration = _configuration.Load(new(Surface, Path, ProfileName), allowCreate: _reuseExistingConfiguration).Configuration;
+                Configuration = _configuration.Load(new(Surface, Path, ProfileName, GetEnvironmentVariable: _environment), allowCreate: _reuseExistingConfiguration).Configuration;
                 _saved = true;
             }
             if (Pairing is not null && Delivery is not null && _origin is not null && !_acknowledged)
@@ -266,7 +269,7 @@ public sealed class SetupSession : IAsyncDisposable
     }
     public async Task<IReadOnlyList<SetupCheck>> DoctorAsync(CancellationToken ct, EffectiveAgentClientConfiguration? snapshot = null)
     {
-        var loaded = snapshot ?? _configuration.Load(new(Surface, Path, ProfileName), allowCreate: _reuseExistingConfiguration);
+        var loaded = snapshot ?? _configuration.Load(new(Surface, Path, ProfileName, GetEnvironmentVariable: _environment), allowCreate: _reuseExistingConfiguration);
         if (Surface != ConfigurationSurface.HttpMcpClient)
         {
             var report = await new NetRatelDoctorService().CheckAsync(loaded, connectivity: true, ct);

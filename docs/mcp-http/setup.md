@@ -1,46 +1,81 @@
-# Deploy and set up HTTP MCP
+# Connect HTTP MCP clients and configure hosting
 
-Start with a working Web/API instance and its verified image bundle. HTTP MCP is optional; ordinary Compose remains Web/API-only until its overlay is selected. Use one trusted public HTTPS origin and the existing native gateway exposure. No separate MCP DNS hostname or backend IP entry is needed.
+Use a working instance Web URL, either its HTTPS root or the equivalent `/mcp` URL. Personal client setup and deployment-host provisioning are separate modes:
 
-Client connection and host administration are separate setup modes. Browser client approval creates a scoped API-purpose or HttpMcp-purpose personal credential. Host setup prepares deployment-owned ingress, outbound service identity, API delegation and persistent Web/API/MCP configuration; it does not borrow a human's HttpMcp bearer.
+| Command | Purpose |
+| --- | --- |
+| `dotnet NetRatel.Mcp.Http.dll setup` | Connect a **personal HTTP MCP client** and save its scoped profile |
+| `dotnet NetRatel.Mcp.Http.dll setup --mode host` | Provision/configure the **HTTP MCP deployment host** as an administrator |
+| `setup --target cli|stdio|http-client` | Explicitly select a personal tooling surface |
+| `setup --target http-host` | Explicitly select deployment-host provisioning |
 
-## Start with the instance Web URL
+A personal HttpMcp bearer never becomes the host's outbound API identity. HTTP MCP remains optional; ordinary Web/API and native Client operation does not require it.
 
-Run setup from the verified release bundle directory. The standalone tooling service uses the HTTP MCP image already pinned in `.env`; it does not start the serving stack or need its unrelated interpolation values. For the bundled public HTTPS stack, retain its actual existing Compose files in the generated apply action:
+## Connect a personal HTTP MCP client
+
+From the HTTP MCP container terminal or native HTTP distribution, run:
+
+```sh
+dotnet /app/NetRatel.Mcp.Http.dll setup
+```
+
+For a native installation, replace `/app/` with its actual assembly directory. For the supplied persistent one-shot tooling service, run this on the deployment host from the verified release bundle directory:
+
+```sh
+docker compose --env-file .env -f compose.setup.yaml run --rm --no-deps \
+  mcp-http setup
+```
+
+Include the final `setup` command to select the personal-client flow: the standalone service's unoverridden preset explicitly selects host provisioning. The tooling image digest comes from the existing `.env`; no server starts during setup.
+
+The first page has one input, **Instance web URL**, focused and ready for paste. Enter `https://netratel.example.invalid` or `https://netratel.example.invalid/mcp`, with or without a trailing slash, then press Enter. Setup retains the HTTPS host/port and derives the API origin and canonical MCP resource once. Embedded credentials, unknown paths, query strings and fragments require correction.
+
+Continue through discovery, personal browser approval, review, Save and actual read-only verification. Open/copy the displayed trusted URL and approve its code, tenants, permissions and expiry in the signed-in account. A browser on another device works for a container/SSH session. Existing managed/OIDC client settings are reused; any required external-provider fields appear progressively. Profile and transport changes are secondary under Advanced. A file write or browser approval alone is not Connected: HTTP setup checks authenticated MCP initialize/catalog and a permitted API-backed authentication-status read.
+
+## Persistent client storage and an existing container
+
+The supplied serving and tooling Compose services mount a separate personal-data volume, `netratel-http-client-data`, at `/var/lib/netratel/clients`. Its default HTTP-client profile is `/var/lib/netratel/clients/profiles/httpmcpclient/default.json`; protected personal secret files stay beside that profile. The volume is writable by MCP UID `10001`, survives recreation, and is never mounted into API. Host service/delegation originals remain in the separate host-setup volume.
+
+Native tooling uses its selected profile/file first, then its per-user configuration directory. An explicit `--config`, profile selector or dedicated client environment remains authoritative; setup shows the effective location/source, retains existing settings and does not silently rewrite a read-only managed file or borrow the host's outbound JSON. A new container client default uses the persistent personal-data location, rather than `/app/.config`.
+
+If an older/custom container has no writable persistent client mount, setup stops before approval/save and gives a concrete next action. From the deployment host, use the supported one-shot command above, or its explicit equivalent:
+
+```sh
+docker compose --env-file .env -f compose.setup.yaml run --rm --no-deps \
+  mcp-http setup --target http-client
+```
+
+This creates/reuses the protected personal volume automatically. For a prior failed Save under `/app/.config`, rerun the personal wizard with the same Web URL and approve the personal connection; selecting host mode does not repair that profile. Existing explicitly selected configuration/secret mounts remain governed by their source. To gain the new personal mount inside a serving container, recreate that service with the deployment's existing reviewed Compose files and updated image. Keep both persistent volumes; do not make secrets public or run the server as root to resolve an access error.
+
+After reopening a terminal or recreating the supported container, validate the saved personal default explicitly:
+
+```sh
+dotnet /app/NetRatel.Mcp.Http.dll doctor --transport http --profile default
+```
+
+The `--transport http` selector matters for this diagnostic: bare HTTP `doctor` retains its existing outbound-host diagnostic contract.
+
+## Provision the HTTP MCP deployment host
+
+Host provisioning prepares the dedicated outbound service identity, matching API delegation, ingress and coordinated Web/API/MCP configuration. It requires administrator approval and a later deployment apply action. Run it explicitly:
+
+```sh
+dotnet /app/NetRatel.Mcp.Http.dll setup --mode host
+```
+
+For the released public HTTPS stack, retain its actual deployment files in the generated apply action:
 
 ```sh
 export NETRATEL_SETUP_COMPOSE_FILES='compose.images.yaml,compose.public-https.yaml,compose.mcp-http.yaml'
-docker compose --env-file .env -f compose.setup.yaml run --rm --no-deps mcp-http
-```
-
-Use the files selected by the actual deployment: include an existing external-database or other overlay, or omit the bundled HTTPS overlay when a separately managed ingress already supplies HTTPS. The comma-separated selection is deployment context; the wizard still starts with one Web URL.
-
-The service defaults to `setup --target http-host`. The equivalent explicit command is:
-
-```sh
 docker compose --env-file .env -f compose.setup.yaml run --rm --no-deps \
   mcp-http setup --mode host
 ```
 
-The first page has one input, **Instance web URL**, with keyboard focus ready for paste. Enter either `https://netratel.example.invalid` or `https://netratel.example.invalid/mcp`, with or without a trailing slash, then press Enter. Setup retains the explicit HTTPS host/port, derives the API origin and canonical `/mcp` resource, and discovers the instance. Unknown paths, embedded credentials, query strings and fragments require correction rather than being silently discarded.
+Include an existing external-database or other overlay, or omit the bundled HTTPS overlay when a separate ingress already supplies HTTPS. Host setup still starts with only the Web URL. Discovery preserves the selected supported authentication mode; advanced storage, explicit API/backend destinations, ports and adopted protected identity inputs remain available later. Use the displayed administrator URL/code to approve this exact host generation; that approval is distinct from a personal client grant.
 
-Follow Next to discover, authorize, review, save/apply and verify. Use the displayed browser link and code to approve from the instance's signed-in administrator session; a browser on another device works for a browserless container. Client approval and host approval are separate: host setup prepares or adopts a dedicated outbound service identity and its API delegation. A personal HttpMcp bearer is never stored as that identity.
+The host flow creates/reuses `netratel-http-host-setup` at `/setup-output`; native hosting uses its configured location first, then per-user application data `NetRatel/http-host`. It does not ask for a directory or require operator UID/GID flags in the supported container flow. Keep the host volume when recreating services. CLI and stdio distributions also support explicit `netratel setup --mode host` and `dotnet NetRatel.Mcp.dll setup --mode host`. Normal serving never opens setup automatically.
 
-Setup selects the supported authentication mode from discovery and preserves an existing managed/OIDC configuration. If external-provider details are still needed, enter them when prompted after discovery. **Advanced** contains alternate storage, explicit API/backend targets, profiles, ports, split-host/resource overrides and existing protected identity inputs. Normal setup does not ask for those details on its first page.
-
-The standalone service creates and reuses the persistent Docker volume `netratel-http-host-setup` at `/setup-output`. It does not ask for a directory or require operator UID/GID flags. Keep this volume when recreating tooling and serving containers. Native tooling uses its configured location first, then the per-user application-data directory `NetRatel/http-host`; the final review shows the resolved path. An explicit output directory remains available through Advanced or `--output-directory`.
-
-The native CLI and stdio distributions support the same explicit host mode:
-
-```sh
-netratel setup --mode host
-dotnet /path/to/NetRatel.Mcp.dll setup --mode host
-dotnet /path/to/NetRatel.Mcp.Http.dll setup --mode host
-```
-
-Normal server or stdio protocol startup never opens a wizard.
-
-## Apply the reviewed configuration, then resume verification
+## Apply host configuration, then resume verification
 
 Saving configuration is a local step. When Web/API/MCP need recreation, setup displays **deployment apply pending**, with one complete apply command for the deployment host. Review and run the command from the deployment directory, then return to **Verify**. Do not report Connected from a saved file or a successful browser approval.
 
@@ -87,11 +122,11 @@ MCP publishes no port in the normal single-origin deployment. [The optional port
 
 ## Client tooling in the HTTP image
 
-The existing HTTP MCP image includes CLI and stdio setup/runtime assets at build time. Its dispatcher supports default/`http` serving, `cli ...`, `stdio ...`, and `setup --target http-host|cli|stdio|http-client`. For a client profile saved to the persistent setup mount:
+The existing HTTP MCP image includes CLI and stdio setup/runtime assets at build time. Its dispatcher supports default/`http` serving, `cli ...`, `stdio ...`, and `setup --target http-host|cli|stdio|http-client`. Personal profiles use the separate persistent client-data volume automatically:
 
 ```sh
 docker compose --env-file .env -f compose.setup.yaml run --rm --no-deps \
-  mcp-http setup --target cli --config /setup-output/cli.json
+  mcp-http setup --target cli
 ```
 
 Use `--target stdio` for an isolated stdio profile or `--target http-client` for a canonical-resource HttpMcp profile. An HTTP client secret belongs to its own namespace, never the host's outbound profile. The wizard's returned launch/client snippet uses a secret reference rather than printing a bearer. Third-party clients need their own supported secret-injection configuration.

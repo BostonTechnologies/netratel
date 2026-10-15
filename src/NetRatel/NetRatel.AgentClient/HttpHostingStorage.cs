@@ -43,6 +43,10 @@ public static class HttpHostingStorage
         string.Equals(Path.GetFullPath(path), "/setup-output", StringComparison.Ordinal) &&
         !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("NETRATEL_SETUP_VOLUME"));
 
+    public static bool UsesClientVolume(string path) =>
+        string.Equals(Path.GetFullPath(path), "/var/lib/netratel/clients", StringComparison.Ordinal) &&
+        !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("NETRATEL_CLIENT_VOLUME"));
+
     public static string VolumeName => Environment.GetEnvironmentVariable("NETRATEL_SETUP_VOLUME") ?? "netratel-http-host-setup";
     public static uint RuntimeGroup => OperatingSystem.IsWindows() ? 10001 : GetEffectiveGroupId();
     private static bool IsContainer => string.Equals(Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"), "true", StringComparison.OrdinalIgnoreCase);
@@ -63,7 +67,7 @@ public static class HttpHostingStorage
         // still survives service recreation; the container root layer does not.
         return !string.IsNullOrEmpty(selected.Mount) && selected.Mount != "/" &&
             selected.Type is not ("tmpfs" or "ramfs" or "devtmpfs") &&
-            (selected.Type != "overlay" || UsesSetupVolume(selected.Mount) && selected.Mount == "/setup-output");
+            (selected.Type != "overlay" || UsesSetupVolume(selected.Mount) || UsesClientVolume(selected.Mount));
     }
 
     [DllImport("libc", EntryPoint = "getegid")]

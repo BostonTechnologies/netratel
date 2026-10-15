@@ -14,6 +14,7 @@ temporary="$(mktemp -d)"
 project="netratel-http-host-${GITHUB_RUN_ID}-${RANDOM}"
 export COMPOSE_PROJECT_NAME="$project"
 export NETRATEL_SETUP_VOLUME="${project}-setup"
+export NETRATEL_CLIENT_VOLUME="${project}-clients"
 export NETRATEL_MCP_HTTP_IMAGE="$image"
 export NETRATEL_AUTHENTICATION_MODE=Local
 export NETRATEL_MCP_AUTHENTICATION_MODE=LocalCredential
@@ -43,7 +44,7 @@ cleanup() {
   fi
   "${applied[@]}" down --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
   "${compose[@]}" down --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
-  docker volume rm "$NETRATEL_SETUP_VOLUME" >/dev/null 2>&1 || true
+  docker volume rm "$NETRATEL_SETUP_VOLUME" "$NETRATEL_CLIENT_VOLUME" >/dev/null 2>&1 || true
   rm -f .netratel.http-host.yaml
   rm -rf "$temporary"
   return "$status"
@@ -186,25 +187,95 @@ account_post /api/v2/account/integration-credentials/pairing/approve \
 delivery="$(poll_protocol /api/integration-pairing/v1/poll "$(jq '{deviceCapability}' <<<"$pairing")" issued "$(jq -er '.intervalSeconds' <<<"$pairing")")"
 credential="$(jq -er '.delivery.secret' <<<"$delivery")"
 [[ "$credential" == nrt_ic_* ]]
+
+stage="saving a personal client with bare HTTP setup inside the serving container"
+printf '%s\n' "$credential" | "${applied[@]}" exec -T \
+  -e NETRATEL_HTTP_HOST_SMOKE_ORIGIN="$NETRATEL_PUBLIC_ORIGIN" mcp-http sh -ceu '
+    umask 077
+    credential_file="$(mktemp)"
+    result_file="$(mktemp)"
+    trap '\''rm -f "$credential_file" "$result_file"'\'' EXIT
+    cat > "$credential_file"
+    dotnet /app/NetRatel.Mcp.Http.dll setup --non-interactive \
+      --instance "$NETRATEL_HTTP_HOST_SMOKE_ORIGIN" --credential-file "$credential_file" > "$result_file"
+    if grep -F -q -f "$credential_file" "$result_file"; then
+      echo "Personal setup emitted credential material." >&2; exit 1
+    else
+      test "$?" = 1
+    fi
+    profile="$NETRATEL_CLIENT_DIRECTORY/profiles/httpmcpclient/default.json"
+    test -f "$profile"
+    test "$(stat -c %a "$profile")" = 600
+    for secret in "$profile".*.secret; do
+      test -f "$secret"
+      test "$(stat -c %a "$secret")" = 600
+    done
+    cat "$result_file"
+  ' > TestResults/http-host-setup/personal-saved.json
+jq -e '.saved == true and .transport == "HttpMcpClient"
+  and .path == "/var/lib/netratel/clients/profiles/httpmcpclient/default.json"
+  and (.checks | length >= 5 and all(.[]; .status == "completed"))
+  and (.launch | fromjson | .credentialFile | startswith("/var/lib/netratel/clients/profiles/httpmcpclient/"))' \
+  TestResults/http-host-setup/personal-saved.json >/dev/null
+
 mcp_session=""
+verification_phase=initial
+redact_mcp_response() {
+  # Never retain response headers, bearer credentials, or signed assertions.
+  # The disposable identity facts and tool schemas are useful failure evidence.
+  python3 - "$temporary/mcp-response" "$1" "$temporary/mcp-credential" <<'PY'
+import json, pathlib, re, sys
+credential = pathlib.Path(sys.argv[3]).read_text().strip()
+value = pathlib.Path(sys.argv[1]).read_text()
+if credential:
+    value = value.replace(credential, "[REDACTED]")
+value = re.sub(r"nrt_ic_[A-Za-z0-9_.-]+", "[REDACTED]", value)
+value = re.sub(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "[REDACTED]", value)
+try:
+    document = json.loads(value)
+except json.JSONDecodeError:
+    document = {"nonJsonResponse": value}
+def redact(item):
+    if isinstance(item, dict):
+        return {key: "[REDACTED]" if re.search(r"^(authorization|access_?token|refresh_?token|assertion|secret|deviceCapability)$", key, re.I)
+                else redact(child) for key, child in item.items()}
+    if isinstance(item, list):
+        return [redact(child) for child in item]
+    return item
+pathlib.Path(sys.argv[2]).write_text(json.dumps(redact(document), indent=2) + "\n")
+PY
+}
+umask 077
+printf '%s' "$credential" > "$temporary/mcp-credential"
 mcp_call() {
-  local response payload headers=()
+  local response payload status=0 headers=()
   if [[ -n "$mcp_session" ]]; then headers=(--header "Mcp-Session-Id: $mcp_session"); fi
-  response="$(post /mcp "$1" --header 'Accept: application/json, text/event-stream' \
+  response="$(post /mcp "$1" --no-fail --fail-with-body --header 'Accept: application/json, text/event-stream' \
     --header 'MCP-Protocol-Version: 2025-03-26' --header "Authorization: Bearer $credential" \
-    --dump-header "$temporary/mcp-headers" "${headers[@]}")"
+    --dump-header "$temporary/mcp-headers" "${headers[@]}")" || status=$?
   payload="$(sed -n 's/^data: *//p' <<<"$response")"
+  printf '%s' "${payload:-$response}" > "$temporary/mcp-response"
+  redact_mcp_response "$2"
+  (( status == 0 )) || return "$status"
   printf '%s' "${payload:-$response}"
 }
 verify_mcp() {
   mcp_session=""
+  stage="verifying ${verification_phase} authenticated MCP initialize"
   mcp_call '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"http-host-setup-smoke","version":"1"}}}' \
+    "TestResults/http-host-setup/${verification_phase}-initialize.json" \
     | jq -e '.id == 1 and .result.serverInfo.name == "NetRatel.Mcp.Http"' >/dev/null
   mcp_session="$(awk 'tolower($1) == "mcp-session-id:" {gsub(/\r/, "", $2); print $2}' "$temporary/mcp-headers")"
-  mcp_call '{"jsonrpc":"2.0","method":"notifications/initialized"}' >/dev/null
+  stage="verifying ${verification_phase} MCP initialized notification"
+  mcp_call '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+    "TestResults/http-host-setup/${verification_phase}-initialized.json" >/dev/null
+  stage="verifying ${verification_phase} authenticated MCP tool catalog"
   mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+    "TestResults/http-host-setup/${verification_phase}-catalog.json" \
     | jq -e '.id == 2 and any(.result.tools[]; .name == "netratel_auth")' >/dev/null
+  stage="verifying ${verification_phase} netratel_auth/status through signed API delegation"
   mcp_call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"netratel_auth","arguments":{"operation":"status"}}}' \
+    "TestResults/http-host-setup/${verification_phase}-auth-status.json" \
     | jq -e '.id == 3 and (.result.isError // false) == false and .result.structuredContent.success == true
       and .result.structuredContent.data.authenticated == true
       and .result.structuredContent.data.authMode == "mcp_operator_delegation"
@@ -221,10 +292,17 @@ jq -e --arg fingerprint "$fingerprint" '.registrationFingerprint == $fingerprint
 "${applied[@]}" up --detach --force-recreate --no-deps api web mcp-http
 wait_ready
 wait_mcp
+verification_phase=recreated
 verify_mcp
+stage="reloading the personal default profile after serving-container recreation"
+"${applied[@]}" exec -T mcp-http dotnet /app/NetRatel.Mcp.Http.dll doctor \
+  --transport http --profile default > TestResults/http-host-setup/personal-reloaded.json
+jq -e 'type == "array" and length >= 5 and all(.[]; .status == "completed")
+  and (map(.name) | index("permitted read-only tool") != null)' \
+  TestResults/http-host-setup/personal-reloaded.json >/dev/null
 post /api/integration-pairing/v1/cancel "$(jq '{deviceCapability}' <<<"$pairing")" >/dev/null
 unset credential delivery pairing host_request
 jq -n --arg fingerprint "$fingerprint" --arg source "$(git rev-parse HEAD)" \
-  '{sourceSha:$source,registrationFingerprint:$fingerprint,headlessGeneration:true,administratorProtocolApproval:true,generatedApply:true,authenticatedCatalogAndApiRead:true,recreatedAndResumed:true,interactiveTerminalAcceptance:"covered separately by focused terminal fixtures",ownerDeploymentAcceptance:"pending"}' \
+  '{sourceSha:$source,registrationFingerprint:$fingerprint,headlessGeneration:true,administratorProtocolApproval:true,generatedApply:true,authenticatedCatalogAndApiRead:true,recreatedAndResumed:true,personalProfileSavedAndReloaded:true,interactiveTerminalAcceptance:"covered separately by focused terminal fixtures",ownerDeploymentAcceptance:"pending"}' \
   > TestResults/http-host-setup/result.json
 echo 'Disposable HTTP host setup, administrator approval, generated apply and resumed API-backed verification passed.'

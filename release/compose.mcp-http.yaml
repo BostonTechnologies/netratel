@@ -41,6 +41,9 @@ services:
     environment:
       ASPNETCORE_URLS: http://+:9224
       NETRATEL_MCP_INSTANCE: ${NETRATEL_MCP_INSTANCE:-prod}
+      # Personal client profiles use a separate writable volume; API never mounts it.
+      NETRATEL_CLIENT_DIRECTORY: /var/lib/netratel/clients
+      NETRATEL_CLIENT_VOLUME: ${NETRATEL_CLIENT_VOLUME:-netratel-http-client-data}
       NETRATEL_MCP_DEV_API_BASE_URL: ${NETRATEL_MCP_DEV_API_BASE_URL:-}
       NETRATEL_MCP_PROD_API_BASE_URL: ${NETRATEL_MCP_PROD_API_BASE_URL:-${NETRATEL_PUBLIC_ORIGIN:-}}
       NetRatel__Mcp__Http__PublicResourceUri: ${NETRATEL_MCP_PUBLIC_RESOURCE_URI:-${NETRATEL_PUBLIC_ORIGIN:-}/mcp}
@@ -56,3 +59,8 @@ services:
       NetRatel__Mcp__Delegation__KeyId: ${NETRATEL_MCP_DELEGATION_KEY_ID:-}
       NetRatel__Mcp__Delegation__SharedKeyBase64: ${NETRATEL_MCP_DELEGATION_KEY_BASE64:-}
       NetRatel__Mcp__Delegation__SharedKeyBase64File: ${NETRATEL_MCP_DELEGATION_KEY_FILE:-}
+    volumes:
+      - http-client-data:/var/lib/netratel/clients
+volumes:
+  http-client-data:
+    name: ${NETRATEL_CLIENT_VOLUME:-netratel-http-client-data}

@@ -62,11 +62,11 @@ public sealed class HttpHostSetupService(NetRatelIdentityDbContext db, IEffectiv
             input.RegistrationFingerprint is not { Length: 64 } || input.RegistrationFingerprint.Any(c => !char.IsAsciiHexDigit(c)) ||
             input.ServicePrincipal is not { Length: > 0 and <= 128 } || input.ServicePrincipal.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not '.' and not '-' and not '_' and not ':' and not '/'))
             throw new HttpHostSetupUnavailableException();
-        if (await db.HttpHostSetupRequests.CountAsync(x => x.State == HttpHostSetupState.Pending || x.State == HttpHostSetupState.Approved, ct).ConfigureAwait(false) >= 4096)
+        var now = clock.GetUtcNow();
+        if (await db.HttpHostSetupRequests.CountAsync(x => (x.State == HttpHostSetupState.Pending || x.State == HttpHostSetupState.Approved) && x.ExpiresAtUtc > now, ct).ConfigureAwait(false) >= 4096)
             throw new HttpHostSetupUnavailableException();
         var code = string.Concat(RandomNumberGenerator.GetBytes(8).Select(value => Alphabet[value % Alphabet.Length]));
         var capability = "nrt_host_" + Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
-        var now = clock.GetUtcNow();
         var request = new HttpHostSetupRequest
         {
             PublicOrigin = binding.PublicOrigin, Resource = binding.Resource, ServicePrincipal = input.ServicePrincipal,

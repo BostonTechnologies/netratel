@@ -22,8 +22,8 @@ case "${1:-http}" in
     if [ -z "${NETRATEL_SETUP_DIRECTORY:-}" ] && [ -n "${NETRATEL_SETUP_VOLUME:-}" ]; then
       export NETRATEL_SETUP_DIRECTORY=/setup-output
     fi
-    # The shared setup boundary infers this distribution's host default and
-    # accepts explicit mode/target/transport options in any argument position.
+    # Bare setup configures a personal HTTP MCP client. Host deployment requires
+    # explicit --mode host or --target http-host, accepted in any argument position.
     exec dotnet /app/NetRatel.Mcp.Http.dll "$@"
     ;;
   *)

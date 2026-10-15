@@ -16,7 +16,12 @@ public sealed class SharedHeadlessConfigurationTests
     public void Named_profiles_use_the_configured_persistent_tooling_root_and_explicit_files_keep_precedence(ConfigurationSurface surface)
     {
         using var files = new ScratchFiles();
-        string? EnvironmentValue(string key) => key == "NETRATEL_SETUP_DIRECTORY" ? files.Directory : null;
+        string? EnvironmentValue(string key) => key switch
+        {
+            "NETRATEL_CLIENT_DIRECTORY" => files.Directory,
+            "NETRATEL_SETUP_DIRECTORY" => files.Path("separate-host-state"),
+            _ => null
+        };
         var expected = Path.Combine(files.Directory, "profiles", surface.ToString().ToLowerInvariant(), "personal.json");
         Assert.Equal(expected, NetRatelConfigurationService.ProfilePath(surface, "personal", EnvironmentValue));
         var service = new NetRatelConfigurationService();
