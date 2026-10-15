@@ -13,11 +13,16 @@ public static class SetupCommand
     public const int NonInteractiveExitCode = 2;
     public const string Help = """
 NetRatel setup
-  setup [--profile NAME] [--config PATH] [--transport cli|stdio|http] [--mode client|host]
+  setup [--instance WEB_URL] [--target cli|stdio|http-client|http-host] [--mode client|host]
+  First screen: Instance Web URL only; HTTPS root and /mcp addresses are equivalent.
+  Profile, transport, directories and provider settings are available under Advanced.
+  setup [--profile NAME] [--config PATH] [--transport cli|stdio|http]
   setup --non-interactive --instance HTTPS_ORIGIN --credential-file PATH [--replace]
-  setup --mode host --non-interactive --public-origin HTTPS_ORIGIN --api-base-url HTTPS_ORIGIN --output-directory PATH [--replace]
+  setup --mode host [--instance WEB_URL] [--output-directory PATH]
+  setup --mode host --non-interactive --instance WEB_URL [--output-directory PATH] [--replace]
+  Noninteractive host setup generates configuration only; apply and live verification remain required.
   Hosting options: --auth-mode local|oidc --oidc-authority HTTPS_URL --required-groups CSV --required-scopes CSV
-  Advanced hosting: --instance-name dev|prod --resource HTTPS_MCP_URL --listen-port PORT --allowed-origins CSV --existing-outbound-config PATH --existing-m2m-callers CSV --delegation-principal NAME
+  Advanced hosting: --instance-name dev|prod --resource HTTPS_MCP_URL --listen-port PORT --allowed-origins CSV --existing-outbound-config PATH --existing-m2m-callers CSV --api-m2m-audience AUDIENCE --delegation-principal NAME
   Existing delegation: --delegation-key-file PATH --delegation-key-id ID --delegation-issuer ID --delegation-audience ID
   config validate [--profile NAME] [--config PATH]
   doctor [--profile NAME] [--config PATH]
@@ -34,6 +39,13 @@ Normal stdio MCP stdout contains protocol JSON-RPC only; run setup explicitly wi
         {
             if (args.Any(a => a is "--help" or "-h")) { await output.WriteLineAsync(Help); return 0; }
             var options = Parse(args);
+            if (options.TryGetValue("--target", out var target))
+            {
+                options["--transport"] = target switch { "cli" => "cli", "stdio" => "stdio", "http-client" or "http-host" => "http", _ => throw new AgentClientValidationException("Target must be cli, stdio, http-client or http-host.") };
+                if (target == "http-host") options["--mode"] = "host";
+            }
+            if (args[0] == "setup" && defaultSurface == ConfigurationSurface.HttpMcpOutbound && !options.ContainsKey("--mode") && !options.ContainsKey("--target") && !options.ContainsKey("--transport"))
+                options["--mode"] = "host";
             var surface = options.TryGetValue("--transport", out var transport) ? transport switch { "cli" => ConfigurationSurface.Cli, "stdio" => ConfigurationSurface.StdioMcp, "http" => ConfigurationSurface.HttpMcpClient, _ => throw new AgentClientValidationException("Transport must be cli, stdio or http.") } : defaultSurface;
             if (args[0] == "setup" && surface == ConfigurationSurface.HttpMcpOutbound) surface = ConfigurationSurface.HttpMcpClient;
             options.TryGetValue("--profile", out var profile); options.TryGetValue("--config", out var path);
@@ -74,7 +86,7 @@ Normal stdio MCP stdout contains protocol JSON-RPC only; run setup explicitly wi
                 await output.WriteLineAsync(JsonSerializer.Serialize(new { saved = true, path = session.Path, transport = surface.ToString(), checks, launch = session.LaunchSnippet() }, AgentClientConfiguration.JsonOptions));
                 return checks.Count > 0 && checks.All(check => check.Status == "completed") ? 0 : 2;
             }
-            return await RunTerminalAsync(session, ct);
+            return await RunTerminalAsync(session, ct, options);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { return 130; }
         catch (AgentClientValidationException ex)
@@ -85,12 +97,12 @@ Normal stdio MCP stdout contains protocol JSON-RPC only; run setup explicitly wi
         }
         catch (Exception) { await error.WriteLineAsync("Setup could not complete. Check protected-file permissions, instance connectivity and authentication configuration."); return 3; }
     }
-    public static async Task<int> RunTerminalAsync(SetupSession session, CancellationToken ct = default)
+    public static async Task<int> RunTerminalAsync(SetupSession session, CancellationToken ct = default, IReadOnlyDictionary<string, string>? options = null)
     {
         var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { Args = [], DisableDefaults = true });
         builder.Logging.ClearProviders();
         builder.Services.AddSingleton(session);
-        var model = new SetupViewModel(session);
+        var model = CreateViewModel(session, options);
         builder.Services.AddTermina("/setup", termina => termina.RegisterRoute<SetupPage, SetupViewModel>("/setup", sp => new SetupPage(sp.GetRequiredService<Termina.Clipboard.IClipboardService>()), sp => model));
         using var host = builder.Build();
         await host.RunAsync(ct);
@@ -102,11 +114,17 @@ Normal stdio MCP stdout contains protocol JSON-RPC only; run setup explicitly wi
         }
         return model.Checks.All(check => check.Status == "completed") ? 0 : 2;
     }
+    public static SetupViewModel CreateViewModel(SetupSession session, IReadOnlyDictionary<string, string>? options = null)
+    {
+        var model = new SetupViewModel(session);
+        if ((options?.GetValueOrDefault("--instance") ?? options?.GetValueOrDefault("--api-base-url")) is { } origin) model.Origin = origin;
+        return model;
+    }
     private static Dictionary<string, string> Parse(string[] args)
     {
         var options = new Dictionary<string, string>(StringComparer.Ordinal);
         var flags = new HashSet<string> { "--non-interactive", "--replace" };
-        var valued = new HashSet<string> { "--profile", "--config", "--transport", "--mode", "--instance", "--credential-file", "--public-origin", "--api-base-url", "--output-directory", "--oidc-authority", "--auth-mode", "--required-groups", "--required-scopes", "--instance-name", "--resource", "--listen-port", "--allowed-origins", "--existing-outbound-config", "--existing-m2m-callers", "--delegation-principal", "--delegation-key-file", "--delegation-key-id", "--delegation-issuer", "--delegation-audience" };
+        var valued = new HashSet<string> { "--profile", "--config", "--transport", "--target", "--mode", "--instance", "--credential-file", "--public-origin", "--api-base-url", "--output-directory", "--oidc-authority", "--auth-mode", "--required-groups", "--required-scopes", "--instance-name", "--resource", "--listen-port", "--allowed-origins", "--existing-outbound-config", "--existing-m2m-callers", "--api-m2m-audience", "--delegation-principal", "--delegation-key-file", "--delegation-key-id", "--delegation-issuer", "--delegation-audience" };
         for (var i = args[0] == "config" ? 2 : args[0] == "profile" ? args.Length : 1; i < args.Length; i++)
         {
             var key = args[i];
@@ -135,24 +153,40 @@ Normal stdio MCP stdout contains protocol JSON-RPC only; run setup explicitly wi
     {
         if (!options.ContainsKey("--non-interactive"))
         {
-            if (!interactive) throw new AgentClientValidationException("Interactive hosting setup requires a TTY. Use setup --mode host --non-interactive with --public-origin, --api-base-url and --output-directory.");
-            return await HostingSetupTerminal.RunAsync(ct);
+            if (!interactive) throw new AgentClientValidationException("Interactive hosting setup requires a TTY. Use setup --mode host --non-interactive --instance WEB_URL for generation only.");
+            return await HostingSetupTerminal.RunAsync(options, ct);
         }
         static string Required(Dictionary<string,string> values, string key) => values.TryGetValue(key, out var value) ? value : throw new AgentClientValidationException(key + " is required for hosting setup.");
-        var mode = options.GetValueOrDefault("--auth-mode", "local");
+        var address = InstanceSetupAddress.Parse(options.GetValueOrDefault("--instance") ?? Required(options, "--public-origin"));
+        var directory = HttpHostingStorage.Resolve(options.GetValueOrDefault("--output-directory"));
+        var saved = NetRatelHttpHostingSetupService.LoadRequest(directory, address.Origin);
+        var mode = options.GetValueOrDefault("--auth-mode", saved?.LocalCredentialMode == false ? "oidc" : "local");
         if (mode is not "local" and not "oidc") throw new AgentClientValidationException("Hosting auth mode must be local or oidc.");
         static string[] Values(string? value) => (value ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var request = new HttpHostingSetupRequest(Required(options, "--output-directory"), Required(options, "--public-origin"), Required(options, "--api-base-url"), options.GetValueOrDefault("--instance-name", "prod"), mode == "local")
+        var request = (saved ?? new HttpHostingSetupRequest(directory, address.Origin, address.Origin)) with
         {
-            OidcAuthority = options.GetValueOrDefault("--oidc-authority"), ComposeOutputDirectory = Environment.GetEnvironmentVariable("NETRATEL_SETUP_HOST_OUTPUT_DIRECTORY"),
-            RequiredGroups = Values(options.GetValueOrDefault("--required-groups")), RequiredScopes = Values(options.GetValueOrDefault("--required-scopes")),
-            PublicResourceUri = options.GetValueOrDefault("--resource"), AllowedOrigins = options.ContainsKey("--allowed-origins") ? Values(options["--allowed-origins"]) : null,
-            ExistingOutboundConfigurationPath = options.GetValueOrDefault("--existing-outbound-config"), DelegationServicePrincipal = options.GetValueOrDefault("--delegation-principal"), ExistingDelegationKeyFile = options.GetValueOrDefault("--delegation-key-file"), DelegationKeyId = options.GetValueOrDefault("--delegation-key-id"), DelegationIssuer = options.GetValueOrDefault("--delegation-issuer"), DelegationAudience = options.GetValueOrDefault("--delegation-audience"), ExistingM2MCallerClientIds = options.ContainsKey("--existing-m2m-callers") ? Values(options["--existing-m2m-callers"]) : null,
-            ListeningPort = options.TryGetValue("--listen-port", out var port) ? int.TryParse(port, out var parsedPort) ? parsedPort : throw new AgentClientValidationException("Listening port must be an integer.") : 9224
+            PublicOrigin = address.Origin, OutputDirectory = directory,
+            ApiBaseUrl = options.GetValueOrDefault("--api-base-url") ?? saved?.ApiBaseUrl ?? address.Origin,
+            Instance = options.GetValueOrDefault("--instance-name") ?? saved?.Instance ?? "prod", LocalCredentialMode = mode == "local",
+            OidcAuthority = options.GetValueOrDefault("--oidc-authority") ?? saved?.OidcAuthority,
+            ComposeOutputDirectory = Environment.GetEnvironmentVariable("NETRATEL_SETUP_HOST_OUTPUT_DIRECTORY") ?? saved?.ComposeOutputDirectory,
+            RequiredGroups = options.ContainsKey("--required-groups") ? Values(options["--required-groups"]) : saved?.RequiredGroups,
+            RequiredScopes = options.ContainsKey("--required-scopes") ? Values(options["--required-scopes"]) : saved?.RequiredScopes,
+            PublicResourceUri = options.GetValueOrDefault("--resource") ?? saved?.PublicResourceUri,
+            AllowedOrigins = options.ContainsKey("--allowed-origins") ? Values(options["--allowed-origins"]) : saved?.AllowedOrigins,
+            ExistingOutboundConfigurationPath = options.GetValueOrDefault("--existing-outbound-config") ?? saved?.ExistingOutboundConfigurationPath,
+            DelegationServicePrincipal = options.GetValueOrDefault("--delegation-principal") ?? saved?.DelegationServicePrincipal,
+            ExistingDelegationKeyFile = options.GetValueOrDefault("--delegation-key-file") ?? saved?.ExistingDelegationKeyFile,
+            DelegationKeyId = options.GetValueOrDefault("--delegation-key-id") ?? saved?.DelegationKeyId,
+            DelegationIssuer = options.GetValueOrDefault("--delegation-issuer") ?? saved?.DelegationIssuer,
+            DelegationAudience = options.GetValueOrDefault("--delegation-audience") ?? saved?.DelegationAudience,
+            ExistingM2MCallerClientIds = options.ContainsKey("--existing-m2m-callers") ? Values(options["--existing-m2m-callers"]) : saved?.ExistingM2MCallerClientIds,
+            ApiServiceAudience = options.GetValueOrDefault("--api-m2m-audience") ?? saved?.ApiServiceAudience ?? "netratel.api",
+            ListeningPort = options.TryGetValue("--listen-port", out var port) ? int.TryParse(port, out var parsedPort) ? parsedPort : throw new AgentClientValidationException("Listening port must be an integer.") : saved?.ListeningPort ?? 9224
         };
         var service = new NetRatelHttpHostingSetupService();
         var preview = service.Preview(request);
         var result = service.Apply(request, options.ContainsKey("--replace"));
-        await output.WriteLineAsync(JsonSerializer.Serialize(new { preview, result }, AgentClientConfiguration.JsonOptions)); return 0;
+        await output.WriteLineAsync(JsonSerializer.Serialize(new { state = "configuration-written-apply-and-live-verification-pending", registrationFingerprint = service.PrepareRegistration(request), applyCommand = NetRatelHttpHostingSetupService.ApplyCommand(request), preview, result }, AgentClientConfiguration.JsonOptions)); return 0;
     }
 }

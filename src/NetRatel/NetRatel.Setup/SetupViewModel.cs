@@ -14,13 +14,19 @@ public sealed class SetupViewModel(SetupSession session) : ReactiveViewModel
     public SetupSession Session { get; } = session;
     public ReactiveProperty<int> Revision { get; } = new(0);
     public ReactiveProperty<string> Status { get; } = new("");
-    public SetupStep Step { get; private set; } = SetupStep.Profile;
+    public SetupStep Step { get; private set; } = SetupStep.Instance;
     public string Profile { get; set; } = session.ProfileName;
     public string Destination { get; private set; } = session.Path;
     private bool _destinationEdited = session.HasExplicitDestination;
     public string Origin { get; set; } = Uri.TryCreate(session.Configuration.ApiBaseUrl, UriKind.Absolute, out var configuredOrigin) ? configuredOrigin.GetLeftPart(UriPartial.Authority) : "";
     public string ManualSecret { get; set; } = "";
-    public string Authentication { get; set; } = "Browser approval";
+    public string Authentication { get; set; } = session.HasConfiguredAuthentication ? "Use existing authentication" : "Browser approval";
+    public string ExternalTokenUrl { get; set; } = session.Configuration.OidcTokenUrl ?? "";
+    public string ExternalClientId { get; set; } = session.Configuration.OidcClientId ?? "";
+    public string ExternalUsername { get; set; } = session.Configuration.OidcUsername ?? "";
+    public string ExternalPassword { get; set; } = session.Configuration.OidcAppPassword ?? "";
+    public bool ExternalProviderDiscovered { get; private set; }
+    public string ExternalScope { get; set; } = session.Configuration.OidcScope ?? AgentClientConfiguration.DefaultScope;
     public ConfigurationSurface Surface { get; set; } = session.Surface;
     public bool Advanced { get; private set; }
     public bool ReplaceConfirmed { get; set; }
@@ -52,7 +58,20 @@ public sealed class SetupViewModel(SetupSession session) : ReactiveViewModel
                 await ChangeStepAsync(SetupStep.Instance, ct);
                 break;
             case SetupStep.Instance:
+                if (Session.Surface != Surface || Session.ProfileName != Profile || Session.Path != Destination)
+                    Session.SelectProfile(Surface, Profile, Destination);
                 await Session.DiscoverAsync(Origin, ct);
+                if (Surface == ConfigurationSurface.HttpMcpClient && !Session.HasConfiguredAuthentication)
+                {
+                    if (Session.Capabilities is { HttpMcpAuthenticationModeKnown: false })
+                        throw new AgentClientValidationException("This instance does not advertise its HTTP MCP authentication mode. Upgrade its setup metadata or select an existing managed client profile in Advanced.");
+                    if (Session.Capabilities?.HttpMcpAuthenticationMode == "oidc")
+                    {
+                        var provider = await Session.DiscoverExternalProviderAsync(ct);
+                        ExternalTokenUrl = provider.TokenEndpoint; ExternalScope = provider.Scope; ExternalProviderDiscovered = true;
+                        Authentication = "External authentication";
+                    }
+                }
                 await ChangeStepAsync(SetupStep.Authentication, ct);
                 break;
             case SetupStep.Authentication:
@@ -61,9 +80,15 @@ public sealed class SetupViewModel(SetupSession session) : ReactiveViewModel
                     Session.UseCredential(ManualSecret); ManualSecret = "";
                     await ChangeStepAsync(SetupStep.Review, ct);
                 }
-                else if (Authentication == "External authentication")
+                else if (Authentication is "External authentication" or "Use existing authentication")
                 {
-                    Session.UseExternalConfiguration();
+                    if (Authentication == "Use existing authentication" || Session.HasConfiguredAuthentication) Session.UseExternalConfiguration();
+                    else Session.UseGuidedExternalConfiguration(AgentClientConfiguration.Empty with
+                    {
+                        ApiBaseUrl = Session.CanonicalTarget, ProfileName = Profile, Instance = Session.Configuration.Instance ?? "prod", AuthenticationMode = "Oidc",
+                        OidcTokenUrl = ExternalTokenUrl, OidcClientId = ExternalClientId, OidcUsername = ExternalUsername,
+                        OidcAppPassword = ExternalPassword, OidcScope = ExternalScope
+                    });
                     await ChangeStepAsync(SetupStep.Review, ct);
                 }
                 else
@@ -72,7 +97,7 @@ public sealed class SetupViewModel(SetupSession session) : ReactiveViewModel
                     await InvokeAsync(Refresh, ct);
                     var poll = await Session.PollAsync(ct);
                     await InvokeAsync(() => { Status.Value = $"Approval {TerminalText.Safe(poll.Status)}"; Refresh(); }, ct);
-                    if (poll.Status == "issued") await ChangeStepAsync(SetupStep.Grants, ct);
+                    if (poll.Status == "issued") await CompleteApprovalAsync(ct);
                     else if (poll.Status is "pending" or "slow_down")
                     {
                         while (Session.Pairing is { } pairing && DateTimeOffset.UtcNow < pairing.ExpiresAtUtc)
@@ -84,7 +109,7 @@ public sealed class SetupViewModel(SetupSession session) : ReactiveViewModel
                                 await InvokeAsync(() => { Status.Value = $"Approval {Session.PairingStatus}; {Math.Max(0, (int)(pairing.ExpiresAtUtc - DateTimeOffset.UtcNow).TotalSeconds)} seconds remaining. F4 opens the trusted link."; }, ct);
                             }
                             poll = await Session.PollAsync(ct);
-                            if (poll.Status == "issued") { await ChangeStepAsync(SetupStep.Grants, ct); break; }
+                            if (poll.Status == "issued") { await CompleteApprovalAsync(ct); break; }
                             if (poll.Status is not "pending" and not "slow_down") break;
                         }
                         await InvokeAsync(() => { Status.Value = $"Approval {TerminalText.Safe(Session.PairingStatus)}"; Refresh(); }, ct);
@@ -95,7 +120,7 @@ public sealed class SetupViewModel(SetupSession session) : ReactiveViewModel
                 await ChangeStepAsync(SetupStep.Review, ct);
                 break;
             case SetupStep.Review:
-                if (File.Exists(Session.Path) && !ReplaceConfirmed)
+                if (File.Exists(Session.Path) && !Session.ReusesExistingConfiguration && !ReplaceConfirmed)
                 {
                     await InvokeAsync(() => { ConfirmReplace = true; Refresh(); }, ct);
                     return;
@@ -107,10 +132,19 @@ public sealed class SetupViewModel(SetupSession session) : ReactiveViewModel
                 await ChangeStepAsync(SetupStep.Finish, ct);
                 break;
             case SetupStep.Finish:
-                await InvokeAsync(RequestShutdown, ct);
+                if (Checks.Count == 0 || Checks.Any(check => check.Status != "completed"))
+                {
+                    var retried = await Session.DoctorAsync(ct);
+                    ct.ThrowIfCancellationRequested();
+                    await InvokeAsync(() => { Checks = retried; Refresh(); }, ct);
+                }
+                else await InvokeAsync(RequestShutdown, ct);
                 break;
         }
     });
+    private Task CompleteApprovalAsync(CancellationToken ct) => ChangeStepAsync(
+        Session.Delivery?.Grants.Select(grant => grant.TenantId).Distinct().Count() > 1 ? SetupStep.Grants : SetupStep.Review, ct);
+    public void EditProfile() { if (Busy || Session.Persisted) return; Step = SetupStep.Profile; Advanced = true; Refresh(); }
     private Task ChangeStepAsync(SetupStep step, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
@@ -151,9 +185,13 @@ public sealed class SetupViewModel(SetupSession session) : ReactiveViewModel
         await InvokeAsync(() =>
         {
             ConfirmReplace = false; ReplaceConfirmed = false;
-            Step = previousStep == SetupStep.Review && Session.Delivery is null
-                ? SetupStep.Authentication
-                : (SetupStep)Math.Max(0, (int)previousStep - 1);
+            Step = previousStep switch
+            {
+                SetupStep.Instance or SetupStep.Profile or SetupStep.Authentication => SetupStep.Instance,
+                SetupStep.Grants => SetupStep.Authentication,
+                SetupStep.Review => Session.Delivery?.Grants.Select(grant => grant.TenantId).Distinct().Count() > 1 ? SetupStep.Grants : SetupStep.Authentication,
+                _ => SetupStep.Review
+            };
             Status.Value = ""; Refresh();
         });
     }
@@ -177,7 +215,7 @@ public sealed class SetupViewModel(SetupSession session) : ReactiveViewModel
     private void CancelOperation() { _generation++; _operation.Cancel(); _operation.Dispose(); _operation = new(); Busy = false; }
     public override void RequestShutdown() { Cancelled = true; CancelOperation(); base.RequestShutdown(); }
     public override void OnDeactivating() { CancelOperation(); base.OnDeactivating(); }
-    public override void Dispose() { _disposed = true; ManualSecret = ""; _operation.Cancel(); _operation.Dispose(); Revision.Dispose(); Status.Dispose(); base.Dispose(); }
+    public override void Dispose() { _disposed = true; ManualSecret = ""; ExternalPassword = ""; _operation.Cancel(); _operation.Dispose(); Revision.Dispose(); Status.Dispose(); base.Dispose(); }
 }
 
 public static class TerminalText
