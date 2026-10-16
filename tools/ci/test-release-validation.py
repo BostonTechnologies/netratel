@@ -2842,6 +2842,10 @@ if args[0] == "compose":
         sys.exit(int(os.environ.get("LAUNCHER_SETUP_STATUS", "2")))
 elif args[0] == "image":
     if args[args.index("--format") + 1] == "{{.Id}}": print("sha256:" + "a" * 64)
+    else:
+        print(os.environ.get("LAUNCHER_IMAGE_ENV_RECORDS", json.dumps([
+            "DOTNET_RUNNING_IN_CONTAINER=true", "ASPNETCORE_HTTP_PORTS=8080"])))
+        print()  # Docker appends its own newline after the formatted JSON.
 elif args[0] == "create":
     print("image-inspection-container")
 elif args[0] == "ps":
@@ -2860,7 +2864,8 @@ elif args[0] == "inspect":
         print("False")
     elif ".Config.Env" in template:
         if "ApiBaseUrl" not in template or 'eq $key "WebGateway__Mcp__BackendUrl"' not in template:
-            print("NetRatel__Mcp__Http__Instance=prod")
+            print(json.dumps(["NetRatel__Mcp__Http__Instance=prod"]))
+            print()  # Docker inspect emits an outer newline for runtime Env too.
             sys.exit(0)
         print("ApiBaseUrl=http://api-private:9440/custom-api/")
         if os.environ.get("LAUNCHER_WEB_MCP_ABSENT") != "1":
@@ -3239,6 +3244,41 @@ elif args[0] == "cp":
                 self.assertEqual(selected, expected)
                 self.assertEqual(protected["NetRatel:Mcp:Http:RequiredScopes"], "")
                 self.assertEqual(protected["NetRatel:Mcp:Http:AllowedOrigins"], "")
+
+    def test_docker_inspect_outer_newline_preserves_image_and_runtime_records(self):
+        result = self.run_launcher()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        output = self.stack / ".netratel-http-mcp-customer-stack"
+        source = json.loads((output / ".effective-deployment.json").read_text())
+        self.assertEqual(source["x-netratel-image-environment"]["mcp-http"]["DOTNET_RUNNING_IN_CONTAINER"], "true")
+        self.assertEqual(source["x-netratel-image-environment"]["mcp-http"]["ASPNETCORE_HTTP_PORTS"], "8080")
+        resumed = self.run_launcher("--verify", LAUNCHER_SETUP_STATUS="0")
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        runtime = json.loads((output / ".runtime-environment.json").read_text())
+        self.assertEqual(runtime["mcp-http"]["NetRatel__Mcp__Http__Instance"], "prod")
+
+    def test_image_environment_json_preserves_multiline_values_without_injecting_settings(self):
+        value = "Operators\nNetRatel__Mcp__Http__LocalCredentialMode=false"
+        records = json.dumps(["NetRatel__Mcp__Http__RequiredGroups__0=" + value])
+        result = self.run_launcher(LAUNCHER_IMAGE_ENV_RECORDS=records)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        source = json.loads((self.stack / ".netratel-http-mcp-customer-stack/.effective-deployment.json").read_text())
+        image = source["x-netratel-image-environment"]["mcp-http"]
+        self.assertEqual(image["NetRatel__Mcp__Http__RequiredGroups__0"], value)
+        self.assertNotIn("NetRatel__Mcp__Http__LocalCredentialMode", image)
+        self.assertNotIn("Operators", result.stdout + result.stderr)
+
+    def test_image_environment_json_rejects_canonical_duplicates_and_oversized_records(self):
+        cases = (["ASPNETCORE_HTTP_PORTS=8080", "aspnetcore_http_ports=9090"],
+                 ["NetRatel__Mcp__Http__Enabled=true", "netratel:mcp:http:enabled=false"],
+                 ["DOTNET_CUSTOM=" + "x" * 4097])
+        for records in cases:
+            with self.subTest(records=len(records)):
+                self.log.write_text("")
+                result = self.run_launcher(LAUNCHER_IMAGE_ENV_RECORDS=json.dumps(records))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("ambiguous image settings", result.stderr)
+                self.assertFalse(any("--name" in call for call in self.commands()))
 
 
 if __name__ == "__main__":

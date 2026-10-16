@@ -277,7 +277,20 @@ protected_defaults = {}
 # Neither container environments nor raw image metadata are printed/logged.
 prefixes = ("NetRatel", "M2M", "ASPNETCORE", "DOTNET", "WebGateway", "HttpHostSetup", "Authentication", "Integration", "NETRATEL_MCP", "NETRATEL_AUTHENTICATION")
 conditions = " ".join('(eq (printf "%.' + str(len(p)) + 's" $key) "' + p.lower() + '")' for p in prefixes)
-template = '{{range .Config.Env}}{{$key := lower (index (split . "=") 0)}}{{if or ' + conditions + ' (eq $key "apibaseurl")}}{{printf "%.4097s\\n" .}}{{end}}{{end}}'
+template = '{{if gt (len .Config.Env) 1024}}{"error":"environment_entry_limit"}{{else}}{{$separator := ""}}[{{range .Config.Env}}{{$key := lower (index (split . "=") 0)}}{{if or ' + conditions + ' (eq $key "apibaseurl")}}{{$separator}}{{json (printf "%.4097s" .)}}{{$separator = ","}}{{end}}{{end}}]{{end}}'
+def environment_records(payload, label):
+    if len(payload) > 262144: raise Prerequisite(label + " settings exceed the inspection bound")
+    records = json.loads(payload)
+    if not isinstance(records, list) or len(records) > 1024: raise Prerequisite(label + " settings exceed the inspection bound")
+    settings = {}; seen = set()
+    for record in records:
+        if not isinstance(record, str): raise Prerequisite("ambiguous " + label + " settings")
+        key, separator, value = record.partition("=")
+        normalized = key.replace(":", "__").casefold()
+        if not separator or not key or len(record) > 4096 or normalized in seen or any(ord(character) < 32 for character in key):
+            raise Prerequisite("ambiguous " + label + " settings")
+        seen.add(normalized); settings[key] = value
+    return settings
 for name in ("api", "mcp-http", "web"):
     image = proposal.get("services", {}).get(name, {}).get("image")
     if not image: continue
@@ -287,12 +300,7 @@ for name in ("api", "mcp-http", "web"):
     image_ids[name] = image_id
     result = subprocess.run(["docker", "image", "inspect", "--format", template, image], capture_output=True, timeout=20)
     if result.returncode: raise Prerequisite("required serving image is unavailable locally; pull the saved image before setup")
-    if len(result.stdout) > 262144: raise Prerequisite("image settings exceed bound")
-    settings = {}
-    for record in result.stdout.decode().splitlines():
-        key, separator, value = record.partition("=")
-        if not separator or len(record) > 4096 or key in settings: raise Prerequisite("ambiguous image settings")
-        settings[key] = value
+    settings = environment_records(result.stdout, "image")
     image_defaults[name] = settings
     effective_environment = dict(settings)
     effective_environment.update(proposal["services"][name].get("environment", {}))
@@ -392,12 +400,8 @@ if verify:
         containers = result.stdout.decode().splitlines()
         if result.returncode or len(containers) != 1: raise Prerequisite("a unique running " + name + " container is required before verification")
         result = subprocess.run(["docker", "inspect", "--format", template, containers[0]], capture_output=True, timeout=20)
-        if result.returncode or len(result.stdout) > 262144: raise Prerequisite("serving runtime unavailable")
-        runtime = {}
-        for record in result.stdout.decode().splitlines():
-            key, separator, value = record.partition("=")
-            if not separator or len(record) > 4096 or key in runtime: raise Prerequisite("ambiguous runtime settings")
-            runtime[key] = value
+        if result.returncode: raise Prerequisite("serving runtime unavailable")
+        runtime = environment_records(result.stdout, "serving runtime")
         observed[name] = runtime
         identifier = subprocess.run(["docker", "inspect", "--format", "{{.Image}}", containers[0]], capture_output=True, timeout=20)
         actual_image = identifier.stdout.decode().strip()
