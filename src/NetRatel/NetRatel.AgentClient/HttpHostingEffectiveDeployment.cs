@@ -120,6 +120,13 @@ public sealed class HttpHostingEffectiveDeployment
     public string? ReadServing(string service, string key)
     {
         key = Normalize(key);
+        foreach (var name in new[] { "RequiredGroups", "RequiredScopes", "AllowedOrigins" })
+        {
+            var array = Http + name;
+            if ((key.Equals(array, StringComparison.OrdinalIgnoreCase) || key.StartsWith(array + "__", StringComparison.OrdinalIgnoreCase)) &&
+                _services[service].Keys.Any(candidate => candidate.Equals(array, StringComparison.OrdinalIgnoreCase) || candidate.StartsWith(array + "__", StringComparison.OrdinalIgnoreCase)))
+                return _services[service].TryGetValue(key, out var item) ? item : "";
+        }
         if (key.StartsWith("NetRatel__Mcp__Outbound__", StringComparison.OrdinalIgnoreCase) || key.StartsWith("NETRATEL_MCP_OUTBOUND_", StringComparison.OrdinalIgnoreCase))
         {
             var property = typeof(AgentClientConfiguration).GetProperties().FirstOrDefault(property => NetRatelConfigurationService.EnvironmentNames(ConfigurationSurface.HttpMcpOutbound, property.Name)

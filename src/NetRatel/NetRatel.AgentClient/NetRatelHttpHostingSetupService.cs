@@ -81,7 +81,11 @@ public sealed class NetRatelHttpHostingSetupService
         if (!File.Exists(path)) return null;
         try
         {
-            var saved = JsonSerializer.Deserialize<HttpHostingSetupRequest>(ConfigurationFileStorage.ReadText(path, secret: true))
+            var text = ConfigurationFileStorage.ReadText(path, secret: true);
+            using var metadata = JsonDocument.Parse(text);
+            if (metadata.RootElement.ValueKind != JsonValueKind.Object || !metadata.RootElement.TryGetProperty(nameof(HttpHostingSetupRequest.DeploymentManager), out var manager) || manager.ValueKind != JsonValueKind.String || manager.GetString() is not ("release-compose" or "komodo"))
+                throw new AgentClientValidationException("deployment_manager_unknown: Saved hosting metadata does not identify an explicit recognized deployment manager. Run ./setup-http-mcp.sh on the Docker host to discover the existing owner and saved sources; setup will not infer release ownership.");
+            var saved = JsonSerializer.Deserialize<HttpHostingSetupRequest>(text)
                 ?? throw new JsonException();
             if (string.IsNullOrWhiteSpace(saved.OutputDirectory) || string.IsNullOrWhiteSpace(saved.PublicOrigin) ||
                 string.IsNullOrWhiteSpace(saved.WebApiBackendUrl) || string.IsNullOrWhiteSpace(saved.WebMcpBackendUrl)) throw new JsonException();

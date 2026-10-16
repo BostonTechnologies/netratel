@@ -311,6 +311,38 @@ public sealed class HttpHostingEffectiveDeploymentTests : IDisposable
         Assert.Equal("winning-protected-secret\n", File.ReadAllText(secretPath));
     }
 
+    [Theory]
+    [InlineData("RequiredGroups")]
+    [InlineData("RequiredScopes")]
+    [InlineData("AllowedOrigins")]
+    public void Discovery_replaces_http_arrays_from_the_highest_provider_instead_of_merging_lower_indices(string name)
+    {
+        var higher = name == "AllowedOrigins" ? "https://higher.example.invalid" : "higher.value";
+        var source = Source(mcp: new() { ["NetRatel__Mcp__Http__" + name + "__0"] = higher }, protectedConfiguration: new()
+        {
+            ["NetRatel:Mcp:Http:" + name + ":0"] = name == "AllowedOrigins" ? "https://lower0.example.invalid" : "lower.value0",
+            ["NetRatel:Mcp:Http:" + name + ":1"] = name == "AllowedOrigins" ? "https://lower1.example.invalid" : "lower.value1"
+        });
+        var existing = ExistingHttpHostSettings.Discover(key => key == HttpHostingEffectiveDeployment.SourceEnvironmentVariable ? source.SourcePath : null);
+        var selected = name == "RequiredGroups" ? existing.RequiredGroups : name == "RequiredScopes" ? existing.RequiredScopes : existing.AllowedOrigins;
+        Assert.Equal([higher], selected);
+    }
+
+    [Fact]
+    public void Saved_metadata_without_explicit_manager_cannot_infer_release_ownership()
+    {
+        new NetRatelHttpHostingSetupService().Apply(Request);
+        var secret = Path.Combine(_directory, "secrets", "outbound-m2m.secret");
+        var before = File.ReadAllBytes(secret);
+        var path = Path.Combine(_directory, ".http-host.setup.json");
+        var saved = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+        Assert.True(saved.Remove(nameof(HttpHostingSetupRequest.DeploymentManager)));
+        ConfigurationFileStorage.WriteAtomic(path, saved.ToJsonString(), replace: true);
+        var exception = Assert.Throws<AgentClientValidationException>(() => NetRatelHttpHostingSetupService.LoadRequest(_directory));
+        Assert.StartsWith("deployment_manager_unknown:", exception.Message);
+        Assert.Equal(before, File.ReadAllBytes(secret));
+    }
+
     [Fact]
     public void Runtime_verification_uses_actual_private_providers_and_image_identity()
     {
