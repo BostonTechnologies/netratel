@@ -210,9 +210,22 @@ Normal stdio MCP stdout contains protocol JSON-RPC only; run setup explicitly wi
         var service = new NetRatelHttpHostingSetupService();
         var preview = service.Preview(request);
         var result = service.Apply(request, options.ContainsKey("--replace"));
-        var fingerprint = service.PrepareRegistration(request);
-        HostingExportReceipt.WriteIfRequested(directory);
-        await output.WriteLineAsync(JsonSerializer.Serialize(new { state = "configuration-written-apply-and-live-verification-pending", registrationFingerprint = fingerprint, applyCommand = NetRatelHttpHostingSetupService.ApplyCommand(request), preview, result }, AgentClientConfiguration.JsonOptions)); return 0;
+        var completeDeployment = !string.IsNullOrWhiteSpace(request.EffectiveComposeSourcePath ?? Environment.GetEnvironmentVariable(HttpHostingEffectiveDeployment.SourceEnvironmentVariable));
+        var fingerprint = completeDeployment ? service.PrepareRegistration(request) : null;
+        if (completeDeployment) HostingExportReceipt.WriteIfRequested(directory);
+        else
+        {
+            string[] pending = ["Generation only: deployment preflight, host approval, apply and live verification remain pending. Run ./setup-http-mcp.sh on the deployment host with the actual saved sources before applying these files."];
+            preview = preview with { Instructions = pending };
+            result = result with { Instructions = pending };
+        }
+        await output.WriteLineAsync(JsonSerializer.Serialize(new
+        {
+            state = completeDeployment ? "configuration-written-apply-and-live-verification-pending" : "configuration-generated-deployment-preflight-pending",
+            generationOnly = true, deploymentPreflight = completeDeployment ? "completed" : "pending", deploymentApplied = false, endToEndVerified = false,
+            registrationFingerprint = fingerprint, applyCommand = completeDeployment ? NetRatelHttpHostingSetupService.ApplyCommand(request) : null,
+            preview, result
+        }, AgentClientConfiguration.JsonOptions)); return 0;
     }
 
     private static async Task<int> VerifyHostingAsync(Dictionary<string, string> options, TextWriter output,
@@ -239,7 +252,7 @@ Normal stdio MCP stdout contains protocol JSON-RPC only; run setup explicitly wi
             }
             HttpHostingEffectiveDeployment.ValidateRuntimeProposal(directory, (service, key) => runtime.GetValueOrDefault(service)?.GetValueOrDefault(key));
         }
-        else if (HttpHostingStorage.UsesSetupVolume(directory))
+        else
             throw new AgentClientValidationException("effective_runtime_missing: Rerun setup-http-mcp.sh on the deployment host to inspect the recreated serving process before verification.");
         if (!options.TryGetValue("--credential-file", out var credentialFile) || !Path.IsPathFullyQualified(credentialFile))
             throw new AgentClientValidationException("Provide --credential-file with the absolute path of a protected HTTP MCP-purpose verifier credential. It remains separate from the server identity and is not saved by verification.");
