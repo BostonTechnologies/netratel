@@ -95,7 +95,11 @@
         CloseEditor(); _deleteTarget = null; _notice = null;
         _loading = true;
         _tenants = await Api.GetTenantsAsync(_lifetime.Token);
-        if (!_tenants.Any(x => x.TenantId == _tenantId)) _tenantId = _tenants.FirstOrDefault()?.TenantId ?? 0;
+        if (!_tenants.Any(x => x.TenantId == _tenantId))
+        {
+            if (InitialTenantId.HasValue) { _tenantId = 0; _error = "The linked tenant is unavailable to this account. Choose a tenant explicitly."; }
+            else _tenantId = _tenants.FirstOrDefault()?.TenantId ?? 0;
+        }
         _connectors = _tenantId > 0 ? await Api.ListAsync(_tenantId, _lifetime.Token) : [];
         _loading = false;
     });

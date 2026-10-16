@@ -69,13 +69,19 @@ public sealed class NotificationConnectorsPanelTests : AsyncBunitContext
 
     [Theory]
     [InlineData(2, 2)]
-    [InlineData(999, 1)]
+    [InlineData(999, 0)]
     public void Flow_link_selects_only_an_authorized_tenant(int requestedTenant, int expectedTenant)
     {
         _api.Tenants.Add(new(2, "Branch site"));
         _api.Targets.Add(new(Guid.NewGuid(), 2, 1, new("Branch Slack", NotificationProvider.Slack, true), true));
         var page = Render<NotificationConnectorsPanel>(parameters => parameters.Add(component => component.InitialTenantId, requestedTenant));
-        page.WaitForAssertion(() => Assert.Single(page.FindAll("[data-testid='notification-card']")));
+        if (expectedTenant > 0) page.WaitForAssertion(() => Assert.Single(page.FindAll("[data-testid='notification-card']")));
+        else
+        {
+            page.WaitForAssertion(() => Assert.Contains("linked tenant is unavailable", page.Find("[data-testid='notification-error']").TextContent));
+            Assert.Empty(page.FindAll("[data-testid='notification-card']"));
+            Assert.True(page.Find("[data-testid='add-slack']").HasAttribute("disabled"));
+        }
         Assert.Equal(expectedTenant, _api.LastListedTenant);
         Assert.Equal(0, _api.Sends);
     }

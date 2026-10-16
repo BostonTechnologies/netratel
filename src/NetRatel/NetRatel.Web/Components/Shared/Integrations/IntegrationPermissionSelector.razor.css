@@ -1,0 +1,21 @@
+.permission-selector { min-width: 0; }
+.permission-heading { position: sticky; top: 0; z-index: 2; background: var(--mud-palette-surface); padding-block: .4rem; border-bottom: 1px solid var(--mud-palette-lines-default); margin-bottom: .5rem; }
+.permission-toolbar { display: grid; grid-template-columns: minmax(12rem, 1fr) minmax(12rem, 1fr); gap: .75rem; }
+.permission-toolbar label { display: flex; flex-direction: column; gap: .3rem; font-size: .875rem; }
+.permission-toolbar select, .permission-toolbar input { width: 100%; min-width: 0; color: var(--mud-palette-text-primary); background: var(--mud-palette-surface); border: 1px solid var(--mud-palette-lines-default); border-radius: 4px; padding: .6rem; font: inherit; }
+.permission-toolbar :is(input,select):focus-visible { outline: 2px solid var(--mud-palette-primary); outline-offset: 2px; }
+.permission-current { margin-top: .75rem; font-size: .875rem; }
+.permission-actions, .permission-group-heading { display: flex; align-items: center; gap: .25rem; flex-wrap: wrap; }
+.permission-actions { margin-block: .4rem; }
+.permission-groups { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: .65rem; align-items: start; }
+.permission-group { border: 1px solid var(--mud-palette-lines-default); border-radius: 6px; padding: .2rem .5rem .5rem; min-width: 0; }
+.permission-group-heading { border-bottom: 1px solid var(--mud-palette-lines-default); justify-content: space-between; }
+.permission-row { padding-block: .15rem; }
+.permission-row ::deep .mud-checkbox { padding-block: .2rem; }
+.permission-description { display: block; margin-left: 2.2rem; font-size: .8rem; color: var(--mud-palette-text-secondary); line-height: 1.35; overflow-wrap: anywhere; }
+.permission-summary { margin-top: .75rem; font-size: .875rem; }
+.permission-summary details { margin-left: .75rem; margin-top: .4rem; }
+.permission-summary summary { cursor: pointer; padding-block: .25rem; }
+.permission-summary code { font-size: .8rem; overflow-wrap: anywhere; }
+@media (max-width: 700px) { .permission-groups { grid-template-columns: minmax(0,1fr); } }
+@media (max-width: 450px) { .permission-toolbar { grid-template-columns: minmax(0,1fr); } }

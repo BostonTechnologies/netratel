@@ -31,6 +31,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         Call(page.Instance, "OpenCreate");
         Set(page.Instance, "_name", "Draft A");
         Set(page.Instance, "_step", 2);
+        Set(page.Instance, "_createConfirmed", true);
         var pending = CallAsync(page.Instance, "CreateAsync");
         transport.PostRequested.Should().BeTrue();
 
@@ -66,6 +67,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         Call(page.Instance, "OpenCreate");
         Set(page.Instance, "_name", "Draft A");
         Set(page.Instance, "_step", 2);
+        Set(page.Instance, "_createConfirmed", true);
         var pending = CallAsync(page.Instance, "CreateAsync");
 
         page.Instance.Dispose();
@@ -88,6 +90,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         Call(page.Instance, "OpenCreate");
         Set(page.Instance, "_name", "Draft A");
         Set(page.Instance, "_step", 2);
+        Set(page.Instance, "_createConfirmed", true);
         var pending = CallAsync(page.Instance, "CreateAsync");
 
         transport.RejectCreate();
@@ -98,14 +101,87 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         Field<string>(page.Instance, "_error").Should().Be("Review the name.");
     }
 
+    [Theory]
+    [InlineData(null, null, null, false)]
+    [InlineData("7", null, 7, false)]
+    [InlineData(null, "7", 7, false)]
+    [InlineData("7", "7", 7, false)]
+    [InlineData("7", "8", null, true)]
+    [InlineData("invalid", null, null, true)]
+    [InlineData(null, "-1", null, true)]
+    [InlineData("", "7", null, true)]
+    public void Tenant_aliases_resolve_consistently_and_conflicting_or_invalid_links_are_explicit(string? snake, string? camel, int? expected, bool invalid)
+    {
+        var result = IntegrationCredentials.ResolveTenantContext(snake, camel);
+        result.TenantId.Should().Be(expected);
+        (result.Error is not null).Should().Be(invalid);
+    }
+
+    [Fact]
+    public async Task Inactive_cleanup_uses_only_explicit_visible_selection_and_retains_partial_failures()
+    {
+        JSInterop.Mode = JSRuntimeMode.Loose;
+        Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+        using var transport = new CredentialTransport { IncludeCredentials = true, FailDeleteId = "revoked-fail" };
+        Services.AddSingleton<IHttpClientFactory>(transport);
+        SetRendererInfo(new RendererInfo("Server", true));
+        var page = Render<IntegrationCredentials>();
+        page.WaitForAssertion(() => Field<object>(page.Instance, "_authority").Should().NotBeNull());
+        var selected = Field<HashSet<string>>(page.Instance, "_selectedInactive");
+        selected.UnionWith(["active", "revoked-ok", "revoked-fail"]);
+        Call(page.Instance, "ConfirmDeleteSelected");
+        await CallAsync(page.Instance, "RevokeAsync");
+        transport.DeletedIds.Should().BeEquivalentTo(["revoked-ok", "revoked-fail"]);
+        Field<string>(page.Instance, "_managementError").Should().Contain("1 credential(s)");
+        selected.Should().Contain("revoked-fail").And.NotContain("revoked-ok");
+        var credentials = ((System.Collections.IEnumerable)Field<object>(page.Instance, "_credentials")).Cast<object>().ToArray();
+        credentials.Select(credential => credential.GetType().GetProperty("Id")!.GetValue(credential)).Should().BeEquivalentTo(["active", "revoked-fail", "expired-unselected"]);
+
+        transport.FailDeleteId = null;
+        Call(page.Instance, "SetStatusFilter", "Expired");
+        selected.Should().BeEmpty();
+        selected.Add("revoked-fail"); // Even stale caller selection cannot include a hidden row in the batch.
+        Call(page.Instance, "ConfirmDeleteSelected");
+        Field<bool>(page.Instance, "_revokeOpen").Should().BeFalse();
+        transport.DeletedIds.Should().HaveCount(2);
+        Call(page.Instance, "SetStatusFilter", "All");
+        selected.Add("revoked-fail");
+        Call(page.Instance, "ConfirmDeleteSelected");
+        await CallAsync(page.Instance, "RevokeAsync");
+        selected.Should().BeEmpty();
+        var remaining = ((System.Collections.IEnumerable)Field<object>(page.Instance, "_credentials")).Cast<object>();
+        remaining.Select(credential => credential.GetType().GetProperty("Id")!.GetValue(credential)).Should().BeEquivalentTo(["active", "expired-unselected"]);
+    }
+
+    [Fact]
+    public async Task Selecting_and_removing_tenant_access_invalidates_create_confirmation()
+    {
+        JSInterop.Mode = JSRuntimeMode.Loose;
+        Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+        using var transport = new CredentialTransport();
+        Services.AddSingleton<IHttpClientFactory>(transport);
+        SetRendererInfo(new RendererInfo("Server", true));
+        var page = Render<IntegrationCredentials>();
+        page.WaitForAssertion(() => Field<object>(page.Instance, "_authority").Should().NotBeNull());
+        Call(page.Instance, "OpenCreate");
+        Set(page.Instance, "_createConfirmed", true);
+        Call(page.Instance, "SetTenantPermission", 7, "telemetry.read", true);
+        Field<bool>(page.Instance, "_createConfirmed").Should().BeFalse();
+        Set(page.Instance, "_createConfirmed", true);
+        Call(page.Instance, "RemoveTenant", 7);
+        Field<bool>(page.Instance, "_createConfirmed").Should().BeFalse();
+        Field<HashSet<(int TenantId, string Permission)>>(page.Instance, "_selectedGrants").Should().BeEmpty();
+        await Task.CompletedTask;
+    }
+
     private static T Field<T>(object instance, string name) =>
         (T)instance.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(instance)!;
 
     private static void Set(object instance, string name, object value) =>
         instance.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(instance, value);
 
-    private static void Call(object instance, string name) =>
-        instance.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(instance, null);
+    private static void Call(object instance, string name, params object[] arguments) =>
+        instance.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(instance, arguments);
 
     private static void CallWithArg(object instance, string name, object value) =>
         instance.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(instance, [value]);
@@ -128,6 +204,9 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
     {
         private readonly TaskCompletionSource<HttpResponseMessage> _create = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool PostRequested { get; private set; }
+        public bool IncludeCredentials { get; set; }
+        public string? FailDeleteId { get; set; }
+        public List<string> DeletedIds { get; } = [];
         public HttpClient CreateClient(string name) => new(this, disposeHandler: false) { BaseAddress = new Uri("https://api.example.test") };
         public void CompleteCreate(string secret) => _create.SetResult(new HttpResponseMessage(HttpStatusCode.Created)
         {
@@ -137,8 +216,20 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         {
             Content = JsonContent.Create(new { errors = new { name = new[] { "Review the name." } } })
         });
+        private static object Credential(string id, DateTimeOffset expiresAt, DateTimeOffset? revokedAt) => new {
+            id, publicId = id, tokenPrefix = "synthetic", name = id, purpose = 0, resource = (string?)null,
+            createdAtUtc = DateTimeOffset.UtcNow.AddDays(-2), expiresAtUtc = expiresAt, revokedAtUtc = revokedAt,
+            lastUsedAtUtc = (DateTimeOffset?)null, grants = Array.Empty<object>(), instancePermissions = Array.Empty<string>() };
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            if (request.Method == HttpMethod.Delete)
+            {
+                var id = request.RequestUri!.AbsolutePath.Split('/')[^1];
+                DeletedIds.Add(id);
+                return Task.FromResult(new HttpResponseMessage(id == FailDeleteId ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.NoContent));
+            }
+            if (request.RequestUri!.AbsolutePath == "/api/v2/access/self")
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new { isInstanceAdministrator = false }) });
             if (request.Method == HttpMethod.Post)
             {
                 PostRequested = true;
@@ -149,7 +240,11 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
                 {
                     Content = JsonContent.Create(new { tenants = Array.Empty<object>(), instancePermissions = Array.Empty<object>(), configuredHttpMcpServerUrl = "https://mcp.example.test/mcp" })
                 });
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(Array.Empty<object>()) });
+            var now = DateTimeOffset.UtcNow;
+            object[] credentials = IncludeCredentials ? new[] {
+                Credential("active", now.AddDays(1), null), Credential("revoked-ok", now.AddDays(1), now),
+                Credential("revoked-fail", now.AddDays(1), now), Credential("expired-unselected", now.AddDays(-1), null) } : [];
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(credentials) });
         }
     }
 }
