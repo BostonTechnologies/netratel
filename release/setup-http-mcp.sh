@@ -215,7 +215,7 @@ for service in inputs.get("services", {}).values():
 PY_INPUTS
   then die 'A saved service env_file or protected appsettings source is missing or unreadable. Restore that saved source before setup; no approval was requested.'; fi
   if ! "${compose[@]}" config --format json >"$output_dir/.effective-deployment.json" 2>>"$output_dir/preflight.log" ||
-      ! "${compose[@]}" config >"$output_dir/.compose-source.yaml" 2>>"$output_dir/preflight.log"; then
+      ! "${compose[@]}" config --no-env-resolution --no-interpolate >"$output_dir/.compose-source.yaml" 2>>"$output_dir/preflight.log"; then
     die 'The saved deployment could not be fully resolved. Restore its Compose/env_file sources before setup; no approval was requested.'
   fi
   rm -f -- "$output_dir/.preflight-action"
@@ -444,6 +444,9 @@ run=("${compose[@]}" run --name "$tool_name" --no-deps --user 10001:10001)
 if [[ ! -t 0 || ! -t 1 ]]; then run+=(-T); fi
 host_apply=("${compose[@]}" -f "$output_dir/compose.http-host.yaml" up -d web api mcp-http)
 printf -v host_apply_command '%q ' "${host_apply[@]}"
+apply_guard='import hashlib,json,pathlib,sys; state=json.loads(pathlib.Path(sys.argv[1]).read_text()); expected=state["sources"]+[{"path":sys.argv[2],"hash":state["exportedHash"]}]; valid=all(pathlib.Path(s["path"]).is_file() and pathlib.Path(s["path"]).stat().st_size<=262144 and hashlib.sha256(pathlib.Path(s["path"]).read_bytes()).hexdigest()==s["hash"] for s in expected); sys.exit(0 if valid else "approved sources changed: stop apply and rerun ordinary setup to review the current deployment")'
+printf -v apply_guard_command '%q ' python3 -c "$apply_guard" "$output_dir/.approved-source-state.json" "$output_dir/compose.http-host.yaml"
+host_apply_command="${apply_guard_command% } && ${host_apply_command% }"
 run+=(
   --env "NETRATEL_SETUP_HOST_OUTPUT_DIRECTORY=$output_dir"
   --env "NETRATEL_SETUP_HOST_APPLY_COMMAND=${host_apply_command% }"
@@ -554,7 +557,11 @@ if [[ "$target" == http-host && "$manager" == release-compose && "$verify" == fa
   check_sources || die "The saved sources changed during overlay export. Keep the approved generation and rerun ordinary setup."
   chmod 600 -- "$overlay_temp"
   mv -f -- "$overlay_temp" "$output_dir/compose.http-host.yaml"
-  cp -- "$source_state" "$output_dir/.approved-source-state.json"
+  python3 - "$source_state" "$output_dir/.approved-source-state.json" "$actual_digest" <<'PY_RELEASE_STATE'
+import json, pathlib, sys
+state = json.loads(pathlib.Path(sys.argv[1]).read_text()); state["exportedHash"] = sys.argv[3]
+pathlib.Path(sys.argv[2]).write_text(json.dumps(state))
+PY_RELEASE_STATE
   printf '\nSaved — apply pending. Review the private overlay and run on this Docker host:\n  %s\n' "$host_apply_command"
   printf 'After apply, resume ./setup-http-mcp.sh --verify with the same instance selection.\n'
 fi

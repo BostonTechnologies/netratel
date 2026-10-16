@@ -264,9 +264,14 @@ class FastTestContainerPreparationTests(unittest.TestCase):
                         # scheduled a SIGKILLed descendant's final exit. Observe
                         # that bounded transition; a still-running child fails.
                         observation_deadline = time.monotonic() + 0.5
-                        while process_stat.exists() and process_stat.read_text().rsplit(")", 1)[1].split()[0] != "Z" and time.monotonic() < observation_deadline:
+                        def still_running():
+                            try:
+                                return process_stat.read_text().rsplit(")", 1)[1].split()[0] != "Z"
+                            except FileNotFoundError:
+                                return False
+                        while still_running() and time.monotonic() < observation_deadline:
                             time.sleep(0.01)
-                        if process_stat.exists() and process_stat.read_text().rsplit(")", 1)[1].split()[0] != "Z":
+                        if still_running():
                             live_children.append(pid)
                             try:
                                 os.kill(pid, 9)  # Do not leak a failing fixture's sleep process.
@@ -3162,6 +3167,9 @@ elif args[0] == "cp":
         self.assertEqual(result.returncode, 2, result.stderr)
         state = json.loads((self.stack / ".netratel-http-mcp-customer-stack/.approved-source-state.json").read_text())
         self.assertIn(str(service_env), [source["path"] for source in state["sources"]])
+        export_source = next(call for call in self.commands() if call[0] == "compose" and "config" in call
+                             and "--no-interpolate" in call)
+        self.assertIn("--no-env-resolution", export_source)
         service_env.write_text("OPTION=changed\n")
         self.log.write_text("")
         resumed = self.run_launcher("--verify", LAUNCHER_RESOLVED_JSON=rendered)
@@ -3182,6 +3190,24 @@ elif args[0] == "cp":
                 self.assertEqual(overlay.read_text(), "prior reviewed overlay")
                 self.assertEqual(state.read_text(), '{"sources": []}')
                 self.assertNotIn("up -d", result.stdout)
+
+    def test_printed_release_apply_checks_both_approved_sources_and_exported_overlay(self):
+        result = self.discovered_launcher(LAUNCHER_MANAGER_METADATA="release-compose")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        command = next(value.split("=", 1)[1] for value in self.run_command()
+                       if value.startswith("NETRATEL_SETUP_HOST_APPLY_COMMAND="))
+        for mutation in ("source", "overlay"):
+            with self.subTest(mutation=mutation):
+                path = self.compose_file if mutation == "source" else self.stack / ".netratel-http-mcp-customer-stack/compose.http-host.yaml"
+                original = path.read_bytes()
+                path.write_bytes(original + b"# concurrent edit\n")
+                self.log.write_text("")
+                guarded = subprocess.run(["bash", "-c", command], cwd=self.root, env=self.environment,
+                                         text=True, capture_output=True, timeout=5)
+                self.assertNotEqual(guarded.returncode, 0)
+                self.assertIn("approved sources changed", guarded.stderr)
+                self.assertFalse(any("up" in call for call in self.commands()))
+                path.write_bytes(original)
 
 
 if __name__ == "__main__":
