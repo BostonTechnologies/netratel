@@ -2,6 +2,8 @@
 
 Check each boundary separately. A valid configuration, responding route, authenticated initialize and authorized business read are different outcomes. Record completed checks and unavailable or denied checks separately; a 401/403 is not successful onboarding.
 
+If you are deciding between client and server modes or setting up a Komodo stack, start with [the server-first setup guide](setup.md). Server setup connects MCP to the API; client setup connects a consumer to that configured MCP endpoint. Switching modes cannot supply missing deployment storage.
+
 ## Bounded verification
 
 1. **Configuration:** run the explicit `config validate` command for the chosen surface. It returns redacted target/auth/source information and exits nonzero for invalid or conflicting values. Render Compose with `config --quiet`; do not print secret-bearing configuration.
@@ -28,6 +30,11 @@ A 401/403 can establish that an auth boundary responded, but it does not prove c
 
 | Observation | Check |
 | --- | --- |
+| `No persistent setup mount` or missing client storage | Run the custom-stack launcher on the **deployment host** using the actual Compose file/project, or use the matching extracted release bundle. Keep host setup and client storage separate; do not run the server as root. |
+| `compose.setup.yaml` / `.yml` not found | This file belongs to the release bundle. Komodo's existing `compose.yaml` is a different supported path; use its launcher. Changing the extension cannot create an absent file. |
+| Existing host identity/settings detected, but setup never completed | Reuse the supported effective config/environment generation through server setup. Config values are supplied settings, not proof of administrator approval or a verified connection. Do not rotate or manually copy keys to bypass the gate. |
+| API/Web are separate hosts or instance shows `dev` | Retain the effective instance and enter the actual HTTPS API destination in server setup. A Web hostname is not automatically the separate API hostname. |
+| Authentication choice required while Local credential text is visible | Select and confirm the actual supported mode in the explicit choice prompt. A default label is not proof that discovery or effective configuration established that mode. |
 | `/mcp` returns Web HTML | MCP overlay selected **and** Web route enabled; exact `/mcp` route; correct destination; no fallback path rewrite |
 | 502/504 or connection refused | Configured service DNS/network/port and backend readiness; do not switch targets automatically |
 | Works directly, fails through ingress | Forwarded Authorization/protocol headers, trusted proxy/host, disabled buffering/caching, timeout budgets and exact metadata route |
@@ -42,6 +49,12 @@ A 401/403 can establish that an auth boundary responded, but it does not prove c
 | `.env` value ignored | Compose interpolation mapping versus actual injected `env_file` key; use canonical .NET `__` key or implemented dedicated alias |
 | `restart` does not apply environment | Recreate the affected services with the same approved Compose files/env input |
 | stdio emits banners or ANSI | Run ordinary stdio protocol mode with pipes; explicit setup alone uses a TTY; diagnostics belong on stderr |
+
+## Distinguish host service checks from client checks
+
+**MCP container terminal:** bare `dotnet /app/NetRatel.Mcp.Http.dll doctor` diagnoses the server's backend identity. In API M2M mode it reports **token acquisition** separately from **service API authorization**. A rejected token request/invalid token response stops before the API probe. A later 403 identifies the API validation/caller/authorization stage; it does not establish that the secret was wrong. A missing service-status endpoint requires a compatible API upgrade alongside MCP. Diagnostics redact credentials and token responses.
+
+Passing the service probe establishes that backend service identity only. It does not establish client tenant grants, MCP initialization or delegated business reads. Complete server setup's real verification. To inspect a separately saved HTTP-client profile instead, run `dotnet /app/NetRatel.Mcp.Http.dll doctor --transport http --profile default`; this exercises that client's credential and MCP path. A browser approval, a file write or account-only endpoint rejection cannot substitute for either result.
 
 The [routing guide](../deployment/web-gateway.md), [complete configuration reference](configuration.md), [shared profile rules](../integrations/configuration.md) and [host setup](setup.md) explain the exact settings. Logs should identify the failed stage using redacted metadata, never device capabilities, user codes, bearer values or complete secret-bearing configuration.
 

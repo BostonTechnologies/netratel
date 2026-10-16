@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 # Optional hosted acceptance only. Reuse the source Compose, public HTTPS,
-# unattended bootstrap and pairing fixtures; never publish these images.
+# unattended bootstrap and pairing fixtures; never publish these images. The
+# actual deployment is one Compose document, as in a Komodo Compose editor.
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 [[ "${GITHUB_ACTIONS:-false}" == true ]] || {
@@ -11,10 +13,13 @@ cd "$root"
 }
 image="${NETRATEL_HTTP_HOST_SETUP_SMOKE_IMAGE:?set the hosted source tooling image}"
 temporary="$(mktemp -d)"
+deployment_uid="$(id -u)"
+deployment_gid="$(id -g)"
+[[ "$deployment_uid" != 10001 ]] || { echo "The hosted deployment owner must differ from the MCP tooling identity." >&2; exit 2; }
 project="netratel-http-host-${GITHUB_RUN_ID}-${RANDOM}"
 export COMPOSE_PROJECT_NAME="$project"
-export NETRATEL_SETUP_VOLUME="${project}-setup"
-export NETRATEL_CLIENT_VOLUME="${project}-clients"
+export NETRATEL_SETUP_VOLUME="${project}-http-host-setup"
+export NETRATEL_CLIENT_VOLUME="${project}-http-client-data"
 export NETRATEL_MCP_HTTP_IMAGE="$image"
 export NETRATEL_AUTHENTICATION_MODE=Local
 export NETRATEL_MCP_AUTHENTICATION_MODE=LocalCredential
@@ -22,19 +27,25 @@ export NETRATEL_MCP_LOCAL_CREDENTIAL_MODE=true
 export NETRATEL_ALLOW_INSECURE_LOCALHOST=false
 export POSTGRES_PASSWORD=disposable-http-host-postgres-passphrase
 export NETRATEL_PUBLIC_HOST=netratel.example.test
+export NETRATEL_PUBLIC_API_HOST=netratel-api.example.test
 export NETRATEL_HTTPS_BIND_ADDRESS=0.0.0.0
 export NETRATEL_HTTPS_PORT=443
 export NETRATEL_WEB_PORT=19081
 export NETRATEL_PUBLIC_ORIGIN="https://${NETRATEL_PUBLIC_HOST}"
+export NETRATEL_PUBLIC_API_ORIGIN="https://${NETRATEL_PUBLIC_API_HOST}"
 export NETRATEL_PUBLIC_GATEWAY_ORIGIN="$NETRATEL_PUBLIC_ORIGIN"
 export NETRATEL_MCP_PUBLIC_RESOURCE_URI="$NETRATEL_PUBLIC_ORIGIN/mcp"
 export NETRATEL_HTTPS_CERTIFICATE="$temporary/tls.crt"
 export NETRATEL_HTTPS_PRIVATE_KEY="$temporary/tls.key"
 export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$temporary/agent.key"
-export NETRATEL_SETUP_COMPOSE_FILES="compose.yaml,release/compose.public-https.yaml,release/compose.mcp-http.yaml,$temporary/fixture.yaml"
-compose=(docker compose -f compose.yaml -f release/compose.public-https.yaml -f release/compose.mcp-http.yaml -f "$temporary/fixture.yaml")
-setup=(docker compose -f compose.setup.yaml -f "$temporary/setup-network.yaml")
-applied=("${compose[@]}" -f .netratel.http-host.yaml)
+source_compose=(docker compose -f compose.yaml -f release/compose.public-https.yaml -f release/compose.mcp-http.yaml -f "$temporary/fixture.yaml")
+compose=(docker compose -f "$temporary/compose.yaml")
+applied=("${compose[@]}")
+launcher=(bash "$root/release/setup-http-mcp.sh" --compose-file "$temporary/compose.yaml" --project "$project" --manager komodo)
+host_setup=(--non-interactive
+  --api-base-url "$NETRATEL_PUBLIC_API_ORIGIN"
+  --api-m2m-authority "$NETRATEL_PUBLIC_ORIGIN" --api-m2m-audience netratel.api
+  --existing-m2m-callers unrelated-caller)
 stage="preparing disposable HTTP host setup"
 cleanup() {
   local status=$?
@@ -51,20 +62,19 @@ cleanup() {
   "${applied[@]}" down --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
   "${compose[@]}" down --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
   docker volume rm "$NETRATEL_SETUP_VOLUME" "$NETRATEL_CLIENT_VOLUME" >/dev/null 2>&1 || true
-  rm -f .netratel.http-host.yaml
   rm -rf "$temporary"
   return "$status"
 }
-[[ ! -e .netratel.http-host.yaml ]] || { echo "Refusing to replace an existing generated deployment overlay." >&2; exit 2; }
 trap cleanup EXIT
 chmod 755 "$temporary"
 openssl req -x509 -newkey rsa:2048 -nodes -keyout "$NETRATEL_HTTPS_PRIVATE_KEY" \
   -out "$NETRATEL_HTTPS_CERTIFICATE" -subj /CN=netratel.example.test \
-  -addext 'subjectAltName=DNS:netratel.example.test,IP:127.0.0.1' \
+  -addext 'subjectAltName=DNS:netratel.example.test,DNS:netratel-api.example.test,IP:127.0.0.1' \
   -addext 'basicConstraints=critical,CA:TRUE' -days 1 >/dev/null 2>&1
 chmod 644 "$NETRATEL_HTTPS_CERTIFICATE"
 chmod 600 "$NETRATEL_HTTPS_PRIVATE_KEY"
 cat /etc/ssl/certs/ca-certificates.crt "$NETRATEL_HTTPS_CERTIFICATE" > "$temporary/trust.pem"
+chmod 644 "$temporary/trust.pem"
 openssl ecparam -name prime256v1 -genkey -noout -out "$NETRATEL_AGENT_AUTH_PRIVATE_KEY"
 docker run --rm --volume "$temporary:/fixture" alpine:3.22 \
   sh -ceu 'chown 1654:1654 /fixture/agent.key; chmod 600 /fixture/agent.key'
@@ -72,21 +82,166 @@ cat > "$temporary/fixture.yaml" <<EOF
 services:
   ingress:
     volumes:
-      - "$root/release/nginx.public-https.conf:/etc/nginx/conf.d/default.conf:ro"
+      - "$temporary/ingress.conf:/etc/nginx/conf.d/default.conf:ro"
   mcp-http:
     extra_hosts:
       - "$NETRATEL_PUBLIC_HOST:host-gateway"
+      - "$NETRATEL_PUBLIC_API_HOST:host-gateway"
     volumes:
       - "$temporary/trust.pem:/etc/ssl/certs/ca-certificates.crt:ro"
 EOF
-cat > "$temporary/setup-network.yaml" <<EOF
-services:
-  mcp-http:
-    extra_hosts:
-      - "$NETRATEL_PUBLIC_HOST:host-gateway"
-    volumes:
-      - "$temporary/trust.pem:/etc/ssl/certs/ca-certificates.crt:ro"
+cat > "$temporary/ingress.conf" <<'EOF'
+server {
+  listen 443 ssl;
+  server_name netratel.example.test;
+  ssl_certificate /run/netratel-ingress/tls.crt;
+  ssl_certificate_key /run/netratel-ingress/tls.key;
+  location / {
+    proxy_pass http://web:9111;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_read_timeout 120s;
+  }
+}
+server {
+  listen 443 ssl;
+  server_name netratel-api.example.test;
+  ssl_certificate /run/netratel-ingress/tls.crt;
+  ssl_certificate_key /run/netratel-ingress/tls.key;
+  location / {
+    proxy_pass http://api:9222;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For $remote_addr;
+  }
+}
 EOF
+# Begin with the reported manually supplied identity: a read-only outbound JSON,
+# dev instance and canonical inline delegation settings. Its backend registration
+# is deliberately absent. Saving/adopting configuration alone must not pass.
+"${source_compose[@]}" config --format json > "$temporary/compose.yaml"
+python3 - "$temporary" "$NETRATEL_PUBLIC_ORIGIN" "$NETRATEL_PUBLIC_API_ORIGIN" <<'PY'
+import base64, json, pathlib, secrets, sys
+directory, origin, api = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+path = directory / "compose.yaml"
+document = json.loads(path.read_text())
+services = document["services"]
+services["api"]["environment"].update({
+    "ASPNETCORE_ENVIRONMENT": "Development", "M2M__Authority": origin,
+    "M2M__Audience": "netratel.api", "M2M__AllowedCallerClientIds__0": "unrelated-caller",
+    "M2MClients__unrelated_caller__Secret": secrets.token_urlsafe(48),
+    "M2MClients__unrelated_caller__AllowedScopes__0": "unrelated.scope",
+    "M2MClients__unrelated_caller__AllowedAudiences__0": "unrelated.audience",
+    "Integration__HttpMcp__AuthenticationMode": ""})
+services["web"]["environment"]["ASPNETCORE_ENVIRONMENT"] = "Development"
+mcp = services["mcp-http"]
+managed_env = directory / "managed.env"
+managed_env.write_text("NETRATEL_ACCEPTANCE_UNRELATED=preserved\nNetRatel__Mcp__Delegation__LifetimeSeconds=90\n")
+managed_env.chmod(0o600)
+for service in (mcp, services["api"]):
+    service["env_file"] = [{"path": str(managed_env), "required": True}]
+environment = mcp["environment"]
+environment.update({"NETRATEL_MCP_INSTANCE": "dev", "NETRATEL_MCP_CONFIG": "/run/secrets/mcp-outbound-config",
+    "NETRATEL_MCP_DEV_API_BASE_URL": api,
+    "NetRatel__Mcp__Http__LocalCredentialMode": "true",
+    "NetRatel__Mcp__Http__OperatorSurfaceEnabled": "true",
+    "NetRatel__Mcp__Delegation__Enabled": "true",
+    "NetRatel__Mcp__Delegation__Issuer": "netratel-mcp-dev",
+    "NetRatel__Mcp__Delegation__Audience": "netratel-api-dev",
+    "NetRatel__Mcp__Delegation__ServicePrincipal": "disposable-mcp-api",
+    "NetRatel__Mcp__Delegation__KeyId": "existing-disposable-generation",
+    "NetRatel__Mcp__Delegation__SharedKeyBase64": base64.b64encode(secrets.token_bytes(32)).decode()})
+services["api"]["environment"].update({key: value for key, value in environment.items()
+    if key.startswith("NetRatel__Mcp__Delegation__")})
+# No setup/profile mounts initially: preflight must recover this exact failure.
+environment.pop("NETRATEL_CLIENT_DIRECTORY", None)
+environment.pop("NETRATEL_CLIENT_VOLUME", None)
+mcp["volumes"] = [mount for mount in mcp.get("volumes", []) if mount.get("target") != "/var/lib/netratel/clients"]
+mcp["volumes"].append({"type": "bind", "source": str(directory / "outbound.json"),
+    "target": "/run/secrets/mcp-outbound-config", "read_only": True})
+document["volumes"].pop("http-client-data", None)
+path.write_text(json.dumps(document, indent=2) + "\n")
+(directory / "outbound.json").write_text(json.dumps({"instance": "dev", "apiBaseUrl": api,
+    "authenticationMode": "ApiM2MClientSecret", "apiM2MTokenUrl": api + "/connect/token",
+    "apiM2MClientId": "disposable-mcp-api", "apiM2MClientSecret": secrets.token_urlsafe(48),
+    "apiM2MScope": "netratel.api"}) + "\n")
+PY
+chmod 600 "$temporary/compose.yaml"
+outbound_hash="$(sha256sum "$temporary/outbound.json" | cut -d ' ' -f 1)"
+generation_hashes="$(python3 - "$temporary" <<'PY'
+import hashlib, json, pathlib, sys
+directory = pathlib.Path(sys.argv[1]); document = json.loads((directory / "compose.yaml").read_text())
+delegation = document["services"]["mcp-http"]["environment"]["NetRatel__Mcp__Delegation__SharedKeyBase64"]
+outbound = json.loads((directory / "outbound.json").read_text())["apiM2MClientSecret"]
+print(json.dumps({"delegation": hashlib.sha256(delegation.encode()).hexdigest(),
+    "outbound": hashlib.sha256(outbound.encode()).hexdigest()}))
+PY
+)"
+docker run --rm --volume "$temporary:/fixture" alpine:3.22 sh -ceu \
+  'chown 10001:10001 /fixture/outbound.json; chmod 400 /fixture/outbound.json'
+check_source_ownership() {
+  [[ "$(stat -c '%u:%g:%a' "$temporary/compose.yaml")" == "$deployment_uid:$deployment_gid:600" ]]
+}
+check_source_ownership
+original_compose_hash="$(sha256sum "$temporary/compose.yaml" | cut -d ' ' -f 1)"
+mkdir -p TestResults/http-host-setup
+stage="rejecting absent durable storage before approval without assuming a setup Compose file"
+[[ ! -e "$temporary/compose.setup.yaml" ]]
+for mode in host client; do
+  arguments=(setup --non-interactive --instance "$NETRATEL_PUBLIC_ORIGIN")
+  if [[ "$mode" == host ]]; then arguments+=(--mode host); fi
+  if "${compose[@]}" run --rm --no-deps -T mcp-http "${arguments[@]}" \
+      > "TestResults/http-host-setup/missing-${mode}-storage.txt" 2>&1; then
+    echo "Setup unexpectedly accepted a disposable container without persistent ${mode} storage." >&2; exit 1
+  fi
+  grep -Eiq 'persistent|durable|storage|mount' "TestResults/http-host-setup/missing-${mode}-storage.txt"
+done
+"${compose[@]}" config --quiet
+managed_env_hash="$(sha256sum "$temporary/managed.env" | cut -d ' ' -f 1)"
+check_generation() {
+  local expected actual kind path
+  for kind in delegation outbound; do
+    expected="$(jq -er --arg kind "$kind" '.[$kind]' <<<"$generation_hashes")"
+    if [[ "$kind" == delegation ]]; then path=/run/netratel-http-host/runtime/delegation.key
+    else path=/run/netratel-http-host/runtime/adopted-outbound-m2m.secret; fi
+    actual="$("${applied[@]}" exec -T --user 10001 mcp-http cat "$path" \
+      | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read().rstrip(b"\r\n")).hexdigest())')"
+    [[ "$actual" == "$expected" ]] || { echo "The existing $kind identity changed." >&2; return 1; }
+  done
+  [[ "$("${applied[@]}" exec -T --user 10001 mcp-http sha256sum /run/secrets/mcp-outbound-config | cut -d ' ' -f 1)" == "$outbound_hash" ]]
+  [[ "$(sha256sum "$temporary/managed.env" | cut -d ' ' -f 1)" == "$managed_env_hash" ]]
+  check_source_ownership
+}
+# Only the owner-facing launcher attaches missing setup/profile volumes. The
+# original Compose file remains untouched until its complete export is reviewed.
+run_host_setup() {
+  local instance="$1" output="$2" status=0
+  "${launcher[@]}" -- "${host_setup[@]}" --instance "$instance" > "$temporary/launcher.log" 2>&1 || status=$?
+  if (( status != 0 && status != 2 )); then
+    echo "The actual single-Compose launcher failed before generating a reviewed document (exit $status)." >&2
+    return "$status"
+  fi
+  # The launcher adds a short human-readable introduction and export location.
+  # Retain the executable's exact JSON receipt, with no launch-log fabrication.
+  python3 - "$temporary/launcher.log" "$output" <<'PY'
+import json, pathlib, sys
+source = pathlib.Path(sys.argv[1]).read_text(); decoder = json.JSONDecoder()
+for offset, character in enumerate(source):
+    if character != "{": continue
+    try: value, _ = decoder.raw_decode(source[offset:])
+    except json.JSONDecodeError: continue
+    if isinstance(value, dict) and "registrationFingerprint" in value:
+        pathlib.Path(sys.argv[2]).write_text(json.dumps(value, indent=2) + "\n")
+        break
+else:
+    raise SystemExit("The launcher did not return a host generation receipt; inspect its private log.")
+PY
+}
 curl_args=(--fail --silent --show-error --connect-timeout 2 --max-time 15 \
   --cacert "$NETRATEL_HTTPS_CERTIFICATE" --noproxy "$NETRATEL_PUBLIC_HOST" \
   --resolve "${NETRATEL_PUBLIC_HOST}:${NETRATEL_HTTPS_PORT}:127.0.0.1")
@@ -141,7 +296,7 @@ wait_mcp() {
   return 1
 }
 
-stage="starting the source Web/API HTTPS fixture"
+stage="starting the single-Compose Web/API HTTPS fixture with supplied but unprovisioned MCP settings"
 "${compose[@]}" up --build --detach postgres volume-init migrations api web ingress
 [[ -n "$("${compose[@]}" ps -q api)" ]]
 wait_state '.setupRequired == true and .isReady == false'
@@ -158,18 +313,29 @@ wait_ready
 post /api/v2/local-auth/login \
   '{"email":"http-host-smoke@example.test","password":"disposable HTTP host administrator passphrase","rememberMe":false}' \
   --cookie-jar "$temporary/cookies" >/dev/null
-stage="generating into the supplied persistent setup volume"
-mkdir -p TestResults/http-host-setup
-"${setup[@]}" run --rm --no-deps -T mcp-http setup --mode host --non-interactive \
-  --instance "$NETRATEL_PUBLIC_ORIGIN" > TestResults/http-host-setup/generated.json
+stage="diagnosing supplied configuration without mistaking it for completed backend provisioning"
+doctor_status=0
+"${compose[@]}" run --rm --no-deps -T mcp-http doctor \
+  > TestResults/http-host-setup/before-doctor.json || doctor_status=$?
+[[ "$doctor_status" == 2 ]]
+jq -e 'type == "array" and any(.[]; .name == "configuration" and .status == "completed")
+  and any(.[]; .name == "token acquisition" and .status == "unauthorized" and .httpStatus == 401)
+  and all(.[]; .name != "service API authorization")' \
+  TestResults/http-host-setup/before-doctor.json >/dev/null
+stage="confirming discovery cannot establish the manually configured ingress mode"
+capabilities="$(curl "${curl_args[@]}" "$NETRATEL_PUBLIC_ORIGIN/api/http-host-setup/v1/capabilities")"
+jq -e --arg origin "$NETRATEL_PUBLIC_ORIGIN" \
+  '.protocolVersion == 1 and .publicOrigin == $origin and .authenticationModeKnown == false' <<<"$capabilities" >/dev/null
+stage="adopting canonical dev/outbound/delegation settings into the durable setup volume"
+run_host_setup "$NETRATEL_PUBLIC_ORIGIN" TestResults/http-host-setup/generated.json
+check_source_ownership
+[[ "$(sha256sum "$temporary/compose.yaml" | cut -d ' ' -f 1)" == "$original_compose_hash" ]]
 jq -e '.state == "configuration-written-apply-and-live-verification-pending"' TestResults/http-host-setup/generated.json >/dev/null
 fingerprint="$(jq -er '.registrationFingerprint' TestResults/http-host-setup/generated.json)"
 [[ "$fingerprint" =~ ^[[:xdigit:]]{64}$ ]]
 
 stage="approving the origin-bound host generation with the disposable administrator"
-capabilities="$(curl "${curl_args[@]}" "$NETRATEL_PUBLIC_ORIGIN/api/http-host-setup/v1/capabilities")"
-jq -e --arg origin "$NETRATEL_PUBLIC_ORIGIN" '.protocolVersion == 1 and .publicOrigin == $origin and .localCredentialMode == true' <<<"$capabilities" >/dev/null
-host_request="$(post /api/http-host-setup/v1/start "$(jq -n --arg origin "$NETRATEL_PUBLIC_ORIGIN" --arg resource "$NETRATEL_MCP_PUBLIC_RESOURCE_URI" --arg fingerprint "$fingerprint" '{publicOrigin:$origin,resource:$resource,registrationFingerprint:$fingerprint}')")"
+host_request="$(post /api/http-host-setup/v1/start "$(jq -n --arg origin "$NETRATEL_PUBLIC_ORIGIN" --arg resource "$NETRATEL_MCP_PUBLIC_RESOURCE_URI" --arg fingerprint "$fingerprint" '{publicOrigin:$origin,resource:$resource,registrationFingerprint:$fingerprint,servicePrincipal:"disposable-mcp-api"}')")"
 code_request="$(jq '{userCode}' <<<"$host_request")"
 account_post /api/v2/account/integration-credentials/http-host-setup/lookup "$code_request" \
   | jq -e --arg fingerprint "$fingerprint" '.registrationFingerprint == $fingerprint' >/dev/null
@@ -177,13 +343,36 @@ account_post /api/v2/account/integration-credentials/http-host-setup/approve "$c
 poll_protocol /api/http-host-setup/v1/poll "$(jq '{deviceCapability}' <<<"$host_request")" approved "$(jq -er '.intervalSeconds' <<<"$host_request")" \
   | jq -e --arg fingerprint "$fingerprint" '.status == "approved" and .registrationFingerprint == $fingerprint' >/dev/null
 
-stage="applying the generated action without secret or YAML repair"
-apply_command="$(jq -er '.result.instructions[] | select(startswith("On the deployment host, review and run: ")) | ltrimstr("On the deployment host, review and run: ")' TestResults/http-host-setup/generated.json)"
-bash -euo pipefail -c "$apply_command"
+stage="applying the complete generated Compose document as a Komodo editor redeployment"
+jq -e 'any(.result.instructions[]; contains("Komodo"))' TestResults/http-host-setup/generated.json >/dev/null
+reviewed_compose="$temporary/.netratel-http-mcp-$project/compose.komodo.yaml"
+# The manager receives the complete document, not a transient command-line
+# overlay that would vanish on its next deploy. No secret or YAML repair occurs.
+test -s "$reviewed_compose"
+[[ "$(stat -c %a "$reviewed_compose")" == 600 ]]
+import_temporary="$(mktemp "$temporary/.compose-import.XXXXXX")"
+cat "$reviewed_compose" > "$import_temporary"
+mv "$import_temporary" "$temporary/compose.yaml"
+check_source_ownership
+applied_compose_hash="$(sha256sum "$temporary/compose.yaml" | cut -d ' ' -f 1)"
+"${compose[@]}" config --quiet
+"${applied[@]}" up --detach --no-deps api web mcp-http
 wait_ready
 wait_mcp
-"${applied[@]}" exec -T --user 1654 api sh -ceu 'test -r /run/netratel-http-host/runtime/delegation.key; test -r /run/netratel-http-host/runtime/outbound-m2m.secret; test ! -r /run/netratel-http-host/secrets/delegation.key'
-"${applied[@]}" exec -T --user 10001 mcp-http sh -ceu 'test -r /run/netratel-http-host/runtime/delegation.key; test -r /run/netratel-http-host/runtime/outbound-m2m.secret; test "$(id -u)" = 10001'
+"${applied[@]}" exec -T --user 1654 api sh -ceu 'test -r /run/netratel-http-host/runtime/delegation.key; test -r /run/netratel-http-host/runtime/adopted-outbound-m2m.secret; test ! -r /run/netratel-http-host/adopted/delegation.key'
+"${applied[@]}" exec -T --user 10001 mcp-http sh -ceu 'test -r /run/netratel-http-host/runtime/delegation.key; test -r /run/netratel-http-host/runtime/mcp-outbound.json; test "$(id -u)" = 10001'
+check_generation
+saved_request_hash="$("${applied[@]}" exec -T --user 10001 mcp-http sha256sum /setup-output/.http-host.setup.json | cut -d ' ' -f 1)"
+"${applied[@]}" exec -T mcp-http sh -ceu \
+  'test "$NETRATEL_MCP_INSTANCE" = dev; test "$NetRatel__Mcp__Delegation__ServicePrincipal" = disposable-mcp-api; test "$NetRatel__Mcp__Delegation__LifetimeSeconds" = 90; test "$NETRATEL_ACCEPTANCE_UNRELATED" = preserved'
+"${applied[@]}" exec -T api sh -ceu 'test "$NETRATEL_ACCEPTANCE_UNRELATED" = preserved; test "$M2M__AllowedCallerClientIds__0" = unrelated-caller'
+stage="verifying token issuance and service API authorization as separate diagnostic stages"
+"${applied[@]}" exec -T mcp-http dotnet /app/NetRatel.Mcp.Http.dll doctor \
+  > TestResults/http-host-setup/after-doctor.json
+jq -e 'type == "array" and length >= 3 and all(.[]; .status == "completed")
+  and any(.[]; .name == "token acquisition")
+  and any(.[]; .name == "service API authorization" and .httpStatus == 200)' \
+  TestResults/http-host-setup/after-doctor.json >/dev/null
 
 stage="obtaining a separate temporary personal MCP verification credential"
 pairing="$(post /api/integration-pairing/v1/start "$(jq -n --arg resource "$NETRATEL_MCP_PUBLIC_RESOURCE_URI" '{name:"HTTP host disposable verification",purpose:1,resource:$resource}')")"
@@ -248,7 +437,7 @@ verify_mcp() {
   stage="verifying ${verification_phase} authenticated MCP tool catalog"
   mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
     "TestResults/http-host-setup/${verification_phase}-catalog.json" \
-    | jq -e '.id == 2 and any(.result.tools[]; .name == "netratel_auth")' >/dev/null
+    | jq -e '.id == 2 and (.result.tools | length >= 30) and any(.result.tools[]; .name == "netratel_auth")' >/dev/null
   stage="verifying ${verification_phase} netratel_auth/status through signed API delegation"
   mcp_call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"netratel_auth","arguments":{"operation":"status"}}}' \
     "TestResults/http-host-setup/${verification_phase}-auth-status.json" \
@@ -260,6 +449,77 @@ verify_mcp() {
 }
 stage="verifying authenticated catalog and a real API-backed read"
 verify_mcp
+
+stage="creating three separately scoped HTTP MCP-purpose customer credentials"
+declare -a customer_tenants=() customer_credentials=() customer_credential_ids=() customer_flow_ids=()
+for customer in 1 2 3; do
+  customer_name="customer${customer}-netclaw"
+  tenant="$(account_post /api/v1/tenants/ "$(jq -n --arg name "$customer_name" '{name:$name}')")"
+  tenant_id="$(jq -er '.tenantId | select(type == "number" and . > 0)' <<<"$tenant")"
+  flow="$(account_post "/api/v1/tenants/${tenant_id}/flows" \
+    "$(jq -n --arg name "${customer_name}-private-flow" '{name:$name,useTemplate:false}')")"
+  flow_id="$(jq -er '.flowId // .id' <<<"$flow")"
+  customer_pairing="$(post /api/integration-pairing/v1/start \
+    "$(jq -n --arg name "$customer_name" --arg resource "$NETRATEL_MCP_PUBLIC_RESOURCE_URI" '{name:$name,purpose:1,resource:$resource}')")"
+  account_post /api/v2/account/integration-credentials/pairing/approve \
+    "$(jq -n --arg code "$(jq -r '.userCode' <<<"$customer_pairing")" --arg expiry "$expiry" \
+      --argjson tenant "$tenant_id" '{userCode:$code,expiresAtUtc:$expiry,grants:[{tenantId:$tenant,permission:"flow.read"}],instancePermissions:["mcp.discovery.read"]}')" >/dev/null
+  customer_delivery="$(poll_protocol /api/integration-pairing/v1/poll \
+    "$(jq '{deviceCapability}' <<<"$customer_pairing")" issued "$(jq -er '.intervalSeconds' <<<"$customer_pairing")")"
+  customer_credential_id="$(jq -er '.delivery.credentialId' <<<"$customer_delivery")"
+  # Policy selects this credential's authenticated client ID. The administrator
+  # retains no policy self-escalation; the three credentials share no authority.
+  account_post /api/v2/mcp-operator/policies \
+    "$(jq -n --arg name "$customer_name" --arg id "$customer_credential_id" --arg expiry "$expiry" \
+      --argjson tenant "$tenant_id" '{policy:{name:$name,environment:1,effect:2,priority:10,
+        principalSelector:{kind:2,value:$id},targetSelector:{kind:2,tenantId:$tenant},
+        targetClassification:null,operationFamily:128,operation:"netratel_flows/list",
+        constraints:{},expiresAtUtc:$expiry,reviewByUtc:$expiry,auditReference:"disposable-http-customer-acceptance"}}')" \
+    | jq -e '.version == 1' >/dev/null
+  post /api/integration-pairing/v1/acknowledge \
+    "$(jq -n --arg capability "$(jq -r '.deviceCapability' <<<"$customer_pairing")" \
+      --arg id "$customer_credential_id" '{deviceCapability:$capability,credentialId:$id}')" >/dev/null
+  customer_tenants+=("$tenant_id")
+  customer_credentials+=("$(jq -er '.delivery.secret' <<<"$customer_delivery")")
+  customer_credential_ids+=("$customer_credential_id")
+  customer_flow_ids+=("$flow_id")
+  unset customer_pairing customer_delivery
+done
+[[ "${customer_credential_ids[0]}" != "${customer_credential_ids[1]}" && \
+   "${customer_credential_ids[1]}" != "${customer_credential_ids[2]}" && \
+   "${customer_credential_ids[0]}" != "${customer_credential_ids[2]}" ]]
+verify_customer_connections() {
+  local original_credential="$credential" customer target tenant_id request response
+  for customer in 0 1 2; do
+    credential="${customer_credentials[$customer]}"
+    printf '%s' "$credential" > "$temporary/mcp-credential"
+    verification_phase="${1}-customer$((customer + 1))"
+    verify_mcp
+    for target in 0 1 2; do
+      tenant_id="${customer_tenants[$target]}"
+      request="$(jq -n --argjson tenant "$tenant_id" '{jsonrpc:"2.0",id:4,method:"tools/call",
+        params:{name:"netratel_flows",arguments:{operation:"list",request:{tenantId:$tenant}}}}')"
+      response="$(mcp_call "$request" "TestResults/http-host-setup/${verification_phase}-tenant-$((target + 1)).json")"
+      if (( customer == target )); then
+        jq -e --arg flow "${customer_flow_ids[$customer]}" '.id == 4
+          and (.result.isError // false) == false and .result.structuredContent.success == true
+          and (.result.structuredContent.data | type == "array" and length == 1
+            and (.[0].flowId // .[0].id) == $flow)' <<<"$response" >/dev/null
+      else
+        # A real permission rejection is required. Connectivity, protocol and
+        # token failures are not evidence of a cross-customer authorization deny.
+        jq -e '.id == 4 and (
+          ((.error.message? // "") | contains("not authorized for this operation")) or
+          (.result.isError == true and any(.result.content[]?;
+            (.text // "") | contains("not authorized for this operation"))))' <<<"$response" >/dev/null
+      fi
+    done
+  done
+  credential="$original_credential"
+  printf '%s' "$credential" > "$temporary/mcp-credential"
+}
+stage="verifying three protocol clients permit their own tenant read and reject all six cross-tenant reads"
+verify_customer_connections initial
 
 stage="saving a personal client with bare HTTP setup inside the serving container"
 printf '%s\n' "$credential" | "${applied[@]}" exec -T \
@@ -292,16 +552,40 @@ jq -e '.saved == true and .transport == "HttpMcpClient"
   and (.checks | length >= 5 and all(.[]; .status == "completed"))
   and (.launch | fromjson | .credentialFile | startswith("/var/lib/netratel/clients/profiles/httpmcpclient/"))' \
   TestResults/http-host-setup/personal-saved.json >/dev/null
+personal_credential_file="$(jq -er '.launch | fromjson | .credentialFile' TestResults/http-host-setup/personal-saved.json)"
 
-stage="resuming from a recreated tooling container with the equivalent /mcp input"
-"${setup[@]}" run --rm --no-deps -T mcp-http setup --mode host --non-interactive \
-  --instance "$NETRATEL_PUBLIC_ORIGIN/mcp/" > TestResults/http-host-setup/resumed.json
-jq -e --arg fingerprint "$fingerprint" '.registrationFingerprint == $fingerprint' TestResults/http-host-setup/resumed.json >/dev/null
+stage="recreating API/Web/MCP from the persisted single Compose document"
 "${applied[@]}" up --detach --force-recreate --no-deps api web mcp-http
 wait_ready
 wait_mcp
+check_generation
 verification_phase=recreated
 verify_mcp
+stage="verifying customer grants remain isolated after complete API/Web/MCP recreation"
+verify_customer_connections recreated
+stage="resuming the saved server setup through the actual launcher verification command"
+"${launcher[@]}" --verify -- --non-interactive --instance "$NETRATEL_PUBLIC_ORIGIN/mcp/" \
+  --credential-file "$personal_credential_file" > "$temporary/verified-launcher.log" 2>&1
+python3 - "$temporary/verified-launcher.log" TestResults/http-host-setup/verified.json <<'PY'
+import json, pathlib, sys
+source = pathlib.Path(sys.argv[1]).read_text(); decoder = json.JSONDecoder()
+for offset, character in enumerate(source):
+    if character != "{": continue
+    try: value, _ = decoder.raw_decode(source[offset:])
+    except json.JSONDecodeError: continue
+    if isinstance(value, dict) and value.get("state") in {"end-to-end-verified", "verification-incomplete"}:
+        pathlib.Path(sys.argv[2]).write_text(json.dumps(value, indent=2) + "\n")
+        break
+else:
+    raise SystemExit("The launcher did not return a server verification receipt; inspect its private log.")
+PY
+jq -e --arg origin "$NETRATEL_PUBLIC_ORIGIN" --arg resource "$NETRATEL_MCP_PUBLIC_RESOURCE_URI" \
+  '.state == "end-to-end-verified" and .instance == $origin and .target == $resource
+  and (.checks | length >= 5 and all(.[]; .status == "completed"))' \
+  TestResults/http-host-setup/verified.json >/dev/null
+[[ "$("${applied[@]}" exec -T --user 10001 mcp-http sha256sum /setup-output/.http-host.setup.json | cut -d ' ' -f 1)" == "$saved_request_hash" ]]
+[[ "$(sha256sum "$temporary/compose.yaml" | cut -d ' ' -f 1)" == "$applied_compose_hash" ]]
+check_generation
 stage="reloading the personal default profile after serving-container recreation"
 "${applied[@]}" exec -T mcp-http dotnet /app/NetRatel.Mcp.Http.dll doctor \
   --transport http --profile default > TestResults/http-host-setup/personal-reloaded.json
@@ -309,8 +593,14 @@ jq -e 'type == "array" and length >= 5 and all(.[]; .status == "completed")
   and (map(.name) | index("permitted read-only tool") != null)' \
   TestResults/http-host-setup/personal-reloaded.json >/dev/null
 post /api/integration-pairing/v1/cancel "$(jq '{deviceCapability}' <<<"$pairing")" >/dev/null
-unset credential delivery pairing host_request
+unset credential delivery pairing host_request customer_credentials
 jq -n --arg fingerprint "$fingerprint" --arg source "$(git rev-parse HEAD)" \
-  '{sourceSha:$source,registrationFingerprint:$fingerprint,headlessGeneration:true,administratorProtocolApproval:true,generatedApply:true,authenticatedCatalogAndApiRead:true,recreatedAndResumed:true,personalProfileSavedAndReloaded:true,interactiveTerminalAcceptance:"covered separately by focused terminal fixtures",ownerDeploymentAcceptance:"pending"}' \
+  '{sourceSha:$source,registrationFingerprint:$fingerprint,headlessGeneration:true,administratorProtocolApproval:true,
+    komodoSingleCompose:true,privateHostOwnedSourcePreserved:true,missingStoragePreflight:true,existingReadOnlyIdentityAdopted:true,managedEnvironmentFilesRetained:true,splitWebApiOrigins:true,instance:"dev",
+    initialTokenIssuanceRejectionDiagnosed:true,
+    generatedApply:true,authenticatedCatalogAndApiRead:true,recreatedAndResumed:true,launcherVerificationCompleted:true,personalProfileSavedAndReloaded:true,
+    customerProtocolAcceptance:{connectionCount:3,ownTenantReads:6,crossTenantDenials:12,persistedAfterRecreation:true},
+    netClawRuntimeAcceptance:"not executed; independent HTTP MCP protocol clients used",
+    interactiveTerminalAcceptance:"covered separately by focused terminal fixtures",ownerDeploymentAcceptance:"pending"}' \
   > TestResults/http-host-setup/result.json
-echo 'Disposable HTTP host setup, administrator approval, generated apply and resumed API-backed verification passed.'
+echo 'Disposable single-Compose host adoption, approval/apply/resume, durable client save and three-customer HTTP MCP isolation passed.'

@@ -29,7 +29,13 @@ public sealed record HttpHostingSetupRequest(
     string? DelegationAudience = null,
     string? ApprovedRegistrationFingerprint = null,
     string ApiServiceAudience = "netratel.api",
-    string? ApiServiceAuthority = null);
+    string? ApiServiceAuthority = null,
+    string DeploymentManager = "release-compose",
+    string? ComposeSourcePath = null,
+    int DelegationLifetimeSeconds = 90,
+    string? ExistingWebApiBackendUrl = null,
+    string? ExistingWebMcpBackendUrl = null,
+    bool ExistingWebEnvironmentObserved = false);
 
 public sealed record HttpHostingSetupPreview(
     IReadOnlyList<string> Changes, IReadOnlyList<string> Files,
@@ -93,6 +99,8 @@ public sealed class NetRatelHttpHostingSetupService
     public static string ApplyCommand(HttpHostingSetupRequest request)
     {
         var output = HttpHostingStorage.Resolve(request.OutputDirectory);
+        if (request.DeploymentManager == "komodo")
+            return "In Komodo, replace this stack's Compose editor with the complete private compose.komodo.yaml exported by setup-http-mcp.sh, then Save and Deploy. Resume the same setup command and select Verify. Do not add a temporary CLI overlay.";
         var files = Environment.GetEnvironmentVariable("NETRATEL_SETUP_COMPOSE_FILES") ??
             (HttpHostingStorage.UsesValidatedSetupVolume(output) ? "compose.images.yaml,compose.mcp-http.yaml" : "compose.yaml,compose.mcp-http.yaml");
         var compose = string.Join(" ", files.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(file => "-f " + ShellQuote(file)));
@@ -107,12 +115,17 @@ public sealed class NetRatelHttpHostingSetupService
     public HttpHostingSetupPreview Preview(HttpHostingSetupRequest request)
     {
         var bundle = Prepare(request);
-        var changes = bundle.Configuration.Select(file =>
+        var changes = bundle.SelectedSettings.Where(change => change.StartsWith("Replace API service registration", StringComparison.Ordinal)).ToList();
+        foreach (var path in bundle.ReviewedInputPaths)
+            changes.Add($"Use current deployment document {path} (SHA256 {ConfigurationFileStorage.Hash(path)}; source stays unchanged; import the complete generated document through its deployment manager).");
+        changes.AddRange(bundle.Configuration.Select(file =>
             !File.Exists(file.Key) ? $"Create {file.Key} (deployment setup)" :
             ConfigurationFileStorage.ReadText(file.Key) == file.Value ? $"Reuse {file.Key} (deployment setup)" :
-            $"Replace {file.Key} (review required; existing file or externally managed values)").ToList();
-        changes.AddRange(bundle.SelectedSettings);
-        changes.Add("The final overlay supplies reviewed Web/API settings and replaces the managed MCP environment and env-file list; retain additional MCP runtime options in a later explicit overlay.");
+            $"Replace {file.Key} (review required; existing file or externally managed values)"));
+        changes.AddRange(bundle.SelectedSettings.Where(change => !change.StartsWith("Replace API service registration", StringComparison.Ordinal)));
+        changes.Add(request.DeploymentManager == "komodo"
+            ? "Import the complete compose.komodo.yaml into this stack's Komodo editor. Existing ingress, database, ports, env_file entries and unrelated settings are retained; only reviewed HTTP MCP settings and persistent mounts change."
+            : "The final overlay supplies reviewed Web/API settings and replaces the managed MCP environment and env-file list; retain additional MCP runtime options in a later explicit overlay.");
         foreach (var path in bundle.SecretPaths)
             changes.Add(File.Exists(path) ? $"Reuse protected secret reference {path}" : $"Create protected secret reference {path} (value withheld)");
         foreach (var path in bundle.InputPaths)
@@ -120,10 +133,10 @@ public sealed class NetRatelHttpHostingSetupService
         foreach (var path in bundle.RuntimeSecrets.Keys)
             changes.Add($"{(File.Exists(path) ? "Reuse" : "Create")} protected runtime export {path} (API/MCP read-only; values withheld)");
         _reviewedRequestSignature = RequestSignature(request);
-        _reviewedHashes = bundle.Configuration.Keys.Concat(bundle.SecretPaths).Concat(bundle.InputPaths).Concat(bundle.RuntimeSecrets.Keys).Distinct(StringComparer.Ordinal)
+        _reviewedHashes = bundle.Configuration.Keys.Concat(bundle.SecretPaths).Concat(bundle.InputPaths).Concat(bundle.ReviewedInputPaths).Concat(bundle.RuntimeSecrets.Keys).Distinct(StringComparer.Ordinal)
             .ToDictionary(path => path, path => File.Exists(path) ? ConfigurationFileStorage.Hash(path) : null, StringComparer.Ordinal);
         return new(changes, bundle.Configuration.Keys.Concat(bundle.SecretPaths).Concat(bundle.RuntimeSecrets.Keys).ToArray(), bundle.Instructions,
-            bundle.Configuration.Keys.Any(File.Exists));
+            bundle.RequiresRegistrationReplacement || bundle.Configuration.Keys.Any(File.Exists));
     }
 
     public HttpHostingSetupResult Apply(HttpHostingSetupRequest request, bool replace = false)
@@ -137,6 +150,8 @@ public sealed class NetRatelHttpHostingSetupService
                     throw new AgentClientValidationException("Hosting configuration or secrets changed since review. Preview the bundle again before applying.");
         }
         var bundle = Prepare(request);
+        if (bundle.RequiresRegistrationReplacement && !replace)
+            throw new AgentClientValidationException("The existing API caller may already have a service registration with different credentials. Review and explicitly confirm replacing only this registration with the selected existing outbound credential; setup cannot compare the API's current secret here.");
         HttpHostingStorage.ValidateWritable(HttpHostingStorage.Resolve(request.OutputDirectory));
         HttpHostingStorage.ValidateHostBoundary(HttpHostingStorage.Resolve(request.OutputDirectory));
         if (request.ApprovedRegistrationFingerprint is not null &&
@@ -207,6 +222,15 @@ public sealed class NetRatelHttpHostingSetupService
         var output = HttpHostingStorage.Resolve(request.OutputDirectory);
         ConfigurationFileStorage.EnsureSafePath(output);
         HttpHostingStorage.ValidateHostBoundary(output);
+        if (request.DeploymentManager is not ("release-compose" or "komodo"))
+            throw new AgentClientValidationException("Choose release-compose for the supplied release files, or komodo for a stack stored in Komodo's Compose editor.");
+        if (request.DeploymentManager == "komodo")
+        {
+            if (!HttpHostingStorage.UsesValidatedSetupVolume(output))
+                throw new AgentClientValidationException("Komodo setup needs the persistent tooling volume. " + HttpHostingStorage.SetupRecoveryInstructions("server"));
+            if (string.IsNullOrWhiteSpace(request.ComposeSourcePath) || !Path.IsPathFullyQualified(request.ComposeSourcePath))
+                throw new AgentClientValidationException("Komodo setup needs its actual Compose source mounted read-only. Run setup-http-mcp.sh with --compose-file and --project on the Docker host; the launcher supplies the source and persistent volumes.");
+        }
         var composeOutput = request.ComposeOutputDirectory ?? output;
         if (!Path.IsPathFullyQualified(composeOutput) || composeOutput.Any(char.IsControl))
             throw new AgentClientValidationException("ComposeOutputDirectory must be the explicit absolute host path of the persistent setup output mount.");
@@ -223,12 +247,17 @@ public sealed class NetRatelHttpHostingSetupService
             resource = resourceUri.GetLeftPart(UriPartial.Authority) + ":443" + resourceUri.AbsolutePath.TrimEnd('/');
         if (request.Instance is not ("dev" or "prod")) throw new AgentClientValidationException("Instance must be dev or prod.");
         if (request.ListeningPort is < 1024 or > 65535) throw new AgentClientValidationException("ListeningPort must be between 1024 and 65535.");
+        if (request.DelegationLifetimeSeconds is < 30 or > 300) throw new AgentClientValidationException("DelegationLifetimeSeconds must be between 30 and 300.");
         var webApi = Backend(request.WebApiBackendUrl, "WebApiBackendUrl");
         var webMcp = Backend(request.WebMcpBackendUrl == "http://mcp-http:9224/"
             ? $"http://mcp-http:{request.ListeningPort}/"
             : request.WebMcpBackendUrl, "WebMcpBackendUrl");
         var groups = request.RequiredGroups ?? [];
         var scopes = request.RequiredScopes ?? [];
+        if (string.IsNullOrWhiteSpace(request.ApiServiceAudience) || request.ApiServiceAudience.Length > 128 ||
+            request.ApiServiceAudience.Any(char.IsWhiteSpace) || request.ApiServiceAudience.Any(char.IsControl) ||
+            request.ApiServiceAudience.Contains('$') || request.ApiServiceAudience.Contains('\''))
+            throw new AgentClientValidationException("The existing API service audience must be a nonempty bounded scope token.");
         if (!request.LocalCredentialMode)
         {
             Https(request.OidcAuthority, "OidcAuthority");
@@ -278,6 +307,7 @@ public sealed class NetRatelHttpHostingSetupService
             ["NetRatel__Mcp__Delegation__Audience"] = audience,
             ["NetRatel__Mcp__Delegation__ServicePrincipal"] = ServicePrincipal,
             ["NetRatel__Mcp__Delegation__KeyId"] = keyId,
+            ["NetRatel__Mcp__Delegation__LifetimeSeconds"] = request.DelegationLifetimeSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["NetRatel__Mcp__Delegation__SharedKeyBase64"] = "",
             ["NetRatel__Mcp__Delegation__SharedKeyBase64File"] = SecretMount + "/delegation.key"
         };
@@ -307,7 +337,7 @@ public sealed class NetRatelHttpHostingSetupService
             ["ASPNETCORE_URLS"] = $"http://+:{request.ListeningPort}",
             ["NETRATEL_MCP_INSTANCE"] = request.Instance,
             ["NETRATEL_CLIENT_DIRECTORY"] = "/var/lib/netratel/clients",
-            ["NETRATEL_CLIENT_VOLUME"] = Environment.GetEnvironmentVariable("NETRATEL_CLIENT_VOLUME") ?? "netratel-http-client-data",
+            ["NETRATEL_CLIENT_VOLUME"] = VolumeIdentifier(Environment.GetEnvironmentVariable("NETRATEL_CLIENT_VOLUME") ?? "netratel-http-client-data"),
             [$"NETRATEL_MCP_{request.Instance.ToUpperInvariant()}_API_BASE_URL"] = api,
             ["NetRatel__Mcp__Http__PublicResourceUri"] = resource,
             ["NetRatel__Mcp__Http__LocalCredentialMode"] = request.LocalCredentialMode.ToString().ToLowerInvariant(),
@@ -325,6 +355,8 @@ public sealed class NetRatelHttpHostingSetupService
         IReadOnlyList<string>? effectiveCallerIds = request.ExistingM2MCallerClientIds;
         var legacySecrets = new List<string>();
         AgentClientConfiguration? legacyConfiguration = null;
+        string? adoptedLocalM2MSecret = null;
+        var requiresRegistrationReplacement = false;
         if (request.ExistingOutboundConfigurationPath is not null)
         {
             legacyPath = Path.GetFullPath(request.ExistingOutboundConfigurationPath);
@@ -350,6 +382,30 @@ public sealed class NetRatelHttpHostingSetupService
             delegation["NetRatel__Mcp__Delegation__ServicePrincipal"] = principal;
             apiSettings["NetRatel__Mcp__Delegation__ServicePrincipal"] = delegation["NetRatel__Mcp__Delegation__ServicePrincipal"];
             mcp["NetRatel__Mcp__Delegation__ServicePrincipal"] = delegation["NetRatel__Mcp__Delegation__ServicePrincipal"];
+            // Supplying an outbound file does not prove its service registration was
+            // provisioned. A reviewed local API registration can reuse exactly those
+            // bytes, while an external issuer remains managed by its existing owner.
+            if (request.ApiServiceAuthority is not null && !string.IsNullOrWhiteSpace(resolved.ApiM2MClientSecret) &&
+                NetRatelConfigurationService.Equivalent(resolved.ApiM2MTokenUrl, new Uri(new Uri(api), "/connect/token").AbsoluteUri))
+            {
+                Https(request.ApiServiceAuthority, "ApiServiceAuthority");
+                if (!string.Equals(resolved.ApiM2MScope, request.ApiServiceAudience, StringComparison.Ordinal))
+                    throw new AgentClientValidationException("The existing outbound service scope differs from the API's discovered service audience. Review that deployment's service registration; setup will not broaden or rebind it.");
+                var callerIds = (request.ExistingM2MCallerClientIds ?? throw new AgentClientValidationException("Discover the API's existing allowed service callers before adopting a local outbound registration."))
+                    .Append(principal).Distinct(StringComparer.Ordinal).ToArray();
+                requiresRegistrationReplacement = request.ExistingM2MCallerClientIds!.Contains(principal, StringComparer.Ordinal);
+                ValidateCallerIds(callerIds);
+                effectiveCallerIds = callerIds;
+                var alias = new string(principal.Select(character => char.IsAsciiLetterOrDigit(character) ? character : '_').ToArray());
+                if (alias.Contains("__", StringComparison.Ordinal))
+                    throw new AgentClientValidationException("The existing service identity cannot be represented by an unambiguous deployment registration alias. Keep that identity and manage its API registration through the existing protected configuration; setup will not rename or rotate it.");
+                for (var index = 0; index < callerIds.Length; index++) apiSettings[$"M2M__AllowedCallerClientIds__{index}"] = callerIds[index];
+                apiSettings[$"M2MClients__{alias}__SecretFile"] = SecretMount + "/adopted-outbound-m2m.secret";
+                apiSettings[$"M2MClients__{alias}__Secret"] = "";
+                apiSettings[$"M2MClients__{alias}__AllowedAudiences__0"] = request.ApiServiceAudience;
+                apiSettings[$"M2MClients__{alias}__AllowedScopes__0"] = request.ApiServiceAudience;
+                adoptedLocalM2MSecret = resolved.ApiM2MClientSecret;
+            }
         }
         else
         {
@@ -359,13 +415,9 @@ public sealed class NetRatelHttpHostingSetupService
             // only this service under its effective discovered audience; do not rebind
             // unrelated callers or their token-validation configuration.
             var serviceAudience = request.ApiServiceAudience;
-            if (string.IsNullOrWhiteSpace(serviceAudience) || serviceAudience.Length > 128 || serviceAudience.Any(char.IsWhiteSpace) ||
-                serviceAudience.Any(char.IsControl) || serviceAudience.Contains('$') || serviceAudience.Contains('\''))
-                throw new AgentClientValidationException("The existing API service audience must be a nonempty bounded scope token.");
             var callerIds = (request.ExistingM2MCallerClientIds ?? ["netratel.cli", "netratel.client.artifacts"])
                 .Append(ServicePrincipal).Distinct(StringComparer.Ordinal).ToArray();
-            if (callerIds.Length > 128 || callerIds.Any(id => string.IsNullOrWhiteSpace(id) || id.Length > 128 || id.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not '.' and not '-' and not '_')))
-                throw new AgentClientValidationException("M2M caller IDs must be explicit nonempty client identity tokens.");
+            ValidateCallerIds(callerIds);
             effectiveCallerIds = callerIds;
             for (var index = 0; index < callerIds.Length; index++) apiSettings[$"M2M__AllowedCallerClientIds__{index}"] = callerIds[index];
             apiSettings[$"M2MClients__{RegistrationEnvironmentAlias}__SecretFile"] = SecretMount + "/outbound-m2m.secret";
@@ -390,8 +442,16 @@ public sealed class NetRatelHttpHostingSetupService
             [Path.Combine(runtime, legacyPath is null ? "outbound-m2m.secret" : "mcp-outbound.json")] = legacyPath ?? serviceSecretPath
         };
         var useVolume = HttpHostingStorage.UsesValidatedSetupVolume(output);
+        if (useVolume) VolumeIdentifier(HttpHostingStorage.VolumeName);
         var runtimeContent = new Dictionary<string, string>();
         var extraMounts = new Dictionary<string, string>();
+        if (adoptedLocalM2MSecret is not null)
+        {
+            var export = Path.Combine(runtime, "adopted-outbound-m2m.secret");
+            runtimeSecrets[export] = legacyPath!;
+            runtimeContent[export] = adoptedLocalM2MSecret + "\n";
+            if (!useVolume) extraMounts[Path.Combine(composeOutput, "runtime", "adopted-outbound-m2m.secret")] = SecretMount + "/adopted-outbound-m2m.secret";
+        }
         if (legacyConfiguration is not null)
         {
             var exported = legacyConfiguration;
@@ -413,6 +473,45 @@ public sealed class NetRatelHttpHostingSetupService
                 foreach (var name in settings.Keys.ToArray())
                     settings[name] = settings[name].Replace(SecretMount + "/", "/run/netratel-http-host/runtime/", StringComparison.Ordinal);
         }
+        var reviewedInputs = new List<string>();
+        string? komodoCompose = null;
+        HttpHostingWebBackendSelection? selectedWebBackends = null;
+        if (request.DeploymentManager == "komodo")
+        {
+            var sourcePath = Path.GetFullPath(request.ComposeSourcePath!);
+            if (sourcePath != Path.Combine(output, ".compose-source.yaml"))
+                throw new AgentClientValidationException("Komodo setup uses the launcher's private persistent Compose snapshot. Run setup-http-mcp.sh on the Docker host; it reads the actual source without changing its ownership or permissions.");
+            var source = ConfigurationFileStorage.ReadText(sourcePath, HttpHostingComposeDocument.MaximumSourceBytes, secret: true);
+            var webEnvironmentObservedNow = string.Equals(Environment.GetEnvironmentVariable("NETRATEL_SETUP_WEB_ENVIRONMENT_OBSERVED"), "true", StringComparison.OrdinalIgnoreCase);
+            selectedWebBackends = HttpHostingComposeDocument.SelectWebBackends(source, web,
+                preserveApi: request.WebApiBackendUrl == "http://api:9222/",
+                preserveMcp: request.WebMcpBackendUrl == "http://mcp-http:9224/",
+                observedApi: webEnvironmentObservedNow ? Environment.GetEnvironmentVariable("NETRATEL_SETUP_EXISTING_WEB_API_BACKEND_URL") : request.ExistingWebApiBackendUrl,
+                observedMcp: webEnvironmentObservedNow ? Environment.GetEnvironmentVariable("NETRATEL_SETUP_EXISTING_WEB_MCP_BACKEND_URL") : request.ExistingWebMcpBackendUrl,
+                environmentObserved: webEnvironmentObservedNow || request.ExistingWebEnvironmentObserved);
+            web = selectedWebBackends.Changes;
+            // Topology is deployment-owned. Enabling this route must not reset a
+            // working SplitHost or LocalProcess Web/API arrangement to Compose.
+            web.Remove("WebGateway__Topology");
+            var hostSource = Environment.GetEnvironmentVariable("NETRATEL_SETUP_COMPOSE_FILES");
+            if (string.IsNullOrWhiteSpace(hostSource) || !Path.IsPathFullyQualified(hostSource) || hostSource.IndexOfAny([',', '$', '\'']) >= 0 || hostSource.Any(char.IsControl))
+                throw new AgentClientValidationException("Komodo setup needs the actual absolute Compose filename from setup-http-mcp.sh. Run the launcher on the Docker host with --compose-file; no assumed setup file is used.");
+            mcp["NETRATEL_SETUP_DIRECTORY"] = "/setup-output";
+            mcp["NETRATEL_SETUP_VOLUME"] = HttpHostingStorage.VolumeName;
+            mcp["NETRATEL_SETUP_DEPLOYMENT_MANAGER"] = "komodo";
+            mcp["NETRATEL_SETUP_COMPOSE_FILES"] = hostSource;
+            mcp["NETRATEL_SETUP_COMPOSE_SOURCE"] = sourcePath;
+            var project = Environment.GetEnvironmentVariable("NETRATEL_SETUP_PROJECT_NAME");
+            if (!string.IsNullOrEmpty(project))
+            {
+                if (project.Length > 128 || project.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not '-' and not '_'))
+                    throw new AgentClientValidationException("The setup project name must be the actual bounded Compose project identifier supplied by the launcher.");
+                mcp["NETRATEL_SETUP_PROJECT_NAME"] = project;
+            }
+            komodoCompose = HttpHostingComposeDocument.Merge(source, web, apiSettings, mcp, HttpHostingStorage.RuntimeGroup,
+                HttpHostingStorage.VolumeName, mcp["NETRATEL_CLIENT_VOLUME"], request.ListeningPort, project);
+            reviewedInputs.Add(sourcePath);
+        }
         var configurationFiles = new Dictionary<string, string>
         {
             [Path.Combine(output, "web.env")] = EnvironmentFile(web),
@@ -427,18 +526,34 @@ public sealed class NetRatelHttpHostingSetupService
                 OutputDirectory = output, PublicOrigin = origin, ApiBaseUrl = api, PublicResourceUri = resource,
                 ComposeOutputDirectory = composeOutput, ApprovedRegistrationFingerprint = null,
                 RequiredGroups = groups.ToArray(), RequiredScopes = scopes.ToArray(), AllowedOrigins = origins.ToArray(),
-                ExistingM2MCallerClientIds = effectiveCallerIds?.ToArray()
+                ExistingM2MCallerClientIds = effectiveCallerIds?.ToArray(),
+                ExistingWebApiBackendUrl = selectedWebBackends?.ApiBackend ?? request.ExistingWebApiBackendUrl,
+                ExistingWebMcpBackendUrl = selectedWebBackends?.McpBackend ?? request.ExistingWebMcpBackendUrl,
+                ExistingWebEnvironmentObserved = request.ExistingWebEnvironmentObserved || string.Equals(Environment.GetEnvironmentVariable("NETRATEL_SETUP_WEB_ENVIRONMENT_OBSERVED"), "true", StringComparison.OrdinalIgnoreCase)
             }, new JsonSerializerOptions { WriteIndented = true }) + "\n",
-            [Path.Combine(output, ".gitignore")] = "secrets/\nruntime/\n*.env\n.http-host.setup.json\n"
+            [Path.Combine(output, ".gitignore")] = "secrets/\nruntime/\n*.env\ncompose.komodo.yaml\n.http-host.setup.json\n"
         };
+        if (komodoCompose is not null)
+        {
+            // Komodo imports one complete managed document. Release-only overlays
+            // and env files are unused here and would change shape after import,
+            // even while the effective complete document and identity stay equal.
+            foreach (var unused in new[] { "web.env", "api.env", "mcp-http.env", "compose.http-host.yaml" })
+                configurationFiles.Remove(Path.Combine(output, unused));
+            configurationFiles[Path.Combine(output, "compose.komodo.yaml")] = komodoCompose;
+        }
         var instructions = new[]
         {
             "This bundle prepares configuration only; deployment apply and live verification remain pending.",
-            "On the deployment host, review and run: " + ApplyCommand(request),
-            "The complete overlay supplies effective Web/API/MCP settings. Independent owner-only host secrets and protected runtime exports reuse the same generation; API UID 1654 and MCP UID 10001 receive explicit read-only access.",
+            (request.DeploymentManager == "komodo" ? "Apply through the deployment manager: " : "On the deployment host, review and run: ") + ApplyCommand(request),
+            request.DeploymentManager == "komodo"
+                ? "setup-http-mcp.sh exports the complete private compose.komodo.yaml without printing it. Import that file into the existing stack's Komodo Compose editor; its original ingress, database, ports and environment-file sources remain included. Do not paste secret values or edit YAML fields by hand."
+                : "The complete overlay supplies effective Web/API/MCP settings. Independent owner-only host secrets and protected runtime exports reuse the same generation; API UID 1654 and MCP UID 10001 receive explicit read-only access.",
             "The API recreation provisions the dedicated outbound service registration and matching delegation. A personal verification credential is never the outbound host identity.",
             "Resume setup with the same instance URL after recreation, then Verify. Only authenticated initialize/catalog and a permitted read-only API-backed tool result establish end-to-end readiness.",
-            "Keep approved image digests and ingress overlays in NETRATEL_SETUP_COMPOSE_FILES (comma-separated files) when they differ from the supplied default. Rerunning setup preserves the existing identity generation."
+            request.DeploymentManager == "komodo"
+                ? "Keep both named persistent volumes. After Save/Deploy, rerun the same setup-http-mcp.sh command with --verify. Existing supplied settings are adopted inputs; only successful authenticated checks establish readiness."
+                : "Keep approved image digests and ingress overlays in NETRATEL_SETUP_COMPOSE_FILES (comma-separated files) when they differ from the supplied default. Rerunning setup preserves the existing identity generation."
         };
         var generatedSecrets = new List<string>();
         if (existingDelegation is null) generatedSecrets.Add(delegationPath);
@@ -446,14 +561,22 @@ public sealed class NetRatelHttpHostingSetupService
         var inputPaths = new List<string>(legacySecrets);
         if (legacyPath is not null) inputPaths.Add(legacyPath);
         if (existingDelegation is not null) inputPaths.Add(existingDelegation);
-        return new(configurationFiles, generatedSecrets.ToArray(), inputPaths.ToArray(), runtimeSecrets, runtimeContent,
+        return new(configurationFiles, generatedSecrets.ToArray(), inputPaths.ToArray(), reviewedInputs.ToArray(), runtimeSecrets, runtimeContent,
             delegation["NetRatel__Mcp__Delegation__ServicePrincipal"],
             web.Select(pair => $"Web: {pair.Key} = {pair.Value}")
                 .Concat(apiSettings.Select(pair => $"API: {pair.Key} = {pair.Value}"))
                 .Concat(mcp.Select(pair => $"HTTP MCP: {pair.Key} = {pair.Value}"))
                 .Append($"Runtime secret readers: reviewed container GID {HttpHostingStorage.RuntimeGroup}; " +
                     (useVolume ? "supplied private setup volume (owner/group access only)." : "native output boundary remains owner-only (0700); the local group cannot traverse it."))
-                .ToArray(), instructions);
+                .Concat(selectedWebBackends is null ? [] : new[]
+                {
+                    "Web private API backend: " + selectedWebBackends.ApiBackend + (web.ContainsKey("ApiBaseUrl") ? " (reviewed change)." : " (existing deployment source retained)."),
+                    "Web private MCP backend: " + selectedWebBackends.McpBackend + (web.ContainsKey("WebGateway__Mcp__BackendUrl") ? " (reviewed change)." : " (existing deployment source retained).")
+                })
+                .Concat(requiresRegistrationReplacement
+                    ? ["Replace API service registration for " + delegation["NetRatel__Mcp__Delegation__ServicePrincipal"] + " using the selected existing credential; the current API secret cannot be compared here. Explicit review is required; other registrations remain unchanged."]
+                    : [])
+                .ToArray(), instructions, requiresRegistrationReplacement);
     }
 
     private static string EnvironmentFile(Dictionary<string, string> values)
@@ -510,6 +633,21 @@ public sealed class NetRatelHttpHostingSetupService
         return value;
     }
 
+    private static void ValidateCallerIds(string[] callerIds)
+    {
+        if (callerIds.Length > 128 || callerIds.Any(id => string.IsNullOrWhiteSpace(id) || id.Length > 128 || !char.IsAsciiLetterOrDigit(id[0]) || id.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not '.' and not '-' and not '_')) ||
+            callerIds.Select(id => new string(id.Select(character => char.IsAsciiLetterOrDigit(character) ? char.ToUpperInvariant(character) : '_').ToArray())).Distinct(StringComparer.Ordinal).Count() != callerIds.Length)
+            throw new AgentClientValidationException("M2M caller IDs must be explicit unambiguous client identity tokens.");
+    }
+
+    private static string VolumeIdentifier(string value)
+    {
+        if (value.Length is < 1 or > 255 || !char.IsAsciiLetterOrDigit(value[0]) ||
+            value.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not '.' and not '-' and not '_'))
+            throw new AgentClientValidationException("Persistent volume names must be explicit Docker volume identifiers selected by the deployment launcher.");
+        return value;
+    }
+
     private static void ValidateExistingSecret(string path, bool ownerOnly = true)
     {
         ConfigurationFileStorage.EnsureSafePath(path);
@@ -524,7 +662,7 @@ public sealed class NetRatelHttpHostingSetupService
             throw new AgentClientValidationException("Existing setup secrets must be owner-only. Use a protected secret-store export for runtime shared-group access.");
     }
 
-    private sealed record Bundle(Dictionary<string, string> Configuration, string[] SecretPaths, string[] InputPaths,
+    private sealed record Bundle(Dictionary<string, string> Configuration, string[] SecretPaths, string[] InputPaths, string[] ReviewedInputPaths,
         Dictionary<string, string> RuntimeSecrets, Dictionary<string, string> RuntimeContent, string ServicePrincipal,
-        IReadOnlyList<string> SelectedSettings, IReadOnlyList<string> Instructions);
+        IReadOnlyList<string> SelectedSettings, IReadOnlyList<string> Instructions, bool RequiresRegistrationReplacement);
 }

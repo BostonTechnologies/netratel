@@ -83,41 +83,57 @@ For standalone Client Docker deployments, set
 `NetRatelCLIENT__Client__ApiBaseUrl` and `NetRatelCLIENT__Gateway__Endpoint`.
 See [configuration](docs/deployment/CONFIGURATION.md) for precedence and split REST hosts.
 
-Optional HTTP MCP is not enabled by default. To connect a **personal HTTP MCP
-client** to an already configured instance, use the URL-first personal wizard:
+Optional HTTP MCP has two connections: **client → MCP server → NetRatel API**.
+Configure the server-to-platform connection once, then configure each client.
+`--mode host` means server setup; bare `setup` means a client profile. These
+are not home/company or single/multi-tenant modes.
+
+**Komodo/custom single Compose deployment, deployment host:** use this bundle's
+launcher against the actual saved stack, replacing the example file/project:
 
 ```sh
-docker compose --env-file .env -f compose.setup.yaml run --rm --no-deps \
-  mcp-http setup
+./setup-http-mcp.sh \
+  --compose-file /etc/komodo/stacks/my-netratel/compose.yaml \
+  --project my-netratel --manager komodo
 ```
 
-Inside the supported serving container, `dotnet NetRatel.Mcp.Http.dll setup`
-opens the same personal flow. Profiles and protected personal credentials use
-the separate persistent `netratel-http-client-data` volume, so Save does not
-target `/app/.config`. Existing explicitly selected client settings remain in
-effect. See [client persistence and existing-container recovery](docs/mcp-http/setup.md#persistent-client-storage-and-an-existing-container).
+It supplies persistent private setup/client mounts, inherits the existing MCP
+service settings, and needs no `compose.setup.yaml` in the custom stack.
+Enter the Web URL, complete administrator approval, review and Save, then
+choose **Export and exit**. Import the complete private `compose.komodo.yaml`
+shown by the launcher into that same Komodo stack's Compose editor. Save and
+Deploy, then run the printed `--verify` command. Keep the setup volume and
+existing ingress/database/secret sources. Use `--env-file /actual/path/.env`
+when the stack's interpolation file is elsewhere.
 
-To provision the **deployment host**, select host mode explicitly:
+**Deployment owned by this release bundle, deployment host:** from this actual
+extracted deployment directory, select its current image/ingress/database files:
 
 ```sh
 export NETRATEL_SETUP_COMPOSE_FILES='compose.images.yaml,compose.public-https.yaml,compose.mcp-http.yaml'
 docker compose --env-file .env -f compose.setup.yaml run --rm --no-deps \
-  mcp-http setup --mode host
+  mcp-http setup --target http-host
 ```
 
-Select only the Compose files used by the actual deployment; include the
-external-database or other existing overlays where applicable. The first page
-asks for the instance Web URL; the root and `/mcp` forms both work. Approve the
-host in the signed-in administrator browser, review and save, then run the
-complete generated apply command on the deployment host and resume Verify.
-The supported setup service manages persistent storage and protected runtime
-secret access automatically. Keep its `netratel-http-host-setup` volume.
+Include the existing external-database/other overlays where used, and omit the
+bundled HTTPS overlay when another ingress supplies HTTPS. Enter the Web URL,
+approve, review and Save. Run the complete reviewed deployment-host apply
+command, then resume Verify. The persistent setup volume retains the server
+identity; no manual secret/YAML copying is required in this path.
 
-Host service identity, delegation and personal client approval remain separate.
-An existing OIDC deployment retains its mode; local credential mode does not
-invent an OIDC authority. See [HTTP MCP setup](docs/mcp-http/setup.md) for the
-guided flow and advanced/manual alternatives. Declare readiness only after
-the real authenticated MCP and API-backed read checks pass.
+After **end-to-end verified**, [configure customer connections in Netclaw](docs/integrations/netclaw-http-mcp.md)
+using the `http` transport and separate scoped HTTP MCP credentials. Saving a
+NetRatel client profile does not configure Netclaw. To use NetRatel's own
+client tooling instead, run `dotnet /app/NetRatel.Mcp.Http.dll setup` in the
+supported MCP container, or explicitly select `setup --target http-client`
+through the persistent tooling service. Client profiles use their separate
+persistent volume and do not replace the server service identity.
+
+[Start with the HTTP MCP setup guide](docs/mcp-http/setup.md) for prerequisites,
+command locations, split Web/API hosts, supported authentication and the full
+server-first journey. A file write or approval is not readiness; require actual
+MCP initialize/catalog and a permitted API-backed read. Existing OIDC settings
+remain in effect. **Owner deployment acceptance must be completed separately.**
 
 Back up PostgreSQL, signing keys and Data Protection volumes together. Do not
 delete persistent volumes during upgrades. No local administrator credentials or

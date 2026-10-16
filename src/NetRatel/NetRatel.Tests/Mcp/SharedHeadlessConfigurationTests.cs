@@ -36,11 +36,19 @@ public sealed class SharedHeadlessConfigurationTests
         Assert.Equal(explicitPath, service.Load(new(surface, explicitPath, GetEnvironmentVariable: EnvironmentValue)).ConfigurationPath);
     }
 
-    [Fact]
-    public void Container_default_profile_without_a_durable_setup_root_has_one_concrete_remediation()
+    [Theory]
+    [InlineData(ConfigurationSurface.StdioMcp, "stdio")]
+    [InlineData(ConfigurationSurface.Cli, "cli")]
+    [InlineData(ConfigurationSurface.HttpMcpClient, "http-client")]
+    public void Container_default_profile_without_a_durable_setup_root_has_one_concrete_remediation(ConfigurationSurface surface, string target)
     {
-        var error = Assert.Throws<AgentClientValidationException>(() => NetRatelConfigurationService.ProfilePath(ConfigurationSurface.StdioMcp, "default", key => key == "DOTNET_RUNNING_IN_CONTAINER" ? "true" : null));
-        Assert.Contains("docker compose -f compose.setup.yaml run --rm --no-deps mcp-http setup --target stdio", error.Message);
+        var error = Assert.Throws<AgentClientValidationException>(() => NetRatelConfigurationService.ProfilePath(surface, "default", key => key == "DOTNET_RUNNING_IN_CONTAINER" ? "true" : null));
+        Assert.Contains("On the Docker host", error.Message);
+        Assert.Contains("setup-http-mcp.sh --compose-file /absolute/path/to/compose.yaml", error.Message);
+        Assert.Contains("--target " + target, error.Message);
+        Assert.Contains("separate client profile", error.Message);
+        Assert.DoesNotContain("docker compose -f compose.setup.yaml run", error.Message);
+        Assert.DoesNotContain("Import the exported", error.Message);
     }
 
     [Fact]
@@ -457,6 +465,89 @@ public sealed class SharedHeadlessConfigurationTests
             }));
         var result = await new NetRatelDoctorService(() => new StatusHandler(body)).CheckAsync(effective, connectivity: true);
         result.IsValid.Should().Be(valid);
+    }
+
+    [Theory]
+    [InlineData("token-rejected", false, false)]
+    [InlineData("invalid-token", false, false)]
+    [InlineData("service-denied", true, false)]
+    [InlineData("service-missing", true, false)]
+    [InlineData("service-wrong-document", true, false)]
+    [InlineData("service-valid", true, true)]
+    public async Task Host_doctor_separates_token_issuance_from_service_authorization_without_account_fallback(
+        string scenario, bool tokenIssued, bool authorized)
+    {
+        var effective = new NetRatelConfigurationService().Load(new(ConfigurationSurface.HttpMcpOutbound,
+            GetEnvironmentVariable: name => name switch
+            {
+                "NETRATEL_MCP_OUTBOUND_API_BASE_URL" => "https://api.example.test/",
+                "NETRATEL_MCP_OUTBOUND_API_M2M_TOKEN_URL" => "https://api.example.test/connect/token",
+                "NETRATEL_MCP_OUTBOUND_API_M2M_CLIENT_ID" => "http-host",
+                "NETRATEL_MCP_OUTBOUND_API_M2M_CLIENT_SECRET" => "synthetic-client-secret-do-not-print",
+                "NETRATEL_MCP_OUTBOUND_API_M2M_SCOPE" => "netratel.api",
+                _ => null
+            }));
+        var paths = new List<string>();
+        var result = await new NetRatelDoctorService(() => new StagedIdentityHandler(scenario, paths))
+            .CheckAsync(effective, connectivity: true);
+
+        result.IsValid.Should().Be(authorized);
+        result.Checks.Single(check => check.Name == "token acquisition").Passed.Should().Be(tokenIssued);
+        paths.Should().Equal(tokenIssued
+            ? new[] { "/connect/token", NetRatelDoctorService.ServiceAuthenticationStatusPath }
+            : new[] { "/connect/token" });
+        if (tokenIssued)
+        {
+            var service = result.Checks.Single(check => check.Name == "service API authorization");
+            service.Passed.Should().Be(authorized);
+            if (scenario == "service-denied")
+            {
+                service.HttpStatus.Should().Be(403);
+                service.Message.Should().Contain("Token acquisition succeeded").And.Contain("does not establish that the client secret is wrong");
+            }
+            if (scenario == "service-missing") service.Message.Should().Contain("Upgrade the API");
+            if (authorized) service.Message.Should().Contain("caller delegation, tool access and tenant grants");
+        }
+        else result.Checks.Should().NotContain(check => check.Name == "service API authorization");
+        var diagnostic = JsonSerializer.Serialize(result);
+        diagnostic.Should().NotContain("synthetic-client-secret-do-not-print").And.NotContain("synthetic-access-token-do-not-print")
+            .And.NotContain("provider-error-do-not-print");
+    }
+
+    private sealed class StagedIdentityHandler(string scenario, List<string> paths) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            paths.Add(request.RequestUri!.AbsolutePath);
+            if (request.RequestUri.AbsolutePath == "/connect/token")
+            {
+                request.Method.Should().Be(HttpMethod.Post);
+                request.Headers.Authorization.Should().BeNull();
+                return Task.FromResult(new HttpResponseMessage(scenario == "token-rejected" ? System.Net.HttpStatusCode.Unauthorized : System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent(scenario switch
+                    {
+                        "token-rejected" => "{\"error\":\"provider-error-do-not-print\"}",
+                        "invalid-token" => "{\"access_token\":{\"private\":\"provider-error-do-not-print\"}}",
+                        _ => "{\"access_token\":\"synthetic-access-token-do-not-print\",\"expires_in\":300}"
+                    })
+                });
+            }
+            request.Method.Should().Be(HttpMethod.Get);
+            request.Headers.Authorization!.Parameter.Should().Be("synthetic-access-token-do-not-print");
+            request.RequestUri.AbsolutePath.Should().Be(NetRatelDoctorService.ServiceAuthenticationStatusPath);
+            return Task.FromResult(new HttpResponseMessage(scenario switch
+            {
+                "service-denied" => System.Net.HttpStatusCode.Forbidden,
+                "service-missing" => System.Net.HttpStatusCode.NotFound,
+                _ => System.Net.HttpStatusCode.OK
+            })
+            {
+                Content = new StringContent(scenario == "service-wrong-document"
+                    ? "{\"authenticated\":true,\"authMode\":\"integration_credential\",\"groups\":[],\"roles\":[]}"
+                    : "{\"authenticated\":true,\"authMode\":\"service\",\"groups\":[],\"roles\":[],\"delegatedMcpVerified\":false}")
+            });
+        }
     }
 
     private sealed class StatusHandler(string body) : HttpMessageHandler

@@ -104,6 +104,7 @@ archive_has_entry "$bundle" '^(\./)?compose\.mcp-http\.ports\.yaml$' "Release bu
 archive_has_entry "$bundle" '^(\./)?compose\.mcp-http\.config\.yaml$' "Release bundle is missing compose.mcp-http.config.yaml."
 archive_has_entry "$bundle" '^(\./)?compose\.mcp-http\.secrets\.yaml$' "Release bundle is missing compose.mcp-http.secrets.yaml."
 archive_has_entry "$bundle" '^(\./)?compose\.setup\.yaml$' "Release bundle is missing compose.setup.yaml."
+archive_has_entry "$bundle" '^(\./)?setup-http-mcp\.sh$' "Release bundle is missing the existing-deployment setup launcher."
 archive_has_entry "$bundle" '^(\./)?\.env\.mcp-http\.example$' "Release bundle is missing .env.mcp-http.example."
 archive_has_entry "$bundle" '^(\./)?\.env\.mcp-http\.outbound\.example$' "Release bundle is missing .env.mcp-http.outbound.example."
 archive_has_entry "$bundle" '^(\./)?\.env\.mcp-http\.api\.example$' "Release bundle is missing .env.mcp-http.api.example."

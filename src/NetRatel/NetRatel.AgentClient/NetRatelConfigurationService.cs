@@ -350,8 +350,7 @@ public sealed class NetRatelConfigurationService
         if (!string.IsNullOrWhiteSpace(configuredRoot))
             return Path.Combine(HttpHostingStorage.Resolve(configuredRoot), "profiles", surface.ToString().ToLowerInvariant(), profileName + ".json");
         if (string.Equals(environment("DOTNET_RUNNING_IN_CONTAINER"), "true", StringComparison.OrdinalIgnoreCase))
-            throw new AgentClientValidationException("No persistent client setup mount is configured. On the deployment host run: docker compose -f compose.setup.yaml run --rm --no-deps mcp-http setup --target " +
-                (surface == ConfigurationSurface.StdioMcp ? "stdio" : surface == ConfigurationSurface.HttpMcpClient ? "http-client" : "cli"));
+            throw new AgentClientValidationException(HttpHostingStorage.SetupRecoveryInstructions(surface == ConfigurationSurface.StdioMcp ? "stdio" : surface == ConfigurationSurface.Cli ? "cli" : "http-client"));
         return Path.Combine(Path.GetDirectoryName(AgentClientConfigurationStore.DefaultPath)!, "profiles", surface.ToString().ToLowerInvariant(), profileName + ".json");
     }
 

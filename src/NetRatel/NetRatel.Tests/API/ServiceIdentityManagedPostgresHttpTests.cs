@@ -2,7 +2,10 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text.Json;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
@@ -12,6 +15,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Tokens;
 using NetRatel.API.Endpoints;
 using NetRatel.API.Endpoints.Auth;
 using NetRatel.API.Security.M2M;
@@ -63,6 +67,20 @@ public sealed class ServiceIdentityManagedPostgresHttpTests(PostgreSqlPersistenc
             Assert.Equal(created.Principal.LinkId, Assert.Single(jwt.Claims.Where(x => x.Type == ServiceIdentityClaims.LinkId)).Value);
             Assert.Equal(created.Principal.GrantHash, Assert.Single(jwt.Claims.Where(x => x.Type == ServiceIdentityClaims.GrantHash)).Value);
             Assert.Equal(HttpStatusCode.OK, await ProtectedAsync(client, token));
+            Assert.Equal(HttpStatusCode.OK, await HostStatusAsync(client, token, "service"));
+            Assert.Equal(HttpStatusCode.Unauthorized, await HostStatusAsync(client, null));
+            using (var legacyResponse = await client.PostAsync("/connect/token", new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["grant_type"] = "client_credentials", ["client_id"] = "legacy-http-host",
+                ["client_secret"] = "synthetic-deployment-secret", ["scope"] = "netratel.api"
+            })))
+            {
+                legacyResponse.EnsureSuccessStatusCode();
+                var legacyToken = (await legacyResponse.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("access_token").GetString()!;
+                Assert.Equal(HttpStatusCode.OK, await HostStatusAsync(client, legacyToken, "m2m"));
+            }
+            Assert.Equal(HttpStatusCode.Forbidden, await HostStatusAsync(client, await SignedLegacyTokenAsync(first, "unlisted-client", "netratel.api")));
+            Assert.Equal(HttpStatusCode.Forbidden, await HostStatusAsync(client, await SignedLegacyTokenAsync(first, "legacy-http-host", "other.scope")));
             Assert.Equal(HttpStatusCode.BadRequest, (await TokenResponseAsync(client, created, "netratel.api")).StatusCode);
             var jwks = await client.GetStringAsync("/.well-known/service-jwks.json"); Assert.DoesNotContain("\"d\":", jwks);
             await using var replica = await StartAsync(connection, directory);
@@ -80,6 +98,7 @@ public sealed class ServiceIdentityManagedPostgresHttpTests(PostgreSqlPersistenc
                 await db.SaveChangesAsync();
             }
             Assert.Equal(HttpStatusCode.Unauthorized, await ProtectedAsync(client, token));
+            Assert.Equal(HttpStatusCode.Unauthorized, await HostStatusAsync(client, token));
             Assert.Equal(HttpStatusCode.Unauthorized, (await TokenResponseAsync(client, created)).StatusCode);
             await using (var scope = first.Services.CreateAsyncScope())
                 await scope.ServiceProvider.GetRequiredService<IServicePrincipalRegistry>().RevokeAsync(created.Principal.Id);
@@ -114,18 +133,40 @@ public sealed class ServiceIdentityManagedPostgresHttpTests(PostgreSqlPersistenc
 
     private static async Task<WebApplication> StartAsync(string connection, string directory)
     {
+        var legacyKey = Path.Combine(directory, "legacy-es256.pem");
+        if (!File.Exists(legacyKey))
+        {
+            using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            await File.WriteAllTextAsync(legacyKey, key.ExportPkcs8PrivateKeyPem());
+        }
         var builder = WebApplication.CreateBuilder(); builder.WebHost.UseTestServer();
-        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["ServiceIdentity:Enabled"] = "true", ["ServiceIdentity:Issuer"] = "https://api.example.test/services", ["ServiceIdentity:ApiBaseUrl"] = "https://api.example.test", ["ServiceIdentity:WebBaseUrl"] = "https://web.example.test", ["ServiceIdentity:Audience"] = "netratel.services" });
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["ServiceIdentity:Enabled"] = "true", ["ServiceIdentity:Issuer"] = "https://api.example.test/services", ["ServiceIdentity:ApiBaseUrl"] = "https://api.example.test", ["ServiceIdentity:WebBaseUrl"] = "https://web.example.test", ["ServiceIdentity:Audience"] = "netratel.services",
+            ["M2M:Authority"] = "https://api.example.test/legacy", ["M2M:Audience"] = "netratel.api",
+            ["M2M:AllowedCallerClientIds:0"] = "legacy-http-host",
+            ["M2MClients:legacy-http-host:Secret"] = "synthetic-deployment-secret",
+            ["M2MClients:legacy-http-host:AllowedAudiences:0"] = "netratel.api",
+            ["M2MClients:legacy-http-host:AllowedScopes:0"] = "netratel.api"
+        });
         builder.Services.AddDbContext<OrchestratorDbContext>(o => o.UseNpgsql(connection));
         builder.Services.AddDbContext<NetRatelIdentityDbContext>(o => o.UseNpgsql(connection));
         builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(directory)).SetApplicationName("NetRatel.ServiceIdentity.Tests");
         builder.Services.AddNetRatelServiceIdentityApi(builder.Configuration);
         builder.Services.AddScoped<IServicePublicSettingsResolver, Settings>();
         builder.Services.AddSingleton<IEffectiveAccessService, PairingBusinessAuthorityFixture.Access>(); builder.Services.AddScoped<PairingAuthority>();
-        builder.Services.Configure<AgentAuthOptions>(_ => { }); builder.Services.AddScoped<OidcSigningService>();
-        builder.Services.AddAuthentication(o => o.DefaultAuthenticateScheme = o.DefaultChallengeScheme = ServiceIdentityAuthenticationHandler.SchemeName);
-        builder.Services.AddAuthorization(o => o.AddPolicy("NarrowRead", p => p.AddAuthenticationSchemes(ServiceIdentityAuthenticationHandler.SchemeName).RequireAuthenticatedUser().RequireClaim("scope", ServiceIdentityScopes.OrchestrationRead)));
+        builder.Services.Configure<M2MOptions>(builder.Configuration.GetSection("M2M"));
+        builder.Services.Configure<AgentAuthOptions>(options => options.PrivateKeyPath = legacyKey); builder.Services.AddScoped<OidcSigningService>();
+        builder.Services.AddAuthentication(o => o.DefaultAuthenticateScheme = o.DefaultChallengeScheme = ServiceIdentityAuthenticationHandler.SchemeName)
+            .AddJwtBearer("M2M", _ => { });
+        builder.Services.AddSingleton<IConfigureOptions<JwtBearerOptions>, M2MJwtBearerOptionsConfigurator>();
+        builder.Services.AddAuthorization(o =>
+        {
+            o.AddPolicy("NarrowRead", p => p.AddAuthenticationSchemes(ServiceIdentityAuthenticationHandler.SchemeName).RequireAuthenticatedUser().RequireClaim("scope", ServiceIdentityScopes.OrchestrationRead));
+            AiAgentSelfStatusEndpoints.AddHttpHostSelfStatusPolicy(o);
+        });
         var app = builder.Build(); app.UseAuthentication(); app.UseAuthorization(); app.UseRateLimiter(); app.MapM2MTokenEndpoints(); app.MapServiceIdentityMetadataEndpoints();
+        app.MapAiAgentSelfStatusEndpoints();
         app.MapGet("/managed", () => Results.Ok()).RequireAuthorization("NarrowRead"); await app.StartAsync(); return app;
     }
     private sealed class Settings(IOptionsMonitor<ServiceIdentityOptions> options) : IServicePublicSettingsResolver
@@ -140,4 +181,27 @@ public sealed class ServiceIdentityManagedPostgresHttpTests(PostgreSqlPersistenc
     { using var response = await TokenResponseAsync(client, created); response.EnsureSuccessStatusCode(); return (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("access_token").GetString()!; }
     private static async Task<HttpStatusCode> ProtectedAsync(HttpClient client, string token)
     { using var request = new HttpRequestMessage(HttpMethod.Get, "/managed"); request.Headers.Authorization = new("Bearer", token); using var response = await client.SendAsync(request); return response.StatusCode; }
+    private static async Task<HttpStatusCode> HostStatusAsync(HttpClient client, string? token, string? expectedMode = null)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/v1/auth/http-host/status");
+        if (token is not null) request.Headers.Authorization = new("Bearer", token);
+        using var response = await client.SendAsync(request);
+        if (expectedMode is not null)
+        {
+            var document = await response.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.True(document.GetProperty("authenticated").GetBoolean());
+            Assert.Equal(expectedMode, document.GetProperty("authMode").GetString());
+            Assert.False(document.GetProperty("delegatedMcpVerified").GetBoolean());
+            Assert.True(response.Headers.CacheControl!.NoStore);
+        }
+        return response.StatusCode;
+    }
+    private static async Task<string> SignedLegacyTokenAsync(WebApplication app, string clientId, string scope)
+    {
+        await using var serviceScope = app.Services.CreateAsyncScope();
+        var key = await serviceScope.ServiceProvider.GetRequiredService<OidcSigningService>().GetActiveSigningKeyAsync(default);
+        var now = DateTime.UtcNow;
+        return new JwtSecurityTokenHandler().WriteToken(new JwtSecurityToken("https://api.example.test/legacy", "netratel.api",
+            [new Claim("sub", clientId), new Claim("client_id", clientId), new Claim("scope", scope)], now.AddSeconds(-1), now.AddMinutes(5), new SigningCredentials(key, SecurityAlgorithms.EcdsaSha256)));
+    }
 }

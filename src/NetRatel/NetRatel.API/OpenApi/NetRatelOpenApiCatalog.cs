@@ -32,6 +32,7 @@ public static class NetRatelOpenApiCatalog
             ["AgentGatewayAccess"] = AgentSchemes,
             ["MachineTokenApi"] = MachineTokenSchemes,
             ["AiAgentSelfStatus"] = ["Bearer", "LocalSession", "IntegrationCredential", "M2M", "MachineToken"],
+            ["HttpHostSelfStatus"] = ["M2M", ServiceIdentityAuthenticationHandler.SchemeName],
             ["LocalUser"] = LocalSessionSchemes,
             ["InteractiveAccount"] = InteractiveAccountSchemes,
             ["ClientArtifactsUpload"] = ArtifactUploadSchemes,

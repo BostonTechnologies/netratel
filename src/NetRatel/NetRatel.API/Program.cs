@@ -522,6 +522,7 @@ builder.Services.AddAuthorization(options =>
         .RequireAssertion(context => IntegrationCredentialAuthorizationBoundary.AllowsDefaultAuthenticatedRoute(context.User))
         .Build();
 
+    AiAgentSelfStatusEndpoints.AddHttpHostSelfStatusPolicy(options);
     options.AddPolicy(AiAgentSelfStatusEndpoints.Policy, policy =>
     {
         policy.AddAuthenticationSchemes("Bearer", "M2M");

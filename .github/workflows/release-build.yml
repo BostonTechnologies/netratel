@@ -117,7 +117,7 @@ jobs:
           cp "artifacts/cli/NetRatel.Cli.${VERSION}.nupkg" artifacts/
           tar -C artifacts/cli -czf "artifacts/netratel-cli-${VERSION}-linux-x64.tar.gz" netratel-cli-linux-x64
           tar -C artifacts/mcp-stdio -czf "artifacts/netratel-mcp-stdio-${VERSION}-linux-x64.tar.gz" netratel-mcp-linux-x64
-          cp release/compose.images.yaml release/compose.external-postgres.yaml release/compose.public-https.yaml release/nginx.public-https.conf release/compose.mcp-http.yaml release/compose.mcp-http.ports.yaml release/compose.mcp-http.config.yaml release/compose.mcp-http.secrets.yaml release/compose.setup.yaml release/.env.mcp-http.example release/.env.mcp-http.outbound.example release/.env.mcp-http.api.example release/.env.images.example release/INSTALL.md LICENSE NOTICE artifacts/release-bundle/
+          cp release/compose.images.yaml release/compose.external-postgres.yaml release/compose.public-https.yaml release/nginx.public-https.conf release/compose.mcp-http.yaml release/compose.mcp-http.ports.yaml release/compose.mcp-http.config.yaml release/compose.mcp-http.secrets.yaml release/compose.setup.yaml release/setup-http-mcp.sh release/.env.mcp-http.example release/.env.mcp-http.outbound.example release/.env.mcp-http.api.example release/.env.images.example release/INSTALL.md LICENSE NOTICE artifacts/release-bundle/
           python3 tools/ci/product-version.py --manifest-output artifacts/release-bundle/release-manifest.json
           cp -a docs artifacts/release-bundle/
           cp README.md artifacts/release-bundle/

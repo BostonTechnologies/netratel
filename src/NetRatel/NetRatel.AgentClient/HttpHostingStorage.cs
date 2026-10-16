@@ -14,7 +14,7 @@ public static class HttpHostingStorage
         if (string.IsNullOrWhiteSpace(path))
         {
             if (IsContainer)
-                throw new AgentClientValidationException("No persistent setup mount is configured. On the deployment host run: docker compose -f compose.setup.yaml run --rm --no-deps mcp-http");
+                throw new AgentClientValidationException("Server setup needs persistent storage before approval. " + SetupRecoveryInstructions("server"));
             path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NetRatel", "http-host");
         }
         if (!Path.IsPathFullyQualified(path) || path.Any(char.IsControl) || Path.GetPathRoot(path) == Path.GetFullPath(path))
@@ -22,7 +22,7 @@ public static class HttpHostingStorage
         path = Path.GetFullPath(path);
         ConfigurationFileStorage.EnsureSafePath(path);
         if (IsContainer && !IsMounted(path))
-            throw new AgentClientValidationException("The selected directory is in the temporary container layer. Resume with: docker compose -f compose.setup.yaml run --rm --no-deps mcp-http");
+            throw new AgentClientValidationException("The selected directory is in the temporary container layer. " + SetupRecoveryInstructions("server"));
         return path;
     }
 
@@ -37,7 +37,7 @@ public static class HttpHostingStorage
         }
         catch (AgentClientValidationException)
         {
-            throw new AgentClientValidationException("The setup location is read-only, externally managed or not writable by this user. Keep the managed source intact; use the supplied compose.setup.yaml persistent volume or an Advanced writable export directory.");
+            throw new AgentClientValidationException("The setup location is read-only, externally managed or not writable by this user. Keep the managed source intact. " + SetupRecoveryInstructions("server"));
         }
     }
 
@@ -46,7 +46,7 @@ public static class HttpHostingStorage
     {
         ConfigurationFileStorage.EnsureSafePath(path);
         if (OperatingSystem.IsWindows())
-            throw new AgentClientValidationException("Native Windows host generation is unavailable because this tool cannot verify a private Windows ACL boundary. On the deployment host run: docker compose -f compose.setup.yaml run --rm --no-deps mcp-http setup --mode host. Personal client setup remains supported.");
+            throw new AgentClientValidationException("Native Windows server generation needs a Docker-host private storage boundary. " + SetupRecoveryInstructions("server"));
         var suppliedVolume = UsesValidatedSetupVolume(path);
         if (suppliedVolume && (RuntimeGroup != 10001 || GetEffectiveUserId() != 10001))
             throw new AgentClientValidationException("Use the supplied setup container identity (UID/GID 10001) for its protected runtime volume.");
@@ -54,7 +54,7 @@ public static class HttpHostingStorage
         var allowed = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
         if (suppliedVolume) allowed |= UnixFileMode.GroupRead | UnixFileMode.GroupExecute;
         if ((File.GetUnixFileMode(path) & ~allowed) != 0 || DirectoryOwner(path) != GetEffectiveUserId())
-            throw new AgentClientValidationException("Host setup requires an owner-only output directory owned by this user. Use the per-user default, a new private Advanced directory, or the supplied compose.setup.yaml volume; existing permissions were not changed.");
+            throw new AgentClientValidationException("Host setup requires an owner-only output directory owned by this user. Existing permissions were not changed. Use a private per-user directory, or " + SetupRecoveryInstructions("server"));
     }
 
     private static uint DirectoryOwner(string path)
@@ -72,7 +72,7 @@ public static class HttpHostingStorage
         }
         catch (Exception exception) when (exception is IOException or System.ComponentModel.Win32Exception or InvalidOperationException)
         {
-            throw new AgentClientValidationException("The private output directory ownership could not be verified. Use the supplied compose.setup.yaml volume or restore the system stat utility before retrying.");
+            throw new AgentClientValidationException("The private output directory ownership could not be verified. Restore the system stat utility, or " + SetupRecoveryInstructions("server"));
         }
     }
 
@@ -88,6 +88,19 @@ public static class HttpHostingStorage
         !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("NETRATEL_CLIENT_VOLUME"));
 
     public static string VolumeName => Environment.GetEnvironmentVariable("NETRATEL_SETUP_VOLUME") ?? "netratel-http-host-setup";
+    public static string SetupRecoveryInstructions(string purpose)
+    {
+        var target = purpose switch { "client" or "http-client" => "http-client", "cli" => "cli", "stdio" => "stdio", _ => "http-host" };
+        var server = target == "http-host";
+        return "On the Docker host, use setup-http-mcp.sh from the matching release's Compose bundle. " +
+            "Find the actual stack file and project with docker compose ls, then run: " +
+            "./setup-http-mcp.sh --compose-file /absolute/path/to/compose.yaml --project YOUR_STACK --manager komodo" +
+            (server ? "" : " --target " + target) +
+            ". Use your real path/project and --env-file /absolute/path/to/.env when needed. " +
+            "The launcher supplies persistent mounts; it does not require a separate compose.setup.yaml file. " +
+            (server ? "Import the exported complete document in Komodo, Save/Deploy, then resume the same command with --verify."
+                : "This command saves a separate client profile. Complete and verify server setup first; keep the client-data volume when recreating the deployment.");
+    }
     public static uint RuntimeGroup => OperatingSystem.IsWindows() ? 10001 : GetEffectiveGroupId();
     private static bool IsContainer => string.Equals(Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"), "true", StringComparison.OrdinalIgnoreCase);
 

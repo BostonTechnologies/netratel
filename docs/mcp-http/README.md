@@ -1,8 +1,9 @@
 # HTTP MCP operator guide
 
-HTTP MCP is an optional bearer-authenticated service. The standard deployment exposes it at the same trusted public HTTPS origin as Web, under `/mcp`, while its listener remains private. Ordinary Web/API and native Client operation does not require MCP.
+HTTP MCP lets Netclaw and other MCP clients use the NetRatel API. First connect the MCP server to the platform once, then give each client a scoped credential for that endpoint. Server/client modes describe the two sides of the connection, not home/company use or tenant count. The standard deployment exposes `/mcp` at the trusted Web HTTPS origin while its listener remains private. Ordinary Web/API and native Client operation does not require MCP.
 
-- [Connect clients and configure hosting](setup.md): bare HTTP `setup` connects a personal client; explicit `--mode host` provisions the deployment. Both use one Web URL, guided authentication, automatic persistent storage and actual verification.
+- [Set up the server, then connect clients](setup.md): start here. Explains the modes, prerequisites, Komodo/custom single Compose and supplied release-bundle paths, apply/resume and actual verification.
+- [Give Netclaw customer connections access](../integrations/netclaw-http-mcp.md): supported HTTP transport, protected credential storage and customer isolation checks after server setup.
 - [Configuration reference](configuration.md): every host, outbound, delegation and Compose setting, defaults, secret-file mappings and precedence.
 - [Authentication modes](authentication.md): local integration credentials, browser client approval and explicit external OIDC.
 - [Local credential mode](local-credential-mode.md): the API-bound credential/delegation flow.
