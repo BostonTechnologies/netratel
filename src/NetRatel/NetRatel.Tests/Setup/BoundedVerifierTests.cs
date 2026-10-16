@@ -93,6 +93,21 @@ public sealed class BoundedVerifierTests
     }
 
     [Fact]
+    public async Task Cancelled_delivery_poll_cleans_up_the_owned_attempt_before_disposal()
+    {
+        using var fixture = new Fixture("success");
+        await using var session = fixture.Session();
+        await session.DiscoverAsync("https://instance.example", default);
+        await session.BeginPairingAsync(default, temporaryVerifier: true);
+        await session.PollAsync(default);
+        using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => session.PollAsync(cancelled.Token));
+        Assert.Equal(1, fixture.CancelCalls);
+        Assert.Null(session.Pairing);
+        Assert.Null(session.Delivery);
+    }
+
+    [Fact]
     public async Task Legacy_capabilities_cannot_silently_issue_an_unbounded_setup_verifier()
     {
         using var fixture = new Fixture("success") { AdvertiseVerifier = false };

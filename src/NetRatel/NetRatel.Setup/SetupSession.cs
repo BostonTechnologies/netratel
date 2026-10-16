@@ -193,31 +193,35 @@ public sealed class SetupSession : IAsyncDisposable
     public async Task<PairingPoll> PollAsync(CancellationToken ct)
     {
         if (Pairing is null || _origin is null) throw new AgentClientValidationException("Start pairing first.");
-        if (DateTimeOffset.UtcNow >= Pairing.ExpiresAtUtc) { PairingStatus = "expired"; return new("expired", 5, null); }
-        using var response = await _http.PostAsJsonAsync(Endpoint(_origin, "/api/integration-pairing/v1/poll"), new { deviceCapability = Pairing.DeviceCapability }, ct);
-        response.EnsureSuccessStatusCode();
-        var poll = await response.Content.ReadFromJsonAsync<PairingPoll>(cancellationToken: ct) ?? throw new AgentClientValidationException("Empty pairing status.");
-        ct.ThrowIfCancellationRequested();
-        PairingStatus = poll.Status;
-        if (poll.Status == "issued" && poll.Delivery is { } delivery)
+        try
         {
-            if (Surface == ConfigurationSurface.HttpMcpClient && !McpResourceUri.Equivalent(delivery.Resource, CanonicalTarget)) throw new AgentClientValidationException("Credential was issued for a different MCP resource.");
-            if (delivery.Purpose != (Surface == ConfigurationSurface.HttpMcpClient ? PairingCredentialPurpose.HttpMcp : PairingCredentialPurpose.Api)) throw new AgentClientValidationException("Credential purpose differs from the selected transport.");
-            if (_temporaryVerifier && (delivery.Grants.Count != 0 || !delivery.InstancePermissions.SequenceEqual(["mcp.discovery.read"]) ||
-                delivery.ExpiresAtUtc > DateTimeOffset.UtcNow.AddMinutes(15)))
+            if (DateTimeOffset.UtcNow >= Pairing.ExpiresAtUtc) { PairingStatus = "expired"; return new("expired", 5, null); }
+            using var response = await _http.PostAsJsonAsync(Endpoint(_origin, "/api/integration-pairing/v1/poll"), new { deviceCapability = Pairing.DeviceCapability }, ct);
+            response.EnsureSuccessStatusCode();
+            var poll = await response.Content.ReadFromJsonAsync<PairingPoll>(cancellationToken: ct) ?? throw new AgentClientValidationException("Empty pairing status.");
+            ct.ThrowIfCancellationRequested();
+            PairingStatus = poll.Status;
+            if (poll.Status == "issued" && poll.Delivery is { } delivery)
             {
-                await CancelPairingAsync();
-                throw new AgentClientValidationException("Temporary verifier exceeded its approved read-only scope or lifetime. Start a fresh review.");
+                if (Surface == ConfigurationSurface.HttpMcpClient && !McpResourceUri.Equivalent(delivery.Resource, CanonicalTarget)) throw new AgentClientValidationException("Credential was issued for a different MCP resource.");
+                if (delivery.Purpose != (Surface == ConfigurationSurface.HttpMcpClient ? PairingCredentialPurpose.HttpMcp : PairingCredentialPurpose.Api)) throw new AgentClientValidationException("Credential purpose differs from the selected transport.");
+                if (_temporaryVerifier && (delivery.Grants.Count != 0 || !delivery.InstancePermissions.SequenceEqual(["mcp.discovery.read"]) ||
+                    delivery.ExpiresAtUtc > DateTimeOffset.UtcNow.AddMinutes(15)))
+                {
+                    await CancelPairingAsync();
+                    throw new AgentClientValidationException("Temporary verifier exceeded its approved read-only scope or lifetime. Start a fresh review.");
+                }
+                Delivery = delivery;
+                UseCredential(delivery.Secret);
             }
-            Delivery = delivery;
-            UseCredential(delivery.Secret);
+            if (Delivery is { } approved && !IsExternallyManaged("DefaultTenantId"))
+            {
+                var tenants = approved.Grants.Select(grant => grant.TenantId).Distinct().ToArray();
+                if (tenants.Length == 1 && Configuration.DefaultTenantId is null) SelectTenant(tenants[0]);
+            }
+            return poll;
         }
-        if (Delivery is { } approved && !IsExternallyManaged("DefaultTenantId"))
-        {
-            var tenants = approved.Grants.Select(grant => grant.TenantId).Distinct().ToArray();
-            if (tenants.Length == 1 && Configuration.DefaultTenantId is null) SelectTenant(tenants[0]);
-        }
-        return poll;
+        catch when (_temporaryVerifier) { await CancelPairingAsync(); throw; }
     }
     public void UseCredential(string secret)
     {
