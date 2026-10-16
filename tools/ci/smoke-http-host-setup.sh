@@ -47,6 +47,57 @@ host_setup=(--non-interactive
   --api-m2m-authority "$NETRATEL_PUBLIC_ORIGIN" --api-m2m-audience netratel.api
   --existing-m2m-callers unrelated-caller)
 stage="preparing disposable HTTP host setup"
+retain_failure_diagnostics() {
+  # Keep raw diagnostics private. Only bounded redacted copies leave this fixture.
+  timeout 10s "${compose[@]}" logs --no-color --tail 120 api web 2>&1 \
+    | head -c 524288 > "$temporary/startup.log" || true
+  timeout 10s "${compose[@]}" config --format json 2>/dev/null \
+    | head -c 524288 > "$temporary/redaction-config.json" || true
+  : > "$temporary/container-states.jsonl"
+  for service in api web; do
+    local container
+    container="$("${compose[@]}" ps --all --quiet "$service" 2>/dev/null)" || continue
+    [[ -n "$container" ]] || continue
+    timeout 5s docker inspect --format \
+      '{"service":"'"$service"'","exitCode":{{.State.ExitCode}},"oomKilled":{{.State.OOMKilled}},"status":{{json .State.Status}},"error":{{json .State.Error}}}' \
+      "$container" >> "$temporary/container-states.jsonl" 2>/dev/null || true
+  done
+  python3 - "$temporary" TestResults/http-host-setup/diagnostics <<'PY'
+import json, pathlib, re, sys
+private, output = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]); output.mkdir(parents=True, exist_ok=True)
+values = set()
+inventory = private / "redaction-values.json"
+if inventory.is_file(): values.update(json.loads(inventory.read_text()))
+def collect(item):
+    if isinstance(item, dict):
+        for key, value in item.items():
+            if isinstance(value, str) and value and re.search(r"(?:password|passphrase|clientsecret|sharedkeybase64|(?:^|__)secret)$|^connectionstrings", key, re.I):
+                values.add(value)
+                values.update(re.findall(r"(?:^|;)Password=([^;]+)", value, re.I))
+            else: collect(value)
+    elif isinstance(item, list):
+        for value in item: collect(value)
+try: collect(json.loads((private / "redaction-config.json").read_text()))
+except (OSError, json.JSONDecodeError): pass
+files = [private / name for name in ("startup.log", "container-states.jsonl", "launcher.log", "verified-launcher.log")]
+files += sorted(private.glob(".netratel-http-mcp-*/*.log"))
+for index, path in enumerate(files):
+    if not path.is_file(): continue
+    with path.open("rb") as source: value = source.read(524288).decode("utf-8", errors="replace")
+    for secret in sorted((value for value in values if len(value) >= 4), key=len, reverse=True):
+        value = value.replace(secret, "[REDACTED]")
+    value = re.sub(r"nrt_(?:ic|host)_[A-Za-z0-9_.-]+", "[REDACTED]", value)
+    value = re.sub(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "[REDACTED]", value)
+    value = re.sub(r"(?i)(Authorization\s*[:=]\s*(?:Bearer|Basic)\s+)\S+", r"\1[REDACTED]", value)
+    (output / f"{index:02d}-{path.name}").write_text(value)
+PY
+  if [[ -f TestResults/http-host-setup/diagnostics/00-startup.log ]]; then
+    tail -n 60 TestResults/http-host-setup/diagnostics/00-startup.log >&2
+  fi
+  if [[ -f TestResults/http-host-setup/diagnostics/01-container-states.jsonl ]]; then
+    cat TestResults/http-host-setup/diagnostics/01-container-states.jsonl >&2
+  fi
+}
 cleanup() {
   local status=$?
   if (( status != 0 )); then
@@ -58,6 +109,7 @@ cleanup() {
       fi
     done
     "${compose[@]}" ps --all >&2 || true
+    retain_failure_diagnostics || true
   fi
   "${applied[@]}" down --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
   "${compose[@]}" down --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
@@ -166,10 +218,17 @@ mcp["volumes"].append({"type": "bind", "source": str(directory / "outbound.json"
     "target": "/run/secrets/mcp-outbound-config", "read_only": True})
 document["volumes"].pop("http-client-data", None)
 path.write_text(json.dumps(document, indent=2) + "\n")
-(directory / "outbound.json").write_text(json.dumps({"instance": "dev", "apiBaseUrl": api,
+outbound = {"instance": "dev", "apiBaseUrl": api,
     "authenticationMode": "ApiM2MClientSecret", "apiM2MTokenUrl": api + "/connect/token",
     "apiM2MClientId": "disposable-mcp-api", "apiM2MClientSecret": secrets.token_urlsafe(48),
-    "apiM2MScope": "netratel.api"}) + "\n")
+    "apiM2MScope": "netratel.api"}
+(directory / "outbound.json").write_text(json.dumps(outbound) + "\n")
+# Preserve actual disposable secret values for failure-log redaction before the
+# outbound file becomes readable only by the MCP identity. Never upload this file.
+redactions = [outbound["apiM2MClientSecret"], environment["NetRatel__Mcp__Delegation__SharedKeyBase64"],
+    services["api"]["environment"]["M2MClients__unrelated_caller__Secret"],
+    "disposable-http-host-postgres-passphrase", "disposable HTTP host administrator passphrase"]
+(directory / "redaction-values.json").write_text(json.dumps(redactions))
 PY
 chmod 600 "$temporary/compose.yaml"
 outbound_hash="$(sha256sum "$temporary/outbound.json" | cut -d ' ' -f 1)"
