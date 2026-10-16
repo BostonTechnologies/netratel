@@ -15,6 +15,58 @@ namespace NetRatel.Tests.Setup;
 
 public sealed class SetupTests
 {
+    [Fact]
+    public async Task Unknown_host_authentication_has_a_visible_choice_and_Enter_selects_it_without_Advanced()
+    {
+        using var directory = new TempDirectory();
+        string? fingerprint = null;
+        var handler = new StubHandler(async request =>
+        {
+            var route = request.RequestUri!.AbsolutePath;
+            if (route.EndsWith("capabilities")) return Json(new { protocolVersion = 1, publicOrigin = "https://instance.example", resource = "https://instance.example/mcp", verificationUri = "https://instance.example/account/integration-credentials", localCredentialMode = false, authenticationModeKnown = false, requiredGroups = Array.Empty<string>(), requiredScopes = Array.Empty<string>() });
+            if (route.EndsWith("start"))
+            {
+                using var body = System.Text.Json.JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+                fingerprint = body.RootElement.GetProperty("registrationFingerprint").GetString();
+                return Json(new { requestId = "host", userCode = "HOST-CODE", deviceCapability = "host-capability", verificationUri = "https://instance.example/account/integration-credentials", publicOrigin = "https://instance.example", expiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(1), intervalSeconds = 5 });
+            }
+            return Json(route.EndsWith("poll") ? new { status = "approved", approvalId = (string?)"approved", registrationFingerprint = fingerprint } : new { status = "cancelled", approvalId = (string?)null, registrationFingerprint = (string?)null });
+        });
+        var model = new HostingSetupViewModel(new Dictionary<string, string> { ["--output-directory"] = directory.Path }, handler);
+        var input = new VirtualInputSource(); var terminal = new VirtualTerminal(96, 30);
+        var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { DisableDefaults = true }); builder.Logging.ClearProviders();
+        builder.Services.AddTerminaVirtualInput(input);
+        builder.Services.AddTermina("/hosting", routes => routes.RegisterRoute<HostingSetupPage, HostingSetupViewModel>("/hosting", services => new HostingSetupPage(services.GetRequiredService<Termina.Clipboard.IClipboardService>()), _ => model));
+        builder.Services.AddSingleton<IAnsiTerminal>(terminal);
+        using var host = builder.Build(); await host.StartAsync();
+        var choice = WaitFor(model.Revision, () => model.Step == HostingSetupStep.Authentication && !model.Busy);
+        input.EnqueueString("https://instance.example/mcp/"); input.EnqueueKey(ConsoleKey.Enter); await choice;
+        Assert.False(model.Advanced); Assert.False(model.AuthenticationModeSelected); Assert.Null(fingerprint);
+        var visible = false; await model.InvokeAsync(() => visible = terminal.Contains("No authentication mode selected")); Assert.True(visible);
+        var correction = WaitFor(model.Revision, () => !model.Busy && model.Error.Value.StartsWith("Select the authentication"));
+        input.EnqueueKey(ConsoleKey.F2); await correction;
+        await model.InvokeAsync(() => visible = terminal.Contains("Next action") && terminal.Contains("Select the authentication")); Assert.True(visible);
+        var review = WaitFor(model.Revision, () => model.Step == HostingSetupStep.Review && !model.Busy);
+        input.EnqueueKey(ConsoleKey.Enter); await review;
+        Assert.Equal("Local credential", model.AuthMode); Assert.True(model.AuthenticationModeSelected); Assert.NotNull(fingerprint);
+        input.EnqueueKey(ConsoleKey.Escape); input.Complete(); await host.StopAsync(); await model.CleanupAsync();
+    }
+
+    [Fact]
+    public async Task Verify_requires_saved_server_setup_and_never_starts_another_administrator_registration()
+    {
+        using var directory = new TempDirectory(); var starts = 0;
+        using var model = new HostingSetupViewModel(new Dictionary<string, string> { ["--output-directory"] = directory.Path, ["--instance"] = "https://instance.example", ["--verify"] = "true" },
+            new StubHandler(request =>
+            {
+                if (request.RequestUri!.AbsolutePath.EndsWith("start")) starts++;
+                return Task.FromResult(Json(new { protocolVersion = 1, publicOrigin = "https://instance.example", resource = "https://instance.example/mcp", verificationUri = "https://instance.example/account/integration-credentials", localCredentialMode = true, requiredGroups = Array.Empty<string>(), requiredScopes = Array.Empty<string>() }));
+            }));
+        await model.NextAsync();
+        Assert.Equal(HostingSetupStep.Instance, model.Step); Assert.Contains("No saved server setup", model.Error.Value); Assert.Equal(0, starts); Assert.False(model.Verified);
+        await model.CleanupAsync();
+    }
+
     [Theory]
     [InlineData("http://instance.example")]
     [InlineData("https://instance.example/prefix/mcp")]

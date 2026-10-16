@@ -6,4 +6,5 @@ Use [CLI and stdio MCP](CLI_AND_MCP.md) for operator tooling, [shared configurat
 - [Discord and Slack notifications](NOTIFICATION-CONNECTORS.md)
 - [RatelDesk incident connector](RATELDESK-CONNECTOR.md)
 - [Netclaw AI operations](netclaw-ai-operations.md)
+- [Give Netclaw customer connections HTTP MCP access](netclaw-http-mcp.md)
 - [Connect NetRatel and RatelDesk](rateldesk-pairing.md)

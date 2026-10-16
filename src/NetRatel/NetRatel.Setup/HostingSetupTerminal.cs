@@ -31,7 +31,7 @@ public static class HostingSetupTerminal
         finally { await model.CleanupAsync(); }
     }
 }
-public enum HostingSetupStep { Instance, Authorization, Review, Apply, Verify, Finish }
+public enum HostingSetupStep { Instance, Authentication, Authorization, Review, Apply, Verify, Finish }
 public sealed class HostingSetupViewModel : ReactiveViewModel
 {
     private readonly NetRatelHttpHostingSetupService _service = new();
@@ -53,6 +53,9 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
     private string? _apiServiceAuthority;
     private string _apiServiceAudience = "netratel.api";
     private bool _m2mCallersKnown;
+    private bool _authenticationModeKnown;
+    private HttpHostingSetupRequest? _savedRequest;
+    private int _delegationLifetimeSeconds = 90;
     public HostingSetupViewModel(IReadOnlyDictionary<string, string>? options = null, HttpMessageHandler? handler = null)
     {
         options ??= new Dictionary<string, string>();
@@ -68,15 +71,18 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
         RequiredGroups = options.GetValueOrDefault("--required-groups", ""); RequiredScopes = options.GetValueOrDefault("--required-scopes", "");
         Instance = options.GetValueOrDefault("--instance-name", "prod"); Resource = options.GetValueOrDefault("--resource", "");
         Port = options.GetValueOrDefault("--listen-port", "9224"); AllowedOrigins = options.GetValueOrDefault("--allowed-origins", "");
-        ExistingOutbound = options.GetValueOrDefault("--existing-outbound-config") ?? Environment.GetEnvironmentVariable("NETRATEL_MCP_CONFIG") ?? Environment.GetEnvironmentVariable("NetRatel__Mcp__Http__ConfigurationPath") ?? "";
+        ExistingOutbound = options.GetValueOrDefault("--existing-outbound-config", "");
         DelegationPrincipal = options.GetValueOrDefault("--delegation-principal", "");
-        ExistingDelegationKeyFile = options.GetValueOrDefault("--delegation-key-file") ?? Environment.GetEnvironmentVariable("NETRATEL_MCP_DELEGATION_KEY_FILE") ?? "";
-        DelegationKeyId = options.GetValueOrDefault("--delegation-key-id") ?? Environment.GetEnvironmentVariable("NETRATEL_MCP_DELEGATION_KEY_ID") ?? "";
-        DelegationIssuer = options.GetValueOrDefault("--delegation-issuer") ?? Environment.GetEnvironmentVariable("NETRATEL_MCP_DELEGATION_ISSUER") ?? "";
-        DelegationAudience = options.GetValueOrDefault("--delegation-audience") ?? Environment.GetEnvironmentVariable("NETRATEL_MCP_DELEGATION_AUDIENCE") ?? "";
+        ExistingDelegationKeyFile = options.GetValueOrDefault("--delegation-key-file", "");
+        DelegationKeyId = options.GetValueOrDefault("--delegation-key-id", "");
+        DelegationIssuer = options.GetValueOrDefault("--delegation-issuer", "");
+        DelegationAudience = options.GetValueOrDefault("--delegation-audience", "");
         ExistingM2MCallers = options.GetValueOrDefault("--existing-m2m-callers", "");
         _m2mCallersKnown = options.ContainsKey("--existing-m2m-callers");
         _apiServiceAudience = options.GetValueOrDefault("--api-m2m-audience", "netratel.api");
+        _apiServiceAuthority = options.GetValueOrDefault("--api-m2m-authority");
+        DeploymentManager = options.GetValueOrDefault("--deployment-manager") ?? Environment.GetEnvironmentVariable("NETRATEL_SETUP_DEPLOYMENT_MANAGER") ?? "release-compose";
+        ComposeSourcePath = options.GetValueOrDefault("--compose-file") ?? Environment.GetEnvironmentVariable("NETRATEL_SETUP_COMPOSE_SOURCE");
     }
     public override void OnActivated()
     {
@@ -95,6 +101,17 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
     public string VerificationPassword { get; set; } = "";
     public string VerificationScope { get; set; } = "";
     public void SelectAuthMode(string mode) { AuthMode = mode; _authModeExplicit = true; Revision.Value++; }
+    public bool AuthenticationModeSelected => _authModeExplicit || _authenticationModeKnown;
+    public string DeploymentManager { get; set; } = "release-compose";
+    public string? ComposeSourcePath { get; set; }
+    public bool IsKomodo => DeploymentManager == "komodo";
+    public void ExportAndExit()
+    {
+        if (!IsKomodo || Step != HostingSetupStep.Apply || Result is null) return;
+        try { HostingExportReceipt.WriteIfRequested(OutputDirectory); RequestShutdown(); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or AgentClientValidationException)
+        { Error.Value = "The saved Compose document could not be marked for export. Keep this setup volume and retry Export and exit; no deployment was applied."; Revision.Value++; }
+    }
     public string OutputDirectory { get; set; } = "";
     public string PublicOrigin { get; set; } = "";
     public string ApiBaseUrl { get; set; } = "";
@@ -142,7 +159,12 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
         ComposeOutputDirectory = Environment.GetEnvironmentVariable("NETRATEL_SETUP_HOST_OUTPUT_DIRECTORY") ?? _composeOutputDirectory,
         OperatorSurfaceEnabled = _operatorSurfaceEnabled,
         ApprovedRegistrationFingerprint = _approvedFingerprint,
-        ApiServiceAudience = _apiServiceAudience, ApiServiceAuthority = _apiServiceAuthority
+        ApiServiceAudience = _apiServiceAudience, ApiServiceAuthority = _apiServiceAuthority,
+        DeploymentManager = DeploymentManager, ComposeSourcePath = ComposeSourcePath,
+        DelegationLifetimeSeconds = _delegationLifetimeSeconds,
+        ExistingWebApiBackendUrl = Environment.GetEnvironmentVariable("NETRATEL_SETUP_EXISTING_WEB_API_BACKEND_URL") ?? _savedRequest?.ExistingWebApiBackendUrl,
+        ExistingWebMcpBackendUrl = Environment.GetEnvironmentVariable("NETRATEL_SETUP_EXISTING_WEB_MCP_BACKEND_URL") ?? _savedRequest?.ExistingWebMcpBackendUrl,
+        ExistingWebEnvironmentObserved = Environment.GetEnvironmentVariable("NETRATEL_SETUP_WEB_ENVIRONMENT_OBSERVED") == "true" || _savedRequest?.ExistingWebEnvironmentObserved == true
     };
     public void Next(bool replace = false) => _ = NextAsync(replace);
     public async Task NextAsync(bool replace = false)
@@ -158,6 +180,15 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
                     var address = InstanceSetupAddress.Parse(PublicOrigin);
                     OutputDirectory = HttpHostingStorage.Resolve(OutputDirectory); HttpHostingStorage.ValidateWritable(OutputDirectory);
                     AdoptSavedRequest(address);
+                    var existing = _savedRequest is null ? DiscoverExistingSettings(_options) : null;
+                    if (existing is not null) AdoptExistingSettings(existing);
+                    if (_options.TryGetValue("--auth-mode", out var explicitMode) && explicitMode is not ("local" or "oidc"))
+                        throw new AgentClientValidationException("Server authentication must be local or oidc. Choose the mode already configured for this MCP server.");
+                    if (!_options.ContainsKey("--verify") && ExistingDelegationKeyFile.Length == 0 && existing is not null)
+                        ExistingDelegationKeyFile = existing.MaterializeDelegationKey(OutputDirectory) ?? "";
+                    if (!_options.ContainsKey("--verify") && existing is not null &&
+                        (ExistingOutbound.Length == 0 || existing.HasOutboundIdentity && existing.OutboundConfigurationPath is null))
+                        ExistingOutbound = existing.MaterializeOutboundConfiguration(OutputDirectory) ?? "";
                     using (var response = await _http.GetAsync(address.Origin + HttpHostSetupProtocol.Route + "/capabilities", ct))
                     {
                         if (response.StatusCode == HttpStatusCode.NotFound) throw new AgentClientValidationException("This instance needs a compatible HTTP host setup release. Upgrade the instance, then retry this URL.");
@@ -168,28 +199,46 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
                         ValidateApprovalLink(capabilities.VerificationUri, address.Origin);
                         var hasDelegation = ExistingDelegationKeyFile.Length > 0 || File.Exists(Path.Combine(OutputDirectory, "secrets", "delegation.key"));
                         var hasOutbound = ExistingOutbound.Length > 0 || File.Exists(Path.Combine(OutputDirectory, "secrets", "outbound-m2m.secret"));
-                        if (capabilities.ExistingHostConfigured && !(hasDelegation && hasOutbound))
-                        { Advanced = true; throw new AgentClientValidationException("This instance already has an HTTP host identity. Reuse its existing setup volume, or select its existing protected outbound configuration and delegation key in Advanced. Setup will not rotate or replace that identity."); }
+                        if (!_options.ContainsKey("--verify") && capabilities.ExistingHostConfigured && !(hasDelegation && hasOutbound))
+                            throw new AgentClientValidationException("Existing server settings were detected, but their identity sources are unavailable here. Run the setup launcher using the existing MCP service so its protected configuration and delegation settings are inherited. No identity was replaced.");
                         if (!McpResourceUri.TryNormalize(capabilities.Resource, out var resource)) throw new AgentClientValidationException("The instance advertises an invalid canonical MCP resource.");
                         ct.ThrowIfCancellationRequested();
                         PublicOrigin = address.Origin;
                         if (ApiBaseUrl.Length == 0) ApiBaseUrl = address.Origin;
                         if (Resource.Length == 0) Resource = resource;
-                        if (!capabilities.AuthenticationModeKnown && !_authModeExplicit)
-                        { Advanced = true; throw new AgentClientValidationException("This existing deployment does not advertise its ingress authentication mode. In Advanced select its current Local credential or OIDC mode, then retry; no mode was changed."); }
-                        if (!_authModeExplicit) AuthMode = capabilities.LocalCredentialMode ? "Local credential" : "OIDC";
+                        _authenticationModeKnown = capabilities.AuthenticationModeKnown;
+                        if (!_authModeExplicit && capabilities.AuthenticationModeKnown) AuthMode = capabilities.LocalCredentialMode ? "Local credential" : "OIDC";
                         if (OidcAuthority.Length == 0) OidcAuthority = capabilities.OidcAuthority ?? "";
                         if (RequiredGroups.Length == 0) RequiredGroups = string.Join(',', capabilities.RequiredGroups);
                         if (RequiredScopes.Length == 0) RequiredScopes = string.Join(',', capabilities.RequiredScopes);
                         if (!_options.ContainsKey("--api-m2m-audience")) _apiServiceAudience = capabilities.ApiServiceAudience;
-                        _apiServiceAuthority = capabilities.ApiServiceAuthority;
+                        if (!_options.ContainsKey("--api-m2m-authority")) _apiServiceAuthority = capabilities.ApiServiceAuthority;
                         if (!_options.ContainsKey("--existing-m2m-callers")) ExistingM2MCallers = string.Join(',', Values(ExistingM2MCallers).Concat(capabilities.ExistingM2MCallerClientIds).Distinct(StringComparer.Ordinal));
                         _m2mCallersKnown = true;
                     }
-                    _fingerprint = _service.PrepareRegistration(Request());
-                    await SetStepAsync(HostingSetupStep.Authorization, ct);
-                    await BeginApprovalAsync(ct);
-                    await PollApprovalAsync(ct);
+                    if (_options.ContainsKey("--verify"))
+                    {
+                        if (_savedRequest is null) throw new AgentClientValidationException("No saved server setup was found in this persistent volume. Run server setup without --verify, approve and save it first.");
+                        if (_options.Keys.Any(key => key is "--auth-mode" or "--resource" or "--instance-name" or "--existing-outbound-config" or "--delegation-key-file" or "--delegation-key-id" or "--delegation-issuer" or "--delegation-audience" or "--delegation-principal" or "--oidc-authority"))
+                            throw new AgentClientValidationException("Verification reuses the saved server identity and authentication settings. Omit configuration overrides, or run setup without --verify to review a change.");
+                        if (_options.TryGetValue("--api-base-url", out var selectedApi) && !NetRatelConfigurationService.Equivalent(selectedApi, _savedRequest.ApiBaseUrl))
+                            throw new AgentClientValidationException("Verification must use the saved API destination. Run setup without --verify to review an intentional configuration change.");
+                        Result = new([], ["Saved server configuration; deployment verification requested."]);
+                        _reviewedRequest = _savedRequest;
+                        await SetStepAsync(HostingSetupStep.Verify, ct);
+                        await VerifyAsync(ct);
+                        break;
+                    }
+                    if (!AuthenticationModeSelected)
+                    {
+                        await SetStepAsync(HostingSetupStep.Authentication, ct);
+                        break;
+                    }
+                    await PrepareAuthorizationAsync(ct);
+                    break;
+                case HostingSetupStep.Authentication:
+                    if (!AuthenticationModeSelected) throw new AgentClientValidationException("Select the authentication already used by this MCP server. Highlight an option and press Enter; the selected option will show a filled circle.");
+                    await PrepareAuthorizationAsync(ct);
                     break;
                 case HostingSetupStep.Authorization:
                     if (_approval is null) await BeginApprovalAsync(ct);
@@ -223,16 +272,79 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
         }
         finally { if (!_disposed && generation == _generation) { Busy = false; Revision.Value++; } }
     }
+    private async Task PrepareAuthorizationAsync(CancellationToken ct)
+    {
+        _fingerprint = _service.PrepareRegistration(Request());
+        await SetStepAsync(HostingSetupStep.Authorization, ct);
+        await BeginApprovalAsync(ct);
+        await PollApprovalAsync(ct);
+    }
+    internal static ExistingHttpHostSettings DiscoverExistingSettings(IReadOnlyDictionary<string, string> options)
+    {
+        var overrides = new Dictionary<string, string?>(StringComparer.Ordinal);
+        void Option(string option, params string[] keys)
+        {
+            if (!options.TryGetValue(option, out var value)) return;
+            foreach (var key in keys) overrides[key] = value;
+        }
+        Option("--existing-outbound-config", "NetRatel__Mcp__Http__ConfigurationPath", "NETRATEL_MCP_CONFIG");
+        Option("--instance-name", "NetRatel__Mcp__Http__Instance", "NETRATEL_MCP_INSTANCE");
+        Option("--api-base-url", "NetRatel__Mcp__Http__DevApiBaseUrl", "NetRatel__Mcp__Http__ProdApiBaseUrl");
+        if (options.TryGetValue("--auth-mode", out var selectedMode) && selectedMode is "local" or "oidc")
+            overrides["NetRatel__Mcp__Http__LocalCredentialMode"] = selectedMode == "local" ? "true" : "false";
+        if (options.TryGetValue("--listen-port", out var selectedPort))
+        {
+            overrides["ASPNETCORE_URLS"] = null;
+            overrides["ASPNETCORE_HTTP_PORTS"] = selectedPort;
+        }
+        Option("--delegation-key-file", "NetRatel__Mcp__Delegation__SharedKeyBase64File", "NETRATEL_MCP_DELEGATION_KEY_FILE");
+        if (options.ContainsKey("--delegation-key-file"))
+        {
+            overrides["NetRatel__Mcp__Delegation__SharedKeyBase64"] = null;
+            overrides["NetRatel:Mcp:Delegation:SharedKeyBase64"] = null;
+            overrides["NetRatel__Mcp__Delegation__SharedKeyBase64_FILE"] = null;
+        }
+        Option("--delegation-key-id", "NetRatel__Mcp__Delegation__KeyId");
+        Option("--delegation-issuer", "NetRatel__Mcp__Delegation__Issuer");
+        Option("--delegation-audience", "NetRatel__Mcp__Delegation__Audience");
+        Option("--delegation-principal", "NetRatel__Mcp__Delegation__ServicePrincipal");
+        return ExistingHttpHostSettings.Discover(key => overrides.TryGetValue(key, out var value) ? value : Environment.GetEnvironmentVariable(key));
+    }
+    private void AdoptExistingSettings(ExistingHttpHostSettings existing)
+    {
+        if (_savedRequest is null && !_options.ContainsKey("--instance-name") && existing.Instance is not null) Instance = existing.Instance;
+        if (ApiBaseUrl.Length == 0) ApiBaseUrl = existing.ApiBaseUrl ?? "";
+        if (ExistingOutbound.Length == 0) ExistingOutbound = existing.OutboundConfigurationPath ?? "";
+        if (Resource.Length == 0) Resource = existing.PublicResourceUri ?? "";
+        if (!_authModeExplicit && existing.LocalCredentialMode is { } local)
+        { AuthMode = local ? "Local credential" : "OIDC"; _authModeExplicit = true; }
+        if (OidcAuthority.Length == 0) OidcAuthority = existing.OidcAuthority ?? "";
+        if (RequiredGroups.Length == 0) RequiredGroups = string.Join(',', existing.RequiredGroups);
+        if (RequiredScopes.Length == 0) RequiredScopes = string.Join(',', existing.RequiredScopes);
+        if (AllowedOrigins.Length == 0) AllowedOrigins = string.Join(',', existing.AllowedOrigins);
+        if (DelegationPrincipal.Length == 0) DelegationPrincipal = existing.DelegationServicePrincipal ?? "";
+        if (DelegationKeyId.Length == 0) DelegationKeyId = existing.DelegationKeyId ?? "";
+        if (DelegationIssuer.Length == 0) DelegationIssuer = existing.DelegationIssuer ?? "";
+        if (DelegationAudience.Length == 0) DelegationAudience = existing.DelegationAudience ?? "";
+        if (_savedRequest is null && existing.DelegationLifetimeSeconds is { } lifetime) _delegationLifetimeSeconds = lifetime;
+        if (_savedRequest is null && !_options.ContainsKey("--listen-port") && existing.ListeningPort is { } port)
+            Port = port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        _operatorSurfaceEnabled ??= existing.OperatorSurfaceEnabled;
+    }
     private void AdoptSavedRequest(InstanceSetupAddress address)
     {
         var location = OutputDirectory + "|" + address.Origin;
         if (_loadedLocation == location) return;
         var saved = NetRatelHttpHostingSetupService.LoadRequest(OutputDirectory, address.Origin);
+        _savedRequest = saved;
         _loadedLocation = location;
         _m2mCallersKnown |= saved?.ExistingM2MCallerClientIds is not null;
         if (saved is null) return;
+        if (!_options.ContainsKey("--deployment-manager")) DeploymentManager = saved.DeploymentManager;
+        if (!_options.ContainsKey("--compose-file")) ComposeSourcePath = saved.ComposeSourcePath;
+        _delegationLifetimeSeconds = saved.DelegationLifetimeSeconds;
         if (!_options.ContainsKey("--api-m2m-audience")) _apiServiceAudience = saved.ApiServiceAudience;
-        _apiServiceAuthority = saved.ApiServiceAuthority;
+        if (!_options.ContainsKey("--api-m2m-authority")) _apiServiceAuthority = saved.ApiServiceAuthority;
         _operatorSurfaceEnabled = saved.OperatorSurfaceEnabled; _composeOutputDirectory = saved.ComposeOutputDirectory;
         if (ApiBaseUrl.Length == 0) ApiBaseUrl = saved.ApiBaseUrl;
         if (Resource.Length == 0) Resource = saved.PublicResourceUri ?? "";
@@ -284,7 +396,7 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
     }
     private async Task VerifyAsync(CancellationToken ct)
     {
-        _verification ??= new SetupSession(ConfigurationSurface.HttpMcpClient, Path.Combine(OutputDirectory, ".verification-" + Guid.NewGuid().ToString("N") + ".json"), "host-verification", _handler);
+        _verification ??= new SetupSession(ConfigurationSurface.HttpMcpClient, Path.Combine(OutputDirectory, ".verification-" + Guid.NewGuid().ToString("N") + ".json"), "host-verification", _handler, getEnvironmentVariable: _ => null);
         if (AuthMode == "OIDC")
         {
             await _verification.DiscoverAsync(PublicOrigin, ct);
@@ -417,6 +529,8 @@ public sealed class HostingSetupPage(IClipboardService clipboard) : ReactivePage
         var previousOffset = sameStep ? _scroll?.Offset ?? 0 : 0;
         _controls.Clear(); _contentSubscriptions.Clear();
         var form = Layouts.Vertical();
+        if (ViewModel.Error.Value.Length > 0 && ViewModel.Error.Value != "Working…")
+            form.WithChild(new TextNode("Next action\n" + TerminalText.Safe(ViewModel.Error.Value)).Bold().HeightAuto());
         switch (ViewModel.Step)
         {
             case HostingSetupStep.Instance:
@@ -424,19 +538,32 @@ public sealed class HostingSetupPage(IClipboardService clipboard) : ReactivePage
                 form.WithChild(new TextNode("Paste the Web URL, with or without /mcp, then press Enter.").Height(2));
                 if (ViewModel.Advanced) AddAdvanced(form);
                 break;
+            case HostingSetupStep.Authentication:
+                form.WithChild(new TextNode("How do clients sign in to this MCP server?\nThe deployment did not advertise its current mode. Choose it explicitly; setup will keep your selection.").Height(4));
+                AddAuthSelection(form);
+                if (ViewModel.AuthMode == "OIDC" && ViewModel.AuthenticationModeSelected)
+                {
+                    form.WithChild(Input("Existing HTTPS OIDC authority", ViewModel.OidcAuthority, value => ViewModel.OidcAuthority = value));
+                    form.WithChild(Input("Required groups (comma-separated)", ViewModel.RequiredGroups, value => ViewModel.RequiredGroups = value));
+                    form.WithChild(Input("Required scopes (comma-separated)", ViewModel.RequiredScopes, value => ViewModel.RequiredScopes = value));
+                }
+                break;
             case HostingSetupStep.Authorization:
                 form.WithChild(new TextNode("A deployment administrator must approve this dedicated service identity. Personal client credentials remain separate.").Height(3));
+                form.WithChild(new TextNode($"Backend API: {ViewModel.ApiBaseUrl}\nInstance: {ViewModel.Instance} · Clients: {ViewModel.AuthMode}\nWrong destination? Back → Advanced before approving.").Height(4));
                 form.WithChild(new TextNode("Registration fingerprint: " + ViewModel.RegistrationFingerprint).Height(2));
                 AddApproval(form);
                 break;
             case HostingSetupStep.Review:
                 form.WithChild(new TextNode("Review the actual deployment changes before saving. Existing identities are reused.").Height(2));
-                form.WithChild(new TextNode($"Web: {ViewModel.PublicOrigin}\nMCP: {ViewModel.Resource}\nAuthentication: {ViewModel.AuthMode}\nPersistent storage: {ViewModel.OutputDirectory}").Height(5));
+                form.WithChild(new TextNode($"Web: {ViewModel.PublicOrigin}\nBackend API: {ViewModel.ApiBaseUrl}\nMCP: {ViewModel.Resource}\nInstance: {ViewModel.Instance} · Authentication: {ViewModel.AuthMode}\nPersistent storage: {ViewModel.OutputDirectory}").Height(6));
                 foreach (var change in ViewModel.Preview!.Changes) form.WithChild(new TextNode(TerminalText.Safe(change)).HeightAuto());
                 break;
             case HostingSetupStep.Apply:
-                form.WithChild(new TextNode("Configuration written · deployment apply pending\nRun this exact command on the deployment host, then choose Verify. Server processes are not reconfigured by writing files.").Height(4));
-                AddCopy(form, ViewModel.ApplyCommand, "Enter copies the reviewed apply command");
+                form.WithChild(new TextNode(ViewModel.IsKomodo
+                    ? "Configuration saved · Komodo deployment pending\nChoose Export and exit. The launcher saves the complete updated Compose document on the Docker host. Import it into the existing Komodo stack editor, Save and Deploy, then run the launcher's printed --verify command."
+                    : "Configuration written · deployment apply pending\nRun this exact command on the deployment host, then choose Verify. Server processes are not reconfigured by writing files.").Height(ViewModel.IsKomodo ? 7 : 4));
+                if (!ViewModel.IsKomodo) AddCopy(form, ViewModel.ApplyCommand, "Enter copies the reviewed apply command");
                 form.WithChild(new TextNode("Persistent storage: " + ViewModel.OutputDirectory).Height(2));
                 break;
             case HostingSetupStep.Verify:
@@ -462,20 +589,27 @@ public sealed class HostingSetupPage(IClipboardService clipboard) : ReactivePage
         }
         var choices = ViewModel.VerificationUrl is not null && ViewModel.Step is HostingSetupStep.Authorization or HostingSetupStep.Verify
             ? new[] { "Open browser", "Next / retry", "Back", "Cancel" }
-            : ViewModel.Step == HostingSetupStep.Instance ? new[] { "Next", "Advanced", "Cancel" } : new[] { ViewModel.Step == HostingSetupStep.Apply ? "Verify after apply" : ViewModel.Step == HostingSetupStep.Finish ? "Finish" : "Next", "Back", "Cancel" };
+            : ViewModel.Step == HostingSetupStep.Instance ? new[] { "Next", "Advanced", "Cancel" }
+            : ViewModel.Step == HostingSetupStep.Apply && ViewModel.IsKomodo ? new[] { "Export and exit", "Verify after deploying in Komodo", "Back" }
+            : new[] { ViewModel.Step == HostingSetupStep.Apply ? "Verify after apply" : ViewModel.Step == HostingSetupStep.Finish ? "Finish" : "Next", "Back", "Cancel" };
         var actions = new SelectionListNode<string>(choices, value => "[ " + value + " ]").WithVisibleRows(choices.Length);
-        actions.SelectionConfirmed.Subscribe(items => { var selected = items.First(); if (selected == "Advanced") ViewModel.ToggleAdvanced(); else if (selected == "Open browser") ViewModel.OpenBrowser(); else if (selected == "Back") ViewModel.Back(); else if (selected == "Cancel") ViewModel.RequestShutdown(); else ViewModel.Next(); }).DisposeWith(_contentSubscriptions);
+        actions.SelectionConfirmed.Subscribe(items => { var selected = items.First(); if (selected == "Advanced") ViewModel.ToggleAdvanced(); else if (selected == "Open browser") ViewModel.OpenBrowser(); else if (selected == "Export and exit") ViewModel.ExportAndExit(); else if (selected == "Back") ViewModel.Back(); else if (selected == "Cancel") ViewModel.RequestShutdown(); else ViewModel.Next(); }).DisposeWith(_contentSubscriptions);
         _controls.Add(actions); form.WithChild(actions);
         var scroller = new ScrollableContainerNode().WithContent(form).WithAutoScroll(AutoScrollPolicy.None);
         var formWidth = Math.Max(20, ViewModel.Width - 5);
         _scroll = new KeyboardScroll(scroller, form, formWidth);
-        var root = Layouts.Vertical().WithChild(new TextNode("NetRatel · Set up HTTP MCP").Bold().Height(1))
-            .WithChild(new PanelNode().WithTitle(ViewModel.Step.ToString()).WithContent(scroller).Fill())
-            .WithChild(ViewModel.Error.Select<string, ILayoutNode>(error => new TextNode(error)).AsLayout(RenderFrameProvider).Height(3))
+        var root = Layouts.Vertical().WithChild(new TextNode("NetRatel · Connect MCP server to backend").Bold().Height(1));
+        if (!ViewModel.Busy && ViewModel.Error.Value.Length > 0)
+        {
+            var banner = new TextNode("Next action\n" + TerminalText.Safe(ViewModel.Error.Value)).Bold();
+            root.WithChild(banner.Height(Math.Clamp(banner.Measure(new Size(formWidth, 100)).Height, 2, 6)));
+        }
+        root.WithChild(new PanelNode().WithTitle(ViewModel.Step.ToString()).WithContent(scroller).Fill())
+            .WithChild(new TextNode(ViewModel.Busy ? "Working…" : "Server setup · client/customer credentials are configured after server verification").Height(1))
             .WithChild(new TextNode("Enter Next  Alt+Left Back  Esc Cancel  Tab Focus  PgUp/Dn Scroll").NoWrap().Height(1));
         if (ViewModel.ConfirmReplace)
         {
-            var modal = new ModalNode().WithTitle("Replace reviewed hosting configuration?").WithContent(new TextNode("Only the displayed configuration replacements are applied. Existing identity secrets are reused.")).WithFooter("Enter Replace · Escape Back"); _controls.Add(modal); Focus.SetFocus(modal); return new StackLayout([root, modal]);
+            var modal = new ModalNode().WithTitle("Apply reviewed server replacements?").WithContent(new TextNode("Apply the displayed replacements, including any listed API service registration repair. The selected stored identity material is reused.")).WithFooter("Enter Replace · Escape Back"); _controls.Add(modal); Focus.SetFocus(modal); return new StackLayout([root, modal]);
         }
         scroller.Measure(new Size(formWidth, 17)); _scroll.Restore(previousOffset);
         if (_controls.Count > 0) { var selected = _controls[Math.Min(previousFocus, _controls.Count - 1)]; Post(() => { if (generation == _layoutGeneration) { Focus.SetFocus(selected); _scroll?.EnsureVisible(selected); } }); } else Focus.ClearFocus();
@@ -493,8 +627,7 @@ public sealed class HostingSetupPage(IClipboardService clipboard) : ReactivePage
     }
     private void AddAdvanced(VerticalLayout form)
     {
-        var auth = new SelectionListNode<string>(["Local credential", "OIDC"], value => value).WithVisibleRows(2).WithHighlightedIndex(ViewModel.AuthMode == "OIDC" ? 1 : 0);
-        auth.SelectionConfirmed.Subscribe(items => ViewModel.SelectAuthMode(items.First())).DisposeWith(_contentSubscriptions); _controls.Add(auth); form.WithChild(auth);
+        AddAuthSelection(form);
         form.WithChild(Input("Persistent output directory (blank uses configured durable default)", ViewModel.OutputDirectory, value => ViewModel.OutputDirectory = value));
         form.WithChild(Input("Separate API HTTPS origin (optional)", ViewModel.ApiBaseUrl, value => ViewModel.ApiBaseUrl = value));
         form.WithChild(Input("Canonical MCP resource (optional)", ViewModel.Resource, value => ViewModel.Resource = value));
@@ -513,6 +646,20 @@ public sealed class HostingSetupPage(IClipboardService clipboard) : ReactivePage
         form.WithChild(Input("Existing API M2M caller IDs (comma-separated)", ViewModel.ExistingM2MCallers, value => ViewModel.ExistingM2MCallers = value));
         form.WithChild(Input("Web API backend URL", ViewModel.ApiBackend, value => ViewModel.ApiBackend = value));
         form.WithChild(Input("Web MCP backend URL", ViewModel.McpBackend, value => ViewModel.McpBackend = value));
+    }
+    private void AddAuthSelection(VerticalLayout form)
+    {
+        form.WithChild(new TextNode(ViewModel.AuthenticationModeSelected ? "Selected: " + ViewModel.AuthMode : "No authentication mode selected. Highlight an option and press Enter.").Bold().Height(2));
+        var auth = new SelectionListNode<string>(["Local credential", "OIDC"], value =>
+            (ViewModel.AuthenticationModeSelected && ViewModel.AuthMode == value ? "● " : "○ ") +
+            (value == "OIDC" ? "External OIDC provider" : "NetRatel browser-approved credentials"))
+            .WithVisibleRows(2).WithHighlightedIndex(ViewModel.AuthMode == "OIDC" ? 1 : 0);
+        auth.SelectionConfirmed.Subscribe(items =>
+        {
+            ViewModel.SelectAuthMode(items.First());
+            if (ViewModel.Step == HostingSetupStep.Authentication && ViewModel.AuthMode == "Local credential") ViewModel.Next();
+        }).DisposeWith(_contentSubscriptions);
+        _controls.Add(auth); form.WithChild(auth);
     }
     private void CycleFocus(bool reverse) { Focus.CycleFocus(_controls, reverse); _scroll?.EnsureVisible(Focus.CurrentFocus); }
     private ILayoutNode Input(string label, string value, Action<string> change, bool password = false)

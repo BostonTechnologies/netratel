@@ -12,7 +12,7 @@ using PairingPoll = NetRatel.Shared.Connectivity.IntegrationPairingPollResponse;
 namespace NetRatel.Setup;
 
 public enum SetupStep { Instance, Profile, Authentication, Grants, Review, Finish }
-public sealed record SetupCheck(string Name, string Status, string Detail);
+public sealed record SetupCheck(string Name, string Status, string Detail, int? HttpStatus = null);
 /// <summary>Headless setup operations shared by the TUI and noninteractive entry points.</summary>
 public sealed class SetupSession : IAsyncDisposable
 {
@@ -276,7 +276,7 @@ public sealed class SetupSession : IAsyncDisposable
         if (Surface != ConfigurationSurface.HttpMcpClient)
         {
             var report = await new NetRatelDoctorService().CheckAsync(loaded, connectivity: true, ct);
-            var results = report.Checks.Select(check => new SetupCheck(check.Name, !check.Completed ? "unavailable" : check.Passed ? "completed" : check.HttpStatus is 401 or 403 ? "unauthorized" : "failed", check.Message)).ToList();
+            var results = report.Checks.Select(check => new SetupCheck(check.Name, !check.Completed ? "unavailable" : check.Passed ? "completed" : check.HttpStatus is 401 or 403 ? "unauthorized" : "failed", check.Message, check.HttpStatus)).ToList();
             if (Surface == ConfigurationSurface.StdioMcp)
                 results.AddRange(await new StdioMcpDoctor().CheckAsync(loaded, ct));
             if (_origin is not null && Capabilities is null) results.Add(new("instance capabilities", "unavailable", "Pairing is unavailable and instance compatibility was not confirmed; the protected profile was explicitly configured."));

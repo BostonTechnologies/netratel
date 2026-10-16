@@ -1956,7 +1956,7 @@ class DistributionTests(unittest.TestCase):
         archive = self.root / f"netratel-compose-{version}.tar.gz"
         manifest = json.dumps({"version": version}).encode()
         with tarfile.open(archive, "w:gz") as target:
-            for name in ("compose.images.yaml", "compose.external-postgres.yaml", "compose.public-https.yaml", "nginx.public-https.conf", "compose.mcp-http.yaml", "compose.mcp-http.ports.yaml", "compose.mcp-http.config.yaml", "compose.mcp-http.secrets.yaml", "compose.setup.yaml", ".env.mcp-http.example", ".env.mcp-http.outbound.example", ".env.mcp-http.api.example", ".env.images.example", "INSTALL.md"):
+            for name in ("compose.images.yaml", "compose.external-postgres.yaml", "compose.public-https.yaml", "nginx.public-https.conf", "compose.mcp-http.yaml", "compose.mcp-http.ports.yaml", "compose.mcp-http.config.yaml", "compose.mcp-http.secrets.yaml", "compose.setup.yaml", "setup-http-mcp.sh", ".env.mcp-http.example", ".env.mcp-http.outbound.example", ".env.mcp-http.api.example", ".env.images.example", "INSTALL.md"):
                 target.add(ROOT / "release" / name, arcname=name)
             manifest_info = tarfile.TarInfo("release-manifest.json")
             manifest_info.size = len(manifest)
@@ -2773,6 +2773,245 @@ class PublicationImageJournalTests(unittest.TestCase):
         with patch.object(self.promotion, "run", side_effect=transport), self.assertRaisesRegex(ValueError, "differs"):
             self.promotion.publish_assets(directory, f"v{self.version}")
         self.assertEqual(uploads, [])
+
+class HttpHostLauncherTests(unittest.TestCase):
+    """Execute the real host launcher against a metadata-only Docker fixture."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        self.stack = self.root / "stack with spaces"
+        self.stack.mkdir()
+        self.compose_file = self.stack / "compose.yaml"
+        self.compose_file.write_text("services:\n  mcp-http:\n    image: fixture\n")
+        self.compose_file.chmod(0o600)
+        self.env_file = self.stack / ".env"
+        self.env_file.write_text("UNCHANGED=fixture\n")
+        self.log = self.root / "docker.jsonl"
+        self.log.write_text("")
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        docker = self.bin / "docker"
+        docker.write_text("""#!/usr/bin/env python3
+import hashlib, json, os, pathlib, sys
+args = sys.argv[1:]
+with open(os.environ["LAUNCHER_DOCKER_LOG"], "a") as log:
+    log.write(json.dumps(args) + "\\n")
+if args[0] == "compose":
+    if "config" in args:
+        if "--services" in args:
+            print("api\\nweb\\nmcp-http")
+        if os.environ.get("LAUNCHER_PREFLIGHT_FAIL") == "1":
+            print("private diagnostic sentinel", file=sys.stderr)
+            sys.exit(1)
+    elif "ps" in args:
+        if args[-1] == "web":
+            for index in range(int(os.environ.get("LAUNCHER_WEB_COUNT", "0"))):
+                print("web-container-" + str(index))
+        elif os.environ.get("LAUNCHER_EXISTING_VOLUMES") == "1":
+            print("serving-container")
+    elif "run" in args:
+        if "--entrypoint" in args:
+            source = sys.stdin.buffer.read()
+            pathlib.Path(os.environ["LAUNCHER_DOCKER_LOG"] + ".source").write_bytes(source)
+            if os.environ.get("LAUNCHER_MUTATE_SOURCE") == "stage":
+                pathlib.Path(args[args.index("-f") + 1]).write_text("changed during staging")
+            print(hashlib.sha256(source).hexdigest() + "  -")
+            sys.exit(0)
+        if os.environ.get("LAUNCHER_MUTATE_SOURCE") == "wizard":
+            pathlib.Path(args[args.index("-f") + 1]).write_text("changed during review")
+        sys.exit(int(os.environ.get("LAUNCHER_SETUP_STATUS", "2")))
+elif args[0] == "inspect":
+    template = args[2]
+    if "oneoff" in template:
+        print("False")
+    elif ".Config.Env" in template:
+        print("ApiBaseUrl=http://api-private:9440/custom-api/")
+        if os.environ.get("LAUNCHER_WEB_MCP_ABSENT") != "1":
+            print("WebGateway__Mcp__BackendUrl=http://relay-private:9550/custom-mcp/")
+    elif "/setup-output" in template:
+        print("volume|existing-server-generation")
+    elif "/var/lib/netratel/clients" in template:
+        print("volume|existing-client-profiles")
+    elif ".State.Running" in template:
+        print("false")
+elif args[0] == "cp":
+    if os.environ.get("LAUNCHER_EXPORT_FAIL") == "1":
+        print("fixture copy failure", file=sys.stderr)
+        sys.exit(1)
+    content = b"services:\\n  mcp-http:\\n    image: fixture\\n"
+    if "/.export-" in args[1]:
+        if os.environ.get("LAUNCHER_RECEIPT_MISSING") == "1":
+            sys.exit(1)
+        digest = hashlib.sha256(content).hexdigest()
+        if os.environ.get("LAUNCHER_RECEIPT_MISMATCH") == "1":
+            digest = "0" * 64
+        content = (digest + "\\n").encode()
+    pathlib.Path(args[2]).write_bytes(content)
+""")
+        docker.chmod(0o755)
+        self.environment = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
+                                LAUNCHER_DOCKER_LOG=str(self.log))
+        self.launcher = ROOT / "release/setup-http-mcp.sh"
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def run_launcher(self, *extra, **environment):
+        env = dict(self.environment, **environment)
+        return subprocess.run(
+            ["bash", str(self.launcher), "--compose-file", str(self.compose_file),
+             "--project", "customer-stack", "--manager", "komodo", *extra],
+            cwd=self.root, env=env, text=True, capture_output=True, timeout=15)
+
+    def commands(self):
+        return [json.loads(line) for line in self.log.read_text().splitlines()]
+
+    def run_command(self):
+        return next(command for command in self.commands()
+                    if command[0] == "compose" and "run" in command and "--name" in command)
+
+    def test_actual_file_quoted_arguments_and_private_export_with_exact_resume_command(self):
+        result = self.run_launcher("--", "--instance", "https://web.example.invalid",
+                                   "--api-base-url", "https://api.example.invalid")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        command = self.run_command()
+        self.assertEqual(command[command.index("-f") + 1], str(self.compose_file))
+        self.assertEqual(command[command.index("--project-name") + 1], "customer-stack")
+        self.assertEqual(command[command.index("--env-file") + 1], str(self.env_file))
+        self.assertFalse(any("/setup-input" in argument for argument in command))
+        self.assertIn("customer-stack-http-host-setup:/setup-output", command)
+        self.assertIn("customer-stack-http-client-data:/var/lib/netratel/clients", command)
+        self.assertEqual(command[-10:], [
+            "--target", "http-host", "--deployment-manager", "komodo",
+            "--compose-file", "/setup-output/.compose-source.yaml", "--instance",
+            "https://web.example.invalid", "--api-base-url", "https://api.example.invalid"])
+        self.assertNotIn("--rm", command)
+        self.assertNotIn("compose.setup.yaml", "\n".join(command))
+        self.assertFalse(any("docker.sock" in argument for argument in command))
+        output = self.stack / ".netratel-http-mcp-customer-stack/compose.komodo.yaml"
+        self.assertTrue(output.is_file())
+        self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(output.parent.stat().st_mode), 0o700)
+        self.assertIn("--verify", result.stdout)
+        self.assertIn("Save and Deploy", result.stdout)
+        self.assertNotIn("services:", result.stdout)
+        self.assertTrue(any(command[0] == "rm" for command in self.commands()))
+        self.assertEqual(self.compose_file.read_text(), "services:\n  mcp-http:\n    image: fixture\n")
+        self.assertEqual(stat.S_IMODE(self.compose_file.stat().st_mode), 0o600)
+        snapshot = Path(str(self.log) + ".source")
+        self.assertEqual(snapshot.read_bytes(), self.compose_file.read_bytes())
+        stage = next(command for command in self.commands() if "--entrypoint" in command)
+        self.assertEqual(stage[stage.index("--user") + 1], "10001:10001")
+        self.assertIn("head -c 65537", stage[-1])
+
+    def test_reuses_existing_named_volumes_and_inspects_only_mounts_and_labels(self):
+        result = self.run_launcher(LAUNCHER_EXISTING_VOLUMES="1")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        command = self.run_command()
+        self.assertIn("existing-server-generation:/setup-output", command)
+        self.assertIn("existing-client-profiles:/var/lib/netratel/clients", command)
+        self.assertIn("NETRATEL_SETUP_VOLUME=existing-server-generation", command)
+        self.assertIn("NETRATEL_CLIENT_VOLUME=existing-client-profiles", command)
+        for call in self.commands():
+            if call[0] == "inspect":
+                self.assertNotIn(".Config.Env", call[2])
+                self.assertTrue(any(value in call[2] for value in (".Mounts", ".Config.Labels", ".State.Running")))
+
+    def test_missing_compose_file_stops_before_any_docker_call(self):
+        self.compose_file.unlink()
+        result = self.run_launcher()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("existing absolute regular file", result.stderr)
+        self.assertEqual(self.commands(), [])
+
+    def test_failed_compose_preflight_does_not_start_setup_or_print_private_diagnostics(self):
+        result = self.run_launcher(LAUNCHER_PREFLIGHT_FAIL="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failed validation", result.stderr)
+        self.assertNotIn("private diagnostic sentinel", result.stdout + result.stderr)
+        self.assertFalse(any("run" in command for command in self.commands()))
+        diagnostics = self.stack / ".netratel-http-mcp-customer-stack/preflight.log"
+        self.assertIn("private diagnostic sentinel", diagnostics.read_text())
+
+    def test_client_target_uses_client_flow_without_host_flags_or_host_export(self):
+        result = self.run_launcher("--target", "http-client", LAUNCHER_SETUP_STATUS="0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        command = self.run_command()
+        self.assertEqual(command[-3:], ["setup", "--target", "http-client"])
+        self.assertNotIn("--deployment-manager", command)
+        self.assertFalse(any(command[0] == "cp" for command in self.commands()))
+        self.assertNotIn("Compose editor", result.stdout)
+
+    def test_export_failure_keeps_container_and_setup_generation_for_recovery(self):
+        result = self.run_launcher(LAUNCHER_EXPORT_FAIL="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("retained", result.stderr)
+        self.assertFalse(any(command[0] == "rm" for command in self.commands()))
+        self.assertFalse((self.stack / ".netratel-http-mcp-customer-stack/compose.komodo.yaml").exists())
+
+    def test_verify_resumes_without_exporting_or_reimporting_saved_compose(self):
+        result = self.run_launcher("--verify", LAUNCHER_SETUP_STATUS="0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--verify", self.run_command())
+        self.assertFalse(any(command[0] == "cp" for command in self.commands()))
+        self.assertIn("Server verification completed", result.stdout)
+        self.assertNotIn("Save and Deploy", result.stdout)
+
+    def test_missing_or_mismatched_current_receipt_cannot_export_stale_compose(self):
+        output = self.stack / ".netratel-http-mcp-customer-stack/compose.komodo.yaml"
+        output.parent.mkdir(mode=0o700)
+        output.write_text("prior private export")
+        output.chmod(0o600)
+        for option in ("LAUNCHER_RECEIPT_MISSING", "LAUNCHER_RECEIPT_MISMATCH"):
+            with self.subTest(option=option):
+                self.log.write_text("")
+                result = self.run_launcher(**{option: "1"})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("retained", result.stderr)
+                self.assertEqual(output.read_text(), "prior private export")
+                self.assertNotIn("Save and Deploy", result.stdout)
+                self.assertFalse(any(command[0] == "rm" for command in self.commands()))
+
+    def test_changed_source_stops_before_wizard_or_export_as_applicable(self):
+        for stage in ("stage", "wizard"):
+            with self.subTest(stage=stage):
+                self.compose_file.write_text("services:\n  mcp-http:\n    image: fixture\n")
+                self.log.write_text("")
+                result = self.run_launcher(LAUNCHER_MUTATE_SOURCE=stage)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("changed", result.stderr)
+                self.assertFalse(any(command[0] == "cp" for command in self.commands()))
+                if stage == "stage":
+                    self.assertFalse(any("--name" in command for command in self.commands()))
+
+    def test_preserves_only_two_effective_web_destinations_and_rejects_multiple_servers(self):
+        result = self.run_launcher(LAUNCHER_WEB_COUNT="1")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        command = self.run_command()
+        self.assertIn("NETRATEL_SETUP_EXISTING_WEB_API_BACKEND_URL=http://api-private:9440/custom-api/", command)
+        self.assertIn("NETRATEL_SETUP_EXISTING_WEB_MCP_BACKEND_URL=http://relay-private:9550/custom-mcp/", command)
+        environment_probes = [call for call in self.commands() if call[0] == "inspect" and ".Config.Env" in call[2]]
+        self.assertEqual(len(environment_probes), 1)
+        self.assertIn('eq $key "ApiBaseUrl"', environment_probes[0][2])
+        self.assertIn('eq $key "WebGateway__Mcp__BackendUrl"', environment_probes[0][2])
+        self.assertIn('printf "%.4097s"', environment_probes[0][2])
+        self.assertNotIn("api-private", result.stdout + result.stderr)
+        self.assertNotIn("relay-private", result.stdout + result.stderr)
+        self.log.write_text("")
+        result = self.run_launcher(LAUNCHER_WEB_COUNT="2")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("More than one serving Web container", result.stderr)
+        self.assertFalse(any("--name" in call for call in self.commands()))
+
+    def test_observed_web_environment_distinguishes_absent_mcp_backend_from_unavailable_metadata(self):
+        result = self.run_launcher(LAUNCHER_WEB_COUNT="1", LAUNCHER_WEB_MCP_ABSENT="1")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        command = self.run_command()
+        self.assertIn("NETRATEL_SETUP_WEB_ENVIRONMENT_OBSERVED=true", command)
+        self.assertIn("NETRATEL_SETUP_EXISTING_WEB_API_BACKEND_URL=http://api-private:9440/custom-api/", command)
+        self.assertFalse(any(value.startswith("NETRATEL_SETUP_EXISTING_WEB_MCP_BACKEND_URL=") for value in command))
+
 
 if __name__ == "__main__":
     unittest.main()

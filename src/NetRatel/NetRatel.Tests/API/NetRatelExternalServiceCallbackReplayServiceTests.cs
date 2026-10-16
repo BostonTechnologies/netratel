@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 using NetRatel.API.Services.Orchestration;
 using NetRatel.Application.Notifications;
 using Xunit;
@@ -11,7 +12,12 @@ public class NetRatelExternalServiceCallbackReplayServiceTests
     public async Task ReplayAsync_ReplaysStoredCallbackPayload()
     {
         var client = new RecordingCallbackClient();
-        var sut = new NetRatelExternalServiceCallbackReplayService(client);
+        var services = new ServiceCollection();
+        services.AddSingleton<INetRatelExternalServiceCallbackClient>(client);
+        services.AddOrchestrationManagedServices();
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var scope = provider.CreateScope();
+        var sut = scope.ServiceProvider.GetRequiredService<INetRatelExternalServiceCallbackReplayService>();
         var taskId = Guid.NewGuid().ToString("N");
         var notification = new NetRatelNotificationDto
         {

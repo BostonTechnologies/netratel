@@ -27,6 +27,7 @@ public static class OrchestrationManagedAuthorization
         });
         services.AddScoped<IAuthorizationHandler, OrchestrationServiceAuthorizationHandler>();
         services.AddScoped<ManagedOrchestrationInvocationGuard>();
+        services.AddScoped<INetRatelExternalServiceCallbackReplayService, NetRatelExternalServiceCallbackReplayService>();
         services.AddScoped<OrchestrationCallbackReconciler>();
         services.AddHostedService<OrchestrationCallbackWorker>();
         services.AddHostedService<ManagedJobRunRecoveryWorker>();

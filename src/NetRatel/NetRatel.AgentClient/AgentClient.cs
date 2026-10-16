@@ -198,13 +198,24 @@ public sealed class NetRatelAgentClient(AgentClientConfiguration configuration, 
             using var response = await client.PostAsync(tokenUrl, new FormUrlEncodedContent(tokenRequest), ct).ConfigureAwait(false);
             var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode) throw new AgentClientRemoteException("auth_token_failed", $"NetRatel token request failed with HTTP {(int)response.StatusCode}.", (int)response.StatusCode, null);
-            using var document = JsonDocument.Parse(body);
-            _accessToken = document.RootElement.GetProperty("access_token").GetString() ?? throw new AgentClientValidationException("Oidc token response did not include access_token.");
-            var expiresIn = document.RootElement.TryGetProperty("expires_in", out var expires) && expires.TryGetInt32(out var seconds)
-                ? Math.Max(seconds, 60)
-                : 300;
-            _accessTokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(expiresIn);
-            return _accessToken;
+            try
+            {
+                using var document = JsonDocument.Parse(body);
+                if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                    !document.RootElement.TryGetProperty("access_token", out var token) || token.ValueKind != JsonValueKind.String ||
+                    string.IsNullOrWhiteSpace(token.GetString()))
+                    throw new JsonException();
+                var expiresIn = document.RootElement.TryGetProperty("expires_in", out var expires) && expires.TryGetInt32(out var seconds)
+                    ? Math.Max(seconds, 60)
+                    : 300;
+                _accessToken = token.GetString();
+                _accessTokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(expiresIn);
+                return _accessToken!;
+            }
+            catch (Exception exception) when (exception is JsonException or InvalidOperationException)
+            {
+                throw new AgentClientRemoteException("auth_token_invalid", "NetRatel token endpoint returned an invalid token document.", (int)response.StatusCode, null);
+            }
         }
         finally
         {
