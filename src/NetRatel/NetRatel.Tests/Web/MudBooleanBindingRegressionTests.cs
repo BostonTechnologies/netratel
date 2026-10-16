@@ -13,8 +13,8 @@ public sealed class MudBooleanBindingRegressionTests
         var source = File.ReadAllText(Path.Combine(RepoRoot, "src/NetRatel/NetRatel.Web/Components/Pages/Jobs/RunJobDialog.razor"));
 
         source.Should().Contain("<MudSwitch T=\"bool\"")
-            .And.Contain("Value=\"@GetBoolValue(p.Name)\"")
-            .And.Contain("ValueChanged=\"@((bool value) => SetBoolValue(p.Name, value))\"")
+            .And.Contain("Value=\"GetBoolValue(p.Name)\"")
+            .And.Contain("ValueChanged=\"value => SetBoolValue(p.Name, value)\"")
             .And.NotContain("CheckedChanged=");
     }
 
