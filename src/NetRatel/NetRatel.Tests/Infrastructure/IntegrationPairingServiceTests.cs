@@ -181,6 +181,78 @@ public sealed class IntegrationPairingServiceTests(PostgreSqlPersistenceFixture 
         (await session.Credentials.VerifyAsync(delivery.Secret, IntegrationCredentialPurpose.HttpMcp))!.Resource.Should().Be("https://mcp.example.test/mcp");
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Temporary_verifier_is_server_bounded_and_revoked_on_cancel_or_abandonment(bool cancel)
+    {
+        await using var fixture = await CreateAsync();
+        await using var session = fixture.Open();
+        var unrelated = await session.Credentials.CreateAsync("pairing-owner", new("Existing profile", IntegrationCredentialPurpose.Api,
+            fixture.Clock.GetUtcNow().AddDays(7), [new(7, NetRatelPermissions.TelemetryRead)]));
+        var role = new AccessRole { Name = "Verifier reader" };
+        role.Permissions.Add(new AccessRolePermission { Permission = NetRatelPermissions.McpDiscoveryRead });
+        session.Db.AccessRoles.Add(role);
+        session.Db.PrincipalRoleAssignments.Add(new PrincipalRoleAssignment { PrincipalId = "pairing-owner", RoleId = role.Id });
+        await session.Db.SaveChangesAsync();
+        var invalidStart = () => session.Pairing.StartAsync(new("Verifier", PairingCredentialPurpose.HttpMcp,
+            RequestedPermissions: [NetRatelPermissions.TelemetryRead]) { TemporaryVerifier = true }, "https://netratel.example.test");
+        await invalidStart.Should().ThrowAsync<IntegrationPairingUnavailableException>();
+        var started = await session.Pairing.StartAsync(new("Verifier", PairingCredentialPurpose.HttpMcp,
+            RequestedPermissions: [NetRatelPermissions.McpDiscoveryRead]) { TemporaryVerifier = true }, "https://netratel.example.test");
+        var review = await session.Pairing.ReviewAsync(started.UserCode);
+        review.TemporaryVerifier.Should().BeTrue();
+        review.RequestedPermissions.Should().Equal(NetRatelPermissions.McpDiscoveryRead);
+        var approval = new IntegrationPairingApprovalRequest(started.UserCode, fixture.Clock.GetUtcNow().AddDays(30), [], [NetRatelPermissions.McpDiscoveryRead])
+            { VerifierConsent = true };
+        var noConsent = () => session.Pairing.ApproveAsync(Owner, approval with { VerifierConsent = false });
+        await noConsent.Should().ThrowAsync<IntegrationCredentialGrantValidationException>();
+        var tenants = () => session.Pairing.ApproveAsync(Owner, approval with { Grants = [new(7, NetRatelPermissions.TelemetryRead)] });
+        await tenants.Should().ThrowAsync<IntegrationCredentialGrantValidationException>();
+        var broader = () => session.Pairing.ApproveAsync(Owner, approval with { InstancePermissions = [NetRatelPermissions.McpDiscoveryRead, NetRatelPermissions.AuditRead] });
+        await broader.Should().ThrowAsync<IntegrationCredentialGrantValidationException>();
+        await session.Pairing.ApproveAsync(Owner, approval);
+        fixture.Clock.Advance(TimeSpan.FromSeconds(5));
+        var delivery = (await session.Pairing.PollAsync(started.DeviceCapability)).Delivery!;
+        delivery.Grants.Should().BeEmpty();
+        delivery.InstancePermissions.Should().Equal(NetRatelPermissions.McpDiscoveryRead);
+        delivery.ExpiresAtUtc.Should().BeOnOrBefore(fixture.Clock.GetUtcNow().AddMinutes(15));
+        var persist = () => session.Pairing.AcknowledgeAsync(started.DeviceCapability, delivery.CredentialId);
+        await persist.Should().ThrowAsync<IntegrationPairingUnavailableException>();
+        if (cancel)
+        {
+            (await session.Pairing.CancelAsync(started.DeviceCapability)).Status.Should().Be("cancelled");
+            (await session.Pairing.CancelAsync(started.DeviceCapability)).Status.Should().Be("cancelled");
+        }
+        else
+        {
+            // A crashed setup cannot leave a usable credential until its nominal credential expiry.
+            fixture.Clock.Advance(TimeSpan.FromMinutes(6));
+            (await session.Credentials.VerifyAsync(delivery.Secret, IntegrationCredentialPurpose.HttpMcp)).Should().BeNull();
+            await session.Pairing.CleanupAsync();
+        }
+        (await session.Credentials.VerifyAsync(delivery.Secret, IntegrationCredentialPurpose.HttpMcp)).Should().BeNull();
+        (await session.Credentials.VerifyAsync(unrelated.Secret, IntegrationCredentialPurpose.Api)).Should().NotBeNull();
+        (await session.Db.IntegrationPairingRequests.SingleAsync()).ProtectedDelivery.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Deleted_issued_credential_cannot_be_redelivered_or_acknowledged_by_a_stale_pairing_context()
+    {
+        await using var fixture = await CreateAsync();
+        await using var session = fixture.Open();
+        var started = await session.Pairing.StartAsync(new("Deleted delivery", PairingCredentialPurpose.Api), "https://netratel.example.test");
+        await session.Pairing.ApproveAsync(Owner, Approval(started, fixture.Clock));
+        fixture.Clock.Advance(TimeSpan.FromSeconds(5));
+        var issued = (await session.Pairing.PollAsync(started.DeviceCapability)).Delivery!;
+        await using (var deleting = fixture.Open())
+            await deleting.Credentials.DeleteAsync("pairing-owner", issued.CredentialId, "pairing-owner");
+        fixture.Clock.Advance(TimeSpan.FromSeconds(5));
+        (await session.Pairing.PollAsync(started.DeviceCapability)).Delivery.Should().BeNull();
+        (await session.Pairing.AcknowledgeAsync(started.DeviceCapability, issued.CredentialId)).Status.Should().NotBe("consumed");
+        (await session.Db.IntegrationCredentials.AsNoTracking().CountAsync()).Should().Be(0);
+    }
+
     private static IntegrationPairingApprovalRequest Approval(IntegrationPairingStartResponse start, ManualClock clock) =>
         new(start.UserCode, clock.GetUtcNow().AddDays(7), [new(7, NetRatelPermissions.TelemetryRead)]);
     private async Task<Fixture> CreateAsync()

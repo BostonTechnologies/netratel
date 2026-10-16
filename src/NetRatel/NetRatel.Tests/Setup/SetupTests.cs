@@ -32,7 +32,7 @@ public sealed class SetupTests
             }
             return Json(route.EndsWith("poll") ? new { status = "approved", approvalId = (string?)"approved", registrationFingerprint = fingerprint } : new { status = "cancelled", approvalId = (string?)null, registrationFingerprint = (string?)null });
         });
-        var model = new HostingSetupViewModel(new Dictionary<string, string> { ["--output-directory"] = directory.Path }, handler);
+        var model = new HostingSetupViewModel(new Dictionary<string, string> { ["--deployment-manager"] = "release-compose", ["--output-directory"] = directory.Path }, handler);
         var input = new VirtualInputSource(); var terminal = new VirtualTerminal(96, 30);
         var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { DisableDefaults = true }); builder.Logging.ClearProviders();
         builder.Services.AddTerminaVirtualInput(input);
@@ -56,7 +56,7 @@ public sealed class SetupTests
     public async Task Verify_requires_saved_server_setup_and_never_starts_another_administrator_registration()
     {
         using var directory = new TempDirectory(); var starts = 0;
-        using var model = new HostingSetupViewModel(new Dictionary<string, string> { ["--output-directory"] = directory.Path, ["--instance"] = "https://instance.example", ["--verify"] = "true" },
+        using var model = new HostingSetupViewModel(new Dictionary<string, string> { ["--deployment-manager"] = "release-compose", ["--output-directory"] = directory.Path, ["--instance"] = "https://instance.example", ["--verify"] = "true" },
             new StubHandler(request =>
             {
                 if (request.RequestUri!.AbsolutePath.EndsWith("start")) starts++;
@@ -69,7 +69,7 @@ public sealed class SetupTests
 
     [Theory]
     [InlineData("http://instance.example")]
-    [InlineData("https://instance.example/prefix/mcp")]
+    [InlineData("https://instance.example/prefix%2fmcp")]
     [InlineData("https://instance.example/mcp?token=x")]
     [InlineData("https://instance.example/path/../mcp")]
     [InlineData("https://user:secret@instance.example")]
@@ -377,11 +377,11 @@ public sealed class SetupTests
             if (route == "/api/http-host-setup/v1/cancel") return Json(new { status = "cancelled" });
             if (route.EndsWith("capabilities")) return Capabilities();
             if (route.EndsWith("start")) return Json(new { requestId = "personal", userCode = "READ-CODE", deviceCapability = "personal-only-capability", verificationUri = "https://instance.example/account/integration-credentials", publicOrigin = "https://instance.example", expiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(1), intervalSeconds = 5 });
-            if (route.EndsWith("poll")) return Json(new { status = "issued", intervalSeconds = 5, delivery = new { credentialId = "personal-42", secret = "nrt_ic_transient-verifier", name = "read-only check", purpose = 1, resource = "https://instance.example/mcp", expiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(5), grants = new[] { new { tenantId = 7, tenantName = "Operations", permission = "telemetry.read" } }, instancePermissions = Array.Empty<string>() } });
+            if (route.EndsWith("poll")) return Json(new { status = "issued", intervalSeconds = 5, delivery = new { credentialId = "personal-42", secret = "nrt_ic_transient-verifier", name = "read-only check", purpose = 1, resource = "https://instance.example/mcp", expiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(5), grants = Array.Empty<object>(), instancePermissions = new[] { "mcp.discovery.read" } } });
             if (route.EndsWith("cancel")) { personalRevocations++; return Json(new { status = "cancelled" }); }
             Assert.Equal("nrt_ic_transient-verifier", request.Headers.Authorization?.Parameter); return await McpReply(request);
         });
-        var model = new HostingSetupViewModel(new Dictionary<string, string> { ["--output-directory"] = directory.Path }, handler);
+        var model = new HostingSetupViewModel(new Dictionary<string, string> { ["--deployment-manager"] = "release-compose", ["--output-directory"] = directory.Path }, handler);
         var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { DisableDefaults = true }); builder.Logging.ClearProviders();
         builder.Services.AddTerminaVirtualInput(input); builder.Services.AddTermina("/hosting", routes => routes.RegisterRoute<HostingSetupPage, HostingSetupViewModel>("/hosting", services => new HostingSetupPage(services.GetRequiredService<Termina.Clipboard.IClipboardService>()), _ => model)); builder.Services.AddSingleton<IAnsiTerminal>(terminal);
         using var host = builder.Build(); await host.StartAsync();
@@ -489,7 +489,7 @@ public sealed class SetupTests
     {
         using var directory = new TempDirectory(); var input = new VirtualInputSource(); var terminal = new VirtualTerminal(80, 24);
         string? requested = null;
-        var model = new HostingSetupViewModel(new Dictionary<string, string> { ["--output-directory"] = directory.Path }, new StubHandler(request =>
+        var model = new HostingSetupViewModel(new Dictionary<string, string> { ["--deployment-manager"] = "release-compose", ["--output-directory"] = directory.Path }, new StubHandler(request =>
         { requested = request.RequestUri!.AbsoluteUri; return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)); }));
         var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { DisableDefaults = true }); builder.Logging.ClearProviders();
         builder.Services.AddTerminaVirtualInput(input);
@@ -651,7 +651,7 @@ public sealed class SetupTests
                 Assert.Equal(1, document.RootElement.GetProperty("purpose").GetInt32());
                 return Json(new { requestId = "personal-client", userCode = "CLIENT-CODE", deviceCapability = "personal-client-capability", verificationUri = "https://instance.example/account/integration-credentials", publicOrigin = "https://instance.example", expiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(1), intervalSeconds = 5 });
             }
-            if (route.EndsWith("poll")) return Json(new { status = "issued", intervalSeconds = 5, delivery = new { credentialId = "personal-credential", secret = "nrt_ic_personal-client-only", name = "default", purpose = 1, resource = "https://instance.example/mcp", expiresAtUtc = DateTimeOffset.UtcNow.AddDays(1), grants = new[] { new { tenantId = 7, tenantName = "Operations", permission = "telemetry.read" } }, instancePermissions = Array.Empty<string>() } });
+            if (route.EndsWith("poll")) return Json(new { status = "issued", intervalSeconds = 5, delivery = new { credentialId = "personal-credential", secret = "nrt_ic_personal-client-only", name = "default", purpose = 1, resource = "https://instance.example/mcp", expiresAtUtc = DateTimeOffset.UtcNow.AddDays(1), grants = Array.Empty<object>(), instancePermissions = new[] { "mcp.discovery.read" } } });
             if (route.EndsWith("acknowledge")) { acknowledged++; return Json(new { status = "consumed" }); }
             Assert.Equal("nrt_ic_personal-client-only", request.Headers.Authorization?.Parameter);
             return await McpReply(request);
@@ -805,7 +805,7 @@ public sealed class SetupTests
         return Finish();
         async Task Finish() { try { await completion.Task.WaitAsync(TimeSpan.FromSeconds(5)); } finally { subscription.Dispose(); } }
     }
-    private static HttpResponseMessage Capabilities() => Json(new { protocolVersion = 1, publicOrigin = "https://instance.example", pairingSupported = true, verificationUri = "https://instance.example/account/integration-credentials", httpMcpResource = "https://instance.example/mcp" });
+    private static HttpResponseMessage Capabilities() => Json(new { protocolVersion = 1, publicOrigin = "https://instance.example", pairingSupported = true, verificationUri = "https://instance.example/account/integration-credentials", httpMcpResource = "https://instance.example/mcp", configurationCapabilities = new[] { NetRatel.Shared.Connectivity.IntegrationPairingProtocol.TemporaryVerifierCapability } });
     private static HttpResponseMessage Json(object value) => new(HttpStatusCode.OK) { Content = JsonContent.Create(value) };
     private sealed class ResponseProbeStream(byte[] bytes) : MemoryStream(bytes)
     {

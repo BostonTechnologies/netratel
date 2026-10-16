@@ -12,7 +12,17 @@ using PairingPoll = NetRatel.Shared.Connectivity.IntegrationPairingPollResponse;
 namespace NetRatel.Setup;
 
 public enum SetupStep { Instance, Profile, Authentication, Grants, Review, Finish }
-public sealed record SetupCheck(string Name, string Status, string Detail, int? HttpStatus = null);
+public sealed record SetupCheck(string Name, string Status, string Detail, int? HttpStatus = null)
+{
+    public string? Code { get; init; }
+    public string? Layer { get; init; }
+    public int? DownstreamStatus { get; init; }
+    public string? Reference { get; init; }
+    public string? NextAction { get; init; }
+    public bool? TransportSucceeded { get; init; }
+    public bool? ProtocolSucceeded { get; init; }
+    public bool? OperationSucceeded { get; init; }
+}
 /// <summary>Headless setup operations shared by the TUI and noninteractive entry points.</summary>
 public sealed class SetupSession : IAsyncDisposable
 {
@@ -24,6 +34,9 @@ public sealed class SetupSession : IAsyncDisposable
     private readonly Func<string, string?> _environment;
     private readonly HttpMessageHandler _transport;
     private readonly SemaphoreSlim _saveGate = new(1, 1);
+    private bool _temporaryVerifier;
+    private string? _cleanupRecordPath;
+    public bool CleanupPending { get; private set; }
     private bool _saved;
     private bool _acknowledged;
     private bool _reuseExistingConfiguration;
@@ -73,8 +86,8 @@ public sealed class SetupSession : IAsyncDisposable
     public bool ReusesExistingConfiguration => _reuseExistingConfiguration;
     public bool Saved => _saved && (Pairing is null || Delivery is null || _acknowledged);
     public bool Persisted => _saved;
-    public string CanonicalTarget => _origin is null ? "" : Surface == ConfigurationSurface.HttpMcpClient ? _canonicalResource ?? new Uri(_origin, "/mcp").AbsoluteUri : _origin.AbsoluteUri.TrimEnd('/');
-    public string CredentialManagementUrl => _origin is null ? "" : new Uri(_origin, "/account/integration-credentials?tab=credentials").AbsoluteUri;
+    public string CanonicalTarget => _origin is null ? "" : Surface == ConfigurationSurface.HttpMcpClient ? _canonicalResource ?? Endpoint(_origin, "/mcp").AbsoluteUri : _origin.AbsoluteUri.TrimEnd('/');
+    public string CredentialManagementUrl => _origin is null ? "" : Endpoint(_origin, "/account/integration-credentials?tab=credentials").AbsoluteUri;
     public void SelectProfile(ConfigurationSurface surface, string profile, string? path = null)
     {
         if (Pairing is not null) throw new AgentClientValidationException("Cancel the current pairing before selecting another profile.");
@@ -99,16 +112,16 @@ public sealed class SetupSession : IAsyncDisposable
     public static Uri ValidateOrigin(string raw) => new(InstanceSetupAddress.Parse(raw).Origin);
     private static Uri ValidateDiscoveredOrigin(string raw)
     {
-        if (!Uri.TryCreate(raw.Trim(), UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps || !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment) || uri.AbsolutePath != "/")
-            throw new AgentClientValidationException("Enter an instance HTTPS origin, for example https://netratel.example.com, without a path, credentials or query.");
-        return uri;
+        try { return new(HttpHostSetupProtocol.NormalizeWebAddress(raw)); }
+        catch (ArgumentException) { throw new AgentClientValidationException("Instance metadata must advertise its canonical HTTPS Web base address."); }
     }
+    private static Uri Endpoint(Uri origin, string route) => new(origin.AbsoluteUri.TrimEnd('/') + "/" + route.TrimStart('/'));
     public async Task DiscoverAsync(string raw, CancellationToken ct)
     {
         var origin = ValidateOrigin(raw);
         if (Surface != ConfigurationSurface.HttpMcpClient && IsExternallyManaged("apiBaseUrl") && !string.Equals(Configuration.ApiBaseUrl?.TrimEnd('/'), origin.AbsoluteUri.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
             throw new AgentClientValidationException("Instance URL is managed by the environment. Change its source before setup.");
-        using var response = await _http.GetAsync(new Uri(origin, "/api/integration-pairing/v1/capabilities"), ct);
+        using var response = await _http.GetAsync(Endpoint(origin, "/api/integration-pairing/v1/capabilities"), ct);
         PairingCapabilities? capabilities = null;
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
@@ -127,11 +140,12 @@ public sealed class SetupSession : IAsyncDisposable
             else if (Surface == ConfigurationSurface.HttpMcpClient) throw new AgentClientValidationException("This instance does not advertise HTTP MCP client support.");
         }
         ct.ThrowIfCancellationRequested();
-        var canonicalResource = !string.IsNullOrWhiteSpace(capabilities?.HttpMcpResource) ? ValidateResource(capabilities.HttpMcpResource).AbsoluteUri : new Uri(origin, "/mcp").AbsoluteUri;
+        var canonicalResource = !string.IsNullOrWhiteSpace(capabilities?.HttpMcpResource) ? ValidateResource(capabilities.HttpMcpResource).AbsoluteUri : Endpoint(origin, "/mcp").AbsoluteUri;
         if (Surface == ConfigurationSurface.HttpMcpClient && IsExternallyManaged("apiBaseUrl") && !string.Equals(Configuration.ApiBaseUrl?.TrimEnd('/'), canonicalResource.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
             throw new AgentClientValidationException("HTTP MCP resource is externally managed and differs from the selected instance. Change its managed source before setup.");
         _origin = origin; Capabilities = capabilities;
         _canonicalResource = canonicalResource;
+        await ReconcileVerifierCleanupAsync(ct);
         Configuration = Configuration with { ApiBaseUrl = origin.AbsoluteUri.TrimEnd('/'), ProfileName = ProfileName };
     }
     private static Uri ValidateResource(string raw)
@@ -141,27 +155,46 @@ public sealed class SetupSession : IAsyncDisposable
     }
     private static void ValidateTrustedLink(string raw, Uri origin)
     {
-        if (!Uri.TryCreate(raw, UriKind.Absolute, out var uri) || uri.Scheme != "https" || uri.GetLeftPart(UriPartial.Authority) != origin.GetLeftPart(UriPartial.Authority) || !string.IsNullOrEmpty(uri.UserInfo) || uri.AbsolutePath != "/account/integration-credentials" || uri.Query is not "" and not "?tab=credentials" || !string.IsNullOrEmpty(uri.Fragment))
+        if (!Uri.TryCreate(raw, UriKind.Absolute, out var uri) || uri.Scheme != "https" || uri.GetLeftPart(UriPartial.Authority) != origin.GetLeftPart(UriPartial.Authority) || !string.IsNullOrEmpty(uri.UserInfo) || uri.AbsolutePath != Endpoint(origin, "/account/integration-credentials").AbsolutePath || uri.Query is not "" and not "?tab=credentials" || !string.IsNullOrEmpty(uri.Fragment))
             throw new AgentClientValidationException("The browser approval URL is not a trusted instance credential page.");
     }
-    public async Task BeginPairingAsync(CancellationToken ct)
+    public async Task BeginPairingAsync(CancellationToken ct, bool temporaryVerifier = false)
     {
         if (Pairing is not null) return;
         if (IsExternallyManaged("IntegrationCredential") || IsExternallyManaged("IntegrationCredentialFile")) throw new AgentClientValidationException("This credential is externally managed; use the explicit external authentication path instead of browser pairing.");
         if (Capabilities is not { PairingSupported: true } || _origin is null) throw new AgentClientValidationException("Browser pairing is unavailable. Import an existing credential or configure external authentication explicitly.");
-        using var response = await _http.PostAsJsonAsync(new Uri(_origin, "/api/integration-pairing/v1/start"), new { name = ProfileName, purpose = Surface == ConfigurationSurface.HttpMcpClient ? 1 : 0, resource = Surface == ConfigurationSurface.HttpMcpClient ? CanonicalTarget : null }, ct);
+        if (temporaryVerifier && Surface != ConfigurationSurface.HttpMcpClient) throw new AgentClientValidationException("Temporary verification requires HTTP MCP.");
+        if (temporaryVerifier && CleanupPending)
+            throw new AgentClientValidationException("Temporary credential cleanup is pending. Restore API access and resume cleanup before approving another verifier.");
+        if (temporaryVerifier && !Capabilities.ConfigurationCapabilities.Contains(IntegrationPairingProtocol.TemporaryVerifierCapability, StringComparer.Ordinal))
+            throw new AgentClientValidationException("This instance does not support bounded setup verifiers. Upgrade the API before requesting temporary verification access.");
+        using var response = await _http.PostAsJsonAsync(Endpoint(_origin, "/api/integration-pairing/v1/start"),
+            new IntegrationPairingStartRequest(ProfileName, Surface == ConfigurationSurface.HttpMcpClient ? PairingCredentialPurpose.HttpMcp : PairingCredentialPurpose.Api,
+                Surface == ConfigurationSurface.HttpMcpClient ? CanonicalTarget : null, temporaryVerifier ? ["mcp.discovery.read"] : null)
+            { TemporaryVerifier = temporaryVerifier }, ct);
         response.EnsureSuccessStatusCode();
         var pairing = await response.Content.ReadFromJsonAsync<PairingStart>(cancellationToken: ct) ?? throw new AgentClientValidationException("Empty pairing response.");
         ValidateTrustedLink(pairing.VerificationUri, _origin);
         if (ValidateDiscoveredOrigin(pairing.PublicOrigin) != _origin) throw new AgentClientValidationException("Pairing origin changed.");
+        Pairing = pairing; PairingStatus = "pending"; _temporaryVerifier = temporaryVerifier;
+        if (temporaryVerifier)
+        {
+            var directory = VerifierCleanupDirectory();
+            _cleanupRecordPath = System.IO.Path.Combine(directory, Guid.NewGuid().ToString("N") + ".json");
+            try
+            {
+                ConfigurationFileStorage.WriteAtomic(_cleanupRecordPath, JsonSerializer.Serialize(new VerifierCleanupRecord(
+                    _origin.AbsoluteUri, pairing.DeviceCapability, pairing.ExpiresAtUtc.AddMinutes(15))));
+            }
+            catch { await CancelPairingAsync(); throw; }
+        }
         ct.ThrowIfCancellationRequested();
-        Pairing = pairing; PairingStatus = "pending";
     }
     public async Task<PairingPoll> PollAsync(CancellationToken ct)
     {
         if (Pairing is null || _origin is null) throw new AgentClientValidationException("Start pairing first.");
         if (DateTimeOffset.UtcNow >= Pairing.ExpiresAtUtc) { PairingStatus = "expired"; return new("expired", 5, null); }
-        using var response = await _http.PostAsJsonAsync(new Uri(_origin, "/api/integration-pairing/v1/poll"), new { deviceCapability = Pairing.DeviceCapability }, ct);
+        using var response = await _http.PostAsJsonAsync(Endpoint(_origin, "/api/integration-pairing/v1/poll"), new { deviceCapability = Pairing.DeviceCapability }, ct);
         response.EnsureSuccessStatusCode();
         var poll = await response.Content.ReadFromJsonAsync<PairingPoll>(cancellationToken: ct) ?? throw new AgentClientValidationException("Empty pairing status.");
         ct.ThrowIfCancellationRequested();
@@ -170,6 +203,12 @@ public sealed class SetupSession : IAsyncDisposable
         {
             if (Surface == ConfigurationSurface.HttpMcpClient && !McpResourceUri.Equivalent(delivery.Resource, CanonicalTarget)) throw new AgentClientValidationException("Credential was issued for a different MCP resource.");
             if (delivery.Purpose != (Surface == ConfigurationSurface.HttpMcpClient ? PairingCredentialPurpose.HttpMcp : PairingCredentialPurpose.Api)) throw new AgentClientValidationException("Credential purpose differs from the selected transport.");
+            if (_temporaryVerifier && (delivery.Grants.Count != 0 || !delivery.InstancePermissions.SequenceEqual(["mcp.discovery.read"]) ||
+                delivery.ExpiresAtUtc > DateTimeOffset.UtcNow.AddMinutes(15)))
+            {
+                await CancelPairingAsync();
+                throw new AgentClientValidationException("Temporary verifier exceeded its approved read-only scope or lifetime. Start a fresh review.");
+            }
             Delivery = delivery;
             UseCredential(delivery.Secret);
         }
@@ -241,6 +280,7 @@ public sealed class SetupSession : IAsyncDisposable
     public void Review() => _reviewHash = File.Exists(Path) ? ConfigurationFileStorage.Hash(Path) : string.Empty;
     public async Task SaveAsync(bool replace, CancellationToken ct)
     {
+        if (_temporaryVerifier) throw new AgentClientValidationException("Temporary verification credentials cannot be saved as personal profiles.");
         await _saveGate.WaitAsync(ct);
         try
         {
@@ -260,7 +300,7 @@ public sealed class SetupSession : IAsyncDisposable
             }
             if (Pairing is not null && Delivery is not null && _origin is not null && !_acknowledged)
             {
-                using var response = await _http.PostAsJsonAsync(new Uri(_origin, "/api/integration-pairing/v1/acknowledge"), new { deviceCapability = Pairing.DeviceCapability, credentialId = Delivery.CredentialId }, ct);
+                using var response = await _http.PostAsJsonAsync(Endpoint(_origin, "/api/integration-pairing/v1/acknowledge"), new { deviceCapability = Pairing.DeviceCapability, credentialId = Delivery.CredentialId }, ct);
                 response.EnsureSuccessStatusCode();
                 using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
                 if (!document.RootElement.TryGetProperty("status", out var status) || status.GetString() != "consumed")
@@ -284,18 +324,28 @@ public sealed class SetupSession : IAsyncDisposable
         }
         return await CheckHttpMcpAsync(loaded, ct);
     }
-    public Task<IReadOnlyList<SetupCheck>> VerifyTransientHttpMcpAsync(CancellationToken ct)
+    public async Task<IReadOnlyList<SetupCheck>> VerifyTransientHttpMcpAsync(CancellationToken ct)
     {
-        if (Surface != ConfigurationSurface.HttpMcpClient || !HasConfiguredAuthentication)
-            throw new AgentClientValidationException("Configure a separate personal HTTP MCP verification identity first.");
-        return CheckHttpMcpAsync(new(Configuration, Surface, null, ProfileName, Sources), ct);
+        IReadOnlyList<SetupCheck> checks;
+        try
+        {
+            if (Surface != ConfigurationSurface.HttpMcpClient || !HasConfiguredAuthentication)
+                throw new AgentClientValidationException("Configure a separate HTTP MCP verification identity first.");
+            checks = await CheckHttpMcpAsync(new(Configuration, Surface, null, ProfileName, Sources), ct);
+        }
+        finally { if (_temporaryVerifier) await CancelPairingAsync(); }
+        if (CleanupPending) return checks.Append(new SetupCheck("temporary credential cleanup", "pending", "Cleanup could not be confirmed. A protected bounded retry record is retained; the server expiry still applies.")
+            { Code = "cleanup_pending", Layer = "API", NextAction = "Restore API reachability and retry verification; cleanup also resumes on the next setup invocation." }).ToArray();
+        return checks;
     }
     private async Task<IReadOnlyList<SetupCheck>> CheckHttpMcpAsync(EffectiveAgentClientConfiguration loaded, CancellationToken ct)
     {
         var validation = loaded.Validate();
-        var checks = new List<SetupCheck> { new("configuration", validation.IsValid ? "completed" : "failed", validation.IsValid ? "Configuration and credential binding are valid." : "Configuration is incomplete or invalid; run config validate.") };
+        var checks = new List<SetupCheck> { new("configuration", validation.IsValid ? "completed" : "failed", validation.IsValid ? "Configuration and credential binding are valid." : "Configuration is incomplete or invalid; run config validate.")
+            { Layer = "configuration", Code = validation.IsValid ? null : "configuration_invalid", NextAction = validation.IsValid ? null : "Run config validate and correct the selected source." } };
         if (_origin is not null && Capabilities is null) checks.Add(new("instance capabilities", "unavailable", "Pairing is unavailable and instance compatibility was not confirmed."));
         if (!validation.IsValid) return checks;
+        var layer = "token";
         try
         {
             var resolved = loaded.Configuration;
@@ -306,28 +356,70 @@ public sealed class SetupSession : IAsyncDisposable
                 {
                     checks.Add(new("external OAuth", "unavailable", "Validate external OAuth through the separately configured third-party client.")); return checks;
                 }
+                layer = "MCP";
                 var target = ValidateResource(resolved.ApiBaseUrl!);
                 var initialize = await SendMcpAsync(target, token, new { jsonrpc = "2.0", id = 1, method = "initialize", @params = new { protocolVersion = "2025-03-26", capabilities = new { }, clientInfo = new { name = "NetRatel setup", version = typeof(SetupSession).Assembly.GetName().Version!.ToString() } } }, null, ct);
                 checks.Add(new("reachability", "completed", "Canonical HTTPS MCP resource responded."));
-                if (initialize.Status is 401 or 403) { checks.Add(new("authentication", "unauthorized", $"HTTP {initialize.Status}")); return checks; }
-                if (initialize.Status is < 200 or >= 300 || initialize.Result is null || !IsMcpReply(initialize.Result.Value, 1) || !initialize.Result.Value.TryGetProperty("result", out var initialized) || !initialized.TryGetProperty("protocolVersion", out var protocol) || protocol.ValueKind != JsonValueKind.String || protocol.GetString() is not ("2024-11-05" or "2025-03-26" or "2025-06-18" or "2025-11-25")) { checks.Add(new("MCP initialize", "unavailable", "Resource did not complete the MCP handshake.")); return checks; }
+                if (initialize.Status is 401 or 403) { checks.Add(Failure("authentication", "mcp_authentication_rejected", "MCP", initialize.Status)); return checks; }
+                if (initialize.Status is < 200 or >= 300 || initialize.Result is null || !IsMcpReply(initialize.Result.Value, 1) || !initialize.Result.Value.TryGetProperty("result", out var initialized) || !initialized.TryGetProperty("protocolVersion", out var protocol) || protocol.ValueKind != JsonValueKind.String || protocol.GetString() is not ("2024-11-05" or "2025-03-26" or "2025-06-18" or "2025-11-25")) { checks.Add(Failure("MCP initialize", "mcp_initialize_failed", "MCP", initialize.Status)); return checks; }
                 checks.Add(new("authentication", "completed", "The bound credential was accepted."));
                 checks.Add(new("MCP initialize", "completed", "Protocol handshake completed."));
-                await SendMcpAsync(target, token, new { jsonrpc = "2.0", method = "notifications/initialized" }, initialize.SessionId, ct);
+                var notification = await SendMcpAsync(target, token, new { jsonrpc = "2.0", method = "notifications/initialized" }, initialize.SessionId, ct);
+                if (notification.Status is < 200 or >= 300)
+                { checks.Add(Failure("MCP initialize", "mcp_initialized_notification_failed", "MCP", notification.Status)); return checks; }
                 var tools = await SendMcpAsync(target, token, new { jsonrpc = "2.0", id = 2, method = "tools/list" }, initialize.SessionId, ct);
-                if (tools.Status is < 200 or >= 300 || tools.Result is null || !IsMcpReply(tools.Result.Value, 2) || !tools.Result.Value.TryGetProperty("result", out var catalog) || !catalog.TryGetProperty("tools", out var offered) || offered.ValueKind != JsonValueKind.Array || !offered.EnumerateArray().Any(t => t.TryGetProperty("name", out var name) && name.GetString() == "netratel_auth"))
-                { checks.Add(new("permitted read-only tool", "unavailable", "The authentication status tool is unavailable.")); return checks; }
+                if (tools.Status is < 200 or >= 300 || tools.Result is null || !IsMcpReply(tools.Result.Value, 2) || !tools.Result.Value.TryGetProperty("result", out var catalog) || !catalog.TryGetProperty("tools", out var offered) || offered.ValueKind != JsonValueKind.Array || !offered.EnumerateArray().Any(t => t.ValueKind == JsonValueKind.Object && t.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String && name.GetString() == "netratel_auth"))
+                { checks.Add(Failure("permitted read-only tool", "mcp_catalog_incomplete", "MCP", tools.Status)); return checks; }
                 var read = await SendMcpAsync(target, token, new { jsonrpc = "2.0", id = 3, method = "tools/call", @params = new { name = "netratel_auth", arguments = new { operation = "status" } } }, initialize.SessionId, ct);
-                var successful = read.Status is >= 200 and < 300 && read.Result is { } envelope && IsMcpReply(envelope, 3) && envelope.TryGetProperty("result", out var result) && !(result.TryGetProperty("isError", out var failed) && failed.ValueKind == JsonValueKind.True) && result.TryGetProperty("structuredContent", out var structured) && structured.TryGetProperty("success", out var accepted) && accepted.ValueKind == JsonValueKind.True && structured.TryGetProperty("data", out var authStatus) && StdioMcpDoctor.IsAuthenticationStatus(authStatus);
-                checks.Add(new("permitted read-only tool", successful ? "completed" : read.Status is 401 or 403 ? "unauthorized" : "unavailable", successful ? "Authentication status tool completed without mutation." : "Status tool was unavailable or not authorized; no permission was granted."));
+                var successful = read.Status is >= 200 and < 300 && read.Result is { } envelope && IsMcpReply(envelope, 3) && envelope.TryGetProperty("result", out var result) && (!result.TryGetProperty("isError", out var failed) || failed.ValueKind == JsonValueKind.False) && result.TryGetProperty("structuredContent", out var structured) && structured.ValueKind == JsonValueKind.Object && structured.TryGetProperty("success", out var accepted) && accepted.ValueKind == JsonValueKind.True && (!structured.TryGetProperty("status", out var resultStatus) || resultStatus.ValueKind == JsonValueKind.String && resultStatus.GetString() == "completed") && structured.TryGetProperty("data", out var authStatus) && StdioMcpDoctor.IsAuthenticationStatus(authStatus);
+                if (successful) checks.Add(new SetupCheck("permitted read-only tool", "completed", "API-backed authentication status completed without mutation.", read.Status)
+                    { Layer = "operation", TransportSucceeded = true, ProtocolSucceeded = true, OperationSucceeded = true });
+                else
+                {
+                    var code = read.Status is 401 or 403 ? "mcp_authentication_rejected" : "mcp_status_response_invalid";
+                    int? downstream = null;
+                    string? reference = null;
+                    var protocolSucceeded = read.Status is >= 200 and < 300 && read.Result is { } reply && IsMcpReply(reply, 3);
+                    if (protocolSucceeded && read.Result!.Value.GetProperty("result").TryGetProperty("structuredContent", out var failure) && failure.ValueKind == JsonValueKind.Object)
+                    {
+                        code = "operation_failed";
+                        if (failure.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object)
+                        {
+                            if (error.TryGetProperty("code", out var errorCode) && errorCode.ValueKind == JsonValueKind.String)
+                                code = errorCode.GetString() switch
+                                { "upstream_unauthorized" or "upstream_forbidden" or "upstream_unavailable" or "upstream_error" or "delegated_identity_invalid" or "delegated_identity_required" or "oauth_scope_missing" => errorCode.GetString()!, _ => "operation_failed" };
+                            if (error.TryGetProperty("upstreamStatus", out var status) && status.ValueKind == JsonValueKind.Number && status.TryGetInt32(out var statusCode) && statusCode is >= 100 and <= 599) downstream = statusCode;
+                        }
+                        if (failure.TryGetProperty("correlationId", out var correlation) && correlation.ValueKind == JsonValueKind.String &&
+                            correlation.GetString() is { Length: >= 16 and <= 64 } candidate && candidate.All(character => char.IsAsciiHexDigit(character) || character == '-')) reference = candidate;
+                    }
+                    var failureLayer = downstream is not null || code.StartsWith("upstream_", StringComparison.Ordinal) || code.StartsWith("delegated_", StringComparison.Ordinal)
+                        ? "API" : protocolSucceeded ? "operation" : "MCP";
+                    checks.Add(Failure("permitted read-only tool", code, failureLayer, read.Status, downstream, reference)
+                        with { TransportSucceeded = true, ProtocolSucceeded = protocolSucceeded, OperationSucceeded = false });
+                }
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (AgentClientRemoteException ex)
-        { checks.Add(new("external authentication", ex.StatusCode is 401 or 403 ? "unauthorized" : "unavailable", "The selected provider rejected the bounded token request. Check its approved account, scope and token endpoint, then retry.")); }
+        { checks.Add(Failure("external authentication", "token_request_rejected", "token", ex.StatusCode)); }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or AgentClientValidationException or JsonException)
-        { checks.Add(new("transport", "unavailable", "The bounded read-only transport check could not complete.")); }
+        { checks.Add(Failure(layer == "token" ? "external authentication" : "transport", ex is JsonException ? "mcp_response_malformed" : "verification_unavailable", layer)); }
         return checks;
+    }
+    private static SetupCheck Failure(string name, string code, string layer, int? httpStatus = null, int? downstream = null, string? reference = null)
+    {
+        var next = layer switch
+        {
+            "token" => "Check the approved provider account, token endpoint and scope, then retry.",
+            "API" => "Check the HTTP host outbound credential, delegation settings and API logs using the reference, then retry.",
+            "MCP" => "Check the applied resource route, authentication mode and MCP service, then retry.",
+            _ => "Check the API-backed status operation and host delegation settings, then retry."
+        };
+        return new(name, httpStatus is 401 or 403 || downstream is 401 or 403 ? "unauthorized" : "unavailable",
+            $"{code} at {layer}." + (downstream is null ? "" : $" Downstream HTTP {downstream}."), httpStatus)
+        { Code = code, Layer = layer, DownstreamStatus = downstream, Reference = reference, NextAction = next,
+            TransportSucceeded = httpStatus is not null, OperationSucceeded = false };
     }
     private async Task<string> GetVerificationTokenAsync(AgentClientConfiguration configuration, CancellationToken ct)
     {
@@ -356,42 +448,46 @@ public sealed class SetupSession : IAsyncDisposable
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         var assigned = response.Headers.TryGetValues("Mcp-Session-Id", out var values) ? values.FirstOrDefault() : sessionId;
         if (!response.IsSuccessStatusCode || response.StatusCode == HttpStatusCode.Accepted) return ((int)response.StatusCode, assigned, null);
-        await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        using var bound = CancellationTokenSource.CreateLinkedTokenSource(ct); bound.CancelAfter(TimeSpan.FromSeconds(12));
-        using var reader = new StreamReader(stream);
-        if (response.Content.Headers.ContentType?.MediaType == "text/event-stream")
+        try
         {
-            var size = 0; var line = new System.Text.StringBuilder(); var chunk = new char[4096];
-            JsonElement? TakeDataLine()
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
+            using var bound = CancellationTokenSource.CreateLinkedTokenSource(ct); bound.CancelAfter(TimeSpan.FromSeconds(12));
+            using var reader = new StreamReader(stream);
+            if (response.Content.Headers.ContentType?.MediaType == "text/event-stream")
             {
-                var text = line.ToString(); line.Clear();
-                if (!text.StartsWith("data:", StringComparison.Ordinal)) return null;
-                using var document = JsonDocument.Parse(text[5..].Trim());
-                return document.RootElement.Clone();
-            }
-            while (true)
-            {
-                var read = await reader.ReadAsync(chunk.AsMemory(), bound.Token);
-                if (read == 0) break;
-                for (var index = 0; index < read; index++)
+                var size = 0; var line = new System.Text.StringBuilder(); var chunk = new char[4096];
+                JsonElement? TakeDataLine()
                 {
-                    if (++size > MaximumMcpResponseCharacters) throw new AgentClientValidationException("MCP response exceeds the setup validation bound.");
-                    if (chunk[index] != '\n') { line.Append(chunk[index]); continue; }
-                    if (TakeDataLine() is { } data) return ((int)response.StatusCode, assigned, data);
+                    var text = line.ToString(); line.Clear();
+                    if (!text.StartsWith("data:", StringComparison.Ordinal)) return null;
+                    using var document = JsonDocument.Parse(text[5..].Trim());
+                    return document.RootElement.Clone();
                 }
+                while (true)
+                {
+                    var read = await reader.ReadAsync(chunk.AsMemory(), bound.Token);
+                    if (read == 0) break;
+                    for (var index = 0; index < read; index++)
+                    {
+                        if (++size > MaximumMcpResponseCharacters) throw new AgentClientValidationException("MCP response exceeds the setup validation bound.");
+                        if (chunk[index] != '\n') { line.Append(chunk[index]); continue; }
+                        if (TakeDataLine() is { } data) return ((int)response.StatusCode, assigned, data);
+                    }
+                }
+                return ((int)response.StatusCode, assigned, TakeDataLine());
             }
-            return ((int)response.StatusCode, assigned, TakeDataLine());
+            var buffer = new char[MaximumMcpResponseCharacters + 1]; var count = 0;
+            while (count < buffer.Length)
+            {
+                var read = await reader.ReadAsync(buffer.AsMemory(count), bound.Token);
+                if (read == 0) break;
+                count += read;
+            }
+            if (count == buffer.Length) throw new AgentClientValidationException("MCP response exceeds the setup validation bound.");
+            using var json = JsonDocument.Parse(new string(buffer, 0, count));
+            return ((int)response.StatusCode, assigned, json.RootElement.Clone());
         }
-        var buffer = new char[MaximumMcpResponseCharacters + 1]; var count = 0;
-        while (count < buffer.Length)
-        {
-            var read = await reader.ReadAsync(buffer.AsMemory(count), bound.Token);
-            if (read == 0) break;
-            count += read;
-        }
-        if (count == buffer.Length) throw new AgentClientValidationException("MCP response exceeds the setup validation bound.");
-        using var json = JsonDocument.Parse(new string(buffer, 0, count));
-        return ((int)response.StatusCode, assigned, json.RootElement.Clone());
+        catch (JsonException) { return ((int)response.StatusCode, assigned, null); }
     }
     public string LaunchSnippet()
     {
@@ -420,14 +516,61 @@ public sealed class SetupSession : IAsyncDisposable
         }
         return "netratel --config " + ShellArgument.Quote(Path) + " auth status";
     }
+    private sealed record VerifierCleanupRecord(string Origin, string DeviceCapability, DateTimeOffset ExpiresAtUtc)
+    { public override string ToString() => "Bounded verifier cleanup (capability redacted)"; }
+    private string VerifierCleanupDirectory() => System.IO.Path.Combine(System.IO.Path.GetDirectoryName(Path)!, ".verification-cleanup",
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(_origin!.AbsoluteUri))).ToLowerInvariant());
+    private async Task<bool> CancelCapabilityAsync(string capability, CancellationToken ct)
+    {
+        using var response = await _http.PostAsJsonAsync(Endpoint(_origin!, "/api/integration-pairing/v1/cancel"), new { deviceCapability = capability }, ct);
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+        return document.RootElement.ValueKind == JsonValueKind.Object && document.RootElement.TryGetProperty("status", out var state) && state.ValueKind == JsonValueKind.String && state.GetString() is "cancelled" or "expired" or "denied";
+    }
+    private async Task ReconcileVerifierCleanupAsync(CancellationToken ct)
+    {
+        var directory = VerifierCleanupDirectory();
+        CleanupPending = false;
+        if (!Directory.Exists(directory)) return;
+        var files = Directory.EnumerateFiles(directory, "*.json").Take(33).ToArray();
+        if (files.Length > 32) CleanupPending = true;
+        foreach (var file in files.Take(32))
+        {
+            try
+            {
+                var record = JsonSerializer.Deserialize<VerifierCleanupRecord>(ConfigurationFileStorage.ReadText(file, 4096, secret: true));
+                if (record is null || record.Origin != _origin!.AbsoluteUri) continue;
+                if (record.ExpiresAtUtc <= DateTimeOffset.UtcNow || await CancelCapabilityAsync(record.DeviceCapability, ct)) File.Delete(file);
+                else CleanupPending = true;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or IOException or AgentClientValidationException)
+            { CleanupPending = true; }
+        }
+    }
     public async Task CancelPairingAsync()
     {
         if (_saved) return;
-        var pairing = Pairing; Pairing = null;
+        var pairing = Pairing;
         if (pairing is null || _origin is null) return;
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        try { using var response = await _http.PostAsJsonAsync(new Uri(_origin, "/api/integration-pairing/v1/cancel"), new { deviceCapability = pairing.DeviceCapability }, timeout.Token); response.EnsureSuccessStatusCode(); }
-        finally { DiscardUnpersistedAuthentication(); PairingStatus = "cancelled"; }
+        try
+        {
+            var confirmed = await CancelCapabilityAsync(pairing.DeviceCapability, timeout.Token);
+            CleanupPending = !confirmed;
+            PairingStatus = confirmed ? "cancelled" : "cleanup_pending";
+            if (confirmed)
+            {
+                Pairing = null;
+                if (_cleanupRecordPath is not null) File.Delete(_cleanupRecordPath);
+                _cleanupRecordPath = null;
+            }
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or IOException or UnauthorizedAccessException)
+        {
+            CleanupPending = true; PairingStatus = "cleanup_pending";
+        }
+        finally { DiscardUnpersistedAuthentication(); }
     }
     public void DiscardUnpersistedAuthentication()
     {

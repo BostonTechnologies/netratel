@@ -22,8 +22,9 @@ public sealed class McpToolInvocationAudit(NetRatelMcpHostContext hostContext, I
         try
         {
             var result = await next(context, cancellationToken).ConfigureAwait(false);
+            var outcome = DescribeOutcome(result);
             logger.LogInformation(
-                "MCP tool invocation completed. Instance={Instance} Transport={Transport} Tool={Tool} Operation={Operation} Caller={Caller} Groups={Groups} Scopes={Scopes} Success={Success} ResultStatus={ResultStatus} DurationMs={DurationMs} TraceId={TraceId}",
+                "MCP tool invocation completed. Instance={Instance} Transport={Transport} Tool={Tool} Operation={Operation} Caller={Caller} Groups={Groups} Scopes={Scopes} Success={Success} ResultStatus={ResultStatus} AuditSchemaVersion={AuditSchemaVersion} TransportSucceeded={TransportSucceeded} ProtocolSucceeded={ProtocolSucceeded} OperationSucceeded={OperationSucceeded} OverallSucceeded={OverallSucceeded} DurationMs={DurationMs} TraceId={TraceId}",
                 hostContext.Target.Instance,
                 hostContext.Transport,
                 Token(context.Params.Name),
@@ -32,7 +33,12 @@ public sealed class McpToolInvocationAudit(NetRatelMcpHostContext hostContext, I
                 Claims(context.User, "groups"),
                 Scopes(context.User),
                 result.IsError is not true,
-                ResultStatus(result),
+                outcome.ResultStatus,
+                2,
+                outcome.TransportSucceeded,
+                outcome.ProtocolSucceeded,
+                outcome.OperationSucceeded,
+                outcome.OverallSucceeded,
                 Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds,
                 Activity.Current?.TraceId.ToString());
             return result;
@@ -40,7 +46,7 @@ public sealed class McpToolInvocationAudit(NetRatelMcpHostContext hostContext, I
         catch (Exception)
         {
             logger.LogWarning(
-                "MCP tool invocation failed. Instance={Instance} Transport={Transport} Tool={Tool} Operation={Operation} Caller={Caller} Groups={Groups} Scopes={Scopes} DurationMs={DurationMs} TraceId={TraceId}",
+                "MCP tool invocation failed. Instance={Instance} Transport={Transport} Tool={Tool} Operation={Operation} Caller={Caller} Groups={Groups} Scopes={Scopes} DurationMs={DurationMs} TraceId={TraceId} AuditSchemaVersion={AuditSchemaVersion} TransportSucceeded={TransportSucceeded} ProtocolSucceeded={ProtocolSucceeded} OperationSucceeded={OperationSucceeded} OverallSucceeded={OverallSucceeded}",
                 hostContext.Target.Instance,
                 hostContext.Transport,
                 Token(context.Params.Name),
@@ -49,15 +55,27 @@ public sealed class McpToolInvocationAudit(NetRatelMcpHostContext hostContext, I
                 Claims(context.User, "groups"),
                 Scopes(context.User),
                 Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds,
-                Activity.Current?.TraceId.ToString());
+                Activity.Current?.TraceId.ToString(),
+                2, false, false, false, false);
             throw;
         }
     }
 
-    private static string ResultStatus(CallToolResult result)
-        => result.StructuredContent is { ValueKind: JsonValueKind.Object } content && content.TryGetProperty("status", out var status)
-            ? Token(status.GetString())
-            : result.IsError is true ? "error" : "unknown";
+    /// <summary>Legacy Success remains IsError based; explicit outcomes prevent structured failures appearing successful.</summary>
+    public sealed record Outcome(bool TransportSucceeded, bool ProtocolSucceeded, bool? OperationSucceeded, bool? OverallSucceeded, string ResultStatus);
+    public static Outcome DescribeOutcome(CallToolResult result)
+    {
+        bool? operationSucceeded = result.IsError is true ? false : null;
+        var resultStatus = result.IsError is true ? "error" : "unknown";
+        if (result.StructuredContent is { ValueKind: JsonValueKind.Object } content)
+        {
+            if (content.TryGetProperty("status", out var status) && status.ValueKind == JsonValueKind.String) resultStatus = Token(status.GetString());
+            if (content.TryGetProperty("success", out var success) && success.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                operationSucceeded = result.IsError is not true && success.GetBoolean();
+            if (resultStatus is "failed" or "invalid_request" or "confirmation_required" or "error") operationSucceeded = false;
+        }
+        return new(true, true, operationSucceeded, operationSucceeded, resultStatus);
+    }
 
     private static string Operation(IDictionary<string, JsonElement>? arguments)
         => arguments is not null && arguments.TryGetValue("operation", out var operation) && operation.ValueKind == JsonValueKind.String
