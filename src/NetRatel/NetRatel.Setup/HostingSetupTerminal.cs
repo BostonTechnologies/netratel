@@ -83,6 +83,7 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
         _apiServiceAuthority = options.GetValueOrDefault("--api-m2m-authority");
         DeploymentManager = options.GetValueOrDefault("--deployment-manager") ?? Environment.GetEnvironmentVariable("NETRATEL_SETUP_DEPLOYMENT_MANAGER") ?? "";
         ComposeSourcePath = options.GetValueOrDefault("--compose-file") ?? Environment.GetEnvironmentVariable("NETRATEL_SETUP_COMPOSE_SOURCE");
+        EffectiveComposeSourcePath = Environment.GetEnvironmentVariable(HttpHostingEffectiveDeployment.SourceEnvironmentVariable);
     }
     public override void OnActivated()
     {
@@ -104,6 +105,7 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
     public bool AuthenticationModeSelected => _authModeExplicit || _authenticationModeKnown;
     public string DeploymentManager { get; set; } = "";
     public string? ComposeSourcePath { get; set; }
+    public string? EffectiveComposeSourcePath { get; set; }
     public bool VerificationOnly => _options.ContainsKey("--verify");
     public string Progress { get; private set; } = "Setup not saved";
     public bool CleanupPending => _verification?.CleanupPending == true;
@@ -163,7 +165,7 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
         OperatorSurfaceEnabled = _operatorSurfaceEnabled,
         ApprovedRegistrationFingerprint = _approvedFingerprint,
         ApiServiceAudience = _apiServiceAudience, ApiServiceAuthority = _apiServiceAuthority,
-        DeploymentManager = DeploymentManager, ComposeSourcePath = ComposeSourcePath,
+        DeploymentManager = DeploymentManager, ComposeSourcePath = ComposeSourcePath, EffectiveComposeSourcePath = EffectiveComposeSourcePath,
         DelegationLifetimeSeconds = _delegationLifetimeSeconds,
         ExistingWebApiBackendUrl = Environment.GetEnvironmentVariable("NETRATEL_SETUP_EXISTING_WEB_API_BACKEND_URL") ?? _savedRequest?.ExistingWebApiBackendUrl,
         ExistingWebMcpBackendUrl = Environment.GetEnvironmentVariable("NETRATEL_SETUP_EXISTING_WEB_MCP_BACKEND_URL") ?? _savedRequest?.ExistingWebMcpBackendUrl,
@@ -360,6 +362,7 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
         }
         if (!_options.ContainsKey("--deployment-manager") && string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("NETRATEL_SETUP_DEPLOYMENT_MANAGER"))) DeploymentManager = saved.DeploymentManager;
         if (!_options.ContainsKey("--compose-file") && string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("NETRATEL_SETUP_COMPOSE_SOURCE"))) ComposeSourcePath = saved.ComposeSourcePath;
+        EffectiveComposeSourcePath ??= saved.EffectiveComposeSourcePath;
         _delegationLifetimeSeconds = saved.DelegationLifetimeSeconds;
         if (!_options.ContainsKey("--api-m2m-audience")) _apiServiceAudience = saved.ApiServiceAudience;
         if (!_options.ContainsKey("--api-m2m-authority")) _apiServiceAuthority = saved.ApiServiceAuthority;
