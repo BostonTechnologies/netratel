@@ -9,7 +9,7 @@ internal static partial class NetRatelCli
         var command = new Command(name, description);
         var options = new Dictionary<string, Option<string?>>();
         command.AddOption(globals.ConfigPath); command.AddOption(globals.ApiBaseUrl); command.AddOption(globals.AppPassword);
-        var setupOptions = new[] { "--profile", "--transport", "--target", "--mode", "--instance", "--credential-file", "--public-origin", "--output-directory", "--oidc-authority", "--auth-mode", "--required-groups", "--required-scopes", "--instance-name", "--resource", "--listen-port", "--allowed-origins", "--existing-outbound-config", "--existing-m2m-callers", "--api-m2m-audience", "--delegation-principal", "--delegation-key-file", "--delegation-key-id", "--delegation-issuer", "--delegation-audience" };
+        var setupOptions = new[] { "--profile", "--transport", "--target", "--mode", "--instance", "--credential-file", "--public-origin", "--output-directory", "--oidc-authority", "--auth-mode", "--required-groups", "--required-scopes", "--instance-name", "--resource", "--listen-port", "--allowed-origins", "--existing-outbound-config", "--existing-m2m-callers", "--api-m2m-audience", "--api-m2m-authority", "--deployment-manager", "--compose-file", "--delegation-principal", "--delegation-key-file", "--delegation-key-id", "--delegation-issuer", "--delegation-audience" };
         foreach (var key in prefix[0] == "setup" ? setupOptions : new[] { "--profile", "--transport" })
         {
             var option = new Option<string?>(key) { Description = key switch
@@ -33,6 +33,9 @@ internal static partial class NetRatelCli
                 "--existing-outbound-config" => "Protected existing outbound authentication JSON.",
                 "--existing-m2m-callers" => "Explicit caller IDs to preserve in the API deployment.",
                 "--api-m2m-audience" => "Current API service audience for the host registration and outbound scope.",
+                "--api-m2m-authority" => "Current API service-token authority for the existing deployment.",
+                "--deployment-manager" => "Explicit deployment owner: release-compose or an external Compose manager.",
+                "--compose-file" => "Actual saved Compose source supplied by the deployment launcher.",
                 "--delegation-principal" => "Explicit existing OIDC delegation service principal.",
                 "--delegation-key-file" => "Protected existing delegation key file; value is never printed.",
                 "--delegation-key-id" => "Existing delegation key ID.",
@@ -43,7 +46,8 @@ internal static partial class NetRatelCli
         }
         var noninteractive = new Option<bool>("--non-interactive") { Description = "Use protected files/environment without a terminal." };
         var replace = new Option<bool>("--replace") { Description = "Explicitly replace reviewed existing configuration." };
-        if (prefix[0] == "setup") { command.AddOption(noninteractive); command.AddOption(replace); }
+        var verify = new Option<bool>("--verify") { Description = "Verify the saved host deployment using observed runtime settings." };
+        if (prefix[0] == "setup") { command.AddOption(noninteractive); command.AddOption(replace); command.AddOption(verify); }
         command.SetHandler(async ctx =>
         {
             if (ctx.ParseResult.GetValueForOption(globals.AppPassword) is not null) throw new CliValidationException("Setup and diagnostics do not accept --app-password. Use a protected file or dedicated environment setting.");
@@ -57,6 +61,7 @@ internal static partial class NetRatelCli
             if (ctx.ParseResult.GetValueForOption(globals.ApiBaseUrl) is { } api) { arguments.Add("--api-base-url"); arguments.Add(api); }
             if (ctx.ParseResult.GetValueForOption(noninteractive)) arguments.Add("--non-interactive");
             if (ctx.ParseResult.GetValueForOption(replace)) arguments.Add("--replace");
+            if (ctx.ParseResult.GetValueForOption(verify)) arguments.Add("--verify");
             ctx.ExitCode = await SetupCommand.RunAsync(arguments.ToArray(), ConfigurationSurface.Cli, runtime.Out, runtime.Error, ct: ctx.GetCancellationToken());
         });
         return command;
