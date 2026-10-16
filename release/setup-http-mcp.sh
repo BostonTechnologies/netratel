@@ -83,12 +83,31 @@ if [[ -n "$selected_container" || ${#compose_files[@]} == 0 || -z "$project" ]];
     IFS=',' read -r -a compose_files <<< "$found_files"
   fi
   if ((${#env_files[@]} == 0)) && [[ -n "$found_env" && "$found_env" != '<no value>' ]]; then IFS=',' read -r -a env_files <<< "$found_env"; fi
-  if [[ -z "$manager" && "$found_manager" == release-compose ]]; then manager=release-compose; fi
+  if [[ -z "$manager" ]]; then
+    case "$found_manager" in
+      release-compose) manager=release-compose ;;
+      external-compose|komodo) manager=komodo ;;
+    esac
+  fi
   [[ -n "$selected_image" && "$selected_image" != '<no value>' ]] || die 'The selected MCP image metadata is missing. Restore the saved deployment image before setup.'
 fi
-# Missing release ownership means owner-managed export only; it never authorizes
-# replacing the running stack through release overlays.
-manager=${manager:-komodo}
+# Missing ownership is a prerequisite, never authorization to select an apply
+# path. A recognized deployment marker or this explicit host choice is required.
+if [[ -z "$manager" ]]; then
+  if [[ -t 0 && -t 1 ]]; then
+    printf 'Deployment ownership metadata is missing. Who applies this saved Compose project?\n'
+    printf '  1) Existing deployment manager — export the reviewed complete document\n'
+    printf '  2) Explicitly release-owned Compose bundle — export a reviewed release overlay\n'
+    read -r -p 'Deployment ownership (1 or 2): ' ownership
+    case "$ownership" in
+      1) manager=komodo ;;
+      2) manager=release-compose ;;
+      *) die 'deployment_manager_unknown: Select the actual owner of the saved deployment before setup.' ;;
+    esac
+  else
+    die 'deployment_manager_unknown: Supply only --manager external-compose for an existing deployment manager, or --manager release-compose for an explicitly release-owned bundle. No approval or setup container was started.'
+  fi
+fi
 if [[ "$manager" == external-compose ]]; then manager=komodo; fi
 [[ "$manager" == komodo || "$manager" == release-compose ]] || die 'Select --manager external-compose (external reviewed export) or explicitly owned release-compose.'
 [[ "$project" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die 'Use the actual Compose project name shown by docker compose ls.'
@@ -288,6 +307,13 @@ for name in ("api", "mcp-http", "web"):
             if isinstance(value, dict):
                 for key, child in value.items(): flatten(child, prefix + (":" if prefix else "") + key)
             elif isinstance(value, list):
+                if prefix.casefold() in {"netratel:mcp:http:requiredgroups", "netratel:mcp:http:requiredscopes", "netratel:mcp:http:allowedorigins"}:
+                    # Serving HTTP options replace each of these arrays at the
+                    # highest JSON provider, including an explicit empty list.
+                    for inherited in list(protected):
+                        if inherited.casefold() == prefix.casefold() or inherited.casefold().startswith(prefix.casefold() + ":"):
+                            del protected[inherited]
+                    if not value: protected[prefix] = ""
                 for index, child in enumerate(value): flatten(child, prefix + ":" + str(index))
             elif prefix.casefold().startswith(("netratel:", "m2m:", "integration:", "authentication:", "webgateway:")) or prefix.casefold() == "apibaseurl":
                 protected[prefix] = value

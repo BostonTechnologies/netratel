@@ -2854,7 +2854,7 @@ elif args[0] == "inspect":
         sys.exit(0)
     if "com.docker.compose.project.config_files" in template:
         files = os.environ.get("LAUNCHER_SAVED_FILES", os.environ["LAUNCHER_COMPOSE_FILE"])
-        print("customer-stack|" + files + "|" + os.environ["LAUNCHER_COMPOSE_DIRECTORY"] + "|" + os.environ["LAUNCHER_ENV_FILE"] + "|" + os.environ.get("LAUNCHER_MANAGER_METADATA", "") + "|fixture|mcp-http")
+        print("customer-stack|" + files + "|" + os.environ["LAUNCHER_COMPOSE_DIRECTORY"] + "|" + os.environ["LAUNCHER_ENV_FILE"] + "|" + os.environ.get("LAUNCHER_MANAGER_METADATA", "external-compose") + "|fixture|mcp-http")
         sys.exit(0)
     if "oneoff" in template:
         print("False")
@@ -2873,6 +2873,9 @@ elif args[0] == "inspect":
         print("false")
 elif args[0] == "cp":
     if args[1].startswith("image-inspection-container:") or ":/app/appsettings" in args[1]:
+        if args[1].endswith("/app/appsettings.Production.json") and "LAUNCHER_IMAGE_ENV_APPSETTINGS" in os.environ:
+            pathlib.Path(args[2]).write_text(os.environ["LAUNCHER_IMAGE_ENV_APPSETTINGS"])
+            sys.exit(0)
         if args[1].endswith("/app/appsettings.json") and "LAUNCHER_IMAGE_APPSETTINGS" in os.environ:
             pathlib.Path(args[2]).write_text(os.environ["LAUNCHER_IMAGE_APPSETTINGS"])
             sys.exit(0)
@@ -3059,7 +3062,7 @@ elif args[0] == "cp":
         return subprocess.run(["bash", str(self.launcher), *arguments], cwd=self.root,
                               env=dict(self.environment, **environment), text=True, capture_output=True, timeout=15)
 
-    def test_discovery_selects_one_instance_and_missing_ownership_exports_only(self):
+    def test_discovery_selects_one_instance_and_explicit_external_ownership_exports_only(self):
         result = self.discovered_launcher()
         self.assertEqual(result.returncode, 2, result.stderr)
         command = self.run_command()
@@ -3208,6 +3211,34 @@ elif args[0] == "cp":
                 self.assertIn("approved sources changed", guarded.stderr)
                 self.assertFalse(any("up" in call for call in self.commands()))
                 path.write_bytes(original)
+
+    def test_missing_ownership_requires_one_explicit_manager_choice_before_preflight_or_setup(self):
+        result = self.discovered_launcher(LAUNCHER_MANAGER_METADATA="")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("deployment_manager_unknown", result.stderr)
+        self.assertIn("--manager external-compose", result.stderr)
+        self.assertFalse(any(call[0] == "compose" and ("config" in call or "run" in call) for call in self.commands()))
+        self.log.write_text("")
+        explicit = self.discovered_launcher("--manager", "external-compose", LAUNCHER_MANAGER_METADATA="")
+        self.assertEqual(explicit.returncode, 2, explicit.stderr)
+        self.assertIn("NETRATEL_SETUP_DEPLOYMENT_MANAGER=komodo", self.run_command())
+
+    def test_highest_protected_http_array_provider_replaces_lower_entries_including_empty_arrays(self):
+        original = {"NetRatel": {"Mcp": {"Http": {"RequiredGroups": ["lower-one", "lower-two"],
+                    "RequiredScopes": ["lower-scope"], "AllowedOrigins": ["https://lower.invalid"]}}}}
+        for replacement in ([], ["reviewed"]):
+            with self.subTest(replacement=replacement):
+                higher = {"NetRatel": {"Mcp": {"Http": {"RequiredGroups": replacement, "RequiredScopes": [], "AllowedOrigins": []}}}}
+                result = self.run_launcher(LAUNCHER_IMAGE_APPSETTINGS=json.dumps(original),
+                                           LAUNCHER_IMAGE_ENV_APPSETTINGS=json.dumps(higher))
+                self.assertEqual(result.returncode, 2, result.stderr)
+                snapshot = json.loads((self.stack / ".netratel-http-mcp-customer-stack/.effective-deployment.json").read_text())
+                protected = snapshot["x-netratel-protected-configuration"]["mcp-http"]
+                selected = {key: value for key, value in protected.items() if key.startswith("NetRatel:Mcp:Http:RequiredGroups")}
+                expected = {"NetRatel:Mcp:Http:RequiredGroups:0": "reviewed"} if replacement else {"NetRatel:Mcp:Http:RequiredGroups": ""}
+                self.assertEqual(selected, expected)
+                self.assertEqual(protected["NetRatel:Mcp:Http:RequiredScopes"], "")
+                self.assertEqual(protected["NetRatel:Mcp:Http:AllowedOrigins"], "")
 
 
 if __name__ == "__main__":

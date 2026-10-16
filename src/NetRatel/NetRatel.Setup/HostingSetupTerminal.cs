@@ -518,7 +518,7 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
     }
     private void SaveProgress(string progress)
     {
-        ConfigurationFileStorage.WriteAtomic(Path.Combine(OutputDirectory, ".hosting-progress.json"), System.Text.Json.JsonSerializer.Serialize(new { State = progress, PublicOrigin, UpdatedAtUtc = DateTimeOffset.UtcNow }));
+        ConfigurationFileStorage.WriteAtomic(Path.Combine(OutputDirectory, ".hosting-progress.json"), System.Text.Json.JsonSerializer.Serialize(new { State = progress, PublicOrigin, UpdatedAtUtc = DateTimeOffset.UtcNow }), replace: true);
         Progress = progress;
     }
     private Task SetStepAsync(HostingSetupStep step, CancellationToken ct) => InvokeAsync(() => { Step = step; Error.Value = ""; Revision.Value++; }, ct);
