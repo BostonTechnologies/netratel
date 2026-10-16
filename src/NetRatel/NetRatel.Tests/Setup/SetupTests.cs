@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NetRatel.AgentClient;
 using NetRatel.Setup;
+using NetRatel.Tests.Mcp;
 using R3;
 using Termina.Hosting;
 using Termina.Input;
@@ -32,7 +33,9 @@ public sealed class SetupTests
             }
             return Json(route.EndsWith("poll") ? new { status = "approved", approvalId = (string?)"approved", registrationFingerprint = fingerprint } : new { status = "cancelled", approvalId = (string?)null, registrationFingerprint = (string?)null });
         });
-        var model = new HostingSetupViewModel(new Dictionary<string, string> { ["--deployment-manager"] = "release-compose", ["--output-directory"] = directory.Path }, handler);
+        var effective = HttpHostingDeploymentFixture.WithSource(new(directory.Path, "https://instance.example", "https://instance.example") { ExistingM2MCallerClientIds = [] });
+        var model = new HostingSetupViewModel(new Dictionary<string, string> { ["--deployment-manager"] = "release-compose", ["--output-directory"] = directory.Path }, handler)
+            { EffectiveComposeSourcePath = effective.EffectiveComposeSourcePath };
         var input = new VirtualInputSource(); var terminal = new VirtualTerminal(96, 30);
         var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { DisableDefaults = true }); builder.Logging.ClearProviders();
         builder.Services.AddTerminaVirtualInput(input);
@@ -381,7 +384,9 @@ public sealed class SetupTests
             if (route.EndsWith("cancel")) { personalRevocations++; return Json(new { status = "cancelled" }); }
             Assert.Equal("nrt_ic_transient-verifier", request.Headers.Authorization?.Parameter); return await McpReply(request);
         });
-        var model = new HostingSetupViewModel(new Dictionary<string, string> { ["--deployment-manager"] = "release-compose", ["--output-directory"] = directory.Path }, handler);
+        var effective = HttpHostingDeploymentFixture.WithSource(new(directory.Path, "https://instance.example", "https://instance.example") { ExistingM2MCallerClientIds = [] });
+        var model = new HostingSetupViewModel(new Dictionary<string, string> { ["--deployment-manager"] = "release-compose", ["--output-directory"] = directory.Path }, handler)
+            { EffectiveComposeSourcePath = effective.EffectiveComposeSourcePath };
         var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { DisableDefaults = true }); builder.Logging.ClearProviders();
         builder.Services.AddTerminaVirtualInput(input); builder.Services.AddTermina("/hosting", routes => routes.RegisterRoute<HostingSetupPage, HostingSetupViewModel>("/hosting", services => new HostingSetupPage(services.GetRequiredService<Termina.Clipboard.IClipboardService>()), _ => model)); builder.Services.AddSingleton<IAnsiTerminal>(terminal);
         using var host = builder.Build(); await host.StartAsync();
@@ -425,6 +430,7 @@ public sealed class SetupTests
             ConfigurationFileStorage.WriteAtomic(key, Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)) + "\n");
             request = request with { ExistingDelegationKeyFile = key, DelegationKeyId = "existing-v1", DelegationIssuer = "existing-issuer", DelegationAudience = "existing-api" };
         }
+        request = HttpHostingDeploymentFixture.WithSource(request);
         var setup = new NetRatelHttpHostingSetupService(); setup.Apply(request);
         var savedFingerprint = setup.PrepareRegistration(request);
         var originalHashes = Directory.EnumerateFiles(directory.Path, "*", SearchOption.AllDirectories).ToDictionary(path => path, ConfigurationFileStorage.Hash);
@@ -587,6 +593,7 @@ public sealed class SetupTests
         var output = System.IO.Path.Combine(directory.Path, "setup");
         var original = new HttpHostingSetupRequest(output, "https://instance.example", "https://instance.example")
         { ApiServiceAudience = "old.api", ApiServiceAuthority = "https://old-authority.example", ExistingM2MCallerClientIds = [] };
+        original = HttpHostingDeploymentFixture.WithSource(original);
         new NetRatelHttpHostingSetupService().Apply(original);
         var protectedHashes = Directory.EnumerateFiles(System.IO.Path.Combine(output, "secrets"), "*", SearchOption.AllDirectories)
             .Concat(Directory.EnumerateFiles(System.IO.Path.Combine(output, "runtime"), "*", SearchOption.AllDirectories))
