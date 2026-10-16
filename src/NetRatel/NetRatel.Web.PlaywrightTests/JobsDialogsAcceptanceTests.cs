@@ -9,6 +9,7 @@ public sealed class JobsDialogsAcceptanceTests(ClientsManagementBrowserFixture b
     [Theory]
     [InlineData(1366, 768, "light", 1d)]
     [InlineData(1366, 768, "dark", 1d)]
+    [InlineData(1600, 900, "light", 1d)]
     [InlineData(390, 844, "dark", 1d)]
     [InlineData(640, 400, "light", 2d)]
     public async Task Eight_inputs_and_parameter_editor_keep_actions_visible_and_keyboard_focus_inside(int width, int height, string theme, double dpr)
@@ -24,7 +25,7 @@ public sealed class JobsDialogsAcceptanceTests(ClientsManagementBrowserFixture b
         var start = dialog.GetByRole(AriaRole.Button, new() { Name = "Start Run", Exact = true });
         await Assertions.Expect(start).ToBeInViewportAsync(new() { Ratio = 1 });
         await Assertions.Expect(dialog.GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true })).ToBeInViewportAsync(new() { Ratio = 1 });
-        if (width == 1366)
+        if (width >= 1366)
         {
             await WaitForDialogAnimationAsync(dialog);
             var bounds = (await dialog.BoundingBoxAsync())!;
@@ -54,7 +55,7 @@ public sealed class JobsDialogsAcceptanceTests(ClientsManagementBrowserFixture b
         var editor = page.Locator(".param-editor");
         await editor.GetByLabel("Name", new() { Exact = true }).FillAsync("New input");
         var child = page.Locator(".mud-dialog").Last;
-        if (width == 1366)
+        if (width >= 1366)
         {
             await WaitForDialogAnimationAsync(child);
             Assert.InRange((await child.BoundingBoxAsync())!.Width, 600, 720);
