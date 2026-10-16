@@ -154,6 +154,43 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
     }
 
     [Fact]
+    public async Task Delayed_refresh_preserves_acknowledged_delete_revoke_and_failed_cleanup_rows()
+    {
+        JSInterop.Mode = JSRuntimeMode.Loose;
+        Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+        using var transport = new CredentialTransport { IncludeCredentials = true, FailDeleteId = "revoked-fail" };
+        Services.AddSingleton<IHttpClientFactory>(transport);
+        SetRendererInfo(new RendererInfo("Server", true));
+        var page = Render<IntegrationCredentials>();
+        page.WaitForAssertion(() => Field<object>(page.Instance, "_authority").Should().NotBeNull());
+        transport.PauseNextList();
+        var refresh = CallAsync(page.Instance, "LoadAsync");
+        transport.DelayedListRequested.Should().BeTrue();
+
+        var selected = Field<HashSet<string>>(page.Instance, "_selectedInactive");
+        selected.UnionWith(["revoked-ok", "revoked-fail"]);
+        Call(page.Instance, "ConfirmDeleteSelected");
+        await CallAsync(page.Instance, "RevokeAsync");
+        Field<string>(page.Instance, "_managementError").Should().Contain("1 credential(s)");
+        selected.Should().Equal("revoked-fail");
+        var active = ((System.Collections.IEnumerable)Field<object>(page.Instance, "_credentials")).Cast<object>()
+            .Single(credential => (string)credential.GetType().GetProperty("Id")!.GetValue(credential)! == "active");
+        Call(page.Instance, "ConfirmRevoke", active);
+        await CallAsync(page.Instance, "RevokeAsync");
+
+        transport.CompleteDelayedList();
+        await refresh;
+        var credentials = ((System.Collections.IEnumerable)Field<object>(page.Instance, "_credentials")).Cast<object>().ToArray();
+        credentials.Select(credential => credential.GetType().GetProperty("Id")!.GetValue(credential))
+            .Should().BeEquivalentTo(["active", "revoked-fail", "expired-unselected"]);
+        active = credentials.Single(credential => (string)credential.GetType().GetProperty("Id")!.GetValue(credential)! == "active");
+        active.GetType().GetProperty("RevokedAtUtc")!.GetValue(active).Should().NotBeNull();
+        selected.Should().Equal("revoked-fail");
+        transport.DeletedIds.Should().BeEquivalentTo(["revoked-ok", "revoked-fail"]);
+        transport.RevokedIds.Should().Equal("active");
+    }
+
+    [Fact]
     public async Task Selecting_and_removing_tenant_access_invalidates_create_confirmation()
     {
         JSInterop.Mode = JSRuntimeMode.Loose;
@@ -207,6 +244,17 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         public bool IncludeCredentials { get; set; }
         public string? FailDeleteId { get; set; }
         public List<string> DeletedIds { get; } = [];
+        public List<string> RevokedIds { get; } = [];
+        private bool _pauseNextList;
+        private TaskCompletionSource<HttpResponseMessage>? _delayedList;
+        private HttpResponseMessage? _delayedSnapshot;
+        public bool DelayedListRequested => _delayedSnapshot is not null;
+        public void PauseNextList()
+        {
+            _pauseNextList = true;
+            _delayedList = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        public void CompleteDelayedList() => _delayedList!.SetResult(_delayedSnapshot!);
         public HttpClient CreateClient(string name) => new(this, disposeHandler: false) { BaseAddress = new Uri("https://api.example.test") };
         public void CompleteCreate(string secret) => _create.SetResult(new HttpResponseMessage(HttpStatusCode.Created)
         {
@@ -230,6 +278,11 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
             }
             if (request.RequestUri!.AbsolutePath == "/api/v2/access/self")
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new { isInstanceAdministrator = false }) });
+            if (request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath.EndsWith("/revoke", StringComparison.Ordinal))
+            {
+                RevokedIds.Add(request.RequestUri.AbsolutePath.Split('/')[^2]);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NoContent));
+            }
             if (request.Method == HttpMethod.Post)
             {
                 PostRequested = true;
@@ -244,7 +297,13 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
             object[] credentials = IncludeCredentials ? new[] {
                 Credential("active", now.AddDays(1), null), Credential("revoked-ok", now.AddDays(1), now),
                 Credential("revoked-fail", now.AddDays(1), now), Credential("expired-unselected", now.AddDays(-1), null) } : [];
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(credentials) });
+            var snapshot = new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(credentials) };
+            if (_pauseNextList)
+            {
+                _pauseNextList = false; _delayedSnapshot = snapshot;
+                return _delayedList!.Task;
+            }
+            return Task.FromResult(snapshot);
         }
     }
 }
