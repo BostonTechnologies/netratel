@@ -250,6 +250,9 @@ public sealed class HttpHostingEffectiveDeploymentTests : IDisposable
         Assert.True(existing.HasDelegationKey);
         Assert.DoesNotContain(secret, JsonSerializer.Serialize(existing));
         var output = Path.Combine(_directory, "adopted-setup");
+        Assert.False(Directory.Exists(output));
+        if (OperatingSystem.IsWindows()) Directory.CreateDirectory(output);
+        else Directory.CreateDirectory(output, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         var outbound = existing.MaterializeOutboundConfiguration(output);
         var delegation = existing.MaterializeDelegationKey(output);
         Assert.Equal(secret, NetRatelConfigurationService.ReadConfiguration(outbound!).ApiM2MClientSecret);
