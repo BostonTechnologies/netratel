@@ -10,7 +10,9 @@ namespace NetRatel.Web.PlaywrightTests;
 public sealed class PairingConnectionsResponsiveTests(ClientsManagementBrowserFixture browserFixture) : IClassFixture<ClientsManagementBrowserFixture>
 {
     [Theory]
-    [InlineData(1280, 800)]
+    [InlineData(1366, 768)]
+    [InlineData(1600, 900)]
+    [InlineData(683, 384)]
     [InlineData(390, 844)]
     public async Task Final_mapping_form_has_readable_tenant_choices_and_reachable_actions(int width, int height)
     {
@@ -20,20 +22,30 @@ public sealed class PairingConnectionsResponsiveTests(ClientsManagementBrowserFi
         var page = await context.NewPageAsync();
         var errors = new List<string>(); page.PageError += (_, error) => errors.Add(error);
         await page.GotoAsync(host.BaseAddress + "/account/integration-credentials", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("integration-credentials-client-ready").WaitForAsync(new() { State = WaitForSelectorState.Attached });
+        await page.Locator("html[data-netratel-theme]").WaitForAsync();
+        if (width < 1280)
+        {
+            var scrim = page.Locator(".mud-drawer-overlay--open .mud-overlay-scrim");
+            if (await scrim.CountAsync() > 0) await scrim.ClickAsync(new() { Position = new() { X = width - 10, Y = height / 2f } });
+            await Assertions.Expect(page.GetByTestId("app-navigation-drawer")).ToHaveClassAsync(new System.Text.RegularExpressions.Regex("mud-drawer--closed"));
+        }
+        await Assertions.Expect(page.GetByTestId("pairing-final-form")).ToHaveCountAsync(0);
+        await page.GetByTestId("connection-view").ClickAsync();
         var form = page.GetByTestId("pairing-final-form");
         await Assertions.Expect(form).ToBeVisibleAsync();
-        var tenant = form.GetByTestId("pairing-netratel-tenant");
-        var organization = form.GetByTestId("pairing-rateldesk-organization");
+        var tenant = form.GetByRole(AriaRole.Combobox, new() { Name = "NetRatel tenant", Exact = true });
+        var organization = form.GetByRole(AriaRole.Combobox, new() { Name = "RatelDesk tenant / organization", Exact = true });
         await Assertions.Expect(tenant).ToContainTextAsync("Monitoring tenant");
         await Assertions.Expect(organization).ToContainTextAsync("Support organization");
-        var positions = await form.EvaluateAsync<double[]>("e => {const a=e.querySelector('[data-testid=pairing-netratel-tenant]').getBoundingClientRect(); const b=e.querySelector('[data-testid=pairing-rateldesk-organization]').getBoundingClientRect(); return [a.top,a.right,b.top,b.left]}");
+        var positions = await form.EvaluateAsync<double[]>("e => {const a=e.querySelector('div[data-testid=pairing-netratel-tenant]').getBoundingClientRect(); const b=e.querySelector('div[data-testid=pairing-rateldesk-organization]').getBoundingClientRect(); return [a.top,a.right,b.top,b.left]}");
         if (width > 600) { Assert.True(Math.Abs(positions[0] - positions[2]) < 3); Assert.True(positions[1] <= positions[3]); }
         else Assert.True(positions[2] > positions[0]);
-        await Assertions.Expect(form.GetByTestId("pairing-run-automation").Locator("input")).Not.ToBeCheckedAsync();
-        await Assertions.Expect(form.GetByTestId("pairing-rateldesk-customer")).ToHaveCountAsync(0);
-        await form.GetByTestId("pairing-create-incidents").Locator("input").CheckAsync();
-        await Assertions.Expect(form.GetByTestId("pairing-rateldesk-customer")).ToBeVisibleAsync();
-        foreach (var control in new[] { form.GetByTestId("pairing-save"), page.GetByTestId("connection-delete") })
+        await Assertions.Expect(form.GetByRole(AriaRole.Checkbox, new() { Name = "Run automation — RatelDesk → NetRatel", Exact = true })).Not.ToBeCheckedAsync();
+        await Assertions.Expect(form.GetByRole(AriaRole.Combobox, new() { Name = "RatelDesk customer", Exact = true })).ToHaveCountAsync(0);
+        await form.GetByRole(AriaRole.Checkbox, new() { Name = "Create incidents — NetRatel → RatelDesk", Exact = true }).CheckAsync();
+        await Assertions.Expect(form.GetByRole(AriaRole.Combobox, new() { Name = "RatelDesk customer", Exact = true })).ToBeVisibleAsync();
+        foreach (var control in new[] { page.GetByTestId("pairing-save") })
         {
             await control.ScrollIntoViewIfNeededAsync(); await Assertions.Expect(control).ToBeVisibleAsync();
             Assert.True(await control.EvaluateAsync<bool>("e => {const r=e.getBoundingClientRect();return r.left>=-1&&r.right<=innerWidth+1&&r.width>0}"));
@@ -41,7 +53,7 @@ public sealed class PairingConnectionsResponsiveTests(ClientsManagementBrowserFi
         Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth + 1"));
         var evidence = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.GetFullPath("TestResults/playwright");
         Directory.CreateDirectory(evidence);
-        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"pairing-final-form-{width}x{height}.png"), FullPage = true });
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"pairing-final-form-{width}x{height}.png"), FullPage = false, Animations = ScreenshotAnimations.Disabled });
         Assert.Empty(errors); Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
     }
 
