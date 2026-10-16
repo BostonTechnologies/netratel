@@ -12,7 +12,7 @@ Use API, Web, HTTP MCP and setup tools from the same verified release. You need 
    ./setup-http-mcp.sh
    ```
 
-   The launcher discovers the running MCP container, ordered saved Compose sources, image and persistent storage. Select a container only if prompted. If discovery stops, correct the specific missing prerequisite before continuing; no approval has been requested.
+   The launcher discovers the running MCP container, ordered saved Compose sources, image and persistent storage. Select a container only if prompted. If ownership metadata is missing, identify the existing deployment manager or explicitly release-owned bundle. Correct any other reported prerequisite before continuing; no approval has been requested.
 
 2. Enter the **NetRatel Web URL**, using its root or `/mcp` address. Check the normalized Web and MCP addresses. Existing API/authentication/instance settings are retained. Use **Advanced** only for a deliberate separate API destination or another supported configuration. A hostname never selects development or production for you.
 

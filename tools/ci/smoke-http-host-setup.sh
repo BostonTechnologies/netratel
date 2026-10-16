@@ -4,7 +4,7 @@ umask 077
 
 # Optional hosted acceptance only. Reuse the source Compose, public HTTPS,
 # unattended bootstrap and pairing fixtures; never publish these images. The
-# actual deployment is one Compose document, as in a Komodo Compose editor.
+# actual deployment is one Compose document in an external deployment manager.
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 [[ "${GITHUB_ACTIONS:-false}" == true ]] || {
