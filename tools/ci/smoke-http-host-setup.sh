@@ -41,7 +41,7 @@ export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$temporary/agent.key"
 source_compose=(docker compose -f compose.yaml -f release/compose.public-https.yaml -f release/compose.mcp-http.yaml -f "$temporary/fixture.yaml")
 compose=(docker compose -f "$temporary/compose.yaml")
 applied=("${compose[@]}")
-launcher=(bash "$root/release/setup-http-mcp.sh" --compose-file "$temporary/compose.yaml" --project "$project" --manager komodo)
+launcher=(bash "$root/release/setup-http-mcp.sh" --compose-file "$temporary/compose.yaml" --project "$project" --manager external-compose)
 host_setup=(--non-interactive
   --api-base-url "$NETRATEL_PUBLIC_API_ORIGIN"
   --api-m2m-authority "$NETRATEL_PUBLIC_ORIGIN" --api-m2m-audience netratel.api
@@ -80,7 +80,7 @@ def collect(item):
 try: collect(json.loads((private / "redaction-config.json").read_text()))
 except (OSError, json.JSONDecodeError): pass
 files = [private / name for name in ("startup.log", "container-states.jsonl", "launcher.log", "verified-launcher.log",
-    "customer-policy-recipe.log", "customer-policy.json")]
+    "fresh-verified-launcher.log", "changed-source-launcher.log", "customer-policy-recipe.log", "customer-policy.json")]
 files += sorted(private.glob(".netratel-http-mcp-*/*.log"))
 for index, path in enumerate(files):
     if not path.is_file(): continue
@@ -101,6 +101,9 @@ PY
 }
 cleanup() {
   local status=$?
+  if [[ -n "${bounded_pairing:-}" ]]; then
+    post /api/integration-pairing/v1/cancel "$(jq '{deviceCapability}' <<< "$bounded_pairing")" >/dev/null 2>&1 || true
+  fi
   if (( status != 0 )); then
     echo "::error title=HTTP host setup smoke failed::${stage}" >&2
     for receipt in TestResults/http-host-setup/personal-{saved,reloaded}.json; do
@@ -684,6 +687,67 @@ jq -e --arg origin "$NETRATEL_PUBLIC_ORIGIN" --arg resource "$NETRATEL_MCP_PUBLI
 [[ "$("${applied[@]}" exec -T --user 10001 mcp-http sha256sum /setup-output/.http-host.setup.json | cut -d ' ' -f 1)" == "$saved_request_hash" ]]
 [[ "$(sha256sum "$temporary/compose.yaml" | cut -d ' ' -f 1)" == "$applied_compose_hash" ]]
 check_generation
+stage="issuing a distinct bounded read-only verifier with explicit consent and zero tenant access"
+bounded_pairing="$(post /api/integration-pairing/v1/start "$(jq -n --arg resource "$NETRATEL_MCP_PUBLIC_RESOURCE_URI" \
+  '{name:"Fresh saved-generation read-only verification",purpose:1,resource:$resource,temporaryVerifier:true,requestedPermissions:["mcp.discovery.read"]}')")"
+account_post /api/v2/account/integration-credentials/pairing/lookup "$(jq '{userCode}' <<< "$bounded_pairing")" \
+  | jq -e '.temporaryVerifier == true and .requestedPermissions == ["mcp.discovery.read"]' >/dev/null
+# Deliberately request an ordinary long expiry; the server must enforce its
+# verifier bound independently of the caller-supplied requested expiration.
+ordinary_expiry="$(date -u -d '+30 days' +'%Y-%m-%dT%H:%M:%SZ')"
+account_post /api/v2/account/integration-credentials/pairing/approve \
+  "$(jq -n --arg code "$(jq -r '.userCode' <<< "$bounded_pairing")" --arg expiry "$ordinary_expiry" \
+    '{userCode:$code,expiresAtUtc:$expiry,grants:[],instancePermissions:["mcp.discovery.read"],verifierConsent:true}')" >/dev/null
+bounded_delivery="$(poll_protocol /api/integration-pairing/v1/poll "$(jq '{deviceCapability}' <<< "$bounded_pairing")" issued "$(jq -er '.intervalSeconds' <<< "$bounded_pairing")")"
+jq -e '.delivery.grants == [] and .delivery.instancePermissions == ["mcp.discovery.read"]' <<< "$bounded_delivery" >/dev/null
+jq '.delivery | del(.secret)' <<< "$bounded_delivery" > TestResults/http-host-setup/bounded-verifier.json
+python3 - TestResults/http-host-setup/bounded-verifier.json <<'PY_BOUND'
+import datetime, json, pathlib, sys
+receipt = json.loads(pathlib.Path(sys.argv[1]).read_text())
+expiry = datetime.datetime.fromisoformat(receipt["expiresAtUtc"].replace("Z", "+00:00"))
+now = datetime.datetime.now(datetime.timezone.utc)
+assert now < expiry <= now + datetime.timedelta(minutes=15), "Verifier lifetime exceeded its server bound"
+PY_BOUND
+bounded_credential_file=/var/lib/netratel/clients/.bounded-host-verifier
+jq -r '.delivery.secret' <<< "$bounded_delivery" | "${applied[@]}" exec -T --user 10001 mcp-http \
+  sh -ceu 'umask 077; cat > /var/lib/netratel/clients/.bounded-host-verifier; chmod 600 /var/lib/netratel/clients/.bounded-host-verifier'
+stage="fresh unchanged-source launcher verification with the bounded verifier"
+"${launcher[@]}" --verify -- --non-interactive --instance "$NETRATEL_PUBLIC_ORIGIN" \
+  --credential-file "$bounded_credential_file" > "$temporary/fresh-verified-launcher.log" 2>&1
+python3 - "$temporary/fresh-verified-launcher.log" <<'PY_FRESH'
+import json, pathlib, sys
+text = pathlib.Path(sys.argv[1]).read_text(); decoder = json.JSONDecoder()
+for offset, character in enumerate(text):
+    if character != "{": continue
+    try: receipt, _ = decoder.raw_decode(text[offset:])
+    except json.JSONDecodeError: continue
+    if isinstance(receipt, dict) and receipt.get("state") == "end-to-end-verified":
+        checks = receipt.get("checks", [])
+        if checks and all(check.get("status") == "completed" for check in checks) and any(check.get("name") == "permitted read-only tool" for check in checks): break
+else: raise SystemExit("Fresh launcher verification did not complete a permitted API-backed read")
+PY_FRESH
+[[ "$("${applied[@]}" exec -T --user 10001 mcp-http sha256sum /setup-output/.http-host.setup.json | cut -d ' ' -f 1)" == "$saved_request_hash" ]]
+stage="revoking the bounded verifier without affecting host or ordinary customer credentials"
+bounded_id="$(jq -er '.delivery.credentialId' <<< "$bounded_delivery")"
+post /api/integration-pairing/v1/cancel "$(jq '{deviceCapability}' <<< "$bounded_pairing")" >/dev/null
+curl "${curl_args[@]}" --cookie "$temporary/cookies" "$NETRATEL_PUBLIC_ORIGIN/api/v2/account/integration-credentials/" \
+  | jq -e --arg id "$bounded_id" 'any(.[]; .id == $id and .revokedAtUtc != null)' >/dev/null
+"${applied[@]}" exec -T --user 10001 mcp-http rm -f "$bounded_credential_file"
+unset bounded_pairing bounded_delivery bounded_id
+stage="rejecting a concurrent saved-source edit before verification consent or completion"
+cp "$temporary/compose.yaml" "$temporary/compose.unchanged-backup"
+printf '\n# synthetic concurrent owner edit\n' >> "$temporary/compose.yaml"
+changed_status=0
+"${launcher[@]}" --verify -- --non-interactive --instance "$NETRATEL_PUBLIC_ORIGIN" \
+  --credential-file "$personal_credential_file" > "$temporary/changed-source-launcher.log" 2>&1 || changed_status=$?
+[[ "$changed_status" != 0 ]]
+rg -q 'approved sources changed' "$temporary/changed-source-launcher.log"
+if rg -q 'end-to-end-verified|Server verification completed' "$temporary/changed-source-launcher.log"; then
+  echo 'Changed-source verification incorrectly claimed completion.' >&2; exit 1
+fi
+mv "$temporary/compose.unchanged-backup" "$temporary/compose.yaml"
+check_source_ownership
+[[ "$(sha256sum "$temporary/compose.yaml" | cut -d ' ' -f 1)" == "$applied_compose_hash" ]]
 stage="reloading the personal default profile after serving-container recreation"
 "${applied[@]}" exec -T mcp-http dotnet /app/NetRatel.Mcp.Http.dll doctor \
   --transport http --profile default > TestResults/http-host-setup/personal-reloaded.json
@@ -696,7 +760,7 @@ jq -n --arg fingerprint "$fingerprint" --arg source "$(git rev-parse HEAD)" \
   '{sourceSha:$source,registrationFingerprint:$fingerprint,headlessGeneration:true,administratorProtocolApproval:true,
     komodoSingleCompose:true,privateHostOwnedSourcePreserved:true,missingStoragePreflight:true,existingReadOnlyIdentityAdopted:true,managedEnvironmentFilesRetained:true,splitWebApiOrigins:true,instance:"dev",
     initialTokenIssuanceRejectionDiagnosed:true,
-    generatedApply:true,authenticatedCatalogAndApiRead:true,recreatedAndResumed:true,launcherVerificationCompleted:true,personalProfileSavedAndReloaded:true,
+    generatedApply:true,authenticatedCatalogAndApiRead:true,recreatedAndResumed:true,launcherVerificationCompleted:true,freshUnchangedSourceLauncherVerification:true,boundedVerifierExplicitConsent:true,boundedVerifierTenantGrants:0,boundedVerifierInstancePermissions:["mcp.discovery.read"],boundedVerifierRevocationConfirmed:true,changedSourceVerificationBlocked:true,personalProfileSavedAndReloaded:true,
     documentedCustomerPolicyRecipeExecuted:true,
     customerProtocolAcceptance:{connectionCount:3,ownTenantReads:6,crossTenantDenials:12,persistedAfterRecreation:true},
     netClawRuntimeAcceptance:"not executed; independent HTTP MCP protocol clients used",

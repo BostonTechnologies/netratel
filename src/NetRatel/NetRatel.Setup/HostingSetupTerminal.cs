@@ -81,7 +81,7 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
         _m2mCallersKnown = options.ContainsKey("--existing-m2m-callers");
         _apiServiceAudience = options.GetValueOrDefault("--api-m2m-audience", "netratel.api");
         _apiServiceAuthority = options.GetValueOrDefault("--api-m2m-authority");
-        DeploymentManager = options.GetValueOrDefault("--deployment-manager") ?? Environment.GetEnvironmentVariable("NETRATEL_SETUP_DEPLOYMENT_MANAGER") ?? "release-compose";
+        DeploymentManager = options.GetValueOrDefault("--deployment-manager") ?? Environment.GetEnvironmentVariable("NETRATEL_SETUP_DEPLOYMENT_MANAGER") ?? "";
         ComposeSourcePath = options.GetValueOrDefault("--compose-file") ?? Environment.GetEnvironmentVariable("NETRATEL_SETUP_COMPOSE_SOURCE");
     }
     public override void OnActivated()
@@ -102,8 +102,11 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
     public string VerificationScope { get; set; } = "";
     public void SelectAuthMode(string mode) { AuthMode = mode; _authModeExplicit = true; Revision.Value++; }
     public bool AuthenticationModeSelected => _authModeExplicit || _authenticationModeKnown;
-    public string DeploymentManager { get; set; } = "release-compose";
+    public string DeploymentManager { get; set; } = "";
     public string? ComposeSourcePath { get; set; }
+    public bool VerificationOnly => _options.ContainsKey("--verify");
+    public string Progress { get; private set; } = "Setup not saved";
+    public bool CleanupPending => _verification?.CleanupPending == true;
     public bool IsKomodo => DeploymentManager == "komodo";
     public void ExportAndExit()
     {
@@ -180,6 +183,8 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
                     var address = InstanceSetupAddress.Parse(PublicOrigin);
                     OutputDirectory = HttpHostingStorage.Resolve(OutputDirectory); HttpHostingStorage.ValidateWritable(OutputDirectory);
                     AdoptSavedRequest(address);
+                    if (string.IsNullOrWhiteSpace(DeploymentManager))
+                        throw new AgentClientValidationException("deployment_manager_unknown: Deployment ownership is unavailable. On the Docker host, run ./setup-http-mcp.sh from the matching release bundle to discover the saved sources and persistent storage before approval.");
                     var existing = _savedRequest is null ? DiscoverExistingSettings(_options) : null;
                     if (existing is not null) AdoptExistingSettings(existing);
                     if (_options.TryGetValue("--auth-mode", out var explicitMode) && explicitMode is not ("local" or "oidc"))
@@ -249,7 +254,8 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
                     { ConfirmReplace = true; break; }
                     if (!string.Equals(_approvedFingerprint, _service.PrepareRegistration(Request()), StringComparison.OrdinalIgnoreCase))
                         throw new AgentClientValidationException("The host identity changed since approval. Go Back and request approval for this generation.");
-                    Result = _service.Apply(_reviewedRequest!, replace); ConfirmReplace = false;
+                    Result = _service.Apply(_reviewedRequest!, replace); ConfirmReplace = false; SaveProgress("Saved — apply pending");
+                    if (!IsKomodo) HostingExportReceipt.WriteIfRequested(OutputDirectory);
                     await SetStepAsync(HostingSetupStep.Apply, ct);
                     break;
                 case HostingSetupStep.Apply:
@@ -340,8 +346,20 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
         _loadedLocation = location;
         _m2mCallersKnown |= saved?.ExistingM2MCallerClientIds is not null;
         if (saved is null) return;
-        if (!_options.ContainsKey("--deployment-manager")) DeploymentManager = saved.DeploymentManager;
-        if (!_options.ContainsKey("--compose-file")) ComposeSourcePath = saved.ComposeSourcePath;
+        Progress = "Saved — apply pending";
+        var progressPath = Path.Combine(OutputDirectory, ".hosting-progress.json");
+        if (File.Exists(progressPath))
+        {
+            try
+            {
+                using var progress = System.Text.Json.JsonDocument.Parse(ConfigurationFileStorage.ReadText(progressPath, 4096));
+                if (progress.RootElement.TryGetProperty("State", out var state) && state.GetString() is "Saved — apply pending" or "Deployment applied — verify pending" or "End-to-end verified")
+                    Progress = state.GetString()!;
+            }
+            catch (System.Text.Json.JsonException) { } // Progress never overrides the saved generation or a fresh verification result.
+        }
+        if (!_options.ContainsKey("--deployment-manager") && string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("NETRATEL_SETUP_DEPLOYMENT_MANAGER"))) DeploymentManager = saved.DeploymentManager;
+        if (!_options.ContainsKey("--compose-file") && string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("NETRATEL_SETUP_COMPOSE_SOURCE"))) ComposeSourcePath = saved.ComposeSourcePath;
         _delegationLifetimeSeconds = saved.DelegationLifetimeSeconds;
         if (!_options.ContainsKey("--api-m2m-audience")) _apiServiceAudience = saved.ApiServiceAudience;
         if (!_options.ContainsKey("--api-m2m-authority")) _apiServiceAuthority = saved.ApiServiceAuthority;
@@ -396,6 +414,22 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
     }
     private async Task VerifyAsync(CancellationToken ct)
     {
+        var runtimePath = Environment.GetEnvironmentVariable("NETRATEL_SETUP_RUNTIME_ENVIRONMENT_SOURCE");
+        if (runtimePath is not null)
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(ConfigurationFileStorage.ReadText(runtimePath, 262144, secret: true));
+            var runtime = new Dictionary<string, Dictionary<string, string?>>(StringComparer.Ordinal);
+            foreach (var service in new[] { "mcp-http", "api", "web" })
+            {
+                if (!document.RootElement.TryGetProperty(service, out var values) || values.ValueKind != System.Text.Json.JsonValueKind.Object)
+                    throw new AgentClientValidationException("effective_runtime_missing: Serving runtime metadata is unavailable. Rerun the host launcher after applying the reviewed deployment.");
+                runtime[service] = values.EnumerateObject().ToDictionary(value => value.Name, value => value.Value.GetString(), StringComparer.OrdinalIgnoreCase);
+            }
+            HttpHostingEffectiveDeployment.ValidateRuntimeProposal(OutputDirectory, (service, key) => runtime.GetValueOrDefault(service)?.GetValueOrDefault(key));
+            SaveProgress("Deployment applied — verify pending");
+        }
+        else if (HttpHostingStorage.UsesSetupVolume(OutputDirectory))
+            throw new AgentClientValidationException("effective_runtime_missing: Verify through ./setup-http-mcp.sh on the Docker host so the applied serving container can be inspected before temporary client approval.");
         _verification ??= new SetupSession(ConfigurationSurface.HttpMcpClient, Path.Combine(OutputDirectory, ".verification-" + Guid.NewGuid().ToString("N") + ".json"), "host-verification", _handler, getEnvironmentVariable: _ => null);
         if (AuthMode == "OIDC")
         {
@@ -423,45 +457,64 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
             var externalChecks = await _verification.VerifyTransientHttpMcpAsync(ct);
             ct.ThrowIfCancellationRequested(); Checks = externalChecks;
             if (Checks.Count > 0 && Checks.All(check => check.Status == "completed"))
-            { VerificationPassword = ""; await SetStepAsync(HostingSetupStep.Finish, ct); }
+            { VerificationPassword = ""; SaveProgress("End-to-end verified"); await SetStepAsync(HostingSetupStep.Finish, ct); }
             else Error.Value = "External-provider verification is incomplete. Review the checks, current scopes and deployment apply state, then retry.";
             return;
         }
-        if (_verification.Pairing is null)
+        try
         {
-            await _verification.DiscoverAsync(PublicOrigin, ct);
-            if (!McpResourceUri.Equivalent(_verification.CanonicalTarget, Resource)) throw new AgentClientValidationException("The applied instance advertises a different MCP resource. Review the deployment and retry.");
-            await _verification.BeginPairingAsync(ct); await InvokeAsync(() => Revision.Value++, ct);
-        }
-        while (_verification.Pairing is { } pairing && DateTimeOffset.UtcNow < pairing.ExpiresAtUtc)
-        {
-            var poll = await _verification.PollAsync(ct);
-            if (poll.Status == "issued")
+            if (_verification.Pairing is null)
             {
-                var checks = await _verification.VerifyTransientHttpMcpAsync(ct);
-                ct.ThrowIfCancellationRequested(); Checks = checks;
-                if (checks.Count > 0 && checks.All(check => check.Status == "completed"))
+                await _verification.DiscoverAsync(PublicOrigin, ct);
+                if (!McpResourceUri.Equivalent(_verification.CanonicalTarget, Resource)) throw new AgentClientValidationException("The applied instance advertises a different MCP resource. Review the deployment and retry.");
+                await _verification.BeginPairingAsync(ct, temporaryVerifier: true); await InvokeAsync(() => Revision.Value++, ct);
+            }
+            while (_verification.Pairing is { } pairing && DateTimeOffset.UtcNow < pairing.ExpiresAtUtc)
+            {
+                var poll = await _verification.PollAsync(ct);
+                if (poll.Status == "issued")
+                {
+                    var checks = await _verification.VerifyTransientHttpMcpAsync(ct);
+                    ct.ThrowIfCancellationRequested(); Checks = checks;
+                    if (checks.Count > 0 && checks.All(check => check.Status == "completed"))
+                    {
+                        await _verification.CancelPairingAsync();
+                        SaveProgress("End-to-end verified"); await SetStepAsync(HostingSetupStep.Finish, ct);
+                    }
+                    else await InvokeAsync(() => { Error.Value = "Deployment verification is incomplete. Review the check result, apply the deployment command if pending, then choose Next to retry."; Revision.Value++; }, ct);
+                    return;
+                }
+                if (poll.Status is not ("pending" or "slow_down"))
                 {
                     await _verification.CancelPairingAsync();
-                    await SetStepAsync(HostingSetupStep.Finish, ct);
+                    throw new AgentClientValidationException("Temporary verification approval " + TerminalText.Safe(poll.Status) + ". Choose Next to retry.");
                 }
-                else await InvokeAsync(() => { Error.Value = "Deployment verification is incomplete. Review the check result, apply the deployment command if pending, then choose Next to retry."; Revision.Value++; }, ct);
-                return;
+                await InvokeAsync(() => { Error.Value = "Approve the separate temporary read-only verification client with mcp.discovery.read only and no tenant access. It expires shortly and is revoked after this check."; Revision.Value++; }, ct);
+                await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(poll.IntervalSeconds, 5, 30)), ct);
             }
-            if (poll.Status is not ("pending" or "slow_down"))
-            {
-                await _verification.CancelPairingAsync();
-                throw new AgentClientValidationException("Personal verification approval " + TerminalText.Safe(poll.Status) + ". Choose Next to retry.");
-            }
-            await InvokeAsync(() => { Error.Value = "Approve a separate personal HTTP MCP credential for this read-only check. It is kept in memory and revoked after verification."; Revision.Value++; }, ct);
-            await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(poll.IntervalSeconds, 5, 30)), ct);
+            await _verification.CancelPairingAsync(); throw new AgentClientValidationException("Temporary verification approval expired. Choose Next to retry.");
         }
-        await _verification.CancelPairingAsync(); throw new AgentClientValidationException("Personal verification approval expired. Choose Next to retry.");
+        finally { await _verification.CancelPairingAsync(); }
     }
+
     private static void ValidateApprovalLink(string raw, string origin)
     {
-        if (!Uri.TryCreate(raw, UriKind.Absolute, out var link) || !NetRatelConfigurationService.Equivalent(link.GetLeftPart(UriPartial.Authority), origin) || link.Scheme != "https" || link.UserInfo.Length != 0 || link.Fragment.Length != 0 || link.AbsolutePath != "/account/integration-credentials" || link.Query is not ("" or "?tab=credentials"))
+        if (!Uri.TryCreate(raw, UriKind.Absolute, out var link) || link.Scheme != "https" || link.UserInfo.Length != 0 || link.Fragment.Length != 0 ||
+            !NetRatelConfigurationService.Equivalent(link.GetLeftPart(UriPartial.Path), origin.TrimEnd('/') + "/account/integration-credentials") || !SafeApprovalQuery(link.Query))
             throw new AgentClientValidationException("The instance supplied an untrusted approval URL. Check the selected Web URL.");
+    }
+    private static bool SafeApprovalQuery(string query)
+    {
+        if (query is "" or "?tab=credentials") return true;
+        const string prefix = "?tab=credentials&host_code=";
+        if (!query.StartsWith(prefix, StringComparison.Ordinal)) return false;
+        var code = query[prefix.Length..];
+        return code.Length is >= 6 and <= 32 && code.All(character => char.IsAsciiLetterOrDigit(character) || character == '-');
+    }
+    private void SaveProgress(string progress)
+    {
+        ConfigurationFileStorage.WriteAtomic(Path.Combine(OutputDirectory, ".hosting-progress.json"), System.Text.Json.JsonSerializer.Serialize(new { State = progress, PublicOrigin, UpdatedAtUtc = DateTimeOffset.UtcNow }));
+        Progress = progress;
     }
     private Task SetStepAsync(HostingSetupStep step, CancellationToken ct) => InvokeAsync(() => { Step = step; Error.Value = ""; Revision.Value++; }, ct);
     public void ToggleAdvanced() { Advanced = !Advanced; Revision.Value++; }
@@ -529,13 +582,11 @@ public sealed class HostingSetupPage(IClipboardService clipboard) : ReactivePage
         var previousOffset = sameStep ? _scroll?.Offset ?? 0 : 0;
         _controls.Clear(); _contentSubscriptions.Clear();
         var form = Layouts.Vertical();
-        if (ViewModel.Error.Value.Length > 0 && ViewModel.Error.Value != "Working…")
-            form.WithChild(new TextNode("Next action\n" + TerminalText.Safe(ViewModel.Error.Value)).Bold().HeightAuto());
         switch (ViewModel.Step)
         {
             case HostingSetupStep.Instance:
                 form.WithChild(Input("Instance Web URL", ViewModel.PublicOrigin, value => ViewModel.PublicOrigin = value));
-                form.WithChild(new TextNode("Paste the Web URL, with or without /mcp, then press Enter.").Height(2));
+                form.WithChild(new TextNode(ViewModel.VerificationOnly ? "Verification-only resume: enter the saved Web URL. Host approval and identity are reused." : "Paste the NetRatel Web URL, with or without /mcp; deployment base paths are preserved.").Height(2));
                 if (ViewModel.Advanced) AddAdvanced(form);
                 break;
             case HostingSetupStep.Authentication:
@@ -561,13 +612,13 @@ public sealed class HostingSetupPage(IClipboardService clipboard) : ReactivePage
                 break;
             case HostingSetupStep.Apply:
                 form.WithChild(new TextNode(ViewModel.IsKomodo
-                    ? "Configuration saved · Komodo deployment pending\nChoose Export and exit. The launcher saves the complete updated Compose document on the Docker host. Import it into the existing Komodo stack editor, Save and Deploy, then run the launcher's printed --verify command."
-                    : "Configuration written · deployment apply pending\nRun this exact command on the deployment host, then choose Verify. Server processes are not reconfigured by writing files.").Height(ViewModel.IsKomodo ? 7 : 4));
+                    ? "Saved — apply pending\nChoose Export and exit. Review the complete private Compose document printed by the launcher in the existing deployment manager. Apply that reviewed generation, then run the printed --verify command."
+                    : "Saved — apply pending · deployment apply pending\nRun this exact command on the deployment host, then choose Verify. Server processes are not reconfigured by writing files.").Height(ViewModel.IsKomodo ? 7 : 4));
                 if (!ViewModel.IsKomodo) AddCopy(form, ViewModel.ApplyCommand, "Enter copies the reviewed apply command");
                 form.WithChild(new TextNode("Persistent storage: " + ViewModel.OutputDirectory).Height(2));
                 break;
             case HostingSetupStep.Verify:
-                form.WithChild(new TextNode("Verify the applied canonical MCP route and API-backed read-only status operation using a separate personal approval. This credential is never written to host storage.").Height(4));
+                form.WithChild(new TextNode("Deployment verification: approve a temporary read-only client with mcp.discovery.read and no tenant/customer access. It checks the canonical MCP route and API-backed status operation, then is revoked.").Height(4));
                 if (ViewModel.AuthMode == "OIDC")
                 {
                     form.WithChild(new TextNode("Existing OIDC provider: " + ViewModel.OidcAuthority + "\nUse your personal application account for the read-only check.").Height(3));
@@ -579,18 +630,20 @@ public sealed class HostingSetupPage(IClipboardService clipboard) : ReactivePage
                     form.WithChild(Input("Required provider scopes", ViewModel.VerificationScope, value => ViewModel.VerificationScope = value));
                 }
                 else AddApproval(form);
-                foreach (var check in ViewModel.Checks) form.WithChild(new TextNode($"{check.Name}: {check.Status} · {check.Detail}").Height(2));
+                if (ViewModel.CleanupPending) form.WithChild(new TextNode("Temporary credential cleanup pending. Its bounded expiry remains in force; rerun setup to retry cleanup.").Height(3));
+                foreach (var check in ViewModel.Checks) form.WithChild(new TextNode(CheckText(check)).HeightAuto());
                 break;
             case HostingSetupStep.Finish:
                 form.WithChild(new TextNode("End-to-end verified · dedicated host identity retained").Bold().Height(2));
-                foreach (var check in ViewModel.Checks) form.WithChild(new TextNode($"{check.Name}: {check.Status} · {check.Detail}").Height(2));
+                if (ViewModel.CleanupPending) form.WithChild(new TextNode("Temporary credential cleanup pending. Resume setup to retry cleanup; its bounded expiry remains in force.").HeightAuto());
+                foreach (var check in ViewModel.Checks) form.WithChild(new TextNode(CheckText(check)).HeightAuto());
                 form.WithChild(new TextNode("Persistent storage: " + ViewModel.OutputDirectory + "\nRerun setup with the same URL to reuse this generation.").Height(3));
                 break;
         }
         var choices = ViewModel.VerificationUrl is not null && ViewModel.Step is HostingSetupStep.Authorization or HostingSetupStep.Verify
             ? new[] { "Open browser", "Next / retry", "Back", "Cancel" }
             : ViewModel.Step == HostingSetupStep.Instance ? new[] { "Next", "Advanced", "Cancel" }
-            : ViewModel.Step == HostingSetupStep.Apply && ViewModel.IsKomodo ? new[] { "Export and exit", "Verify after deploying in Komodo", "Back" }
+            : ViewModel.Step == HostingSetupStep.Apply && ViewModel.IsKomodo ? new[] { "Export and exit", "Back" }
             : new[] { ViewModel.Step == HostingSetupStep.Apply ? "Verify after apply" : ViewModel.Step == HostingSetupStep.Finish ? "Finish" : "Next", "Back", "Cancel" };
         var actions = new SelectionListNode<string>(choices, value => "[ " + value + " ]").WithVisibleRows(choices.Length);
         actions.SelectionConfirmed.Subscribe(items => { var selected = items.First(); if (selected == "Advanced") ViewModel.ToggleAdvanced(); else if (selected == "Open browser") ViewModel.OpenBrowser(); else if (selected == "Export and exit") ViewModel.ExportAndExit(); else if (selected == "Back") ViewModel.Back(); else if (selected == "Cancel") ViewModel.RequestShutdown(); else ViewModel.Next(); }).DisposeWith(_contentSubscriptions);
@@ -615,6 +668,10 @@ public sealed class HostingSetupPage(IClipboardService clipboard) : ReactivePage
         if (_controls.Count > 0) { var selected = _controls[Math.Min(previousFocus, _controls.Count - 1)]; Post(() => { if (generation == _layoutGeneration) { Focus.SetFocus(selected); _scroll?.EnsureVisible(selected); } }); } else Focus.ClearFocus();
         return root;
     }
+    private static string CheckText(SetupCheck check)
+        => TerminalText.Safe($"{check.Name}: {check.Status} · {check.Detail}" +
+            (check.Reference is null ? "" : "\nReference: " + check.Reference) +
+            (check.NextAction is null ? "" : "\nNext action: " + check.NextAction));
     private void AddApproval(VerticalLayout form)
     {
         if (ViewModel.VerificationUrl is not { } link) { form.WithChild(new TextNode("Choose Next to request approval. Denied or expired requests can be retried.").Height(2)); return; }

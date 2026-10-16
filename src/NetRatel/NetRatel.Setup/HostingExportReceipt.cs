@@ -13,6 +13,11 @@ internal static class HostingExportReceipt
         if (!Path.IsPathFullyQualified(requested) || Path.GetDirectoryName(Path.GetFullPath(requested)) != output ||
             !Path.GetFileName(requested).StartsWith(".export-", StringComparison.Ordinal))
             throw new AgentClientValidationException("The setup export receipt must be a private one-use file inside the selected setup volume.");
-        ConfigurationFileStorage.WriteAtomic(requested, ConfigurationFileStorage.Hash(Path.Combine(output, "compose.komodo.yaml")).ToLowerInvariant() + "\n");
+        var document = Environment.GetEnvironmentVariable("NETRATEL_SETUP_EXPORT_DOCUMENT") ?? "compose.komodo.yaml";
+        if (document is not ("compose.komodo.yaml" or "compose.http-host.yaml"))
+            throw new AgentClientValidationException("The requested export document is unsupported. Rerun the host launcher for the reviewed deployment manager.");
+        var content = ConfigurationFileStorage.ReadText(Path.Combine(output, document), 262144, secret: true);
+        var digest = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(content))).ToLowerInvariant();
+        ConfigurationFileStorage.WriteAtomic(requested, digest + "\n");
     }
 }

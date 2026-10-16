@@ -1,6 +1,6 @@
 namespace NetRatel.AgentClient;
 
-/// <summary>The single user-input boundary for the common Web/API/MCP authority.</summary>
+/// <summary>The single user-input boundary for the common Web/API/MCP deployment address.</summary>
 public sealed record InstanceSetupAddress(string Origin, string McpResource)
 {
     public static InstanceSetupAddress Parse(string? value)
@@ -11,17 +11,24 @@ public sealed record InstanceSetupAddress(string Origin, string McpResource)
             !Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps ||
             string.IsNullOrEmpty(uri.Host) || !string.IsNullOrEmpty(uri.UserInfo) ||
             !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment))
-            throw new AgentClientValidationException("Enter an HTTPS instance Web URL without credentials, query or fragment.");
-        // Compare the escaped input path as well: URI dot-segment normalization must
-        // not quietly turn an unsupported prefix into an approved credential origin.
-        var authorityEnd = value.IndexOf('/', value.IndexOf("://", StringComparison.Ordinal) + 3);
-        var inputPath = authorityEnd < 0 ? "/" : value[authorityEnd..];
-        if (inputPath is not ("/" or "/mcp" or "/mcp/"))
-            throw new AgentClientValidationException("Use the instance Web URL or its /mcp address. Configure split hosts or an application prefix in Advanced.");
-        var rawAuthority = value[(value.IndexOf("://", StringComparison.Ordinal) + 3)..];
-        if (authorityEnd >= 0) rawAuthority = value[(value.IndexOf("://", StringComparison.Ordinal) + 3)..authorityEnd];
+            throw new AgentClientValidationException("Enter an HTTPS NetRatel Web URL without credentials, query or fragment.");
+        // Check the supplied path before URI dot-segment normalization. Preserve
+        // deployment prefixes while rejecting encoded separators and traversal.
+        var authorityStart = value.IndexOf("://", StringComparison.Ordinal) + 3;
+        var authorityEnd = value.IndexOf('/', authorityStart);
+        var inputPath = authorityEnd < 0 ? "" : value[authorityEnd..].TrimEnd('/');
+        foreach (var segment in inputPath.Split('/').Skip(1))
+        {
+            var decoded = Uri.UnescapeDataString(segment);
+            if (decoded.Length == 0 || decoded is "." or ".." || decoded.Any(char.IsControl) || decoded.IndexOfAny(['/', '\\', '?', '#', '%']) >= 0)
+                throw new AgentClientValidationException("Use the NetRatel Web URL or its /mcp endpoint with a normal deployment base path; traversal and encoded separators are unsupported.");
+        }
+        var basePath = uri.AbsolutePath.TrimEnd('/');
+        if (basePath.EndsWith("/mcp", StringComparison.Ordinal)) basePath = basePath[..^4];
+        var rawAuthority = authorityEnd < 0 ? value[authorityStart..] : value[authorityStart..authorityEnd];
         var origin = uri.GetLeftPart(UriPartial.Authority);
         if (uri.IsDefaultPort && rawAuthority.EndsWith(":443", StringComparison.Ordinal)) origin += ":443";
+        origin += basePath;
         return new(origin, origin + "/mcp");
     }
 }
