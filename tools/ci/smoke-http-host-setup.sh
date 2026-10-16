@@ -741,8 +741,8 @@ changed_status=0
 "${launcher[@]}" --verify -- --non-interactive --instance "$NETRATEL_PUBLIC_ORIGIN" \
   --credential-file "$personal_credential_file" > "$temporary/changed-source-launcher.log" 2>&1 || changed_status=$?
 [[ "$changed_status" != 0 ]]
-rg -q 'approved sources changed' "$temporary/changed-source-launcher.log"
-if rg -q 'end-to-end-verified|Server verification completed' "$temporary/changed-source-launcher.log"; then
+grep -Fq 'approved sources changed' "$temporary/changed-source-launcher.log"
+if grep -Eq 'end-to-end-verified|Server verification completed' "$temporary/changed-source-launcher.log"; then
   echo 'Changed-source verification incorrectly claimed completion.' >&2; exit 1
 fi
 mv "$temporary/compose.unchanged-backup" "$temporary/compose.yaml"
