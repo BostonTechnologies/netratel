@@ -41,3 +41,5 @@ The documentation reorganization on 14 October 2026 preserves operator guides, r
 | `docs/theme-first-paint.md` | [docs/implementation/theme-first-paint.md](../../docs/implementation/theme-first-paint.md) |
 
 `docs/README.md` is the navigation entry point. `docs/THIRD-PARTY-NOTICES.txt` remains at the root because build and release packages distribute that legal notice; it is the only non-index exception.
+
+HTTP MCP detailed host setup, recovery, client storage and rotation sections moved from `docs/mcp-http/setup.md` to [the hosting reference](../mcp-http/hosting-reference.md). The original setup URL remains the short operator quickstart.

@@ -1,112 +1,113 @@
+@using System.Text.Json
 @using NetRatel.Shared.Contracts.Jobs
 @inject IJobApiClient JobApi
 @inject ISnackbar Snackbar
 
-<MudDialog>
+<MudDialog Style="width:min(680px,calc(100vw - 32px))" ContentStyle="max-height:calc(100dvh - 180px);overflow-y:auto">
     <DialogContent>
-        <MudStack Spacing="2">
-            <MudTextField @bind-Value="_name" Label="Name" Required="true" />
-            <MudSelect T="string" Label="Type" @bind-Value="_type" Required="true">
-                @foreach (var option in _typeOptions)
-                {
-                    <MudSelectItem Value="@option">@option</MudSelectItem>
-                }
-            </MudSelect>
-            <MudSwitch T="bool" @bind-value="_required" Color="Color.Primary">Required</MudSwitch>
-            <MudTextField @bind-Value="_default" Label="Default Value" />
-            <MudTextField @bind-Value="_description" Label="Description" Lines="2" />
-            <MudTextField @bind-Value="_optionsJson" Label="Options (JSON)" Lines="3" />
-        </MudStack>
+        <div class="param-editor">
+            <div class="param-editor-row">
+                <MudTextField @bind-Value="_name" Label="Name" Required="true" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(_validated && string.IsNullOrWhiteSpace(_name))" ErrorText="Name is required." Disabled="_saving" />
+                <MudSelect T="string" Label="Type" @bind-Value="_type" Required="true" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_saving">
+                    @foreach (var option in _typeOptions)
+                    { <MudSelectItem T="string" Value="@option.Key">@option.Value</MudSelectItem> }
+                </MudSelect>
+            </div>
+            <MudSwitch T="bool" @bind-Value="_required" Color="Color.Primary" Disabled="_saving">Required at run time</MudSwitch>
+            @if (_type == "bool")
+            {
+                <MudSelect T="string" @bind-Value="_default" Label="Default value" Clearable="true" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(DefaultError is not null)" ErrorText="@DefaultError" Disabled="_saving">
+                    <MudSelectItem T="string" Value="@("true")">True</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("false")">False</MudSelectItem>
+                </MudSelect>
+            }
+            else if (_type == "select" && JobParameterInput.SelectOptions(_optionsJson).Count > 0)
+            {
+                <MudSelect T="string" @bind-Value="_default" Label="Default value" Clearable="true" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(DefaultError is not null)" ErrorText="@DefaultError" Disabled="_saving">
+                    @foreach (var option in JobParameterInput.SelectOptions(_optionsJson))
+                    { <MudSelectItem T="string" Value="@option">@option</MudSelectItem> }
+                </MudSelect>
+            }
+            else
+            {
+                <MudTextField @bind-Value="_default" Label="Default value" InputType="@(_type == "secret" ? InputType.Password : InputType.Text)" InputMode="@(_type == "int" ? InputMode.numeric : InputMode.text)" Lines="@(_type == "json" ? 3 : 1)" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(DefaultError is not null)" ErrorText="@DefaultError" Disabled="_saving" HelperText="Optional; used when no value is supplied." />
+            }
+            <MudTextField @bind-Value="_description" Label="Description" Lines="2" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_saving" />
+            @if (_type == "select")
+            {
+                <MudTextField T="string" Value="@_optionsText" ValueChanged="SetOptionsText" Label="Options" Lines="3" Variant="Variant.Outlined" Margin="Margin.Dense" HelperText="One option per line. Values are saved as a JSON string array." Error="@(_validated && OptionsError is not null)" ErrorText="@OptionsError" Disabled="_saving" />
+            }
+            <MudCheckBox T="bool" @bind-Value="_advanced" Label="Advanced options JSON" Dense="true" Disabled="_saving" />
+            @if (_advanced)
+            {
+                <MudTextField T="string" Value="@_optionsJson" ValueChanged="SetOptionsJson" Label="Options (JSON)" Lines="3" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(_validated && OptionsError is not null)" ErrorText="@OptionsError" Disabled="_saving" />
+            }
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Saving updates this parameter immediately. Closing the job editor keeps saved parameters.</MudText>
+            @if (_saveError is not null) { <MudText Typo="Typo.body2" Color="Color.Error" role="alert">@_saveError</MudText> }
+        </div>
     </DialogContent>
     <DialogActions>
-        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SaveAsync">Save</MudButton>
-        <MudButton Variant="Variant.Text" OnClick="Cancel">Cancel</MudButton>
+        <MudButton OnClick="Cancel" Disabled="_saving">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SaveAsync" Disabled="@(_saving || _saved)">Save</MudButton>
     </DialogActions>
 </MudDialog>
 
 @code {
     [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
-
     [Parameter] public ulong JobId { get; set; }
     [Parameter] public JobParamDto? ExistingParam { get; set; }
-
-    private readonly string[] _typeOptions = ["string", "int", "bool", "json", "select", "secret"];
-
-    private ulong? _paramId;
-    private string _name = string.Empty;
-    private string _type = "string";
-    private bool _required;
-    private string? _default;
-    private string? _description;
-    private string? _optionsJson;
-
+    private readonly Dictionary<string, string> _typeOptions = new()
+    { ["string"] = "Text", ["int"] = "Whole number", ["bool"] = "True / false", ["json"] = "JSON", ["select"] = "Choice", ["secret"] = "Secret" };
+    private string _name = string.Empty, _type = "string", _optionsText = string.Empty;
+    private string? _default, _description, _optionsJson, _saveError;
+    private bool _required, _saving, _saved, _validated, _advanced;
+    private string? DefaultError => _validated ? JobParameterInput.Validate(_type, _default, false, _optionsJson) : null;
+    private string? OptionsError
+    {
+        get
+        {
+            if (_type == "select") return JobParameterInput.SelectOptions(_optionsJson).Count == 0 ? "Provide a JSON array of non-empty text options." : null;
+            if (string.IsNullOrWhiteSpace(_optionsJson)) return null;
+            try { using var document = JsonDocument.Parse(_optionsJson); return null; }
+            catch (JsonException) { return "Enter valid options JSON."; }
+        }
+    }
     protected override void OnInitialized()
     {
-        if (ExistingParam is null)
-        {
-            _paramId = null;
-            _name = string.Empty;
-            _type = "string";
-            _required = false;
-            _default = null;
-            _description = null;
-            _optionsJson = null;
-            return;
-        }
-
-        _paramId = ExistingParam.Id;
-        _name = ExistingParam.Name;
-        _type = ExistingParam.Type;
-        _required = ExistingParam.Required;
-        _default = ExistingParam.Default;
-        _description = ExistingParam.Description;
-        _optionsJson = ExistingParam.OptionsJson;
+        if (ExistingParam is not { } p) return;
+        _name = p.Name; _type = p.Type; _required = p.Required; _default = p.Default;
+        _description = p.Description; _optionsJson = p.OptionsJson;
+        _optionsText = string.Join('\n', JobParameterInput.SelectOptions(_optionsJson));
+        _advanced = !string.IsNullOrWhiteSpace(_optionsJson) && (_type != "select" || JobParameterInput.SelectOptions(_optionsJson).Count == 0);
     }
-
+    private void SetOptionsText(string? value)
+    {
+        _optionsText = value ?? string.Empty;
+        _optionsJson = JsonSerializer.Serialize(_optionsText.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n').Where(option => !string.IsNullOrWhiteSpace(option)));
+    }
+    private void SetOptionsJson(string? value)
+    {
+        _optionsJson = value;
+        _optionsText = string.Join('\n', JobParameterInput.SelectOptions(value));
+    }
     private async Task SaveAsync()
     {
+        if (_saving || _saved) return;
+        _validated = true;
+        _saveError = null;
+        if (string.IsNullOrWhiteSpace(_name) || DefaultError is not null || OptionsError is not null) return;
+        _saving = true;
         try
         {
-            if (string.IsNullOrWhiteSpace(_name))
-            {
-                Snackbar.Add("Name is required.", Severity.Warning);
-                return;
-            }
-
-            if (_paramId is null)
-            {
-                var req = new AddJobParamRequest(
-                    _name,
-                    _type,
-                    _required,
-                    _default,
-                    _description,
-                    _optionsJson);
-
-                var param = await JobApi.AddJobParamAsync(JobId, req);
-                Snackbar.Add("Parameter added.", Severity.Success);
-                MudDialog.Close(DialogResult.Ok(param));
-            }
-            else
-            {
-                var req = new UpdateJobParamRequest(
-                    _name,
-                    _type,
-                    _required,
-                    _default,
-                    _description,
-                    _optionsJson);
-
-                var param = await JobApi.UpdateJobParamAsync(_paramId.Value, req);
-                Snackbar.Add("Parameter updated.", Severity.Success);
-                MudDialog.Close(DialogResult.Ok(param));
-            }
+            var param = ExistingParam is null
+                ? await JobApi.AddJobParamAsync(JobId, new AddJobParamRequest(_name, _type, _required, _default, _description, _optionsJson))
+                : await JobApi.UpdateJobParamAsync(ExistingParam.Id, new UpdateJobParamRequest(_name, _type, _required, _default, _description, _optionsJson));
+            _saved = true;
+            Snackbar.Add("Parameter saved.", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(param));
         }
-        catch (Exception ex)
-        {
-            Snackbar.Add($"Failed to save parameter: {ex.Message}", Severity.Error);
-        }
+        catch { _saveError = "The parameter could not be saved. Check your values and try again."; }
+        finally { _saving = false; }
     }
-
-    private void Cancel() => MudDialog.Cancel();
+    private void Cancel() { if (!_saving) MudDialog.Cancel(); }
 }

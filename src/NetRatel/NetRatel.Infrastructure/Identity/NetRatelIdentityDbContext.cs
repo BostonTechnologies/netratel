@@ -21,6 +21,7 @@ public sealed class NetRatelIdentityDbContext(DbContextOptions<NetRatelIdentityD
     public DbSet<IntegrationPairingRequest> IntegrationPairingRequests => Set<IntegrationPairingRequest>();
     public DbSet<HttpHostSetupRequest> HttpHostSetupRequests => Set<HttpHostSetupRequest>();
     public DbSet<IntegrationCredential> IntegrationCredentials => Set<IntegrationCredential>();
+    public DbSet<IntegrationCredentialLifecycleEvent> IntegrationCredentialLifecycleEvents => Set<IntegrationCredentialLifecycleEvent>();
     public DbSet<IntegrationCredentialGrant> IntegrationCredentialGrants => Set<IntegrationCredentialGrant>();
     public DbSet<IntegrationCredentialInstanceGrant> IntegrationCredentialInstanceGrants => Set<IntegrationCredentialInstanceGrant>();
     public DbSet<DeploymentBrandingOverride> DeploymentBrandingOverrides => Set<DeploymentBrandingOverride>();
@@ -147,6 +148,18 @@ public sealed class NetRatelIdentityDbContext(DbContextOptions<NetRatelIdentityD
             entity.HasIndex(credential => credential.SecretHash).IsUnique();
             entity.HasIndex(credential => new { credential.OwnerPrincipalId, credential.CreatedAtUtc });
             entity.HasIndex(credential => new { credential.Purpose, credential.ExpiresAtUtc, credential.RevokedAtUtc });
+        });
+
+        builder.Entity<IntegrationCredentialLifecycleEvent>(entity =>
+        {
+            entity.ToTable("IntegrationCredentialLifecycleEvents");
+            entity.HasKey(record => record.Id);
+            entity.Property(record => record.Id).HasMaxLength(32);
+            entity.Property(record => record.CredentialId).HasMaxLength(32).IsRequired();
+            entity.Property(record => record.OwnerPrincipalId).HasMaxLength(32).IsRequired();
+            entity.Property(record => record.ActorPrincipalId).HasMaxLength(32).IsRequired();
+            entity.Property(record => record.Action).HasMaxLength(16).IsRequired();
+            entity.HasIndex(record => new { record.CredentialId, record.OccurredAtUtc });
         });
 
         builder.Entity<IntegrationCredentialGrant>(entity =>

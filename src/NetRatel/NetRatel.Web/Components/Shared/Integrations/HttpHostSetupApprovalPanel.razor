@@ -4,52 +4,83 @@
 @using NetRatel.Shared.Connectivity
 @inject IHttpClientFactory Clients
 
-<MudPaper Class="pa-4 mb-5" Elevation="0" Outlined="true" data-testid="host-setup-panel">
-    <MudText Typo="Typo.h6">Approve an HTTP MCP host deployment</MudText>
-    <MudText Typo="Typo.body2" Class="mb-3">Instance administrators can approve the protected service identity prepared by host setup. This is separate from connecting a personal CLI or MCP client.</MudText>
-    @if (_error is not null) { <MudAlert Severity="Severity.Error" Class="mb-3" data-testid="host-setup-error">@_error</MudAlert> }
-    @if (_message is not null) { <MudAlert Severity="Severity.Success" Class="mb-3" data-testid="host-setup-complete">@_message</MudAlert> }
-    @if (_review is null)
+<div class="approval-entry-shell"><MudPaper Class="approval-entry" Elevation="0" Outlined="true" data-testid="host-setup-panel">
+    <MudText Typo="Typo.h6">Approve HTTP MCP host</MudText>
+    <MudText Typo="Typo.body2" Class="mb-2">Connect the HTTP MCP service to this instance.</MudText>
+    @if (_review is null && _error is not null) { <MudAlert Severity="Severity.Error" Class="mb-2" data-testid="host-setup-error">@_error</MudAlert> }
+    @if (_message is not null) { <MudAlert Severity="Severity.Success" Class="mb-2" data-testid="host-setup-complete">@_message</MudAlert> }
+    @if (_isAdministrator)
     {
         <EditForm Model="_entry" OnSubmit="LookupAsync">
             <AntiforgeryToken />
-            <MudStack Row="true" AlignItems="AlignItems.Center">
-                <MudTextField T="string" Label="Host setup verification code" Variant="Variant.Outlined" @bind-Value="_entry.UserCode" Placeholder="ABCD-EFGH" Disabled="_busy" MaxLength="9" data-testid="host-setup-code" />
-                <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Outlined" Color="Color.Primary" Disabled="_busy" data-testid="host-setup-lookup">Review host deployment</MudButton>
-            </MudStack>
+            <div class="approval-code-row">
+                <MudTextField T="string" Label="Host setup verification code" Variant="Variant.Outlined" Margin="Margin.Dense" @bind-Value="_entry.UserCode" Placeholder="ABCD-EFGH" Disabled="@(_busy || _review is not null)" MaxLength="9" data-testid="host-setup-code" />
+                <MudButton @ref="_opener" ButtonType="ButtonType.Submit" Variant="Variant.Outlined" Color="Color.Primary" Disabled="@(_busy || _review is not null)" data-testid="host-setup-lookup">Review host</MudButton>
+            </div>
         </EditForm>
     }
-    else
-    {
-        <MudStack Spacing="2">
-            <MudText Typo="Typo.subtitle1">Confirm host code <strong>@_review.UserCode</strong></MudText>
-            <MudText Typo="Typo.body2">Instance: @_review.PublicOrigin</MudText>
-            <MudText Typo="Typo.body2">MCP resource: @_review.Resource</MudText>
-            <MudText Typo="Typo.body2">Dedicated outbound service: @_review.ServicePrincipal</MudText>
-            <MudText Typo="Typo.body2">Compare this generation fingerprint with the one in the host terminal:</MudText>
-            <code style="overflow-wrap:anywhere" data-testid="host-setup-fingerprint">@_review.RegistrationFingerprint</code>
-            <MudText Typo="Typo.caption">Approval permits applying this exact protected deployment generation. It does not restart services or establish that MCP is connected. Your personal credentials are never used as the outbound host identity.</MudText>
+    else { <MudText Typo="Typo.body2" Color="Color.Secondary" data-testid="host-setup-authority">@(_authorityChecked ? "An instance administrator must review host setup." : "Checking host approval authority…")</MudText> }
+</MudPaper></div>
+@if (_review is { } review)
+{
+    <div class="approval-overlay-host"><MudOverlay Visible="true" DarkBackground="true" LockScroll="true" Modal="true" AutoClose="false" ZIndex="1400" Class="approval-overlay" @onkeydown="ReviewKeyDown">
+    <section class="approval-review" role="dialog" aria-modal="true" aria-labelledby="host-review-title" data-testid="host-review-dialog">
+    <MudFocusTrap DefaultFocus="DefaultFocus.FirstChild" Class="approval-focus">
+        <header class="approval-title"><h2 id="host-review-title">Review HTTP MCP host</h2><p>Confirm host code <strong>@review.UserCode</strong></p></header>
+        <div class="approval-body">
+            @if (_error is not null) { <MudAlert Severity="Severity.Error" Class="mb-2" data-testid="host-setup-error">@_error</MudAlert> }
+            <p>Instance: @review.PublicOrigin</p>
+            <p>MCP resource: @review.Resource</p>
+            <p>Dedicated outbound service: @review.ServicePrincipal</p>
+            <p>Compare this generation fingerprint with the host terminal:</p>
+            <code data-testid="host-setup-fingerprint">@review.RegistrationFingerprint</code>
+            <p class="approval-secondary">Approval permits applying this exact protected deployment generation. It does not restart services or verify the connection. It grants no personal credential or tenant access.</p>
             <MudCheckBox T="bool" @bind-Value="_confirmed" Label="I recognize this code and fingerprint and authorize this host deployment." Disabled="_busy" data-testid="host-setup-confirm" />
-            <MudStack Row="true">
-                <MudButton OnClick="Reset" Disabled="_busy">Back</MudButton>
-                <MudButton Color="Color.Error" OnClick="@(() => DecideAsync(false))" Disabled="_busy">Deny host deployment</MudButton>
-                <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="@(() => DecideAsync(true))" Disabled="@(_busy || !_confirmed)" data-testid="host-setup-approve">Approve host deployment</MudButton>
-            </MudStack>
-        </MudStack>
-    }
-</MudPaper>
+        </div>
+        <footer class="approval-footer">
+            <MudButton OnClick="Reset" Disabled="_busy">Back</MudButton>
+            <MudButton Color="Color.Error" OnClick="@(() => DecideAsync(false))" Disabled="_busy" data-testid="host-setup-deny">Deny host deployment</MudButton>
+            <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="@(() => DecideAsync(true))" Disabled="@(_busy || !_confirmed)" data-testid="host-setup-approve">Approve host deployment</MudButton>
+        </footer>
+    </MudFocusTrap>
+    </section></MudOverlay></div>
+}
 
 @code {
+    [Parameter] public string? InitialCode { get; set; }
+    private string? _lastInitialCode;
+    protected override void OnParametersSet()
+    {
+        if (_review is not null || _busy || string.Equals(InitialCode, _lastInitialCode, StringComparison.Ordinal)) return;
+        _lastInitialCode = InitialCode;
+        if (!string.IsNullOrWhiteSpace(InitialCode)) _entry.UserCode = InitialCode.Trim().ToUpperInvariant();
+    }
     private sealed class CodeEntry { public string UserCode { get; set; } = string.Empty; }
     private readonly CodeEntry _entry = new();
     private readonly CancellationTokenSource _lifetime = new();
     private HttpHostSetupReview? _review;
-    private bool _busy, _confirmed, _disposed;
+    private bool _busy, _confirmed, _disposed, _isAdministrator, _authorityChecked, _restoreFocus;
+    private MudButton? _opener;
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            using var api = Clients.CreateClient("OrchestratorApi");
+            var access = await api.GetFromJsonAsync<HostAccess>("/api/v2/access/self", _lifetime.Token);
+            if (!_disposed) _isAdministrator = access?.IsInstanceAdministrator == true;
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException or OperationCanceledException) { }
+        finally { if (!_disposed) _authorityChecked = true; }
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    { if (_restoreFocus && !_disposed && _opener is not null) { _restoreFocus = false; await _opener.FocusAsync(); } }
+    private void ReviewKeyDown(KeyboardEventArgs args) { if (args.Key == "Escape") Reset(); }
+    private sealed record HostAccess(bool IsInstanceAdministrator);
     private string? _error, _message;
 
     private async Task LookupAsync()
     {
-        if (_busy || _disposed) return;
+        if (_busy || _disposed || !_isAdministrator) return;
         _busy = true; _error = _message = null;
         try
         {
@@ -80,13 +111,13 @@
             _confirmed = false;
             if (!response.IsSuccessStatusCode)
             { _error = "This request or your administrator authority changed. Review the current host setup code again."; return; }
-            _review = null; _entry.UserCode = string.Empty;
+            _review = null; _entry.UserCode = string.Empty; _restoreFocus = true;
             _message = approve ? "Host generation approved. Return to the terminal to apply the deployment and verify the authenticated connection." : "Host deployment denied. No personal credential was issued.";
         }
         catch (Exception exception) when (exception is HttpRequestException or JsonException or OperationCanceledException)
         { if (!_disposed) { _confirmed = false; _error = "Could not save your decision. Check the terminal status before trying again."; } }
         finally { if (!_disposed) _busy = false; }
     }
-    private void Reset() { if (_busy) return; _review = null; _confirmed = false; _error = null; }
+    private void Reset() { if (_busy) return; _review = null; _confirmed = false; _error = null; _restoreFocus = true; }
     public void Dispose() { _disposed = true; _lifetime.Cancel(); _lifetime.Dispose(); }
 }

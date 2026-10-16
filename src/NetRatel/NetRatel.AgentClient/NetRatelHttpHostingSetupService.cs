@@ -35,7 +35,8 @@ public sealed record HttpHostingSetupRequest(
     int DelegationLifetimeSeconds = 90,
     string? ExistingWebApiBackendUrl = null,
     string? ExistingWebMcpBackendUrl = null,
-    bool ExistingWebEnvironmentObserved = false);
+    bool ExistingWebEnvironmentObserved = false,
+    string? EffectiveComposeSourcePath = null);
 
 public sealed record HttpHostingSetupPreview(
     IReadOnlyList<string> Changes, IReadOnlyList<string> Files,
@@ -63,6 +64,8 @@ public sealed class NetRatelHttpHostingSetupService
     public string PrepareRegistration(HttpHostingSetupRequest request)
     {
         var bundle = Prepare(request);
+        if (string.IsNullOrWhiteSpace(request.EffectiveComposeSourcePath ?? Environment.GetEnvironmentVariable(HttpHostingEffectiveDeployment.SourceEnvironmentVariable)))
+            throw new AgentClientValidationException("deployment_source_unresolved: Administrator approval requires the complete effective deployment, including ordered Compose sources, interpolation inputs, service env_file values, image defaults and protected configuration. Run setup-http-mcp.sh on the deployment host with its actual sources before requesting approval.");
         PreparedServicePrincipal = bundle.ServicePrincipal;
         HttpHostingStorage.ValidateWritable(HttpHostingStorage.Resolve(request.OutputDirectory));
         HttpHostingStorage.ValidateHostBoundary(HttpHostingStorage.Resolve(request.OutputDirectory));
@@ -78,7 +81,11 @@ public sealed class NetRatelHttpHostingSetupService
         if (!File.Exists(path)) return null;
         try
         {
-            var saved = JsonSerializer.Deserialize<HttpHostingSetupRequest>(ConfigurationFileStorage.ReadText(path, secret: true))
+            var text = ConfigurationFileStorage.ReadText(path, secret: true);
+            using var metadata = JsonDocument.Parse(text);
+            if (metadata.RootElement.ValueKind != JsonValueKind.Object || !metadata.RootElement.TryGetProperty(nameof(HttpHostingSetupRequest.DeploymentManager), out var manager) || manager.ValueKind != JsonValueKind.String || manager.GetString() is not ("release-compose" or "komodo"))
+                throw new AgentClientValidationException("deployment_manager_unknown: Saved hosting metadata does not identify an explicit recognized deployment manager. Run ./setup-http-mcp.sh on the Docker host to discover the existing owner and saved sources; setup will not infer release ownership.");
+            var saved = JsonSerializer.Deserialize<HttpHostingSetupRequest>(text)
                 ?? throw new JsonException();
             if (string.IsNullOrWhiteSpace(saved.OutputDirectory) || string.IsNullOrWhiteSpace(saved.PublicOrigin) ||
                 string.IsNullOrWhiteSpace(saved.WebApiBackendUrl) || string.IsNullOrWhiteSpace(saved.WebMcpBackendUrl)) throw new JsonException();
@@ -101,6 +108,8 @@ public sealed class NetRatelHttpHostingSetupService
         var output = HttpHostingStorage.Resolve(request.OutputDirectory);
         if (request.DeploymentManager == "komodo")
             return "In Komodo, replace this stack's Compose editor with the complete private compose.komodo.yaml exported by setup-http-mcp.sh, then Save and Deploy. Resume the same setup command and select Verify. Do not add a temporary CLI overlay.";
+        if (Environment.GetEnvironmentVariable("NETRATEL_SETUP_HOST_APPLY_COMMAND") is { Length: > 0 } hostCommand)
+            return hostCommand;
         var files = Environment.GetEnvironmentVariable("NETRATEL_SETUP_COMPOSE_FILES") ??
             (HttpHostingStorage.UsesValidatedSetupVolume(output) ? "compose.images.yaml,compose.mcp-http.yaml" : "compose.yaml,compose.mcp-http.yaml");
         var compose = string.Join(" ", files.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(file => "-f " + ShellQuote(file)));
@@ -117,15 +126,16 @@ public sealed class NetRatelHttpHostingSetupService
         var bundle = Prepare(request);
         var changes = bundle.SelectedSettings.Where(change => change.StartsWith("Replace API service registration", StringComparison.Ordinal)).ToList();
         foreach (var path in bundle.ReviewedInputPaths)
-            changes.Add($"Use current deployment document {path} (SHA256 {ConfigurationFileStorage.Hash(path)}; source stays unchanged; import the complete generated document through its deployment manager).");
+            changes.Add($"Use current private deployment source {path} (source bound to approval; values and hashes withheld; apply through its deployment manager).");
         changes.AddRange(bundle.Configuration.Select(file =>
             !File.Exists(file.Key) ? $"Create {file.Key} (deployment setup)" :
-            ConfigurationFileStorage.ReadText(file.Key) == file.Value ? $"Reuse {file.Key} (deployment setup)" :
+            ConfigurationFileStorage.ReadText(file.Key, HttpHostingComposeDocument.MaximumSourceBytes) == file.Value ? $"Reuse {file.Key} (deployment setup)" :
             $"Replace {file.Key} (review required; existing file or externally managed values)"));
         changes.AddRange(bundle.SelectedSettings.Where(change => !change.StartsWith("Replace API service registration", StringComparison.Ordinal)));
         changes.Add(request.DeploymentManager == "komodo"
             ? "Import the complete compose.komodo.yaml into this stack's Komodo editor. Existing ingress, database, ports, env_file entries and unrelated settings are retained; only reviewed HTTP MCP settings and persistent mounts change."
-            : "The final overlay supplies reviewed Web/API settings and replaces the managed MCP environment and env-file list; retain additional MCP runtime options in a later explicit overlay.");
+            : bundle.ReviewedInputPaths.Length > 0 ? "The final overlay merges explicit reviewed Web/API/MCP values over the complete deployment; existing env_file sources and unrelated runtime options remain effective."
+            : "The exported fragment requires complete deployment preflight on the host before it is applied.");
         foreach (var path in bundle.SecretPaths)
             changes.Add(File.Exists(path) ? $"Reuse protected secret reference {path}" : $"Create protected secret reference {path} (value withheld)");
         foreach (var path in bundle.InputPaths)
@@ -134,7 +144,7 @@ public sealed class NetRatelHttpHostingSetupService
             changes.Add($"{(File.Exists(path) ? "Reuse" : "Create")} protected runtime export {path} (API/MCP read-only; values withheld)");
         _reviewedRequestSignature = RequestSignature(request);
         _reviewedHashes = bundle.Configuration.Keys.Concat(bundle.SecretPaths).Concat(bundle.InputPaths).Concat(bundle.ReviewedInputPaths).Concat(bundle.RuntimeSecrets.Keys).Distinct(StringComparer.Ordinal)
-            .ToDictionary(path => path, path => File.Exists(path) ? ConfigurationFileStorage.Hash(path) : null, StringComparer.Ordinal);
+            .ToDictionary(path => path, path => File.Exists(path) ? DeploymentHash(path) : null, StringComparer.Ordinal);
         return new(changes, bundle.Configuration.Keys.Concat(bundle.SecretPaths).Concat(bundle.RuntimeSecrets.Keys).ToArray(), bundle.Instructions,
             bundle.RequiresRegistrationReplacement || bundle.Configuration.Keys.Any(File.Exists));
     }
@@ -146,7 +156,7 @@ public sealed class NetRatelHttpHostingSetupService
             if (_reviewedRequestSignature != RequestSignature(request))
                 throw new AgentClientValidationException("Hosting inputs changed since review. Preview the updated changes before applying.");
             foreach (var (path, reviewedHash) in _reviewedHashes)
-                if ((File.Exists(path) ? ConfigurationFileStorage.Hash(path) : null) != reviewedHash)
+                if ((File.Exists(path) ? DeploymentHash(path) : null) != reviewedHash)
                     throw new AgentClientValidationException("Hosting configuration or secrets changed since review. Preview the bundle again before applying.");
         }
         var bundle = Prepare(request);
@@ -160,8 +170,8 @@ public sealed class NetRatelHttpHostingSetupService
             throw new AgentClientValidationException("The host identity generation changed after administrator approval. Request approval again before applying.");
         // Review every conflict before creating even the first secret. Repeated setup with
         // the same inputs is a no-op; an existing different/unknown file needs approval.
-        var writes = bundle.Configuration.Where(file => !File.Exists(file.Key) || ConfigurationFileStorage.ReadText(file.Key) != file.Value)
-            .Select(file => (file.Key, file.Value, Before: File.Exists(file.Key) ? ConfigurationFileStorage.Hash(file.Key) : null)).ToArray();
+        var writes = bundle.Configuration.Where(file => !File.Exists(file.Key) || ConfigurationFileStorage.ReadText(file.Key, HttpHostingComposeDocument.MaximumSourceBytes) != file.Value)
+            .Select(file => (file.Key, file.Value, Before: File.Exists(file.Key) ? DeploymentHash(file.Key) : null)).ToArray();
         if (!replace && writes.Any(file => file.Before is not null))
             throw new AgentClientValidationException("The deployment bundle has existing changes. Review Preview and explicitly confirm replacement before applying.");
         foreach (var file in writes)
@@ -193,7 +203,7 @@ public sealed class NetRatelHttpHostingSetupService
             }
         }
         foreach (var file in writes)
-            ConfigurationFileStorage.WriteAtomic(file.Key, file.Value, replace, file.Before ?? string.Empty);
+            ConfigurationFileStorage.WriteAtomic(file.Key, file.Value, replace, file.Before ?? string.Empty, maximumBytes: HttpHostingComposeDocument.MaximumSourceBytes);
         _reviewedHashes = null;
         _reviewedRequestSignature = null;
         return new(bundle.Configuration.Keys.Concat(bundle.SecretPaths).Concat(bundle.RuntimeSecrets.Keys).ToArray(), bundle.Instructions);
@@ -210,8 +220,8 @@ public sealed class NetRatelHttpHostingSetupService
         var settings = new
         {
             EffectiveConfiguration = bundle.Configuration.OrderBy(pair => pair.Key, StringComparer.Ordinal).ToArray(),
-            Inputs = bundle.SecretPaths.Concat(bundle.InputPaths).Order(StringComparer.Ordinal)
-                .Select(path => new { Path = path, Hash = ConfigurationFileStorage.Hash(path) }).ToArray()
+            Inputs = bundle.SecretPaths.Concat(bundle.InputPaths).Concat(bundle.ReviewedInputPaths).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)
+                .Select(path => new { Path = path, Hash = DeploymentHash(path) }).ToArray()
         };
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(settings))));
     }
@@ -224,6 +234,10 @@ public sealed class NetRatelHttpHostingSetupService
         HttpHostingStorage.ValidateHostBoundary(output);
         if (request.DeploymentManager is not ("release-compose" or "komodo"))
             throw new AgentClientValidationException("Choose release-compose for the supplied release files, or komodo for a stack stored in Komodo's Compose editor.");
+        var effectiveSource = request.EffectiveComposeSourcePath ?? Environment.GetEnvironmentVariable(HttpHostingEffectiveDeployment.SourceEnvironmentVariable);
+        var effectiveDeployment = string.IsNullOrWhiteSpace(effectiveSource) ? null : HttpHostingEffectiveDeployment.Load(effectiveSource);
+        if (effectiveDeployment is null && (request.DeploymentManager == "komodo" || HttpHostingStorage.UsesValidatedSetupVolume(output)))
+            throw new AgentClientValidationException("deployment_source_unresolved: The complete effective deployment is required before approval. Run setup-http-mcp.sh with the actual ordered Compose and interpolation files; runtime environment alone does not establish the next deployment.");
         if (request.DeploymentManager == "komodo")
         {
             if (!HttpHostingStorage.UsesValidatedSetupVolume(output))
@@ -266,7 +280,7 @@ public sealed class NetRatelHttpHostingSetupService
         foreach (var values in new[] { groups, scopes })
             if (values.Count > 32 || values.Any(value => string.IsNullOrWhiteSpace(value) || value.Length > 128 || value.Any(char.IsWhiteSpace) || value.Contains('$') || value.Contains('\'')) || values.Distinct(StringComparer.Ordinal).Count() != values.Count)
                 throw new AgentClientValidationException("Groups and scopes must be unique nonempty tokens without whitespace or interpolation characters.");
-        var requestedOrigins = request.AllowedOrigins ?? [origin];
+        var requestedOrigins = request.AllowedOrigins ?? [new Uri(origin).GetLeftPart(UriPartial.Authority)];
         if (requestedOrigins.Count > 16) throw new AgentClientValidationException("Hosting setup supports up to 16 explicit allowed origins.");
         // Browser Origin serialization omits the default HTTPS port. Keep the
         // user's explicit authority in setup/resource identity, and emit wire
@@ -336,9 +350,11 @@ public sealed class NetRatelHttpHostingSetupService
         {
             ["ASPNETCORE_URLS"] = $"http://+:{request.ListeningPort}",
             ["NETRATEL_MCP_INSTANCE"] = request.Instance,
+            ["NetRatel__Mcp__Http__Instance"] = request.Instance,
             ["NETRATEL_CLIENT_DIRECTORY"] = "/var/lib/netratel/clients",
             ["NETRATEL_CLIENT_VOLUME"] = VolumeIdentifier(Environment.GetEnvironmentVariable("NETRATEL_CLIENT_VOLUME") ?? "netratel-http-client-data"),
             [$"NETRATEL_MCP_{request.Instance.ToUpperInvariant()}_API_BASE_URL"] = api,
+            [$"NetRatel__Mcp__Http__{(request.Instance == "dev" ? "DevApiBaseUrl" : "ProdApiBaseUrl")}"] = api,
             ["NetRatel__Mcp__Http__PublicResourceUri"] = resource,
             ["NetRatel__Mcp__Http__LocalCredentialMode"] = request.LocalCredentialMode.ToString().ToLowerInvariant(),
             ["NetRatel__Mcp__Http__OperatorSurfaceEnabled"] = (request.OperatorSurfaceEnabled ?? request.Instance == "prod").ToString().ToLowerInvariant()
@@ -474,6 +490,11 @@ public sealed class NetRatelHttpHostingSetupService
                     settings[name] = settings[name].Replace(SecretMount + "/", "/run/netratel-http-host/runtime/", StringComparison.Ordinal);
         }
         var reviewedInputs = new List<string>();
+        var effectiveRequest = request with { ApiBaseUrl = api, PublicOrigin = origin, PublicResourceUri = resource };
+        if (effectiveDeployment is not null)
+        {
+            reviewedInputs.Add(effectiveDeployment.SourcePath);
+        }
         string? komodoCompose = null;
         HttpHostingWebBackendSelection? selectedWebBackends = null;
         if (request.DeploymentManager == "komodo")
@@ -486,20 +507,21 @@ public sealed class NetRatelHttpHostingSetupService
             selectedWebBackends = HttpHostingComposeDocument.SelectWebBackends(source, web,
                 preserveApi: request.WebApiBackendUrl == "http://api:9222/",
                 preserveMcp: request.WebMcpBackendUrl == "http://mcp-http:9224/",
-                observedApi: webEnvironmentObservedNow ? Environment.GetEnvironmentVariable("NETRATEL_SETUP_EXISTING_WEB_API_BACKEND_URL") : request.ExistingWebApiBackendUrl,
-                observedMcp: webEnvironmentObservedNow ? Environment.GetEnvironmentVariable("NETRATEL_SETUP_EXISTING_WEB_MCP_BACKEND_URL") : request.ExistingWebMcpBackendUrl,
-                environmentObserved: webEnvironmentObservedNow || request.ExistingWebEnvironmentObserved);
+                observedApi: effectiveDeployment?.ReadServing("web", "ApiBaseUrl") ?? (webEnvironmentObservedNow ? Environment.GetEnvironmentVariable("NETRATEL_SETUP_EXISTING_WEB_API_BACKEND_URL") : request.ExistingWebApiBackendUrl),
+                observedMcp: effectiveDeployment?.ReadServing("web", "WebGateway__Mcp__BackendUrl") ?? (webEnvironmentObservedNow ? Environment.GetEnvironmentVariable("NETRATEL_SETUP_EXISTING_WEB_MCP_BACKEND_URL") : request.ExistingWebMcpBackendUrl),
+                environmentObserved: effectiveDeployment is not null || webEnvironmentObservedNow || request.ExistingWebEnvironmentObserved);
             web = selectedWebBackends.Changes;
             // Topology is deployment-owned. Enabling this route must not reset a
             // working SplitHost or LocalProcess Web/API arrangement to Compose.
             web.Remove("WebGateway__Topology");
             var hostSource = Environment.GetEnvironmentVariable("NETRATEL_SETUP_COMPOSE_FILES");
-            if (string.IsNullOrWhiteSpace(hostSource) || !Path.IsPathFullyQualified(hostSource) || hostSource.IndexOfAny([',', '$', '\'']) >= 0 || hostSource.Any(char.IsControl))
+            var hostSources = hostSource?.Split(',', StringSplitOptions.TrimEntries);
+            if (hostSources is null || hostSources.Length is < 1 or > 32 || hostSources.Any(path => string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path) || path.IndexOfAny(['$', '\'']) >= 0 || path.Any(char.IsControl)))
                 throw new AgentClientValidationException("Komodo setup needs the actual absolute Compose filename from setup-http-mcp.sh. Run the launcher on the Docker host with --compose-file; no assumed setup file is used.");
             mcp["NETRATEL_SETUP_DIRECTORY"] = "/setup-output";
             mcp["NETRATEL_SETUP_VOLUME"] = HttpHostingStorage.VolumeName;
             mcp["NETRATEL_SETUP_DEPLOYMENT_MANAGER"] = "komodo";
-            mcp["NETRATEL_SETUP_COMPOSE_FILES"] = hostSource;
+            mcp["NETRATEL_SETUP_COMPOSE_FILES"] = string.Join(',', hostSources);
             mcp["NETRATEL_SETUP_COMPOSE_SOURCE"] = sourcePath;
             var project = Environment.GetEnvironmentVariable("NETRATEL_SETUP_PROJECT_NAME");
             if (!string.IsNullOrEmpty(project))
@@ -508,10 +530,13 @@ public sealed class NetRatelHttpHostingSetupService
                     throw new AgentClientValidationException("The setup project name must be the actual bounded Compose project identifier supplied by the launcher.");
                 mcp["NETRATEL_SETUP_PROJECT_NAME"] = project;
             }
+            effectiveDeployment!.Prepare(effectiveRequest, web, apiSettings, mcp);
             komodoCompose = HttpHostingComposeDocument.Merge(source, web, apiSettings, mcp, HttpHostingStorage.RuntimeGroup,
-                HttpHostingStorage.VolumeName, mcp["NETRATEL_CLIENT_VOLUME"], request.ListeningPort, project);
+                HttpHostingStorage.VolumeName, mcp["NETRATEL_CLIENT_VOLUME"], request.ListeningPort, project, effectiveDeployment.ResolvedVolumeNames);
             reviewedInputs.Add(sourcePath);
         }
+        else if (effectiveDeployment is not null) effectiveDeployment.Prepare(effectiveRequest, web, apiSettings, mcp);
+        else HttpHostingEffectiveDeployment.ValidateServingOptions(mcp.ToDictionary(pair => pair.Key, pair => (string?)pair.Value));
         var configurationFiles = new Dictionary<string, string>
         {
             [Path.Combine(output, "web.env")] = EnvironmentFile(web),
@@ -520,7 +545,7 @@ public sealed class NetRatelHttpHostingSetupService
             [Path.Combine(output, "compose.http-host.yaml")] = Overlay(composeOutput,
                 Path.Combine(composeOutput, "runtime", "delegation.key"),
                 Path.Combine(composeOutput, "runtime", legacyPath is null ? "outbound-m2m.secret" : "mcp-outbound.json"),
-                legacyPath is not null, extraMounts, web, apiSettings, mcp, request.ListeningPort, useVolume),
+                legacyPath is not null, extraMounts, web, apiSettings, mcp, request.ListeningPort, useVolume, preserveExistingEnvironment: effectiveDeployment is not null),
             [Path.Combine(output, ".http-host.setup.json")] = JsonSerializer.Serialize(request with
             {
                 OutputDirectory = output, PublicOrigin = origin, ApiBaseUrl = api, PublicResourceUri = resource,
@@ -541,6 +566,13 @@ public sealed class NetRatelHttpHostingSetupService
             foreach (var unused in new[] { "web.env", "api.env", "mcp-http.env", "compose.http-host.yaml" })
                 configurationFiles.Remove(Path.Combine(output, unused));
             configurationFiles[Path.Combine(output, "compose.komodo.yaml")] = komodoCompose;
+        }
+        if (effectiveDeployment is not null)
+        {
+            // This manifest contains only reviewed non-secret values. The private
+            // source itself stays outside terminal output and the exported diff.
+            effectiveDeployment.ValidateProposed(effectiveRequest, web, apiSettings, mcp);
+            configurationFiles[Path.Combine(output, ".effective-proposal.json")] = effectiveDeployment.RedactedProposal(effectiveRequest, web, apiSettings, mcp);
         }
         var instructions = new[]
         {
@@ -563,9 +595,9 @@ public sealed class NetRatelHttpHostingSetupService
         if (existingDelegation is not null) inputPaths.Add(existingDelegation);
         return new(configurationFiles, generatedSecrets.ToArray(), inputPaths.ToArray(), reviewedInputs.ToArray(), runtimeSecrets, runtimeContent,
             delegation["NetRatel__Mcp__Delegation__ServicePrincipal"],
-            web.Select(pair => $"Web: {pair.Key} = {pair.Value}")
+            (effectiveDeployment is null ? web.Select(pair => $"Web: {pair.Key} = {pair.Value}")
                 .Concat(apiSettings.Select(pair => $"API: {pair.Key} = {pair.Value}"))
-                .Concat(mcp.Select(pair => $"HTTP MCP: {pair.Key} = {pair.Value}"))
+                .Concat(mcp.Select(pair => $"HTTP MCP: {pair.Key} = {pair.Value}")) : effectiveDeployment.Changes)
                 .Append($"Runtime secret readers: reviewed container GID {HttpHostingStorage.RuntimeGroup}; " +
                     (useVolume ? "supplied private setup volume (owner/group access only)." : "native output boundary remains owner-only (0700); the local group cannot traverse it."))
                 .Concat(selectedWebBackends is null ? [] : new[]
@@ -586,8 +618,10 @@ public sealed class NetRatelHttpHostingSetupService
     private static string RequestSignature(HttpHostingSetupRequest request)
         => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(request))));
 
+    private static string DeploymentHash(string path) => ConfigurationFileStorage.Hash(path, HttpHostingComposeDocument.MaximumSourceBytes);
+
     private static string Overlay(string output, string delegation, string outbound, bool legacy, IReadOnlyDictionary<string, string> extraMounts,
-        Dictionary<string, string> web, Dictionary<string, string> api, Dictionary<string, string> mcp, int listeningPort, bool setupVolume)
+        Dictionary<string, string> web, Dictionary<string, string> api, Dictionary<string, string> mcp, int listeningPort, bool setupVolume, bool preserveExistingEnvironment = false)
     {
         string Quote(string value) => JsonSerializer.Serialize(value.Replace("$", "$$", StringComparison.Ordinal));
         string Mount(string path, string target) => $"      - type: bind\n        source: {Quote(path)}\n        target: {Quote(target)}\n        read_only: true\n        bind:\n          create_host_path: false\n";
@@ -603,7 +637,7 @@ public sealed class NetRatelHttpHostingSetupService
         return "# Requires Docker Compose 2.24.4+; apply after compose.mcp-http.yaml.\nservices:\n" +
             $"  web:\n{EnvironmentMap(web)}" +
             $"  api:\n{group}{EnvironmentMap(api)}    volumes:\n{key}" + (legacy ? "" : identity) +
-            $"  mcp-http:\n{group}{EnvironmentMap(mcp, replace: true)}    env_file: !override []\n    healthcheck:\n      test: [\"CMD\", \"curl\", \"--fail\", \"--silent\", \"http://127.0.0.1:{listeningPort}/health/live\"]\n    volumes:\n{client}{key}{identity}" +
+            $"  mcp-http:\n{group}{EnvironmentMap(mcp, replace: !preserveExistingEnvironment)}" + (preserveExistingEnvironment ? "" : "    env_file: !override []\n") + $"    healthcheck:\n      test: [\"CMD\", \"curl\", \"--fail\", \"--silent\", \"http://127.0.0.1:{listeningPort}/health/live\"]\n    volumes:\n{client}{key}{identity}" +
             (setupVolume ? "" : string.Concat(extraMounts.Select(pair => Mount(pair.Key, pair.Value)))) +
             "volumes:\n  http-client-data:\n    name: " + Quote(mcp["NETRATEL_CLIENT_VOLUME"]) + "\n" +
             (setupVolume ? "  http-host-setup:\n    external: true\n    name: " + Quote(HttpHostingStorage.VolumeName) + "\n" : "");

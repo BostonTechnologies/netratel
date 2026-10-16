@@ -26,24 +26,24 @@ public sealed class PairingConnectionsTests : AsyncBunitContext
     public async Task Code_generation_needs_no_tenant_and_pairing_opens_only_two_inputs_then_one_final_form()
     {
         var api = new FakeApi(); Services.AddSingleton<IPairingApiClient>(api);
-        var panel = Render<PairingConnectionsPanel>();
-        await panel.Find("[data-testid='generate-pairing-code']").ClickAsync(new());
-        panel.Markup.Should().Contain("ABCD-EFGH");
-        panel.FindAll("[data-testid='pairing-final-form']").Should().BeEmpty();
-        await panel.Find("[data-testid='create-connection']").ClickAsync(new());
-        panel.Find("[data-testid='pairing-create-form']").QuerySelectorAll("input").Should().HaveCount(2);
-        panel.Find("[data-testid='pair-and-connect']").HasAttribute("disabled").Should().BeTrue();
-        panel.Find("[data-testid='pairing-address']").Input("http://10.20.30.40:8080///");
-        panel.Find("[data-testid='pairing-code']").Input("ABCD-EFGH");
-        panel.Find("[data-testid='pair-and-connect']").HasAttribute("disabled").Should().BeFalse();
-        await panel.Find("[data-testid='pair-and-connect']").ClickAsync(new());
+        var panel = RenderPanel();
+        await Find(panel, "[data-testid='generate-pairing-code']").ClickAsync(new());
+        Markup(panel).Should().Contain("ABCD-EFGH");
+        FindAll(panel, "[data-testid='pairing-final-form']").Should().BeEmpty();
+        await Find(panel, "[data-testid='create-connection']").ClickAsync(new());
+        Find(panel, "[data-testid='pairing-create-form']").QuerySelectorAll("input").Should().HaveCount(2);
+        Find(panel, "[data-testid='pair-and-connect']").HasAttribute("disabled").Should().BeTrue();
+        Find(panel, "[data-testid='pairing-address']").Input("http://10.20.30.40:8080///");
+        Find(panel, "[data-testid='pairing-code']").Input("ABCD-EFGH");
+        Find(panel, "[data-testid='pair-and-connect']").HasAttribute("disabled").Should().BeFalse();
+        await Find(panel, "[data-testid='pair-and-connect']").ClickAsync(new());
         api.ConnectCalls.Should().Be(1); api.LastConnect!.Address.Should().Be("http://10.20.30.40:8080");
-        panel.FindAll("[data-testid='pairing-create-form']").Should().BeEmpty();
-        panel.FindAll("[data-testid='pairing-final-form']").Should().HaveCount(1);
-        panel.FindAll("[data-testid='pairing-save']").Should().HaveCount(1);
-        panel.FindAll("[data-testid='pairing-rateldesk-customer']").Should().BeEmpty();
+        FindAll(panel, "[data-testid='pairing-create-form']").Should().BeEmpty();
+        FindAll(panel, "[data-testid='pairing-final-form']").Should().HaveCount(1);
+        FindAll(panel, "[data-testid='pairing-save']").Should().HaveCount(1);
+        FindAll(panel, "[data-testid='pairing-rateldesk-customer']").Should().BeEmpty();
         Field<bool>(panel.Instance, "_runAutomation").Should().BeFalse();
-        panel.Markup.Should().Contain("Monitoring tenant").And.Contain("Support organization").And.Contain("Systems paired");
+        Markup(panel).Should().Contain("Monitoring tenant").And.Contain("Support organization").And.Contain("Systems paired");
     }
 
     [Fact]
@@ -51,44 +51,45 @@ public sealed class PairingConnectionsTests : AsyncBunitContext
     {
         var api = new FakeApi { Connections = [FakeApi.Unconfigured()], RejectSave = true };
         Services.AddSingleton<IPairingApiClient>(api);
-        var panel = Render<PairingConnectionsPanel>();
-        panel.WaitForAssertion(() => panel.FindAll("[data-testid='pairing-final-form']").Should().HaveCount(1));
-        panel.Find("[data-testid='pairing-connection-name']").Input("On call incidents");
-        var incidents = panel.FindComponents<MudCheckBox<bool>>().Single(x => x.Instance.Label!.StartsWith("Create incidents", StringComparison.Ordinal));
+        var panel = RenderPanel();
+        await Find(panel, "[data-testid='connection-view']").ClickAsync(new());
+        panel.WaitForAssertion(() => FindAll(panel, "[data-testid='pairing-final-form']").Should().HaveCount(1));
+        Find(panel, "[data-testid='pairing-connection-name']").Input("On call incidents");
+        var incidents = FindComponents<MudCheckBox<bool>>(panel).Single(x => x.Instance.Label!.StartsWith("Create incidents", StringComparison.Ordinal));
         await panel.InvokeAsync(() => incidents.Instance.ValueChanged.InvokeAsync(true));
-        var customer = panel.FindComponents<MudSelect<string>>().Single(x => x.Instance.Label == "RatelDesk customer");
+        var customer = FindComponents<MudSelect<string>>(panel).Single(x => x.Instance.Label == "RatelDesk customer");
         await panel.InvokeAsync(() => customer.Instance.ValueChanged.InvokeAsync("customer-1"));
-        await panel.Find("[data-testid='pairing-save']").ClickAsync(new());
-        panel.Find("[data-testid='pairing-save-error']").TextContent.Should().Contain("customer permission changed").And.Contain("ref-save");
+        await Find(panel, "[data-testid='pairing-save']").ClickAsync(new());
+        Find(panel, "[data-testid='pairing-save-error']").TextContent.Should().Contain("customer permission changed").And.Contain("ref-save");
         Field<string>(panel.Instance, "_name").Should().Be("On call incidents");
-        panel.FindAll("[data-testid='connection-card']").Should().HaveCount(1);
+        FindAll(panel, "[data-testid='connection-card']").Should().HaveCount(1);
         var mappingId = api.LastSave!.Id;
         api.RejectSave = false;
-        await panel.Find("[data-testid='pairing-save']").ClickAsync(new());
+        await Find(panel, "[data-testid='pairing-save']").ClickAsync(new());
         api.LastSave!.Id.Should().Be(mappingId); api.LastSave.RunAutomation.Should().BeFalse();
         api.LastSave.RatelDeskCustomerId.Should().Be("customer-1");
         api.ConnectCalls.Should().Be(0); api.TestCalls.Should().Be(0); api.SaveCalls.Should().Be(2);
-        panel.FindAll("[data-testid='pairing-final-form']").Should().BeEmpty();
-        panel.FindAll("[data-testid='connection-card']").Should().HaveCount(1);
-        panel.Markup.Should().Contain("Connected").And.Contain("On call incidents");
+        FindAll(panel, "[data-testid='pairing-final-form']").Should().BeEmpty();
+        FindAll(panel, "[data-testid='connection-card']").Should().HaveCount(1);
+        Markup(panel).Should().Contain("Connected").And.Contain("On call incidents");
     }
 
     [Fact]
     public async Task Pair_retry_after_lost_response_keeps_operation_identity_and_does_not_duplicate_the_setup()
     {
         var api = new FakeApi { LoseConnectResponse = true }; Services.AddSingleton<IPairingApiClient>(api);
-        var panel = Render<PairingConnectionsPanel>();
-        await panel.Find("[data-testid='create-connection']").ClickAsync(new());
-        panel.Find("[data-testid='pairing-address']").Input("desk.internal:8443/");
-        panel.Find("[data-testid='pairing-code']").Input("ABCD-EFGH");
-        await panel.Find("[data-testid='pair-and-connect']").ClickAsync(new());
+        var panel = RenderPanel();
+        await Find(panel, "[data-testid='create-connection']").ClickAsync(new());
+        Find(panel, "[data-testid='pairing-address']").Input("desk.internal:8443/");
+        Find(panel, "[data-testid='pairing-code']").Input("ABCD-EFGH");
+        await Find(panel, "[data-testid='pair-and-connect']").ClickAsync(new());
         var operation = api.LastConnect!.OperationId;
-        panel.Find("[data-testid='pairing-error']").TextContent.Should().Contain("Reference:");
+        Find(panel, "[data-testid='pairing-error']").TextContent.Should().Contain("Reference:");
         api.LoseConnectResponse = false;
-        await panel.Find("[data-testid='pair-and-connect']").ClickAsync(new());
+        await Find(panel, "[data-testid='pair-and-connect']").ClickAsync(new());
         api.LastConnect!.OperationId.Should().Be(operation);
         api.LastConnect.Address.Should().Be("https://desk.internal:8443");
-        panel.FindAll("[data-testid='connection-card']").Should().HaveCount(1);
+        FindAll(panel, "[data-testid='connection-card']").Should().HaveCount(1);
     }
 
     [Fact]
@@ -96,29 +97,29 @@ public sealed class PairingConnectionsTests : AsyncBunitContext
     {
         using var transport = new PeerCodeRejectionTransport();
         Services.AddSingleton<IPairingApiClient>(new PairingApiClient(transport));
-        var panel = Render<PairingConnectionsPanel>();
-        panel.WaitForAssertion(() => panel.Find("[data-testid='create-connection']").HasAttribute("disabled").Should().BeFalse());
-        await panel.Find("[data-testid='create-connection']").ClickAsync(new());
+        var panel = RenderPanel();
+        panel.WaitForAssertion(() => Find(panel, "[data-testid='create-connection']").HasAttribute("disabled").Should().BeFalse());
+        await Find(panel, "[data-testid='create-connection']").ClickAsync(new());
         const string address = "desk.internal:8443/";
-        panel.Find("[data-testid='pairing-address']").Input(address);
-        panel.Find("[data-testid='pairing-code']").Input("ABCD-EFGH");
-        await panel.Find("[data-testid='pair-and-connect']").ClickAsync(new());
-        panel.Find("[data-testid='pairing-error']").TextContent.Should()
+        Find(panel, "[data-testid='pairing-address']").Input(address);
+        Find(panel, "[data-testid='pairing-code']").Input("ABCD-EFGH");
+        await Find(panel, "[data-testid='pair-and-connect']").ClickAsync(new());
+        Find(panel, "[data-testid='pairing-error']").TextContent.Should()
             .Contain("Generate a new code").And.Contain("peer-code-ref").And.NotContain("sign-in");
-        panel.FindAll("[data-testid='pairing-create-form']").Should().HaveCount(1);
-        ((AngleSharp.Html.Dom.IHtmlInputElement)panel.Find("[data-testid='pairing-address']")).Value.Should().Be(address);
-        ((AngleSharp.Html.Dom.IHtmlInputElement)panel.Find("[data-testid='pairing-code']")).Value.Should().Be("ABCD-EFGH");
-        panel.Find("[data-testid='pair-and-connect']").HasAttribute("disabled").Should().BeFalse();
+        FindAll(panel, "[data-testid='pairing-create-form']").Should().HaveCount(1);
+        ((AngleSharp.Html.Dom.IHtmlInputElement)Find(panel, "[data-testid='pairing-address']")).Value.Should().Be(address);
+        ((AngleSharp.Html.Dom.IHtmlInputElement)Find(panel, "[data-testid='pairing-code']")).Value.Should().Be("ABCD-EFGH");
+        Find(panel, "[data-testid='pair-and-connect']").HasAttribute("disabled").Should().BeFalse();
         var firstOperation = transport.Connects.Single().OperationId;
-        panel.Find("[data-testid='pairing-code']").Input("JKLM-NPQR");
-        await panel.Find("[data-testid='pair-and-connect']").ClickAsync(new());
+        Find(panel, "[data-testid='pairing-code']").Input("JKLM-NPQR");
+        await Find(panel, "[data-testid='pair-and-connect']").ClickAsync(new());
         transport.Connects.Should().HaveCount(2);
         transport.Connects[1].Address.Should().Be("https://desk.internal:8443");
         transport.Connects[1].OperationId.Should().NotBe(firstOperation);
-        panel.FindAll("[data-testid='pairing-create-form']").Should().BeEmpty();
-        panel.FindAll("[data-testid='pairing-error']").Should().BeEmpty();
-        panel.FindAll("[data-testid='pairing-final-form']").Should().HaveCount(1);
-        panel.Markup.Should().Contain("Systems paired");
+        FindAll(panel, "[data-testid='pairing-create-form']").Should().BeEmpty();
+        FindAll(panel, "[data-testid='pairing-error']").Should().BeEmpty();
+        FindAll(panel, "[data-testid='pairing-final-form']").Should().HaveCount(1);
+        Markup(panel).Should().Contain("Systems paired");
     }
 
     [Fact]
@@ -128,32 +129,78 @@ public sealed class PairingConnectionsTests : AsyncBunitContext
         var retained = FakeApi.Configured(Guid.Parse("22222222-2222-2222-2222-222222222222"), "Second mapping");
         var api = new FakeApi { Connections = [selected, retained], TestGate = new(TaskCreationOptions.RunContinuationsAsynchronously) };
         Services.AddSingleton<IPairingApiClient>(api);
-        var panel = Render<PairingConnectionsPanel>();
-        panel.WaitForAssertion(() => panel.FindAll("[data-testid='connection-card']").Should().HaveCount(2));
-        var selectedCard = panel.FindAll("[data-testid='connection-card']").Single(x => x.TextContent.Contains("First mapping", StringComparison.Ordinal));
+        var panel = RenderPanel();
+        panel.WaitForAssertion(() => FindAll(panel, "[data-testid='connection-card']").Should().HaveCount(2));
+        var selectedCard = FindAll(panel, "[data-testid='connection-card']").Single(x => x.TextContent.Contains("First mapping", StringComparison.Ordinal));
         var pendingTest = selectedCard.QuerySelector("[data-testid='connection-test']")!.ClickAsync(new());
         panel.WaitForAssertion(() => api.TestCalls.Should().Be(1));
-        selectedCard = panel.FindAll("[data-testid='connection-card']").Single(x => x.TextContent.Contains("First mapping", StringComparison.Ordinal));
+        selectedCard = FindAll(panel, "[data-testid='connection-card']").Single(x => x.TextContent.Contains("First mapping", StringComparison.Ordinal));
         await selectedCard.QuerySelector("[data-testid='connection-delete']")!.ClickAsync(new());
+        api.LastDeleted.Should().BeNull();
+        await Find(panel, "[data-testid='confirm-connection-delete']").ClickAsync(new());
         api.LastDeleted!.Mapping!.Id.Should().Be(selected.Mapping!.Id);
         api.TestGate.SetResult(new(true, "Authenticated mapping checked; no incident or task created.", DateTimeOffset.UtcNow));
         await pendingTest;
         await panel.InvokeAsync(() => Task.CompletedTask);
-        panel.FindAll("[data-testid='connection-card']").Should().HaveCount(1);
-        panel.Markup.Should().Contain("Second mapping").And.NotContain("First mapping");
-        panel.FindAll("[data-testid='connection-test-result']").Should().BeEmpty();
+        FindAll(panel, "[data-testid='connection-card']").Should().HaveCount(1);
+        Markup(panel).Should().Contain("Second mapping").And.NotContain("First mapping");
+        FindAll(panel, "[data-testid='connection-test-result']").Should().BeEmpty();
     }
 
     [Fact]
-    public void Refresh_returns_an_existing_incomplete_pair_to_the_final_form_and_alternate_page_links_to_it()
+    public async Task Refresh_keeps_incomplete_pair_resumable_without_automatically_opening_configuration()
     {
         var api = new FakeApi { Connections = [FakeApi.Unconfigured()] }; Services.AddSingleton<IPairingApiClient>(api);
-        var panel = Render<PairingConnectionsPanel>();
-        panel.WaitForAssertion(() => panel.FindAll("[data-testid='pairing-final-form']").Should().HaveCount(1));
+        var panel = RenderPanel();
+        FindAll(panel, "[data-testid='pairing-final-form']").Should().BeEmpty();
+        Find(panel, "[data-testid='connection-view']").TextContent.Should().Contain("Continue setup");
+        await Find(panel, "[data-testid='connection-view']").ClickAsync(new());
+        panel.WaitForAssertion(() => FindAll(panel, "[data-testid='pairing-final-form']").Should().HaveCount(1));
         api.ConnectCalls.Should().Be(0);
         var page = Render<RatelDeskConnectors>();
         page.Find("[data-testid='manage-system-connections']").GetAttribute("href").Should().Be("/account/integration-credentials");
         page.FindAll("input").Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Test_response_for_an_old_mapping_cannot_overwrite_newly_saved_configuration()
+    {
+        var connection = FakeApi.Configured(Guid.NewGuid(), "Original mapping");
+        var api = new FakeApi { Connections = [connection], TestGate = new(TaskCreationOptions.RunContinuationsAsynchronously) };
+        Services.AddSingleton<IPairingApiClient>(api);
+        var panel = RenderPanel();
+        var pending = Find(panel, "[data-testid='connection-test']").ClickAsync(new());
+        panel.WaitForAssertion(() => api.TestCalls.Should().Be(1));
+        await Find(panel, "[data-testid='connection-view']").ClickAsync(new());
+        Find(panel, "[data-testid='pairing-connection-name']").Input("Updated mapping");
+        await Find(panel, "[data-testid='pairing-save']").ClickAsync(new());
+        api.TestGate.SetResult(new(true, "Old mapping verified", DateTimeOffset.UtcNow));
+        await pending;
+        panel.Markup.Should().Contain("Updated mapping").And.NotContain("Original mapping").And.NotContain("Old mapping verified");
+    }
+
+    private IRenderedComponent<MudDialogProvider> _dialogs = null!;
+    private IRenderedComponent<PairingConnectionsPanel> RenderPanel(int? tenantId = null)
+    {
+        _dialogs = Render<MudDialogProvider>();
+        return Render<PairingConnectionsPanel>(p => p.Add(x => x.InitialTenantId, tenantId));
+    }
+    private string Markup(IRenderedComponent<PairingConnectionsPanel> panel) => panel.Markup + _dialogs.Markup;
+    private AngleSharp.Dom.IElement Find(IRenderedComponent<PairingConnectionsPanel> panel, string selector) => FindAll(panel, selector).First();
+    private IReadOnlyList<AngleSharp.Dom.IElement> FindAll(IRenderedComponent<PairingConnectionsPanel> panel, string selector) => panel.FindAll(selector).Concat(_dialogs.FindAll(selector)).ToList();
+    private IEnumerable<IRenderedComponent<T>> FindComponents<T>(IRenderedComponent<PairingConnectionsPanel> panel) where T : Microsoft.AspNetCore.Components.IComponent => panel.FindComponents<T>().Concat(_dialogs.FindComponents<T>());
+
+    [Theory]
+    [InlineData(12, "12")]
+    [InlineData(999, "")]
+    public async Task Tenant_hint_is_validated_and_never_saves_or_changes_an_existing_mapping(int hint, string expected)
+    {
+        var api = new FakeApi { Connections = [FakeApi.Unconfigured()] };
+        Services.AddSingleton<IPairingApiClient>(api);
+        var panel = RenderPanel(hint);
+        await Find(panel, "[data-testid='connection-view']").ClickAsync(new());
+        Field<string>(panel.Instance, "_netRatelTenant").Should().Be(expected);
+        api.SaveCalls.Should().Be(0);
     }
 
     private static T Field<T>(object target, string name) => (T)target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(target)!;

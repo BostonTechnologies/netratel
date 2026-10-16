@@ -4,6 +4,7 @@ namespace NetRatel.Shared.Connectivity;
 public static class IntegrationPairingProtocol
 {
     public const int Version = 1;
+    public const string TemporaryVerifierCapability = "temporary-http-mcp-verifier-v1";
     public const string Route = "/api/integration-pairing/v1";
     public const string AccountRoute = "/api/v2/account/integration-credentials/pairing";
     public const int PollIntervalSeconds = 5;
@@ -23,7 +24,8 @@ public sealed record IntegrationPairingCapabilities(int ProtocolVersion, string 
     public bool HttpMcpAuthenticationModeKnown { get; init; } = true;
 }
 public sealed record IntegrationPairingStartRequest(string Name, PairingCredentialPurpose Purpose,
-    string? Resource = null, IReadOnlyList<string>? RequestedPermissions = null);
+    string? Resource = null, IReadOnlyList<string>? RequestedPermissions = null)
+{ public bool TemporaryVerifier { get; init; } }
 public sealed record IntegrationPairingStartResponse(string RequestId, string UserCode, string DeviceCapability,
     string VerificationUri, string PublicOrigin, DateTimeOffset ExpiresAtUtc, int IntervalSeconds)
 { public override string ToString() => $"Pairing request {RequestId} (code and capability redacted)"; }
@@ -46,8 +48,15 @@ public sealed record IntegrationPairingCodeRequest(string UserCode)
 { public override string ToString() => "Pairing code request (code redacted)"; }
 public sealed record IntegrationPairingApprovalRequest(string UserCode, DateTimeOffset ExpiresAtUtc,
     IReadOnlyList<IntegrationPairingGrant> Grants, IReadOnlyList<string>? InstancePermissions = null)
-{ public override string ToString() => "Pairing approval (code redacted)"; }
+{
+    public bool VerifierConsent { get; init; }
+    public override string ToString() => "Pairing approval (code redacted)";
+}
 public sealed record IntegrationPairingReview(string RequestId, string UserCode, string Name,
     PairingCredentialPurpose Purpose, string PublicOrigin, string? Resource,
     IReadOnlyList<string> RequestedPermissions, DateTimeOffset ExpiresAtUtc, string Status)
-{ public override string ToString() => $"Pairing review {RequestId} {Status} (code redacted)"; }
+{
+    public bool TemporaryVerifier { get; init; }
+    public DateTimeOffset? CredentialExpiresAtUtc { get; init; }
+    public override string ToString() => $"Pairing review {RequestId} {Status} (code redacted)";
+}

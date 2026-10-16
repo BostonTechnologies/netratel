@@ -25,6 +25,8 @@ PR/main and tag-build validation runs fast Core/API/component regressions and
 does not install Chromium or run this assembly. Dispatch the `browser` suite in
 [integration-validation.yml](../../../.github/workflows/integration-validation.yml)
 for hosted execution with actual source identity, TRX and screenshot retention.
+The optional `browser_classes` input accepts space-separated fully qualified test
+class names for a focused review; leaving it blank retains the full browser suite.
 
 For an explicitly requested local fixture run, build the project and install its pinned Chromium version once:
 

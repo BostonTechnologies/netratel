@@ -1,0 +1,80 @@
+@using NetRatel.Shared.Connectivity
+<div class="permission-selector" data-testid="permission-selector">
+    <div class="permission-heading">
+    <div class="permission-toolbar">
+        <label>Access scope
+            <select value="@ScopeKey" @onchange="ChangeScope" disabled="@Disabled" data-testid="permission-scope">
+                @foreach (var scope in Scopes)
+                { <option value="@Key(scope)">@scope.Name (@SelectedCount(scope)/@scope.Permissions.Count)</option> }
+            </select>
+        </label>
+        <label>Search permissions <input value="@_search" @oninput="SearchChanged" type="search" placeholder="Name or capability" disabled="@Disabled" data-testid="permission-search" /></label>
+    </div>
+    @if (Current is { } active)
+    {
+        <div class="permission-current" aria-live="polite"><strong>@active.Name</strong> · @SelectedCount(active) of @active.Permissions.Count selected
+            @if (active.TenantId is null) { <span> · Server-level access applies across this instance.</span> }
+        </div>
+        <div class="permission-actions">
+            <MudButton Size="Size.Small" Variant="Variant.Outlined" Disabled="Disabled" OnClick="@(() => SelectAsync(active.Permissions, true))" data-testid="permission-select-scope">Select all in this scope (@active.Permissions.Count)</MudButton>
+            <MudButton Size="Size.Small" Disabled="Disabled" OnClick="@(() => SelectAsync(active.Permissions, false))" data-testid="permission-clear-scope">Clear this scope</MudButton>
+            @if (!string.IsNullOrWhiteSpace(_search))
+            { <MudButton Size="Size.Small" Disabled="@(Disabled || !Visible.Any())" OnClick="@(() => SelectAsync(Visible, true))" data-testid="permission-select-search">Select search results (@Visible.Count())</MudButton> }
+        </div>
+    }
+    </div>
+    @if (Current is { } current)
+    {
+        <div class="permission-groups">
+        @foreach (var group in Visible.GroupBy(permission => permission.Group).OrderBy(group => group.Key))
+        {
+            var all = current.Permissions.Where(permission => permission.Group == group.Key).ToArray();
+            var selected = all.Count(IsSelected);
+            <section class="permission-group" @key="group.Key">
+                <div class="permission-group-heading">
+                    <MudCheckBox T="bool?" TriState="true" Value="@(selected == 0 ? false : selected == all.Length ? true : (bool?)null)" ValueChanged="@(_ => SelectAsync(all, selected < all.Length))" Label="@($"{group.Key} ({selected}/{all.Length})")" Disabled="Disabled" aria-checked="@(selected == 0 ? "false" : selected == all.Length ? "true" : "mixed")" data-testid="permission-group-toggle" />
+                    <MudButton Size="Size.Small" Disabled="Disabled" OnClick="@(() => SelectAsync(all, false))" aria-label="@($"Clear {group.Key} group")">Clear group</MudButton>
+                </div>
+                @foreach (var permission in group)
+                {
+                    <div class="permission-row" @key="permission.Id">
+                        <MudCheckBox T="bool" Value="@IsSelected(permission)" ValueChanged="@(value => SelectAsync([permission], value))" Label="@permission.Label" Disabled="Disabled" data-testid="@PermissionTestId(current, permission)" />
+                        <span class="permission-description">@permission.Description</span>
+                    </div>
+                }
+            </section>
+        }
+        </div>
+        @if (!Visible.Any()) { <p role="status">No permissions match this search. Existing selections are preserved.</p> }
+    }
+    else { <p>Add a tenant or choose an available server-level scope to select access.</p> }
+    <details class="permission-summary"><summary>Selected access: @Grants.Count tenant grants · @InstancePermissions.Count server-level grants</summary>
+        @foreach (var scope in Scopes.Where(scope => SelectedCount(scope) > 0))
+        {
+            <details><summary>@scope.Name · @SelectedCount(scope) permissions</summary>
+                <ul>@foreach (var permission in scope.Permissions.Where(permission => IsSelected(scope, permission))) { <li>@permission.Label <code>@permission.Id</code></li> }</ul>
+            </details>
+        }
+    </details>
+</div>
+@code {
+    [Parameter] public IReadOnlyList<IntegrationPermissionScope> Scopes { get; set; } = [];
+    [Parameter] public IReadOnlyCollection<IntegrationPairingGrant> Grants { get; set; } = [];
+    [Parameter] public IReadOnlyCollection<string> InstancePermissions { get; set; } = [];
+    [Parameter] public EventCallback<IntegrationPermissionChange> Changed { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public string TestIdPrefix { get; set; } = "credential";
+    private string? _scopeKey;
+    private string _search = "";
+    private string ScopeKey => Current is { } scope ? Key(scope) : "";
+    private IntegrationPermissionScope? Current => Scopes.FirstOrDefault(scope => Key(scope) == _scopeKey) ?? Scopes.FirstOrDefault();
+    private IEnumerable<IntegrationPermission> Visible => Current?.Permissions.Where(permission => string.IsNullOrWhiteSpace(_search) || permission.Label.Contains(_search, StringComparison.OrdinalIgnoreCase) || permission.Id.Contains(_search, StringComparison.OrdinalIgnoreCase) || permission.Description.Contains(_search, StringComparison.OrdinalIgnoreCase)) ?? [];
+    private static string Key(IntegrationPermissionScope scope) => scope.TenantId?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "server";
+    private bool IsSelected(IntegrationPermission permission) => Current is { } scope && IsSelected(scope, permission);
+    private bool IsSelected(IntegrationPermissionScope scope, IntegrationPermission permission) => scope.TenantId is int tenant ? Grants.Any(grant => grant.TenantId == tenant && grant.Permission == permission.Id) : InstancePermissions.Contains(permission.Id);
+    private int SelectedCount(IntegrationPermissionScope scope) => scope.Permissions.Count(permission => IsSelected(scope, permission));
+    private void ChangeScope(ChangeEventArgs args) { _scopeKey = args.Value?.ToString(); }
+    private void SearchChanged(ChangeEventArgs args) { _search = args.Value?.ToString() ?? ""; }
+    private Task SelectAsync(IEnumerable<IntegrationPermission> permissions, bool selected) => Disabled || Current is null ? Task.CompletedTask : Changed.InvokeAsync(new(Current.TenantId, permissions.Select(permission => permission.Id).ToArray(), selected));
+    private string PermissionTestId(IntegrationPermissionScope scope, IntegrationPermission permission) => scope.TenantId is int tenant ? $"{TestIdPrefix}-{(TestIdPrefix == "pairing" ? "grant" : "permission")}-{tenant}-{permission.Id}" : $"{TestIdPrefix}-instance-permission-{permission.Id}";
+}

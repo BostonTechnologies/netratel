@@ -21,17 +21,22 @@ public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IInt
 {
     private static readonly TimeSpan RequestLifetime = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan DeliveryLifetime = TimeSpan.FromMinutes(5);
+    public static readonly TimeSpan TemporaryVerifierLifetime = TimeSpan.FromMinutes(15);
+    private const string VerifierPermission = NetRatelPermissions.McpDiscoveryRead;
     private const string Alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
     public async Task<IntegrationPairingStartResponse> StartAsync(IntegrationPairingStartRequest input, string origin, string? canonicalHttpMcpResource = null,
         CancellationToken cancellationToken = default)
     {
-        origin = ClientEndpointAddress.NormalizePublicOrigin(origin).TrimEnd('/');
+        origin = HttpHostSetupProtocol.NormalizeWebAddress(origin).TrimEnd('/');
         var name = input.Name?.Trim();
         var requested = input.RequestedPermissions ?? [];
         if (string.IsNullOrWhiteSpace(name) || name.Length > 128 || name.Any(char.IsControl) || !Enum.IsDefined(input.Purpose) ||
             requested.Count > 32 || requested.Distinct(StringComparer.Ordinal).Count() != requested.Count ||
             requested.Any(permission => !Authorization.NetRatelPermissions.All.Contains(permission) || permission == Authorization.NetRatelPermissions.IntegrationManagement))
+            throw new IntegrationPairingUnavailableException();
+        if (input.TemporaryVerifier && (input.Purpose != PairingCredentialPurpose.HttpMcp ||
+            requested.Count != 1 || requested[0] != VerifierPermission))
             throw new IntegrationPairingUnavailableException();
         if (await db.IntegrationPairingRequests.CountAsync(request => request.State == IntegrationPairingState.Pending ||
             request.State == IntegrationPairingState.Approved || request.State == IntegrationPairingState.Issued, cancellationToken).ConfigureAwait(false) >= 4096)
@@ -49,7 +54,9 @@ public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IInt
         {
             Name = name, PublicOrigin = origin, Purpose = (IntegrationCredentialPurpose)input.Purpose, Resource = resource,
             UserCodeHash = IntegrationCredentialService.Hash(code), DeviceCapabilityHash = IntegrationCredentialService.Hash(capability),
-            RequestedPermissionsJson = JsonSerializer.Serialize(requested), CreatedAtUtc = now, ExpiresAtUtc = now.Add(RequestLifetime),
+            // An object envelope adds setup metadata without changing existing persisted arrays.
+            RequestedPermissionsJson = input.TemporaryVerifier
+                ? JsonSerializer.Serialize(new VerifierRequestMetadata(true, requested)) : JsonSerializer.Serialize(requested), CreatedAtUtc = now, ExpiresAtUtc = now.Add(RequestLifetime),
             NextPollAtUtc = now.AddSeconds(IntegrationPairingProtocol.PollIntervalSeconds)
         };
         db.IntegrationPairingRequests.Add(request);
@@ -65,7 +72,7 @@ public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IInt
             if (request.State != IntegrationPairingState.Pending) throw new IntegrationPairingUnavailableException();
             return new IntegrationPairingReview(request.Id, FormatCode(NormalizeCode(code)), request.Name,
                 (PairingCredentialPurpose)request.Purpose, request.PublicOrigin, request.Resource,
-                Deserialize<string>(request.RequestedPermissionsJson), request.ExpiresAtUtc, Status(request));
+                RequestedPermissions(request), request.ExpiresAtUtc, Status(request)) { TemporaryVerifier = IsTemporaryVerifier(request), CredentialExpiresAtUtc = IsTemporaryVerifier(request) ? clock.GetUtcNow().Add(TemporaryVerifierLifetime) : null };
         }, cancellationToken);
 
     public Task<IntegrationPairingPollResponse> ApproveAsync(ClaimsPrincipal principal, IntegrationPairingApprovalRequest approval,
@@ -74,8 +81,15 @@ public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IInt
             await ExpireAsync(request, cancellationToken).ConfigureAwait(false);
             if (request.State != IntegrationPairingState.Pending || !await BindingIsCurrentAsync(request, cancellationToken).ConfigureAwait(false))
                 throw new IntegrationPairingUnavailableException();
+            var temporaryVerifier = IsTemporaryVerifier(request);
+            if (temporaryVerifier && (!approval.VerifierConsent || (approval.Grants?.Count ?? 0) != 0 ||
+                approval.InstancePermissions is not { Count: 1 } || approval.InstancePermissions[0] != VerifierPermission))
+                throw new IntegrationCredentialGrantValidationException("verifierConsent");
+            var now = clock.GetUtcNow();
+            var expiresAt = temporaryVerifier && approval.ExpiresAtUtc > now.Add(TemporaryVerifierLifetime)
+                ? now.Add(TemporaryVerifierLifetime) : approval.ExpiresAtUtc;
             var owner = principal.FindFirstValue("netratel_principal_id");
-            var create = new IntegrationCredentialCreateRequest(request.Name, request.Purpose, approval.ExpiresAtUtc,
+            var create = new IntegrationCredentialCreateRequest(request.Name, request.Purpose, expiresAt,
                 (approval.Grants ?? []).Select(grant => new IntegrationCredentialGrantRequest(grant.TenantId, grant.Permission)).ToArray(),
                 request.Resource, approval.InstancePermissions ?? []);
             await validator.ValidateAsync(principal, create, cancellationToken).ConfigureAwait(false);
@@ -165,6 +179,8 @@ public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IInt
         CancellationToken cancellationToken = default) => MutateAsync(CapabilityHash(capability), true, async request =>
         {
             await ExpireAsync(request, cancellationToken).ConfigureAwait(false);
+            // Setup verifiers cannot become persistent credentials through acknowledgement.
+            if (IsTemporaryVerifier(request)) throw new IntegrationPairingUnavailableException();
             if (request.CredentialId != credentialId) throw new IntegrationPairingUnavailableException();
             if (request.State == IntegrationPairingState.Issued)
             {
@@ -208,6 +224,9 @@ public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IInt
                 var request = await db.IntegrationPairingRequests.SingleOrDefaultAsync(candidate => device
                     ? candidate.DeviceCapabilityHash == hash : candidate.UserCodeHash == hash, ct).ConfigureAwait(false)
                     ?? throw new IntegrationPairingUnavailableException();
+                // Lock/CAS the setup attempt before any credential mutation. Deletion uses the same
+                // request -> credential order, and a stale tracked request retries before delivery.
+                await SaveAsync(request, ct).ConfigureAwait(false);
                 var result = await mutate(request).ConfigureAwait(false);
                 await transaction.CommitAsync(ct).ConfigureAwait(false);
                 return result;
@@ -226,6 +245,10 @@ public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IInt
         var owner = new ClaimsPrincipal(new ClaimsIdentity([new Claim("netratel_principal_id", request.OwnerPrincipalId)], "pairing-owner"));
         try
         {
+            if (IsTemporaryVerifier(request) && (request.Purpose != IntegrationCredentialPurpose.HttpMcp ||
+                request.CredentialExpiresAtUtc > request.ExpiresAtUtc.Add(TemporaryVerifierLifetime) ||
+                Deserialize<IntegrationCredentialGrantRequest>(request.ApprovedGrantsJson!).Length != 0 ||
+                !Deserialize<string>(request.ApprovedInstancePermissionsJson!).SequenceEqual([VerifierPermission]))) return false;
             await validator.ValidateAsync(owner, CreateRequest(request), ct).ConfigureAwait(false);
             if (request.CredentialId is not null)
             {
@@ -243,7 +266,7 @@ public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IInt
         if (branding is null) return true;
         try
         {
-            var origin = ClientEndpointAddress.NormalizePublicOrigin((await branding.GetEffectiveAsync(ct).ConfigureAwait(false)).SiteUrl.Value).TrimEnd('/');
+            var origin = HttpHostSetupProtocol.NormalizeWebAddress((await branding.GetEffectiveAsync(ct).ConfigureAwait(false)).SiteUrl.Value).TrimEnd('/');
             if (!string.Equals(origin, request.PublicOrigin, StringComparison.Ordinal)) return false;
             if (request.Purpose == IntegrationCredentialPurpose.Api) return request.Resource is null;
             return McpResourceUri.TryNormalize(configuration?["Integration:HttpMcp:PublicResourceUri"] ?? origin + "/mcp", out var resource) &&
@@ -294,6 +317,19 @@ public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IInt
     }
     private IDataProtector Protector(IntegrationPairingRequest request) => protection.CreateProtector("NetRatel.IntegrationPairing.Delivery.v1", request.Id);
     private static string Status(IntegrationPairingRequest request) => request.State.ToString().ToLowerInvariant();
+    private sealed record VerifierRequestMetadata(bool TemporaryVerifier, IReadOnlyList<string> Permissions);
+    private static bool IsTemporaryVerifier(IntegrationPairingRequest request)
+    {
+        using var document = JsonDocument.Parse(request.RequestedPermissionsJson);
+        return document.RootElement.ValueKind == JsonValueKind.Object &&
+            document.RootElement.TryGetProperty(nameof(VerifierRequestMetadata.TemporaryVerifier), out var flag) && flag.ValueKind == JsonValueKind.True;
+    }
+    private static IReadOnlyList<string> RequestedPermissions(IntegrationPairingRequest request)
+    {
+        using var document = JsonDocument.Parse(request.RequestedPermissionsJson);
+        return document.RootElement.ValueKind == JsonValueKind.Array ? Deserialize<string>(request.RequestedPermissionsJson) :
+            JsonSerializer.Deserialize<VerifierRequestMetadata>(request.RequestedPermissionsJson)?.Permissions ?? [];
+    }
     private static T[] Deserialize<T>(string json) => JsonSerializer.Deserialize<T[]>(json) ?? [];
     private static string FormatCode(string code) => code[..4] + "-" + code[4..];
     private static string NormalizeCode(string? code)

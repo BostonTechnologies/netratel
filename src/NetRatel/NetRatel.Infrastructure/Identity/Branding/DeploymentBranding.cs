@@ -62,7 +62,7 @@ public sealed class DeploymentBrandingOptionsValidator : IValidateOptions<Deploy
         foreach (var (field, value) in new[] { (nameof(options.SiteUrl), options.SiteUrl), (nameof(options.GatewayUrl), options.GatewayUrl) })
         {
             if (string.IsNullOrWhiteSpace(value)) continue;
-            try { ClientEndpointAddress.NormalizePublicOrigin(value); }
+            try { if (field == nameof(options.SiteUrl)) ClientEndpointAddress.NormalizePublicWebBase(value); else ClientEndpointAddress.NormalizePublicOrigin(value); }
             catch (ArgumentException) { failures.Add($"Branding:{field} must be a public HTTPS origin."); }
         }
 

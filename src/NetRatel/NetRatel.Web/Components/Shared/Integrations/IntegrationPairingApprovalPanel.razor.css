@@ -1,0 +1,16 @@
+.approval-entry-shell { min-width: 0; }
+::deep .approval-entry { padding: .9rem 1rem; height: 100%; min-width: 0; }
+.approval-code-row { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+.approval-code-row ::deep .mud-input-control { width: 12rem; max-width: 100%; flex: 0 1 12rem; }
+.approval-overlay-host ::deep .approval-overlay { position: fixed; inset: 0; z-index: 1400; display: flex; align-items: center; justify-content: center; padding: 12px; }
+.approval-review { width: min(65rem, 100%); max-height: calc(100dvh - 24px); min-height: 0; display: flex; flex-direction: column; background: var(--mud-palette-surface); color: var(--mud-palette-text-primary); border: 1px solid var(--mud-palette-lines-default); border-radius: 8px; box-shadow: var(--mud-elevation-12); overflow: hidden; }
+.approval-review ::deep .approval-focus { display: flex; flex-direction: column; min-height: 0; max-height: calc(100dvh - 24px); }
+.approval-title { overflow-wrap: anywhere; padding: .85rem 1.25rem; border-bottom: 1px solid var(--mud-palette-lines-default); flex-shrink: 0; }
+.approval-title h2 { font-size: 1.2rem; font-weight: 600; }
+.approval-body { overflow-y: auto; min-height: 0; padding: .85rem 1.25rem; overflow-wrap: anywhere; overscroll-behavior: contain; }
+.approval-body p { margin-block: .35rem; }
+.approval-secondary { color: var(--mud-palette-text-secondary); font-size: .875rem; }
+.approval-footer { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: .4rem; padding: .65rem 1rem; border-top: 1px solid var(--mud-palette-lines-default); flex-shrink: 0; }
+@media (max-width: 600px) { .approval-title, .approval-body { padding: .75rem; } .approval-footer { padding: .5rem; } }
+
+.approval-overlay-host ::deep .mud-overlay-content { display: flex; width: min(65rem, 100%); max-height: calc(100dvh - 24px); min-width: 0; }

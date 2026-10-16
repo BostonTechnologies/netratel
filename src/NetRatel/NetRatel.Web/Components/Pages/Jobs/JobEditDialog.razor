@@ -264,7 +264,7 @@
                         <ToolBarContent>
                             <MudText Typo="Typo.h6">Parameters</MudText>
                             <MudSpacer />
-                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="@(() => RunDetailsActionAsync(AddParam))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed)">
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" @ref="_addParameterButton" OnClick="AddParam" Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed)">
                                 Add Param
                             </MudButton>
                         </ToolBarContent>
@@ -279,7 +279,7 @@
                             <MudTd>@context.Type</MudTd>
                             <MudTd><MudText Typo="Typo.caption" Style="font-family:monospace">@GetParamDefault(context)</MudText></MudTd>
                             <MudTd Style="text-align:right">
-                                <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => RunDetailsActionAsync(() => EditParamAsync(context)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed)" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" @ref="_parameterEditButtons[context.Id]" aria-label="@($"Edit parameter {context.Name}")" OnClick="@(() => EditParamAsync(context))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed)" />
                                 <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => RunDetailsActionAsync(() => DeleteParamAsync(context)))" Disabled="@(_jobId == null || _isSaving || _detailsBusy || _detailsLoadFailed)" />
                             </MudTd>
                         </RowTemplate>
@@ -692,7 +692,7 @@
 
     private async Task SaveAsync()
     {
-        if (_isSaving || _isLoading || _detailsBusy) return;
+        if (_isSaving || _isLoading || _detailsBusy || _parameterDialogOpen) return;
         _isSaving = true;
         _validationMessage = null;
         try
@@ -927,7 +927,7 @@
 
     private async Task CancelAsync()
     {
-        if (_isSaving || _detailsBusy) return;
+        if (_isSaving || _detailsBusy || _parameterDialogOpen) return;
         if (_createdInWorkspace && _savedJob is not null)
         {
             var close = await DialogService.ShowMessageBoxAsync("Close saved draft?",
@@ -945,7 +945,7 @@
 
     private async Task DeleteCreatedDraftAsync()
     {
-        if (!_createdInWorkspace || !_jobId.HasValue || _isSaving || _detailsBusy) return;
+        if (!_createdInWorkspace || !_jobId.HasValue || _isSaving || _detailsBusy || _parameterDialogOpen) return;
         var confirm = await DialogService.ShowMessageBoxAsync("Delete created draft?",
             "This deletes the new job and its saved steps and parameters. The source job of a copy is kept.",
             yesText: "Delete draft", cancelText: "Keep editing");
@@ -989,7 +989,7 @@
 
     private async Task RunDetailsActionAsync(Func<Task> action)
     {
-        if (_detailsBusy || _isSaving) return;
+        if (_detailsBusy || _isSaving || _parameterDialogOpen) return;
         _detailsBusy = true;
         try { await action(); }
         catch (Exception ex) { Snackbar.Add($"Could not update job details: {ex.Message}", Severity.Error); }
@@ -998,26 +998,45 @@
 
     // --- Steps & Params (Dialog Calls) ---
 
-    private async Task AddParam()
-    {
-        if (_jobId is null || _detailsLoadFailed) return;
-        var jobId = _jobId.Value;
+    private bool _parameterDialogOpen, _restoreParameterFocus;
+    private ulong? _parameterFocusId;
+    private MudButton? _addParameterButton;
+    private readonly Dictionary<ulong, MudIconButton> _parameterEditButtons = new();
 
-        var parameters = new DialogParameters { ["JobId"] = jobId };
-        var dialog = await DialogService.ShowAsync<ParamEditDialog>("Add Parameter", parameters);
-        var result = await dialog.Result;
-        if (result is not null && !result.Canceled) await RefreshDetailsAsync(jobId);
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_restoreParameterFocus || _parameterDialogOpen || _disposeCts.IsCancellationRequested) return;
+        _restoreParameterFocus = false;
+        if (_parameterFocusId is { } id && _parameterEditButtons.TryGetValue(id, out var button)) await button.FocusAsync();
+        else if (_addParameterButton is not null) await _addParameterButton.FocusAsync();
     }
 
-    private async Task EditParamAsync(JobParamDto param)
-    {
-        if (!CanModifyParam(param)) return;
-        var jobId = _jobId.Value;
+    private static readonly DialogOptions ParameterDialogOptions = new() { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false };
 
-        var parameters = new DialogParameters { ["JobId"] = jobId, ["ExistingParam"] = param };
-        var dialog = await DialogService.ShowAsync<ParamEditDialog>("Edit Parameter", parameters);
-        var result = await dialog.Result;
-        if (result is not null && !result.Canceled) await RefreshDetailsAsync(jobId);
+    private void UpsertParameter(JobParamDto saved)
+    {
+        if (saved.JobId != _jobId) return;
+        _params = _params.Where(p => p.Id != saved.Id).Append(saved).OrderBy(p => p.Name).ToList();
+    }
+
+    private Task AddParam() => ShowParameterAsync(null);
+    private Task EditParamAsync(JobParamDto param) => CanModifyParam(param) ? ShowParameterAsync(param) : Task.CompletedTask;
+
+    private async Task ShowParameterAsync(JobParamDto? param)
+    {
+        if (_jobId is null || _detailsLoadFailed || _isSaving || _detailsBusy || _parameterDialogOpen) return;
+        _parameterDialogOpen = true;
+        try
+        {
+            var parameters = new DialogParameters { ["JobId"] = _jobId.Value, ["ExistingParam"] = param };
+            // Keep the invoking control enabled while the provider traps focus in the child,
+            // so the provider can restore it when that dialog closes.
+            var dialog = await DialogService.ShowAsync<ParamEditDialog>(param is null ? "Add parameter" : "Edit parameter", parameters, ParameterDialogOptions);
+            var result = await dialog.Result;
+            if (result is { Canceled: false, Data: JobParamDto saved }) UpsertParameter(saved);
+        }
+        catch { Snackbar.Add("The parameter editor could not be opened. Try again.", Severity.Error); }
+        finally { _parameterDialogOpen = false; _parameterFocusId = param?.Id; _restoreParameterFocus = true; }
     }
 
     private async Task AddStep()
@@ -1114,5 +1133,5 @@
 
     private string GetStepTypeLabel(JobStepDto step) => step.Type == JobStepTypeDto.LibraryScript && step.ScriptId is { } id && _scriptSummaries.TryGetValue(id, out var script)
         ? script.ScriptType ?? "Library script" : step.Runner ?? step.Type.ToString();
-    private string GetParamDefault(JobParamDto param) => param.Default ?? "-";
+    private string GetParamDefault(JobParamDto param) => param.Type.Equals("secret", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(param.Default) ? "••••••••" : param.Default ?? "-";
 }

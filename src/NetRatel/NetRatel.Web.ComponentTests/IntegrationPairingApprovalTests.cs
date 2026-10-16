@@ -45,7 +45,6 @@ public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
         panel.FindAll("input[type='checkbox']").Should().OnlyContain(input => !input.HasAttribute("checked"));
         panel.Find("[data-testid='pairing-approve']").HasAttribute("disabled").Should().BeTrue();
         transport.ApprovalRequests.Should().Be(0);
-        panel.Find(".mud-expand-panel-header").Click();
         panel.Find("[data-testid='pairing-grant-7-telemetry.read']").Change(true);
         panel.Find("[data-testid='pairing-confirm']").Change(true);
         panel.Find("[data-testid='pairing-approve']").HasAttribute("disabled").Should().BeFalse();
@@ -70,7 +69,6 @@ public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
         panel.Find("input").Change("ABCD-EFGH");
         panel.Find("form").Submit();
         panel.WaitForAssertion(() => panel.Find("[data-testid='pairing-confirm-code']").TextContent.Should().Be("ABCD-EFGH"));
-        panel.Find(".mud-expand-panel-header").Click();
         panel.Find("[data-testid='pairing-grant-7-telemetry.read']").Change(true);
         panel.Find("[data-testid='pairing-confirm']").Change(true);
         panel.Find("[data-testid='pairing-approve']").Click();
@@ -82,6 +80,92 @@ public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
         panel.Find("[data-testid='pairing-confirm']").Change(true);
         panel.Find("[data-testid='pairing-approve']").Click();
         panel.WaitForAssertion(() => panel.Markup.Should().Contain("Connection approved"));
+    }
+
+    [Fact]
+    public void Host_deep_link_seeds_code_without_lookup_and_background_parameters_preserve_edits()
+    {
+        using var transport = Configure();
+        var panel = Render<HttpHostSetupApprovalPanel>(parameters => parameters.Add(component => component.InitialCode, "ABCD-EFGH"));
+        panel.WaitForAssertion(() => panel.Find("input").GetAttribute("value").Should().Be("ABCD-EFGH"));
+        panel.FindAll("[role='dialog']").Should().BeEmpty();
+        panel.Find("input").Change("IJKL-MNOP");
+        panel.Render(parameters => parameters.Add(component => component.InitialCode, "ABCD-EFGH"));
+        panel.Find("input").GetAttribute("value").Should().Be("IJKL-MNOP");
+        transport.HostApprovalRequests.Should().Be(0);
+    }
+
+    [Fact]
+    public void Host_entry_requires_instance_administrator_before_showing_working_form()
+    {
+        using var transport = Configure();
+        transport.Administrator = false;
+        var panel = Render<HttpHostSetupApprovalPanel>();
+        panel.WaitForAssertion(() => panel.Find("[data-testid='host-setup-authority']").TextContent.Should().Contain("instance administrator"));
+        panel.FindAll("form").Should().BeEmpty();
+        panel.Markup.Should().Contain("Approve HTTP MCP host").And.Contain("Connect the HTTP MCP service");
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound)]
+    [InlineData(HttpStatusCode.BadRequest)]
+    [InlineData(HttpStatusCode.Gone)]
+    public void Unavailable_wrong_kind_or_expired_code_preserves_entry_without_switching_approval_kind(HttpStatusCode status)
+    {
+        using var transport = Configure();
+        transport.LookupStatus = status;
+        var panel = Render<IntegrationPairingApprovalPanel>();
+        panel.Find("input").Change("ABCD-EFGH");
+        panel.Find("form").Submit();
+        panel.WaitForAssertion(() => panel.Find("[data-testid='pairing-error']").TextContent.Should().Contain("unavailable or expired"));
+        panel.Find("input").GetAttribute("value").Should().Be("ABCD-EFGH");
+        panel.FindAll("[role='dialog']").Should().BeEmpty();
+        transport.ApprovalRequests.Should().Be(0);
+    }
+
+    [Fact]
+    public void Temporary_verifier_shows_only_one_explicit_read_permission_and_zero_tenant_access()
+    {
+        using var transport = Configure();
+        transport.TemporaryVerifier = true;
+        var panel = Render<IntegrationPairingApprovalPanel>();
+        panel.Find("input").Change("ABCD-EFGH");
+        panel.Find("form").Submit();
+        panel.WaitForAssertion(() => panel.Find("[role='dialog']").TextContent.Should().Contain("Temporary verification client"));
+        panel.FindAll("[data-testid='permission-selector']").Should().BeEmpty();
+        panel.Markup.Should().Contain("No tenant or customer access").And.Contain("mcp.discovery.read");
+        panel.Find("[data-testid='pairing-confirm']").Change(true);
+        panel.Find("[data-testid='pairing-approve']").HasAttribute("disabled").Should().BeTrue();
+        panel.Find("[data-testid='pairing-verifier-consent']").Change(true);
+        panel.Find("[data-testid='pairing-confirm']").HasAttribute("checked").Should().BeFalse();
+        panel.Find("[data-testid='pairing-confirm']").Change(true);
+        panel.Find("[data-testid='pairing-approve']").Click();
+        panel.WaitForAssertion(() => transport.Approved.Should().NotBeNull());
+        transport.Approved!.VerifierConsent.Should().BeTrue();
+        transport.Approved.Grants.Should().BeEmpty();
+        transport.Approved.InstancePermissions.Should().Equal("mcp.discovery.read");
+        transport.Approved.ExpiresAtUtc.Should().BeBefore(DateTimeOffset.UtcNow.AddMinutes(16));
+    }
+
+    [Fact]
+    public async Task Changing_selected_access_or_expiry_invalidates_recognition_and_deny_issues_no_credential()
+    {
+        using var transport = Configure();
+        var panel = Render<IntegrationPairingApprovalPanel>();
+        panel.Find("input").Change("ABCD-EFGH"); panel.Find("form").Submit();
+        panel.WaitForAssertion(() => panel.Find("[data-testid='pairing-confirm-code']").TextContent.Should().Be("ABCD-EFGH"));
+        panel.Find("[data-testid='pairing-grant-7-telemetry.read']").Change(true);
+        panel.Find("[data-testid='pairing-confirm']").Change(true);
+        await panel.InvokeAsync(() => panel.Instance.GetType().GetMethod("ExpiryChanged", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(panel.Instance, [DateTime.UtcNow.Date.AddDays(20)]));
+        panel.Render();
+        panel.Find("[data-testid='pairing-confirm']").HasAttribute("checked").Should().BeFalse();
+        panel.Find("[data-testid='pairing-confirm']").Change(true);
+        panel.Find("[data-testid='pairing-grant-7-telemetry.read']").Change(false);
+        panel.Find("[data-testid='pairing-confirm']").HasAttribute("checked").Should().BeFalse();
+        panel.Find("[data-testid='pairing-deny']").Click();
+        panel.WaitForAssertion(() => panel.Markup.Should().Contain("Connection denied"));
+        transport.ApprovalRequests.Should().Be(0);
+        panel.FindAll("[role='dialog']").Should().BeEmpty();
     }
 
     private Transport Configure()
@@ -98,12 +182,18 @@ public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
         public int ApprovalRequests { get; private set; }
         public int HostApprovalRequests { get; private set; }
         public bool RejectApproval { get; set; }
+        public bool TemporaryVerifier { get; set; }
+        public bool Administrator { get; set; } = true;
+        public HttpStatusCode LookupStatus { get; set; } = HttpStatusCode.OK;
         public bool DurableAuthorityRejection { get; set; }
         public IntegrationPairingApprovalRequest? Approved { get; private set; }
         public HttpClient CreateClient(string name) => new(this, false) { BaseAddress = new("https://api.example.test") };
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var path = request.RequestUri!.AbsolutePath;
+            if (path == "/api/v2/access/self") return new(HttpStatusCode.OK) { Content = JsonContent.Create(new { isInstanceAdministrator = Administrator }) };
+            if (path.EndsWith("/lookup", StringComparison.Ordinal) && LookupStatus != HttpStatusCode.OK) return new(LookupStatus);
+            if (path.EndsWith("/deny", StringComparison.Ordinal)) return new(HttpStatusCode.OK) { Content = JsonContent.Create(new { status = "denied" }) };
             if (path.StartsWith(HttpHostSetupProtocol.AccountRoute, StringComparison.Ordinal))
             {
                 if (path.EndsWith("/lookup", StringComparison.Ordinal)) return new(HttpStatusCode.OK)
@@ -117,7 +207,7 @@ public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
             }
             if (path.EndsWith("/lookup", StringComparison.Ordinal)) return new(HttpStatusCode.OK)
             { Content = JsonContent.Create(new IntegrationPairingReview("request", "ABCD-EFGH", "CLI profile", PairingCredentialPurpose.Api,
-                "https://netratel.example.test", null, ["telemetry.read"], DateTimeOffset.UtcNow.AddMinutes(10), "pending")) };
+                "https://netratel.example.test", null, ["telemetry.read"], DateTimeOffset.UtcNow.AddMinutes(10), "pending") { TemporaryVerifier = TemporaryVerifier, CredentialExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(15) }) };
             if (path.EndsWith("/authority", StringComparison.Ordinal)) return new(HttpStatusCode.OK)
             { Content = JsonContent.Create(new { tenants = new[] { new { tenantId = 7, name = "Tenant A", permissions = new[] {
                 new { id = "telemetry.read", label = "Read telemetry", description = "Read tenant telemetry." } } } }, instancePermissions = Array.Empty<object>() }) };

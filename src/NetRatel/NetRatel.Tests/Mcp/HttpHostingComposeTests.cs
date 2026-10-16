@@ -207,6 +207,7 @@ public sealed class HttpHostingComposeTests : IDisposable
         var request = new HttpHostingSetupRequest(_directory, "https://web.example.invalid", "https://api.example.invalid", Instance: "dev",
             ExistingOutboundConfigurationPath: source, ApiServiceAuthority: "https://web.example.invalid", ApiServiceAudience: "custom.api",
             ExistingM2MCallerClientIds: ["unrelated.worker"], DelegationLifetimeSeconds: 60);
+        request = HttpHostingDeploymentFixture.WithSource(request);
         var service = new NetRatelHttpHostingSetupService();
         var fingerprint = service.PrepareRegistration(request);
         var approved = request with { ApprovedRegistrationFingerprint = fingerprint };
@@ -215,7 +216,8 @@ public sealed class HttpHostingComposeTests : IDisposable
         service.Apply(approved);
         var api = File.ReadAllText(Path.Combine(_directory, "api.env"));
         Assert.Contains("M2MClients__custom_test_mcp_api__SecretFile='/run/netratel-mcp-secrets/adopted-outbound-m2m.secret'", api);
-        Assert.Contains("M2M__AllowedCallerClientIds__0='unrelated.worker'", api);
+        Assert.DoesNotContain("M2M__AllowedCallerClientIds__0=", api);
+        Assert.Equal("unrelated.worker", HttpHostingEffectiveDeployment.Load(request.EffectiveComposeSourcePath!).Read("api", "M2M__AllowedCallerClientIds__0"));
         Assert.Contains("M2M__AllowedCallerClientIds__1='custom-test-mcp-api'", api);
         Assert.Contains("LifetimeSeconds='60'", api);
         Assert.Equal(secret + "\n", File.ReadAllText(Path.Combine(_directory, "runtime", "adopted-outbound-m2m.secret")));
@@ -287,6 +289,7 @@ public sealed class HttpHostingComposeTests : IDisposable
         ConfigurationFileStorage.WriteAtomic(source, JsonSerializer.Serialize(outbound, AgentClientConfiguration.JsonOptions));
         var request = new HttpHostingSetupRequest(_directory, "https://web.example.invalid", "https://api.example.invalid",
             ExistingOutboundConfigurationPath: source, ApiServiceAuthority: "https://web.example.invalid", ExistingM2MCallerClientIds: []);
+        request = HttpHostingDeploymentFixture.WithSource(request);
         Assert.Contains("unambiguous deployment registration alias", Assert.Throws<AgentClientValidationException>(() => new NetRatelHttpHostingSetupService().PrepareRegistration(request)).Message);
         Assert.False(Directory.Exists(Path.Combine(_directory, "secrets")));
         Assert.False(File.Exists(Path.Combine(_directory, "api.env")));

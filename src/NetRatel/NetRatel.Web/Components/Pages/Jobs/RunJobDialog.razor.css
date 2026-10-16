@@ -1,0 +1,13 @@
+.run-job-dialog { min-width: 0; }
+.run-job-context { display: flex; flex-wrap: wrap; gap: 4px 20px; padding-bottom: 16px; margin-bottom: 4px; border-bottom: 1px solid var(--mud-palette-divider); color: var(--mud-palette-text-secondary); overflow-wrap: anywhere; }
+.run-job-context strong { color: var(--mud-palette-text-primary); }
+.run-job-inputs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 24px; row-gap: 8px; padding-top: 8px; }
+.run-job-field { min-width: 0; overflow-wrap: anywhere; }
+.run-job-field-wide { grid-column: 1 / -1; }
+.run-job-metadata { max-width: 320px; margin-top: 12px; }
+.run-job-dialog ::deep .mud-input-helper-text { overflow-wrap: anywhere; }
+@media (max-width: 650px) { .run-job-inputs { grid-template-columns: minmax(0, 1fr); } .run-job-metadata { max-width: none; } }
+
+.run-job-inputs-single { grid-template-columns: minmax(0, 1fr); }
+
+.run-job-field-error { color: var(--mud-palette-error); font-size: .75rem; margin-top: 4px; }

@@ -48,6 +48,7 @@ public sealed class HttpHostSettingsAdoptionTests : IDisposable
             DelegationKeyId: settings.DelegationKeyId, DelegationIssuer: settings.DelegationIssuer,
             DelegationAudience: settings.DelegationAudience, OperatorSurfaceEnabled: settings.OperatorSurfaceEnabled,
             DelegationLifetimeSeconds: settings.DelegationLifetimeSeconds!.Value, ListeningPort: settings.ListeningPort!.Value);
+        request = HttpHostingDeploymentFixture.WithSource(request);
         var service = new NetRatelHttpHostingSetupService();
         var fingerprint = service.PrepareRegistration(request);
         var approved = request with { ApprovedRegistrationFingerprint = fingerprint };
@@ -143,7 +144,7 @@ public sealed class HttpHostSettingsAdoptionTests : IDisposable
         Assert.Contains("will not redirect", Assert.Throws<AgentClientValidationException>(() => ExistingHttpHostSettings.Discover(environment.GetValueOrDefault)).Message);
         environment["NETRATEL_MCP_DEV_API_BASE_URL"] = Api;
         environment["NetRatel__Mcp__Delegation__ServicePrincipal"] = "another-service";
-        Assert.Contains("does not match", Assert.Throws<AgentClientValidationException>(() => ExistingHttpHostSettings.Discover(environment.GetValueOrDefault)).Message);
+        Assert.StartsWith("outbound_identity_mismatch:", Assert.Throws<AgentClientValidationException>(() => ExistingHttpHostSettings.Discover(environment.GetValueOrDefault)).Message);
         Assert.False(Directory.Exists(Output));
     }
 

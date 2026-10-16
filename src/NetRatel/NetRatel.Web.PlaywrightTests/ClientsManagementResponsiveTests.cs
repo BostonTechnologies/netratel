@@ -1502,6 +1502,8 @@ public sealed class ClientsManagementBrowserFixture : IAsyncLifetime
 [Route("/scriptlibrary")]
 [Route("/tasks/new")]
 [Route("/jobs")]
+[Route("/jobs/42/runs/9")]
+[Route("/account/integration-credentials")]
 public sealed class ClientsManagementFixtureApp : ComponentBase
 {
     protected override void BuildRenderTree(RenderTreeBuilder builder)

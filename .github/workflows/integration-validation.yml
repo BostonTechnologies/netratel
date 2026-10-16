@@ -12,6 +12,11 @@ on:
         description: Source ref to test (published-image and upgrade suites use release_tag)
         default: main
         required: true
+      browser_classes:
+        description: Optional space-separated fully qualified browser test classes; blank runs the full browser suite
+        default: ''
+        required: false
+        type: string
       deployment_profile:
         description: Disposable profile for the deployment suite only
         type: choice
@@ -57,6 +62,7 @@ jobs:
       NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT: ${{ github.workspace }}/TestResults/playwright
       NETRATEL_PAIRING_EVIDENCE_DIRECTORY: ${{ github.workspace }}/TestResults/pairing
       RATELDESK_PAIRING_REF: ${{ inputs.companion_ref }}
+      BROWSER_CLASSES: ${{ inputs.browser_classes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -155,8 +161,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          browser_filters=()
+          if [[ -n "$BROWSER_CLASSES" ]]; then
+            read -r -a selected_classes <<< "$BROWSER_CLASSES"
+            for test_class in "${selected_classes[@]}"; do
+              [[ "$test_class" =~ ^[A-Za-z0-9_.*]+$ ]] || { echo 'Invalid browser test class selector.' >&2; exit 2; }
+            done
+            browser_filters=(--filter-class "${selected_classes[@]}")
+          fi
           dotnet test --project src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
             --configuration Release --no-build --no-restore --max-parallel-test-modules 1 \
+            "${browser_filters[@]}" \
             --filter-not-trait category=compose category=hosted \
             --results-directory TestResults/browser --report-trx --report-trx-filename browser.trx
           python3 tools/ci/verify-mtp-trx.py TestResults/browser/browser.trx

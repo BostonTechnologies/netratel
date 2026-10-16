@@ -88,38 +88,13 @@ Configure the server-to-platform connection once, then configure each client.
 `--mode host` means server setup; bare `setup` means a client profile. These
 are not home/company or single/multi-tenant modes.
 
-**Komodo/custom single Compose deployment, deployment host:** use this bundle's
-launcher against the actual saved stack, replacing the example file/project:
+From the extracted verified bundle's setup-tools directory on the **deployment host**, run:
 
 ```sh
-./setup-http-mcp.sh \
-  --compose-file /etc/komodo/stacks/my-netratel/compose.yaml \
-  --project my-netratel --manager komodo
+./setup-http-mcp.sh
 ```
 
-It supplies persistent private setup/client mounts, inherits the existing MCP
-service settings, and needs no `compose.setup.yaml` in the custom stack.
-Enter the Web URL, complete administrator approval, review and Save, then
-choose **Export and exit**. Import the complete private `compose.komodo.yaml`
-shown by the launcher into that same Komodo stack's Compose editor. Save and
-Deploy, then run the printed `--verify` command. Keep the setup volume and
-existing ingress/database/secret sources. Use `--env-file /actual/path/.env`
-when the stack's interpolation file is elsewhere.
-
-**Deployment owned by this release bundle, deployment host:** from this actual
-extracted deployment directory, select its current image/ingress/database files:
-
-```sh
-export NETRATEL_SETUP_COMPOSE_FILES='compose.images.yaml,compose.public-https.yaml,compose.mcp-http.yaml'
-docker compose --env-file .env -f compose.setup.yaml run --rm --no-deps \
-  mcp-http setup --target http-host
-```
-
-Include the existing external-database/other overlays where used, and omit the
-bundled HTTPS overlay when another ingress supplies HTTPS. Enter the Web URL,
-approve, review and Save. Run the complete reviewed deployment-host apply
-command, then resume Verify. The persistent setup volume retains the server
-identity; no manual secret/YAML copying is required in this path.
+The launcher discovers the container and saved deployment sources, then asks for the Web URL. Review the effective configuration and approve the host. Apply through the reviewed release-owned or externally managed Compose path, then explicitly approve the temporary read-only verification client. Resume with `./setup-http-mcp.sh --verify` from the same directory. Keep the persistent setup/client storage and original ingress, database and secret sources. See the [short HTTP MCP quickstart](docs/mcp-http/setup.md) and [ownership/recovery reference](docs/mcp-http/hosting-reference.md).
 
 After **end-to-end verified**, [configure customer connections in Netclaw](docs/integrations/netclaw-http-mcp.md)
 using the `http` transport and separate scoped HTTP MCP credentials. Saving a

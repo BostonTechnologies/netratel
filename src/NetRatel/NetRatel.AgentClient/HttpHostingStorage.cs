@@ -92,14 +92,12 @@ public static class HttpHostingStorage
     {
         var target = purpose switch { "client" or "http-client" => "http-client", "cli" => "cli", "stdio" => "stdio", _ => "http-host" };
         var server = target == "http-host";
-        return "On the Docker host, use setup-http-mcp.sh from the matching release's Compose bundle. " +
-            "Find the actual stack file and project with docker compose ls, then run: " +
-            "./setup-http-mcp.sh --compose-file /absolute/path/to/compose.yaml --project YOUR_STACK --manager komodo" +
+        return "On the Docker host, run ./setup-http-mcp.sh from the matching release's Compose bundle" +
             (server ? "" : " --target " + target) +
-            ". Use your real path/project and --env-file /absolute/path/to/.env when needed. " +
-            "The launcher supplies persistent mounts; it does not require a separate compose.setup.yaml file. " +
-            (server ? "Import the exported complete document in Komodo, Save/Deploy, then resume the same command with --verify."
-                : "This command saves a separate client profile. Complete and verify server setup first; keep the client-data volume when recreating the deployment.");
+            ". The launcher discovers the saved sources and supplies persistent storage. " +
+            "If discovery cannot find a source, provide only its actual --compose-file location; use --container to select an instance. " +
+            (server ? "Review the private export, apply it through the existing deployment manager, then resume with --verify."
+                : "This saves a separate client profile. Complete server verification first and keep the existing client-data volume.");
     }
     public static uint RuntimeGroup => OperatingSystem.IsWindows() ? 10001 : GetEffectiveGroupId();
     private static bool IsContainer => string.Equals(Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"), "true", StringComparison.OrdinalIgnoreCase);

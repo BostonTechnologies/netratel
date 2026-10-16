@@ -26,7 +26,7 @@ public sealed class HttpHostSetupService(NetRatelIdentityDbContext db, IEffectiv
     public async Task<HttpHostSetupCapabilities> CapabilitiesAsync(CancellationToken ct = default)
     {
         string origin;
-        try { origin = ClientEndpointAddress.NormalizePublicOrigin((await branding.GetEffectiveAsync(ct).ConfigureAwait(false)).SiteUrl.Value).TrimEnd('/'); }
+        try { origin = HttpHostSetupProtocol.NormalizeWebAddress((await branding.GetEffectiveAsync(ct).ConfigureAwait(false)).SiteUrl.Value).TrimEnd('/'); }
         catch (ArgumentException) { throw new HttpHostSetupUnavailableException(); }
         if (!McpResourceUri.TryNormalize(configuration["Integration:HttpMcp:PublicResourceUri"] ?? origin + "/mcp", out var resource))
             throw new HttpHostSetupUnavailableException();
@@ -56,7 +56,7 @@ public sealed class HttpHostSetupService(NetRatelIdentityDbContext db, IEffectiv
     {
         var binding = await CapabilitiesAsync(ct).ConfigureAwait(false);
         string suppliedOrigin;
-        try { suppliedOrigin = ClientEndpointAddress.NormalizePublicOrigin(input.PublicOrigin).TrimEnd('/'); }
+        try { suppliedOrigin = HttpHostSetupProtocol.NormalizeWebAddress(input.PublicOrigin).TrimEnd('/'); }
         catch (ArgumentException) { throw new HttpHostSetupUnavailableException(); }
         if (suppliedOrigin != binding.PublicOrigin || !McpResourceUri.TryNormalize(input.Resource, out var resource) || resource != binding.Resource ||
             input.RegistrationFingerprint is not { Length: 64 } || input.RegistrationFingerprint.Any(c => !char.IsAsciiHexDigit(c)) ||
@@ -76,7 +76,7 @@ public sealed class HttpHostSetupService(NetRatelIdentityDbContext db, IEffectiv
         };
         db.HttpHostSetupRequests.Add(request);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return new(request.Id, FormatCode(code), capability, binding.VerificationUri, binding.PublicOrigin, request.ExpiresAtUtc, request.PollIntervalSeconds);
+        return new(request.Id, FormatCode(code), capability, binding.VerificationUri + "&host_code=" + Uri.EscapeDataString(FormatCode(code)), binding.PublicOrigin, request.ExpiresAtUtc, request.PollIntervalSeconds);
     }
 
     public async Task<HttpHostSetupReview> ReviewAsync(ClaimsPrincipal actor, string code, CancellationToken ct = default)

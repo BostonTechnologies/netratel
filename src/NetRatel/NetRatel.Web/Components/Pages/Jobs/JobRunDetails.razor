@@ -60,7 +60,15 @@
         <MudText Typo="Typo.body2" Class="job-run-summary" role="status">@GetRunOutcomeSummary()</MudText>
 
         <section class="job-run-execution" aria-label="Execution steps and output">
-            <MudText Typo="Typo.subtitle2" Class="mb-2">Steps and output</MudText>
+            <div class="job-run-follow-bar">
+                <MudText Typo="Typo.subtitle2">Steps and output</MudText>
+                <MudSwitch T="bool" Value="_follow.Following" ValueChanged="SetFollowAsync" Label="Follow active step" Color="Color.Primary" Size="Size.Small" />
+                @if (!_follow.Following && !IsRunTerminal(_run))
+                {
+                    <MudText Typo="Typo.caption" role="status">Follow paused</MudText>
+                    <MudButton Size="Size.Small" OnClick="@(() => SetFollowAsync(true))">Resume</MudButton>
+                }
+            </div>
             @if (_steps.Count == 0)
             {
                 <MudText Typo="Typo.body2" Color="Color.Secondary">@(IsRunTerminal(_run) ? "No step evidence was captured for this run." : "Waiting for step execution evidence.")</MudText>
@@ -82,7 +90,7 @@
                                 </div>
                             </TitleContent>
                             <ChildContent>
-                                <MudTabs @bind-ActivePanelIndex="state.ActiveTab" KeepPanelsAlive="true" Elevation="0" Class="job-run-output-tabs">
+                                <MudTabs ActivePanelIndex="state.ActiveTab" ActivePanelIndexChanged="@((int index) => OnStepTabChanged(state, index))" KeepPanelsAlive="true" Elevation="0" Class="job-run-output-tabs">
                                     <MudTabPanel Text="Output">
                                         @if (state.Loading && state.Log is null)
                                         {
@@ -166,6 +174,8 @@
     [Parameter] public long JobId { get; set; }
     [Parameter] public long RunId { get; set; }
 
+    private readonly JobStepFollowState _follow = new();
+    private long _routeGeneration;
     private JobRunDto? _run;
     private List<StepState> _steps = new();
     private IReadOnlyList<JobRunOptionDto> _runOptions = Array.Empty<JobRunOptionDto>();
@@ -193,10 +203,13 @@
         _routeCts?.Cancel();
         _routeCts?.Dispose();
         _routeCts = CancellationTokenSource.CreateLinkedTokenSource(_disposeCts.Token);
+        _routeGeneration++;
+        _follow.Reset();
         _loadedRunId = RunIdValue;
         _run = null;
         _steps = [];
         _liveState = "Connecting";
+        _isCancelling = false;
         await LoadInitialAsync(_routeCts.Token);
     }
 
@@ -213,17 +226,22 @@
         }
 
         _isCancelling = true;
+        var runId = _run.Id;
+        var generation = _routeGeneration;
+        var token = _routeCts?.Token ?? _disposeCts.Token;
         try
         {
-            await JobApi.CancelJobRunAsync(_run.Id, _disposeCts.Token);
+            await JobApi.CancelJobRunAsync(runId, token);
+            if (token.IsCancellationRequested || generation != _routeGeneration || _disposed) return;
             Snackbar.Add("Run cancellation requested.", Severity.Info);
             await LoadInitialAsync(_routeCts?.Token ?? _disposeCts.Token, true);
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception ex)
         {
-            Snackbar.Add($"Failed to cancel run: {ex.Message}", Severity.Error);
+            if (generation == _routeGeneration && !_disposed) Snackbar.Add($"Failed to cancel run: {ex.Message}", Severity.Error);
         }
-        finally { _isCancelling = false; }
+        finally { if (generation == _routeGeneration) _isCancelling = false; }
     }
 
     private async Task LoadInitialAsync(CancellationToken cancellationToken, bool fromUser = false)
@@ -235,6 +253,7 @@
 
         StopStream();
         var runId = RunIdValue;
+        var generation = _routeGeneration;
         _isLoading = true;
         _loadError = null;
         _runOptions = Array.Empty<JobRunOptionDto>();
@@ -247,6 +266,7 @@
         {
             var run = await JobApi.GetJobRunAsync(runId, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
+            if (generation != _routeGeneration || _disposed) return;
             if (run is null)
             {
                 _loadError = "Job run not found.";
@@ -262,6 +282,7 @@
 
             var fetchedSteps = (await JobApi.GetJobRunStepsAsync(runId, cancellationToken)).OrderBy(step => step.Ordinal).ToList();
             cancellationToken.ThrowIfCancellationRequested();
+            if (generation != _routeGeneration || _disposed) return;
             SyncStepStates(fetchedSteps);
             foreach (var state in _steps.Where(state => state.Expanded))
                 await LoadStepLogAsync(state);
@@ -269,13 +290,14 @@
         catch (OperationCanceledException)
         {
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            _loadError = $"Failed to load run: {ex.Message}";
+            if (!_disposed && generation == _routeGeneration && !cancellationToken.IsCancellationRequested)
+                _loadError = "Failed to load run. Refresh to retry.";
         }
         finally
         {
-            if (!cancellationToken.IsCancellationRequested)
+            if (!cancellationToken.IsCancellationRequested && generation == _routeGeneration && !_disposed)
             {
                 _isLoading = false;
                 StartStream();
@@ -288,22 +310,22 @@
     {
         StopStream();
         if (_disposed || _run is null || IsRunTerminal(_run)) return;
-        _streamCts = CancellationTokenSource.CreateLinkedTokenSource(_disposeCts.Token);
-        _ = ObserveRunAsync(_streamCts.Token);
+        _streamCts = CancellationTokenSource.CreateLinkedTokenSource(_routeCts?.Token ?? _disposeCts.Token);
+        _ = ObserveRunAsync(_run.Id, _routeGeneration, _streamCts.Token);
     }
 
-    private async Task ObserveRunAsync(CancellationToken cancellationToken)
+    private async Task ObserveRunAsync(ulong runId, long generation, CancellationToken cancellationToken)
     {
         try
         {
-            await foreach (var update in RunStream.SubscribeAsync(RunIdValue, cancellationToken))
+            await foreach (var update in RunStream.SubscribeAsync(runId, cancellationToken))
             {
-                if (_disposed || cancellationToken.IsCancellationRequested) break;
+                if (_disposed || cancellationToken.IsCancellationRequested || generation != _routeGeneration) break;
                 await InvokeAsync(() =>
                 {
-                    if (_disposed || cancellationToken.IsCancellationRequested) return;
+                    if (_disposed || cancellationToken.IsCancellationRequested || generation != _routeGeneration) return;
                     _liveState = update.State;
-                    if (update.Snapshot is { } snapshot && snapshot.Run.Id == RunIdValue)
+                    if (update.Snapshot is { } snapshot && snapshot.Run.Id == runId)
                     {
                         _run = snapshot.Run;
                         _loadError = null;
@@ -316,6 +338,9 @@
                             ApplyLog(state, new ExecutionLogDto(state.Step.TaskRequestId, null, null, null, captured.Logs), captured.Truncated);
 
                         }
+                        // Captured stream output is applied first; fetch only missing output for the newly followed step.
+                        foreach (var state in _steps.Where(state => state.Expanded && state.Log is null && !state.LogAttempted))
+                            _ = LoadStepLogAsync(state);
                     }
                     StateHasChanged();
                 });
@@ -325,7 +350,7 @@
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch (Exception)
         {
-            if (!_disposed) await InvokeAsync(() => { _liveState = "Live updates unavailable. Refresh to retry."; StateHasChanged(); });
+            if (!_disposed && !cancellationToken.IsCancellationRequested && generation == _routeGeneration) await InvokeAsync(() => { _liveState = "Live updates unavailable. Refresh to retry."; StateHasChanged(); });
         }
     }
 
@@ -485,58 +510,99 @@
         var existingById = _steps.ToDictionary(state => state.Step.Id);
         var newList = new List<StepState>();
         var changed = _steps.Count != latest.Count;
-        var preferred = latest.FirstOrDefault(step => step.Status == JobStepRunStatusDto.Running)
-            ?? latest.FirstOrDefault(step => step.Status == JobStepRunStatusDto.Failed)
-            ?? latest.LastOrDefault(step => step.StartedAtMicros.HasValue)
-            ?? latest.FirstOrDefault();
         foreach (var step in latest)
         {
             if (existingById.TryGetValue(step.Id, out var state))
             {
                 changed |= state.Step != step;
+                if (state.Step.TaskRequestId != step.TaskRequestId || state.Step.StartedAtMicros != step.StartedAtMicros)
+                {
+                    state.Log = null;
+                    state.LogAttempted = false;
+                    state.Loading = false;
+                }
                 state.Step = step;
                 newList.Add(state);
             }
             else
             {
-                newList.Add(new StepState { Step = step, Expanded = step.Id == preferred?.Id });
+                newList.Add(new StepState { Step = step });
                 changed = true;
             }
         }
         _steps = newList;
+        if (_run is not null) ApplyFollowTarget(_follow.Reconcile(_run, latest));
         return changed;
     }
 
     private async Task OnStepExpanded(StepState state, bool expanded)
     {
+        if (state.Expanded != expanded) _follow.Pause();
         state.Expanded = expanded;
         if (expanded && state.Log is null && !state.Loading) await LoadStepLogAsync(state);
+    }
+
+    private void OnStepTabChanged(StepState state, int index)
+    {
+        if (state.ActiveTab != index) _follow.Pause();
+        state.ActiveTab = index;
+    }
+
+    private void ApplyFollowTarget(ulong? targetId)
+    {
+        if (targetId is null) return;
+        foreach (var state in _steps)
+        {
+            state.Expanded = state.Step.Id == targetId;
+            if (state.Expanded) state.ActiveTab = 0;
+        }
+    }
+
+    private async Task SetFollowAsync(bool following)
+    {
+        if (!following) { _follow.Pause(); return; }
+        if (_run is null) return;
+        ApplyFollowTarget(_follow.Resume(_run, _steps.Select(state => state.Step).ToList()));
+        foreach (var state in _steps.Where(state => state.Expanded && state.Log is null && !state.LogAttempted))
+            await LoadStepLogAsync(state);
     }
 
     private async Task LoadStepLogAsync(StepState state)
     {
         if (_run is null || state.Loading || string.IsNullOrWhiteSpace(state.Step.TaskRequestId)) return;
         state.Loading = true;
+        state.LogAttempted = true;
         state.LoadFailed = false;
+        var runId = _run.Id;
+        var step = state.Step;
+        var generation = _routeGeneration;
+        var outputRevision = state.OutputRevision;
+        var cancellationToken = _routeCts?.Token ?? _disposeCts.Token;
         try
         {
-            var log = await JobApi.GetJobStepLogsAsync(_run.Id, state.Step.Ordinal, _routeCts?.Token ?? _disposeCts.Token);
-            if (log is not null)
+            var log = await JobApi.GetJobStepLogsAsync(runId, step.Ordinal, cancellationToken);
+            if (cancellationToken.IsCancellationRequested || generation != _routeGeneration || state.Step.TaskRequestId != step.TaskRequestId || state.Step.StartedAtMicros != step.StartedAtMicros) return;
+            if (log is not null && state.OutputRevision == outputRevision)
             {
                 ApplyLog(state, log, false);
             }
         }
         catch (OperationCanceledException) { }
-        catch (Exception) { state.LoadFailed = true; }
+        catch (Exception)
+        {
+            if (generation == _routeGeneration && !cancellationToken.IsCancellationRequested && state.OutputRevision == outputRevision
+                && state.Step.TaskRequestId == step.TaskRequestId && state.Step.StartedAtMicros == step.StartedAtMicros) state.LoadFailed = true;
+        }
         finally
         {
-            state.Loading = false;
-            if (!_disposed) await InvokeAsync(StateHasChanged);
+            if (state.Step.TaskRequestId == step.TaskRequestId && state.Step.StartedAtMicros == step.StartedAtMicros) state.Loading = false;
+            if (!_disposed && generation == _routeGeneration && !cancellationToken.IsCancellationRequested) await InvokeAsync(StateHasChanged);
         }
     }
 
     private static void ApplyLog(StepState state, ExecutionLogDto log, bool truncated)
     {
+        state.OutputRevision++;
         var ordered = log.Logs.GroupBy(line => line.Seq).Select(group => group.First()).OrderBy(line => line.Seq).ToList();
         var bounded = ordered.TakeLast(MaximumOutputLines).ToList();
         var remaining = MaximumOutputCharacters;
@@ -655,6 +721,8 @@
         public JobStepRunDto Step { get; set; } = default!;
         public ExecutionLogDto? Log { get; set; }
         public bool Loading { get; set; }
+        public bool LogAttempted { get; set; }
+        public long OutputRevision { get; set; }
         public bool LoadFailed { get; set; }
         public bool Expanded { get; set; }
         public int ActiveTab { get; set; }

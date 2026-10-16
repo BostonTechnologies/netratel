@@ -5,71 +5,52 @@
 @using NetRatel.Web.Services
 @inject IHttpClientFactory Clients
 
-<MudPaper Class="pa-4 mb-5" Elevation="0" Outlined="true" data-testid="integration-pairing-panel">
-    <MudText Typo="Typo.h6">Connect a CLI or MCP client</MudText>
-    <MudText Typo="Typo.body2" Class="mb-3">Enter the short code shown by your client's setup. Review its connection and choose the access you want to approve.</MudText>
-    @if (_error is not null) { <MudAlert Severity="Severity.Error" Class="mb-3" data-testid="pairing-error">@_error</MudAlert> }
-    @if (_message is not null) { <MudAlert Severity="Severity.Success" Class="mb-3" data-testid="pairing-complete">@_message</MudAlert> }
-    @if (_review is null)
-    {
-        <EditForm Model="_entry" OnSubmit="LookupAsync">
-            <AntiforgeryToken />
-            <MudStack Row="true" AlignItems="AlignItems.Center">
-                <MudTextField T="string" Label="Client verification code" Variant="Variant.Outlined" @bind-Value="_entry.UserCode" Placeholder="ABCD-EFGH" Disabled="_busy" MaxLength="9" data-testid="pairing-code" />
-                <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Outlined" Color="Color.Primary" Disabled="_busy" data-testid="pairing-lookup">@(_busy ? "Checking…" : "Review connection")</MudButton>
-            </MudStack>
-        </EditForm>
-    }
-    else
-    {
-        <MudStack Spacing="2">
-            <MudText Typo="Typo.subtitle1">Confirm code <strong data-testid="pairing-confirm-code">@_review.UserCode</strong></MudText>
-            <MudText Typo="Typo.body2">Connection: <strong>@_review.Name</strong> · @(_review.Purpose == PairingCredentialPurpose.Api ? "API / CLI / stdio MCP" : "HTTP MCP client")</MudText>
-            <MudText Typo="Typo.body2">Instance: @_review.PublicOrigin</MudText>
-            @if (_review.Resource is not null) { <MudText Typo="Typo.body2">HTTP MCP resource: @_review.Resource</MudText> }
-            @if (_review.RequestedPermissions.Count > 0)
-            { <MudText Typo="Typo.body2">Client suggestions: @string.Join(", ", _review.RequestedPermissions). Choose access explicitly below.</MudText> }
-            <MudText Typo="Typo.caption">Approve before @_review.ExpiresAtUtc.UtcDateTime.ToString("HH:mm") UTC. Your sign-in and code lookup do not approve this connection.</MudText>
-            <MudDatePicker Label="Credential expires on (23:59 UTC)" @bind-Date="_expiry" MinDate="DateTime.UtcNow.Date.AddDays(1)" MaxDate="DateTime.UtcNow.Date.AddDays(364)" Variant="Variant.Outlined" Disabled="_busy" />
-            <MudText Typo="Typo.subtitle2">Tenant permissions</MudText>
-            <MudText Typo="Typo.body2">Select each permission for the intended tenant. No access is selected automatically.</MudText>
-            <MudExpansionPanels Elevation="0">
-                @foreach (var tenant in _authority!.Tenants)
-                {
-                    <MudExpansionPanel Text="@tenant.Name">
-                        @foreach (var permission in tenant.Permissions)
-                        {
-                            var grant = new IntegrationPairingGrant(tenant.TenantId, permission.Id);
-                            <MudCheckBox T="bool" Value="@_grants.Contains(grant)" ValueChanged="@(value => SelectGrant(grant, value))" Label="@permission.Label" Disabled="_busy" data-testid="@($"pairing-grant-{tenant.TenantId}-{permission.Id}")" />
-                            <MudText Typo="Typo.caption">@permission.Description</MudText>
-                        }
-                    </MudExpansionPanel>
-                }
-                @if (_authority.InstancePermissions.Count > 0)
-                {
-                    <MudExpansionPanel Text="Server-level access (advanced)">
-                        <MudText Typo="Typo.body2">Server-level grants may expose instance-wide information. Select them only when this client needs them.</MudText>
-                        @foreach (var permission in _authority.InstancePermissions)
-                        { <MudCheckBox T="bool" Value="@_instancePermissions.Contains(permission.Id)" ValueChanged="@(value => SelectInstance(permission.Id, value))" Label="@permission.Label" Disabled="_busy" /> }
-                    </MudExpansionPanel>
-                }
-            </MudExpansionPanels>
-            @if (_grants.Count > 0 || _instancePermissions.Count > 0)
+<div class="approval-entry-shell"><MudPaper Class="approval-entry" Elevation="0" Outlined="true" data-testid="integration-pairing-panel">
+    <MudText Typo="Typo.h6">Connect CLI / MCP client</MudText>
+    <MudText Typo="Typo.body2" Class="mb-2">Choose the access this client may use.</MudText>
+    @if (_review is null && _error is not null) { <MudAlert Severity="Severity.Error" Class="mb-2" data-testid="pairing-error">@_error</MudAlert> }
+    @if (_message is not null) { <MudAlert Severity="Severity.Success" Class="mb-2" data-testid="pairing-complete">@_message</MudAlert> }
+    <EditForm Model="_entry" OnSubmit="LookupAsync">
+        <AntiforgeryToken />
+        <div class="approval-code-row">
+            <MudTextField T="string" Label="Client verification code" Variant="Variant.Outlined" Margin="Margin.Dense" @bind-Value="_entry.UserCode" Placeholder="ABCD-EFGH" Disabled="@(_busy || _review is not null)" MaxLength="9" data-testid="pairing-code" />
+            <MudButton @ref="_opener" ButtonType="ButtonType.Submit" Variant="Variant.Outlined" Color="Color.Primary" Disabled="@(_busy || _review is not null)" data-testid="pairing-lookup">@(_busy ? "Checking…" : "Review client")</MudButton>
+        </div>
+    </EditForm>
+</MudPaper></div>
+@if (_review is { } review)
+{
+    <div class="approval-overlay-host"><MudOverlay Visible="true" DarkBackground="true" LockScroll="true" Modal="true" AutoClose="false" ZIndex="1400" Class="approval-overlay" @onkeydown="ReviewKeyDown">
+    <section class="approval-review" role="dialog" aria-modal="true" aria-labelledby="client-review-title" data-testid="client-review-dialog">
+    <MudFocusTrap DefaultFocus="DefaultFocus.FirstChild" Class="approval-focus">
+        <header class="approval-title"><h2 id="client-review-title">@(review.TemporaryVerifier ? "Temporary verification client" : "Review client access")</h2><p>Confirm code <strong data-testid="pairing-confirm-code">@review.UserCode</strong> · @review.Name</p></header>
+        <div class="approval-body">
+            @if (_error is not null) { <MudAlert Severity="Severity.Error" Class="mb-2" data-testid="pairing-error">@_error</MudAlert> }
+            <p>Instance: @review.PublicOrigin</p>
+            @if (review.Resource is not null) { <p>HTTP MCP resource: @review.Resource</p> }
+            <p class="approval-secondary">Approve before @review.ExpiresAtUtc.UtcDateTime.ToString("HH:mm") UTC. Sign-in and code lookup do not approve access.</p>
+            @if (review.TemporaryVerifier)
             {
-                <MudText Typo="Typo.subtitle2">Selected access</MudText>
-                @foreach (var grant in _grants.OrderBy(grant => grant.TenantId).ThenBy(grant => grant.Permission))
-                { <MudText Typo="Typo.body2">@_authority!.Tenants.Single(tenant => tenant.TenantId == grant.TenantId).Name · @grant.Permission</MudText> }
-                @foreach (var permission in _instancePermissions.Order()) { <MudText Typo="Typo.body2">Server-level · @permission</MudText> }
+                <MudAlert Severity="Severity.Info" Class="my-2">Temporary read-only client used to check the server connection. No tenant or customer access. This is separate from approval of the HTTP MCP host service.</MudAlert>
+                <p>Access expires @VerifierExpiry.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss") UTC, or is revoked when verification ends.</p>
+                <MudCheckBox T="bool" Value="_verifierConsent" ValueChanged="SetVerifierConsent" Label="Allow read-only connection status (mcp.discovery.read) for this temporary verification." Disabled="_busy" data-testid="pairing-verifier-consent" />
             }
-            <MudCheckBox T="bool" @bind-Value="_confirmed" Label="@($"I recognize code {_review.UserCode} and approve this connection with the selected access and expiry.")" Disabled="_busy" data-testid="pairing-confirm" />
-            <MudStack Row="true">
-                <MudButton OnClick="Reset" Disabled="_busy">Back</MudButton>
-                <MudButton Color="Color.Error" OnClick="DenyAsync" Disabled="_busy" data-testid="pairing-deny">Deny connection</MudButton>
-                <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="ApproveAsync" Disabled="@(_busy || !_confirmed || _grants.Count == 0 && _instancePermissions.Count == 0)" data-testid="pairing-approve">@(_busy ? "Saving…" : "Approve connection")</MudButton>
-            </MudStack>
-        </MudStack>
-    }
-</MudPaper>
+            else
+            {
+                <MudDatePicker Label="Credential expires on (23:59 UTC)" Date="_expiry" DateChanged="ExpiryChanged" MinDate="DateTime.UtcNow.Date.AddDays(1)" MaxDate="DateTime.UtcNow.Date.AddDays(364)" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_busy" />
+                @if (review.RequestedPermissions.Count > 0) { <details class="my-2"><summary>Client suggestions (@review.RequestedPermissions.Count)</summary><p>@string.Join(", ", review.RequestedPermissions). Select access explicitly below.</p></details> }
+                <IntegrationPermissionSelector Scopes="PermissionScopes" Grants="_grants" InstancePermissions="_instancePermissions" Changed="ChangePermissions" Disabled="_busy" TestIdPrefix="pairing" />
+            }
+            <MudCheckBox T="bool" @bind-Value="_confirmed" Label="@($"I recognize code {review.UserCode} and approve this connection with the selected access and expiry.")" Disabled="_busy" data-testid="pairing-confirm" />
+        </div>
+        <footer class="approval-footer">
+            <MudButton OnClick="Reset" Disabled="_busy">Back</MudButton>
+            <MudButton Color="Color.Error" OnClick="DenyAsync" Disabled="_busy" data-testid="pairing-deny">Deny connection</MudButton>
+            <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="ApproveAsync" Disabled="@(_busy || !_confirmed || !HasAccess)" data-testid="pairing-approve">@(_busy ? "Saving…" : "Approve connection")</MudButton>
+        </footer>
+    </MudFocusTrap>
+    </section></MudOverlay></div>
+}
 
 @code {
     [Parameter] public EventCallback Approved { get; set; }
@@ -80,7 +61,13 @@
     private readonly HashSet<IntegrationPairingGrant> _grants = [];
     private readonly HashSet<string> _instancePermissions = new(StringComparer.Ordinal);
     private DateTime? _expiry = DateTime.UtcNow.Date.AddDays(30);
-    private bool _busy, _confirmed, _disposed;
+    private bool _busy, _confirmed, _disposed, _verifierConsent, _restoreFocus;
+    private MudButton? _opener;
+    private IReadOnlyList<IntegrationPermissionScope> PermissionScopes => _authority is null ? [] : _authority.Tenants.Select(tenant => new IntegrationPermissionScope(tenant.TenantId, tenant.Name, tenant.Permissions.Select(permission => new IntegrationPermission(permission.Id, permission.Label, permission.Description)).ToArray())).Concat(_authority.InstancePermissions.Count > 0 ? [new IntegrationPermissionScope(null, "Server-level access", _authority.InstancePermissions.Select(permission => new IntegrationPermission(permission.Id, permission.Label, permission.Description)).ToArray())] : []).ToArray();
+    private DateTimeOffset VerifierExpiry => _review?.CredentialExpiresAtUtc ?? _review?.ExpiresAtUtc ?? DateTimeOffset.UtcNow;
+    private bool HasAccess => _review?.TemporaryVerifier == true ? _verifierConsent : _grants.Count > 0 || _instancePermissions.Count > 0;
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    { if (_restoreFocus && !_disposed && _opener is not null) { _restoreFocus = false; await _opener.FocusAsync(); } }
     private string? _error, _message;
     private readonly CancellationTokenSource _lifetime = new();
     private HttpClient Api => Clients.CreateClient("OrchestratorApi");
@@ -93,28 +80,38 @@
             using var response = await Api.PostAsJsonAsync(IntegrationPairingProtocol.AccountRoute + "/lookup", new IntegrationPairingCodeRequest(_entry.UserCode), _lifetime.Token);
             if (!response.IsSuccessStatusCode) { _error = "This code is unavailable or expired. Check the code or start a new request in your client."; return; }
             var review = await response.Content.ReadFromJsonAsync<IntegrationPairingReview>(_lifetime.Token);
-            var authority = await Api.GetFromJsonAsync<PairingAuthority>("/api/v2/account/integration-credentials/authority", _lifetime.Token);
+            var authority = review?.TemporaryVerifier == true ? new PairingAuthority([], []) : await Api.GetFromJsonAsync<PairingAuthority>("/api/v2/account/integration-credentials/authority", _lifetime.Token);
             if (_disposed) return;
             if (review is null || authority is null) { _error = "Could not load the requested connection. Try again."; return; }
-            _grants.Clear(); _instancePermissions.Clear(); _confirmed = false;
+            _grants.Clear(); _instancePermissions.Clear(); _confirmed = _verifierConsent = false;
             _review = review; _authority = authority;
         }
         catch (Exception exception) when (exception is HttpRequestException or JsonException or OperationCanceledException)
         { if (!_disposed) _error = "Could not check the connection. Your code is preserved; try again."; }
         finally { if (!_disposed) _busy = false; }
     }
+    private void ExpiryChanged(DateTime? value) { if (_busy) return; _expiry = value; _confirmed = false; }
+    private void ChangePermissions(IntegrationPermissionChange change)
+    {
+        if (_busy || _review?.TemporaryVerifier == true) return;
+        foreach (var permission in change.Permissions)
+            if (change.TenantId is int tenant) SelectGrant(new(tenant, permission), change.Selected);
+            else SelectInstance(permission, change.Selected);
+    }
+    private void SetVerifierConsent(bool value) { if (_busy) return; _verifierConsent = value; _confirmed = false; }
+    private void ReviewKeyDown(KeyboardEventArgs args) { if (args.Key == "Escape") Reset(); }
     private void SelectGrant(IntegrationPairingGrant grant, bool selected)
     { if (_busy) return; if (selected) _grants.Add(grant); else _grants.Remove(grant); _confirmed = false; }
     private void SelectInstance(string permission, bool selected)
     { if (_busy) return; if (selected) _instancePermissions.Add(permission); else _instancePermissions.Remove(permission); _confirmed = false; }
     private async Task ApproveAsync()
     {
-        if (_busy || _disposed || _review is null || !_confirmed || _grants.Count == 0 && _instancePermissions.Count == 0) return;
-        var expiry = IntegrationCredentialExpiry.EndOfUtcDay(_expiry);
+        if (_busy || _disposed || _review is null || !_confirmed || !HasAccess) return;
+        var expiry = _review.TemporaryVerifier ? VerifierExpiry : IntegrationCredentialExpiry.EndOfUtcDay(_expiry);
         if (expiry is null || expiry <= DateTimeOffset.UtcNow || expiry > DateTimeOffset.UtcNow.AddDays(365))
         { _error = "Choose a credential expiry after today and within one year."; return; }
         await DecideAsync("approve", new IntegrationPairingApprovalRequest(_review.UserCode, expiry.Value,
-            _grants.ToArray(), _instancePermissions.ToArray()));
+            _review.TemporaryVerifier ? [] : _grants.ToArray(), _review.TemporaryVerifier ? ["mcp.discovery.read"] : _instancePermissions.ToArray()) { VerifierConsent = _review.TemporaryVerifier && _verifierConsent });
     }
     private Task DenyAsync() => _review is null ? Task.CompletedTask : DecideAsync("deny", new IntegrationPairingCodeRequest(_review.UserCode));
     private async Task DecideAsync<T>(string action, T request)
@@ -133,7 +130,7 @@
                     "The request changed or your access is no longer available. Review your selection or start a new client request.";
                 _confirmed = false; return;
             }
-            _review = null; _entry.UserCode = string.Empty;
+            _review = null; _entry.UserCode = string.Empty; _restoreFocus = true;
             _grants.Clear(); _instancePermissions.Clear(); _confirmed = false;
             _message = action == "approve" ? "Connection approved. Return to your client to save its credential. You can revoke it here after setup." : "Connection denied. No credential was issued.";
             if (action == "approve") await Approved.InvokeAsync();
@@ -143,7 +140,7 @@
         finally { if (!_disposed) _busy = false; }
     }
     private void Reset()
-    { if (_busy) return; _review = null; _error = null; _confirmed = false; _grants.Clear(); _instancePermissions.Clear(); }
+    { if (_busy) return; _review = null; _error = null; _confirmed = _verifierConsent = false; _grants.Clear(); _instancePermissions.Clear(); _restoreFocus = true; }
     public void Dispose() { _disposed = true; _lifetime.Cancel(); _lifetime.Dispose(); }
     private sealed record PairingValidationProblem(Dictionary<string, string[]>? Errors);
     private sealed record PairingPermission(string Id, string Label, string Description);

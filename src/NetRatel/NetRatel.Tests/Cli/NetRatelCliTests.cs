@@ -33,20 +33,40 @@ public sealed class NetRatelCliTests
         {
             var code = await NetRatelCli.RunAsync([
                 "setup", "--instance", "https://instance.example/mcp", "--target", "http-host", "--mode", "host",
-                "--non-interactive", "--auth-mode", "local", "--output-directory", directory, "--api-m2m-audience", "custom.api",
+                "--non-interactive", "--auth-mode", "local", "--deployment-manager", "release-compose", "--output-directory", directory, "--api-m2m-audience", "custom.api",
+                "--api-m2m-authority", "https://identity.example",
                 "--existing-m2m-callers", "existing.client"
             ], new CliRuntime { Out = output, Error = errors });
             code.Should().Be(0, errors.ToString());
             errors.ToString().Should().BeEmpty();
             using var result = JsonDocument.Parse(output.ToString());
-            result.RootElement.GetProperty("state").GetString().Should().Be("configuration-written-apply-and-live-verification-pending");
+            result.RootElement.GetProperty("state").GetString().Should().Be("configuration-generated-deployment-preflight-pending");
+            result.RootElement.GetProperty("deploymentPreflight").GetString().Should().Be("pending");
+            result.RootElement.GetProperty("endToEndVerified").GetBoolean().Should().BeFalse();
             var api = await File.ReadAllTextAsync(Path.Combine(directory, "api.env"));
             api.Should().Contain("M2MClients__netratel_mcp_http__AllowedAudiences__0='custom.api'");
             api.Should().Contain("M2M__AllowedCallerClientIds__0='existing.client'");
             api.Should().NotContain("\nM2M__Authority=").And.NotContain("\nM2M__Audience=");
             (await File.ReadAllTextAsync(Path.Combine(directory, "mcp-http.env"))).Should().Contain("ApiM2MScope='custom.api'");
+            NetRatel.AgentClient.NetRatelHttpHostingSetupService.LoadRequest(directory)!.ApiServiceAuthority.Should().Be("https://identity.example");
         }
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+    }
+
+    [Fact]
+    public async Task Setup_wrapper_forwards_host_verification_to_the_shared_saved_deployment_guard()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "netratel-cli-verify-" + Guid.NewGuid().ToString("N"));
+        var output = new StringWriter();
+        var errors = new StringWriter();
+        var code = await NetRatelCli.RunAsync([
+            "setup", "--instance", "https://instance.example", "--target", "http-host", "--verify", "--non-interactive",
+            "--deployment-manager", "release-compose", "--output-directory", directory
+        ], new CliRuntime { Out = output, Error = errors });
+        code.Should().Be(NetRatel.Setup.SetupCommand.NonInteractiveExitCode);
+        output.ToString().Should().BeEmpty();
+        errors.ToString().Should().Contain("No saved server setup was found").And.NotContain("Unrecognized command");
+        Directory.Exists(directory).Should().BeFalse();
     }
 
     [Fact]

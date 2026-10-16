@@ -44,7 +44,8 @@ public sealed class SharedHeadlessConfigurationTests
     {
         var error = Assert.Throws<AgentClientValidationException>(() => NetRatelConfigurationService.ProfilePath(surface, "default", key => key == "DOTNET_RUNNING_IN_CONTAINER" ? "true" : null));
         Assert.Contains("On the Docker host", error.Message);
-        Assert.Contains("setup-http-mcp.sh --compose-file /absolute/path/to/compose.yaml", error.Message);
+        Assert.Contains("setup-http-mcp.sh", error.Message);
+        Assert.DoesNotContain("/absolute/path/to/compose.yaml", error.Message);
         Assert.Contains("--target " + target, error.Message);
         Assert.Contains("separate client profile", error.Message);
         Assert.DoesNotContain("docker compose -f compose.setup.yaml run", error.Message);
