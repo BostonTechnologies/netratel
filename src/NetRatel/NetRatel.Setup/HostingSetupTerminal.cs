@@ -84,6 +84,7 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
         DeploymentManager = options.GetValueOrDefault("--deployment-manager") ?? Environment.GetEnvironmentVariable("NETRATEL_SETUP_DEPLOYMENT_MANAGER") ?? "";
         ComposeSourcePath = options.GetValueOrDefault("--compose-file") ?? Environment.GetEnvironmentVariable("NETRATEL_SETUP_COMPOSE_SOURCE");
         EffectiveComposeSourcePath = Environment.GetEnvironmentVariable(HttpHostingEffectiveDeployment.SourceEnvironmentVariable);
+        RuntimeEnvironmentSourcePath = Environment.GetEnvironmentVariable("NETRATEL_SETUP_RUNTIME_ENVIRONMENT_SOURCE");
     }
     public override void OnActivated()
     {
@@ -106,6 +107,7 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
     public string DeploymentManager { get; set; } = "";
     public string? ComposeSourcePath { get; set; }
     public string? EffectiveComposeSourcePath { get; set; }
+    public string? RuntimeEnvironmentSourcePath { get; set; }
     public bool VerificationOnly => _options.ContainsKey("--verify");
     public string Progress { get; private set; } = "Setup not saved";
     public bool CleanupPending => _verification?.CleanupPending == true;
@@ -417,8 +419,8 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
     }
     private async Task VerifyAsync(CancellationToken ct)
     {
-        var runtimePath = Environment.GetEnvironmentVariable("NETRATEL_SETUP_RUNTIME_ENVIRONMENT_SOURCE");
-        if (runtimePath is not null)
+        var runtimePath = RuntimeEnvironmentSourcePath;
+        if (!string.IsNullOrWhiteSpace(runtimePath))
         {
             using var document = System.Text.Json.JsonDocument.Parse(ConfigurationFileStorage.ReadText(runtimePath, 262144, secret: true));
             var runtime = new Dictionary<string, Dictionary<string, string?>>(StringComparer.Ordinal);
@@ -428,11 +430,11 @@ public sealed class HostingSetupViewModel : ReactiveViewModel
                     throw new AgentClientValidationException("effective_runtime_missing: Serving runtime metadata is unavailable. Rerun the host launcher after applying the reviewed deployment.");
                 runtime[service] = values.EnumerateObject().ToDictionary(value => value.Name, value => value.Value.GetString(), StringComparer.OrdinalIgnoreCase);
             }
-            HttpHostingEffectiveDeployment.ValidateRuntimeProposal(OutputDirectory, (service, key) => runtime.GetValueOrDefault(service)?.GetValueOrDefault(key));
+            HttpHostingEffectiveDeployment.ValidateRuntimeProposal(OutputDirectory, (service, key) => runtime.GetValueOrDefault(service)?.GetValueOrDefault(key), runtimePath);
             SaveProgress("Deployment applied — verify pending");
         }
-        else if (HttpHostingStorage.UsesSetupVolume(OutputDirectory))
-            throw new AgentClientValidationException("effective_runtime_missing: Verify through ./setup-http-mcp.sh on the Docker host so the applied serving container can be inspected before temporary client approval.");
+        else
+            throw new AgentClientValidationException("effective_runtime_missing: Verify through ./setup-http-mcp.sh on the Docker host so the applied serving containers and protected configuration can be inspected before temporary client approval. Saved configuration alone does not establish the applied deployment.");
         _verification ??= new SetupSession(ConfigurationSurface.HttpMcpClient, Path.Combine(OutputDirectory, ".verification-" + Guid.NewGuid().ToString("N") + ".json"), "host-verification", _handler, getEnvironmentVariable: _ => null);
         if (AuthMode == "OIDC")
         {
