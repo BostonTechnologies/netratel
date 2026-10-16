@@ -181,6 +181,22 @@ public static class IntegrationCredentialEndpoints
                 : Results.NoContent();
         });
 
+        group.MapDelete("/{credentialId}", async (
+            string credentialId,
+            ClaimsPrincipal principal,
+            IIntegrationCredentialService credentials,
+            HttpContext context,
+            CancellationToken ct) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            var owner = PrincipalId(principal);
+            if (owner is null || !IsCookieMutationValidated(principal, context)) return Results.Forbid();
+
+            await credentials.DeleteAsync(owner, credentialId, owner, ct).ConfigureAwait(false);
+            // Missing and other-owner identifiers intentionally have the same result.
+            return Results.NoContent();
+        });
+
         return app;
     }
 

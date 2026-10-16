@@ -1,6 +1,8 @@
 using AwesomeAssertions;
 using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.Configuration;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
@@ -207,5 +209,139 @@ public sealed class IntegrationCredentialServiceTests(PostgreSqlPersistenceFixtu
             new DbContextOptionsBuilder<NetRatelIdentityDbContext>().UseNpgsql(connectionString).Options);
         await db.Database.MigrateAsync();
         return db;
+    }
+
+    [Fact]
+    public async Task Delete_removes_active_verifier_and_grants_durably_but_keeps_principal_and_nonsecret_history()
+    {
+        await using var db = await CreateDbAsync();
+        db.ApplicationPrincipals.Add(new ApplicationPrincipal { Id = "principal-a" });
+        await db.SaveChangesAsync();
+        var service = new IntegrationCredentialService(db);
+        var created = await service.CreateAsync("principal-a", new("Temporary automation", IntegrationCredentialPurpose.HttpMcp,
+            DateTimeOffset.UtcNow.AddDays(7), [new(7, NetRatelPermissions.TelemetryRead)], "https://mcp.example.test/mcp", [NetRatelPermissions.McpDiscoveryRead]));
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([
+            new Claim("netratel_principal_id", "principal-a"), new Claim("netratel_integration_credential_id", created.CredentialId)], "integration"));
+        var access = new EffectiveAccessService(db, new ConfigurationBuilder().Build());
+        (await service.VerifyCurrentAsync(created.CredentialId, IntegrationCredentialPurpose.HttpMcp)).Should().NotBeNull();
+
+        (await service.DeleteAsync("principal-a", created.CredentialId, "principal-a")).Should().BeTrue();
+        (await service.DeleteAsync("principal-a", created.CredentialId, "principal-a")).Should().BeFalse();
+        (await service.DeleteAsync("principal-a", "missing", "principal-a")).Should().BeFalse();
+
+        // Reload through another context, including an already exchanged MCP credential identifier.
+        await using var restarted = OpenSameDatabase(db);
+        var afterRestart = new IntegrationCredentialService(restarted);
+        (await afterRestart.ListAsync("principal-a")).Should().BeEmpty();
+        (await afterRestart.VerifyAsync(created.Secret, IntegrationCredentialPurpose.HttpMcp)).Should().BeNull();
+        (await afterRestart.VerifyCurrentAsync(created.CredentialId, IntegrationCredentialPurpose.HttpMcp)).Should().BeNull();
+        (await access.AuthorizeAsync(principal, NetRatelPermissions.TelemetryRead, 7)).Should().BeFalse();
+        (await restarted.IntegrationCredentialGrants.CountAsync()).Should().Be(0);
+        (await restarted.IntegrationCredentialInstanceGrants.CountAsync()).Should().Be(0);
+        (await restarted.ApplicationPrincipals.CountAsync()).Should().Be(1);
+        var audit = await restarted.IntegrationCredentialLifecycleEvents.SingleAsync();
+        audit.CredentialId.Should().Be(created.CredentialId);
+        audit.OwnerPrincipalId.Should().Be("principal-a");
+        audit.ActorPrincipalId.Should().Be("principal-a");
+        audit.Action.Should().Be("deleted");
+    }
+
+    [Fact]
+    public async Task Delete_is_owner_scoped_and_preserves_revoke_history_when_cleaning_inactive_credentials()
+    {
+        await using var db = await CreateDbAsync();
+        var service = new IntegrationCredentialService(db);
+        var revoked = await service.CreateAsync("principal-a", new("Revoked", IntegrationCredentialPurpose.Api,
+            DateTimeOffset.UtcNow.AddDays(7), [new(7, NetRatelPermissions.TelemetryRead)]));
+        var expired = await service.CreateAsync("principal-a", new("Expired", IntegrationCredentialPurpose.Api,
+            DateTimeOffset.UtcNow.AddDays(7), [new(7, NetRatelPermissions.TelemetryRead)]));
+        var other = await service.CreateAsync("principal-b", new("Other account", IntegrationCredentialPurpose.Api,
+            DateTimeOffset.UtcNow.AddDays(7), [new(7, NetRatelPermissions.TelemetryRead)]));
+        await db.IntegrationCredentials.Where(candidate => candidate.Id == expired.CredentialId)
+            .ExecuteUpdateAsync(update => update.SetProperty(candidate => candidate.ExpiresAtUtc, DateTimeOffset.UtcNow.AddMinutes(-1)));
+
+        (await service.RevokeAsync("principal-a", revoked.CredentialId, "principal-a")).Should().BeTrue();
+        (await service.ListAsync("principal-a")).Single(candidate => candidate.Id == revoked.CredentialId).RevokedAtUtc.Should().NotBeNull();
+        (await service.DeleteAsync("principal-a", other.CredentialId, "principal-a")).Should().BeFalse();
+        (await service.DeleteAsync("principal-a", revoked.CredentialId, "principal-a")).Should().BeTrue();
+        (await service.DeleteAsync("principal-a", expired.CredentialId, "principal-a")).Should().BeTrue();
+
+        (await service.ListAsync("principal-a")).Should().BeEmpty();
+        (await service.VerifyAsync(other.Secret, IntegrationCredentialPurpose.Api)).Should().NotBeNull();
+        (await db.IntegrationCredentialLifecycleEvents.Where(record => record.CredentialId == revoked.CredentialId)
+            .OrderBy(record => record.OccurredAtUtc).Select(record => record.Action).ToArrayAsync()).Should().Equal("revoked", "deleted");
+        (await db.IntegrationCredentialLifecycleEvents.AnyAsync(record => record.CredentialId == other.CredentialId)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Concurrent_delete_revoke_and_authentication_do_not_resurrect_a_tracked_credential()
+    {
+        await using var db = await CreateDbAsync();
+        var service = new IntegrationCredentialService(db);
+        var created = await service.CreateAsync("principal-a", new("Concurrent cleanup", IntegrationCredentialPurpose.Api,
+            DateTimeOffset.UtcNow.AddDays(7), [new(7, NetRatelPermissions.TelemetryRead)]));
+        await using var deleting = OpenSameDatabase(db);
+        await using var revoking = OpenSameDatabase(db);
+        await using var authenticating = OpenSameDatabase(db);
+        var deletingService = new IntegrationCredentialService(deleting);
+        var revokingService = new IntegrationCredentialService(revoking);
+        var authenticatingService = new IntegrationCredentialService(authenticating);
+
+        await Task.WhenAll(
+            deletingService.DeleteAsync("principal-a", created.CredentialId, "principal-a"),
+            revokingService.RevokeAsync("principal-a", created.CredentialId, "principal-a"),
+            authenticatingService.VerifyAsync(created.Secret, IntegrationCredentialPurpose.Api));
+
+        // The original context deliberately still tracks the pre-delete entity.
+        (await service.VerifyAsync(created.Secret, IntegrationCredentialPurpose.Api)).Should().BeNull();
+        (await service.VerifyCurrentAsync(created.CredentialId, IntegrationCredentialPurpose.Api)).Should().BeNull();
+        (await service.RevokeAsync("principal-a", created.CredentialId, "principal-a")).Should().BeFalse();
+        (await db.IntegrationCredentials.CountAsync()).Should().Be(0);
+        (await db.IntegrationCredentialGrants.CountAsync()).Should().Be(0);
+        (await db.IntegrationCredentialLifecycleEvents.CountAsync(record => record.Action == "deleted")).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Reused_context_cannot_authenticate_its_tracked_snapshot_after_external_revocation()
+    {
+        await using var db = await CreateDbAsync();
+        var service = new IntegrationCredentialService(db);
+        var created = await service.CreateAsync("principal-a", new("Tracked snapshot", IntegrationCredentialPurpose.Api,
+            DateTimeOffset.UtcNow.AddDays(7), [new(7, NetRatelPermissions.TelemetryRead)]));
+        await using var other = OpenSameDatabase(db);
+        await new IntegrationCredentialService(other).RevokeAsync("principal-a", created.CredentialId, "principal-a");
+
+        (await service.VerifyAsync(created.Secret, IntegrationCredentialPurpose.Api)).Should().BeNull();
+        (await service.VerifyCurrentAsync(created.CredentialId, IntegrationCredentialPurpose.Api)).Should().BeNull();
+    }
+
+    private static NetRatelIdentityDbContext OpenSameDatabase(NetRatelIdentityDbContext db) => new(
+        new DbContextOptionsBuilder<NetRatelIdentityDbContext>().UseNpgsql(db.Database.GetConnectionString()).Options);
+
+    [Fact]
+    public async Task Upgrade_preserves_existing_revocation_attribution_after_record_deletion()
+    {
+        var connectionString = await postgres.CreateDatabaseAsync();
+        await using var db = new NetRatelIdentityDbContext(new DbContextOptionsBuilder<NetRatelIdentityDbContext>().UseNpgsql(connectionString).Options);
+        var migrator = db.GetService<IMigrator>();
+        await migrator.MigrateAsync("20261014172949_AddIntegrationCredentialPairing");
+        var revokedAt = DateTimeOffset.UtcNow.AddDays(-1);
+        var credential = new IntegrationCredential
+        {
+            Name = "Old revoked test", OwnerPrincipalId = "principal-a", PublicId = "old-public-id", TokenPrefix = "nrt_ic_old",
+            SecretHash = IntegrationCredentialService.Hash("old-secret"), ExpiresAtUtc = DateTimeOffset.UtcNow.AddDays(1),
+            RevokedAtUtc = revokedAt, RevokedByPrincipalId = "original-actor"
+        };
+        db.IntegrationCredentials.Add(credential);
+        await db.SaveChangesAsync();
+        await migrator.MigrateAsync();
+
+        await new IntegrationCredentialService(db).DeleteAsync("principal-a", credential.Id, "deleting-actor");
+        var history = await db.IntegrationCredentialLifecycleEvents.AsNoTracking().OrderBy(record => record.OccurredAtUtc).ToArrayAsync();
+        history.Select(record => record.Action).Should().Equal("revoked", "deleted");
+        history[0].ActorPrincipalId.Should().Be("original-actor");
+        // PostgreSQL timestamps have microsecond precision.
+        history[0].OccurredAtUtc.Should().BeCloseTo(revokedAt, TimeSpan.FromMicroseconds(1));
+        history[1].ActorPrincipalId.Should().Be("deleting-actor");
     }
 }
