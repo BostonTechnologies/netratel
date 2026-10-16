@@ -116,7 +116,7 @@ public static class IntegrationPairingEndpoints
     private static void NoStore(HttpContext http) => http.Response.Headers.CacheControl = "no-store";
     private static async Task<string?> PublicOriginAsync(IDeploymentBrandingService branding, CancellationToken ct)
     {
-        try { return ClientEndpointAddress.NormalizePublicOrigin((await branding.GetEffectiveAsync(ct).ConfigureAwait(false)).SiteUrl.Value).TrimEnd('/'); }
+        try { return HttpHostSetupProtocol.NormalizeWebAddress((await branding.GetEffectiveAsync(ct).ConfigureAwait(false)).SiteUrl.Value).TrimEnd('/'); }
         catch (ArgumentException) { return null; }
     }
     private static string HttpMcpResource(string origin, IConfiguration configuration) =>
@@ -127,6 +127,7 @@ public static class IntegrationPairingEndpoints
         origin + IntegrationPairingProtocol.Route + "/poll", origin + IntegrationPairingProtocol.Route + "/cancel",
         origin + IntegrationPairingProtocol.Route + "/acknowledge", HttpMcpResource(origin, configuration))
     {
+        ConfigurationCapabilities = ["scoped-integration-credential", "explicit-tenant-grants", IntegrationPairingProtocol.TemporaryVerifierCapability],
         AuthenticationMethods = AuthenticationModeConfiguration.Resolve(configuration) switch
         { "Hybrid" => ["local-browser", "oidc-browser"], "Oidc" => ["oidc-browser"], _ => ["local-browser"] }
     };

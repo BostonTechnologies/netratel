@@ -8,6 +8,26 @@ namespace NetRatel.Shared.Client;
 /// </summary>
 public static class ClientEndpointAddress
 {
+    /// <summary>Public Web address, including a deliberately configured deployment path base.</summary>
+    public static string NormalizePublicWebBase(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length > 2048 || value.Any(char.IsControl) ||
+            value.Contains('\\') || !Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri) ||
+            uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0)
+            throw new ArgumentException("Set a public HTTPS Web address without credentials, query or fragment.", nameof(value));
+        var authority = NormalizePublicOrigin(uri.GetLeftPart(UriPartial.Authority));
+        var text = value.Trim();
+        var pathStart = text.IndexOf('/', text.IndexOf("://", StringComparison.Ordinal) + 3);
+        var path = pathStart < 0 ? "" : text[pathStart..].TrimEnd('/');
+        foreach (var segment in path.Split('/').Skip(1))
+        {
+            var decoded = Uri.UnescapeDataString(segment);
+            if (decoded.Length == 0 || decoded is "." or ".." || decoded.Any(char.IsControl) || decoded.IndexOfAny(['/', '\\', '?', '#', '%']) >= 0)
+                throw new ArgumentException("Use a normal deployment path without traversal or encoded separators.", nameof(value));
+        }
+        return authority + uri.AbsolutePath.TrimEnd('/');
+    }
+
     /// <summary>Public installation endpoints use a DNS HTTPS origin on port 443.</summary>
     public static string NormalizePublicOrigin(string? value)
     {

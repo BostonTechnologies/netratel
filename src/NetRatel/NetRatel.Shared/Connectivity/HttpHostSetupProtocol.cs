@@ -7,6 +7,7 @@ public static class HttpHostSetupProtocol
     public const string Route = "/api/http-host-setup/v1";
     public const string AccountRoute = "/api/v2/account/integration-credentials/http-host-setup";
     public const int PollIntervalSeconds = 5;
+    public static string NormalizeWebAddress(string value) => NetRatel.Shared.Client.ClientEndpointAddress.NormalizePublicWebBase(value);
 }
 
 public sealed record HttpHostSetupCapabilities(int ProtocolVersion, string PublicOrigin, string Resource,

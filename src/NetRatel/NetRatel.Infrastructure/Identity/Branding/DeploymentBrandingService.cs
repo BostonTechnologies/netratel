@@ -143,7 +143,7 @@ public sealed class DeploymentBrandingService(
             throw new BrandingValidationException($"'{field}' must be non-empty, no longer than {max} characters, and contain no control characters.");
         if (field is "siteUrl" or "gatewayUrl")
         {
-            try { return ClientEndpointAddress.NormalizePublicOrigin(value); }
+            try { return field == "siteUrl" ? ClientEndpointAddress.NormalizePublicWebBase(value) : ClientEndpointAddress.NormalizePublicOrigin(value); }
             catch (ArgumentException) { throw new BrandingValidationException($"'{field}' must be a public HTTPS origin."); }
         }
         if (field is "supportUrl" && !BrandingUrl.IsSafeConfiguredUrl(value))

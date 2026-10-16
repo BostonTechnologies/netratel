@@ -27,6 +27,33 @@ namespace NetRatel.Tests.API;
 public sealed class IntegrationPairingEndpointTests
 {
     [Fact]
+    public async Task Host_and_client_approval_keep_configured_deployment_base_paths_and_advertise_bounded_verification()
+    {
+        await using var app = await BuildAppAsync("https://netratel.example.test/platform", "https://netratel.example.test/platform/mcp");
+        using var client = app.GetTestClient();
+        var host = (await client.GetFromJsonAsync<HttpHostSetupCapabilities>(HttpHostSetupProtocol.Route + "/capabilities"))!;
+        host.PublicOrigin.Should().Be("https://netratel.example.test/platform");
+        host.VerificationUri.Should().Be("https://netratel.example.test/platform/account/integration-credentials?tab=credentials");
+        var pairing = (await client.GetFromJsonAsync<IntegrationPairingCapabilities>(IntegrationPairingProtocol.Route + "/capabilities"))!;
+        pairing.PublicOrigin.Should().Be(host.PublicOrigin);
+        pairing.StartEndpoint.Should().Be("https://netratel.example.test/platform" + IntegrationPairingProtocol.Route + "/start");
+        pairing.ConfigurationCapabilities.Should().Contain(IntegrationPairingProtocol.TemporaryVerifierCapability);
+        using var started = await client.PostAsJsonAsync(HttpHostSetupProtocol.Route + "/start", new HttpHostSetupStartRequest(host.PublicOrigin, host.Resource, new string('A', 64)));
+        started.StatusCode.Should().Be(HttpStatusCode.OK);
+        var request = (await started.Content.ReadFromJsonAsync<HttpHostSetupStartResponse>())!;
+        request.VerificationUri.Should().StartWith(host.VerificationUri + "&host_code=").And.NotContain(request.DeviceCapability);
+    }
+
+    [Theory]
+    [InlineData("https://netratel.example.test/platform/../other")]
+    [InlineData("https://netratel.example.test/platform/%2fother")]
+    [InlineData("https://netratel.example.test/platform/%252fother")]
+    [InlineData("https://netratel.example.test/platform?target=other")]
+    [InlineData("https://user:secret@netratel.example.test/platform")]
+    public void Deployment_web_address_rejects_ambiguous_or_credential_bearing_paths(string value) =>
+        Assert.Throws<ArgumentException>(() => HttpHostSetupProtocol.NormalizeWebAddress(value));
+
+    [Fact]
     public async Task Expired_pending_host_requests_do_not_consume_the_active_request_limit()
     {
         await using var app = await BuildAppAsync();
@@ -71,7 +98,7 @@ public sealed class IntegrationPairingEndpointTests
         start.StatusCode.Should().Be(HttpStatusCode.OK);
         start.Headers.CacheControl!.NoStore.Should().BeTrue();
         var request = (await start.Content.ReadFromJsonAsync<HttpHostSetupStartResponse>())!;
-        request.VerificationUri.Should().NotContain(request.UserCode).And.NotContain(request.DeviceCapability);
+        request.VerificationUri.Should().EndWith("&host_code=" + Uri.EscapeDataString(request.UserCode)).And.NotContain(request.DeviceCapability);
         var decision = new HttpHostSetupCodeRequest(request.UserCode);
         (await client.PostAsJsonAsync(HttpHostSetupProtocol.AccountRoute + "/approve", decision)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         client.DefaultRequestHeaders.Add("X-Test-Account", "owner");
@@ -267,12 +294,12 @@ public sealed class IntegrationPairingEndpointTests
         (await client.GetAsync("/api/v1/auth/ai-agent/status")).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 
-    private static async Task<WebApplication> BuildAppAsync()
+    private static async Task<WebApplication> BuildAppAsync(string siteUrl = "https://netratel.example.test", string mcpResource = "https://mcp.example.test/mcp")
     {
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
-        builder.Configuration["Integration:HttpMcp:PublicResourceUri"] = "https://mcp.example.test/mcp";
-        builder.Services.Configure<DeploymentBrandingOptions>(options => options.SiteUrl = "https://netratel.example.test");
+        builder.Configuration["Integration:HttpMcp:PublicResourceUri"] = mcpResource;
+        builder.Services.Configure<DeploymentBrandingOptions>(options => options.SiteUrl = siteUrl);
         builder.Services.AddAuthentication("PairingTest").AddScheme<AuthenticationSchemeOptions, AccountAuthentication>("PairingTest", _ => { })
             .AddScheme<AuthenticationSchemeOptions, IntegrationCredentialAuthenticationHandler>(IntegrationCredentialAuthenticationHandler.SchemeName, _ => { });
         builder.Services.AddAuthorization(options =>

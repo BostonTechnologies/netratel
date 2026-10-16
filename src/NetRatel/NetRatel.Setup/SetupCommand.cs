@@ -203,7 +203,7 @@ Normal stdio MCP stdout contains protocol JSON-RPC only; run setup explicitly wi
             ExistingM2MCallerClientIds = options.ContainsKey("--existing-m2m-callers") ? Values(options["--existing-m2m-callers"]) : saved?.ExistingM2MCallerClientIds,
             ApiServiceAudience = options.GetValueOrDefault("--api-m2m-audience") ?? saved?.ApiServiceAudience ?? "netratel.api",
             ApiServiceAuthority = options.GetValueOrDefault("--api-m2m-authority") ?? saved?.ApiServiceAuthority,
-            DeploymentManager = options.GetValueOrDefault("--deployment-manager") ?? saved?.DeploymentManager ?? Environment.GetEnvironmentVariable("NETRATEL_SETUP_DEPLOYMENT_MANAGER") ?? "release-compose",
+            DeploymentManager = options.GetValueOrDefault("--deployment-manager") ?? saved?.DeploymentManager ?? Environment.GetEnvironmentVariable("NETRATEL_SETUP_DEPLOYMENT_MANAGER") ?? string.Empty,
             ComposeSourcePath = options.GetValueOrDefault("--compose-file") ?? saved?.ComposeSourcePath,
             ListeningPort = options.TryGetValue("--listen-port", out var port) ? int.TryParse(port, out var parsedPort) ? parsedPort : throw new AgentClientValidationException("Listening port must be an integer.") : saved?.ListeningPort ?? existing?.ListeningPort ?? 9224
         };
@@ -211,7 +211,7 @@ Normal stdio MCP stdout contains protocol JSON-RPC only; run setup explicitly wi
         var preview = service.Preview(request);
         var result = service.Apply(request, options.ContainsKey("--replace"));
         var fingerprint = service.PrepareRegistration(request);
-        if (request.DeploymentManager == "komodo") HostingExportReceipt.WriteIfRequested(directory);
+        HostingExportReceipt.WriteIfRequested(directory);
         await output.WriteLineAsync(JsonSerializer.Serialize(new { state = "configuration-written-apply-and-live-verification-pending", registrationFingerprint = fingerprint, applyCommand = NetRatelHttpHostingSetupService.ApplyCommand(request), preview, result }, AgentClientConfiguration.JsonOptions)); return 0;
     }
 
@@ -226,6 +226,21 @@ Normal stdio MCP stdout contains protocol JSON-RPC only; run setup explicitly wi
             throw new AgentClientValidationException("Verification reuses the saved server identity and authentication settings. Omit configuration overrides or run setup without --verify to review an intentional change.");
         if (options.TryGetValue("--api-base-url", out var api) && !NetRatelConfigurationService.Equivalent(api, saved.ApiBaseUrl))
             throw new AgentClientValidationException("Verification must use the saved API destination. Omit the API override or review a configuration change without --verify.");
+        // Verify the serving process, not the one-shot setup container's inherited environment.
+        if (Environment.GetEnvironmentVariable("NETRATEL_SETUP_RUNTIME_ENVIRONMENT_SOURCE") is { Length: > 0 } runtimePath)
+        {
+            using var snapshot = JsonDocument.Parse(ConfigurationFileStorage.ReadText(runtimePath, 1_048_576, secret: true));
+            var runtime = new Dictionary<string, Dictionary<string, string?>>(StringComparer.Ordinal);
+            foreach (var name in new[] { "mcp-http", "api", "web" })
+            {
+                if (!snapshot.RootElement.TryGetProperty(name, out var service) || service.ValueKind != JsonValueKind.Object)
+                    throw new AgentClientValidationException("effective_runtime_missing: Rerun the host launcher to inspect all recreated services.");
+                runtime[name] = service.EnumerateObject().ToDictionary(entry => entry.Name, entry => entry.Value.GetString(), StringComparer.OrdinalIgnoreCase);
+            }
+            HttpHostingEffectiveDeployment.ValidateRuntimeProposal(directory, (service, key) => runtime.GetValueOrDefault(service)?.GetValueOrDefault(key));
+        }
+        else if (HttpHostingStorage.UsesSetupVolume(directory))
+            throw new AgentClientValidationException("effective_runtime_missing: Rerun setup-http-mcp.sh on the deployment host to inspect the recreated serving process before verification.");
         if (!options.TryGetValue("--credential-file", out var credentialFile) || !Path.IsPathFullyQualified(credentialFile))
             throw new AgentClientValidationException("Provide --credential-file with the absolute path of a protected HTTP MCP-purpose verifier credential. It remains separate from the server identity and is not saved by verification.");
         credentialFile = Path.GetFullPath(credentialFile);
