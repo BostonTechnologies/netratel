@@ -35,6 +35,7 @@ public sealed class HttpHostSettingsAdoptionTests : IDisposable
         Assert.DoesNotContain(_key, JsonSerializer.Serialize(settings));
         Assert.DoesNotContain(_key, settings.ToString());
 
+        CreatePrivateOutput();
         var keyPath = settings.MaterializeDelegationKey(Output);
         Assert.Equal(_key + "\n", File.ReadAllText(keyPath!));
         var before = File.GetLastWriteTimeUtc(keyPath!);
@@ -108,6 +109,7 @@ public sealed class HttpHostSettingsAdoptionTests : IDisposable
     public void Different_inline_generation_is_rejected_without_overwriting_the_protected_key()
     {
         var environment = ExistingDeployment();
+        CreatePrivateOutput();
         var path = ExistingHttpHostSettings.Discover(environment.GetValueOrDefault).MaterializeDelegationKey(Output)!;
         var otherKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         environment["NetRatel__Mcp__Delegation__SharedKeyBase64"] = otherKey;
@@ -185,6 +187,7 @@ public sealed class HttpHostSettingsAdoptionTests : IDisposable
         Assert.Equal(Api, settings.ApiBaseUrl);
         Assert.False(Directory.Exists(Output));
         Assert.DoesNotContain("existing-environment-service-secret", JsonSerializer.Serialize(settings));
+        CreatePrivateOutput();
         var path = settings.MaterializeOutboundConfiguration(Output)!;
         Assert.Equal("existing-environment-service-secret", NetRatelConfigurationService.ReadConfiguration(path).ApiM2MClientSecret);
         var before = File.GetLastWriteTimeUtc(path);
@@ -216,6 +219,7 @@ public sealed class HttpHostSettingsAdoptionTests : IDisposable
         Assert.True(settings.HasOutboundIdentity);
         Assert.Equal(Principal, settings.DelegationServicePrincipal);
         Assert.Null(settings.LocalCredentialMode); // Outbound OIDC says nothing about client ingress.
+        CreatePrivateOutput();
         var path = settings.MaterializeOutboundConfiguration(Output)!;
         var snapshot = NetRatelConfigurationService.ReadConfiguration(path);
         Assert.Equal(secretFile, snapshot.OidcAppPasswordFile);
@@ -261,6 +265,7 @@ public sealed class HttpHostSettingsAdoptionTests : IDisposable
         Assert.Null(settings.OutboundConfigurationPath);
         Assert.True(settings.HasOutboundIdentity);
         Assert.False(Directory.Exists(Output));
+        CreatePrivateOutput();
         var snapshotPath = settings.MaterializeOutboundConfiguration(Output)!;
         var snapshot = NetRatelConfigurationService.ReadConfiguration(snapshotPath);
         Assert.Equal(secretFile, snapshot.ApiM2MClientSecretFile);
@@ -275,6 +280,12 @@ public sealed class HttpHostSettingsAdoptionTests : IDisposable
         Assert.DoesNotContain("current-effective-service-secret", error.Message);
         Assert.Equal(snapshotBefore, File.ReadAllText(snapshotPath));
         Assert.Equal(original, File.ReadAllText(originalPath));
+    }
+
+    private void CreatePrivateOutput()
+    {
+        if (OperatingSystem.IsWindows()) Directory.CreateDirectory(Output);
+        else Directory.CreateDirectory(Output, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
     private Dictionary<string, string?> ExistingDeployment()

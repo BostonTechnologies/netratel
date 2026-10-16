@@ -33,7 +33,7 @@ public sealed class NetRatelCliTests
         {
             var code = await NetRatelCli.RunAsync([
                 "setup", "--instance", "https://instance.example/mcp", "--target", "http-host", "--mode", "host",
-                "--non-interactive", "--output-directory", directory, "--api-m2m-audience", "custom.api",
+                "--non-interactive", "--auth-mode", "local", "--output-directory", directory, "--api-m2m-audience", "custom.api",
                 "--existing-m2m-callers", "existing.client"
             ], new CliRuntime { Out = output, Error = errors });
             code.Should().Be(0, errors.ToString());
