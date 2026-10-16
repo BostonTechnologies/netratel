@@ -10,6 +10,7 @@ These documents include current architecture/development guidance and dated impl
 - [RC.19 installer and gateway reliability evidence](RC19_INSTALLER_GATEWAY_RELIABILITY.md)
 - [Historical SQLite installations](SQLITE.md)
 - [Compact operator workspaces — rendered review](beta-13-workspaces.md)
+- [Beta.20 setup, integrations and Jobs — synthetic acceptance](beta-20-setup-integrations-jobs.md)
 - [Documentation move map](documentation-move-map.md)
 - [Local-first endpoint and permission inventory](local-first-endpoint-permissions.md)
 - [Local-first implementation progress](local-first-progress.md)
