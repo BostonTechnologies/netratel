@@ -208,16 +208,27 @@ public sealed class HttpHostingSetupTests : IDisposable
     [InlineData("https://person:secret@netratel.example.invalid/mcp")]
     [InlineData("https://netratel.example.invalid/mcp?access_token=secret")]
     [InlineData("https://netratel.example.invalid/#fragment")]
-    [InlineData("https://netratel.example.invalid/prefix/mcp")]
     [InlineData("https://netratel.example.invalid/a/../mcp")]
     public void Instance_address_rejects_credential_destinations_which_would_be_silently_changed(string input)
         => Assert.Throws<AgentClientValidationException>(() => InstanceSetupAddress.Parse(input));
 
     [Fact]
+    public void Instance_address_preserves_the_deployment_base_path_and_browser_origins_use_authority()
+    {
+        var address = InstanceSetupAddress.Parse("https://netratel.example.invalid/prefix/mcp");
+        Assert.Equal("https://netratel.example.invalid/prefix", address.Origin);
+        Assert.Equal("https://netratel.example.invalid/prefix/mcp", address.McpResource);
+        new NetRatelHttpHostingSetupService().Apply(Request with { PublicOrigin = address.Origin });
+        var environment = File.ReadAllText(Path.Combine(_directory, "mcp-http.env"));
+        Assert.Contains("PublicResourceUri='https://netratel.example.invalid/prefix/mcp'", environment);
+        Assert.Contains("AllowedOrigins__0='https://netratel.example.invalid'", environment);
+    }
+
+    [Fact]
     public void Approval_binds_full_effective_settings_and_reuses_generation_without_reprovisioning()
     {
         var service = new NetRatelHttpHostingSetupService();
-        var request = Request with { PublicOrigin = "https://netratel.example.invalid/mcp", ApiBaseUrl = "" };
+        var request = HttpHostingDeploymentFixture.WithSource(Request with { PublicOrigin = "https://netratel.example.invalid/mcp", ApiBaseUrl = "" });
         var fingerprint = service.PrepareRegistration(request);
         Assert.False(File.Exists(Path.Combine(_directory, "api.env")));
         var secret = File.ReadAllText(Path.Combine(_directory, "secrets", "outbound-m2m.secret"));

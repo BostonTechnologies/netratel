@@ -9,7 +9,7 @@ public sealed record HttpHostingWebBackendSelection(Dictionary<string, string> C
 /// <summary>Merges reviewed HTTP MCP settings into a deployment manager's complete document.</summary>
 public static class HttpHostingComposeDocument
 {
-    public const int MaximumSourceBytes = 65_536;
+    public const int MaximumSourceBytes = 262_144;
 
     /// <summary>Retain deployment-owned backend bindings when the wizard is using its defaults.</summary>
     public static HttpHostingWebBackendSelection SelectWebBackends(string source, IReadOnlyDictionary<string, string> proposed,
@@ -99,7 +99,7 @@ public static class HttpHostingComposeDocument
     public static string Merge(string source, IReadOnlyDictionary<string, string> web,
         IReadOnlyDictionary<string, string> api, IReadOnlyDictionary<string, string> mcp,
         uint runtimeGroup, string setupVolumeName, string clientVolumeName,
-        int listeningPort, string? projectName = null)
+        int listeningPort, string? projectName = null, IReadOnlyDictionary<string, string>? resolvedVolumeNames = null)
     {
         try
         {
@@ -121,8 +121,8 @@ public static class HttpHostingComposeDocument
                 if (service.Children.ContainsKey(Key("extends")))
                     throw Invalid("Inherited services need a complete source document before setup can merge them.");
 
-            var setupKey = VolumeKey(volumes, mcpService, "/setup-output", "http-host-setup", setupVolumeName, projectName);
-            var clientKey = VolumeKey(volumes, mcpService, "/var/lib/netratel/clients", "http-client-data", clientVolumeName, projectName);
+            var setupKey = VolumeKey(volumes, mcpService, "/setup-output", "http-host-setup", setupVolumeName, projectName, resolvedVolumeNames);
+            var clientKey = VolumeKey(volumes, mcpService, "/var/lib/netratel/clients", "http-client-data", clientVolumeName, projectName, resolvedVolumeNames);
             Environment(webService, web);
             Environment(apiService, api);
             Environment(mcpService, mcp);
@@ -144,7 +144,7 @@ public static class HttpHostingComposeDocument
             writer.WriteLine("# Complete reviewed HTTP MCP deployment. Import this entire document into the existing Komodo stack.");
             yaml.Save(writer, assignAnchors: false);
             var result = writer.ToString();
-            if (System.Text.Encoding.UTF8.GetByteCount(result) > 65_536)
+            if (System.Text.Encoding.UTF8.GetByteCount(result) > MaximumSourceBytes)
                 throw Invalid("The merged document is too large for protected setup storage.");
             return result;
         }
@@ -175,7 +175,7 @@ public static class HttpHostingComposeDocument
     private static void ValidateSyntax(string source)
     {
         if (System.Text.Encoding.UTF8.GetByteCount(source) > MaximumSourceBytes)
-            throw Invalid("The source exceeds the supported 64 KiB protected document size.");
+            throw Invalid("The source exceeds the supported 256 KiB protected document size.");
         var parser = new Parser(new StringReader(source));
         var depth = 0;
         var count = 0;
@@ -254,7 +254,7 @@ public static class HttpHostingComposeDocument
         service.Children[Key("environment")] = environment;
     }
 
-    private static string VolumeKey(YamlMappingNode volumes, YamlMappingNode mcp, string target, string preferred, string physical, string? projectName)
+    private static string VolumeKey(YamlMappingNode volumes, YamlMappingNode mcp, string target, string preferred, string physical, string? projectName, IReadOnlyDictionary<string, string>? resolvedVolumeNames)
     {
         var current = Mounts(mcp).SingleOrDefault(mount => mount.Target == target);
         if (current is not null)
@@ -267,13 +267,13 @@ public static class HttpHostingComposeDocument
             if (definition is YamlMappingNode details)
             {
                 expected = Value(details, "name");
-                if (expected?.Contains('$') == true)
+                if (expected?.Contains('$') == true && resolvedVolumeNames?.TryGetValue(current.Source, out expected) != true)
                     throw Invalid($"The existing {target} volume name uses unresolved interpolation. Setup cannot prove it matches the selected persistent volume.");
                 if (expected is null && bool.TryParse(Value(details, "external"), out var external) && external) expected = current.Source;
             }
             else if (definition is not YamlScalarNode { Value: null or "" })
                 throw Invalid($"The existing {target} volume declaration must be an explicit mapping.");
-            expected ??= projectName is null ? null : projectName + "_" + current.Source;
+            expected ??= resolvedVolumeNames?.GetValueOrDefault(current.Source) ?? (projectName is null ? null : projectName + "_" + current.Source);
             if (expected is null || expected != physical)
                 throw Invalid($"The {target} volume does not match the launcher's selected persistent volume. Reopen setup through setup-http-mcp.sh.");
             return current.Source;

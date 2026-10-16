@@ -46,6 +46,15 @@ public sealed class ExistingHttpHostSettings
     public static ExistingHttpHostSettings Discover(Func<string, string?>? environment = null)
     {
         environment ??= Environment.GetEnvironmentVariable;
+        if (environment(HttpHostingEffectiveDeployment.SourceEnvironmentVariable) is { Length: > 0 } sourcePath)
+        {
+            var deployment = HttpHostingEffectiveDeployment.Load(sourcePath);
+            var servingEnvironment = environment;
+            // Keep explicit caller/launcher overrides above deployment providers;
+            // adopt protected outbound credentials through the same private export
+            // path as environment identities, without rewriting their source.
+            environment = key => servingEnvironment(key) ?? deployment.ReadServing("mcp-http", key);
+        }
         // Canonical typed settings win over compact aliases within the environment,
         // matching NetRatelMcpHttpOptions.FromConfiguration.
         string? Read(string key, params string[] aliases)
@@ -154,7 +163,7 @@ public sealed class ExistingHttpHostSettings
             (!hasKey || keyId is null || issuer is null || audience is null || principal is null))
             throw new AgentClientValidationException("Existing delegation settings are incomplete. Keep the current generation and supply its canonical key source, KeyId, Issuer, Audience and ServicePrincipal in the deployment settings. Setup will not generate a replacement key.");
         if (principal is not null && outbound?.ApiM2MClientId is { Length: > 0 } clientId && principal != clientId)
-            throw new AgentClientValidationException("The existing delegation ServicePrincipal does not match the outbound API service identity. Correct the coordinated deployment settings; setup will not replace either identity.");
+            throw new AgentClientValidationException("outbound_identity_mismatch: NetRatel:Mcp:Delegation:ServicePrincipal and NetRatel:Mcp:Outbound:ApiM2MClientId identify different services; winning sources: effective serving delegation environment and existing outbound configuration/environment. Correct the coordinated deployment settings to the existing outbound identity; preserve credential and delegation key bytes, then review again.");
         if (inline is not null) ValidateKey(inline);
         if (keyFile is not null)
         {

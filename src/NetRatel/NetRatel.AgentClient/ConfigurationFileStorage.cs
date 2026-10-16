@@ -36,7 +36,8 @@ public static class ConfigurationFileStorage
         }
     }
 
-    public static string Hash(string path) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ReadText(path))));
+    public static string Hash(string path) => Hash(path, 65_536);
+    public static string Hash(string path, int maximumBytes) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ReadText(path, maximumBytes))));
 
     public static bool IsWritable(string path)
     {
@@ -52,7 +53,7 @@ public static class ConfigurationFileStorage
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { return false; }
     }
 
-    public static void WriteAtomic(string path, string content, bool replace = false, string? expectedHash = null)
+    public static void WriteAtomic(string path, string content, bool replace = false, string? expectedHash = null, int maximumBytes = 65_536)
     {
         var fullPath = Path.GetFullPath(path);
         string? temporaryPath = null;
@@ -79,7 +80,7 @@ public static class ConfigurationFileStorage
             if (existed && !OperatingSystem.IsWindows() &&
                 (File.GetUnixFileMode(fullPath) & (UnixFileMode.GroupWrite | UnixFileMode.OtherWrite)) != 0)
                 throw new AgentClientValidationException("Existing configuration is writable by another user. Correct ownership and permissions before replacement.");
-            var before = existed ? Hash(fullPath) : string.Empty;
+            var before = existed ? Hash(fullPath, maximumBytes) : string.Empty;
             if (expectedHash is not null && !string.Equals(expectedHash, before, StringComparison.Ordinal))
                 throw new AgentClientValidationException("Configuration changed since it was reviewed. Reload before saving.");
             temporaryPath = Path.Combine(directory, "." + Path.GetFileName(fullPath) + "." + Guid.NewGuid().ToString("N") + ".tmp");
@@ -90,7 +91,7 @@ public static class ConfigurationFileStorage
                 stream.Flush(flushToDisk: true);
             }
             EnsureSafePath(fullPath);
-            if (existed != File.Exists(fullPath) || existed && !string.Equals(before, Hash(fullPath), StringComparison.Ordinal))
+            if (existed != File.Exists(fullPath) || existed && !string.Equals(before, Hash(fullPath, maximumBytes), StringComparison.Ordinal))
                 throw new AgentClientValidationException("Configuration changed while saving. Reload before saving.");
             File.Move(temporaryPath, fullPath, overwrite: existed);
             temporaryPath = null;
