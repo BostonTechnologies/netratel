@@ -101,7 +101,7 @@ Host setup creates/reuses `netratel-http-host-setup` at `/setup-output`. Its ori
 
 ## 2. Connect clients after the server is verified
 
-For Netclaw, go to [Give Netclaw customer connections HTTP MCP access](../integrations/netclaw-http-mcp.md). It covers the `http` transport, encrypted credential storage, three separate customer entries and allowed/denied tenant checks. A profile saved in the MCP container is not automatically installed into Netclaw.
+For Netclaw, go to [Give Netclaw customer connections HTTP MCP access](../integrations/netclaw-http-mcp.md). It covers the `http` transport, encrypted credential storage, the required administrator-approved operation policy, three separate customer entries and allowed/denied tenant checks. Server setup and credential grants do not automatically create customer operation policies. A profile saved in the MCP container is not automatically installed into Netclaw.
 
 For NetRatel's own client tooling, continue below. The installed native **NetRatel Client** agent, CLI, stdio MCP and third-party HTTP MCP clients are separate consumers; use the intended surface's command and credential purpose.
 

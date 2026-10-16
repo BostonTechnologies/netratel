@@ -79,7 +79,8 @@ def collect(item):
         for value in item: collect(value)
 try: collect(json.loads((private / "redaction-config.json").read_text()))
 except (OSError, json.JSONDecodeError): pass
-files = [private / name for name in ("startup.log", "container-states.jsonl", "launcher.log", "verified-launcher.log")]
+files = [private / name for name in ("startup.log", "container-states.jsonl", "launcher.log", "verified-launcher.log",
+    "customer-policy-recipe.log", "customer-policy.json")]
 files += sorted(private.glob(".netratel-http-mcp-*/*.log"))
 for index, path in enumerate(files):
     if not path.is_file(): continue
@@ -509,32 +510,69 @@ verify_mcp() {
 stage="verifying authenticated catalog and a real API-backed read"
 verify_mcp
 
-stage="creating three separately scoped HTTP MCP-purpose customer credentials"
+# Execute the copyable administrator guide itself. Only its four documented
+# non-secret inputs differ; each execution signs in with its own private cookie
+# jar and selects the actual resource-bound credential from the API response.
+mkdir "$temporary/policy-curl"
+printf 'resolve = "%s:443:127.0.0.1"\nnoproxy = "%s"\n' \
+  "$NETRATEL_PUBLIC_API_HOST" "$NETRATEL_PUBLIC_API_HOST" > "$temporary/policy-curl/.curlrc"
+run_documented_customer_policy() {
+  python3 - docs/integrations/netclaw-http-mcp.md "$temporary/customer-policy-recipe.sh" \
+    "$NETRATEL_PUBLIC_API_ORIGIN" "$NETRATEL_MCP_PUBLIC_RESOURCE_URI" dev "$1" <<'PY'
+import pathlib, re, shlex, sys
+guide, target = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+text = guide.read_text()
+begin, end = "<!-- BEGIN NETCLAW_HTTP_POLICY_RECIPE -->", "<!-- END NETCLAW_HTTP_POLICY_RECIPE -->"
+if text.count(begin) != 1 or text.count(end) != 1:
+    raise SystemExit("The canonical customer-policy recipe markers must each occur once.")
+block = text.split(begin, 1)[1].split(end, 1)[0].strip()
+if not block.startswith("~~~bash\n") or not block.endswith("\n~~~"):
+    raise SystemExit("The canonical customer-policy recipe must remain one Bash fence.")
+recipe = block[len("~~~bash\n"):-len("\n~~~")]
+for name, value in zip(("API_URL", "MCP_URL", "INSTANCE", "CREDENTIAL_NAME"), sys.argv[3:], strict=True):
+    recipe, count = re.subn(r"^" + name + r"='[^'\n]*'$", lambda _: name + "=" + shlex.quote(value), recipe, flags=re.M)
+    if count != 1:
+        raise SystemExit("The canonical recipe must contain exactly one editable " + name + " assignment.")
+target.write_text(recipe + "\n")
+PY
+  printf '%s\n' http-host-smoke@example.test 'disposable HTTP host administrator passphrase' ALLOW \
+    | CURL_HOME="$temporary/policy-curl" CURL_CA_BUNDLE="$NETRATEL_HTTPS_CERTIFICATE" \
+      bash "$temporary/customer-policy-recipe.sh" \
+        > "$temporary/customer-policy.json" 2> "$temporary/customer-policy-recipe.log"
+}
 declare -a customer_tenants=() customer_credentials=() customer_credential_ids=() customer_flow_ids=()
 for customer in 1 2 3; do
   customer_name="customer${customer}-netclaw"
+  stage="creating ${customer_name} tenant through the Web API gateway"
   tenant="$(account_post /api/v1/tenants/ "$(jq -n --arg name "$customer_name" '{name:$name}')")"
   tenant_id="$(jq -er '.tenantId | select(type == "number" and . > 0)' <<<"$tenant")"
+  stage="creating ${customer_name} durable private flow"
   flow="$(account_post "/api/v1/tenants/${tenant_id}/flows" \
     "$(jq -n --arg name "${customer_name}-private-flow" '{name:$name,useTemplate:false}')")"
   flow_id="$(jq -er '.flowId // .id' <<<"$flow")"
+  stage="requesting ${customer_name} HTTP MCP-purpose credential"
   customer_pairing="$(post /api/integration-pairing/v1/start \
     "$(jq -n --arg name "$customer_name" --arg resource "$NETRATEL_MCP_PUBLIC_RESOURCE_URI" '{name:$name,purpose:1,resource:$resource}')")"
+  stage="approving ${customer_name} credential for its own tenant only"
   account_post /api/v2/account/integration-credentials/pairing/approve \
     "$(jq -n --arg code "$(jq -r '.userCode' <<<"$customer_pairing")" --arg expiry "$expiry" \
       --argjson tenant "$tenant_id" '{userCode:$code,expiresAtUtc:$expiry,grants:[{tenantId:$tenant,permission:"flow.read"}],instancePermissions:["mcp.discovery.read"]}')" >/dev/null
+  stage="receiving ${customer_name} approved HTTP MCP-purpose credential"
   customer_delivery="$(poll_protocol /api/integration-pairing/v1/poll \
     "$(jq '{deviceCapability}' <<<"$customer_pairing")" issued "$(jq -er '.intervalSeconds' <<<"$customer_pairing")")"
   customer_credential_id="$(jq -er '.delivery.credentialId' <<<"$customer_delivery")"
   # Policy selects this credential's authenticated client ID. The administrator
   # retains no policy self-escalation; the three credentials share no authority.
-  account_post /api/v2/mcp-operator/policies \
-    "$(jq -n --arg name "$customer_name" --arg id "$customer_credential_id" --arg expiry "$expiry" \
-      --argjson tenant "$tenant_id" '{policy:{name:$name,environment:1,effect:2,priority:10,
-        principalSelector:{kind:2,value:$id},targetSelector:{kind:2,tenantId:$tenant},
-        targetClassification:null,operationFamily:128,operation:"netratel_flows/list",
-        constraints:{},expiresAtUtc:$expiry,reviewByUtc:$expiry,auditReference:"disposable-http-customer-acceptance"}}')" \
-    | jq -e '.version == 1' >/dev/null
+  stage="running the documented administrator recipe for ${customer_name} flow-read policy"
+  run_documented_customer_policy "$customer_name"
+  jq -e '.version == 1' "$temporary/customer-policy.json" >/dev/null
+  jq -n --arg name "$customer_name" --arg id "$customer_credential_id" --arg flow "$flow_id" \
+    --arg resource "$NETRATEL_MCP_PUBLIC_RESOURCE_URI" --argjson tenant "$tenant_id" \
+    --argjson policy "$(cat "$temporary/customer-policy.json")" \
+    '{name:$name,credentialId:$id,purpose:"HttpMcp",resource:$resource,tenantId:$tenant,flowId:$flow,
+      grants:[{tenantId:$tenant,permission:"flow.read"}],instancePermissions:["mcp.discovery.read"],policy:$policy}' \
+    > "TestResults/http-host-setup/${customer_name}-identity.json"
+  stage="acknowledging ${customer_name} credential delivery"
   post /api/integration-pairing/v1/acknowledge \
     "$(jq -n --arg capability "$(jq -r '.deviceCapability' <<<"$customer_pairing")" \
       --arg id "$customer_credential_id" '{deviceCapability:$capability,credentialId:$id}')" >/dev/null
@@ -556,6 +594,7 @@ verify_customer_connections() {
     verify_mcp
     for target in 0 1 2; do
       tenant_id="${customer_tenants[$target]}"
+      stage="verifying ${verification_phase} flow-read authorization for customer$((target + 1)) tenant"
       request="$(jq -n --argjson tenant "$tenant_id" '{jsonrpc:"2.0",id:4,method:"tools/call",
         params:{name:"netratel_flows",arguments:{operation:"list",request:{tenantId:$tenant}}}}')"
       response="$(mcp_call "$request" "TestResults/http-host-setup/${verification_phase}-tenant-$((target + 1)).json")"
@@ -658,6 +697,7 @@ jq -n --arg fingerprint "$fingerprint" --arg source "$(git rev-parse HEAD)" \
     komodoSingleCompose:true,privateHostOwnedSourcePreserved:true,missingStoragePreflight:true,existingReadOnlyIdentityAdopted:true,managedEnvironmentFilesRetained:true,splitWebApiOrigins:true,instance:"dev",
     initialTokenIssuanceRejectionDiagnosed:true,
     generatedApply:true,authenticatedCatalogAndApiRead:true,recreatedAndResumed:true,launcherVerificationCompleted:true,personalProfileSavedAndReloaded:true,
+    documentedCustomerPolicyRecipeExecuted:true,
     customerProtocolAcceptance:{connectionCount:3,ownTenantReads:6,crossTenantDenials:12,persistedAfterRecreation:true},
     netClawRuntimeAcceptance:"not executed; independent HTTP MCP protocol clients used",
     interactiveTerminalAcceptance:"covered separately by focused terminal fixtures",ownerDeploymentAcceptance:"pending"}' \
