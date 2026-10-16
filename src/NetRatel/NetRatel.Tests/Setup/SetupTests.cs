@@ -70,6 +70,32 @@ public sealed class SetupTests
         await model.CleanupAsync();
     }
 
+    [Fact]
+    public async Task Native_host_verification_requires_observed_runtime_before_temporary_client_consent()
+    {
+        using var directory = new TempDirectory();
+        var request = HttpHostingDeploymentFixture.WithSource(new(directory.Path, "https://instance.example", "https://instance.example") { ExistingM2MCallerClientIds = [] });
+        new NetRatelHttpHostingSetupService().Apply(request);
+        var temporaryApprovals = 0;
+        using var model = new HostingSetupViewModel(new Dictionary<string, string>
+        {
+            ["--output-directory"] = directory.Path, ["--instance"] = "https://instance.example", ["--verify"] = "true"
+        }, new StubHandler(message =>
+        {
+            if (message.RequestUri!.AbsolutePath.Contains("integration-pairing", StringComparison.Ordinal)) temporaryApprovals++;
+            return Task.FromResult(Json(new { protocolVersion = 1, publicOrigin = "https://instance.example", resource = "https://instance.example/mcp",
+                verificationUri = "https://instance.example/account/integration-credentials", localCredentialMode = true, requiredGroups = Array.Empty<string>(), requiredScopes = Array.Empty<string>() }));
+        })) { RuntimeEnvironmentSourcePath = null };
+        try
+        {
+            await model.NextAsync();
+            Assert.Contains("effective_runtime_missing", model.Error.Value);
+            Assert.False(model.Verified);
+            Assert.Equal(0, temporaryApprovals);
+        }
+        finally { await model.CleanupAsync(); }
+    }
+
     [Theory]
     [InlineData("http://instance.example")]
     [InlineData("https://instance.example/prefix%2fmcp")]
@@ -398,7 +424,10 @@ public sealed class SetupTests
         var apiSettings = File.ReadAllText(System.IO.Path.Combine(directory.Path, "api.env"));
         Assert.Contains("custom.api", apiSettings); Assert.DoesNotContain("netratel-cli", apiSettings); Assert.DoesNotContain("netratel-client-artifacts", apiSettings); Assert.DoesNotContain("\nM2M__Audience=", apiSettings);
         var visible = false; await model.InvokeAsync(() => { visible = terminal.Contains("deployment apply pending"); Console.WriteLine("Rendered host apply screen:\n" + terminal); }); Assert.True(visible);
-        var finished = WaitFor(model.Revision, () => model.Verified && !model.Busy); input.EnqueueKey(ConsoleKey.Tab); input.EnqueueKey(ConsoleKey.Enter); await finished;
+        model.RuntimeEnvironmentSourcePath = AppliedRuntimeFixture(directory.Path);
+        var finished = WaitFor(model.Revision, () => !model.Busy && (model.Verified || model.Step == HostingSetupStep.Verify && model.Error.Value.Length > 0));
+        input.EnqueueKey(ConsoleKey.Tab); input.EnqueueKey(ConsoleKey.Enter); await finished;
+        Assert.True(model.Verified, $"Verification stopped at {model.Step}: {model.Error.Value}");
         Assert.Equal(1, personalRevocations); Assert.All(model.Checks, check => Assert.Equal("completed", check.Status));
         Assert.DoesNotContain(Directory.EnumerateFiles(directory.Path, "*", SearchOption.AllDirectories), path => File.ReadAllText(path).Contains("nrt_ic_transient-verifier", StringComparison.Ordinal));
         await model.InvokeAsync(() => Console.WriteLine("Rendered host verified screen:\n" + terminal));
@@ -775,6 +804,37 @@ public sealed class SetupTests
         }
         Assert.Equal(hash, ConfigurationFileStorage.Hash(path)); Assert.False(terminal.Contains("protected-new-provider-password"));
         input.EnqueueKey(ConsoleKey.Escape); input.Complete(); await host.StopAsync();
+    }
+
+    private static string AppliedRuntimeFixture(string output)
+    {
+        // Simulate a deployment owner applying the exported env files. This fixture
+        // reads generated deployment inputs, never the verifier's expected manifest.
+        var services = new Dictionary<string, Dictionary<string, string?>>(StringComparer.Ordinal);
+        foreach (var service in new[] { "web", "api", "mcp-http" })
+        {
+            var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            foreach (var line in File.ReadLines(System.IO.Path.Combine(output, service + ".env")))
+            {
+                if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#')) continue;
+                var separator = line.IndexOf('='); Assert.True(separator > 0);
+                var value = line[(separator + 1)..];
+                Assert.StartsWith("'", value); Assert.EndsWith("'", value);
+                value = value[1..^1]; Assert.DoesNotContain("'", value);
+                values.Add(line[..separator], value);
+            }
+            services.Add(service, values);
+        }
+        services["api"]["DOTNET_ENVIRONMENT"] = "Production"; // Explicit original fixture provider.
+        Assert.Equal("LocalCredential", services["api"]["Integration__HttpMcp__AuthenticationMode"]);
+        Assert.Equal("netratel-mcp-http", services["mcp-http"]["NetRatel__Mcp__Delegation__ServicePrincipal"]);
+        Assert.Equal("https://instance.example/mcp", services["mcp-http"]["NetRatel__Mcp__Http__PublicResourceUri"]);
+        var runtime = services.ToDictionary(pair => pair.Key, pair => (object)pair.Value, StringComparer.Ordinal);
+        runtime["x-netratel-protected-configuration"] = services.Keys.ToDictionary(service => service, _ => new Dictionary<string, string?>());
+        runtime["x-netratel-runtime-images"] = new Dictionary<string, string>();
+        var path = System.IO.Path.Combine(output, ".applied-runtime-fixture.json");
+        ConfigurationFileStorage.WriteAtomic(path, System.Text.Json.JsonSerializer.Serialize(runtime));
+        return path;
     }
 
     private static async Task<HttpResponseMessage> McpReply(HttpRequestMessage request)
