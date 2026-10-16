@@ -31,4 +31,12 @@ External OAuth client compatibility is a separate explicit option; browser integ
 
 Bearer forwarding must preserve an explicit Authorization header end to end. Configure HTTPS, origin restrictions and the current allow/deny operation policy; do not authorize every tenant or tool merely to make setup pass. Read scopes do not imply write, execute, administrator or all-target grants.
 
-For local client rotation, create/approve the replacement credential, securely update the intended consumer, initialize and perform a permitted read-only call, then revoke the old credential. Host service-identity and delegation-key rotation are separate coordinated administrator operations, described in [setup](setup.md#rotation). Denial or revocation is an expected failed authorization result, not a reason to switch identities.
+For local client rotation, create/approve the replacement credential, securely update the intended consumer, initialize and perform a permitted read-only call, then revoke the old credential. Host service-identity and delegation-key rotation are separate coordinated administrator operations, described in [setup](hosting-reference.md#rotation). Denial or revocation is an expected failed authorization result, not a reason to switch identities.
+
+## Temporary host verification
+
+Host setup requests a separate **Temporary verification client**. The administrator must explicitly consent to `mcp.discovery.read`; the server rejects tenant grants or any broader scope and caps the credential at 15 minutes. It cannot be saved as an ordinary profile. Setup cancels/revokes it after success, failure, cancellation or disposal. Unacknowledged delivery also has a five-minute recovery deadline.
+
+Interrupted setup retains an owner-only cleanup capability record, containing no bearer credential. Resume retries cleanup before requesting another verifier. If the API is unavailable, the terminal reports `cleanup_pending`; retain the private setup/client volume and rerun verification after connectivity is restored. The server cleanup worker and credential expiry bound abandoned access independently. Persistent host identity and unrelated credentials are unaffected.
+
+Deleting a client credential removes its authentication verifier, grants and protected pending delivery. Minimal nonsecret actor/time/correlation history remains for audit. MCP audit schema 2 adds separate transport, protocol, operation and overall outcomes; legacy `Success` retains its protocol meaning. Unstructured results can leave operation/overall outcome unknown.

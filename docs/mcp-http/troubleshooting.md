@@ -2,7 +2,7 @@
 
 Check each boundary separately. A valid configuration, responding route, authenticated initialize and authorized business read are different outcomes. Record completed checks and unavailable or denied checks separately; a 401/403 is not successful onboarding.
 
-If you are deciding between client and server modes or setting up a Komodo stack, start with [the server-first setup guide](setup.md). Server setup connects MCP to the API; client setup connects a consumer to that configured MCP endpoint. Switching modes cannot supply missing deployment storage.
+If you are deciding between client and server modes or setting up a externally managed Compose stack, start with [the server-first setup guide](setup.md). Server setup connects MCP to the API; client setup connects a consumer to that configured MCP endpoint. Switching modes cannot supply missing deployment storage.
 
 ## Bounded verification
 
@@ -31,7 +31,7 @@ A 401/403 can establish that an auth boundary responded, but it does not prove c
 | Observation | Check |
 | --- | --- |
 | `No persistent setup mount` or missing client storage | Run the custom-stack launcher on the **deployment host** using the actual Compose file/project, or use the matching extracted release bundle. Keep host setup and client storage separate; do not run the server as root. |
-| `compose.setup.yaml` / `.yml` not found | This file belongs to the release bundle. Komodo's existing `compose.yaml` is a different supported path; use its launcher. Changing the extension cannot create an absent file. |
+| `compose.setup.yaml` / `.yml` not found | This file belongs to the release bundle. An externally managed stack’s saved Compose files is a different supported path; use its launcher. Changing the extension cannot create an absent file. |
 | Existing host identity/settings detected, but setup never completed | Reuse the supported effective config/environment generation through server setup. Config values are supplied settings, not proof of administrator approval or a verified connection. Do not rotate or manually copy keys to bypass the gate. |
 | API/Web are separate hosts or instance shows `dev` | Retain the effective instance and enter the actual HTTPS API destination in server setup. A Web hostname is not automatically the separate API hostname. |
 | Authentication choice required while Local credential text is visible | Select and confirm the actual supported mode in the explicit choice prompt. A default label is not proof that discovery or effective configuration established that mode. |
