@@ -575,13 +575,13 @@
 
         var options = new DialogOptions
         {
-            MaxWidth = MaxWidth.Medium,
+            MaxWidth = MaxWidth.Large,
             FullWidth = true,
             CloseOnEscapeKey = false,
             BackdropClick = false
         };
 
-        var dialogRef = await DialogService.ShowAsync<RunJobDialog>($"Run Job: {job.Name}", parameters, options);
+        var dialogRef = await DialogService.ShowAsync<RunJobDialog>("Run job", parameters, options);
         var result = await dialogRef.Result;
 
         if (result is not null && !result.Canceled && result.Data is JobRunDto run)

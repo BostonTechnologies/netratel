@@ -163,6 +163,29 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
     }
 
     [Fact]
+    public async Task Saving_parameter_updates_parent_in_place_and_preserves_unsaved_definition_and_tab()
+    {
+        var (cut, _) = await OpenEditorAsync(jobId: 42);
+        Name(cut).Change("Unsaved definition");
+        cut.FindAll(".mud-tab").Single(tab => tab.TextContent.Contains("Parameters")).Click();
+        var reads = _transport.ParamReads;
+        Button(cut, "Add Param").Click();
+        _dialogs.WaitForElement(".param-editor");
+        var editor = _dialogs.FindComponent<ParamEditDialog>();
+        editor.FindComponents<MudTextField<string>>().Single(field => field.Instance.Label == "Name").Find("input").Change("Extra");
+        Button(editor, "Save").Click();
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("Extra"));
+        Name(cut).GetAttribute("value").Should().Be("Unsaved definition");
+        _transport.ParamReads.Should().Be(reads, "a saved child is returned directly without reloading the parent");
+        cut.Find(".jobs-editor-tabs .mud-tab-active").TextContent.Should().Contain("Parameters");
+        Button(cut, "Add Param").Click();
+        _dialogs.WaitForElement(".param-editor");
+        Button(_dialogs.FindComponent<ParamEditDialog>(), "Cancel").Click();
+        cut.Markup.Should().Contain("Extra");
+        Name(cut).GetAttribute("value").Should().Be("Unsaved definition");
+    }
+
+    [Fact]
     public async Task Failed_validation_and_save_retain_input_and_require_target_reselection()
     {
         var (cut, _) = await OpenEditorAsync(jobId: 42);
@@ -206,6 +229,9 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
         Button(_dialogs, "Start Run").HasAttribute("disabled").Should().BeTrue();
         Button(_dialogs, "Start Run").Click();
         _transport.RunCalls.Should().Be(0);
+        _transport.FailParams = false;
+        Button(_dialogs, "Retry parameters").Click();
+        _dialogs.WaitForAssertion(() => Button(_dialogs, "Start Run").HasAttribute("disabled").Should().BeFalse());
         Button(_dialogs, "Cancel").Click();
         (await reference.Result)!.Canceled.Should().BeTrue();
 

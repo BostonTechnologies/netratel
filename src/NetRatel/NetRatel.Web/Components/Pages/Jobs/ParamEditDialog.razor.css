@@ -1,0 +1,5 @@
+.param-editor { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.param-editor-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
+.param-editor ::deep .mud-input-control { margin-top: 0; }
+.param-editor ::deep .mud-input-helper-text { overflow-wrap: anywhere; }
+@media (max-width: 600px) { .param-editor-row { grid-template-columns: minmax(0, 1fr); gap: 12px; } }

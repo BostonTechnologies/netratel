@@ -121,6 +121,78 @@ public sealed class JobRunDetailsTests : AsyncBunitContext
         await cut.WaitForAssertionAsync(() => _stream.Ended.Should().BeTrue());
     }
 
+    [Fact]
+    public async Task Live_three_step_run_follows_once_per_transition_and_manual_inspection_pauses_until_resume()
+    {
+        var first = _transport.Steps[0];
+        var second = first with { Id = 12, Ordinal = 2, Status = JobStepRunStatusDto.Pending, StartedAtMicros = null, TaskRequestId = null, ScriptName = "Second step" };
+        var third = second with { Id = 13, Ordinal = 3, ScriptName = "Third step" };
+        _transport.Steps = [first, second, third];
+        var cut = Render<JobRunDetails>(parameters => parameters.Add(page => page.RunId, 9).Add(page => page.JobId, 42));
+        cut.WaitForElement(".job-run-output");
+        cut.FindComponents<MudExpansionPanel>().Select(panel => panel.Instance.Expanded).Should().Equal(true, false, false);
+        first = first with { Status = JobStepRunStatusDto.Succeeded, CompletedAtMicros = 200 };
+        second = second with { Status = JobStepRunStatusDto.Running, StartedAtMicros = 210, TaskRequestId = "task-2" };
+        await _stream.SendAsync(_transport.Run, [first, second, third], [Line(1, "second output")], 2);
+        cut.WaitForAssertion(() => cut.FindComponents<MudExpansionPanel>().Select(panel => panel.Instance.Expanded).Should().Equal(false, true, false));
+        cut.FindAll(".job-run-output").Should().Contain(output => output.TextContent == "second output");
+        var secondPanel = cut.FindComponents<MudExpansionPanel>()[1];
+        await cut.InvokeAsync(() => secondPanel.Instance.ExpandedChanged.InvokeAsync(true));
+        cut.FindComponents<MudSwitch<bool>>().Single().Instance.Value.Should().BeTrue(); // Programmatic echo does not pause.
+        await cut.InvokeAsync(() => cut.FindComponents<MudExpansionPanel>()[0].Instance.ExpandedChanged.InvokeAsync(true));
+        cut.Markup.Should().Contain("Follow paused");
+        third = third with { Status = JobStepRunStatusDto.Running, StartedAtMicros = 310, TaskRequestId = "task-3" };
+        second = second with { Status = JobStepRunStatusDto.Succeeded, CompletedAtMicros = 300 };
+        await _stream.SendAsync(_transport.Run, [first, second, third], [Line(1, "third output")], 3);
+        cut.WaitForAssertion(() => cut.FindComponents<MudExpansionPanel>()[2].Find(".job-run-step-header").TextContent.Should().Contain("Running"));
+        cut.FindComponents<MudExpansionPanel>().Select(panel => panel.Instance.Expanded).Should().Equal(true, true, false);
+        await cut.InvokeAsync(() => cut.FindAll("button").Single(button => button.TextContent == "Resume").Click());
+        cut.WaitForAssertion(() => cut.FindComponents<MudExpansionPanel>().Select(panel => panel.Instance.Expanded).Should().Equal(false, false, true));
+        cut.FindComponents<MudExpansionPanel>()[2].Find(".job-run-output").TextContent.Should().Be("third output");
+        await _stream.SendAsync(_transport.Run with { Status = JobRunStatusDto.Succeeded }, [first, second, third with { Status = JobStepRunStatusDto.Succeeded, CompletedAtMicros = 400 }], [Line(1, "third output")], 3);
+        cut.WaitForAssertion(() => cut.Find(".job-run-summary").TextContent.Should().Contain("Execution completed successfully."));
+        cut.FindComponents<MudExpansionPanel>().Select(panel => panel.Instance.Expanded).Should().Equal(false, false, true);
+        _transport.LogReads.Should().Be(1); // Stream logs satisfy newly opened panels.
+    }
+
+    [Fact]
+    public async Task Late_http_output_does_not_replace_newer_captured_stream_output()
+    {
+        var cut = Render<JobRunDetails>(parameters => parameters.Add(page => page.RunId, 9).Add(page => page.JobId, 42));
+        cut.WaitForElement(".job-run-output");
+        var first = _transport.Steps[0] with { Status = JobStepRunStatusDto.Succeeded, CompletedAtMicros = 200 };
+        var second = first with { Id = 12, Ordinal = 2, Status = JobStepRunStatusDto.Running, TaskRequestId = "task-2", StartedAtMicros = 210, CompletedAtMicros = null };
+        _transport.PendingSecondLog = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        await _stream.SendWithoutLogsAsync(_transport.Run, [first, second]);
+        cut.WaitForAssertion(() => _transport.LogReads.Should().Be(2));
+        await _stream.SendAsync(_transport.Run, [first, second], [Line(2, "new streamed output")], 2);
+        cut.WaitForAssertion(() => cut.FindAll(".job-run-output").Should().Contain(output => output.TextContent == "new streamed output"));
+        var renderCount = cut.RenderCount;
+        _transport.PendingSecondLog.SetResult(new(HttpStatusCode.OK) { Content = JsonContent.Create(new ExecutionLogDto("task-2", null, null, null, [Line(1, "old HTTP output")])) });
+        await cut.WaitForAssertionAsync(() => cut.RenderCount.Should().BeGreaterThan(renderCount));
+        cut.FindAll(".job-run-output").Should().Contain(output => output.TextContent == "new streamed output");
+        cut.Markup.Should().NotContain("old HTTP output");
+    }
+
+    [Fact]
+    public async Task Route_change_resets_follow_and_ignores_old_run_snapshots_without_duplicate_subscriptions()
+    {
+        var cut = Render<JobRunDetails>(parameters => parameters.Add(page => page.RunId, 9).Add(page => page.JobId, 42));
+        cut.WaitForElement(".job-run-output");
+        await cut.InvokeAsync(() => cut.FindComponent<MudExpansionPanel>().Instance.ExpandedChanged.InvokeAsync(false));
+        cut.Render(parameters => parameters.Add(page => page.RunId, 10).Add(page => page.JobId, 42));
+        cut.WaitForAssertion(() => cut.Find(".job-run-context").TextContent.Should().Contain("Run #10"));
+        await _stream.SendAsync(_transport.Run, _transport.Steps, [Line(1, "stale output")]);
+        var nextRun = _transport.Run with { Id = 10, JobName = "Next route" };
+        var nextSteps = _transport.Steps.Select(step => step with { Id = step.Id + 10, JobRunId = 10 }).ToList();
+        await _stream.SendAsync(nextRun, nextSteps, [Line(1, "new route output")]);
+        cut.WaitForAssertion(() => cut.Find(".job-run-output").TextContent.Should().Be("new route output"));
+        cut.FindComponent<MudExpansionPanel>().Instance.Expanded.Should().BeTrue();
+        cut.FindComponents<MudSwitch<bool>>().Single().Instance.Value.Should().BeTrue();
+        cut.Markup.Should().NotContain("stale output");
+        _stream.Subscriptions.Should().Be(2);
+    }
+
     private static TaskLogDto Line(long sequence, string message) => new(sequence, "task-1", "agent", DateTimeOffset.UnixEpoch, "stdout", message, sequence);
 
     private sealed class LiveStream : IJobRunStreamService
@@ -138,8 +210,10 @@ public sealed class JobRunDetailsTests : AsyncBunitContext
             }
             finally { Ended = true; }
         }
-        public ValueTask SendAsync(JobRunDto run, IReadOnlyList<JobStepRunDto> steps, IReadOnlyList<TaskLogDto> lines) =>
-            _updates.Writer.WriteAsync(new("Live", new(run, steps, [new(1, lines)])));
+        public ValueTask SendWithoutLogsAsync(JobRunDto run, IReadOnlyList<JobStepRunDto> steps) =>
+            _updates.Writer.WriteAsync(new("Live", new(run, steps, [])));
+        public ValueTask SendAsync(JobRunDto run, IReadOnlyList<JobStepRunDto> steps, IReadOnlyList<TaskLogDto> lines, int ordinal = 1) =>
+            _updates.Writer.WriteAsync(new("Live", new(run, steps, [new(ordinal, lines)])));
     }
 
     private sealed class Transport : HttpMessageHandler, IHttpClientFactory
@@ -149,21 +223,30 @@ public sealed class JobRunDetailsTests : AsyncBunitContext
             TargetDisplayName: "Frozen agent", TargetHostName: "frozen-host");
         public IReadOnlyList<JobStepRunDto> Steps { get; set; } = [new(11, 9, 21, JobStepRunStatusDto.Running, 1, "task-1", 100, null, null, ScriptName: "Frozen script", ScriptType: "Bash")];
         public ExecutionLogDto Log { get; set; } = new("task-1", null, null, 0, [Line(1, "initial output")]);
+        public TaskCompletionSource<HttpResponseMessage>? PendingSecondLog { get; set; }
         public int StepReads { get; private set; }
         public int LogReads { get; private set; }
         public HttpClient CreateClient(string name) => new(this, false) { BaseAddress = new Uri("http://fixture") };
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            if (request.RequestUri!.AbsolutePath == "/api/v1/jobruns/9/steps/2/logs" && PendingSecondLog is not null)
+            {
+                LogReads++;
+                return await PendingSecondLog.Task;
+            }
             object result = request.RequestUri!.AbsolutePath switch
             {
                 "/api/v1/jobruns/9" => Run,
+                "/api/v1/jobruns/10" => Run with { Id = 10, JobName = "Next route" },
+                "/api/v1/jobruns/10/steps" => Steps.Select(step => step with { Id = step.Id + 10, JobRunId = 10 }).ToList(),
+                "/api/v1/jobruns/10/steps/1/logs" => ReadLog(),
                 "/api/v1/jobs/42" => new JobDto(42, "Current mutable definition", "/Fixture/", null, 7, "different-agent", 0, 0),
                 "/api/v1/jobs/42/steps" => Array.Empty<JobStepDto>(),
                 "/api/v1/jobruns/9/steps" => ReadSteps(),
                 "/api/v1/jobruns/9/steps/1/logs" => ReadLog(),
                 _ => throw new InvalidOperationException(request.RequestUri.AbsolutePath)
             };
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(result, result.GetType()) });
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(result, result.GetType()) };
         }
         private IReadOnlyList<JobStepRunDto> ReadSteps() { StepReads++; return Steps; }
         private ExecutionLogDto ReadLog() { LogReads++; return Log; }

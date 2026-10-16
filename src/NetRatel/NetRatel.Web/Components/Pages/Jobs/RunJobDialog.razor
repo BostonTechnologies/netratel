@@ -1,343 +1,131 @@
-@using System.Linq
 @using System.Text.Json
 @using NetRatel.Shared
 @using NetRatel.Shared.Contracts.Jobs
-
 @inject IJobApiClient JobApi
 @inject ISnackbar Snackbar
 @inject NavigationManager NavManager
 
-<MudDialog>
+<MudDialog Style="@(_params?.Count > 1 ? "width:min(1160px,calc(100vw - 32px));max-width:1160px" : "width:min(560px,calc(100vw - 32px));max-width:560px")" ContentStyle="max-height:calc(100dvh - 180px);overflow-y:auto">
     <DialogContent>
-        <MudStack Spacing="3" Class="run-job-dialog">
-            @if (_job is null)
+        <div class="run-job-dialog">
+            <div class="run-job-context">
+                <strong>@Job.Name</strong>
+                <span>@(Job.ClientDisplayName ?? "Target label unavailable")</span>
+                <span>@(Job.TenantDisplayName ?? "Tenant label unavailable")</span>
+                <span>@(Job.Environment?.ToShortLabel() ?? "Environment unknown")</span>
+            </div>
+            @if (_params is null)
             {
-                <MudText>No job selected.</MudText>
+                @if (_parameterLoadFailed)
+                {
+                    <MudAlert Severity="Severity.Error">Parameters could not be loaded. Try again before starting a run.</MudAlert>
+                    <MudButton OnClick="LoadParametersAsync" Disabled="_loadingParameters">Retry parameters</MudButton>
+                }
+                else
+                {
+                    <MudProgressLinear Indeterminate="true" aria-label="Loading parameters" />
+                }
+            }
+            else if (_params.Count == 0)
+            {
+                <MudText Typo="Typo.body2">This job has no inputs.</MudText>
             }
             else
             {
-                <MudPaper Class="run-job-hero pa-4" Elevation="0">
-                    <MudStack Spacing="1">
-                        <MudText Class="run-job-kicker">Launch Workflow</MudText>
-                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
-                            <MudText Typo="Typo.h5">@_job.Name</MudText>
-                            <MudChip T="string" Variant="Variant.Outlined" Size="Size.Small">Job #@_job.Id</MudChip>
-                        </MudStack>
-                        @if (!string.IsNullOrWhiteSpace(_job.Description))
-                        {
-                            <MudText Typo="Typo.body2">@_job.Description</MudText>
-                        }
-                    </MudStack>
-                </MudPaper>
-
-                <MudGrid Spacing="2">
-                    <MudItem xs="12" md="7">
-                        <MudPaper Class="run-job-panel pa-3" Elevation="0">
-                            <MudStack Spacing="2">
-                                <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
-                                    <MudText Typo="Typo.subtitle1">Inputs</MudText>
-                                    @if (_params is not null)
-                                    {
-                                        <MudChip T="string" Variant="Variant.Text" Size="Size.Small">@_params.Count parameter@(_params.Count == 1 ? string.Empty : "s")</MudChip>
-                                    }
-                                </MudStack>
-
-                                @if (_params is null)
-                                {
-                                    @if (_parameterLoadFailed)
-                                    {
-                                        <MudAlert Severity="Severity.Error">Parameters could not be loaded. Close and reopen this dialog to retry.</MudAlert>
-                                    }
-                                    else
-                                    {
-                                        <MudStack AlignItems="AlignItems.Center" Class="py-4">
-                                            <MudProgressCircular Indeterminate="true" />
-                                            <MudText Class="mt-2">Loading parameters...</MudText>
-                                        </MudStack>
-                                    }
-                                }
-                                else if (_params.Count == 0)
-                                {
-                                    <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">
-                                        This job has no parameters. Confirm the launch profile and start the run.
-                                    </MudAlert>
-                                }
-                                else
-                                {
-                                    @foreach (var p in _params)
-                                    {
-                                        var type = p.Type?.ToLowerInvariant();
-                                        <MudPaper Class="run-job-param pa-3" Elevation="0">
-                                            <MudStack Spacing="1">
-                                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
-                                                    <MudText Typo="Typo.subtitle2">@p.Name</MudText>
-                                                    @if (p.Required)
-                                                    {
-                                                        <MudChip T="string" Variant="Variant.Outlined" Color="Color.Error" Size="Size.Small">Required</MudChip>
-                                                    }
-                                                    @if (!string.IsNullOrWhiteSpace(p.Type))
-                                                    {
-                                                        <MudChip T="string" Variant="Variant.Text" Size="Size.Small">@p.Type</MudChip>
-                                                    }
-                                                </MudStack>
-
-                                                @if (type == "bool")
-                                                {
-                                                    <MudSwitch T="bool"
-                                                               Value="@GetBoolValue(p.Name)"
-                                                               ValueChanged="@((bool value) => SetBoolValue(p.Name, value))" />
-                                                }
-                                                else if (type == "select")
-                                                {
-                                                    var options = GetSelectOptions(p);
-                                                    if (options.Count > 0)
-                                                    {
-                                                        <MudSelect T="string"
-                                                                   Value="@GetValue(p.Name)"
-                                                                   ValueChanged="@((string? value) => SetValue(p.Name, value))"
-                                                                   Label="Select value"
-                                                                   Variant="Variant.Outlined"
-                                                                   Margin="Margin.Dense">
-                                                            @foreach (var option in options)
-                                                            {
-                                                                <MudSelectItem T="string" Value="@option">@option</MudSelectItem>
-                                                            }
-                                                        </MudSelect>
-                                                    }
-                                                    else
-                                                    {
-                                                        <MudTextField Value="@GetValue(p.Name)"
-                                                                      ValueChanged="@((string? value) => SetValue(p.Name, value))"
-                                                                      Label="Value"
-                                                                      Variant="Variant.Outlined"
-                                                                      Margin="Margin.Dense" />
-                                                    }
-                                                }
-                                                else
-                                                {
-                                                    <MudTextField Value="@GetValue(p.Name)"
-                                                                  ValueChanged="@((string? value) => SetValue(p.Name, value))"
-                                                                  Label="Value"
-                                                                  Variant="Variant.Outlined"
-                                                                  Margin="Margin.Dense" />
-                                                }
-
-                                                @if (!string.IsNullOrWhiteSpace(p.Description))
-                                                {
-                                                    <MudText Typo="Typo.caption">@p.Description</MudText>
-                                                }
-                                            </MudStack>
-                                        </MudPaper>
-                                    }
-                                }
-                            </MudStack>
-                        </MudPaper>
-                    </MudItem>
-
-                    <MudItem xs="12" md="5">
-                        <MudPaper Class="run-job-panel pa-3" Elevation="0">
-                            <MudStack Spacing="2">
-                                <MudText Typo="Typo.subtitle1">Launch Profile</MudText>
-                                <MudText Typo="Typo.body2">Target: @(string.IsNullOrWhiteSpace(_job.ClientDisplayName) ? "Target label unavailable" : _job.ClientDisplayName)</MudText>
-                                <MudText Typo="Typo.caption" Color="Color.Secondary">@(_job.TenantDisplayName ?? (_job.TenantId is int tenantId ? $"Tenant #{tenantId}" : "Tenant unknown")) · @(_job.Environment?.ToShortLabel() ?? "Environment unknown")</MudText>
-                                <MudTextField @bind-Value="_startedBy"
-                                              Label="Started by"
-                                              Required="true"
-                                              Variant="Variant.Outlined"
-                                              Margin="Margin.Dense" />
-                                <MudAlert Severity="Severity.Info" Variant="Variant.Text">
-                                    Submit the run and follow its execution. Output appears when the agent begins execution.
-                                </MudAlert>
-                            </MudStack>
-                        </MudPaper>
-                    </MudItem>
-                </MudGrid>
+                <div class="run-job-inputs @(_params.Count == 1 ? "run-job-inputs-single" : "")">
+                    @foreach (var p in _params)
+                    {
+                        var type = p.Type.ToLowerInvariant();
+                        var error = FieldError(p);
+                        <div class="run-job-field @(type == "json" || type == "string" && (GetValue(p.Name)?.Contains('\n') == true || p.Default?.Length > 180) ? "run-job-field-wide" : "")" @key="p.Id">
+                            @if (type == "bool")
+                            {
+                                <MudSwitch T="bool" Value="GetBoolValue(p.Name)" ValueChanged="value => SetBoolValue(p.Name, value)" Label="@(p.Name + (p.Required ? " *" : ""))" Disabled="_isSubmitting" Color="Color.Primary" />
+                                @if (!string.IsNullOrWhiteSpace(p.Description)) { <MudText Typo="Typo.caption">@p.Description</MudText> }
+                            }
+                            else if (type == "select")
+                            {
+                                <MudSelect T="string" Value="@GetValue(p.Name)" ValueChanged="value => SetValue(p.Name, value)" Label="@p.Name" Required="p.Required" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(error is not null)" HelperText="@p.Description" Disabled="_isSubmitting" Clearable="@(!p.Required)">
+                                    @foreach (var option in JobParameterInput.SelectOptions(p.OptionsJson))
+                                    { <MudSelectItem T="string" Value="@option">@option</MudSelectItem> }
+                                </MudSelect>
+                            }
+                            else
+                            {
+                                <MudTextField T="string" Value="@GetValue(p.Name)" ValueChanged="value => SetValue(p.Name, value)" Label="@p.Name" Required="p.Required" Variant="Variant.Outlined" Margin="Margin.Dense" Lines="@(type == "json" || type == "string" && GetValue(p.Name)?.Contains('\n') == true ? 3 : 1)" InputType="@(type == "secret" ? InputType.Password : InputType.Text)" InputMode="@(type == "int" ? InputMode.numeric : InputMode.text)" Error="@(error is not null)" HelperText="@p.Description" Disabled="_isSubmitting" />
+                            }
+                            @if (error is not null) { <div class="run-job-field-error" role="alert">@error</div> }
+                        </div>
+                    }
+                </div>
             }
-        </MudStack>
+            <div class="run-job-metadata">
+                <MudTextField @bind-Value="_startedBy" Label="Started by" Required="true" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_isSubmitting" HelperText="Run metadata" />
+            </div>
+            @if (_launchError is not null) { <MudText Color="Color.Error" Typo="Typo.body2" role="alert">@_launchError</MudText> }
+        </div>
     </DialogContent>
     <DialogActions>
+        <MudButton OnClick="Cancel" Disabled="_isSubmitting">Cancel</MudButton>
         <MudButton Disabled="@(!CanRun)" OnClick="RunAsync" Color="Color.Primary" Variant="Variant.Filled">Start Run</MudButton>
-        <MudButton OnClick="Cancel" Disabled="@_isSubmitting">Cancel</MudButton>
     </DialogActions>
 </MudDialog>
 
 @code {
     [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
-
-    // passed in from DialogService
     [Parameter] public JobDto Job { get; set; } = default!;
-
     [Parameter] public EventCallback<JobRunDto> OnRunCompleted { get; set; }
-
-    private JobDto? _job;
     private List<JobParamDto>? _params;
     private readonly Dictionary<string, string?> _values = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _touched = new(StringComparer.OrdinalIgnoreCase);
     private string _startedBy = "ui";
-    private bool _isSubmitting;
-    private bool _parameterLoadFailed;
+    private string? _launchError;
+    private bool _isSubmitting, _parameterLoadFailed, _loadingParameters, _submitted;
+    private bool CanRun => !_isSubmitting && !_submitted && _params is not null && !string.IsNullOrWhiteSpace(_startedBy)
+        && _params.All(p => JobParameterInput.Validate(p.Type, GetValue(p.Name), p.Required, p.OptionsJson) is null);
 
-    private bool CanRun =>
-        !_isSubmitting &&
-        _job is not null &&
-        _params is not null &&
-        ValidateRequired() &&
-        !string.IsNullOrWhiteSpace(_startedBy);
-
-    protected override async Task OnInitializedAsync()
+    protected override Task OnInitializedAsync() => LoadParametersAsync();
+    private async Task LoadParametersAsync()
     {
-        // initialize state from the Job parameter
-        _job = Job;
-        _params = null;
-        _values.Clear();
-        _startedBy = "ui";
-        _isSubmitting = false;
+        if (_loadingParameters) return;
+        _loadingParameters = true;
         _parameterLoadFailed = false;
-
         try
         {
-            var list = await JobApi.GetJobParamsAsync(_job.Id);
-            _params = list.ToList();
-
-            foreach (var param in _params)
-            {
-                var defaultValue = param.Default;
-                if (string.Equals(param.Type, "bool", StringComparison.OrdinalIgnoreCase) &&
-                    string.IsNullOrWhiteSpace(defaultValue))
-                {
-                    defaultValue = "false";
-                }
-
-                _values[param.Name] = defaultValue ?? string.Empty;
-            }
+            _params = (await JobApi.GetJobParamsAsync(Job.Id)).ToList();
+            foreach (var p in _params)
+                if (!_values.ContainsKey(p.Name))
+                    _values[p.Name] = p.Type.Equals("bool", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(p.Default) ? "false" : p.Default ?? string.Empty;
+            await MudDialog.SetOptionsAsync(MudDialog.Options with { MaxWidth = _params.Count > 1 ? MaxWidth.Large : MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
         }
-        catch (Exception ex)
-        {
-            Snackbar.Add($"Failed to load parameters: {ex.Message}", Severity.Error);
-            _params = null;
-            _parameterLoadFailed = true;
-        }
+        catch { _parameterLoadFailed = true; _params = null; }
+        finally { _loadingParameters = false; }
     }
-
-    private bool ValidateRequired()
-    {
-        if (_params is null) return false;
-
-        foreach (var p in _params.Where(p => p.Required))
-        {
-            if (!_values.TryGetValue(p.Name, out var val) || string.IsNullOrWhiteSpace(val))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private string? GetValue(string key)
-        => _values.TryGetValue(key, out var val) ? val : null;
-
-    private void SetValue(string key, string? value)
-        => _values[key] = value;
-
-    private bool GetBoolValue(string key)
-        => _values.TryGetValue(key, out var val) && bool.TryParse(val, out var parsed) && parsed;
-
-    private void SetBoolValue(string key, bool value)
-        => _values[key] = value ? "true" : "false";
-
-    private List<string> GetSelectOptions(JobParamDto param)
-    {
-        if (string.IsNullOrWhiteSpace(param.OptionsJson))
-            return [];
-
-        try
-        {
-            var options = JsonSerializer.Deserialize<List<string>>(param.OptionsJson);
-            return options?.Where(o => !string.IsNullOrWhiteSpace(o)).ToList() ?? [];
-        }
-        catch
-        {
-            return [];
-        }
-    }
-
+    private string? GetValue(string key) => _values.GetValueOrDefault(key);
+    private string? FieldError(JobParamDto p) => _touched.Contains(p.Name) || !string.IsNullOrWhiteSpace(GetValue(p.Name))
+        ? JobParameterInput.Validate(p.Type, GetValue(p.Name), p.Required, p.OptionsJson) : null;
+    private void SetValue(string key, string? value) { _values[key] = value; _touched.Add(key); }
+    private bool GetBoolValue(string key) => bool.TryParse(GetValue(key), out var value) && value;
+    private void SetBoolValue(string key, bool value) => SetValue(key, value ? "true" : "false");
     private async Task RunAsync()
     {
-        if (!CanRun || _job is null || _params is null)
-            return;
-
+        if (!CanRun || _params is null) return;
         _isSubmitting = true;
-        StateHasChanged();
-
+        _launchError = null;
         try
         {
             var payload = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-            foreach (var param in _params)
-            {
-                _values.TryGetValue(param.Name, out var raw);
-                object? value = raw;
-                if (string.Equals(param.Type, "bool", StringComparison.OrdinalIgnoreCase))
-                {
-                    value = bool.TryParse(raw, out var parsed) && parsed;
-                }
-
-                payload[param.Name] = value;
-            }
-
-            var json = JsonSerializer.Serialize(payload);
-            var request = new RunJobRequest(
-                _startedBy,
-                json,
-                ClientIdentityOverride: null,
-                Environment: _job.Environment);
-
-            var run = await JobApi.RunJobAsync(_job.Id, request);
+            foreach (var p in _params)
+                payload[p.Name] = p.Type.Equals("bool", StringComparison.OrdinalIgnoreCase) ? GetBoolValue(p.Name) : GetValue(p.Name);
+            var run = await JobApi.RunJobAsync(Job.Id, new RunJobRequest(_startedBy, JsonSerializer.Serialize(payload), ClientIdentityOverride: null, Environment: Job.Environment));
+            _submitted = true;
             Snackbar.Add($"Run #{run.Id} submitted.", Severity.Success);
-
-            if (OnRunCompleted.HasDelegate)
-                await OnRunCompleted.InvokeAsync(run);
-
-            NavManager.NavigateTo($"/jobs/{_job.Id}/runs/{run.Id}");
-
-            // close dialog and return run to caller
+            if (OnRunCompleted.HasDelegate) await OnRunCompleted.InvokeAsync(run);
+            NavManager.NavigateTo($"/jobs/{Job.Id}/runs/{run.Id}");
             MudDialog.Close(DialogResult.Ok(run));
         }
-        catch (Exception ex)
-        {
-            Snackbar.Add($"Failed to start job: {ex.Message}", Severity.Error);
-        }
-        finally
-        {
-            _isSubmitting = false;
-            StateHasChanged();
-        }
+        catch { _launchError = "The run could not be started. Your inputs are retained; try again."; }
+        finally { _isSubmitting = false; }
     }
-
-    private void Cancel()
-    {
-        if (_isSubmitting) return;
-        MudDialog.Cancel();
-    }
+    private void Cancel() { if (!_isSubmitting) MudDialog.Cancel(); }
 }
-
-<style>
-    .run-job-hero,
-    .run-job-panel,
-    .run-job-param {
-        border-radius: var(--netratel-radius-surface, 7px);
-        border: 1px solid var(--mud-palette-divider);
-        background: var(--mud-palette-surface);
-    }
-
-    .run-job-hero {
-        border-left: 3px solid var(--mud-palette-primary);
-    }
-
-    .run-job-kicker {
-        color: var(--mud-palette-primary);
-        font-size: 0.74rem;
-        font-weight: 700;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-    }
-</style>

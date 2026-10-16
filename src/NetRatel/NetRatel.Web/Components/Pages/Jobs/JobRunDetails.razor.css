@@ -29,3 +29,5 @@
     .job-run-step-time { width: 100%; }
     .job-run-output { padding: .75rem; min-height: 120px; }
 }
+
+.job-run-follow-bar { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; margin-bottom:8px; }
