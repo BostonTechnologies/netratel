@@ -218,7 +218,7 @@ jobs:
             --output "$RUNNER_TEMP/image-journal/prepared.json" \
             --component "$component" --phase prepared --local-image-config "$local_config"
       - name: Preserve authenticated prepared image journal before registry write
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: publication-image-${{ matrix.component }}-prepared-attempt-${{ github.run_attempt }}
           path: |
@@ -253,13 +253,13 @@ jobs:
             --local-image-config "$local_config" --image-digest "$(cat "$RUNNER_TEMP/${component}.digest")"
       - name: Preserve image phase evidence after success or failure
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: publication-image-${{ matrix.component }}-result-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/image-journal
           if-no-files-found: error
           retention-days: 14
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: promoted-${{ matrix.component }}-digest
           path: ${{ runner.temp }}/${{ matrix.component }}.digest
@@ -343,7 +343,7 @@ jobs:
             --state "$RUNNER_TEMP/promotion-state.json"
           (cd "$RUNNER_TEMP/promoted-release" && sha256sum -c SHA256SUMS)
       - name: Preserve exact completed bytes before public asset publication
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: publication-finish-prepared-attempt-${{ github.run_attempt }}
           path: |
@@ -366,7 +366,7 @@ jobs:
           (cd "$RUNNER_TEMP/public-downloads" && sha256sum -c SHA256SUMS)
       - name: Preserve exact Finish receipt state and staged bytes after success or failure
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: publication-finish-attempt-${{ github.run_attempt }}
           path: |
