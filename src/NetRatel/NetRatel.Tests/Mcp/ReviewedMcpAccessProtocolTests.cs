@@ -126,9 +126,18 @@ public sealed class ReviewedMcpAccessProtocolTests
             Assert.All(receipt.EffectiveAdmission, row => Assert.False(row.PolicyAllowed));
             var malformedApproval = JsonSerializer.SerializeToNode(fixture.Approval(receipt), new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
             malformedApproval.AsObject().Remove("expiresAtUtc"); malformedApproval["ExpiresAtUtc"] = "2030-04-01T10:11:12.12345601Z";
-            malformedApproval["ReviewedProposalHash"] = malformedApproval["reviewedProposalHash"]!.DeepClone(); malformedApproval.AsObject().Remove("reviewedProposalHash");
+            var reviewedHash = malformedApproval["reviewedProposalHash"]!.GetValue<string>();
+            malformedApproval.AsObject().Remove("reviewedProposalHash"); malformedApproval["ReviewedProposalHash"] = reviewedHash;
+            var malformedJson = malformedApproval.ToJsonString();
+            using (var emitted = JsonDocument.Parse(malformedJson))
+            {
+                Assert.Equal(receipt.Request.ProposalHash, emitted.RootElement.GetProperty("ReviewedProposalHash").GetString());
+                Assert.False(emitted.RootElement.TryGetProperty("reviewedProposalHash", out _));
+                Assert.Equal("2030-04-01T10:11:12.12345601Z", emitted.RootElement.GetProperty("ExpiresAtUtc").GetString());
+                Assert.False(emitted.RootElement.TryGetProperty("expiresAtUtc", out _));
+            }
             using (var malformed = new HttpRequestMessage(HttpMethod.Post, "/test/operator/approve")
-                { Content = new StringContent(malformedApproval.ToJsonString(), System.Text.Encoding.UTF8, "application/json") })
+                { Content = new StringContent(malformedJson, System.Text.Encoding.UTF8, "application/json") })
             {
                 malformed.Headers.Add("X-Test-Operator", "reviewer");
                 using var browser = api.GetTestClient(); using var rejected = await browser.SendAsync(malformed);
