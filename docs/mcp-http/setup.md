@@ -3,7 +3,7 @@
 There are two separate connections:
 
 ```text
-Netclaw / CLI / other MCP client → HTTP MCP server → NetRatel API
+Netclaw / other HTTP MCP client → HTTP MCP server → NetRatel API
           client credential         host service identity
 ```
 
