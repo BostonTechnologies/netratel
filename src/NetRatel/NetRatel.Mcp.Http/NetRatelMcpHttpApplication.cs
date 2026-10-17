@@ -62,7 +62,10 @@ public static class NetRatelMcpHttpApplication
             targetBinding.Target,
             NetRatelMcpTransport.StreamableHttp,
             "NetRatel.Mcp.Http",
-            httpOptions.IsOperatorSurfaceEnabled);
+            httpOptions.IsOperatorSurfaceEnabled)
+        {
+            ReleaseIdentity = NetRatelMcpReleaseIdentity.FromAssembly(typeof(NetRatelMcpHttpApplication).Assembly)
+        };
         builder.Services.AddNetRatelMcpCore(hostContext);
         builder.Services.AddSingleton(targetBinding);
         builder.Services.AddSingleton(delegationOptions);
@@ -152,7 +155,11 @@ public static class NetRatelMcpHttpApplication
         builder.Services.AddSingleton<McpOperationScopeAuthorization>();
         var httpTools = NetRatelMcpToolDefinitions.CreateForHttp(hostContext);
         builder.Services.AddSingleton(new NetRatelMcpInputValidator(httpTools));
-        builder.Services.AddMcpServer()
+        builder.Services.AddMcpServer(options => options.ServerInfo = new Implementation
+            {
+                Name = hostContext.ServerName,
+                Version = hostContext.ReleaseIdentity?.ProductVersion ?? "unknown"
+            })
             .WithHttpTransport(options => options.Stateless = true)
             .WithTools(httpTools)
             .WithResources<NetRatelMcpCatalogResources>()

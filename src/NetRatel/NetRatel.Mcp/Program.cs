@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using NetRatel.AgentClient;
 using NetRatel.Mcp;
@@ -44,14 +45,21 @@ if (mcpInstance is not "dev" and not "prod")
 var hostContext = new NetRatelMcpHostContext(
     new NetRatelMcpTarget(mcpInstance, apiBaseUri, new Uri("netratel://server/status"), NetRatelMcpCatalog.Revision),
     NetRatelMcpTransport.Stdio,
-    "NetRatel.Mcp");
+    "NetRatel.Mcp")
+{
+    ReleaseIdentity = NetRatelMcpReleaseIdentity.FromAssembly(typeof(NetRatelMcpStdioApiClient).Assembly)
+};
 builder.Services.AddSingleton(configuration);
 builder.Services.AddSingleton(configurationStore);
 builder.Services.AddNetRatelMcpCore(hostContext);
 builder.Services.AddSingleton<INetRatelAgentClient, NetRatelAgentClient>();
 builder.Services.AddSingleton<INetRatelMcpApiClient, NetRatelMcpStdioApiClient>();
 builder.Services
-    .AddMcpServer()
+    .AddMcpServer(options => options.ServerInfo = new Implementation
+    {
+        Name = hostContext.ServerName,
+        Version = hostContext.ReleaseIdentity?.ProductVersion ?? "unknown"
+    })
     .WithStdioServerTransport()
     .WithTools(NetRatelMcpToolDefinitions.CreateForStdio(new Dictionary<string, Type>(StringComparer.Ordinal)
     {

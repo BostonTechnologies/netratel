@@ -160,7 +160,7 @@ public sealed class NetRatelMcpHttpToolTests
         var client = new HealthApiClient((path, _) =>
         {
             paths.Add(path);
-            return Task.FromResult<JsonNode?>(new JsonObject { ["status"] = path == "/health/live" ? "alive" : "ready" });
+            return Task.FromResult<JsonNode?>(new JsonObject { ["status"] = path == "/api/v2/mcp/operator/health/live" ? "alive" : "ready" });
         });
         var tools = new NetRatelMcpOperationalTools(client);
 
@@ -171,7 +171,7 @@ public sealed class NetRatelMcpHttpToolTests
         result.Data!["components"]!["liveness"]!["status"]!.GetValue<string>().Should().Be("healthy");
         result.Data["components"]!["readiness"]!["status"]!.GetValue<string>().Should().Be("healthy");
         result.Data["components"]!["authentication"]!["status"]!.GetValue<string>().Should().Be("admitted");
-        paths.Should().BeEquivalentTo("/health/live", "/health/ready");
+        paths.Should().BeEquivalentTo("/api/v2/mcp/operator/health/live", "/api/v2/mcp/operator/health/ready");
     }
 
     [Theory]
@@ -183,7 +183,7 @@ public sealed class NetRatelMcpHttpToolTests
     [InlineData(502, "unavailable", true)]
     public async Task Health_keeps_liveness_when_readiness_fails_and_never_exposes_upstream_details(int status, string expected, bool retryable)
     {
-        var client = new HealthApiClient((path, _) => path == "/health/live"
+        var client = new HealthApiClient((path, _) => path == "/api/v2/mcp/operator/health/live"
             ? Task.FromResult<JsonNode?>(new JsonObject { ["status"] = "alive", ["private"] = "must-not-echo" })
             : Task.FromException<JsonNode?>(new NetRatelMcpApiException("upstream", "private-topology-and-secret", status, retryable, expected == "unready" ? "api_readiness_unhealthy" : null)));
         var result = await new NetRatelMcpOperationalTools(client).netratel_health();
@@ -199,7 +199,7 @@ public sealed class NetRatelMcpHttpToolTests
     [Fact]
     public async Task Health_timeout_and_invalid_response_are_bounded_safe_component_observations()
     {
-        var client = new HealthApiClient((path, _) => Task.FromException<JsonNode?>(path == "/health/live"
+        var client = new HealthApiClient((path, _) => Task.FromException<JsonNode?>(path == "/api/v2/mcp/operator/health/live"
             ? new TaskCanceledException("private-timeout-data")
             : new System.Text.Json.JsonException("private-response-body")));
         var result = await new NetRatelMcpOperationalTools(client).netratel_health();
@@ -2281,7 +2281,7 @@ public sealed class NetRatelMcpHttpToolTests
         presence["RequiresConfirmation"]!.GetValue<bool>().Should().BeFalse();
         presence["RequiresIdempotency"]!.GetValue<bool>().Should().BeFalse();
         presence["AvailableOverHttp"]!.GetValue<bool>().Should().BeTrue();
-        unsupported.Error.Should().BeEquivalentTo(new NetRatelToolError("unsupported_operation", false, AllowedOperations: ["get"]));
+        unsupported.Error.Should().BeEquivalentTo(new NetRatelToolError("unsupported_operation", false, AllowedOperations: ["get", "status", "schema"]));
         unsupported.Failure!.RequiredOperation.Should().Be("netratel_capabilities/unsupported");
         unsupported.Failure.RequiredScopes.Should().BeEmpty();
         resources.ServerStatus().Should().Contain("\"mutationToolsEnabled\":true");

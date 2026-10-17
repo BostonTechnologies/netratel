@@ -32,7 +32,7 @@ public sealed partial class SetupSession
         {
             var previous = JsonSerializer.Deserialize<ReviewedSetupRecord>(ConfigurationFileStorage.ReadText(stateFile, secret: true), AgentClientConfiguration.JsonOptions)
                 ?? throw new AgentClientValidationException("The saved access request is invalid.");
-            if (previous.Origin != record.Origin || previous.Resource != record.Resource || previous.Destination != record.Destination ||
+            if (previous.Origin != record.Origin || previous.Resource != record.Resource || previous.Destination != record.Destination || previous.Profile != record.Profile ||
                 JsonSerializer.Serialize(previous.Proposal) != JsonSerializer.Serialize(proposal))
                 throw new AgentClientValidationException("The saved access proposal differs. Resume it or use a separate request and state file.");
             record = previous;

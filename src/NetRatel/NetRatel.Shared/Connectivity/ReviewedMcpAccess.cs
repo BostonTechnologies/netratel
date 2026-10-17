@@ -44,7 +44,10 @@ public sealed record ReviewedMcpAccessAdmission(ReviewedMcpAccessTarget Target, 
 public sealed record ReviewedMcpAccessReceipt(ReviewedMcpAccessRequest Request, string? CredentialId,
     DateTimeOffset? CredentialExpiresAtUtc, string CredentialState, IReadOnlyList<IntegrationPairingGrant> ConfiguredGrants,
     IReadOnlyList<string> ConfiguredInstancePermissions, IReadOnlyList<ReviewedMcpAccessAdmission> EffectiveAdmission,
-    IReadOnlyList<string> RemainingPrerequisites, string NextAction);
+    IReadOnlyList<string> RemainingPrerequisites, string NextAction)
+{
+    public IntegrationPairingFailure? ReviewFailure { get; init; }
+}
 
 /// <summary>The credential authority persists UTC instants at microsecond resolution. Submitted instants are never rounded.</summary>
 public static class ReviewedMcpAccessExpiry

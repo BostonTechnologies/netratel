@@ -76,6 +76,7 @@ def required_artifacts(version):
         f"netratel-cli-{version}-linux-x64.tar.gz", f"NetRatel.Cli.{version}.nupkg",
         f"netratel-mcp-stdio-{version}-linux-x64.tar.gz", f"netratel-compose-{version}.tar.gz",
         f"netratel-{version}.spdx.json",
+        f"netratel-mcp-stdio-{version}-win-x64.zip", f"netratel-mcp-stdio-{version}-win-x64.spdx.json",
         *[f"netratel-client-{version}-{runtime}.{extension}" for runtime, extension in
           (("linux-x64", "tar.gz"), ("win-x64", "zip"), ("osx-arm64", "tar.gz"))],
         *[f"netratel-client-{version}-{runtime}.spdx.json" for runtime in ("linux-x64", "win-x64", "osx-arm64")]
@@ -327,7 +328,9 @@ def create_input_receipt(inputs, output, run_id, version, revision, download=Fal
     files = {}
     for name in required:
         runtime = re.match(rf"netratel-client-{re.escape(version)}-(linux-x64|win-x64|osx-arm64)", name)
-        artifact_name = (f"netratel-client-{version}-{runtime.group(1)}" if runtime else
+        windows_mcp = name.startswith(f"netratel-mcp-stdio-{version}-win-x64.")
+        artifact_name = (f"netratel-mcp-stdio-{version}-win-x64" if windows_mcp else
+                         f"netratel-client-{version}-{runtime.group(1)}" if runtime else
                          f"netratel-{version}-linux-x64")
         artifact = artifacts.get(artifact_name)
         if not artifact or artifact.get("expired") or not isinstance(artifact.get("id"), int) or \

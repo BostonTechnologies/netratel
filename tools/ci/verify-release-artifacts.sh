@@ -2,21 +2,23 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 --artifacts <directory> --version <semver>" >&2
+  echo "Usage: $0 --artifacts <directory> --version <semver> --source-revision <public-commit-sha>" >&2
   exit 2
 }
 
 artifacts=""
 version=""
+source_revision=""
 while (( $# > 0 )); do
   case "$1" in
     --artifacts) artifacts="${2:-}"; shift 2 ;;
     --version) version="${2:-}"; shift 2 ;;
+    --source-revision) source_revision="${2:-}"; shift 2 ;;
     *) usage ;;
   esac
 done
 
-[[ -n "$artifacts" && -n "$version" ]] || usage
+[[ -n "$artifacts" && -n "$version" && "$source_revision" =~ ^[0-9a-f]{40}$ ]] || usage
 for required_tool in python3 dotnet jq find sort grep tar unzip timeout; do
   command -v "$required_tool" >/dev/null 2>&1 || {
     echo "Required artifact verifier tool '$required_tool' is unavailable." >&2; exit 1;
@@ -173,19 +175,29 @@ mcp_initialize_response="$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"initializ
 printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}' >&"$mcp_stdin_fd"
 mcp_tools_response="$(mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}')"
 mcp_capabilities_response="$(mcp_call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"netratel_capabilities","arguments":{"operation":"get"}}}')"
+mcp_status_response="$(mcp_call '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"netratel_capabilities","arguments":{"operation":"status"}}}')"
 kill "$mcp_stdio_pid" 2>/dev/null || true
 wait "$mcp_stdio_pid" 2>/dev/null || true
 
-if ! printf '%s\n%s\n%s\n' "$mcp_initialize_response" "$mcp_tools_response" "$mcp_capabilities_response" | jq -se '
-  length == 3
-  and (map(.id) | sort == [1, 2, 3])
+if ! printf '%s\n%s\n%s\n%s\n' "$mcp_initialize_response" "$mcp_tools_response" "$mcp_capabilities_response" "$mcp_status_response" | jq -se --arg version "$version" --arg source "$source_revision" '
+  length == 4
+  and (map(.id) | sort == [1, 2, 3, 4])
   and (map(select(.id == 1))[0] | .jsonrpc == "2.0"
     and .result.serverInfo.name == "NetRatel.Mcp"
+    and (.result.serverInfo.version == $version or (.result.serverInfo.version | startswith($version + "+")))
     and (.result.capabilities.tools | type == "object"))
   and (map(select(.id == 2))[0].result.tools | type == "array" and length > 0)
   and map(select(.id == 3))[0].result.structuredContent.success == true
+  and (map(select(.id == 4))[0].result.structuredContent | .success == true
+    and .data.identityScope == "mcp_host"
+    and .data.sourceIdentityAvailable == true
+    and .data.hostRelease.serviceName == "NetRatel.Mcp"
+    and .data.hostRelease.productVersion == $version
+    and .data.hostRelease.sourceRevision == $source
+    and .data.nativeLoadedMetadata == "not_observed"
+    and (.data.catalog.digest | test("^[0-9a-f]{64}$")))
 ' >/dev/null; then
-  echo "stdio MCP archive did not initialize, list tools, and complete its capabilities read." >&2
+  echo "stdio MCP archive did not initialize, list tools, and report the exact public release identity." >&2
   exit 1
 fi
 

@@ -26,6 +26,30 @@ namespace NetRatel.Tests.API;
 
 public sealed class IntegrationPairingEndpointTests
 {
+    [Theory]
+    [InlineData("start")]
+    [InlineData("poll")]
+    [InlineData("cancel")]
+    [InlineData("acknowledge")]
+    public async Task Ordinary_pairing_failures_report_the_actual_stage_without_echoing_delivery_material(string operation)
+    {
+        await using var app = await BuildAppAsync();
+        using var client = app.GetTestClient();
+        object request = operation switch
+        {
+            "start" => new IntegrationPairingStartRequest("", PairingCredentialPurpose.Api),
+            "acknowledge" => new IntegrationPairingAcknowledgeRequest("synthetic-invalid-capability", "synthetic-credential"),
+            _ => new IntegrationPairingDeviceRequest("synthetic-invalid-capability")
+        };
+        using var response = await client.PostAsJsonAsync(IntegrationPairingProtocol.Route + "/" + operation, request);
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        response.Headers.CacheControl!.NoStore.Should().BeTrue();
+        var failure = (await response.Content.ReadFromJsonAsync<IntegrationPairingFailure>())!;
+        failure.Stage.Should().Be(operation);
+        failure.CorrelationId.Should().NotBeNullOrWhiteSpace();
+        (await response.Content.ReadAsStringAsync()).Should().NotContain("synthetic-invalid-capability");
+    }
+
     [Fact]
     public async Task Host_and_client_approval_keep_configured_deployment_base_paths_and_advertise_bounded_verification()
     {

@@ -35,6 +35,12 @@ public sealed record NetRatelMcpHostContext
     public string ServerName { get; }
 
     /// <summary>
+    /// Identity read from this host's assembly at startup, independently of
+    /// the configured downstream API. Missing build metadata remains unknown.
+    /// </summary>
+    public NetRatelMcpReleaseIdentity? ReleaseIdentity { get; init; }
+
+    /// <summary>
     /// Selects the policy-admitted V2 operator route family. It is on by
     /// default for Production and must be explicitly enabled for Development;
     /// it is never derived from a caller request.

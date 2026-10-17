@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text;
 using AwesomeAssertions;
 using Bunit;
 using Microsoft.AspNetCore.Components;
@@ -13,6 +14,92 @@ namespace NetRatel.Web.ComponentTests;
 
 public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Reviewed_access_explains_principal_eligibility_and_preserves_exact_independent_consent(bool eligible)
+    {
+        using var transport = Configure();
+        transport.ReviewedAccess = true;
+        transport.ReviewEligible = eligible;
+        var panel = Render<IntegrationPairingApprovalPanel>();
+        panel.Find("input").Change("ABCD-EFGH");
+        panel.Find("form").Submit();
+        panel.WaitForAssertion(() => panel.Find("[data-testid='pairing-eligibility']").TextContent.Should().Contain(eligible ? "eligible to review" : "cannot approve"));
+        panel.Find("[data-testid='pairing-approve']").HasAttribute("disabled").Should().BeTrue();
+        transport.ApprovalRequests.Should().Be(0);
+        panel.FindAll("[data-testid='permission-selector']").Should().BeEmpty();
+        if (!eligible)
+        {
+            panel.Find("[data-testid='pairing-error']").TextContent.Should().Contain("different authorized operator account");
+            panel.Find("[data-testid='pairing-failure-reference']").TextContent.Should().Contain("review_independent_approver_required").And.Contain("synthetic-review-reference");
+            panel.Find("[data-testid='pairing-confirm']").HasAttribute("disabled").Should().BeTrue();
+            return;
+        }
+        panel.Find("[data-testid='pairing-confirm']").Change(true);
+        panel.Find("[data-testid='pairing-approve']").Click();
+        panel.WaitForAssertion(() => transport.Approved.Should().NotBeNull());
+        transport.Approved!.ReviewedProposalHash.Should().Be(new string('A', 64));
+        transport.Approved.ExpiresAtUtc.Should().Be(transport.ReviewedProposal.ExpiresAtUtc);
+        transport.Approved.Grants.Should().Equal(transport.ReviewedProposal.Grants);
+        transport.Approved.InstancePermissions.Should().Equal(transport.ReviewedProposal.InstancePermissions);
+        transport.ApprovalRequests.Should().Be(1);
+    }
+
+    [Fact]
+    public void Structured_review_failure_shows_safe_action_and_correlation_and_requires_fresh_lookup()
+    {
+        using var transport = Configure();
+        transport.ReviewedAccess = true;
+        transport.ReviewFailureCode = "review_policy_changed";
+        var panel = Render<IntegrationPairingApprovalPanel>();
+        panel.Find("input").Change("ABCD-EFGH"); panel.Find("form").Submit();
+        panel.WaitForAssertion(() => panel.Find("[data-testid='pairing-eligibility']").TextContent.Should().Contain("eligible to review"));
+        panel.Find("[data-testid='pairing-confirm']").Change(true);
+        panel.Find("[data-testid='pairing-approve']").Click();
+        panel.WaitForAssertion(() => panel.Find("[data-testid='pairing-error']").TextContent.Should().Contain("policy changed"));
+        panel.Find("[data-testid='pairing-failure-reference']").TextContent.Should().Contain("review_policy_changed").And.Contain("synthetic-review-reference");
+        panel.Find("[data-testid='pairing-confirm-code']").TextContent.Should().Be("ABCD-EFGH");
+        panel.Find("[data-testid='pairing-confirm']").HasAttribute("checked").Should().BeFalse();
+        panel.Find("[data-testid='pairing-approve']").HasAttribute("disabled").Should().BeTrue();
+        panel.Markup.Should().NotContain("synthetic-untrusted-upstream-body");
+        transport.ApprovalRequests.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized, "Sign in")]
+    [InlineData(HttpStatusCode.Forbidden, "current account cannot open")]
+    [InlineData(HttpStatusCode.TooManyRequests, "rate limited")]
+    [InlineData(HttpStatusCode.ServiceUnavailable, "service could not complete")]
+    public void Lookup_authentication_permission_rate_and_service_failures_do_not_claim_expiry(HttpStatusCode status, string message)
+    {
+        using var transport = Configure();
+        transport.LookupStatus = status;
+        var panel = Render<IntegrationPairingApprovalPanel>();
+        panel.Find("input").Change("ABCD-EFGH"); panel.Find("form").Submit();
+        panel.WaitForAssertion(() => panel.Find("[data-testid='pairing-error']").TextContent.Should().Contain(message).And.NotContain("unavailable or expired"));
+        panel.Find("input").GetAttribute("value").Should().Be("ABCD-EFGH");
+        transport.ApprovalRequests.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void HTML_and_oversized_streamed_lookup_failures_preserve_status_guidance_with_bounded_reads(bool oversized)
+    {
+        using var transport = Configure();
+        transport.LookupStatus = HttpStatusCode.ServiceUnavailable;
+        transport.LookupBody = oversized ? new string('x', 64 * 1024) : "<html>Synthetic upstream outage body</html>";
+        var panel = Render<IntegrationPairingApprovalPanel>();
+        panel.Find("input").Change("ABCD-EFGH"); panel.Find("form").Submit();
+        panel.WaitForAssertion(() => panel.Find("[data-testid='pairing-error']").TextContent.Should().Contain("service could not complete lookup"));
+        panel.Markup.Should().NotContain("Synthetic upstream outage body").And.NotContain("unavailable or expired");
+        transport.LookupStream!.BytesRead.Should().BeLessThanOrEqualTo(16 * 1024 + 1);
+        if (oversized) transport.LookupStream.BytesRead.Should().Be(16 * 1024 + 1);
+        panel.Find("input").GetAttribute("value").Should().Be("ABCD-EFGH");
+        transport.ApprovalRequests.Should().Be(0);
+    }
+
     [Fact]
     public void Host_approval_reviews_exact_generation_and_keeps_personal_credential_approval_separate()
     {
@@ -185,14 +272,28 @@ public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
         public bool TemporaryVerifier { get; set; }
         public bool Administrator { get; set; } = true;
         public HttpStatusCode LookupStatus { get; set; } = HttpStatusCode.OK;
+        public string? LookupBody { get; set; }
+        public TrackedResponseStream? LookupStream { get; private set; }
         public bool DurableAuthorityRejection { get; set; }
+        public bool ReviewedAccess { get; set; }
+        public bool ReviewEligible { get; set; } = true;
+        public string? ReviewFailureCode { get; set; }
+        public ReviewedMcpAccessProposal ReviewedProposal { get; } = new("b2222222222242228222222222222222", "Synthetic reviewed client", "reconcile",
+            DateTimeOffset.FromUnixTimeSeconds(DateTimeOffset.UtcNow.ToUnixTimeSeconds()).AddDays(30).AddTicks(1234560),
+            [new(17, "flow.read"), new(29, "flow.read")], ["mcp.discovery.read"],
+            [new(17, "netratel_flows", "list"), new(29, "netratel_flows", "list")], "c3333333333343338333333333333333");
         public IntegrationPairingApprovalRequest? Approved { get; private set; }
         public HttpClient CreateClient(string name) => new(this, false) { BaseAddress = new("https://api.example.test") };
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var path = request.RequestUri!.AbsolutePath;
             if (path == "/api/v2/access/self") return new(HttpStatusCode.OK) { Content = JsonContent.Create(new { isInstanceAdministrator = Administrator }) };
-            if (path.EndsWith("/lookup", StringComparison.Ordinal) && LookupStatus != HttpStatusCode.OK) return new(LookupStatus);
+            if (path.EndsWith("/lookup", StringComparison.Ordinal) && LookupStatus != HttpStatusCode.OK)
+            {
+                if (LookupBody is null) return new(LookupStatus);
+                LookupStream = new(Encoding.UTF8.GetBytes(LookupBody));
+                return new(LookupStatus) { Content = new StreamContent(LookupStream) };
+            }
             if (path.EndsWith("/deny", StringComparison.Ordinal)) return new(HttpStatusCode.OK) { Content = JsonContent.Create(new { status = "denied" }) };
             if (path.StartsWith(HttpHostSetupProtocol.AccountRoute, StringComparison.Ordinal))
             {
@@ -207,7 +308,13 @@ public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
             }
             if (path.EndsWith("/lookup", StringComparison.Ordinal)) return new(HttpStatusCode.OK)
             { Content = JsonContent.Create(new IntegrationPairingReview("request", "ABCD-EFGH", "CLI profile", PairingCredentialPurpose.Api,
-                "https://netratel.example.test", null, ["telemetry.read"], DateTimeOffset.UtcNow.AddMinutes(10), "pending") { TemporaryVerifier = TemporaryVerifier, CredentialExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(15) }) };
+                "https://netratel.example.test", null, ["telemetry.read"], DateTimeOffset.UtcNow.AddMinutes(10), "pending")
+                {
+                    TemporaryVerifier = TemporaryVerifier, CredentialExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(15),
+                    ReviewedAccess = ReviewedAccess ? new(ReviewedProposal.RequestId, "pending", "https://netratel.example.test/account/integration-credentials", "ABCD-EFGH", ReviewedProposal,
+                        "https://netratel.example.test/mcp", "dev", "Development", "synthetic-requester", ReviewedProposal.CredentialId!, 1, new string('A', 64)) : null,
+                    Eligibility = ReviewedAccess ? new(ReviewEligible, ReviewEligible ? null : IntegrationPairingFailure.ForCode("review_independent_approver_required", "lookup") with { CorrelationId = "synthetic-review-reference" }) : null
+                }) };
             if (path.EndsWith("/authority", StringComparison.Ordinal)) return new(HttpStatusCode.OK)
             { Content = JsonContent.Create(new { tenants = new[] { new { tenantId = 7, name = "Tenant A", permissions = new[] {
                 new { id = "telemetry.read", label = "Read telemetry", description = "Read tenant telemetry." } } } }, instancePermissions = Array.Empty<object>() }) };
@@ -215,11 +322,24 @@ public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
             {
                 ApprovalRequests++;
                 Approved = await request.Content!.ReadFromJsonAsync<IntegrationPairingApprovalRequest>(cancellationToken);
+                if (ReviewFailureCode is { } reviewCode) return new(HttpStatusCode.Forbidden)
+                { Content = JsonContent.Create(IntegrationPairingFailure.ForCode(reviewCode, "approval") with { CorrelationId = "synthetic-review-reference", Remediation = "synthetic-untrusted-upstream-body" }) };
                 if (RejectApproval && DurableAuthorityRejection) return new(HttpStatusCode.BadRequest)
                 { Content = JsonContent.Create(new { errors = new Dictionary<string, string[]> { ["durableAuthority"] = [IntegrationPairingProtocol.DurableAuthorityGuidance] } }) };
                 return new(RejectApproval ? HttpStatusCode.Forbidden : HttpStatusCode.OK) { Content = JsonContent.Create(new { status = "approved" }) };
             }
             throw new InvalidOperationException("Unexpected pairing test request.");
+        }
+    }
+    private sealed class TrackedResponseStream(byte[] bytes) : MemoryStream(bytes)
+    {
+        public override bool CanSeek => false;
+        public int BytesRead { get; private set; }
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            var read = await base.ReadAsync(buffer, cancellationToken);
+            BytesRead += read;
+            return read;
         }
     }
 }

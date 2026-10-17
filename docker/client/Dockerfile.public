@@ -3,6 +3,7 @@
 # This file intentionally has no source, credential, or tooling dependency on
 # private repositories.
 FROM mcr.microsoft.com/dotnet/sdk:10.0.401-noble AS build
+ARG PublicSourceRevision
 ARG BUILD_CONFIGURATION=Release
 ARG TARGETARCH
 WORKDIR /src

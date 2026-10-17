@@ -7,7 +7,7 @@ on:
         description: Run only this optional suite (client measurements use matching hosted OS runners)
         type: choice
         required: true
-        options: [pairing, gateway, mcp-campaign, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement]
+        options: [pairing, gateway, mcp-campaign, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement, windows-mcp]
       source_ref:
         description: Source ref to test (published-image and upgrade suites use release_tag)
         default: main
@@ -53,7 +53,7 @@ permissions:
 jobs:
   selected-suite:
     name: Manual ${{ inputs.suite }} (Linux)
-    if: inputs.suite != 'client-measurement'
+    if: inputs.suite != 'client-measurement' && inputs.suite != 'windows-mcp'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ (inputs.suite == 'native-client' || inputs.suite == 'deployment' || inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc') && 45 || inputs.suite == 'release-images' && 60 || 40 }}
     env:
@@ -162,7 +162,7 @@ jobs:
           dotnet test --project src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj \
             --configuration Release --no-build --no-restore --max-parallel-test-modules 1 \
             --filter-method NetRatel.Tests.Mcp.ReviewedMcpAccessProtocolTests.Native_request_independent_approval_resume_then_actual_reads_in_two_tenants \
-              NetRatel.Tests.Mcp.NetRatelMcpHttpTests.Protocol_health_reaches_protected_API_through_the_shipped_Web_gateway \
+              NetRatel.Tests.Mcp.NetRatelMcpHttpHealthRouteTests.Protocol_health_reaches_protected_API_through_the_shipped_Web_gateway \
             --minimum-expected-tests 2 --results-directory TestResults/mcp-campaign \
             --report-trx --report-trx-filename protocol.trx
           python3 tools/ci/verify-mtp-trx.py TestResults/mcp-campaign/protocol.trx
@@ -412,6 +412,44 @@ jobs:
           path: |
             TestResults
             src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright
+          if-no-files-found: warn
+          retention-days: 14
+
+  windows-mcp:
+    name: Manual Windows MCP archive and protected launcher
+    if: inputs.suite == 'windows-mcp' || inputs.suite == 'mcp-campaign'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - name: Record selected archive source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'PublicSourceRevision=%s\nVERSION=%s\n' "$source_sha" "$(python3 tools/ci/product-version.py)" >> "$GITHUB_ENV"
+      - name: Package the selected Windows source
+        shell: bash
+        run: bash tools/ci/package-windows-mcp.sh
+      - name: Smoke the original Windows archive bytes
+        shell: pwsh
+        run: |
+          ./tools/ci/test-windows-mcp-archive.ps1 -ArchivePath "artifacts/netratel-mcp-stdio-$env:VERSION-win-x64.zip" -Version $env:VERSION -SourceRevision $env:PublicSourceRevision -ReceiptPath TestResults/windows-mcp-smoke.json
+      - name: Retain sanitized Windows branch receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-mcp-branch-smoke
+          path: TestResults/windows-mcp-smoke.json
           if-no-files-found: warn
           retention-days: 14
 

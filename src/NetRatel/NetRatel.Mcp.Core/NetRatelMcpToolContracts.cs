@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json.Nodes;
+using NetRatel.Shared.Connectivity;
 using NetRatel.Shared.Operations;
 
 namespace NetRatel.Mcp.Core;
@@ -30,15 +31,16 @@ public record NetRatelToolFailure(
     {
         var code = error?.Code ?? status;
         var delegation = McpDelegationFailure.ForCode(code);
+        var review = IntegrationPairingFailure.IsKnownCode(code) ? IntegrationPairingFailure.ForCode(code, "review") : null;
         return new NetRatelToolFailure(
             code,
-            delegation?.Layer ?? LayerFor(code),
+            review is not null ? "review" : delegation?.Layer ?? LayerFor(code),
             delegation?.Retryable ?? error?.Retryable ?? false,
             [],
             "not_available",
             null,
-            SafeDetailsFor(code),
-            delegation?.Remediation ?? RemediationFor(code));
+            review is not null ? "The reviewed access request did not complete. Inspect the safe review reason and retained receipt." : SafeDetailsFor(code),
+            review?.Remediation ?? delegation?.Remediation ?? RemediationFor(code));
     }
 
     private static string LayerFor(string code) => code switch

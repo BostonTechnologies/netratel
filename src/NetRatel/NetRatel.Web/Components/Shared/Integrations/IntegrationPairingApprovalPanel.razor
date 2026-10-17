@@ -9,7 +9,9 @@
 <div class="approval-entry-shell"><MudPaper Class="approval-entry" Elevation="0" Outlined="true" data-testid="integration-pairing-panel">
     <MudText Typo="Typo.h6">Connect CLI / MCP client</MudText>
     <MudText Typo="Typo.body2" Class="mb-2">Choose the access this client may use.</MudText>
-    @if (_review is null && _error is not null) { <MudAlert Severity="Severity.Error" Class="mb-2" data-testid="pairing-error">@_error</MudAlert> }
+    @if (_review is null && _error is not null) { <MudAlert Severity="Severity.Error" Class="mb-2" data-testid="pairing-error">@_error
+        @if (_failureCode is not null) { <p data-testid="pairing-failure-reference">Reason: @_failureCode · reference @_correlationReference</p> }
+    </MudAlert> }
     @if (_message is not null) { <MudAlert Severity="Severity.Success" Class="mb-2" data-testid="pairing-complete">@_message</MudAlert> }
     <EditForm Model="_entry" OnSubmit="LookupAsync">
         <AntiforgeryToken />
@@ -26,7 +28,9 @@
     <MudFocusTrap DefaultFocus="DefaultFocus.FirstChild" Class="approval-focus">
         <header class="approval-title"><h2 id="client-review-title">@(review.TemporaryVerifier ? "Temporary verification client" : "Review client access")</h2><p>Confirm code <strong data-testid="pairing-confirm-code">@review.UserCode</strong> · @review.Name</p></header>
         <div class="approval-body">
-            @if (_error is not null) { <MudAlert Severity="Severity.Error" Class="mb-2" data-testid="pairing-error">@_error</MudAlert> }
+            @if (_error is not null) { <MudAlert Severity="Severity.Error" Class="mb-2" data-testid="pairing-error">@_error
+                @if (_failureCode is not null) { <p data-testid="pairing-failure-reference">Reason: @_failureCode · reference @_correlationReference</p> }
+            </MudAlert> }
             <p>Instance: @review.PublicOrigin</p>
             @if (review.Resource is not null) { <p>HTTP MCP resource: @review.Resource</p> }
             <p class="approval-secondary">Approve before @review.ExpiresAtUtc.UtcDateTime.ToString("HH:mm") UTC. Sign-in and code lookup do not approve access.</p>
@@ -39,6 +43,7 @@
             else if (review.ReviewedAccess is { } access)
             {
                 <MudAlert Severity="Severity.Info">Independent review required. The requesting client cannot approve its own access. Changing any value requires a new request.</MudAlert>
+                <p data-testid="pairing-eligibility">@(review.Eligibility?.CanApprove == true ? "Your current account is eligible to review this proposal. Approval will recheck current authority and bindings." : "Your current account cannot approve this proposal. Follow the review guidance and look up the code again after the prerequisite is resolved.")</p>
                 <p>Requester: @access.RequestingPrincipalId · client @access.RequestingCredentialId</p>
                 <p>Action: @access.Proposal.Action · instance @access.Instance · environment @access.Environment</p>
                 <p>Exact UTC expiry: @IntegrationCredentialExpiry.Format(access.Proposal.ExpiresAtUtc)</p>
@@ -60,12 +65,12 @@
                 @if (review.RequestedPermissions.Count > 0) { <details class="my-2"><summary>Client suggestions (@review.RequestedPermissions.Count)</summary><p>@string.Join(", ", review.RequestedPermissions). Select access explicitly below.</p></details> }
                 <IntegrationPermissionSelector Scopes="PermissionScopes" Grants="_grants" InstancePermissions="_instancePermissions" Changed="ChangePermissions" Disabled="_busy" TestIdPrefix="pairing" />
             }
-            <MudCheckBox T="bool" @bind-Value="_confirmed" Label="@($"I recognize code {review.UserCode} and approve this connection with the selected access and expiry.")" Disabled="_busy" data-testid="pairing-confirm" />
+            <MudCheckBox T="bool" @bind-Value="_confirmed" Label="@($"I recognize code {review.UserCode} and approve this connection with the selected access and expiry.")" Disabled="@(_busy || !CanApprove)" data-testid="pairing-confirm" />
         </div>
         <footer class="approval-footer">
             <MudButton OnClick="Reset" Disabled="_busy">Back</MudButton>
             <MudButton Color="Color.Error" OnClick="DenyAsync" Disabled="_busy" data-testid="pairing-deny">Deny connection</MudButton>
-            <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="ApproveAsync" Disabled="@(_busy || !_confirmed || !HasAccess)" data-testid="pairing-approve">@(_busy ? "Saving…" : "Approve connection")</MudButton>
+            <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="ApproveAsync" Disabled="@(_busy || !_confirmed || !HasAccess || !CanApprove)" data-testid="pairing-approve">@(_busy ? "Saving…" : "Approve connection")</MudButton>
         </footer>
     </MudFocusTrap>
     </section></MudOverlay></div>
@@ -86,25 +91,43 @@
     private IReadOnlyList<IntegrationPermissionScope> PermissionScopes => _authority is null ? [] : _authority.Tenants.Select(tenant => new IntegrationPermissionScope(tenant.TenantId, tenant.Name, tenant.Permissions.Select(permission => new IntegrationPermission(permission.Id, permission.Label, permission.Description)).ToArray())).Concat(_authority.InstancePermissions.Count > 0 ? [new IntegrationPermissionScope(null, "Server-level access", _authority.InstancePermissions.Select(permission => new IntegrationPermission(permission.Id, permission.Label, permission.Description)).ToArray())] : []).ToArray();
     private DateTimeOffset VerifierExpiry => _review?.CredentialExpiresAtUtc ?? _review?.ExpiresAtUtc ?? DateTimeOffset.UtcNow;
     private bool HasAccess => _review?.ReviewedAccess is not null || (_review?.TemporaryVerifier == true ? _verifierConsent : _grants.Count > 0 || _instancePermissions.Count > 0);
+    private bool CanApprove => _review?.ReviewedAccess is null || _review.Eligibility?.CanApprove == true;
     protected override async Task OnAfterRenderAsync(bool firstRender)
     { if (_restoreFocus && !_disposed && _opener is not null) { _restoreFocus = false; await _opener.FocusAsync(); } }
-    private string? _error, _message;
+    private string? _error, _message, _failureCode, _correlationReference;
     private readonly CancellationTokenSource _lifetime = new();
+    private const int MaximumProblemBytes = 16 * 1024;
     private HttpClient Api => Clients.CreateClient("OrchestratorApi");
     private async Task LookupAsync()
     {
         if (_busy || _disposed) return;
-        _busy = true; _error = _message = null;
+        _busy = true; _error = _message = _failureCode = _correlationReference = null;
         try
         {
-            using var response = await Api.PostAsJsonAsync(IntegrationPairingProtocol.AccountRoute + "/lookup", new IntegrationPairingCodeRequest(_entry.UserCode), _lifetime.Token);
-            if (!response.IsSuccessStatusCode) { _error = "This code is unavailable or expired. Check the code or start a new request in your client."; return; }
+            using var message = new HttpRequestMessage(HttpMethod.Post, IntegrationPairingProtocol.AccountRoute + "/lookup")
+            { Content = JsonContent.Create(new IntegrationPairingCodeRequest(_entry.UserCode)) };
+            using var response = await Api.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, _lifetime.Token);
+            if (!response.IsSuccessStatusCode)
+            {
+                var failure = await ReadProblemAsync(response);
+                if (!ShowReviewFailure(failure?.Code, failure?.CorrelationId))
+                    _error = response.StatusCode switch
+                    {
+                        System.Net.HttpStatusCode.Unauthorized => "Sign in to review this client, then look up the preserved code again.",
+                        System.Net.HttpStatusCode.Forbidden => "Your current account cannot open this review. Ask an authorized independent operator to sign in and enter the code.",
+                        System.Net.HttpStatusCode.TooManyRequests => "Review lookup is temporarily rate limited. Keep this code and retry after the server's waiting interval; inspect the client receipt if its review deadline passes.",
+                        _ when (int)response.StatusCode >= 500 => "The review service could not complete lookup. Keep this code and inspect the client receipt before retrying; no approval has been submitted.",
+                        _ => "This code is unavailable or expired. Check the code or start a new request in your client."
+                    };
+                return;
+            }
             var review = await response.Content.ReadFromJsonAsync<IntegrationPairingReview>(_lifetime.Token);
             var authority = review?.TemporaryVerifier == true || review?.ReviewedAccess is not null ? new PairingAuthority([], []) : await Api.GetFromJsonAsync<PairingAuthority>("/api/v2/account/integration-credentials/authority", _lifetime.Token);
             if (_disposed) return;
             if (review is null || authority is null) { _error = "Could not load the requested connection. Try again."; return; }
             _grants.Clear(); _instancePermissions.Clear(); _confirmed = _verifierConsent = false;
             _review = review; _authority = authority; _expiryReference = IntegrationCredentialExpiry.Reference(DateTimeOffset.UtcNow); UseThirtyDays();
+            if (review.Eligibility?.Failure is { } eligibilityFailure) ShowReviewFailure(eligibilityFailure.Code, eligibilityFailure.CorrelationId ?? review.CorrelationId);
         }
         catch (Exception exception) when (exception is HttpRequestException or JsonException or OperationCanceledException)
         { if (!_disposed) _error = "Could not check the connection. Your code is preserved; try again."; }
@@ -127,7 +150,7 @@
     { if (_busy) return; if (selected) _instancePermissions.Add(permission); else _instancePermissions.Remove(permission); _confirmed = false; }
     private async Task ApproveAsync()
     {
-        if (_busy || _disposed || _review is null || !_confirmed || !HasAccess) return;
+        if (_busy || _disposed || _review is null || !_confirmed || !HasAccess || !CanApprove) return;
         var reviewed = _review.ReviewedAccess;
         var expiry = reviewed?.Proposal.ExpiresAtUtc ?? (_review.TemporaryVerifier ? VerifierExpiry : IntegrationCredentialExpiry.ParseUtcInstant(_expiry));
         if (expiry is null || expiry <= DateTimeOffset.UtcNow || expiry > DateTimeOffset.UtcNow.AddDays(365))
@@ -139,17 +162,21 @@
     private async Task DecideAsync<T>(string action, T request)
     {
         if (_busy || _disposed) return;
-        _busy = true; _error = null;
+        _busy = true; _error = _failureCode = _correlationReference = null;
         try
         {
-            using var response = await Api.PostAsJsonAsync(IntegrationPairingProtocol.AccountRoute + "/" + action, request, _lifetime.Token);
+            using var message = new HttpRequestMessage(HttpMethod.Post, IntegrationPairingProtocol.AccountRoute + "/" + action)
+            { Content = JsonContent.Create(request) };
+            using var response = await Api.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, _lifetime.Token);
             if (_disposed) return;
             if (!response.IsSuccessStatusCode)
             {
-                var problem = response.StatusCode == System.Net.HttpStatusCode.BadRequest
-                    ? await response.Content.ReadFromJsonAsync<PairingValidationProblem>(_lifetime.Token) : null;
-                _error = problem?.Errors?.ContainsKey("durableAuthority") == true ? IntegrationPairingProtocol.DurableAuthorityGuidance :
-                    "The request changed or your access is no longer available. Review your selection or start a new client request.";
+                var problem = await ReadProblemAsync(response);
+                if (!ShowReviewFailure(problem?.Code, problem?.CorrelationId))
+                    _error = problem?.Errors?.ContainsKey("durableAuthority") == true ? IntegrationPairingProtocol.DurableAuthorityGuidance :
+                        "The request changed or your access is no longer available. Review your selection or start a new client request.";
+                else if (_review?.ReviewedAccess is not null)
+                    _review = _review with { Eligibility = new(false) };
                 _confirmed = false; return;
             }
             _review = null; _entry.UserCode = string.Empty; _restoreFocus = true;
@@ -162,9 +189,34 @@
         finally { if (!_disposed) _busy = false; }
     }
     private void Reset()
-    { if (_busy) return; _review = null; _error = null; _confirmed = _verifierConsent = false; _grants.Clear(); _instancePermissions.Clear(); _restoreFocus = true; }
+    { if (_busy) return; _review = null; _error = _failureCode = _correlationReference = null; _confirmed = _verifierConsent = false; _grants.Clear(); _instancePermissions.Clear(); _restoreFocus = true; }
+    private async Task<PairingValidationProblem?> ReadProblemAsync(HttpResponseMessage response)
+    {
+        if (response.Content.Headers.ContentLength > MaximumProblemBytes) return null;
+        await using var stream = await response.Content.ReadAsStreamAsync(_lifetime.Token);
+        var bytes = new byte[MaximumProblemBytes + 1];
+        var length = 0;
+        while (length < bytes.Length)
+        {
+            var read = await stream.ReadAsync(bytes.AsMemory(length), _lifetime.Token);
+            if (read == 0) break;
+            length += read;
+        }
+        if (length is 0 or > MaximumProblemBytes) return null;
+        try { return JsonSerializer.Deserialize<PairingValidationProblem>(bytes.AsSpan(0, length), new JsonSerializerOptions(JsonSerializerDefaults.Web)); }
+        catch (JsonException) { return null; } // The caller still handles the HTTP status using fixed, safe guidance.
+    }
+    private bool ShowReviewFailure(string? code, string? correlationId)
+    {
+        if (!IntegrationPairingFailure.IsKnownCode(code)) return false;
+        _failureCode = code;
+        _error = IntegrationPairingFailure.ForCode(code!, "review").Remediation;
+        _correlationReference = correlationId is { Length: > 0 and <= 128 } && correlationId.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.' or ':')
+            ? correlationId : "not_available";
+        return true;
+    }
     public void Dispose() { _disposed = true; _lifetime.Cancel(); _lifetime.Dispose(); }
-    private sealed record PairingValidationProblem(Dictionary<string, string[]>? Errors);
+    private sealed record PairingValidationProblem(Dictionary<string, string[]>? Errors, string? Code = null, string? CorrelationId = null);
     private sealed record PairingPermission(string Id, string Label, string Description);
     private sealed record PairingTenant(int TenantId, string Name, IReadOnlyList<PairingPermission> Permissions);
     private sealed record PairingAuthority(IReadOnlyList<PairingTenant> Tenants, IReadOnlyList<PairingPermission> InstancePermissions);

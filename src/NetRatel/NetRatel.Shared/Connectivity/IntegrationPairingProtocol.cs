@@ -65,5 +65,7 @@ public sealed record IntegrationPairingReview(string RequestId, string UserCode,
     public bool TemporaryVerifier { get; init; }
     public ReviewedMcpAccessRequest? ReviewedAccess { get; init; }
     public DateTimeOffset? CredentialExpiresAtUtc { get; init; }
+    public IntegrationPairingReviewEligibility? Eligibility { get; init; }
+    public string? CorrelationId { get; init; }
     public override string ToString() => $"Pairing review {RequestId} {Status} (code redacted)";
 }

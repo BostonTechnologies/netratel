@@ -15,7 +15,8 @@ public sealed partial class IntegrationPairingService
     private sealed record ReviewedAccessMetadata(bool ReviewedAccess, IReadOnlyList<string> Permissions,
         ReviewedMcpAccessProposal Proposal, string RequestingPrincipalId, string RequestingCredentialId,
         string Instance, McpOperatorEnvironment Environment, string PolicyRevisionHash, string ProposalHash,
-        string? ApproverPrincipalId = null, bool Applied = false, string? ProtectedSetup = null, string? CredentialRevisionHash = null, string? ReviewBindingHash = null);
+        string? ApproverPrincipalId = null, bool Applied = false, string? ProtectedSetup = null, string? CredentialRevisionHash = null, string? ReviewBindingHash = null,
+        IntegrationPairingFailure? ReviewFailure = null);
     private sealed record ProtectedSetupMaterial(string Code, string Capability)
     { public override string ToString() => "Protected setup material (code and capability redacted)"; }
 
@@ -25,6 +26,7 @@ public sealed partial class IntegrationPairingService
         CancellationToken ct = default)
     {
         RequireReviewedExpiry(proposal.ExpiresAtUtc);
+        proposal = CanonicalProposal(proposal);
         if (applicationDb is null || effectiveAccess is null || policyAdministration is null || operatorAuthorization is null ||
             !Guid.TryParse(proposal.RequestId, out var requestId) || requestId == Guid.Empty ||
             proposal.Action is not ("create" or "reconcile" or "revoke") || proposal.Grants is null || proposal.InstancePermissions is null || proposal.Targets is null ||
@@ -51,8 +53,9 @@ public sealed partial class IntegrationPairingService
         if (existing is not null)
         {
             var bound = AccessMetadata(existing);
-            if (bound?.RequestingPrincipalId != owner || bound.RequestingCredentialId != requestingCredentialId || bound.ProposalHash != hash || bound.Environment != environment || existing.Resource != resource || existing.PublicOrigin != origin)
+            if (bound?.RequestingPrincipalId != owner || bound.RequestingCredentialId != requestingCredentialId || bound.Environment != environment || existing.Resource != resource || existing.PublicOrigin != origin)
                 throw new IntegrationPairingUnavailableException();
+            if (!SameProposal(bound, proposal)) throw ReviewValidation("review_proposal_conflict", "request", "requestId");
             if (existing.State is not (IntegrationPairingState.Pending or IntegrationPairingState.Approved or IntegrationPairingState.Issued) || (existing.State == IntegrationPairingState.Issued ? existing.DeliveryExpiresAtUtc <= clock.GetUtcNow() : existing.ExpiresAtUtc <= clock.GetUtcNow()) || bound.ProtectedSetup is null)
                 throw new IntegrationPairingUnavailableException();
             var setup = JsonSerializer.Deserialize<ProtectedSetupMaterial>(protection.CreateProtector("NetRatel.IntegrationPairing.Setup.v1", existing.Id).Unprotect(bound.ProtectedSetup))!;
@@ -93,16 +96,19 @@ public sealed partial class IntegrationPairingService
         string requester, string origin, string resource, McpOperatorEnvironment environment, CancellationToken ct = default)
     {
         RequireReviewedExpiry(proposal.ExpiresAtUtc);
+        proposal = CanonicalProposal(proposal);
         if (branding is not null) origin = HttpHostSetupProtocol.NormalizeWebAddress((await branding.GetEffectiveAsync(ct).ConfigureAwait(false)).SiteUrl.Value).TrimEnd('/');
         var existing = await FindAccessAsync(proposal.RequestId, owner, requester, ct).ConfigureAwait(false);
         string? code = null;
         if (existing is not null)
         {
-            if (AccessMetadata(existing)!.ProposalHash != HashProposal(proposal) || AccessMetadata(existing)!.Environment != environment || !McpResourceUri.Equivalent(existing.Resource, resource) || existing.PublicOrigin != HttpHostSetupProtocol.NormalizeWebAddress(origin).TrimEnd('/')) throw new IntegrationPairingUnavailableException();
+            var metadata = AccessMetadata(existing)!;
+            if (metadata.Environment != environment || !McpResourceUri.Equivalent(existing.Resource, resource) || existing.PublicOrigin != HttpHostSetupProtocol.NormalizeWebAddress(origin).TrimEnd('/')) throw new IntegrationPairingUnavailableException();
+            if (!SameProposal(metadata, proposal)) throw ReviewValidation("review_proposal_conflict", "request", "requestId");
         }
         else
         {
-            if (proposal.Action == "create") throw new IntegrationCredentialGrantValidationException("protectedSetupRequired");
+            if (proposal.Action == "create") throw ReviewValidation("review_protected_setup_required", "request", "protectedSetupRequired");
             var start = await StartReviewedAsync(proposal, owner, requester, origin, resource, environment, ct).ConfigureAwait(false);
             code = start.UserCode;
         }
@@ -120,9 +126,10 @@ public sealed partial class IntegrationPairingService
             var metadata = AccessMetadata(request)!;
             if (resume && request.State == IntegrationPairingState.Approved)
             {
-                if (!await ReviewedAuthorityIsCurrentAsync(request, metadata, ct).ConfigureAwait(false))
+                if (await ReviewedAuthorityFailureAsync(request, metadata, metadata.ApproverPrincipalId, "resume", ct).ConfigureAwait(false) is { } failure)
                 {
                     request.State = IntegrationPairingState.Denied;
+                    request.RequestedPermissionsJson = JsonSerializer.Serialize(metadata with { ReviewFailure = failure });
                     await SaveAsync(request, ct).ConfigureAwait(false);
                 }
                 else if (metadata.Proposal.Action != "create")
@@ -156,49 +163,63 @@ public sealed partial class IntegrationPairingService
             .Take(50).Select(x => AccessRequest(x, AccessMetadata(x)!, null)).ToArray();
     }
 
-    public async Task<IntegrationCredentialSummary?> InspectOwnedCredentialAsync(string owner, string id, CancellationToken ct = default) =>
-        (await credentials.ListAsync(owner, ct).ConfigureAwait(false)).SingleOrDefault(x => x.Id == id && x.Purpose == IntegrationCredentialPurpose.HttpMcp);
+    public async Task<IntegrationCredentialSummary?> InspectOwnedCredentialAsync(string owner, string id, CancellationToken ct = default)
+    {
+        var canonicalId = CanonicalUuid(id, "credentialId");
+        return (await credentials.ListAsync(owner, ct).ConfigureAwait(false)).SingleOrDefault(x => x.Id == canonicalId && x.Purpose == IntegrationCredentialPurpose.HttpMcp);
+    }
 
     private async Task ValidateReviewedApprovalAsync(IntegrationPairingRequest request, ReviewedAccessMetadata metadata,
         ClaimsPrincipal principal, IntegrationPairingApprovalRequest approval, CancellationToken ct)
     {
         RequireReviewedExpiry(approval.ExpiresAtUtc);
-        if (principal.FindFirstValue("netratel_principal_id") is not { } approver || approver == metadata.RequestingPrincipalId ||
-            metadata.ProposalHash != HashProposal(metadata.Proposal) || metadata.ReviewBindingHash != ReviewHash(request.PublicOrigin, request.Resource!, metadata) || approval.ReviewedProposalHash != metadata.ReviewBindingHash || approval.ExpiresAtUtc != metadata.Proposal.ExpiresAtUtc ||
+        if (await ReviewedAuthorityFailureAsync(request, metadata, principal.FindFirstValue("netratel_principal_id"), "approval", ct).ConfigureAwait(false) is { } failure)
+            throw new IntegrationCredentialGrantValidationException("reviewedProposal", true) { ReviewFailure = failure };
+        if (approval.ReviewedProposalHash != metadata.ReviewBindingHash || approval.ExpiresAtUtc != metadata.Proposal.ExpiresAtUtc || approval.Grants is null ||
             !SameGrants(approval.Grants, metadata.Proposal.Grants) ||
             !(approval.InstancePermissions ?? []).Order().SequenceEqual(metadata.Proposal.InstancePermissions.Order()))
-            throw new IntegrationCredentialGrantValidationException("reviewedProposal");
-        if (!await IsPolicyApproverAsync(approver, ct).ConfigureAwait(false)) throw new IntegrationCredentialGrantValidationException("policyAuthority", true);
-        if (metadata.Proposal.Action != "revoke") await validator.ValidateAsync(DurablePrincipal(approver),
-            new(request.Name, request.Purpose, metadata.Proposal.ExpiresAtUtc, metadata.Proposal.Grants.Select(x => new IntegrationCredentialGrantRequest(x.TenantId, x.Permission)).ToArray(), request.Resource, metadata.Proposal.InstancePermissions), ct).ConfigureAwait(false);
-        await ValidateTargetsAsync(metadata.Proposal, ct).ConfigureAwait(false);
-        if (metadata.CredentialRevisionHash != await CredentialRevisionHashAsync(metadata.Proposal.CredentialId, metadata.RequestingPrincipalId, ct).ConfigureAwait(false))
-            throw new IntegrationCredentialGrantValidationException("reviewedRevision");
-        if (await PolicyRevisionHashAsync(metadata.Proposal, metadata.Environment, request.Id, ct).ConfigureAwait(false) != metadata.PolicyRevisionHash)
-            throw new IntegrationCredentialGrantValidationException("reviewedRevision");
+            throw ReviewValidation("review_proposal_changed", "approval", "reviewedProposal");
     }
 
-    private async Task<bool> ReviewedAuthorityIsCurrentAsync(IntegrationPairingRequest request, ReviewedAccessMetadata metadata, CancellationToken ct)
+    private async Task<bool> ReviewedAuthorityIsCurrentAsync(IntegrationPairingRequest request, ReviewedAccessMetadata metadata, CancellationToken ct) =>
+        await ReviewedAuthorityFailureAsync(request, metadata, metadata.ApproverPrincipalId, "resume", ct).ConfigureAwait(false) is null;
+
+    private async Task<IntegrationPairingFailure?> ReviewedAuthorityFailureAsync(IntegrationPairingRequest request,
+        ReviewedAccessMetadata metadata, string? approver, string stage, CancellationToken ct)
     {
-        if (metadata.ApproverPrincipalId is null || metadata.ApproverPrincipalId == metadata.RequestingPrincipalId ||
-            !await IsPolicyApproverAsync(metadata.ApproverPrincipalId, ct).ConfigureAwait(false) ||
-            metadata.ProposalHash != HashProposal(metadata.Proposal) || metadata.ReviewBindingHash != ReviewHash(request.PublicOrigin, request.Resource!, metadata) || !await BindingIsCurrentAsync(request, ct).ConfigureAwait(false)) return false;
-        if (!metadata.Applied && metadata.CredentialRevisionHash != await CredentialRevisionHashAsync(metadata.Proposal.CredentialId, metadata.RequestingPrincipalId, ct).ConfigureAwait(false)) return false;
+        if (string.IsNullOrWhiteSpace(approver) || approver == metadata.RequestingPrincipalId)
+            return IntegrationPairingFailure.ForCode("review_independent_approver_required", stage);
+        if (!await IsPolicyApproverAsync(approver, ct).ConfigureAwait(false))
+            return IntegrationPairingFailure.ForCode("review_approver_authority_missing", stage);
+        if (metadata.ProposalHash != HashProposal(metadata.Proposal) || metadata.ReviewBindingHash != ReviewHash(request.PublicOrigin, request.Resource!, metadata) || !await BindingIsCurrentAsync(request, ct).ConfigureAwait(false))
+            return IntegrationPairingFailure.ForCode("review_binding_changed", stage);
+        if (metadata.Proposal.Action != "revoke" && metadata.Proposal.ExpiresAtUtc <= clock.GetUtcNow())
+            return IntegrationPairingFailure.ForCode("review_credential_expiry_passed", stage);
+        if (!metadata.Applied && metadata.Proposal.CredentialId is { } credentialId)
+        {
+            var credential = await InspectOwnedCredentialAsync(metadata.RequestingPrincipalId, credentialId, ct).ConfigureAwait(false);
+            if (credential is null || metadata.CredentialRevisionHash != IntegrationCredentialService.RevisionHash(credential) ||
+                metadata.Proposal.Action == "reconcile" && (credential.RevokedAtUtc is not null || credential.ExpiresAtUtc <= clock.GetUtcNow()))
+                return IntegrationPairingFailure.ForCode("review_credential_changed", stage);
+        }
         try
         {
             await ValidateTargetsAsync(metadata.Proposal, ct).ConfigureAwait(false);
-            if (await PolicyRevisionHashAsync(metadata.Proposal, metadata.Environment, request.Id, ct).ConfigureAwait(false) != metadata.PolicyRevisionHash) return false;
-            if (metadata.Proposal.Action != "revoke")
-            {
-                var grantRequest = new IntegrationCredentialCreateRequest(request.Name, request.Purpose, metadata.Proposal.ExpiresAtUtc, metadata.Proposal.Grants.Select(x => new IntegrationCredentialGrantRequest(x.TenantId, x.Permission)).ToArray(), request.Resource, metadata.Proposal.InstancePermissions);
-                await validator.ValidateAsync(DurablePrincipal(metadata.RequestingPrincipalId), grantRequest, ct).ConfigureAwait(false);
-                await validator.ValidateAsync(DurablePrincipal(metadata.ApproverPrincipalId), grantRequest, ct).ConfigureAwait(false);
-            }
-            var requester = await db.IntegrationCredentials.AsNoTracking().SingleOrDefaultAsync(x => x.Id == metadata.RequestingCredentialId && x.OwnerPrincipalId == metadata.RequestingPrincipalId, ct).ConfigureAwait(false);
-            if (requester is null || requester.RevokedAtUtc is not null || requester.ExpiresAtUtc <= clock.GetUtcNow() || requester.Resource != request.Resource) return false;
-            return true;
         }
-        catch (IntegrationCredentialGrantValidationException) { return false; }
+        catch (IntegrationCredentialGrantValidationException) { return IntegrationPairingFailure.ForCode("review_target_changed", stage); }
+        if (await PolicyRevisionHashAsync(metadata.Proposal, metadata.Environment, request.Id, ct).ConfigureAwait(false) != metadata.PolicyRevisionHash)
+            return IntegrationPairingFailure.ForCode("review_policy_changed", stage);
+        if (metadata.Proposal.Action != "revoke")
+        {
+            var grantRequest = new IntegrationCredentialCreateRequest(request.Name, request.Purpose, metadata.Proposal.ExpiresAtUtc, metadata.Proposal.Grants.Select(x => new IntegrationCredentialGrantRequest(x.TenantId, x.Permission)).ToArray(), request.Resource, metadata.Proposal.InstancePermissions);
+            try { await validator.ValidateAsync(DurablePrincipal(metadata.RequestingPrincipalId), grantRequest, ct).ConfigureAwait(false); }
+            catch (IntegrationCredentialGrantValidationException) { return IntegrationPairingFailure.ForCode("review_owner_authority_missing", stage); }
+            try { await validator.ValidateAsync(DurablePrincipal(approver), grantRequest, ct).ConfigureAwait(false); }
+            catch (IntegrationCredentialGrantValidationException) { return IntegrationPairingFailure.ForCode("review_approver_authority_missing", stage); }
+        }
+        var requester = await db.IntegrationCredentials.AsNoTracking().SingleOrDefaultAsync(x => x.Id == metadata.RequestingCredentialId && x.OwnerPrincipalId == metadata.RequestingPrincipalId, ct).ConfigureAwait(false);
+        return requester is null || requester.RevokedAtUtc is not null || requester.ExpiresAtUtc <= clock.GetUtcNow() || requester.Resource != request.Resource
+            ? IntegrationPairingFailure.ForCode("review_requester_unavailable", stage) : null;
     }
 
     private async Task<bool> IsPolicyApproverAsync(string id, CancellationToken ct)
@@ -210,9 +231,14 @@ public sealed partial class IntegrationPairingService
     private async Task<bool> ApplyReviewedAsync(IntegrationPairingRequest request, ReviewedAccessMetadata metadata, CancellationToken ct)
     {
         if (metadata.Applied) return true;
-        if (!await ReviewedAuthorityIsCurrentAsync(request, metadata, ct).ConfigureAwait(false))
-        { request.State = IntegrationPairingState.Denied; await SaveAsync(request, ct).ConfigureAwait(false); return false; }
-        var proposal = metadata.Proposal;
+        if (await ReviewedAuthorityFailureAsync(request, metadata, metadata.ApproverPrincipalId, "resume", ct).ConfigureAwait(false) is { } failure)
+        {
+            request.State = IntegrationPairingState.Denied;
+            request.RequestedPermissionsJson = JsonSerializer.Serialize(metadata with { ReviewFailure = failure });
+            await SaveAsync(request, ct).ConfigureAwait(false);
+            return false;
+        }
+        var proposal = CanonicalProposal(metadata.Proposal);
         if (proposal.Action == "create")
         {
             // Normal device polling owns issuance and protected delivery. Policy attachment is done after that exact record exists.
@@ -342,9 +368,13 @@ public sealed partial class IntegrationPairingService
         if (admissions.Any(x => !x.TenantVisible || x.PolicyAllowed == false)) missing.Add("One or more current tenant or target policies do not admit the selected operation.");
         if (admissions.Any(x => x.PolicyAdmissionStatus == "conditional_runtime_unverified")) missing.Add("Agent admission remains conditional: the pairing authority has not verified current target readiness or the operation capability. Read netratel_access target/effective for the exact target, then use the supported readiness/dispatch path.");
         missing.Add("Dispatch rechecks current owner authority, target readiness, capability, preview/confirmation and idempotency.");
+        var reviewFailure = request.State == IntegrationPairingState.Expired ? IntegrationPairingFailure.ForCode("review_request_expired", "receipt") : metadata.ReviewFailure;
         return new(AccessRequest(request, metadata, code ?? SafeUserCode(request, metadata)), credentialId, credential?.ExpiresAtUtc, state,
             credential?.Grants.Select(x => new IntegrationPairingGrant(x.TenantId, x.Permission)).ToArray() ?? [], credential?.InstancePermissions ?? [], admissions, missing,
-            request.State == IntegrationPairingState.Pending ? "Open the review URL and have an independent authorized operator enter the displayed code; then resume this same requestId." : admissions.Any(x => x.PolicyAdmissionStatus == "conditional_runtime_unverified") ? "Read netratel_access target/effective for the exact persisted target and policy, then inspect the operation readiness before dispatch. Runtime admission remains unverified in this receipt." : "Inspect each current admission result; reuse this requestId to reconcile an interrupted outcome.");
+            reviewFailure?.Remediation ?? (request.State == IntegrationPairingState.Pending ? "Open the review URL and have an independent authorized operator enter the displayed code; then resume this same requestId." : admissions.Any(x => x.PolicyAdmissionStatus == "conditional_runtime_unverified") ? "Read netratel_access target/effective for the exact persisted target and policy, then inspect the operation readiness before dispatch. Runtime admission remains unverified in this receipt." : "Inspect each current admission result; reuse this requestId to reconcile an interrupted outcome."))
+        {
+            ReviewFailure = reviewFailure
+        };
     }
 
     private string? SafeUserCode(IntegrationPairingRequest request, ReviewedAccessMetadata metadata)
@@ -380,6 +410,24 @@ public sealed partial class IntegrationPairingService
             throw new IntegrationPairingUnavailableException();
     }
     private static ClaimsPrincipal DurablePrincipal(string id) => new(new ClaimsIdentity([new Claim("netratel_principal_id", id)], "pairing-owner"));
+    private static IntegrationCredentialGrantValidationException ReviewValidation(string code, string stage, string field) =>
+        new(field) { ReviewFailure = IntegrationPairingFailure.ForCode(code, stage) };
+    private static string CanonicalUuid(string value, string field)
+    {
+        if (!Guid.TryParse(value, out var id) || id == Guid.Empty)
+            throw ReviewValidation(field == "requestId" ? "review_request_id_invalid" : "review_credential_id_invalid", "request", field);
+        return id.ToString("N");
+    }
+    private static ReviewedMcpAccessProposal CanonicalProposal(ReviewedMcpAccessProposal proposal) => proposal with
+    {
+        RequestId = CanonicalUuid(proposal.RequestId, "requestId"),
+        CredentialId = proposal.CredentialId is null ? null : CanonicalUuid(proposal.CredentialId, "credentialId")
+    };
+    private static bool SameProposal(ReviewedAccessMetadata metadata, ReviewedMcpAccessProposal proposal) =>
+        // Validate the original binding before comparing canonical UUIDs. Persisted beta requests keep their
+        // exact original proposal/hash so an already reviewed or approved binding is never rewritten by a retry.
+        metadata.ProposalHash == HashProposal(metadata.Proposal) &&
+        HashProposal(CanonicalProposal(metadata.Proposal)) == HashProposal(CanonicalProposal(proposal));
     private static string ReviewHash(string origin, string resource, ReviewedAccessMetadata metadata) => IntegrationCredentialService.Hash(JsonSerializer.Serialize(new
     { origin, resource, metadata.RequestingPrincipalId, metadata.RequestingCredentialId, metadata.Instance, metadata.Environment, metadata.ProposalHash, metadata.CredentialRevisionHash, metadata.PolicyRevisionHash }));
     private static string HashProposal(ReviewedMcpAccessProposal proposal) => IntegrationCredentialService.Hash(JsonSerializer.Serialize(new

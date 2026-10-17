@@ -98,7 +98,11 @@ For a consumer that supports only stdio launch commands, obtain the versioned `N
 
 A local HTTP MCP credential's configured grants and the current operation delegation are separate from tenant visibility and target policy. Start with `netratel_access` operation `credential` and the caller-owned `credentialId` to inspect safe grants and the exact UTC expiry. `request` proposes `reconcile` or `revoke` for an owned credential; include a durable UUID `requestId`, exact `expiresAtUtc`, explicit `grants`, `instancePermissions` and `targets`. Each target names `tenantId`, `tool` and `operation`; agent operations also require the independently resolved `agentId` and current `profileRevision`. Use `requests`, `receipt`, `resume` and `cancel` with the saved request ID to reconcile interrupted setup. A changed proposal needs a new request ID and review. Reconciliation does not silently start a new thirty-day period.
 
+Credential and request UUIDs accept standard representations, including hyphenated and compact values, with case-independent identity. New proposals normalize those IDs before storage and hashing. A replay in another UUID representation keeps the same request and exact original reviewed binding; it does not grant permission to change the proposal. Existing reviewed requests retain their original hash and approval binding.
+
 An independent signed-in operator enters the returned user code at the credential-management review URL, checks the identity, resource, instance/environment, exact grants, scopes/roles, targets, operation set, revisions and UTC instant, and explicitly approves. Approval rechecks current credential delegation and MCP policy authority. The requester cannot approve itself. Missing owner roles or target profiles remain explicit prerequisites. No administrative API token or broad fallback grant is needed.
+
+Lookup reports whether that signed-in operator is currently eligible to approve; this is advisory and approval/resume repeat the authority checks. Review failures include a safe code, stage, remediation and correlation reference. `review_independent_approver_required` means a different authorized principal is needed, even if the same account opened another browser. `review_approver_authority_missing` and `review_owner_authority_missing` distinguish those accounts' durable permissions. Code expiry, proposed credential expiry, changed proposals, target revisions and policy changes have separate reasons. A transient `review_service_unavailable` preserves the pending request: keep its code and request ID, then inspect its receipt after recovery before retrying. Share the correlation reference when diagnosing a failure; do not share the private pending-state file or decrypted credential.
 
 For a new auxiliary credential, the protected client prepares pairing outside model-visible tool results. On the consumer machine, [obtain and verify the stdio tooling archive and install its .NET 10 runtime](../integrations/http-mcp-bridge.md#obtain-and-configure-the-bridge). Run the commands below as the same operating-system user that owns the protected HTTP profiles, replacing `/path/to/netratel-mcp-linux-x64` with the actual extracted archive directory. Save a secret-free proposal JSON file, for example:
 
@@ -127,6 +131,42 @@ dotnet /path/to/netratel-mcp-linux-x64/NetRatel.Mcp.dll access resume --state-fi
 ```
 
 Prepare prints only request ID, non-bearer user code, review URL and expiry. Its protected pending file retains the device capability; keep it private and out of model context, exports and logs. A lost response is reconciled by rerunning prepare with the same request and paths. Resume saves the one-time credential through the existing protected profile store, then acknowledges delivery. It rejects a delivery whose grants or exact expiry differ from the retained proposal. Do not print or paste that profile's secret. Native `request` can inspect an already prepared create proposal, and `receipt` reports its safe outcome. Credential inspection never retrieves an existing secret.
+
+#### Prepare an auxiliary credential from a retained Windows DPAPI primary
+
+On the Windows consumer machine, first obtain the matching [Windows archive and prepare its DPAPI reference profile](../integrations/http-mcp-bridge.md#retain-an-existing-windows-dpapi-credential). Use a new private directory for the pending device capability and destination profile. In PowerShell 7, these commands create a new directory readable and writable by the current account; they do not alter the retained primary's storage:
+
+```powershell
+$privateDirectory = Join-Path $env:LOCALAPPDATA 'NetRatel\reviewed-access-01'
+New-Item -ItemType Directory -Path $privateDirectory | Out-Null
+$account = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl = Get-Acl -LiteralPath $privateDirectory
+$acl.SetAccessRuleProtection($true, $false)
+$acl.SetOwner($account)
+$rule = [Security.AccessControl.FileSystemAccessRule]::new(
+    $account, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+$acl.SetAccessRule($rule)
+Set-Acl -LiteralPath $privateDirectory -AclObject $acl
+```
+
+Save the reviewed, secret-free proposal JSON in that directory. From the extracted `netratel-mcp-win-x64` directory, run:
+
+```powershell
+.\http-mcp-windows.ps1 `
+    -Profile 'C:\Users\operator\AppData\Local\NetRatel\http-client-profile.json' `
+    -AccessPrepare -RequestFile (Join-Path $privateDirectory 'proposal.json') `
+    -StateFile (Join-Path $privateDirectory 'pending.json') `
+    -DestinationConfig (Join-Path $privateDirectory 'auxiliary-http-profile.json') `
+    -DestinationProfile auxiliary
+# After the independent operator approves, resume the same saved request.
+.\NetRatel.Mcp.exe access resume `
+    --state-file (Join-Path $privateDirectory 'pending.json') `
+    --config (Join-Path $privateDirectory 'auxiliary-http-profile.json') --profile auxiliary
+```
+
+The wrapper binds the requester to the prepared primary's canonical resource and supplies its credential only to the requester's authentication path in that spawned setup process. The primary credential is never loaded into the auxiliary destination profile. Preparation is idempotent only for the unchanged request and saved paths; inspect its receipt after an uncertain outcome. Resume uses the protected saved device capability and stores the newly approved auxiliary credential through normal shared setup. The primary's profile, encrypted source and active consumer configuration are preserved. Select an auxiliary profile only after its exact grants, expiry and permitted reads have been independently checked; creating it does not switch the primary consumer.
+
+#### Verify effective admission
 
 The receipt separates configured credential grants, the current attenuated delegation, current tenant visibility, exact policy decisions and remaining prerequisites. For agent targets, the receipt leaves `policyAllowed` null with `conditional_runtime_unverified` and keeps `authorizationAdmitted` false until current runtime prerequisites are established. Read `netratel_access target/effective` for that exact persisted target and policy, then inspect operation readiness. Tenant and control-plane authorization can be evaluated without agent runtime facts. Dispatch rechecks readiness, capability and the normal preview, confirmation and idempotency requirements. Test a permitted read in each approved tenant before continuing the owner campaign.
 

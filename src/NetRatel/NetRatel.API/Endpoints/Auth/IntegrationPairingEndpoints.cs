@@ -83,7 +83,7 @@ public static class IntegrationPairingEndpoints
         var account = app.MapGroup(IntegrationPairingProtocol.AccountRoute).WithTags("Integration credential pairing")
             .RequireAuthorization("InteractiveAccount").RequireRateLimiting("integration-pairing-account");
         account.MapPost("/lookup", ([FromBody] IntegrationPairingCodeRequest request, IntegrationPairingService pairing,
-            HttpContext http, CancellationToken ct) => AccountGuardAsync(http, () => pairing.ReviewAsync(request.UserCode, ct)));
+            HttpContext http, CancellationToken ct) => AccountGuardAsync(http, () => pairing.ReviewAsync(http.User, request.UserCode, ct)));
         account.MapPost("/approve", ([FromBody] IntegrationPairingApprovalRequest request, IntegrationPairingService pairing,
             ClaimsPrincipal principal, HttpContext http, CancellationToken ct) => AccountGuardAsync(http, () => pairing.ApproveAsync(principal, request, ct)));
         account.MapPost("/deny", ([FromBody] IntegrationPairingCodeRequest request, IntegrationPairingService pairing,
@@ -103,13 +103,38 @@ public static class IntegrationPairingEndpoints
     private static async Task<IResult> GuardAsync<T>(HttpContext http, Func<Task<T>> action)
     {
         NoStore(http);
-        try { return Results.Ok(await action().ConfigureAwait(false)); }
-        catch (IntegrationPairingUnavailableException) { return Results.BadRequest(new { status = "unavailable" }); }
+        var stage = Path.GetFileName(http.Request.Path.Value) switch
+        {
+            "approve" => "approval", "deny" => "denial", "lookup" => "lookup",
+            "start" => "start", "poll" => "poll", "cancel" => "cancel", "acknowledge" => "acknowledge",
+            _ => "pairing"
+        };
+        try
+        {
+            var result = await action().ConfigureAwait(false);
+            return result is IntegrationPairingReview review ? Results.Ok(review with
+            {
+                CorrelationId = http.TraceIdentifier,
+                Eligibility = review.Eligibility is { } eligibility ? eligibility with
+                { Failure = eligibility.Failure is { } failure ? failure with { CorrelationId = http.TraceIdentifier } : null } : null
+            }) : Results.Ok(result);
+        }
+        catch (IntegrationPairingUnavailableException exception)
+        {
+            return Results.BadRequest((exception.ReviewFailure ?? IntegrationPairingFailure.ForCode("review_request_unavailable", stage)) with
+            { Stage = stage, CorrelationId = http.TraceIdentifier });
+        }
         catch (IntegrationCredentialGrantValidationException exception)
         {
+            if (exception.ReviewFailure is { } failure)
+                return Results.Json(failure with { CorrelationId = http.TraceIdentifier }, statusCode: exception.Forbidden ? StatusCodes.Status403Forbidden : StatusCodes.Status400BadRequest);
             return exception.Forbidden ? Results.Forbid() : Results.ValidationProblem(
                 new Dictionary<string, string[]> { [exception.Field] = [exception.Field == "durableAuthority" ?
                     IntegrationPairingProtocol.DurableAuthorityGuidance : "Review the connection and selected access, then retry."] });
+        }
+        catch (Exception exception) when (IntegrationPairingFailureResponses.IsTransient(exception))
+        {
+            return IntegrationPairingFailureResponses.Unavailable(stage, http.TraceIdentifier);
         }
     }
 
