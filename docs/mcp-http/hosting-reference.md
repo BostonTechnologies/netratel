@@ -1,6 +1,59 @@
 # HTTP MCP host setup and recovery reference
 
-Start with the [short host quickstart](setup.md). This reference covers alternate launch contexts, persistent storage, headless generation and coordinated recovery. Host approval and client approval remain separate decisions.
+Start with the [host/client command table and setup procedure](setup.md). The current HTTP image includes `/app/setup-http-mcp.sh`: the guide shows how to copy it to the Docker host and run it. This reference covers older-image acquisition, missing sources, first-time enablement, storage and recovery. Host approval and client approval remain separate decisions.
+
+## Use a verified Compose download
+
+Use this alternative if your older running image does not contain the host tool, or if you are enabling MCP before its first container exists. Download the Compose archive from the **same verified release as API, Web and MCP**. The archive contains the tool at its root; there is no bundled `setup-tools/` subdirectory. Extract into a new tools directory, separate from your saved deployment.
+
+On the **Linux Docker host**, set `version` to the release tag without its leading `v`, then run:
+
+```sh
+version=VERSION_FROM_RELEASE
+archive="netratel-compose-${version}.tar.gz"
+download="https://github.com/BostonTechnologies/netratel/releases/download/v${version}"
+mkdir -p netratel-mcp-download
+cd netratel-mcp-download
+curl --fail --location --output SHA256SUMS "$download/SHA256SUMS"
+curl --fail --location --output "$archive" "$download/$archive"
+sha256sum --check --ignore-missing SHA256SUMS &&
+  mkdir -m 700 tools &&
+  tar -xzf "$archive" -C tools &&
+  cd tools
+```
+
+Continue only after the archive reports `OK`. The extracted files are setup tools; extraction does not deploy them over your existing stack. For an existing MCP container, start:
+
+```sh
+bash ./setup-http-mcp.sh --container YOUR_MCP_CONTAINER
+```
+
+Follow the [host approval, apply and verification steps](setup.md#connect-the-server-once). Keep this tools directory for resume.
+
+## Missing saved source or first-time MCP enablement
+
+Discovery uses the selected container's saved Compose labels. If a source has moved or is inaccessible, restore it or supply the actual saved paths. The following are **examples to replace**, not files that setup creates:
+
+```sh
+bash ./setup-http-mcp.sh \
+  --compose-file /absolute/path/to/compose.yaml \
+  --project existing-project \
+  --manager external-compose
+```
+
+Repeat `--compose-file` for every saved overlay in its real merge order. If interpolation uses a separate file, add `--env-file /absolute/path/to/.env`. Use `--manager release-compose` only when the original release files actually own deployment. Preserve the existing manager, ingress, database, volumes and protected sources.
+
+For **first-time MCP enablement with no MCP container**, first add the matching HTTP MCP service/routing to the existing saved deployment through its normal configuration process. Use the [MCP overlay/configuration reference](configuration.md) for the existing topology. API/Web must already be reachable and the selected MCP image must be pulled locally. Obtain the tool using the download commands above, then supply the complete sources explicitly, for example:
+
+```sh
+bash ./setup-http-mcp.sh \
+  --compose-file /absolute/path/to/compose.yaml \
+  --compose-file /absolute/path/to/compose.mcp-http.yaml \
+  --project existing-project \
+  --manager external-compose
+```
+
+Use your actual source list: a manager may store everything in one document. Do not add an example file that does not exist. Review/export/apply through the same owner, then use the printed host-side verification command. A standalone `docker compose -f compose.setup.yaml run ...` does not collect the host deployment/runtime information needed for complete host approval and verification; use the launcher for that journey.
 
 ## Deployment ownership and saved sources
 
@@ -12,11 +65,11 @@ For externally managed Compose, use the complete private deployment document at 
 
 The launcher supplies separate persistent host-setup and client-data storage. Keep both when containers are recreated. Missing storage is a prerequisite failure, not a reason to change setup modes or run the serving container as root.
 
-For tooling in the HTTP image, use the launcher with `--target http-client`, `--target cli` or `--target stdio`. A supplied release bundle also includes `compose.setup.yaml` for deployments with explicitly configured source/storage metadata. This file is not expected in an externally managed stack. See [shared configuration](../integrations/configuration.md) for profile precedence and [troubleshooting](troubleshooting.md) for recovery.
+For tooling in the HTTP image, use the [copied host launcher](setup.md#connect-the-server-once) with `--target http-client`, `--target cli` or `--target stdio`. A supplied release bundle also includes `compose.setup.yaml` for client tooling with its separate persistent storage. That file is not expected in an externally managed stack. See [shared configuration](../integrations/configuration.md) for profile precedence and [troubleshooting](troubleshooting.md) for recovery.
 
 ## Advanced and headless hosting
 
-The direct container command is `dotnet /app/NetRatel.Mcp.Http.dll setup --mode host`. Use it when that serving container already has the supported persistent setup volume and deployment-manager/source metadata. A missing-mount preflight is a prerequisite failure before administrator approval; changing client/server modes does not supply storage. For a custom stack missing those prerequisites, start with the deployment-host launcher above.
+The direct container command is `dotnet /app/NetRatel.Mcp.Http.dll setup --mode host`. Use it when that serving container already has the supported persistent setup volume and prepared deployment-manager/source information. A missing-mount preflight is a prerequisite failure before administrator approval; changing client/server modes does not supply storage. For ordinary fresh setup and live verification, use the [Docker-host commands in the guide](setup.md#connect-the-server-once), which collect the saved sources and current serving configuration.
 
 CLI and stdio distributions also support explicit `netratel setup --mode host` and `dotnet NetRatel.Mcp.dll setup --mode host`. Native Unix host generation uses its configured private directory or per-user application data `NetRatel/http-host`; an existing selected directory must be owned by the current user with mode `0700`. Native Windows host generation cannot verify the required private ACL boundary and stops before creating identity material; use the supported Linux Docker path. Windows client setup remains supported.
 
@@ -55,7 +108,7 @@ MCP publishes no port in the normal single-origin deployment. [The optional port
 
 ## Client tooling in the HTTP image
 
-The existing HTTP MCP image includes CLI and stdio setup/runtime assets at build time. Its dispatcher supports default/`http` serving, `cli ...`, `stdio ...`, and `setup --target http-host|cli|stdio|http-client`. For a externally managed Compose deployment, the launcher supports `--target cli` and `--target stdio` with the same actual Compose/project inputs shown above. For a supplied release-bundle deployment, client profiles use its separate persistent client-data volume:
+The existing HTTP MCP image includes CLI and stdio setup/runtime assets at build time. Its dispatcher supports default/`http` serving, `cli ...`, `stdio ...`, and `setup --target http-host|cli|stdio|http-client`. For an externally managed Compose deployment, the launcher supports `--target cli` and `--target stdio` with the [actual Compose/project inputs above](#missing-saved-source-or-first-time-mcp-enablement). For a supplied release-bundle deployment, client profiles use its separate persistent client-data volume:
 
 ```sh
 docker compose --env-file .env -f compose.setup.yaml run --rm --no-deps \

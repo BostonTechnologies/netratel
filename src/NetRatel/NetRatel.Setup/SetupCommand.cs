@@ -23,7 +23,10 @@ NetRatel setup
   setup --non-interactive --instance HTTPS_ORIGIN --credential-file PATH [--replace]
   setup --mode host [--instance WEB_URL] [--output-directory PATH]
   setup --mode host --verify --instance WEB_URL  (resume real checks from saved server setup)
-  Komodo/custom Compose: run setup-http-mcp.sh from the matching release bundle on the Docker host.
+  Existing Compose deployment, Docker-host terminal:
+    docker cp CONTAINER:/app/setup-http-mcp.sh ./setup-http-mcp.sh
+    bash ./setup-http-mcp.sh --container CONTAINER
+  The matching HTTP image includes this host tool; docs/mcp-http/setup.md explains server/client commands and prerequisites.
   Deployment options: --deployment-manager release-compose|komodo --compose-file PATH
   setup --mode host --non-interactive --instance WEB_URL [--output-directory PATH] [--replace]
   Noninteractive host setup generates configuration only; apply and live verification remain required.

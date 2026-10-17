@@ -1,6 +1,6 @@
 # NetRatel documentation
 
-Install the verified image bundle using [release installation](../release/INSTALL.md), then follow [self-hosting](deployment/SELF_HOSTING.md) and [first-run setup](deployment/FIRST_RUN_SETUP.md). For a single public HTTPS origin, use the [Web/YARP gateway guide](deployment/web-gateway.md). For optional HTTP MCP, [complete the short host setup quickstart](mcp-http/setup.md), then [configure customer connections in Netclaw](integrations/netclaw-http-mcp.md) or another client.
+Install the verified image bundle using [release installation](../release/INSTALL.md), then follow [self-hosting](deployment/SELF_HOSTING.md) and [first-run setup](deployment/FIRST_RUN_SETUP.md). For a single public HTTPS origin, use the [Web/YARP gateway guide](deployment/web-gateway.md). For optional HTTP MCP, start with the [host/client commands and server setup steps](mcp-http/setup.md), then [configure customer connections in Netclaw](integrations/netclaw-http-mcp.md) or another client.
 
 | Category | Guides |
 | --- | --- |

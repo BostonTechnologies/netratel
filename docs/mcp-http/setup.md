@@ -1,39 +1,91 @@
-# Set up HTTP MCP
+# Set up the HTTP MCP server, then connect clients
 
-**Host approval connects the persistent HTTP MCP service to NetRatel. Client approval grants one CLI/MCP client access.** Complete host setup once per deployment, then connect individual clients with their own permissions.
+There are two separate connections:
 
-## Connect an existing deployment
-
-Use API, Web, HTTP MCP and setup tools from the same verified release. You need Docker access on the deployment host, an instance-administrator account, the public HTTPS Web URL and permission to apply through your existing deployment manager. Keep the database, ingress, volumes and protected configuration.
-
-1. Extract the verified release Compose bundle into a separate tools directory. Open a terminal **on the deployment host**, enter that directory and run:
-
-   ```sh
-   ./setup-http-mcp.sh
-   ```
-
-   The launcher discovers the running MCP container, ordered saved Compose sources, image and persistent storage. Select a container only if prompted. If ownership metadata is missing, identify the existing deployment manager or explicitly release-owned bundle. Correct any other reported prerequisite before continuing; no approval has been requested.
-
-2. Enter the **NetRatel Web URL**, using its root or `/mcp` address. Check the normalized Web and MCP addresses. Existing API/authentication/instance settings are retained. Use **Advanced** only for a deliberate separate API destination or another supported configuration. A hostname never selects development or production for you.
-
-3. Review the effective deployment proposal and redacted changes. Open the approval link, sign in as the instance administrator and choose **Review host**. Confirm the persistent host deployment proposal. This approval does not grant personal or tenant client access. Configuration problems must be corrected and reviewed before approval.
-
-4. Choose **Save**. **Saved — apply pending** means configuration is prepared. For externally managed Compose, choose **Export and exit**, review the complete private document at the printed path, then save/deploy through the same manager. For release-managed Compose, run the reviewed apply command. Preserve the printed checkpoint and persistent storage.
-
-5. Resume verification after deployment. **Deployment applied — verify pending** still needs a live check. Separately review the **Temporary verification client** and explicitly consent to its short-lived `mcp.discovery.read` access with no tenant grants. It is used only to check this connection and is cleaned up afterward; a cleanup-pending result needs recovery.
-
-6. Finish only at **End-to-end verified**: configuration, authentication, MCP initialization/catalog and the permitted API-backed status operation passed. Keep the sanitized result. A token, HTTP 200 or an exported file alone is insufficient.
-
-For interrupted setup or verification-only resume, rerun from the same tools directory:
-
-```sh
-./setup-http-mcp.sh --verify
+```text
+Netclaw / CLI / other MCP client → HTTP MCP server → NetRatel API
+          client credential         host service identity
 ```
 
-Resume reuses the approved generation; changed sources require renewed review. See [recovery and alternate contexts](hosting-reference.md), [configuration](configuration.md) and [troubleshooting](troubleshooting.md).
+**Host setup connects the MCP server to NetRatel once per deployment. Client setup gives each consumer its own access.** Host/client does not mean home/company use or single/multiple tenants. Ordinary Web/API and the native NetRatel Client agent do not require HTTP MCP.
 
-## Connect another CLI/MCP client
+## Which setup command do I run?
 
-After host verification, open **Integrations → API & MCP credentials → Create credential**, or enter the client's code under **Connect CLI / MCP client → Review client**. Select only the explicit tenant/server permissions it needs. Store its one-time secret securely. Each consumer uses its own credential; the setup verifier is temporary.
+These are commands for an already-open terminal, with the matching tools installed:
 
-For Netclaw, follow [customer connection setup](../integrations/netclaw-http-mcp.md). For native CLI/stdio and container tooling, use [CLI and MCP](../integrations/CLI_AND_MCP.md) and the [host reference](hosting-reference.md#client-tooling-in-the-http-image).
+| What you are setting up | Command | Terminal |
+| --- | --- | --- |
+| **MCP server → API** | `dotnet /app/NetRatel.Mcp.Http.dll setup --mode host` | Inside a **prepared HTTP MCP container**; see the storage/deployment prerequisite below. |
+| **Personal HTTP MCP client → server** | `dotnet /app/NetRatel.Mcp.Http.dll setup` | Inside the HTTP MCP container, with persistent client storage. |
+| **CLI → API** | `netratel setup` | The client machine where the CLI is installed. |
+| **Stdio MCP → API** | `dotnet NetRatel.Mcp.dll setup` | The extracted stdio tooling directory on the client machine. |
+
+The direct **host** command needs persistent host-setup storage and prepared deployment information. It cannot discover Docker-host files or recreate sibling services from a container terminal. **For an existing deployment, use the complete host procedure below:** it obtains those details, starts the same host wizard and checks the applied containers afterward. Client setup alone cannot supply the server's missing prerequisites.
+
+When starting a new tooling container through the image dispatcher, `setup --target http-host` selects host setup and `setup --target http-client` selects client setup. Those are image arguments, not standalone shell commands.
+
+## Connect the server once
+
+Use matching verified API, Web and HTTP MCP images. Have your public HTTPS Web URL, an instance-administrator login, and access to the saved deployment through its existing manager. The **Linux Docker host** needs Docker Compose, Bash, Python 3 and GNU coreutils. Keep the existing database, ingress, volumes and protected settings.
+
+1. **Open a terminal on the Docker host**, not inside the MCP container. List the HTTP MCP containers:
+
+   ```sh
+   docker ps --filter label=com.docker.compose.service=mcp-http --format 'table {{.Names}}\t{{.Image}}'
+   ```
+
+   In a writable directory, copy the setup tool from the installed image. Replace `YOUR_MCP_CONTAINER` with its **name** from that list:
+
+   ```sh
+   mkdir -p netratel-mcp-tools
+   cd netratel-mcp-tools
+   mcp_container=YOUR_MCP_CONTAINER
+   docker cp "$mcp_container:/app/setup-http-mcp.sh" ./setup-http-mcp.sh
+   bash ./setup-http-mcp.sh --container "$mcp_container"
+   ```
+
+   You do not need another extracted Compose bundle. The tool reads the selected container's actual saved deployment files. If ownership is unknown, select the existing deployment manager or explicitly release-owned Compose when asked. A missing source must be restored before approval; see [source recovery](hosting-reference.md#missing-saved-source-or-first-time-mcp-enablement).
+
+2. **Enter the NetRatel Web URL**, such as `https://netratel.example.invalid` or its `/mcp` URL. Check the displayed Web/MCP/API addresses. Existing API and authentication settings are reused. For a deliberately separate API address, choose **Advanced → Separate API HTTPS origin**.
+
+3. **Approve the server.** Review the effective configuration and redacted changes, open the displayed approval link and sign in as the instance administrator. Check the code and choose **Review host**. This approves the persistent server connection; it grants no personal or tenant client access.
+
+4. **Save, then deploy.** **Saved — apply pending** means deployment is still required. For an existing manager, choose **Export and exit**, privately open the complete Compose document at the printed host path, replace the **entire saved document in that same manager**, retain its interpolation/secret values, then **Save and Deploy**. For release-owned Compose, run the complete reviewed apply command from the deployment directory.
+
+5. **Verify after deployment.** On the Docker host, in the same tools directory, run:
+
+   ```sh
+   bash ./setup-http-mcp.sh --container "$mcp_container" --verify
+   ```
+
+   In a new terminal, set `mcp_container` to its current name again first. In local credential mode, separately approve the **Temporary verification client**: only `mcp.discovery.read`, no tenant grants; it is short-lived and revoked afterward. For OIDC, follow the existing provider/account prompts. If interrupted before Save/apply, rerun the ordinary command from step 1 first.
+
+6. **Finish at End-to-end verified.** Configuration, authentication, MCP initialization/catalog and the permitted API-backed status read must pass. **Deployment applied — verify pending**, a saved file, a token or HTTP 200 is not completion. Keep the checkpoint and persistent storage. Follow [recovery](hosting-reference.md) if cleanup remains pending or changed sources require renewed review.
+
+If `docker cp` reports that the tool is absent, the running image predates this bootstrap method. Upgrade to the matching verified release first, or use the [existing bundle acquisition commands](hosting-reference.md#use-a-verified-compose-download). If there is no MCP container yet, use [first-time enablement](hosting-reference.md#missing-saved-source-or-first-time-mcp-enablement).
+
+## Connect each HTTP MCP client afterward
+
+**MCP container terminal:** start the client wizard with this command, without `--mode host`:
+
+```sh
+dotnet /app/NetRatel.Mcp.Http.dll setup
+```
+
+From a **Docker-host terminal**, the equivalent is:
+
+```sh
+docker exec -it "$mcp_container" dotnet /app/NetRatel.Mcp.Http.dll setup
+```
+
+Enter the Web URL. In local credential mode, open the browser approval link, choose **Review client**, and select only the required tenant/server permissions. For OIDC, follow the configured provider/account prompts. Return to the terminal, review, Save and complete its read-only verification. Keep the client-data volume: this profile belongs to that container, not another computer.
+
+If that container lacks persistent client storage, use the copied host tool instead:
+
+```sh
+bash ./setup-http-mcp.sh --container "$mcp_container" --target http-client
+```
+
+For **Netclaw or another third-party client**, create a separate HTTP MCP credential under **Integrations → API & MCP credentials → Create credential** or approve that client's code under **Connect CLI / MCP client → Review client**. Install the one-time secret in that client's own protected storage and use the canonical `/mcp` URL. A container profile is not automatically installed into Netclaw. Follow [Netclaw customer connections](../integrations/netclaw-http-mcp.md) for its transport, policy and per-customer checks.
+
+See [CLI/stdio commands](../integrations/CLI_AND_MCP.md), [host/storage recovery](hosting-reference.md), [configuration](configuration.md) and [troubleshooting](troubleshooting.md) for other contexts.

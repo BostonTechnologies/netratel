@@ -88,13 +88,18 @@ Configure the server-to-platform connection once, then configure each client.
 `--mode host` means server setup; bare `setup` means a client profile. These
 are not home/company or single/multi-tenant modes.
 
-From the extracted verified bundle's setup-tools directory on the **deployment host**, run:
+For an existing HTTP MCP container, open a **Linux Docker-host terminal**. List its name, copy the host setup tool from that installed image, and run it. Replace `YOUR_MCP_CONTAINER` with the actual name:
 
 ```sh
-./setup-http-mcp.sh
+docker ps --filter label=com.docker.compose.service=mcp-http --format 'table {{.Names}}\t{{.Image}}'
+mcp_container=YOUR_MCP_CONTAINER
+docker cp "$mcp_container:/app/setup-http-mcp.sh" ./setup-http-mcp.sh
+bash ./setup-http-mcp.sh --container "$mcp_container"
 ```
 
-The launcher discovers the container and saved deployment sources, then asks for the Web URL. Review the effective configuration and approve the host. Apply through the reviewed release-owned or externally managed Compose path, then explicitly approve the temporary read-only verification client. Resume with `./setup-http-mcp.sh --verify` from the same directory. Keep the persistent setup/client storage and original ingress, database and secret sources. See the [short HTTP MCP quickstart](docs/mcp-http/setup.md) and [ownership/recovery reference](docs/mcp-http/hosting-reference.md).
+The launcher reads the saved deployment sources and asks for the Web URL. Review the effective configuration and approve the host. Apply through the reviewed release-owned or externally managed Compose path, then run `bash ./setup-http-mcp.sh --container "$mcp_container" --verify`. Local credential mode asks for separate temporary read-only client approval; OIDC uses its existing provider/account prompts. Keep the persistent setup/client storage and original ingress, database and secret sources.
+
+The Compose archive also contains `setup-http-mcp.sh` **at its extracted root**. If your running image predates the copy method, use that matching verified download as described in [tool acquisition](docs/mcp-http/hosting-reference.md#use-a-verified-compose-download). There is no bundled `setup-tools/` subdirectory. Start with the [host/client command table and six host steps](docs/mcp-http/setup.md) for terminal locations, full-document manager apply, interrupted setup, fresh verification and ordinary client setup.
 
 After **end-to-end verified**, [configure customer connections in Netclaw](docs/integrations/netclaw-http-mcp.md)
 using the `http` transport and separate scoped HTTP MCP credentials. Saving a
