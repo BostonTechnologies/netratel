@@ -11,6 +11,7 @@ import io
 import json
 import os
 import re
+import shlex
 from pathlib import Path
 import shutil
 import subprocess
@@ -2922,6 +2923,9 @@ elif args[0] == "cp":
                     if command[0] == "compose" and "run" in command and "--name" in command)
 
     def test_actual_file_quoted_arguments_and_private_export_with_exact_resume_command(self):
+        self.launcher = self.root / "copied host setup.sh"
+        self.launcher.write_bytes((ROOT / "release/setup-http-mcp.sh").read_bytes())
+        self.launcher.chmod(0o644)  # docker cp retains the image's readable file mode.
         result = self.run_launcher("--", "--instance", "https://web.example.invalid",
                                    "--api-base-url", "https://api.example.invalid")
         self.assertEqual(result.returncode, 2, result.stderr)
@@ -2954,6 +2958,13 @@ elif args[0] == "cp":
         stage = next(command for command in self.commands() if command[0] == "compose" and "--entrypoint" in command)
         self.assertEqual(stage[stage.index("--user") + 1], "10001:10001")
         self.assertTrue(any("head -c 262145" in argument for argument in stage))
+        resume = next(line.strip() for line in result.stdout.splitlines()
+                      if line.startswith("  ") and "--verify" in line)
+        verified = subprocess.run(shlex.split(resume), cwd=self.root,
+                                  env=dict(self.environment, LAUNCHER_SETUP_STATUS="0"),
+                                  text=True, capture_output=True, timeout=15)
+        self.assertEqual(verified.returncode, 0, verified.stderr)
+        self.assertIn("Server verification completed", verified.stdout)
 
     def test_reuses_existing_named_volumes_and_inspects_only_mounts_and_labels(self):
         result = self.run_launcher(LAUNCHER_EXISTING_VOLUMES="1")

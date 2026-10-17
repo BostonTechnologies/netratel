@@ -554,7 +554,7 @@ PY_STATE
     if [[ "$setup_status" == 2 ]]; then
       printf 'Open that file privately in the existing deployment manager. Review the complete replacement, then Save and Deploy the same stack.\n'
       printf 'Saved — apply pending. After reviewed manager apply, verification remains pending. After deployment run:\n'
-      resume=("$(realpath -- "$0")" --project "$project" --project-directory "$compose_dir" --manager external-compose)
+      resume=(bash "$(realpath -- "$0")" --project "$project" --project-directory "$compose_dir" --manager external-compose)
       for item in "${compose_files[@]}"; do resume+=(--compose-file "$item"); done
       for item in "${env_files[@]}"; do resume+=(--env-file "$item"); done
       resume+=(--verify)
@@ -593,7 +593,7 @@ state = json.loads(pathlib.Path(sys.argv[1]).read_text()); state["exportedHash"]
 pathlib.Path(sys.argv[2]).write_text(json.dumps(state))
 PY_RELEASE_STATE
   printf '\nSaved — apply pending. Review the private overlay and run on this Docker host:\n  %s\n' "$host_apply_command"
-  printf 'After apply, resume ./setup-http-mcp.sh --verify with the same instance selection.\n'
+  printf 'After apply, resume bash ./setup-http-mcp.sh --verify with the same instance selection.\n'
 fi
 if [[ "$target" == http-host && "$verify" == true && "$setup_status" == 0 ]]; then
   printf 'Server verification completed. The saved identity and applied deployment were checked; no Compose reimport is required.\n'

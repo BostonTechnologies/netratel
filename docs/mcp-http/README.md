@@ -2,7 +2,7 @@
 
 HTTP MCP lets Netclaw and other MCP clients use the NetRatel API. First connect the MCP server to the platform once, then give each client a scoped credential for that endpoint. Server/client modes describe the two sides of the connection, not home/company use or tenant count. The standard deployment exposes `/mcp` at the trusted Web HTTPS origin while its listener remains private. Ordinary Web/API and native Client operation does not require MCP.
 
-- [Set up the server, then connect clients](setup.md): start here. Explains the modes, prerequisites, externally managed Compose and supplied release-bundle paths, apply/resume and actual verification.
+- [Set up the server, then connect clients](setup.md): start here for the host/client command table, runnable Docker-host and container-terminal commands, browser approval, deploy, verify and client setup.
 - [Give Netclaw customer connections access](../integrations/netclaw-http-mcp.md): supported HTTP transport, protected credential storage and customer isolation checks after server setup.
 - [Host setup and recovery reference](hosting-reference.md): deployment ownership, alternate launch contexts, storage, headless generation and rotation.
 - [Configuration reference](configuration.md): every host, outbound, delegation and Compose setting, defaults, secret-file mappings and precedence.
