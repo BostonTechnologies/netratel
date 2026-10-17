@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using NetRatel.Shared.Connectivity;
 
 namespace NetRatel.Mcp.Core;
 
@@ -31,7 +32,7 @@ public static partial class NetRatelMcpToolDefinitions
         RequiredString("name", "Reviewed credential name.", 128),
         RequiredEnum("action", "Reconcile or revoke an owned credential. New credential creation is prepared by the protected setup client.", "create", "reconcile", "revoke"),
         Uuid("credentialId", "Owned HTTP MCP credential identifier; omit only for a protected prepared create request.", false),
-        ("expiresAtUtc", new JsonObject { ["type"] = "string", ["format"] = "date-time", ["pattern"] = "(Z|[+]00:00)$", ["maxLength"] = 40 }, true),
+        ("expiresAtUtc", new JsonObject { ["type"] = "string", ["format"] = "date-time", ["pattern"] = ReviewedMcpAccessExpiry.JsonPattern, ["maxLength"] = 32, ["description"] = "Exact UTC expiry, at most six fractional digits (microsecond resolution); unsupported precision is rejected." }, true),
         ("grants", new JsonObject { ["type"] = "array", ["maxItems"] = 64, ["items"] = RequiredRequest([
             RequiredInteger("tenantId", "Exact positive tenant identifier.", 1, int.MaxValue), RequiredString("permission", "Exact application permission.", 128)
         ]).Schema }, true),

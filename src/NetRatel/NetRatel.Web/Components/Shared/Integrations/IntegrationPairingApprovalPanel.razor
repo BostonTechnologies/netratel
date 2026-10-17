@@ -54,7 +54,7 @@
             }
             else
             {
-                <MudTextField T="string" Label="Exact credential expiry (UTC)" Value="_expiry" ValueChanged="ExpiryChanged" Placeholder="2030-04-01T10:11:12Z" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_busy" />
+                <MudTextField T="string" Label="Exact credential expiry (UTC, up to 6 fractional digits)" Value="_expiry" ValueChanged="ExpiryChanged" Placeholder="2030-04-01T10:11:12Z" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_busy" />
                 <p>30 days is 720 hours from @IntegrationCredentialExpiry.Format(_expiryReference). Exact stored expiry: @_expiry</p>
                 <MudButton OnClick="UseThirtyDays" Disabled="_busy" Size="Size.Small">Use 30 days from this reference</MudButton>
                 @if (review.RequestedPermissions.Count > 0) { <details class="my-2"><summary>Client suggestions (@review.RequestedPermissions.Count)</summary><p>@string.Join(", ", review.RequestedPermissions). Select access explicitly below.</p></details> }
@@ -79,8 +79,8 @@
     private PairingAuthority? _authority;
     private readonly HashSet<IntegrationPairingGrant> _grants = [];
     private readonly HashSet<string> _instancePermissions = new(StringComparer.Ordinal);
-    private DateTimeOffset _expiryReference = DateTimeOffset.UtcNow;
-    private string _expiry = IntegrationCredentialExpiry.Format(IntegrationCredentialExpiry.ThirtyDaysFrom(DateTimeOffset.UtcNow));
+    private DateTimeOffset _expiryReference = IntegrationCredentialExpiry.Reference(DateTimeOffset.UtcNow);
+    private string _expiry = string.Empty;
     private bool _busy, _confirmed, _disposed, _verifierConsent, _restoreFocus;
     private MudButton? _opener;
     private IReadOnlyList<IntegrationPermissionScope> PermissionScopes => _authority is null ? [] : _authority.Tenants.Select(tenant => new IntegrationPermissionScope(tenant.TenantId, tenant.Name, tenant.Permissions.Select(permission => new IntegrationPermission(permission.Id, permission.Label, permission.Description)).ToArray())).Concat(_authority.InstancePermissions.Count > 0 ? [new IntegrationPermissionScope(null, "Server-level access", _authority.InstancePermissions.Select(permission => new IntegrationPermission(permission.Id, permission.Label, permission.Description)).ToArray())] : []).ToArray();
@@ -104,7 +104,7 @@
             if (_disposed) return;
             if (review is null || authority is null) { _error = "Could not load the requested connection. Try again."; return; }
             _grants.Clear(); _instancePermissions.Clear(); _confirmed = _verifierConsent = false;
-            _review = review; _authority = authority; _expiryReference = DateTimeOffset.UtcNow; UseThirtyDays();
+            _review = review; _authority = authority; _expiryReference = IntegrationCredentialExpiry.Reference(DateTimeOffset.UtcNow); UseThirtyDays();
         }
         catch (Exception exception) when (exception is HttpRequestException or JsonException or OperationCanceledException)
         { if (!_disposed) _error = "Could not check the connection. Your code is preserved; try again."; }
@@ -131,7 +131,7 @@
         var reviewed = _review.ReviewedAccess;
         var expiry = reviewed?.Proposal.ExpiresAtUtc ?? (_review.TemporaryVerifier ? VerifierExpiry : IntegrationCredentialExpiry.ParseUtcInstant(_expiry));
         if (expiry is null || expiry <= DateTimeOffset.UtcNow || expiry > DateTimeOffset.UtcNow.AddDays(365))
-        { _error = "Choose an exact UTC expiry after the current instant and within one year."; return; }
+        { _error = "Choose an exact UTC expiry with up to six fractional digits, after the current instant and within one year."; return; }
         await DecideAsync("approve", new IntegrationPairingApprovalRequest(_review.UserCode, expiry.Value,
             reviewed?.Proposal.Grants ?? (_review.TemporaryVerifier ? [] : _grants.ToArray()), reviewed?.Proposal.InstancePermissions ?? (_review.TemporaryVerifier ? ["mcp.discovery.read"] : _instancePermissions.ToArray())) { VerifierConsent = _review.TemporaryVerifier && _verifierConsent, ReviewedProposalHash = reviewed?.ProposalHash });
     }

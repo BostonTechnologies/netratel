@@ -29,7 +29,7 @@ public sealed class SetupTests
         await using var session = new SetupSession(ConfigurationSurface.HttpMcpClient, destination, "auxiliary", handler);
         await session.DiscoverAsync("https://instance.example", default);
         var alias = System.IO.Path.Combine(directory.Path, ".", "auxiliary.json");
-        var proposal = new NetRatel.Shared.Connectivity.ReviewedMcpAccessProposal(Guid.NewGuid().ToString(), "Auxiliary", "create", DateTimeOffset.UtcNow.AddDays(1), [], ["mcp.discovery.read"], []);
+        var proposal = new NetRatel.Shared.Connectivity.ReviewedMcpAccessProposal(Guid.NewGuid().ToString(), "Auxiliary", "create", DateTimeOffset.Parse("2030-04-01T10:11:12.123456Z"), [], ["mcp.discovery.read"], []);
         var prepare = await Assert.ThrowsAsync<AgentClientValidationException>(() => session.PrepareReviewedAccessAsync(proposal, existing, alias, default));
         Assert.Contains("different from the destination", prepare.Message);
         var restore = await Assert.ThrowsAsync<AgentClientValidationException>(() => session.RestoreReviewedAccessAsync(alias, default));
@@ -47,7 +47,7 @@ public sealed class SetupTests
         var destination = System.IO.Path.Combine(directory.Path, "auxiliary.json");
         var pending = System.IO.Path.Combine(directory.Path, "pending.json");
         var requestId = Guid.NewGuid().ToString("N"); var polls = 0; var acknowledgements = 0;
-        var expiry = DateTimeOffset.UtcNow.AddDays(7);
+        var expiry = DateTimeOffset.Parse("2030-04-01T10:11:12.123456Z");
         var proposal = new NetRatel.Shared.Connectivity.ReviewedMcpAccessProposal(requestId, "Acknowledgement recovery", "create", expiry, [], ["mcp.discovery.read"], []);
         const string credentialId = "b4444444444444448444444444444444";
         const string device = "nrt_pair_lost-ack-capability";
@@ -114,7 +114,7 @@ public sealed class SetupTests
         var destination = System.IO.Path.Combine(directory.Path, "auxiliary.json");
         var pending = System.IO.Path.Combine(directory.Path, "private", "pending.json");
         var starts = 0; var acknowledgements = 0; var cancellations = 0;
-        var expiry = DateTimeOffset.UtcNow.AddDays(30).AddTicks(1234);
+        var expiry = DateTimeOffset.Parse("2030-04-01T10:11:12.123456Z");
         var requestId = Guid.NewGuid().ToString("D");
         var proposal = new NetRatel.Shared.Connectivity.ReviewedMcpAccessProposal(requestId, "Restricted auxiliary", "create", expiry,
             [new(17, "flow.read")], ["mcp.discovery.read"], [new(17, "netratel_flows", "list")]);

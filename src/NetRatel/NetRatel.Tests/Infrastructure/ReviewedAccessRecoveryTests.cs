@@ -76,7 +76,7 @@ public sealed class ReviewedAccessRecoveryTests(PostgreSqlPersistenceFixture pos
 
     private sealed class RecoveryClock : TimeProvider
     {
-        private DateTimeOffset now = DateTimeOffset.UtcNow;
+        private DateTimeOffset now = DateTimeOffset.Parse("2030-01-01T00:00:00.123456Z", global::System.Globalization.CultureInfo.InvariantCulture);
         public override DateTimeOffset GetUtcNow() => now;
         public void Advance(TimeSpan elapsed) => now += elapsed;
     }

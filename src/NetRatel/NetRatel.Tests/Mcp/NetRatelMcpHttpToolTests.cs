@@ -277,7 +277,7 @@ public sealed class NetRatelMcpHttpToolTests
             "netratel_health/get",
             null,
             "The operation did not complete. No upstream response content is exposed.",
-            "Retry only when the failure is marked retryable; otherwise inspect the safe failure details and correlation ID."));
+            "Reconcile an uncertain mutation before retrying. For reads, retry only when marked retryable; otherwise inspect the safe failure details and correlation ID."));
         result.CorrelationId.Should().NotBeNullOrWhiteSpace();
         result.Summary.Should().NotContain("raw-upstream-error");
     }

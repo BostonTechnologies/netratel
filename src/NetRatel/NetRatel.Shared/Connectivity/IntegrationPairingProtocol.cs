@@ -50,6 +50,7 @@ public sealed record IntegrationPairingPollResponse(string Status, int IntervalS
     IntegrationPairingDelivery? Delivery = null);
 public sealed record IntegrationPairingCodeRequest(string UserCode)
 { public override string ToString() => "Pairing code request (code redacted)"; }
+[System.Text.Json.Serialization.JsonConverter(typeof(ReviewedMcpAccessApprovalJsonConverter))]
 public sealed record IntegrationPairingApprovalRequest(string UserCode, DateTimeOffset ExpiresAtUtc,
     IReadOnlyList<IntegrationPairingGrant> Grants, IReadOnlyList<string>? InstancePermissions = null)
 {

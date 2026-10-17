@@ -161,8 +161,8 @@ jobs:
           bash tools/ci/prepare-fast-test-containers.sh
           dotnet test --project src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj \
             --configuration Release --no-build --no-restore --max-parallel-test-modules 1 \
-            --filter-method Native_request_independent_approval_resume_then_actual_reads_in_two_tenants \
-              Protocol_health_reaches_protected_API_through_the_shipped_Web_gateway \
+            --filter-method NetRatel.Tests.Mcp.ReviewedMcpAccessProtocolTests.Native_request_independent_approval_resume_then_actual_reads_in_two_tenants \
+              NetRatel.Tests.Mcp.NetRatelMcpHttpTests.Protocol_health_reaches_protected_API_through_the_shipped_Web_gateway \
             --minimum-expected-tests 2 --results-directory TestResults/mcp-campaign \
             --report-trx --report-trx-filename protocol.trx
           python3 tools/ci/verify-mtp-trx.py TestResults/mcp-campaign/protocol.trx

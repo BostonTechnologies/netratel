@@ -200,7 +200,7 @@ public static class NetRatelMcpCatalog
         "tenants", "scripts", "jobs", "requests", "clients", "tasks");
 
     private static NetRatelMcpToolDescriptor ReviewedAccess() => new("netratel_access",
-        "Inspect bounded access with whoami/target/effective/evaluate. credential returns safe owned credential metadata; requests/receipt inspect caller-bound reviewed requests. request proposes exact create/reconcile/revoke grants, targets, operation set and UTC expiry for independent browser review; create must first be prepared by the protected setup client. resume applies only the unchanged independently approved request; cancel withdraws a pending request. No MCP operation approves itself or returns credential secrets. Keep requestId for durable reconciliation.",
+        "Inspect bounded access with whoami/target/effective/evaluate. credential returns safe owned credential metadata; requests/receipt inspect caller-bound reviewed requests. request proposes exact create/reconcile/revoke grants, targets, operation set and UTC expiry for independent browser review; create must first be prepared by the protected setup client. resume applies only the unchanged independently approved request; cancel withdraws a pending request. No MCP operation approves itself or returns credential secrets. Keep requestId for durable reconciliation. Available over HTTP. Set operation and supply only the matching closed request schema.",
         NetRatelMcpOperationSafety.OperatorMutation, true,
         new[] { "whoami", "effective", "evaluate", "target", "request", "requests", "receipt", "resume", "cancel", "credential" }
             .Select(operation => new NetRatelMcpOperationDescriptor(operation,

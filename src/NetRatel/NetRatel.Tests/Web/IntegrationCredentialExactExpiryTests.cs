@@ -15,12 +15,18 @@ public sealed class IntegrationCredentialExactExpiryTests
         try
         {
             CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo(culture);
-            var requested = DateTimeOffset.Parse("2030-04-01T10:11:12.1234567Z", CultureInfo.InvariantCulture);
+            var requested = DateTimeOffset.Parse("2030-04-01T10:11:12.123456Z", CultureInfo.InvariantCulture);
             Assert.Equal(requested, IntegrationCredentialExpiry.ParseUtcInstant(IntegrationCredentialExpiry.Format(requested)));
             var reference = new DateTimeOffset(2030, 3, 2, 12, 11, 12, TimeSpan.FromHours(2));
             var expiry = IntegrationCredentialExpiry.ThirtyDaysFrom(reference);
             Assert.Equal(TimeSpan.FromHours(720), expiry - reference);
-            Assert.Equal("2030-04-01T10:11:12.0000000Z", IntegrationCredentialExpiry.Format(expiry));
+            Assert.Equal("2030-04-01T10:11:12.000000Z", IntegrationCredentialExpiry.Format(expiry));
+            var displayedReference = IntegrationCredentialExpiry.Reference(requested.AddTicks(1));
+            Assert.Equal(displayedReference, IntegrationCredentialExpiry.ParseUtcInstant(IntegrationCredentialExpiry.Format(displayedReference)));
+            Assert.Equal(TimeSpan.FromHours(720), IntegrationCredentialExpiry.ThirtyDaysFrom(displayedReference) - displayedReference);
+            Assert.Null(IntegrationCredentialExpiry.ParseUtcInstant("2030-04-01T10:11:12.1234567Z"));
+            Assert.Null(IntegrationCredentialExpiry.ParseUtcInstant("2030-04-01T10:11:12.12345601Z"));
+            Assert.Null(IntegrationCredentialExpiry.ParseUtcInstant("2030-04-01T10:11:12.123456Z\n"));
             Assert.Null(IntegrationCredentialExpiry.ParseUtcInstant("2030-04-01"));
             Assert.Null(IntegrationCredentialExpiry.ParseUtcInstant("2030-04-01T10:11:12+02:00"));
         }

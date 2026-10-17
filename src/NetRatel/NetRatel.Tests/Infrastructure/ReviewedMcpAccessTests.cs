@@ -17,6 +17,17 @@ namespace NetRatel.Tests.Infrastructure;
 public sealed class ReviewedMcpAccessTests
 {
     [Fact]
+    public async Task Direct_reviewed_authority_rejects_unsupported_expiry_without_persisting_a_request()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var proposal = fixture.Proposal("create", null) with { ExpiresAtUtc = fixture.Clock.GetUtcNow().AddDays(1).AddTicks(1) };
+        var rejected = await Assert.ThrowsAsync<IntegrationCredentialGrantValidationException>(() => fixture.Pairing.StartReviewedAsync(proposal,
+            "requester", fixture.Credential.CredentialId, Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production));
+        Assert.Equal("expiryPrecision", rejected.Field);
+        Assert.Empty(await fixture.Identity.IntegrationPairingRequests.ToArrayAsync());
+    }
+
+    [Fact]
     public async Task Exact_independent_review_admits_only_two_selected_tenant_reads_and_resume_is_idempotent()
     {
         await using var fixture = await Fixture.CreateAsync();

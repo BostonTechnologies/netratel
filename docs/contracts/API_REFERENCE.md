@@ -111,6 +111,14 @@ credential examples, use [first-run setup](../deployment/FIRST_RUN_SETUP.md),
 [configuration](../deployment/CONFIGURATION.md), [self-hosting](../deployment/SELF_HOSTING.md), and
 [CLI and MCP](../integrations/CLI_AND_MCP.md).
 
+## Reviewed MCP expiry
+
+Reviewed access proposals and approvals accept exact UTC instants with at most
+six fractional digits, matching PostgreSQL microsecond storage. Unsupported
+precision is rejected before date parsing or persistence; an accepted expiry is
+never rounded. The 30-day preset adds 720 hours to the displayed UTC reference.
+See [reviewed setup](../mcp-http/setup.md) for protected delivery and lifecycle.
+
 ## Job input confidentiality
 
 The server binds each submitted run to an immutable parameter sensitivity

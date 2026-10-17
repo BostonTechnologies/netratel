@@ -24,6 +24,7 @@ public sealed partial class IntegrationPairingService
         string owner, string requestingCredentialId, string origin, string resource, McpOperatorEnvironment environment,
         CancellationToken ct = default)
     {
+        RequireReviewedExpiry(proposal.ExpiresAtUtc);
         if (applicationDb is null || effectiveAccess is null || policyAdministration is null || operatorAuthorization is null ||
             !Guid.TryParse(proposal.RequestId, out var requestId) || requestId == Guid.Empty ||
             proposal.Action is not ("create" or "reconcile" or "revoke") || proposal.Grants is null || proposal.InstancePermissions is null || proposal.Targets is null ||
@@ -91,6 +92,7 @@ public sealed partial class IntegrationPairingService
     public async Task<ReviewedMcpAccessReceipt> RequestReviewedAsync(ReviewedMcpAccessProposal proposal, string owner,
         string requester, string origin, string resource, McpOperatorEnvironment environment, CancellationToken ct = default)
     {
+        RequireReviewedExpiry(proposal.ExpiresAtUtc);
         if (branding is not null) origin = HttpHostSetupProtocol.NormalizeWebAddress((await branding.GetEffectiveAsync(ct).ConfigureAwait(false)).SiteUrl.Value).TrimEnd('/');
         var existing = await FindAccessAsync(proposal.RequestId, owner, requester, ct).ConfigureAwait(false);
         string? code = null;
@@ -160,6 +162,7 @@ public sealed partial class IntegrationPairingService
     private async Task ValidateReviewedApprovalAsync(IntegrationPairingRequest request, ReviewedAccessMetadata metadata,
         ClaimsPrincipal principal, IntegrationPairingApprovalRequest approval, CancellationToken ct)
     {
+        RequireReviewedExpiry(approval.ExpiresAtUtc);
         if (principal.FindFirstValue("netratel_principal_id") is not { } approver || approver == metadata.RequestingPrincipalId ||
             metadata.ProposalHash != HashProposal(metadata.Proposal) || metadata.ReviewBindingHash != ReviewHash(request.PublicOrigin, request.Resource!, metadata) || approval.ReviewedProposalHash != metadata.ReviewBindingHash || approval.ExpiresAtUtc != metadata.Proposal.ExpiresAtUtc ||
             !SameGrants(approval.Grants, metadata.Proposal.Grants) ||
@@ -259,6 +262,11 @@ public sealed partial class IntegrationPairingService
                 new(selector, target.TenantId, target.AgentId), profile?.Classification, descriptor.OperationFamily,
                 target.Tool + "/" + target.Operation, new(), metadata.Proposal.ExpiresAtUtc, metadata.Proposal.ExpiresAtUtc, reference), metadata.ApproverPrincipalId!, ct).ConfigureAwait(false);
         }
+    }
+
+    private static void RequireReviewedExpiry(DateTimeOffset expiry)
+    {
+        if (!ReviewedMcpAccessExpiry.IsSupported(expiry)) throw new IntegrationCredentialGrantValidationException("expiryPrecision");
     }
 
     private async Task ValidateTargetsAsync(ReviewedMcpAccessProposal proposal, CancellationToken ct)

@@ -16,6 +16,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Microsoft.EntityFrameworkCore;
 using NetRatel.API.Endpoints.Auth;
 using NetRatel.API.Endpoints.Client;
 using NetRatel.API.Middleware;
@@ -95,17 +96,49 @@ public sealed class ReviewedMcpAccessProtocolTests
             mcpBuilder.Services.AddSingleton<INetRatelMcpApiClient>(services => new ApiForwarder(api.GetTestClient(), services.GetRequiredService<IMcpOperatorDelegationContext>()));
             await using var mcp = mcpBuilder.Build(); NetRatelMcpHttpApplication.ConfigurePipeline(mcp); await mcp.StartAsync();
             using var client = mcp.GetTestClient(); client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", fixture.Credential.Secret);
+            // Raw protected JSON must reject excess precision before DateTimeOffset can truncate it.
+            foreach (var unsupportedExpiry in new[] { "2030-04-01T10:11:12.1234567Z", "2030-04-01T10:11:12.12345601Z", "2030-04-01T10:11:12.123456Z\n" })
+            {
+                var raw = JsonSerializer.SerializeToNode(fixture.Proposal("create", null), new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+                raw["expiresAtUtc"] = unsupportedExpiry;
+                using var message = new HttpRequestMessage(HttpMethod.Post, "/api/v2/mcp/local-delegation/access/start")
+                { Content = new StringContent(raw.ToJsonString(), System.Text.Encoding.UTF8, "application/json") };
+                message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", fixture.Credential.Secret);
+                message.Headers.Add("X-NetRatel-Mcp-Pairing", mcp.Services.GetRequiredService<McpLocalCredentialPairingService>().CreateAuthenticationProof());
+                using var protectedClient = api.GetTestClient(); using var rejected = await protectedClient.SendAsync(message);
+                Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+            }
+            Assert.Empty(await fixture.Identity.IntegrationPairingRequests.ToArrayAsync());
             var before = await CallAsync(client, "netratel_flows", "list", new { tenantId = 17 });
             Assert.False(before.GetProperty("success").GetBoolean());
-            var proposal = fixture.Proposal("reconcile", fixture.Credential.CredentialId);
+            var proposal = fixture.Proposal("reconcile", fixture.Credential.CredentialId) with { ExpiresAtUtc = DateTimeOffset.Parse("2030-04-01T10:11:12.123456Z") };
+            var invalidNative = JsonSerializer.SerializeToNode(proposal, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+            invalidNative["expiresAtUtc"] = "2030-04-01T10:11:12.12345601Z";
+            var invalidResult = await CallAsync(client, "netratel_access", "request", invalidNative);
+            Assert.False(invalidResult.GetProperty("success").GetBoolean());
+            Assert.Equal("validation_error", invalidResult.GetProperty("error").GetProperty("code").GetString());
+            Assert.Equal("input", invalidResult.GetProperty("failure").GetProperty("layer").GetString());
+            Assert.Contains("expiresAtUtc", invalidResult.GetProperty("data").GetProperty("fieldPaths").GetRawText());
+            Assert.Empty(await fixture.Identity.IntegrationPairingRequests.ToArrayAsync());
             var requested = await CallAsync(client, "netratel_access", "request", proposal);
             Assert.True(requested.GetProperty("success").GetBoolean());
             var receipt = requested.GetProperty("data").GetProperty("receipt").Deserialize<ReviewedMcpAccessReceipt>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
             Assert.All(receipt.EffectiveAdmission, row => Assert.False(row.PolicyAllowed));
+            var malformedApproval = JsonSerializer.SerializeToNode(fixture.Approval(receipt), new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+            malformedApproval.AsObject().Remove("expiresAtUtc"); malformedApproval["ExpiresAtUtc"] = "2030-04-01T10:11:12.12345601Z";
+            malformedApproval["ReviewedProposalHash"] = malformedApproval["reviewedProposalHash"]!.DeepClone(); malformedApproval.AsObject().Remove("reviewedProposalHash");
+            using (var malformed = new HttpRequestMessage(HttpMethod.Post, "/test/operator/approve")
+                { Content = new StringContent(malformedApproval.ToJsonString(), System.Text.Encoding.UTF8, "application/json") })
+            {
+                malformed.Headers.Add("X-Test-Operator", "reviewer");
+                using var browser = api.GetTestClient(); using var rejected = await browser.SendAsync(malformed);
+                Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+            }
             using var approval = new HttpRequestMessage(HttpMethod.Post, "/test/operator/approve") { Content = JsonContent.Create(fixture.Approval(receipt)) };
             approval.Headers.Add("X-Test-Operator", "reviewer");
             using var operatorClient = api.GetTestClient(); using var accepted = await operatorClient.SendAsync(approval); Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
             var resumed = await CallAsync(client, "netratel_access", "resume", new { requestId = proposal.RequestId }); Assert.True(resumed.GetProperty("success").GetBoolean());
+            Assert.Equal(proposal.ExpiresAtUtc, resumed.GetProperty("data").GetProperty("receipt").GetProperty("credentialExpiresAtUtc").GetDateTimeOffset());
             foreach (var tenant in new[] { 17, 29 }) Assert.True((await CallAsync(client, "netratel_flows", "list", new { tenantId = tenant })).GetProperty("success").GetBoolean());
             Assert.False((await CallAsync(client, "netratel_flows", "list", new { tenantId = 31 })).GetProperty("success").GetBoolean());
             var ownerRole = fixture.Identity.AccessRoles.Local.Single();
