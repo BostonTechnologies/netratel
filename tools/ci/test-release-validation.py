@@ -3426,6 +3426,7 @@ elif args[0] == "cp":
         output.mkdir(mode=0o700)
         overlay = output / "compose.http-host.yaml"; overlay.write_text("prior reviewed overlay")
         state = output / ".approved-source-state.json"; state.write_text('{"sources": []}')
+        state.chmod(0o600)
         for option in ("LAUNCHER_RECEIPT_MISSING", "LAUNCHER_RECEIPT_MISMATCH"):
             with self.subTest(option=option):
                 self.log.write_text("")

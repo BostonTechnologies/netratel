@@ -47,10 +47,33 @@ public sealed class JobsAutofillAcceptanceTests(ITestOutputHelper output)
                 var manager = await seed.NewPageAsync();
                 await manager.GotoAsync("chrome://password-manager/passwords");
                 var error = await manager.EvaluateAsync<string?>("""
-                    data => new Promise(resolve => chrome.passwordsPrivate.addPassword({
-                      url: data.url, username: data.username, password: data.password,
-                      useAccountStore: false, note: 'Disposable NetRatel browser acceptance'
-                    }, () => resolve(chrome.runtime.lastError?.message ?? null)))
+                    data => new Promise(resolve => {
+                      let added = false, observed = false, completed = false;
+                      const finish = error => {
+                        if (completed) return;
+                        completed = true;
+                        clearTimeout(timeout);
+                        chrome.passwordsPrivate.onSavedPasswordsListChanged.removeListener(accept);
+                        resolve(error);
+                      };
+                      const accept = entries => {
+                        observed = entries.length === 1 && entries[0].username === data.username;
+                        if (added && observed) finish(null);
+                      };
+                      const timeout = setTimeout(() => finish('Native saved-password list did not become ready within 15 seconds.'), 15_000);
+                      // The add callback precedes asynchronous password-list/model updates on some hosts.
+                      chrome.passwordsPrivate.onSavedPasswordsListChanged.addListener(accept);
+                      chrome.passwordsPrivate.addPassword({
+                        url: data.url, username: data.username, password: data.password,
+                        useAccountStore: false, note: 'Disposable NetRatel browser acceptance'
+                      }, () => {
+                        const error = chrome.runtime.lastError?.message;
+                        if (error) return finish(error);
+                        added = true;
+                        if (observed) finish(null);
+                        else chrome.passwordsPrivate.getSavedPasswordList(accept);
+                      });
+                    })
                     """, new { url = fixture.BaseAddress, username = accountName, password = accountPassword });
                 Assert.True(error is null, "Native password store must be available; use an isolated test browser with password saving enabled. " + error);
                 Assert.Equal(1, await manager.EvaluateAsync<int>("""
