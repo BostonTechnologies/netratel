@@ -41,7 +41,8 @@ export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$temporary/agent.key"
 source_compose=(docker compose -f compose.yaml -f release/compose.public-https.yaml -f release/compose.mcp-http.yaml -f "$temporary/fixture.yaml")
 compose=(docker compose -f "$temporary/compose.yaml")
 applied=("${compose[@]}")
-launcher=(bash "$root/release/setup-http-mcp.sh" --compose-file "$temporary/compose.yaml" --project "$project" --manager external-compose)
+launcher=(bash "$temporary/setup-http-mcp.sh" --compose-file "$temporary/compose.yaml" --project "$project" --manager external-compose)
+launcher_container=
 host_setup=(--non-interactive
   --api-base-url "$NETRATEL_PUBLIC_API_ORIGIN"
   --api-m2m-authority "$NETRATEL_PUBLIC_ORIGIN" --api-m2m-audience netratel.api
@@ -101,6 +102,9 @@ PY
 }
 cleanup() {
   local status=$?
+  if [[ -n "$launcher_container" ]]; then
+    docker rm "$launcher_container" >/dev/null 2>&1 || true
+  fi
   if [[ -n "${bounded_pairing:-}" ]]; then
     post /api/integration-pairing/v1/cancel "$(jq '{deviceCapability}' <<< "$bounded_pairing")" >/dev/null 2>&1 || true
   fi
@@ -122,6 +126,16 @@ cleanup() {
   return "$status"
 }
 trap cleanup EXIT
+stage="copying the source-matched setup launcher from the actual MCP image"
+# The first host generation runs before a serving MCP container exists. Copy
+# from its candidate image without starting the entrypoint or joining a network.
+launcher_container="$(docker create --network none --entrypoint /bin/true "$image")"
+docker cp "$launcher_container:/app/setup-http-mcp.sh" "$temporary/setup-http-mcp.sh"
+cmp -- "$root/release/setup-http-mcp.sh" "$temporary/setup-http-mcp.sh"
+launcher_hash="$(sha256sum < "$temporary/setup-http-mcp.sh")"
+launcher_hash=${launcher_hash%% *}
+docker rm "$launcher_container" >/dev/null
+launcher_container=
 chmod 755 "$temporary"
 openssl req -x509 -newkey rsa:2048 -nodes -keyout "$NETRATEL_HTTPS_PRIVATE_KEY" \
   -out "$NETRATEL_HTTPS_CERTIFICATE" -subj /CN=netratel.example.test \
@@ -756,8 +770,8 @@ jq -e 'type == "array" and length >= 5 and all(.[]; .status == "completed")
   TestResults/http-host-setup/personal-reloaded.json >/dev/null
 post /api/integration-pairing/v1/cancel "$(jq '{deviceCapability}' <<<"$pairing")" >/dev/null
 unset credential delivery pairing host_request customer_credentials
-jq -n --arg fingerprint "$fingerprint" --arg source "$(git rev-parse HEAD)" \
-  '{sourceSha:$source,registrationFingerprint:$fingerprint,headlessGeneration:true,administratorProtocolApproval:true,
+jq -n --arg fingerprint "$fingerprint" --arg source "$(git rev-parse HEAD)" --arg launcherSha256 "$launcher_hash" \
+  '{sourceSha:$source,registrationFingerprint:$fingerprint,imageLauncherCopiedAndSourceMatched:true,launcherSha256:$launcherSha256,headlessGeneration:true,administratorProtocolApproval:true,
     komodoSingleCompose:true,privateHostOwnedSourcePreserved:true,missingStoragePreflight:true,existingReadOnlyIdentityAdopted:true,managedEnvironmentFilesRetained:true,splitWebApiOrigins:true,instance:"dev",
     initialTokenIssuanceRejectionDiagnosed:true,
     generatedApply:true,authenticatedCatalogAndApiRead:true,recreatedAndResumed:true,launcherVerificationCompleted:true,freshUnchangedSourceLauncherVerification:true,boundedVerifierExplicitConsent:true,boundedVerifierTenantGrants:0,boundedVerifierInstancePermissions:["mcp.discovery.read"],boundedVerifierRevocationConfirmed:true,changedSourceVerificationBlocked:true,personalProfileSavedAndReloaded:true,

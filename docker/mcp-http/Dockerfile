@@ -47,6 +47,9 @@ RUN dotnet publish src/NetRatel/NetRatel.Cli/NetRatel.Cli.csproj \
     dotnet publish src/NetRatel/NetRatel.Mcp/NetRatel.Mcp.csproj \
       --configuration "${BUILD_CONFIGURATION}" --no-restore --output /out/tooling/stdio /p:UseAppHost=false
 
+# Operators copy this matching launcher to the Docker host and run it with bash.
+# Include it in /out before generating the runtime distribution inventory.
+COPY --chmod=0644 release/setup-http-mcp.sh /out/setup-http-mcp.sh
 RUN apt-get update && apt-get install -y --no-install-recommends python3
 RUN python3 tools/ci/generate-runtime-sbom.py \
       --project-assets src/NetRatel/NetRatel.Mcp.Http/obj/project.assets.json \
