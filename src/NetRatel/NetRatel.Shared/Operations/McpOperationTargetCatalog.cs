@@ -111,7 +111,7 @@ public static class McpOperationTargetCatalog
         ("netratel_auth", "status") or
         ("netratel_health", "get") or
         ("netratel_system", "version") or
-        ("netratel_capabilities", "get") or
+        ("netratel_capabilities", "get" or "status" or "schema") or
         ("netratel_access", "whoami" or "request" or "requests" or "receipt" or "resume" or "cancel" or "credential") or
         ("netratel_telemetry", "overview") or
         ("netratel_logs", "search") => McpOperationTargetModel.NoBusinessTarget,

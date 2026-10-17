@@ -111,9 +111,12 @@ Avoid `config set` for local credentials because command-line arguments can be
 recorded by a shell. Use environment injection or an owner-readable config
 file instead.
 
-The release rehearsal currently packages and validates Linux x64 for the CLI
-and stdio MCP. Other CLI/MCP runtime archives are not advertised until their
-matching runners build and smoke-test them.
+The release rehearsal packages and validates Linux x64 for the CLI, and Linux
+x64 plus Windows x64 for stdio MCP and its HTTP bridge. The Windows MCP archive
+includes the protected DPAPI launcher and is built and smoke-tested on Windows.
+See [bridge acquisition and migration](http-mcp-bridge.md) for exact runtime,
+archive and profile commands. Other CLI/MCP runtime archives are not advertised
+until their matching runners build and smoke-test them.
 
 ## Client operations, monitoring, and flows
 

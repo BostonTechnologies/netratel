@@ -105,7 +105,9 @@ public static partial class NetRatelMcpToolDefinitions
         bool operatorSurfaceEnabled)
     {
         var method = toolTypes
-            .Select(type => type.GetMethod(descriptor.Name, BindingFlags.Instance | BindingFlags.Public))
+            .Select(type => descriptor.Name == "netratel_capabilities"
+                ? type.GetMethod(descriptor.Name, [typeof(string), typeof(JsonElement?)])
+                : type.GetMethod(descriptor.Name, BindingFlags.Instance | BindingFlags.Public))
             .SingleOrDefault(candidate => candidate is not null)
             ?? throw new InvalidOperationException($"No shared MCP handler was found for catalogued tool '{descriptor.Name}'.");
         var operations = descriptor.Operations.Where(includeOperation).ToArray();
@@ -194,6 +196,10 @@ public static partial class NetRatelMcpToolDefinitions
     private static RequestDefinition? RequestSchema(string tool, string operation, string instance, bool operatorSurfaceEnabled) => (tool, operation) switch
     {
         _ when ManagedOperationCatalog.Find(tool, operation) is { } managed => ManagedRequestSchema(managed),
+        ("netratel_capabilities", "schema") => RequiredRequest([
+            RequiredPatternString("tool", "Exact tool name published by this MCP host; inspection does not invoke it.", "^[A-Za-z0-9_-]{1,128}$", 128),
+            RequiredPatternString("operation", "Exact published operation whose complete input envelope is requested.", "^[A-Za-z0-9_-]{1,128}$", 128)
+        ]),
         ("netratel_clients", "presence") when operatorSurfaceEnabled => ProductionClientTargetRequest(),
         ("netratel_clients", "presence") => Request([
             Integer("tenantId", "Optional positive tenant identifier.", 1, int.MaxValue),
@@ -709,7 +715,7 @@ public static partial class NetRatelMcpToolDefinitions
         ("netratel_auth", "status") or
         ("netratel_health", "get") or
         ("netratel_system", "version") or
-        ("netratel_capabilities", "get") or
+        ("netratel_capabilities", "get" or "status") or
         ("netratel_access", "whoami") or
         ("netratel_config", "show") or
         ("netratel_telemetry", "overview") or

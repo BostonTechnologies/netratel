@@ -5,7 +5,7 @@ public static class McpLocalOperationAuthorizationCatalog
 {
     public static bool IsInstanceRead(string tool, string operation) =>
         (tool, operation) is ("netratel_auth", "status") or ("netratel_health", "get") or
-            ("netratel_system", "version") or ("netratel_capabilities", "get") or
+            ("netratel_system", "version") or ("netratel_capabilities", "get" or "status" or "schema") or
             ("netratel_access", "request" or "requests" or "receipt" or "resume" or "cancel" or "credential");
 
     public static string? RequiredPermission(string tool, string operation)

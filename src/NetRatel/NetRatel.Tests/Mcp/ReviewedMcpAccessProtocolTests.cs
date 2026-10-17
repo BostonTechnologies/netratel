@@ -5,6 +5,7 @@ using System.Security.Claims;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.DataProtection;
@@ -49,6 +50,7 @@ public sealed class ReviewedMcpAccessProtocolTests
         apiBuilder.Configuration["Integration:HttpMcp:PublicResourceUri"] = ReviewedMcpAccessTests.Fixture.Resource;
         apiBuilder.Services.Configure<DeploymentBrandingOptions>(branding => branding.SiteUrl = ReviewedMcpAccessTests.Fixture.Origin);
         apiBuilder.Services.AddScoped<IDeploymentBrandingService, DeploymentBrandingService>();
+        apiBuilder.Services.AddScoped<HttpHostSetupService>();
         apiBuilder.Services.AddSingleton(fixture.Identity); apiBuilder.Services.AddSingleton(fixture.App); apiBuilder.Services.AddSingleton(fixture.Pairing);
         apiBuilder.Services.AddSingleton<IIntegrationCredentialService>(fixture.Credentials); apiBuilder.Services.AddSingleton<IIntegrationCredentialCurrentVerifier>(fixture.Credentials);
         apiBuilder.Services.AddSingleton<IEffectiveAccessService>(fixture.EffectiveAccess);
@@ -61,18 +63,18 @@ public sealed class ReviewedMcpAccessProtocolTests
         apiBuilder.Services.AddAuthorization(auth =>
         {
             auth.AddPolicy("M2MOnly", policy => policy.RequireAuthenticatedUser());
+            auth.AddPolicy("InteractiveAccount", policy => policy.RequireAuthenticatedUser().RequireClaim("netratel_principal_id"));
             auth.AddPolicy(ManagedOperationAuthorization.PolicyName, policy => policy.RequireAuthenticatedUser());
             auth.AddPolicy("McpLocalDelegationExchange", policy => policy.AddAuthenticationSchemes(IntegrationCredentialAuthenticationHandler.SchemeName).RequireAuthenticatedUser());
         });
-        await using var api = apiBuilder.Build();
-        api.UseAuthentication(); api.UseMiddleware<McpOperatorDelegationMiddleware>(); api.UseAuthorization();
-        api.MapMcpLocalDelegationEndpoints(); api.MapMcpReviewedAccessEndpoints(); api.MapManagedOperationEndpoints();
-        // The browser approval uses the existing service and exact proposal; no requester can reach this operator-only test route.
-        api.MapPost("/test/operator/approve", async (IntegrationPairingApprovalRequest request, HttpContext http) =>
+        apiBuilder.Services.AddRateLimiter(limits =>
         {
-            if (http.Request.Headers["X-Test-Operator"] != "reviewer") return Results.Forbid();
-            return Results.Ok(await fixture.Pairing.ApproveAsync(new ClaimsPrincipal(new ClaimsIdentity([new Claim("netratel_principal_id", "reviewer")], "interactive-test")), request));
+            foreach (var name in new[] { "integration-pairing-start", "integration-pairing-poll", "integration-pairing-account" })
+                limits.AddPolicy(name, _ => RateLimitPartition.GetNoLimiter("test"));
         });
+        await using var api = apiBuilder.Build();
+        api.UseAuthentication(); api.UseMiddleware<McpOperatorDelegationMiddleware>(); api.UseAuthorization(); api.UseRateLimiter();
+        api.MapMcpLocalDelegationEndpoints(); api.MapMcpReviewedAccessEndpoints(); api.MapManagedOperationEndpoints(); api.MapIntegrationPairingEndpoints();
         await api.StartAsync();
         var configPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".json");
         await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new NetRatel.AgentClient.AgentClientConfiguration("https://api.example.test", "https://issuer.example.test/token", "gateway", "agent", "synthetic", "mcp:read"), NetRatel.AgentClient.AgentClientConfiguration.JsonOptions));
@@ -111,7 +113,7 @@ public sealed class ReviewedMcpAccessProtocolTests
             Assert.Empty(await fixture.Identity.IntegrationPairingRequests.ToArrayAsync());
             var before = await CallAsync(client, "netratel_flows", "list", new { tenantId = 17 });
             Assert.False(before.GetProperty("success").GetBoolean());
-            var proposal = fixture.Proposal("reconcile", fixture.Credential.CredentialId) with { ExpiresAtUtc = DateTimeOffset.Parse("2030-04-01T10:11:12.123456Z") };
+            var proposal = fixture.Proposal("reconcile", Guid.Parse(fixture.Credential.CredentialId).ToString("D").ToUpperInvariant()) with { ExpiresAtUtc = DateTimeOffset.Parse("2030-04-01T10:11:12.123456Z") };
             var invalidNative = JsonSerializer.SerializeToNode(proposal, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
             invalidNative["expiresAtUtc"] = "2030-04-01T10:11:12.12345601Z";
             var invalidResult = await CallAsync(client, "netratel_access", "request", invalidNative);
@@ -124,6 +126,56 @@ public sealed class ReviewedMcpAccessProtocolTests
             Assert.True(requested.GetProperty("success").GetBoolean());
             var receipt = requested.GetProperty("data").GetProperty("receipt").Deserialize<ReviewedMcpAccessReceipt>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
             Assert.All(receipt.EffectiveAdmission, row => Assert.False(row.PolicyAllowed));
+            var equivalent = await CallAsync(client, "netratel_access", "request", proposal with { RequestId = Guid.Parse(proposal.RequestId).ToString("N"), CredentialId = fixture.Credential.CredentialId });
+            Assert.True(equivalent.GetProperty("success").GetBoolean());
+            Assert.Equal(receipt.Request.ProposalHash, equivalent.GetProperty("data").GetProperty("receipt").GetProperty("request").GetProperty("proposalHash").GetString());
+            var conflict = await CallAsync(client, "netratel_access", "request", proposal with { Name = "Different synthetic proposal" });
+            Assert.False(conflict.GetProperty("success").GetBoolean());
+            Assert.Equal("review_proposal_conflict", conflict.GetProperty("failure").GetProperty("code").GetString());
+            Assert.Equal("review", conflict.GetProperty("failure").GetProperty("layer").GetString());
+            Assert.Contains("receipt", conflict.GetProperty("failure").GetProperty("remediation").GetString());
+            Assert.NotEqual("not_available", conflict.GetProperty("correlationId").GetString());
+            using var operatorClient = api.GetTestClient();
+            operatorClient.DefaultRequestHeaders.Add("X-Test-Operator", "reviewer");
+            operatorClient.DefaultRequestHeaders.Add("X-NetRatel-Account-Request", "1");
+            fixture.PersistenceFailure.FailNextSave = true;
+            using (var transientLookup = await operatorClient.PostAsJsonAsync(IntegrationPairingProtocol.AccountRoute + "/lookup", new IntegrationPairingCodeRequest(receipt.Request.UserCode!)))
+            {
+                Assert.Equal(HttpStatusCode.ServiceUnavailable, transientLookup.StatusCode);
+                var failure = (await transientLookup.Content.ReadFromJsonAsync<IntegrationPairingFailure>())!;
+                Assert.Equal("review_service_unavailable", failure.Code);
+                Assert.Equal("lookup", failure.Stage);
+                Assert.False(string.IsNullOrWhiteSpace(failure.CorrelationId));
+                Assert.DoesNotContain("Synthetic persistence timeout", await transientLookup.Content.ReadAsStringAsync());
+                Assert.Equal(IntegrationPairingState.Pending, (await fixture.Identity.IntegrationPairingRequests.SingleAsync()).State);
+            }
+            using (var lookupResponse = await operatorClient.PostAsJsonAsync(IntegrationPairingProtocol.AccountRoute + "/lookup", new IntegrationPairingCodeRequest(receipt.Request.UserCode!)))
+            {
+                Assert.Equal(HttpStatusCode.OK, lookupResponse.StatusCode);
+                Assert.True(lookupResponse.Headers.CacheControl!.NoStore);
+                var review = (await lookupResponse.Content.ReadFromJsonAsync<IntegrationPairingReview>())!;
+                Assert.True(review.Eligibility!.CanApprove);
+                Assert.False(string.IsNullOrWhiteSpace(review.CorrelationId));
+                Assert.Equal(receipt.Request.ProposalHash, review.ReviewedAccess!.ProposalHash);
+            }
+            using (var requesterBrowser = api.GetTestClient())
+            {
+                requesterBrowser.DefaultRequestHeaders.Add("X-Test-Operator", "requester");
+                requesterBrowser.DefaultRequestHeaders.Add("X-NetRatel-Account-Request", "1");
+                using var ownLookup = await requesterBrowser.PostAsJsonAsync(IntegrationPairingProtocol.AccountRoute + "/lookup", new IntegrationPairingCodeRequest(receipt.Request.UserCode!));
+                var ownReview = (await ownLookup.Content.ReadFromJsonAsync<IntegrationPairingReview>())!;
+                Assert.False(ownReview.Eligibility!.CanApprove);
+                Assert.Equal("review_independent_approver_required", ownReview.Eligibility.Failure!.Code);
+                using var rejected = await requesterBrowser.PostAsJsonAsync(IntegrationPairingProtocol.AccountRoute + "/approve", fixture.Approval(receipt));
+                Assert.Equal(HttpStatusCode.Forbidden, rejected.StatusCode);
+                var reason = (await rejected.Content.ReadFromJsonAsync<IntegrationPairingFailure>())!;
+                Assert.Equal("review_independent_approver_required", reason.Code);
+                Assert.Equal("approval", reason.Stage);
+                Assert.False(string.IsNullOrWhiteSpace(reason.CorrelationId));
+                Assert.DoesNotContain(fixture.Credential.Secret, await rejected.Content.ReadAsStringAsync());
+            }
+            // Read/CAS revisions may advance while an operator reviews; unchanged proposal bindings remain usable.
+            for (var read = 0; read < 3; read++) Assert.True((await CallAsync(client, "netratel_access", "receipt", new { requestId = proposal.RequestId })).GetProperty("success").GetBoolean());
             var malformedApproval = JsonSerializer.SerializeToNode(fixture.Approval(receipt), new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
             malformedApproval.AsObject().Remove("expiresAtUtc"); malformedApproval["ExpiresAtUtc"] = "2030-04-01T10:11:12.12345601Z";
             var reviewedHash = malformedApproval["reviewedProposalHash"]!.GetValue<string>();
@@ -136,16 +188,14 @@ public sealed class ReviewedMcpAccessProtocolTests
                 Assert.Equal("2030-04-01T10:11:12.12345601Z", emitted.RootElement.GetProperty("ExpiresAtUtc").GetString());
                 Assert.False(emitted.RootElement.TryGetProperty("expiresAtUtc", out _));
             }
-            using (var malformed = new HttpRequestMessage(HttpMethod.Post, "/test/operator/approve")
+            using (var malformed = new HttpRequestMessage(HttpMethod.Post, IntegrationPairingProtocol.AccountRoute + "/approve")
                 { Content = new StringContent(malformedJson, System.Text.Encoding.UTF8, "application/json") })
             {
-                malformed.Headers.Add("X-Test-Operator", "reviewer");
-                using var browser = api.GetTestClient(); using var rejected = await browser.SendAsync(malformed);
+                using var rejected = await operatorClient.SendAsync(malformed);
                 Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
             }
-            using var approval = new HttpRequestMessage(HttpMethod.Post, "/test/operator/approve") { Content = JsonContent.Create(fixture.Approval(receipt)) };
-            approval.Headers.Add("X-Test-Operator", "reviewer");
-            using var operatorClient = api.GetTestClient(); using var accepted = await operatorClient.SendAsync(approval); Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
+            using var approval = new HttpRequestMessage(HttpMethod.Post, IntegrationPairingProtocol.AccountRoute + "/approve") { Content = JsonContent.Create(fixture.Approval(receipt)) };
+            using var accepted = await operatorClient.SendAsync(approval); Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
             var resumed = await CallAsync(client, "netratel_access", "resume", new { requestId = proposal.RequestId }); Assert.True(resumed.GetProperty("success").GetBoolean());
             Assert.Equal(proposal.ExpiresAtUtc, resumed.GetProperty("data").GetProperty("receipt").GetProperty("credentialExpiresAtUtc").GetDateTimeOffset());
             foreach (var tenant in new[] { 17, 29 }) Assert.True((await CallAsync(client, "netratel_flows", "list", new { tenantId = tenant })).GetProperty("success").GetBoolean());
@@ -186,15 +236,39 @@ public sealed class ReviewedMcpAccessProtocolTests
             using var request = new HttpRequestMessage(method, path) { Content = body is null ? null : JsonContent.Create(body) };
             request.Headers.Add("X-Test-Gateway", "1"); request.Headers.Add(McpOperatorDelegationOptions.HeaderName, delegation.CurrentAssertion!);
             using var response = await client.SendAsync(request, cancellationToken);
-            if (!response.IsSuccessStatusCode) throw new NetRatelMcpApiException("admission_denied", "The reviewed operation was denied.", (int)response.StatusCode, false);
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                string? code = null, correlation = null;
+                if (!string.IsNullOrWhiteSpace(errorBody))
+                {
+                    using var failure = JsonDocument.Parse(errorBody);
+                    if (failure.RootElement.ValueKind == JsonValueKind.Object &&
+                        failure.RootElement.TryGetProperty("code", out var codeValue) && codeValue.ValueKind == JsonValueKind.String &&
+                        IntegrationPairingFailure.IsKnownCode(codeValue.GetString()))
+                    {
+                        code = codeValue.GetString();
+                        if (failure.RootElement.TryGetProperty("correlationId", out var correlationValue) && correlationValue.ValueKind == JsonValueKind.String)
+                            correlation = correlationValue.GetString();
+                    }
+                }
+                throw new NetRatelMcpApiException("admission_denied", "The reviewed operation was denied.", (int)response.StatusCode, false,
+                    code) { CorrelationId = correlation };
+            }
             return JsonNode.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
         }
     }
     private sealed class GatewayAuthentication(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder)
         : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
     {
-        protected override Task<AuthenticateResult> HandleAuthenticateAsync() => Task.FromResult(Request.Headers.ContainsKey("X-Test-Gateway")
-            ? AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(new ClaimsIdentity([new Claim("token_use", "netratel_service")], Scheme.Name)), Scheme.Name))
-            : AuthenticateResult.NoResult());
+        protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+        {
+            if (Request.Headers["X-Test-Operator"].ToString() is "reviewer" or "requester")
+                return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(new ClaimsIdentity(
+                    [new Claim("netratel_principal_id", Request.Headers["X-Test-Operator"].ToString()), new Claim("auth_mode", "local")], Scheme.Name)), Scheme.Name)));
+            return Task.FromResult(Request.Headers.ContainsKey("X-Test-Gateway")
+                ? AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(new ClaimsIdentity([new Claim("token_use", "netratel_service")], Scheme.Name)), Scheme.Name))
+                : AuthenticateResult.NoResult());
+        }
     }
 }

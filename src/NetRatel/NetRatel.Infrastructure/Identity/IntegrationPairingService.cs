@@ -13,7 +13,10 @@ using NetRatel.Shared.Connectivity;
 
 namespace NetRatel.Infrastructure.Identity;
 
-public sealed class IntegrationPairingUnavailableException() : Exception("The connection request is unavailable. Start a new connection request.");
+public sealed class IntegrationPairingUnavailableException() : Exception("The connection request is unavailable. Start a new connection request.")
+{
+    public IntegrationPairingFailure? ReviewFailure { get; init; }
+}
 
 /// <summary>Durable, capability-bound pairing with one ordinary credential and a bounded retry envelope.</summary>
 public sealed partial class IntegrationPairingService(NetRatelIdentityDbContext db, IIntegrationCredentialService credentials,
@@ -70,21 +73,37 @@ public sealed partial class IntegrationPairingService(NetRatelIdentityDbContext 
     }
 
     public Task<IntegrationPairingReview> ReviewAsync(string code, CancellationToken cancellationToken = default) =>
+        ReviewCoreAsync(null, code, cancellationToken);
+
+    public Task<IntegrationPairingReview> ReviewAsync(ClaimsPrincipal principal, string code, CancellationToken cancellationToken = default) =>
+        ReviewCoreAsync(principal, code, cancellationToken);
+
+    private Task<IntegrationPairingReview> ReviewCoreAsync(ClaimsPrincipal? principal, string code, CancellationToken cancellationToken) =>
         MutateAsync(CodeHash(code), false, async request =>
         {
             await ExpireAsync(request, cancellationToken).ConfigureAwait(false);
-            if (request.State != IntegrationPairingState.Pending) throw new IntegrationPairingUnavailableException();
+            RequirePendingReview(request, "lookup");
+            var access = AccessMetadata(request);
+            var failure = access is not null && principal is not null
+                ? await ReviewedAuthorityFailureAsync(request, access, principal.FindFirstValue("netratel_principal_id"), "lookup", cancellationToken).ConfigureAwait(false) : null;
             return new IntegrationPairingReview(request.Id, FormatCode(NormalizeCode(code)), request.Name,
                 (PairingCredentialPurpose)request.Purpose, request.PublicOrigin, request.Resource,
-                RequestedPermissions(request), request.ExpiresAtUtc, Status(request)) { TemporaryVerifier = IsTemporaryVerifier(request), ReviewedAccess = AccessMetadata(request) is { } access ? AccessRequest(request, access, FormatCode(NormalizeCode(code))) : null, CredentialExpiresAtUtc = AccessMetadata(request)?.Proposal.ExpiresAtUtc ?? (IsTemporaryVerifier(request) ? clock.GetUtcNow().Add(TemporaryVerifierLifetime) : null) };
+                RequestedPermissions(request), request.ExpiresAtUtc, Status(request))
+            {
+                TemporaryVerifier = IsTemporaryVerifier(request),
+                ReviewedAccess = access is not null ? AccessRequest(request, access, FormatCode(NormalizeCode(code))) : null,
+                CredentialExpiresAtUtc = access?.Proposal.ExpiresAtUtc ?? (IsTemporaryVerifier(request) ? clock.GetUtcNow().Add(TemporaryVerifierLifetime) : null),
+                Eligibility = access is not null && principal is not null ? new(failure is null, failure) : null
+            };
         }, cancellationToken);
 
     public Task<IntegrationPairingPollResponse> ApproveAsync(ClaimsPrincipal principal, IntegrationPairingApprovalRequest approval,
         CancellationToken cancellationToken = default) => MutateAsync(CodeHash(approval.UserCode), false, async request =>
         {
             await ExpireAsync(request, cancellationToken).ConfigureAwait(false);
-            if (request.State != IntegrationPairingState.Pending || !await BindingIsCurrentAsync(request, cancellationToken).ConfigureAwait(false))
-                throw new IntegrationPairingUnavailableException();
+            RequirePendingReview(request, "approval");
+            if (!await BindingIsCurrentAsync(request, cancellationToken).ConfigureAwait(false))
+                throw new IntegrationPairingUnavailableException { ReviewFailure = IntegrationPairingFailure.ForCode("review_binding_changed", "approval") };
             var reviewed = AccessMetadata(request);
             if (reviewed is not null)
                 await ValidateReviewedApprovalAsync(request, reviewed, principal, approval, cancellationToken).ConfigureAwait(false);
@@ -99,12 +118,14 @@ public sealed partial class IntegrationPairingService(NetRatelIdentityDbContext 
             var create = new IntegrationCredentialCreateRequest(request.Name, request.Purpose, expiresAt,
                 (approval.Grants ?? []).Select(grant => new IntegrationCredentialGrantRequest(grant.TenantId, grant.Permission)).ToArray(),
                 request.Resource, approval.InstancePermissions ?? []);
-            if (reviewed?.Proposal.Action != "revoke") await validator.ValidateAsync(principal, create, cancellationToken).ConfigureAwait(false);
+            try { if (reviewed?.Proposal.Action != "revoke") await validator.ValidateAsync(principal, create, cancellationToken).ConfigureAwait(false); }
+            catch (IntegrationCredentialGrantValidationException) when (reviewed is not null)
+            { throw new IntegrationCredentialGrantValidationException("reviewedProposal", true) { ReviewFailure = IntegrationPairingFailure.ForCode("review_approver_authority_missing", "approval") }; }
             // Browser provider claims are not a durable delegation grant. Use the same current owner identity as redemption.
             var durableOwner = new ClaimsPrincipal(new ClaimsIdentity([new Claim("netratel_principal_id", owner!)], "pairing-owner"));
             try { if (reviewed?.Proposal.Action != "revoke") await validator.ValidateAsync(durableOwner, create, cancellationToken).ConfigureAwait(false); }
             catch (IntegrationCredentialGrantValidationException)
-            { throw new IntegrationCredentialGrantValidationException("durableAuthority"); }
+            { throw new IntegrationCredentialGrantValidationException("durableAuthority") { ReviewFailure = reviewed is null ? null : IntegrationPairingFailure.ForCode("review_owner_authority_missing", "approval") }; }
             if (reviewed is not null)
             {
                 reviewed = reviewed with { ApproverPrincipalId = principal.FindFirstValue("netratel_principal_id") };
@@ -266,16 +287,27 @@ public sealed partial class IntegrationPairingService(NetRatelIdentityDbContext 
 
     private async Task<bool> ValidateApprovalAsync(IntegrationPairingRequest request, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(request.OwnerPrincipalId) || !await BindingIsCurrentAsync(request, ct).ConfigureAwait(false)) return false;
+        if (string.IsNullOrWhiteSpace(request.OwnerPrincipalId)) return false;
         var owner = new ClaimsPrincipal(new ClaimsIdentity([new Claim("netratel_principal_id", request.OwnerPrincipalId)], "pairing-owner"));
         try
         {
-            if (AccessMetadata(request) is { } reviewed && !await ReviewedAuthorityIsCurrentAsync(request, reviewed, ct).ConfigureAwait(false)) return false;
+            var reviewed = AccessMetadata(request);
+            if (reviewed is not null)
+            {
+                if (await ReviewedAuthorityFailureAsync(request, reviewed, reviewed.ApproverPrincipalId, "resume", ct).ConfigureAwait(false) is { } failure)
+                {
+                    // This includes the current deployment binding. Preserve its reason
+                    // with the existing protected-path denial/revocation for later receipts.
+                    request.RequestedPermissionsJson = JsonSerializer.Serialize(reviewed with { ReviewFailure = failure });
+                    return false;
+                }
+            }
+            else if (!await BindingIsCurrentAsync(request, ct).ConfigureAwait(false)) return false;
             if (IsTemporaryVerifier(request) && (request.Purpose != IntegrationCredentialPurpose.HttpMcp ||
                 request.CredentialExpiresAtUtc > request.ExpiresAtUtc.Add(TemporaryVerifierLifetime) ||
                 Deserialize<IntegrationCredentialGrantRequest>(request.ApprovedGrantsJson!).Length != 0 ||
                 !Deserialize<string>(request.ApprovedInstancePermissionsJson!).SequenceEqual([VerifierPermission]))) return false;
-            if (AccessMetadata(request)?.Proposal.Action != "revoke") await validator.ValidateAsync(owner, CreateRequest(request), ct).ConfigureAwait(false);
+            if (reviewed?.Proposal.Action != "revoke") await validator.ValidateAsync(owner, CreateRequest(request), ct).ConfigureAwait(false);
             if (request.CredentialId is not null)
             {
                 var credential = await db.IntegrationCredentials.AsNoTracking().SingleOrDefaultAsync(candidate => candidate.Id == request.CredentialId, ct).ConfigureAwait(false);
@@ -344,6 +376,15 @@ public sealed partial class IntegrationPairingService(NetRatelIdentityDbContext 
         request.Revision++;
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
+    private static void RequirePendingReview(IntegrationPairingRequest request, string stage)
+    {
+        if (request.State != IntegrationPairingState.Pending)
+            throw new IntegrationPairingUnavailableException
+            {
+                ReviewFailure = IntegrationPairingFailure.ForCode(request.State == IntegrationPairingState.Expired
+                    ? "review_request_expired" : "review_request_not_pending", stage)
+            };
+    }
     private IDataProtector Protector(IntegrationPairingRequest request) => protection.CreateProtector("NetRatel.IntegrationPairing.Delivery.v1", request.Id);
     private static string Status(IntegrationPairingRequest request) => request.State.ToString().ToLowerInvariant();
     private sealed record VerifierRequestMetadata(bool TemporaryVerifier, IReadOnlyList<string> Permissions);
@@ -365,7 +406,7 @@ public sealed partial class IntegrationPairingService(NetRatelIdentityDbContext 
     {
         var normalized = code?.Trim().Replace("-", "", StringComparison.Ordinal).ToUpperInvariant();
         if (normalized is null || normalized.Length != 8 || normalized.Any(character => !Alphabet.Contains(character)))
-            throw new IntegrationPairingUnavailableException();
+            throw new IntegrationPairingUnavailableException { ReviewFailure = IntegrationPairingFailure.ForCode("review_code_invalid", "lookup") };
         return normalized;
     }
     private static string CodeHash(string code) => IntegrationCredentialService.Hash(NormalizeCode(code));

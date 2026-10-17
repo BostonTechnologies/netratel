@@ -1761,7 +1761,8 @@ public sealed partial class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture po
         HttpMessageHandler? localCredentialApiHandler = null,
         INetRatelMcpApiClient? businessApi = null,
         bool operatorSurfaceEnabled = false,
-        string? publicResourceUri = null)
+        string? publicResourceUri = null,
+        Action<IServiceCollection>? configureServices = null)
     {
         var configurationPath = await WriteIsolatedConfigurationAsync("https://api.dev.example");
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Development });
@@ -1823,6 +1824,7 @@ public sealed partial class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture po
                 options.TokenValidationParameters.IssuerSigningKey = TestSigningKey;
                 options.TokenValidationParameters.ValidateIssuerSigningKey = true;
             });
+            configureServices?.Invoke(builder.Services);
             var app = builder.Build();
             NetRatelMcpHttpApplication.ConfigurePipeline(app);
             await app.StartAsync();

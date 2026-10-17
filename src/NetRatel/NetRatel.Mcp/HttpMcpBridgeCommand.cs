@@ -5,8 +5,15 @@ namespace NetRatel.Mcp;
 
 public static class HttpMcpBridgeCommand
 {
+    private const string Usage = "Usage: NetRatel.Mcp http-bridge --profile NAME | --config ABSOLUTE_PATH. Create a protected HTTP MCP profile with setup --transport http first.";
+
     public static async Task<int> RunAsync(string[] args)
     {
+        if (args is ["--help"] or ["-h"])
+        {
+            await Console.Out.WriteLineAsync(Usage);
+            return 0;
+        }
         if (args is ["--version"])
         {
             await Console.Out.WriteLineAsync(typeof(HttpMcpBridge).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unknown");
@@ -14,7 +21,7 @@ public static class HttpMcpBridgeCommand
         }
         if (args is not ["--profile", _] && args is not ["--config", _])
         {
-            await Console.Error.WriteLineAsync("Usage: NetRatel.Mcp http-bridge --profile NAME | --config ABSOLUTE_PATH. Create a protected HTTP MCP profile with setup --transport http first.");
+            await Console.Error.WriteLineAsync(Usage);
             return 2;
         }
         try

@@ -15,18 +15,30 @@ namespace NetRatel.Mcp.Core;
 [McpServerToolType]
 public sealed class NetRatelMcpCatalogTools(NetRatelMcpHostContext hostContext)
 {
-    [McpServerTool(UseStructuredContent = true), Description("Describe the NetRatel MCP catalog and its HTTP availability. Operation must be get.")]
     public NetRatelToolResponse netratel_capabilities(string operation = "get")
-        => string.Equals(operation, "get", StringComparison.Ordinal)
-            ? new NetRatelToolResponse(true, "completed", "NetRatel MCP capabilities returned.", JsonSerializer.SerializeToNode(CatalogSchema(hostContext)))
-            : new NetRatelToolResponse(false, "invalid_request", "Unsupported netratel_capabilities operation.",
-                Error: new NetRatelToolError("unsupported_operation", false, AllowedOperations: ["get"]))
-                .WithFailureContext("netratel_capabilities", operation);
+        => netratel_capabilities(operation, null);
+
+    [McpServerTool(UseStructuredContent = true), Description("Inspect the MCP catalog: get returns metadata, status returns compact host identity/counts/digest, and schema takes request:{tool,operation} for one exact operation envelope without invoking it.")]
+    public NetRatelToolResponse netratel_capabilities(string operation, JsonElement? request = null)
+    {
+        if ((operation is "get" or "status") && request is not null)
+            return NetRatelMcpDiscovery.InvalidRequest(operation);
+
+        return operation switch
+        {
+            "get" => new NetRatelToolResponse(true, "completed", "NetRatel MCP capabilities returned.", JsonSerializer.SerializeToNode(CatalogSchema(hostContext))),
+            "status" => NetRatelMcpDiscovery.Status(hostContext),
+            "schema" => NetRatelMcpDiscovery.Schema(hostContext, request),
+            _ => new NetRatelToolResponse(false, "invalid_request", "Unsupported netratel_capabilities operation.",
+                Error: new NetRatelToolError("unsupported_operation", false, AllowedOperations: ["get", "status", "schema"]))
+                .WithFailureContext("netratel_capabilities", NetRatelMcpDiscovery.IsSelector(operation) ? operation : "unknown")
+        };
+    }
 
     internal static object CatalogSchema(NetRatelMcpHostContext hostContext)
     {
         var tools = NetRatelMcpCatalog.Tools
-            .Where(tool => IsAvailable(tool, hostContext))
+            .Where(tool => NetRatelMcpToolDefinitions.SelectedOperations(tool, hostContext).Count > 0)
             .Select(tool => ToSchema(tool, hostContext))
             .ToArray();
 
@@ -51,18 +63,9 @@ public sealed class NetRatelMcpCatalogTools(NetRatelMcpHostContext hostContext)
         confirmationFields = new[] { "confirmField", "requiredValue", "operation", "affectedIds" }
     };
 
-    private static bool IsAvailable(NetRatelMcpToolDescriptor tool, NetRatelMcpHostContext hostContext)
-        => tool.Operations.Any(operation => IsAvailable(operation, hostContext));
-
-    private static bool IsAvailable(NetRatelMcpOperationDescriptor operation, NetRatelMcpHostContext hostContext)
-        => NetRatelMcpCatalog.IsAvailableIn(operation, hostContext) &&
-           (hostContext.Transport is not NetRatelMcpTransport.StreamableHttp || NetRatelMcpCatalog.IsAvailableOverHttpIn(operation, hostContext));
-
     private static object ToSchema(NetRatelMcpToolDescriptor tool, NetRatelMcpHostContext hostContext)
     {
-        var operations = tool.Operations
-            .Where(operation => IsAvailable(operation, hostContext))
-            .ToArray();
+        var operations = NetRatelMcpToolDefinitions.SelectedOperations(tool, hostContext);
         var description = hostContext.OperatorSurfaceEnabled
             ? NetRatelMcpOperatorInstructions.Describe(tool)
             : tool.Name == "netratel_notifications" &&
@@ -77,28 +80,32 @@ public sealed class NetRatelMcpCatalogTools(NetRatelMcpHostContext hostContext)
             Description = description,
             safety = EffectiveSafety(operations).ToString(),
             tool.AvailableOverHttp,
-            operations = operations.Select(operation =>
-            {
-                var access = McpOperationAccessCatalog.Find(tool.Name, operation.Name)
-                    ?? throw new InvalidOperationException($"MCP operation '{tool.Name}/{operation.Name}' has no access catalog classification.");
-                return new
-                {
-                    operation.Name,
-                    safety = operation.Safety.ToString(),
-                    operation.RequiresConfirmation,
-                    operation.RequiresIdempotency,
-                    operation.AvailableOverHttp,
-                    availableIn = NetRatelMcpCatalog.EffectiveAvailableInstances(operation, hostContext),
-                    requiredScope = access.RequiredScope.ToString(),
-                    minimumRole = access.MinimumRole.ToString(),
-                    targetModel = McpOperationTargetCatalog.Find(tool.Name, operation.Name)?.Model.ToString()
-                        ?? throw new InvalidOperationException($"MCP operation '{tool.Name}/{operation.Name}' has no target-model classification."),
-                    localCredentialSupported = tool.AvailableOverHttp && NetRatelMcpCatalog.IsAvailableOverHttpIn(operation, hostContext) &&
-                        McpLocalOperationAuthorizationCatalog.RequiredPermission(tool.Name, operation.Name) is not null,
-                    applicationPermission = McpLocalOperationAuthorizationCatalog.RequiredPermission(tool.Name, operation.Name),
-                    additionalApplicationPermissions = McpLocalOperationAuthorizationCatalog.AdditionalPermissions(tool.Name, operation.Name)
-                };
-            })
+            operations = operations.Select(operation => OperationMetadata(tool, operation, hostContext))
+        };
+    }
+
+    internal static object OperationMetadata(NetRatelMcpToolDescriptor tool, NetRatelMcpOperationDescriptor operation, NetRatelMcpHostContext hostContext)
+    {
+        var access = McpOperationAccessCatalog.Find(tool.Name, operation.Name)
+            ?? throw new InvalidOperationException($"MCP operation '{tool.Name}/{operation.Name}' has no access catalog classification.");
+        return new
+        {
+            operation.Name,
+            safety = operation.Safety.ToString(),
+            operation.RequiresConfirmation,
+            operation.RequiresIdempotency,
+            operation.AvailableOverHttp,
+            availableIn = hostContext.Transport == NetRatelMcpTransport.StreamableHttp
+                ? NetRatelMcpCatalog.EffectiveAvailableInstances(operation, hostContext) : operation.AvailableInstances,
+            requiredScope = access.RequiredScope.ToString(),
+            requiredScopeName = McpOperationAccessScopeNames.Canonical(access.RequiredScope),
+            minimumRole = access.MinimumRole.ToString(),
+            targetModel = McpOperationTargetCatalog.Find(tool.Name, operation.Name)?.Model.ToString()
+                ?? throw new InvalidOperationException($"MCP operation '{tool.Name}/{operation.Name}' has no target-model classification."),
+            localCredentialSupported = tool.AvailableOverHttp && NetRatelMcpCatalog.IsAvailableOverHttpIn(operation, hostContext) &&
+                McpLocalOperationAuthorizationCatalog.RequiredPermission(tool.Name, operation.Name) is not null,
+            applicationPermission = McpLocalOperationAuthorizationCatalog.RequiredPermission(tool.Name, operation.Name),
+            additionalApplicationPermissions = McpLocalOperationAuthorizationCatalog.AdditionalPermissions(tool.Name, operation.Name)
         };
     }
 
@@ -131,12 +138,13 @@ public sealed class NetRatelMcpCatalogResources(NetRatelMcpHostContext hostConte
         instance = hostContext.Target.Instance,
         apiBaseUrl = hostContext.Target.ApiBaseUri,
         catalogRevision = hostContext.Target.CatalogRevision,
+        discovery = NetRatelMcpDiscovery.StatusData(hostContext),
         mutationToolsEnabled = NetRatelMcpCatalog.Tools
             .SelectMany(tool => tool.Operations)
             .Any(operation => operation.Safety != NetRatelMcpOperationSafety.Read &&
                               (hostContext.Transport != NetRatelMcpTransport.StreamableHttp ||
                                operation.IsAvailableOverHttpIn(hostContext.Target.Instance)))
-    });
+    }, JsonSerializerOptions.Web);
 
     [McpServerResource(UriTemplate = "netratel://health", Name = "NetRatel MCP health descriptor", MimeType = "application/json")]
     public string Health() => JsonSerializer.Serialize(new

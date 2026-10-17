@@ -36,6 +36,7 @@ NetRatel setup
   access prepare --instance WEB_URL --request-file PROPOSAL_JSON --requester-config EXISTING_HTTP_PROFILE --state-file PROTECTED_STATE --config NEW_HTTP_PROFILE [--profile NAME]
   access resume --state-file PROTECTED_STATE --config NEW_HTTP_PROFILE [--profile NAME] [--replace]
   The proposal contains only safe exact grants, targets, requestId and UTC expiry. An independent operator approves it in the browser.
+  Reviewed access isolates requester and destination profiles from ambient client settings. The Windows protected launcher can supply a requester-only credential.
   Resume saves the one-time new credential to protected storage and acknowledges delivery; no secret is printed.
   config validate [--profile NAME] [--config PATH]
   doctor [--profile NAME] [--config PATH]
@@ -148,20 +149,21 @@ Normal stdio MCP stdout contains protocol JSON-RPC only; run setup explicitly wi
         }
         return options;
     }
-    private static async Task<int> RunReviewedAccessAsync(string[] args, Dictionary<string, string> options, TextWriter output, CancellationToken ct)
+    internal static async Task<int> RunReviewedAccessAsync(string[] args, Dictionary<string, string> options, TextWriter output, CancellationToken ct,
+        HttpMessageHandler? handler = null, Func<string, string?>? requesterEnvironment = null)
     {
         static string Required(Dictionary<string, string> options, string key) => options.TryGetValue(key, out var value) ? value : throw new AgentClientValidationException(key + " is required.");
         var state = Required(options, "--state-file");
         var destination = Required(options, "--config");
-        await using var session = new SetupSession(ConfigurationSurface.HttpMcpClient, destination, options.GetValueOrDefault("--profile", "default"));
+        await using var session = new SetupSession(ConfigurationSurface.HttpMcpClient, destination, options.GetValueOrDefault("--profile", "default"),
+            handler, getEnvironmentVariable: _ => null);
         session.ValidateDestinationStorage();
         if (args.Length > 1 && args[1] == "prepare")
         {
             var proposal = JsonSerializer.Deserialize<NetRatel.Shared.Connectivity.ReviewedMcpAccessProposal>(
                 File.ReadAllText(Required(options, "--request-file")), AgentClientConfiguration.JsonOptions)
                 ?? throw new AgentClientValidationException("The reviewed proposal file is invalid.");
-            var requesting = new NetRatelConfigurationService().Load(new(ConfigurationSurface.HttpMcpClient, Required(options, "--requester-config")));
-            if (!requesting.Validate().IsValid) throw new AgentClientValidationException("The requesting HTTP MCP profile is invalid.");
+            var requesting = ReviewedAccessRequesterConfiguration.Load(Required(options, "--requester-config"), requesterEnvironment);
             await session.DiscoverAsync(Required(options, "--instance"), ct);
             await session.PrepareReviewedAccessAsync(proposal, requesting.Configuration, state, ct);
             await output.WriteLineAsync(JsonSerializer.Serialize(new { requestId = session.Pairing!.RequestId, userCode = session.Pairing.UserCode,

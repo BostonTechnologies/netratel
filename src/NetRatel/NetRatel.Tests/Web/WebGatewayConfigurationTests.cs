@@ -189,6 +189,7 @@ public sealed class WebGatewayConfigurationTests
         using var client = proxy.GetTestClient();
         foreach (var path in new[] { "/mcp", "/mcp/", "/api/http-host-setup/v1/capabilities", "/api/integration-pairing/v1/capabilities", "/api/v1/tenants", "/api/v1/auth/ai-agent/status",
                      "/api/v2/account/integration-credentials/pairing/lookup", "/api/v2/mcp/operator/auth/status", "/health/live", "/health/ready",
+                     "/api/v2/mcp/operator/health/live", "/api/v2/mcp/operator/health/ready",
                      "/api/v2/agent-updates/check", "/clients/install/capability",
                      "/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-authorization-server" })
         {

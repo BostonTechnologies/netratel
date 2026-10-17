@@ -1,12 +1,15 @@
 using System.Security.Claims;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
 using NetRatel.Application.Operations;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
+using NetRatel.Infrastructure.Identity.Branding;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Connectivity;
@@ -16,6 +19,184 @@ namespace NetRatel.Tests.Infrastructure;
 
 public sealed class ReviewedMcpAccessTests
 {
+    [Fact]
+    public async Task Equivalent_UUID_representations_share_owned_lookup_proposal_and_reconciliation()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var credentialId = Guid.Parse(fixture.Credential.CredentialId);
+        var requestId = Guid.NewGuid();
+        var proposal = fixture.Proposal("reconcile", credentialId.ToString("D").ToUpperInvariant()) with { RequestId = requestId.ToString("D") };
+        var pending = await fixture.Pairing.RequestReviewedAsync(proposal, "requester", fixture.Credential.CredentialId, Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production);
+        Assert.Equal(requestId.ToString("N"), pending.Request.Proposal.RequestId);
+        Assert.Equal(credentialId.ToString("N"), pending.Request.Proposal.CredentialId);
+        foreach (var format in new[] { "D", "N", "B", "P" })
+        {
+            var owned = await fixture.Pairing.InspectOwnedCredentialAsync("requester", credentialId.ToString(format).ToUpperInvariant());
+            Assert.Equal(credentialId.ToString("N"), owned!.Id);
+            var retry = await fixture.Pairing.RequestReviewedAsync(proposal with
+            { RequestId = requestId.ToString(format).ToUpperInvariant(), CredentialId = credentialId.ToString(format) },
+                "requester", fixture.Credential.CredentialId, Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production);
+            Assert.Equal(pending.Request.ProposalHash, retry.Request.ProposalHash);
+            Assert.Equal(pending.Request.UserCode, retry.Request.UserCode);
+        }
+        Assert.Single(await fixture.Identity.IntegrationPairingRequests.ToArrayAsync());
+        var conflict = await Assert.ThrowsAsync<IntegrationCredentialGrantValidationException>(() => fixture.Pairing.RequestReviewedAsync(proposal with { Name = "Different intent" },
+            "requester", fixture.Credential.CredentialId, Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production));
+        Assert.Equal("review_proposal_conflict", conflict.ReviewFailure!.Code);
+        await fixture.Pairing.ApproveAsync(Principal("reviewer"), fixture.Approval(pending));
+        var applied = await fixture.Pairing.InspectReviewedAsync(requestId.ToString("B"), "requester", fixture.Credential.CredentialId, resume: true);
+        Assert.Equal("consumed", applied.Request.Status);
+        Assert.Equal(proposal.ExpiresAtUtc, applied.CredentialExpiresAtUtc);
+        Assert.Single(await fixture.Identity.IntegrationCredentialLifecycleEvents.Where(x => x.Action == "reconciled").ToArrayAsync());
+        Assert.Null(await fixture.Pairing.InspectOwnedCredentialAsync("other-owner", credentialId.ToString("D")));
+        Assert.Null(await fixture.Pairing.InspectOwnedCredentialAsync("other-owner", Guid.NewGuid().ToString("D")));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Legacy_UUID_binding_is_preserved_during_pending_or_approved_canonical_replay(bool alreadyApproved)
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var proposal = fixture.Proposal("reconcile", fixture.Credential.CredentialId) with { Grants = [], Targets = [] };
+        var original = await fixture.Pairing.RequestReviewedAsync(proposal, "requester", fixture.Credential.CredentialId, Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production);
+        var row = await fixture.Identity.IntegrationPairingRequests.SingleAsync();
+        var metadata = JsonNode.Parse(row.RequestedPermissionsJson)!.AsObject();
+        // Frozen beta.23 wire shape: UUID strings were hashed verbatim. An empty target list has no catalog requirements.
+        metadata["Proposal"] = JsonSerializer.SerializeToNode(proposal);
+        var legacyProposalHash = IntegrationCredentialService.Hash(JsonSerializer.Serialize(new { Proposal = proposal, OperationRequirements = Array.Empty<object>() }));
+        metadata["ProposalHash"] = legacyProposalHash;
+        var legacyReviewHash = IntegrationCredentialService.Hash(JsonSerializer.Serialize(new
+        {
+            origin = Fixture.Origin, resource = Fixture.Resource, RequestingPrincipalId = "requester", RequestingCredentialId = fixture.Credential.CredentialId,
+            Instance = "prod", Environment = McpOperatorEnvironment.Production, ProposalHash = legacyProposalHash,
+            CredentialRevisionHash = original.Request.CredentialRevisionHash, PolicyRevisionHash = original.Request.PolicyRevisionHash
+        }));
+        metadata["ReviewBindingHash"] = legacyReviewHash;
+        row.RequestedPermissionsJson = metadata.ToJsonString();
+        await fixture.Identity.SaveChangesAsync();
+        var review = await fixture.Pairing.ReviewAsync(Principal("reviewer"), original.Request.UserCode!);
+        Assert.True(review.Eligibility!.CanApprove);
+        var approval = fixture.Approval(original) with { ReviewedProposalHash = legacyReviewHash };
+        if (alreadyApproved) await fixture.Pairing.ApproveAsync(Principal("reviewer"), approval);
+        var replay = await fixture.Pairing.RequestReviewedAsync(proposal with { RequestId = Guid.Parse(proposal.RequestId).ToString("N") },
+            "requester", fixture.Credential.CredentialId, Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production);
+        Assert.Equal(legacyReviewHash, replay.Request.ProposalHash);
+        Assert.Equal(proposal.RequestId, replay.Request.Proposal.RequestId);
+        var persisted = JsonNode.Parse((await fixture.Identity.IntegrationPairingRequests.SingleAsync()).RequestedPermissionsJson)!;
+        Assert.Equal(legacyProposalHash, persisted["ProposalHash"]!.GetValue<string>());
+        Assert.Equal(legacyReviewHash, persisted["ReviewBindingHash"]!.GetValue<string>());
+        if (!alreadyApproved) await fixture.Pairing.ApproveAsync(Principal("reviewer"), approval);
+        Assert.Equal("consumed", (await fixture.Pairing.InspectReviewedAsync(proposal.RequestId, "requester", fixture.Credential.CredentialId, resume: true)).Request.Status);
+    }
+
+    [Theory]
+    [InlineData("requestId", "not-a-uuid", "review_request_id_invalid")]
+    [InlineData("credentialId", "not-a-uuid", "review_credential_id_invalid")]
+    [InlineData("credentialId", "00000000-0000-0000-0000-000000000000", "review_credential_id_invalid")]
+    public async Task Invalid_UUIDs_are_actionable_and_never_persist_a_proposal(string field, string value, string expectedCode)
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var proposal = fixture.Proposal("reconcile", fixture.Credential.CredentialId);
+        proposal = field == "requestId" ? proposal with { RequestId = value } : proposal with { CredentialId = value };
+        var failure = await Assert.ThrowsAsync<IntegrationCredentialGrantValidationException>(() => fixture.Pairing.RequestReviewedAsync(proposal,
+            "requester", fixture.Credential.CredentialId, Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production));
+        Assert.Equal(expectedCode, failure.ReviewFailure!.Code);
+        Assert.Equal("request", failure.ReviewFailure.Stage);
+        Assert.Empty(await fixture.Identity.IntegrationPairingRequests.ToArrayAsync());
+    }
+
+    [Theory]
+    [InlineData("requester", "none", "review_independent_approver_required")]
+    [InlineData("reviewer", "approver", "review_approver_authority_missing")]
+    [InlineData("reviewer", "owner", "review_owner_authority_missing")]
+    [InlineData("reviewer", "credential", "review_credential_changed")]
+    [InlineData("reviewer", "policy", "review_policy_changed")]
+    [InlineData("reviewer", "target", "review_target_changed")]
+    [InlineData("reviewer", "binding", "review_binding_changed")]
+    public async Task Review_eligibility_and_actual_decision_report_current_safe_failure_without_approval(string actor, string change, string code)
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var proposal = fixture.Proposal("reconcile", fixture.Credential.CredentialId);
+        if (change == "target")
+        {
+            fixture.Identity.AccessRoles.Local.Single().Permissions.Add(new AccessRolePermission { Permission = NetRatelPermissions.TelemetryRead });
+            await fixture.Identity.SaveChangesAsync();
+            var agent = Guid.Parse("b2222222-2222-4222-8222-222222222222");
+            fixture.App.Agents.Add(new Agent { Id = agent, TenantId = 17, Name = "Synthetic profile target", IsEnabled = true, Status = AgentStatus.Active });
+            await fixture.App.SaveChangesAsync();
+            var profile = await new McpOperatorPolicyAdministration(fixture.App).UpsertTargetProfileAsync(17, agent, McpOperatorTargetClassification.DedicatedQa, [], null, "reviewer", default);
+            proposal = proposal with { Grants = [new(17, NetRatelPermissions.TelemetryRead)], Targets = [new(17, "netratel_clients", "telemetry", agent, profile.Version)] };
+        }
+        var pending = await fixture.Pairing.RequestReviewedAsync(proposal, "requester", fixture.Credential.CredentialId, Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production);
+        Assert.True((await fixture.Pairing.ReviewAsync(Principal("reviewer"), pending.Request.UserCode!)).Eligibility!.CanApprove);
+        switch (change)
+        {
+            case "approver": (await fixture.Identity.Users.SingleAsync(x => x.PrincipalId == "reviewer")).IsInstanceAdministrator = false; break;
+            case "owner": (await fixture.Identity.Users.SingleAsync(x => x.PrincipalId == "requester")).IsEnabled = false; break;
+            case "credential": (await fixture.Identity.IntegrationCredentials.SingleAsync()).Name = "Changed synthetic credential"; break;
+            case "policy":
+                fixture.App.McpOperatorPolicies.Add(new McpOperatorPolicyRecord { Id = Guid.NewGuid(), TenantId = 17, Environment = McpOperatorEnvironment.Production, Version = 1 });
+                await fixture.App.SaveChangesAsync(); break;
+            case "target":
+                (await fixture.App.McpOperatorTargetProfiles.SingleAsync()).Version++;
+                await fixture.App.SaveChangesAsync(); break;
+            case "binding": (await fixture.Identity.IntegrationPairingRequests.SingleAsync()).Resource = "https://changed.example.test/mcp"; break;
+        }
+        await fixture.Identity.SaveChangesAsync();
+        var review = await fixture.Pairing.ReviewAsync(Principal(actor), pending.Request.UserCode!);
+        Assert.False(review.Eligibility!.CanApprove);
+        Assert.Equal(code, review.Eligibility.Failure!.Code);
+        Assert.Equal("lookup", review.Eligibility.Failure.Stage);
+        var rejected = await Assert.ThrowsAsync<IntegrationCredentialGrantValidationException>(() => fixture.Pairing.ApproveAsync(Principal(actor), fixture.Approval(pending)));
+        Assert.Equal(code, rejected.ReviewFailure!.Code);
+        Assert.Equal("approval", rejected.ReviewFailure.Stage);
+        Assert.Equal(IntegrationPairingState.Pending, (await fixture.Identity.IntegrationPairingRequests.SingleAsync()).State);
+        Assert.Empty(await fixture.Identity.IntegrationCredentialLifecycleEvents.Where(x => x.Action == "reconciled").ToArrayAsync());
+        Assert.DoesNotContain(fixture.Credential.Secret, JsonSerializer.Serialize(review.Eligibility));
+        Assert.DoesNotContain(pending.Request.UserCode!, JsonSerializer.Serialize(review.Eligibility));
+    }
+
+    [Fact]
+    public async Task Lookup_distinguishes_expired_and_decided_codes_from_invalid_or_unavailable_codes()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var proposal = fixture.Proposal("reconcile", fixture.Credential.CredentialId);
+        var pending = await fixture.Pairing.RequestReviewedAsync(proposal, "requester", fixture.Credential.CredentialId, Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production);
+        var invalid = await Assert.ThrowsAsync<IntegrationPairingUnavailableException>(() => fixture.Pairing.ReviewAsync(Principal("reviewer"), "invalid"));
+        Assert.Equal("review_code_invalid", invalid.ReviewFailure!.Code);
+        var unavailable = await Assert.ThrowsAsync<IntegrationPairingUnavailableException>(() => fixture.Pairing.ReviewAsync(Principal("reviewer"), "ZZZZ-ZZZZ"));
+        Assert.Null(unavailable.ReviewFailure);
+        await fixture.Pairing.ApproveAsync(Principal("reviewer"), fixture.Approval(pending));
+        var decided = await Assert.ThrowsAsync<IntegrationPairingUnavailableException>(() => fixture.Pairing.ReviewAsync(Principal("reviewer"), pending.Request.UserCode!));
+        Assert.Equal("review_request_not_pending", decided.ReviewFailure!.Code);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(10));
+        var expired = await Assert.ThrowsAsync<IntegrationPairingUnavailableException>(() => fixture.Pairing.ReviewAsync(Principal("reviewer"), pending.Request.UserCode!));
+        Assert.Equal("review_request_expired", expired.ReviewFailure!.Code);
+        var receipt = await fixture.Pairing.InspectReviewedAsync(proposal.RequestId, "requester", fixture.Credential.CredentialId);
+        Assert.Equal("expired", receipt.Request.Status);
+        Assert.Equal("review_request_expired", receipt.ReviewFailure!.Code);
+        Assert.True((await fixture.Credentials.ListAsync("requester")).Single().ExpiresAtUtc > fixture.Clock.GetUtcNow());
+    }
+
+    [Fact]
+    public async Task Proposed_credential_expiry_is_distinct_from_review_deadline_and_authority_loss()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var proposal = fixture.Proposal("create", null) with { ExpiresAtUtc = fixture.Clock.GetUtcNow().AddSeconds(10) };
+        var started = await fixture.Pairing.StartReviewedAsync(proposal, "requester", fixture.Credential.CredentialId, Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production);
+        var receipt = await fixture.Pairing.InspectReviewedAsync(proposal.RequestId, "requester", fixture.Credential.CredentialId);
+        fixture.Clock.Advance(TimeSpan.FromSeconds(11));
+        Assert.True(started.ExpiresAtUtc > fixture.Clock.GetUtcNow());
+        var review = await fixture.Pairing.ReviewAsync(Principal("reviewer"), started.UserCode);
+        Assert.False(review.Eligibility!.CanApprove);
+        Assert.Equal("review_credential_expiry_passed", review.Eligibility.Failure!.Code);
+        var failed = await Assert.ThrowsAsync<IntegrationCredentialGrantValidationException>(() => fixture.Pairing.ApproveAsync(Principal("reviewer"), fixture.Approval(receipt)));
+        Assert.Equal("review_credential_expiry_passed", failed.ReviewFailure!.Code);
+        Assert.Single(await fixture.Identity.IntegrationCredentials.ToArrayAsync());
+        Assert.Empty(await fixture.App.McpOperatorPolicies.ToArrayAsync());
+    }
+
     [Fact]
     public async Task Direct_reviewed_authority_rejects_unsupported_expiry_without_persisting_a_request()
     {
@@ -51,6 +232,77 @@ public sealed class ReviewedMcpAccessTests
         var serialized = JsonSerializer.Serialize(approved);
         Assert.DoesNotContain(fixture.Credential.Secret, serialized);
         Assert.DoesNotContain("DeviceCapability", serialized);
+    }
+
+    [Theory]
+    [InlineData("before_issue", false)]
+    [InlineData("redelivery", false)]
+    [InlineData("acknowledge", false)]
+    [InlineData("before_issue", true)]
+    [InlineData("redelivery", true)]
+    [InlineData("acknowledge", true)]
+    public async Task Protected_create_authority_or_binding_loss_retains_denial_reason_without_delivery_or_reissue(string stage, bool bindingChanged)
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        { ["Integration:HttpMcp:PublicResourceUri"] = Fixture.Resource }).Build();
+        using var brandingOptions = new OptionsMonitor<DeploymentBrandingOptions>(
+            new OptionsFactory<DeploymentBrandingOptions>([new ConfigureOptions<DeploymentBrandingOptions>(options => options.SiteUrl = Fixture.Origin)], []),
+            [], new OptionsCache<DeploymentBrandingOptions>());
+        var pairing = new IntegrationPairingService(fixture.Identity, fixture.Credentials,
+            new IntegrationCredentialGrantValidator(fixture.Identity, fixture.App, fixture.EffectiveAccess, fixture.Clock),
+            new EphemeralDataProtectionProvider(), fixture.Clock,
+            branding: new DeploymentBrandingService(fixture.Identity, brandingOptions), configuration: configuration,
+            applicationDb: fixture.App, effectiveAccess: fixture.EffectiveAccess,
+            policyAdministration: new McpOperatorPolicyAdministration(fixture.App), operatorAuthorization: fixture.Authorization);
+        var proposal = fixture.Proposal("create", null);
+        var start = await pairing.StartReviewedAsync(proposal, "requester", fixture.Credential.CredentialId, Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production);
+        var pending = await pairing.InspectReviewedAsync(proposal.RequestId, "requester", fixture.Credential.CredentialId);
+        await pairing.ApproveAsync(Principal("reviewer"), fixture.Approval(pending));
+        IntegrationPairingDelivery? delivery = null;
+        if (stage != "before_issue")
+        {
+            fixture.Clock.Advance(TimeSpan.FromSeconds(5));
+            delivery = (await pairing.PollAsync(start.DeviceCapability)).Delivery;
+            Assert.NotNull(delivery);
+        }
+        var approver = await fixture.Identity.Users.SingleAsync(x => x.PrincipalId == "reviewer");
+        if (bindingChanged) configuration["Integration:HttpMcp:PublicResourceUri"] = "https://changed-deployment.example.test/mcp";
+        else approver.IsInstanceAdministrator = false;
+        await fixture.Identity.SaveChangesAsync();
+        fixture.Clock.Advance(TimeSpan.FromSeconds(5));
+        var denied = stage == "acknowledge"
+            ? await pairing.AcknowledgeAsync(start.DeviceCapability, delivery!.CredentialId)
+            : await pairing.PollAsync(start.DeviceCapability);
+        Assert.Equal("denied", denied.Status);
+        Assert.Null(denied.Delivery);
+        var receipt = await pairing.InspectReviewedAsync(proposal.RequestId, "requester", fixture.Credential.CredentialId);
+        Assert.Equal("denied", receipt.Request.Status);
+        Assert.Equal(bindingChanged ? "review_binding_changed" : "review_approver_authority_missing", receipt.ReviewFailure!.Code);
+        Assert.Equal("resume", receipt.ReviewFailure.Stage);
+        Assert.Contains("new request", receipt.NextAction);
+        var row = await fixture.Identity.IntegrationPairingRequests.SingleAsync();
+        Assert.Null(row.ProtectedDelivery);
+        Assert.Null(row.DeliveryExpiresAtUtc);
+        if (delivery is not null)
+            Assert.Null(await fixture.Credentials.VerifyAsync(delivery.Secret, IntegrationCredentialPurpose.HttpMcp));
+        var serialized = JsonSerializer.Serialize(receipt);
+        Assert.DoesNotContain(start.DeviceCapability, serialized);
+        Assert.DoesNotContain(fixture.Credential.Secret, serialized);
+        if (delivery is not null) Assert.DoesNotContain(delivery.Secret, serialized);
+
+        // Restoring authority or deployment settings never reopens the denied request.
+        approver.IsInstanceAdministrator = true;
+        configuration["Integration:HttpMcp:PublicResourceUri"] = Fixture.Resource;
+        await fixture.Identity.SaveChangesAsync();
+        fixture.Clock.Advance(TimeSpan.FromSeconds(5));
+        var retry = await pairing.PollAsync(start.DeviceCapability);
+        Assert.Equal("denied", retry.Status);
+        Assert.Null(retry.Delivery);
+        var resumed = await pairing.InspectReviewedAsync(proposal.RequestId, "requester", fixture.Credential.CredentialId, resume: true);
+        Assert.Equal("denied", resumed.Request.Status);
+        Assert.Equal(receipt.ReviewFailure, resumed.ReviewFailure);
+        Assert.Equal(delivery is null ? 1 : 2, await fixture.Identity.IntegrationCredentials.CountAsync());
     }
 
     [Fact]
@@ -147,6 +399,10 @@ public sealed class ReviewedMcpAccessTests
         await fixture.Identity.SaveChangesAsync();
         var denied = await fixture.Pairing.InspectReviewedAsync(proposal.RequestId, "requester", fixture.Credential.CredentialId, resume: true);
         Assert.Equal("denied", denied.Request.Status);
+        Assert.Equal("review_approver_authority_missing", denied.ReviewFailure!.Code);
+        Assert.Equal("resume", denied.ReviewFailure.Stage);
+        Assert.Contains("new requestId", denied.NextAction);
+        Assert.Equal(denied.ReviewFailure, (await fixture.Pairing.InspectReviewedAsync(proposal.RequestId, "requester", fixture.Credential.CredentialId)).ReviewFailure);
         Assert.Empty(await fixture.App.McpOperatorPolicies.ToArrayAsync());
     }
 
@@ -157,19 +413,37 @@ public sealed class ReviewedMcpAccessTests
         public override DateTimeOffset GetUtcNow() => _now;
         public void Advance(TimeSpan span) => _now += span;
     }
+    internal sealed class TransientSaveFailureInterceptor : SaveChangesInterceptor
+    {
+        public bool FailNextSave { get; set; }
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (FailNextSave)
+            {
+                FailNextSave = false;
+                throw new TimeoutException("Synthetic persistence timeout");
+            }
+            return ValueTask.FromResult(result);
+        }
+    }
     internal sealed class Fixture : IAsyncDisposable
     {
         public const string Origin = "https://netratel.example.test";
         public const string Resource = Origin + "/mcp";
         public FrozenClock Clock { get; } = new();
-        public NetRatelIdentityDbContext Identity { get; } = new(new DbContextOptionsBuilder<NetRatelIdentityDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString()).ConfigureWarnings(x => x.Ignore(InMemoryEventId.TransactionIgnoredWarning)).Options);
+        public TransientSaveFailureInterceptor PersistenceFailure { get; } = new();
+        public NetRatelIdentityDbContext Identity { get; }
         public OrchestratorDbContext App { get; } = new(new DbContextOptionsBuilder<OrchestratorDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
         public IEffectiveAccessService EffectiveAccess { get; private set; } = null!;
         public IntegrationCredentialService Credentials { get; private set; } = null!;
         public IntegrationPairingService Pairing { get; private set; } = null!;
         public McpOperatorAuthorization Authorization { get; private set; } = null!;
         public IntegrationCredentialSecret Credential { get; private set; } = null!;
+        private Fixture()
+        {
+            Identity = new(new DbContextOptionsBuilder<NetRatelIdentityDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString())
+                .ConfigureWarnings(x => x.Ignore(InMemoryEventId.TransactionIgnoredWarning)).AddInterceptors(PersistenceFailure).Options);
+        }
         public static async Task<Fixture> CreateAsync()
         {
             var f = new Fixture();
