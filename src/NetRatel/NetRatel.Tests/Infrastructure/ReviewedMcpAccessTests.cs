@@ -5,9 +5,11 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
 using NetRatel.Application.Operations;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
+using NetRatel.Infrastructure.Identity.Branding;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Connectivity;
@@ -230,6 +232,77 @@ public sealed class ReviewedMcpAccessTests
         var serialized = JsonSerializer.Serialize(approved);
         Assert.DoesNotContain(fixture.Credential.Secret, serialized);
         Assert.DoesNotContain("DeviceCapability", serialized);
+    }
+
+    [Theory]
+    [InlineData("before_issue", false)]
+    [InlineData("redelivery", false)]
+    [InlineData("acknowledge", false)]
+    [InlineData("before_issue", true)]
+    [InlineData("redelivery", true)]
+    [InlineData("acknowledge", true)]
+    public async Task Protected_create_authority_or_binding_loss_retains_denial_reason_without_delivery_or_reissue(string stage, bool bindingChanged)
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        { ["Integration:HttpMcp:PublicResourceUri"] = Fixture.Resource }).Build();
+        using var brandingOptions = new OptionsMonitor<DeploymentBrandingOptions>(
+            new OptionsFactory<DeploymentBrandingOptions>([new ConfigureOptions<DeploymentBrandingOptions>(options => options.SiteUrl = Fixture.Origin)], []),
+            [], new OptionsCache<DeploymentBrandingOptions>());
+        var pairing = new IntegrationPairingService(fixture.Identity, fixture.Credentials,
+            new IntegrationCredentialGrantValidator(fixture.Identity, fixture.App, fixture.EffectiveAccess, fixture.Clock),
+            new EphemeralDataProtectionProvider(), fixture.Clock,
+            branding: new DeploymentBrandingService(fixture.Identity, brandingOptions), configuration: configuration,
+            applicationDb: fixture.App, effectiveAccess: fixture.EffectiveAccess,
+            policyAdministration: new McpOperatorPolicyAdministration(fixture.App), operatorAuthorization: fixture.Authorization);
+        var proposal = fixture.Proposal("create", null);
+        var start = await pairing.StartReviewedAsync(proposal, "requester", fixture.Credential.CredentialId, Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production);
+        var pending = await pairing.InspectReviewedAsync(proposal.RequestId, "requester", fixture.Credential.CredentialId);
+        await pairing.ApproveAsync(Principal("reviewer"), fixture.Approval(pending));
+        IntegrationPairingDelivery? delivery = null;
+        if (stage != "before_issue")
+        {
+            fixture.Clock.Advance(TimeSpan.FromSeconds(5));
+            delivery = (await pairing.PollAsync(start.DeviceCapability)).Delivery;
+            Assert.NotNull(delivery);
+        }
+        var approver = await fixture.Identity.Users.SingleAsync(x => x.PrincipalId == "reviewer");
+        if (bindingChanged) configuration["Integration:HttpMcp:PublicResourceUri"] = "https://changed-deployment.example.test/mcp";
+        else approver.IsInstanceAdministrator = false;
+        await fixture.Identity.SaveChangesAsync();
+        fixture.Clock.Advance(TimeSpan.FromSeconds(5));
+        var denied = stage == "acknowledge"
+            ? await pairing.AcknowledgeAsync(start.DeviceCapability, delivery!.CredentialId)
+            : await pairing.PollAsync(start.DeviceCapability);
+        Assert.Equal("denied", denied.Status);
+        Assert.Null(denied.Delivery);
+        var receipt = await pairing.InspectReviewedAsync(proposal.RequestId, "requester", fixture.Credential.CredentialId);
+        Assert.Equal("denied", receipt.Request.Status);
+        Assert.Equal(bindingChanged ? "review_binding_changed" : "review_approver_authority_missing", receipt.ReviewFailure!.Code);
+        Assert.Equal("resume", receipt.ReviewFailure.Stage);
+        Assert.Contains("new request", receipt.NextAction);
+        var row = await fixture.Identity.IntegrationPairingRequests.SingleAsync();
+        Assert.Null(row.ProtectedDelivery);
+        Assert.Null(row.DeliveryExpiresAtUtc);
+        if (delivery is not null)
+            Assert.Null(await fixture.Credentials.VerifyAsync(delivery.Secret, IntegrationCredentialPurpose.HttpMcp));
+        var serialized = JsonSerializer.Serialize(receipt);
+        Assert.DoesNotContain(start.DeviceCapability, serialized);
+        Assert.DoesNotContain(fixture.Credential.Secret, serialized);
+        if (delivery is not null) Assert.DoesNotContain(delivery.Secret, serialized);
+
+        // Restoring authority or deployment settings never reopens the denied request.
+        approver.IsInstanceAdministrator = true;
+        configuration["Integration:HttpMcp:PublicResourceUri"] = Fixture.Resource;
+        await fixture.Identity.SaveChangesAsync();
+        fixture.Clock.Advance(TimeSpan.FromSeconds(5));
+        var retry = await pairing.PollAsync(start.DeviceCapability);
+        Assert.Equal("denied", retry.Status);
+        Assert.Null(retry.Delivery);
+        var resumed = await pairing.InspectReviewedAsync(proposal.RequestId, "requester", fixture.Credential.CredentialId, resume: true);
+        Assert.Equal("denied", resumed.Request.Status);
+        Assert.Equal(receipt.ReviewFailure, resumed.ReviewFailure);
+        Assert.Equal(delivery is null ? 1 : 2, await fixture.Identity.IntegrationCredentials.CountAsync());
     }
 
     [Fact]

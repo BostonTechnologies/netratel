@@ -97,6 +97,7 @@
     private string? _error, _message, _failureCode, _correlationReference;
     private readonly CancellationTokenSource _lifetime = new();
     private const int MaximumProblemBytes = 16 * 1024;
+    private static readonly TimeSpan ResponseBodyTimeout = TimeSpan.FromSeconds(5);
     private HttpClient Api => Clients.CreateClient("OrchestratorApi");
     private async Task LookupAsync()
     {
@@ -107,6 +108,7 @@
             using var message = new HttpRequestMessage(HttpMethod.Post, IntegrationPairingProtocol.AccountRoute + "/lookup")
             { Content = JsonContent.Create(new IntegrationPairingCodeRequest(_entry.UserCode)) };
             using var response = await Api.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, _lifetime.Token);
+            if (_disposed) return;
             if (!response.IsSuccessStatusCode)
             {
                 var failure = await ReadProblemAsync(response);
@@ -121,7 +123,9 @@
                     };
                 return;
             }
-            var review = await response.Content.ReadFromJsonAsync<IntegrationPairingReview>(_lifetime.Token);
+            IntegrationPairingReview? review;
+            using (var bodyTimeout = CreateResponseBodyTimeout())
+                review = await response.Content.ReadFromJsonAsync<IntegrationPairingReview>(bodyTimeout.Token);
             var authority = review?.TemporaryVerifier == true || review?.ReviewedAccess is not null ? new PairingAuthority([], []) : await Api.GetFromJsonAsync<PairingAuthority>("/api/v2/account/integration-credentials/authority", _lifetime.Token);
             if (_disposed) return;
             if (review is null || authority is null) { _error = "Could not load the requested connection. Try again."; return; }
@@ -129,7 +133,7 @@
             _review = review; _authority = authority; _expiryReference = IntegrationCredentialExpiry.Reference(DateTimeOffset.UtcNow); UseThirtyDays();
             if (review.Eligibility?.Failure is { } eligibilityFailure) ShowReviewFailure(eligibilityFailure.Code, eligibilityFailure.CorrelationId ?? review.CorrelationId);
         }
-        catch (Exception exception) when (exception is HttpRequestException or JsonException or OperationCanceledException)
+        catch (Exception exception) when (exception is HttpRequestException or System.IO.IOException or JsonException or OperationCanceledException)
         { if (!_disposed) _error = "Could not check the connection. Your code is preserved; try again."; }
         finally { if (!_disposed) _busy = false; }
     }
@@ -174,6 +178,7 @@
                 var problem = await ReadProblemAsync(response);
                 if (!ShowReviewFailure(problem?.Code, problem?.CorrelationId))
                     _error = problem?.Errors?.ContainsKey("durableAuthority") == true ? IntegrationPairingProtocol.DurableAuthorityGuidance :
+                        (int)response.StatusCode >= 500 ? "The review service could not confirm your decision. Keep this code and inspect the client receipt before retrying." :
                         "The request changed or your access is no longer available. Review your selection or start a new client request.";
                 else if (_review?.ReviewedAccess is not null)
                     _review = _review with { Eligibility = new(false) };
@@ -184,7 +189,7 @@
             _message = action == "approve" ? "Connection approved. Return to your client to save its credential. You can revoke it here after setup." : "Connection denied. No credential was issued.";
             if (action == "approve") await Approved.InvokeAsync();
         }
-        catch (Exception exception) when (exception is HttpRequestException or JsonException or OperationCanceledException)
+        catch (Exception exception) when (exception is HttpRequestException or System.IO.IOException or JsonException or OperationCanceledException)
         { if (!_disposed) { _error = "Could not save your decision. Check the client status before trying again."; _confirmed = false; } }
         finally { if (!_disposed) _busy = false; }
     }
@@ -193,18 +198,31 @@
     private async Task<PairingValidationProblem?> ReadProblemAsync(HttpResponseMessage response)
     {
         if (response.Content.Headers.ContentLength > MaximumProblemBytes) return null;
-        await using var stream = await response.Content.ReadAsStreamAsync(_lifetime.Token);
-        var bytes = new byte[MaximumProblemBytes + 1];
-        var length = 0;
-        while (length < bytes.Length)
+        using var bodyTimeout = CreateResponseBodyTimeout();
+        try
         {
-            var read = await stream.ReadAsync(bytes.AsMemory(length), _lifetime.Token);
-            if (read == 0) break;
-            length += read;
+            await using var stream = await response.Content.ReadAsStreamAsync(bodyTimeout.Token);
+            var bytes = new byte[MaximumProblemBytes + 1];
+            var length = 0;
+            while (length < bytes.Length)
+            {
+                var read = await stream.ReadAsync(bytes.AsMemory(length), bodyTimeout.Token);
+                if (read == 0) break;
+                length += read;
+            }
+            if (length is 0 or > MaximumProblemBytes) return null;
+            return JsonSerializer.Deserialize<PairingValidationProblem>(bytes.AsSpan(0, length), new JsonSerializerOptions(JsonSerializerDefaults.Web));
         }
-        if (length is 0 or > MaximumProblemBytes) return null;
-        try { return JsonSerializer.Deserialize<PairingValidationProblem>(bytes.AsSpan(0, length), new JsonSerializerOptions(JsonSerializerDefaults.Web)); }
         catch (JsonException) { return null; } // The caller still handles the HTTP status using fixed, safe guidance.
+        catch (System.IO.IOException) { return null; } // A reset or truncated body does not change the known HTTP status.
+        catch (OperationCanceledException) when (bodyTimeout.IsCancellationRequested && !_lifetime.IsCancellationRequested)
+        { return null; } // A stalled body must not replace the known HTTP status or leave the form busy.
+    }
+    private CancellationTokenSource CreateResponseBodyTimeout()
+    {
+        var timeout = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        timeout.CancelAfter(ResponseBodyTimeout);
+        return timeout;
     }
     private bool ShowReviewFailure(string? code, string? correlationId)
     {

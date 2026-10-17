@@ -34,7 +34,7 @@ public sealed class McpHttpDiscoveryTests
         {
             protocolVersion = "2025-11-25", capabilities = new { }, clientInfo = new { name = "discovery-test", version = "1.0" }
         });
-        var hostIdentity = NetRatelMcpReleaseIdentity.FromAssembly(typeof(NetRatelMcpHttpApplication).Assembly);
+        var hostIdentity = NetRatelMcpReleaseIdentity.ReadAssemblyMetadata(typeof(NetRatelMcpHttpApplication).Assembly);
         Assert.Equal(hostIdentity.ProductVersion, initialized.RootElement.GetProperty("result").GetProperty("serverInfo").GetProperty("version").GetString());
         Assert.Equal("2025-11-25", initialized.RootElement.GetProperty("result").GetProperty("protocolVersion").GetString());
 

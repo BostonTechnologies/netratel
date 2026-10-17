@@ -64,7 +64,7 @@ public static class NetRatelMcpHttpApplication
             "NetRatel.Mcp.Http",
             httpOptions.IsOperatorSurfaceEnabled)
         {
-            ReleaseIdentity = NetRatelMcpReleaseIdentity.FromAssembly(typeof(NetRatelMcpHttpApplication).Assembly)
+            ReleaseIdentity = NetRatelMcpReleaseIdentity.ReadAssemblyMetadata(typeof(NetRatelMcpHttpApplication).Assembly)
         };
         builder.Services.AddNetRatelMcpCore(hostContext);
         builder.Services.AddSingleton(targetBinding);

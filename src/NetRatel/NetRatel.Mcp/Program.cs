@@ -47,7 +47,7 @@ var hostContext = new NetRatelMcpHostContext(
     NetRatelMcpTransport.Stdio,
     "NetRatel.Mcp")
 {
-    ReleaseIdentity = NetRatelMcpReleaseIdentity.FromAssembly(typeof(NetRatelMcpStdioApiClient).Assembly)
+    ReleaseIdentity = NetRatelMcpReleaseIdentity.ReadAssemblyMetadata(typeof(NetRatelMcpStdioApiClient).Assembly)
 };
 builder.Services.AddSingleton(configuration);
 builder.Services.AddSingleton(configurationStore);

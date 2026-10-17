@@ -100,6 +100,82 @@ public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
         transport.ApprovalRequests.Should().Be(0);
     }
 
+    [Theory]
+    [InlineData(HttpStatusCode.ServiceUnavailable, "service could not complete lookup")]
+    [InlineData(HttpStatusCode.OK, "Your code is preserved")]
+    public async Task Headers_without_a_completing_lookup_body_release_the_form_and_preserve_the_code(HttpStatusCode status, string guidance)
+    {
+        using var transport = Configure();
+        transport.LookupStatus = status;
+        transport.StallLookupBody = true;
+        var panel = Render<IntegrationPairingApprovalPanel>();
+        panel.Find("input").Change("ABCD-EFGH");
+        var submission = panel.Find("form").SubmitAsync(EventArgs.Empty);
+        await transport.StalledBody.ReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await submission.WaitAsync(TimeSpan.FromSeconds(8));
+        panel.Find("[data-testid='pairing-error']").TextContent.Should().Contain(guidance).And.NotContain("unavailable or expired");
+        panel.Find("input").GetAttribute("value").Should().Be("ABCD-EFGH");
+        panel.Find("[data-testid='pairing-lookup']").HasAttribute("disabled").Should().BeFalse();
+        transport.StalledBody.CancellationObserved.Should().BeTrue();
+        transport.ApprovalRequests.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.ServiceUnavailable, "service could not complete lookup")]
+    [InlineData(HttpStatusCode.OK, "Your code is preserved")]
+    public async Task Reset_lookup_body_preserves_safe_status_guidance_and_the_code(HttpStatusCode status, string guidance)
+    {
+        using var transport = Configure();
+        transport.LookupStatus = status;
+        transport.ResetLookupBody = true;
+        var panel = Render<IntegrationPairingApprovalPanel>();
+        panel.Find("input").Change("ABCD-EFGH");
+        await panel.Find("form").SubmitAsync(EventArgs.Empty);
+        panel.Find("[data-testid='pairing-error']").TextContent.Should().Contain(guidance).And.NotContain("unavailable or expired");
+        panel.Markup.Should().NotContain("synthetic-private-stream-diagnostic");
+        panel.Find("input").GetAttribute("value").Should().Be("ABCD-EFGH");
+        panel.Find("[data-testid='pairing-lookup']").HasAttribute("disabled").Should().BeFalse();
+        transport.ApprovalRequests.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Stalled_decision_error_preserves_uncertain_outcome_and_requires_confirmation_again()
+    {
+        using var transport = Configure();
+        transport.ReviewedAccess = true;
+        transport.StallApprovalBody = true;
+        var panel = Render<IntegrationPairingApprovalPanel>();
+        panel.Find("input").Change("ABCD-EFGH");
+        await panel.Find("form").SubmitAsync(EventArgs.Empty);
+        panel.Find("[data-testid='pairing-confirm']").Change(true);
+        var decision = panel.Find("[data-testid='pairing-approve']").ClickAsync(new());
+        await transport.StalledBody.ReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await decision.WaitAsync(TimeSpan.FromSeconds(8));
+        panel.Find("[data-testid='pairing-error']").TextContent.Should().Contain("could not confirm your decision").And.Contain("inspect the client receipt");
+        panel.Find("[data-testid='pairing-confirm-code']").TextContent.Should().Be("ABCD-EFGH");
+        panel.Find("[data-testid='pairing-confirm']").HasAttribute("checked").Should().BeFalse();
+        panel.Find("[data-testid='pairing-confirm']").HasAttribute("disabled").Should().BeFalse();
+        panel.Find("[data-testid='pairing-approve']").HasAttribute("disabled").Should().BeTrue();
+        transport.StalledBody.CancellationObserved.Should().BeTrue();
+        transport.ApprovalRequests.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Disposing_the_component_cancels_a_stalled_body_without_waiting_for_the_read_timeout()
+    {
+        using var transport = Configure();
+        transport.LookupStatus = HttpStatusCode.ServiceUnavailable;
+        transport.StallLookupBody = true;
+        var panel = Render<IntegrationPairingApprovalPanel>();
+        panel.Find("input").Change("ABCD-EFGH");
+        var submission = panel.Find("form").SubmitAsync(EventArgs.Empty);
+        await transport.StalledBody.ReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await DisposeComponentsAsync();
+        await submission.WaitAsync(TimeSpan.FromSeconds(2));
+        transport.StalledBody.CancellationObserved.Should().BeTrue();
+        transport.ApprovalRequests.Should().Be(0);
+    }
+
     [Fact]
     public void Host_approval_reviews_exact_generation_and_keeps_personal_credential_approval_separate()
     {
@@ -274,6 +350,10 @@ public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
         public HttpStatusCode LookupStatus { get; set; } = HttpStatusCode.OK;
         public string? LookupBody { get; set; }
         public TrackedResponseStream? LookupStream { get; private set; }
+        public bool StallLookupBody { get; set; }
+        public bool ResetLookupBody { get; set; }
+        public bool StallApprovalBody { get; set; }
+        public StalledResponseStream StalledBody { get; } = new();
         public bool DurableAuthorityRejection { get; set; }
         public bool ReviewedAccess { get; set; }
         public bool ReviewEligible { get; set; } = true;
@@ -288,6 +368,10 @@ public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
         {
             var path = request.RequestUri!.AbsolutePath;
             if (path == "/api/v2/access/self") return new(HttpStatusCode.OK) { Content = JsonContent.Create(new { isInstanceAdministrator = Administrator }) };
+            if (path.EndsWith("/lookup", StringComparison.Ordinal) && ResetLookupBody)
+                return new(LookupStatus) { Content = new StreamContent(new ResetResponseStream()) };
+            if (path.EndsWith("/lookup", StringComparison.Ordinal) && StallLookupBody)
+                return new(LookupStatus) { Content = new StreamContent(StalledBody) };
             if (path.EndsWith("/lookup", StringComparison.Ordinal) && LookupStatus != HttpStatusCode.OK)
             {
                 if (LookupBody is null) return new(LookupStatus);
@@ -322,6 +406,7 @@ public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
             {
                 ApprovalRequests++;
                 Approved = await request.Content!.ReadFromJsonAsync<IntegrationPairingApprovalRequest>(cancellationToken);
+                if (StallApprovalBody) return new(HttpStatusCode.ServiceUnavailable) { Content = new StreamContent(StalledBody) };
                 if (ReviewFailureCode is { } reviewCode) return new(HttpStatusCode.Forbidden)
                 { Content = JsonContent.Create(IntegrationPairingFailure.ForCode(reviewCode, "approval") with { CorrelationId = "synthetic-review-reference", Remediation = "synthetic-untrusted-upstream-body" }) };
                 if (RejectApproval && DurableAuthorityRejection) return new(HttpStatusCode.BadRequest)
@@ -341,5 +426,28 @@ public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
             BytesRead += read;
             return read;
         }
+    }
+    private sealed class StalledResponseStream : MemoryStream
+    {
+        private readonly TaskCompletionSource<int> _uncompletedBody = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReadStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool CancellationObserved { get; private set; }
+        public override bool CanSeek => false;
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            ReadStarted.TrySetResult();
+            try { return await _uncompletedBody.Task.WaitAsync(cancellationToken); }
+            finally { CancellationObserved = cancellationToken.IsCancellationRequested; }
+        }
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            => ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+    }
+    private sealed class ResetResponseStream : MemoryStream
+    {
+        public override bool CanSeek => false;
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            => ValueTask.FromException<int>(new IOException("synthetic-private-stream-diagnostic"));
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            => ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
     }
 }

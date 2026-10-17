@@ -162,7 +162,7 @@ public sealed class McpCatalogDiscoveryTests
     {
         var assembly = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("Synthetic.Mcp") { Version = new Version(0, 1, 1, 0) }, AssemblyBuilderAccess.Run);
         assembly.SetCustomAttribute(new CustomAttributeBuilder(typeof(AssemblyInformationalVersionAttribute).GetConstructor([typeof(string)])!, [informationalVersion]));
-        var identity = NetRatelMcpReleaseIdentity.FromAssembly(assembly);
+        var identity = NetRatelMcpReleaseIdentity.ReadAssemblyMetadata(assembly);
         Assert.Equal("Synthetic.Mcp", identity.ServiceName);
         Assert.Equal("0.1.1-beta.24", identity.ProductVersion);
         Assert.Equal(informationalVersion, identity.InformationalVersion);
@@ -191,7 +191,7 @@ public sealed class McpCatalogDiscoveryTests
         assembly.SetCustomAttribute(new CustomAttributeBuilder(metadataConstructor, ["ProductVersion", "0.1.1-beta.24"]));
         assembly.SetCustomAttribute(new CustomAttributeBuilder(metadataConstructor, ["SourceRevisionId", publicSourceRevision]));
 
-        var identity = NetRatelMcpReleaseIdentity.FromAssembly(assembly);
+        var identity = NetRatelMcpReleaseIdentity.ReadAssemblyMetadata(assembly);
         Assert.Equal("0.1.1-beta.24", identity.ProductVersion);
         Assert.Equal(expectedSourceRevision, identity.SourceRevision);
         var status = new NetRatelMcpCatalogTools(Host() with { ReleaseIdentity = identity }).netratel_capabilities("status");

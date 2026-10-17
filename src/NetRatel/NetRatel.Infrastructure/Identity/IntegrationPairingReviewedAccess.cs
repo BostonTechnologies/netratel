@@ -181,9 +181,6 @@ public sealed partial class IntegrationPairingService
             throw ReviewValidation("review_proposal_changed", "approval", "reviewedProposal");
     }
 
-    private async Task<bool> ReviewedAuthorityIsCurrentAsync(IntegrationPairingRequest request, ReviewedAccessMetadata metadata, CancellationToken ct) =>
-        await ReviewedAuthorityFailureAsync(request, metadata, metadata.ApproverPrincipalId, "resume", ct).ConfigureAwait(false) is null;
-
     private async Task<IntegrationPairingFailure?> ReviewedAuthorityFailureAsync(IntegrationPairingRequest request,
         ReviewedAccessMetadata metadata, string? approver, string stage, CancellationToken ct)
     {

@@ -287,16 +287,27 @@ public sealed partial class IntegrationPairingService(NetRatelIdentityDbContext 
 
     private async Task<bool> ValidateApprovalAsync(IntegrationPairingRequest request, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(request.OwnerPrincipalId) || !await BindingIsCurrentAsync(request, ct).ConfigureAwait(false)) return false;
+        if (string.IsNullOrWhiteSpace(request.OwnerPrincipalId)) return false;
         var owner = new ClaimsPrincipal(new ClaimsIdentity([new Claim("netratel_principal_id", request.OwnerPrincipalId)], "pairing-owner"));
         try
         {
-            if (AccessMetadata(request) is { } reviewed && !await ReviewedAuthorityIsCurrentAsync(request, reviewed, ct).ConfigureAwait(false)) return false;
+            var reviewed = AccessMetadata(request);
+            if (reviewed is not null)
+            {
+                if (await ReviewedAuthorityFailureAsync(request, reviewed, reviewed.ApproverPrincipalId, "resume", ct).ConfigureAwait(false) is { } failure)
+                {
+                    // This includes the current deployment binding. Preserve its reason
+                    // with the existing protected-path denial/revocation for later receipts.
+                    request.RequestedPermissionsJson = JsonSerializer.Serialize(reviewed with { ReviewFailure = failure });
+                    return false;
+                }
+            }
+            else if (!await BindingIsCurrentAsync(request, ct).ConfigureAwait(false)) return false;
             if (IsTemporaryVerifier(request) && (request.Purpose != IntegrationCredentialPurpose.HttpMcp ||
                 request.CredentialExpiresAtUtc > request.ExpiresAtUtc.Add(TemporaryVerifierLifetime) ||
                 Deserialize<IntegrationCredentialGrantRequest>(request.ApprovedGrantsJson!).Length != 0 ||
                 !Deserialize<string>(request.ApprovedInstancePermissionsJson!).SequenceEqual([VerifierPermission]))) return false;
-            if (AccessMetadata(request)?.Proposal.Action != "revoke") await validator.ValidateAsync(owner, CreateRequest(request), ct).ConfigureAwait(false);
+            if (reviewed?.Proposal.Action != "revoke") await validator.ValidateAsync(owner, CreateRequest(request), ct).ConfigureAwait(false);
             if (request.CredentialId is not null)
             {
                 var credential = await db.IntegrationCredentials.AsNoTracking().SingleOrDefaultAsync(candidate => candidate.Id == request.CredentialId, ct).ConfigureAwait(false);

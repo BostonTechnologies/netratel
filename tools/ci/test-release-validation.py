@@ -2582,7 +2582,7 @@ class WindowsMcpArchiveTests(unittest.TestCase):
                 del self.files[name]
 
     def test_potential_key_material_is_rejected(self):
-        self.files["extra.txt"] = b"-----BEGIN PRIVATE KEY-----\nsynthetic-marker-only\n"
+        self.files["extra.txt"] = b"-----BEGIN " + b"PRIVATE KEY-----\nsynthetic-marker-only\n"
         self.write_bundle()
         with self.assertRaisesRegex(ValueError, "potential key material"): self.verify()
 

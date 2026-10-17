@@ -10,7 +10,7 @@ public sealed record NetRatelMcpReleaseIdentity(
     string? AssemblyVersion,
     string? SourceRevision)
 {
-    public static NetRatelMcpReleaseIdentity FromAssembly(Assembly assembly)
+    public static NetRatelMcpReleaseIdentity ReadAssemblyMetadata(Assembly assembly)
     {
         ArgumentNullException.ThrowIfNull(assembly);
         var informationalVersion = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;

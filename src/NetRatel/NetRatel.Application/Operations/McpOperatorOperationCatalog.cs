@@ -34,7 +34,7 @@ public static class McpOperatorOperationCatalog
         .. Register(McpOperatorOperationFamily.Observability, McpOperatorConfirmationClass.None, "netratel_auth", "status"),
         .. Register(McpOperatorOperationFamily.Observability, McpOperatorConfirmationClass.None, "netratel_health", "get"),
         .. Register(McpOperatorOperationFamily.Observability, McpOperatorConfirmationClass.None, "netratel_system", "version"),
-        .. Register(McpOperatorOperationFamily.Observability, McpOperatorConfirmationClass.None, "netratel_capabilities", "get"),
+        .. Register(McpOperatorOperationFamily.Observability, McpOperatorConfirmationClass.None, "netratel_capabilities", "get", "status", "schema"),
         .. Register(McpOperatorOperationFamily.Observability, McpOperatorConfirmationClass.None, "netratel_access", "whoami", "effective", "evaluate", "target", "request", "requests", "receipt", "resume", "cancel", "credential"),
         .. Register(McpOperatorOperationFamily.PolicyAdministration, McpOperatorConfirmationClass.None, "netratel_policy", "policies", "policy", "change_audits", "accepted_audits", "target", "matches", "evaluate", "preview_create", "preview_replace", "preview_disable", "preview_revoke", "preview_target_profile"),
         .. Register(McpOperatorOperationFamily.PolicyAdministration, McpOperatorConfirmationClass.PolicyAdministration, "netratel_policy", "confirm_create", "confirm_replace", "confirm_disable", "confirm_revoke", "confirm_target_profile"),
