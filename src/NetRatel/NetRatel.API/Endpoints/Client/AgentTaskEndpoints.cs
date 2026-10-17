@@ -87,6 +87,7 @@ public static class AgentTaskEndpoints
             HttpContext http,
             [FromServices] IEffectiveAccessService access,
             [FromServices] OrchestratorDbContext db,
+            IJobRunService runs,
             CancellationToken ct) =>
         {
             var resolvedPage = page ?? 0;
@@ -111,8 +112,14 @@ public static class AgentTaskEndpoints
             var total = await query.CountAsync(ct);
             var items = await query.Skip(resolvedPage * resolvedPageSize).Take(resolvedPageSize).ToListAsync(ct);
 
+            var projected = new List<TaskHistoryItemDto>();
+            foreach (var item in items)
+            {
+                var safe = await runs.GetActivityByIdAsync((ulong)item.Id, ct);
+                if (safe is not null) projected.Add(MapHistoryItem(item with { Error = safe.Error, CommandLabel = safe.CommandLabel }));
+            }
             return Results.Ok(new TaskHistoryPageDto(
-                items.Select(MapHistoryItem).ToList(),
+                projected,
                 total,
                 resolvedPage,
                 resolvedPageSize));

@@ -34,6 +34,8 @@ public static class IntegrationPermissionCatalog
         new(NetRatelPermissions.TenantAdministration, "Administer tenant", "Change tenant-level settings and authority."),
         new(NetRatelPermissions.UserRoleAdministration, "Manage identities", "Change user and role assignments."),
         new(NetRatelPermissions.McpDiscoveryRead, "Discover MCP capabilities", "List the MCP operations permitted by this credential."),
+        new(NetRatelPermissions.McpConnectivityRead, "Inspect MCP connectivity", "Inspect redacted server-owned connectivity configuration and prepare a probe preview without sending it."),
+        new(NetRatelPermissions.McpConnectivityTest, "Test MCP connectivity", "Confirm one bounded probe to the server-owned destination; also requires connectivity inspection and the reviewed control-plane policy."),
         new(NetRatelPermissions.McpPolicyAdministration, "Manage MCP policy", "Change MCP operation policy.")
     ];
 }

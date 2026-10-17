@@ -1,45 +1,65 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.DataProtection;
 using NetRatel.Application.Jobs;
 using NetRatel.Infrastructure.Persistence;
 
 namespace NetRatel.Infrastructure.Services;
 
-public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
+public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvider protection) : IJobRunService
 {
     private const int TaskActivityInsertAttempts = 4;
     private readonly OrchestratorDbContext _db = db;
+    private readonly JobRunInputProtection _protection = new(protection);
+    private readonly Dictionary<ulong, (ulong JobId, int? TenantId, JobRunInputProtection.Sensitivity Metadata)> _submissions = [];
+
+    public void BindSubmittedDefinition(ulong runId, JobDefinitionDetails definition)
+    {
+        var job = new JobDefinition { Id = checked((long)definition.Job.Id), UpdatedAtUtc = definition.Job.UpdatedAtUtc };
+        var parameters = definition.Params.Select(p => new JobParameterDefinition
+            { Id = checked((long)p.Id), Name = p.Name, Type = p.Type, Required = p.Required });
+        // Bind exactly once; later lifecycle calls cannot replace submission sensitivity.
+        _submissions.TryAdd(runId, (definition.Job.Id, definition.Job.TenantId, JobRunInputProtection.Capture(job, parameters)));
+    }
 
     public async Task<IReadOnlyList<JobRunInfo>> ListAsync(CancellationToken ct = default)
-        => await _db.JobRuns
-            .AsNoTracking()
-            .OrderByDescending(x => x.CreatedAtUtc)
-            .Select(MapRun())
-            .ToListAsync(ct);
+    {
+        await ProtectLegacyAsync(null, ct);
+        return (await _db.JobRuns.AsNoTracking().OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct))
+            .Select(Map).ToList();
+    }
 
     public async Task<JobRunInfo?> GetAsync(ulong runId, CancellationToken ct = default)
-        => await _db.JobRuns
-            .AsNoTracking()
-            .Where(x => x.Id == (long)runId)
-            .Select(MapRun())
-            .FirstOrDefaultAsync(ct);
+    {
+        await ProtectLegacyAsync((long)runId, ct);
+        var row = await _db.JobRuns.AsNoTracking().FirstOrDefaultAsync(x => x.Id == (long)runId, ct);
+        return row is null ? null : Map(row);
+    }
+
+    public async Task<string?> GetExecutionInputsAsync(ulong runId, CancellationToken ct = default)
+    {
+        await ProtectLegacyAsync((long)runId, ct);
+        var row = await _db.JobRuns.AsNoTracking().FirstOrDefaultAsync(x => x.Id == (long)runId, ct);
+        return row is null ? null : _protection.ForExecution(row).InputsJson;
+    }
+
+    public async Task<string?> GetExecutionOptionsAsync(ulong runId, CancellationToken ct = default)
+    {
+        await ProtectLegacyAsync((long)runId, ct);
+        var row = await _db.JobRuns.AsNoTracking().FirstOrDefaultAsync(x => x.Id == (long)runId, ct);
+        return row is null ? null : _protection.ForExecution(row).OptionsJson;
+    }
 
     public async Task<JobRunDetails?> GetDetailsAsync(ulong runId, CancellationToken ct = default)
     {
-        var run = await _db.JobRuns
-            .AsNoTracking()
-            .Include(x => x.Steps)
-            .Include(x => x.Activities)
+        await ProtectLegacyAsync((long)runId, ct);
+        var run = await _db.JobRuns.AsNoTracking().Include(x => x.Steps).Include(x => x.Activities)
             .FirstOrDefaultAsync(x => x.Id == (long)runId, ct);
-
-        if (run is null)
-        {
-            return null;
-        }
-
-        return new JobRunDetails(
-            Map(run),
-            run.Steps.OrderBy(x => x.Ordinal).ThenBy(x => x.Id).Select(Map).ToList(),
-            run.Activities.OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Id).Select(Map).ToList());
+        if (run is null) return null;
+        return new JobRunDetails(Map(run),
+            run.Steps.OrderBy(x => x.Ordinal).ThenBy(x => x.Id)
+                .Select(x => Map(x) with { Error = _protection.Diagnostic(run, x.Error) }).ToList(),
+            run.Activities.OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Id)
+                .Select(x => SanitizeActivity(run, Map(x))).ToList());
     }
 
     public async Task DeleteAsync(ulong runId, CancellationToken ct = default)
@@ -76,46 +96,53 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
     }
 
     public async Task<JobTaskActivityInfo?> GetActivityByRequestIdAsync(string requestId, CancellationToken ct = default)
-        => await _db.JobTaskActivities
-            .AsNoTracking()
-            .Where(x => x.RequestId == requestId)
-            .OrderByDescending(x => x.CreatedAtUtc)
-            .ThenByDescending(x => x.Id)
-            .Select(MapActivity())
-            .FirstOrDefaultAsync(ct);
+    {
+        var row = await _db.JobTaskActivities.AsNoTracking().Where(x => x.RequestId == requestId)
+            .OrderByDescending(x => x.CreatedAtUtc).ThenByDescending(x => x.Id).FirstOrDefaultAsync(ct);
+        return row is null ? null : await SanitizeActivityAsync(row, ct);
+    }
 
     public async Task<IReadOnlyList<JobTaskActivityInfo>> ListTaskActivitiesAsync(CancellationToken ct = default)
-        => await _db.JobTaskActivities
-            .AsNoTracking()
-            .OrderByDescending(x => x.CreatedAtUtc)
-            .Select(MapActivity())
-            .ToListAsync(ct);
+    {
+        var result = new List<JobTaskActivityInfo>();
+        foreach (var row in await _db.JobTaskActivities.AsNoTracking().OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct))
+            result.Add(await SanitizeActivityAsync(row, ct));
+        return result;
+    }
 
     public async Task<JobTaskActivityInfo?> GetActivityByIdAsync(ulong activityId, CancellationToken ct = default)
-        => await _db.JobTaskActivities
-            .AsNoTracking()
-            .Where(x => x.Id == (long)activityId)
-            .Select(MapActivity())
-            .FirstOrDefaultAsync(ct);
+    {
+        var row = await _db.JobTaskActivities.AsNoTracking().FirstOrDefaultAsync(x => x.Id == (long)activityId, ct);
+        return row is null ? null : await SanitizeActivityAsync(row, ct);
+    }
 
     public async Task<IReadOnlyList<JobTaskLogInfo>> GetLogsByRequestIdAsync(string requestId, CancellationToken ct = default)
-        => await _db.JobTaskLogs
-            .AsNoTracking()
-            .Where(x => x.RequestId == requestId)
-            .OrderBy(x => x.Sequence)
-            .ThenBy(x => x.Id)
-            .Select(MapLog())
-            .ToListAsync(ct);
+    {
+        var run = await FindActivityRunAsync(requestId, ct);
+        if (run is not null && run.ProtectedExecutionJson is null)
+        {
+            await ProtectLegacyAsync(run.Id, ct);
+            run = await FindActivityRunAsync(requestId, ct);
+        }
+        var logs = await _db.JobTaskLogs.AsNoTracking().Where(x => x.RequestId == requestId)
+            .OrderBy(x => x.Sequence).ThenBy(x => x.Id).ToListAsync(ct);
+        return logs.Select(x => Map(x) with { Message = run is null ? x.Message : _protection.Diagnostic(run, x.Message)! }).ToList();
+    }
 
     public async Task<JobRunInfo> UpsertRunAsync(UpsertJobRunCommand command, CancellationToken ct = default)
     {
         var row = await _db.JobRuns.FirstOrDefaultAsync(x => x.Id == (long)command.RunId, ct);
+        var isNew = row is null;
         if (row is null)
         {
             row = new JobRunRecord { Id = (long)command.RunId };
             _db.JobRuns.Add(row);
         }
 
+        if (!isNew && (row.JobId != (long)command.JobId || row.TenantId != command.TenantId))
+            throw new InvalidOperationException("The submitted run identity cannot change.");
+        var capture = row.ProtectedExecutionJson is null;
+        var existingHistory = capture && !isNew;
         row.JobId = (long)command.JobId;
         row.TenantId = command.TenantId;
         row.AgentId = command.AgentId;
@@ -136,9 +163,29 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
         {
             row.CompletedAtUtc = command.CompletedAtUtc;
         }
-        row.Error = NormalizeNullable(command.Error);
-        row.InputsJson = command.InputsJson;
-        row.OptionsJson = command.OptionsJson;
+        if (capture)
+        {
+            JobRunInputProtection.Sensitivity metadata;
+            if (existingHistory) metadata = new("legacy-unknown-v1", null, []);
+            else if (_submissions.TryGetValue(command.RunId, out var submitted))
+            {
+                if (submitted.JobId != command.JobId || submitted.TenantId != command.TenantId)
+                    throw new InvalidOperationException("The run differs from its submitted definition binding.");
+                metadata = submitted.Metadata;
+            }
+            else
+            {
+                // Non-actor ingress creates its durable intent here. One SQL snapshot owns
+                // both the definition and parameter sensitivity at that submission boundary.
+                var definition = await _db.Jobs.AsNoTracking().Include(x => x.Parameters).AsSingleQuery()
+                    .SingleOrDefaultAsync(x => x.Id == row.JobId && x.TenantId == row.TenantId, ct);
+                metadata = JobRunInputProtection.Capture(definition, definition?.Parameters ?? []);
+            }
+            _protection.Store(row, metadata,
+                existingHistory ? row.InputsJson : command.InputsJson,
+                existingHistory ? row.OptionsJson : command.OptionsJson);
+        }
+        row.Error = _protection.Diagnostic(row, NormalizeNullable(command.Error));
 
         await SaveAndNotifyAsync(ct);
         return Map(row);
@@ -179,7 +226,7 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
             var existing = await _db.JobTaskActivities.FirstOrDefaultAsync(x => x.RequestId == command.RequestId, ct);
             if (existing is not null)
             {
-                return Map(existing);
+                return await SanitizeActivityAsync(existing, ct);
             }
 
             var row = BuildTaskActivity(command, await AllocateNextTaskActivityIdAsync(ct));
@@ -188,7 +235,7 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
             try
             {
                 await SaveAndNotifyAsync(ct);
-                return Map(row);
+                return await SanitizeActivityAsync(row, ct);
             }
             catch (DbUpdateException ex) when (IsUniqueViolation(ex))
             {
@@ -199,7 +246,7 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
                     .FirstOrDefaultAsync(x => x.RequestId == command.RequestId, ct);
                 if (existing is not null)
                 {
-                    return Map(existing);
+                    return await SanitizeActivityAsync(existing, ct);
                 }
             }
         }
@@ -207,13 +254,13 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
         var finalExisting = await _db.JobTaskActivities.FirstOrDefaultAsync(x => x.RequestId == command.RequestId, ct);
         if (finalExisting is not null)
         {
-            return Map(finalExisting);
+            return await SanitizeActivityAsync(finalExisting, ct);
         }
 
         var finalRow = BuildTaskActivity(command, await AllocateNextTaskActivityIdAsync(ct));
         _db.JobTaskActivities.Add(finalRow);
         await SaveAndNotifyAsync(ct);
-        return Map(finalRow);
+        return await SanitizeActivityAsync(finalRow, ct);
     }
 
     public async Task<JobTaskActivityInfo> UpsertTaskActivityAsync(UpsertJobTaskActivityCommand command, CancellationToken ct = default)
@@ -236,7 +283,7 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
             try
             {
                 await SaveAndNotifyAsync(ct);
-                return Map(row);
+                return await SanitizeActivityAsync(row, ct);
             }
             catch (DbUpdateException ex) when (IsUniqueViolation(ex))
             {
@@ -247,7 +294,7 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
                     .FirstOrDefaultAsync(x => x.RequestId == command.RequestId, ct);
                 if (existing is not null)
                 {
-                    return Map(existing);
+                    return await SanitizeActivityAsync(existing, ct);
                 }
             }
         }
@@ -264,7 +311,7 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
         }
 
         await SaveAndNotifyAsync(ct);
-        return Map(finalRow);
+        return await SanitizeActivityAsync(finalRow, ct);
     }
 
     public async Task<JobTaskLogInfo> AppendTaskLogAsync(AppendJobTaskLogCommand command, CancellationToken ct = default)
@@ -277,7 +324,8 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
 
         if (existing is not null)
         {
-            return Map(existing);
+            var run = await FindActivityRunAsync(existing.RequestId, ct);
+            return Map(existing) with { Message = run is null ? existing.Message : _protection.Diagnostic(run, existing.Message)! };
         }
 
         var row = new JobTaskLogRecord
@@ -307,7 +355,7 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
 
         if (IsTerminal(row.Status) && !IsTerminal(command.Status))
         {
-            return Map(row);
+            return await SanitizeActivityAsync(row, ct);
         }
 
         row.Status = command.Status.Trim();
@@ -334,11 +382,101 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
         }
 
         await SaveAndNotifyAsync(ct);
-        return Map(row);
+        return await SanitizeActivityAsync(row, ct);
+    }
+
+    private async Task<JobRunRecord?> FindActivityRunAsync(string requestId, CancellationToken ct)
+    {
+        var activity = await _db.JobTaskActivities.AsNoTracking().FirstOrDefaultAsync(x => x.RequestId == requestId, ct);
+        if (activity?.JobRunId is not { } runId) return null;
+        return await _db.JobRuns.AsNoTracking().FirstOrDefaultAsync(x => x.Id == runId && x.TenantId == activity.TenantId, ct);
+    }
+
+    private async Task<JobTaskActivityInfo> SanitizeActivityAsync(JobTaskActivityRecord row, CancellationToken ct)
+    {
+        if (row.JobRunId is { } parentId) await ProtectLegacyAsync(parentId, ct);
+        var run = row.JobRunId is { } id
+            ? await _db.JobRuns.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id && x.TenantId == row.TenantId, ct) : null;
+        return run is null ? Map(row) : SanitizeActivity(run, Map(row));
+    }
+
+    private JobTaskActivityInfo SanitizeActivity(JobRunRecord run, JobTaskActivityInfo activity) => activity with
+    {
+        Error = _protection.Diagnostic(run, activity.Error),
+        ResultJson = _protection.Diagnostic(run, activity.ResultJson),
+        CommandLabel = _protection.Diagnostic(run, activity.CommandLabel)
+    };
+
+    private async Task SanitizePendingDiagnosticsAsync(CancellationToken ct)
+    {
+        var changed = _db.ChangeTracker.Entries().Where(x => x.State is EntityState.Added or EntityState.Modified)
+            .Select(x => x.Entity).ToArray();
+        foreach (var item in changed)
+        {
+            if (item is JobStepRunRecord step)
+            {
+                var run = await _db.JobRuns.FindAsync([step.JobRunId], ct);
+                if (run is not null) step.Error = _protection.Diagnostic(run, step.Error);
+            }
+            else if (item is JobTaskActivityRecord activity && activity.JobRunId is { } id)
+            {
+                var run = await _db.JobRuns.FindAsync([id], ct);
+                if (run is null || run.TenantId != activity.TenantId) continue;
+                activity.Error = _protection.Diagnostic(run, activity.Error);
+                activity.ResultJson = _protection.Diagnostic(run, activity.ResultJson);
+                activity.CommandLabel = _protection.Diagnostic(run, activity.CommandLabel);
+            }
+            else if (item is JobTaskLogRecord log)
+            {
+                var run = await FindActivityRunAsync(log.RequestId, ct);
+                if (run is not null && run.TenantId == log.TenantId) log.Message = _protection.Diagnostic(run, log.Message)!;
+            }
+        }
+    }
+
+    private async Task ProtectLegacyAsync(long? runId, CancellationToken ct)
+    {
+        var query = _db.JobRuns.Where(x => x.ProtectedExecutionJson == null);
+        if (runId.HasValue) query = query.Where(x => x.Id == runId.Value);
+        var rows = await query.ToListAsync(ct);
+        if (rows.Count == 0) return;
+        foreach (var row in rows)
+        {
+            // Current definitions cannot prove the sensitivity of historical values.
+            // Retain exact execution payload under DP and conservatively mask every input.
+            var steps = await _db.JobStepRuns.Where(x => x.JobRunId == row.Id).ToListAsync(ct);
+            var activities = await _db.JobTaskActivities.Where(x => x.JobRunId == row.Id).ToListAsync(ct);
+            var control = await _db.Set<JobRunControlRecord>().FirstOrDefaultAsync(x => x.RunId == row.Id, ct);
+            var originalHash = JobRunProjectionHash.Compute(new(Map(row), steps.Select(Map).ToList(), activities.Select(Map).ToList()));
+            var previouslyAccepted = control?.TerminalReadyAtUtc is not null && control.TerminalResultHash == originalHash;
+            _protection.Store(row, new("legacy-unknown-v1", null, []), row.InputsJson, row.OptionsJson);
+            row.Error = _protection.Diagnostic(row, row.Error);
+            foreach (var step in steps) step.Error = _protection.Diagnostic(row, step.Error);
+            foreach (var activity in activities)
+            {
+                activity.Error = _protection.Diagnostic(row, activity.Error);
+                activity.ResultJson = _protection.Diagnostic(row, activity.ResultJson);
+                activity.CommandLabel = _protection.Diagnostic(row, activity.CommandLabel);
+            }
+            if (previouslyAccepted)
+            {
+                // Rebind only an already proven immutable terminal body as part of the same
+                // protection write. A pre-existing mismatch never becomes accepted by upgrade.
+                var protectedHash = JobRunProjectionHash.Compute(new(Map(row), steps.Select(Map).ToList(), activities.Select(Map).ToList()));
+                control!.TerminalResultHash = protectedHash;
+                row.InputSensitivityJson = System.Text.Json.JsonSerializer.Serialize(JobRunInputProtection.Metadata(row) with
+                    { PriorTerminalResultHash = originalHash, ProtectedTerminalResultHash = protectedHash });
+            }
+            var requests = activities.Select(x => x.RequestId).ToArray();
+            foreach (var log in await _db.JobTaskLogs.Where(x => requests.Contains(x.RequestId)).ToListAsync(ct))
+                log.Message = _protection.Diagnostic(row, log.Message)!;
+        }
+        await _db.SaveChangesAsync(ct);
     }
 
     private async Task SaveAndNotifyAsync(CancellationToken ct)
     {
+        await SanitizePendingDiagnosticsAsync(ct);
         // Capture changed keys before SaveChanges clears tracking state. Notifications
         // inside an authority transaction remain invisible until its commit.
         var changed = _db.ChangeTracker.Entries()
@@ -474,7 +612,9 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
             row.Environment,
             row.TargetDisplayName,
             row.TargetHostName,
-            row.TargetName);
+            row.TargetName,
+            JobRunInputProtection.Metadata(row).Provenance,
+            JobRunInputProtection.Metadata(row).DefinitionRevision);
 
     private static JobStepRunInfo Map(JobStepRunRecord row)
         => new(
@@ -526,62 +666,4 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
             row.Sequence,
             row.TimestampUtc);
 
-    private static System.Linq.Expressions.Expression<Func<JobTaskActivityRecord, JobTaskActivityInfo>> MapActivity()
-        => row => new JobTaskActivityInfo(
-            (ulong)row.Id,
-            row.RequestId,
-            (ulong?)row.JobRunId,
-            (ulong?)row.JobStepId,
-            row.ClientIdentity,
-            row.TenantId,
-            row.TaskType,
-            row.Status,
-            row.Error,
-            row.CreatedAtUtc,
-            row.CompletedAtUtc,
-            row.AgentId,
-            row.ResultJson,
-            row.Environment,
-            row.StartedAtUtc,
-            row.ExitCode,
-            row.TargetDisplayName,
-            row.TargetHostName,
-            row.TargetName,
-            row.ScriptName,
-            row.ScriptType,
-            row.CommandLabel,
-            row.ScriptContentHash);
-
-    private static System.Linq.Expressions.Expression<Func<JobTaskLogRecord, JobTaskLogInfo>> MapLog()
-        => row => new JobTaskLogInfo(
-            row.Id,
-            row.RequestId,
-            (ulong?)row.JobTaskActivityId,
-            row.ClientIdentity,
-            row.TenantId,
-            row.Stream,
-            row.Message,
-            row.Sequence,
-            row.TimestampUtc);
-
-    private static System.Linq.Expressions.Expression<Func<JobRunRecord, JobRunInfo>> MapRun()
-        => row => new JobRunInfo(
-            (ulong)row.Id,
-            (ulong)row.JobId,
-            row.TenantId,
-            row.ClientIdentity,
-            row.StartedBy,
-            (JobRunState)row.Status,
-            row.CurrentStepOrdinal,
-            row.CreatedAtUtc,
-            row.StartedAtUtc,
-            row.CompletedAtUtc,
-            row.Error,
-            row.InputsJson,
-            row.OptionsJson,
-            row.AgentId,
-            row.Environment,
-            row.TargetDisplayName,
-            row.TargetHostName,
-            row.TargetName);
 }

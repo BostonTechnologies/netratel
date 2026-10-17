@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using System.Text;
+using System.Text.Json;
 using AwesomeAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
@@ -117,14 +118,14 @@ public sealed class McpFileDelegationPermissionTests
 
         (await scenario.InvokeAsync(operation, credential: credential.Id, ingress: NetRatelPermissions.FileRead))
             .Entered.Should().BeTrue("collect only reads client data into an internal artifact");
-        (await scenario.InvokeAsync(operation, credential: credential.Id, ingress: NetRatelPermissions.FileWrite))
-            .Status.Should().Be(StatusCodes.Status401Unauthorized, "the signed ingress permission must match the operation exactly");
-        (await scenario.InvokeAsync(operation, tenant: 8, credential: credential.Id, ingress: NetRatelPermissions.FileRead))
-            .Status.Should().Be(StatusCodes.Status401Unauthorized);
+        AssertPermissionDenied(await scenario.InvokeAsync(operation, credential: credential.Id, ingress: NetRatelPermissions.FileWrite),
+            "the signed ingress permission must match the operation exactly");
+        AssertPermissionDenied(await scenario.InvokeAsync(operation, tenant: 8, credential: credential.Id, ingress: NetRatelPermissions.FileRead),
+            "a tenant grant cannot authorize a different tenant");
         scenario.Db.PrincipalRoleAssignments.Remove(ownerGrant);
         await scenario.Db.SaveChangesAsync();
-        (await scenario.InvokeAsync(operation, credential: credential.Id, ingress: NetRatelPermissions.FileRead))
-            .Status.Should().Be(StatusCodes.Status401Unauthorized, "the credential cannot retain a revoked owner read grant");
+        AssertPermissionDenied(await scenario.InvokeAsync(operation, credential: credential.Id, ingress: NetRatelPermissions.FileRead),
+            "the credential cannot retain a removed owner read grant");
     }
 
     [Theory]
@@ -146,15 +147,15 @@ public sealed class McpFileDelegationPermissionTests
         scenario.Db.IntegrationCredentials.Add(credential);
         await scenario.Db.SaveChangesAsync();
 
-        (await scenario.InvokeAsync(operation, credential: credential.Id, ingress: NetRatelPermissions.FileWrite))
-            .Status.Should().Be(StatusCodes.Status401Unauthorized, "a write credential cannot borrow the owner's source read grant");
+        AssertPermissionDenied(await scenario.InvokeAsync(operation, credential: credential.Id, ingress: NetRatelPermissions.FileWrite),
+            "a write credential cannot borrow the owner's source read grant");
         credential.Grants.Add(new() { CredentialId = credential.Id, TenantId = 7, Permission = NetRatelPermissions.FileRead });
         await scenario.Db.SaveChangesAsync();
         (await scenario.InvokeAsync(operation, credential: credential.Id, ingress: NetRatelPermissions.FileWrite)).Entered.Should().BeTrue();
         scenario.Db.PrincipalRoleAssignments.Remove(ownerRead);
         await scenario.Db.SaveChangesAsync();
-        (await scenario.InvokeAsync(operation, credential: credential.Id, ingress: NetRatelPermissions.FileWrite))
-            .Status.Should().Be(StatusCodes.Status401Unauthorized, "both current owner permissions still constrain an issued credential");
+        AssertPermissionDenied(await scenario.InvokeAsync(operation, credential: credential.Id, ingress: NetRatelPermissions.FileWrite),
+            "both current owner permissions still constrain an issued credential");
     }
 
     [Fact]
@@ -171,18 +172,27 @@ public sealed class McpFileDelegationPermissionTests
         };
         scenario.Db.IntegrationCredentials.Add(credential);
         await scenario.Db.SaveChangesAsync();
-        (await scenario.InvokeAsync("confirm_delete", credential: credential.Id, ingress: NetRatelPermissions.FileWrite))
-            .Status.Should().Be(StatusCodes.Status401Unauthorized, "an old broad write assertion cannot authorize deletion");
-        (await scenario.InvokeAsync("confirm_move", credential: credential.Id, ingress: NetRatelPermissions.FileWrite))
-            .Status.Should().Be(StatusCodes.Status401Unauthorized, "an owner's delete grant cannot enlarge a write-only credential");
+        AssertPermissionDenied(await scenario.InvokeAsync("confirm_delete", credential: credential.Id, ingress: NetRatelPermissions.FileWrite),
+            "an old broad write assertion cannot authorize deletion");
+        AssertPermissionDenied(await scenario.InvokeAsync("confirm_move", credential: credential.Id, ingress: NetRatelPermissions.FileWrite),
+            "an owner's delete grant cannot enlarge a write-only credential");
         credential.Grants.Add(new() { CredentialId = credential.Id, TenantId = 7, Permission = NetRatelPermissions.FileDelete });
         await scenario.Db.SaveChangesAsync();
         (await scenario.InvokeAsync("confirm_move", credential: credential.Id, ingress: NetRatelPermissions.FileWrite)).Entered.Should().BeTrue();
         (await scenario.InvokeAsync("confirm_delete", credential: credential.Id, ingress: NetRatelPermissions.FileDelete)).Entered.Should().BeTrue();
         credential.RevokedAtUtc = DateTimeOffset.UtcNow;
         await scenario.Db.SaveChangesAsync();
-        (await scenario.InvokeAsync("confirm_delete", credential: credential.Id, ingress: NetRatelPermissions.FileDelete))
-            .Status.Should().Be(StatusCodes.Status401Unauthorized);
+        var revoked = await scenario.InvokeAsync("confirm_delete", credential: credential.Id, ingress: NetRatelPermissions.FileDelete);
+        revoked.Entered.Should().BeFalse();
+        revoked.Status.Should().Be(StatusCodes.Status401Unauthorized);
+        revoked.Code.Should().Be("delegated_identity_revoked");
+    }
+
+    private static void AssertPermissionDenied((bool Entered, int Status, string? Code) response, string because)
+    {
+        response.Entered.Should().BeFalse(because);
+        response.Status.Should().Be(StatusCodes.Status403Forbidden, because);
+        response.Code.Should().Be("local_credential_permission_denied", because);
     }
 
     private sealed class Scenario : IAsyncDisposable
@@ -224,7 +234,7 @@ public sealed class McpFileDelegationPermissionTests
             return assignment;
         }
 
-        public async Task<(bool Entered, int Status)> InvokeAsync(string operation, int tenant = 7, string? issuer = Issuer,
+        public async Task<(bool Entered, int Status, string? Code)> InvokeAsync(string operation, int tenant = 7, string? issuer = Issuer,
             string? credential = null, string? ingress = null)
         {
             var tokens = new McpOperatorDelegationTokenService(_options);
@@ -245,7 +255,13 @@ public sealed class McpFileDelegationPermissionTests
             http.Response.Body = body;
             http.Request.Headers[McpOperatorDelegationOptions.HeaderName] = assertion;
             await middleware.InvokeAsync(http);
-            return (entered, http.Response.StatusCode);
+            string? code = null;
+            if (body.Length > 0)
+            {
+                using var response = JsonDocument.Parse(body.ToArray());
+                code = response.RootElement.GetProperty("code").GetString();
+            }
+            return (entered, http.Response.StatusCode, code);
         }
 
         public ValueTask DisposeAsync() => Services.DisposeAsync();

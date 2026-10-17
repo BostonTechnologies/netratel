@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using AwesomeAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Server;
@@ -664,15 +665,21 @@ public sealed class McpCoreIsolationTests
 
         request.GetProperty("additionalProperties").GetBoolean().Should().BeFalse();
         request.GetProperty("required").EnumerateArray().Should().BeEmpty();
-        since.GetProperty("description").GetString().Should().Be("Optional exclusive log sequence cursor.");
+        since.GetProperty("description").GetString().Should().StartWith("Optional exclusive log sequence cursor.")
+            .And.Contain("Range: 0 through 9223372036854775807")
+            .And.Contain("retain decimal-string IDs exactly");
         var alternatives = since.GetProperty("oneOf").EnumerateArray().ToArray();
         alternatives.Should().HaveCount(2);
         alternatives.Should().Contain(alternative =>
             alternative.GetProperty("type").GetString() == "integer" &&
-            alternative.GetProperty("minimum").GetInt32() == 0);
-        alternatives.Should().Contain(alternative =>
-            alternative.GetProperty("type").GetString() == "string" &&
-            alternative.GetProperty("pattern").GetString() == "^(0|[1-9][0-9]{0,18})$");
+            alternative.GetProperty("minimum").GetInt32() == 0 &&
+            alternative.GetProperty("maximum").GetInt64() == long.MaxValue);
+        var pattern = alternatives.Single(alternative => alternative.GetProperty("type").GetString() == "string")
+            .GetProperty("pattern").GetString()!;
+        foreach (var valid in new[] { "0", "1", "9007199254740993", "9223372036854775807" })
+            Regex.IsMatch(valid, pattern).Should().BeTrue($"{valid} is a supported exact nonnegative sequence cursor");
+        foreach (var invalid in new[] { "-1", "01", "1.0", "9223372036854775808", "0\n" })
+            Regex.IsMatch(invalid, pattern).Should().BeFalse("malformed and overflowing sequence cursors are outside the published range");
     }
 
     [Fact]
@@ -886,7 +893,9 @@ public sealed class McpCoreIsolationTests
     {
         var source = await File.ReadAllTextAsync(Path.Combine(FindRepoRoot(), "src", "NetRatel", "NetRatel.Mcp.Http", "NetRatelMcpHttpApplication.cs"));
 
-        source.Should().Contain(".WithTools(NetRatelMcpToolDefinitions.CreateForHttp(hostContext))");
+        source.Should().Contain("var httpTools = NetRatelMcpToolDefinitions.CreateForHttp(hostContext);");
+        source.Should().Contain("new NetRatelMcpInputValidator(httpTools)");
+        source.Should().Contain(".WithTools(httpTools)");
         source.Should().NotContain(".WithTools<NetRatelMcpHttpReadOnlyTools>()");
         source.Should().Contain(".WithPrompts<NetRatelPrompts>()");
         source.Should().NotContain("FromAssembly");
@@ -904,6 +913,9 @@ public sealed class McpCoreIsolationTests
 
         prompt.Should().Contain("netratel://capabilities").And.Contain("netratel_clients telemetry");
         prompt.Should().Contain("catalogued read operations");
+        prompt.IndexOf("netratel_search/tenants", StringComparison.Ordinal).Should().BeLessThan(prompt.IndexOf("netratel_access", StringComparison.Ordinal));
+        prompt.Should().Contain("netratel_search/clients").And.Contain("nextOffset").And.Contain("no match").And.Contain("ambiguous");
+        prompt.Should().Contain("exact returned tenantId and agentId").And.Contain("data");
         prompt.Should().NotContain("netratel_terminal operation=command");
     }
 

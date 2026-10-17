@@ -13,6 +13,8 @@ public sealed class RequestRecord
     public string? ResultMessage { get; set; }
     public string? ResultData { get; set; }
     public string? JobInputs { get; set; }
+    public string? InputSensitivityJson { get; set; }
+    public string? ProtectedJobInputsJson { get; set; }
     public List<string> Logs { get; set; } = [];
     public DateTimeOffset CreatedAtUtc { get; set; }
     public DateTimeOffset UpdatedAtUtc { get; set; }

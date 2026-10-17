@@ -16,7 +16,8 @@ public static class HealthEndpoints
             var report = await healthChecks.CheckHealthAsync(cancellationToken).ConfigureAwait(false);
             return report.Status == HealthStatus.Healthy
                 ? Results.Ok(new { status = "ready" })
-                : Results.Problem(statusCode: StatusCodes.Status503ServiceUnavailable, title: "A required NetRatel dependency is unhealthy.");
+                : Results.Problem(statusCode: StatusCodes.Status503ServiceUnavailable, title: "A required NetRatel dependency is unhealthy.",
+                    extensions: new Dictionary<string, object?> { ["code"] = "api_readiness_unhealthy" });
         })
             .RequireAuthorization("HealthRead")
             .WithTags("Health")

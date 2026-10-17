@@ -46,3 +46,25 @@ audience, required group and required scope. Existing OIDC deployments retain
 their OAuth protected-resource metadata and behavior unchanged.
 
 Use [the complete reference](configuration.md) for exact host/outbound/delegation mappings and [setup](setup.md) for persistence, container commands and rotation. [Web/YARP routing](../deployment/web-gateway.md) exposes `/mcp` under the same HTTPS origin without new DNS; routing is separate from authentication. [Verification](troubleshooting.md) must include initialize and a permitted read-only operation.
+
+## Operation targets and connectivity permissions
+
+Use each operation's published `targetModel`. Policy lists accept no filter or a tenant-only filter; unfiltered lists require an explicit instance `mcp.policy.admin` grant. Tenant filters require that tenant's grant. Policy previews accept their actual control-plane, tenant, client-tag or exact-agent selector. Exact-target inspection and target-profile changes retain the tenant/agent pair. A policy-ID read resolves its tenant and agent from persistence before checking the application grant. Existing policy mutations independently compare the persisted selector and version with the reviewed request. Supplying IDs cannot establish ownership.
+
+Connectivity is supported in local and OIDC modes with these explicit application permissions:
+
+| Operations | Application permissions | Scope and policy |
+| --- | --- | --- |
+| `settings`, `netratel` | Instance `mcp.connectivity.read` | `netratel.mcp.admin`, PolicyAdministrator role, active Connectivity ControlPlane policy |
+| `preview_test` | Instance `mcp.connectivity.read` | `netratel.mcp.execute`, AutomationOperator role, active Connectivity ControlPlane policy |
+| `test` | Instance `mcp.connectivity.test` and `mcp.connectivity.read` | `netratel.mcp.execute`, AutomationOperator role, active Connectivity ControlPlane policy |
+
+Preview creates a confirmation plan and performs no delivery. The confirmed test retains identity/resource/instance/plan binding and idempotency; its only destination is the server-owned configured test destination. No caller-supplied host, URL, headers, credentials, timeout or configuration override is supported. An operator must review the concrete test before dispatch.
+
+Capabilities publish `localCredentialSupported`, `applicationPermission` and `additionalApplicationPermissions` for each operation. These describe prerequisites; configured credential grants, attenuated delegation and effective policy admission remain separate facts. A missing application permission produces `local_credential_permission_denied`, not an expired-credential diagnosis. Permission removal, malformed target, ownership mismatch, revoked known execution and expired known execution retain distinct safe errors and correlation. Unknown incoming credentials keep a limited invalid-credential response.
+
+Known raw bearers also receive `local_credential_expired` or `local_credential_revoked` only after a valid signed pairing proof and constant-time full-hash, purpose and resource checks. Wrong tokens, purposes and resources remain `local_credential_invalid`. HTTP 401 bodies carry only the bounded code, server-authored failure/remediation and safe correlation; they omit account, credential and ownership identifiers. These permanent authentication failures are non-retryable.
+
+For reviewed bootstrap and campaign-owned auxiliary credentials, use the [reviewed access workflow](setup.md#reviewed-client-access-and-exact-expiry). Exact UTC expiry is retained from proposal through browser review, persistence, protected delivery and safe inspection; the UI's thirty-day preset means 720 hours from its displayed reference instant. A saved approved expiry is reused during resume. Native safe receipts expose the configured grant set separately from the single operation's delegated scopes/roles and effective policy admission. Existing secrets remain unretrievable.
+
+Reviewed credential expiry uses exact UTC instants at microsecond resolution: at most six fractional digits, such as `2030-04-01T10:11:12.123456Z`. Unsupported precision is rejected before date parsing; accepted input is never rounded. The 30-day preset adds exactly 720 hours to the displayed representable UTC reference.

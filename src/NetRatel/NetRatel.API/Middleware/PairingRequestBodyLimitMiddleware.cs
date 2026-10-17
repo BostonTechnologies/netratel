@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Http.Features;
 using NetRatel.Shared.SystemPairing;
 using NetRatel.Shared.Connectivity;
+using NetRatel.API.Endpoints.Auth;
 
 namespace NetRatel.API.Middleware;
 
@@ -11,7 +12,13 @@ public sealed class PairingRequestBodyLimitMiddleware(RequestDelegate next)
     public async Task InvokeAsync(HttpContext http)
     {
         var path = http.Request.Path;
-        var isPairing = path.StartsWithSegments(PairingProtocol.Route, StringComparison.OrdinalIgnoreCase) ||
+        var exact = new PathString(path.Value?.TrimEnd('/'));
+        var isReviewedAccess = exact.Equals(new PathString(McpLocalDelegationEndpoints.AccessStartPath), StringComparison.OrdinalIgnoreCase) ||
+            exact.Equals(new PathString("/api/v2/mcp/operator/access/requests"), StringComparison.OrdinalIgnoreCase) ||
+            exact.Equals(new PathString("/api/v2/mcp/operator/access/receipt"), StringComparison.OrdinalIgnoreCase) ||
+            exact.Equals(new PathString("/api/v2/mcp/operator/access/resume"), StringComparison.OrdinalIgnoreCase) ||
+            exact.Equals(new PathString("/api/v2/mcp/operator/access/cancel"), StringComparison.OrdinalIgnoreCase);
+        var isPairing = isReviewedAccess || path.StartsWithSegments(PairingProtocol.Route, StringComparison.OrdinalIgnoreCase) ||
             path.StartsWithSegments(PairingProtocol.AdminRoute, StringComparison.OrdinalIgnoreCase) ||
             path.StartsWithSegments(IntegrationPairingProtocol.Route, StringComparison.OrdinalIgnoreCase) ||
             path.StartsWithSegments(IntegrationPairingProtocol.AccountRoute, StringComparison.OrdinalIgnoreCase) ||

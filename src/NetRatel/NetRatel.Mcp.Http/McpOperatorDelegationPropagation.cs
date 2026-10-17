@@ -52,7 +52,7 @@ public sealed class McpOperatorDelegationPropagation(
                 hostContext.Target.Instance,
                 TenantIdFor(targetModel, arguments),
                 AgentIdFor(targetModel, arguments),
-                Activity.Current?.TraceId.ToString())
+                Activity.Current?.TraceId.ToString() ?? Guid.NewGuid().ToString("N"))
             {
                 ObjectReference = hostContext.OperatorSurfaceEnabled ? ObjectReferenceFor(target, arguments) : null,
                 ObjectTargetResolutionEnabled = hostContext.OperatorSurfaceEnabled
@@ -83,6 +83,7 @@ public sealed class McpOperatorDelegationPropagation(
 
         var operation = Operation(arguments);
         var target = McpOperationTargetCatalog.Find(Token(tool), operation);
+        var correlationId = Activity.Current?.TraceId.ToString() ?? Guid.NewGuid().ToString("N");
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v2/mcp/local-delegation/exchange");
         request.Headers.Authorization = AuthenticationHeaderValue.Parse(authorization);
         request.Headers.TryAddWithoutValidation("X-NetRatel-Mcp-Pairing", localPairing.CreateExecutionProof(
@@ -91,7 +92,8 @@ public sealed class McpOperatorDelegationPropagation(
             TenantIdFor(target?.Model, arguments),
             AgentIdFor(target?.Model, arguments),
             hostContext.OperatorSurfaceEnabled ? ObjectReferenceFor(target, arguments) : null,
-            hostContext.OperatorSurfaceEnabled));
+            hostContext.OperatorSurfaceEnabled,
+            correlationId));
         try
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -99,12 +101,15 @@ public sealed class McpOperatorDelegationPropagation(
             using var response = await httpClients.CreateClient(McpLocalCredentialAuthenticationHandler.ApiHttpClientName)
                 .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
-                throw new McpLocalCredentialExchangeException(McpLocalCredentialExchangeFailure.FromResponse(response));
+            {
+                var failure = await McpLocalCredentialExchangeFailure.FromResponseAsync(response, deadline.Token).ConfigureAwait(false);
+                throw new McpLocalCredentialExchangeException(failure with { CorrelationId = failure.CorrelationId ?? correlationId });
+            }
 
             var execution = await McpLocalCredentialExchangeResponse
                 .ReadJsonAsync<McpLocalExecutionResponse>(response.Content, deadline.Token).ConfigureAwait(false);
             if (execution is null || string.IsNullOrWhiteSpace(execution.Assertion))
-                throw new McpLocalCredentialExchangeException(McpLocalCredentialExchangeFailure.ProtocolError);
+                throw new McpLocalCredentialExchangeException(McpLocalCredentialExchangeFailure.ProtocolError with { CorrelationId = correlationId });
             return execution.Assertion;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -113,15 +118,15 @@ public sealed class McpOperatorDelegationPropagation(
         }
         catch (OperationCanceledException)
         {
-            throw new McpLocalCredentialExchangeException(McpLocalCredentialExchangeFailure.TimedOut);
+            throw new McpLocalCredentialExchangeException(McpLocalCredentialExchangeFailure.TimedOut with { CorrelationId = correlationId });
         }
         catch (HttpRequestException)
         {
-            throw new McpLocalCredentialExchangeException(McpLocalCredentialExchangeFailure.DependencyUnavailable);
+            throw new McpLocalCredentialExchangeException(McpLocalCredentialExchangeFailure.DependencyUnavailable with { CorrelationId = correlationId });
         }
         catch (IOException)
         {
-            throw new McpLocalCredentialExchangeException(McpLocalCredentialExchangeFailure.DependencyUnavailable);
+            throw new McpLocalCredentialExchangeException(McpLocalCredentialExchangeFailure.DependencyUnavailable with { CorrelationId = correlationId });
         }
     }
 
@@ -139,7 +144,7 @@ public sealed class McpOperatorDelegationPropagation(
 
     private static int? TenantId(IDictionary<string, JsonElement>? arguments)
         => TryRequestProperty(arguments, "tenantId", out var value) || TryPolicyTargetProperty(arguments, "tenantId", out value) || TryExplicitTargetProperty(arguments, "tenantId", out value)
-            ? value.TryGetInt32(out var tenantId) && tenantId > 0 ? tenantId : null
+            ? NetRatelMcpIdentifiers.TryInt32(value, 1, int.MaxValue, out var tenantId) ? tenantId : null
             : null;
 
     private static Guid? AgentId(IDictionary<string, JsonElement>? arguments)
@@ -163,15 +168,12 @@ public sealed class McpOperatorDelegationPropagation(
             return null;
         }
 
-        return value.ValueKind switch
-        {
-            JsonValueKind.Number when value.TryGetInt64(out var number) && number > 0
-                => number.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            JsonValueKind.String when long.TryParse(value.GetString(), System.Globalization.NumberStyles.None,
-                System.Globalization.CultureInfo.InvariantCulture, out var number) && number > 0
-                => number.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            _ => null
-        };
+        if (target.ObjectReferenceKind == McpOperationObjectReferenceKind.Policy)
+            return value.ValueKind == JsonValueKind.String && Guid.TryParse(value.GetString(), out var policyId) && policyId != Guid.Empty
+                ? policyId.ToString("D") : null;
+
+        return NetRatelMcpIdentifiers.TryInt64(value, 1, long.MaxValue, out var number)
+            ? number.ToString(System.Globalization.CultureInfo.InvariantCulture) : null;
     }
 
     private static string Token(string? value)

@@ -27,6 +27,7 @@ public sealed class NetRatelMcpApiException(string code, string message, int sta
     public bool Retryable { get; } = retryable;
 
     public string? RemoteCode { get; } = remoteCode;
+    public string? CorrelationId { get; init; }
 }
 
 /// <summary>Raised by a host adapter when local operation input is invalid.</summary>

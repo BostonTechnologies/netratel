@@ -110,3 +110,53 @@ and source/release-image OIDC Compose smoke. For runnable deployment and
 credential examples, use [first-run setup](../deployment/FIRST_RUN_SETUP.md),
 [configuration](../deployment/CONFIGURATION.md), [self-hosting](../deployment/SELF_HOSTING.md), and
 [CLI and MCP](../integrations/CLI_AND_MCP.md).
+
+## Reviewed MCP expiry
+
+Reviewed access proposals and approvals accept exact UTC instants with at most
+six fractional digits, matching PostgreSQL microsecond storage. Unsupported
+precision is rejected before date parsing or persistence; an accepted expiry is
+never rounded. The 30-day preset adds 720 hours to the displayed UTC reference.
+See [reviewed setup](../mcp-http/setup.md) for protected delivery and lifecycle.
+
+## Job input confidentiality
+
+The server binds each submitted run to an immutable parameter sensitivity
+snapshot and definition revision. Web parameters of type `secret` are masked
+as `[REDACTED]` in both `inputsJson` and derived options. Ordinary values keep
+their JSON types and original keys, including empty strings, Unicode, zero,
+and false. MCP `secret_reference` parameters keep their opaque target-local
+references; inline secret defaults remain rejected by the MCP contract.
+
+Run detail/list/query responses, stream snapshots, linked task history,
+step output, MCP job logs and linked request diagnostics use the same server
+projection. The raw input is never sent to the browser for cosmetic masking.
+There is no reveal API. Job-management access does not grant access to the
+protected execution payload. Secret input values echoed verbatim in run
+errors, task results, command labels and logs are also scrubbed before their
+ordinary projections are persisted. Scripts must still avoid printing
+transformed or encoded credentials; input redaction cannot infer arbitrary
+transformations performed by user code.
+
+Run responses include `inputProtectionStatus` and
+`submittedDefinitionRevision`. `submitted-definition-v1` means sensitivity
+was captured from the authoritative submitted definition. Editing parameters
+or deleting the source definition cannot downgrade a retained run's snapshot.
+Historical rows without a complete submission snapshot use
+`legacy-unknown-v1`, with no fabricated revision. The first server read or
+recovery protects the exact historical execution material and masks every
+input/option and free-form diagnostic conservatively. This inspection does
+not execute the job. Existing accepted terminal callback hashes are rebound
+to the protected projection only after the original body matches its
+committed hash; an existing mismatch remains rejected. Backups made before this upgrade can still contain
+historical plaintext and need the deployment's normal protected backup
+retention treatment.
+
+Exact input and execution options are stored separately under the API's
+Data Protection key ring, bound to the tenant, job and run (or linked request)
+identity. Only internal execution, recovery and diagnostic redaction can access this
+material; ordinary responses never include it. Restore the
+original durable key ring alongside the database; missing keys fail recovery
+with a value-free error. The migration refuses destructive downgrade once
+protected payloads exist. See [self-hosting](../deployment/SELF_HOSTING.md)
+for durable storage and backup requirements.

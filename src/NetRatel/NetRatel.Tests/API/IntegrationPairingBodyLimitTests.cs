@@ -2,6 +2,7 @@ using System.Text;
 using AwesomeAssertions;
 using Microsoft.AspNetCore.Http;
 using NetRatel.API.Middleware;
+using NetRatel.API.Endpoints.Auth;
 using NetRatel.Shared.Connectivity;
 using Xunit;
 
@@ -10,6 +11,11 @@ namespace NetRatel.Tests.API;
 public sealed class IntegrationPairingBodyLimitTests
 {
     [Theory]
+    [InlineData(McpLocalDelegationEndpoints.AccessStartPath, false)]
+    [InlineData(McpLocalDelegationEndpoints.AccessStartPath, true)]
+    [InlineData("/api/v2/mcp/operator/access/requests", false)]
+    [InlineData("/api/v2/mcp/operator/access/requests", true)]
+    [InlineData("/API/V2/MCP/OPERATOR/ACCESS/REQUESTS/", true)]
     [InlineData(IntegrationPairingProtocol.Route + "/start", false)]
     [InlineData(IntegrationPairingProtocol.Route + "/start", true)]
     [InlineData(HttpHostSetupProtocol.Route + "/start", false)]

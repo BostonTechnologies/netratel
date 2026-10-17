@@ -33,9 +33,44 @@ using Xunit;
 
 namespace NetRatel.Tests.API;
 
-[Collection(PostgreSqlPersistenceCollection.Name)]
 public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixture postgres)
+    : IClassFixture<PostgreSqlPersistenceFixture>
 {
+    [Fact]
+    public async Task Secret_input_dispatch_is_exact_while_independent_history_and_recovery_remain_redacted()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var ct = deadline.Token;
+        await using var h = await Harness.CreateAsync(await postgres.CreateDatabaseAsync(ct), ct);
+        await using (var scope = h.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            db.JobParameters.Add(new() { Id = 44, JobId = 41, Name = "phrase", Type = "secret" });
+            (await db.JobSteps.SingleAsync(ct)).Command = "printf '%s' '@option.phrase@'";
+            await db.SaveChangesAsync(ct);
+        }
+        const string inputs = "{\"phrase\":\"garden rain Ω 908\",\"zero\":0,\"flag\":false}";
+        var run = await h.StartAsync(ct, inputs);
+        run.InputsJson.Should().NotContain("garden rain");
+        h.Gateway.LastDispatchPayload.Should().Contain("garden rain");
+        await using (var scope = h.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            (await db.JobParameters.SingleAsync(ct)).Type = "string";
+            await db.SaveChangesAsync(ct);
+            (await scope.ServiceProvider.GetRequiredService<IJobRunService>().GetExecutionInputsAsync(run.Id, ct)).Should().Be(inputs);
+            (await db.JobRuns.SingleAsync(ct)).ProtectedExecutionJson.Should().NotContain("garden rain");
+        }
+        await h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Started, 3, null, false, ct);
+        await h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Completed, 4,
+            JsonSerializer.Serialize(new { stdout = new[] { "garden rain Ω 908" }, exitCode = 0 }), false, ct);
+        var history = await h.DetailsAsync(run.Id, ct);
+        JsonSerializer.Serialize(history).Should().NotContain("garden rain");
+        history.Run.InputProtectionStatus.Should().Be("submitted-definition-v1");
+        await h.RecoverAsync(run.Id, true, ct);
+        h.Gateway.Dispatches.Should().Be(1);
+    }
+
     [Fact]
     public async Task CommittedLifecycleReceipts_ReplayAcrossIndependentActorsWithoutDuplicatingOutputOrPhysicalDispatch()
     {
@@ -739,6 +774,7 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             services.AddSingleton<IClientConnectionEpochStore, ClientConnectionEpochStore>();
             services.AddNetRatelJobObservationPersistence();
             services.AddScoped<IJobDefinitionService, JobDefinitionService>();
+            services.AddSingleton<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>(new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
             services.AddScoped<IJobRunService, JobRunService>();
             services.AddScoped<NetRatel.Application.Requests.IRequestService, RequestService>();
             h.Services = services.BuildServiceProvider();
@@ -813,8 +849,8 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             new JobTaskBridge(new EmptyScripts(), NullLogger<JobTaskBridge>.Instance), Gateway, replica ? Replica : Primary,
             new RecordingRealtimeFanoutSink(), new JobAuthorityIdGenerator(), new TestEnvironment(),
             managedGuard: managedGuard, db: services.GetRequiredService<OrchestratorDbContext>(), clock: Clock);
-        public async Task<JobRunInfo> StartAsync(CancellationToken ct)
-        { await using var scope = Services.CreateAsyncScope(); return await Authority(scope.ServiceProvider, false).StartAsync(41, new("operator-test", null, null), ct); }
+        public async Task<JobRunInfo> StartAsync(CancellationToken ct, string? inputs = null)
+        { await using var scope = Services.CreateAsyncScope(); return await Authority(scope.ServiceProvider, false).StartAsync(41, new("operator-test", inputs, null), ct); }
         private ClaimsPrincipal? _managedPrincipal;
         public async Task<JobRunInfo> StartManagedAsync(ulong runId, int requestId, CancellationToken ct)
         {
@@ -930,6 +966,7 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         public int Cancellations;
         public bool AmbiguousNextDispatch;
         public ulong LastDispatchRunId;
+        public string? LastDispatchPayload;
         public AgentJobGatewayRegistration Register(ClientKey client, Guid id, ulong epoch, bool provisional = false) =>
             _backend.Register(client, id, epoch, provisional);
         public bool IsAvailable(ClientKey client) => _backend.IsAvailable(client);
@@ -951,6 +988,7 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             frame.Dispatch.Should().NotBeNull();
             frame.Dispatch.JobRunId.Should().Be(dispatch.JobRunId);
             LastDispatchRunId = dispatch.JobRunId;
+            LastDispatchPayload = dispatch.PayloadJson;
             Interlocked.Increment(ref Dispatches);
             if (AmbiguousNextDispatch)
             {

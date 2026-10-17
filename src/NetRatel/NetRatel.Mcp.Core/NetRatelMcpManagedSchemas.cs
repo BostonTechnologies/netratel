@@ -33,10 +33,7 @@ public static partial class NetRatelMcpToolDefinitions
             properties["skip"] = new JsonObject { ["type"] = "integer", ["minimum"] = 0, ["maximum"] = 100_000,
                 ["description"] = "Offset for bounded investigation history pages (100 records)." };
         if (operation.SequencePaged)
-            properties["after"] = new JsonObject { ["oneOf"] = new JsonArray(
-                new JsonObject { ["type"] = "integer", ["minimum"] = 0 },
-                new JsonObject { ["type"] = "string", ["pattern"] = "^[0-9]{1,19}$" }),
-                ["description"] = "Nonnegative Int64 sequence of the last event actually received. Continue paging until reaching the snapshot's lastSequence high-water mark. Use a decimal string above JavaScript's safe integer range." };
+            properties["after"] = NonNegativeLongIdentifier("after", "Sequence of the last event actually received. Continue paging to lastSequence; retain decimal-string cursors exactly.").Schema;
         if (operation.ApprovalTarget)
             properties["callId"] = new JsonObject { ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 256,
                 ["description"] = "Exact callId from the investigation's pendingApprovals. Never invent an approval." };

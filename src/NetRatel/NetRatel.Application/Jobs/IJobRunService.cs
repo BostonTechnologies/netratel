@@ -43,7 +43,9 @@ public sealed record JobRunInfo(
     NetRatel.Shared.ClientEnvironment? Environment = null,
     string? TargetDisplayName = null,
     string? TargetHostName = null,
-    string? TargetName = null);
+    string? TargetName = null,
+    string? InputProtectionStatus = null,
+    string? SubmittedDefinitionRevision = null);
 
 public sealed record JobStepRunInfo(
     ulong Id,
@@ -198,6 +200,14 @@ public sealed record JobRunDetails(
 
 public interface IJobRunService
 {
+    // Called by the server authority immediately after loading the submitted definition;
+    // never populated from RunJobRequest or any caller-supplied sensitivity flags.
+    void BindSubmittedDefinition(ulong runId, JobDefinitionDetails definition) { }
+    // Internal execution boundary only. Never map this material into ordinary responses.
+    Task<string?> GetExecutionOptionsAsync(ulong runId, CancellationToken ct = default)
+        => throw new NotSupportedException("Protected execution options retrieval is unavailable.");
+    Task<string?> GetExecutionInputsAsync(ulong runId, CancellationToken ct = default)
+        => throw new NotSupportedException("Protected execution input retrieval is unavailable.");
     Task<IReadOnlyList<JobRunInfo>> ListAsync(CancellationToken ct = default);
     Task<JobRunInfo?> GetAsync(ulong runId, CancellationToken ct = default);
     Task<JobRunDetails?> GetDetailsAsync(ulong runId, CancellationToken ct = default);

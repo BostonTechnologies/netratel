@@ -16,6 +16,7 @@ public static class McpOperatorAccessEndpoints
 
     public static IEndpointRouteBuilder MapMcpOperatorAccessEndpoints(this IEndpointRouteBuilder app)
     {
+        if (app.ServiceProvider.GetService<IServiceProviderIsService>()?.IsService(typeof(NetRatel.Infrastructure.Identity.IntegrationPairingService)) == true) app.MapMcpReviewedAccessEndpoints();
         var group = app.MapGroup("/api/v2/mcp/operator/access")
             .WithTags("MCP Operator")
             .RequireAuthorization("M2MOnly");

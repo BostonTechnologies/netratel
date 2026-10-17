@@ -20,8 +20,10 @@ public static class ManagedOrchestrationRecovery
         JobRunInfo? run;
         if (binding.ExecutionId is null)
         {
-            var matches = (await runs.ListAsync(ct)).Where(candidate => SameTarget(candidate, binding) && HasLocalRequest(candidate.InputsJson, binding.RequestId)).ToArray();
-            if (matches.Length != 1) return null;
+            var matches = new List<JobRunInfo>();
+            foreach (var candidate in (await runs.ListAsync(ct)).Where(candidate => SameTarget(candidate, binding)))
+                if (HasLocalRequest(await runs.GetExecutionInputsAsync(candidate.Id, ct), binding.RequestId)) matches.Add(candidate);
+            if (matches.Count != 1) return null;
             run = matches[0];
             var current = await db.Set<ManagedOrchestrationRequestBinding>().SingleAsync(x => x.RequestId == binding.RequestId, ct);
             var runId = run.Id.ToString(CultureInfo.InvariantCulture);
@@ -35,7 +37,7 @@ public static class ManagedOrchestrationRecovery
             if (!ulong.TryParse(binding.ExecutionId, NumberStyles.None, CultureInfo.InvariantCulture, out var runId)) return null;
             run = await runs.GetAsync(runId, ct);
         }
-        if (run is null || !SameTarget(run, binding) || !HasLocalRequest(run.InputsJson, binding.RequestId) ||
+        if (run is null || !SameTarget(run, binding) || !HasLocalRequest(await runs.GetExecutionInputsAsync(run.Id, ct), binding.RequestId) ||
             request.ExecutionId is not null && request.ExecutionId != binding.ExecutionId) return null;
         if (request.ExecutionId is null)
             request = await requests.UpdateAsync(new UpdateRequestCommand(request.Id, null, null, null, binding.ExecutionId,

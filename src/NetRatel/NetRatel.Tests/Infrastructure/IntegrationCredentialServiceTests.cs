@@ -139,6 +139,7 @@ public sealed class IntegrationCredentialServiceTests(PostgreSqlPersistenceFixtu
         db.IntegrationCredentials.Single(credential => credential.Id == first.CredentialId).ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1);
         await db.SaveChangesAsync();
         (await service.VerifyAsync(first.Secret, IntegrationCredentialPurpose.Api)).Should().BeNull();
+        (await service.CheckCurrentAsync(first.CredentialId, IntegrationCredentialPurpose.Api)).FailureCode.Should().Be("local_credential_expired");
 
         var unpairedHttp = () => service.CreateAsync("principal-a", new(
             "Unpaired", IntegrationCredentialPurpose.HttpMcp, DateTimeOffset.UtcNow.AddDays(7), [new(7, NetRatelPermissions.TelemetryRead)]));
@@ -160,8 +161,15 @@ public sealed class IntegrationCredentialServiceTests(PostgreSqlPersistenceFixtu
         current.Should().NotBeNull();
         current!.Resource.Should().Be("https://mcp.example.test/mcp");
 
+        await db.IntegrationCredentialGrants.Where(grant => grant.CredentialId == created.CredentialId).ExecuteDeleteAsync();
+        var underprivileged = await service.CheckCurrentAsync(created.CredentialId, IntegrationCredentialPurpose.HttpMcp);
+        underprivileged.FailureCode.Should().BeNull("removing permissions does not revoke the credential");
+        underprivileged.Credential.Should().NotBeNull();
+        underprivileged.Credential!.Grants.Should().BeEmpty();
+
         await service.RevokeAsync("principal-a", created.CredentialId, "principal-a");
         (await service.VerifyCurrentAsync(created.CredentialId, IntegrationCredentialPurpose.HttpMcp)).Should().BeNull();
+        (await service.CheckCurrentAsync(created.CredentialId, IntegrationCredentialPurpose.HttpMcp)).FailureCode.Should().Be("delegated_identity_revoked");
     }
 
     [Fact]

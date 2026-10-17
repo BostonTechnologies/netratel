@@ -146,6 +146,14 @@ Data Protection keys, application storage, and the signing key durably with
 UID/GID 1654 access. Keep the configured public HTTP MCP URL distinct from
 the internal API URL; see [local HTTP MCP mode](../mcp-http/local-credential-mode.md).
 
+Job runs and linked request inputs also depend on that same key ring. Keep
+`DataProtection:KeysDirectory` durable and identical across API replicas; a
+new key ring cannot recover protected execution inputs from the database.
+Restore the database and original keys together. Ordinary run history masks
+secret inputs, and historical runs without complete sensitivity provenance
+are conservatively masked on inspection without re-execution. See the
+[job input contract](../contracts/API_REFERENCE.md#job-input-confidentiality).
+
 ## 6. Restart, upgrade, and troubleshoot
 
 For an ordinary restart, run:

@@ -21,3 +21,11 @@ agent credential. Invalid credentials, insufficient access, rate limits and
 dependency failures remain distinguishable without leaking account existence.
 Existing external-OIDC HTTP MCP configuration and resource names remain
 compatible.
+
+Operation target contracts distinguish no target, optional tenant filters, exact tenant/agent pairs, selector-bound policy drafts and persisted references. The API resolves a policy reference's stored ownership before attenuation, rechecks it at execution, and the receiving policy authority validates selector/version binding. An absent agent is valid for a tenant or control-plane policy and never supplies a broader permission. Unfiltered control-plane access requires an explicit instance grant.
+
+The shared local-operation authorization catalog publishes named application prerequisites. Connectivity inspection/preview uses `mcp.connectivity.read`; confirmed dispatch additionally uses `mcp.connectivity.test`. OIDC and local modes retain scope, role, current application-grant and Connectivity ControlPlane policy checks, followed by the existing server-owned destination and confirmation/idempotency authority.
+
+Exchange and receiving middleware retain bounded allowlisted failure codes, layer, retryability, correlation and server-authored remediation. Removing a permission does not revoke a credential. Previously authenticated execution identifiers can distinguish expiry and revocation; unknown tokens keep limited disclosure. Dependency recovery never authorizes automatic retry of an uncertain mutation.
+
+Raw ingress lifecycle disclosure additionally requires a valid signed paired-resource proof, constant-time full-hash comparison and purpose/resource match. Only then may the API and MCP challenge expose expired or revoked status. Unknown tokens and purpose/resource mismatches retain generic invalid status. Challenge bodies contain safe code/remediation/correlation without identity or credential identifiers.

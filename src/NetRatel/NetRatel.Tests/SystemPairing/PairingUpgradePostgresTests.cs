@@ -33,7 +33,7 @@ public sealed class PairingUpgradePostgresTests(PostgreSqlPersistenceFixture pos
         db.Add(new InstallationIdentityRecord { InstanceId = installation, SourceInstanceId = producer });
         db.FlowRuntimeIdentity.Add(new() { SourceInstanceId = producer });
         db.Add(new ServiceSigningKey { Kid = "preserved-signing-key", Issuer = "https://nr.example.test/services", ProtectedPrivateKey = "preserved-protected-key", PublicModulus = "retained-n", PublicExponent = "retained-e", ActiveSlot = 1, CreatedAtUtc = DateTimeOffset.UtcNow });
-        db.Requests.Add(new() { SourceSystem = "preserved-business-history", TargetClientIdentity = "retained-agent", JobDefinitionId = "retained-job", Status = "completed", Logs = [], CreatedAtUtc = DateTimeOffset.UtcNow, UpdatedAtUtc = DateTimeOffset.UtcNow });
+        if (!upgrade) db.Requests.Add(new() { SourceSystem = "preserved-business-history", TargetClientIdentity = "retained-agent", JobDefinitionId = "retained-job", Status = "completed", Logs = [], CreatedAtUtc = DateTimeOffset.UtcNow, UpdatedAtUtc = DateTimeOffset.UtcNow });
         var principalIds = new List<Guid>();
         if (upgrade)
         {
@@ -46,7 +46,16 @@ public sealed class PairingUpgradePostgresTests(PostgreSqlPersistenceFixture pos
             db.RatelDeskConnectors.Add(new() { TenantId = 23, Id = Guid.NewGuid(), OwnerPrincipalId = PairingBusinessAuthorityFixture.Administrator, ConfigurationJson = "\"malformed legacy configuration\"", ProtectedCredential = "old-protected-outbound", AuthenticationJson = "{\"Mode\":2,\"ManagedLinkId\":\"old\"}", ReadinessJson = "{}", Revision = 1, RowVersion = 1 });
         }
         await db.SaveChangesAsync();
-        if (upgrade) await SeedLegacyAttemptsAsync(connection);
+        if (upgrade)
+        {
+            // Seed the deployed request schema before upgrading; the current EF model
+            // also writes protection columns that do not exist in this prior schema.
+            await db.Database.ExecuteSqlRawAsync("""
+                INSERT INTO "Requests" ("SourceSystem", "TargetClientIdentity", "RundeckJobDefinitionId", "Status", "Logs", "CreatedAtUtc", "UpdatedAtUtc")
+                VALUES ('preserved-business-history', 'retained-agent', 'retained-job', 'completed', ARRAY[]::text[], CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """);
+            await SeedLegacyAttemptsAsync(connection);
+        }
         await db.Database.MigrateAsync(); db.ChangeTracker.Clear();
         Assert.Equal(installation, (await db.Set<InstallationIdentityRecord>().SingleAsync()).InstanceId);
         Assert.Equal(producer, (await db.FlowRuntimeIdentity.SingleAsync()).SourceInstanceId);

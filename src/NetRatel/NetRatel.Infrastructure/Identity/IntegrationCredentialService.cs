@@ -59,14 +59,30 @@ public sealed record VerifiedIntegrationCredential(
 /// </summary>
 public interface IIntegrationCredentialCurrentVerifier
 {
+    async Task<IntegrationCredentialCurrentResult> CheckCurrentAsync(string credentialId,
+        IntegrationCredentialPurpose purpose, CancellationToken cancellationToken = default)
+    {
+        var credential = await VerifyCurrentAsync(credentialId, purpose, cancellationToken).ConfigureAwait(false);
+        return new(credential, credential is null ? "delegated_identity_revoked" : null);
+    }
+
     Task<VerifiedIntegrationCredential?> VerifyCurrentAsync(
         string credentialId,
         IntegrationCredentialPurpose purpose,
         CancellationToken cancellationToken = default);
 }
 
+public sealed record IntegrationCredentialCurrentResult(VerifiedIntegrationCredential? Credential, string? FailureCode);
+
 public interface IIntegrationCredentialService
 {
+    async Task<IntegrationCredentialCurrentResult> VerifyWithStatusAsync(string secret, IntegrationCredentialPurpose purpose,
+        string? expectedResource = null, CancellationToken cancellationToken = default)
+    {
+        var credential = await VerifyAsync(secret, purpose, cancellationToken).ConfigureAwait(false);
+        return new(credential, credential is null ? "local_credential_invalid" : null);
+    }
+
     Task<IntegrationCredentialSecret> CreateAsync(string ownerPrincipalId, IntegrationCredentialCreateRequest request, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<IntegrationCredentialSummary>> ListAsync(string ownerPrincipalId, CancellationToken cancellationToken = default);
     Task<bool> RevokeAsync(string ownerPrincipalId, string credentialId, string revokedByPrincipalId, CancellationToken cancellationToken = default);
@@ -74,13 +90,34 @@ public interface IIntegrationCredentialService
     Task<VerifiedIntegrationCredential?> VerifyAsync(string secret, IntegrationCredentialPurpose purpose, CancellationToken cancellationToken = default);
 }
 
+public interface IIntegrationCredentialPairingIssuer
+{
+    Task<IntegrationCredentialSecret> CreateForPairingAsync(string ownerPrincipalId, IntegrationCredentialCreateRequest request,
+        string pairingRequestId, CancellationToken cancellationToken = default);
+}
+
+public interface IIntegrationCredentialReviewedLifecycle
+{
+    Task ReconcileReviewedAsync(string ownerPrincipalId, string credentialId, IntegrationCredentialCreateRequest approved,
+        string approverPrincipalId, string expectedRevisionHash, CancellationToken cancellationToken = default);
+}
+
 /// <summary>Owns opaque credential generation, one-way verification, and revocation.</summary>
-public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, TimeProvider? clock = null) : IIntegrationCredentialService, IIntegrationCredentialCurrentVerifier
+public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, TimeProvider? clock = null) : IIntegrationCredentialService, IIntegrationCredentialCurrentVerifier, IIntegrationCredentialReviewedLifecycle, IIntegrationCredentialPairingIssuer
 {
     public const string ApiTokenPrefix = "nrt_ic_";
     private static readonly TimeSpan MaximumLifetime = TimeSpan.FromDays(365);
 
-    public async Task<IntegrationCredentialSecret> CreateAsync(string ownerPrincipalId, IntegrationCredentialCreateRequest request, CancellationToken cancellationToken = default)
+    public Task<IntegrationCredentialSecret> CreateAsync(string ownerPrincipalId, IntegrationCredentialCreateRequest request, CancellationToken cancellationToken = default) =>
+        CreateCoreAsync(ownerPrincipalId, request, null, cancellationToken);
+
+    public Task<IntegrationCredentialSecret> CreateForPairingAsync(string ownerPrincipalId, IntegrationCredentialCreateRequest request, string pairingRequestId, CancellationToken cancellationToken = default)
+    {
+        if (!Guid.TryParseExact(pairingRequestId, "N", out _)) throw new IntegrationPairingUnavailableException();
+        return CreateCoreAsync(ownerPrincipalId, request, pairingRequestId, cancellationToken);
+    }
+
+    private async Task<IntegrationCredentialSecret> CreateCoreAsync(string ownerPrincipalId, IntegrationCredentialCreateRequest request, string? pairingRequestId, CancellationToken cancellationToken)
     {
         var name = request.Name?.Trim();
         var resource = request.Resource?.Trim();
@@ -121,6 +158,8 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, T
         var publicId = Convert.ToHexString(RandomNumberGenerator.GetBytes(12)).ToLowerInvariant();
         var credential = new IntegrationCredential
         {
+            Id = pairingRequestId is null ? Guid.NewGuid().ToString("N") : Hash("NetRatel.Pairing.Credential.v1:" + pairingRequestId)[..32].ToLowerInvariant(),
+            PairingRequestId = pairingRequestId,
             PublicId = publicId,
             TokenPrefix = secret[..Math.Min(secret.Length, ApiTokenPrefix.Length + 8)],
             SecretHash = Hash(secret),
@@ -166,6 +205,49 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, T
                 InstancePermissions = credential.InstanceGrants.Select(grant => grant.Permission).Order().ToArray()
             })
             .ToArray();
+    }
+
+    public static string RevisionHash(IntegrationCredentialSummary credential) => Hash(System.Text.Json.JsonSerializer.Serialize(new
+    { credential.Id, credential.Name, credential.Purpose, credential.Resource, credential.ExpiresAtUtc, credential.RevokedAtUtc, credential.Grants, credential.InstancePermissions }));
+
+    public async Task ReconcileReviewedAsync(string ownerPrincipalId, string credentialId, IntegrationCredentialCreateRequest approved,
+        string approverPrincipalId, string expectedRevisionHash, CancellationToken cancellationToken = default)
+    {
+        var now = (clock ?? TimeProvider.System).GetUtcNow();
+        if (approved.ExpiresAtUtc <= now || approved.ExpiresAtUtc > now.Add(MaximumLifetime) ||
+            ownerPrincipalId == approverPrincipalId || string.IsNullOrWhiteSpace(approverPrincipalId))
+            throw new IntegrationCredentialGrantValidationException("reviewedProposal");
+        if (db.Database.IsRelational())
+        {
+            // Serialize reviewed changes and revocation on the existing credential row. Pairing already owns the transaction.
+            if (db.Database.CurrentTransaction is null) throw new IntegrationPairingUnavailableException();
+            var locked = await db.IntegrationCredentials.Where(x => x.Id == credentialId && x.OwnerPrincipalId == ownerPrincipalId && x.RevokedAtUtc == null)
+                .ExecuteUpdateAsync(update => update.SetProperty(x => x.Name, x => x.Name), cancellationToken).ConfigureAwait(false);
+            if (locked != 1) throw new IntegrationPairingUnavailableException();
+        }
+        var current = (await ListAsync(ownerPrincipalId, cancellationToken).ConfigureAwait(false)).SingleOrDefault(x => x.Id == credentialId)
+            ?? throw new IntegrationPairingUnavailableException();
+        if (RevisionHash(current) != expectedRevisionHash) throw new IntegrationCredentialGrantValidationException("reviewedRevision");
+        var credential = await db.IntegrationCredentials.Include(x => x.Grants).Include(x => x.InstanceGrants)
+            .SingleOrDefaultAsync(x => x.Id == credentialId && x.OwnerPrincipalId == ownerPrincipalId, cancellationToken).ConfigureAwait(false)
+            ?? throw new IntegrationPairingUnavailableException();
+        if (credential.RevokedAtUtc is not null || credential.ExpiresAtUtc <= now || credential.Purpose != approved.Purpose ||
+            !McpResourceUri.Equivalent(credential.Resource, approved.Resource)) throw new IntegrationPairingUnavailableException();
+        credential.ExpiresAtUtc = approved.ExpiresAtUtc;
+        var wantedGrants = approved.Grants.ToHashSet();
+        var removedGrants = credential.Grants.Where(x => !wantedGrants.Contains(new(x.TenantId, x.Permission))).ToArray();
+        db.RemoveRange(removedGrants);
+        foreach (var removed in removedGrants) credential.Grants.Remove(removed);
+        foreach (var added in wantedGrants.Where(x => !credential.Grants.Any(g => g.TenantId == x.TenantId && g.Permission == x.Permission)))
+            credential.Grants.Add(new IntegrationCredentialGrant { CredentialId = credential.Id, TenantId = added.TenantId, Permission = added.Permission });
+        var wantedInstance = (approved.InstancePermissions ?? []).ToHashSet(StringComparer.Ordinal);
+        var removedInstance = credential.InstanceGrants.Where(x => !wantedInstance.Contains(x.Permission)).ToArray();
+        db.RemoveRange(removedInstance);
+        foreach (var removed in removedInstance) credential.InstanceGrants.Remove(removed);
+        foreach (var added in wantedInstance.Where(x => !credential.InstanceGrants.Any(g => g.Permission == x)))
+            credential.InstanceGrants.Add(new IntegrationCredentialInstanceGrant { CredentialId = credential.Id, Permission = added });
+        db.IntegrationCredentialLifecycleEvents.Add(LifecycleEvent(credentialId, ownerPrincipalId, approverPrincipalId, now, "reconciled"));
+        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<bool> RevokeAsync(string ownerPrincipalId, string credentialId, string revokedByPrincipalId, CancellationToken cancellationToken = default)
@@ -265,27 +347,38 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, T
     };
 
     public async Task<VerifiedIntegrationCredential?> VerifyAsync(string secret, IntegrationCredentialPurpose purpose, CancellationToken cancellationToken = default)
+        => (await VerifyWithStatusAsync(secret, purpose, null, cancellationToken).ConfigureAwait(false)).Credential;
+
+    public async Task<IntegrationCredentialCurrentResult> VerifyWithStatusAsync(string secret, IntegrationCredentialPurpose purpose,
+        string? expectedResource = null, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(secret) || !secret.StartsWith(ApiTokenPrefix, StringComparison.Ordinal))
         {
-            return null;
+            return new(null, "local_credential_invalid");
         }
 
         var now = (clock ?? TimeProvider.System).GetUtcNow();
+        var suppliedHash = Hash(secret);
         var credential = await db.IntegrationCredentials.AsNoTracking()
             .Include(candidate => candidate.Grants)
             .Include(candidate => candidate.InstanceGrants)
-            .SingleOrDefaultAsync(candidate => candidate.SecretHash == Hash(secret) && candidate.Purpose == purpose &&
-                candidate.RevokedAtUtc == null && candidate.ExpiresAtUtc > now, cancellationToken).ConfigureAwait(false);
-        if (credential is null || !await PairingDeliveryIsCurrentAsync(credential, now, cancellationToken).ConfigureAwait(false))
-        {
-            return null;
-        }
+            .SingleOrDefaultAsync(candidate => candidate.SecretHash == suppliedHash && candidate.Purpose == purpose, cancellationToken).ConfigureAwait(false);
+        // A database lookup is not proof for lifecycle disclosure. Verify the full
+        // hash in constant time and bind the expected resource before classifying.
+        if (credential is null || !CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(credential.SecretHash), Encoding.ASCII.GetBytes(suppliedHash)) ||
+            (expectedResource is not null && !McpResourceUri.Equivalent(credential.Resource, expectedResource)))
+            return new(null, "local_credential_invalid");
+        var discloseState = purpose == IntegrationCredentialPurpose.HttpMcp && expectedResource is not null;
+        IntegrationCredentialCurrentResult Denied(string code) => new(null, discloseState ? code : "local_credential_invalid");
+        if (credential.RevokedAtUtc is not null) return Denied("local_credential_revoked");
+        if (credential.ExpiresAtUtc <= now) return Denied("local_credential_expired");
+        if (!await PairingDeliveryIsCurrentAsync(credential, now, cancellationToken).ConfigureAwait(false))
+            return Denied("local_credential_revoked");
 
         var localOwner = await db.Users.AsNoTracking().SingleOrDefaultAsync(user => user.PrincipalId == credential.OwnerPrincipalId, cancellationToken).ConfigureAwait(false);
         if (localOwner is not null && !localOwner.IsEnabled)
         {
-            return null;
+            return Denied("local_credential_revoked");
         }
 
         if (db.Database.IsRelational())
@@ -294,51 +387,62 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, T
             // may already have revoked/deleted it, and authorization must then fail closed.
             var updated = await db.IntegrationCredentials.Where(candidate => candidate.Id == credential.Id && candidate.RevokedAtUtc == null && candidate.ExpiresAtUtc > now)
                 .ExecuteUpdateAsync(update => update.SetProperty(candidate => candidate.LastUsedAtUtc, now), cancellationToken).ConfigureAwait(false);
-            if (updated == 0) return null;
+            if (updated == 0)
+            {
+                var current = await CheckCurrentAsync(credential.Id, purpose, cancellationToken).ConfigureAwait(false);
+                return Denied(current.FailureCode == "delegated_identity_revoked" ? "local_credential_revoked" : current.FailureCode ?? "local_credential_invalid");
+            }
         }
         else
         {
             var tracked = await db.IntegrationCredentials.SingleOrDefaultAsync(candidate => candidate.Id == credential.Id, cancellationToken).ConfigureAwait(false);
-            if (tracked is null || tracked.RevokedAtUtc is not null) return null;
+            if (tracked is null) return new(null, "local_credential_invalid");
+            if (tracked.RevokedAtUtc is not null) return Denied("local_credential_revoked");
+            if (tracked.ExpiresAtUtc <= now) return Denied("local_credential_expired");
             tracked.LastUsedAtUtc = now;
             await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
-        return new(credential.Id, credential.OwnerPrincipalId, credential.Purpose,
+        return new(new(credential.Id, credential.OwnerPrincipalId, credential.Purpose,
             credential.Grants.Select(grant => new IntegrationCredentialGrantRequest(grant.TenantId, grant.Permission)).ToArray())
         {
             Resource = credential.Resource,
             InstancePermissions = credential.InstanceGrants.Select(grant => grant.Permission).ToArray()
-        };
+        }, null);
     }
 
     public async Task<VerifiedIntegrationCredential?> VerifyCurrentAsync(
         string credentialId,
         IntegrationCredentialPurpose purpose,
         CancellationToken cancellationToken = default)
+        => (await CheckCurrentAsync(credentialId, purpose, cancellationToken).ConfigureAwait(false)).Credential;
+
+    public async Task<IntegrationCredentialCurrentResult> CheckCurrentAsync(
+        string credentialId, IntegrationCredentialPurpose purpose, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(credentialId))
-            return null;
+            return new(null, "delegated_identity_invalid");
 
         var now = (clock ?? TimeProvider.System).GetUtcNow();
         var credential = await db.IntegrationCredentials.AsNoTracking()
             .Include(candidate => candidate.Grants)
             .Include(candidate => candidate.InstanceGrants)
-            .SingleOrDefaultAsync(candidate => candidate.Id == credentialId && candidate.Purpose == purpose &&
-                candidate.RevokedAtUtc == null, cancellationToken).ConfigureAwait(false);
-        if (credential is null || credential.ExpiresAtUtc <= now ||
-            !await PairingDeliveryIsCurrentAsync(credential, now, cancellationToken).ConfigureAwait(false))
-            return null;
+            .SingleOrDefaultAsync(candidate => candidate.Id == credentialId && candidate.Purpose == purpose, cancellationToken).ConfigureAwait(false);
+        if (credential is null) return new(null, "delegated_identity_invalid");
+        if (credential.RevokedAtUtc is not null) return new(null, "delegated_identity_revoked");
+        if (credential.ExpiresAtUtc <= now) return new(null, "local_credential_expired");
+        if (!await PairingDeliveryIsCurrentAsync(credential, now, cancellationToken).ConfigureAwait(false))
+            return new(null, "delegated_identity_revoked");
 
         var localOwner = await db.Users.AsNoTracking().SingleOrDefaultAsync(user => user.PrincipalId == credential.OwnerPrincipalId, cancellationToken).ConfigureAwait(false);
         if (localOwner is not null && !localOwner.IsEnabled)
-            return null;
+            return new(null, "delegated_identity_revoked");
 
-        return new(credential.Id, credential.OwnerPrincipalId, credential.Purpose,
+        return new(new(credential.Id, credential.OwnerPrincipalId, credential.Purpose,
             credential.Grants.Select(grant => new IntegrationCredentialGrantRequest(grant.TenantId, grant.Permission)).ToArray())
         {
             Resource = credential.Resource,
             InstancePermissions = credential.InstanceGrants.Select(grant => grant.Permission).ToArray()
-        };
+        }, null);
     }
 
     private Task<bool> PairingDeliveryIsCurrentAsync(IntegrationCredential credential, DateTimeOffset now, CancellationToken ct)

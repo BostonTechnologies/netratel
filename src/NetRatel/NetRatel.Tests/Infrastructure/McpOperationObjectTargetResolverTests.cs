@@ -9,6 +9,22 @@ namespace NetRatel.Tests.Infrastructure;
 
 public sealed class McpOperationObjectTargetResolverTests
 {
+    [Fact]
+    public async Task Policy_reference_ownership_is_resolved_from_persistence_including_tenant_only_selectors()
+    {
+        await using var db = CreateDb();
+        var policyId = Guid.Parse("22222222-2222-4222-8222-222222222222");
+        db.McpOperatorPolicies.Add(new McpOperatorPolicyRecord { Id = policyId, TenantId = 17 });
+        await db.SaveChangesAsync();
+        var resolver = new McpOperationObjectTargetResolver(db);
+        var resolved = await resolver.ResolvePolicyTargetAsync(policyId.ToString("D"), CancellationToken.None);
+        resolved.Should().Be(new McpOperationResolvedPolicyTarget(17, null));
+        var delegation = Delegation("netratel_policy", "policy", policyId.ToString("D"), 17, Guid.NewGuid()) with { AgentId = null };
+        (await resolver.MatchesDelegationAsync(delegation, CancellationToken.None)).Should().BeTrue();
+        (await resolver.MatchesDelegationAsync(delegation with { TenantId = 29 }, CancellationToken.None)).Should().BeFalse();
+        (await resolver.ResolvePolicyTargetAsync(Guid.NewGuid().ToString("D"), CancellationToken.None)).Should().BeNull();
+    }
+
     [Theory]
     [InlineData("netratel_jobs", "get", "1001")]
     [InlineData("netratel_job_runs", "get", "1002")]

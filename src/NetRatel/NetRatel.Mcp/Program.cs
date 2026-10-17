@@ -8,6 +8,9 @@ using NetRatel.Mcp.Core;
 using NetRatel.Mcp.Core.Prompts;
 using NetRatel.Mcp.Tools;
 
+if (args is ["http-bridge", .. var bridgeArguments])
+    return await HttpMcpBridgeCommand.RunAsync(bridgeArguments);
+
 if (NetRatel.Setup.SetupCommand.IsSetupInvocation(args))
     return await NetRatel.Setup.SetupCommand.RunAsync(args, ConfigurationSurface.StdioMcp);
 

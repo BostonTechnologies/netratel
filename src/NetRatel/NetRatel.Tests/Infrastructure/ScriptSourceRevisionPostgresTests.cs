@@ -14,26 +14,25 @@ using NetRatel.Application.Scripts;
 using NetRatel.Application.Jobs;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
-using Testcontainers.PostgreSql;
 using Npgsql;
 using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
 
-public sealed class ScriptSourceRevisionPostgresTests : IAsyncLifetime
+public sealed class ScriptSourceRevisionPostgresTests(PostgreSqlPersistenceFixture postgres) : IAsyncLifetime, IClassFixture<PostgreSqlPersistenceFixture>
 {
-    private readonly PostgreSqlContainer postgres = new PostgreSqlBuilder("postgres:16-alpine").Build();
+    private string _connectionString = null!;
     private DbContextOptions<OrchestratorDbContext> options = null!;
 
     public async ValueTask InitializeAsync()
     {
-        await postgres.StartAsync();
-        options = new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(postgres.GetConnectionString()).Options;
+        _connectionString = await postgres.CreateDatabaseAsync();
+        options = new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(_connectionString).Options;
         await using var db = new OrchestratorDbContext(options);
         await db.Database.MigrateAsync();
     }
 
-    public ValueTask DisposeAsync() => postgres.DisposeAsync();
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     [Fact]
     public async Task Concurrent_library_creation_rechecks_the_committed_path_before_accepting_a_duplicate()
@@ -133,7 +132,7 @@ public sealed class ScriptSourceRevisionPostgresTests : IAsyncLifetime
 
     private async Task WaitForDatabaseBlockAsync(int processId, Task pending, CancellationToken ct)
     {
-        await using var connection = new NpgsqlConnection(postgres.GetConnectionString());
+        await using var connection = new NpgsqlConnection(_connectionString);
         await connection.OpenAsync(ct);
         using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(20));
         do

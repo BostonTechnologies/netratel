@@ -29,7 +29,7 @@ internal sealed class NetRatelMcpHttpApiClient(INetRatelMcpOutboundClient client
                 exception.Message,
                 exception.StatusCode,
                 exception.StatusCode >= StatusCodes.Status500InternalServerError,
-                exception.RemoteCode);
+                exception.RemoteCode) { CorrelationId = exception.CorrelationId };
         }
         catch (AgentClientValidationException exception)
         {

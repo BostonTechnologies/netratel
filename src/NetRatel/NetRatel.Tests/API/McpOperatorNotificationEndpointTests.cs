@@ -20,6 +20,8 @@ using NetRatel.API.Middleware;
 using NetRatel.API.Services;
 using NetRatel.Application.Notifications;
 using NetRatel.Application.Operations;
+using NetRatel.Infrastructure.Identity;
+using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Shared.Contracts;
 using NetRatel.Shared.Operations;
 using Xunit;
@@ -125,6 +127,25 @@ public sealed class McpOperatorNotificationEndpointTests
     }
 
     [Fact]
+    public async Task Connectivity_oidc_application_grants_distinguish_inspection_from_dispatch()
+    {
+        var grants = new ConnectivityApplicationGrants();
+        using var app = await BuildAppAsync(new RecordingNotifications(), new RecordingAuthorization(), connectivityGrants: grants);
+        var denied = await ClientFor(app, "settings", "netratel_connectivity", "netratel.mcp.admin")
+            .GetAsync("/api/v2/mcp/operator/connectivity/settings");
+        denied.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await denied.Content.ReadAsStringAsync()).Should().Contain("application_permission_denied");
+        grants.Permissions.Add(NetRatelPermissions.McpConnectivityRead);
+        var allowed = await ClientFor(app, "settings", "netratel_connectivity", "netratel.mcp.admin")
+            .GetAsync("/api/v2/mcp/operator/connectivity/settings");
+        allowed.StatusCode.Should().Be(HttpStatusCode.OK);
+        var dispatch = await ClientFor(app, "test", "netratel_connectivity", "netratel.mcp.execute")
+            .PostAsJsonAsync("/api/v2/mcp/operator/connectivity/test/confirm", new { planToken = new string('a', 40), idempotencyKey = new string('b', 40) });
+        dispatch.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await dispatch.Content.ReadAsStringAsync()).Should().Contain("application_permission_denied");
+    }
+
+    [Fact]
     public async Task Development_host_accepts_a_dev_control_plane_assertion_against_development_policy()
     {
         var authorization = new RecordingAuthorization();
@@ -152,7 +173,8 @@ public sealed class McpOperatorNotificationEndpointTests
         var client = app.GetTestClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("M2M");
         var assertion = app.Services.GetRequiredService<McpOperatorDelegationTokenService>().Create(
-            new McpOperatorDelegationIdentity("delegated.operator@example.test", "notification-client", null, [], ["Operator", "Administrator"], [scope]),
+            new McpOperatorDelegationIdentity("delegated.operator@example.test", "notification-client", null, [], ["Operator", "Administrator", "AutomationOperator", "PolicyAdministrator"], [scope])
+            { ExternalIssuer = "https://identity.example.invalid" },
             new McpOperatorDelegationRequest(tool, operation, $"request-{Guid.NewGuid():N}", "https://mcp.{instance}.example/mcp", instance, null, null, "notification-correlation"));
         client.DefaultRequestHeaders.Add(McpOperatorDelegationOptions.HeaderName, assertion);
         return client;
@@ -163,7 +185,8 @@ public sealed class McpOperatorNotificationEndpointTests
         RecordingAuthorization authorization,
         RecordingEvents? events = null,
         RecordingConnectivity? connectivity = null,
-        string? environmentName = null)
+        string? environmentName = null,
+        ConnectivityApplicationGrants? connectivityGrants = null)
     {
         var delegationOptions = new McpOperatorDelegationOptions
         {
@@ -195,6 +218,9 @@ public sealed class McpOperatorNotificationEndpointTests
                 }));
                 services.AddSingleton(delegationOptions);
                 services.AddSingleton<McpOperatorDelegationTokenService>();
+                services.AddSingleton<IApplicationPrincipalResolver, ConnectivityPrincipalResolver>();
+                services.AddSingleton<IEffectiveAccessService>(connectivityGrants ?? new ConnectivityApplicationGrants(
+                    NetRatelPermissions.McpConnectivityRead, NetRatelPermissions.McpConnectivityTest));
                 services.AddSingleton<IMcpOperatorAuthorization>(authorization);
                 services.AddSingleton<IMcpOperatorConfirmationService>(confirmations);
                 services.AddSingleton<INetRatelNotificationService>(notifications);
@@ -216,6 +242,22 @@ public sealed class McpOperatorNotificationEndpointTests
             });
         });
         return await builder.StartAsync();
+    }
+
+    private sealed class ConnectivityPrincipalResolver : IApplicationPrincipalResolver
+    {
+        public Task<string?> ResolveExternalAsync(ClaimsPrincipal principal, CancellationToken cancellationToken = default) => Task.FromResult(
+            principal.HasClaim("iss", "https://identity.example.invalid") && principal.HasClaim("sub", "delegated.operator@example.test") ? "connectivity-principal" : null);
+    }
+
+    private sealed class ConnectivityApplicationGrants(params string[] permissions) : IEffectiveAccessService
+    {
+        public HashSet<string> Permissions { get; } = new(permissions, StringComparer.Ordinal);
+        public Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenantId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(principal.HasClaim("netratel_principal_id", "connectivity-principal") && tenantId is null && Permissions.Contains(permission));
+        public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenantId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new EffectiveAccessSnapshot("connectivity-principal", false, false, Permissions));
+        public Task ReconcileBuiltInRolesAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
     private sealed class RecordingAuthorization : IMcpOperatorAuthorization

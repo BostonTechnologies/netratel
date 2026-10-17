@@ -31,12 +31,13 @@ using System.Security.Claims;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Xunit;
 
 namespace NetRatel.Tests.Mcp;
 
 [Collection(PostgreSqlPersistenceCollection.Name)]
-public sealed class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture postgres)
+public sealed partial class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture postgres)
 {
     private static readonly SymmetricSecurityKey TestSigningKey = new(Encoding.UTF8.GetBytes("netratel-mcp-test-signing-key-for-http-protocol-discovery"));
 
@@ -413,7 +414,7 @@ public sealed class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture postgres)
     }
 
     [Theory]
-    [InlineData(HttpStatusCode.Unauthorized, HttpStatusCode.Unauthorized, null)]
+    [InlineData(HttpStatusCode.Unauthorized, HttpStatusCode.Unauthorized, "local_credential_invalid")]
     [InlineData(HttpStatusCode.Forbidden, HttpStatusCode.Forbidden, "local_credential_forbidden")]
     [InlineData(HttpStatusCode.TooManyRequests, HttpStatusCode.TooManyRequests, "local_credential_throttled")]
     [InlineData(HttpStatusCode.InternalServerError, HttpStatusCode.ServiceUnavailable, "local_credential_exchange_unavailable")]
@@ -749,7 +750,7 @@ public sealed class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture postgres)
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "nrt_ic_not-forwarded-to-business-api");
             request.Headers.Add(McpLocalDelegationEndpoints.PairingHeaderName, pairing);
 
-            (await client.SendAsync(request)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+            (await client.SendAsync(request)).StatusCode.Should().Be(HttpStatusCode.BadRequest);
         }
         finally
         {
@@ -795,7 +796,7 @@ public sealed class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture postgres)
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "nrt_ic_not-forwarded-to-business-api");
             request.Headers.Add(McpLocalDelegationEndpoints.PairingHeaderName, pairing);
 
-            (await client.SendAsync(request)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+            (await client.SendAsync(request)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
         }
         finally
         {
@@ -876,6 +877,61 @@ public sealed class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture postgres)
         promptPayload.RootElement.GetProperty("result").GetProperty("messages").EnumerateArray().Should().NotBeEmpty();
     }
 
+    [Theory]
+    [InlineData("inspect_client", "client", null)]
+    [InlineData("inspect_client", "client", "")]
+    [InlineData("inspect_client", "client", "  ")]
+    [InlineData("inspect_client", "client", "bad\u0001name")]
+    [InlineData("diagnose_job_run", "jobRunId", null)]
+    [InlineData("diagnose_job_run", "jobRunId", "")]
+    [InlineData("diagnose_job_run", "jobRunId", "  ")]
+    [InlineData("diagnose_job_run", "jobRunId", "1e3")]
+    [InlineData("diagnose_job_run", "jobRunId", "-1")]
+    [InlineData("diagnose_job_run", "jobRunId", "0")]
+    [InlineData("diagnose_job_run", "jobRunId", "9223372036854775808")]
+    public async Task Prompt_invalid_arguments_return_actionable_invalid_params_and_preserve_request_id(string name, string argument, string? value)
+    {
+        await using var host = await CreateApplicationAsync();
+        using var client = host.Application.GetTestClient();
+        var arguments = new Dictionary<string, string>();
+        if (value is not null) arguments[argument] = value;
+        using var response = await client.SendAsync(McpRequest(81, "prompts/get", new { name, arguments }));
+        using var payload = await ReadMcpPayloadAsync(response);
+        payload.RootElement.GetProperty("id").GetInt32().Should().Be(81);
+        var error = payload.RootElement.GetProperty("error");
+        error.GetProperty("code").GetInt32().Should().Be(-32602);
+        error.GetProperty("message").GetString().Should().Contain(argument).And.Contain("string");
+        error.GetRawText().Should().NotContain("bad\u0001name").And.NotContain("StackTrace");
+        using var valid = await client.SendAsync(McpRequest(82, "prompts/get", new
+        {
+            name,
+            arguments = new Dictionary<string, string> { [argument] = argument == "client" ? "Καλημέρα-客户端" : "9007199254740993" }
+        }));
+        using var validPayload = await ReadMcpPayloadAsync(valid);
+        validPayload.RootElement.GetProperty("result").GetProperty("messages").GetArrayLength().Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public async Task All_prompts_retrieve_valid_arguments_and_preserve_unicode_and_large_identity()
+    {
+        await using var host = await CreateApplicationAsync();
+        using var client = host.Application.GetTestClient();
+        foreach (var name in NetRatelMcpCatalog.Prompts)
+        {
+            var arguments = name switch
+            {
+                "inspect_client" => new Dictionary<string, string> { ["client"] = "Καλημέρα-客户端", ["futureArgument"] = "ignored" },
+                "diagnose_job_run" => new Dictionary<string, string> { ["jobRunId"] = "9007199254740993" },
+                _ => new Dictionary<string, string>()
+            };
+            using var response = await client.SendAsync(McpRequest(83, "prompts/get", new { name, arguments }));
+            using var payload = await ReadMcpPayloadAsync(response);
+            var text = payload.RootElement.GetProperty("result").GetProperty("messages")[0].GetProperty("content").GetProperty("text").GetString();
+            if (name == "inspect_client") text.Should().Contain("Καλημέρα-客户端").And.Contain("netratel_search/tenants").And.Contain("netratel_search/clients");
+            if (name == "diagnose_job_run") text.Should().Contain("9007199254740993");
+        }
+    }
+
     [Fact]
     public async Task Authenticated_read_tool_remains_available_without_the_development_operation_scope()
     {
@@ -892,6 +948,189 @@ public sealed class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture postgres)
         using var payload = await ReadMcpPayloadAsync(response);
         var result = payload.RootElement.GetProperty("result");
         (!result.TryGetProperty("isError", out var isError) || !isError.GetBoolean()).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Closed_tool_envelopes_reject_invalid_input_before_local_execution_exchange_or_business_dispatch()
+    {
+        var exchange = new ContractLocalExchange();
+        var business = new ContractBusinessApi();
+        await using var host = await CreateApplicationAsync(localCredentialMode: true,
+            localCredentialApiHandler: exchange, businessApi: business, operatorSurfaceEnabled: true);
+        var client = host.Application.GetTestClient();
+        var cases = new (string Tool, object Arguments, string Field)[]
+        {
+            ("netratel_auth", new { operation = "status", unexpected = "synthetic-secret-never-echo" }, "unexpected"),
+            ("netratel_access", new { operation = "target", request = new { tenantId = 17, agentId = ContractAgentId, unexpected = true } }, "request"),
+            ("netratel_commands", new { operation = "preview_execute", request = new { tenantId = 17, agentId = ContractAgentId, shell = "bash", command = "true", workingDirectory = "/tmp", unexpected = true } }, "request"),
+            ("netratel_auth", new { operation = "status", confirm = false }, "confirm"),
+            ("netratel_auth", new { operation = "unknown" }, "operation"),
+            ("netratel_auth", new { }, "operation")
+        };
+        foreach (var entry in cases)
+        {
+            using var request = ContractCall(entry.Tool, entry.Arguments);
+            using var response = await client.SendAsync(request);
+            using var payload = await ReadMcpPayloadAsync(response);
+            var result = payload.RootElement.GetProperty("result");
+            (result.TryGetProperty("isError", out var inputError) && inputError.GetBoolean()).Should().BeTrue("closed tool envelopes reject invalid arguments before delegation");
+            var structured = result.GetProperty("structuredContent");
+            structured.GetProperty("error").GetProperty("code").GetString().Should().Be("validation_error");
+            structured.GetProperty("failure").GetProperty("layer").GetString().Should().Be("input");
+            structured.GetProperty("data").GetProperty("fieldPaths").GetRawText().Should().Contain(entry.Field);
+            structured.GetRawText().Should().NotContain("synthetic-secret-never-echo");
+        }
+        exchange.Executions.Should().BeEmpty("invalid contracts must not request operation authorization");
+        business.Calls.Should().BeEmpty("invalid contracts must not dispatch a backend read or mutation");
+
+        using var control = await client.SendAsync(ContractCall("netratel_auth", new { operation = "status" }));
+        using var controlPayload = await ReadMcpPayloadAsync(control);
+        controlPayload.RootElement.GetProperty("result").GetProperty("structuredContent").GetProperty("success").GetBoolean().Should().BeTrue();
+        exchange.Executions.Should().ContainSingle();
+        business.Calls.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Local_http_identifier_alternatives_preserve_target_and_exact_long_references()
+    {
+        var grants = new AdmissionGrants(NetRatelPermissions.ClientManagement, NetRatelPermissions.JobManagement);
+        await using var api = await AdmissionApiAsync(grants);
+        var exchange = new ContractLocalExchange(api.GetTestServer().CreateHandler());
+        var business = new ContractBusinessApi { DenyAccess = true };
+        await using var host = await CreateApplicationAsync(localCredentialMode: true,
+            localCredentialApiHandler: exchange, businessApi: business, operatorSurfaceEnabled: true);
+        var client = host.Application.GetTestClient();
+        foreach (object tenantId in new object[] { 17, "17" })
+        {
+            using var response = await client.SendAsync(ContractCall("netratel_access", new { operation = "target", request = new { tenantId, agentId = ContractAgentId } }));
+            using var payload = await ReadMcpPayloadAsync(response);
+            payload.RootElement.GetProperty("result").TryGetProperty("structuredContent", out var admission).Should().BeTrue("both published tenant-ID representations must reach a structured admission result");
+            admission.GetProperty("failure").GetProperty("code").GetString().Should().Be("tenant_not_authorized");
+        }
+        exchange.Executions.Should().HaveCount(2).And.OnlyContain(proof => proof.TenantId == 17 && proof.AgentId == ContractAgentId);
+        business.Calls.Select(call => call.Path).Distinct().Should().ContainSingle("both representations address exactly the same target");
+
+        foreach (object invalid in new object[] { "2147483648", 2147483648L, 0, -1, 1.5, JsonSerializer.Deserialize<JsonElement>("1.0000000000000000001"), JsonSerializer.Deserialize<JsonElement>("1.0000000000000000000000000000000000000001"), true, "17x", " 17", "17\n", new { value = 17 } })
+        {
+            using var response = await client.SendAsync(ContractCall("netratel_access", new { operation = "target", request = new { tenantId = invalid, agentId = ContractAgentId } }));
+            using var payload = await ReadMcpPayloadAsync(response);
+            payload.RootElement.GetProperty("result").GetProperty("structuredContent").GetProperty("error").GetProperty("code").GetString().Should().Be("validation_error");
+        }
+        exchange.Executions.Should().HaveCount(2);
+        business.Calls.Should().HaveCount(2);
+
+        business.DenyAccess = false;
+        using var exact = await client.SendAsync(ContractCall("netratel_job_runs", new { operation = "get", request = new { tenantId = 17, agentId = ContractAgentId, jobRunId = "9007199254740993" } }));
+        using var exactPayload = await ReadMcpPayloadAsync(exact);
+        exactPayload.RootElement.GetProperty("result").GetProperty("structuredContent").GetProperty("data").GetProperty("id").GetString().Should().Be("9007199254740993");
+        exchange.Executions.Last().ObjectReference.Should().Be("9007199254740993");
+        business.Calls.Last().Path.Should().EndWith("/9007199254740993");
+        foreach (object invalidId in new object[] { "9223372036854775808", "999999999999999999999999999999", JsonSerializer.Deserialize<JsonElement>("99999999999999999999999999999999999999999999999999"), 1.5 })
+        {
+            using var invalidLong = await client.SendAsync(ContractCall("netratel_job_runs", new { operation = "get", request = new { tenantId = 17, agentId = ContractAgentId, jobRunId = invalidId } }));
+            using var invalidPayload = await ReadMcpPayloadAsync(invalidLong);
+            invalidPayload.RootElement.GetProperty("result").GetProperty("structuredContent").GetProperty("error").GetProperty("code").GetString().Should().Be("validation_error");
+        }
+        exchange.Executions.Should().HaveCount(3);
+        business.Calls.Should().HaveCount(3);
+    }
+
+    [Fact]
+    public async Task Local_http_search_empty_values_match_omission_and_valid_maps_false_and_zero_survive()
+    {
+        var exchange = new ContractLocalExchange();
+        var business = new ContractBusinessApi();
+        await using var host = await CreateApplicationAsync(localCredentialMode: true,
+            localCredentialApiHandler: exchange, businessApi: business, operatorSurfaceEnabled: true);
+        var client = host.Application.GetTestClient();
+        foreach (var q in new[] { null, "", " \t " })
+        {
+            var search = new JsonObject { ["limit"] = 10, ["offset"] = 0 };
+            if (q is not null) search["q"] = q;
+            using var response = await client.SendAsync(ContractCall("netratel_search", new { operation = "tenants", request = search }));
+            using var payload = await ReadMcpPayloadAsync(response);
+            payload.RootElement.GetProperty("result").GetProperty("structuredContent").GetProperty("success").GetBoolean().Should().BeTrue();
+        }
+        business.Calls.Should().HaveCount(3).And.OnlyContain(call => call.Path == "/api/v2/mcp/operator/search/tenants?offset=0&limit=10");
+        using var unicode = await client.SendAsync(ContractCall("netratel_search", new { operation = "tenants", request = new { q = "東京 café", offset = 0, limit = 10 } }));
+        using var unicodePayload = await ReadMcpPayloadAsync(unicode);
+        unicodePayload.RootElement.GetProperty("result").GetProperty("structuredContent").GetProperty("success").GetBoolean().Should().BeTrue();
+        business.Calls.Last().Path.Should().Contain("q=%E6%9D%B1%E4%BA%AC%20caf%C3%A9").And.Contain("offset=0");
+
+        foreach (object invalidSearch in new object[] { new { offset = -1 }, new { limit = 101 }, new { q = true } })
+        {
+            using var rejected = await client.SendAsync(ContractCall("netratel_search", new { operation = "tenants", request = invalidSearch }));
+            using var rejectedPayload = await ReadMcpPayloadAsync(rejected);
+            rejectedPayload.RootElement.GetProperty("result").GetProperty("structuredContent").GetProperty("error").GetProperty("code").GetString().Should().Be("validation_error");
+        }
+        exchange.Executions.Should().HaveCount(4);
+        business.Calls.Should().HaveCount(4);
+
+        using var preview = await client.SendAsync(ContractCall("netratel_scripts", new { operation = "run", confirm = false,
+            request = new { tenantId = 17, agentId = ContractAgentId, scriptId = "9007199254740993", version = "1", contentHash = new string('A', 64), parameters = new Dictionary<string, string> { ["custom_input"] = "東京 café", ["empty_input"] = "" } } }));
+        using var previewPayload = await ReadMcpPayloadAsync(preview);
+        previewPayload.RootElement.GetProperty("result").GetProperty("structuredContent").GetProperty("success").GetBoolean().Should().BeTrue();
+        business.Calls.Last().Path.Should().EndWith("/scripts/9007199254740993/runs/preview");
+        business.Calls.Last().Body!["parameters"]!["custom_input"]!.GetValue<string>().Should().Be("東京 café");
+        business.Calls.Last().Body!["parameters"]!["empty_input"]!.GetValue<string>().Should().BeEmpty();
+        using var falseValue = await client.SendAsync(ContractCall("netratel_tenants", new { operation = "delete", confirm = false,
+            request = new { tenantId = 17, expectedVersion = "1", cascade = false } }));
+        using var falsePayload = await ReadMcpPayloadAsync(falseValue);
+        falsePayload.RootElement.GetProperty("result").GetProperty("structuredContent").GetProperty("success").GetBoolean().Should().BeTrue();
+        business.Calls.Last().Path.Should().EndWith("/preview/delete");
+        business.Calls.Last().Body!["cascade"]!.GetValue<bool>().Should().BeFalse();
+        foreach (object cursor in new object[] { 0, "0" })
+        {
+            using var cursorResponse = await client.SendAsync(ContractCall("netratel_scripts", new { operation = "list",
+                request = new { tenantId = 17, agentId = ContractAgentId, afterId = cursor, limit = 1 } }));
+            using var cursorPayload = await ReadMcpPayloadAsync(cursorResponse);
+            cursorPayload.RootElement.GetProperty("result").GetProperty("structuredContent").GetProperty("success").GetBoolean().Should().BeTrue();
+            business.Calls.Last().Path.Should().Be($"/api/v2/mcp/operator/agents/17/{ContractAgentId:D}/scripts?afterId=0&limit=1");
+            exchange.Executions.Last().TenantId.Should().Be(17);
+            exchange.Executions.Last().AgentId.Should().Be(ContractAgentId);
+        }
+        exchange.Executions.Should().HaveCount(8);
+        business.Calls.Should().HaveCount(8);
+    }
+
+    private static readonly Guid ContractAgentId = Guid.Parse("11111111-1111-4111-8111-111111111111");
+
+    private static HttpRequestMessage ContractCall(string tool, object arguments)
+    {
+        var request = McpRequest(33, "tools/call", new { name = tool, arguments });
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "nrt_ic_synthetic-contract-fixture");
+        return request;
+    }
+
+    private sealed class ContractLocalExchange(HttpMessageHandler? upstream = null) : HttpMessageHandler
+    {
+        private readonly McpOperatorDelegationTokenService tokens = new(LocalCredentialDelegationOptions());
+        private readonly HttpMessageInvoker? forward = upstream is null ? null : new HttpMessageInvoker(upstream, disposeHandler: false);
+        public List<McpOperatorDelegation> Executions { get; } = [];
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/authenticate", StringComparison.Ordinal))
+                return forward is not null ? forward.SendAsync(request, cancellationToken) : Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new { ownerPrincipalId = "fixture-owner", credentialId = "fixture-credential" }) });
+            tokens.TryValidate(request.Headers.GetValues("X-NetRatel-Mcp-Pairing").Single(), out var proof).Should().BeTrue();
+            Executions.Add(proof!);
+            if (forward is not null) return forward.SendAsync(request, cancellationToken);
+            var assertion = tokens.Create(new McpOperatorDelegationIdentity("fixture-owner", null, null, [], ["Operator"], ["netratel.mcp.read"]),
+                new McpOperatorDelegationRequest(proof!.Tool, proof.Operation, proof.RequestId, proof.Resource, proof.Instance, proof.TenantId, proof.AgentId));
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new { assertion }) });
+        }
+    }
+
+    private sealed class ContractBusinessApi : INetRatelMcpApiClient
+    {
+        public bool DenyAccess { get; set; }
+        public List<(string Path, JsonNode? Body)> Calls { get; } = [];
+        public Task<JsonNode?> GetAsync(string path, CancellationToken cancellationToken = default) => SendAsync(HttpMethod.Get, path, null, cancellationToken);
+        public Task<JsonNode?> SendAsync(HttpMethod method, string path, JsonNode? body = null, CancellationToken cancellationToken = default)
+        {
+            Calls.Add((path, body?.DeepClone()));
+            if (DenyAccess) throw new NetRatelMcpApiException("upstream_forbidden", "Synthetic tenant denial", 403, false, "tenant_not_authorized");
+            return Task.FromResult<JsonNode?>(new JsonObject { ["id"] = path.Split('/').Last() });
+        }
     }
 
     [Fact]
@@ -1450,7 +1689,7 @@ public sealed class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture postgres)
         jobRun.RequiresObjectReference.Should().BeTrue();
         McpOperationTargetCatalog.Find("netratel_job_runs", "list")!.RequiresObjectReference.Should().BeFalse();
         McpOperationTargetCatalog.Find("netratel_policy", "confirm_disable")!.Model
-            .Should().Be(McpOperationTargetModel.ObjectDerived);
+            .Should().Be(McpOperationTargetModel.PolicySelector);
         McpOperationTargetCatalog.Find("netratel_policy", "confirm_disable")!.ObjectReferenceKind.Should().BeNull();
         McpOperationTargetCatalog.Find("netratel_clients", "get")!.Model
             .Should().Be(McpOperationTargetModel.Agent);
@@ -1519,14 +1758,17 @@ public sealed class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture postgres)
         bool includeProdApiBaseUrl = true,
         bool useDeploymentVariables = false,
         bool localCredentialMode = false,
-        HttpMessageHandler? localCredentialApiHandler = null)
+        HttpMessageHandler? localCredentialApiHandler = null,
+        INetRatelMcpApiClient? businessApi = null,
+        bool operatorSurfaceEnabled = false,
+        string? publicResourceUri = null)
     {
         var configurationPath = await WriteIsolatedConfigurationAsync("https://api.dev.example");
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Development });
         builder.WebHost.UseTestServer();
         var values = new Dictionary<string, string?>
         {
-            ["NetRatel:Mcp:Http:PublicResourceUri"] = "https://mcp.dev.example/mcp",
+            ["NetRatel:Mcp:Http:PublicResourceUri"] = publicResourceUri ?? "https://mcp.dev.example/mcp",
             ["NetRatel:Mcp:Http:AllowedOrigins:0"] = "https://operator.example"
         };
         if (localCredentialMode)
@@ -1563,10 +1805,13 @@ public sealed class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture postgres)
                 values["NetRatel:Mcp:Http:ProdApiBaseUrl"] = "https://api.prod.example";
         }
 
+        values["NetRatel:Mcp:Http:OperatorSurfaceEnabled"] = operatorSurfaceEnabled.ToString();
         builder.Configuration.AddInMemoryCollection(values);
         try
         {
             NetRatelMcpHttpApplication.ConfigureServices(builder);
+            if (businessApi is not null)
+                builder.Services.AddSingleton(businessApi);
             if (localCredentialApiHandler is not null)
             {
                 builder.Services.AddHttpClient(McpLocalCredentialAuthenticationHandler.ApiHttpClientName)
@@ -1668,20 +1913,23 @@ public sealed class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture postgres)
     }
 
     private async Task<PersistedLocalCredentialApiApplication> CreatePersistedLocalCredentialApiAsync(
-        McpOperatorDelegationTokenService tokens)
+        McpOperatorDelegationTokenService tokens,
+        TimeProvider? clock = null)
     {
         var connectionString = await postgres.CreateDatabaseAsync();
-        return await CreatePersistedLocalCredentialApiAsync(tokens, options => options.UseNpgsql(connectionString));
+        return await CreatePersistedLocalCredentialApiAsync(tokens, options => options.UseNpgsql(connectionString), clock: clock);
     }
 
     private static async Task<PersistedLocalCredentialApiApplication> CreatePersistedLocalCredentialApiAsync(
         McpOperatorDelegationTokenService tokens,
         Action<DbContextOptionsBuilder> configureDatabase,
-        IAsyncDisposable? databaseResource = null)
+        IAsyncDisposable? databaseResource = null,
+        TimeProvider? clock = null)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Development });
         builder.WebHost.UseTestServer();
         builder.Services.AddDbContext<NetRatelIdentityDbContext>(configureDatabase);
+        builder.Services.AddSingleton(clock ?? TimeProvider.System);
         builder.Services.AddScoped<IntegrationCredentialService>();
         builder.Services.AddScoped<IIntegrationCredentialService>(services => services.GetRequiredService<IntegrationCredentialService>());
         builder.Services.AddScoped<IIntegrationCredentialCurrentVerifier>(services => services.GetRequiredService<IntegrationCredentialService>());
@@ -1727,7 +1975,7 @@ public sealed class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture postgres)
                 new IntegrationCredentialCreateRequest(
                     "persisted-local-mcp",
                     IntegrationCredentialPurpose.HttpMcp,
-                    DateTimeOffset.UtcNow.AddHours(1),
+                    (clock ?? TimeProvider.System).GetUtcNow().AddHours(1),
                     [],
                     "https://mcp.dev.example/mcp",
                     [NetRatelPermissions.McpDiscoveryRead]));
@@ -1903,7 +2151,7 @@ public sealed class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture postgres)
                 new IntegrationCredentialCreateRequest(
                     $"persisted-{principalId}",
                     IntegrationCredentialPurpose.HttpMcp,
-                    DateTimeOffset.UtcNow.AddHours(1),
+                    Application.Services.GetRequiredService<TimeProvider>().GetUtcNow().AddHours(1),
                     [],
                     "https://mcp.dev.example/mcp",
                     [permission]));

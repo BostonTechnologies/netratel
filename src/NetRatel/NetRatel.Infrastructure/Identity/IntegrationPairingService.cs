@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
 using NetRatel.Infrastructure.Identity.Branding;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
@@ -15,9 +16,11 @@ namespace NetRatel.Infrastructure.Identity;
 public sealed class IntegrationPairingUnavailableException() : Exception("The connection request is unavailable. Start a new connection request.");
 
 /// <summary>Durable, capability-bound pairing with one ordinary credential and a bounded retry envelope.</summary>
-public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IIntegrationCredentialService credentials,
+public sealed partial class IntegrationPairingService(NetRatelIdentityDbContext db, IIntegrationCredentialService credentials,
     IIntegrationCredentialGrantValidator validator, IDataProtectionProvider protection, TimeProvider clock,
-    IDeploymentBrandingService? branding = null, IConfiguration? configuration = null, OrchestratorDbContext? applicationDb = null)
+    IDeploymentBrandingService? branding = null, IConfiguration? configuration = null, OrchestratorDbContext? applicationDb = null, IEffectiveAccessService? effectiveAccess = null,
+    NetRatel.Application.Operations.IMcpOperatorPolicyAdministration? policyAdministration = null,
+    NetRatel.Application.Operations.IMcpOperatorAuthorization? operatorAuthorization = null, IHostEnvironment? hostEnvironment = null)
 {
     private static readonly TimeSpan RequestLifetime = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan DeliveryLifetime = TimeSpan.FromMinutes(5);
@@ -28,6 +31,7 @@ public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IInt
     public async Task<IntegrationPairingStartResponse> StartAsync(IntegrationPairingStartRequest input, string origin, string? canonicalHttpMcpResource = null,
         CancellationToken cancellationToken = default)
     {
+        if (input.ReviewedAccess is not null) throw new IntegrationPairingUnavailableException();
         origin = HttpHostSetupProtocol.NormalizeWebAddress(origin).TrimEnd('/');
         var name = input.Name?.Trim();
         var requested = input.RequestedPermissions ?? [];
@@ -72,7 +76,7 @@ public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IInt
             if (request.State != IntegrationPairingState.Pending) throw new IntegrationPairingUnavailableException();
             return new IntegrationPairingReview(request.Id, FormatCode(NormalizeCode(code)), request.Name,
                 (PairingCredentialPurpose)request.Purpose, request.PublicOrigin, request.Resource,
-                RequestedPermissions(request), request.ExpiresAtUtc, Status(request)) { TemporaryVerifier = IsTemporaryVerifier(request), CredentialExpiresAtUtc = IsTemporaryVerifier(request) ? clock.GetUtcNow().Add(TemporaryVerifierLifetime) : null };
+                RequestedPermissions(request), request.ExpiresAtUtc, Status(request)) { TemporaryVerifier = IsTemporaryVerifier(request), ReviewedAccess = AccessMetadata(request) is { } access ? AccessRequest(request, access, FormatCode(NormalizeCode(code))) : null, CredentialExpiresAtUtc = AccessMetadata(request)?.Proposal.ExpiresAtUtc ?? (IsTemporaryVerifier(request) ? clock.GetUtcNow().Add(TemporaryVerifierLifetime) : null) };
         }, cancellationToken);
 
     public Task<IntegrationPairingPollResponse> ApproveAsync(ClaimsPrincipal principal, IntegrationPairingApprovalRequest approval,
@@ -81,6 +85,9 @@ public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IInt
             await ExpireAsync(request, cancellationToken).ConfigureAwait(false);
             if (request.State != IntegrationPairingState.Pending || !await BindingIsCurrentAsync(request, cancellationToken).ConfigureAwait(false))
                 throw new IntegrationPairingUnavailableException();
+            var reviewed = AccessMetadata(request);
+            if (reviewed is not null)
+                await ValidateReviewedApprovalAsync(request, reviewed, principal, approval, cancellationToken).ConfigureAwait(false);
             var temporaryVerifier = IsTemporaryVerifier(request);
             if (temporaryVerifier && (!approval.VerifierConsent || (approval.Grants?.Count ?? 0) != 0 ||
                 approval.InstancePermissions is not { Count: 1 } || approval.InstancePermissions[0] != VerifierPermission))
@@ -88,16 +95,21 @@ public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IInt
             var now = clock.GetUtcNow();
             var expiresAt = temporaryVerifier && approval.ExpiresAtUtc > now.Add(TemporaryVerifierLifetime)
                 ? now.Add(TemporaryVerifierLifetime) : approval.ExpiresAtUtc;
-            var owner = principal.FindFirstValue("netratel_principal_id");
+            var owner = reviewed?.RequestingPrincipalId ?? principal.FindFirstValue("netratel_principal_id");
             var create = new IntegrationCredentialCreateRequest(request.Name, request.Purpose, expiresAt,
                 (approval.Grants ?? []).Select(grant => new IntegrationCredentialGrantRequest(grant.TenantId, grant.Permission)).ToArray(),
                 request.Resource, approval.InstancePermissions ?? []);
-            await validator.ValidateAsync(principal, create, cancellationToken).ConfigureAwait(false);
+            if (reviewed?.Proposal.Action != "revoke") await validator.ValidateAsync(principal, create, cancellationToken).ConfigureAwait(false);
             // Browser provider claims are not a durable delegation grant. Use the same current owner identity as redemption.
             var durableOwner = new ClaimsPrincipal(new ClaimsIdentity([new Claim("netratel_principal_id", owner!)], "pairing-owner"));
-            try { await validator.ValidateAsync(durableOwner, create, cancellationToken).ConfigureAwait(false); }
+            try { if (reviewed?.Proposal.Action != "revoke") await validator.ValidateAsync(durableOwner, create, cancellationToken).ConfigureAwait(false); }
             catch (IntegrationCredentialGrantValidationException)
             { throw new IntegrationCredentialGrantValidationException("durableAuthority"); }
+            if (reviewed is not null)
+            {
+                reviewed = reviewed with { ApproverPrincipalId = principal.FindFirstValue("netratel_principal_id") };
+                request.RequestedPermissionsJson = JsonSerializer.Serialize(reviewed);
+            }
             request.OwnerPrincipalId = owner;
             request.ApprovedGrantsJson = JsonSerializer.Serialize(create.Grants);
             request.ApprovedInstancePermissionsJson = JsonSerializer.Serialize(create.InstancePermissions);
@@ -141,10 +153,23 @@ public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IInt
                 await RevokeAndClearAsync(request, IntegrationPairingState.Denied, cancellationToken).ConfigureAwait(false);
                 return new IntegrationPairingPollResponse("denied");
             }
+            if (AccessMetadata(request) is { } accessMetadata)
+            {
+                if (!await ApplyReviewedAsync(request, accessMetadata, cancellationToken).ConfigureAwait(false))
+                    return new IntegrationPairingPollResponse(Status(request));
+                if (accessMetadata.Proposal.Action != "create") return new IntegrationPairingPollResponse(Status(request));
+            }
             if (request.State == IntegrationPairingState.Approved)
             {
-                var created = await credentials.CreateAsync(request.OwnerPrincipalId!, CreateRequest(request), cancellationToken).ConfigureAwait(false);
+                var created = AccessMetadata(request) is not null && credentials is IIntegrationCredentialPairingIssuer issuer
+                    ? await issuer.CreateForPairingAsync(request.OwnerPrincipalId!, CreateRequest(request), request.Id, cancellationToken).ConfigureAwait(false)
+                    : await credentials.CreateAsync(request.OwnerPrincipalId!, CreateRequest(request), cancellationToken).ConfigureAwait(false);
                 request.CredentialId = created.CredentialId;
+                if (AccessMetadata(request) is { } reviewedCreate)
+                {
+                    await ApplyPoliciesAsync(request, reviewedCreate, created.CredentialId, cancellationToken).ConfigureAwait(false);
+                    request.RequestedPermissionsJson = JsonSerializer.Serialize(reviewedCreate with { Applied = true });
+                }
                 (await db.IntegrationCredentials.SingleAsync(credential => credential.Id == created.CredentialId, cancellationToken).ConfigureAwait(false)).PairingRequestId = request.Id;
                 request.DeliveryExpiresAtUtc = now.Add(DeliveryLifetime);
                 request.ProtectedDelivery = Protector(request).Protect(created.Secret);
@@ -245,11 +270,12 @@ public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IInt
         var owner = new ClaimsPrincipal(new ClaimsIdentity([new Claim("netratel_principal_id", request.OwnerPrincipalId)], "pairing-owner"));
         try
         {
+            if (AccessMetadata(request) is { } reviewed && !await ReviewedAuthorityIsCurrentAsync(request, reviewed, ct).ConfigureAwait(false)) return false;
             if (IsTemporaryVerifier(request) && (request.Purpose != IntegrationCredentialPurpose.HttpMcp ||
                 request.CredentialExpiresAtUtc > request.ExpiresAtUtc.Add(TemporaryVerifierLifetime) ||
                 Deserialize<IntegrationCredentialGrantRequest>(request.ApprovedGrantsJson!).Length != 0 ||
                 !Deserialize<string>(request.ApprovedInstancePermissionsJson!).SequenceEqual([VerifierPermission]))) return false;
-            await validator.ValidateAsync(owner, CreateRequest(request), ct).ConfigureAwait(false);
+            if (AccessMetadata(request)?.Proposal.Action != "revoke") await validator.ValidateAsync(owner, CreateRequest(request), ct).ConfigureAwait(false);
             if (request.CredentialId is not null)
             {
                 var credential = await db.IntegrationCredentials.AsNoTracking().SingleOrDefaultAsync(candidate => candidate.Id == request.CredentialId, ct).ConfigureAwait(false);
@@ -262,6 +288,9 @@ public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IInt
 
     private async Task<bool> BindingIsCurrentAsync(IntegrationPairingRequest request, CancellationToken ct)
     {
+        if (AccessMetadata(request) is { } reviewed && hostEnvironment is not null &&
+            reviewed.Environment != (hostEnvironment.IsProduction() ? NetRatel.Application.Operations.McpOperatorEnvironment.Production :
+                hostEnvironment.IsDevelopment() ? NetRatel.Application.Operations.McpOperatorEnvironment.Development : (NetRatel.Application.Operations.McpOperatorEnvironment?)null)) return false;
         // Runtime bindings are deployment-owned. A changed origin/resource requires a new approval.
         if (branding is null) return true;
         try
@@ -328,7 +357,7 @@ public sealed class IntegrationPairingService(NetRatelIdentityDbContext db, IInt
     {
         using var document = JsonDocument.Parse(request.RequestedPermissionsJson);
         return document.RootElement.ValueKind == JsonValueKind.Array ? Deserialize<string>(request.RequestedPermissionsJson) :
-            JsonSerializer.Deserialize<VerifierRequestMetadata>(request.RequestedPermissionsJson)?.Permissions ?? [];
+            AccessMetadata(request) is { } access ? access.Permissions : JsonSerializer.Deserialize<VerifierRequestMetadata>(request.RequestedPermissionsJson)?.Permissions ?? [];
     }
     private static T[] Deserialize<T>(string json) => JsonSerializer.Deserialize<T[]>(json) ?? [];
     private static string FormatCode(string code) => code[..4] + "-" + code[4..];

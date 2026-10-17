@@ -37,11 +37,15 @@ public sealed class McpOperatorDelegationMiddleware(
 
         if (headers.Count != 1 || !tokens.TryValidate(headers[0], out var delegation))
         {
+            var failure = McpDelegationFailure.ForCode("delegated_identity_invalid")!;
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             await context.Response.WriteAsJsonAsync(new
             {
-                code = "delegated_identity_invalid",
-                layer = "delegation"
+                success = false,
+                code = failure.Code,
+                layer = failure.Layer,
+                failure,
+                correlationId = context.TraceIdentifier
             }, context.RequestAborted);
             return;
         }
@@ -51,25 +55,36 @@ public sealed class McpOperatorDelegationMiddleware(
             var currentCredentials = context.RequestServices.GetService<IIntegrationCredentialCurrentVerifier>();
             var access = context.RequestServices.GetService<IEffectiveAccessService>();
             var objectTargets = context.RequestServices.GetService<IMcpOperationObjectTargetResolver>();
-            if (!await IsCurrentLocalExecutionAsync(delegation, currentCredentials, access, objectTargets, context.RequestAborted).ConfigureAwait(false))
+            if (await LocalExecutionFailureAsync(delegation, currentCredentials, access, objectTargets, context.RequestAborted).ConfigureAwait(false) is { } failureCode)
             {
-                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                var failure = McpDelegationFailure.ForCode(failureCode)!;
+                context.Response.StatusCode = failureCode == "delegated_identity_invalid" ? StatusCodes.Status401Unauthorized : failure.Layer switch
+                {
+                    "credential" => StatusCodes.Status401Unauthorized,
+                    "input" => StatusCodes.Status400BadRequest,
+                    "dependency" => StatusCodes.Status503ServiceUnavailable,
+                    _ => StatusCodes.Status403Forbidden
+                };
                 await context.Response.WriteAsJsonAsync(new
                 {
-                    code = "delegated_identity_revoked",
-                    layer = "delegation"
+                    success = false, summary = "Local HTTP MCP execution was not admitted.",
+                    code = failure.Code, layer = failure.Layer, failure,
+                    correlationId = delegation.CorrelationId ?? context.TraceIdentifier
                 }, context.RequestAborted);
                 return;
             }
         }
-        else if (delegation.Tool == "netratel_files" &&
-            !await IsAuthorizedExternalFileExecutionAsync(delegation, context.RequestServices, context.RequestAborted).ConfigureAwait(false))
+        else if (delegation.Tool is "netratel_files" or "netratel_connectivity" &&
+            !await IsAuthorizedExternalApplicationExecutionAsync(delegation, context.RequestServices, context.RequestAborted).ConfigureAwait(false))
         {
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
             await context.Response.WriteAsJsonAsync(new
             {
-                code = "delegated_file_permission_denied",
-                layer = "delegation"
+                success = false,
+                code = delegation.Tool == "netratel_files" ? "delegated_file_permission_denied" : "application_permission_denied",
+                layer = "application_permission",
+                failure = McpDelegationFailure.ForCode("application_permission_denied"),
+                correlationId = delegation.CorrelationId ?? context.TraceIdentifier
             }, context.RequestAborted);
             return;
         }
@@ -78,35 +93,31 @@ public sealed class McpOperatorDelegationMiddleware(
         await next(context);
     }
 
-    private static async Task<bool> IsCurrentLocalExecutionAsync(
+    private static async Task<string?> LocalExecutionFailureAsync(
         McpOperatorDelegation delegation,
         IIntegrationCredentialCurrentVerifier? currentCredentials,
         IEffectiveAccessService? access,
         IMcpOperationObjectTargetResolver? objectTargets,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(delegation.IngressCredentialId))
-            return true;
         if (currentCredentials is null || access is null)
-            return false;
-        if (string.IsNullOrWhiteSpace(delegation.IngressPermission) ||
-            !McpLocalDelegationTargetRequirements.TryGetAuthorizationTenant(delegation, out var authorizationTenantId))
-            return false;
-        if (McpOperationTargetCatalog.Find(delegation.Tool, delegation.Operation)?.Model is McpOperationTargetModel.ObjectDerived &&
-            delegation.ObjectTargetResolutionEnabled &&
-            (objectTargets is null ||
-             !await objectTargets.MatchesDelegationAsync(delegation, cancellationToken).ConfigureAwait(false)))
-            return false;
-
-        var credential = await currentCredentials.VerifyCurrentAsync(
-            delegation.IngressCredentialId,
-            IntegrationCredentialPurpose.HttpMcp,
-            cancellationToken).ConfigureAwait(false);
-        if (credential is null || credential.OwnerPrincipalId != delegation.Identity.Subject ||
+            return "local_credential_exchange_unavailable";
+        var current = await currentCredentials.CheckCurrentAsync(delegation.IngressCredentialId!,
+            IntegrationCredentialPurpose.HttpMcp, cancellationToken).ConfigureAwait(false);
+        if (current.Credential is not { } credential)
+            return current.FailureCode ?? "delegated_identity_invalid";
+        if (credential.OwnerPrincipalId != delegation.Identity.Subject ||
             !string.Equals(credential.Resource, delegation.Resource, StringComparison.Ordinal))
-        {
-            return false;
-        }
+            return "local_delegation_binding_mismatch";
+        if (!McpLocalDelegationTargetRequirements.TryGetAuthorizationTenant(delegation, out var authorizationTenantId))
+            return "local_delegation_target_invalid";
+        var target = McpOperationTargetCatalog.Find(delegation.Tool, delegation.Operation);
+        if ((target?.Model is McpOperationTargetModel.ObjectDerived && delegation.ObjectTargetResolutionEnabled ||
+             target?.Model is McpOperationTargetModel.PolicyReference) &&
+            (objectTargets is null || !await objectTargets.MatchesDelegationAsync(delegation, cancellationToken).ConfigureAwait(false)))
+            return "local_delegation_binding_mismatch";
+        if (delegation.IngressPermission != McpLocalDelegationPermissionMapper.RequiredPermission(delegation.Tool, delegation.Operation))
+            return "local_credential_permission_denied";
 
         var principal = new ClaimsPrincipal(new ClaimsIdentity(
         [
@@ -115,21 +126,16 @@ public sealed class McpOperatorDelegationMiddleware(
             new Claim("auth_mode", "integration_credential"),
             new Claim("integration_credential_purpose", "http_mcp")
         ], "McpLocalExecution"));
-        if (delegation.Tool == "netratel_files")
-        {
-            if (delegation.IngressPermission != McpLocalDelegationPermissionMapper.RequiredPermission(delegation.Tool, delegation.Operation))
-                return false;
-            return await McpLocalDelegationPermissionMapper.AuthorizeAsync(access, principal, delegation.Tool, delegation.Operation,
-                authorizationTenantId, cancellationToken).ConfigureAwait(false);
-        }
-        return await access.AuthorizeAsync(principal, delegation.IngressPermission, authorizationTenantId, cancellationToken).ConfigureAwait(false);
+        return await McpLocalDelegationPermissionMapper.AuthorizeAsync(access, principal, delegation.Tool, delegation.Operation,
+            authorizationTenantId, cancellationToken).ConfigureAwait(false) ? null : "local_credential_permission_denied";
     }
 
-    private static async Task<bool> IsAuthorizedExternalFileExecutionAsync(McpOperatorDelegation delegation,
+    private static async Task<bool> IsAuthorizedExternalApplicationExecutionAsync(McpOperatorDelegation delegation,
         IServiceProvider services, CancellationToken cancellationToken)
     {
         if (delegation.Identity.ExternalIssuer is not { Length: > 0 } issuer ||
-            !McpLocalDelegationTargetRequirements.TryGetAuthorizationTenant(delegation, out var tenantId) || tenantId is not > 0 ||
+            !McpLocalDelegationTargetRequirements.TryGetAuthorizationTenant(delegation, out var tenantId) ||
+            (delegation.Tool == "netratel_files" && tenantId is not > 0) ||
             services.GetService<IApplicationPrincipalResolver>() is not { } principals ||
             services.GetService<IEffectiveAccessService>() is not { } access)
             return false;

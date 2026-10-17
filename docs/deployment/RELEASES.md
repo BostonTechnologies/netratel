@@ -37,7 +37,17 @@ immutable artifact digests requires an explicit authorized promotion decision;
 it is never performed by a PR or non-publishing build workflow.
 Every final image is built with public OCI source, revision, and product-version
 labels, then its saved layers are scanned for generic credential material before
-publication. The fail-closed `Release rehearsal` aggregate keeps its generic
+publication. The scanner resolves the saved manifest's legacy `layer.tar` or OCI
+blob references, verifies OCI content digests, and scans each unique physical
+layer, including content overwritten or removed by later layers. Repeated and
+empty layers are valid, but a scan without nonempty regular text content fails.
+Its JSON coverage receipt records references, unique layers, files, bytes, and
+raw matching-file counts. Exact upstream curl/Python help-text matches reviewed
+in [#281](https://github.com/BostonTechnologies/netratel/issues/281) retain their
+raw match status and exact file hashes in that receipt; new or changed matches
+fail pending review. Historical release bytes stay immutable.
+
+The fail-closed `Release rehearsal` aggregate keeps its generic
 identity and requires fast source/build/regression validation, CLI/stdio archive
 verification and all supported native Client archive producers. Actual release
 images are built and scanned once by the publication path; no throwaway image
@@ -139,6 +149,8 @@ pulls and final image inspections, with a five-second termination grace. Prepara
 failures stop the required job. Its separate duration and image identities make
 cold dependency preparation visible without changing test selection or the
 20-minute job cap.
+
+Provider regressions retain isolated databases and real migrations for every case. The script-source revision, client release import and client update suites reuse one PostgreSQL server per test class, avoiding repeated container startup while preserving their concurrent transaction, crash/recovery, notification and fencing assertions. The owned-job boundary and monitoring-flow bridge suites use separate class servers to move their measured 187.2 seconds of baseline case work outside the common serial PostgreSQL collection. This adds two servers without changing test selection, timeout budgets or assertions; it does not guarantee the same wall-time saving. Compare hosted TRX case counts and stage durations when changing this setup; local focused timings do not establish the hosted budget. Further concurrency or selection changes require hosted evidence.
 
 Use [integration-validation.yml](../../.github/workflows/integration-validation.yml)
 only through explicit `workflow_dispatch` to select one functional suite at an

@@ -22,7 +22,16 @@ public enum McpOperationTargetModel
     ObjectDerived,
 
     /// <summary>One exact tenant and persisted agent pair.</summary>
-    Agent
+    Agent,
+
+    /// <summary>A policy inspection accepts no filter or one tenant filter.</summary>
+    OptionalTenant,
+
+    /// <summary>A policy selector/filter accepts control plane, tenant, or exact agent.</summary>
+    PolicySelector,
+
+    /// <summary>A persisted policy reference whose target the API resolves.</summary>
+    PolicyReference
 }
 
 /// <summary>
@@ -35,7 +44,8 @@ public enum McpOperationObjectReferenceKind
     Job,
     JobRun,
     Task,
-    Request
+    Request,
+    Policy
 }
 
 /// <summary>Closed target contract for one advertised MCP operation.</summary>
@@ -102,15 +112,18 @@ public static class McpOperationTargetCatalog
         ("netratel_health", "get") or
         ("netratel_system", "version") or
         ("netratel_capabilities", "get") or
-        ("netratel_access", "whoami") or
+        ("netratel_access", "whoami" or "request" or "requests" or "receipt" or "resume" or "cancel" or "credential") or
         ("netratel_telemetry", "overview") or
         ("netratel_logs", "search") => McpOperationTargetModel.NoBusinessTarget,
 
-        // Policy lifecycle calls contain either an immutable policy reference
-        // or a verified target selector. The receiving authority resolves
-        // that reference and preserves its binding; it is not a global
-        // control-plane fallback.
-        ("netratel_policy", _) => McpOperationTargetModel.ObjectDerived,
+        // Unfiltered inspection requires an explicit instance permission.
+        // Selector-bound mutations are checked again against the draft and
+        // persisted policy by the receiving authority, including references.
+        ("netratel_policy", "policy") => McpOperationTargetModel.PolicyReference,
+        ("netratel_policy", "policies") => McpOperationTargetModel.OptionalTenant,
+        ("netratel_policy", "target" or "matches" or "evaluate" or "preview_target_profile" or "confirm_target_profile")
+            => McpOperationTargetModel.Agent,
+        ("netratel_policy", _) => McpOperationTargetModel.PolicySelector,
 
         // These tools act on server-owned control-plane or caller-owned
         // records. Individual object references are independently validated
@@ -151,6 +164,7 @@ public static class McpOperationTargetCatalog
 
     private static (string PropertyName, McpOperationObjectReferenceKind Kind, bool Required)? ObjectReferenceFor(string tool, string operation) => (tool, operation) switch
     {
+        ("netratel_policy", "policy") => ("policyId", McpOperationObjectReferenceKind.Policy, true),
         ("netratel_jobs", "get" or "details" or "params" or "steps" or "update" or "delete" or
             "param_add" or "param_update" or "param_delete" or "step_add" or "step_update" or "step_reorder" or "step_delete")
             => ("jobId", McpOperationObjectReferenceKind.Job, true),

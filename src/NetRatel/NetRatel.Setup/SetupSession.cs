@@ -24,7 +24,7 @@ public sealed record SetupCheck(string Name, string Status, string Detail, int? 
     public bool? OperationSucceeded { get; init; }
 }
 /// <summary>Headless setup operations shared by the TUI and noninteractive entry points.</summary>
-public sealed class SetupSession : IAsyncDisposable
+public sealed partial class SetupSession : IAsyncDisposable
 {
     // The production HTTP catalog is approximately 331 KiB; keep a bounded
     // response budget that also admits the complete advertised tool schemas.
@@ -195,7 +195,7 @@ public sealed class SetupSession : IAsyncDisposable
         if (Pairing is null || _origin is null) throw new AgentClientValidationException("Start pairing first.");
         try
         {
-            if (DateTimeOffset.UtcNow >= Pairing.ExpiresAtUtc) { PairingStatus = "expired"; return new("expired", 5, null); }
+            if (_reviewedProposal is null && DateTimeOffset.UtcNow >= Pairing.ExpiresAtUtc) { PairingStatus = "expired"; return new("expired", 5, null); }
             using var response = await _http.PostAsJsonAsync(Endpoint(_origin, "/api/integration-pairing/v1/poll"), new { deviceCapability = Pairing.DeviceCapability }, ct);
             response.EnsureSuccessStatusCode();
             var poll = await response.Content.ReadFromJsonAsync<PairingPoll>(cancellationToken: ct) ?? throw new AgentClientValidationException("Empty pairing status.");
@@ -211,6 +211,10 @@ public sealed class SetupSession : IAsyncDisposable
                     await CancelPairingAsync();
                     throw new AgentClientValidationException("Temporary verifier exceeded its approved read-only scope or lifetime. Start a fresh review.");
                 }
+                if (_reviewedProposal is { } reviewed && (delivery.ExpiresAtUtc != reviewed.ExpiresAtUtc || delivery.Name != reviewed.Name ||
+                    !delivery.Grants.Select(x => (x.TenantId, x.Permission)).Order().SequenceEqual(reviewed.Grants.Select(x => (x.TenantId, x.Permission)).Order()) ||
+                    !delivery.InstancePermissions.Order().SequenceEqual(reviewed.InstancePermissions.Order())))
+                    throw new AgentClientValidationException("Protected delivery differs from the retained reviewed grants or exact UTC expiry. Inspect this request before accepting a credential.");
                 Delivery = delivery;
                 UseCredential(delivery.Secret);
             }
@@ -304,6 +308,7 @@ public sealed class SetupSession : IAsyncDisposable
             }
             if (Pairing is not null && Delivery is not null && _origin is not null && !_acknowledged)
             {
+                CheckpointReviewedSave();
                 using var response = await _http.PostAsJsonAsync(Endpoint(_origin, "/api/integration-pairing/v1/acknowledge"), new { deviceCapability = Pairing.DeviceCapability, credentialId = Delivery.CredentialId }, ct);
                 response.EnsureSuccessStatusCode();
                 using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
@@ -376,7 +381,7 @@ public sealed class SetupSession : IAsyncDisposable
                 { checks.Add(Failure("permitted read-only tool", "mcp_catalog_incomplete", "MCP", tools.Status)); return checks; }
                 var read = await SendMcpAsync(target, token, new { jsonrpc = "2.0", id = 3, method = "tools/call", @params = new { name = "netratel_auth", arguments = new { operation = "status" } } }, initialize.SessionId, ct);
                 var successful = read.Status is >= 200 and < 300 && read.Result is { } envelope && IsMcpReply(envelope, 3) && envelope.TryGetProperty("result", out var result) && (!result.TryGetProperty("isError", out var failed) || failed.ValueKind == JsonValueKind.False) && result.TryGetProperty("structuredContent", out var structured) && structured.ValueKind == JsonValueKind.Object && structured.TryGetProperty("success", out var accepted) && accepted.ValueKind == JsonValueKind.True && (!structured.TryGetProperty("status", out var resultStatus) || resultStatus.ValueKind == JsonValueKind.String && resultStatus.GetString() == "completed") && structured.TryGetProperty("data", out var authStatus) && StdioMcpDoctor.IsAuthenticationStatus(authStatus);
-                if (successful) checks.Add(new SetupCheck("permitted read-only tool", "completed", "API-backed authentication status completed without mutation.", read.Status)
+                if (successful) checks.Add(new SetupCheck("permitted read-only tool", "completed", "API-backed authentication status completed without mutation. Backend readiness and tenant admission require separate checks.", read.Status)
                     { Layer = "operation", TransportSucceeded = true, ProtocolSucceeded = true, OperationSucceeded = true });
                 else
                 {
@@ -583,5 +588,5 @@ public sealed class SetupSession : IAsyncDisposable
         Sources = _initialSources;
         Delivery = null; _reuseExistingConfiguration = false;
     }
-    public async ValueTask DisposeAsync() { try { await CancelPairingAsync(); } catch (HttpRequestException) { } catch (TaskCanceledException) { } _http.Dispose(); _saveGate.Dispose(); }
+    public async ValueTask DisposeAsync() { try { if (!_retainReviewedPending) await CancelPairingAsync(); } catch (HttpRequestException) { } catch (TaskCanceledException) { } _http.Dispose(); _saveGate.Dispose(); }
 }

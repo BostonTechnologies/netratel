@@ -52,7 +52,7 @@ public sealed partial class NetRatelMcpOperationalTools
 
     [McpServerTool(UseStructuredContent = true), Description("Read authenticated NetRatel health. Operation must be get.")]
     public Task<NetRatelToolResponse> netratel_health(string operation = "get", CancellationToken cancellationToken = default)
-        => GetAsync("netratel_health", operation, ["get"], "/health/ready", cancellationToken);
+        => HealthAsync(operation, cancellationToken);
 
     [McpServerTool(UseStructuredContent = true), Description("Read safe NetRatel system metadata. Operation must be version.")]
     public Task<NetRatelToolResponse> netratel_system(string operation = "version", CancellationToken cancellationToken = default)
@@ -63,6 +63,7 @@ public sealed partial class NetRatelMcpOperationalTools
     {
         return operation switch
         {
+            "request" or "requests" or "receipt" or "resume" or "cancel" or "credential" => ReviewedAccessAsync(operation, request, cancellationToken),
             "whoami" when request is null => GetAsync("netratel_access", operation, AccessOperations, "/api/v2/mcp/operator/access/whoami", cancellationToken),
             "whoami" => Task.FromResult(Invalid("whoami does not accept a request object.")),
             "target" => AccessTargetAsync(operation, request, cancellationToken),
@@ -402,11 +403,10 @@ public sealed partial class NetRatelMcpOperationalTools
         var payload = ToObject(request) ?? new JsonObject();
         var paged = http && operation is "clients" or "tenants";
         if (!ContainsOnly(payload, paged ? ["q", "offset", "limit"] : ["q"]) ||
-            (payload["q"] is not null && !TryOptionalString(payload, "q", 512, out _)) ||
+            !TrySearchQuery(payload, out var query) ||
             !TryOptionalInt(payload, "offset", 0, 1_000_000, out var offset) ||
             !TryOptionalInt(payload, "limit", 1, 100, out var limit))
             return Task.FromResult(Invalid("Search accepts q (at most 512 characters); HTTP tenant/client discovery also accepts offset (0–1000000) and limit (1–100)."));
-        var query = payload["q"]?.ToString();
         var path = http
             ? $"/api/v2/mcp/operator/search/{operation}"
             : $"/api/v1/global-search/{operation}";
@@ -532,7 +532,7 @@ public sealed partial class NetRatelMcpOperationalTools
     private static readonly string[] DevelopmentClientReadOperations = ["presence", "binding", "telemetry", "update_attempts"];
     private static readonly string[] ProductionClientReadOperations = ["get", "presence", "capabilities", "binding", "telemetry", "update_attempts", "update_metadata"];
     private static readonly string[] ProductionClientOperations = [.. ProductionClientReadOperations, "preview_ping", "ping", "preview_software_update", "software_update", "preview_disable", "disable", "preview_enable", "enable", "preview_delete", "delete"];
-    private static readonly string[] AccessOperations = ["whoami", "effective", "evaluate", "target"];
+    private static readonly string[] AccessOperations = ["whoami", "effective", "evaluate", "target", "request", "requests", "receipt", "resume", "cancel", "credential"];
     private static readonly string[] PolicyOperations = ["policies", "policy", "change_audits", "accepted_audits", "target", "matches", "evaluate", "preview_create", "confirm_create", "preview_replace", "confirm_replace", "preview_disable", "confirm_disable", "preview_revoke", "confirm_revoke", "preview_target_profile", "confirm_target_profile"];
     private static readonly string[] DevelopmentFileReadOperations = ["browse", "read", "status", "download"];
     private static readonly string[] DevelopmentFileOperations = ["browse", "read", "status", "download", "collect", "cleanup"];
@@ -3830,8 +3830,9 @@ public sealed partial class NetRatelMcpOperationalTools
             }
 
             return new NetRatelToolResponse(false, "failed", exception.Message,
-                Error: new NetRatelToolError(exception.RemoteCode ?? exception.Code, exception.Retryable, exception.StatusCode))
-                .WithFailureContext(tool, operation);
+                Error: new NetRatelToolError(exception.RemoteCode ?? exception.Code,
+                    exception.Retryable && NetRatelMcpCatalog.FindOperation(tool, operation)?.Safety == NetRatelMcpOperationSafety.Read, exception.StatusCode))
+                .WithFailureContext(tool, operation, correlationId: exception.CorrelationId);
         }
         catch (NetRatelMcpApiValidationException exception)
         {
@@ -4203,6 +4204,15 @@ public sealed partial class NetRatelMcpOperationalTools
         return true;
     }
 
+    private static bool TrySearchQuery(JsonObject payload, out string? query)
+    {
+        query = null;
+        if (!payload.TryGetPropertyValue("q", out var node)) return true;
+        if (node is not JsonValue value || !value.TryGetValue<string>(out var text) || text.Length > 512) return false;
+        if (!string.IsNullOrWhiteSpace(text)) query = text;
+        return true;
+    }
+
     private static bool TryOptionalString(JsonObject? payload, string name, int maximum, out string? value)
     {
         value = null;
@@ -4470,78 +4480,29 @@ public sealed partial class NetRatelMcpOperationalTools
     private static bool TryPositiveUlong(JsonObject? payload, string name, out ulong value)
     {
         value = 0;
-        if (payload is null || !payload.TryGetPropertyValue(name, out var node) || node is not JsonValue raw)
-        {
-            return false;
-        }
-
-        if (raw.TryGetValue<ulong>(out var numeric))
-        {
-            value = numeric;
-        }
-        else if (!raw.TryGetValue<string>(out var text) || !ulong.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out value))
-        {
-            return false;
-        }
-
-        return value > 0;
+        return payload is not null && payload.TryGetPropertyValue(name, out var node) && node is JsonValue raw &&
+            NetRatelMcpIdentifiers.TryUInt64(JsonSerializer.SerializeToElement(raw), 1, out value);
     }
 
     private static bool TryPositiveLong(JsonObject? payload, string name, out long value)
     {
         value = 0;
-        if (payload is null || !payload.TryGetPropertyValue(name, out var node) || node is not JsonValue raw)
-        {
-            return false;
-        }
-
-        if (raw.TryGetValue<long>(out var numeric))
-        {
-            value = numeric;
-        }
-        else if (!raw.TryGetValue<string>(out var text) || !long.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out value))
-        {
-            return false;
-        }
-
-        return value > 0;
+        return payload is not null && payload.TryGetPropertyValue(name, out var node) && node is JsonValue raw &&
+            NetRatelMcpIdentifiers.TryInt64(JsonSerializer.SerializeToElement(raw), 1, long.MaxValue, out value);
     }
 
     private static bool TryPositiveInt(JsonObject? payload, string name, out int value)
     {
         value = 0;
-        if (payload is null || !payload.TryGetPropertyValue(name, out var node) || node is not JsonValue raw)
-        {
-            return false;
-        }
-
-        if (raw.TryGetValue<int>(out var numeric))
-        {
-            value = numeric;
-        }
-        else if (!raw.TryGetValue<string>(out var text) || !int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out value))
-        {
-            return false;
-        }
-
-        return value > 0;
+        return payload is not null && payload.TryGetPropertyValue(name, out var node) && node is JsonValue raw &&
+            NetRatelMcpIdentifiers.TryInt32(JsonSerializer.SerializeToElement(raw), 1, int.MaxValue, out value);
     }
 
     private static bool TryNonNegativeInt(JsonObject? payload, string name, out int value)
     {
         value = 0;
-        if (payload is null || !payload.TryGetPropertyValue(name, out var node) || node is not JsonValue raw)
-        {
-            return false;
-        }
-
-        if (raw.TryGetValue<int>(out var numeric))
-        {
-            value = numeric;
-            return value >= 0;
-        }
-
-        return raw.TryGetValue<string>(out var text) && int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out value) && value >= 0;
+        return payload is not null && payload.TryGetPropertyValue(name, out var node) && node is JsonValue raw &&
+            NetRatelMcpIdentifiers.TryInt32(JsonSerializer.SerializeToElement(raw), 0, int.MaxValue, out value);
     }
 
     private static bool TryOptionalInt(JsonObject? payload, string name, int minimum, int maximum, out int? value)
@@ -4557,16 +4518,8 @@ public sealed partial class NetRatelMcpOperationalTools
             return false;
         }
 
-        if (!raw.TryGetValue<int>(out var parsed) &&
-            (!raw.TryGetValue<string>(out var text) || !int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out parsed)))
-        {
+        if (!NetRatelMcpIdentifiers.TryInt32(JsonSerializer.SerializeToElement(raw), minimum, maximum, out var parsed))
             return false;
-        }
-
-        if (parsed < minimum || parsed > maximum)
-        {
-            return false;
-        }
 
         value = parsed;
         return true;

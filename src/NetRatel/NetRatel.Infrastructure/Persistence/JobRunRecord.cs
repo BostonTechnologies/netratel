@@ -22,6 +22,9 @@ public sealed class JobRunRecord
     public string? Error { get; set; }
     public string? InputsJson { get; set; }
     public string? OptionsJson { get; set; }
+    // Only sanitized ordinary projections belong in InputsJson/OptionsJson.
+    public string? InputSensitivityJson { get; set; }
+    public string? ProtectedExecutionJson { get; set; }
     public JobDefinition? Job { get; set; }
     public List<JobStepRunRecord> Steps { get; set; } = [];
     public List<JobTaskActivityRecord> Activities { get; set; } = [];

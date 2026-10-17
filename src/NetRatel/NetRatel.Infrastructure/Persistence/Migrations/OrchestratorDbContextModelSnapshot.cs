@@ -2943,6 +2943,12 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<string>("Error")
                         .HasColumnType("text");
 
+                    b.Property<string>("InputSensitivityJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ProtectedExecutionJson")
+                        .HasColumnType("text");
+
                     b.Property<string>("InputsJson")
                         .HasColumnType("text");
 
@@ -5955,6 +5961,12 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("RundeckJobDefinitionId");
+
+                    b.Property<string>("InputSensitivityJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ProtectedJobInputsJson")
+                        .HasColumnType("text");
 
                     b.Property<string>("JobInputs")
                         .HasColumnType("text");

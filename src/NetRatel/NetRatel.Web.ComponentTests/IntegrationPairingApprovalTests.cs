@@ -156,7 +156,7 @@ public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
         panel.WaitForAssertion(() => panel.Find("[data-testid='pairing-confirm-code']").TextContent.Should().Be("ABCD-EFGH"));
         panel.Find("[data-testid='pairing-grant-7-telemetry.read']").Change(true);
         panel.Find("[data-testid='pairing-confirm']").Change(true);
-        await panel.InvokeAsync(() => panel.Instance.GetType().GetMethod("ExpiryChanged", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(panel.Instance, [DateTime.UtcNow.Date.AddDays(20)]));
+        await panel.InvokeAsync(() => panel.Instance.GetType().GetMethod("ExpiryChanged", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(panel.Instance, [NetRatel.Web.Services.IntegrationCredentialExpiry.Format(NetRatel.Web.Services.IntegrationCredentialExpiry.Reference(DateTimeOffset.UtcNow).AddDays(20))]));
         panel.Render();
         panel.Find("[data-testid='pairing-confirm']").HasAttribute("checked").Should().BeFalse();
         panel.Find("[data-testid='pairing-confirm']").Change(true);

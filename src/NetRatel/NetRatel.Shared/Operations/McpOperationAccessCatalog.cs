@@ -133,7 +133,7 @@ public static class McpOperationAccessCatalog
         .. Register(McpOperationAccessScope.Read, "netratel_health", "get"),
         .. Register(McpOperationAccessScope.Read, "netratel_system", "version"),
         .. Register(McpOperationAccessScope.Read, "netratel_capabilities", "get"),
-        .. Register(McpOperationAccessScope.Read, "netratel_access", "whoami", "effective", "evaluate", "target"),
+        .. Register(McpOperationAccessScope.Read, "netratel_access", "whoami", "effective", "evaluate", "target", "request", "requests", "receipt", "resume", "cancel", "credential"),
         .. Register(McpOperationAccessScope.Admin, "netratel_policy", McpOperationMinimumRole.Administrator, "policies", "policy", "change_audits", "accepted_audits", "target", "matches", "evaluate", "preview_create", "confirm_create", "preview_replace", "confirm_replace", "preview_disable", "confirm_disable", "preview_revoke", "confirm_revoke", "preview_target_profile", "confirm_target_profile"),
         .. Register(McpOperationAccessScope.Observe, "netratel_clients", "presence", "binding", "telemetry", "update_attempts", "get", "capabilities", "update_metadata"),
         .. Register(McpOperationAccessScope.Execute, "netratel_clients", "preview_ping", "ping", "preview_software_update", "software_update"),

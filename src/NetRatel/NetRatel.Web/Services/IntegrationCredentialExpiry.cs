@@ -1,12 +1,21 @@
+using NetRatel.Shared.Connectivity;
+
 namespace NetRatel.Web.Services;
 
-/// <summary>Interprets a selected calendar date as the final instant of that UTC day.</summary>
+/// <summary>Exact UTC instants; a duration preset never rounds to a calendar boundary.</summary>
 public static class IntegrationCredentialExpiry
 {
-    public static DateTimeOffset? EndOfUtcDay(DateTime? selectedDate)
+    // The generated preset starts at the same representable instant shown to the reviewer.
+    public static DateTimeOffset Reference(DateTimeOffset clockReading) => new(clockReading.UtcTicks - clockReading.UtcTicks % TimeSpan.TicksPerMicrosecond, TimeSpan.Zero);
+    public static DateTimeOffset ThirtyDaysFrom(DateTimeOffset reference)
     {
-        if (selectedDate is null) return null;
-        var utcDay = DateTime.SpecifyKind(selectedDate.Value.Date, DateTimeKind.Utc);
-        return new DateTimeOffset(utcDay.AddDays(1).AddTicks(-1));
+        reference = reference.ToUniversalTime();
+        if (!ReviewedMcpAccessExpiry.IsSupported(reference)) throw new ArgumentOutOfRangeException(nameof(reference));
+        return reference.Add(TimeSpan.FromHours(30 * 24));
     }
+    public static string Format(DateTimeOffset instant) => ReviewedMcpAccessExpiry.Format(instant);
+    public static DateTimeOffset? ParseUtcInstant(string? value) => ReviewedMcpAccessExpiry.TryParse(value, out var instant) ? instant : null;
+    // Retained only for compatibility with historical callers. Creation and approval use ParseUtcInstant.
+    public static DateTimeOffset? EndOfUtcDay(DateTime? selectedDate) => selectedDate is null ? null :
+        new DateTimeOffset(DateTime.SpecifyKind(selectedDate.Value.Date, DateTimeKind.Utc).AddDays(1).AddTicks(-1));
 }
