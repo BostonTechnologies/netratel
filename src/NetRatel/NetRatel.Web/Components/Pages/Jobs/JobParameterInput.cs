@@ -3,9 +3,16 @@ using System.Text.Json;
 
 namespace NetRatel.Web.Components.Pages.Jobs;
 
-/// <summary>Validates editor text without changing the established run payload representation.</summary>
+/// <summary>Operational input hints and validation without changing the established run payload representation.</summary>
 public static class JobParameterInput
 {
+    /// <summary>Forwarded by MudBlazor to the native control; operational field names stay separate from payload keys.</summary>
+    public static Dictionary<string, object> OperationalAttributes(string inputId, bool secret = false) => new()
+    {
+        ["name"] = inputId,
+        ["autocomplete"] = secret ? "new-password" : "off"
+    };
+
     public static IReadOnlyList<string> SelectOptions(string? json)
     {
         if (string.IsNullOrWhiteSpace(json)) return [];

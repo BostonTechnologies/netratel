@@ -32,6 +32,18 @@ jobs:
       - run: tools/ci/check-public-disclosure.sh
       - run: tools/ci/test-public-disclosure.sh
 
+  contracts:
+    name: Source and release contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - name: Validate release scripts and workflow contracts
+        run: python3 tools/ci/test-release-validation.py
+
   dotnet:
     name: .NET build and tests
     runs-on: ubuntu-latest
@@ -54,8 +66,6 @@ jobs:
         run: tools/ci/validate-layout.sh
       - name: Validate PostgreSQL-only configuration
         run: bash tools/ci/check-postgresql-only.sh
-      - name: Validate release scripts and workflow contracts
-        run: python3 tools/ci/test-release-validation.py
       - name: Restore solution
         run: dotnet restore NetRatel.sln
       - name: Build Release solution
@@ -76,13 +86,15 @@ jobs:
   pr-validation:
     name: PR validation
     if: always()
-    needs: [disclosure, dotnet]
+    needs: [disclosure, contracts, dotnet]
     runs-on: ubuntu-latest
     steps:
       - name: Require source checks, build and fast regressions
         env:
           DISCLOSURE_RESULT: ${{ needs.disclosure.result }}
+          CONTRACTS_RESULT: ${{ needs.contracts.result }}
           DOTNET_RESULT: ${{ needs.dotnet.result }}
         run: |
           [[ "$DISCLOSURE_RESULT" == success ]]
+          [[ "$CONTRACTS_RESULT" == success ]]
           [[ "$DOTNET_RESULT" == success ]]

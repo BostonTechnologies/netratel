@@ -13,7 +13,8 @@ public static class HttpHostingComposeDocument
 
     /// <summary>Retain deployment-owned backend bindings when the wizard is using its defaults.</summary>
     public static HttpHostingWebBackendSelection SelectWebBackends(string source, IReadOnlyDictionary<string, string> proposed,
-        bool preserveApi, bool preserveMcp, string? observedApi = null, string? observedMcp = null, bool environmentObserved = false)
+        bool preserveApi, bool preserveMcp, string? observedApi = null, string? observedMcp = null, bool environmentObserved = false,
+        HttpHostingEffectiveDeployment? effectiveDeployment = null)
     {
         try
         {
@@ -31,7 +32,7 @@ public static class HttpHostingComposeDocument
             {
                 if (!changes.TryGetValue(key, out var suggested)) throw Invalid($"The reviewed {label} backend is missing.");
                 if (!preserve) return Backend(suggested, label);
-                var (present, configured) = SourceEnvironment(service, key);
+                var (present, configured) = SourceEnvironment(service, key, effectiveDeployment);
                 if (configured is { Length: > 0 } && !configured.Contains('$'))
                 {
                     changes.Remove(key);
@@ -61,8 +62,9 @@ public static class HttpHostingComposeDocument
         }
     }
 
-    private static (bool Present, string? Value) SourceEnvironment(YamlMappingNode service, string key)
+    private static (bool Present, string? Value) SourceEnvironment(YamlMappingNode service, string key, HttpHostingEffectiveDeployment? effectiveDeployment)
     {
+        Environment(service, new Dictionary<string, string>(), "web", effectiveDeployment);
         if (!service.Children.TryGetValue(Key("environment"), out var environment)) return (false, null);
         var matches = new List<string?>();
         if (environment is YamlMappingNode mapping)
@@ -84,8 +86,9 @@ public static class HttpHostingComposeDocument
                     matches.Add(equals < 0 ? null : scalar.Value[(equals + 1)..]);
             }
         else throw Invalid("Web environment must be a mapping or a list.");
-        if (matches.Count > 1) throw Invalid("Duplicate Web backend settings need an explicit single source.");
-        return (matches.Count == 1, matches.SingleOrDefault());
+        if (matches.Count > 1 && matches.Any(value => !string.Equals(value, matches[0], StringComparison.Ordinal)))
+            throw Invalid("Conflicting Web backend settings need an explicit single source.");
+        return (matches.Count > 0, matches.FirstOrDefault());
     }
 
     private static string Backend(string value, string label)
@@ -99,7 +102,8 @@ public static class HttpHostingComposeDocument
     public static string Merge(string source, IReadOnlyDictionary<string, string> web,
         IReadOnlyDictionary<string, string> api, IReadOnlyDictionary<string, string> mcp,
         uint runtimeGroup, string setupVolumeName, string clientVolumeName,
-        int listeningPort, string? projectName = null, IReadOnlyDictionary<string, string>? resolvedVolumeNames = null)
+        int listeningPort, string? projectName = null, IReadOnlyDictionary<string, string>? resolvedVolumeNames = null,
+        HttpHostingEffectiveDeployment? effectiveDeployment = null)
     {
         try
         {
@@ -123,9 +127,9 @@ public static class HttpHostingComposeDocument
 
             var setupKey = VolumeKey(volumes, mcpService, "/setup-output", "http-host-setup", setupVolumeName, projectName, resolvedVolumeNames);
             var clientKey = VolumeKey(volumes, mcpService, "/var/lib/netratel/clients", "http-client-data", clientVolumeName, projectName, resolvedVolumeNames);
-            Environment(webService, web);
-            Environment(apiService, api);
-            Environment(mcpService, mcp);
+            Environment(webService, web, "web", effectiveDeployment);
+            Environment(apiService, api, "api", effectiveDeployment);
+            Environment(mcpService, mcp, "mcp-http", effectiveDeployment);
             AddGroup(apiService, runtimeGroup);
             AddGroup(mcpService, runtimeGroup);
             AddMount(apiService, "volume", setupKey, "/run/netratel-http-host", readOnly: true);
@@ -224,32 +228,52 @@ public static class HttpHostingComposeDocument
         var result = new YamlMappingNode(); parent.Add(Key(key), result); return result;
     }
 
-    private static void Environment(YamlMappingNode service, IReadOnlyDictionary<string, string> changes)
+    private static void Environment(YamlMappingNode service, IReadOnlyDictionary<string, string> changes, string serviceName,
+        HttpHostingEffectiveDeployment? effectiveDeployment)
     {
-        YamlMappingNode environment;
-        if (!service.Children.TryGetValue(Key("environment"), out var existing)) environment = new();
-        else if (existing is YamlMappingNode mapping) environment = mapping;
+        var environment = new YamlMappingNode();
+        var seen = new Dictionary<string, (string Name, string? Value, int Index)>(HttpHostingEnvironmentNames.Comparer);
+        var index = 0;
+        void Add(string name, YamlScalarNode value)
+        {
+            index++;
+            var key = HttpHostingEnvironmentNames.Canonical(name);
+            var selected = (value.Style is ScalarStyle.Plain or ScalarStyle.Any) && (value.Value is null or "" or "~" or "null" or "Null" or "NULL") ? null : value.Value;
+            if (seen.TryGetValue(key, out var previous))
+            {
+                if (HttpHostingEnvironmentNames.Recognized(key) &&
+                    (string.Equals(previous.Value, selected, StringComparison.Ordinal) ||
+                     effectiveDeployment?.EqualComposeAliases(serviceName, previous.Name, name) == true)) return;
+                throw HttpHostingEnvironmentNames.Conflict(serviceName, key, previous.Name, name, "Compose environment", previous.Index, index);
+            }
+            seen.Add(key, (name, selected, index));
+            environment.Add(Key(key), value);
+        }
+        if (!service.Children.TryGetValue(Key("environment"), out var existing)) { }
+        else if (existing is YamlMappingNode mapping)
+        {
+            foreach (var (name, value) in mapping.Children)
+            {
+                if (name is not YamlScalarNode { Value: not null } key || value is not YamlScalarNode scalar) throw Invalid("Environment names and values must be scalar settings.");
+                Add(key.Value, scalar);
+            }
+        }
         else if (existing is YamlSequenceNode sequence)
         {
-            environment = new();
             foreach (var entry in sequence.Children)
             {
                 if (entry is not YamlScalarNode { Value: not null } scalar) throw Invalid("Environment lists must contain named values.");
                 var equals = scalar.Value.IndexOf('=');
                 var key = equals < 0 ? scalar.Value : scalar.Value[..equals];
-                if (environment.Children.Keys.OfType<YamlScalarNode>().Any(item => string.Equals(item.Value, key, StringComparison.OrdinalIgnoreCase)))
-                    throw Invalid("Duplicate environment names need an explicit single source.");
-                environment.Add(Key(key), equals < 0 ? new YamlScalarNode((string?)null) : Text(scalar.Value[(equals + 1)..]));
+                Add(key, equals < 0 ? new YamlScalarNode((string?)null) : Text(scalar.Value[(equals + 1)..]));
             }
         }
         else throw Invalid("Environment must be a mapping or a list.");
-        if (environment.Children.Keys.OfType<YamlScalarNode>().GroupBy(item => item.Value, StringComparer.OrdinalIgnoreCase).Any(group => group.Count() > 1))
-            throw Invalid("Duplicate environment names need an explicit single source.");
         foreach (var (key, value) in changes)
         {
-            var previous = environment.Children.Keys.OfType<YamlScalarNode>().SingleOrDefault(item => string.Equals(item.Value, key, StringComparison.OrdinalIgnoreCase));
+            var previous = environment.Children.Keys.OfType<YamlScalarNode>().SingleOrDefault(item => HttpHostingEnvironmentNames.Comparer.Equals(item.Value, key));
             if (previous is not null) environment.Children.Remove(previous);
-            environment.Add(Key(key), Text(value.Replace("$", "$$", StringComparison.Ordinal)));
+            environment.Add(Key(HttpHostingEnvironmentNames.Canonical(key)), Text(value.Replace("$", "$$", StringComparison.Ordinal)));
         }
         service.Children[Key("environment")] = environment;
     }

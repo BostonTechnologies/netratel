@@ -2,6 +2,22 @@
 
 Start with the [host/client command table and setup procedure](setup.md). The current HTTP image includes `/app/setup-http-mcp.sh`: the guide shows how to copy it to the Docker host and run it. This reference covers older-image acquisition, missing sources, first-time enablement, storage and recovery. Host approval and client approval remain separate decisions.
 
+## Compose capability prerequisite
+
+The Docker-host launcher requires `config --no-env-resolution`, JSON output and unresolved interpolation support. Upstream Compose **v2.35.0** is the minimum for all launcher operations; distribution suffixes are allowed when the actual capabilities are present. An older plugin such as 2.26.1 is rejected before saved-source rendering, URL/approval or setup-container creation. Rejection is a handled prerequisite, not successful setup on the older plugin. Do not remove `--no-env-resolution`: it keeps service `env_file` references separate from the effective runtime snapshot.
+
+On the **Linux Docker host**, keep your existing Docker configuration/context selection and use the launcher's deliberate isolated tooling option:
+
+```sh
+bash ./setup-http-mcp.sh \
+  --isolated-compose "$PWD/netratel-compose-tools" \
+  --container YOUR_MCP_CONTAINER
+```
+
+This command acquires upstream v2.35.0 for Linux x86_64/aarch64 over HTTPS into a user-owned `0700` directory. It verifies the binary against the release's pinned SHA-256 before executing it and on every later launch. `curl` is needed for acquisition; install it with your host's normal package manager if unavailable. The launcher never installs a global plugin or changes Docker's authentication/configuration files. Keep the private tools directory for resume. To select a separately acquired and verified compatible executable, use `--compose-plugin /absolute/path/to/docker-compose` instead.
+
+Existing `DOCKER_CONFIG`, `DOCKER_CONTEXT`, `DOCKER_HOST` and Docker TLS settings apply to both inspections and Compose. Configured plugin search paths continue to apply to ordinary `docker compose`; an explicit `--compose-plugin` selects only the launcher executable. Generated verification commands retain the selection and Docker environment. Copy the complete printed command, including its `env` prefix and Bash invocation. If the selected plugin is unsupported, the diagnostic prints the exact isolated-tooling retry for the original deployment arguments.
+
 ## Use a verified Compose download
 
 Use this alternative if your older running image does not contain the host tool, or if you are enabling MCP before its first container exists. Download the Compose archive from the **same verified release as API, Web and MCP**. The archive contains the tool at its root; there is no bundled `setup-tools/` subdirectory. Extract into a new tools directory, separate from your saved deployment.
@@ -59,7 +75,9 @@ Use your actual source list: a manager may store everything in one document. Do 
 
 The host launcher reads the selected container's Compose metadata and resolves the ordered saved files and interpolation inputs privately. It checks service environment files and image defaults separately from the current serving configuration. Missing or inconsistent sources stop setup before approval. Restore the saved source at its actual location, then rerun discovery; do not invent a file or replace the existing stack with a new deployment.
 
-For externally managed Compose, use the complete private deployment document at the printed export location. Review it and apply through the existing manager's normal saved-source workflow. Preserve interpolation values, secret sources, database, ingress and volumes. Replacing the saved source or its inputs invalidates the previous proposal; repeat review rather than bypassing the source guard. For an explicitly release-managed stack, use its reviewed apply command with the original ordered files.
+After reviewed export, the launcher remembers your ownership choice in the existing private source-approval record. A fresh `bash ./setup-http-mcp.sh --verify` reuses that choice and host approval for the same Docker daemon, project, ordered sources, persistent setup volume and saved host generation, including container recreation and an exact reviewed complete-document import. Temporary read-only client verification still requires its own consent. Keep the private setup directory and volume. If ownership metadata conflicts, repair it; if the sources or owner intentionally change, run ordinary setup with the actual `--manager` and review again. Missing or corrupt saved state never implies release ownership.
+
+For externally managed Compose, use the complete private deployment document at the printed export location. Review it and apply through the existing manager's normal saved-source workflow. Preserve interpolation values, secret sources, database, ingress and volumes. Unreviewed changes to the saved source or its inputs invalidate the previous proposal; repeat review rather than bypassing the source guard. For an explicitly release-managed stack, use its reviewed apply command with the original ordered files.
 
 ## Persistent client storage and an existing container
 

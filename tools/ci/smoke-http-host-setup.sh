@@ -41,7 +41,11 @@ export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$temporary/agent.key"
 source_compose=(docker compose -f compose.yaml -f release/compose.public-https.yaml -f release/compose.mcp-http.yaml -f "$temporary/fixture.yaml")
 compose=(docker compose -f "$temporary/compose.yaml")
 applied=("${compose[@]}")
-launcher=(bash "$temporary/setup-http-mcp.sh" --compose-file "$temporary/compose.yaml" --project "$project" --manager external-compose)
+compose_tools="$temporary/compose-tools"
+ordinary_compose_version="$(docker compose version --short)"
+ordinary_docker_context="$(docker context show)"
+launcher=(bash "$temporary/setup-http-mcp.sh" --isolated-compose "$compose_tools" --compose-file "$temporary/compose.yaml" --project "$project" --manager external-compose)
+plain_verify=(bash "$temporary/setup-http-mcp.sh" --isolated-compose "$compose_tools" --verify)
 launcher_container=
 host_setup=(--non-interactive
   --api-base-url "$NETRATEL_PUBLIC_API_ORIGIN"
@@ -81,7 +85,7 @@ def collect(item):
 try: collect(json.loads((private / "redaction-config.json").read_text()))
 except (OSError, json.JSONDecodeError): pass
 files = [private / name for name in ("startup.log", "container-states.jsonl", "launcher.log", "verified-launcher.log",
-    "fresh-verified-launcher.log", "changed-source-launcher.log", "customer-policy-recipe.log", "customer-policy.json")]
+    "fresh-verified-launcher.log", "changed-source-launcher.log", "older-compose-launcher.log", "customer-policy-recipe.log", "customer-policy.json")]
 files += sorted(private.glob(".netratel-http-mcp-*/*.log"))
 for index, path in enumerate(files):
     if not path.is_file(): continue
@@ -209,6 +213,9 @@ services["api"]["environment"].update({
     "M2MClients__unrelated_caller__AllowedAudiences__0": "unrelated.audience",
     "Integration__HttpMcp__AuthenticationMode": ""})
 services["web"]["environment"]["ASPNETCORE_ENVIRONMENT"] = "Development"
+# Reproduce the owner's harmless case-variant aliases in the actual protected
+# Web environment; do not repair them before launcher/runtime inspection.
+services["web"]["environment"]["NETRATEL_KEYS_DIR"] = services["web"]["environment"]["NetRatel_KEYS_DIR"]
 mcp = services["mcp-http"]
 managed_env = directory / "managed.env"
 managed_env.write_text("NETRATEL_ACCEPTANCE_UNRELATED=preserved\nNetRatel__Mcp__Delegation__LifetimeSeconds=90\n")
@@ -267,6 +274,37 @@ check_source_ownership() {
 check_source_ownership
 original_compose_hash="$(sha256sum "$temporary/compose.yaml" | cut -d ' ' -f 1)"
 mkdir -p TestResults/http-host-setup
+stage="rejecting the actual older Compose capability before setup"
+# Historical upstream tooling is acceptance input, not a host package update.
+# These hashes are from docker/compose v2.26.1 checksums.txt. The launcher must
+# reject the real old implementation, then deliberately acquire its documented
+# supported isolated tool without changing the ordinary Docker plugin/config.
+case "$(uname -m)" in
+  x86_64) compose_arch=x86_64; older_compose_sha256=2f61856d1b8c9de29ffdaedaa1c6d0a5fc5c79da45068f1f4310feed8d3a3f61 ;;
+  aarch64|arm64) compose_arch=aarch64; older_compose_sha256=c86efb0d6347b72af6690f06fbd30ed17023fe67e23e28647cacb4b3f6bfb451 ;;
+  *) echo 'The bounded real-Compose acceptance supports Linux x86_64/aarch64.' >&2; exit 2 ;;
+esac
+older_compose="$temporary/docker-compose-older"
+curl --fail --silent --show-error --location --connect-timeout 10 --max-time 90 \
+  "https://github.com/docker/compose/releases/download/v2.26.1/docker-compose-linux-$compose_arch" \
+  --output "$older_compose"
+printf '%s  %s\n' "$older_compose_sha256" "$older_compose" | sha256sum --check --status
+chmod 700 "$older_compose"
+[[ "$("$older_compose" version --short)" == 2.26.1 ]]
+older_status=0
+bash "$temporary/setup-http-mcp.sh" --compose-plugin "$older_compose" \
+  --compose-file "$temporary/compose.yaml" --project "$project" --manager external-compose \
+  > "$temporary/older-compose-launcher.log" 2>&1 || older_status=$?
+[[ "$older_status" != 0 ]]
+grep -Fq 'compose_capability_unsupported' "$temporary/older-compose-launcher.log"
+grep -Fq -- '--no-env-resolution' "$temporary/older-compose-launcher.log"
+grep -Fq '2.26.1' "$temporary/older-compose-launcher.log"
+grep -Fq '2.35.0' "$temporary/older-compose-launcher.log"
+grep -Fq -- '--isolated-compose' "$temporary/older-compose-launcher.log"
+[[ ! -e "$temporary/.netratel-http-mcp-$project/.approved-source-state.json" ]]
+[[ -z "$(docker ps --all --filter "label=com.docker.compose.project=$project" --format '{{.ID}}')" ]]
+[[ "$(docker compose version --short)" == "$ordinary_compose_version" ]]
+[[ "$(docker context show)" == "$ordinary_docker_context" ]]
 stage="rejecting absent durable storage before approval without assuming a setup Compose file"
 [[ ! -e "$temporary/compose.setup.yaml" ]]
 for mode in host client; do
@@ -299,6 +337,7 @@ check_generation() {
 run_host_setup() {
   local instance="$1" output="$2" status=0
   "${launcher[@]}" -- "${host_setup[@]}" --instance "$instance" > "$temporary/launcher.log" 2>&1 || status=$?
+  [[ "$("$compose_tools/docker-compose" version --short)" == 2.35.0 ]]
   if (( status != 0 && status != 2 )); then
     echo "The actual single-Compose launcher failed before generating a reviewed document (exit $status)." >&2
     return "$status"
@@ -376,6 +415,7 @@ wait_mcp() {
 stage="starting the single-Compose Web/API HTTPS fixture with supplied but unprovisioned MCP settings"
 "${compose[@]}" up --build --detach postgres volume-init migrations api web ingress
 [[ -n "$("${compose[@]}" ps -q api)" ]]
+"${compose[@]}" exec -T web sh -ceu 'test "$NETRATEL_KEYS_DIR" = "$NetRatel_KEYS_DIR"; test "$NetRatel_KEYS_DIR" = /var/netratel/keys'
 wait_state '.setupRequired == true and .isReady == false'
 printf '%s\n' 'disposable HTTP host administrator passphrase' | "${compose[@]}" exec -T api \
   sh -ceu 'umask 077; cat > /var/netratel/bootstrap/http-host-password'
@@ -408,6 +448,8 @@ run_host_setup "$NETRATEL_PUBLIC_ORIGIN" TestResults/http-host-setup/generated.j
 check_source_ownership
 [[ "$(sha256sum "$temporary/compose.yaml" | cut -d ' ' -f 1)" == "$original_compose_hash" ]]
 jq -e '.state == "configuration-written-apply-and-live-verification-pending"' TestResults/http-host-setup/generated.json >/dev/null
+jq -e --arg provider "$temporary/managed.env" 'any(.sources[]; .path == $provider)' \
+  "$temporary/.netratel-http-mcp-$project/.approved-source-state.json" >/dev/null
 fingerprint="$(jq -er '.registrationFingerprint' TestResults/http-host-setup/generated.json)"
 [[ "$fingerprint" =~ ^[[:xdigit:]]{64}$ ]]
 
@@ -427,6 +469,24 @@ reviewed_compose="$temporary/.netratel-http-mcp-$project/compose.komodo.yaml"
 # overlay that would vanish on its next deploy. No secret or YAML repair occurs.
 test -s "$reviewed_compose"
 [[ "$(stat -c %a "$reviewed_compose")" == 600 ]]
+"$compose_tools/docker-compose" --project-directory "$temporary" -f "$reviewed_compose" \
+  config --no-env-resolution --no-interpolate --format json > "$temporary/reviewed-aliases.json"
+python3 - "$temporary/reviewed-aliases.json" <<'PY_ALIASES'
+import json, pathlib, sys
+services = json.loads(pathlib.Path(sys.argv[1]).read_text())["services"]
+environment = services["web"]["environment"]
+if isinstance(environment, list):
+    environment = dict(entry.split("=", 1) if "=" in entry else (entry, None) for entry in environment)
+aliases = [key for key in environment if key.casefold() == "netratel_keys_dir"]
+assert aliases == ["NetRatel_KEYS_DIR"], "Reviewed export did not retain one canonical keys-directory alias"
+assert environment[aliases[0]] == "/var/netratel/keys", "Reviewed export changed the keys directory"
+for service in ("api", "mcp-http"):
+    references = services[service].get("env_file", [])
+    assert any(pathlib.Path(item if isinstance(item, str) else item["path"]).name == "managed.env" for item in references), "Reviewed export lost its managed env_file reference"
+    values = services[service].get("environment", {})
+    names = values if isinstance(values, dict) else [entry.split("=", 1)[0] for entry in values]
+    assert "NETRATEL_ACCEPTANCE_UNRELATED" not in names, "Reviewed export flattened env_file contents"
+PY_ALIASES
 import_temporary="$(mktemp "$temporary/.compose-import.XXXXXX")"
 cat "$reviewed_compose" > "$import_temporary"
 mv "$import_temporary" "$temporary/compose.yaml"
@@ -679,8 +739,16 @@ verify_mcp
 stage="verifying customer grants remain isolated after complete API/Web/MCP recreation"
 verify_customer_connections recreated
 stage="resuming the saved server setup through the actual launcher verification command"
-"${launcher[@]}" --verify -- --non-interactive --instance "$NETRATEL_PUBLIC_ORIGIN/mcp/" \
+# The recreated container intentionally has no manager label. A new process
+# must recover the approved export/import relationship with ordinary --verify.
+mcp_container="$("${applied[@]}" ps --quiet mcp-http)"
+manager_label="$(docker inspect --format '{{index .Config.Labels "com.netratel.deployment.manager"}}' "$mcp_container")"
+[[ -z "$manager_label" || "$manager_label" == '<no value>' ]]
+"${plain_verify[@]}" -- --non-interactive --instance "$NETRATEL_PUBLIC_ORIGIN/mcp/" \
   --credential-file "$personal_credential_file" > "$temporary/verified-launcher.log" 2>&1
+if grep -Eq 'Deployment ownership|deployment_manager_unknown|Host provisioning approval' "$temporary/verified-launcher.log"; then
+  echo 'Plain verification repeated ownership or host approval after the reviewed apply transition.' >&2; exit 1
+fi
 python3 - "$temporary/verified-launcher.log" TestResults/http-host-setup/verified.json <<'PY'
 import json, pathlib, sys
 source = pathlib.Path(sys.argv[1]).read_text(); decoder = json.JSONDecoder()
@@ -726,8 +794,11 @@ bounded_credential_file=/var/lib/netratel/clients/.bounded-host-verifier
 jq -r '.delivery.secret' <<< "$bounded_delivery" | "${applied[@]}" exec -T --user 10001 mcp-http \
   sh -ceu 'umask 077; cat > /var/lib/netratel/clients/.bounded-host-verifier; chmod 600 /var/lib/netratel/clients/.bounded-host-verifier'
 stage="fresh unchanged-source launcher verification with the bounded verifier"
-"${launcher[@]}" --verify -- --non-interactive --instance "$NETRATEL_PUBLIC_ORIGIN" \
+"${plain_verify[@]}" -- --non-interactive --instance "$NETRATEL_PUBLIC_ORIGIN" \
   --credential-file "$bounded_credential_file" > "$temporary/fresh-verified-launcher.log" 2>&1
+if grep -Eq 'Deployment ownership|deployment_manager_unknown|Host provisioning approval' "$temporary/fresh-verified-launcher.log"; then
+  echo 'Fresh plain verification repeated ownership or host approval.' >&2; exit 1
+fi
 python3 - "$temporary/fresh-verified-launcher.log" <<'PY_FRESH'
 import json, pathlib, sys
 text = pathlib.Path(sys.argv[1]).read_text(); decoder = json.JSONDecoder()
@@ -752,7 +823,7 @@ stage="rejecting a concurrent saved-source edit before verification consent or c
 cp "$temporary/compose.yaml" "$temporary/compose.unchanged-backup"
 printf '\n# synthetic concurrent owner edit\n' >> "$temporary/compose.yaml"
 changed_status=0
-"${launcher[@]}" --verify -- --non-interactive --instance "$NETRATEL_PUBLIC_ORIGIN" \
+"${plain_verify[@]}" -- --non-interactive --instance "$NETRATEL_PUBLIC_ORIGIN" \
   --credential-file "$personal_credential_file" > "$temporary/changed-source-launcher.log" 2>&1 || changed_status=$?
 [[ "$changed_status" != 0 ]]
 grep -Fq 'approved sources changed' "$temporary/changed-source-launcher.log"
@@ -770,8 +841,12 @@ jq -e 'type == "array" and length >= 5 and all(.[]; .status == "completed")
   TestResults/http-host-setup/personal-reloaded.json >/dev/null
 post /api/integration-pairing/v1/cancel "$(jq '{deviceCapability}' <<<"$pairing")" >/dev/null
 unset credential delivery pairing host_request customer_credentials
+[[ "$(docker compose version --short)" == "$ordinary_compose_version" ]]
+[[ "$(docker context show)" == "$ordinary_docker_context" ]]
 jq -n --arg fingerprint "$fingerprint" --arg source "$(git rev-parse HEAD)" --arg launcherSha256 "$launcher_hash" \
   '{sourceSha:$source,registrationFingerprint:$fingerprint,imageLauncherCopiedAndSourceMatched:true,launcherSha256:$launcherSha256,headlessGeneration:true,administratorProtocolApproval:true,
+    composeCapabilityAcceptance:{unsupportedRealVersion:"2.26.1",unsupportedSetupBlocked:true,supportedIsolatedVersion:"2.35.0",ordinaryPluginAndContextUnchanged:true},
+    equalWebKeysDirectoryAliasesInspected:true,canonicalExportAliasPreserved:true,unlabeledOwnershipReusedOnPlainVerify:true,
     komodoSingleCompose:true,privateHostOwnedSourcePreserved:true,missingStoragePreflight:true,existingReadOnlyIdentityAdopted:true,managedEnvironmentFilesRetained:true,splitWebApiOrigins:true,instance:"dev",
     initialTokenIssuanceRejectionDiagnosed:true,
     generatedApply:true,authenticatedCatalogAndApiRead:true,recreatedAndResumed:true,launcherVerificationCompleted:true,freshUnchangedSourceLauncherVerification:true,boundedVerifierExplicitConsent:true,boundedVerifierTenantGrants:0,boundedVerifierInstancePermissions:["mcp.discovery.read"],boundedVerifierRevocationConfirmed:true,changedSourceVerificationBlocked:true,personalProfileSavedAndReloaded:true,

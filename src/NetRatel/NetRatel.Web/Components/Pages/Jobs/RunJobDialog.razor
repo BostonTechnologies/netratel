@@ -7,7 +7,7 @@
 
 <MudDialog Style="@(_params?.Count > 1 ? "width:min(1160px,calc(100vw - 32px));max-width:1160px" : "width:min(560px,calc(100vw - 32px));max-width:560px")" ContentStyle="max-height:calc(100dvh - 180px);overflow-y:auto">
     <DialogContent>
-        <div class="run-job-dialog">
+        <form class="run-job-dialog" id="@_formId" autocomplete="off" aria-label="Job inputs" @onsubmit:preventDefault="true">
             <div class="run-job-context">
                 <strong>@Job.Name</strong>
                 <span>@(Job.ClientDisplayName ?? "Target label unavailable")</span>
@@ -45,14 +45,14 @@
                             }
                             else if (type == "select")
                             {
-                                <MudSelect T="string" Value="@GetValue(p.Name)" ValueChanged="value => SetValue(p.Name, value)" Label="@p.Name" Required="p.Required" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(error is not null)" HelperText="@p.Description" Disabled="_isSubmitting" Clearable="@(!p.Required)">
+                                <MudSelect T="string" Value="@GetValue(p.Name)" ValueChanged="value => SetValue(p.Name, value)" Label="@p.Name" InputId="@FieldId(p)" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId(p))" Required="p.Required" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(error is not null)" HelperText="@p.Description" Disabled="_isSubmitting" Clearable="@(!p.Required)">
                                     @foreach (var option in JobParameterInput.SelectOptions(p.OptionsJson))
                                     { <MudSelectItem T="string" Value="@option">@option</MudSelectItem> }
                                 </MudSelect>
                             }
                             else
                             {
-                                <MudTextField T="string" Value="@GetValue(p.Name)" ValueChanged="value => SetValue(p.Name, value)" Label="@p.Name" Required="p.Required" Variant="Variant.Outlined" Margin="Margin.Dense" Lines="@(type == "json" || type == "string" && GetValue(p.Name)?.Contains('\n') == true ? 3 : 1)" InputType="@(type == "secret" ? InputType.Password : InputType.Text)" InputMode="@(type == "int" ? InputMode.numeric : InputMode.text)" Error="@(error is not null)" HelperText="@p.Description" Disabled="_isSubmitting" />
+                                <MudTextField T="string" Value="@GetValue(p.Name)" ValueChanged="value => SetValue(p.Name, value)" Label="@p.Name" InputId="@FieldId(p)" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId(p), type == "secret")" Required="p.Required" Variant="Variant.Outlined" Margin="Margin.Dense" Lines="@(type == "json" || type == "string" && GetValue(p.Name)?.Contains('\n') == true ? 3 : 1)" InputType="@(type == "secret" ? InputType.Password : InputType.Text)" InputMode="@(type == "int" ? InputMode.numeric : InputMode.text)" Error="@(error is not null)" HelperText="@p.Description" Disabled="_isSubmitting" />
                             }
                             @if (error is not null) { <div class="run-job-field-error" role="alert">@error</div> }
                         </div>
@@ -60,10 +60,10 @@
                 </div>
             }
             <div class="run-job-metadata">
-                <MudTextField @bind-Value="_startedBy" Label="Started by" Required="true" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_isSubmitting" HelperText="Run metadata" />
+                <MudTextField @bind-Value="_startedBy" Label="Started by" InputId="@(_formId + "-started-by")" UserAttributes="@JobParameterInput.OperationalAttributes(_formId + "-started-by")" Required="true" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_isSubmitting" HelperText="Run metadata" />
             </div>
             @if (_launchError is not null) { <MudText Color="Color.Error" Typo="Typo.body2" role="alert">@_launchError</MudText> }
-        </div>
+        </form>
     </DialogContent>
     <DialogActions>
         <MudButton OnClick="Cancel" Disabled="_isSubmitting">Cancel</MudButton>
@@ -75,6 +75,8 @@
     [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
     [Parameter] public JobDto Job { get; set; } = default!;
     [Parameter] public EventCallback<JobRunDto> OnRunCompleted { get; set; }
+    private readonly string _formId = $"job-operation-{Guid.NewGuid():N}";
+    private string FieldId(JobParamDto parameter) => $"{_formId}-parameter-{parameter.Id}";
     private List<JobParamDto>? _params;
     private readonly Dictionary<string, string?> _values = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _touched = new(StringComparer.OrdinalIgnoreCase);

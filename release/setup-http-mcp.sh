@@ -20,6 +20,7 @@ Explicit source recovery (repeat file options in their actual merge order):
   --compose-file /absolute/compose.yaml [--compose-file /absolute/override.yaml]
   --project STACK [--project-directory /absolute/directory]
   [--env-file /absolute/.env] [--manager external-compose|release-compose]
+  [--compose-plugin /absolute/docker-compose | --isolated-compose /absolute/tools-directory]
   [--target http-host|http-client|cli|stdio] [-- wizard-options...]
 USAGE
 }
@@ -27,9 +28,12 @@ USAGE
 die() { printf 'Setup not started: %s\n' "$*" >&2; exit 1; }
 compose_file= project= manager= env_file= target=http-host verify=false selected_container= compose_dir=
 compose_files=() env_files=() wizard_args=()
+found_manager= runtime_manager=
+compose_plugin= isolated_compose=
+launcher_arguments=("$@")
 while (($#)); do
   case "$1" in
-    --compose-file|--project|--manager|--env-file|--target|--container|--project-directory)
+    --compose-file|--project|--manager|--env-file|--target|--container|--project-directory|--compose-plugin|--isolated-compose)
       (($# >= 2)) || die "Missing value for $1. Use --help."
       case "$1" in
         --compose-file) compose_files+=("$2") ;;
@@ -39,6 +43,8 @@ while (($#)); do
         --target) target=$2 ;;
         --container) selected_container=$2 ;;
         --project-directory) compose_dir=$2 ;;
+        --compose-plugin) compose_plugin=$2 ;;
+        --isolated-compose) isolated_compose=$2 ;;
       esac
       shift 2 ;;
     --verify) verify=true; shift ;;
@@ -51,6 +57,70 @@ done
 [[ "$verify" == false || "$target" == http-host ]] || die '--verify resumes saved server setup; client setup verifies within its own wizard.'
 for command in docker realpath stat mktemp sha256sum python3 timeout; do command -v "$command" >/dev/null || die "Required host command is unavailable: $command. Install it, then rerun this launcher."; done
 
+# Keep the selected Docker authentication, daemon and context for every host
+# inspection, standalone Compose invocation and copied resume command.
+docker_environment=(env)
+for variable in DOCKER_CONFIG DOCKER_CONTEXT DOCKER_HOST DOCKER_TLS DOCKER_TLS_VERIFY DOCKER_CERT_PATH DOCKER_API_VERSION; do
+  if [[ -v "$variable" ]]; then
+    if [[ "$variable" == DOCKER_CONFIG || "$variable" == DOCKER_CERT_PATH ]] && [[ -n "${!variable}" ]]; then
+      printf -v "$variable" '%s' "$(realpath -m -- "${!variable}")"; export "$variable"
+    fi
+    docker_environment+=("$variable=${!variable}")
+  fi
+done
+[[ -z "$compose_plugin" || -z "$isolated_compose" ]] || die 'Select only --compose-plugin or --isolated-compose.'
+if [[ -n "$isolated_compose" ]]; then
+  # Deliberate task-local acquisition: pin both upstream version and bytes;
+  # never alter the host plugin or Docker configuration/authentication files.
+  [[ "$isolated_compose" == /* && "$isolated_compose" != *[[:cntrl:]]* && ! -L "$isolated_compose" ]] || die '--isolated-compose needs an absolute private tools directory, not a symlink.'
+  if ! python3 - "$isolated_compose" "${DOCKER_CONFIG:-$HOME/.docker}" 2>/dev/null <<'PY_PLUGIN_DIRECTORY'
+import json, pathlib, sys
+selected = pathlib.Path(sys.argv[1]).resolve(); config = pathlib.Path(sys.argv[2])
+active = [config / "cli-plugins", pathlib.Path.home() / ".docker/cli-plugins", *(pathlib.Path(prefix) / "docker/cli-plugins" for prefix in
+          ("/usr/local/lib", "/usr/local/libexec", "/usr/lib", "/usr/libexec"))]
+try:
+    settings = json.loads((config / "config.json").read_text())
+    active.extend(pathlib.Path(value) for value in settings.get("cliPluginsExtraDirs", []) if isinstance(value, str))
+except (OSError, ValueError, TypeError):
+    pass
+sys.exit(1 if selected in [path.resolve() for path in active] else 0)
+PY_PLUGIN_DIRECTORY
+  then die 'Choose an isolated tools directory outside Docker plugin search directories; the ordinary host plugin must remain unchanged.'; fi
+  case "$(uname -m)" in
+    x86_64) compose_arch=x86_64; compose_digest=dba1915cf2f282527f5df0cd7a94b9503047ed200317801853abe8f22c8cd493 ;;
+    aarch64|arm64) compose_arch=aarch64; compose_digest=a08457d837d5d4ed7c079f0721dc51ef3f21ce2d9654a6abd44944b74d975cd2 ;;
+    *) die 'Isolated Compose acquisition supports Linux x86_64/aarch64. Supply a verified --compose-plugin for this host.' ;;
+  esac
+  [[ "$(uname -s)" == Linux ]] || die 'Isolated Compose acquisition supports Linux. Supply a verified --compose-plugin for this host.'
+  if [[ ! -d "$isolated_compose" ]]; then mkdir -m 700 -- "$isolated_compose" || die 'The isolated Compose tools directory could not be created.'; fi
+  isolated_compose=$(realpath -- "$isolated_compose")
+  [[ $(stat -c %u -- "$isolated_compose") == "$(id -u)" && $(stat -c %a -- "$isolated_compose") == 700 ]] || die 'The isolated Compose tools directory must be owned by this user with mode 0700.'
+  compose_plugin=$isolated_compose/docker-compose
+  [[ ! -L "$compose_plugin" ]] || die 'The isolated Compose executable cannot be a symlink.'
+  if [[ ! -e "$compose_plugin" ]]; then
+    command -v curl >/dev/null || die 'Install curl to acquire the verified isolated Compose plugin, then rerun the same command.'
+    compose_download=$(mktemp "$isolated_compose/.docker-compose.XXXXXX")
+    if ! curl --fail --silent --show-error --location --connect-timeout 10 --max-time 45 \
+        "https://github.com/docker/compose/releases/download/v2.35.0/docker-compose-linux-$compose_arch" --output "$compose_download" 2>/dev/null; then
+      rm -f -- "$compose_download"; die 'The isolated Compose download failed. No plugin was installed; rerun the same command after restoring HTTPS access to GitHub.'
+    fi
+    actual_compose_digest=$(sha256sum <"$compose_download"); actual_compose_digest=${actual_compose_digest%% *}
+    if [[ "$actual_compose_digest" != "$compose_digest" ]]; then rm -f -- "$compose_download"; die 'Isolated Compose integrity verification failed. No plugin was installed.'; fi
+    chmod 700 -- "$compose_download"; mv -T -- "$compose_download" "$compose_plugin"
+  fi
+  [[ -f "$compose_plugin" && $(stat -c %u -- "$compose_plugin") == "$(id -u)" && $(stat -c %a -- "$compose_plugin") == 700 ]] || die 'The isolated Compose executable must be a private regular file owned by this user with mode 0700.'
+  actual_compose_digest=$(sha256sum <"$compose_plugin"); actual_compose_digest=${actual_compose_digest%% *}
+  [[ "$actual_compose_digest" == "$compose_digest" ]] || die 'Isolated Compose integrity verification failed. Remove the altered task-local executable and rerun --isolated-compose; the host plugin was not changed.'
+fi
+compose_command=(docker compose)
+compose_selection=()
+if [[ -n "$compose_plugin" ]]; then
+  [[ "$compose_plugin" == /* && "$compose_plugin" != *[[:cntrl:]]* ]] || die '--compose-plugin must name an executable at its absolute path.'
+  compose_plugin=$(realpath -m -- "$compose_plugin")
+  compose_command=("$compose_plugin")
+  # Retain integrity verification for an acquired plugin on every resume.
+  if [[ -n "$isolated_compose" ]]; then compose_selection=(--isolated-compose "$isolated_compose"); else compose_selection=(--compose-plugin "$compose_plugin"); fi
+fi
 # Docker access stays here; the serving/tooling process remains UID 10001 with no
 # socket mount. Inspect only bounded label/image/mount fields, never an Env dump.
 if [[ -n "$selected_container" || ${#compose_files[@]} == 0 || -z "$project" ]]; then
@@ -83,33 +153,10 @@ if [[ -n "$selected_container" || ${#compose_files[@]} == 0 || -z "$project" ]];
     IFS=',' read -r -a compose_files <<< "$found_files"
   fi
   if ((${#env_files[@]} == 0)) && [[ -n "$found_env" && "$found_env" != '<no value>' ]]; then IFS=',' read -r -a env_files <<< "$found_env"; fi
-  if [[ -z "$manager" ]]; then
-    case "$found_manager" in
-      release-compose) manager=release-compose ;;
-      external-compose|komodo) manager=komodo ;;
-    esac
-  fi
   [[ -n "$selected_image" && "$selected_image" != '<no value>' ]] || die 'The selected MCP image metadata is missing. Restore the saved deployment image before setup.'
 fi
-# Missing ownership is a prerequisite, never authorization to select an apply
-# path. A recognized deployment marker or this explicit host choice is required.
-if [[ -z "$manager" ]]; then
-  if [[ -t 0 && -t 1 ]]; then
-    printf 'Deployment ownership metadata is missing. Who applies this saved Compose project?\n'
-    printf '  1) Existing deployment manager — export the reviewed complete document\n'
-    printf '  2) Explicitly release-owned Compose bundle — export a reviewed release overlay\n'
-    read -r -p 'Deployment ownership (1 or 2): ' ownership
-    case "$ownership" in
-      1) manager=komodo ;;
-      2) manager=release-compose ;;
-      *) die 'deployment_manager_unknown: Select the actual owner of the saved deployment before setup.' ;;
-    esac
-  else
-    die 'deployment_manager_unknown: Supply only --manager external-compose for an existing deployment manager, or --manager release-compose for an explicitly release-owned bundle. No approval or setup container was started.'
-  fi
-fi
 if [[ "$manager" == external-compose ]]; then manager=komodo; fi
-[[ "$manager" == komodo || "$manager" == release-compose ]] || die 'Select --manager external-compose (external reviewed export) or explicitly owned release-compose.'
+[[ -z "$manager" || "$manager" == komodo || "$manager" == release-compose ]] || die 'Select --manager external-compose (external reviewed export) or explicitly owned release-compose.'
 [[ "$project" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die 'Use the actual Compose project name shown by docker compose ls.'
 ((${#compose_files[@]} > 0 && ${#compose_files[@]} <= 16 && ${#env_files[@]} <= 16)) || die 'Supply the actual ordered saved Compose sources (at most 16 files).'
 for index in "${!compose_files[@]}"; do
@@ -128,13 +175,154 @@ for index in "${!env_files[@]}"; do
   [[ "$item" == /* && -f "$item" && -r "$item" && ! -L "$item" && "$item" != *[[:cntrl:]]* && "$item" != *,* ]] || die 'A saved interpolation environment file is missing or unreadable. Supply only --env-file with its actual absolute location.'
   env_files[$index]=$(realpath -- "$item")
 done
+# Probe the actual selected command before reading/rendering saved sources or
+# creating containers. Distribution suffixes never determine capabilities.
+compose_version=$(timeout 10s "${compose_command[@]}" version --short 2>/dev/null) || compose_version=unavailable
+[[ -n "$compose_version" && ${#compose_version} -le 80 && "$compose_version" != *[[:cntrl:]]* ]] || compose_version=unavailable
+compose_capabilities=$(timeout 10s "${compose_command[@]}" config --help 2>/dev/null) || compose_capabilities=
+missing_capability=
+for capability in --no-env-resolution --format --no-interpolate --no-path-resolution --quiet --services; do
+  if [[ ! "$compose_capabilities" =~ (^|[[:space:]])$capability([[:space:]=]|$) ]]; then missing_capability=$capability; break; fi
+done
+if [[ -n "$missing_capability" || "$compose_version" == unavailable ]]; then
+  remediation_arguments=()
+  for ((index=0; index<${#launcher_arguments[@]}; index++)); do
+    case "${launcher_arguments[$index]}" in
+      --compose-plugin|--isolated-compose) ((index+=1)) ;;
+      --) break ;; # Wizard arguments can contain credentials; never echo them.
+      *) remediation_arguments+=("${launcher_arguments[$index]}") ;;
+    esac
+  done
+  printf -v compose_remediation '%q ' "${docker_environment[@]}" bash "$(realpath -- "$0")" \
+    --isolated-compose "$(pwd -P)/.netratel-compose-v2.35.0" "${remediation_arguments[@]}"
+  die "compose_capability_unsupported: Docker Compose $compose_version lacks config ${missing_capability:-command execution}; requires upstream v2.35.0+ with these capabilities. Verified isolated tooling (no global install; repeat wizard options privately if needed): $compose_remediation"
+fi
+
 output_dir=$compose_dir/.netratel-http-mcp-$project
 [[ ! -L "$output_dir" ]] || die 'The private setup output directory cannot be a symlink.'
 if [[ ! -d "$output_dir" ]]; then mkdir -m 700 -- "$output_dir" || die 'The saved working directory is not writable. Provide its actual writable --project-directory; no approval was requested.'; fi
 [[ $(stat -c %u -- "$output_dir") == "$(id -u)" && $(stat -c %a -- "$output_dir") == 700 ]] || die 'The existing private setup output directory must be owned by this user with mode 0700.'
-compose=(docker compose --project-directory "$compose_dir" --project-name "$project")
-if ((${#env_files[@]})); then for item in "${env_files[@]}"; do compose+=(--env-file "$item"); done; else compose+=(--env-file /dev/null); fi
+compose_base=("${compose_command[@]}" --project-directory "$compose_dir" --project-name "$project")
+if ((${#env_files[@]})); then for item in "${env_files[@]}"; do compose_base+=(--env-file "$item"); done; else compose_base+=(--env-file /dev/null); fi
+compose=("${compose_base[@]}")
 for item in "${compose_files[@]}"; do compose+=(-f "$item"); done
+# Recover only the reviewed decision for this actual daemon, project, ordered
+# source set and saved host generation. Container IDs deliberately are not part
+# of this identity: a normal reviewed apply recreates them.
+daemon_id=$(timeout 15s docker info --format '{{.ID}}' 2>"$output_dir/ownership.log") || die 'deployment_manager_unresolved: Docker daemon identity is unavailable; restore Docker access before choosing deployment ownership.'
+[[ -n "$daemon_id" && ${#daemon_id} -le 128 && "$daemon_id" != *[[:cntrl:]]* ]] || die 'deployment_manager_unresolved: Docker daemon identity is invalid.'
+if [[ -n "$selected_container" ]]; then
+  manager_template='{{range .Config.Env}}{{if eq (index (split . "=") 0) "NETRATEL_SETUP_DEPLOYMENT_MANAGER"}}{{printf "%.257s\n" .}}{{end}}{{end}}'
+  runtime_manager=$(timeout 15s docker inspect --format "$manager_template" "$selected_container" 2>>"$output_dir/ownership.log") || die 'deployment_manager_unresolved: Selected deployment metadata is unavailable.'
+fi
+# A saved Compose environment marker is also authoritative, including when
+# explicit sources are used without selecting a running container. Keep the
+# complete render private; only the recognized ownership value is interpreted.
+if ! timeout 20s "${compose[@]}" config --format json >"$output_dir/.ownership-deployment.json" 2>"$output_dir/preflight.log"; then
+  die "The saved Compose deployment failed validation. Restore its saved inputs. Private diagnostics: $output_dir/preflight.log. No approval or setup container was started."
+fi
+if ! resolved_manager=$(python3 - "$output_dir" "$verify" "$manager" "$found_manager" "$runtime_manager" "$daemon_id" "$project" "$compose_dir" "$selected_container" "${#compose_files[@]}" "${compose_files[@]}" "${env_files[@]}" 2>>"$output_dir/ownership.log" <<'PY_OWNER'
+import hashlib, json, os, pathlib, stat, subprocess, sys, tempfile
+root = pathlib.Path(sys.argv[1]); verify = sys.argv[2] == "true"
+explicit, label, runtime, daemon, project, directory, container = sys.argv[3:10]
+count = int(sys.argv[10]); compose = sys.argv[11:11 + count]; env = sys.argv[11 + count:]
+def stop(code, detail):
+    print(code + ": " + detail)
+    sys.exit(1)
+def manager(value):
+    if value in ("", "<no value>"): return None
+    if value in ("komodo", "external-compose"): return "komodo"
+    if value == "release-compose": return value
+    stop("deployment_manager_conflict", "Unrecognized deployment ownership metadata; repair the selected deployment before setup.")
+markers = [manager(label)]
+markers += [manager(value.removeprefix("NETRATEL_SETUP_DEPLOYMENT_MANAGER=")) for value in runtime.splitlines()]
+try:
+    configuration = root / ".ownership-deployment.json"
+    if configuration.stat().st_size > 262144: raise ValueError()
+    configured = json.loads(configuration.read_text()).get("services", {}).get("mcp-http", {}).get("environment", {})
+    if not isinstance(configured, dict): raise ValueError()
+    markers.append(manager(configured.get("NETRATEL_SETUP_DEPLOYMENT_MANAGER") or ""))
+except (ValueError, TypeError, AttributeError, OSError):
+    stop("deployment_manager_unresolved", "Configured ownership metadata is invalid; restore the saved deployment before setup.")
+markers = {value for value in markers if value}
+if len(markers) > 1 or explicit and markers and explicit not in markers:
+    stop("deployment_manager_conflict", "Explicit ownership and deployment metadata disagree; repair the selected deployment metadata before setup.")
+selected = explicit or next(iter(markers), "")
+path = root / ".approved-source-state.json"
+if path.exists() or path.is_symlink():
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 262144:
+            raise ValueError()
+        saved = json.loads(path.read_text())
+        if not isinstance(saved, dict): raise ValueError()
+        remembered = manager(saved.get("manager", ""))
+        binding = {"daemon": daemon, "project": project, "directory": directory, "composeFiles": compose, "envFiles": env}
+        valid_binding = saved.get("binding") == binding
+        approved_overlay = root / "compose.http-host.yaml"
+        original_binding = saved.get("binding", {})
+        if remembered == "release-compose" and isinstance(original_binding, dict) and compose == original_binding.get("composeFiles", []) + [str(approved_overlay)]:
+            previous_binding = dict(binding, composeFiles=compose[:-1])
+            valid_binding = previous_binding == original_binding and approved_overlay.is_file() and not approved_overlay.is_symlink() and hashlib.sha256(approved_overlay.read_bytes()).hexdigest() == saved.get("exportedHash")
+        # Pre-feature source records cannot authorize ownership. Explicit
+        # ordinary setup may replace stale/corrupt records after a new review.
+        if remembered and (verify or not explicit):
+            if not valid_binding:
+                stop("deployment_manager_state_stale", "Saved ownership belongs to another daemon, project or ordered source set; run ordinary setup with its actual owner to review the change.")
+            sources = saved["sources"]
+            if not isinstance(sources, list) or not sources: raise ValueError()
+            changed = []
+            for source in sources:
+                source_path = pathlib.Path(source["path"])
+                if not source_path.is_file() or source_path.is_symlink() or source_path.stat().st_size > 262144: raise ValueError()
+                current = hashlib.sha256(source_path.read_bytes()).hexdigest()
+                if current != source["hash"]: changed.append((source_path, current))
+            if changed and not (len(changed) == 1 and str(changed[0][0]) == compose[0] and changed[0][1] == saved["exportedHash"] and remembered == "komodo"):
+                stop("deployment_manager_state_stale", "approved sources changed; run setup without --verify to review current sources.")
+            if markers and remembered not in markers or explicit and explicit != remembered:
+                stop("deployment_manager_conflict", "Reviewed ownership and current deployment metadata disagree; review the actual owner in ordinary setup before verification.")
+            if not container:
+                result = subprocess.run(["docker", "ps", "--filter", "label=com.docker.compose.project=" + project, "--filter", "label=com.docker.compose.service=mcp-http", "--filter", "label=com.docker.compose.oneoff=False", "--format", "{{.ID}}"], capture_output=True, timeout=15)
+                containers = result.stdout.decode().splitlines()
+                if result.returncode or len(containers) != 1: raise ValueError()
+                container = containers[0]
+            mount = subprocess.run(["docker", "inspect", "--format", '{{range .Mounts}}{{if eq .Destination "/setup-output"}}{{.Type}}|{{.Name}}{{end}}{{end}}', container], capture_output=True, timeout=15)
+            if mount.returncode or mount.stdout.decode().strip() != "volume|" + saved["setupVolume"]:
+                stop("deployment_manager_state_stale", "The serving deployment uses different setup storage; restore its reviewed generation or run ordinary setup.")
+            fd, temporary = tempfile.mkstemp(prefix=".owner-generation-", dir=root); os.close(fd)
+            try:
+                copied = subprocess.run(["docker", "cp", container + ":/setup-output/.http-host.setup.json", temporary], capture_output=True, timeout=15)
+                generation = pathlib.Path(temporary)
+                if copied.returncode or generation.is_symlink() or generation.stat().st_size > 262144: raise ValueError()
+                if hashlib.sha256(generation.read_bytes()).hexdigest() != saved["generationHash"]:
+                    stop("deployment_manager_state_stale", "The serving host generation differs from reviewed ownership; restore the saved generation or run ordinary setup.")
+            finally:
+                pathlib.Path(temporary).unlink(missing_ok=True)
+            selected = remembered
+    except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError):
+        if verify or not explicit:
+            stop("deployment_manager_state_invalid", "Saved ownership or host generation is invalid; preserve the setup volume and rerun ordinary setup with the actual --manager to review it.")
+print(selected)
+PY_OWNER
+); then die "$resolved_manager No host approval or setup container was started."; fi
+manager=$resolved_manager
+# Missing ownership never authorizes an apply path. A protected reviewed
+# decision, recognized deployment marker or explicit host choice is required.
+if [[ -z "$manager" ]]; then
+  if [[ -t 0 && -t 1 ]]; then
+    printf 'Deployment ownership metadata is missing. Who applies this saved Compose project?\n'
+    printf '  1) Existing deployment manager — export the reviewed complete document\n'
+    printf '  2) Explicitly release-owned Compose bundle — export a reviewed release overlay\n'
+    read -r -p 'Deployment ownership (1 or 2): ' ownership
+    case "$ownership" in
+      1) manager=komodo ;;
+      2) manager=release-compose ;;
+      *) die 'deployment_manager_unknown: Select the actual owner of the saved deployment before setup.' ;;
+    esac
+  else
+    die 'deployment_manager_unknown: Supply only --manager external-compose for an existing deployment manager, or --manager release-compose for an explicitly release-owned bundle. No approval or setup container was started.'
+  fi
+fi
 if ! "${compose[@]}" config --quiet >"$output_dir/preflight.log" 2>&1; then
   die "The saved Compose deployment failed validation. Review its sources and interpolation/env_file prerequisites. Private diagnostics: $output_dir/preflight.log. No setup container was started."
 fi
@@ -175,12 +363,37 @@ if [[ "$target" == http-host ]]; then
     web_container=$candidate
   done
   if [[ -n "$web_container" ]]; then
-    # Select exactly two non-secret routing values. Each captured record is
-    # bounded, duplicates fail, and no unrelated environment entry is emitted.
-    backend_template='{{$api := ""}}{{$mcp := ""}}{{$seenApi := false}}{{$seenMcp := false}}{{$duplicate := false}}{{range .Config.Env}}{{$key := index (split . "=") 0}}{{if eq $key "ApiBaseUrl"}}{{if $seenApi}}{{$duplicate = true}}{{end}}{{$seenApi = true}}{{$api = printf "%.4097s" .}}{{end}}{{if eq $key "WebGateway__Mcp__BackendUrl"}}{{if $seenMcp}}{{$duplicate = true}}{{end}}{{$seenMcp = true}}{{$mcp = printf "%.4097s" .}}{{end}}{{end}}{{if $duplicate}}DUPLICATE_WEB_BACKEND{{else}}{{if $seenApi}}{{println $api}}{{end}}{{if $seenMcp}}{{println $mcp}}{{end}}{{end}}'
+    # Inspect only the two routing settings. Keep record boundaries and original
+    # spellings so equal aliases coalesce and conflicts retain safe provenance.
+    backend_template='{{$separator := ""}}[{{range .Config.Env}}{{$key := lower (index (split . "=") 0)}}{{if or (eq $key "apibaseurl") (eq $key "webgateway__mcp__backendurl") (eq $key "webgateway:mcp:backendurl")}}{{$separator}}{{json (printf "%.4097s" .)}}{{$separator = ","}}{{end}}{{end}}]'
     backend_metadata=$(timeout 15s docker inspect --format "$backend_template" "$web_container")
+    backend_metadata=$(python3 -c '
+import json, sys
+try:
+    payload = sys.stdin.read(262145)
+    records = json.loads(payload)
+    if len(payload) > 262144 or not isinstance(records, list) or len(records) > 1024: raise ValueError()
+    seen = {}
+    for index, record in enumerate(records, 1):
+        if not isinstance(record, str) or len(record) > 4096: raise ValueError()
+        key, separator, value = record.partition("=")
+        normalized = key.replace(":", "__").casefold()
+        if not separator or normalized not in ("apibaseurl", "webgateway__mcp__backendurl"): raise ValueError()
+        if normalized in seen:
+            first, first_value, first_index = seen[normalized]
+            if first_value != value:
+                raise SystemExit("environment_alias_conflict: service web; normalized key " + normalized + "; " + first + " at serving runtime environment entry " + str(first_index) + " / " + key + " at serving runtime environment entry " + str(index) + ". Make these entries exactly equal or remove the unintended alias.")
+        else: seen[normalized] = (key, value, index)
+    for normalized, (_, value, _) in seen.items():
+        if len(value) > 2048 or any(c.isspace() or ord(c) < 32 or c in "@?#" for c in value): raise ValueError()
+        print(("ApiBaseUrl" if normalized == "apibaseurl" else "WebGateway__Mcp__BackendUrl") + "=" + value)
+except (ValueError, TypeError):
+    raise SystemExit("deployment_prerequisite: The serving Web backend metadata is invalid or oversized. Review its source; no value was printed or substituted.")
+' 2>"$output_dir/.web-backend-action" <<< "$backend_metadata") || {
+      IFS= read -r backend_action < "$output_dir/.web-backend-action"
+      die "$backend_action"
+    }
     web_environment_observed=true
-    [[ "$backend_metadata" != DUPLICATE_WEB_BACKEND ]] || die 'The serving Web container has duplicate backend settings. Resolve the ambiguous source before server setup.'
     while IFS= read -r backend_record; do
       [[ -n "$backend_record" ]] || continue
       backend_value=${backend_record#*=}
@@ -211,13 +424,57 @@ paths = [pathlib.Path(p) for p in sys.argv[2:]]
 if any(path.stat().st_size > 262144 for path in paths): raise ValueError("source exceeds 256 KiB")
 pathlib.Path(sys.argv[1]).write_text(json.dumps({str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}))
 PY_INITIAL
-  if ! "${compose[@]}" config --no-env-resolution --format json >"$output_dir/.compose-inputs.json" 2>>"$output_dir/preflight.log"; then
+  # Interpolating Compose renders discard env_file references even when
+  # --no-env-resolution is advertised. Preserve the raw structure first, then
+  # let the same Compose invocation interpolate only provider path strings in
+  # an inert service model with no env_file and no container execution.
+  if ! timeout 20s "${compose[@]}" config --no-env-resolution --no-interpolate --no-path-resolution --format json >"$output_dir/.compose-inputs.json" 2>>"$output_dir/preflight.log"; then
     die 'Saved Compose sources could not be read. Restore their locations and use Docker Compose with --no-env-resolution support; no approval was requested.'
   fi
-  if ! python3 - "$output_dir" 2>>"$output_dir/preflight.log" <<'PY_INPUTS'
-import hashlib, json, pathlib, sys
+  if ! python3 - "$output_dir" 2>>"$output_dir/preflight.log" <<'PY_PROVIDERS'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1]); inputs = json.loads((root / ".compose-inputs.json").read_text())
+values = {}; locations = {}
+def reference(service, kind, index, field, value):
+    if not isinstance(value, str): raise ValueError("provider reference is not text")
+    key = "NETRATEL_SOURCE_" + str(len(values))
+    values[key] = value; locations[key] = [service, kind, index, field]
+for name, service in inputs.get("services", {}).items():
+    files = service.get("env_file", [])
+    for index, item in enumerate(files):
+        if isinstance(item, str): item = files[index] = {"path": item, "required": True}
+        if item.get("path"): reference(name, "env_file", index, "path", item["path"])
+    for index, mount in enumerate(service.get("volumes", [])):
+        if isinstance(mount, dict) and mount.get("type") == "bind":
+            for field in ("source", "target"):
+                if mount.get(field): reference(name, "volumes", index, field, mount[field])
+(root / ".compose-inputs.json").write_text(json.dumps(inputs))
+(root / ".compose-provider-locations.json").write_text(json.dumps(locations))
+(root / ".compose-provider-probe.json").write_text(json.dumps({"services": {"netratel-source-providers": {
+    "image": "scratch", "environment": values or {"NETRATEL_SOURCE_NONE": ""}}}}))
+PY_PROVIDERS
+  then die 'Saved source provider references could not be read. Restore the selected Compose sources; no approval was requested.'; fi
+  if ! timeout 20s "${compose_base[@]}" -f "$output_dir/.compose-provider-probe.json" config --format json >"$output_dir/.compose-provider-values.json" 2>>"$output_dir/preflight.log"; then
+    die 'Saved source provider paths could not be interpolated. Restore the selected interpolation inputs; no approval was requested.'
+  fi
+  if ! python3 - "$output_dir" "$compose_dir" 2>>"$output_dir/preflight.log" <<'PY_INPUTS'
+import hashlib, json, os, pathlib, sys
 root = pathlib.Path(sys.argv[1]); initial = json.loads((root / ".initial-source-state.json").read_text())
 inputs = json.loads((root / ".compose-inputs.json").read_text())
+locations = json.loads((root / ".compose-provider-locations.json").read_text())
+resolved = json.loads((root / ".compose-provider-values.json").read_text())["services"]["netratel-source-providers"]["environment"]
+for key, (name, kind, index, field) in locations.items():
+    value = resolved[key]
+    if not isinstance(value, str) or not value: raise ValueError("provider reference is empty or unset")
+    # Interpolating `compose config` re-escapes literal dollars for a reusable
+    # Compose document. Decode that output escape once; Compose owns expansion.
+    value = value.replace("$$", "$")
+    if field != "target":
+        path = pathlib.Path(value).expanduser()
+        if not path.is_absolute(): path = pathlib.Path(sys.argv[2]) / path
+        value = os.path.abspath(path)
+    inputs["services"][name][kind][index][field] = value
+(root / ".compose-inputs.json").write_text(json.dumps(inputs))
 for service in inputs.get("services", {}).values():
     paths = []
     for item in service.get("env_file", []):
@@ -234,12 +491,13 @@ for service in inputs.get("services", {}).values():
 PY_INPUTS
   then die 'A saved service env_file or protected appsettings source is missing or unreadable. Restore that saved source before setup; no approval was requested.'; fi
   if ! "${compose[@]}" config --format json >"$output_dir/.effective-deployment.json" 2>>"$output_dir/preflight.log" ||
-      ! "${compose[@]}" config --no-env-resolution --no-interpolate >"$output_dir/.compose-source.yaml" 2>>"$output_dir/preflight.log"; then
+      ! "${compose[@]}" config --no-env-resolution --no-interpolate --no-path-resolution >"$output_dir/.compose-source.yaml" 2>>"$output_dir/preflight.log"; then
     die 'The saved deployment could not be fully resolved. Restore its Compose/env_file sources before setup; no approval was requested.'
   fi
   rm -f -- "$output_dir/.preflight-action"
   export NETRATEL_LAUNCHER_PROJECT=$project
   export NETRATEL_LAUNCHER_SELECTED_IMAGE=${selected_image:-}
+  export NETRATEL_LAUNCHER_MANAGER=$manager
   if ! python3 - "$output_dir" "$verify" "$manager" "${source_inputs[@]}" 2>>"$output_dir/preflight.log" <<'PY'
 import hashlib, json, os, pathlib, subprocess, sys
 root = pathlib.Path(sys.argv[1]); verify = sys.argv[2] == "true"
@@ -252,6 +510,11 @@ sys.excepthook = safe_failure
 paths = [pathlib.Path(p) for p in sys.argv[4:]]
 inputs = json.loads((root / ".compose-inputs.json").read_text())
 proposal = json.loads((root / ".effective-deployment.json").read_text())
+configured_manager = proposal.get("services", {}).get("mcp-http", {}).get("environment", {}).get("NETRATEL_SETUP_DEPLOYMENT_MANAGER")
+if configured_manager is not None:
+    configured_manager = "komodo" if configured_manager == "external-compose" else configured_manager
+    if configured_manager != os.environ["NETRATEL_LAUNCHER_MANAGER"]:
+        raise Prerequisite("deployment_manager_conflict: Configured ownership disagrees with the selected owner; repair the saved deployment metadata before setup")
 selected_image = os.environ.get("NETRATEL_LAUNCHER_SELECTED_IMAGE")
 if selected_image and proposal.get("services", {}).get("mcp-http", {}).get("image") != selected_image:
     raise Prerequisite("saved sources and selected serving image disagree; restore the saved deployment source before setup")
@@ -278,19 +541,58 @@ protected_defaults = {}
 prefixes = ("NetRatel", "M2M", "ASPNETCORE", "DOTNET", "WebGateway", "HttpHostSetup", "Authentication", "Integration", "NETRATEL_MCP", "NETRATEL_AUTHENTICATION")
 conditions = " ".join('(eq (printf "%.' + str(len(p)) + 's" $key) "' + p.lower() + '")' for p in prefixes)
 template = '{{if gt (len .Config.Env) 1024}}{"error":"environment_entry_limit"}{{else}}{{$separator := ""}}[{{range .Config.Env}}{{$key := lower (index (split . "=") 0)}}{{if or ' + conditions + ' (eq $key "apibaseurl")}}{{$separator}}{{json (printf "%.4097s" .)}}{{$separator = ","}}{{end}}{{end}}]{{end}}'
-def environment_records(payload, label):
+configuration_prefixes = ("netratel__", "m2m__", "m2mclients__", "webgateway__", "httphostsetup__", "authentication__", "integration__", "netratel_mcp_", "netratel_authentication_", "netratel_client_")
+configuration_names = {"netratel_keys_dir", "netratel_http_port", "apibaseurl", "dotnet_environment", "aspnetcore_environment", "aspnetcore_urls", "aspnetcore_http_ports"}
+def recognized(key):
+    normalized = key.replace(":", "__").casefold()
+    return normalized in configuration_names or normalized.startswith(configuration_prefixes)
+def identity(key):
+    return key.replace(":", "__").casefold() if recognized(key) else key
+def canonical(key, protected=False):
+    normalized = identity(key)
+    if normalized == "netratel_keys_dir": return "NetRatel_KEYS_DIR"
+    if normalized == "netratel_http_port": return "NetRatel_HTTP_PORT"
+    if recognized(key) and normalized.startswith(("netratel_mcp_", "netratel_authentication_", "netratel_client_", "dotnet_", "aspnetcore_")): return normalized.upper()
+    return key if protected or not recognized(key) else key.replace(":", "__")
+def safe_name(key):
+    return key if len(key) <= 128 and all(c.isascii() and (c.isalnum() or c in "_:") for c in key) else "[redacted setting name]"
+def effective_value(value):
+    if value is None or isinstance(value, str): return value
+    if isinstance(value, (bool, int, float)): return json.dumps(value, separators=(",", ":"))
+    raise Prerequisite("application setting must have a scalar value")
+def coalesce(entries, service, label, protected=False, allow_equal=True):
+    settings = {}; seen = {}
+    for index, (key, value) in enumerate(entries, 1):
+        normalized = identity(key)
+        if normalized in seen:
+            previous_key, previous_value, previous_index = seen[normalized]
+            if allow_equal and recognized(key) and effective_value(previous_value) == effective_value(value): continue
+            code = "environment_alias_conflict" if allow_equal else "protected_configuration_duplicate"
+            repair = "Make these entries exactly equal or remove the unintended alias." if allow_equal else "Remove the repeated property from this JSON provider; .NET requires unique configuration keys."
+            raise Prerequisite(code + ": service " + service + "; normalized key " + safe_name(normalized) + "; " +
+                safe_name(previous_key) + " at " + label + " entry " + str(previous_index) + " / " + safe_name(key) + " at " + label + " entry " + str(index) +
+                ". " + repair)
+        seen[normalized] = (key, value, index)
+        settings[canonical(key, protected)] = value
+    return settings
+def overlay(lower, higher):
+    # Duplicate detection is per provider. A later provider legitimately wins.
+    replacing = {identity(key) for key in higher}
+    for key in list(lower):
+        if identity(key) in replacing: del lower[key]
+    lower.update(higher)
+def environment_records(payload, service, label):
     if len(payload) > 262144: raise Prerequisite(label + " settings exceed the inspection bound")
     records = json.loads(payload)
     if not isinstance(records, list) or len(records) > 1024: raise Prerequisite(label + " settings exceed the inspection bound")
-    settings = {}; seen = set()
+    entries = []
     for record in records:
         if not isinstance(record, str): raise Prerequisite("ambiguous " + label + " settings")
         key, separator, value = record.partition("=")
-        normalized = key.replace(":", "__").casefold()
-        if not separator or not key or len(record) > 4096 or normalized in seen or any(ord(character) < 32 for character in key):
+        if not separator or not key or len(record) > 4096 or any(ord(character) < 32 for character in key):
             raise Prerequisite("ambiguous " + label + " settings")
-        seen.add(normalized); settings[key] = value
-    return settings
+        entries.append((key, value))
+    return coalesce(entries, service, label + " environment")
 for name in ("api", "mcp-http", "web"):
     image = proposal.get("services", {}).get(name, {}).get("image")
     if not image: continue
@@ -300,34 +602,46 @@ for name in ("api", "mcp-http", "web"):
     image_ids[name] = image_id
     result = subprocess.run(["docker", "image", "inspect", "--format", template, image], capture_output=True, timeout=20)
     if result.returncode: raise Prerequisite("required serving image is unavailable locally; pull the saved image before setup")
-    settings = environment_records(result.stdout, "image")
+    settings = environment_records(result.stdout, name, "image")
     image_defaults[name] = settings
+    compose_environment = coalesce(proposal["services"][name].get("environment", {}).items(), name, "Compose environment")
+    # Retain original spellings in this private resolved layer. The C# merge can
+    # then prove that differing unresolved expressions for those exact aliases
+    # resolved equally, without borrowing an image/protected-provider value.
     effective_environment = dict(settings)
-    effective_environment.update(proposal["services"][name].get("environment", {}))
-    folded_environment = {key.casefold(): value for key, value in effective_environment.items()}
+    overlay(effective_environment, compose_environment)
+    folded_environment = {identity(key): value for key, value in effective_environment.items()}
     deployment_environment = folded_environment.get("dotnet_environment") or folded_environment.get("aspnetcore_environment") or "Production"
     if not deployment_environment.replace("-", "").replace("_", "").isalnum() or len(deployment_environment) > 80: raise Prerequisite("invalid deployment environment")
     protected = {}
     configuration_hashes = {}
     def read_configuration(path):
         if path.stat().st_size > 262144: raise Prerequisite("protected configuration exceeds bound")
+        entries = []; replaced_arrays = []
+        class ObjectPairs(list): pass
         def flatten(value, prefix=""):
-            if isinstance(value, dict):
-                for key, child in value.items(): flatten(child, prefix + (":" if prefix else "") + key)
+            if isinstance(value, ObjectPairs):
+                for key, child in value: flatten(child, prefix + (":" if prefix else "") + key)
             elif isinstance(value, list):
                 if prefix.casefold() in {"netratel:mcp:http:requiredgroups", "netratel:mcp:http:requiredscopes", "netratel:mcp:http:allowedorigins"}:
                     # Serving HTTP options replace each of these arrays at the
                     # highest JSON provider, including an explicit empty list.
-                    for inherited in list(protected):
-                        if inherited.casefold() == prefix.casefold() or inherited.casefold().startswith(prefix.casefold() + ":"):
-                            del protected[inherited]
-                    if not value: protected[prefix] = ""
+                    replaced_arrays.append(prefix)
+                    if not value: entries.append((prefix, ""))
                 for index, child in enumerate(value): flatten(child, prefix + ":" + str(index))
-            elif prefix.casefold().startswith(("netratel:", "m2m:", "integration:", "authentication:", "webgateway:")) or prefix.casefold() == "apibaseurl":
-                protected[prefix] = value
+            elif recognized(prefix): entries.append((prefix, value))
         content = path.read_bytes()
         configuration_hashes[str(path)] = hashlib.sha256(content).hexdigest()
-        flatten(json.loads(content))
+        flatten(json.loads(content, object_pairs_hook=ObjectPairs))
+        # The serving .NET JSON provider rejects duplicate properties even when
+        # equal. Resolved snapshots may coalesce aliases; raw providers must be
+        # valid themselves before setup can approve their effective contents.
+        layer = coalesce(entries, name, "protected provider " + str(len(configuration_hashes)), protected=True, allow_equal=False)
+        for prefix in replaced_arrays:
+            normalized = identity(prefix)
+            for inherited in list(protected):
+                if identity(inherited) == normalized or identity(inherited).startswith(normalized + "__"): del protected[inherited]
+        overlay(protected, layer)
     # Inspect image JSON providers without starting its entrypoint or connecting
     # it to a network. Always remove the stopped inspection container.
     created = subprocess.run(["docker", "create", "--network", "none", "--entrypoint", "/bin/true", image], capture_output=True, timeout=20)
@@ -380,7 +694,9 @@ proposal["x-netratel-protected-configuration"] = protected_defaults
 old = root / ".approved-source-state.json"
 if verify and old.exists():
     saved = json.loads(old.read_text())
-    if state != saved["sources"]:
+    approved_overlay = {"path": str(root / "compose.http-host.yaml"), "hash": saved.get("exportedHash")}
+    release_transition = saved.get("manager") == "release-compose" and approved_overlay in state and [source for source in state if source != approved_overlay] == saved["sources"]
+    if state != saved["sources"] and not release_transition:
         # A manager may replace the one saved Compose file with exactly the
         # reviewed complete export. Arbitrary source changes remain blocked.
         exported = saved.get("exportedHash")
@@ -401,14 +717,22 @@ if verify:
         if result.returncode or len(containers) != 1: raise Prerequisite("a unique running " + name + " container is required before verification")
         result = subprocess.run(["docker", "inspect", "--format", template, containers[0]], capture_output=True, timeout=20)
         if result.returncode: raise Prerequisite("serving runtime unavailable")
-        runtime = environment_records(result.stdout, "serving runtime")
+        runtime = environment_records(result.stdout, name, "serving runtime")
         observed[name] = runtime
+        if name == "mcp-http":
+            runtime_owner = runtime.get("NETRATEL_SETUP_DEPLOYMENT_MANAGER")
+            runtime_owner = "komodo" if runtime_owner == "external-compose" else runtime_owner
+            label_owner = subprocess.run(["docker", "inspect", "--format", '{{index .Config.Labels "com.netratel.deployment.manager"}}', containers[0]], capture_output=True, timeout=15)
+            label = label_owner.stdout.decode().strip()
+            label = "komodo" if label == "external-compose" else label
+            if label_owner.returncode or any(owner not in (None, "", "<no value>", os.environ["NETRATEL_LAUNCHER_MANAGER"]) for owner in (runtime_owner, label)):
+                raise Prerequisite("deployment_manager_conflict: Serving deployment ownership disagrees with the reviewed owner; repair its metadata before verification")
         identifier = subprocess.run(["docker", "inspect", "--format", "{{.Image}}", containers[0]], capture_output=True, timeout=20)
         actual_image = identifier.stdout.decode().strip()
         if identifier.returncode or not actual_image.startswith("sha256:") or len(actual_image) != 71: raise Prerequisite("The applied serving image cannot be established; recreate the reviewed deployment before verification")
         observed_images[name] = actual_image
         protected = {}; configuration_hashes = {}
-        folded_runtime = {key.casefold(): value for key, value in runtime.items()}
+        folded_runtime = {identity(key): value for key, value in runtime.items()}
         actual_environment = folded_runtime.get("dotnet_environment") or folded_runtime.get("aspnetcore_environment") or "Production"
         if not actual_environment.replace("-", "").replace("_", "").isalnum() or len(actual_environment) > 80: raise Prerequisite("The serving deployment environment is invalid; restore its actual source before verification")
         # Read the serving container filesystem, including its mounted providers,
@@ -432,7 +756,7 @@ PY
   then
     if [[ -f "$output_dir/.preflight-action" ]]; then
       IFS= read -r prerequisite < "$output_dir/.preflight-action"
-      [[ ${#prerequisite} -le 512 && "$prerequisite" != *[[:cntrl:]]* ]] || prerequisite='deployment_prerequisite: Private source validation failed. Restore the saved source and retry.'
+      [[ ${#prerequisite} -le 2048 && "$prerequisite" != *[[:cntrl:]]* ]] || prerequisite='deployment_prerequisite: Private source validation failed. Restore the saved source and retry.'
       die "$prerequisite No host approval or temporary verifier was requested. Private diagnostics: $output_dir/preflight.log."
     fi
     die "deployment_prerequisite: Restore the saved source locations and local serving images, then rerun setup. Private diagnostics: $output_dir/preflight.log. No approval or verifier was requested."
@@ -467,12 +791,46 @@ for source in json.loads(pathlib.Path(sys.argv[1]).read_text())["sources"]:
     if hashlib.sha256(pathlib.Path(source["path"]).read_bytes()).hexdigest() != source["hash"]: sys.exit(1)
 PY
 }
+remember_approved_state() {
+  local digest=$1 generation_temp
+  generation_temp=$(mktemp "$output_dir/.owner-generation.XXXXXX")
+  if ! docker cp "$tool_name:/setup-output/.http-host.setup.json" "$generation_temp" >>"$output_dir/export.log" 2>&1; then
+    rm -f -- "$generation_temp"
+    die 'deployment_manager_state_invalid: The reviewed host generation could not be recorded. Keep the setup container and volume; no ownership decision was saved.'
+  fi
+  if ! python3 - "$source_state" "$output_dir/.approved-source-state.json" "$digest" "$manager" "$daemon_id" "$project" "$compose_dir" "$setup_volume" "$generation_temp" "${#compose_files[@]}" "${compose_files[@]}" "${env_files[@]}" <<'PY_REMEMBER'
+import hashlib, json, os, pathlib, stat, sys, tempfile
+source, destination, exported, manager, daemon, project, directory, volume, generation_path = sys.argv[1:10]
+count = int(sys.argv[10]); compose = sys.argv[11:11 + count]; env = sys.argv[11 + count:]
+generation = pathlib.Path(generation_path)
+if not stat.S_ISREG(generation.lstat().st_mode) or generation.stat().st_size > 262144: raise ValueError("invalid saved generation")
+metadata = json.loads(generation.read_text())
+if metadata.get("DeploymentManager") != manager: raise ValueError("saved generation ownership disagrees")
+state = json.loads(pathlib.Path(source).read_text())
+state.update({"manager": manager, "exportedHash": exported, "generationHash": hashlib.sha256(generation.read_bytes()).hexdigest(), "setupVolume": volume,
+              "binding": {"daemon": daemon, "project": project, "directory": directory, "composeFiles": compose, "envFiles": env}})
+target = pathlib.Path(destination)
+fd, temporary = tempfile.mkstemp(prefix=".approved-source-state-", dir=target.parent)
+try:
+    with os.fdopen(fd, "w") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        json.dump(state, stream); stream.flush(); os.fsync(stream.fileno())
+    os.replace(temporary, target)
+finally:
+    pathlib.Path(temporary).unlink(missing_ok=True)
+PY_REMEMBER
+  then
+    rm -f -- "$generation_temp"
+    die 'deployment_manager_state_invalid: The reviewed generation and owner disagree. Keep the setup container and volume; no ownership decision was saved.'
+  fi
+  rm -f -- "$generation_temp"
+}
 if [[ "$target" == http-host ]] && ! check_sources; then
   die 'The Compose/env_file sources changed while preparing the private snapshot. Retry with stable saved sources; no wizard was started.'
 fi
 run=("${compose[@]}" run --name "$tool_name" --no-deps --user 10001:10001)
 if [[ ! -t 0 || ! -t 1 ]]; then run+=(-T); fi
-host_apply=("${compose[@]}" -f "$output_dir/compose.http-host.yaml" up -d web api mcp-http)
+host_apply=("${docker_environment[@]}" "${compose[@]}" -f "$output_dir/compose.http-host.yaml" up -d web api mcp-http)
 printf -v host_apply_command '%q ' "${host_apply[@]}"
 apply_guard='import hashlib,json,pathlib,sys; state=json.loads(pathlib.Path(sys.argv[1]).read_text()); expected=state["sources"]+[{"path":sys.argv[2],"hash":state["exportedHash"]}]; valid=all(pathlib.Path(s["path"]).is_file() and pathlib.Path(s["path"]).stat().st_size<=262144 and hashlib.sha256(pathlib.Path(s["path"]).read_bytes()).hexdigest()==s["hash"] for s in expected); sys.exit(0 if valid else "approved sources changed: stop apply and rerun ordinary setup to review the current deployment")'
 printf -v apply_guard_command '%q ' python3 -c "$apply_guard" "$output_dir/.approved-source-state.json" "$output_dir/compose.http-host.yaml"
@@ -545,16 +903,12 @@ if [[ "$target" == http-host && "$manager" == komodo && "$verify" == false && ( 
     check_sources || die "The saved sources changed during export. Keep the approved generation and rerun ordinary setup; no file was published."
     chmod 600 -- "$export_temp"
     mv -f -- "$export_temp" "$output_dir/compose.komodo.yaml"
-    python3 - "$source_state" "$output_dir/.approved-source-state.json" "$actual_digest" <<'PY_STATE'
-import json, pathlib, sys
-state = json.loads(pathlib.Path(sys.argv[1]).read_text()); state["exportedHash"] = sys.argv[3]
-pathlib.Path(sys.argv[2]).write_text(json.dumps(state))
-PY_STATE
+    remember_approved_state "$actual_digest"
     printf '\nPrivate complete externally managed Compose file: %s/compose.komodo.yaml\n' "$output_dir"
     if [[ "$setup_status" == 2 ]]; then
       printf 'Open that file privately in the existing deployment manager. Review the complete replacement, then Save and Deploy the same stack.\n'
       printf 'Saved — apply pending. After reviewed manager apply, verification remains pending. After deployment run:\n'
-      resume=(bash "$(realpath -- "$0")" --project "$project" --project-directory "$compose_dir" --manager external-compose)
+      resume=("${docker_environment[@]}" bash "$(realpath -- "$0")" "${compose_selection[@]}" --project "$project" --project-directory "$compose_dir" --manager external-compose)
       for item in "${compose_files[@]}"; do resume+=(--compose-file "$item"); done
       for item in "${env_files[@]}"; do resume+=(--env-file "$item"); done
       resume+=(--verify)
@@ -587,11 +941,7 @@ if [[ "$target" == http-host && "$manager" == release-compose && "$verify" == fa
   check_sources || die "The saved sources changed during overlay export. Keep the approved generation and rerun ordinary setup."
   chmod 600 -- "$overlay_temp"
   mv -f -- "$overlay_temp" "$output_dir/compose.http-host.yaml"
-  python3 - "$source_state" "$output_dir/.approved-source-state.json" "$actual_digest" <<'PY_RELEASE_STATE'
-import json, pathlib, sys
-state = json.loads(pathlib.Path(sys.argv[1]).read_text()); state["exportedHash"] = sys.argv[3]
-pathlib.Path(sys.argv[2]).write_text(json.dumps(state))
-PY_RELEASE_STATE
+  remember_approved_state "$actual_digest"
   printf '\nSaved — apply pending. Review the private overlay and run on this Docker host:\n  %s\n' "$host_apply_command"
   printf 'After apply, resume bash ./setup-http-mcp.sh --verify with the same instance selection.\n'
 fi
