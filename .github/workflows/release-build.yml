@@ -17,6 +17,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  contracts:
+    name: Source and release contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - name: Validate release scripts and workflow contracts
+        run: python3 tools/ci/test-release-validation.py
+
   validate:
     name: Validate release source
     runs-on: ubuntu-latest
@@ -55,8 +67,6 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ripgrep
       - name: Validate PostgreSQL-only configuration
         run: bash tools/ci/check-postgresql-only.sh
-      - name: Validate release scripts and workflow contracts
-        run: python3 tools/ci/test-release-validation.py
       - name: Validate isolated OIDC launcher configuration
         run: bash tools/dev/test-oidc-evaluation.sh
       - name: Restore solution
@@ -78,7 +88,7 @@ jobs:
 
   package:
     name: Build distributable artifacts
-    needs: validate
+    needs: [validate, contracts]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -144,7 +154,7 @@ jobs:
 
   client-packages:
     name: Native Client (${{ matrix.runtime }})
-    needs: validate
+    needs: [validate, contracts]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
@@ -224,15 +234,17 @@ jobs:
   release-rehearsal:
     name: Release rehearsal
     if: always()
-    needs: [validate, package, client-packages]
+    needs: [validate, contracts, package, client-packages]
     runs-on: ubuntu-latest
     steps:
       - name: Require validated source and authenticated release artifacts
         env:
           VALIDATE_RESULT: ${{ needs.validate.result }}
+          CONTRACTS_RESULT: ${{ needs.contracts.result }}
           PACKAGE_RESULT: ${{ needs.package.result }}
           CLIENT_PACKAGES_RESULT: ${{ needs.client-packages.result }}
         run: |
           [[ "$VALIDATE_RESULT" == success ]]
+          [[ "$CONTRACTS_RESULT" == success ]]
           [[ "$PACKAGE_RESULT" == success ]]
           [[ "$CLIENT_PACKAGES_RESULT" == success ]]

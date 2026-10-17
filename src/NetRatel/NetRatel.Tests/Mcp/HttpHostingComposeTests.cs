@@ -52,6 +52,75 @@ public sealed class HttpHostingComposeTests : IDisposable
     private static string Merge(string source) => HttpHostingComposeDocument.Merge(source, Web, Api, Mcp, 10001,
         "existing-stack-host", "existing-stack-clients", 9224, "existing-stack");
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Export_coalesces_equal_recognized_aliases_with_entrypoint_spelling_and_preserves_other_linux_names(bool list)
+    {
+        var environment = list
+            ? "    environment:\n      - NETRATEL_KEYS_DIR=/synthetic/keys\n      - NetRatel_KEYS_DIR=/synthetic/keys\n      - NETRATEL_HTTP_PORT=9111\n      - NetRatel_HTTP_PORT=9111\n      - CUSTOM_PATH=upper\n      - custom_path=lower\n"
+            : "    environment:\n      NETRATEL_KEYS_DIR: /synthetic/keys\n      NetRatel_KEYS_DIR: /synthetic/keys\n      NETRATEL_HTTP_PORT: '9111'\n      NetRatel_HTTP_PORT: '9111'\n      CUSTOM_PATH: upper\n      custom_path: lower\n";
+        var merged = Merge(Compose.Replace("    labels:\n", environment + "    labels:\n", StringComparison.Ordinal));
+        Assert.Contains("NetRatel_KEYS_DIR:", merged);
+        Assert.DoesNotContain("NETRATEL_KEYS_DIR:", merged);
+        Assert.Contains("NetRatel_HTTP_PORT:", merged);
+        Assert.DoesNotContain("NETRATEL_HTTP_PORT:", merged);
+        Assert.Contains("CUSTOM_PATH:", merged);
+        Assert.Contains("custom_path:", merged);
+        Assert.Equal(merged, Merge(merged));
+    }
+
+    [Theory]
+    [InlineData("/different")]
+    [InlineData("\"\"")]
+    [InlineData("null")]
+    public void Export_alias_conflict_has_specific_redacted_entry_diagnostic(string second)
+    {
+        var source = Compose.Replace("    labels:\n", "    environment:\n      NETRATEL_KEYS_DIR: /synthetic/keys\n      NetRatel_KEYS_DIR: " + second + "\n    labels:\n", StringComparison.Ordinal);
+        var exception = Assert.Throws<AgentClientValidationException>(() => Merge(source));
+        Assert.StartsWith("environment_alias_conflict:", exception.Message);
+        Assert.Contains("web", exception.Message);
+        Assert.Contains("Compose environment entry 1", exception.Message);
+        Assert.Contains("Compose environment entry 2", exception.Message);
+        Assert.DoesNotContain("/synthetic/keys", exception.Message);
+        Assert.DoesNotContain("/different", exception.Message);
+    }
+
+    [Fact]
+    public void Equal_resolved_compose_aliases_can_preserve_the_first_distinct_interpolation_expression()
+    {
+        Directory.CreateDirectory(_directory);
+        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(_directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var path = Path.Combine(_directory, "effective.json");
+        var services = new Dictionary<string, object>
+        {
+            ["web"] = new { environment = new Dictionary<string, string> { ["NETRATEL_KEYS_DIR"] = "/synthetic/keys", ["NetRatel_KEYS_DIR"] = "/synthetic/keys" } },
+            ["api"] = new { }, ["mcp-http"] = new { }
+        };
+        ConfigurationFileStorage.WriteAtomic(path, JsonSerializer.Serialize(new { services }));
+        var effective = HttpHostingEffectiveDeployment.Load(path);
+        var source = Compose.Replace("    labels:\n", "    environment:\n      NETRATEL_KEYS_DIR: ${FIRST_KEYS}\n      NetRatel_KEYS_DIR: ${SECOND_KEYS}\n    labels:\n", StringComparison.Ordinal);
+        var merged = HttpHostingComposeDocument.Merge(source, Web, Api, Mcp, 10001,
+            "existing-stack-host", "existing-stack-clients", 9224, "existing-stack", effectiveDeployment: effective);
+        Assert.Contains("NetRatel_KEYS_DIR: ${FIRST_KEYS}", merged);
+        Assert.DoesNotContain("SECOND_KEYS", merged);
+        Assert.StartsWith("environment_alias_conflict:", Assert.Throws<AgentClientValidationException>(() => Merge(source)).Message);
+
+        // An image default with a matching value cannot prove an absent Compose
+        // alias. Evidence must contain both exact source spellings in that layer.
+        services["web"] = new { environment = new Dictionary<string, string> { ["NETRATEL_KEYS_DIR"] = "/synthetic/keys" } };
+        ConfigurationFileStorage.WriteAtomic(path, JsonSerializer.Serialize(new Dictionary<string, object>
+        {
+            ["services"] = services,
+            ["x-netratel-image-environment"] = new { web = new Dictionary<string, string> { ["NetRatel_KEYS_DIR"] = "/synthetic/keys" } },
+            ["x-netratel-protected-configuration"] = new { web = new Dictionary<string, string> { ["NetRatel_KEYS_DIR"] = "/synthetic/keys" } }
+        }), replace: true);
+        var incomplete = HttpHostingEffectiveDeployment.Load(path);
+        Assert.StartsWith("environment_alias_conflict:", Assert.Throws<AgentClientValidationException>(() =>
+            HttpHostingComposeDocument.Merge(source, Web, Api, Mcp, 10001,
+                "existing-stack-host", "existing-stack-clients", 9224, "existing-stack", effectiveDeployment: incomplete)).Message);
+    }
+
     [Fact]
     public void Komodo_import_preserves_complete_deployment_and_is_idempotent_after_editor_save()
     {
@@ -172,7 +241,6 @@ public sealed class HttpHostingComposeTests : IDisposable
     [InlineData("services:\n  web: &service {}\n  api: *service\n  mcp-http: {}")]
     [InlineData("include: other.yaml\nservices:\n  web: {}\n  api: {}\n  mcp-http: {}")]
     [InlineData("services:\n  web: {extends: other}\n  api: {}\n  mcp-http: {}")]
-    [InlineData("services:\n  web: {}\n  api: {}\n  mcp-http:\n    environment: [OPTION=first, option=second]")]
     [InlineData("services:\n  web: {}\n  api: {}\n  mcp-http:\n    volumes: [wrong:/run/netratel-http-host]")]
     public void Unsupported_or_conflicting_sources_fail_before_any_mutation(string source)
     {

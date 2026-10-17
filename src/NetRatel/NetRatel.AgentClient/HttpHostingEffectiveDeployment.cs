@@ -17,6 +17,7 @@ public sealed class HttpHostingEffectiveDeployment
     private readonly Dictionary<string, Dictionary<string, string?>> _services = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, string>> _sources = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, string?>> _protected = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<string, string?>> _composed = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<(string Type, string Source, string Target)>> _mounts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _volumeNames = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _imageIds = new(StringComparer.Ordinal);
@@ -45,17 +46,19 @@ public sealed class HttpHostingEffectiveDeployment
             foreach (var name in new[] { "web", "api", "mcp-http" })
             {
                 if (!services.TryGetProperty(name, out var service)) throw new JsonException();
-                var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-                var sources = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var values = new Dictionary<string, string?>(HttpHostingEnvironmentNames.Comparer);
+                var sources = new Dictionary<string, string>(HttpHostingEnvironmentNames.Comparer);
                 if (root.TryGetProperty("x-netratel-image-environment", out var images) && images.TryGetProperty(name, out var image))
-                    ReadValues(image, values, sources, "selected image default");
+                    ReadValues(image, values, sources, name, "selected image default");
+                var composed = new Dictionary<string, string?>(StringComparer.Ordinal);
                 if (service.TryGetProperty("environment", out var environment))
-                    ReadValues(environment, values, sources, "resolved Compose environment (inline entries mask matching env_file indices)", unsetRemoves: true);
+                    ReadValues(environment, values, sources, name, "resolved Compose environment (inline entries mask matching env_file indices)", unsetRemoves: true, originals: composed);
+                result._composed[name] = composed;
                 result._services[name] = values;
                 result._sources[name] = sources;
-                var protectedValues = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+                var protectedValues = new Dictionary<string, string?>(HttpHostingEnvironmentNames.Comparer);
                 if (root.TryGetProperty("x-netratel-protected-configuration", out var protectedRoot) && protectedRoot.TryGetProperty(name, out var protectedSource))
-                    ReadValues(protectedSource, protectedValues, new(StringComparer.OrdinalIgnoreCase), "protected application configuration");
+                    ReadValues(protectedSource, protectedValues, new(HttpHostingEnvironmentNames.Comparer), name, "protected application configuration");
                 result._protected[name] = protectedValues;
                 result._mounts[name] = [];
                 // A mounted configuration file is a real provider. Do not approve an
@@ -80,14 +83,37 @@ public sealed class HttpHostingEffectiveDeployment
         }
     }
 
-    private static void ReadValues(JsonElement input, Dictionary<string, string?> values, Dictionary<string, string> sources, string source, bool unsetRemoves = false)
+    internal bool EqualComposeAliases(string service, string first, string second)
+        => HttpHostingEnvironmentNames.Recognized(first) && HttpHostingEnvironmentNames.Comparer.Equals(first, second) &&
+           _composed[service].TryGetValue(first, out var left) && _composed[service].TryGetValue(second, out var right) &&
+           string.Equals(left, right, StringComparison.Ordinal);
+
+    private static void ReadValues(JsonElement input, Dictionary<string, string?> values, Dictionary<string, string> sources, string service, string source, bool unsetRemoves = false,
+        Dictionary<string, string?>? originals = null)
     {
         if (input.ValueKind != JsonValueKind.Object) throw new JsonException();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seen = new Dictionary<string, (string Name, string? Value, int Index)>(HttpHostingEnvironmentNames.Comparer);
+        var index = 0;
         foreach (var entry in input.EnumerateObject())
         {
-            var key = Normalize(entry.Name);
-            if (!seen.Add(key)) throw new JsonException();
+            index++;
+            var key = HttpHostingEnvironmentNames.Canonical(entry.Name);
+            var selected = entry.Value.ValueKind switch
+            {
+                JsonValueKind.String => entry.Value.GetString(),
+                JsonValueKind.Null => null,
+                JsonValueKind.True => "true",
+                JsonValueKind.False => "false",
+                JsonValueKind.Number => entry.Value.GetRawText(),
+                _ => throw new JsonException()
+            };
+            if (originals is not null) originals[entry.Name] = selected;
+            if (seen.TryGetValue(key, out var previous))
+            {
+                if (HttpHostingEnvironmentNames.Recognized(key) && string.Equals(previous.Value, selected, StringComparison.Ordinal)) continue;
+                throw HttpHostingEnvironmentNames.Conflict(service, key, previous.Name, entry.Name, source, previous.Index, index);
+            }
+            seen.Add(key, (entry.Name, selected, index));
             if (unsetRemoves && entry.Value.ValueKind == JsonValueKind.Null)
             {
                 // Compose's unset entry removes the image variable. With no
@@ -97,15 +123,7 @@ public sealed class HttpHostingEffectiveDeployment
                 sources.Remove(key);
                 continue;
             }
-            values[key] = entry.Value.ValueKind switch
-            {
-                JsonValueKind.String => entry.Value.GetString(),
-                JsonValueKind.Null => null,
-                JsonValueKind.True => "true",
-                JsonValueKind.False => "false",
-                JsonValueKind.Number => entry.Value.GetRawText(),
-                _ => throw new JsonException()
-            };
+            values[key] = selected;
             sources[key] = source;
         }
     }
@@ -276,7 +294,7 @@ public sealed class HttpHostingEffectiveDeployment
 
     private Dictionary<string, string?> EffectiveValues(string service)
     {
-        var values = new Dictionary<string, string?>(_protected[service], StringComparer.OrdinalIgnoreCase);
+        var values = new Dictionary<string, string?>(_protected[service], HttpHostingEnvironmentNames.Comparer);
         foreach (var pair in _services[service]) values[pair.Key] = pair.Value;
         return values;
     }
@@ -290,7 +308,7 @@ public sealed class HttpHostingEffectiveDeployment
             return values;
         }
         var mcpValues = Proposed("mcp-http", mcp);
-        var servingEnvironment = new Dictionary<string, string?>(_services["mcp-http"], StringComparer.OrdinalIgnoreCase);
+        var servingEnvironment = new Dictionary<string, string?>(_services["mcp-http"], HttpHostingEnvironmentNames.Comparer);
         foreach (var pair in mcp) servingEnvironment[Normalize(pair.Key)] = pair.Value;
         ValidateServingOptions(servingEnvironment, _protected["mcp-http"]);
         var apiValues = Proposed("api", api);
@@ -354,15 +372,15 @@ public sealed class HttpHostingEffectiveDeployment
             var actualProtected = new Dictionary<string, Dictionary<string, string?>>(StringComparer.Ordinal);
             foreach (var service in new[] { "web", "api", "mcp-http" })
             {
-                actualEnvironment[service] = new(StringComparer.OrdinalIgnoreCase);
-                actualProtected[service] = new(StringComparer.OrdinalIgnoreCase);
+                actualEnvironment[service] = new(HttpHostingEnvironmentNames.Comparer);
+                actualProtected[service] = new(HttpHostingEnvironmentNames.Comparer);
                 if (runtime is not null)
                 {
                     if (!runtime.RootElement.TryGetProperty(service, out var serviceEnvironment)) throw new JsonException();
-                    ReadValues(serviceEnvironment, actualEnvironment[service], new(StringComparer.OrdinalIgnoreCase), "serving container environment");
+                    ReadValues(serviceEnvironment, actualEnvironment[service], new(HttpHostingEnvironmentNames.Comparer), service, "serving container environment");
                     if (!runtime.RootElement.TryGetProperty("x-netratel-protected-configuration", out var providers) || !providers.TryGetProperty(service, out var provider))
                         throw Problem("runtime_provider_unresolved", service + " protected configuration", "serving provider snapshot unavailable", "serving container", "Rerun the canonical launcher with --verify so it observes actual serving files before consent.");
-                    ReadValues(provider, actualProtected[service], new(StringComparer.OrdinalIgnoreCase), "serving protected configuration");
+                    ReadValues(provider, actualProtected[service], new(HttpHostingEnvironmentNames.Comparer), service, "serving protected configuration");
                 }
             }
             if (runtime is null && (proposal.GetProperty("RequiresProtectedRuntimeSnapshot").GetBoolean() || proposal.GetProperty("ExpectedImages").EnumerateObject().Any()))
@@ -425,7 +443,7 @@ public sealed class HttpHostingEffectiveDeployment
             foreach (var pair in service.Values) values[Normalize(pair.Key)] = pair.Value;
             expected[service.Name] = values.Where(pair => RelevantSetting(pair.Key) && !Sensitive(pair.Key)).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
         }
-        var serving = new Dictionary<string, string?>(_services["mcp-http"], StringComparer.OrdinalIgnoreCase);
+        var serving = new Dictionary<string, string?>(_services["mcp-http"], HttpHostingEnvironmentNames.Comparer);
         foreach (var pair in mcp) serving[Normalize(pair.Key)] = pair.Value;
         return JsonSerializer.Serialize(new { Instance = request.Instance, request.LocalCredentialMode, PublicResourceUri = request.PublicResourceUri ?? request.PublicOrigin.TrimEnd('/') + "/mcp", request.ApiBaseUrl,
             ApiEnvironment = Read("api", "DOTNET_ENVIRONMENT") ?? Read("api", "ASPNETCORE_ENVIRONMENT") ?? "Production",
@@ -438,7 +456,7 @@ public sealed class HttpHostingEffectiveDeployment
         .Any(prefix => key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) || key.Equals("ApiBaseUrl", StringComparison.OrdinalIgnoreCase) || key.Equals("DOTNET_ENVIRONMENT", StringComparison.OrdinalIgnoreCase) || key.Equals("ASPNETCORE_ENVIRONMENT", StringComparison.OrdinalIgnoreCase) || key.Equals("ASPNETCORE_URLS", StringComparison.OrdinalIgnoreCase);
 
     private static int ParseIndex(string key) => int.TryParse(key[(key.LastIndexOf("__", StringComparison.Ordinal) + 2)..], out var index) && index is >= 0 and < 128 ? index : -1;
-    private static string Normalize(string key) => key.Replace(":", "__", StringComparison.Ordinal);
+    private static string Normalize(string key) => HttpHostingEnvironmentNames.Normalize(key);
     private static string Canonical(string key) => key.Replace("__", ":", StringComparison.Ordinal);
     private static bool Sensitive(string key) => key.Contains("Secret", StringComparison.OrdinalIgnoreCase) || key.Contains("Password", StringComparison.OrdinalIgnoreCase) || key.Contains("SharedKey", StringComparison.OrdinalIgnoreCase) || key.Contains("Credential", StringComparison.OrdinalIgnoreCase) && !key.EndsWith("LocalCredentialMode", StringComparison.OrdinalIgnoreCase);
     private static string Display(string key, string value) => Sensitive(key) ? "[protected value/reference retained]" : value.Length == 0 ? "[explicit empty]" : value;

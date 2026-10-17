@@ -12,7 +12,8 @@ public sealed class HttpHostingEffectiveDeploymentTests : IDisposable
     private HttpHostingSetupRequest Request => new(_directory, "https://web.example.invalid", "https://api.example.invalid");
 
     private HttpHostingEffectiveDeployment Source(Dictionary<string, string?>? api = null, Dictionary<string, string?>? mcp = null,
-        Dictionary<string, string?>? image = null, Dictionary<string, string?>? protectedConfiguration = null, string? imageId = null)
+        Dictionary<string, string?>? image = null, Dictionary<string, string?>? protectedConfiguration = null, string? imageId = null,
+        Dictionary<string, string?>? web = null)
     {
         Directory.CreateDirectory(_directory);
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(_directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
@@ -21,7 +22,7 @@ public sealed class HttpHostingEffectiveDeploymentTests : IDisposable
         {
             ["services"] = new Dictionary<string, object>
             {
-                ["web"] = new { environment = new Dictionary<string, string?>() },
+                ["web"] = new { environment = web ?? new Dictionary<string, string?>() },
                 ["api"] = new { environment = api ?? [] },
                 ["mcp-http"] = new { environment = mcp ?? [] }
             },
@@ -47,6 +48,68 @@ public sealed class HttpHostingEffectiveDeploymentTests : IDisposable
         ["Integration__HttpMcp__AuthenticationMode"] = local ? "LocalCredential" : "Oidc",
         ["NetRatel__Mcp__Delegation__ServicePrincipal"] = "netratel-mcp-http"
     };
+
+    [Fact]
+    public void Equal_recognized_case_aliases_load_without_discarding_provider_precedence()
+    {
+        var source = Source(web: new() { ["NETRATEL_KEYS_DIR"] = "/synthetic/keys", ["NetRatel_KEYS_DIR"] = "/synthetic/keys" },
+            mcp: new() { ["NetRatel__Mcp__Http__Instance"] = "prod", ["netratel:mcp:http:instance"] = "prod" },
+            image: new() { ["NETRATEL_KEYS_DIR"] = "/image/keys", ["NetRatel_KEYS_DIR"] = "/image/keys" },
+            protectedConfiguration: new() { ["NetRatel:Mcp:Http:Instance"] = "dev", ["netratel:mcp:http:instance"] = "dev" });
+        Assert.Equal("/synthetic/keys", source.Read("web", "NetRatel_KEYS_DIR"));
+        Assert.Equal("prod", source.ReadServing("mcp-http", "NetRatel:Mcp:Http:Instance"));
+    }
+
+    [Theory]
+    [InlineData("/other/keys")]
+    [InlineData("/synthetic/keys ")]
+    [InlineData("")]
+    [InlineData(null)]
+    public void Conflicting_aliases_preserve_specific_redacted_diagnostic_through_outer_loader(string? second)
+    {
+        var exception = Assert.Throws<AgentClientValidationException>(() => Source(web: new()
+        {
+            ["NETRATEL_KEYS_DIR"] = "/synthetic/keys", ["NetRatel_KEYS_DIR"] = second
+        }));
+        Assert.StartsWith("environment_alias_conflict:", exception.Message);
+        Assert.Contains("web", exception.Message);
+        Assert.Contains("netratel_keys_dir", exception.Message);
+        Assert.Contains("NETRATEL_KEYS_DIR", exception.Message);
+        Assert.Contains("NetRatel_KEYS_DIR", exception.Message);
+        Assert.Contains("entry 1", exception.Message);
+        Assert.Contains("entry 2", exception.Message);
+        Assert.Contains("remove the unintended alias", exception.Message);
+        Assert.DoesNotContain("/synthetic", exception.Message);
+        Assert.DoesNotContain("/other", exception.Message);
+        Assert.DoesNotContain(_directory, exception.Message);
+    }
+
+    [Fact]
+    public void Arbitrary_linux_variables_keep_case_sensitive_identity()
+    {
+        var source = Source(web: new() { ["CUSTOM_PATH"] = "/upper", ["custom_path"] = "/lower" });
+        Assert.Equal("/upper", source.Read("web", "CUSTOM_PATH"));
+        Assert.Equal("/lower", source.Read("web", "custom_path"));
+        Assert.Null(source.Read("web", "Custom_Path"));
+    }
+
+    [Fact]
+    public void M2m_client_aliases_preserve_provider_precedence_and_redact_conflicting_credentials()
+    {
+        const string secret = "synthetic-m2m-credential-do-not-print";
+        var source = Source(mcp: new() { ["M2MClients__worker__Secret"] = secret, ["m2mclients__worker__Secret"] = secret },
+            protectedConfiguration: new() { ["M2MClients:worker:Secret"] = "synthetic-lower-secret" });
+        Assert.Equal(secret, source.Read("mcp-http", "M2MCLIENTS:WORKER:SECRET"));
+        var exception = Assert.Throws<AgentClientValidationException>(() => Source(mcp: new()
+        {
+            ["M2MClients__worker__Secret"] = secret, ["m2mclients__worker__Secret"] = secret + "-different"
+        }));
+        Assert.StartsWith("environment_alias_conflict:", exception.Message);
+        Assert.Contains("m2mclients__worker__secret", exception.Message);
+        Assert.Contains("entry 1", exception.Message);
+        Assert.Contains("entry 2", exception.Message);
+        Assert.DoesNotContain(secret, exception.Message);
+    }
 
     [Fact]
     public void Caller_repair_preserves_effective_occupied_indices_and_appends_at_an_available_index()

@@ -15,9 +15,10 @@ namespace NetRatel.Web.PlaywrightTests;
 /// <summary>Disposable in-memory Jobs API for the optional operator workspace browser review.</summary>
 internal static class JobsWorkspaceFixture
 {
-    public static void Configure(IServiceCollection services, int parameterCount = 1, bool mixed = false, JobsRunFixtureStream? stream = null)
+    public static void Configure(IServiceCollection services, int parameterCount = 1, bool mixed = false, JobsRunFixtureStream? stream = null,
+        IReadOnlyList<JobParamDto>? parameters = null, Action<RunJobRequest>? runAccepted = null)
     {
-        services.AddSingleton<IJobApiClient>(new JobApiClient(new JobsTransport(parameterCount, mixed)));
+        services.AddSingleton<IJobApiClient>(new JobApiClient(new JobsTransport(parameterCount, mixed, parameters, runAccepted)));
         services.AddSingleton<ITenantApiService, JobsTenants>();
         services.AddSingleton<IJobRunStreamService>(stream ?? new JobsRunFixtureStream());
     }
@@ -33,7 +34,7 @@ internal static class JobsWorkspaceFixture
         public Task DeleteTenantAsync(int tenantId, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
-    private sealed class JobsTransport(int parameterCount, bool mixed) : HttpMessageHandler, IHttpClientFactory
+    private sealed class JobsTransport(int parameterCount, bool mixed, IReadOnlyList<JobParamDto>? parameters, Action<RunJobRequest>? runAccepted) : HttpMessageHandler, IHttpClientFactory
     {
         private readonly Guid _agentId = Guid.Parse("4886c6c0-e486-4f59-a006-40e4043a4a46");
         private JobDto _job = new(42, "Nightly backup", "/Visual fixture/Backups/", "Back up the development database", 3, "gateway-agent-01", 0, 0,
@@ -57,6 +58,7 @@ internal static class JobsWorkspaceFixture
                 new(4, 42, "Settings", "json", true, "{\"enabled\":false}", "JSON is sent using the existing text representation", null),
                 new(5, 42, "Mode", "select", true, "safe", "Choose a value", "[\"safe\",\"preview\"]"),
                 new(6, 42, "Token", "secret", false, null, "Masked secret entry", null)];
+            if (parameters is not null) _parameters = parameters.ToList();
         }
         public HttpClient CreateClient(string name) => new(this, disposeHandler: false) { BaseAddress = new("https://jobs-fixture.invalid") };
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -79,6 +81,7 @@ internal static class JobsWorkspaceFixture
             if (request.Method == HttpMethod.Post && path == "/api/v1/jobruns/start/42")
             {
                 var body = (await request.Content!.ReadFromJsonAsync<RunJobRequest>(cancellationToken))!;
+                runAccepted?.Invoke(body);
                 _run = _run with { StartedBy = body.StartedBy, InputsJson = body.InputsJson, Environment = body.Environment };
                 return Ok(_run);
             }

@@ -5,10 +5,10 @@
 
 <MudDialog Style="width:min(680px,calc(100vw - 32px))" ContentStyle="max-height:calc(100dvh - 180px);overflow-y:auto">
     <DialogContent>
-        <div class="param-editor">
+        <form class="param-editor" id="@_formId" autocomplete="off" aria-label="Parameter definition" @onsubmit:preventDefault="true">
             <div class="param-editor-row">
-                <MudTextField @bind-Value="_name" Label="Name" Required="true" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(_validated && string.IsNullOrWhiteSpace(_name))" ErrorText="Name is required." Disabled="_saving" />
-                <MudSelect T="string" Label="Type" @bind-Value="_type" Required="true" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_saving">
+                <MudTextField @bind-Value="_name" Label="Name" InputId="@FieldId("parameter-name")" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId("parameter-name"))" Required="true" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(_validated && string.IsNullOrWhiteSpace(_name))" ErrorText="Name is required." Disabled="_saving" />
+                <MudSelect T="string" Label="Type" @bind-Value="_type" InputId="@FieldId("parameter-type")" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId("parameter-type"))" Required="true" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_saving">
                     @foreach (var option in _typeOptions)
                     { <MudSelectItem T="string" Value="@option.Key">@option.Value</MudSelectItem> }
                 </MudSelect>
@@ -16,35 +16,35 @@
             <MudSwitch T="bool" @bind-Value="_required" Color="Color.Primary" Disabled="_saving">Required at run time</MudSwitch>
             @if (_type == "bool")
             {
-                <MudSelect T="string" @bind-Value="_default" Label="Default value" Clearable="true" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(DefaultError is not null)" ErrorText="@DefaultError" Disabled="_saving">
+                <MudSelect T="string" @bind-Value="_default" Label="Default value" InputId="@FieldId("default-value")" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId("default-value"))" Clearable="true" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(DefaultError is not null)" ErrorText="@DefaultError" Disabled="_saving">
                     <MudSelectItem T="string" Value="@("true")">True</MudSelectItem>
                     <MudSelectItem T="string" Value="@("false")">False</MudSelectItem>
                 </MudSelect>
             }
             else if (_type == "select" && JobParameterInput.SelectOptions(_optionsJson).Count > 0)
             {
-                <MudSelect T="string" @bind-Value="_default" Label="Default value" Clearable="true" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(DefaultError is not null)" ErrorText="@DefaultError" Disabled="_saving">
+                <MudSelect T="string" @bind-Value="_default" Label="Default value" InputId="@FieldId("default-value")" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId("default-value"))" Clearable="true" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(DefaultError is not null)" ErrorText="@DefaultError" Disabled="_saving">
                     @foreach (var option in JobParameterInput.SelectOptions(_optionsJson))
                     { <MudSelectItem T="string" Value="@option">@option</MudSelectItem> }
                 </MudSelect>
             }
             else
             {
-                <MudTextField @bind-Value="_default" Label="Default value" InputType="@(_type == "secret" ? InputType.Password : InputType.Text)" InputMode="@(_type == "int" ? InputMode.numeric : InputMode.text)" Lines="@(_type == "json" ? 3 : 1)" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(DefaultError is not null)" ErrorText="@DefaultError" Disabled="_saving" HelperText="Optional; used when no value is supplied." />
+                <MudTextField @bind-Value="_default" Label="Default value" InputId="@FieldId("default-value")" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId("default-value"), _type == "secret")" InputType="@(_type == "secret" ? InputType.Password : InputType.Text)" InputMode="@(_type == "int" ? InputMode.numeric : InputMode.text)" Lines="@(_type == "json" ? 3 : 1)" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(DefaultError is not null)" ErrorText="@DefaultError" Disabled="_saving" HelperText="Optional; used when no value is supplied." />
             }
-            <MudTextField @bind-Value="_description" Label="Description" Lines="2" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_saving" />
+            <MudTextField @bind-Value="_description" Label="Description" InputId="@FieldId("description")" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId("description"))" Lines="2" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_saving" />
             @if (_type == "select")
             {
-                <MudTextField T="string" Value="@_optionsText" ValueChanged="SetOptionsText" Label="Options" Lines="3" Variant="Variant.Outlined" Margin="Margin.Dense" HelperText="One option per line. Values are saved as a JSON string array." Error="@(_validated && OptionsError is not null)" ErrorText="@OptionsError" Disabled="_saving" />
+                <MudTextField T="string" Value="@_optionsText" ValueChanged="SetOptionsText" Label="Options" InputId="@FieldId("options")" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId("options"))" Lines="3" Variant="Variant.Outlined" Margin="Margin.Dense" HelperText="One option per line. Values are saved as a JSON string array." Error="@(_validated && OptionsError is not null)" ErrorText="@OptionsError" Disabled="_saving" />
             }
             <MudCheckBox T="bool" @bind-Value="_advanced" Label="Advanced options JSON" Dense="true" Disabled="_saving" />
             @if (_advanced)
             {
-                <MudTextField T="string" Value="@_optionsJson" ValueChanged="SetOptionsJson" Label="Options (JSON)" Lines="3" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(_validated && OptionsError is not null)" ErrorText="@OptionsError" Disabled="_saving" />
+                <MudTextField T="string" Value="@_optionsJson" ValueChanged="SetOptionsJson" Label="Options (JSON)" InputId="@FieldId("options-json")" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId("options-json"))" Lines="3" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(_validated && OptionsError is not null)" ErrorText="@OptionsError" Disabled="_saving" />
             }
             <MudText Typo="Typo.caption" Color="Color.Secondary">Saving updates this parameter immediately. Closing the job editor keeps saved parameters.</MudText>
             @if (_saveError is not null) { <MudText Typo="Typo.body2" Color="Color.Error" role="alert">@_saveError</MudText> }
-        </div>
+        </form>
     </DialogContent>
     <DialogActions>
         <MudButton OnClick="Cancel" Disabled="_saving">Cancel</MudButton>
@@ -56,6 +56,8 @@
     [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
     [Parameter] public ulong JobId { get; set; }
     [Parameter] public JobParamDto? ExistingParam { get; set; }
+    private readonly string _formId = $"job-operation-{Guid.NewGuid():N}";
+    private string FieldId(string field) => $"{_formId}-{field}";
     private readonly Dictionary<string, string> _typeOptions = new()
     { ["string"] = "Text", ["int"] = "Whole number", ["bool"] = "True / false", ["json"] = "JSON", ["select"] = "Choice", ["secret"] = "Secret" };
     private string _name = string.Empty, _type = "string", _optionsText = string.Empty;

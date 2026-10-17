@@ -509,7 +509,8 @@ public sealed class NetRatelHttpHostingSetupService
                 preserveMcp: request.WebMcpBackendUrl == "http://mcp-http:9224/",
                 observedApi: effectiveDeployment?.ReadServing("web", "ApiBaseUrl") ?? (webEnvironmentObservedNow ? Environment.GetEnvironmentVariable("NETRATEL_SETUP_EXISTING_WEB_API_BACKEND_URL") : request.ExistingWebApiBackendUrl),
                 observedMcp: effectiveDeployment?.ReadServing("web", "WebGateway__Mcp__BackendUrl") ?? (webEnvironmentObservedNow ? Environment.GetEnvironmentVariable("NETRATEL_SETUP_EXISTING_WEB_MCP_BACKEND_URL") : request.ExistingWebMcpBackendUrl),
-                environmentObserved: effectiveDeployment is not null || webEnvironmentObservedNow || request.ExistingWebEnvironmentObserved);
+                environmentObserved: effectiveDeployment is not null || webEnvironmentObservedNow || request.ExistingWebEnvironmentObserved,
+                effectiveDeployment: effectiveDeployment);
             web = selectedWebBackends.Changes;
             // Topology is deployment-owned. Enabling this route must not reset a
             // working SplitHost or LocalProcess Web/API arrangement to Compose.
@@ -532,7 +533,7 @@ public sealed class NetRatelHttpHostingSetupService
             }
             effectiveDeployment!.Prepare(effectiveRequest, web, apiSettings, mcp);
             komodoCompose = HttpHostingComposeDocument.Merge(source, web, apiSettings, mcp, HttpHostingStorage.RuntimeGroup,
-                HttpHostingStorage.VolumeName, mcp["NETRATEL_CLIENT_VOLUME"], request.ListeningPort, project, effectiveDeployment.ResolvedVolumeNames);
+                HttpHostingStorage.VolumeName, mcp["NETRATEL_CLIENT_VOLUME"], request.ListeningPort, project, effectiveDeployment.ResolvedVolumeNames, effectiveDeployment);
             reviewedInputs.Add(sourcePath);
         }
         else if (effectiveDeployment is not null) effectiveDeployment.Prepare(effectiveRequest, web, apiSettings, mcp);

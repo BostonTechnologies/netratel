@@ -26,7 +26,7 @@ When starting a new tooling container through the image dispatcher, `setup --tar
 
 ## Connect the server once
 
-Use matching verified API, Web and HTTP MCP images. Have your public HTTPS Web URL, an instance-administrator login, and access to the saved deployment through its existing manager. The **Linux Docker host** needs Docker Compose, Bash, Python 3 and GNU coreutils. Keep the existing database, ingress, volumes and protected settings.
+Use matching verified API, Web and HTTP MCP images. Have your public HTTPS Web URL, an instance-administrator login, and access to the saved deployment through its existing manager. The **Linux Docker host** needs Docker Compose with `config --no-env-resolution` (upstream v2.35.0 or later), Bash, Python 3 and GNU coreutils. The launcher checks the selected plugin before setup; [verified isolated Compose remediation](hosting-reference.md#compose-capability-prerequisite) leaves the host plugin unchanged. Keep the existing database, ingress, volumes and protected settings.
 
 1. **Open a terminal on the Docker host**, not inside the MCP container. List the HTTP MCP containers:
 
