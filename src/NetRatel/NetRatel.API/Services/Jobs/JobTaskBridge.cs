@@ -116,9 +116,9 @@ public sealed class JobTaskBridge
                 return payload;
             }
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
-            _logger.LogDebug(ex, "Failed to deserialize shell payload json.");
+            _logger.LogDebug("Failed to deserialize shell payload json.");
         }
 
         return null;
@@ -142,9 +142,9 @@ public sealed class JobTaskBridge
                 return payload;
             }
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
-            _logger.LogDebug(ex, "Failed to deserialize library payload json into ExecLibraryScriptPayload.");
+            _logger.LogDebug("Failed to deserialize library payload json into ExecLibraryScriptPayload.");
         }
 
         try
@@ -159,9 +159,9 @@ public sealed class JobTaskBridge
                 }
             }
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
-            _logger.LogDebug(ex, "Failed to deserialize library payload json into parameter map.");
+            _logger.LogDebug("Failed to deserialize library payload json into parameter map.");
         }
 
         return null;
@@ -249,10 +249,10 @@ public sealed class JobTaskBridge
         invocation = new TaskInvocation(TaskKinds.ExecShellCommand, JsonSerializer.Serialize(payload), CommandLabel: $"{payload.Preferred} command");
 
         _logger.LogDebug(
-            "JobRun {RunId} step {Ordinal}: ExecShellCommand payload {@Payload}",
+            "JobRun {RunId} step {Ordinal}: shell dispatch prepared with executor {Executor}.",
             run.Id,
             step.Ordinal,
-            payload);
+            payload.Preferred);
 
         return true;
     }
@@ -356,10 +356,11 @@ public sealed class JobTaskBridge
         var invocation = new TaskInvocation(TaskKinds.ExecLibraryScript, JsonSerializer.Serialize(payload), execution.Script.Name, payload.ScriptType.ToString(), execution.Script.Name, ComputeContentHash(execution.Script.Content));
 
         _logger.LogDebug(
-            "JobRun {RunId} step {Ordinal}: ExecLibraryScript payload {@Payload}",
+            "JobRun {RunId} step {Ordinal}: library dispatch prepared for script {ScriptId} with {ParameterCount} parameters.",
             run.Id,
             step.Ordinal,
-            payload);
+            payload.ScriptId,
+            payload.Parameters.Count);
 
         return (true, invocation, null);
     }

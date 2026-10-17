@@ -53,6 +53,8 @@ Use `--replace` only after reviewing replacement of the selected profile. Do not
 
 The stdio distribution and HTTP tooling image provide explicit `setup`, `config validate`, `doctor` and profile commands through their supported executable entry points. The stdio archive ships the `NetRatel.Mcp` apphost and `NetRatel.Mcp.dll`; use the extracted apphost or `dotnet /absolute/path/NetRatel.Mcp.dll`. Setup emits that actual executable when found. A standalone CLI installation without the stdio archive reports that the stdio executable must be installed before its launch snippet can work. The HTTP tooling image uses its `stdio` dispatcher instead; `setup --target cli|stdio|http-client` selects a personal client, while `setup --mode host` or `--target http-host` selects deployment administration. See [HTTP MCP setup](../mcp-http/setup.md) for the URL-first container command, generated apply action and resumable live verification.
 
+The same versioned stdio archive supplies `dotnet NetRatel.Mcp.dll http-bridge --profile NAME` for consumers limited to stdio launch commands. It uses an isolated protected HTTP MCP client profile. See [supported HTTP MCP transport](http-mcp-bridge.md) for verified archive acquisition, setup, limits, recovery and the private owner migration receipt.
+
 ## Integration credentials
 
 An authenticated user can open **Admin → Integration** at

@@ -92,7 +92,11 @@ public sealed class NetRatelMcpCatalogTools(NetRatelMcpHostContext hostContext)
                     requiredScope = access.RequiredScope.ToString(),
                     minimumRole = access.MinimumRole.ToString(),
                     targetModel = McpOperationTargetCatalog.Find(tool.Name, operation.Name)?.Model.ToString()
-                        ?? throw new InvalidOperationException($"MCP operation '{tool.Name}/{operation.Name}' has no target-model classification.")
+                        ?? throw new InvalidOperationException($"MCP operation '{tool.Name}/{operation.Name}' has no target-model classification."),
+                    localCredentialSupported = tool.AvailableOverHttp && NetRatelMcpCatalog.IsAvailableOverHttpIn(operation, hostContext) &&
+                        McpLocalOperationAuthorizationCatalog.RequiredPermission(tool.Name, operation.Name) is not null,
+                    applicationPermission = McpLocalOperationAuthorizationCatalog.RequiredPermission(tool.Name, operation.Name),
+                    additionalApplicationPermissions = McpLocalOperationAuthorizationCatalog.AdditionalPermissions(tool.Name, operation.Name)
                 };
             })
         };
@@ -141,7 +145,9 @@ public sealed class NetRatelMcpCatalogResources(NetRatelMcpHostContext hostConte
         server = hostContext.ServerName,
         transport = hostContext.Transport.ToString(),
         healthTool = "netratel_health",
-        note = "Use netratel_health to retrieve the authenticated NetRatel API readiness result."
+        scope = "mcp_host_only",
+        backendStatus = "not_probed",
+        note = "This descriptor establishes MCP host state only. Use netratel_health/get for configured API liveness, readiness and protected health-route admission; delegated authentication and tenant admission require separate checks."
     });
 
     [McpServerResource(UriTemplate = "netratel://config/redacted", Name = "NetRatel MCP redacted configuration", MimeType = "application/json")]

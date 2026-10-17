@@ -119,6 +119,8 @@ Supply the matching allowed service client on API using its existing `M2MClients
 
 Legacy isolated files keep their flat `apiBaseUrl`, `apiM2M*` or `oidc*` schema. CLI/stdio additionally support API-purpose `integrationCredential`; HTTP host outbound rejects that human credential mode. Mount read-only and select with `NETRATEL_MCP_CONFIG=/etc/netratel/mcp.json`. The new dedicated environment overrides are allowed, but must resolve coherently and still match the selected HTTPS target. No mandatory JSON secret file is needed when environment/file references supply the complete outbound configuration.
 
+The selected outbound destination must serve the protected API `GET /health/live` and `GET /health/ready` contracts. The shipped Web gateway forwards both exact paths to API without removing API authorization. Same-origin profiles use the reviewed Web HTTPS origin; separate API-origin profiles use their explicitly selected HTTPS API origin. Both probes stay on that destination; no alternate origin or administrative token is inferred.
+
 Web-to-backend private HTTP URLs (`http://api:9222/`, `http://mcp-http:9224/`) are unrelated to this outbound trust boundary. Use the public Web HTTPS origin with the narrowly required API routes, or a consistently selected privately trusted HTTPS API endpoint. Do not disable validation or configure `http://api:9222/` as the MCP target.
 
 ### Exact outbound aliases

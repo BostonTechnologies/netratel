@@ -13,7 +13,7 @@ public sealed class JobRunServiceTests
     public async Task CreateTaskActivityAsync_BackToBackRequests_GetDistinctActivityIds()
     {
         await using var db = CreateDb();
-        var service = new JobRunService(db);
+        var service = new JobRunService(db, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
         var now = DateTimeOffset.UtcNow;
 
         var first = await service.CreateTaskActivityAsync(new CreateJobTaskActivityCommand(
@@ -50,7 +50,7 @@ public sealed class JobRunServiceTests
     public async Task CreateTaskActivityAsync_DuplicateRequestId_ReturnsExistingActivity()
     {
         await using var db = CreateDb();
-        var service = new JobRunService(db);
+        var service = new JobRunService(db, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
         var now = DateTimeOffset.UtcNow;
 
         var first = await service.CreateTaskActivityAsync(new CreateJobTaskActivityCommand(
@@ -85,7 +85,7 @@ public sealed class JobRunServiceTests
     public async Task UpsertTaskActivityAsync_BackToBackRequests_GetDistinctActivityIds()
     {
         await using var db = CreateDb();
-        var service = new JobRunService(db);
+        var service = new JobRunService(db, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
         var now = DateTimeOffset.UtcNow;
 
         var first = await service.UpsertTaskActivityAsync(new UpsertJobTaskActivityCommand(
@@ -124,7 +124,7 @@ public sealed class JobRunServiceTests
     public async Task UpdateTaskActivityStatusAsync_PersistsTerminalResultSeparatelyFromFailureSummary()
     {
         await using var db = CreateDb();
-        var service = new JobRunService(db);
+        var service = new JobRunService(db, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
         var created = await service.CreateTaskActivityAsync(new CreateJobTaskActivityCommand(
             "terminal-result-request", null, null, "client", 3, "exec-library-script", "Processing", null,
             DateTimeOffset.UtcNow, null));
@@ -148,7 +148,7 @@ public sealed class JobRunServiceTests
     public async Task UpdateTaskActivityStatusAsync_DuplicateOrLateLifecycleDoesNotOverwriteTerminalResult()
     {
         await using var db = CreateDb();
-        var service = new JobRunService(db);
+        var service = new JobRunService(db, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
         var created = await service.CreateTaskActivityAsync(new CreateJobTaskActivityCommand(
             "idempotent-result-request", null, null, "client", 3, "exec-library-script", "Processing", null,
             DateTimeOffset.UtcNow, null));

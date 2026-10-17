@@ -11,6 +11,14 @@ namespace NetRatel.Infrastructure.Identity;
 /// </summary>
 public sealed class McpOperationObjectTargetResolver(OrchestratorDbContext db) : IMcpOperationObjectTargetResolver
 {
+    public async Task<McpOperationResolvedPolicyTarget?> ResolvePolicyTargetAsync(string reference, CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(reference, out var policyId) || policyId == Guid.Empty) return null;
+        var policy = await db.McpOperatorPolicies.AsNoTracking()
+            .SingleOrDefaultAsync(record => record.Id == policyId, cancellationToken).ConfigureAwait(false);
+        return policy is null ? null : new(policy.TenantId > 0 ? policy.TenantId : null, policy.AgentId);
+    }
+
     public async Task<bool> MatchesDelegationAsync(
         McpOperatorDelegation delegation,
         CancellationToken cancellationToken)
@@ -18,6 +26,12 @@ public sealed class McpOperationObjectTargetResolver(OrchestratorDbContext db) :
         ArgumentNullException.ThrowIfNull(delegation);
 
         var descriptor = McpOperationTargetCatalog.Find(delegation.Tool, delegation.Operation);
+        if (descriptor?.Model is McpOperationTargetModel.PolicyReference)
+        {
+            var policy = delegation.ObjectReference is { } reference
+                ? await ResolvePolicyTargetAsync(reference, cancellationToken).ConfigureAwait(false) : null;
+            return policy is not null && policy.TenantId == delegation.TenantId && policy.AgentId == delegation.AgentId;
+        }
         if (descriptor?.Model is not McpOperationTargetModel.ObjectDerived)
             return delegation.ObjectReference is null;
         if (descriptor.ObjectReferenceKind is null)

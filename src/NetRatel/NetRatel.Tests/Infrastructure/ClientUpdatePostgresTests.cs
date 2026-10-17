@@ -6,28 +6,27 @@ using NetRatel.API.Services;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Application.Events;
 using NetRatel.Infrastructure.Events;
-using Testcontainers.PostgreSql;
 using Npgsql;
 using System.Text.Json;
 using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
 
-public sealed class ClientUpdatePostgresTests : IAsyncLifetime
+public sealed class ClientUpdatePostgresTests(PostgreSqlPersistenceFixture postgres) : IAsyncLifetime, IClassFixture<PostgreSqlPersistenceFixture>
 {
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16-alpine").Build();
+    private string _connectionString = null!;
     private DbContextOptions<OrchestratorDbContext> _options = null!;
 
     public async ValueTask InitializeAsync()
     {
-        await _postgres.StartAsync();
+        _connectionString = await postgres.CreateDatabaseAsync();
         _options = new DbContextOptionsBuilder<OrchestratorDbContext>()
-            .UseNpgsql(_postgres.GetConnectionString()).Options;
+            .UseNpgsql(_connectionString).Options;
         await using var db = new OrchestratorDbContext(_options);
         await db.Database.MigrateAsync();
     }
 
-    public ValueTask DisposeAsync() => _postgres.DisposeAsync();
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     [Fact]
     public async Task Repeated_update_faults_atomically_retain_one_durable_notification_and_its_read_delivery_state()
@@ -118,7 +117,7 @@ public sealed class ClientUpdatePostgresTests : IAsyncLifetime
     [Fact]
     public async Task Activity_invalidation_is_delivered_only_for_a_committed_transaction()
     {
-        await using var listener = new NpgsqlConnection(_postgres.GetConnectionString());
+        await using var listener = new NpgsqlConnection(_connectionString);
         await listener.OpenAsync();
         await using (var command = new NpgsqlCommand("LISTEN " + ClientUpdateActivityNotifications.ChannelName, listener))
             await command.ExecuteNonQueryAsync();

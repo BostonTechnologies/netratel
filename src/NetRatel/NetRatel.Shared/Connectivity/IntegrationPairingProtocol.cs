@@ -25,7 +25,9 @@ public sealed record IntegrationPairingCapabilities(int ProtocolVersion, string 
 }
 public sealed record IntegrationPairingStartRequest(string Name, PairingCredentialPurpose Purpose,
     string? Resource = null, IReadOnlyList<string>? RequestedPermissions = null)
-{ public bool TemporaryVerifier { get; init; } }
+{ public bool TemporaryVerifier { get; init; }
+    public ReviewedMcpAccessProposal? ReviewedAccess { get; init; }
+}
 public sealed record IntegrationPairingStartResponse(string RequestId, string UserCode, string DeviceCapability,
     string VerificationUri, string PublicOrigin, DateTimeOffset ExpiresAtUtc, int IntervalSeconds)
 { public override string ToString() => $"Pairing request {RequestId} (code and capability redacted)"; }
@@ -35,7 +37,9 @@ public sealed record IntegrationPairingAcknowledgeRequest(string DeviceCapabilit
 { public override string ToString() => $"Pairing acknowledgement {CredentialId} (capability redacted)"; }
 public sealed record IntegrationPairingGrant(int TenantId, string Permission)
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? TenantName { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? PermissionLabel { get; init; }
 }
 public sealed record IntegrationPairingDelivery(string CredentialId, string Secret, string Name,
@@ -50,6 +54,7 @@ public sealed record IntegrationPairingApprovalRequest(string UserCode, DateTime
     IReadOnlyList<IntegrationPairingGrant> Grants, IReadOnlyList<string>? InstancePermissions = null)
 {
     public bool VerifierConsent { get; init; }
+    public string? ReviewedProposalHash { get; init; }
     public override string ToString() => "Pairing approval (code redacted)";
 }
 public sealed record IntegrationPairingReview(string RequestId, string UserCode, string Name,
@@ -57,6 +62,7 @@ public sealed record IntegrationPairingReview(string RequestId, string UserCode,
     IReadOnlyList<string> RequestedPermissions, DateTimeOffset ExpiresAtUtc, string Status)
 {
     public bool TemporaryVerifier { get; init; }
+    public ReviewedMcpAccessRequest? ReviewedAccess { get; init; }
     public DateTimeOffset? CredentialExpiresAtUtc { get; init; }
     public override string ToString() => $"Pairing review {RequestId} {Status} (code redacted)";
 }

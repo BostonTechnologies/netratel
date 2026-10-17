@@ -21,6 +21,13 @@ public sealed class OrchestrationCallbackHashTests
         var details = new JobRunDetails(run, [], [activity]);
         var expected = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(legacyJson)));
         Assert.Equal(expected, OrchestrationCallbackProjection.ResultHash(details));
+        var protectedEvidence = details with
+        {
+            Run = run with { InputProtectionStatus = "submitted-definition-v1", SubmittedDefinitionRevision = "synthetic-revision" }
+        };
+        Assert.Equal(expected, JobRunProjectionHash.Compute(protectedEvidence));
+        Assert.Equal(expected, OrchestrationCallbackProjection.ResultHash(protectedEvidence));
+        Assert.NotEqual(expected, JobRunProjectionHash.Compute(protectedEvidence with { Run = protectedEvidence.Run with { InputsJson = "{}" } }));
         Assert.NotEqual(expected, OrchestrationCallbackProjection.ResultHash(details with { Run = run with { TargetDisplayName = "Captured target" } }));
     }
 }

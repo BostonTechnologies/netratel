@@ -7,7 +7,7 @@ on:
         description: Run only this optional suite (client measurements use matching hosted OS runners)
         type: choice
         required: true
-        options: [pairing, gateway, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement]
+        options: [pairing, gateway, mcp-campaign, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement]
       source_ref:
         description: Source ref to test (published-image and upgrade suites use release_tag)
         default: main
@@ -94,7 +94,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          case "$SUITE" in pairing|gateway|browser|deployment|release-images|native-client|upgrade-local|upgrade-oidc) ;; *) exit 2 ;; esac
+          case "$SUITE" in pairing|gateway|mcp-campaign|browser|deployment|release-images|native-client|upgrade-local|upgrade-oidc) ;; *) exit 2 ;; esac
           source_sha="$(git rev-parse HEAD)"
           version="$(python3 tools/ci/product-version.py)"
           export NETRATEL_DOTNET_SDK_VERSION="$(dotnet --version)"
@@ -118,13 +118,13 @@ jobs:
           Path("TestResults/selected-source.json").write_text(json.dumps(identity, indent=2) + "\n")
           PY
       - name: Restore and build selected test assembly
-        if: inputs.suite == 'pairing' || inputs.suite == 'gateway' || inputs.suite == 'browser' || inputs.suite == 'upgrade-oidc'
+        if: inputs.suite == 'pairing' || inputs.suite == 'gateway' || inputs.suite == 'mcp-campaign' || inputs.suite == 'browser' || inputs.suite == 'upgrade-oidc'
         shell: bash
         run: |
           set -euo pipefail
           case "$SUITE" in
             pairing) project=src/NetRatel/NetRatel.API.IntegrationTests/NetRatel.API.IntegrationTests.csproj ;;
-            gateway) project=src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj ;;
+            gateway|mcp-campaign) project=src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj ;;
             browser|upgrade-oidc) project=src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj ;;
           esac
           dotnet restore "$project"
@@ -153,6 +153,30 @@ jobs:
         env:
           NETRATEL_GATEWAY_TEST_ASSEMBLY: ${{ github.workspace }}/src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll
         run: bash tools/ci/tests/traefik-gateway-routing.sh
+      - name: Run bounded disposable HTTP MCP protocol acceptance
+        if: inputs.suite == 'mcp-campaign'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/ci/prepare-fast-test-containers.sh
+          dotnet test --project src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj \
+            --configuration Release --no-build --no-restore --max-parallel-test-modules 1 \
+            --filter-method Native_request_independent_approval_resume_then_actual_reads_in_two_tenants \
+              Protocol_health_reaches_protected_API_through_the_shipped_Web_gateway \
+            --minimum-expected-tests 2 --results-directory TestResults/mcp-campaign \
+            --report-trx --report-trx-filename protocol.trx
+          python3 tools/ci/verify-mtp-trx.py TestResults/mcp-campaign/protocol.trx
+      - name: Run supported bridge streaming and recovery contract
+        if: inputs.suite == 'mcp-campaign'
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet test --project src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj \
+            --configuration Release --no-build --no-restore --max-parallel-test-modules 1 \
+            --filter-class NetRatel.Tests.Mcp.HttpMcpBridgeTests \
+            --minimum-expected-tests 16 --results-directory TestResults/mcp-campaign \
+            --report-trx --report-trx-filename bridge.trx
+          python3 tools/ci/verify-mtp-trx.py TestResults/mcp-campaign/bridge.trx
       - name: Install requested browser
         if: inputs.suite == 'browser' || inputs.suite == 'upgrade-oidc'
         run: pwsh src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium

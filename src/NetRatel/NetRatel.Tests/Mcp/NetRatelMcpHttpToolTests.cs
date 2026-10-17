@@ -156,15 +156,72 @@ public sealed class NetRatelMcpHttpToolTests
     [Fact]
     public async Task Health_tool_uses_the_exact_reviewed_outbound_route()
     {
-        var client = new RecordingApiClient(data: new JsonObject { ["status"] = "healthy" });
+        var paths = new List<string>();
+        var client = new HealthApiClient((path, _) =>
+        {
+            paths.Add(path);
+            return Task.FromResult<JsonNode?>(new JsonObject { ["status"] = path == "/health/live" ? "alive" : "ready" });
+        });
         var tools = new NetRatelMcpOperationalTools(client);
 
         var result = await tools.netratel_health();
 
         result.Success.Should().BeTrue();
         result.Status.Should().Be("completed");
-        result.Data!.ToJsonString().Should().Contain("healthy");
-        client.Paths.Should().ContainSingle().Which.Should().Be("/health/ready");
+        result.Data!["components"]!["liveness"]!["status"]!.GetValue<string>().Should().Be("healthy");
+        result.Data["components"]!["readiness"]!["status"]!.GetValue<string>().Should().Be("healthy");
+        result.Data["components"]!["authentication"]!["status"]!.GetValue<string>().Should().Be("admitted");
+        paths.Should().BeEquivalentTo("/health/live", "/health/ready");
+    }
+
+    [Theory]
+    [InlineData(503, "unready", true)]
+    [InlineData(503, "unavailable", true)]
+    [InlineData(404, "unmapped", false)]
+    [InlineData(401, "unauthorized", false)]
+    [InlineData(403, "unauthorized", false)]
+    [InlineData(502, "unavailable", true)]
+    public async Task Health_keeps_liveness_when_readiness_fails_and_never_exposes_upstream_details(int status, string expected, bool retryable)
+    {
+        var client = new HealthApiClient((path, _) => path == "/health/live"
+            ? Task.FromResult<JsonNode?>(new JsonObject { ["status"] = "alive", ["private"] = "must-not-echo" })
+            : Task.FromException<JsonNode?>(new NetRatelMcpApiException("upstream", "private-topology-and-secret", status, retryable, expected == "unready" ? "api_readiness_unhealthy" : null)));
+        var result = await new NetRatelMcpOperationalTools(client).netratel_health();
+        result.Success.Should().BeFalse();
+        result.Data!["components"]!["liveness"]!["status"]!.GetValue<string>().Should().Be("healthy");
+        result.Data["components"]!["readiness"]!["status"]!.GetValue<string>().Should().Be(expected);
+        result.Data["components"]!["authentication"]!["status"]!.GetValue<string>().Should().Be("admitted");
+        result.Error!.Retryable.Should().Be(retryable);
+        System.Text.Json.JsonSerializer.Serialize(result).Should().NotContain("private-topology").And.NotContain("must-not-echo");
+        result.CorrelationId.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Fact]
+    public async Task Health_timeout_and_invalid_response_are_bounded_safe_component_observations()
+    {
+        var client = new HealthApiClient((path, _) => Task.FromException<JsonNode?>(path == "/health/live"
+            ? new TaskCanceledException("private-timeout-data")
+            : new System.Text.Json.JsonException("private-response-body")));
+        var result = await new NetRatelMcpOperationalTools(client).netratel_health();
+        result.Data!["components"]!["liveness"]!["status"]!.GetValue<string>().Should().Be("timed_out");
+        result.Data["components"]!["readiness"]!["status"]!.GetValue<string>().Should().Be("invalid_response");
+        System.Text.Json.JsonSerializer.Serialize(result).Should().NotContain("private-timeout-data").And.NotContain("private-response-body");
+    }
+
+    [Fact]
+    public async Task Health_denied_unavailable_and_caller_cancellation_remain_distinct()
+    {
+        var denied = await new NetRatelMcpOperationalTools(new RecordingApiClient(exception:
+            new NetRatelMcpApiException("upstream", "do-not-echo", 403, false))).netratel_health();
+        denied.Data!["components"]!["authentication"]!["status"]!.GetValue<string>().Should().Be("denied");
+        var unavailable = await new NetRatelMcpOperationalTools(new RecordingApiClient(exception:
+            new HttpRequestException("do-not-echo"))).netratel_health();
+        unavailable.Data!["components"]!["liveness"]!["status"]!.GetValue<string>().Should().Be("unavailable");
+        unavailable.Data["components"]!["authentication"]!["status"]!.GetValue<string>().Should().Be("unknown");
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        var action = () => new NetRatelMcpOperationalTools(new RecordingApiClient()).netratel_health(cancellationToken: cancelled.Token);
+        await action.Should().ThrowAsync<OperationCanceledException>();
     }
 
     [Fact]
@@ -211,9 +268,9 @@ public sealed class NetRatelMcpHttpToolTests
 
         result.Success.Should().BeFalse();
         result.Status.Should().Be("failed");
-        result.Error.Should().BeEquivalentTo(new NetRatelToolError("remote_request_failed", true, 503));
+        result.Error.Should().BeEquivalentTo(new NetRatelToolError("health_component_failed", true));
         result.Failure.Should().BeEquivalentTo(new NetRatelToolFailure(
-            "remote_request_failed",
+            "health_component_failed",
             "upstream",
             true,
             ["netratel.mcp.read"],
@@ -236,7 +293,7 @@ public sealed class NetRatelMcpHttpToolTests
         var action = () => tools.netratel_health(cancellationToken: cancellation.Token);
 
         await action.Should().ThrowAsync<OperationCanceledException>();
-        client.ObservedCancellation.Should().Be(cancellation.Token);
+        client.Paths.Should().BeEmpty("an already cancelled health call must not dispatch probes");
     }
 
     [Fact]
@@ -2238,6 +2295,13 @@ public sealed class NetRatelMcpHttpToolTests
 
     private static System.Text.Json.JsonElement Request(JsonObject request)
         => System.Text.Json.JsonDocument.Parse(request.ToJsonString()).RootElement.Clone();
+
+    private sealed class HealthApiClient(Func<string, CancellationToken, Task<JsonNode?>> read) : INetRatelMcpApiClient
+    {
+        public Task<JsonNode?> GetAsync(string path, CancellationToken cancellationToken = default) => read(path, cancellationToken);
+        public Task<JsonNode?> SendAsync(HttpMethod method, string path, JsonNode? body = null, CancellationToken cancellationToken = default)
+            => throw new InvalidOperationException("Health must never mutate.");
+    }
 
     private sealed class RecordingApiClient : INetRatelMcpApiClient
     {

@@ -30,6 +30,26 @@ internal static class McpLocalDelegationTargetRequirements
                 authorizationTenantId = delegation.TenantId;
                 return true;
 
+            case McpOperationTargetModel.OptionalTenant:
+                if (delegation.TenantId is <= 0 || delegation.AgentId is not null || delegation.ObjectReference is not null)
+                    return false;
+                authorizationTenantId = delegation.TenantId;
+                return true;
+
+            case McpOperationTargetModel.PolicySelector:
+                if (delegation.TenantId is <= 0 || delegation.ObjectReference is not null ||
+                    (delegation.AgentId is not null && delegation.TenantId is null))
+                    return false;
+                authorizationTenantId = delegation.TenantId;
+                return true;
+
+            case McpOperationTargetModel.PolicyReference:
+                if (delegation.TenantId is <= 0 || (delegation.AgentId is not null && delegation.TenantId is null) ||
+                    !Guid.TryParse(delegation.ObjectReference, out var policyId) || policyId == Guid.Empty)
+                    return false;
+                authorizationTenantId = delegation.TenantId;
+                return true;
+
             case McpOperationTargetModel.Agent:
                 if (delegation.TenantId is not > 0 || delegation.AgentId is null || delegation.ObjectReference is not null)
                     return false;
@@ -40,7 +60,10 @@ internal static class McpLocalDelegationTargetRequirements
                 if (delegation.TenantId is not > 0 || delegation.AgentId is null)
                     return false;
                 if (!delegation.ObjectTargetResolutionEnabled)
+                {
+                    authorizationTenantId = delegation.TenantId;
                     return delegation.ObjectReference is null;
+                }
                 if (target.RequiresObjectReference && string.IsNullOrWhiteSpace(delegation.ObjectReference))
                     return false;
                 if (delegation.ObjectReference is not null && target.ObjectReferenceKind is null)

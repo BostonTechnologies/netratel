@@ -26,30 +26,30 @@ using NetRatel.Application.Events;
 using NetRatel.Infrastructure.Artifacts;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
-using Testcontainers.PostgreSql;
+using NetRatel.Tests.Infrastructure;
 using Xunit;
 
 namespace NetRatel.Tests.API;
 
-public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
+public sealed class ClientReleaseImportWorkerTests(PostgreSqlPersistenceFixture postgres) : IAsyncLifetime, IClassFixture<PostgreSqlPersistenceFixture>
 {
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16-alpine").Build();
+    private string _connectionString = null!;
     private readonly string _storage = Path.Combine(Path.GetTempPath(), $"client-import-worker-{Guid.NewGuid():N}");
     private DbContextOptions<OrchestratorDbContext> _dbOptions = null!;
 
     public async ValueTask InitializeAsync()
     {
-        await _postgres.StartAsync();
+        _connectionString = await postgres.CreateDatabaseAsync();
         _dbOptions = new DbContextOptionsBuilder<OrchestratorDbContext>()
-            .UseNpgsql(_postgres.GetConnectionString()).Options;
+            .UseNpgsql(_connectionString).Options;
         await using var db = new OrchestratorDbContext(_dbOptions);
         await db.Database.MigrateAsync();
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        await _postgres.DisposeAsync();
         if (Directory.Exists(_storage)) Directory.Delete(_storage, recursive: true);
+        return ValueTask.CompletedTask;
     }
 
     [Theory]
@@ -63,7 +63,7 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
         var assetRequests = new ConcurrentDictionary<long, int>();
         await using var services = new ServiceCollection()
             .AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Warning))
-            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_connectionString))
             .AddSingleton<TimeProvider>(TimeProvider.System)
             .AddSingleton(new NetRatelAkkaOptions())
             .AddSingleton<ClientUpdateCatalog>()
@@ -209,7 +209,7 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
         var store = new RecordingArtifactStore();
         await using var services = new ServiceCollection()
             .AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Warning))
-            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_connectionString))
             .AddSingleton<TimeProvider>(TimeProvider.System)
             .AddSingleton<IGitHubClientReleaseCatalog>(new FixtureCatalog(fixture.Release, fixture.Commit))
             .AddSingleton<IClientArtifactsService>(store)
@@ -276,7 +276,7 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
         var blocked = 0;
         await using var services = new ServiceCollection()
             .AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Warning))
-            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_connectionString))
             .AddSingleton<TimeProvider>(TimeProvider.System)
             .AddSingleton<IGitHubClientReleaseCatalog>(new FixtureCatalog(fixture.Release, fixture.Commit))
             .AddSingleton<IClientArtifactsService>(store)
@@ -355,7 +355,7 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
         var fence = new ImportOwnershipFenceInterceptor();
         await using var services = new ServiceCollection()
             .AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Warning))
-            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString())
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_connectionString)
                 .AddInterceptors(fence))
             .AddSingleton<TimeProvider>(clock)
             .AddSingleton<IGitHubClientReleaseCatalog>(new FixtureCatalog(fixture.Release, fixture.Commit))
@@ -490,7 +490,7 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
         };
         foreach (var argument in new[]
         {
-            _postgres.GetConnectionString(), _storage, operationId.ToString(), leaseOwner.ToString(), "1",
+            _connectionString, _storage, operationId.ToString(), leaseOwner.ToString(), "1",
             source.RuntimeId, fixture.Release.Version, archivePath, fixture.Release.Tag, source.Id.ToString(),
             source.Name, source.Sha256Digest![7..], fixture.Commit, ClientReleaseArchiveAdapter.Contract
         }) startInfo.ArgumentList.Add(argument);
@@ -512,7 +512,7 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
 
         await using var services = new ServiceCollection()
             .AddLogging()
-            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_connectionString))
             .AddSingleton<TimeProvider>(TimeProvider.System)
             .AddSingleton<IOptions<ClientArtifactsOptions>>(Options.Create(new ClientArtifactsOptions
             {
@@ -634,7 +634,7 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
         };
         await using var services = new ServiceCollection()
             .AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Warning))
-            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_connectionString))
             .AddSingleton<TimeProvider>(TimeProvider.System)
             .AddSingleton<IGitHubClientReleaseCatalog>(new FixtureCatalog(release, commit))
             .AddScoped<IClientArtifactsService, ClientArtifactsService>()

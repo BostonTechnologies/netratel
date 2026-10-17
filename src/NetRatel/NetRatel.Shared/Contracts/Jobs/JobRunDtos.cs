@@ -49,7 +49,9 @@ public record JobRunDto(
     Guid? AgentId = null,
     string? TargetDisplayName = null,
     string? TargetHostName = null,
-    string? TargetName = null
+    string? TargetName = null,
+    string? InputProtectionStatus = null,
+    string? SubmittedDefinitionRevision = null
 );
 
 public record JobStepRunDto(

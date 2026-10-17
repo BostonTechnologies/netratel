@@ -201,6 +201,10 @@ public static partial class NetRatelMcpToolDefinitions
             Boolean("online", "Optional current online-state filter."),
             Integer("limit", "Optional bounded result limit from 1 through 100.", 1, 100)
         ]),
+        ("netratel_access", "request") => ReviewedAccessProposalSchema(),
+        ("netratel_access", "receipt" or "resume" or "cancel") => RequiredRequest([Uuid("requestId", "Your saved non-secret request identifier.", true)]),
+        ("netratel_access", "credential") => RequiredRequest([Uuid("credentialId", "Your owned credential identifier.", true)]),
+        ("netratel_access", "requests") => null,
         ("netratel_access", "target" or "effective") => RequiredRequest([
             PositiveIntIdentifier("tenantId", "Positive tenant identifier."),
             Uuid("agentId", "Persisted V2 agent identifier.", true)
@@ -1241,49 +1245,29 @@ public static partial class NetRatelMcpToolDefinitions
         }, true);
 
     private static (string Name, JsonObject Schema, bool Required) PositiveIdentifier(string name, string description)
-        => (name, new JsonObject
-        {
-            ["oneOf"] = new JsonArray(
-                new JsonObject { ["type"] = "string", ["pattern"] = "^[1-9][0-9]{0,19}$", ["maxLength"] = 20 },
-                new JsonObject { ["type"] = "integer", ["minimum"] = 1 }),
-            ["description"] = description
-        }, true);
+        => PositiveLongIdentifier(name, description);
 
     private static (string Name, JsonObject Schema, bool Required) PositiveIntIdentifier(string name, string description)
-        => (name, new JsonObject
-        {
-            ["oneOf"] = new JsonArray(
-                new JsonObject { ["type"] = "string", ["pattern"] = "^[1-9][0-9]{0,9}$", ["maxLength"] = 10 },
-                new JsonObject { ["type"] = "integer", ["minimum"] = 1, ["maximum"] = int.MaxValue }),
-            ["description"] = description
-        }, true);
+        => BoundedIdentifier(name, description, int.MaxValue, false, true);
 
     private static (string Name, JsonObject Schema, bool Required) PositiveLongIdentifier(string name, string description)
-        => (name, new JsonObject
-        {
-            ["oneOf"] = new JsonArray(
-                new JsonObject { ["type"] = "string", ["pattern"] = "^[1-9][0-9]{0,18}$", ["maxLength"] = 19 },
-                new JsonObject { ["type"] = "integer", ["minimum"] = 1, ["maximum"] = long.MaxValue }),
-            ["description"] = description
-        }, true);
+        => BoundedIdentifier(name, description, long.MaxValue, false, true);
 
     private static (string Name, JsonObject Schema, bool Required) NonNegativeIntegerIdentifier(string name, string description)
-        => (name, new JsonObject
-        {
-            ["oneOf"] = new JsonArray(
-                new JsonObject { ["type"] = "string", ["pattern"] = "^(0|[1-9][0-9]{0,9})$", ["maxLength"] = 10 },
-                new JsonObject { ["type"] = "integer", ["minimum"] = 0, ["maximum"] = int.MaxValue }),
-            ["description"] = description
-        }, true);
+        => BoundedIdentifier(name, description, int.MaxValue, true, true);
 
     private static (string Name, JsonObject Schema, bool Required) NonNegativeLongIdentifier(string name, string description)
+        => BoundedIdentifier(name, description, long.MaxValue, true, false);
+
+    private static (string Name, JsonObject Schema, bool Required) BoundedIdentifier(
+        string name, string description, long maximum, bool allowZero, bool required)
         => (name, new JsonObject
         {
             ["oneOf"] = new JsonArray(
-                new JsonObject { ["type"] = "string", ["pattern"] = "^(0|[1-9][0-9]{0,18})$", ["maxLength"] = 19 },
-                new JsonObject { ["type"] = "integer", ["minimum"] = 0, ["maximum"] = long.MaxValue }),
-            ["description"] = description
-        }, false);
+                new JsonObject { ["type"] = "string", ["pattern"] = NetRatelMcpIdentifiers.DecimalPattern((ulong)maximum, allowZero), ["maxLength"] = maximum.ToString(System.Globalization.CultureInfo.InvariantCulture).Length },
+                new JsonObject { ["type"] = "integer", ["minimum"] = allowZero ? 0 : 1, ["maximum"] = maximum }),
+            ["description"] = description + $" Range: {(allowZero ? 0 : 1)} through {maximum.ToString(System.Globalization.CultureInfo.InvariantCulture)}; retain decimal-string IDs exactly."
+        }, required);
 
     private static (string Name, JsonObject Schema, bool Required) OpaquePlanToken(string name, string description)
         => (name, new JsonObject

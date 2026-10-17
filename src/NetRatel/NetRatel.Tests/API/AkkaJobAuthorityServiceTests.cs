@@ -317,6 +317,8 @@ public sealed class AkkaJobAuthorityServiceTests
 
     private sealed class InMemoryRuns : IJobRunService
     {
+        public async Task<string?> GetExecutionOptionsAsync(ulong id, CancellationToken ct = default) => (await GetAsync(id, ct))?.OptionsJson;
+        public async Task<string?> GetExecutionInputsAsync(ulong id, CancellationToken ct = default) => (await GetAsync(id, ct))?.InputsJson;
         public JobRunInfo? Run { get; private set; }
         public List<JobStepRunInfo> Steps { get; } = [];
         public List<JobTaskLogInfo> Logs { get; } = [];

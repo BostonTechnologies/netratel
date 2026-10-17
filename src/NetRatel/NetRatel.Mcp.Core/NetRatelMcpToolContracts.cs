@@ -29,20 +29,22 @@ public record NetRatelToolFailure(
     internal static NetRatelToolFailure From(string status, NetRatelToolError? error)
     {
         var code = error?.Code ?? status;
+        var delegation = McpDelegationFailure.ForCode(code);
         return new NetRatelToolFailure(
             code,
-            LayerFor(code),
-            error?.Retryable ?? false,
+            delegation?.Layer ?? LayerFor(code),
+            delegation?.Retryable ?? error?.Retryable ?? false,
             [],
             "not_available",
             null,
             SafeDetailsFor(code),
-            RemediationFor(code));
+            delegation?.Remediation ?? RemediationFor(code));
     }
 
     private static string LayerFor(string code) => code switch
     {
-        "oauth_scope_missing" or "oauth_role_missing" => "oauth_scope",
+        "oauth_scope_missing" => "oauth_scope",
+        "oauth_role_missing" => "oauth_role",
         "tenant_not_authorized" => "tenant",
         "target_not_found" or "target_disabled" or "target_offline" => "target",
         "target_policy_missing" or "target_policy_denied" or "target_operation_not_authorized" or "target_classification_denied" or "target_policy_expired" => "policy",
@@ -81,7 +83,7 @@ public record NetRatelToolFailure(
         "target_policy_missing" or "target_policy_denied" or "target_operation_not_authorized" or "target_classification_denied" or "target_policy_expired" => "Use netratel_access to inspect the target policy and ask a policy administrator for a reviewed change.",
         "delegated_identity_invalid" or "delegated_identity_required" => "Invoke through the authenticated MCP host to obtain a fresh signed delegation assertion.",
         "idempotency_conflict" => "Reuse the original request payload for this idempotency key or start a new preview.",
-        _ => "Retry only when the failure is marked retryable; otherwise inspect the safe failure details and correlation ID."
+        _ => "Reconcile an uncertain mutation before retrying. For reads, retry only when marked retryable; otherwise inspect the safe failure details and correlation ID."
     };
 }
 

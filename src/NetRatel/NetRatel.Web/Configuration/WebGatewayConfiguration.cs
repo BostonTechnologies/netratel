@@ -163,6 +163,8 @@ public static class WebGatewayConfiguration
         data["ReverseProxy:Routes:api-openapi-route:Transforms:1:Set"] = "/api";
         data["ReverseProxy:Routes:api-openapi-route:Transforms:2:X-Forwarded"] = "Set";
         data["ReverseProxy:Routes:api-openapi-route:Transforms:2:Prefix"] = "Off";
+        Route("api-health-live-route", "/health/live", false, "GET");
+        Route("api-health-ready-route", "/health/ready", false, "GET");
         Route("api-v1-route", "/api/v1/{**catch-all}", true);
         Route("public-client-install-route", "/clients/install/{**catch-all}");
         Route("agent-telemetry-route", "/api/v2/agents/{**catch-all}", true);
@@ -189,6 +191,7 @@ public static class WebGatewayConfiguration
         Route("integrationCredentialsRoute", "/api/v2/account/integration-credentials/{**catch-all}", true);
         foreach (var operation in new[] { "authenticate", "exchange" })
             Route($"mcpLocalDelegation{operation}Route", $"/api/v2/mcp/local-delegation/{operation}", false, "POST");
+        Route("mcpReviewedAccessStartRoute", "/api/v2/mcp/local-delegation/access/start", false, "POST");
         Route("mcpOperatorApiRoute", "/api/v2/mcp/operator/{**catch-all}", true);
         Route("mcpDevelopmentApiRoute", "/api/v2/development/mcp/{**catch-all}", true);
         Route("agentTasksRoute", "/api/v2/tasks/{**catch-all}", true);
@@ -200,6 +203,9 @@ public static class WebGatewayConfiguration
             // MapMcp hosts exactly /mcp (with optional trailing slash), not arbitrary subpaths.
             data["ReverseProxy:Routes:mcpRoute:ClusterId"] = "mcpCluster";
             data["ReverseProxy:Routes:mcpRoute:Match:Path"] = "/mcp";
+            data["ReverseProxy:Routes:mcpReviewedSetupRoute:ClusterId"] = "mcpCluster";
+            data["ReverseProxy:Routes:mcpReviewedSetupRoute:Match:Path"] = "/mcp/setup/access/start";
+            data["ReverseProxy:Routes:mcpReviewedSetupRoute:Match:Methods:0"] = "POST";
             data["ReverseProxy:Clusters:mcpCluster:Destinations:mcp1:Address"] = options.Mcp.BackendUri!.AbsoluteUri;
             data["ReverseProxy:Clusters:mcpCluster:HttpRequest:AllowResponseBuffering"] = "false";
             data["ReverseProxy:Clusters:mcpCluster:HttpRequest:ActivityTimeout"] = options.Mcp.ActivityTimeout.ToString("c", CultureInfo.InvariantCulture);

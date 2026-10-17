@@ -904,6 +904,9 @@ public sealed class McpCoreIsolationTests
 
         prompt.Should().Contain("netratel://capabilities").And.Contain("netratel_clients telemetry");
         prompt.Should().Contain("catalogued read operations");
+        prompt.IndexOf("netratel_search/tenants", StringComparison.Ordinal).Should().BeLessThan(prompt.IndexOf("netratel_access", StringComparison.Ordinal));
+        prompt.Should().Contain("netratel_search/clients").And.Contain("nextOffset").And.Contain("no match").And.Contain("ambiguous");
+        prompt.Should().Contain("exact returned tenantId and agentId").And.Contain("data");
         prompt.Should().NotContain("netratel_terminal operation=command");
     }
 

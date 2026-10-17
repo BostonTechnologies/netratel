@@ -1953,6 +1953,135 @@ class ClientRuntimeContentTests(unittest.TestCase):
                 self.sbom.packages_from_assets(assets, "linux-x64", distribution, root / "missing.deps.json")
 
 
+class SavedImageCredentialScanTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="netratel-saved-image-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+
+    def layer(self, layout, content=b"ordinary public content\n", empty=False):
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as archive:
+            if not empty:
+                member = tarfile.TarInfo("app/example.txt")
+                member.size = len(content)
+                archive.addfile(member, io.BytesIO(content))
+        data = buffer.getvalue()
+        name = ("blobs/sha256/" + hashlib.sha256(data).hexdigest()
+                if layout == "oci" else f"layer-{hashlib.sha256(data).hexdigest()}/layer.tar")
+        path = self.root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return name
+
+    def scan(self, references):
+        (self.root / "manifest.json").write_text(json.dumps([{"Layers": references}]))
+        return subprocess.run([sys.executable, str(ROOT / "tools/ci/scan-saved-image.py"), str(self.root)],
+                              capture_output=True, text=True)
+
+    def test_oci_and_legacy_scan_actual_layers_and_deduplicate_empty_references(self):
+        for layout in ("oci", "legacy"):
+            with self.subTest(layout=layout):
+                layer = self.layer(layout)
+                empty = self.layer(layout, empty=True)
+                result = self.scan([layer, empty, empty, empty])
+                self.assertEqual(0, result.returncode, result.stderr)
+                coverage = json.loads(result.stdout)
+                self.assertEqual(4, coverage["layerReferences"])
+                self.assertEqual(2, coverage["uniqueLayers"])
+                self.assertEqual(1, coverage["regularFiles"])
+                self.assertGreater(coverage["regularBytes"], 0)
+                self.assertEqual(1, coverage["textFiles"])
+
+    def test_oci_marker_is_rejected_by_public_scanner(self):
+        # Exercise the actual shell entrypoint with an isolated Docker protocol
+        # fixture; no Docker daemon/container or registry writes are involved.
+        marker = b"-----BEGIN " + b"PRIVATE KEY-----\nsynthetic\n"
+        reference = self.layer("oci", marker)
+        (self.root / "manifest.json").write_text(json.dumps([{"Layers": [reference]}]))
+        saved = self.root / "save.tar"
+        with tarfile.open(saved, "w") as archive:
+            archive.add(self.root / "manifest.json", arcname="manifest.json")
+            archive.add(self.root / reference, arcname=reference)
+        bin_directory = self.root / "bin"
+        bin_directory.mkdir()
+        docker = bin_directory / "docker"
+        docker.write_text("#!/usr/bin/env python3\nimport json,os,sys\n"
+            "args=sys.argv[1:]\n"
+            "if args[:2]==['image','inspect']:\n"
+            " print(json.dumps([{'Config':{'Labels':{'org.opencontainers.image.title':'NetRatel',"
+            "'org.opencontainers.image.source':'https://github.com/BostonTechnologies/netratel',"
+            "'org.opencontainers.image.version':'1.2.3','org.opencontainers.image.revision':'a'*40}}}]))\n"
+            "elif args[:2]==['image','save']:\n"
+            " sys.stdout.buffer.write(open(os.environ['TEST_SAVED_IMAGE'],'rb').read())\n"
+            "elif args[0]!='run': sys.exit(2)\n")
+        docker.chmod(0o755)
+        result = subprocess.run(["bash", str(ROOT / "tools/ci/scan-public-image.sh"),
+            "--image", "synthetic", "--version", "1.2.3", "--revision", "a" * 40],
+            env={**os.environ, "PATH": str(bin_directory) + os.pathsep + os.environ["PATH"],
+                 "TEST_SAVED_IMAGE": str(saved)}, capture_output=True, text=True)
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("potential credential", result.stderr)
+
+    def test_empty_missing_corrupt_and_unreviewed_matches_fail(self):
+        cases = [([], "no layers"),
+                 ([self.layer("oci", empty=True)], "no nonempty"),
+                 (["missing/layer.tar"], "could not read"),
+                 ([self.layer("legacy", b"<" + b"key>synthetic</key>\n")], "potential credential")]
+        for references, error in cases:
+            with self.subTest(error=error):
+                result = self.scan(references)
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn(error, result.stderr)
+        reference = self.layer("oci")
+        (self.root / reference).write_bytes(b"corrupt")
+        result = self.scan([reference])
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("digest", result.stderr)
+        # Digest verification follows normalized references; aliases cannot
+        # convert content-addressed blobs into unchecked legacy layers.
+        for alias in ("./" + reference, "blobs/../" + reference):
+            result = self.scan([alias])
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("digest", result.stderr)
+        linked = self.root / "layer-alias"
+        linked.symlink_to(self.root / reference)
+        result = self.scan([linked.name])
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("symbolic links", result.stderr)
+        sensitive_name = "missing/gh" + "p_" + "synthetic" * 5
+        result = self.scan([sensitive_name])
+        self.assertNotEqual(0, result.returncode)
+        self.assertNotIn(sensitive_name, result.stderr)
+        self.assertNotIn("synthetic", result.stderr)
+
+    def test_pure_oci_index_resolves_manifest_layers(self):
+        reference = self.layer("oci")
+        document = json.dumps({"layers": [{"digest": "sha256:" + Path(reference).name}]}).encode()
+        digest = hashlib.sha256(document).hexdigest()
+        (self.root / "blobs/sha256" / digest).write_bytes(document)
+        (self.root / "index.json").write_text(json.dumps({"manifests": [{"digest": "sha256:" + digest}]}))
+        result = subprocess.run([sys.executable, str(ROOT / "tools/ci/scan-saved-image.py"), str(self.root)],
+                                capture_output=True, text=True)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(1, json.loads(result.stdout)["uniqueLayers"])
+
+    def test_exact_reviewed_benign_bytes_retain_raw_match_and_changed_bytes_fail(self):
+        scanner = module("scan-saved-image")
+        content = b"public documentation: <" + b"key>example</key>\n"
+        reference = self.layer("oci", content)
+        (self.root / "manifest.json").write_text(json.dumps([{"Layers": [reference]}]))
+        with patch.dict(scanner.REVIEWED, {"app/example.txt": hashlib.sha256(content).hexdigest()}):
+            with contextlib.redirect_stdout(io.StringIO()):
+                coverage = scanner.scan(self.root)
+            self.assertEqual(1, coverage["rawMatchingFiles"])
+            self.assertEqual(0, coverage["reviewedBenignMatches"][0]["rawGrepExit"])
+            reference = self.layer("oci", content + b"changed upstream bytes\n")
+            (self.root / "manifest.json").write_text(json.dumps([{"Layers": [reference]}]))
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, "potential credential"):
+                scanner.scan(self.root)
+
+
 class DistributionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="netratel-distribution-tests-")

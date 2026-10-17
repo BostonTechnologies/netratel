@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Text.Json;
-using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Requests;
@@ -10,31 +9,7 @@ namespace NetRatel.API.Services.Orchestration;
 
 public static class OrchestrationCallbackProjection
 {
-    public static string ResultHash(JobRunDetails details)
-    {
-        // Keep typed scalar values: converting timestamps through JsonNode would
-        // re-escape their UTC offset and change already published terminal hashes.
-        static Dictionary<string, object?> Shape(object value, params string[] newEvidence)
-        {
-            var fields = new Dictionary<string, object?>();
-            foreach (var property in value.GetType().GetProperties())
-            {
-                var field = property.GetValue(value);
-                if (field is null && newEvidence.Contains(property.Name)) continue;
-                fields.Add(property.Name, field);
-            }
-            return fields;
-        }
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(new
-        {
-            Run = Shape(details.Run, "Environment", "TargetDisplayName", "TargetHostName", "TargetName"),
-            Steps = details.Steps.OrderBy(x => x.Id),
-            Activities = details.Activities.OrderBy(x => x.Id).Select(activity => Shape(activity,
-                "Environment", "StartedAtUtc", "ExitCode", "TargetDisplayName", "TargetHostName", "TargetName",
-                "ScriptName", "ScriptType", "CommandLabel", "ScriptContentHash"))
-        });
-        return Convert.ToHexStringLower(SHA256.HashData(bytes));
-    }
+    public static string ResultHash(JobRunDetails details) => JobRunProjectionHash.Compute(details);
 
     public static async Task<bool> TerminalReadyAsync(OrchestratorDbContext db, JobRunDetails details, CancellationToken ct)
     {

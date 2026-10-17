@@ -16,7 +16,7 @@ public sealed class JobRunStreamSnapshotTests
     public async Task Recovered_snapshot_bounds_output_keeps_sequence_order_and_separates_errors_from_logs()
     {
         await using var db = CreateDb();
-        var runs = new JobRunService(db);
+        var runs = new JobRunService(db, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
         var jobs = new JobDefinitionService(db);
         var job = await jobs.CreateAsync(new("Disposable", "/", null, 7, ""));
         var now = DateTimeOffset.Parse("2026-10-14T10:00:00Z");
@@ -58,7 +58,7 @@ public sealed class JobRunStreamSnapshotTests
         await db.SaveChangesAsync();
         var jobs = new JobDefinitionService(db);
         var job = await jobs.CreateAsync(new("Historical", "/", null, 7, ""));
-        var runs = new JobRunService(db);
+        var runs = new JobRunService(db, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
         var now = DateTimeOffset.Parse("2026-10-14T10:00:00Z");
         await runs.UpsertRunAsync(new(10, job.Id, 7, "", "tester", JobRunState.Failed,
             1, now, null, now, "Dispatch rejected", null, null, agentId));

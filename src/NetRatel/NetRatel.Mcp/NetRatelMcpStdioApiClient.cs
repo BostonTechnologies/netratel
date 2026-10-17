@@ -35,7 +35,7 @@ internal sealed class NetRatelMcpStdioApiClient(INetRatelAgentClient client) : I
                 exception.Message,
                 exception.StatusCode,
                 exception.StatusCode >= 500,
-                exception.RemoteCode);
+                exception.RemoteCode) { CorrelationId = exception.CorrelationId };
         }
         catch (AgentClientValidationException exception)
         {

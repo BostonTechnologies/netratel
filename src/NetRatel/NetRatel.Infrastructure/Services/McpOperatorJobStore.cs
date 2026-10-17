@@ -652,7 +652,8 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
     private static McpOperatorJobRunLease ToRunLease(McpOperatorJobRunRecord run, JobRunRecord projection) => new(
         checked((ulong)run.JobRunId), run.JobId, run.TenantId, run.AgentId, run.AcceptedAuditId, run.IdempotencyId, run.CorrelationId,
         run.TargetSetDigest, ((JobRunState)projection.Status).ToString(), projection.CurrentStepOrdinal, run.CreatedAtUtc,
-        projection.StartedAtUtc, projection.CompletedAtUtc, projection.Error, run.CancellationRequested, run.DeletedAtUtc is not null, run.Version);
+        projection.StartedAtUtc, projection.CompletedAtUtc,
+        projection.Error is not null && JobRunInputProtection.Metadata(projection).Legacy ? JobRunInputProtection.Mask : projection.Error, run.CancellationRequested, run.DeletedAtUtc is not null, run.Version);
 
     private static McpOperatorJobAuditRecord JobAudit(McpOperatorJobRecord owner, string action, Guid acceptedAuditId, DateTimeOffset occurredAtUtc) => new()
     {

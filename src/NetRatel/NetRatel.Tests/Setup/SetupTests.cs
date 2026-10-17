@@ -17,6 +17,173 @@ namespace NetRatel.Tests.Setup;
 public sealed class SetupTests
 {
     [Fact]
+    public async Task Reviewed_state_cannot_alias_destination_and_preserves_the_existing_profile()
+    {
+        using var directory = new TempDirectory();
+        var destination = System.IO.Path.Combine(directory.Path, "auxiliary.json");
+        var existing = AgentClientConfiguration.Empty with { ApiBaseUrl = "https://instance.example/mcp", AuthenticationMode = "IntegrationCredential", CredentialPurpose = "HttpMcp",
+            IntegrationCredential = "nrt_ic_existing-profile", Instance = "prod", ApprovedOrigin = "https://instance.example", ApprovedTarget = "https://instance.example/mcp" };
+        new NetRatelConfigurationService().SaveProfile(destination, existing, ConfigurationSurface.HttpMcpClient);
+        var before = ConfigurationFileStorage.Hash(destination);
+        using var handler = new StubHandler(_ => Task.FromResult(Capabilities()));
+        await using var session = new SetupSession(ConfigurationSurface.HttpMcpClient, destination, "auxiliary", handler);
+        await session.DiscoverAsync("https://instance.example", default);
+        var alias = System.IO.Path.Combine(directory.Path, ".", "auxiliary.json");
+        var proposal = new NetRatel.Shared.Connectivity.ReviewedMcpAccessProposal(Guid.NewGuid().ToString(), "Auxiliary", "create", DateTimeOffset.UtcNow.AddDays(1), [], ["mcp.discovery.read"], []);
+        var prepare = await Assert.ThrowsAsync<AgentClientValidationException>(() => session.PrepareReviewedAccessAsync(proposal, existing, alias, default));
+        Assert.Contains("different from the destination", prepare.Message);
+        var restore = await Assert.ThrowsAsync<AgentClientValidationException>(() => session.RestoreReviewedAccessAsync(alias, default));
+        Assert.Contains("different from the destination", restore.Message);
+        Assert.Equal(before, ConfigurationFileStorage.Hash(destination));
+        Assert.Equal(existing.IntegrationCredential, new NetRatelConfigurationService().Load(new(ConfigurationSurface.HttpMcpClient, destination, "auxiliary")).Configuration.IntegrationCredential);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Reviewed_save_reconciles_lost_ack_after_restart_and_rejects_a_changed_profile(bool changeProfile)
+    {
+        using var directory = new TempDirectory();
+        var destination = System.IO.Path.Combine(directory.Path, "auxiliary.json");
+        var pending = System.IO.Path.Combine(directory.Path, "pending.json");
+        var requestId = Guid.NewGuid().ToString("N"); var polls = 0; var acknowledgements = 0;
+        var expiry = DateTimeOffset.UtcNow.AddDays(7);
+        var proposal = new NetRatel.Shared.Connectivity.ReviewedMcpAccessProposal(requestId, "Acknowledgement recovery", "create", expiry, [], ["mcp.discovery.read"], []);
+        const string credentialId = "b4444444444444448444444444444444";
+        const string device = "nrt_pair_lost-ack-capability";
+        const string secret = "nrt_ic_lost-ack-private-secret";
+        using var handler = new StubHandler(request =>
+        {
+            var route = request.RequestUri!.AbsolutePath;
+            if (route.EndsWith("capabilities", StringComparison.Ordinal)) return Task.FromResult(Capabilities());
+            if (route == "/mcp/setup/access/start") return Task.FromResult(Json(new NetRatel.Shared.Connectivity.IntegrationPairingStartResponse(requestId, "ABCD-EFGH", device,
+                "https://instance.example/account/integration-credentials", "https://instance.example", DateTimeOffset.UtcNow.AddMinutes(10), 5)));
+            if (route.EndsWith("/poll", StringComparison.Ordinal))
+            {
+                polls++; return Task.FromResult(Json(new NetRatel.Shared.Connectivity.IntegrationPairingPollResponse("issued", Delivery: new(credentialId, secret, proposal.Name,
+                    NetRatel.Shared.Connectivity.PairingCredentialPurpose.HttpMcp, "https://instance.example/mcp", expiry, [], proposal.InstancePermissions))));
+            }
+            if (route.EndsWith("/acknowledge", StringComparison.Ordinal))
+            {
+                acknowledgements++;
+                if (acknowledgements == 1) throw new HttpRequestException("Synthetic lost acknowledgement after server consumed delivery.");
+                return Task.FromResult(Json(new { status = "consumed" }));
+            }
+            throw new InvalidOperationException("Unexpected recovery request.");
+        });
+        var requesting = AgentClientConfiguration.Empty with { ApiBaseUrl = "https://instance.example/mcp", AuthenticationMode = "IntegrationCredential", CredentialPurpose = "HttpMcp",
+            IntegrationCredential = "nrt_ic_requesting-client", Instance = "prod", ApprovedOrigin = "https://instance.example", ApprovedTarget = "https://instance.example/mcp" };
+        await using (var first = new SetupSession(ConfigurationSurface.HttpMcpClient, destination, "auxiliary", handler))
+        {
+            await first.DiscoverAsync("https://instance.example", default);
+            await first.PrepareReviewedAccessAsync(proposal, requesting, pending, default);
+            await first.PollAsync(default); first.Review();
+            await Assert.ThrowsAsync<HttpRequestException>(() => first.SaveAsync(false, default));
+            Assert.True(first.Persisted); Assert.False(first.Saved);
+            Assert.DoesNotContain(secret, File.ReadAllText(pending));
+            Assert.Contains(credentialId, File.ReadAllText(pending));
+        }
+        if (changeProfile) File.AppendAllText(destination, " ");
+        var retained = ConfigurationFileStorage.Hash(destination);
+        await using (var restarted = new SetupSession(ConfigurationSurface.HttpMcpClient, destination, "auxiliary", handler))
+        {
+            if (changeProfile)
+            {
+                var failure = await Assert.ThrowsAsync<AgentClientValidationException>(() => restarted.RestoreReviewedAccessAsync(pending, default));
+                Assert.Contains("changed after", failure.Message); Assert.False(restarted.Saved);
+                Assert.Equal(1, acknowledgements);
+            }
+            else
+            {
+                await restarted.RestoreReviewedAccessAsync(pending, default);
+                Assert.True(await restarted.ReconcileReviewedSavedAsync(default));
+                Assert.True(restarted.Saved); Assert.Equal(credentialId, restarted.ReviewedSavedCredentialId);
+                Assert.Equal(2, acknowledgements); Assert.Equal(1, polls);
+            }
+        }
+        Assert.Equal(retained, ConfigurationFileStorage.Hash(destination));
+        Assert.True(File.Exists(destination));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Reviewed_prepare_updates_private_pending_state_and_resume_preserves_exact_delivery_before_protected_save(bool mismatchedExpiry)
+    {
+        using var directory = new TempDirectory();
+        var destination = System.IO.Path.Combine(directory.Path, "auxiliary.json");
+        var pending = System.IO.Path.Combine(directory.Path, "private", "pending.json");
+        var starts = 0; var acknowledgements = 0; var cancellations = 0;
+        var expiry = DateTimeOffset.UtcNow.AddDays(30).AddTicks(1234);
+        var requestId = Guid.NewGuid().ToString("D");
+        var proposal = new NetRatel.Shared.Connectivity.ReviewedMcpAccessProposal(requestId, "Restricted auxiliary", "create", expiry,
+            [new(17, "flow.read")], ["mcp.discovery.read"], [new(17, "netratel_flows", "list")]);
+        const string device = "nrt_pair_private-reviewed-capability";
+        const string deliveredSecret = "nrt_ic_private-reviewed-delivery";
+        const string credentialId = "b3333333333343338333333333333333";
+        using var handler = new StubHandler(async request =>
+        {
+            var route = request.RequestUri!.AbsolutePath;
+            if (route.EndsWith("capabilities", StringComparison.Ordinal)) return Capabilities();
+            if (route == "/mcp/setup/access/start")
+            {
+                starts++;
+                Assert.Equal("Bearer nrt_ic_requesting-client", request.Headers.Authorization!.ToString());
+                Assert.True(File.Exists(pending));
+                Assert.DoesNotContain(device, File.ReadAllText(pending));
+                return Json(new NetRatel.Shared.Connectivity.IntegrationPairingStartResponse(Guid.Parse(requestId).ToString("N"), "ABCD-EFGH", device,
+                    "https://instance.example/account/integration-credentials", "https://instance.example", DateTimeOffset.UtcNow.AddMinutes(10), 5));
+            }
+            if (route.EndsWith("/poll", StringComparison.Ordinal))
+            {
+                Assert.Contains(device, await request.Content!.ReadAsStringAsync());
+                return Json(new NetRatel.Shared.Connectivity.IntegrationPairingPollResponse("issued", Delivery:
+                    new(credentialId, deliveredSecret, proposal.Name, NetRatel.Shared.Connectivity.PairingCredentialPurpose.HttpMcp,
+                        "https://instance.example/mcp", mismatchedExpiry ? expiry.AddSeconds(1) : expiry, proposal.Grants, proposal.InstancePermissions)));
+            }
+            if (route.EndsWith("/acknowledge", StringComparison.Ordinal)) { acknowledgements++; return Json(new { status = "consumed" }); }
+            if (route.EndsWith("/cancel", StringComparison.Ordinal)) { cancellations++; return Json(new { status = "cancelled" }); }
+            throw new InvalidOperationException("Unexpected reviewed setup route.");
+        });
+        var requester = AgentClientConfiguration.Empty with
+        {
+            ApiBaseUrl = "https://instance.example/mcp", AuthenticationMode = "IntegrationCredential", CredentialPurpose = "HttpMcp",
+            IntegrationCredential = "nrt_ic_requesting-client", Instance = "prod", ApprovedOrigin = "https://instance.example", ApprovedTarget = "https://instance.example/mcp"
+        };
+        await using (var preparing = new SetupSession(ConfigurationSurface.HttpMcpClient, destination, "auxiliary", handler))
+        {
+            await preparing.DiscoverAsync("https://instance.example", default);
+            await preparing.PrepareReviewedAccessAsync(proposal, requester, pending, default);
+            Assert.Equal(device, preparing.Pairing!.DeviceCapability);
+            Assert.Contains(device, ConfigurationFileStorage.ReadText(pending, secret: true));
+            Assert.DoesNotContain(deliveredSecret, File.ReadAllText(pending));
+            if (!OperatingSystem.IsWindows()) Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(pending));
+            await preparing.PrepareReviewedAccessAsync(proposal, requester, pending, default);
+            Assert.Equal(1, starts);
+        }
+        Assert.Equal(0, cancellations);
+        await using (var resuming = new SetupSession(ConfigurationSurface.HttpMcpClient, destination, "auxiliary", handler))
+        {
+            await resuming.RestoreReviewedAccessAsync(pending, default);
+            if (mismatchedExpiry)
+            {
+                await Assert.ThrowsAsync<AgentClientValidationException>(() => resuming.PollAsync(default));
+                Assert.Null(resuming.Delivery); Assert.False(File.Exists(destination)); Assert.Equal(0, acknowledgements);
+            }
+            else
+            {
+                var issued = await resuming.PollAsync(default);
+                Assert.Equal(expiry, issued.Delivery!.ExpiresAtUtc);
+                resuming.Review(); await resuming.SaveAsync(false, default);
+                Assert.True(resuming.Saved); Assert.Equal(1, acknowledgements);
+                Assert.DoesNotContain(deliveredSecret, File.ReadAllText(destination));
+                Assert.Equal(deliveredSecret, new NetRatelConfigurationService().Load(new(ConfigurationSurface.HttpMcpClient, destination, "auxiliary")).Configuration.IntegrationCredential);
+            }
+        }
+        Assert.Equal(0, cancellations);
+    }
+
+    [Fact]
     public async Task Unknown_host_authentication_has_a_visible_choice_and_Enter_selects_it_without_Advanced()
     {
         using var directory = new TempDirectory();

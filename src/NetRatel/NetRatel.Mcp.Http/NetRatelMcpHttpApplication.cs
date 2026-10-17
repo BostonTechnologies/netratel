@@ -11,6 +11,8 @@ using NetRatel.Mcp.Core;
 using NetRatel.Mcp.Core.Prompts;
 using NetRatel.Shared.Operations;
 using System.Threading.RateLimiting;
+using System.Text.Json;
+using ModelContextProtocol.Protocol;
 
 namespace NetRatel.Mcp.Http;
 
@@ -148,9 +150,11 @@ public static class NetRatelMcpHttpApplication
         }));
         builder.Services.AddSingleton<McpToolInvocationAudit>();
         builder.Services.AddSingleton<McpOperationScopeAuthorization>();
+        var httpTools = NetRatelMcpToolDefinitions.CreateForHttp(hostContext);
+        builder.Services.AddSingleton(new NetRatelMcpInputValidator(httpTools));
         builder.Services.AddMcpServer()
             .WithHttpTransport(options => options.Stateless = true)
-            .WithTools(NetRatelMcpToolDefinitions.CreateForHttp(hostContext))
+            .WithTools(httpTools)
             .WithResources<NetRatelMcpCatalogResources>()
             .WithPrompts<NetRatelPrompts>()
             .WithRequestFilters(filters => filters.AddCallToolFilter(next => (context, cancellationToken) =>
@@ -160,6 +164,18 @@ public static class NetRatelMcpHttpApplication
                 return services.GetRequiredService<McpToolInvocationAudit>().InvokeAsync(
                     async (nextContext, nextCancellationToken) =>
                     {
+                        var inputFailure = services.GetRequiredService<NetRatelMcpInputValidator>()
+                            .Validate(nextContext.Params.Name, nextContext.Params.Arguments);
+                        if (inputFailure is not null)
+                        {
+                            var inputPayload = JsonSerializer.SerializeToElement(inputFailure, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                            return new CallToolResult
+                            {
+                                IsError = true,
+                                StructuredContent = inputPayload,
+                                Content = [new TextContentBlock { Text = inputPayload.GetRawText() }]
+                            };
+                        }
                         operationAuthorization.EnsureAuthorized(nextContext.User, nextContext.Params.Name, nextContext.Params.Arguments);
                         var propagation = services.GetRequiredService<McpOperatorDelegationPropagation>();
                         string? assertion;
@@ -171,26 +187,39 @@ public static class NetRatelMcpHttpApplication
                         }
                         catch (McpLocalCredentialExchangeException exception)
                         {
-                            throw new McpException(McpErrorMessage(exception.Failure));
+                            var tool = nextContext.Params.Name;
+                            var operation = nextContext.Params.Arguments is { } arguments && arguments.TryGetValue("operation", out var value) && value.ValueKind == JsonValueKind.String
+                                ? value.GetString()! : "not_available";
+                            var failure = exception.Failure;
+                            var safe = McpDelegationFailure.ForCode(failure.Code);
+                            var response = new NetRatelToolResponse(false, "failed", "Local HTTP MCP delegation was not admitted.",
+                                JsonSerializer.SerializeToNode(new
+                                {
+                                    requiredPermission = McpLocalOperationAuthorizationCatalog.RequiredPermission(tool, operation),
+                                    additionalPermissions = McpLocalOperationAuthorizationCatalog.AdditionalPermissions(tool, operation),
+                                    retryAfterSeconds = failure.RetryAfterSeconds
+                                }), Error: new NetRatelToolError(failure.Code, safe?.Retryable ?? false, (int)failure.StatusCode))
+                                .WithFailureContext(tool, operation, correlationId: failure.CorrelationId);
+                            var payload = JsonSerializer.SerializeToElement(response, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                            return new CallToolResult
+                            {
+                                IsError = true,
+                                StructuredContent = payload,
+                                Content = [new TextContentBlock { Text = payload.GetRawText() }]
+                            };
                         }
                         using (propagation.Begin(assertion))
                             return await next(nextContext, nextCancellationToken).ConfigureAwait(false);
                     },
                     context,
                     cancellationToken);
+            }).AddGetPromptFilter(next => (context, cancellationToken) =>
+            {
+                McpPromptArgumentValidation.Validate(context.Params);
+                return next(context, cancellationToken);
             }))
             .AddAuthorizationFilters();
     }
-
-    private static string McpErrorMessage(McpLocalCredentialExchangeFailure failure) => failure.Code switch
-    {
-        "local_credential_invalid" => "The local HTTP MCP credential is invalid or has expired.",
-        "local_credential_forbidden" => "The local HTTP MCP credential is not authorized for this operation.",
-        "local_credential_throttled" => "The local credential service is temporarily throttling requests. Retry after the indicated delay.",
-        "local_credential_exchange_timed_out" => "The local credential service did not respond before the deadline. Retry the operation.",
-        "local_credential_exchange_unavailable" => "The local credential service is temporarily unavailable. Retry the operation.",
-        _ => "The local credential service returned an invalid response. Retry the operation."
-    };
 
     public static void ConfigurePipeline(WebApplication app)
     {
@@ -215,6 +244,7 @@ public static class NetRatelMcpHttpApplication
         app.MapHealthChecks("/health/ready");
         if (runtime.ProtectedResourceMetadata is not null)
             app.MapGet("/.well-known/oauth-protected-resource/mcp", () => Results.Json(runtime.ProtectedResourceMetadata)).AllowAnonymous();
+        app.MapMcpReviewedSetup(runtime.Options.LocalCredentialMode);
         app.MapMcp("/mcp").RequireAuthorization(PolicyName).RequireRateLimiting(RateLimitPolicy);
     }
 

@@ -93,7 +93,7 @@ public sealed class NetRatelExternalServiceCallbackClientTests
             var registry = new ServicePrincipalRegistry(db, new RuntimeOptions(options), options, new EmptyServiceClientDeploymentCatalog(), authority, TimeProvider.System);
             var protection = new EphemeralDataProtectionProvider();
             var credential = await PairingBusinessAuthorityFixture.CreateAsync(db, registry, 71, [ServiceIdentityScopes.OrchestrationInvoke], protection: protection);
-            var requests = new RequestService(db); var runs = new JobRunService(db);
+            var requests = new RequestService(db, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider()); var runs = new JobRunService(db, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
             var source = "service:" + credential.Principal.Id.ToString("N");
             var stored = await requests.CreateAsync(new(source, agent.ToString("D"), "7001", "{}", 71, agent));
             await requests.UpdateAsync(new(stored.Id, null, null, null, "8001", "Processing", null, null, null, null));

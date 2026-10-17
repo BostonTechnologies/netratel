@@ -127,6 +127,11 @@ cli_executable="$release_extract_dir/netratel-cli-linux-x64/netratel"
 mcp_assembly="$release_extract_dir/netratel-mcp-linux-x64/NetRatel.Mcp.dll"
 [[ -x "$cli_executable" ]] || { echo "CLI archive executable is not executable." >&2; exit 1; }
 [[ -f "$mcp_assembly" ]] || { echo "stdio MCP archive assembly is missing." >&2; exit 1; }
+bridge_version="$(timeout 10s dotnet "$mcp_assembly" http-bridge --version)"
+[[ "$bridge_version" == "$version" || "$bridge_version" == "$version"+* ]] || {
+  echo "Supported HTTP bridge version does not match the release version." >&2
+  exit 1
+}
 "$cli_executable" --help >/dev/null
 cli_version="$("$cli_executable" --version)"
 [[ "$cli_version" == "$version" || "$cli_version" == "$version"+* ]] || {

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
+using NetRatel.Shared.Operations;
 
 namespace NetRatel.Mcp.Http;
 
@@ -13,6 +14,35 @@ internal sealed record McpLocalCredentialExchangeFailure(
     HttpStatusCode StatusCode,
     int? RetryAfterSeconds = null)
 {
+    public string? CorrelationId { get; init; }
+
+    public object ToPayload(string? fallbackCorrelationId = null) => new
+    {
+        success = false,
+        summary = "Local HTTP MCP delegation was not admitted.",
+        code = Code,
+        failure = McpDelegationFailure.ForCode(Code),
+        retryAfterSeconds = RetryAfterSeconds,
+        correlationId = CorrelationId ?? fallbackCorrelationId
+    };
+
+    public static async Task<McpLocalCredentialExchangeFailure> FromResponseAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        var fallback = FromResponse(response);
+        // Only the authenticated peer's bounded code and correlation are read.
+        // Messages, remediation, ownership and arbitrary response fields are never reflected.
+        if (response.StatusCode is not (HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden))
+            return fallback;
+        var payload = await McpLocalCredentialExchangeResponse.ReadJsonAsync<SafeExchangeFailure>(response.Content, cancellationToken).ConfigureAwait(false);
+        if (payload?.Code is not { } code || McpDelegationFailure.ForCode(code) is not { Retryable: false })
+            return fallback;
+        var correlation = payload.CorrelationId is { Length: > 0 and <= 128 } value &&
+            value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.' or ':') ? value : null;
+        return new(code, response.StatusCode) { CorrelationId = correlation };
+    }
+
+    private sealed record SafeExchangeFailure(string? Code, string? CorrelationId);
+
     public static McpLocalCredentialExchangeFailure FromResponse(HttpResponseMessage response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -109,7 +139,7 @@ public static class McpLocalCredentialExchangeFailureResponses
             context.Response.StatusCode = (int)failure.StatusCode;
             if (failure.RetryAfterSeconds is { } retryAfterSeconds)
                 context.Response.Headers.RetryAfter = retryAfterSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            await context.Response.WriteAsJsonAsync(new { code = failure.Code }, context.RequestAborted).ConfigureAwait(false);
+            await context.Response.WriteAsJsonAsync(failure.ToPayload(context.TraceIdentifier), context.RequestAborted).ConfigureAwait(false);
         }
     }
 }

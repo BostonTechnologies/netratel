@@ -134,6 +134,7 @@ public sealed class AkkaJobAuthorityService(
     {
         var definition = await jobDefinitions.GetDetailsAsync(jobId, cancellationToken).ConfigureAwait(false)
             ?? throw new KeyNotFoundException($"Job {jobId} was not found.");
+        jobRuns.BindSubmittedDefinition(runId, definition);
         if (recordedRequestId is { } ingressId)
         {
             if (managedGuard is null || principal is null) throw new InvalidOperationException("Managed invocation authority is unavailable.");
@@ -178,11 +179,12 @@ public sealed class AkkaJobAuthorityService(
         // Owner reservation cannot accept a run. Validate the exact registered
         // physical owner inside the existing intent transaction before writes.
         _ = await RequireDispatchOwnerAsync(client, cancellationToken);
+        var preparedOptions = prepared is null ? null : await jobRuns.GetExecutionOptionsAsync(prepared.Id, cancellationToken);
         var createdAt = prepared?.CreatedAtUtc ?? _clock.GetUtcNow();
         var runtimePolicy = prepared is null ? JobExecutionRuntimePolicy.FromJobAndRequest(definition.Job, request)
-            : JobExecutionRuntimePolicy.FromOptions(prepared.OptionsJson);
+            : JobExecutionRuntimePolicy.FromOptions(preparedOptions);
         var executionEnvironment = prepared is null ? request.Environment ?? JobExecutionContextPolicy.FromJob(definition.Job)
-            : prepared.Environment ?? JobExecutionContextPolicy.FromOptions(prepared.OptionsJson);
+            : prepared.Environment ?? JobExecutionContextPolicy.FromOptions(preparedOptions);
         if (executionEnvironment is { } selected && !Enum.IsDefined(selected))
             throw new InvalidOperationException("The selected execution environment is invalid.");
         var target = db is null ? null : await db.Agents.AsNoTracking()
@@ -202,7 +204,7 @@ public sealed class AkkaJobAuthorityService(
             null,
             null,
             prepared?.InputsJson ?? request.InputsJson,
-            JobExecutionContextPolicy.MergeOptionsJson(JobExecutionRuntimePolicy.MergeOptionsJson(prepared?.OptionsJson ?? definition.Job.OptionsJson, runtimePolicy), executionEnvironment), agentId,
+            JobExecutionContextPolicy.MergeOptionsJson(JobExecutionRuntimePolicy.MergeOptionsJson(preparedOptions ?? definition.Job.OptionsJson, runtimePolicy), executionEnvironment), agentId,
             executionEnvironment, presentation?.DisplayName, presentation?.HostName, target?.Name), cancellationToken).ConfigureAwait(false);
 
         if (recordedRequestId is { } bindingRequestId) await managedGuard!.BindRunAsync(bindingRequestId, run, cancellationToken);
@@ -425,8 +427,8 @@ public sealed class AkkaJobAuthorityService(
         var invocation = await taskBridge.BuildGatewayInvocationAsync(
             run,
             step,
-            JobTemplateHelper.ParseInputs(run.InputsJson),
-            JobExecutionRuntimePolicy.FromOptions(run.OptionsJson),
+            JobTemplateHelper.ParseInputs(await jobRuns.GetExecutionInputsAsync(run.Id, cancellationToken)),
+            JobExecutionRuntimePolicy.FromOptions(await jobRuns.GetExecutionOptionsAsync(run.Id, cancellationToken)),
             cancellationToken).ConfigureAwait(false);
         if (!invocation.Success || string.IsNullOrWhiteSpace(invocation.TaskType) || invocation.PayloadJson is null)
         {
@@ -471,7 +473,7 @@ public sealed class AkkaJobAuthorityService(
             control.DispatchOwnerEpoch = dispatchOwner.Value.Epoch;
             // Conservative, immutable dispatch-time reconciliation boundary.
             // Native payload timeout still starts at physical process execution.
-            control.NativeDeadlineUtc = now.Add(JobExecutionRuntimePolicy.FromOptions(run.OptionsJson).HardTimeout);
+            control.NativeDeadlineUtc = now.Add(JobExecutionRuntimePolicy.FromOptions(await jobRuns.GetExecutionOptionsAsync(run.Id, cancellationToken)).HardTimeout);
             control.Revision++;
             await db.SaveChangesAsync(cancellationToken);
         }

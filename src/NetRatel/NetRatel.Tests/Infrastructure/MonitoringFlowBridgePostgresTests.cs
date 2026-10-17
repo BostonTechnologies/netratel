@@ -29,8 +29,8 @@ using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
 
-[Collection(PostgreSqlPersistenceCollection.Name)]
 public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixture postgres)
+    : IClassFixture<PostgreSqlPersistenceFixture>
 {
     [Fact]
     public async Task Automated_ai_flow_sends_pinned_context_waits_through_approval_and_delivers_one_completed_enriched_incident()

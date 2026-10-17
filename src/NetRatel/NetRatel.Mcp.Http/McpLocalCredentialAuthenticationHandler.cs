@@ -21,6 +21,7 @@ public sealed class McpLocalCredentialAuthenticationHandler(
 {
     public const string SchemeName = "NetRatelMcpLocalCredential";
     public const string ApiHttpClientName = "NetRatel.Mcp.LocalCredentialExchange";
+    private McpLocalCredentialExchangeFailure? _failure;
 
     protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
     {
@@ -38,7 +39,7 @@ public sealed class McpLocalCredentialAuthenticationHandler(
             using var response = await clients.CreateClient(ApiHttpClientName)
                 .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
-                return Fail(McpLocalCredentialExchangeFailure.FromResponse(response));
+                return Fail(await McpLocalCredentialExchangeFailure.FromResponseAsync(response, deadline.Token).ConfigureAwait(false));
 
             var result = await McpLocalCredentialExchangeResponse
                 .ReadJsonAsync<McpLocalAuthenticationResponse>(response.Content, deadline.Token).ConfigureAwait(false);
@@ -73,9 +74,17 @@ public sealed class McpLocalCredentialAuthenticationHandler(
 
     private AuthenticateResult Fail(McpLocalCredentialExchangeFailure failure)
     {
+        _failure = failure;
         return failure.StatusCode == System.Net.HttpStatusCode.Unauthorized
             ? AuthenticateResult.Fail(failure.Code)
             : throw new McpLocalCredentialExchangeException(failure);
+    }
+
+    protected override Task HandleChallengeAsync(AuthenticationProperties properties)
+    {
+        if (_failure is null) return base.HandleChallengeAsync(properties);
+        Response.StatusCode = StatusCodes.Status401Unauthorized;
+        return Response.WriteAsJsonAsync(_failure.ToPayload(Context.TraceIdentifier), Context.RequestAborted);
     }
 
     private sealed record McpLocalAuthenticationResponse(string OwnerPrincipalId, string CredentialId);

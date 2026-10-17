@@ -33,6 +33,10 @@ NetRatel setup
   Hosting options: --auth-mode local|oidc --oidc-authority HTTPS_URL --required-groups CSV --required-scopes CSV
   Advanced hosting: --instance-name dev|prod --resource HTTPS_MCP_URL --listen-port PORT --allowed-origins CSV --existing-outbound-config PATH --existing-m2m-callers CSV --api-m2m-audience AUDIENCE --api-m2m-authority HTTPS --delegation-principal NAME
   Existing delegation: --delegation-key-file PATH --delegation-key-id ID --delegation-issuer ID --delegation-audience ID
+  access prepare --instance WEB_URL --request-file PROPOSAL_JSON --requester-config EXISTING_HTTP_PROFILE --state-file PROTECTED_STATE --config NEW_HTTP_PROFILE [--profile NAME]
+  access resume --state-file PROTECTED_STATE --config NEW_HTTP_PROFILE [--profile NAME] [--replace]
+  The proposal contains only safe exact grants, targets, requestId and UTC expiry. An independent operator approves it in the browser.
+  Resume saves the one-time new credential to protected storage and acknowledges delivery; no secret is printed.
   config validate [--profile NAME] [--config PATH]
   doctor [--profile NAME] [--config PATH]
   profile list | profile select NAME
@@ -40,7 +44,7 @@ Interactive setup requires terminal input and output. Exit 2 indicates invalid i
 Import secrets from protected files or dedicated environment settings, never command arguments.
 Normal stdio MCP stdout contains protocol JSON-RPC only; run setup explicitly with a TTY.
 """;
-    public static bool IsSetupInvocation(string[] args) => args.Length > 0 && (args[0] is "setup" or "doctor" or "profile" || args[0] == "config" && args.Length > 1 && args[1] == "validate" || args[0] is "--help" or "-h");
+    public static bool IsSetupInvocation(string[] args) => args.Length > 0 && (args[0] is "setup" or "doctor" or "profile" or "access" || args[0] == "config" && args.Length > 1 && args[1] == "validate" || args[0] is "--help" or "-h");
     public static async Task<int> RunAsync(string[] args, ConfigurationSurface defaultSurface, TextWriter? output = null, TextWriter? error = null, bool? interactive = null, CancellationToken ct = default)
     {
         output ??= Console.Out; error ??= Console.Error;
@@ -57,6 +61,7 @@ Normal stdio MCP stdout contains protocol JSON-RPC only; run setup explicitly wi
             if (args[0] == "setup" && surface == ConfigurationSurface.HttpMcpOutbound) surface = ConfigurationSurface.HttpMcpClient;
             options.TryGetValue("--profile", out var profile); options.TryGetValue("--config", out var path);
             var engine = new NetRatelConfigurationService();
+            if (args[0] == "access") return await RunReviewedAccessAsync(args, options, output, ct);
             if (args[0] == "profile") return await ProfilesAsync(args, surface, engine, output);
             if (args[0] is "doctor" or "config")
             {
@@ -132,8 +137,8 @@ Normal stdio MCP stdout contains protocol JSON-RPC only; run setup explicitly wi
     {
         var options = new Dictionary<string, string>(StringComparer.Ordinal);
         var flags = new HashSet<string> { "--non-interactive", "--replace", "--verify" };
-        var valued = new HashSet<string> { "--profile", "--config", "--transport", "--target", "--mode", "--instance", "--credential-file", "--public-origin", "--api-base-url", "--output-directory", "--oidc-authority", "--auth-mode", "--required-groups", "--required-scopes", "--instance-name", "--resource", "--listen-port", "--allowed-origins", "--existing-outbound-config", "--existing-m2m-callers", "--api-m2m-audience", "--api-m2m-authority", "--delegation-principal", "--delegation-key-file", "--delegation-key-id", "--delegation-issuer", "--delegation-audience", "--deployment-manager", "--compose-file" };
-        for (var i = args[0] == "config" ? 2 : args[0] == "profile" ? args.Length : 1; i < args.Length; i++)
+        var valued = new HashSet<string> { "--profile", "--config", "--transport", "--target", "--mode", "--instance", "--credential-file", "--public-origin", "--api-base-url", "--output-directory", "--oidc-authority", "--auth-mode", "--required-groups", "--required-scopes", "--instance-name", "--resource", "--listen-port", "--allowed-origins", "--existing-outbound-config", "--existing-m2m-callers", "--api-m2m-audience", "--api-m2m-authority", "--delegation-principal", "--delegation-key-file", "--delegation-key-id", "--delegation-issuer", "--delegation-audience", "--deployment-manager", "--compose-file", "--request-file", "--requester-config", "--state-file" };
+        for (var i = args[0] is "config" or "access" ? 2 : args[0] == "profile" ? args.Length : 1; i < args.Length; i++)
         {
             var key = args[i];
             if (options.ContainsKey(key)) throw new AgentClientValidationException("Duplicate setup option.");
@@ -143,6 +148,52 @@ Normal stdio MCP stdout contains protocol JSON-RPC only; run setup explicitly wi
         }
         return options;
     }
+    private static async Task<int> RunReviewedAccessAsync(string[] args, Dictionary<string, string> options, TextWriter output, CancellationToken ct)
+    {
+        static string Required(Dictionary<string, string> options, string key) => options.TryGetValue(key, out var value) ? value : throw new AgentClientValidationException(key + " is required.");
+        var state = Required(options, "--state-file");
+        var destination = Required(options, "--config");
+        await using var session = new SetupSession(ConfigurationSurface.HttpMcpClient, destination, options.GetValueOrDefault("--profile", "default"));
+        session.ValidateDestinationStorage();
+        if (args.Length > 1 && args[1] == "prepare")
+        {
+            var proposal = JsonSerializer.Deserialize<NetRatel.Shared.Connectivity.ReviewedMcpAccessProposal>(
+                File.ReadAllText(Required(options, "--request-file")), AgentClientConfiguration.JsonOptions)
+                ?? throw new AgentClientValidationException("The reviewed proposal file is invalid.");
+            var requesting = new NetRatelConfigurationService().Load(new(ConfigurationSurface.HttpMcpClient, Required(options, "--requester-config")));
+            if (!requesting.Validate().IsValid) throw new AgentClientValidationException("The requesting HTTP MCP profile is invalid.");
+            await session.DiscoverAsync(Required(options, "--instance"), ct);
+            await session.PrepareReviewedAccessAsync(proposal, requesting.Configuration, state, ct);
+            await output.WriteLineAsync(JsonSerializer.Serialize(new { requestId = session.Pairing!.RequestId, userCode = session.Pairing.UserCode,
+                verificationUri = session.Pairing.VerificationUri, expiresAtUtc = proposal.ExpiresAtUtc, state = "pending_operator_review", nextAction = "Have an independent authorized operator review this exact request, then run access resume with the same state and destination." }, AgentClientConfiguration.JsonOptions));
+            return 0;
+        }
+        if (args.Length > 1 && args[1] == "resume")
+        {
+            await session.RestoreReviewedAccessAsync(state, ct);
+            if (await session.ReconcileReviewedSavedAsync(ct))
+            {
+                File.Delete(state);
+                await output.WriteLineAsync(JsonSerializer.Serialize(new { requestId = session.Pairing!.RequestId, credentialId = session.ReviewedSavedCredentialId,
+                    expiresAtUtc = session.ReviewedCredentialExpiresAtUtc, saved = true, reconciled = true, configurationPath = session.Path }, AgentClientConfiguration.JsonOptions));
+                return 0;
+            }
+            var poll = await session.PollAsync(ct);
+            if (poll.Status != "issued")
+            {
+                await output.WriteLineAsync(JsonSerializer.Serialize(new { requestId = session.Pairing!.RequestId, status = poll.Status, intervalSeconds = poll.IntervalSeconds }, AgentClientConfiguration.JsonOptions));
+                return poll.Status is "pending" or "approved" or "slow_down" ? 0 : 2;
+            }
+            session.Review();
+            await session.SaveAsync(options.ContainsKey("--replace"), ct);
+            File.Delete(state);
+            await output.WriteLineAsync(JsonSerializer.Serialize(new { requestId = session.Pairing!.RequestId, credentialId = session.Delivery!.CredentialId,
+                expiresAtUtc = session.Delivery.ExpiresAtUtc, saved = session.Saved, configurationPath = session.Path }, AgentClientConfiguration.JsonOptions));
+            return 0;
+        }
+        throw new AgentClientValidationException("Use access prepare or access resume; see setup --help.");
+    }
+
     private static async Task<int> ProfilesAsync(string[] args, ConfigurationSurface surface, NetRatelConfigurationService service, TextWriter output)
     {
         if (args.Length == 2 && args[1] == "list")

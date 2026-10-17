@@ -54,7 +54,7 @@ public static class McpOperatorPolicyInspectionEndpoints
             IMcpOperatorPolicyAdministration administration,
             CancellationToken cancellationToken) =>
         {
-            if (!TryContext(http, hostEnvironment, "policy", null, null, out var context, out var failure))
+            if (!TryContext(http, hostEnvironment, "policy", null, null, out var context, out var failure, policyId.ToString("D")))
                 return Failure(failure!, null, null, http.TraceIdentifier, $"{Tool}/policy");
 
             var policy = await administration.GetAsync(policyId, cancellationToken).ConfigureAwait(false);
@@ -212,7 +212,8 @@ public static class McpOperatorPolicyInspectionEndpoints
         int? tenantId,
         Guid? agentId,
         out McpOperatorPolicyInspectionContext? context,
-        out string? failure)
+        out string? failure,
+        string? policyReference = null)
     {
         context = null;
         failure = null;
@@ -233,7 +234,9 @@ public static class McpOperatorPolicyInspectionEndpoints
             McpOperatorEnvironment.Production => "prod",
             _ => null
         };
-        var targetMatches = tenantId.HasValue || agentId.HasValue
+        var targetMatches = policyReference is not null
+            ? string.Equals(delegation.ObjectReference, policyReference, StringComparison.Ordinal)
+            : tenantId.HasValue || agentId.HasValue
             ? delegation.TenantId == tenantId && delegation.AgentId == agentId
             : delegation.TenantId is null && delegation.AgentId is null;
         if (operatorEnvironment is null || expectedInstance is null ||

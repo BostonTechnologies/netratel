@@ -28,6 +28,8 @@ public static class NetRatelPermissions
     public const string ArtifactPublication = "artifact.publish";
     public const string McpPolicyAdministration = "mcp.policy.admin";
     public const string McpDiscoveryRead = "mcp.discovery.read";
+    public const string McpConnectivityRead = "mcp.connectivity.read";
+    public const string McpConnectivityTest = "mcp.connectivity.test";
     public const string FlowRead = "flow.read";
     public const string FlowEdit = "flow.edit";
     public const string FlowPublish = "flow.publish";
@@ -41,6 +43,7 @@ public static class NetRatelPermissions
         ScriptEdit, ScriptExecute, JobManagement, TerminalAccess,
         FileRead, FileWrite, FileDelete, RemoteSupport, SecretUse, SecretReveal,
         AuditRead, IntegrationManagement, ArtifactPublication, McpPolicyAdministration, McpDiscoveryRead,
+        McpConnectivityRead, McpConnectivityTest,
         FlowRead, FlowEdit, FlowPublish, FlowExecute
     };
 }

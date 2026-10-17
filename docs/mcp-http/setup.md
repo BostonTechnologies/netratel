@@ -9,6 +9,8 @@ Netclaw / other HTTP MCP client → HTTP MCP server → NetRatel API
 
 **Host setup connects the MCP server to NetRatel once per deployment. Client setup gives each consumer its own access.** Host/client does not mean home/company use or single/multiple tenants. Ordinary Web/API and the native NetRatel Client agent do not require HTTP MCP.
 
+The `netratel://health` resource describes the MCP host only. After reconnecting the saved client, invoke `netratel_health` with `operation: "get"` to check the protected API liveness/readiness routes through the actual configured HTTPS destination. Preserve each component outcome and correlation ID. A healthy MCP host or admitted health probe does not establish delegated authentication or tenant access; complete `netratel_auth/status` and an approved tenant read separately. See [verification](troubleshooting.md#bounded-verification).
+
 ## Which setup command do I run?
 
 These are commands for an already-open terminal, with the matching tools installed:
@@ -89,3 +91,41 @@ bash ./setup-http-mcp.sh --container "$mcp_container" --target http-client
 For **Netclaw or another third-party client**, create a separate HTTP MCP credential under **Integrations → API & MCP credentials → Create credential** or approve that client's code under **Connect CLI / MCP client → Review client**. Install the one-time secret in that client's own protected storage and use the canonical `/mcp` URL. A container profile is not automatically installed into Netclaw. Follow [Netclaw customer connections](../integrations/netclaw-http-mcp.md) for its transport, policy and per-customer checks.
 
 See [CLI/stdio commands](../integrations/CLI_AND_MCP.md), [host/storage recovery](hosting-reference.md), [configuration](configuration.md) and [troubleshooting](troubleshooting.md) for other contexts.
+
+For a consumer that supports only stdio launch commands, obtain the versioned `NetRatel.Mcp` archive and configure `http-bridge --profile NAME` using [the supported client transport and migration guide](../integrations/http-mcp-bridge.md). Run its acquisition and client setup commands on the consumer machine; a container profile does not migrate that machine's installed adapter. Native HTTP connections remain available through the consumer's maintained transport.
+
+### Reviewed client access and exact expiry
+
+A local HTTP MCP credential's configured grants and the current operation delegation are separate from tenant visibility and target policy. Start with `netratel_access` operation `credential` and the caller-owned `credentialId` to inspect safe grants and the exact UTC expiry. `request` proposes `reconcile` or `revoke` for an owned credential; include a durable UUID `requestId`, exact `expiresAtUtc`, explicit `grants`, `instancePermissions` and `targets`. Each target names `tenantId`, `tool` and `operation`; agent operations also require the independently resolved `agentId` and current `profileRevision`. Use `requests`, `receipt`, `resume` and `cancel` with the saved request ID to reconcile interrupted setup. A changed proposal needs a new request ID and review. Reconciliation does not silently start a new thirty-day period.
+
+An independent signed-in operator enters the returned user code at the credential-management review URL, checks the identity, resource, instance/environment, exact grants, scopes/roles, targets, operation set, revisions and UTC instant, and explicitly approves. Approval rechecks current credential delegation and MCP policy authority. The requester cannot approve itself. Missing owner roles or target profiles remain explicit prerequisites. No administrative API token or broad fallback grant is needed.
+
+For a new auxiliary credential, the protected client prepares pairing outside model-visible tool results. On the consumer machine, [obtain and verify the stdio tooling archive and install its .NET 10 runtime](../integrations/http-mcp-bridge.md#obtain-and-configure-the-bridge). Run the commands below as the same operating-system user that owns the protected HTTP profiles, replacing `/path/to/netratel-mcp-linux-x64` with the actual extracted archive directory. Save a secret-free proposal JSON file, for example:
+
+```json
+{
+  "requestId": "b1111111-1111-4111-8111-111111111111",
+  "name": "Disposable flow reader",
+  "action": "create",
+  "expiresAtUtc": "2030-04-01T10:11:12Z",
+  "grants": [{"tenantId":17,"permission":"flow.read"},{"tenantId":29,"permission":"flow.read"}],
+  "instancePermissions": ["mcp.discovery.read"],
+  "targets": [{"tenantId":17,"tool":"netratel_flows","operation":"list"},{"tenantId":29,"tool":"netratel_flows","operation":"list"}]
+}
+```
+
+Choose a real future expiry within one year and replace synthetic tenant IDs with the separately approved exact tenants. The requesting profile must already have durable owner authority for the requested application grants.
+
+```sh
+# Client terminal. Existing HTTP profile stores the requesting credential securely.
+dotnet /path/to/netratel-mcp-linux-x64/NetRatel.Mcp.dll access prepare --instance https://netratel.example.test \
+  --request-file ./reviewed-proposal.json --requester-config ./existing-http-profile.json \
+  --state-file ./private/access-request.json --config ./auxiliary-http-profile.json --profile auxiliary
+# After independent browser approval, poll/resume the same saved request.
+dotnet /path/to/netratel-mcp-linux-x64/NetRatel.Mcp.dll access resume --state-file ./private/access-request.json \
+  --config ./auxiliary-http-profile.json --profile auxiliary
+```
+
+Prepare prints only request ID, non-bearer user code, review URL and expiry. Its protected pending file retains the device capability; keep it private and out of model context, exports and logs. A lost response is reconciled by rerunning prepare with the same request and paths. Resume saves the one-time credential through the existing protected profile store, then acknowledges delivery. It rejects a delivery whose grants or exact expiry differ from the retained proposal. Do not print or paste that profile's secret. Native `request` can inspect an already prepared create proposal, and `receipt` reports its safe outcome. Credential inspection never retrieves an existing secret.
+
+The receipt separates configured credential grants, the current attenuated delegation, current tenant visibility, exact policy decisions and remaining prerequisites. For agent targets, the receipt leaves `policyAllowed` null with `conditional_runtime_unverified` and keeps `authorizationAdmitted` false until current runtime prerequisites are established. Read `netratel_access target/effective` for that exact persisted target and policy, then inspect operation readiness. Tenant and control-plane authorization can be evaluated without agent runtime facts. Dispatch rechecks readiness, capability and the normal preview, confirmation and idempotency requirements. Test a permitted read in each approved tenant before continuing the owner campaign.

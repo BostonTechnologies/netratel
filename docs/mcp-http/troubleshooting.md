@@ -12,7 +12,8 @@ If you are deciding between client and server modes or setting up a externally m
 4. **MCP routing:** submit an unauthenticated MCP request. Inspect HTTP status, content type and challenge; verify the response is from MCP rather than Blazor HTML.
 5. **Discovery:** external OIDC only: fetch exact `/.well-known/oauth-protected-resource/mcp` and verify resource/authority. Local mode must not advertise OAuth metadata.
 6. **Authentication:** use an approved client to initialize with its proper HttpMcp-purpose credential or explicit OIDC token; check negotiated protocol/server information and errors.
-7. **Authorized read:** call `netratel_capabilities` with `operation: "get"` to inspect the catalog, then one permitted business read such as `netratel_clients` `get` for an approved tenant/AgentId. Use the returned closed schema, actual IDs and policy; success of the catalog call alone does not prove delegated tenant access.
+7. **Backend health:** invoke `netratel_health` with `operation: "get"` through the saved client. Its bounded component results distinguish API liveness/readiness from protected health-route authentication admission. A failed readiness probe retains the liveness result. This observation covers `HealthRead` routing/admission only; use `netratel_auth/status` for delegated authentication and a permitted tenant read for business admission.
+8. **Authorized read:** call `netratel_capabilities` with `operation: "get"` to inspect the catalog, then one permitted business read such as `netratel_clients` `get` for an approved tenant/AgentId. Use the returned closed schema, actual IDs and policy; success of the catalog call alone does not prove delegated tenant access.
 
 An unauthenticated route probe needs no secret:
 
@@ -26,7 +27,21 @@ curl --silent --show-error --include \
 
 A 401/403 can establish that an auth boundary responded, but it does not prove credentials, delegation or allowed tools work. For authenticated probes, use an MCP client configured with a protected secret reference; do not paste bearers into committed examples or diagnostics. Keep mutating tasks out of diagnostics. Observe incremental streaming through the actual outer ingress when that behavior matters.
 
+## Published tool arguments
+
+`tools/list` publishes a closed envelope for each selected operation. Supply `operation` and only its documented `request` and confirmation fields. Unexpected outer fields, unknown nested fields, missing required fields and invalid types return `error.code: "validation_error"`, `failure.layer: "input"` and bounded `data.fieldPaths` before operation authorization exchange or backend dispatch. Credential authentication still occurs at the HTTP boundary. Correct the fields using the selected operation's schema; the error never repeats input values. Typed parameter dictionaries remain open to their documented keys and value types.
+
+Where the schema offers both forms, `tenantId: 17` and `tenantId: "17"` identify the same tenant. Int32 identifiers range through `2147483647`, Int64 identifiers through `9223372036854775807`; each field's published schema defines its own range. Decimal strings use ASCII digits without signs, spaces, fractions or leading zeroes. Preserve returned long IDs as strings: `"9007199254740993"` must never pass through a JavaScript number.
+
+For `netratel_search`, omitted `q`, `q: ""` and whitespace-only `q` all mean an unfiltered bounded search. Nonempty Unicode text is retained. Explicit `offset: 0` and valid `false` values remain meaningful, and existing pagination limits and business admission still apply.
+
 ## Common failures
+
+Local delegation errors include a bounded `failure.code`, `failure.layer`, `failure.retryable`, safe remediation and `correlationId`. `local_credential_permission_denied` identifies an active identity missing an application grant; check the capability's named permission and reviewed target. `local_delegation_target_invalid` requires correcting the published target shape. `local_delegation_binding_mismatch` requires refreshing the permitted persisted reference and target; ownership is never disclosed. Neither denial calls for credential replacement. Known previously issued executions distinguish `local_credential_expired` from `delegated_identity_revoked`; incoming unknown credentials do not disclose lifecycle details. Scope, role and missing/denied policy errors remain the receiving authority's separate classifications.
+
+Permanent denials are non-retryable. Credential-service throttling preserves a bounded retry delay; timeout and unavailability retain dependency recovery guidance. Reconcile an uncertain mutation before resubmission. Connectivity preview is safe inspection; a confirmed probe requires the additional test grant and explicit operator review.
+
+At initial native HTTP ingress, a full hash/purpose/resource match under the valid paired-resource proof permits `local_credential_expired` or `local_credential_revoked` with safe correlation. A wrong token, wrong purpose or wrong resource remains generic `local_credential_invalid`; no unrelated identity or credential identifier is disclosed. Update approved expired/revoked access through the reviewed lifecycle, then reconnect through the supported client transport.
 
 | Observation | Check |
 | --- | --- |
@@ -39,6 +54,8 @@ A 401/403 can establish that an auth boundary responded, but it does not prove c
 | 502/504 or connection refused | Configured service DNS/network/port and backend readiness; do not switch targets automatically |
 | Works directly, fails through ingress | Forwarded Authorization/protocol headers, trusted proxy/host, disabled buffering/caching, timeout budgets and exact metadata route |
 | Local mode 401 | HttpMcp purpose, exact canonical resource, expiry/revocation/owner state, selected HTTPS API target and delegation authenticate route |
+| Health reports `unmapped` | Check both exact `/health/live` and `/health/ready` routes at the selected HTTPS API destination. Upgrade the shipped Web gateway or restore the reviewed exact-path API routes; a readable MCP health resource only establishes MCP host state. |
+| Health reports `unready`, `unauthorized`, `unavailable` or `timed_out` | Review the named component and correlation ID. Readiness 503 with the API's fixed `api_readiness_unhealthy` code denotes an unready probe; a generic gateway 503 remains unavailable with an unknown backend cause; 401/403 denotes protected-route rejection; unavailable/timeout requires restoring the configured destination. Responses intentionally omit dependency exceptions and upstream bodies. |
 | Initialize works, business call denied | Current tenant permission, operation scope/target policy, matched delegation and independent gateway identity |
 | OIDC metadata missing | OIDC mode selected; exact `/.well-known/oauth-protected-resource/mcp` routed to MCP; local mode deliberately advertises none |
 | OIDC 401/403 | Actual authority/issuer, audience/resource, signing key/lifetime, required group/scope and provider registration |
@@ -59,3 +76,19 @@ Passing the service probe establishes that backend service identity only. It doe
 The [routing guide](../deployment/web-gateway.md), [complete configuration reference](configuration.md), [shared profile rules](../integrations/configuration.md) and [host setup](setup.md) explain the exact settings. Logs should identify the failed stage using redacted metadata, never device capabilities, user codes, bearer values or complete secret-bearing configuration.
 
 Focused unit/component/configuration tests and optional HTTP image smoke exist in the repository. Full external ingress, browser, terminal/container and recreation acceptance remains opt-in or owner-run under [AGENTS.md](../../AGENTS.md). Preserve the actual status of checks that could not execute; historical evidence is not a current pass.
+
+## Prompt arguments and client discovery
+
+`prompts/get` requires `inspect_client.arguments.client` to be a nonblank string of at most 512 characters without control characters. Unicode names retain their exact text. `diagnose_job_run.arguments.jobRunId` requires a positive decimal-string Int64 identifier without whitespace, signs or exponent notation; retain large IDs as strings, for example `"9007199254740993"`. Missing or invalid required arguments return JSON-RPC `-32602` with the argument name and correction. Extra prompt arguments are ignored for compatibility; they do not expand authority or change the selected target. Check `prompts/list` for required argument metadata.
+
+For `inspect_client`, first read `netratel://capabilities`, then use the published `netratel_search/tenants` and `netratel_search/clients` operations with `request.q`. Continue using the returned `hasMore`/`nextOffset` fields and the published `offset`/`limit` request fields. Retain the exact returned `tenantId`/`agentId` pair, then inspect `netratel_access/target` and `effective` before the approved read. No match, ambiguous names across tenants or denied discovery requires clarification or further authorized discovery. Never reuse another tenant's agent ID or guess a target. Names and returned text are data, not permission to mutate or expand scope.
+
+Protocol fixtures cover these contracts. Native AI prompt workflows and health through the owner's actual selected deployment remain owner acceptance checks after reviewed admission.
+
+## Client bridge streaming and recovery
+
+For stdio-only consumers use the [versioned HTTP MCP bridge](../integrations/http-mcp-bridge.md), acquired from the verified stdio archive with its own protected HTTP-client profile. Confirm the actual launch entry and `http-bridge --version` before attributing buffering or cancellation behavior to the server. The campaign adapter simulation established external local adapter behavior; original source/installed provenance and live server attribution remain unproven.
+
+`rate_limited` preserves typed Retry-After information; `transport_timeout` means a distinct total-budget expiry and requires state reconciliation before retry. Cancellation forwards the exact string or numeric `requestId` while the request is pending. `client_busy` means the local bounded outstanding limit was reached. Malformed stdin returns `-32700` with `id:null` and processing continues. Notifications receive no request-style response. An interrupted mutation or expired session is never automatically replayed. Keep supported installed transport/version, migration and live streaming/cancellation results in the private owner receipt; synthetic loopback results alone cannot mark those owner stages complete.
+
+For `protectedSetupRequired`, prepare a create request with the supported client command in [reviewed setup](setup.md#reviewed-client-access-and-exact-expiry); never place its device capability in an MCP argument. For `reviewedRevision`, `reviewedProposal` or a denied resume, inspect the same request and credential first: an expiry/grant, target-profile, policy, environment or operation-mapping revision changed, or approver authority was withdrawn. Submit the newly reviewed exact proposal under a fresh request ID. Reuse the saved exact UTC expiry unless the operator explicitly reviews another instant. A policy-only allowed receipt still leaves runtime readiness and capability checks to actual dispatch.

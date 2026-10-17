@@ -11,10 +11,25 @@ public sealed class AgentClientRemoteException(string code, string message, int 
     public int StatusCode { get; } = statusCode;
     public string? ResponseBody { get; } = responseBody;
     public string? RemoteCode { get; } = remoteCode;
+    public string? CorrelationId { get; } = AgentClientRemoteError.ExtractSafeCorrelationId(responseBody);
 }
 
 internal static class AgentClientRemoteError
 {
+    public static string? ExtractSafeCorrelationId(string? responseBody)
+    {
+        if (string.IsNullOrWhiteSpace(responseBody) || responseBody.Length > 4096) return null;
+        try
+        {
+            using var document = JsonDocument.Parse(responseBody);
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("correlationId", out var element) || element.ValueKind != JsonValueKind.String) return null;
+            var value = element.GetString();
+            return value is { Length: > 0 and <= 128 } && value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.' or ':') ? value : null;
+        }
+        catch (JsonException) { return null; }
+    }
+
     public static string? ExtractSafeCode(string? responseBody)
     {
         if (string.IsNullOrWhiteSpace(responseBody) || responseBody.Length > 4096)
@@ -25,6 +40,7 @@ internal static class AgentClientRemoteError
         try
         {
             using var document = JsonDocument.Parse(responseBody);
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return null;
             return SafeCode(document.RootElement) ??
                    (document.RootElement.TryGetProperty("failure", out var failure) && failure.ValueKind == JsonValueKind.Object
                        ? SafeCode(failure)

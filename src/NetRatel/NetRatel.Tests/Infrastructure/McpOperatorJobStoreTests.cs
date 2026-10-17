@@ -71,7 +71,7 @@ public sealed class McpOperatorJobStoreTests
         var job = await store.CreateAsync(new McpOperatorJobCreateRequest(fixture.Decision, fixture.Audit,
             new McpOperatorJobDraft("retained-run", "/"), fixture.Now), CancellationToken.None);
         const ulong runId = 9007199254740993;
-        await new JobRunService(db).UpsertRunAsync(new UpsertJobRunCommand(runId, (ulong)job.JobId,
+        await new JobRunService(db, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider()).UpsertRunAsync(new UpsertJobRunCommand(runId, (ulong)job.JobId,
             fixture.TenantId, "client", fixture.Principal.Subject, JobRunState.Succeeded, 1,
             fixture.Now, fixture.Now, fixture.Now, null, null, null, fixture.AgentId));
         await store.RecordStartedRunAsync(job.JobId, runId, Guid.NewGuid(), fixture.Decision, fixture.Audit,
