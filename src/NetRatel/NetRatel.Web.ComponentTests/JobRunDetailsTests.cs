@@ -135,7 +135,7 @@ public sealed class JobRunDetailsTests : AsyncBunitContext
         second = second with { Status = JobStepRunStatusDto.Running, StartedAtMicros = 210, TaskRequestId = "task-2" };
         await _stream.SendAsync(_transport.Run, [first, second, third], [Line(1, "second output")], 2);
         cut.WaitForAssertion(() => cut.FindComponents<MudExpansionPanel>().Select(panel => panel.Instance.Expanded).Should().Equal(false, true, false));
-        cut.FindAll(".job-run-output").Should().Contain(output => output.TextContent == "second output");
+        cut.WaitForAssertion(() => cut.FindAll(".job-run-output").Should().Contain(output => output.TextContent == "second output"));
         var secondPanel = cut.FindComponents<MudExpansionPanel>()[1];
         await cut.InvokeAsync(() => secondPanel.Instance.ExpandedChanged.InvokeAsync(true));
         cut.FindComponents<MudSwitch<bool>>().Single().Instance.Value.Should().BeTrue(); // Programmatic echo does not pause.
@@ -148,7 +148,7 @@ public sealed class JobRunDetailsTests : AsyncBunitContext
         cut.FindComponents<MudExpansionPanel>().Select(panel => panel.Instance.Expanded).Should().Equal(true, true, false);
         await cut.InvokeAsync(() => cut.FindAll("button").Single(button => button.TextContent == "Resume").Click());
         cut.WaitForAssertion(() => cut.FindComponents<MudExpansionPanel>().Select(panel => panel.Instance.Expanded).Should().Equal(false, false, true));
-        cut.FindComponents<MudExpansionPanel>()[2].Find(".job-run-output").TextContent.Should().Be("third output");
+        cut.WaitForAssertion(() => cut.FindComponents<MudExpansionPanel>()[2].Find(".job-run-output").TextContent.Should().Be("third output"));
         await _stream.SendAsync(_transport.Run with { Status = JobRunStatusDto.Succeeded }, [first, second, third with { Status = JobStepRunStatusDto.Succeeded, CompletedAtMicros = 400 }], [Line(1, "third output")], 3);
         cut.WaitForAssertion(() => cut.Find(".job-run-summary").TextContent.Should().Contain("Execution completed successfully."));
         cut.FindComponents<MudExpansionPanel>().Select(panel => panel.Instance.Expanded).Should().Equal(false, false, true);
