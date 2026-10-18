@@ -1,6 +1,7 @@
 using System.Text.Json;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Presence;
+using NetRatel.Shared.Security;
 
 namespace NetRatel.API.Services.Jobs;
 
@@ -34,7 +35,8 @@ internal static class TaskLifecycleOutput
                     if (line.ValueKind != JsonValueKind.String) continue;
                     var message = line.GetString() ?? string.Empty;
                     await tasks.AppendTaskLogAsync(new(requestId, activity.Id, activity.ClientIdentity, activity.TenantId,
-                        stream, message.Length <= 4096 ? message : message[..4096], sequence++, receivedAtUtc), cancellationToken).ConfigureAwait(false);
+                        stream, message.Length <= 4096 ? message : message[..4096], sequence++, receivedAtUtc,
+                        TaskOutputRedactor.ReadBinding(resultJson)), cancellationToken).ConfigureAwait(false);
                 }
             }
         }

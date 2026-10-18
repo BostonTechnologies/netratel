@@ -17,6 +17,55 @@ namespace NetRatel.Tests.API;
 
 public sealed class McpFileDelegationPermissionTests
 {
+    [Fact]
+    public async Task External_job_start_requires_current_job_and_script_grants_in_one_tenant()
+    {
+        await using var scenario = new Scenario();
+        await scenario.GrantAsync(NetRatelPermissions.JobManagement, 7);
+        await scenario.GrantAsync(NetRatelPermissions.ScriptEdit, 8);
+        (await scenario.InvokeAsync("start", tool: "netratel_job_runs")).Status.Should().Be(StatusCodes.Status403Forbidden);
+        var user = new ClaimsPrincipal(new ClaimsIdentity([new Claim("netratel_principal_id", Scenario.Owner)], "Oidc"));
+        var access = scenario.Services.GetRequiredService<IEffectiveAccessService>();
+        (await McpLocalDelegationPermissionMapper.AuthorizeAsync(access, user, "netratel_job_runs", "start", 7, default)).Should().BeFalse();
+
+        var scriptGrant = await scenario.GrantAsync(NetRatelPermissions.ScriptEdit, 7);
+        (await scenario.InvokeAsync("start", tool: "netratel_job_runs")).Entered.Should().BeTrue();
+        (await McpLocalDelegationPermissionMapper.AuthorizeAsync(access, user, "netratel_job_runs", "start", 7, default)).Should().BeTrue();
+        scenario.Db.PrincipalRoleAssignments.Remove(scriptGrant);
+        await scenario.Db.SaveChangesAsync();
+
+        (await scenario.InvokeAsync("start", tool: "netratel_job_runs")).Status.Should().Be(StatusCodes.Status403Forbidden);
+    }
+
+    [Fact]
+    public async Task Local_job_start_keeps_execute_scope_and_requires_script_grant_in_owner_and_credential()
+    {
+        await using var scenario = new Scenario();
+        await scenario.GrantAsync(NetRatelPermissions.JobManagement, 7);
+        var ownerScript = await scenario.GrantAsync(NetRatelPermissions.ScriptEdit, 7);
+        var credential = new IntegrationCredential
+        {
+            OwnerPrincipalId = Scenario.Owner, Purpose = IntegrationCredentialPurpose.HttpMcp,
+            Resource = Scenario.Resource, ExpiresAtUtc = DateTimeOffset.UtcNow.AddHours(1),
+            Grants = [new() { TenantId = 7, Permission = NetRatelPermissions.JobManagement },
+                new() { TenantId = 8, Permission = NetRatelPermissions.ScriptEdit }]
+        };
+        scenario.Db.IntegrationCredentials.Add(credential);
+        await scenario.Db.SaveChangesAsync();
+        AssertPermissionDenied(await scenario.InvokeAsync("start", credential: credential.Id, ingress: NetRatelPermissions.JobManagement, tool: "netratel_job_runs"),
+            "the start credential must hold script.edit for the same tenant");
+
+        credential.Grants.Add(new() { CredentialId = credential.Id, TenantId = 7, Permission = NetRatelPermissions.ScriptEdit });
+        await scenario.Db.SaveChangesAsync();
+        (await scenario.InvokeAsync("start", credential: credential.Id, ingress: NetRatelPermissions.JobManagement, tool: "netratel_job_runs")).Entered.Should().BeTrue();
+        McpOperationAccessCatalog.Find("netratel_job_runs", "start")!.RequiredScope.Should().Be(McpOperationAccessScope.Execute);
+        scenario.Db.PrincipalRoleAssignments.Remove(ownerScript);
+        await scenario.Db.SaveChangesAsync();
+
+        AssertPermissionDenied(await scenario.InvokeAsync("start", credential: credential.Id, ingress: NetRatelPermissions.JobManagement, tool: "netratel_job_runs"),
+            "an existing assertion must not retain a revoked owner script entitlement");
+    }
+
     [Theory]
     [InlineData("collect", NetRatelPermissions.FileRead, null)]
     [InlineData("preview_collect", NetRatelPermissions.FileRead, null)]
@@ -235,13 +284,14 @@ public sealed class McpFileDelegationPermissionTests
         }
 
         public async Task<(bool Entered, int Status, string? Code)> InvokeAsync(string operation, int tenant = 7, string? issuer = Issuer,
-            string? credential = null, string? ingress = null)
+            string? credential = null, string? ingress = null, string tool = "netratel_files")
         {
             var tokens = new McpOperatorDelegationTokenService(_options);
             var assertion = tokens.Create(new McpOperatorDelegationIdentity(credential is null ? "external-operator" : Owner,
-                "oauth-client", null, [], ["Administrator", "AutomationOperator"], ["netratel.mcp.files", "netratel.mcp.write"])
+                "oauth-client", null, [], ["Administrator", "AutomationOperator"],
+                [McpOperationAccessScopeNames.Canonical(McpOperationAccessCatalog.Find(tool, operation)!.RequiredScope)])
                 { ExternalIssuer = issuer },
-                new McpOperatorDelegationRequest("netratel_files", operation, Guid.NewGuid().ToString("N"), Resource, "prod", tenant, AgentId, "test")
+                new McpOperatorDelegationRequest(tool, operation, Guid.NewGuid().ToString("N"), Resource, "prod", tenant, AgentId, "test")
                 { IngressCredentialId = credential, IngressPermission = ingress });
             var entered = false;
             var middleware = new McpOperatorDelegationMiddleware(context =>

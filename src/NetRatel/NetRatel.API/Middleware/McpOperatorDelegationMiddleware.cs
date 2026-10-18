@@ -74,7 +74,8 @@ public sealed class McpOperatorDelegationMiddleware(
                 return;
             }
         }
-        else if (delegation.Tool is "netratel_files" or "netratel_connectivity" &&
+        else if ((delegation.Tool is "netratel_files" or "netratel_connectivity" ||
+                  delegation.Tool == "netratel_job_runs" && delegation.Operation == "start") &&
             !await IsAuthorizedExternalApplicationExecutionAsync(delegation, context.RequestServices, context.RequestAborted).ConfigureAwait(false))
         {
             context.Response.StatusCode = StatusCodes.Status403Forbidden;

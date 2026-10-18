@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.DataProtection;
+using NetRatel.Application.Jobs;
 using NetRatel.Infrastructure.Persistence;
 
 namespace NetRatel.Infrastructure.Services;
@@ -19,7 +20,7 @@ internal sealed class JobRunInputProtection(IDataProtectionProvider protection)
         public HashSet<string> Secrets => Parameters.Where(p => p.Type.Equals("secret", StringComparison.OrdinalIgnoreCase))
             .Select(p => p.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
-    internal sealed record Execution(string? InputsJson, string? OptionsJson);
+    internal sealed record Execution(string? InputsJson, string? OptionsJson, McpOperatorJobExecutionSnapshot? McpSnapshot = null);
 
     public static Sensitivity Capture(JobDefinition? definition, IEnumerable<JobParameterDefinition> parameters)
     {
@@ -43,10 +44,10 @@ internal sealed class JobRunInputProtection(IDataProtectionProvider protection)
         catch (JsonException) { return new("legacy-unknown-v1", null, []); }
     }
 
-    public void Store(JobRunRecord run, Sensitivity metadata, string? inputs, string? options)
+    public void Store(JobRunRecord run, Sensitivity metadata, string? inputs, string? options, McpOperatorJobExecutionSnapshot? mcpSnapshot = null)
     {
         run.InputSensitivityJson = JsonSerializer.Serialize(metadata);
-        run.ProtectedExecutionJson = Protector(run).Protect(JsonSerializer.Serialize(new Execution(inputs, options)));
+        run.ProtectedExecutionJson = Protector(run).Protect(JsonSerializer.Serialize(new Execution(inputs, options, mcpSnapshot)));
         run.InputsJson = RedactInputs(inputs, metadata);
         run.OptionsJson = RedactOptions(options, metadata, SecretValues(inputs, metadata));
     }

@@ -48,7 +48,7 @@ public static class McpOperatorPolicyMutationEndpoints
                 return Failure("environment_mismatch", target.TenantId, target.AgentId, context.CorrelationId, StatusCodes.Status400BadRequest);
 
             var payloadHash = PayloadHash(request.Policy);
-            var decision = await EvaluateAsync(context, target, payloadHash, CreateOperation, authorization, cancellationToken).ConfigureAwait(false);
+            var decision = await EvaluateAsync(context, target, payloadHash, CreateOperation, authorization, administration, cancellationToken).ConfigureAwait(false);
             if (!decision.IsAllowed)
                 return Failure(decision.FailureCode ?? "target_policy_missing", target.TenantId, target.AgentId, context.CorrelationId);
             if (WouldEscalateCaller(request.Policy, context.Principal))
@@ -106,7 +106,7 @@ public static class McpOperatorPolicyMutationEndpoints
                 return Failure("environment_mismatch", target.TenantId, target.AgentId, context.CorrelationId, StatusCodes.Status400BadRequest);
 
             var payloadHash = PayloadHash(request.Policy);
-            var decision = await EvaluateAsync(context, target, payloadHash, CreateOperation, authorization, cancellationToken).ConfigureAwait(false);
+            var decision = await EvaluateAsync(context, target, payloadHash, CreateOperation, authorization, administration, cancellationToken).ConfigureAwait(false);
             if (!decision.IsAllowed)
                 return Failure(decision.FailureCode ?? "target_policy_missing", target.TenantId, target.AgentId, context.CorrelationId);
             if (WouldEscalateCaller(request.Policy, context.Principal))
@@ -141,21 +141,19 @@ public static class McpOperatorPolicyMutationEndpoints
 
             try
             {
-                await authorization.RecordAcceptedAsync(decision, context.ServicePrincipal, cancellationToken).ConfigureAwait(false);
+                var created = await ExecuteMutationAsync(
+                    decision, context, target, payloadHash, CreateOperation, authorization, administration,
+                    mutationToken => administration.CreateAsync(request.Policy, context.Principal.Subject, mutationToken),
+                    cancellationToken).ConfigureAwait(false);
+                await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, created.PolicyId.ToString("D"), cancellationToken).ConfigureAwait(false);
+                return Results.Created(
+                    $"/api/v2/mcp/operator/policy/policies/{created.PolicyId:D}",
+                    new McpOperatorPolicyCreateResult(created, false, context.CorrelationId));
             }
             catch (McpOperatorAdmissionRejectedException rejection)
             {
                 await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, rejection.FailureCode, cancellationToken).ConfigureAwait(false);
                 return Failure(rejection.FailureCode, target.TenantId, target.AgentId, context.CorrelationId);
-            }
-
-            try
-            {
-                var created = await administration.CreateAsync(request.Policy, context.Principal.Subject, cancellationToken).ConfigureAwait(false);
-                await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, created.PolicyId.ToString("D"), cancellationToken).ConfigureAwait(false);
-                return Results.Created(
-                    $"/api/v2/mcp/operator/policy/policies/{created.PolicyId:D}",
-                    new McpOperatorPolicyCreateResult(created, false, context.CorrelationId));
             }
             catch (KeyNotFoundException)
             {
@@ -266,7 +264,7 @@ public static class McpOperatorPolicyMutationEndpoints
 
         var payload = new TargetProfileUpsertPayload(request.TenantId, request.AgentId, request.Classification, request.Tags, request.ExpectedVersion);
         var payloadHash = PayloadHash(UpsertTargetProfileOperation, payload);
-        var decision = await EvaluateAsync(context, target, payloadHash, UpsertTargetProfileOperation, authorization, cancellationToken).ConfigureAwait(false);
+        var decision = await EvaluateAsync(context, target, payloadHash, UpsertTargetProfileOperation, authorization, administration, cancellationToken).ConfigureAwait(false);
         if (!decision.IsAllowed)
             return Failure(decision.FailureCode ?? "target_policy_missing", target.TenantId, target.AgentId, context!.CorrelationId, mutationOperation: UpsertTargetProfileOperation);
 
@@ -296,7 +294,7 @@ public static class McpOperatorPolicyMutationEndpoints
 
         var payload = new TargetProfileUpsertPayload(request.TenantId, request.AgentId, request.Classification, request.Tags, request.ExpectedVersion);
         var payloadHash = PayloadHash(UpsertTargetProfileOperation, payload);
-        var decision = await EvaluateAsync(context, target, payloadHash, UpsertTargetProfileOperation, authorization, cancellationToken).ConfigureAwait(false);
+        var decision = await EvaluateAsync(context, target, payloadHash, UpsertTargetProfileOperation, authorization, administration, cancellationToken).ConfigureAwait(false);
         if (!decision.IsAllowed)
             return Failure(decision.FailureCode ?? "target_policy_missing", target.TenantId, target.AgentId, context!.CorrelationId, mutationOperation: UpsertTargetProfileOperation);
 
@@ -315,17 +313,19 @@ public static class McpOperatorPolicyMutationEndpoints
 
         try
         {
-            await authorization.RecordAcceptedAsync(decision, context.ServicePrincipal, cancellationToken).ConfigureAwait(false);
-            var profile = await administration.UpsertTargetProfileAsync(
-                target.TenantId,
-                agentId,
-                request.Classification,
-                request.Tags,
-                request.ExpectedVersion,
-                context.Principal.Subject,
+            var profile = await ExecuteMutationAsync(
+                decision, context, target, payloadHash, UpsertTargetProfileOperation, authorization, administration,
+                mutationToken => administration.UpsertTargetProfileAsync(
+                    target.TenantId, agentId, request.Classification, request.Tags, request.ExpectedVersion,
+                    context.Principal.Subject, mutationToken),
                 cancellationToken).ConfigureAwait(false);
             await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, profile.AgentId.ToString("D"), cancellationToken).ConfigureAwait(false);
             return Results.Ok(new McpOperatorTargetProfileMutationResult(profile, false, context.CorrelationId));
+        }
+        catch (McpOperatorAdmissionRejectedException rejection)
+        {
+            await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, rejection.FailureCode, cancellationToken).ConfigureAwait(false);
+            return Failure(rejection.FailureCode, target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: UpsertTargetProfileOperation);
         }
         catch (KeyNotFoundException)
         {
@@ -373,7 +373,7 @@ public static class McpOperatorPolicyMutationEndpoints
             return Failure(failure!, target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: ReplaceOperation);
 
         var payloadHash = PayloadHash(ReplaceOperation, new PolicyReplacePayload(request.PolicyId, request.ExpectedVersion, request.Policy!));
-        var decision = await EvaluateAsync(context, target, payloadHash, ReplaceOperation, authorization, cancellationToken).ConfigureAwait(false);
+        var decision = await EvaluateAsync(context, target, payloadHash, ReplaceOperation, authorization, administration, cancellationToken).ConfigureAwait(false);
         if (!decision.IsAllowed)
             return Failure(decision.FailureCode ?? "target_policy_missing", target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: ReplaceOperation);
 
@@ -424,7 +424,7 @@ public static class McpOperatorPolicyMutationEndpoints
             return Failure(failure!, target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: ReplaceOperation);
 
         var payloadHash = PayloadHash(ReplaceOperation, new PolicyReplacePayload(request.PolicyId, request.ExpectedVersion, request.Policy!));
-        var decision = await EvaluateAsync(context, target, payloadHash, ReplaceOperation, authorization, cancellationToken).ConfigureAwait(false);
+        var decision = await EvaluateAsync(context, target, payloadHash, ReplaceOperation, authorization, administration, cancellationToken).ConfigureAwait(false);
         if (!decision.IsAllowed)
             return Failure(decision.FailureCode ?? "target_policy_missing", target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: ReplaceOperation);
 
@@ -456,12 +456,10 @@ public static class McpOperatorPolicyMutationEndpoints
 
         try
         {
-            await authorization.RecordAcceptedAsync(decision, context.ServicePrincipal, cancellationToken).ConfigureAwait(false);
-            var replaced = await administration.ReplaceAsync(
-                request.PolicyId,
-                request.ExpectedVersion,
-                request.Policy!,
-                context.Principal.Subject,
+            var replaced = await ExecuteMutationAsync(
+                decision, context, target, payloadHash, ReplaceOperation, authorization, administration,
+                mutationToken => administration.ReplaceAsync(request.PolicyId, request.ExpectedVersion,
+                    request.Policy!, context.Principal.Subject, mutationToken),
                 cancellationToken).ConfigureAwait(false);
             await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, replaced.PolicyId.ToString("D"), cancellationToken).ConfigureAwait(false);
             return Results.Ok(new McpOperatorPolicyMutationResult(replaced, false, context.CorrelationId));
@@ -518,7 +516,7 @@ public static class McpOperatorPolicyMutationEndpoints
             return Failure(failure!, target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: DisableOperation);
 
         var payloadHash = PayloadHash(DisableOperation, new PolicyDisablePayload(request.PolicyId, request.ExpectedVersion, request.Target));
-        var decision = await EvaluateAsync(context, target, payloadHash, DisableOperation, authorization, cancellationToken).ConfigureAwait(false);
+        var decision = await EvaluateAsync(context, target, payloadHash, DisableOperation, authorization, administration, cancellationToken).ConfigureAwait(false);
         if (!decision.IsAllowed)
             return Failure(decision.FailureCode ?? "target_policy_missing", target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: DisableOperation);
 
@@ -553,7 +551,7 @@ public static class McpOperatorPolicyMutationEndpoints
             return Failure(failure!, target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: DisableOperation);
 
         var payloadHash = PayloadHash(DisableOperation, new PolicyDisablePayload(request.PolicyId, request.ExpectedVersion, request.Target));
-        var decision = await EvaluateAsync(context, target, payloadHash, DisableOperation, authorization, cancellationToken).ConfigureAwait(false);
+        var decision = await EvaluateAsync(context, target, payloadHash, DisableOperation, authorization, administration, cancellationToken).ConfigureAwait(false);
         if (!decision.IsAllowed)
             return Failure(decision.FailureCode ?? "target_policy_missing", target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: DisableOperation);
 
@@ -568,8 +566,10 @@ public static class McpOperatorPolicyMutationEndpoints
 
         try
         {
-            await authorization.RecordAcceptedAsync(decision, context.ServicePrincipal, cancellationToken).ConfigureAwait(false);
-            var disabled = await administration.DisableAsync(request.PolicyId, request.ExpectedVersion, context.Principal.Subject, cancellationToken).ConfigureAwait(false);
+            var disabled = await ExecuteMutationAsync(
+                decision, context, target, payloadHash, DisableOperation, authorization, administration,
+                mutationToken => administration.DisableAsync(request.PolicyId, request.ExpectedVersion, context.Principal.Subject, mutationToken),
+                cancellationToken).ConfigureAwait(false);
             if (disabled is null)
             {
                 await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, "operator_policy_not_found", cancellationToken).ConfigureAwait(false);
@@ -621,7 +621,7 @@ public static class McpOperatorPolicyMutationEndpoints
             return Failure(failure!, target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: RevokeOperation);
 
         var payloadHash = PayloadHash(RevokeOperation, new PolicyDisablePayload(request.PolicyId, request.ExpectedVersion, request.Target));
-        var decision = await EvaluateAsync(context, target, payloadHash, RevokeOperation, authorization, cancellationToken).ConfigureAwait(false);
+        var decision = await EvaluateAsync(context, target, payloadHash, RevokeOperation, authorization, administration, cancellationToken).ConfigureAwait(false);
         if (!decision.IsAllowed)
             return Failure(decision.FailureCode ?? "target_policy_missing", target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: RevokeOperation);
 
@@ -657,7 +657,7 @@ public static class McpOperatorPolicyMutationEndpoints
             return Failure(failure!, target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: RevokeOperation);
 
         var payloadHash = PayloadHash(RevokeOperation, new PolicyDisablePayload(request.PolicyId, request.ExpectedVersion, request.Target));
-        var decision = await EvaluateAsync(context, target, payloadHash, RevokeOperation, authorization, cancellationToken).ConfigureAwait(false);
+        var decision = await EvaluateAsync(context, target, payloadHash, RevokeOperation, authorization, administration, cancellationToken).ConfigureAwait(false);
         if (!decision.IsAllowed)
             return Failure(decision.FailureCode ?? "target_policy_missing", target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: RevokeOperation);
 
@@ -672,8 +672,10 @@ public static class McpOperatorPolicyMutationEndpoints
 
         try
         {
-            await authorization.RecordAcceptedAsync(decision, context.ServicePrincipal, cancellationToken).ConfigureAwait(false);
-            var revoked = await revocation.RevokeAsync(request.PolicyId, request.ExpectedVersion, context.Principal.Subject, cancellationToken).ConfigureAwait(false);
+            var revoked = await ExecuteMutationAsync(
+                decision, context, target, payloadHash, RevokeOperation, authorization, administration,
+                mutationToken => revocation.RevokeAsync(request.PolicyId, request.ExpectedVersion, context.Principal.Subject, mutationToken),
+                cancellationToken).ConfigureAwait(false);
             if (revoked is null)
             {
                 await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, "operator_policy_not_found", cancellationToken).ConfigureAwait(false);
@@ -959,24 +961,31 @@ public static class McpOperatorPolicyMutationEndpoints
         string payloadHash,
         string mutationOperation,
         IMcpOperatorAuthorization authorization,
+        IMcpOperatorPolicyAdministration administration,
         CancellationToken cancellationToken)
     {
         var tenantVisible = await authorization.HasTenantVisibilityAsync(
             context.Environment, context.Principal, target.TenantId, cancellationToken).ConfigureAwait(false);
+        // Policy selectors describe the proposed rule, not trusted facts about
+        // its target. Read the exact persisted profile for both phases and bind
+        // its revision into the confirmation decision.
+        var profile = tenantVisible && target.AgentId is { } agentId
+            ? await administration.GetTargetProfileAsync(target.TenantId, agentId, cancellationToken).ConfigureAwait(false)
+            : null;
         var access = new McpOperatorAccessRequest(
             context.Environment,
             context.Principal,
             target.TenantId,
             target.AgentId,
-            null,
+            profile?.Classification,
             McpOperatorOperationFamily.PolicyAdministration,
             $"{Tool}/{mutationOperation}",
             new HashSet<string>([RequiredScope], StringComparer.Ordinal),
             McpOperatorConfirmationClass.PolicyAdministration,
             context.CorrelationId,
             context.RequestId,
-            TargetSetDigest(mutationOperation, target, payloadHash),
-            null,
+            TargetSetDigest(mutationOperation, target, payloadHash, profile),
+            profile?.Tags.ToHashSet(StringComparer.Ordinal),
             context.Resource,
             context.Instance,
             Tool,
@@ -985,7 +994,40 @@ public static class McpOperatorPolicyMutationEndpoints
             TargetEnabled: true,
             TargetOnline: true,
             CapabilityAvailable: true);
+        // Creating an initial profile is the reviewed bootstrap operation.
+        // A policy mutation for an exact agent must already have that profile.
+        if (tenantVisible && target.AgentId is not null && profile is null && mutationOperation != UpsertTargetProfileOperation)
+            return McpOperatorDecision.Denied(access, "target_profile_missing", McpOperatorAuthorizationLayer.Target);
         return await authorization.EvaluateAsync(access, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<T> ExecuteMutationAsync<T>(
+        McpOperatorDecision decision,
+        McpOperatorPolicyMutationContext context,
+        McpOperatorPolicyMutationTarget target,
+        string payloadHash,
+        string mutationOperation,
+        IMcpOperatorAuthorization authorization,
+        IMcpOperatorPolicyAdministration administration,
+        Func<CancellationToken, Task<T>> mutation,
+        CancellationToken cancellationToken)
+    {
+        var profile = target.AgentId is { } agentId
+            ? await administration.GetTargetProfileAsync(target.TenantId, agentId, cancellationToken).ConfigureAwait(false)
+            : null;
+        if (TargetSetDigest(mutationOperation, target, payloadHash, profile) != decision.Request.TargetSetDigest)
+            throw new McpOperatorAdmissionRejectedException("confirmation_plan_stale");
+
+        async Task<T> PersistAsync(CancellationToken mutationToken)
+        {
+            await authorization.RecordAcceptedAsync(decision, context.ServicePrincipal, mutationToken).ConfigureAwait(false);
+            return await mutation(mutationToken).ConfigureAwait(false);
+        }
+
+        return target.AgentId is { } exactAgentId
+            ? await administration.ExecuteWithTargetProfileAsync(
+                target.TenantId, exactAgentId, profile, PersistAsync, cancellationToken).ConfigureAwait(false)
+            : await PersistAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static bool TryContext(
@@ -1170,9 +1212,21 @@ public static class McpOperatorPolicyMutationEndpoints
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
     }
 
-    private static string TargetSetDigest(string mutationOperation, McpOperatorPolicyMutationTarget target, string payloadHash)
+    private static string TargetSetDigest(string mutationOperation, McpOperatorPolicyMutationTarget target, string payloadHash,
+        McpOperatorTargetProfile? profile)
     {
-        var source = $"policy-{mutationOperation}:{target.TenantId}:{target.AgentId:D}:{(short)target.Kind}:{target.ClientTag}:{payloadHash}";
+        var source = JsonSerializer.Serialize(new
+        {
+            operation = $"{Tool}/{mutationOperation}",
+            target.TenantId,
+            target.AgentId,
+            target.Kind,
+            target.ClientTag,
+            payloadHash,
+            profileVersion = profile?.Version,
+            classification = profile?.Classification,
+            tags = profile?.Tags.Order(StringComparer.Ordinal).ToArray()
+        });
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(source)));
     }
 
@@ -1185,7 +1239,7 @@ public static class McpOperatorPolicyMutationEndpoints
         "oauth_scope_missing" => "oauth_scope",
         "oauth_role_missing" => "oauth_role",
         "tenant_not_authorized" => "tenant",
-        "target_not_found" => "target",
+        "target_not_found" or "target_profile_missing" => "target",
         "operator_policy_not_found" => "policy",
         "validation_error" or "environment_mismatch" => "input",
         "confirmation_plan_invalid" or "confirmation_plan_stale" or "confirmation_plan_expired" => "confirmation",
@@ -1200,6 +1254,7 @@ public static class McpOperatorPolicyMutationEndpoints
         "oauth_role_missing" => "The signed delegation does not include the PolicyAdministrator role.",
         "tenant_not_authorized" => "The caller has no active policy-administration authorization for this tenant.",
         "target_not_found" => "No persisted exact target matched the requested policy selector.",
+        "target_profile_missing" => "The exact agent has no persisted operator target profile for policy administration.",
         "operator_policy_not_found" => "No current policy record matched the supplied policy identifier.",
         "validation_error" => "The policy draft did not meet the published bounded contract.",
         "environment_mismatch" => "A delegated policy mutation can apply policy only for the selected MCP environment.",
@@ -1221,6 +1276,7 @@ public static class McpOperatorPolicyMutationEndpoints
         "oauth_role_missing" => "Ask an identity administrator to assign the dedicated PolicyAdministrator role, then reauthorize.",
         "tenant_not_authorized" => "Ask a policy administrator to grant a reviewed PolicyAdministration policy for this tenant.",
         "target_not_found" => "Verify the persisted V2 target when using an exact-agent policy selector.",
+        "target_profile_missing" => "Have an independently authorized administrator create the exact agent's reviewed target profile, then create a fresh policy preview.",
         "operator_policy_not_found" => "Refresh the bounded policy list and use a current policy identifier.",
         "validation_error" or "environment_mismatch" => "Use the documented bounded policy draft shape and selected environment.",
         "policy_environment_immutable" or "policy_target_immutable" => "Create a new reviewed policy for the requested environment or target, then disable the old policy through an independent administrator.",

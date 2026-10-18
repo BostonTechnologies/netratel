@@ -1,9 +1,14 @@
 using AwesomeAssertions;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using NetRatel.Application.Operations;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
+using NetRatel.Shared.Contracts.Tasks;
+using NetRatel.Shared.Security;
 using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
@@ -15,7 +20,11 @@ public sealed class McpOperatorCommandStoreTests
     {
         await using var db = CreateDb();
         var now = DateTimeOffset.UtcNow;
-        var request = CreateRequest(now, maximumConcurrent: 1);
+        var request = CreateRequest(now, maximumConcurrent: 1) with
+        {
+            EnvironmentReferences = ["NETRATEL_TOKEN"],
+            OutputPolicy = TaskOutputPolicy.Create([], environmentReferences: ["NETRATEL_TOKEN"])
+        };
         var store = new McpOperatorCommandStore(db);
 
         var lease = await store.CreateOrGetAsync(request, CancellationToken.None);
@@ -229,6 +238,68 @@ public sealed class McpOperatorCommandStoreTests
         (await store.GetAsync(request.CommandId, CancellationToken.None))!.Output!.UnavailableReason.Should().Be(reason);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Referenced_command_binds_native_redaction_and_rejects_unverified_output_across_reload(bool verified)
+    {
+        await using var db = CreateDb();
+        var policy = TaskOutputPolicy.Create([], environmentReferences: ["FIXTURE_REFERENCE"]);
+        var request = CreateRequest(DateTimeOffset.UtcNow, 2) with
+        {
+            EnvironmentReferences = ["FIXTURE_REFERENCE"], OutputPolicy = policy
+        };
+        var store = new McpOperatorCommandStore(db);
+        await store.CreateOrGetAsync(request, default);
+        var redactor = new TaskOutputRedactor(policy, resolveEnvironment: _ => "garden Ω 908");
+        var original = JsonSerializer.Serialize(new { stdout = new[] { "garden Ω 908", "Useful 雨" }, stderr = new[] { "garden Ω 908" }, exitCode = 0 });
+        var envelope = JsonNode.Parse(verified ? redactor.RedactEnvelope(original)! : original)!.AsObject();
+        envelope[TaskOutputRedactor.ReceiptProperty] = verified ? policy.Binding : new string('0', 32);
+        // These commands deliberately have no JobTaskActivity. Gateway protection
+        // must resolve their own immutable admission before storing terminal output.
+        var safe = await new JobRunService(db, new EphemeralDataProtectionProvider())
+            .ProtectTaskOutputAsync(request.CommandId, envelope.ToJsonString());
+        await store.RecordLifecycleAsync(request.CommandId, 42, request.Decision.Request.AgentId!.Value,
+            McpOperatorCommandState.Completed, DateTimeOffset.UtcNow, null, default, safe, 0);
+
+        db.ChangeTracker.Clear();
+        var output = (await new McpOperatorCommandStore(db).GetAsync(request.CommandId, default))!.Output!;
+        output.ExitCode.Should().Be(0);
+        output.Stdout.Should().Equal(TaskOutputRedactor.Mask, verified ? "Useful 雨" : TaskOutputRedactor.Mask);
+        output.Stderr.Should().Equal(TaskOutputRedactor.Mask);
+        var stored = await db.McpOperatorCommands.SingleAsync();
+        stored.OutputJson.Should().NotContain("garden");
+        stored.OutputProtectionJson.Should().NotContain("garden");
+    }
+
+    [Fact]
+    public async Task Legacy_referenced_command_hides_output_without_rewriting_private_history()
+    {
+        await using var db = CreateDb();
+        var request = CreateRequest(DateTimeOffset.UtcNow, 2) with
+        {
+            EnvironmentReferences = ["FIXTURE_REFERENCE"], OutputPolicy = null
+        };
+        var store = new McpOperatorCommandStore(db);
+        await store.CreateOrGetAsync(request, default);
+        var row = await db.McpOperatorCommands.SingleAsync();
+        var original = JsonSerializer.Serialize(new McpOperatorCommandOutput(0, ["garden Ω 908"], ["retained diagnostic"], false),
+            McpOperatorJsonContext.Default.McpOperatorCommandOutput);
+        row.OutputJson = original;
+        row.State = McpOperatorCommandState.Completed;
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var readback = (await store.GetOwnedAsync(request.CommandId, 42, request.Decision.Request.AgentId!.Value,
+            request.Decision.Request.Principal, request.Decision.Request.McpResource!, request.Decision.Request.McpInstance!, default))!;
+
+        readback.Output!.Stdout.Should().Equal(TaskOutputRedactor.Mask);
+        readback.Output.Stderr.Should().Equal(TaskOutputRedactor.Mask);
+        readback.Output.ExitCode.Should().Be(0);
+        readback.State.Should().Be(McpOperatorCommandState.Completed);
+        (await db.McpOperatorCommands.SingleAsync()).OutputJson.Should().Be(original);
+    }
+
     private static McpOperatorCommandCreateRequest CreateRequest(DateTimeOffset createdAtUtc, int maximumConcurrent)
     {
         var agentId = Guid.Parse("bb69ba7b-1e56-4ea8-bc36-533950b50610");
@@ -267,7 +338,8 @@ public sealed class McpOperatorCommandStoreTests
             access.TenantId, access.AgentId, access.OperationFamily, access.Operation, access.CorrelationId, access.RequestId, createdAtUtc);
         return new McpOperatorCommandCreateRequest(
             Guid.NewGuid().ToString("N"), decision, audit, Guid.NewGuid(), "corr-42", "bash", "/srv/netratel",
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", 12, ["NETRATEL_TOKEN"], 60, 8 * 1024, createdAtUtc);
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", 12, [], 60, 8 * 1024, createdAtUtc,
+            TaskOutputPolicy.Create([]));
     }
 
     private static OrchestratorDbContext CreateDb(string? database = null, IInterceptor? interceptor = null)

@@ -22,6 +22,8 @@ namespace NetRatel.API.Services.Jobs;
 public interface IAkkaJobAuthorityService
 {
     Task<JobRunInfo> StartAsync(ulong jobId, RunJobRequest request, CancellationToken cancellationToken);
+    Task<JobRunInfo> StartReviewedMcpAsync(McpOperatorJobExecutionSnapshot snapshot, RunJobRequest request, CancellationToken cancellationToken)
+        => throw new InvalidOperationException("This job authority does not support reviewed MCP snapshots.");
     Task<JobRunInfo> StartManagedAsync(ulong jobId, RunJobRequest request, int recordedRequestId, ClaimsPrincipal principal, CancellationToken cancellationToken)
         => throw new InvalidOperationException("This job authority does not support managed invocation.");
     Task RecordLifecycleAsync(ClientKey client, JobLifecycleUpdateEnvelope lifecycle, CancellationToken cancellationToken);
@@ -109,15 +111,27 @@ public sealed class AkkaJobAuthorityService(
 
     public Task<JobRunInfo> StartAsync(ulong jobId, RunJobRequest request, CancellationToken cancellationToken)
     {
+        if (request.StartedBy?.Trim().StartsWith("mcp-reviewed:", StringComparison.Ordinal) == true)
+            throw new InvalidOperationException("Reviewed MCP execution requires a server-owned snapshot.");
         if (request.StartedBy?.Trim().StartsWith("service:", StringComparison.Ordinal) == true)
             throw new InvalidOperationException("Managed service identity requires the recorded ingress entry point.");
         return StartCoreAsync(jobId, request, null, null, cancellationToken);
     }
 
+    public Task<JobRunInfo> StartReviewedMcpAsync(McpOperatorJobExecutionSnapshot snapshot, RunJobRequest request, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        if (request.StartedBy != $"mcp-reviewed:{snapshot.Subject}" || snapshot.Definition.Job.TenantId is not > 0 ||
+            snapshot.Definition.Job.AgentId is null || snapshot.Scripts.Count == 0)
+            throw new InvalidOperationException("The reviewed MCP execution binding is invalid.");
+        return StartCoreAsync(snapshot.Definition.Job.Id, request, null, null, cancellationToken, snapshot);
+    }
+
     public Task<JobRunInfo> StartManagedAsync(ulong jobId, RunJobRequest request, int recordedRequestId, ClaimsPrincipal principal, CancellationToken cancellationToken)
         => StartCoreAsync(jobId, request, recordedRequestId, principal, cancellationToken);
 
-    private async Task<JobRunInfo> StartCoreAsync(ulong jobId, RunJobRequest request, int? recordedRequestId, ClaimsPrincipal? principal, CancellationToken cancellationToken)
+    private async Task<JobRunInfo> StartCoreAsync(ulong jobId, RunJobRequest request, int? recordedRequestId, ClaimsPrincipal? principal, CancellationToken cancellationToken,
+        McpOperatorJobExecutionSnapshot? mcpSnapshot = null)
     {
         var runId = ids.Next();
         if (db is not null && recordedRequestId is { } requestId)
@@ -127,14 +141,16 @@ public sealed class AkkaJobAuthorityService(
             if (executionId is not null && !ulong.TryParse(executionId, out runId))
                 throw new InvalidOperationException("The recorded run intent identifier is invalid.");
         }
-        return await OwnAsync(runId, ct => StartOwnedAsync(jobId, request, recordedRequestId, principal, runId, ct), cancellationToken);
+        return await OwnAsync(runId, ct => StartOwnedAsync(jobId, request, recordedRequestId, principal, runId, ct, mcpSnapshot), cancellationToken);
     }
 
-    private async Task<JobRunInfo> StartOwnedAsync(ulong jobId, RunJobRequest request, int? recordedRequestId, ClaimsPrincipal? principal, ulong runId, CancellationToken cancellationToken)
+    private async Task<JobRunInfo> StartOwnedAsync(ulong jobId, RunJobRequest request, int? recordedRequestId, ClaimsPrincipal? principal, ulong runId, CancellationToken cancellationToken,
+        McpOperatorJobExecutionSnapshot? mcpSnapshot = null)
     {
-        var definition = await jobDefinitions.GetDetailsAsync(jobId, cancellationToken).ConfigureAwait(false)
+        var definition = mcpSnapshot?.Definition ?? await jobDefinitions.GetDetailsAsync(jobId, cancellationToken).ConfigureAwait(false)
             ?? throw new KeyNotFoundException($"Job {jobId} was not found.");
-        jobRuns.BindSubmittedDefinition(runId, definition);
+        if (mcpSnapshot is null) jobRuns.BindSubmittedDefinition(runId, definition);
+        else jobRuns.BindMcpExecutionSnapshot(runId, mcpSnapshot);
         if (recordedRequestId is { } ingressId)
         {
             if (managedGuard is null || principal is null) throw new InvalidOperationException("Managed invocation authority is unavailable.");
@@ -296,6 +312,9 @@ public sealed class AkkaJobAuthorityService(
             lifecycle.Status == JobGatewayLifecycleStatus.Progress && stepRun.StartedAtUtc is null && lifecycle.StartedAtUtc is null)
             throw new InvalidOperationException("The job lifecycle does not follow the recorded native execution state.");
         await PrepareLifecycleReceiptAsync(lifecycle, cancellationToken);
+        // Preserve the authenticated receipt hash, then protect every downstream
+        // projection and observation before output can be persisted or broadcast.
+        lifecycle = lifecycle with { ResultJson = await jobRuns.ProtectTaskOutputAsync(lifecycle.RequestId, lifecycle.ResultJson, cancellationToken) };
         await AppendLifecycleOutputAsync(run, stepRun, lifecycle, cancellationToken);
         NetRatelAkkaTelemetry.RecordAuthorityRequest(Feature, Authority, environment.EnvironmentName);
         using var activity = NetRatelAkkaTelemetry.StartAuthorityActivity(Feature, Authority, lifecycle.Status.ToString(), environment.EnvironmentName);
@@ -408,7 +427,13 @@ public sealed class AkkaJobAuthorityService(
             return completed;
         }
 
-        var definition = await jobDefinitions.GetDetailsAsync(run.JobId, cancellationToken).ConfigureAwait(false)
+        var mcpSnapshot = await jobRuns.GetMcpExecutionSnapshotAsync(run.Id, cancellationToken).ConfigureAwait(false);
+        if (mcpSnapshot is null && run.StartedBy.StartsWith("mcp-reviewed:", StringComparison.Ordinal))
+        {
+            await FailBeforeDispatchAsync(run, cancellationToken, "The reviewed MCP execution snapshot is unavailable.");
+            return (await jobRuns.GetAsync(run.Id, cancellationToken))!;
+        }
+        var definition = mcpSnapshot?.Definition ?? await jobDefinitions.GetDetailsAsync(run.JobId, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Job definition {run.JobId} was not found.");
         if (run.StartedBy.StartsWith("service:", StringComparison.Ordinal))
         {
@@ -429,7 +454,7 @@ public sealed class AkkaJobAuthorityService(
             step,
             JobTemplateHelper.ParseInputs(await jobRuns.GetExecutionInputsAsync(run.Id, cancellationToken)),
             JobExecutionRuntimePolicy.FromOptions(await jobRuns.GetExecutionOptionsAsync(run.Id, cancellationToken)),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken, await jobRuns.GetRunOutputPolicyAsync(run.Id, cancellationToken), mcpSnapshot).ConfigureAwait(false);
         if (!invocation.Success || string.IsNullOrWhiteSpace(invocation.TaskType) || invocation.PayloadJson is null)
         {
             await FailBeforeDispatchAsync(run, cancellationToken, invocation.Error ?? "The job step could not be translated for gateway execution.");
@@ -461,7 +486,8 @@ public sealed class AkkaJobAuthorityService(
         var activity = await jobRuns.CreateTaskActivityAsync(new CreateJobTaskActivityCommand(
             Guid.NewGuid().ToString("N"), run.Id, step.Id, run.ClientIdentity, run.TenantId, invocation.TaskType, "Pending", null, now, null, run.AgentId,
             Environment: run.Environment, TargetDisplayName: run.TargetDisplayName, TargetHostName: run.TargetHostName, TargetName: run.TargetName,
-            ScriptName: invocation.ScriptName, ScriptType: invocation.ScriptType, CommandLabel: invocation.CommandLabel, ScriptContentHash: invocation.ScriptContentHash), cancellationToken).ConfigureAwait(false);
+            ScriptName: invocation.ScriptName, ScriptType: invocation.ScriptType, CommandLabel: invocation.CommandLabel, ScriptContentHash: invocation.ScriptContentHash,
+            OutputPolicy: invocation.OutputPolicy), cancellationToken).ConfigureAwait(false);
         var pendingStep = await jobRuns.UpsertStepRunAsync(new UpsertJobStepRunCommand(
             next.Id, run.Id, step.Id, JobStepRunState.Pending, next.Ordinal, activity.RequestId, null, null, null), cancellationToken).ConfigureAwait(false);
         if (db is not null)

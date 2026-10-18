@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -44,7 +45,10 @@ public sealed class ClientTaskManager : IDisposable
         int Environment,
         string TaskType,
         string? Payload,
-        string RequestId);
+        string RequestId)
+    {
+        public TaskOutputRedactor Output { get; init; } = new(null);
+    }
 
     private sealed record CommandWorkItem(
         string CommandId,
@@ -228,7 +232,7 @@ public sealed class ClientTaskManager : IDisposable
                 }
                 catch (Exception ex)
                 {
-                    _logError($"RunOne failed for command {workItem.CommandId}: {ex}");
+                    _logError($"RunOne failed for command {workItem.CommandId}: {ex.GetType().Name}");
                     await SafeStatusAsync(
                         new CommandExecutionContext(
                             workItem.TenantId,
@@ -238,7 +242,7 @@ public sealed class ClientTaskManager : IDisposable
                             workItem.CommandId),
                         TaskStatuses.Failed,
                         "Run failed.",
-                        ex.Message).ConfigureAwait(false);
+                        "Command execution failed before completion.").ConfigureAwait(false);
                 }
                 finally
                 {
@@ -422,6 +426,8 @@ public sealed class ClientTaskManager : IDisposable
             return;
         }
 
+        task = task with { Output = new TaskOutputRedactor(payload.OutputPolicy, additionalSecretValues: payload.OutputSecretValues) };
+
         if (!EnvironmentReferencesAreAvailable(payload.EnvironmentReferences))
         {
             await PublishFailureAsync(task, sink, "Environment reference unavailable", "A required client-local environment reference is unavailable.").ConfigureAwait(false);
@@ -432,7 +438,7 @@ public sealed class ClientTaskManager : IDisposable
         {
             LogManager.WriteLog($"[Command] Executing shell command requestId={task.RequestId} preferred={payload.Preferred} timeout={payload.TimeoutSeconds?.ToString() ?? "default"}");
             var result = await _shellRunner.RunShellCommandAsync(payload, ct, CreateExecutionObserver(task)).ConfigureAwait(false);
-            LogManager.WriteLog($"[Command] Shell command finished requestId={task.RequestId} exitCode={result.ExitCode} stdout={result.Output.Count} stderr={result.Error.Count} shell={result.ShellPath} cwd={result.WorkingDirectory}");
+            LogManager.WriteLog($"[Command] Shell command finished requestId={task.RequestId} exitCode={result.ExitCode}");
             await EmitResultAsync(task, sink, result).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -475,6 +481,8 @@ public sealed class ClientTaskManager : IDisposable
             return;
         }
 
+        task = task with { Output = new TaskOutputRedactor(payload.OutputPolicy, payload.Parameters, payload.OutputSecretValues) };
+
         var hasSnapshotContent = !string.IsNullOrEmpty(payload.ScriptContent);
         if (payload.ScriptId <= 0 && !hasSnapshotContent)
         {
@@ -505,7 +513,7 @@ public sealed class ClientTaskManager : IDisposable
         {
             LogManager.WriteLog($"[Command] Executing library script requestId={task.RequestId} scriptId={payload.ScriptId} scriptType={payload.ScriptType} preferred={payload.Preferred} contentHash={ComputeContentHash(content)}");
             var result = await _shellRunner.RunLibraryScriptAsync(payload, content, ct, mergedParams, CreateExecutionObserver(task)).ConfigureAwait(false);
-            LogManager.WriteLog($"[Command] Library script finished requestId={task.RequestId} exitCode={result.ExitCode} stdout={result.Output.Count} stderr={result.Error.Count} shell={result.ShellPath} cwd={result.WorkingDirectory}");
+            LogManager.WriteLog($"[Command] Library script finished requestId={task.RequestId} exitCode={result.ExitCode}");
             await EmitResultAsync(task, sink, result).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -545,8 +553,8 @@ public sealed class ClientTaskManager : IDisposable
     private async Task EmitResultAsync(CommandExecutionContext task, ITaskLogSink sink, ExternalShellRunner.RunResult res)
     {
         var remainingBytes = MaximumGatewayResultBytes;
-        var stdout = BoundOutput(res.Output, ref remainingBytes, out var stdoutTruncated);
-        var stderr = BoundOutput(res.Error, ref remainingBytes, out var stderrTruncated);
+        var stdout = BoundOutput(res.Output.Select(line => task.Output.Redact(line)!).ToArray(), ref remainingBytes, out var stdoutTruncated);
+        var stderr = BoundOutput(res.Error.Select(line => task.Output.Redact(line)!).ToArray(), ref remainingBytes, out var stderrTruncated);
         _ = sink;
 
         var payload = JsonSerializer.Serialize(new
@@ -583,14 +591,15 @@ public sealed class ClientTaskManager : IDisposable
             {
                 var payload = JsonSerializer.Serialize(new
                 {
-                    stdout = stream == "stdout" ? new[] { line } : Array.Empty<string>(),
-                    stderr = stream == "stderr" ? new[] { line } : Array.Empty<string>(),
+                    stdout = stream == "stdout" ? new[] { task.Output.Redact(line) } : Array.Empty<string>(),
+                    stderr = stream == "stderr" ? new[] { task.Output.Redact(line) } : Array.Empty<string>(),
                     outputSequence = ++sequence,
-                    outputTruncated = false
+                    outputTruncated = false,
+                    outputProtectionBinding = task.Output.Binding
                 });
                 try { await _gatewayStatusPublisher(task.RequestId, "progress", payload, null).ConfigureAwait(false); }
-                catch (Exception ex) { _logError($"Output update failed for command {task.RequestId}: {ex}"); }
-            });
+                catch (Exception ex) { _logError($"Output update failed for command {task.RequestId}: {ex.GetType().Name}"); }
+            }, line => task.Output.Redact(line)!);
     }
 
     private static IReadOnlyList<string> BoundOutput(IReadOnlyList<string> lines, ref int remainingBytes, out bool truncated)
@@ -632,14 +641,14 @@ public sealed class ClientTaskManager : IDisposable
 
     private async Task PublishFailureAsync(CommandExecutionContext task, ITaskLogSink sink, string message, string? detail, string? payload = null, int? exitCode = null)
     {
-        var errorText = OperatorOutputRedactor.Redact(string.IsNullOrWhiteSpace(detail) ? message : detail!);
+        var errorText = task.Output.Redact(string.IsNullOrWhiteSpace(detail) ? message : detail!)!;
         try
         {
             await sink.AppendAsync("stderr", errorText, 1).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            _logError($"Failed to append failure log for command {task.RequestId}: {ex}");
+            _logError($"Failed to append failure log for command {task.RequestId}: {ex.GetType().Name}");
         }
 
         var returnData = JsonSerializer.Serialize(new
@@ -695,7 +704,7 @@ public sealed class ClientTaskManager : IDisposable
         }
         catch (Exception ex)
         {
-            _logError($"Status update failed for command {task.RequestId} -> {status}: {ex}");
+            _logError($"Status update failed for command {task.RequestId} -> {status}: {ex.GetType().Name}");
         }
     }
 
@@ -709,7 +718,16 @@ public sealed class ClientTaskManager : IDisposable
                     : string.Equals(newStatus, TaskStatuses.Cancelled, StringComparison.OrdinalIgnoreCase)
                         ? "cancelled"
                         : "failed";
-        return _gatewayStatusPublisher(task.RequestId, gatewayStatus, returnData ?? message, exitCode);
+        var safeOutput = task.Output.RedactEnvelope(returnData ?? message);
+        if (task.Output.Binding is { } binding)
+        {
+            JsonObject envelope;
+            try { envelope = JsonNode.Parse(safeOutput ?? "null") as JsonObject ?? new JsonObject { ["message"] = safeOutput }; }
+            catch (JsonException) { envelope = new JsonObject { ["message"] = safeOutput }; }
+            envelope[TaskOutputRedactor.ReceiptProperty] = binding;
+            safeOutput = envelope.ToJsonString();
+        }
+        return _gatewayStatusPublisher(task.RequestId, gatewayStatus, safeOutput, exitCode);
     }
 
     private static string ComputeContentHash(string content)

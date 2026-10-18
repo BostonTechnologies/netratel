@@ -84,6 +84,7 @@ public sealed class McpOperatorCommandStore(OrchestratorDbContext db) : IMcpOper
                 CommandHash = request.CommandHash,
                 CommandLength = request.CommandLength,
                 EnvironmentReferencesJson = JsonSerializer.Serialize(request.EnvironmentReferences.ToArray(), McpOperatorJsonContext.Default.StringArray),
+                OutputProtectionJson = TaskOutputProtection.Serialize(request.OutputPolicy),
                 TimeoutSeconds = request.TimeoutSeconds,
                 MaximumOutputBytes = request.MaximumOutputBytes,
                 EffectiveConstraintsJson = JsonSerializer.Serialize(constraints, McpOperatorJsonContext.Default.McpOperatorConstraints),
@@ -218,8 +219,13 @@ public sealed class McpOperatorCommandStore(OrchestratorDbContext db) : IMcpOper
             }
 
             if (IsTerminal(state))
-                record.OutputJson = JsonSerializer.Serialize(CurateOutput(resultJson, exitCode, record.MaximumOutputBytes),
+            {
+                var safeResult = TaskOutputProtection.Project(record.OutputProtectionJson, resultJson,
+                    TaskOutputProtection.HasEnvironmentReferences(record.EnvironmentReferencesJson));
+                record.OutputJson = JsonSerializer.Serialize(CurateOutput(safeResult, exitCode, record.MaximumOutputBytes),
                     McpOperatorJsonContext.Default.McpOperatorCommandOutput);
+                record.OutputProtectionBinding = TaskOutputRedactor.ReadBinding(safeResult);
+            }
             record.State = state;
             record.LastUpdatedAtUtc = now;
             record.FailureCode = state is McpOperatorCommandState.Failed or McpOperatorCommandState.Unknown ? BoundedFailureCode(failureCode) : null;
@@ -273,6 +279,10 @@ public sealed class McpOperatorCommandStore(OrchestratorDbContext db) : IMcpOper
         {
             throw new ArgumentException("The command request is not an allowed, policy-frozen Production admission.", nameof(request));
         }
+        if (request.OutputPolicy is { } outputPolicy &&
+            (outputPolicy.SecretParameters.Length != 0 || outputPolicy.SecretReferenceParameters.Length != 0 ||
+             !outputPolicy.EnvironmentReferences.SequenceEqual(request.EnvironmentReferences.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal), StringComparer.Ordinal)))
+            throw new ArgumentException("The output classification must match the admitted environment references.", nameof(request));
     }
 
     private static bool SameAdmission(McpOperatorCommandRecord record, McpOperatorCommandCreateRequest request) =>
@@ -282,7 +292,8 @@ public sealed class McpOperatorCommandStore(OrchestratorDbContext db) : IMcpOper
         record.PolicyId == request.Decision.MatchingPolicyIds.Single() &&
         record.PolicyVersion == request.Decision.SelectedPolicyVersion &&
         record.AcceptedAuditId == request.AcceptedAudit.AuditId &&
-        record.CommandHash == request.CommandHash;
+        record.CommandHash == request.CommandHash &&
+        record.OutputProtectionJson == TaskOutputProtection.Serialize(request.OutputPolicy);
 
     private static bool IsTerminal(McpOperatorCommandState state) =>
         state is McpOperatorCommandState.Completed or McpOperatorCommandState.Failed or McpOperatorCommandState.Cancelled or McpOperatorCommandState.Unknown;
@@ -388,7 +399,21 @@ public sealed class McpOperatorCommandStore(OrchestratorDbContext db) : IMcpOper
         record.FailureCode,
         record.Version)
     {
-        Output = record.OutputJson is null ? null : JsonSerializer.Deserialize(record.OutputJson,
-            McpOperatorJsonContext.Default.McpOperatorCommandOutput)
+        Output = ReadOutput(record)
     };
+
+    private static McpOperatorCommandOutput? ReadOutput(McpOperatorCommandRecord record)
+    {
+        var output = record.OutputJson is null ? null : JsonSerializer.Deserialize(record.OutputJson,
+            McpOperatorJsonContext.Default.McpOperatorCommandOutput);
+        if (output is null) return null;
+        var required = TaskOutputProtection.HasEnvironmentReferences(record.EnvironmentReferencesJson);
+        return output with
+        {
+            Stdout = output.Stdout.Select(line => TaskOutputProtection.Project(record.OutputProtectionJson, line,
+                required, record.OutputProtectionBinding, envelope: false)!).ToArray(),
+            Stderr = output.Stderr.Select(line => TaskOutputProtection.Project(record.OutputProtectionJson, line,
+                required, record.OutputProtectionBinding, envelope: false)!).ToArray()
+        };
+    }
 }

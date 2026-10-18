@@ -42,15 +42,69 @@ public sealed class JobTaskBridge
         JobStepInfo step,
         IReadOnlyDictionary<string, object?> inputs,
         JobExecutionRuntimePolicy runtimePolicy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TaskOutputPolicy? outputPolicy = null,
+        McpOperatorJobExecutionSnapshot? mcpSnapshot = null)
     {
+        McpOperatorScriptExecutionSnapshot? reviewedScript = null;
+        if (mcpSnapshot is not null)
+        {
+            if (mcpSnapshot.Definition.Job.Id != run.JobId || mcpSnapshot.Definition.Job.TenantId != run.TenantId ||
+                mcpSnapshot.Definition.Job.AgentId != run.AgentId || step.Type != JobStepKind.LibraryScript ||
+                !mcpSnapshot.Definition.Steps.Contains(step))
+                return new(false, null, null, "The reviewed job step does not match this run.");
+            reviewedScript = mcpSnapshot.Scripts.SingleOrDefault(script => script.Script.Id == step.ScriptId);
+            if (reviewedScript is null || !string.Equals(ComputeContentHash(reviewedScript.Script.Content), reviewedScript.ContentHash, StringComparison.OrdinalIgnoreCase))
+                return new(false, null, null, "The reviewed script snapshot is unavailable or invalid.");
+        }
         var build = await TryBuildInvocationAsync(
                 run,
                 step,
                 inputs,
                 runtimePolicy,
-                cancellationToken: cancellationToken)
+                cancellationToken: cancellationToken,
+                reviewedScript: reviewedScript)
             .ConfigureAwait(false);
+        if (build.Success)
+        {
+            var policy = outputPolicy ?? TaskOutputPolicy.Create([]);
+            var secretValues = inputs.Where(x => policy.SecretParameters.Contains(x.Key, StringComparer.OrdinalIgnoreCase))
+                .ToDictionary(x => x.Key, x => JobTemplateHelper.ConvertValueToString(x.Value), StringComparer.OrdinalIgnoreCase);
+            var references = inputs.Where(x => policy.SecretReferenceParameters.Contains(x.Key, StringComparer.OrdinalIgnoreCase))
+                .Select(x => JobTemplateHelper.ConvertValueToString(x.Value)).ToArray();
+            if (build.Invocation.TaskType == TaskKinds.ExecLibraryScript)
+            {
+                var payload = JsonSerializer.Deserialize<ExecLibraryScriptPayload>(build.Invocation.Payload, DeserializeOptions)!;
+                var parameters = reviewedScript?.Parameters ?? await _scripts.GetParamsAsync((ulong)payload.ScriptId, cancellationToken);
+                var script = reviewedScript?.Script ?? await _scripts.GetAsync((ulong)payload.ScriptId, cancellationToken);
+                if (script is null || script.SourceRevision != build.Invocation.ScriptRevision ||
+                    !string.Equals(ComputeContentHash(script.Content), build.Invocation.ScriptContentHash, StringComparison.Ordinal))
+                    return new(false, null, null, "The script source changed while preparing its execution snapshot.");
+                var scriptPolicy = TaskOutputPolicy.Create(parameters.Select(p => (p.Name, p.Type)), payload.ScriptId,
+                    script.SourceRevision, build.Invocation.ScriptContentHash);
+                policy = policy with
+                {
+                    SecretParameters = policy.SecretParameters.Concat(scriptPolicy.SecretParameters).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+                    SecretReferenceParameters = scriptPolicy.SecretReferenceParameters,
+                    EnvironmentReferences = policy.EnvironmentReferences.Concat(references).Distinct(StringComparer.Ordinal).ToArray(),
+                    ScriptId = scriptPolicy.ScriptId, ScriptRevision = scriptPolicy.ScriptRevision, ScriptContentHash = scriptPolicy.ScriptContentHash
+                };
+                payload.OutputPolicy = policy;
+                payload.OutputSecretValues = secretValues;
+                return new(true, build.Invocation.TaskType, JsonSerializer.Serialize(payload), null,
+                    build.Invocation.ScriptName, build.Invocation.ScriptType, build.Invocation.CommandLabel, build.Invocation.ScriptContentHash, policy);
+            }
+            var shell = JsonSerializer.Deserialize<ExecShellCommandPayload>(build.Invocation.Payload, DeserializeOptions)!;
+            policy = policy with
+            {
+                SecretReferenceParameters = [],
+                EnvironmentReferences = policy.EnvironmentReferences.Concat(references).Concat(shell.EnvironmentReferences ?? []).Distinct(StringComparer.Ordinal).ToArray()
+            };
+            shell.OutputPolicy = policy;
+            shell.OutputSecretValues = secretValues;
+            return new(true, build.Invocation.TaskType, JsonSerializer.Serialize(shell), null,
+                build.Invocation.ScriptName, build.Invocation.ScriptType, build.Invocation.CommandLabel, build.Invocation.ScriptContentHash, policy);
+        }
         return build.Success
             ? new(true, build.Invocation.TaskType, build.Invocation.Payload, null, build.Invocation.ScriptName, build.Invocation.ScriptType, build.Invocation.CommandLabel, build.Invocation.ScriptContentHash)
             : new(false, null, null, build.Error);
@@ -83,7 +137,8 @@ public sealed class JobTaskBridge
         JobStepInfo step,
         IReadOnlyDictionary<string, object?> inputs,
         JobExecutionRuntimePolicy runtimePolicy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        McpOperatorScriptExecutionSnapshot? reviewedScript)
     {
         switch (step.Type)
         {
@@ -94,7 +149,7 @@ public sealed class JobTaskBridge
                 }
 
             case JobStepKind.LibraryScript:
-                return await TryBuildLibraryScriptInvocationAsync(run, step, inputs, runtimePolicy, cancellationToken).ConfigureAwait(false);
+                return await TryBuildLibraryScriptInvocationAsync(run, step, inputs, runtimePolicy, cancellationToken, reviewedScript).ConfigureAwait(false);
 
             default:
                 return (false, default, $"Unsupported step type {step.Type}.");
@@ -260,7 +315,8 @@ public sealed class JobTaskBridge
     private async Task<(ScriptInfo? Script, ScriptType ScriptType, ShellExecutor Preferred)> ResolveLibraryExecutionAsync(
         JobStepInfo step,
         ExecLibraryScriptPayload payload,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        McpOperatorScriptExecutionSnapshot? reviewedScript)
     {
         var scriptType = payload.ScriptType == default ? ParseScriptType(step.Runner) : payload.ScriptType;
         var preferred = payload.Preferred == ShellExecutor.Auto ? ParseShellExecutor(step.Runner) : payload.Preferred;
@@ -270,7 +326,7 @@ public sealed class JobTaskBridge
             return (null, scriptType, preferred);
         }
 
-        var script = await _scripts.GetAsync((ulong)payload.ScriptId, cancellationToken).ConfigureAwait(false);
+        var script = reviewedScript?.Script ?? await _scripts.GetAsync((ulong)payload.ScriptId, cancellationToken).ConfigureAwait(false);
         if (script is null)
         {
             return (null, scriptType, preferred);
@@ -299,7 +355,8 @@ public sealed class JobTaskBridge
         JobStepInfo step,
         IReadOnlyDictionary<string, object?> inputs,
         JobExecutionRuntimePolicy runtimePolicy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        McpOperatorScriptExecutionSnapshot? reviewedScript)
     {
         ExecLibraryScriptPayload payload;
         Dictionary<string, string>? payloadParameters = null;
@@ -320,7 +377,9 @@ public sealed class JobTaskBridge
         }
 
         payload.ScriptId = scriptId.Value;
-        var execution = await ResolveLibraryExecutionAsync(step, payload, cancellationToken).ConfigureAwait(false);
+        if (reviewedScript is not null && reviewedScript.Script.Id != (ulong)payload.ScriptId)
+            return (false, default, "The job payload cannot select a different reviewed script.");
+        var execution = await ResolveLibraryExecutionAsync(step, payload, cancellationToken, reviewedScript).ConfigureAwait(false);
         if (execution.Script is null)
         {
             return (false, default, $"Script {payload.ScriptId} not found.");
@@ -353,7 +412,8 @@ public sealed class JobTaskBridge
             runtimePolicy.GraceSeconds,
             runtimePolicy.HardTimeoutSeconds);
 
-        var invocation = new TaskInvocation(TaskKinds.ExecLibraryScript, JsonSerializer.Serialize(payload), execution.Script.Name, payload.ScriptType.ToString(), execution.Script.Name, ComputeContentHash(execution.Script.Content));
+        var invocation = new TaskInvocation(TaskKinds.ExecLibraryScript, JsonSerializer.Serialize(payload), execution.Script.Name,
+            payload.ScriptType.ToString(), execution.Script.Name, ComputeContentHash(execution.Script.Content), execution.Script.SourceRevision);
 
         _logger.LogDebug(
             "JobRun {RunId} step {Ordinal}: library dispatch prepared for script {ScriptId} with {ParameterCount} parameters.",
@@ -494,7 +554,8 @@ public sealed class JobTaskBridge
         };
     }
 
-    private readonly record struct TaskInvocation(string TaskType, string Payload, string? ScriptName = null, string? ScriptType = null, string? CommandLabel = null, string? ScriptContentHash = null);
+    private readonly record struct TaskInvocation(string TaskType, string Payload, string? ScriptName = null, string? ScriptType = null,
+        string? CommandLabel = null, string? ScriptContentHash = null, long? ScriptRevision = null);
 }
 
 public sealed record JobGatewayTaskInvocation(
@@ -505,4 +566,5 @@ public sealed record JobGatewayTaskInvocation(
     string? ScriptName = null,
     string? ScriptType = null,
     string? CommandLabel = null,
-    string? ScriptContentHash = null);
+    string? ScriptContentHash = null,
+    TaskOutputPolicy? OutputPolicy = null);

@@ -324,6 +324,8 @@ public static class McpOperatorScriptEndpoints
 
         var script = resolved.Script!.Value;
         var requestId = Guid.NewGuid().ToString("N");
+        var outputPolicy = TaskOutputPolicy.Create(script.Lease.Parameters.Select(p => (p.Name, p.Type)),
+            script.Lease.ScriptId, script.Lease.Version, script.Lease.ContentHash);
         McpOperatorTaskLease? activity = null;
         try
         {
@@ -332,7 +334,7 @@ public static class McpOperatorScriptEndpoints
                 idempotencyId, context.CorrelationId, TaskKinds.ExecLibraryScript, null, null, 0,
                 script.Lease.ScriptId, script.Lease.Version, script.Lease.ContentHash, script.Lease.TimeoutSeconds,
                 (int)Math.Min(48 * 1024, context.Decision.EffectiveConstraints!.MaxOutputBytes!.Value),
-                DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+                DateTimeOffset.UtcNow, outputPolicy), cancellationToken).ConfigureAwait(false);
             var payload = JsonSerializer.Serialize(new ExecLibraryScriptPayload
             {
                 ScriptId = checked((int)script.Lease.ScriptId),
@@ -340,7 +342,8 @@ public static class McpOperatorScriptEndpoints
                 ScriptContent = script.Content,
                 Parameters = request.Parameters?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
                 WorkingDirectory = script.Lease.WorkingDirectory,
-                TimeoutSeconds = script.Lease.TimeoutSeconds
+                TimeoutSeconds = script.Lease.TimeoutSeconds,
+                OutputPolicy = outputPolicy
             });
             await dispatcher.DispatchAsync(new ClientKey(tenantId, agentId), requestId, context.CorrelationId, TaskKinds.ExecLibraryScript, payload, environment: 0, cancellationToken).ConfigureAwait(false);
             await events.RecordAsync(new DomainEvent

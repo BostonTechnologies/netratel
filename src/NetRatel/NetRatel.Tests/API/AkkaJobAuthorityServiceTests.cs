@@ -9,12 +9,67 @@ using NetRatel.Application.Jobs;
 using NetRatel.Application.Presence;
 using NetRatel.Application.Scripts;
 using NetRatel.Shared.Contracts.Jobs;
+using NetRatel.Shared.Contracts.Tasks;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using Xunit;
 
 namespace NetRatel.Tests.API;
 
 public sealed class AkkaJobAuthorityServiceTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Reviewed_job_keeps_confirmed_scripts_between_steps_or_fails_closed_when_snapshot_is_missing(bool loseSnapshot)
+    {
+        var agentId = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        const string content = "printf 'reviewed-marker'";
+        var contentHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content)));
+        var script = new ScriptInfo(91, "reviewed-script", "/", "fixture", content, null, "bash", now, now, 3);
+        var steps = new[]
+        {
+            new JobStepInfo(42, 41, 1, JobStepKind.LibraryScript, null, null, 91, null, true),
+            new JobStepInfo(43, 41, 2, JobStepKind.LibraryScript, null, null, 91, null, true)
+        };
+        var snapshot = new McpOperatorJobExecutionSnapshot(
+            new JobDefinitionDetails(new JobDefinitionInfo(41, "reviewed-job", "/", null, 7, string.Empty, now, now, null, agentId), [], steps),
+            2, "operator", "client", "https://mcp.example.test/mcp", "prod", new string('A', 64), [],
+            [new McpOperatorScriptExecutionSnapshot(script, [new ScriptParamInfo(1, 91, "credential", "secret", false, null, null, null)], 3, contentHash)]);
+        var runs = new InMemoryRuns();
+        var gateway = new AvailableGateway();
+        // The current definition is now a different shell job and the current
+        // script no longer exists. Only the reviewed snapshot may be dispatched.
+        var service = CreateAuthority(agentId, runs, new OneStepDefinitions(agentId), gateway);
+
+        await service.StartReviewedMcpAsync(snapshot, new RunJobRequest("mcp-reviewed:operator", "{\"credential\":\"synthetic-only\"}", null), CancellationToken.None);
+
+        gateway.DispatchCount.Should().Be(1);
+        var first = JsonSerializer.Deserialize<ExecLibraryScriptPayload>(gateway.LastDispatch!.PayloadJson)!;
+        first.ScriptContent.Should().Be(content);
+        first.OutputPolicy!.SecretParameters.Should().Contain("credential");
+        if (loseSnapshot) runs.McpSnapshot = null;
+        await service.RecordLifecycleAsync(new ClientKey(7, agentId), Lifecycle(runs, JobGatewayLifecycleStatus.Completed, 3,
+            "{\"exitCode\":0}", 0), CancellationToken.None);
+
+        if (loseSnapshot)
+        {
+            gateway.DispatchCount.Should().Be(1);
+            runs.Run!.Status.Should().Be(JobRunState.Failed);
+            runs.Run.Error.Should().Contain("snapshot is unavailable");
+        }
+        else
+        {
+            gateway.DispatchCount.Should().Be(2);
+            var second = JsonSerializer.Deserialize<ExecLibraryScriptPayload>(gateway.LastDispatch!.PayloadJson)!;
+            second.ScriptContent.Should().Be(content);
+            second.OutputPolicy!.SecretParameters.Should().Contain("credential");
+            gateway.LastDispatch.JobStepId.Should().Be(43);
+        }
+    }
+
     [Theory]
     [InlineData("outcomeUnknown", "Unknown physical outcome; native termination could not be confirmed.")]
     [InlineData("timedOut", "Execution timed out.")]
@@ -317,6 +372,9 @@ public sealed class AkkaJobAuthorityServiceTests
 
     private sealed class InMemoryRuns : IJobRunService
     {
+        public McpOperatorJobExecutionSnapshot? McpSnapshot { get; set; }
+        public void BindMcpExecutionSnapshot(ulong runId, McpOperatorJobExecutionSnapshot snapshot) => McpSnapshot = snapshot;
+        public Task<McpOperatorJobExecutionSnapshot?> GetMcpExecutionSnapshotAsync(ulong runId, CancellationToken ct = default) => Task.FromResult(McpSnapshot);
         public async Task<string?> GetExecutionOptionsAsync(ulong id, CancellationToken ct = default) => (await GetAsync(id, ct))?.OptionsJson;
         public async Task<string?> GetExecutionInputsAsync(ulong id, CancellationToken ct = default) => (await GetAsync(id, ct))?.InputsJson;
         public JobRunInfo? Run { get; private set; }

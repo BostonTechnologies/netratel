@@ -86,7 +86,10 @@ public sealed class ClientServiceControlService(
 
         try
         {
-            var payload = new ClientServiceControlPayload(operation.Id, operation.ServiceName, operation.Platform, operation.Action, operation.ExpiresAtUtc);
+            var payload = new ClientServiceControlPayload(operation.Id, operation.ServiceName, operation.Platform, operation.Action, operation.ExpiresAtUtc)
+            {
+                IssuedAtUtc = operation.CreatedAtUtc
+            };
             await commands.DispatchAsync(client, operation.Id.ToString("N"), Correlation(operation.Id), ClientServiceControlRules.TaskType,
                 JsonSerializer.Serialize(payload, JsonOptions), 0, cancellationToken).ConfigureAwait(false);
             // Gateway acknowledgement may have won this race; never regress its persisted status.

@@ -1,14 +1,45 @@
 using AwesomeAssertions;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Jobs;
+using NetRatel.Application.Scripts;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
+using NetRatel.Shared.Contracts.Tasks;
 using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
 
 public sealed class JobRunServiceTests
 {
+    [Fact]
+    public async Task Reviewed_execution_snapshot_survives_service_reload_without_entering_ordinary_run_output()
+    {
+        await using var db = CreateDb();
+        var keys = new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider();
+        var service = new JobRunService(db, keys);
+        var now = DateTimeOffset.UtcNow;
+        var agentId = Guid.NewGuid();
+        const string scriptContent = "printf 'private-reviewed-script-snapshot'";
+        var snapshot = new McpOperatorJobExecutionSnapshot(
+            new JobDefinitionDetails(new JobDefinitionInfo(11, "reviewed-job", "/", null, 7, string.Empty, now, now, null, agentId), [], []),
+            2, "operator", "client", "https://mcp.example.test/mcp", "prod", new string('A', 64), [],
+            [new McpOperatorScriptExecutionSnapshot(new ScriptInfo(12, "reviewed-script", "/", "fixture", scriptContent, null, "bash", now, now), [], 1, new string('B', 64))]);
+        service.BindMcpExecutionSnapshot(21, snapshot);
+        await service.UpsertRunAsync(new UpsertJobRunCommand(21, 11, 7, string.Empty, "mcp-reviewed:operator", JobRunState.Pending,
+            0, now, null, null, null, "{}", null, agentId));
+        db.ChangeTracker.Clear();
+        var reloaded = new JobRunService(db, keys);
+
+        var savedSnapshot = await reloaded.GetMcpExecutionSnapshotAsync(21);
+        var ordinary = await reloaded.GetAsync(21);
+
+        savedSnapshot.Should().NotBeNull();
+        savedSnapshot!.ComputeDigest().Should().Be(snapshot.ComputeDigest());
+        ordinary!.SubmittedDefinitionRevision.Should().Be(snapshot.ComputeDigest());
+        System.Text.Json.JsonSerializer.Serialize(ordinary).Should().NotContain(scriptContent);
+        (await db.JobRuns.SingleAsync()).ProtectedExecutionJson.Should().NotContain(scriptContent);
+    }
+
     [Fact]
     public async Task CreateTaskActivityAsync_BackToBackRequests_GetDistinctActivityIds()
     {
@@ -127,7 +158,7 @@ public sealed class JobRunServiceTests
         var service = new JobRunService(db, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
         var created = await service.CreateTaskActivityAsync(new CreateJobTaskActivityCommand(
             "terminal-result-request", null, null, "client", 3, "exec-library-script", "Processing", null,
-            DateTimeOffset.UtcNow, null));
+            DateTimeOffset.UtcNow, null, OutputPolicy: TaskOutputPolicy.Create([])));
         const string result = "{\"stdout\":[\"completed\"],\"stderr\":[\"failed detail\"],\"exitCode\":1}";
 
         var updated = await service.UpdateTaskActivityStatusAsync(new UpdateJobTaskActivityStatusCommand(
@@ -151,7 +182,7 @@ public sealed class JobRunServiceTests
         var service = new JobRunService(db, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
         var created = await service.CreateTaskActivityAsync(new CreateJobTaskActivityCommand(
             "idempotent-result-request", null, null, "client", 3, "exec-library-script", "Processing", null,
-            DateTimeOffset.UtcNow, null));
+            DateTimeOffset.UtcNow, null, OutputPolicy: TaskOutputPolicy.Create([])));
         const string completedResult = "{\"stdout\":[\"completed\"],\"exitCode\":0}";
 
         await service.UpdateTaskActivityStatusAsync(new UpdateJobTaskActivityStatusCommand(
