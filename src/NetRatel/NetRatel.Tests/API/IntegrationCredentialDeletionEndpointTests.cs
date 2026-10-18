@@ -88,8 +88,7 @@ public sealed class IntegrationCredentialDeletionEndpointTests
 
     private static async Task<IHost> BuildAppAsync(IIntegrationCredentialService credentials, IntegrationPairingService? pairing = null)
     {
-        var builder = WebApplication.CreateBuilder();
-        builder.WebHost.UseEnvironment(Environments.Production);
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Production });
         builder.WebHost.UseTestServer();
         builder.Services.AddAuthentication("DeleteTest").AddScheme<AuthenticationSchemeOptions, AccountAuthentication>("DeleteTest", _ => { });
         builder.Services.AddAuthorization(options => options.AddPolicy("InteractiveAccount", policy =>
