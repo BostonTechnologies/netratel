@@ -163,6 +163,7 @@ public static class McpOperatorCommandEndpoints
         }
 
         var commandId = Guid.NewGuid().ToString("N");
+        var outputPolicy = TaskOutputPolicy.Create([], environmentReferences: command.EnvironmentReferences);
         McpOperatorCommandLease lease;
         try
         {
@@ -179,7 +180,7 @@ public static class McpOperatorCommandEndpoints
                 command.EnvironmentReferences,
                 command.TimeoutSeconds,
                 command.MaximumOutputBytes,
-                DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+                DateTimeOffset.UtcNow, outputPolicy), cancellationToken).ConfigureAwait(false);
             await commands.RecordLifecycleAsync(lease.CommandId, tenantId, agentId, McpOperatorCommandState.Dispatched,
                 DateTimeOffset.UtcNow, null, cancellationToken).ConfigureAwait(false);
 
@@ -189,7 +190,8 @@ public static class McpOperatorCommandEndpoints
                 Command = command.Command,
                 WorkingDirectory = command.WorkingDirectory,
                 TimeoutSeconds = command.TimeoutSeconds,
-                EnvironmentReferences = command.EnvironmentReferences.ToList()
+                EnvironmentReferences = command.EnvironmentReferences.ToList(),
+                OutputPolicy = outputPolicy
             });
             await dispatcher.DispatchAsync(new ClientKey(tenantId, agentId), lease.CommandId, context.CorrelationId,
                 TaskKinds.ExecShellCommand, payload, environment: 0, cancellationToken).ConfigureAwait(false);

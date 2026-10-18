@@ -40,8 +40,21 @@ internal sealed class ClientServiceControlExecutor(
             return Result("invalid_service_selection");
         if (_platform == ClientServicePlatform.Unknown || operation.Platform != _platform) return Result("platform_unsupported");
         if (ClientServiceControlRules.IsProtectedService(operation.ServiceName)) return Result("agent_service_protected");
-        if (operation.ExpiresAtUtc <= _clock.GetUtcNow() || operation.ExpiresAtUtc > _clock.GetUtcNow().Add(ClientServiceControlRules.DispatchLifetime))
-            return Result("service_operation_expired");
+        var now = _clock.GetUtcNow();
+        if (operation.ExpiresAtUtc <= now) return Result("service_operation_expired");
+        if (operation.IssuedAtUtc is { } issuedAt)
+        {
+            var lifetime = operation.ExpiresAtUtc - issuedAt;
+            if (lifetime <= TimeSpan.Zero || lifetime > ClientServiceControlRules.DispatchLifetime)
+                return Result("invalid_service_operation_window");
+            if (issuedAt - now > ClientServiceControlRules.IssuanceClockSkew)
+                return Result("service_operation_clock_skew");
+        }
+        else if (operation.ExpiresAtUtc - now > ClientServiceControlRules.DispatchLifetime + ClientServiceControlRules.IssuanceClockSkew)
+        {
+            // Legacy issuers used expiry = issuance + DispatchLifetime without sending issuance.
+            return Result("service_operation_clock_skew");
+        }
 
         var before = await ObserveAsync(operation, cancellationToken).ConfigureAwait(false);
         if (before is null) return Result("service_identity_unavailable");

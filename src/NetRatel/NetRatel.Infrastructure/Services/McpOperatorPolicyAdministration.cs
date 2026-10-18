@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using NetRatel.Application.Operations;
 using NetRatel.Infrastructure.Persistence;
 
@@ -15,6 +16,34 @@ public sealed class McpOperatorPolicyAdministration(OrchestratorDbContext db) : 
 {
     private const int MaxIdentityLength = 256;
     private readonly OrchestratorDbContext _db = db;
+
+    public async Task<T> ExecuteWithTargetProfileAsync<T>(
+        int tenantId,
+        Guid agentId,
+        McpOperatorTargetProfile? expectedProfile,
+        Func<CancellationToken, Task<T>> mutation,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(mutation);
+        await using var transaction = await BeginProfileTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await LockProfileTargetAsync(tenantId, agentId, cancellationToken).ConfigureAwait(false);
+        if (_db.Database.IsRelational())
+        {
+            // Hold the profile's row lock through audit and policy persistence.
+            // The Agent lock also serializes initial profile creation when no
+            // profile row exists yet, including the reviewed bootstrap path.
+            await _db.McpOperatorTargetProfiles.Where(profile => profile.AgentId == agentId && profile.TenantId == tenantId)
+                .ExecuteUpdateAsync(update => update.SetProperty(profile => profile.Version, profile => profile.Version), cancellationToken)
+                .ConfigureAwait(false);
+        }
+        var current = await GetTargetProfileAsync(tenantId, agentId, cancellationToken).ConfigureAwait(false);
+        if (!ProfilesMatch(current, expectedProfile))
+            throw new McpOperatorAdmissionRejectedException("confirmation_plan_stale");
+
+        var result = await mutation(cancellationToken).ConfigureAwait(false);
+        if (transaction is not null) await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return result;
+    }
 
     public async Task<McpOperatorPolicyPage> ListAsync(
         McpOperatorEnvironment? environment,
@@ -249,11 +278,8 @@ public sealed class McpOperatorPolicyAdministration(OrchestratorDbContext db) : 
             !IsSafeValue(actorId, MaxIdentityLength))
             throw new ArgumentException("A persisted target, known classification, and trusted administrator identity are required.");
         var normalizedTags = NormalizeTags(tags);
-        var agentExists = await _db.Agents.AsNoTracking().AnyAsync(
-            candidate => candidate.TenantId == tenantId && candidate.Id == agentId,
-            cancellationToken).ConfigureAwait(false);
-        if (!agentExists)
-            throw new KeyNotFoundException("The persisted Agent target was not found for this tenant.");
+        await using var transaction = await BeginProfileTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await LockProfileTargetAsync(tenantId, agentId, cancellationToken).ConfigureAwait(false);
 
         var profile = await _db.McpOperatorTargetProfiles.SingleOrDefaultAsync(
             candidate => candidate.AgentId == agentId,
@@ -286,8 +312,27 @@ public sealed class McpOperatorPolicyAdministration(OrchestratorDbContext db) : 
         profile.UpdatedBy = actorId.Trim();
         AddChangeAudit("target_profile_upserted", profile.TenantId, null, profile.AgentId, profile.Version, profile.UpdatedBy, now);
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        if (transaction is not null) await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return ToProfile(profile);
     }
+
+    private async Task<IDbContextTransaction?> BeginProfileTransactionAsync(CancellationToken cancellationToken) =>
+        _db.Database.IsRelational() && _db.Database.CurrentTransaction is null
+            ? await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false)
+            : null;
+
+    private async Task LockProfileTargetAsync(int tenantId, Guid agentId, CancellationToken cancellationToken)
+    {
+        var target = await AgentLifecycleLock.LockAsync(_db, tenantId, agentId, cancellationToken).ConfigureAwait(false);
+        if (target is null || target.DeletedAtUtc is not null)
+            throw new KeyNotFoundException("The persisted Agent target was not found for this tenant.");
+    }
+
+    private static bool ProfilesMatch(McpOperatorTargetProfile? current, McpOperatorTargetProfile? expected) =>
+        current is null ? expected is null : expected is not null &&
+        current.TenantId == expected.TenantId && current.AgentId == expected.AgentId &&
+        current.Version == expected.Version && current.Classification == expected.Classification &&
+        current.Tags.Order(StringComparer.Ordinal).SequenceEqual(expected.Tags.Order(StringComparer.Ordinal), StringComparer.Ordinal);
 
     private async Task EnsureExactTargetExistsAsync(McpOperatorTargetSelector target, CancellationToken cancellationToken)
     {

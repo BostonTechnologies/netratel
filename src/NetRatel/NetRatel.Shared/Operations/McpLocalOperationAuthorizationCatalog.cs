@@ -58,6 +58,10 @@ public static class McpLocalOperationAuthorizationCatalog
 
     public static IReadOnlyList<string> AdditionalPermissions(string tool, string operation) => (tool, operation) switch
     {
+        // Starting an owned job validates its pinned library scripts internally.
+        // That dependency is an application entitlement on the start action;
+        // it does not mint a separate script-read OAuth scope.
+        ("netratel_job_runs", "start") => ["script.edit"],
         ("netratel_connectivity", "test") => ["mcp.connectivity.read"],
         ("netratel_files", "preview_copy" or "copy" or "confirm_copy") => ["file.read"],
         ("netratel_files", "preview_move" or "move" or "confirm_move") => ["file.delete"],

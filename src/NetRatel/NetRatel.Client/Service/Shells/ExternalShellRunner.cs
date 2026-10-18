@@ -53,7 +53,8 @@ namespace NetRatel.Client.Service.Shells
             public RunResult Execution { get; } = execution;
         }
 
-        public sealed record ExecutionObserver(Func<Task> Started, Func<string, string, Task> Output);
+        public sealed record ExecutionObserver(Func<Task> Started, Func<string, string, Task> Output,
+            Func<string, string>? RedactOutput = null);
 
         private readonly TimeSpan _defaultTimeout;
 
@@ -892,7 +893,9 @@ namespace NetRatel.Client.Service.Shells
                         res.OutputTruncated = true;
                         return;
                     }
-                    text = OperatorOutputRedactor.Redact(text);
+                    // Redact the complete process line before truncation, bounded
+                    // capture, or queueing; truncation must not retain a secret prefix.
+                    text = observer?.RedactOutput?.Invoke(text) ?? OperatorOutputRedactor.Redact(text);
                     var length = Math.Min(text.Length, Math.Min(4096, remainingBytes));
                     while (length > 0 && Encoding.UTF8.GetByteCount(text.AsSpan(0, length)) > remainingBytes) length--;
                     if (length < text.Length) res.OutputTruncated = true;

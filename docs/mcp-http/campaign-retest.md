@@ -7,7 +7,56 @@ publication integrity and owner functional acceptance are separate stages.
 [campaign #294](https://github.com/BostonTechnologies/netratel/issues/294) remain
 open until the owner explicitly disposes the campaign contexts.
 
-## Current authority: final beta.24 evidence and beta.25 order
+## Current authority: beta.26 continuation and beta.27 repair order
+
+The beta.26 continuation supersedes earlier blocked-admission descriptions for
+current connection state. Both original tenant native flow reads and primary
+identity now pass. The selected bridge and API/Web/MCP/migrations match beta.26;
+the native agent used for the service-control failure remained on an earlier
+release. Record those identities independently. A bridge upgrade cannot repair
+an older native agent's service-operation executor.
+
+Acceptance remains **NO-GO**. Fresh ordinary authenticated API reads disclosed a
+synthetic secret through task detail and logs. Owned job-start previews failed
+compound admission; classification-constrained policy mutations require trusted
+profile binding; native service-operation expiry handling needs bounded clock
+skew. Full workflows, endurance and owned cleanup remain incomplete.
+
+| Order | Repair or owner acceptance |
+| --- | --- |
+| 1 | [#315](https://github.com/BostonTechnologies/netratel/issues/315): immutable secret classification, safe standalone/job task output before persistence/fan-out and consistent ordinary projections. |
+| 2 | [#316](https://github.com/BostonTechnologies/netratel/issues/316): exact Execute-only job-start contract with required job and script entitlements, pinned definitions and confirmation revision binding. |
+| 3 | [#317](https://github.com/BostonTechnologies/netratel/issues/317): persisted exact-agent classification/profile revision on policy preview and confirm, with canonical action semantics. |
+| 4 | [#318](https://github.com/BostonTechnologies/netratel/issues/318): bounded native service-operation issuance skew with unchanged actual expiry. Retest using the fixed native agent. |
+| 5 | Verify published source/artifacts and actual deployed component identities, then both original tenant reads and selected native operation metadata. |
+| 6 | Complete the supported same-owner no-reveal auxiliary review with an eligible distinct reviewer, then fresh standalone and job secret-reader matrices under [#306](https://github.com/BostonTechnologies/netratel/issues/306). |
+| 7 | Finish [#305](https://github.com/BostonTechnologies/netratel/issues/305), [#308](https://github.com/BostonTechnologies/netratel/issues/308) and native progress/cancellation under [#288](https://github.com/BostonTechnologies/netratel/issues/288), then the isolated hour and exact cleanup below. |
+
+The retained auxiliary proposal expired. Prepare a fresh current proposal through
+the existing review/receipt/resume workflow. Attenuate only the specifically
+approved reveal grants on that auxiliary; retain every other grant and its exact
+original expiry. Never trim the intended proposal to match an available reviewer's
+authority. Preserve the primary identity, grants and original expiry unchanged.
+
+**Autofill is owner-deferred and untested in this continuation.** Do not request
+saved-dummy-login setup, run browser autofill acceptance or make it a prerequisite
+for independent HTTP MCP work. Preserve earlier autofill evidence as historical.
+
+Owned command/cancellation, terminal output/readback/close, selected typed task,
+script and request lifecycles, stale confirmation denials, value-file round-trip
+and real traversal/reparse denials produced bounded successes. They do not close
+all related contexts. MCP permission denials before resource/projection evaluation
+do not prove secret masking or cross-tenant resource enforcement. Inspector
+rendering and prompt retrieval do not complete the eight native prompt workflows
+or their explicit human AI decisions. Native progress remains unobserved; page
+limits alone do not establish continuation or pagination under change.
+
+Keep original context IDs and historical evidence immutable. Record current
+assertion rows, invocations, operations and acceptance dispositions as separate
+measures, with native/API/diagnostic/browser/source provenance. Distribution
+integrity and source tests do not establish owner functional acceptance.
+
+## Historical final beta.24 evidence and beta.25 order
 
 The final beta.24 root-cause evidence refines the corrected retest, which
 supersedes first-pass interpretations. Production acceptance remains withheld:
@@ -105,9 +154,11 @@ and pre-existing sessions while these prerequisites are completed.
    Keep protected capabilities and secrets outside model input/output. Inspect the
    retained credential and preserve its **owner-requested exact UTC expiry**;
    restarting the campaign does not restart its approval window. Record the actual
-   UI/server expiry separately; the owner-requested instant was not applied in
-   the assessed campaigns. Obtain actual independent approval and verify applied
-   Production policies through #301; a prepared, pending, expired or cancelled
+   UI/server expiry separately and compare it with the original retained instant.
+   Earlier campaigns lacked applied admission; the beta.26 continuation supplies
+   the current successful two-tenant reads. When new or changed access is needed,
+   obtain actual independent approval and verify applied Production policies
+   through #301; a prepared, pending, expired or cancelled
    request supplies no admission authority.
 4. Discover each original approved tenant and designated target independently,
    following published search pagination and clarifying ambiguity. Inspect
@@ -146,7 +197,7 @@ state before retrying an uncertain mutation; the bridge never automatically repl
 | G06 | Fresh synthetic secret absent from ordinary API/UI/MCP/history/stream/log/error/export; ordinary-authorized, unauthorized and cross-tenant readers; audited authorized reveal; ordinary false/zero inputs stay useful |
 | G07 | Untrusted content cannot expand server-enforced authority or targets |
 | G08 | Admitted endurance and a separate pagination-under-change phase |
-| G09 | Existing JobsAutofillAcceptanceTests saved-dummy positive control plus deployed-form evidence |
+| G09 | Owner-deferred and untested in the current continuation; retain earlier autofill evidence without rerunning it |
 | G10 | Reviewed restricted/revoked/controlled-time expired identities; exact expiry and effective revocation |
 | G11 | Source/catalog/component manifest digests and configuration revisions |
 | G12 | Native prompt workflows, progress before completion and in-flight cancellation |
@@ -180,9 +231,9 @@ This selection exercises independent reviewed setup and actual reads in syntheti
 tenants in both Development and Production, the shipped protected health gateway
 (three protocol cases minimum) and gated bridge streaming/recovery.
 It is a protocol/client integration receipt, not an actual AI-host invocation or
-the original owner-tenant campaign. Browser selection with
-`browser_classes=NetRatel.Web.PlaywrightTests.JobsAutofillAcceptanceTests` retains
-the existing saved-account control; record the actual owner deployed form separately.
+the original owner-tenant campaign. The existing optional browser selection
+`browser_classes=NetRatel.Web.PlaywrightTests.JobsAutofillAcceptanceTests` remains
+available for a later owner-approved autofill campaign; it is deferred here.
 
 ## Original paced comparison
 

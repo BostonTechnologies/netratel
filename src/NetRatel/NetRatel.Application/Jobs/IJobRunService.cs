@@ -1,4 +1,5 @@
 using NetRatel.Shared;
+using NetRatel.Shared.Contracts.Tasks;
 
 namespace NetRatel.Application.Jobs;
 
@@ -148,7 +149,8 @@ public sealed record UpsertJobTaskActivityCommand(
     string? ScriptName = null,
     string? ScriptType = null,
     string? CommandLabel = null,
-    string? ScriptContentHash = null);
+    string? ScriptContentHash = null,
+    TaskOutputPolicy? OutputPolicy = null);
 
 public sealed record CreateJobTaskActivityCommand(
     string RequestId,
@@ -172,7 +174,8 @@ public sealed record CreateJobTaskActivityCommand(
     string? ScriptName = null,
     string? ScriptType = null,
     string? CommandLabel = null,
-    string? ScriptContentHash = null);
+    string? ScriptContentHash = null,
+    TaskOutputPolicy? OutputPolicy = null);
 
 public sealed record AppendJobTaskLogCommand(
     string RequestId,
@@ -182,7 +185,8 @@ public sealed record AppendJobTaskLogCommand(
     string Stream,
     string Message,
     long Sequence,
-    DateTimeOffset TimestampUtc);
+    DateTimeOffset TimestampUtc,
+    string? OutputProtectionBinding = null);
 
 public sealed record UpdateJobTaskActivityStatusCommand(
     string RequestId,
@@ -200,9 +204,18 @@ public sealed record JobRunDetails(
 
 public interface IJobRunService
 {
+    // Agent lifecycle ingress: protect output before creating any diagnostic copy.
+    Task<string?> ProtectTaskOutputAsync(string requestId, string? output, CancellationToken ct = default)
+        => Task.FromResult(output);
+    Task<TaskOutputPolicy> GetRunOutputPolicyAsync(ulong runId, CancellationToken ct = default)
+        => Task.FromResult(TaskOutputPolicy.Create([]));
     // Called by the server authority immediately after loading the submitted definition;
     // never populated from RunJobRequest or any caller-supplied sensitivity flags.
     void BindSubmittedDefinition(ulong runId, JobDefinitionDetails definition) { }
+    void BindMcpExecutionSnapshot(ulong runId, McpOperatorJobExecutionSnapshot snapshot)
+        => throw new NotSupportedException("Reviewed MCP job execution snapshots are unavailable.");
+    Task<McpOperatorJobExecutionSnapshot?> GetMcpExecutionSnapshotAsync(ulong runId, CancellationToken ct = default)
+        => Task.FromResult<McpOperatorJobExecutionSnapshot?>(null);
     // Internal execution boundary only. Never map this material into ordinary responses.
     Task<string?> GetExecutionOptionsAsync(ulong runId, CancellationToken ct = default)
         => throw new NotSupportedException("Protected execution options retrieval is unavailable.");

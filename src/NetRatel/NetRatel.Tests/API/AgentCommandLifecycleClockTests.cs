@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.Json;
 using System.Threading.Channels;
 using Akka.Actor;
 using AwesomeAssertions;
@@ -20,6 +21,8 @@ using NetRatel.Application.Commands;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Presence;
+using NetRatel.Shared.Contracts.Tasks;
+using NetRatel.Shared.Security;
 using NetRatel.Tests.Akka;
 using Xunit;
 
@@ -27,6 +30,38 @@ namespace NetRatel.Tests.API;
 
 public sealed partial class AgentCommandJobControlGatewayServiceTests
 {
+    [Fact]
+    public async Task Command_lifecycle_protects_output_before_fanning_out_to_each_projection()
+    {
+        var protection = new TaskOutputRedactor(TaskOutputPolicy.Create([("vault", "secret")]),
+            new Dictionary<string, string> { ["vault"] = "garden Ω 908" });
+        await using var fixture = await ClockFixture.CreateAsync(protection);
+        using var call = await fixture.ConnectAsync();
+        await call.RequestStream.WriteAsync(fixture.Lifecycle(1, 3, CommandShadowStatus.Accepted, fixture.RequestedAt));
+        await fixture.ReadProjectionsAsync(3);
+        await call.RequestStream.WriteAsync(fixture.Lifecycle(2, 4, CommandShadowStatus.Started, fixture.RequestedAt));
+        await fixture.ReadProjectionsAsync(3);
+        var terminal = fixture.Lifecycle(3, 5, CommandShadowStatus.Completed, fixture.RequestedAt);
+        terminal.Lifecycle.ResultJson = JsonSerializer.Serialize(new
+        {
+            stdout = new[] { "garden Ω 908", "Useful 雨" }, stderr = new[] { "garden Ω 908" },
+            outputStreamed = true, exitCode = 0
+        });
+        terminal.Lifecycle.ExitCode = 0;
+
+        await call.RequestStream.WriteAsync(terminal);
+        await fixture.ReadProjectionsAsync(3);
+
+        fixture.ProtectionCalls.Should().Be(3);
+        fixture.LastOperatorCommandResult.Should().Be(fixture.LastOperatorTaskResult).And.Be(fixture.LastJobProjection!.ResultJson);
+        using var output = JsonDocument.Parse(fixture.LastJobProjection!.ResultJson!);
+        output.RootElement.GetProperty("stdout")[0].GetString().Should().Be(TaskOutputRedactor.Mask);
+        output.RootElement.GetProperty("stdout")[1].GetString().Should().Be("Useful 雨");
+        output.RootElement.GetProperty("stderr")[0].GetString().Should().Be(TaskOutputRedactor.Mask);
+        fixture.LastJobProjection.ExitCode.Should().Be(0);
+        (await fixture.StateAsync()).CurrentStatus.Should().Be(CommandLifecycleStatus.Completed);
+    }
+
     [Fact]
     public async Task Command_progress_keeps_started_execution_active_and_nullable_exit_evidence()
     {
@@ -173,7 +208,7 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
 
     private sealed record ClockProjection(string Store, DateTimeOffset? Timestamp);
 
-    private sealed class ClockFixture : IAsyncDisposable
+    private sealed class ClockFixture(TaskOutputRedactor outputProtection) : IAsyncDisposable
     {
         public ClientKey Client { get; } = new(73, Guid.NewGuid());
         public Guid ConnectionId { get; } = Guid.NewGuid();
@@ -181,8 +216,11 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
         public ReceiptClock Clock { get; } = new();
         public int ProjectionCount;
         public int JobProjections;
+        public int ProtectionCalls;
         public UpdateJobTaskActivityStatusCommand? LastJobProjection { get; private set; }
         public McpOperatorCommandState? LastOperatorCommandState { get; private set; }
+        public string? LastOperatorCommandResult { get; private set; }
+        public string? LastOperatorTaskResult { get; private set; }
         private readonly Channel<ClockProjection> projections = Channel.CreateUnbounded<ClockProjection>();
         private readonly AgentCommandGatewaySessionRegistry sessions = new();
         private ActorSystem system = null!;
@@ -191,9 +229,9 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
         private GrpcChannel channel = null!;
         private CommandKey Command => new(Client.TenantId, "clock-command");
 
-        public static async Task<ClockFixture> CreateAsync()
+        public static async Task<ClockFixture> CreateAsync(TaskOutputRedactor? outputProtection = null)
         {
-            var fixture = new ClockFixture();
+            var fixture = new ClockFixture(outputProtection ?? new TaskOutputRedactor(TaskOutputPolicy.Create([])));
             fixture.Clock.Now = fixture.RequestedAt.AddSeconds(1);
             fixture.system = ActorSystem.Create("command-clock-" + Guid.NewGuid().ToString("N"));
             fixture.actor = fixture.system.ActorOf(CommandActor.Props(fixture.Command, new TestCommandPersistenceStore()));
@@ -287,6 +325,11 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
         }
         private object Project(string store, string method, object?[]? args)
         {
+            if (store == "job" && method == nameof(IJobRunService.ProtectTaskOutputAsync))
+            {
+                Interlocked.Increment(ref ProtectionCalls);
+                return Task.FromResult(outputProtection.RedactEnvelope((string?)args![1]));
+            }
             DateTimeOffset? timestamp;
             if (store == "job" && method == nameof(IJobRunService.UpdateTaskActivityStatusAsync))
             {
@@ -297,9 +340,14 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
             else if (store == "command" && method == nameof(IMcpOperatorCommandStore.RecordLifecycleAsync))
             {
                 LastOperatorCommandState = (McpOperatorCommandState)args![3]!;
+                LastOperatorCommandResult = (string?)args[7];
                 timestamp = (DateTimeOffset)args[4]!;
             }
-            else if (store == "task" && method == nameof(IMcpOperatorTaskStore.RecordLifecycleAsync)) timestamp = (DateTimeOffset)args![5]!;
+            else if (store == "task" && method == nameof(IMcpOperatorTaskStore.RecordLifecycleAsync))
+            {
+                timestamp = (DateTimeOffset)args![5]!;
+                LastOperatorTaskResult = (string?)args[4];
+            }
             else throw new NotSupportedException(method);
             Interlocked.Increment(ref ProjectionCount);
             projections.Writer.TryWrite(new(store, timestamp)).Should().BeTrue();

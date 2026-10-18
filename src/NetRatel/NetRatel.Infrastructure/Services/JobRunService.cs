@@ -2,6 +2,9 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.DataProtection;
 using NetRatel.Application.Jobs;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Shared.Contracts.Tasks;
+using NetRatel.Shared.Security;
+using System.Text.Json;
 
 namespace NetRatel.Infrastructure.Services;
 
@@ -11,6 +14,45 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
     private readonly OrchestratorDbContext _db = db;
     private readonly JobRunInputProtection _protection = new(protection);
     private readonly Dictionary<ulong, (ulong JobId, int? TenantId, JobRunInputProtection.Sensitivity Metadata)> _submissions = [];
+    private readonly Dictionary<ulong, McpOperatorJobExecutionSnapshot> _mcpSnapshots = [];
+
+    public void BindMcpExecutionSnapshot(ulong runId, McpOperatorJobExecutionSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        if (!_mcpSnapshots.TryAdd(runId, snapshot))
+            throw new InvalidOperationException("A reviewed MCP run snapshot is immutable.");
+        BindSubmittedDefinition(runId, snapshot.Definition);
+    }
+
+    public async Task<McpOperatorJobExecutionSnapshot?> GetMcpExecutionSnapshotAsync(ulong runId, CancellationToken ct = default)
+    {
+        var run = await _db.JobRuns.AsNoTracking().SingleOrDefaultAsync(row => row.Id == (long)runId, ct);
+        return run?.ProtectedExecutionJson is null ? null : _protection.ForExecution(run).McpSnapshot;
+    }
+
+    public async Task<TaskOutputPolicy> GetRunOutputPolicyAsync(ulong runId, CancellationToken ct = default)
+    {
+        await ProtectLegacyAsync((long)runId, ct);
+        var run = await _db.JobRuns.AsNoTracking().SingleAsync(x => x.Id == (long)runId, ct);
+        var metadata = JobRunInputProtection.Metadata(run);
+        return TaskOutputPolicy.Create(metadata.Parameters.Select(p => (p.Name, p.Type)), withholdOutput: metadata.Legacy);
+    }
+
+    public async Task<string?> ProtectTaskOutputAsync(string requestId, string? output, CancellationToken ct = default)
+    {
+        var task = await _db.JobTaskActivities.AsNoTracking().SingleOrDefaultAsync(x => x.RequestId == requestId, ct);
+        if (task is null)
+        {
+            var command = await _db.McpOperatorCommands.AsNoTracking().SingleOrDefaultAsync(x => x.CommandId == requestId, ct);
+            return command is null ? TaskOutputRedactor.WithholdEnvelope(output)
+                : TaskOutputProtection.Project(command.OutputProtectionJson, output,
+                    TaskOutputProtection.HasEnvironmentReferences(command.EnvironmentReferencesJson));
+        }
+        await ProtectLegacyTaskAsync(task, ct);
+        var safe = TaskOutputProtection.Project(task, output);
+        var run = await FindActivityRunAsync(requestId, ct);
+        return run is null ? safe : _protection.Diagnostic(run, safe);
+    }
 
     public void BindSubmittedDefinition(ulong runId, JobDefinitionDetails definition)
     {
@@ -59,7 +101,7 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
             run.Steps.OrderBy(x => x.Ordinal).ThenBy(x => x.Id)
                 .Select(x => Map(x) with { Error = _protection.Diagnostic(run, x.Error) }).ToList(),
             run.Activities.OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Id)
-                .Select(x => SanitizeActivity(run, Map(x))).ToList());
+                .Select(x => SanitizeActivity(run, ProtectActivity(x))).ToList());
     }
 
     public async Task DeleteAsync(ulong runId, CancellationToken ct = default)
@@ -118,6 +160,8 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
 
     public async Task<IReadOnlyList<JobTaskLogInfo>> GetLogsByRequestIdAsync(string requestId, CancellationToken ct = default)
     {
+        var activity = await _db.JobTaskActivities.FirstOrDefaultAsync(x => x.RequestId == requestId, ct);
+        if (activity is not null) await ProtectLegacyTaskAsync(activity, ct);
         var run = await FindActivityRunAsync(requestId, ct);
         if (run is not null && run.ProtectedExecutionJson is null)
         {
@@ -126,7 +170,10 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
         }
         var logs = await _db.JobTaskLogs.AsNoTracking().Where(x => x.RequestId == requestId)
             .OrderBy(x => x.Sequence).ThenBy(x => x.Id).ToListAsync(ct);
-        return logs.Select(x => Map(x) with { Message = run is null ? x.Message : _protection.Diagnostic(run, x.Message)! }).ToList();
+        return logs.Select(x => Map(x) with
+        {
+            Message = ProjectLog(activity, run, x)
+        }).ToList();
     }
 
     public async Task<JobRunInfo> UpsertRunAsync(UpsertJobRunCommand command, CancellationToken ct = default)
@@ -181,9 +228,12 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
                     .SingleOrDefaultAsync(x => x.Id == row.JobId && x.TenantId == row.TenantId, ct);
                 metadata = JobRunInputProtection.Capture(definition, definition?.Parameters ?? []);
             }
+            _mcpSnapshots.TryGetValue(command.RunId, out var mcpSnapshot);
+            if (mcpSnapshot is not null)
+                metadata = metadata with { DefinitionRevision = mcpSnapshot.ComputeDigest() };
             _protection.Store(row, metadata,
                 existingHistory ? row.InputsJson : command.InputsJson,
-                existingHistory ? row.OptionsJson : command.OptionsJson);
+                existingHistory ? row.OptionsJson : command.OptionsJson, mcpSnapshot);
         }
         row.Error = _protection.Diagnostic(row, NormalizeNullable(command.Error));
 
@@ -277,6 +327,7 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
             }
             else
             {
+                await ProtectLegacyTaskAsync(row, ct);
                 ApplyTaskActivity(row, command);
             }
 
@@ -307,6 +358,7 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
         }
         else
         {
+            await ProtectLegacyTaskAsync(finalRow, ct);
             ApplyTaskActivity(finalRow, command);
         }
 
@@ -316,6 +368,8 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
 
     public async Task<JobTaskLogInfo> AppendTaskLogAsync(AppendJobTaskLogCommand command, CancellationToken ct = default)
     {
+        var legacyActivity = await _db.JobTaskActivities.FirstOrDefaultAsync(x => x.RequestId == command.RequestId && x.TenantId == command.TenantId, ct);
+        if (legacyActivity is not null) await ProtectLegacyTaskAsync(legacyActivity, ct);
         var existing = await _db.JobTaskLogs.FirstOrDefaultAsync(
             x => x.RequestId == command.RequestId &&
                  x.Sequence == command.Sequence &&
@@ -325,7 +379,8 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
         if (existing is not null)
         {
             var run = await FindActivityRunAsync(existing.RequestId, ct);
-            return Map(existing) with { Message = run is null ? existing.Message : _protection.Diagnostic(run, existing.Message)! };
+            var activity = await _db.JobTaskActivities.FirstOrDefaultAsync(x => x.RequestId == existing.RequestId, ct);
+            return Map(existing) with { Message = ProjectLog(activity, run, existing) };
         }
 
         var row = new JobTaskLogRecord
@@ -337,7 +392,8 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
             Stream = command.Stream.Trim(),
             Message = command.Message,
             Sequence = command.Sequence,
-            TimestampUtc = command.TimestampUtc
+            TimestampUtc = command.TimestampUtc,
+            OutputProtectionBinding = command.OutputProtectionBinding
         };
 
         _db.JobTaskLogs.Add(row);
@@ -352,6 +408,8 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
         {
             return null;
         }
+
+        await ProtectLegacyTaskAsync(row, ct);
 
         if (IsTerminal(row.Status) && !IsTerminal(command.Status))
         {
@@ -394,10 +452,25 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
 
     private async Task<JobTaskActivityInfo> SanitizeActivityAsync(JobTaskActivityRecord row, CancellationToken ct)
     {
+        await ProtectLegacyTaskAsync(row, ct);
         if (row.JobRunId is { } parentId) await ProtectLegacyAsync(parentId, ct);
         var run = row.JobRunId is { } id
             ? await _db.JobRuns.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id && x.TenantId == row.TenantId, ct) : null;
-        return run is null ? Map(row) : SanitizeActivity(run, Map(row));
+        return run is null ? ProtectActivity(row) : SanitizeActivity(run, ProtectActivity(row));
+    }
+
+    private static JobTaskActivityInfo ProtectActivity(JobTaskActivityRecord row) => Map(row) with
+    {
+        Error = TaskOutputProtection.Project(row, row.Error, TaskOutputRedactor.ReadBinding(row.ResultJson)),
+        ResultJson = TaskOutputProtection.Project(row, row.ResultJson),
+        CommandLabel = TaskOutputProtection.Project(row, row.CommandLabel)
+    };
+
+    private string ProjectLog(JobTaskActivityRecord? activity, JobRunRecord? run, JobTaskLogRecord log)
+    {
+        var message = activity is null ? TaskOutputRedactor.Withhold(log.Message)!
+            : TaskOutputProtection.Project(activity, log.Message, log.OutputProtectionBinding, envelope: false)!;
+        return run is null ? message : _protection.Diagnostic(run, message)!;
     }
 
     private JobTaskActivityInfo SanitizeActivity(JobRunRecord run, JobTaskActivityInfo activity) => activity with
@@ -418,19 +491,75 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
                 var run = await _db.JobRuns.FindAsync([step.JobRunId], ct);
                 if (run is not null) step.Error = _protection.Diagnostic(run, step.Error);
             }
-            else if (item is JobTaskActivityRecord activity && activity.JobRunId is { } id)
+            else if (item is JobTaskActivityRecord activity)
             {
-                var run = await _db.JobRuns.FindAsync([id], ct);
-                if (run is null || run.TenantId != activity.TenantId) continue;
-                activity.Error = _protection.Diagnostic(run, activity.Error);
-                activity.ResultJson = _protection.Diagnostic(run, activity.ResultJson);
-                activity.CommandLabel = _protection.Diagnostic(run, activity.CommandLabel);
+                var safe = ProtectActivity(activity);
+                activity.Error = safe.Error;
+                activity.ResultJson = safe.ResultJson;
+                activity.CommandLabel = safe.CommandLabel;
+                if (activity.JobRunId is { } id)
+                {
+                    var run = await _db.JobRuns.FindAsync([id], ct);
+                    if (run is null || run.TenantId != activity.TenantId) continue;
+                    activity.Error = _protection.Diagnostic(run, activity.Error);
+                    activity.ResultJson = _protection.Diagnostic(run, activity.ResultJson);
+                    activity.CommandLabel = _protection.Diagnostic(run, activity.CommandLabel);
+                }
             }
             else if (item is JobTaskLogRecord log)
             {
                 var run = await FindActivityRunAsync(log.RequestId, ct);
-                if (run is not null && run.TenantId == log.TenantId) log.Message = _protection.Diagnostic(run, log.Message)!;
+                var task = await _db.JobTaskActivities.FirstOrDefaultAsync(x => x.RequestId == log.RequestId && x.TenantId == log.TenantId, ct);
+                log.Message = ProjectLog(task, run?.TenantId == log.TenantId ? run : null, log);
             }
+        }
+    }
+
+    private async Task ProtectLegacyTaskAsync(JobTaskActivityRecord row, CancellationToken ct)
+    {
+        if (!TaskOutputProtection.IsUnclassifiedScript(row) || row.ProtectedLegacyOutputJson is not null) return;
+        var tracked = await _db.JobTaskActivities.FindAsync([row.Id], ct);
+        if (tracked is null || tracked.ProtectedLegacyOutputJson is not null) return;
+        await _db.Entry(tracked).ReloadAsync(ct);
+        if (tracked.ProtectedLegacyOutputJson is not null)
+        {
+            CopyProtectedHistory();
+            return;
+        }
+        var logs = await _db.JobTaskLogs.Where(x => x.RequestId == row.RequestId && x.TenantId == row.TenantId).ToListAsync(ct);
+        var owner = await _db.McpOperatorTasks.FirstOrDefaultAsync(x => x.TaskActivityId == row.Id && x.TenantId == row.TenantId, ct);
+        var archive = JsonSerializer.Serialize(new
+        {
+            tracked.Error, tracked.ResultJson, tracked.CommandLabel,
+            OperatorSummary = owner?.ResultSummary,
+            Logs = logs.Select(x => new { x.Id, x.Message })
+        });
+        tracked.ProtectedLegacyOutputJson = protection.CreateProtector("NetRatel.TaskOutput.Legacy.v1",
+            row.TenantId?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "global", row.RequestId).Protect(archive);
+        tracked.Error = TaskOutputRedactor.Withhold(tracked.Error);
+        tracked.ResultJson = TaskOutputRedactor.WithholdEnvelope(tracked.ResultJson);
+        tracked.CommandLabel = TaskOutputRedactor.Withhold(tracked.CommandLabel);
+        foreach (var log in logs) log.Message = TaskOutputRedactor.Withhold(log.Message)!;
+        if (owner is not null) owner.ResultSummary = TaskOutputRedactor.WithholdEnvelope(owner.ResultSummary);
+        try { await _db.SaveChangesAsync(ct); }
+        catch (DbUpdateConcurrencyException conflict) when (conflict.Entries.All(x => ReferenceEquals(x.Entity, tracked)))
+        {
+            // A simultaneous reader already archived the immutable original. Never
+            // replace that archive with a later masked projection or retry its write.
+            await _db.Entry(tracked).ReloadAsync(ct);
+            foreach (var log in logs) await _db.Entry(log).ReloadAsync(ct);
+            if (owner is not null) await _db.Entry(owner).ReloadAsync(ct);
+            if (tracked.ProtectedLegacyOutputJson is null)
+                throw new InvalidOperationException("Task history protection conflicted without a committed archive.");
+        }
+        CopyProtectedHistory();
+
+        void CopyProtectedHistory()
+        {
+            row.Error = tracked.Error;
+            row.ResultJson = tracked.ResultJson;
+            row.CommandLabel = tracked.CommandLabel;
+            row.ProtectedLegacyOutputJson = tracked.ProtectedLegacyOutputJson;
         }
     }
 
@@ -440,6 +569,10 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
         if (runId.HasValue) query = query.Where(x => x.Id == runId.Value);
         var rows = await query.ToListAsync(ct);
         if (rows.Count == 0) return;
+        // Archival saves and terminal-hash rebinding form one migration unit.
+        // A crash must not commit masked task rows against the old proven hash.
+        await using var ownedTransaction = _db.Database.IsRelational() && _db.Database.CurrentTransaction is null
+            ? await _db.Database.BeginTransactionAsync(ct) : null;
         foreach (var row in rows)
         {
             // Current definitions cannot prove the sensitivity of historical values.
@@ -449,6 +582,9 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
             var control = await _db.Set<JobRunControlRecord>().FirstOrDefaultAsync(x => x.RunId == row.Id, ct);
             var originalHash = JobRunProjectionHash.Compute(new(Map(row), steps.Select(Map).ToList(), activities.Select(Map).ToList()));
             var previouslyAccepted = control?.TerminalReadyAtUtc is not null && control.TerminalResultHash == originalHash;
+            // Preserve old task result and log bytes before the run's diagnostic
+            // protection replaces visible history during this upgrade read.
+            foreach (var activity in activities) await ProtectLegacyTaskAsync(activity, ct);
             _protection.Store(row, new("legacy-unknown-v1", null, []), row.InputsJson, row.OptionsJson);
             row.Error = _protection.Diagnostic(row, row.Error);
             foreach (var step in steps) step.Error = _protection.Diagnostic(row, step.Error);
@@ -472,6 +608,7 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
                 log.Message = _protection.Diagnostic(row, log.Message)!;
         }
         await _db.SaveChangesAsync(ct);
+        if (ownedTransaction is not null) await ownedTransaction.CommitAsync(ct);
     }
 
     private async Task SaveAndNotifyAsync(CancellationToken ct)
@@ -545,7 +682,8 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
             ScriptName = command.ScriptName,
             ScriptType = command.ScriptType,
             CommandLabel = command.CommandLabel,
-            ScriptContentHash = command.ScriptContentHash
+            ScriptContentHash = command.ScriptContentHash,
+            OutputProtectionJson = TaskOutputProtection.Serialize(command.OutputPolicy)
         };
 
     private static JobTaskActivityRecord BuildTaskActivity(UpsertJobTaskActivityCommand command, long id)
@@ -557,6 +695,7 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
 
     private static void ApplyTaskActivity(JobTaskActivityRecord row, UpsertJobTaskActivityCommand command)
     {
+        TaskOutputProtection.Bind(row, command.OutputPolicy);
         row.RequestId = command.RequestId;
         row.JobRunId = command.JobRunId.HasValue ? (long)command.JobRunId.Value : null;
         row.JobStepId = command.JobStepId.HasValue ? (long)command.JobStepId.Value : null;

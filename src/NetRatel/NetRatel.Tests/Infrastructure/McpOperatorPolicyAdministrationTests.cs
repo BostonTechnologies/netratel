@@ -12,6 +12,34 @@ public sealed class McpOperatorPolicyAdministrationTests
     private static readonly CancellationToken Ct = CancellationToken.None;
 
     [Fact]
+    public async Task Guarded_target_profile_bootstrap_preserves_absence_and_rejects_reusing_it_after_creation()
+    {
+        await using var db = CreateDb();
+        var agentId = Guid.NewGuid();
+        db.Agents.Add(new Agent
+        {
+            Id = agentId, TenantId = 42, IsEnabled = true,
+            Status = AgentStatus.Active, CreatedAtUtc = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync(Ct);
+        var administration = new McpOperatorPolicyAdministration(db);
+
+        var created = await administration.ExecuteWithTargetProfileAsync(42, agentId, null,
+            ct => administration.UpsertTargetProfileAsync(42, agentId, McpOperatorTargetClassification.ManagedStandard,
+                ["reviewed"], null, "policy-admin@example.test", ct), Ct);
+        created.Version.Should().Be(1);
+        var repeated = () => administration.ExecuteWithTargetProfileAsync(42, agentId, null,
+            ct => administration.UpsertTargetProfileAsync(42, agentId, McpOperatorTargetClassification.Restricted,
+                ["changed"], created.Version, "policy-admin@example.test", ct), Ct);
+
+        var rejected = await repeated.Should().ThrowAsync<McpOperatorAdmissionRejectedException>();
+        rejected.Which.FailureCode.Should().Be("confirmation_plan_stale");
+        var current = await administration.GetTargetProfileAsync(42, agentId, Ct);
+        current.Should().BeEquivalentTo(created);
+        (await db.McpOperatorPolicyChangeAudits.CountAsync(Ct)).Should().Be(1);
+    }
+
+    [Fact]
     public async Task CreateAsync_RejectsOAuthSubjectSelfEscalation()
     {
         await using var db = CreateDb();

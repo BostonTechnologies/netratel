@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
+using System.Text.Json;
 using AwesomeAssertions;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
@@ -148,6 +149,9 @@ public sealed class AgentTaskHistoryEndpointPostgresTests : IAsyncLifetime
             Status = "Completed",
             Error = "completed",
             ResultJson = """{"stdout":["result-secret"],"exitCode":0}""",
+            // This fixture tests result omission from a summary, with known benign
+            // output. Unknown historical classification has separate withholding tests.
+            OutputProtectionJson = JsonSerializer.Serialize(TaskOutputPolicy.Create([])),
             CreatedAtUtc = DateTimeOffset.UtcNow,
             CompletedAtUtc = DateTimeOffset.UtcNow
         });

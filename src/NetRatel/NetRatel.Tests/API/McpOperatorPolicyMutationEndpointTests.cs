@@ -4,12 +4,14 @@ using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Encodings.Web;
+using System.Text.Json;
 using AwesomeAssertions;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -17,6 +19,8 @@ using Microsoft.Extensions.Options;
 using NetRatel.API.Endpoints.Client;
 using NetRatel.API.Middleware;
 using NetRatel.Application.Operations;
+using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Operations;
 using Xunit;
 
@@ -24,6 +28,137 @@ namespace NetRatel.Tests.API;
 
 public sealed class McpOperatorPolicyMutationEndpointTests
 {
+    [Theory]
+    [InlineData("create")]
+    [InlineData("replace")]
+    [InlineData("disable")]
+    [InlineData("revoke")]
+    public async Task Exact_agent_policy_lifecycle_uses_persisted_classification_and_canonical_action(string action)
+    {
+        var draft = ExactAgentDraft();
+        await using var db = await CreatePolicyDbAsync(action, draft.TargetSelector);
+        var administration = new RecordingAdministration { CurrentTargetProfile = TargetProfile(draft.TargetSelector) };
+        administration.CurrentPolicy = administration.CreatedPolicy with { TargetSelector = draft.TargetSelector };
+        using var app = await BuildAppAsync(new McpOperatorAuthorization(db), administration, new McpOperatorConfirmationService(db));
+        var client = M2mClient(app);
+        object previewRequest = action switch
+        {
+            "create" => new PreviewMcpOperatorPolicyCreateRequest(draft),
+            "replace" => new PreviewMcpOperatorPolicyReplaceRequest(administration.CreatedPolicy.PolicyId, 1, draft),
+            _ => new PreviewMcpOperatorPolicyDisableRequest(administration.CreatedPolicy.PolicyId, 1, draft.TargetSelector)
+        };
+        SetDelegation(client, app, $"preview_{action}", draft.TargetSelector, ["PolicyAdministrator"], ["netratel.mcp.admin"]);
+
+        var previewResponse = await client.PostAsJsonAsync($"/api/v2/mcp/operator/policy/{action}/preview", previewRequest);
+
+        previewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var preview = (await previewResponse.Content.ReadFromJsonAsync<McpOperatorPolicyMutationPreview>())!;
+        object confirmRequest = action switch
+        {
+            "create" => new ConfirmMcpOperatorPolicyCreateRequest(draft, preview.PlanToken, preview.IdempotencyKey),
+            "replace" => new ConfirmMcpOperatorPolicyReplaceRequest(administration.CreatedPolicy.PolicyId, 1, draft, preview.PlanToken, preview.IdempotencyKey),
+            _ => new ConfirmMcpOperatorPolicyDisableRequest(administration.CreatedPolicy.PolicyId, 1, draft.TargetSelector, preview.PlanToken, preview.IdempotencyKey)
+        };
+        SetDelegation(client, app, $"confirm_{action}", draft.TargetSelector, ["PolicyAdministrator"], ["netratel.mcp.admin"]);
+
+        var confirmed = await client.PostAsJsonAsync($"/api/v2/mcp/operator/policy/{action}/confirm", confirmRequest);
+
+        confirmed.StatusCode.Should().Be(action == "create" ? HttpStatusCode.Created : HttpStatusCode.OK);
+        var audit = await db.McpOperatorAcceptedAudits.SingleAsync();
+        audit.Operation.Should().Be($"netratel_policy/{action}");
+        audit.TenantId.Should().Be(draft.TargetSelector.TenantId);
+        audit.AgentId.Should().Be(draft.TargetSelector.AgentId);
+        administration.GuardedMutations.Should().Be(1);
+        (administration.Creates + administration.Replaces + administration.Disables + administration.Revocations).Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData("version", "confirmation_plan_stale")]
+    [InlineData("tags", "confirmation_plan_stale")]
+    [InlineData("classification", "target_classification_denied")]
+    [InlineData("missing", "target_profile_missing")]
+    public async Task Profile_changes_after_preview_cannot_reuse_policy_confirmation(string change, string failureCode)
+    {
+        var draft = ExactAgentDraft();
+        await using var db = await CreatePolicyDbAsync("create", draft.TargetSelector);
+        var profile = TargetProfile(draft.TargetSelector);
+        var administration = new RecordingAdministration { CurrentTargetProfile = profile };
+        using var app = await BuildAppAsync(new McpOperatorAuthorization(db), administration, new McpOperatorConfirmationService(db));
+        var client = M2mClient(app);
+        SetDelegation(client, app, "preview_create", draft.TargetSelector, ["PolicyAdministrator"], ["netratel.mcp.admin"]);
+        var previewResponse = await client.PostAsJsonAsync("/api/v2/mcp/operator/policy/create/preview", new PreviewMcpOperatorPolicyCreateRequest(draft));
+        previewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var preview = (await previewResponse.Content.ReadFromJsonAsync<McpOperatorPolicyCreatePreview>())!;
+        administration.CurrentTargetProfile = change switch
+        {
+            "version" => profile with { Version = profile.Version + 1 },
+            "tags" => profile with { Tags = ["changed-tag"] },
+            "classification" => profile with { Classification = McpOperatorTargetClassification.Restricted },
+            _ => null
+        };
+        SetDelegation(client, app, "confirm_create", draft.TargetSelector, ["PolicyAdministrator"], ["netratel.mcp.admin"]);
+
+        var confirmed = await client.PostAsJsonAsync("/api/v2/mcp/operator/policy/create/confirm",
+            new ConfirmMcpOperatorPolicyCreateRequest(draft, preview.PlanToken, preview.IdempotencyKey));
+
+        confirmed.StatusCode.Should().Be(failureCode == "confirmation_plan_stale" ? HttpStatusCode.Conflict : HttpStatusCode.Forbidden);
+        (await confirmed.Content.ReadAsStringAsync()).Should().Contain(failureCode);
+        administration.Creates.Should().Be(0);
+        (await db.McpOperatorAcceptedAudits.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Proposed_policy_classification_cannot_override_the_persisted_target()
+    {
+        var draft = ExactAgentDraft() with { TargetClassification = McpOperatorTargetClassification.ManagedStandard };
+        await using var db = await CreatePolicyDbAsync("create", draft.TargetSelector);
+        var administration = new RecordingAdministration
+        {
+            CurrentTargetProfile = TargetProfile(draft.TargetSelector) with { Classification = McpOperatorTargetClassification.Restricted }
+        };
+        using var app = await BuildAppAsync(new McpOperatorAuthorization(db), administration, new McpOperatorConfirmationService(db));
+        var client = M2mClient(app);
+        SetDelegation(client, app, "preview_create", draft.TargetSelector, ["PolicyAdministrator"], ["netratel.mcp.admin"]);
+
+        var response = await client.PostAsJsonAsync("/api/v2/mcp/operator/policy/create/preview", new PreviewMcpOperatorPolicyCreateRequest(draft));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("target_classification_denied");
+        administration.Creates.Should().Be(0);
+        (await db.McpOperatorConfirmationPlans.CountAsync()).Should().Be(0);
+    }
+
+    private static McpOperatorPolicyDraft ExactAgentDraft() => Draft() with
+    {
+        TargetSelector = new McpOperatorTargetSelector(McpOperatorTargetSelectorKind.ExactAgent, 42,
+            Guid.Parse("ef6a3f18-0d0d-45e0-8211-18067a95d9b9"))
+    };
+
+    private static McpOperatorTargetProfile TargetProfile(McpOperatorTargetSelector target) => new(
+        target.AgentId!.Value, target.TenantId, McpOperatorTargetClassification.ManagedStandard,
+        ["campaign-fixture"], DateTimeOffset.UtcNow, "independent-admin@example.test", 2);
+
+    private static async Task<OrchestratorDbContext> CreatePolicyDbAsync(string action, McpOperatorTargetSelector target)
+    {
+        var db = new OrchestratorDbContext(new DbContextOptionsBuilder<OrchestratorDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString("N")).Options);
+        db.McpOperatorPolicies.Add(new McpOperatorPolicyRecord
+        {
+            Id = Guid.NewGuid(), Name = "exact classified policy administrator", Environment = McpOperatorEnvironment.Development,
+            Effect = McpOperatorPolicyEffect.Allow, Priority = 10,
+            PrincipalSelectorKind = McpOperatorPrincipalSelectorKind.OAuthSubject, PrincipalSelectorValue = "policy.admin@example.test",
+            TargetSelectorKind = McpOperatorTargetSelectorKind.ExactAgent, TenantId = target.TenantId, AgentId = target.AgentId,
+            TargetClassification = McpOperatorTargetClassification.ManagedStandard,
+            OperationFamily = McpOperatorOperationFamily.PolicyAdministration, Operation = $"netratel_policy/{action}",
+            ConstraintsJson = JsonSerializer.Serialize(new McpOperatorConstraints(
+                AllowedTargetClassifications: [McpOperatorTargetClassification.ManagedStandard],
+                RequiredConfirmationClass: McpOperatorConfirmationClass.PolicyAdministration), McpOperatorJsonContext.Default.McpOperatorConstraints),
+            CreatedAtUtc = DateTimeOffset.UtcNow, CreatedBy = "independent-admin@example.test", Version = 1
+        });
+        await db.SaveChangesAsync();
+        return db;
+    }
+
     [Fact]
     public async Task Preview_RequiresExactDelegatedAdministratorPolicyAndDoesNotCreateAPolicy()
     {
@@ -379,9 +514,9 @@ public sealed class McpOperatorPolicyMutationEndpointTests
     }
 
     private static async Task<IHost> BuildAppAsync(
-        RecordingAuthorization authorization,
+        IMcpOperatorAuthorization authorization,
         RecordingAdministration administration,
-        RecordingConfirmations confirmations)
+        IMcpOperatorConfirmationService confirmations)
     {
         var delegationOptions = new McpOperatorDelegationOptions
         {
@@ -491,6 +626,7 @@ public sealed class McpOperatorPolicyMutationEndpointTests
 
     private sealed class RecordingAdministration : IMcpOperatorPolicyAdministration, IMcpOperatorPolicyRevocation
     {
+        public int GuardedMutations { get; private set; }
         public int Validations { get; private set; }
         public int Creates { get; private set; }
         public int Replaces { get; private set; }
@@ -521,10 +657,20 @@ public sealed class McpOperatorPolicyMutationEndpointTests
             1,
             "change-347");
 
-        private McpOperatorPolicy CurrentPolicy { get; set; }
-        private McpOperatorTargetProfile? CurrentTargetProfile { get; set; }
+        public McpOperatorPolicy CurrentPolicy { get; set; }
+        public McpOperatorTargetProfile? CurrentTargetProfile { get; set; }
 
         public RecordingAdministration() => CurrentPolicy = CreatedPolicy;
+
+        public async Task<T> ExecuteWithTargetProfileAsync<T>(int tenantId, Guid agentId,
+            McpOperatorTargetProfile? expectedProfile, Func<CancellationToken, Task<T>> mutation, CancellationToken cancellationToken)
+        {
+            var current = await GetTargetProfileAsync(tenantId, agentId, cancellationToken);
+            if (current != expectedProfile)
+                throw new McpOperatorAdmissionRejectedException("confirmation_plan_stale");
+            GuardedMutations++;
+            return await mutation(cancellationToken);
+        }
 
         public Task<McpOperatorPolicyPage> ListAsync(McpOperatorEnvironment? environment, int? tenantId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<IReadOnlyList<McpOperatorPolicyChangeAudit>> ListChangeAuditsAsync(int? tenantId, Guid? policyId, Guid? agentId, CancellationToken cancellationToken) => throw new NotSupportedException();

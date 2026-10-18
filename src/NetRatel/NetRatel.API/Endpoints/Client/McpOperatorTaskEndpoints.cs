@@ -264,7 +264,7 @@ public static class McpOperatorTaskEndpoints
                 commandId, context.Decision, audit, idempotencyId, context.CorrelationId, normalized.TaskType,
                 normalized.ShellType, normalized.CommandHash, normalized.CommandLength, normalized.Script?.Lease.ScriptId,
                 normalized.Script?.Lease.Version, normalized.Script?.Lease.ContentHash, normalized.TimeoutSeconds,
-                normalized.MaximumOutputBytes, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+                normalized.MaximumOutputBytes, DateTimeOffset.UtcNow, normalized.OutputPolicy), cancellationToken).ConfigureAwait(false);
             await dispatcher.DispatchAsync(new ClientKey(tenantId, agentId), createdTask.CommandId, context.CorrelationId, createdTask.TaskType, normalized.PayloadJson, 0, cancellationToken).ConfigureAwait(false);
             await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, createdTask.TaskId.ToString(), cancellationToken).ConfigureAwait(false);
             return Results.Accepted(TaskLocation(tenantId, agentId, createdTask.TaskId), new McpOperatorTaskMutationResult(Decimal(createdTask.TaskId), createdTask.State, false, context.CorrelationId));
@@ -317,6 +317,8 @@ public static class McpOperatorTaskEndpoints
         var maximumOutput = Math.Min(context.Decision.EffectiveConstraints!.MaxOutputBytes!.Value, MaximumOutputBytes);
         if (script.Lease.TimeoutSeconds > context.Decision.EffectiveConstraints.MaxCommandDurationSeconds || maximumOutput <= 0)
             return TaskMutationResolution.Invalid;
+        var outputPolicy = TaskOutputPolicy.Create(script.Lease.Parameters.Select(parameter => (parameter.Name, parameter.Type)),
+            script.Lease.ScriptId, script.Lease.Version, script.Lease.ContentHash);
         var payload = JsonSerializer.Serialize(new ExecLibraryScriptPayload
         {
             ScriptId = checked((int)script.Lease.ScriptId),
@@ -324,9 +326,10 @@ public static class McpOperatorTaskEndpoints
             ScriptContent = script.Content,
             Parameters = request.Script!.Parameters?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
             WorkingDirectory = script.Lease.WorkingDirectory,
-            TimeoutSeconds = script.Lease.TimeoutSeconds
+            TimeoutSeconds = script.Lease.TimeoutSeconds,
+            OutputPolicy = outputPolicy
         });
-        return new(null, new NormalizedTask(TaskKinds.ExecLibraryScript, null, null, 0, script.Lease.TimeoutSeconds, maximumOutput, payload, script), null);
+        return new(null, new NormalizedTask(TaskKinds.ExecLibraryScript, null, null, 0, script.Lease.TimeoutSeconds, maximumOutput, payload, script, outputPolicy), null);
     }
 
     private static bool TryNormalizeCommand(McpOperatorTaskCommandPayload request, McpOperatorDecision decision, out NormalizedTask? task, out string failureCode)
@@ -345,15 +348,17 @@ public static class McpOperatorTaskEndpoints
 
         var shell = request.Shell.Trim().ToLowerInvariant();
         var command = request.Command.Trim();
+        var outputPolicy = TaskOutputPolicy.Create([], environmentReferences: request.EnvironmentReferences);
         var payload = JsonSerializer.Serialize(new ExecShellCommandPayload
         {
             Preferred = ToShellExecutor(shell),
             Command = command,
             WorkingDirectory = request.WorkingDirectory,
             TimeoutSeconds = request.TimeoutSeconds,
-            EnvironmentReferences = request.EnvironmentReferences?.ToList()
+            EnvironmentReferences = request.EnvironmentReferences?.ToList(),
+            OutputPolicy = outputPolicy
         });
-        task = new NormalizedTask(TaskKinds.ExecShellCommand, shell, Hash(command), Encoding.UTF8.GetByteCount(command), request.TimeoutSeconds, request.MaximumOutputBytes, payload, null);
+        task = new NormalizedTask(TaskKinds.ExecShellCommand, shell, Hash(command), Encoding.UTF8.GetByteCount(command), request.TimeoutSeconds, request.MaximumOutputBytes, payload, null, outputPolicy);
         return true;
     }
 
@@ -498,7 +503,7 @@ public static class McpOperatorTaskEndpoints
 
     private sealed record McpOperatorTaskContext(McpOperatorRouteAccessRequest Request, McpOperatorDecision Decision, string RequiredScope, string Operation, int TenantId, Guid AgentId, string CorrelationId);
     private sealed record McpOperatorTaskContextResult(McpOperatorTaskContext? Context, IResult? Failure);
-    private sealed record NormalizedTask(string TaskType, string? ShellType, string? CommandHash, int CommandLength, int TimeoutSeconds, int MaximumOutputBytes, string PayloadJson, (McpOperatorScriptLease Lease, string Content, string? ManifestJson)? Script);
+    private sealed record NormalizedTask(string TaskType, string? ShellType, string? CommandHash, int CommandLength, int TimeoutSeconds, int MaximumOutputBytes, string PayloadJson, (McpOperatorScriptLease Lease, string Content, string? ManifestJson)? Script, TaskOutputPolicy OutputPolicy);
     private sealed record ScriptResolution((McpOperatorScriptLease Lease, string Content, string? ManifestJson)? Script, string? FailureCode)
     {
         public static ScriptResolution Invalid { get; } = new(null, "task_invalid");

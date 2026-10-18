@@ -103,3 +103,95 @@ For `protectedSetupRequired`, prepare a create request with the supported client
 If authentication succeeds but an exact tenant read returns `tenant_not_authorized`, open credential details and refresh **Configured grants and current admission**. For synthetic tenants 17 and 29, configured `flow.read` grants do not by themselves create matching Production `netratel_flows/list` policies. Inspect the current resource/instance/environment, exact expiry, durable owner permission, tenant visibility and matching policy facts separately. The bounded default samples do not assess every configured permission; unselected operations and runtime readiness remain not checked.
 
 Use the [independently reviewed admission workflow](local-credential-mode.md#independently-reviewed-admission) to reconcile the existing credential with exact tenant/operation targets. Retain the original grant set and expiry intent, obtain a different authorized reviewer's approval and resume the same saved request ID. Refresh details afterward. Setup and doctor may show completed authentication with `admissionStatus=blocked`, `not_checked` or `unavailable`; those fields deliberately preserve a separate business-admission outcome. Do not widen scopes, replace the credential or install policies as a setup side effect. Confirm selected native reads only after admission, through the owner acceptance path.
+
+## Compound job execution and classification-bound policy changes
+
+A local `netratel_job_runs/start` assertion remains Execute-only. Starting a job
+requires current `job.manage` and `script.edit` application entitlements in the
+same tenant, including when an external OAuth identity enters the API. Internal
+validation of the job's pinned scripts is part of that exact start contract; it
+does not grant a reusable `netratel_scripts/get` Read assertion. Review the current
+job and script ownership, version/hash, target profile and confirmation when a
+start is rejected. Reconcile the actual run before retrying an uncertain start.
+Confirmation binds the complete job definition and reviewed script contents and
+parameter types. Every step uses that stored execution snapshot. Editing the
+current job or script cannot change an already confirmed run's executable content.
+
+Policy mutation preview and confirm both evaluate the canonical action below.
+Use those canonical actions in exact operation selectors, rather than the names
+of the transport's preview/confirm commands.
+
+| Requested mutation | Canonical admission action |
+| --- | --- |
+| Create policy | `netratel_policy/create` |
+| Replace policy | `netratel_policy/replace` |
+| Disable policy | `netratel_policy/disable` |
+| Revoke policy | `netratel_policy/revoke` |
+| Create or update target profile | `netratel_policy/upsert_target_profile` |
+
+For an exact-agent policy change, classification and tags come from its persisted
+operator target profile. Caller-provided classification or the proposed profile's
+new classification cannot substitute for current trusted state. A missing required
+profile returns `target_profile_missing`; an independently authorized administrator
+must first complete the supported reviewed profile bootstrap. Profile revision,
+classification or tags changing after preview requires a fresh preview and
+confirmation. Preserve the original intended classification selectors when
+retesting; a policy with those selectors removed does not prove the protection.
+The accepted audit and write hold the same profile guard, so a concurrent profile
+update cannot change the classification between admission and persistence.
+
+## Secret-designated task output and historical results
+
+Library-script execution captures secret and `secret_reference` parameter
+classification from the server's script definition. The native agent resolves
+client-local secret references and masks declared values before output capture,
+truncation, streaming and final results. Classification metadata contains parameter
+names and revision evidence, not resolved environment values. Ordinary output
+retains useful nonsecret values, including false, zero, empty strings and Unicode.
+
+Update both the server and executing native agent for the complete path. If a
+secret-bearing task returns no matching protection receipt, the server withholds
+arbitrary output while retaining typed lifecycle facts such as exit code and
+timeout state. Older agents can therefore produce masked output until upgraded.
+Missing classification on historical library tasks is treated as unknown; editing
+or deleting the current script never reclassifies their retained output as safe.
+
+The schema migration adds output-classification and protected-history fields.
+Ordinary task projections immediately withhold unclassified historical output.
+Task detail/log inspection archives the original stored result, error, logs and
+operator summary under the existing durable Data Protection key ring before
+replacing visible output columns with masks. It preserves task and log IDs,
+status, timestamps and cursors. This is application-assisted remediation, not an
+eager rewrite of every historical row during schema migration. Retain the key ring
+with deployment backups. A schema rollback is blocked once protected archives
+exist, to prevent silently dropping preserved evidence.
+
+The masking contract covers declared values, their JSON encodings and multiline
+fragments. It does not claim to recognize every arbitrary transformation a script
+could compute from a secret. No new ordinary-reader reveal path is introduced.
+Retest fresh standalone scripts and jobs through task detail, logs, streams and
+MCP projections with the intended ordinary identities; an earlier permission
+denial does not establish that the output projection was reached and protected.
+
+## Native service-operation time windows
+
+Service-operation issue and expiry times are sent over the authenticated native
+gateway with the current tenant/session and replay fencing. The payload has no
+separate per-operation signature; signed HTTP MCP delegation is a different
+boundary. The native client enforces a positive issuance lifetime of at most two
+minutes and allows the server's issuance clock to be at most two seconds ahead.
+It still rejects at or after actual expiry before native mutation. Queue or
+inventory time never refreshes expiry; native controller execution remains bounded
+by its existing 45-second timeout.
+
+`service_operation_clock_skew` identifies an issuance time beyond that allowance.
+`invalid_service_operation_window` identifies a nonpositive or overlong issuance
+lifetime. `service_operation_expired` retains its genuine expiry meaning. Verify
+normal clock synchronization and current server/agent versions; do not repeatedly
+adjust clocks or extend the allowed lifetime to force an acceptance result. New
+servers emit the persisted original issue time; updated clients also handle older
+payloads without that field using a bounded remaining-window check. The fixed
+native agent is required for the new validation behavior.
+
+Use only a registered inert service for Start/Stop acceptance and read its actual
+state afterward. The MCP bridge's product version is not the native agent version.

@@ -23,6 +23,7 @@ public sealed class ClientServiceControlServiceTests
     {
         await using var scenario = await Scenario.CreateAsync();
         var request = Request();
+        var issuedAt = scenario.Clock.GetUtcNow();
         scenario.Dispatcher.BeforeDispatch = async () =>
         {
             await using var observer = scenario.OpenDb();
@@ -30,6 +31,7 @@ public sealed class ClientServiceControlServiceTests
             stored.Id.Should().Be(request.OperationId);
             stored.Status.Should().Be("Pending");
             (await observer.OutboxMessages.SingleAsync()).Type.Should().Be("agent.service.requested");
+            scenario.Clock.Now = scenario.Clock.Now.AddSeconds(10);
         };
         var response = await scenario.Service.RequestAsync(Key, request, "operator", default);
         response.Status.Should().Be("Dispatched");
@@ -39,6 +41,8 @@ public sealed class ClientServiceControlServiceTests
         payload!.OperationId.Should().Be(request.OperationId);
         payload.ServiceName.Should().Be("worker.service");
         payload.Action.Should().Be(ClientServiceControlAction.Restart);
+        payload.IssuedAtUtc.Should().Be(issuedAt);
+        payload.ExpiresAtUtc.Should().Be(issuedAt.Add(ClientServiceControlRules.DispatchLifetime));
 
         var result = new ClientServiceControlResult(request.OperationId, request.ServiceName, request.Platform, request.Action,
             true, ClientServiceState.Running, scenario.Clock.GetUtcNow());

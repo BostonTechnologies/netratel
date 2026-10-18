@@ -107,5 +107,7 @@ public sealed class McpOperatorCommandRecord
     public DateTimeOffset LastUpdatedAtUtc { get; set; }
     public string? FailureCode { get; set; }
     public string? OutputJson { get; set; }
+    public string? OutputProtectionJson { get; set; }
+    public string? OutputProtectionBinding { get; set; }
     public long Version { get; set; }
 }

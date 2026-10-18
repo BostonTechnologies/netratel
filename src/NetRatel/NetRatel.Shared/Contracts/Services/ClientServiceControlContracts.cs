@@ -18,7 +18,12 @@ public sealed record ClientServiceControlPayload(
     string ServiceName,
     ClientServicePlatform Platform,
     ClientServiceControlAction Action,
-    DateTimeOffset ExpiresAtUtc);
+    DateTimeOffset ExpiresAtUtc)
+{
+    /// <summary>The server's persisted issuance time. Older servers omit this field.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? IssuedAtUtc { get; init; }
+}
 
 public sealed record ClientServiceControlResult(
     Guid OperationId,
@@ -49,6 +54,8 @@ public static class ClientServiceControlRules
     public const string Capability = "service-control-v1";
     public const string TaskType = "service-control";
     public static readonly TimeSpan DispatchLifetime = TimeSpan.FromMinutes(2);
+    // Allows a small server/agent clock difference when checking issuance, never extra time after expiry.
+    public static readonly TimeSpan IssuanceClockSkew = TimeSpan.FromSeconds(2);
     public static readonly TimeSpan ExecutionTimeout = TimeSpan.FromSeconds(45);
 
     public static bool IsValidSelection(string? name, ClientServicePlatform platform, ClientServiceControlAction action) =>

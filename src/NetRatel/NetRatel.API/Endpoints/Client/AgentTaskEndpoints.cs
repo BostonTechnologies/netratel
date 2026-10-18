@@ -182,7 +182,8 @@ public static class AgentTaskEndpoints
                 ScriptName: metadata.ScriptName,
                 ScriptType: metadata.ScriptType,
                 CommandLabel: metadata.CommandLabel,
-                ScriptContentHash: metadata.ScriptContentHash), ct);
+                ScriptContentHash: metadata.ScriptContentHash,
+                OutputPolicy: payload.OutputPolicy), ct);
 
             if (created.TenantId != request.TenantId || created.AgentId != request.AgentId)
                 return Results.Conflict(new { code = "request_id_in_use" });
@@ -257,24 +258,33 @@ public static class AgentTaskEndpoints
                 }
                 catch (JsonException) { script = null; }
             }
+            var outputPolicy = TaskOutputPolicy.Create([]);
             return string.IsNullOrWhiteSpace(script)
                 ? (null, "A PowerShell script is required for the legacy task kind.")
-                : (JsonSerializer.Serialize(new ExecLibraryScriptPayload
+                : new PreparedTaskPayload(JsonSerializer.Serialize(new ExecLibraryScriptPayload
                 {
                     ScriptType = ScriptType.PowerShell,
                     ScriptContent = script,
                     Preferred = request.ShellCommand?.Preferred ?? request.Preferred,
                     Parameters = request.Parameters,
                     WorkingDirectory = request.ShellCommand?.WorkingDirectory ?? request.WorkingDirectory,
-                    TimeoutSeconds = request.ShellCommand?.TimeoutSeconds ?? request.TimeoutSeconds
-                }), null);
+                    TimeoutSeconds = request.ShellCommand?.TimeoutSeconds ?? request.TimeoutSeconds,
+                    OutputPolicy = outputPolicy
+                }), null, OutputPolicy: outputPolicy);
         }
         if (taskType == TaskKinds.ExecShellCommand)
         {
             var command = request.ShellCommand?.Command ?? request.Payload;
-            return string.IsNullOrWhiteSpace(command)
-                ? (null, "ShellCommand or Payload is required for exec-shell-cmd.")
-                : (JsonSerializer.Serialize(request.ShellCommand ?? new ExecShellCommandPayload { Command = command, Preferred = request.Preferred, WorkingDirectory = request.WorkingDirectory, TimeoutSeconds = request.TimeoutSeconds }), null);
+            if (string.IsNullOrWhiteSpace(command)) return (null, "ShellCommand or Payload is required for exec-shell-cmd.");
+            var outputPolicy = TaskOutputPolicy.Create([], environmentReferences: request.ShellCommand?.EnvironmentReferences);
+            return new PreparedTaskPayload(JsonSerializer.Serialize(new ExecShellCommandPayload
+            {
+                Command = command, Preferred = request.ShellCommand?.Preferred ?? request.Preferred,
+                WorkingDirectory = request.ShellCommand?.WorkingDirectory ?? request.WorkingDirectory,
+                TimeoutSeconds = request.ShellCommand?.TimeoutSeconds ?? request.TimeoutSeconds,
+                EnvironmentReferences = request.ShellCommand?.EnvironmentReferences,
+                OutputPolicy = outputPolicy
+            }), null, OutputPolicy: outputPolicy);
         }
         if (taskType == TaskKinds.ExecLibraryScript)
         {
@@ -282,7 +292,17 @@ public static class AgentTaskEndpoints
             var script = await scripts.GetAsync((ulong)scriptId, ct);
             if (script is null) return (null, $"Script {scriptId} not found.");
             var type = request.ScriptType ?? (Enum.TryParse<ScriptType>(script.ScriptType, true, out var parsed) ? parsed : ScriptType.PowerShell);
-            return new PreparedTaskPayload(JsonSerializer.Serialize(new ExecLibraryScriptPayload { ScriptId = scriptId, ScriptType = type, ScriptContent = script.Content, Preferred = request.Preferred, Parameters = request.Parameters, WorkingDirectory = request.WorkingDirectory, TimeoutSeconds = request.TimeoutSeconds }), null, script.Name);
+            var parameters = await scripts.GetParamsAsync((ulong)scriptId, ct);
+            var current = await scripts.GetAsync((ulong)scriptId, ct);
+            if (current?.SourceRevision != script.SourceRevision) return (null, "The script changed while preparing execution; reload and retry.");
+            var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(script.Content))).ToLowerInvariant();
+            var outputPolicy = TaskOutputPolicy.Create(parameters.Select(p => (p.Name, p.Type)), scriptId, script.SourceRevision, hash);
+            return new PreparedTaskPayload(JsonSerializer.Serialize(new ExecLibraryScriptPayload
+            {
+                ScriptId = scriptId, ScriptType = type, ScriptContent = script.Content, Preferred = request.Preferred,
+                Parameters = request.Parameters, WorkingDirectory = request.WorkingDirectory, TimeoutSeconds = request.TimeoutSeconds,
+                OutputPolicy = outputPolicy
+            }), null, script.Name, outputPolicy);
         }
         return taskType is TaskKinds.OsInfo or TaskKinds.ProcessesList or TaskKinds.ProcessesTopCpu or TaskKinds.DiskFree
             ? (request.Payload ?? string.Empty, null)
@@ -366,7 +386,7 @@ public static class AgentTaskEndpoints
         return new(null, null, null, null);
     }
 
-    internal sealed record PreparedTaskPayload(string? Value, string? Error, string? ScriptName = null)
+    internal sealed record PreparedTaskPayload(string? Value, string? Error, string? ScriptName = null, TaskOutputPolicy? OutputPolicy = null)
     {
         public static implicit operator PreparedTaskPayload((string? Value, string? Error) result) => new(result.Value, result.Error);
     }
@@ -555,7 +575,8 @@ public static class AgentTaskEndpoints
             row.Activity.TenantId,
             row.Activity.TaskType,
             row.Activity.Status,
-            row.Activity.Error,
+            row.Activity.OutputProtectionJson == null && (row.Activity.TaskType == TaskKinds.ExecLibraryScript || row.Activity.TaskType == TaskKinds.Legacy_RunLibraryScript)
+                ? row.Activity.Error == null ? null : "[REDACTED]" : row.Activity.Error,
             row.Activity.CreatedAtUtc,
             row.Activity.CompletedAtUtc,
             row.Activity.AgentId,
@@ -572,7 +593,8 @@ public static class AgentTaskEndpoints
             row.Activity.TargetName,
             row.Activity.ScriptName,
             row.Activity.ScriptType,
-            row.Activity.CommandLabel,
+            row.Activity.OutputProtectionJson == null && (row.Activity.TaskType == TaskKinds.ExecLibraryScript || row.Activity.TaskType == TaskKinds.Legacy_RunLibraryScript)
+                ? row.Activity.CommandLabel == null ? null : "[REDACTED]" : row.Activity.CommandLabel,
             row.TenantName));
     }
 

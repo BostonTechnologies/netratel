@@ -295,6 +295,15 @@ public sealed record McpOperatorRouteAdmission(
 /// <summary>Application boundary for policy and target-profile administration.</summary>
 public interface IMcpOperatorPolicyAdministration
 {
+    /// <summary>Atomically binds an exact target profile to accepted audit and policy persistence.</summary>
+    Task<T> ExecuteWithTargetProfileAsync<T>(
+        int tenantId,
+        Guid agentId,
+        McpOperatorTargetProfile? expectedProfile,
+        Func<CancellationToken, Task<T>> mutation,
+        CancellationToken cancellationToken) =>
+        throw new InvalidOperationException("The policy administrator does not support guarded target-profile mutations.");
+
     Task<McpOperatorPolicyPage> ListAsync(
         McpOperatorEnvironment? environment,
         int? tenantId,
@@ -851,7 +860,8 @@ public sealed record McpOperatorCommandCreateRequest(
     IReadOnlyList<string> EnvironmentReferences,
     int TimeoutSeconds,
     int MaximumOutputBytes,
-    DateTimeOffset CreatedAtUtc);
+    DateTimeOffset CreatedAtUtc,
+    NetRatel.Shared.Contracts.Tasks.TaskOutputPolicy? OutputPolicy = null);
 
 /// <summary>
 /// Scoped durable ownership authority for Production one-shot commands. It
@@ -1200,6 +1210,10 @@ public interface IMcpOperatorJobStore
         long jobId, McpOperatorDecision decision, McpOperatorPrincipal principal, string mcpResource, string mcpInstance,
         CancellationToken cancellationToken);
 
+    /// <summary>Captures the complete reviewed job and pinned script material for confirmation and immutable execution.</summary>
+    Task<NetRatel.Application.Jobs.McpOperatorJobExecutionSnapshot?> GetExecutionSnapshotAsync(
+        long jobId, McpOperatorDecision decision, CancellationToken cancellationToken);
+
     Task<IReadOnlyList<McpOperatorJobParameter>> ListParametersAsync(
         long jobId, int tenantId, Guid agentId, McpOperatorPrincipal principal, string mcpResource, string mcpInstance,
         CancellationToken cancellationToken);
@@ -1314,7 +1328,8 @@ public sealed record McpOperatorTaskCreateRequest(
     string? ScriptContentHash,
     int TimeoutSeconds,
     int MaximumOutputBytes,
-    DateTimeOffset OccurredAtUtc);
+    DateTimeOffset OccurredAtUtc,
+    NetRatel.Shared.Contracts.Tasks.TaskOutputPolicy? OutputPolicy = null);
 
 public sealed record McpOperatorTaskCancelRequest(
     long TaskId,
@@ -1375,6 +1390,16 @@ public interface IMcpOperatorTaskStore
     Task<McpOperatorTaskLease?> RequestCancellationAsync(McpOperatorTaskCancelRequest request, CancellationToken cancellationToken);
 
     Task RecordLifecycleAsync(
+        string commandId,
+        int tenantId,
+        Guid agentId,
+        string state,
+        string? resultSummary,
+        DateTimeOffset occurredAtUtc,
+        CancellationToken cancellationToken);
+
+    /// <summary>Returns true only when this call commits the lifecycle projection.</summary>
+    Task<bool> TryRecordLifecycleAsync(
         string commandId,
         int tenantId,
         Guid agentId,

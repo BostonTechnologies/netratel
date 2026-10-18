@@ -14,6 +14,9 @@ namespace NetRatel.Shared.Contracts.Tasks
         /// this command. Values never traverse an MCP or gateway payload.
         /// </summary>
         public List<string>? EnvironmentReferences { get; set; }
+        public TaskOutputPolicy? OutputPolicy { get; set; }
+        // Execution-only values from protected job inputs; never persist in diagnostics.
+        public Dictionary<string, string>? OutputSecretValues { get; set; }
     }
 
     public sealed class ExecLibraryScriptPayload
@@ -25,5 +28,7 @@ namespace NetRatel.Shared.Contracts.Tasks
         public Dictionary<string, string>? Parameters { get; set; } = new();
         public string? WorkingDirectory { get; set; }
         public int? TimeoutSeconds { get; set; }
+        public TaskOutputPolicy? OutputPolicy { get; set; }
+        public Dictionary<string, string>? OutputSecretValues { get; set; }
     }
 }

@@ -9,6 +9,7 @@ public sealed class JobTaskLogRecord
     public int? TenantId { get; set; }
     public string Stream { get; set; } = string.Empty;
     public string Message { get; set; } = string.Empty;
+    public string? OutputProtectionBinding { get; set; }
     public long Sequence { get; set; }
     public DateTimeOffset TimestampUtc { get; set; }
     public JobTaskActivityRecord? Activity { get; set; }

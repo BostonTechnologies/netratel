@@ -1,4 +1,5 @@
 using NetRatel.Shared;
+using System.ComponentModel.DataAnnotations;
 
 namespace NetRatel.Infrastructure.Persistence;
 
@@ -16,6 +17,11 @@ public sealed class JobTaskActivityRecord
     public string Status { get; set; } = string.Empty;
     public string? Error { get; set; }
     public string? ResultJson { get; set; }
+    // Immutable server-owned dispatch classification; absent on historical rows.
+    public string? OutputProtectionJson { get; set; }
+    // Application-assisted remediation retains historical bytes under Data Protection.
+    [ConcurrencyCheck]
+    public string? ProtectedLegacyOutputJson { get; set; }
     // Captured when dispatched. Historical records retain null where evidence is absent.
     public ClientEnvironment? Environment { get; set; }
     public DateTimeOffset? StartedAtUtc { get; set; }

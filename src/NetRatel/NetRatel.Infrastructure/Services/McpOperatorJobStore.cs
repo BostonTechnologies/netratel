@@ -2,9 +2,11 @@ using System.Data;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Operations;
+using NetRatel.Application.Scripts;
 using NetRatel.Infrastructure.Persistence;
 
 namespace NetRatel.Infrastructure.Services;
@@ -79,43 +81,79 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
         long jobId, McpOperatorDecision decision, McpOperatorPrincipal principal, string mcpResource, string mcpInstance,
         CancellationToken cancellationToken)
     {
+        if (principal.Subject != decision.Request.Principal.Subject || ClientId(principal) != ClientId(decision.Request.Principal) ||
+            mcpResource != decision.Request.McpResource || mcpInstance != decision.Request.McpInstance)
+            return false;
+        return await GetExecutionSnapshotAsync(jobId, decision, cancellationToken).ConfigureAwait(false) is not null;
+    }
+
+    public async Task<McpOperatorJobExecutionSnapshot?> GetExecutionSnapshotAsync(
+        long jobId, McpOperatorDecision decision, CancellationToken cancellationToken)
+    {
         ValidateAdmission(decision, null);
         var access = decision.Request;
+        var principal = access.Principal;
         var agentId = access.AgentId!.Value;
-        var row = await FindOwnedAsync(jobId, access.TenantId, agentId, principal, mcpResource, mcpInstance, includeDeleted: false, cancellationToken)
+        var resource = access.McpResource!;
+        var instance = access.McpInstance!;
+        var row = await FindOwnedAsync(jobId, access.TenantId, agentId, principal, resource, instance, includeDeleted: false, cancellationToken)
             .ConfigureAwait(false);
         if (row is null || row.owner.TargetSetDigest != access.TargetSetDigest)
-        {
-            return false;
-        }
+            return null;
 
-        var steps = await _db.JobSteps.AsNoTracking()
-            .Where(step => step.JobId == jobId && step.Enabled)
-            .OrderBy(step => step.Ordinal)
-            .ToListAsync(cancellationToken)
+        // Capture the actual canonical rows as well as the operator revision:
+        // legacy job editors do not advance the operator ownership version.
+        var definition = await _db.Jobs.AsNoTracking().Include(job => job.Parameters).Include(job => job.Steps).AsSingleQuery()
+            .SingleOrDefaultAsync(job => job.Id == jobId && job.TenantId == access.TenantId && job.AgentId == agentId, cancellationToken)
             .ConfigureAwait(false);
-        if (steps.Count == 0 || steps.Count > MaximumSteps)
-            return false;
+        if (definition is null || definition.Parameters.Count > MaximumParameters || definition.Steps.Count > MaximumSteps)
+            return null;
+        var steps = definition.Steps.Where(step => step.Enabled).OrderBy(step => step.Ordinal).ThenBy(step => step.Id).ToArray();
+        if (steps.Length == 0 || steps.Any(step => step.Type != (int)JobStepKind.LibraryScript || step.ScriptId is null ||
+            !TryReadScriptReference(step.PayloadJson, out _)))
+            return null;
 
+        var scriptIds = steps.Select(step => step.ScriptId!.Value).Distinct().ToArray();
+        var sources = await _db.Scripts.AsNoTracking().Include(source => source.Parameters).AsSingleQuery()
+            .Join(_db.McpOperatorScripts.AsNoTracking(), source => source.Id, owner => owner.ScriptId, (source, owner) => new { source, owner })
+            .Where(entry => scriptIds.Contains(entry.source.Id) && entry.owner.TenantId == access.TenantId &&
+                entry.owner.Subject == principal.Subject && entry.owner.ClientId == ClientId(principal) &&
+                entry.owner.McpResource == resource && entry.owner.McpInstance == instance && entry.owner.DeletedAtUtc == null)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        if (sources.Count != scriptIds.Length)
+            return null;
         foreach (var step in steps)
         {
-            if (step.Type != (int)JobStepKind.LibraryScript || step.ScriptId is not { } scriptId ||
-                !TryReadScriptReference(step.PayloadJson, out var reference))
-            {
-                return false;
-            }
-            var script = await _db.McpOperatorScripts.AsNoTracking().SingleOrDefaultAsync(candidate =>
-                candidate.ScriptId == scriptId && candidate.TenantId == access.TenantId &&
-                candidate.Subject == principal.Subject && candidate.ClientId == ClientId(principal) &&
-                candidate.McpResource == mcpResource && candidate.McpInstance == mcpInstance && candidate.DeletedAtUtc == null,
-                cancellationToken).ConfigureAwait(false);
-            if (script is null || script.Version != reference.ScriptVersion ||
-                !string.Equals(script.ContentHash, reference.ScriptContentHash, StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
+            var source = sources.Single(entry => entry.source.Id == step.ScriptId);
+            if (!TryReadScriptReference(step.PayloadJson, out var reference) || source.owner.Version != reference.ScriptVersion ||
+                !string.Equals(source.owner.ContentHash, reference.ScriptContentHash, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(source.source.Content))), reference.ScriptContentHash, StringComparison.OrdinalIgnoreCase))
+                return null;
         }
-        return true;
+        var parameters = definition.Parameters.OrderBy(parameter => parameter.Name, StringComparer.Ordinal).ThenBy(parameter => parameter.Id).ToArray();
+        var inputSchema = parameters.Select(ToParameter).ToArray();
+        try
+        {
+            foreach (var parameter in inputSchema) _ = PrepareParameter(parameter);
+        }
+        catch (ArgumentException) { return null; }
+
+        var details = new JobDefinitionDetails(
+            new JobDefinitionInfo((ulong)definition.Id, definition.Name, definition.FolderPath, definition.Description, definition.TenantId,
+                definition.ClientIdentity, definition.CreatedAtUtc, definition.UpdatedAtUtc, definition.OptionsJson, definition.AgentId),
+            parameters.Select(parameter => new JobParameterInfo((ulong)parameter.Id, (ulong)parameter.JobId, parameter.Name,
+                parameter.Type, parameter.Required, parameter.DefaultValue, parameter.Description, parameter.OptionsJson)).ToArray(),
+            definition.Steps.OrderBy(step => step.Ordinal).ThenBy(step => step.Id).Select(step => new JobStepInfo((ulong)step.Id,
+                (ulong)step.JobId, step.Ordinal, (JobStepKind)step.Type, step.Runner, step.Command,
+                step.ScriptId is { } scriptId ? (ulong)scriptId : null, step.PayloadJson, step.Enabled)).ToArray());
+        var scripts = sources.OrderBy(entry => entry.source.Id).Select(entry => new McpOperatorScriptExecutionSnapshot(
+            new ScriptInfo((ulong)entry.source.Id, entry.source.Name, entry.source.FolderPath, entry.source.Description, entry.source.Content,
+                entry.source.ManifestJson, entry.source.ScriptType, entry.source.CreatedAtUtc, entry.source.UpdatedAtUtc, entry.source.SourceRevision),
+            entry.source.Parameters.OrderBy(parameter => parameter.Id).Select(parameter => new ScriptParamInfo((ulong)parameter.Id,
+                (ulong)parameter.ScriptId, parameter.Name, parameter.Type, parameter.Required, parameter.Default, parameter.Description, parameter.OptionsJson)).ToArray(),
+            entry.owner.Version, entry.owner.ContentHash)).ToArray();
+        return new McpOperatorJobExecutionSnapshot(details, row.owner.Version, principal.Subject, ClientId(principal), resource, instance,
+            access.TargetSetDigest!, inputSchema, scripts);
     }
 
     public async Task<IReadOnlyList<McpOperatorJobParameter>> ListParametersAsync(
@@ -787,6 +825,7 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
 
     private sealed record PreparedJobDraft(string Name, string FolderPath, string? Description, string? OptionsJson);
     private sealed record ParameterMetadata(IReadOnlyList<string> Options, string? SecretReference);
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     private sealed record LibraryScriptReference(long ScriptVersion, string ScriptContentHash);
     private sealed class OwnedJob(McpOperatorJobRecord ownerValue, JobDefinition jobValue)
     {

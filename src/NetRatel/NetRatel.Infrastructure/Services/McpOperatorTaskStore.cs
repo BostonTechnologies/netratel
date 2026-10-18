@@ -27,7 +27,7 @@ public sealed class McpOperatorTaskStore(OrchestratorDbContext db) : IMcpOperato
         var existing = await FindByIdempotencyAsync(request.IdempotencyId, cancellationToken).ConfigureAwait(false);
         if (existing is not null)
             return SameAdmission(existing, request)
-                ? ToLease(existing)
+                ? await ProjectLeaseAsync(existing, cancellationToken)
                 : throw new InvalidOperationException("The task idempotency admission is already bound to another task.");
 
         await using var transaction = _db.Database.IsRelational()
@@ -41,7 +41,7 @@ public sealed class McpOperatorTaskStore(OrchestratorDbContext db) : IMcpOperato
                 if (transaction is not null)
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 return SameAdmission(existing, request)
-                    ? ToLease(existing)
+                    ? await ProjectLeaseAsync(existing, cancellationToken)
                     : throw new InvalidOperationException("The task idempotency admission is already bound to another task.");
             }
 
@@ -66,7 +66,9 @@ public sealed class McpOperatorTaskStore(OrchestratorDbContext db) : IMcpOperato
                 AgentId = access.AgentId,
                 TaskType = request.TaskType,
                 Status = "Pending",
-                CreatedAtUtc = request.OccurredAtUtc
+                CreatedAtUtc = request.OccurredAtUtc,
+                ScriptContentHash = request.ScriptContentHash,
+                OutputProtectionJson = TaskOutputProtection.Serialize(request.OutputPolicy)
             };
             var record = new McpOperatorTaskRecord
             {
@@ -121,7 +123,7 @@ public sealed class McpOperatorTaskStore(OrchestratorDbContext db) : IMcpOperato
             _db.ChangeTracker.Clear();
             existing = await FindByIdempotencyAsync(request.IdempotencyId, cancellationToken).ConfigureAwait(false);
             if (existing is not null && SameAdmission(existing, request))
-                return ToLease(existing);
+                return await ProjectLeaseAsync(existing, cancellationToken);
             throw;
         }
     }
@@ -131,7 +133,7 @@ public sealed class McpOperatorTaskStore(OrchestratorDbContext db) : IMcpOperato
         if (taskId <= 0 || !IsOwnerInputValid(tenantId, agentId, principal, mcpResource, mcpInstance))
             return null;
         var record = await FindOwnedAsync(taskId, tenantId, agentId, principal, mcpResource, mcpInstance, cancellationToken).ConfigureAwait(false);
-        return record is null ? null : ToLease(record);
+        return record is null ? null : await ProjectLeaseAsync(record, cancellationToken);
     }
 
     public async Task<McpOperatorTaskLease?> GetOwnedByRequestIdAsync(string requestId, int tenantId, Guid agentId, McpOperatorPrincipal principal, string mcpResource, string mcpInstance, CancellationToken cancellationToken)
@@ -144,7 +146,7 @@ public sealed class McpOperatorTaskStore(OrchestratorDbContext db) : IMcpOperato
             candidate.Subject == principal.Subject && candidate.ClientId == ClientId(principal) &&
             candidate.McpResource == mcpResource && candidate.McpInstance == mcpInstance,
             cancellationToken).ConfigureAwait(false);
-        return record is null ? null : ToLease(record);
+        return record is null ? null : await ProjectLeaseAsync(record, cancellationToken);
     }
 
     public async Task<IReadOnlyList<McpOperatorTaskLease>> ListOwnedAsync(int tenantId, Guid agentId, McpOperatorPrincipal principal, string mcpResource, string mcpInstance, string? state, DateTimeOffset? sinceUtc, int limit, CancellationToken cancellationToken)
@@ -162,7 +164,13 @@ public sealed class McpOperatorTaskStore(OrchestratorDbContext db) : IMcpOperato
             query = query.Where(candidate => candidate.CreatedAtUtc >= sinceUtc.Value);
         var rows = await query.OrderByDescending(candidate => candidate.UpdatedAtUtc).ThenByDescending(candidate => candidate.TaskActivityId)
             .Take(limit).ToListAsync(cancellationToken).ConfigureAwait(false);
-        return rows.Select(ToLease).ToArray();
+        var ids = rows.Select(x => x.TaskActivityId).ToArray();
+        var activities = await _db.JobTaskActivities.AsNoTracking().Where(x => ids.Contains(x.Id)).ToDictionaryAsync(x => x.Id, cancellationToken);
+        return rows.Select(row => ToLease(row) with
+        {
+            ResultSummary = activities.TryGetValue(row.TaskActivityId, out var task)
+                ? TaskOutputProtection.Project(task, row.ResultSummary) : NetRatel.Shared.Security.TaskOutputRedactor.Withhold(row.ResultSummary)
+        }).ToArray();
     }
 
     public async Task<IReadOnlyList<McpOperatorTaskLogLease>> ListLogsOwnedAsync(long taskId, int tenantId, Guid agentId, McpOperatorPrincipal principal, string mcpResource, string mcpInstance, long sinceLogId, string? stream, int limit, CancellationToken cancellationToken)
@@ -172,13 +180,17 @@ public sealed class McpOperatorTaskStore(OrchestratorDbContext db) : IMcpOperato
         var task = await FindOwnedAsync(taskId, tenantId, agentId, principal, mcpResource, mcpInstance, cancellationToken).ConfigureAwait(false);
         if (task is null)
             return [];
+        var activity = await _db.JobTaskActivities.AsNoTracking().SingleOrDefaultAsync(x => x.Id == task.TaskActivityId, cancellationToken);
+        if (activity is null) return [];
+        task.ResultSummary = TaskOutputProtection.Project(activity, task.ResultSummary);
         limit = Math.Clamp(limit, 1, MaximumLogsPerRead);
         var query = _db.JobTaskLogs.AsNoTracking().Where(log => log.JobTaskActivityId == taskId && log.Id > sinceLogId);
         if (!string.IsNullOrWhiteSpace(stream) && !string.Equals(stream, "all", StringComparison.OrdinalIgnoreCase))
             query = query.Where(log => log.Stream == stream);
         var rows = await query.OrderBy(log => log.Id).Take(limit).ToListAsync(cancellationToken).ConfigureAwait(false);
         if (rows.Count > 0)
-            return rows.Select(log => new McpOperatorTaskLogLease(log.Id, taskId, task.CommandId, log.TimestampUtc, log.Stream, log.Message, log.Sequence)).ToArray();
+            return rows.Select(log => new McpOperatorTaskLogLease(log.Id, taskId, task.CommandId, log.TimestampUtc, log.Stream,
+                TaskOutputProtection.Project(activity, log.Message, log.OutputProtectionBinding, envelope: false)!, log.Sequence)).ToArray();
         if (!IsTerminal(task.State) || string.IsNullOrWhiteSpace(task.ResultSummary) ||
             await _db.JobTaskLogs.AsNoTracking().AnyAsync(log => log.JobTaskActivityId == taskId, cancellationToken).ConfigureAwait(false))
             return [];
@@ -246,7 +258,7 @@ public sealed class McpOperatorTaskStore(OrchestratorDbContext db) : IMcpOperato
             if (entry.State == EntityState.Detached || !MatchesDecision(record, request.Decision))
                 return null;
             if (IsTerminal(record.State) || record.CancellationRequested)
-                return ToLease(record);
+                return await ProjectLeaseAsync(record, cancellationToken);
 
             record.CancellationRequested = true;
             record.CancellationRequestedAtUtc = request.OccurredAtUtc;
@@ -265,7 +277,7 @@ public sealed class McpOperatorTaskStore(OrchestratorDbContext db) : IMcpOperato
             try
             {
                 await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                return ToLease(record);
+                return await ProjectLeaseAsync(record, cancellationToken);
             }
             catch (DbUpdateConcurrencyException conflict) when (IsTaskConflict(conflict, record))
             {
@@ -280,15 +292,20 @@ public sealed class McpOperatorTaskStore(OrchestratorDbContext db) : IMcpOperato
         }
     }
 
-    public async Task RecordLifecycleAsync(string commandId, int tenantId, Guid agentId, string state, string? resultSummary, DateTimeOffset occurredAtUtc, CancellationToken cancellationToken)
+    public Task RecordLifecycleAsync(string commandId, int tenantId, Guid agentId, string state, string? resultSummary,
+        DateTimeOffset occurredAtUtc, CancellationToken cancellationToken) =>
+        TryRecordLifecycleAsync(commandId, tenantId, agentId, state, resultSummary, occurredAtUtc, cancellationToken);
+
+    public async Task<bool> TryRecordLifecycleAsync(string commandId, int tenantId, Guid agentId, string state,
+        string? resultSummary, DateTimeOffset occurredAtUtc, CancellationToken cancellationToken)
     {
         if (!IsCommandId(commandId) || tenantId <= 0 || agentId == Guid.Empty || !IsKnownState(state))
-            return;
+            return false;
         var record = await _db.McpOperatorTasks.SingleOrDefaultAsync(candidate =>
             candidate.CommandId == commandId && candidate.TenantId == tenantId && candidate.AgentId == agentId,
             cancellationToken).ConfigureAwait(false);
         if (record is null)
-            return;
+            return false;
         var entry = _db.Entry(record);
         // The gateway retains this context across lifecycle frames, while HTTP
         // cancellation updates the same task in a separate scope.
@@ -296,12 +313,14 @@ public sealed class McpOperatorTaskStore(OrchestratorDbContext db) : IMcpOperato
         for (var attempt = 1; ; attempt++)
         {
             if (entry.State == EntityState.Detached || IsTerminal(record.State))
-                return;
+                return false;
             if (record.CancellationRequested && !IsTerminal(state))
-                return;
+                return false;
 
             record.State = state;
-            record.ResultSummary = BoundSummary(resultSummary);
+            var activity = await _db.JobTaskActivities.AsNoTracking().SingleOrDefaultAsync(x => x.Id == record.TaskActivityId, cancellationToken);
+            record.ResultSummary = BoundSummary(activity is null ? NetRatel.Shared.Security.TaskOutputRedactor.Withhold(resultSummary)
+                : TaskOutputProtection.Project(activity, resultSummary));
             record.UpdatedAtUtc = occurredAtUtc;
             if (IsTerminal(state))
                 record.CompletedAtUtc = occurredAtUtc;
@@ -309,7 +328,7 @@ public sealed class McpOperatorTaskStore(OrchestratorDbContext db) : IMcpOperato
             try
             {
                 await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                return;
+                return true;
             }
             catch (DbUpdateConcurrencyException conflict) when (
                 attempt < MaximumLifecycleWriteAttempts && IsTaskConflict(conflict, record))
@@ -393,6 +412,13 @@ public sealed class McpOperatorTaskStore(OrchestratorDbContext db) : IMcpOperato
         record.TaskType, record.ShellType, record.ScriptId, record.ScriptVersion, record.ScriptContentHash,
         record.TimeoutSeconds, record.MaximumOutputBytes, record.State, record.ResultSummary, record.CancellationRequested,
         record.CorrelationId, record.CreatedAtUtc, record.UpdatedAtUtc, record.CompletedAtUtc, record.Version);
+
+    private async Task<McpOperatorTaskLease> ProjectLeaseAsync(McpOperatorTaskRecord record, CancellationToken ct)
+    {
+        var activity = await _db.JobTaskActivities.AsNoTracking().SingleOrDefaultAsync(x => x.Id == record.TaskActivityId, ct);
+        return ToLease(record) with { ResultSummary = activity is null ? TaskOutputRedactor.Withhold(record.ResultSummary)
+            : TaskOutputProtection.Project(activity, record.ResultSummary) };
+    }
 
     private static string ClientId(McpOperatorPrincipal principal) => principal.ClientId ?? string.Empty;
     private static bool IsOwnerInputValid(int tenantId, Guid agentId, McpOperatorPrincipal principal, string mcpResource, string mcpInstance) =>
