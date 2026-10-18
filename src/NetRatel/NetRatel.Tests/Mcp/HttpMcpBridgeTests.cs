@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Server;
 using NetRatel.AgentClient;
 using NetRatel.Mcp;
 using Xunit;
@@ -18,6 +19,33 @@ namespace NetRatel.Tests.Mcp;
 
 public sealed class HttpMcpBridgeTests
 {
+    [Theory]
+    [InlineData("2025-03-26")]
+    [InlineData("2025-06-18")]
+    [InlineData("2025-11-25")]
+    public async Task Initialize_negotiates_with_the_real_http_transport_and_subsequent_reads_work(string protocolVersion)
+    {
+        await using var fixture = await Fixture.StartAsync(null);
+        await fixture.SendAsync(JsonSerializer.Serialize(new
+        {
+            jsonrpc = "2.0", id = "initialize", method = "initialize",
+            @params = new { protocolVersion, capabilities = new { }, clientInfo = new { name = "bridge-regression", version = "1" } }
+        }));
+        var initialized = await fixture.ReadAsync();
+        Assert.Equal("initialize", initialized.GetProperty("id").GetString());
+        Assert.Equal(protocolVersion, initialized.GetProperty("result").GetProperty("protocolVersion").GetString());
+        await fixture.SendAsync("""{"jsonrpc":"2.0","method":"notifications/initialized"}""");
+        await fixture.SendAsync("""{"jsonrpc":"2.0","id":"catalog","method":"tools/list","params":{}}""");
+        var catalog = await fixture.ReadAsync();
+        Assert.Equal("catalog", catalog.GetProperty("id").GetString());
+        Assert.Equal("read_status", Assert.Single(catalog.GetProperty("result").GetProperty("tools").EnumerateArray()).GetProperty("name").GetString());
+        await fixture.SendAsync("""{"jsonrpc":"2.0","id":"read","method":"tools/call","params":{"name":"read_status","arguments":{}}}""");
+        var read = await fixture.ReadAsync();
+        Assert.Equal("read", read.GetProperty("id").GetString());
+        Assert.Equal("ready", read.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString());
+        await fixture.CompleteAsync();
+    }
+
     [Fact]
     public async Task Split_utf8_sse_progress_is_observable_while_final_reply_is_gated()
     {
@@ -242,6 +270,7 @@ public sealed class HttpMcpBridgeTests
             var message = document.RootElement;
             if (message.GetProperty("method").GetString() == "initialize")
             {
+                Assert.False(context.Request.Headers.ContainsKey("MCP-Protocol-Version"));
                 context.Response.Headers["Mcp-Session-Id"] = "synthetic-session";
                 await context.Response.WriteAsJsonAsync(new { jsonrpc = "2.0", id = 1, result = new { protocolVersion = "2025-11-25" } });
                 return;
@@ -338,13 +367,17 @@ public sealed class HttpMcpBridgeTests
             return document.RootElement.Clone();
         }
         public async Task CompleteAsync() { await input.Writer.CompleteAsync(); await run.WaitAsync(TimeSpan.FromSeconds(10)); }
-        public static async Task<Fixture> StartAsync(RequestDelegate handle, TimeSpan? timeout = null)
+        public static async Task<Fixture> StartAsync(RequestDelegate? handle, TimeSpan? timeout = null)
         {
             var builder = WebApplication.CreateSlimBuilder();
             builder.Logging.ClearProviders();
             builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, 0));
+            if (handle is null) builder.Services.AddMcpServer()
+                .WithHttpTransport(options => options.Stateless = true)
+                .WithTools([McpServerTool.Create((Func<string>)(() => "ready"), new() { Name = "read_status" })]);
             var app = builder.Build();
-            app.Run(handle);
+            if (handle is null) app.MapMcp("/");
+            else app.Run(handle);
             await app.StartAsync();
             var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
             var directory = Path.Combine(Path.GetTempPath(), "netratel-bridge-test-" + Guid.NewGuid().ToString("N"));
