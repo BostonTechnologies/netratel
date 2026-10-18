@@ -19,6 +19,9 @@ public sealed record SetupCheck(string Name, string Status, string Detail, int? 
     public int? DownstreamStatus { get; init; }
     public string? Reference { get; init; }
     public string? NextAction { get; init; }
+    public CredentialMcpAdmission? Admission { get; init; }
+    public string? AdmissionStatus { get; init; }
+    public string? AdmissionCode { get; init; }
     public bool? TransportSucceeded { get; init; }
     public bool? ProtocolSucceeded { get; init; }
     public bool? OperationSucceeded { get; init; }
@@ -381,8 +384,19 @@ public sealed partial class SetupSession : IAsyncDisposable
                 { checks.Add(Failure("permitted read-only tool", "mcp_catalog_incomplete", "MCP", tools.Status)); return checks; }
                 var read = await SendMcpAsync(target, token, new { jsonrpc = "2.0", id = 3, method = "tools/call", @params = new { name = "netratel_auth", arguments = new { operation = "status" } } }, initialize.SessionId, ct);
                 var successful = read.Status is >= 200 and < 300 && read.Result is { } envelope && IsMcpReply(envelope, 3) && envelope.TryGetProperty("result", out var result) && (!result.TryGetProperty("isError", out var failed) || failed.ValueKind == JsonValueKind.False) && result.TryGetProperty("structuredContent", out var structured) && structured.ValueKind == JsonValueKind.Object && structured.TryGetProperty("success", out var accepted) && accepted.ValueKind == JsonValueKind.True && (!structured.TryGetProperty("status", out var resultStatus) || resultStatus.ValueKind == JsonValueKind.String && resultStatus.GetString() == "completed") && structured.TryGetProperty("data", out var authStatus) && StdioMcpDoctor.IsAuthenticationStatus(authStatus);
-                if (successful) checks.Add(new SetupCheck("permitted read-only tool", "completed", "API-backed authentication status completed without mutation. Backend readiness and tenant admission require separate checks.", read.Status)
-                    { Layer = "operation", TransportSucceeded = true, ProtocolSucceeded = true, OperationSucceeded = true });
+                if (successful)
+                {
+                    checks.Add(new SetupCheck("permitted read-only tool", "completed", "API-backed authentication status completed without mutation. Backend readiness and tenant admission require separate checks.", read.Status)
+                        { Layer = "operation", TransportSucceeded = true, ProtocolSucceeded = true, OperationSucceeded = true });
+                    if (!_temporaryVerifier)
+                    {
+                        var admission = await CheckCurrentAdmissionAsync(target, token, initialize.SessionId,
+                            read.Result!.Value.GetProperty("result").GetProperty("structuredContent").GetProperty("data"), ct);
+                        // Authentication/setup completion and business admission remain distinct outcomes.
+                        checks[^1] = checks[^1] with { Detail = checks[^1].Detail + " Current business admission: " + admission.Status + ". " + admission.Detail,
+                            Admission = admission.Admission, AdmissionStatus = admission.Status, AdmissionCode = admission.Code, NextAction = admission.NextAction };
+                    }
+                }
                 else
                 {
                     var code = read.Status is 401 or 403 ? "mcp_authentication_rejected" : "mcp_status_response_invalid";

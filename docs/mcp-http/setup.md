@@ -134,26 +134,18 @@ Prepare prints only request ID, non-bearer user code, review URL and expiry. Its
 
 #### Prepare an auxiliary credential from a retained Windows DPAPI primary
 
-On the Windows consumer machine, first obtain the matching [Windows archive and prepare its DPAPI reference profile](../integrations/http-mcp-bridge.md#retain-an-existing-windows-dpapi-credential). Use a new private directory for the pending device capability and destination profile. In PowerShell 7, these commands create a new directory readable and writable by the current account; they do not alter the retained primary's storage:
+On the Windows consumer machine, first obtain the matching [Windows archive and prepare its complete DPAPI layout](../integrations/http-mcp-bridge.md#retain-an-existing-windows-dpapi-credential). Continue in that PowerShell 7 terminal with its `$preparation` receipt and extracted `netratel-mcp-win-x64` directory. Reuse the validated private state and temporary directories; their names alone do not prove their ancestry is protected:
 
 ```powershell
-$privateDirectory = Join-Path $env:LOCALAPPDATA 'NetRatel\reviewed-access-01'
-New-Item -ItemType Directory -Path $privateDirectory | Out-Null
-$account = [Security.Principal.WindowsIdentity]::GetCurrent().User
-$acl = Get-Acl -LiteralPath $privateDirectory
-$acl.SetAccessRuleProtection($true, $false)
-$acl.SetOwner($account)
-$rule = [Security.AccessControl.FileSystemAccessRule]::new(
-    $account, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-$acl.SetAccessRule($rule)
-Set-Acl -LiteralPath $privateDirectory -AclObject $acl
+$privateDirectory = $preparation.layout.pendingStateDirectory
+$temporaryDirectory = $preparation.layout.temporaryDirectory
 ```
 
 Save the reviewed, secret-free proposal JSON in that directory. From the extracted `netratel-mcp-win-x64` directory, run:
 
 ```powershell
 .\http-mcp-windows.ps1 `
-    -Profile 'C:\Users\operator\AppData\Local\NetRatel\http-client-profile.json' `
+    -Profile $preparation.profile -TemporaryDirectory $temporaryDirectory `
     -AccessPrepare -RequestFile (Join-Path $privateDirectory 'proposal.json') `
     -StateFile (Join-Path $privateDirectory 'pending.json') `
     -DestinationConfig (Join-Path $privateDirectory 'auxiliary-http-profile.json') `
@@ -171,3 +163,10 @@ The wrapper binds the requester to the prepared primary's canonical resource and
 The receipt separates configured credential grants, the current attenuated delegation, current tenant visibility, exact policy decisions and remaining prerequisites. For agent targets, the receipt leaves `policyAllowed` null with `conditional_runtime_unverified` and keeps `authorizationAdmitted` false until current runtime prerequisites are established. Read `netratel_access target/effective` for that exact persisted target and policy, then inspect operation readiness. Tenant and control-plane authorization can be evaluated without agent runtime facts. Dispatch rechecks readiness, capability and the normal preview, confirmation and idempotency requirements. Test a permitted read in each approved tenant before continuing the owner campaign.
 
 Reviewed credential expiry uses exact UTC instants at microsecond resolution: at most six fractional digits, such as `2030-04-01T10:11:12.123456Z`. Unsupported precision is rejected before date parsing; accepted input is never rounded. The 30-day preset adds exactly 720 hours to the displayed representable UTC reference.
+
+
+## Current credential admission during client setup
+
+HTTP MCP setup and doctor keep their successful authentication/status check separate from business admission. For a local credential, status provides its non-secret identifier and setup uses the existing `netratel_access/credential` inspection to attach current configured grants, durable owner permissions, exact expiry, binding and named operation/policy facts. The diagnostic exposes `admissionStatus` and the safe `admission` separately from the authentication check status. `blocked` means a known prerequisite is missing; `not_checked` means no authoritative local view or named operation sample was available. Older servers, external OAuth and discovery-only credentials can still complete connection setup while their business admission remains explicitly unassessed. No business operation runs as a setup diagnostic.
+
+When valid configured tenant grants lack matching Production operator policies, refresh the [credential admission view](local-credential-mode.md#independently-reviewed-admission) and use the supported independent request/inspect/resume reconciliation above. Preserve the original exact UTC expiry and grants until an approved proposal changes them. Setup success does not establish native tenant dispatch, agent readiness or production readiness; those remain owner acceptance checks.

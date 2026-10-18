@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using NetRatel.API.Endpoints.Auth;
+using NetRatel.API.Endpoints.Client;
 using NetRatel.API.Middleware;
 using NetRatel.API.Security.Integration;
 using NetRatel.Infrastructure.Identity;
@@ -75,6 +76,56 @@ public sealed partial class NetRatelMcpHttpTests
     {
         public DateTimeOffset UtcNow { get; set; } = now;
         public override DateTimeOffset GetUtcNow() => UtcNow;
+    }
+
+    [Fact]
+    public async Task Local_http_exchange_attenuates_policy_inspection_separately_from_flow_read_and_status()
+    {
+        var flowPermission = McpLocalOperationAuthorizationCatalog.RequiredPermission("netratel_flows", "list")!;
+        await using var api = await AdmissionApiAsync(new AdmissionGrants(NetRatelPermissions.McpPolicyAdministration,
+            NetRatelPermissions.McpDiscoveryRead, flowPermission));
+        var tokens = api.Services.GetRequiredService<McpOperatorDelegationTokenService>();
+        foreach (var (tool, operation, expectedScope, expectedRole) in new[]
+        {
+            ("netratel_policy", "evaluate", "netratel.mcp.admin", "PolicyAdministrator"),
+            ("netratel_flows", "list", "netratel.mcp.observe", "Operator"),
+            ("netratel_auth", "status", "netratel.mcp.read", (string?)null)
+        })
+        {
+            var isStatus = tool == "netratel_auth";
+            using var request = new HttpRequestMessage(HttpMethod.Post, McpLocalDelegationEndpoints.ExchangePath);
+            request.Headers.Add(McpLocalDelegationEndpoints.PairingHeaderName, tokens.Create(
+                new McpOperatorDelegationIdentity("local-gateway", "netratel-local-gateway", null, [], [], []),
+                new McpOperatorDelegationRequest(tool, operation, Guid.NewGuid().ToString("N"),
+                    "https://mcp.dev.example/mcp", "dev", isStatus ? null : 17,
+                    tool == "netratel_policy" ? ContractAgentId : null, "correlation-attenuation")));
+            using var response = await api.GetTestClient().SendAsync(request);
+            response.StatusCode.Should().Be(HttpStatusCode.OK, tool);
+            var result = await response.Content.ReadFromJsonAsync<McpLocalDelegationEndpoints.McpLocalExecutionResponse>();
+            tokens.TryValidate(result!.Assertion, out var delegation).Should().BeTrue();
+            delegation!.Identity.Scopes.Should().Equal(expectedScope);
+            delegation.Identity.Roles.Should().Equal(expectedRole is null ? [] : [expectedRole]);
+            delegation.IngressPermission.Should().Be(McpLocalOperationAuthorizationCatalog.RequiredPermission(tool, operation));
+            var context = McpOperatorAssertionContext.FromDelegation(delegation);
+            context.AuthenticationSource.Should().Be("local_http_credential");
+            context.ScopeContext.Should().Be("operation_specific");
+            context.Tool.Should().Be(tool);
+            context.Operation.Should().Be(operation);
+            context.CredentialEntitlements.Should().Be("not_assessed");
+            context.BusinessAdmission.Should().Be("not_checked");
+            if (isStatus)
+            {
+                using var statusRequest = new HttpRequestMessage(HttpMethod.Get, "/api/v2/mcp/operator/auth/status");
+                statusRequest.Headers.Add(McpOperatorDelegationOptions.HeaderName, result.Assertion);
+                using var status = await api.GetTestClient().SendAsync(statusRequest);
+                status.StatusCode.Should().Be(HttpStatusCode.OK);
+                var statusBody = await status.Content.ReadFromJsonAsync<JsonElement>();
+                statusBody.GetProperty("identityProvider").GetString().Should().Be("local_integration_credential");
+                statusBody.GetProperty("credentialId").GetString().Should().Be("credential-id");
+                statusBody.GetProperty("delegationContext").GetProperty("scopeContext").GetString().Should().Be("operation_specific");
+                statusBody.GetProperty("scopes").EnumerateArray().Select(scope => scope.GetString()).Should().Equal("netratel.mcp.read");
+            }
+        }
     }
 
     [Theory]
@@ -270,7 +321,11 @@ public sealed partial class NetRatelMcpHttpTests
         builder.WebHost.UseTestServer();
         builder.Services.AddAuthentication(IntegrationCredentialAuthenticationHandler.SchemeName)
             .AddScheme<AuthenticationSchemeOptions, LocalExchangeAuthenticationHandler>(IntegrationCredentialAuthenticationHandler.SchemeName, _ => { });
-        builder.Services.AddAuthorization(options => options.AddPolicy("McpLocalDelegationExchange", policy => policy.RequireAuthenticatedUser()));
+        builder.Services.AddAuthorization(options =>
+        {
+            options.AddPolicy("McpLocalDelegationExchange", policy => policy.RequireAuthenticatedUser());
+            options.AddPolicy("M2MOnly", policy => policy.RequireAuthenticatedUser());
+        });
         builder.Services.AddSingleton(LocalCredentialDelegationOptions());
         builder.Services.AddSingleton<McpOperatorDelegationTokenService>();
         builder.Services.AddSingleton<IEffectiveAccessService>(grants);
@@ -281,6 +336,7 @@ public sealed partial class NetRatelMcpHttpTests
         app.UseMiddleware<McpOperatorDelegationMiddleware>();
         app.UseAuthorization();
         app.MapMcpLocalDelegationEndpoints();
+        app.MapMcpOperatorAuthenticationStatusEndpoints();
         app.MapGet("/execution", () => "admitted");
         await app.StartAsync();
         return app;

@@ -50,6 +50,12 @@ public sealed class McpOperatorAccessEvaluationServiceTests
         evaluation!.Allowed.Should().BeTrue();
         evaluation.RequiredScope.Should().Be("netratel.mcp.observe");
         evaluation.CapabilityReadiness.Should().Be("not_checked");
+        evaluation.Interpretation.Should().NotBeNull();
+        evaluation.Interpretation!.InspectionTool.Should().Be("netratel_access");
+        evaluation.Interpretation.Assessment.Should().Be("current_assertion_only");
+        evaluation.Interpretation.Policy.Should().Be("evaluated");
+        evaluation.Interpretation.Runtime.Should().Be("not_checked");
+        evaluation.Interpretation.AuthoritativeAdmissionReceipt.Should().BeFalse();
         evaluation.MissingPrerequisites.Should().ContainSingle().Which.Should().Contain("rechecked by the dispatch route");
         (await db.McpOperatorAcceptedAudits.CountAsync(Ct)).Should().Be(0);
     }
@@ -81,8 +87,11 @@ public sealed class McpOperatorAccessEvaluationServiceTests
         evaluation.Should().BeNull();
     }
 
-    [Fact]
-    public async Task PolicyAdministratorEvaluation_ExplainsItsOwnExactAccessWithoutPriorTenantVisibility()
+    [Theory]
+    [InlineData(false, "oauth_scope_missing", "not_checked")]
+    [InlineData(true, "target_policy_missing", "evaluated")]
+    public async Task PolicyAdministratorEvaluation_ExplainsItsOwnExactAccessWithoutPriorTenantVisibility(
+        bool includeObserveScope, string failureCode, string policyAssessment)
     {
         await using var db = CreateDb();
         var agentId = Guid.NewGuid();
@@ -91,8 +100,8 @@ public sealed class McpOperatorAccessEvaluationServiceTests
         var administrator = Principal() with
         {
             Subject = "policy.admin@example.test",
-            Roles = Set("PolicyAdministrator"),
-            Scopes = Set("netratel.mcp.admin", "netratel.mcp.observe")
+            Roles = includeObserveScope ? Set("PolicyAdministrator", "Operator") : Set("PolicyAdministrator"),
+            Scopes = includeObserveScope ? Set("netratel.mcp.admin", "netratel.mcp.observe") : Set("netratel.mcp.admin")
         };
 
         var ordinary = await service.EvaluateAsync(
@@ -120,7 +129,26 @@ public sealed class McpOperatorAccessEvaluationServiceTests
         diagnostic.Should().NotBeNull();
         diagnostic!.Target!.AgentId.Should().Be(agentId);
         diagnostic.Allowed.Should().BeFalse();
-        diagnostic.FailureCode.Should().Be("target_policy_missing");
+        diagnostic.FailureCode.Should().Be(failureCode);
+        var interpretation = diagnostic.Interpretation!;
+        interpretation.InspectionTool.Should().Be("netratel_policy");
+        interpretation.InspectionOperation.Should().Be("evaluate");
+        interpretation.Assessment.Should().Be("current_assertion_only");
+        interpretation.EvaluatedTool.Should().Be("netratel_terminal");
+        interpretation.EvaluatedOperation.Should().Be("availability");
+        interpretation.RequiredScopes.Should().Equal("netratel.mcp.observe");
+        interpretation.RequiredRolesAnyOf.Should().BeEquivalentTo("Observer", "Operator", "AutomationOperator");
+        interpretation.DelegatedScopes.Should().BeEquivalentTo(administrator.Scopes);
+        interpretation.DelegatedRoles.Should().BeEquivalentTo(administrator.Roles);
+        interpretation.ApplicationGrants.Should().Be("not_checked");
+        interpretation.TenantAdmission.Should().Be("not_checked");
+        interpretation.Policy.Should().Be(policyAssessment);
+        interpretation.Capability.Should().Be("not_checked");
+        interpretation.Runtime.Should().Be("not_checked");
+        interpretation.AuthoritativeAdmissionReceipt.Should().BeFalse();
+        interpretation.Guidance.Should().Contain("inspection-context scope denial").And.Contain("netratel_access/receipt");
+        if (!includeObserveScope)
+            diagnostic.NextAction.Should().Contain("current inspection assertion").And.Contain("using its own delegation");
         (await db.McpOperatorAcceptedAudits.CountAsync(Ct)).Should().Be(0);
     }
 

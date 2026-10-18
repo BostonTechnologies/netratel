@@ -30,7 +30,9 @@ public static class McpReviewedAccessEndpoints
             {
                 var credential = await pairing.InspectOwnedCredentialAsync(delegation.Identity.Subject, credentialId, ct).ConfigureAwait(false);
                 if (credential is null || !McpResourceUri.Equivalent(credential.Resource, delegation.Resource)) throw new IntegrationPairingUnavailableException();
-                return new { credential, lifecycleState = credential.RevokedAtUtc is not null ? "revoked" : credential.ExpiresAtUtc <= clock.GetUtcNow() ? "expired" : "active" };
+                var admission = await pairing.InspectCredentialAdmissionAsync(delegation.Identity.Subject, credentialId,
+                    OperatorEnvironment(environment), ct: ct).ConfigureAwait(false);
+                return new { credential, lifecycleState = credential.RevokedAtUtc is not null ? "revoked" : credential.ExpiresAtUtc <= clock.GetUtcNow() ? "expired" : "active", admission };
             }));
         return app;
     }

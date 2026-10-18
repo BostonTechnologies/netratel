@@ -154,6 +154,7 @@ public sealed class McpOperatorAccessEvaluationService(
             caller,
             resolved.Target,
             resolved.RelevantPolicies,
+            policyAdministratorInspection: false,
             correlationId,
             requestId,
             cancellationToken).ConfigureAwait(false);
@@ -193,6 +194,7 @@ public sealed class McpOperatorAccessEvaluationService(
             caller,
             resolved.Target,
             resolved.RelevantPolicies,
+            policyAdministratorInspection: true,
             correlationId,
             requestId,
             cancellationToken).ConfigureAwait(false);
@@ -205,6 +207,7 @@ public sealed class McpOperatorAccessEvaluationService(
         McpOperatorAccessCaller caller,
         McpOperatorAccessTarget target,
         IReadOnlyList<McpOperatorAccessPolicySummary> matchingPolicies,
+        bool policyAdministratorInspection,
         string correlationId,
         string requestId,
         CancellationToken cancellationToken)
@@ -243,7 +246,33 @@ public sealed class McpOperatorAccessEvaluationService(
             missing,
             decision.IsAllowed
                 ? $"The policy decision is currently allowed. Invoke {descriptor.ToolName} operation={descriptor.OperationName}; the route will recheck readiness before dispatch."
-                : $"Resolve the '{decision.FailureCode ?? "target_policy_missing"}' prerequisite, then evaluate the same exact operation again.");
+                : policyAdministratorInspection && (decision.FailureCode is "oauth_scope_missing" or "oauth_role_missing")
+                ? $"The current inspection assertion does not meet {descriptor.ToolName}/{descriptor.OperationName}'s scope or role requirements. " +
+                  "Inspect the caller-owned netratel_access/receipt or credential admission, or invoke the exact supported operation using its own delegation for current prerequisites and outcome."
+                : $"Resolve the '{decision.FailureCode ?? "target_policy_missing"}' prerequisite, then evaluate the same exact operation again.")
+        {
+            Interpretation = new McpOperatorEvaluationInterpretation(
+                policyAdministratorInspection ? "netratel_policy" : "netratel_access",
+                "evaluate",
+                "current_assertion_only",
+                Ordered(principal.Scopes),
+                Ordered(principal.Roles),
+                descriptor.ToolName,
+                descriptor.OperationName,
+                [McpOperationAccessScopeNames.Canonical(descriptor.RequiredScope)],
+                McpOperationRoleRequirements.AnyOfRoles(descriptor.RequiredScope),
+                "not_checked",
+                policyAdministratorInspection ? "not_checked" : "checked",
+                decision.FailureLayer is McpOperatorAuthorizationLayer.Delegation or McpOperatorAuthorizationLayer.OAuthScope or
+                    McpOperatorAuthorizationLayer.Tenant or McpOperatorAuthorizationLayer.Target ? "not_checked" : "evaluated",
+                "not_checked",
+                "not_checked",
+                false,
+                "This decision assesses the present signed assertion, not the credential's complete entitlements or another operation's delegation. " +
+                "A local policy/evaluate assertion has only its own operation's scope and roles; an inspection-context scope denial does not establish the outcome of a separate business call. " +
+                "Inspect the caller-owned reviewed netratel_access/receipt or credential admission, or invoke the exact supported operation for its current prerequisites and outcome. " +
+                "Configured grants and matching policy metadata do not establish dispatch success.")
+        };
     }
 
     private async Task<IReadOnlyList<McpOperatorPolicyRecord>> RelevantPoliciesAsync(

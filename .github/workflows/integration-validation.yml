@@ -163,9 +163,22 @@ jobs:
             --configuration Release --no-build --no-restore --max-parallel-test-modules 1 \
             --filter-method NetRatel.Tests.Mcp.ReviewedMcpAccessProtocolTests.Native_request_independent_approval_resume_then_actual_reads_in_two_tenants \
               NetRatel.Tests.Mcp.NetRatelMcpHttpHealthRouteTests.Protocol_health_reaches_protected_API_through_the_shipped_Web_gateway \
-            --minimum-expected-tests 2 --results-directory TestResults/mcp-campaign \
+            --minimum-expected-tests 3 --results-directory TestResults/mcp-campaign \
             --report-trx --report-trx-filename protocol.trx
-          python3 tools/ci/verify-mtp-trx.py TestResults/mcp-campaign/protocol.trx
+          python3 tools/ci/verify-mtp-trx.py TestResults/mcp-campaign/protocol.trx --expected-executed 3
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          report = ET.parse(Path("TestResults/mcp-campaign/protocol.trx")).getroot()
+          passed = {result.attrib.get("testName") for result in report.iter()
+                    if result.tag.endswith("UnitTestResult") and result.attrib.get("outcome") == "Passed"}
+          method = "NetRatel.Tests.Mcp.ReviewedMcpAccessProtocolTests.Native_request_independent_approval_resume_then_actual_reads_in_two_tenants"
+          for environment, instance in (("Development", "dev"), ("Production", "prod")):
+              expected = f'{method}(environment: "{environment}", instance: "{instance}")'
+              if expected not in passed:
+                  raise SystemExit(f"Missing passed protocol environment case: {environment}/{instance}")
+          print("Both Development/dev and Production/prod protocol cases executed and passed.")
+          PY
       - name: Run supported bridge streaming and recovery contract
         if: inputs.suite == 'mcp-campaign'
         shell: bash

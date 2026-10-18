@@ -49,6 +49,19 @@ public sealed record ReviewedMcpAccessReceipt(ReviewedMcpAccessRequest Request, 
     public IntegrationPairingFailure? ReviewFailure { get; init; }
 }
 
+/// <summary>Secret-free current credential facts for explicitly named operations; never a dispatch readiness certificate.</summary>
+public sealed record CredentialMcpAdmission(string CredentialId, DateTimeOffset CheckedAtUtc, string CredentialState,
+    string AuthenticationStatus, string Resource, string Instance, string Environment, DateTimeOffset CredentialExpiresAtUtc,
+    IReadOnlyList<IntegrationPairingGrant> ConfiguredGrants, IReadOnlyList<string> ConfiguredInstancePermissions,
+    IReadOnlyList<ReviewedMcpAccessAdmission> EffectiveAdmission, IReadOnlyList<string> RemainingPrerequisites, string NextAction)
+{
+    public bool TargetsTruncated { get; init; }
+    public IReadOnlyList<CredentialMcpPolicy> MatchingPolicies { get; init; } = [];
+}
+
+public sealed record CredentialMcpPolicy(Guid PolicyId, string Environment, int TenantId, Guid? AgentId,
+    string? Operation, string Effect, DateTimeOffset? ExpiresAtUtc, DateTimeOffset? ReviewByUtc, long Version);
+
 /// <summary>The credential authority persists UTC instants at microsecond resolution. Submitted instants are never rounded.</summary>
 public static class ReviewedMcpAccessExpiry
 {
