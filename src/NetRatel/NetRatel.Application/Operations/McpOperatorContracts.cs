@@ -1397,6 +1397,16 @@ public interface IMcpOperatorTaskStore
         string? resultSummary,
         DateTimeOffset occurredAtUtc,
         CancellationToken cancellationToken);
+
+    /// <summary>Returns true only when this call commits the lifecycle projection.</summary>
+    Task<bool> TryRecordLifecycleAsync(
+        string commandId,
+        int tenantId,
+        Guid agentId,
+        string state,
+        string? resultSummary,
+        DateTimeOffset occurredAtUtc,
+        CancellationToken cancellationToken);
 }
 
 public sealed class McpOperatorTaskLimitException(string code)

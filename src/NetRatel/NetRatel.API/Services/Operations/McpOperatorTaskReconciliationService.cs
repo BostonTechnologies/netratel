@@ -42,16 +42,16 @@ public sealed class McpOperatorTaskReconciliationService(
 
             // The store re-reads the current version and never overwrites an
             // already terminal task, including a concurrent gateway completion.
-            await tasks.RecordLifecycleAsync(task.CommandId, task.TenantId, task.AgentId,
+            // Output may be withheld by the immutable dispatch classification.
+            // Only the store's committed write can establish that this call repaired
+            // the projection; neither diagnostic text nor a concurrent writer can.
+            var updated = await tasks.TryRecordLifecycleAsync(task.CommandId, task.TenantId, task.AgentId,
                 terminal!.Status.ToString(), ResultUnavailable, terminal.StatusTimestamp, cancellationToken).ConfigureAwait(false);
-            var current = await db.McpOperatorTasks.AsNoTracking().SingleOrDefaultAsync(
-                row => row.Id == task.Id, cancellationToken).ConfigureAwait(false);
-            if (current?.State != terminal.Status.ToString() || current.CompletedAtUtc != terminal.StatusTimestamp ||
-                current.ResultSummary != ResultUnavailable)
+            if (!updated)
                 continue;
             reconciled++;
             logger.LogInformation("Recovered MCP task {TaskId} from authoritative command lifecycle {State}.",
-                task.TaskActivityId, current.State);
+                task.TaskActivityId, terminal.Status);
         }
         var next = candidates.Count == MaximumCandidates ? candidates[^1].TaskActivityId : 0;
         return new(candidates.Count, reconciled, next);

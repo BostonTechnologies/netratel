@@ -174,6 +174,7 @@ public sealed class AgentCommandGatewayService(
             var statusTimestamp = result.CurrentStatusTimestamp
                 ?? throw new RpcException(new Status(StatusCode.FailedPrecondition, "The committed command lifecycle timestamp is unavailable."));
             var safeResult = BoundResult(await jobRuns.ProtectTaskOutputAsync(lifecycle.CommandId, lifecycle.ResultJson, cancellationToken));
+            RequireCurrent(registration);
             var outcomeUnknown = status == CommandLifecycleStatus.Failed && HasResultFlag(safeResult, "outcomeUnknown");
             var timedOut = status == CommandLifecycleStatus.Failed && HasResultFlag(safeResult, "timedOut");
             var taskStatus = outcomeUnknown ? "Unknown" : timedOut ? "TimedOut" : MapTaskActivityStatus(status);

@@ -292,15 +292,20 @@ public sealed class McpOperatorTaskStore(OrchestratorDbContext db) : IMcpOperato
         }
     }
 
-    public async Task RecordLifecycleAsync(string commandId, int tenantId, Guid agentId, string state, string? resultSummary, DateTimeOffset occurredAtUtc, CancellationToken cancellationToken)
+    public Task RecordLifecycleAsync(string commandId, int tenantId, Guid agentId, string state, string? resultSummary,
+        DateTimeOffset occurredAtUtc, CancellationToken cancellationToken) =>
+        TryRecordLifecycleAsync(commandId, tenantId, agentId, state, resultSummary, occurredAtUtc, cancellationToken);
+
+    public async Task<bool> TryRecordLifecycleAsync(string commandId, int tenantId, Guid agentId, string state,
+        string? resultSummary, DateTimeOffset occurredAtUtc, CancellationToken cancellationToken)
     {
         if (!IsCommandId(commandId) || tenantId <= 0 || agentId == Guid.Empty || !IsKnownState(state))
-            return;
+            return false;
         var record = await _db.McpOperatorTasks.SingleOrDefaultAsync(candidate =>
             candidate.CommandId == commandId && candidate.TenantId == tenantId && candidate.AgentId == agentId,
             cancellationToken).ConfigureAwait(false);
         if (record is null)
-            return;
+            return false;
         var entry = _db.Entry(record);
         // The gateway retains this context across lifecycle frames, while HTTP
         // cancellation updates the same task in a separate scope.
@@ -308,9 +313,9 @@ public sealed class McpOperatorTaskStore(OrchestratorDbContext db) : IMcpOperato
         for (var attempt = 1; ; attempt++)
         {
             if (entry.State == EntityState.Detached || IsTerminal(record.State))
-                return;
+                return false;
             if (record.CancellationRequested && !IsTerminal(state))
-                return;
+                return false;
 
             record.State = state;
             var activity = await _db.JobTaskActivities.AsNoTracking().SingleOrDefaultAsync(x => x.Id == record.TaskActivityId, cancellationToken);
@@ -323,7 +328,7 @@ public sealed class McpOperatorTaskStore(OrchestratorDbContext db) : IMcpOperato
             try
             {
                 await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                return;
+                return true;
             }
             catch (DbUpdateConcurrencyException conflict) when (
                 attempt < MaximumLifecycleWriteAttempts && IsTaskConflict(conflict, record))

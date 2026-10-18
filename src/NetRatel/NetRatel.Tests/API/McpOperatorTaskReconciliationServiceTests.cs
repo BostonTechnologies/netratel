@@ -1,4 +1,5 @@
 using AwesomeAssertions;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using NetRatel.API.Services.Operations;
@@ -6,6 +7,8 @@ using NetRatel.Application.Commands;
 using NetRatel.Application.Presence;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
+using NetRatel.Shared.Contracts.Tasks;
+using NetRatel.Shared.Security;
 using Xunit;
 
 namespace NetRatel.Tests.API;
@@ -23,6 +26,7 @@ public sealed class McpOperatorTaskReconciliationServiceTests
         await using var db = CreateDb();
         var task = NewTask(1);
         db.McpOperatorTasks.Add(task);
+        db.JobTaskActivities.Add(NewActivity(task, TaskOutputPolicy.Create([])));
         await db.SaveChangesAsync();
         var history = History(task, terminal);
         var replay = new ReplayStore(_ => new(history, true));
@@ -41,6 +45,37 @@ public sealed class McpOperatorTaskReconciliationServiceTests
         saved.CancellationRequested.Should().BeTrue();
         saved.Subject.Should().Be(task.Subject);
         (await db.McpOperatorTaskAudits.CountAsync()).Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("secret-reference")]
+    [InlineData("legacy")]
+    [InlineData("missing-activity")]
+    public async Task Protected_or_unknown_output_does_not_prevent_counting_a_committed_terminal_recovery(string classification)
+    {
+        await using var db = CreateDb();
+        var task = NewTask(1);
+        db.McpOperatorTasks.Add(task);
+        if (classification != "missing-activity")
+            db.JobTaskActivities.Add(NewActivity(task, classification == "secret-reference"
+                ? TaskOutputPolicy.Create([("vault", "secret_reference")]) : null));
+        await db.SaveChangesAsync();
+        var history = History(task, CommandLifecycleStatus.Completed);
+        var replay = new ReplayStore(_ => new(history, true));
+        var service = Service(db, replay);
+
+        var recovered = await service.ReconcileAsync(Now);
+        var replayed = await service.ReconcileAsync(Now);
+
+        recovered.Reconciled.Should().Be(1);
+        replayed.Scanned.Should().Be(0);
+        replay.Calls.Should().Be(1);
+        var saved = await db.McpOperatorTasks.AsNoTracking().SingleAsync();
+        saved.State.Should().Be("Completed");
+        saved.CompletedAtUtc.Should().Be(history[^1].StatusTimestamp);
+        saved.ResultSummary.Should().Be(TaskOutputRedactor.Mask, "recovery has no native protected output receipt");
+        saved.Version.Should().Be(2);
+        (await db.JobTaskLogs.CountAsync()).Should().Be(0, "authoritative status recovery cannot invent execution output");
     }
 
     [Theory]
@@ -152,11 +187,13 @@ public sealed class McpOperatorTaskReconciliationServiceTests
         await using var gatewayDb = CreateDb(database);
         var task = NewTask(1);
         db.McpOperatorTasks.Add(task);
+        db.JobTaskActivities.Add(NewActivity(task, TaskOutputPolicy.Create([])));
         await db.SaveChangesAsync();
-        var replay = new ReplayStore(_ => new(History(task, CommandLifecycleStatus.Cancelled), true))
+        var history = History(task, CommandLifecycleStatus.Completed);
+        var replay = new ReplayStore(_ => new(history, true))
         {
             BeforeRead = token => new McpOperatorTaskStore(gatewayDb).RecordLifecycleAsync(task.CommandId,
-                task.TenantId, task.AgentId, "Completed", "real-final-output", Now.AddSeconds(-1), token)
+                task.TenantId, task.AgentId, "Completed", "real-final-output", history[^1].StatusTimestamp, token)
         };
 
         var result = await Service(db, replay).ReconcileAsync(Now);
@@ -201,6 +238,13 @@ public sealed class McpOperatorTaskReconciliationServiceTests
         CommandId = Guid.NewGuid().ToString("N"), CorrelationId = "corr-task-recovery", Subject = "test-operator",
         State = "CancelRequested", CancellationRequested = true, CreatedAtUtc = Now.AddMinutes(-2),
         UpdatedAtUtc = Now.AddMinutes(-1), Version = 1
+    };
+
+    private static JobTaskActivityRecord NewActivity(McpOperatorTaskRecord task, TaskOutputPolicy? policy) => new()
+    {
+        Id = task.TaskActivityId, RequestId = task.CommandId, TenantId = task.TenantId, AgentId = task.AgentId,
+        TaskType = TaskKinds.ExecLibraryScript, Status = task.State, CreatedAtUtc = task.CreatedAtUtc,
+        OutputProtectionJson = policy is null ? null : JsonSerializer.Serialize(policy)
     };
 
     private static CommandLifecycleEvent[] History(McpOperatorTaskRecord task, CommandLifecycleStatus terminal)
