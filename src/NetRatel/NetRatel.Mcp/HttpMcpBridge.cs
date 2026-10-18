@@ -132,7 +132,8 @@ public sealed class HttpMcpBridge(HttpClient http, Uri endpoint, Func<Cancellati
         var replied = false;
         try
         {
-            using var request = await CreateRequestAsync(HttpMethod.Post, timeout.Token);
+            var initializing = message.TryGetProperty("method", out var requestMethod) && requestMethod.GetString() == "initialize";
+            using var request = await CreateRequestAsync(HttpMethod.Post, timeout.Token, includeProtocolVersion: !initializing);
             request.Content = new StringContent(message.GetRawText(), Encoding.UTF8, "application/json");
             using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
             if (!response.IsSuccessStatusCode)
@@ -242,12 +243,14 @@ public sealed class HttpMcpBridge(HttpClient http, Uri endpoint, Func<Cancellati
         { await diagnostics.WriteLineAsync("HTTP MCP event stream ended; reconnect explicitly before relying on unsolicited notifications."); }
     }
 
-    private async Task<HttpRequestMessage> CreateRequestAsync(HttpMethod method, CancellationToken ct)
+    private async Task<HttpRequestMessage> CreateRequestAsync(HttpMethod method, CancellationToken ct, bool includeProtocolVersion = true)
     {
         var request = new HttpRequestMessage(method, endpoint);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await getToken(ct));
         request.Headers.Accept.ParseAdd("application/json, text/event-stream");
-        request.Headers.Add("MCP-Protocol-Version", _protocolVersion);
+        // The initialize body owns version negotiation. Sending the previous/default
+        // version here can contradict that body and is rejected by the HTTP server.
+        if (includeProtocolVersion) request.Headers.Add("MCP-Protocol-Version", _protocolVersion);
         if (_sessionId is { } session) request.Headers.Add("Mcp-Session-Id", session);
         return request;
     }
