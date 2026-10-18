@@ -18,11 +18,17 @@ public sealed class RatelDeskConnectorAuthorization(IEffectiveAccessService acce
 
     public async Task<bool> CanExecuteAsync(string principalId, string? integrationCredentialId, int tenantId, CancellationToken cancellationToken)
     {
-        if (tenantId <= 0 || !await IsCurrentPrincipalAsync(principalId, cancellationToken).ConfigureAwait(false)) return false;
+        if (tenantId <= 0 || integrationCredentialId is not null && string.IsNullOrWhiteSpace(integrationCredentialId) ||
+            !await IsCurrentPrincipalAsync(principalId, cancellationToken).ConfigureAwait(false)) return false;
         var claims = new List<Claim> { new("netratel_principal_id", principalId) };
         if (integrationCredentialId is not null) claims.Add(new("netratel_integration_credential_id", integrationCredentialId));
         var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, "PersistedFlowAuthority"));
-        return await access.AuthorizeAsync(principal, NetRatelPermissions.IntegrationManagement, tenantId, cancellationToken).ConfigureAwait(false) &&
+        // A delegated flow uses the connector; it cannot receive integration.manage.
+        // Null credential authority is also used to recheck the connector owner.
+        var permission = integrationCredentialId is null
+            ? NetRatelPermissions.IntegrationManagement
+            : NetRatelPermissions.FlowExecute;
+        return await access.AuthorizeAsync(principal, permission, tenantId, cancellationToken).ConfigureAwait(false) &&
             await access.AuthorizeAsync(principal, NetRatelPermissions.SecretUse, tenantId, cancellationToken).ConfigureAwait(false);
     }
 
