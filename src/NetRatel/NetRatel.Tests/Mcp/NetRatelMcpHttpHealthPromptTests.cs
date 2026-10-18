@@ -11,9 +11,12 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NetRatel.API.Endpoints;
+using NetRatel.API.Middleware;
+using NetRatel.AgentClient;
 using NetRatel.Mcp.Core;
+using NetRatel.Shared.Operations;
 using NetRatel.Web.Configuration;
-using System.Net.Http.Json;
+using System.Collections.Concurrent;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -44,21 +47,32 @@ public sealed partial class NetRatelMcpHttpTests
         }
     }
 
-    [Fact]
-    public async Task Protocol_health_reaches_protected_API_through_the_shipped_Web_gateway()
+    internal static async Task VerifyHealthThroughProtectedWebGatewayAsync()
     {
         var apiBuilder = WebApplication.CreateBuilder();
         apiBuilder.Logging.ClearProviders();
         apiBuilder.WebHost.UseUrls("http://127.0.0.1:0");
         apiBuilder.Services.AddAuthentication("health-fixture").AddScheme<AuthenticationSchemeOptions, HealthFixtureAuthentication>("health-fixture", _ => { });
-        apiBuilder.Services.AddAuthorization(options => options.AddPolicy("HealthRead", policy => policy.RequireAuthenticatedUser()));
+        apiBuilder.Services.AddAuthorization(options => options.AddPolicy("HealthRead", policy =>
+            policy.RequireAuthenticatedUser().RequireClaim("synthetic-health-permission", "read")));
+        apiBuilder.Services.AddSingleton(LocalCredentialDelegationOptions());
+        apiBuilder.Services.AddSingleton<McpOperatorDelegationTokenService>();
         var backendReady = true;
         apiBuilder.Services.AddHealthChecks().AddCheck("synthetic-dependency", () => backendReady
             ? Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult.Healthy()
             : Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult.Unhealthy("private dependency cause"));
         await using var api = apiBuilder.Build();
         api.UseAuthentication();
+        api.UseMiddleware<McpOperatorDelegationMiddleware>();
         api.UseAuthorization();
+        var admittedRequests = new ConcurrentQueue<(string Path, string Authorization, string? Tool, string? Operation)>();
+        api.Use(async (context, next) =>
+        {
+            context.TryGetMcpOperatorDelegation(out var delegation);
+            admittedRequests.Enqueue((context.Request.Path.Value!, context.Request.Headers.Authorization.ToString(),
+                delegation?.Tool, delegation?.Operation));
+            await next(context);
+        });
         api.MapHealthEndpoints();
         await api.StartAsync();
         var apiAddress = api.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
@@ -70,12 +84,29 @@ public sealed partial class NetRatelMcpHttpTests
         gatewayBuilder.Services.AddReverseProxy().LoadFromConfig(gatewayConfiguration.GetSection("ReverseProxy"));
         await using var gateway = gatewayBuilder.Build();
         var gatewayUnavailable = false;
+        var invalidReadinessPayload = false;
+        var rootHealthUnmapped = false;
+        var operatorHealthUnmapped = false;
+        var gatewayRequests = new ConcurrentQueue<string>();
         gateway.Use(async (context, next) =>
         {
-            if (gatewayUnavailable && context.Request.Path == "/health/ready")
+            gatewayRequests.Enqueue(context.Request.Path.Value!);
+            if (rootHealthUnmapped && context.Request.Path.StartsWithSegments("/health") ||
+                operatorHealthUnmapped && context.Request.Path.StartsWithSegments("/api/v2/mcp/operator/health"))
+            {
+                context.Response.StatusCode = StatusCodes.Status404NotFound;
+                return;
+            }
+            if (gatewayUnavailable && context.Request.Path == "/api/v2/mcp/operator/health/ready")
             {
                 context.Response.StatusCode = 503;
                 await context.Response.WriteAsJsonAsync(new { title = "Synthetic gateway unavailable" });
+                return;
+            }
+            if (invalidReadinessPayload && context.Request.Path == "/api/v2/mcp/operator/health/ready")
+            {
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync("{ private malformed upstream response");
                 return;
             }
             await next(context);
@@ -83,12 +114,31 @@ public sealed partial class NetRatelMcpHttpTests
         gateway.MapReverseProxy();
         await gateway.StartAsync();
         using var destination = gateway.GetTestClient();
-        using var rejected = await destination.GetAsync("/health/live");
-        rejected.StatusCode.Should().Be(System.Net.HttpStatusCode.Unauthorized, "the gateway must preserve API HealthRead authorization");
-        destination.DefaultRequestHeaders.Authorization = new("Bearer", "synthetic-health-identity");
+        foreach (var path in new[] { "/health/live", "/health/ready", "/api/v2/mcp/operator/health/live", "/api/v2/mcp/operator/health/ready" })
+        {
+            destination.DefaultRequestHeaders.Authorization = null;
+            using var anonymous = await destination.GetAsync(path);
+            anonymous.StatusCode.Should().Be(System.Net.HttpStatusCode.Unauthorized, "every alias must preserve API HealthRead authorization");
+            destination.DefaultRequestHeaders.Authorization = new("Bearer", "synthetic-unprivileged-identity");
+            using var forbidden = await destination.GetAsync(path);
+            forbidden.StatusCode.Should().Be(System.Net.HttpStatusCode.Forbidden);
+            destination.DefaultRequestHeaders.Authorization = new("Bearer", "synthetic-health-identity");
+            using var allowed = await destination.GetAsync(path);
+            allowed.StatusCode.Should().Be(System.Net.HttpStatusCode.OK, "the original health routes remain compatible");
+        }
+        admittedRequests.Clear();
+        gatewayRequests.Clear();
+        rootHealthUnmapped = true;
         using var exchange = new ContractLocalExchange();
         await using var mcp = await CreateApplicationAsync(localCredentialMode: true, localCredentialApiHandler: exchange,
-            businessApi: new HealthGatewayApi(destination), operatorSurfaceEnabled: true);
+            operatorSurfaceEnabled: true, configureServices: services =>
+                services.AddHttpClient(NetRatelMcpOutboundClient.ApiHttpClientName)
+                    .ConfigurePrimaryHttpMessageHandler(() => gateway.GetTestServer().CreateHandler()));
+        // Only the synthetic token source and network destination are substituted: the MCP
+        // HTTP adapter, outbound request construction, delegation and YARP forwarding are real.
+        await mcp.Application.Services.GetRequiredService<NetRatelMcpAccessTokenCache>().GetAsync(
+            _ => Task.FromResult(new NetRatelMcpAccessToken("synthetic-health-identity", DateTimeOffset.UtcNow.AddMinutes(5))),
+            CancellationToken.None);
         using var client = mcp.Application.GetTestClient();
         using var response = await client.SendAsync(ContractCall("netratel_health", new { operation = "get" }));
         using var payload = await ReadMcpPayloadAsync(response);
@@ -97,7 +147,12 @@ public sealed partial class NetRatelMcpHttpTests
         var components = result.GetProperty("data").GetProperty("components");
         components.GetProperty("liveness").GetProperty("status").GetString().Should().Be("healthy");
         components.GetProperty("readiness").GetProperty("status").GetString().Should().Be("healthy");
+        components.GetProperty("authentication").GetProperty("status").GetString().Should().Be("admitted");
         components.GetProperty("authentication").GetProperty("scope").GetString().Should().Be("protected_health_route");
+        gatewayRequests.Should().BeEquivalentTo("/api/v2/mcp/operator/health/live", "/api/v2/mcp/operator/health/ready");
+        admittedRequests.Should().HaveCount(2).And.OnlyContain(request =>
+            request.Authorization == "Bearer synthetic-health-identity" && request.Tool == "netratel_health" && request.Operation == "get",
+            "the service bearer and validated caller attribution must survive both outbound and gateway HTTP boundaries");
         backendReady = false;
         using var unreadyResponse = await client.SendAsync(ContractCall("netratel_health", new { operation = "get" }));
         using var unready = await ReadMcpPayloadAsync(unreadyResponse);
@@ -111,6 +166,30 @@ public sealed partial class NetRatelMcpHttpTests
         var unavailableReadiness = unavailable.RootElement.GetProperty("result").GetProperty("structuredContent").GetProperty("data").GetProperty("components").GetProperty("readiness");
         unavailableReadiness.GetProperty("status").GetString().Should().Be("unavailable");
         unavailableReadiness.GetProperty("code").GetString().Should().Be("health_probe_readiness_503_backend_cause_unknown");
+        gatewayUnavailable = false;
+        invalidReadinessPayload = true;
+        using var invalidResponse = await client.SendAsync(ContractCall("netratel_health", new { operation = "get" }));
+        using var invalid = await ReadMcpPayloadAsync(invalidResponse);
+        var invalidReadiness = invalid.RootElement.GetProperty("result").GetProperty("structuredContent").GetProperty("data").GetProperty("components").GetProperty("readiness");
+        invalidReadiness.GetProperty("status").GetString().Should().Be("invalid_response");
+        invalidReadiness.GetProperty("code").GetString().Should().Be("health_probe_invalid_response");
+        invalid.RootElement.GetRawText().Should().NotContain("private malformed upstream response");
+        invalidReadinessPayload = false;
+        backendReady = true;
+        rootHealthUnmapped = false;
+        operatorHealthUnmapped = true;
+        gatewayRequests.Clear();
+        using var unmappedResponse = await client.SendAsync(ContractCall("netratel_health", new { operation = "get" }));
+        using var unmapped = await ReadMcpPayloadAsync(unmappedResponse);
+        var unmappedComponents = unmapped.RootElement.GetProperty("result").GetProperty("structuredContent").GetProperty("data").GetProperty("components");
+        foreach (var name in new[] { "liveness", "readiness" })
+        {
+            unmappedComponents.GetProperty(name).GetProperty("status").GetString().Should().Be("unmapped");
+            unmappedComponents.GetProperty(name).GetProperty("httpStatus").GetInt32().Should().Be(404);
+        }
+        unmappedComponents.GetProperty("authentication").GetProperty("status").GetString().Should().Be("unknown");
+        gatewayRequests.Should().BeEquivalentTo(new[] { "/api/v2/mcp/operator/health/live", "/api/v2/mcp/operator/health/ready" },
+            "an unmapped reviewed route must not trigger retries or fall back to another health surface");
     }
 
     [Fact]
@@ -160,27 +239,19 @@ public sealed partial class NetRatelMcpHttpTests
         }
     }
 
-    private sealed class HealthGatewayApi(HttpClient client) : INetRatelMcpApiClient
-    {
-        public async Task<JsonNode?> GetAsync(string path, CancellationToken cancellationToken = default)
-        {
-            using var response = await client.GetAsync(path, cancellationToken);
-            var body = await response.Content.ReadFromJsonAsync<JsonNode>(cancellationToken);
-            if (!response.IsSuccessStatusCode) throw new NetRatelMcpApiException("upstream", "Safe synthetic failure", (int)response.StatusCode,
-                (int)response.StatusCode >= 500, body?["code"]?.GetValue<string>() == "api_readiness_unhealthy" ? "api_readiness_unhealthy" : null);
-            return body;
-        }
-        public Task<JsonNode?> SendAsync(HttpMethod method, string path, JsonNode? body = null, CancellationToken cancellationToken = default)
-            => throw new InvalidOperationException("Health must never mutate.");
-    }
-
     private sealed class HealthFixtureAuthentication(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder)
         : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
     {
-        protected override Task<AuthenticateResult> HandleAuthenticateAsync() => Task.FromResult(
-            Request.Headers.Authorization == "Bearer synthetic-health-identity"
-                ? AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "synthetic-health")], Scheme.Name)), Scheme.Name))
-                : AuthenticateResult.NoResult());
+        protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+        {
+            List<Claim> claims = [new("sub", "synthetic-health")];
+            if (Request.Headers.Authorization == "Bearer synthetic-health-identity")
+                claims.Add(new("synthetic-health-permission", "read"));
+            else if (Request.Headers.Authorization != "Bearer synthetic-unprivileged-identity")
+                return Task.FromResult(AuthenticateResult.NoResult());
+            return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(
+                new ClaimsPrincipal(new ClaimsIdentity(claims, Scheme.Name)), Scheme.Name)));
+        }
     }
 
     private sealed class PromptDiscoveryApi : INetRatelMcpApiClient
@@ -209,4 +280,13 @@ public sealed partial class NetRatelMcpHttpTests
         public Task<JsonNode?> SendAsync(HttpMethod method, string path, JsonNode? body = null, CancellationToken cancellationToken = default)
             => throw new InvalidOperationException("The inspect_client workflow must never dispatch a mutation.");
     }
+}
+
+public sealed class NetRatelMcpHttpHealthRouteTests
+{
+    [Fact]
+    public Task Protocol_health_reaches_protected_API_through_the_shipped_Web_gateway()
+        // This protocol-only regression does not need the PostgreSQL fixture used by
+        // other HTTP MCP tests that exercise persisted credentials.
+        => NetRatelMcpHttpTests.VerifyHealthThroughProtectedWebGatewayAsync();
 }

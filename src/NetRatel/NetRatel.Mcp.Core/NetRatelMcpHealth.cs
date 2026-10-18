@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using NetRatel.Shared.Connectivity;
 
 namespace NetRatel.Mcp.Core;
 
@@ -13,8 +14,8 @@ public sealed partial class NetRatelMcpOperationalTools
         cancellationToken.ThrowIfCancellationRequested();
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(HealthProbeBudget);
-        var live = ObserveHealthAsync("/health/live", readiness: false, deadline.Token, cancellationToken);
-        var ready = ObserveHealthAsync("/health/ready", readiness: true, deadline.Token, cancellationToken);
+        var live = ObserveHealthAsync(McpApiHealthRoutes.Liveness, readiness: false, deadline.Token, cancellationToken);
+        var ready = ObserveHealthAsync(McpApiHealthRoutes.Readiness, readiness: true, deadline.Token, cancellationToken);
         await Task.WhenAll(live, ready).ConfigureAwait(false);
         var observations = new[] { live.Result, ready.Result };
         var authenticated = observations.Any(probe => probe.Status == "healthy")
@@ -59,6 +60,10 @@ public sealed partial class NetRatelMcpOperationalTools
         catch (OperationCanceledException) when (!callerCancellation.IsCancellationRequested)
         {
             return new("timed_out", "health_probe_timed_out", null, true);
+        }
+        catch (NetRatelMcpApiException error) when (error.Code == "remote_response_invalid")
+        {
+            return new("invalid_response", "health_probe_invalid_response", error.StatusCode, false);
         }
         catch (NetRatelMcpApiException error)
         {

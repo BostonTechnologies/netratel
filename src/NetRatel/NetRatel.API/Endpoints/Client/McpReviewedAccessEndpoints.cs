@@ -1,4 +1,5 @@
 using NetRatel.API.Middleware;
+using NetRatel.API.Endpoints.Auth;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Shared.Connectivity;
 using NetRatel.Application.Operations;
@@ -45,15 +46,27 @@ public static class McpReviewedAccessEndpoints
             return Results.Unauthorized();
         try
         {
-            var receipt = await action(caller).ConfigureAwait(false);
+            object? receipt = await action(caller).ConfigureAwait(false);
+            if (receipt is ReviewedMcpAccessReceipt { ReviewFailure: { } failure } reviewed)
+                receipt = reviewed with { ReviewFailure = failure with { CorrelationId = caller.CorrelationId } };
             return Results.Ok(new { receipt, currentDelegation = new { caller.Identity.Subject, caller.Identity.ClientId, caller.Identity.Roles, caller.Identity.Scopes, caller.Tool, caller.Operation }, correlationId = caller.CorrelationId });
         }
-        catch (IntegrationPairingUnavailableException) { return Results.BadRequest(new { code = "reviewed_request_unavailable", nextAction = "Inspect your saved requestId and current credential; requests are private to their initiating credential." }); }
+        catch (IntegrationPairingUnavailableException exception)
+        {
+            return Results.BadRequest((exception.ReviewFailure ?? IntegrationPairingFailure.ForCode("reviewed_request_unavailable", operation)) with
+            { CorrelationId = caller.CorrelationId });
+        }
         catch (IntegrationCredentialGrantValidationException exception)
         {
+            if (exception.ReviewFailure is { } failure)
+                return Results.Json(failure with { CorrelationId = caller.CorrelationId }, statusCode: exception.Forbidden ? StatusCodes.Status403Forbidden : StatusCodes.Status400BadRequest);
             return Results.Json(new { code = exception.Field, nextAction = exception.Field == "protectedSetupRequired" ?
                 "Prepare this request with the protected setup client, retain its device capability outside the model, then inspect and resume by requestId." :
-                "Review exact grants, targets, UTC expiry and revisions with an independent authorized operator; submit a new requestId when the proposal changes." }, statusCode: exception.Forbidden ? 403 : 400);
+                "Review exact grants, targets, UTC expiry and revisions with an independent authorized operator; submit a new requestId when the proposal changes.", correlationId = caller.CorrelationId }, statusCode: exception.Forbidden ? 403 : 400);
+        }
+        catch (Exception exception) when (IntegrationPairingFailureResponses.IsTransient(exception))
+        {
+            return IntegrationPairingFailureResponses.Unavailable(operation, caller.CorrelationId);
         }
     }
     private static McpOperatorEnvironment OperatorEnvironment(IHostEnvironment environment) => environment.IsProduction() ? McpOperatorEnvironment.Production : McpOperatorEnvironment.Development;

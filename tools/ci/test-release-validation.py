@@ -369,7 +369,7 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
                 self.assertIn("CONTRACTS_RESULT: ${{ needs.contracts.result }}", jobs[gate])
                 self.assertIn('[[ "$CONTRACTS_RESULT" == success ]]', jobs[gate])
                 if gate == "release-rehearsal":
-                    for package in ("package", "client-packages"):
+                    for package in ("package", "mcp-windows", "client-packages"):
                         self.assertIn("needs: [validate, contracts]", jobs[package])
 
     def test_ci_uses_sdk10_mtp_selectors_and_requires_each_generic_test_assembly(self):
@@ -413,7 +413,7 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertEqual(["workflow_dispatch"], re.findall(r"(?m)^  ([A-Za-z_][A-Za-z_0-9-]*):", triggers.group(1)))
         jobs = manual.split("\njobs:\n", 1)
         self.assertEqual(2, len(jobs))
-        self.assertEqual(["selected-suite", "client-measurement"],
+        self.assertEqual(["selected-suite", "windows-mcp", "client-measurement"],
                          re.findall(r"(?m)^  ([A-Za-z_][A-Za-z_0-9-]*):", jobs[1]))
         selected, measurement = jobs[1].split("\n  client-measurement:", 1)
         self.assertNotRegex(selected, r"(?m)^\s+matrix:", "A functional suite selection must not fan out into other functional suites.")
@@ -2488,6 +2488,179 @@ class DistributionTests(unittest.TestCase):
         self.verifier.verify(document, self.root)
 
 
+class WindowsMcpArchiveTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="netratel-windows-mcp-contract-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.verifier = module("verify-windows-mcp-archive")
+        self.version = "9.8.7-regression.4"
+        self.archive = self.root / f"netratel-mcp-stdio-{self.version}-win-x64.zip"
+        self.sbom = self.root / f"netratel-mcp-stdio-{self.version}-win-x64.spdx.json"
+        self.files = {name: ("synthetic-" + name).encode() for name in self.verifier.REQUIRED}
+        for name, source in {
+                "http-mcp-windows.ps1": "tools/client/http-mcp-windows.ps1",
+                "HttpMcpProcessRelay.cs": "tools/client/HttpMcpProcessRelay.cs",
+                "LICENSE": "LICENSE", "NOTICE": "NOTICE"}.items():
+            self.files[name] = (ROOT / source).read_bytes()
+        self.files["NetRatel.Mcp.runtimeconfig.json"] = json.dumps({"runtimeOptions": {
+            "tfm": "net10.0", "framework": {"name": "Microsoft.NETCore.App", "version": "10.0.0"}}}).encode()
+        self.files["NetRatel.Mcp.deps.json"] = json.dumps({"runtimeTarget": {"name": ".NETCoreApp,Version=v10.0/win-x64"}}).encode()
+
+    def write_bundle(self):
+        files = {f"{self.verifier.DISTRIBUTION}/{name}": value for name, value in self.files.items()}
+        with zipfile.ZipFile(self.archive, "w") as output:
+            for name, value in files.items(): output.writestr(name, value)
+        document = {
+            "name": "NetRatel-MCP-win-x64", "relationships": [],
+            "packages": [
+                {"SPDXID": "SPDXRef-distribution", "name": "NetRatel-MCP-win-x64", "versionInfo": self.version},
+                {"SPDXID": "SPDXRef-mcp", "name": "NetRatel.Mcp"},
+                {"SPDXID": "SPDXRef-runtime", "name": "Microsoft.NETCore.App", "externalRefs": [{"referenceType": "purl"}]},
+            ],
+            "files": [{"SPDXID": f"SPDXRef-file-{index}", "fileName": name,
+                       "checksums": [{"algorithm": "SHA256", "checksumValue": hashlib.sha256(value).hexdigest()}]}
+                      for index, (name, value) in enumerate(files.items())],
+        }
+        self.sbom.write_text(json.dumps(document))
+        self.checksums()
+
+    def checksums(self):
+        (self.root / "SHA256SUMS").write_text("".join(
+            f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n" for path in (self.archive, self.sbom)))
+
+    def verify(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            return self.verifier.verify(self.root, self.version)
+
+    def test_complete_archive_binds_launcher_runtime_legal_and_all_spdx_file_bytes(self):
+        self.write_bundle()
+        receipt = self.verify()
+        self.assertEqual(receipt["filesVerified"], len(self.files))
+        self.assertEqual(receipt["archiveSha256"], hashlib.sha256(self.archive.read_bytes()).hexdigest())
+        self.assertEqual(receipt["runtime"], "win-x64")
+        self.assertEqual(receipt["version"], self.version)
+
+    def test_changed_outer_bytes_and_missing_launcher_fail(self):
+        self.write_bundle()
+        self.archive.write_bytes(self.archive.read_bytes() + b"changed")
+        with self.assertRaisesRegex(ValueError, "checksum mismatch"): self.verify()
+        del self.files["http-mcp-windows.ps1"]
+        self.write_bundle()
+        with self.assertRaisesRegex(ValueError, "missing runtime, documentation or launcher"): self.verify()
+
+    def test_self_consistent_modified_launcher_is_not_accepted_as_source(self):
+        self.files["HttpMcpProcessRelay.cs"] += b"\n// changed artifact\n"
+        self.write_bundle()
+        with self.assertRaisesRegex(ValueError, "differs from the validated source"): self.verify()
+
+    def test_wrong_runtime_and_self_contained_framework_are_rejected(self):
+        for options in (
+                {"tfm": "net9.0", "framework": {"name": "Microsoft.NETCore.App", "version": "9.0.0"}},
+                {"tfm": "net10.0", "includedFrameworks": [{"name": "Microsoft.NETCore.App", "version": "10.0.0"}]}):
+            with self.subTest(runtime=options):
+                self.files["NetRatel.Mcp.runtimeconfig.json"] = json.dumps({"runtimeOptions": options}).encode()
+                self.write_bundle()
+                with self.assertRaisesRegex(ValueError, "framework-dependent"): self.verify()
+
+    def test_inventory_omissions_and_wrong_file_digests_fail_after_outer_reindex(self):
+        for change in ("missing", "digest"):
+            with self.subTest(change=change):
+                self.write_bundle()
+                document = json.loads(self.sbom.read_text())
+                if change == "missing": document["files"].pop()
+                else: document["files"][0]["checksums"][0]["checksumValue"] = "b" * 64
+                self.sbom.write_text(json.dumps(document)); self.checksums()
+                with self.assertRaisesRegex(ValueError, "inventory every|Incorrect SBOM digest"): self.verify()
+
+    def test_windows_path_aliases_and_credential_exports_are_rejected(self):
+        for name in ("../escape", "nested\\escape", "NOTICE:stream", "notice", "credential.clixml"):
+            with self.subTest(name=name):
+                self.files[name] = b"synthetic-fixture"
+                self.write_bundle()
+                with self.assertRaisesRegex(ValueError, "unsafe path|duplicate or special|must not be packaged"): self.verify()
+                del self.files[name]
+
+    def test_potential_key_material_is_rejected(self):
+        self.files["extra.txt"] = b"-----BEGIN " + b"PRIVATE KEY-----\nsynthetic-marker-only\n"
+        self.write_bundle()
+        with self.assertRaisesRegex(ValueError, "potential key material"): self.verify()
+
+
+class PublicImageSourceIdentityTests(unittest.TestCase):
+    def invoke(self, revision):
+        with tempfile.TemporaryDirectory(prefix="netratel-image-identity-") as temporary:
+            root = Path(temporary); command_log = root / "docker.jsonl"
+            docker = root / "docker"
+            docker.write_text("#!/usr/bin/env python3\nimport json, os, sys\nfrom pathlib import Path\n"
+                              "with Path(os.environ['NETRATEL_IMAGE_BUILD_CALLS']).open('a') as stream:\n"
+                              "    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n")
+            docker.chmod(0o755)
+            result = subprocess.run([
+                "bash", str(ROOT / "tools/ci/build-public-image.sh"), "--dockerfile", str(ROOT / "docker/mcp-http/Dockerfile"),
+                "--image", "synthetic.invalid/mcp:regression", "--version", "9.8.7-regression", "--revision", revision],
+                cwd=ROOT, env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ.get("PATH", ""),
+                                  NETRATEL_IMAGE_BUILD_CALLS=str(command_log)), capture_output=True, text=True, timeout=10)
+            calls = [json.loads(line) for line in command_log.read_text().splitlines()] if command_log.exists() else []
+            return result, calls
+
+    def test_image_build_and_oci_label_use_the_same_verified_revision(self):
+        revision = "ab" * 20
+        result, calls = self.invoke(revision)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "build")
+        self.assertEqual(calls[0][calls[0].index("--build-arg") + 1], f"PublicSourceRevision={revision}")
+        self.assertIn(f"org.opencontainers.image.revision={revision}", calls[0])
+        for relative in ("api/Dockerfile", "web/Dockerfile", "mcp-http/Dockerfile", "migrations/Dockerfile", "client/Dockerfile.public"):
+            with self.subTest(dockerfile=relative):
+                self.assertRegex((ROOT / "docker" / relative).read_text(), r"(?m)^ARG PublicSourceRevision$")
+
+    def test_invalid_revision_invokes_no_docker_command(self):
+        for revision in ("", "short", "g" * 40, "A" * 40, "a" * 40 + "\n"):
+            with self.subTest(revision=revision):
+                result, calls = self.invoke(revision)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(calls, [])
+
+
+class WindowsMcpReleaseContractTests(unittest.TestCase):
+    def test_release_requires_original_windows_archive_smoke_and_attestation(self):
+        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
+        jobs = dict(re.findall(r"(?ms)^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:|\Z)", workflow.split("\njobs:\n", 1)[1]))
+        windows = jobs["mcp-windows"]
+        self.assertIn("env:\n  PublicSourceRevision: ${{ github.sha }}", workflow)
+        self.assertIn('verify-release-artifacts.sh --artifacts artifacts --version "$VERSION" --source-revision "$GITHUB_SHA"', workflow)
+        for required in ("needs: [validate, contracts]", "runs-on: windows-latest", "bash tools/ci/package-windows-mcp.sh",
+                         "test-windows-mcp-archive.ps1", "-SourceRevision $env:GITHUB_SHA", "uses: actions/attest@",
+                         "artifacts/SHA256SUMS", "-win-x64.zip", "-win-x64.spdx.json"):
+            self.assertIn(required, windows)
+        self.assertNotIn("continue-on-error", windows)
+        self.assertIn("needs: [validate, contracts, package, mcp-windows, client-packages]", jobs["release-rehearsal"])
+        self.assertIn('[[ "$MCP_WINDOWS_RESULT" == success ]]', jobs["release-rehearsal"])
+        packaging = (ROOT / "tools/ci/package-windows-mcp.sh").read_text()
+        for required in ("--runtime win-x64 --self-contained false", "LICENSE NOTICE", "http-mcp-windows.ps1",
+                         "HttpMcpProcessRelay.cs", "CLI_AND_MCP.md", "http-mcp-bridge.md", "generate-runtime-sbom.py",
+                         "verify-windows-mcp-archive.py", '"$(git rev-parse HEAD)" == "$PublicSourceRevision"'):
+            self.assertIn(required, packaging)
+
+    def test_windows_branch_smoke_is_optional_and_accepts_existing_campaign_choice(self):
+        optional = (ROOT / ".github/workflows/integration-validation.yml").read_text()
+        windows = optional.split("\n  windows-mcp:\n", 1)[1].split("\n  client-measurement:", 1)[0]
+        self.assertIn("if: inputs.suite == 'windows-mcp' || inputs.suite == 'mcp-campaign'", windows)
+        self.assertIn("ref: ${{ inputs.source_ref }}", windows)
+        self.assertIn("runs-on: windows-latest", windows)
+        self.assertIn("-SourceRevision $env:PublicSourceRevision", windows)
+        self.assertNotIn("continue-on-error", windows)
+        self.assertNotIn("test-windows-mcp-archive", (ROOT / ".github/workflows/public-pr-validation.yml").read_text())
+        smoke = (ROOT / "tools/ci/test-windows-mcp-archive.ps1").read_text()
+        self.assertIn("$data.hostRelease.sourceRevision -ceq $SourceRevision", smoke)
+        self.assertIn("$data.nativeLoadedMetadata -eq 'not_observed'", smoke)
+        self.assertIn("SetAccessRuleProtection($true, $false)", smoke)
+        self.assertIn("Export-Clixml", smoke)
+        self.assertIn("HttpMcpWindowsRelaySmoke", smoke)
+
+
 class PublicationImageJournalTests(unittest.TestCase):
     """Real local validation with synthetic authority and no external transports."""
 
@@ -2514,9 +2687,9 @@ class PublicationImageJournalTests(unittest.TestCase):
             "runId": 1010, "attempt": 2, "headSha": self.revision,
             "productVersion": self.version, "files": {},
         }
-        groups = {101: [], 102: [], 103: [], 104: []}
+        groups = {101: [], 102: [], 103: [], 104: [], 105: []}
         for name in self.promotion.required_artifacts(self.version):
-            artifact_id = 101
+            artifact_id = 105 if name.startswith(f"netratel-mcp-stdio-{self.version}-win-x64.") else 101
             if name.startswith(f"netratel-client-{self.version}-"):
                 artifact_id = next(value for runtime, value in
                                    (("linux-x64", 102), ("win-x64", 103), ("osx-arm64", 104))
@@ -2661,7 +2834,7 @@ class PublicationImageJournalTests(unittest.TestCase):
                 stable = lambda document: {key: value for key, value in document.items()
                                            if key not in {"phase", "recordedAtUtc", "imageDigest"}}
                 self.assertEqual(stable(prepared), stable(recorded))
-        self.assertEqual(set(self.downloads), {101, 102, 103, 104})
+        self.assertEqual(set(self.downloads), {101, 102, 103, 104, 105})
 
     def test_source_tag_dirty_checkout_and_workflow_environment_fail_before_evidence_creation(self):
         for key, value in (("GITHUB_ACTIONS", "false"), ("GITHUB_REPOSITORY", "example/other"),
@@ -2745,8 +2918,9 @@ class PublicationImageJournalTests(unittest.TestCase):
         grouped = self.root / "original-downloads"; grouped.mkdir()
         for metadata in self.metadata:
             members = [name for name, item in self.receipt["files"].items() if item["artifactId"] == metadata["id"]]
-            runtime = {101: None, 102: "linux-x64", 103: "win-x64", 104: "osx-arm64"}[metadata["id"]]
-            metadata["name"] = (f"netratel-client-{self.version}-{runtime}" if runtime else
+            runtime = {101: None, 102: "linux-x64", 103: "win-x64", 104: "osx-arm64", 105: None}[metadata["id"]]
+            metadata["name"] = (f"netratel-mcp-stdio-{self.version}-win-x64" if metadata["id"] == 105 else
+                                f"netratel-client-{self.version}-{runtime}" if runtime else
                                 f"netratel-{self.version}-linux-x64")
             directory = grouped / metadata["name"]; directory.mkdir()
             for name in members: shutil.copyfile(self.inputs / name, directory / name)
@@ -2768,8 +2942,9 @@ class PublicationImageJournalTests(unittest.TestCase):
     def test_receipt_download_selects_latest_upload_by_time_across_partial_reruns(self):
         self.original_run.update(event="push", head_branch=f"v{self.version}", run_attempt=2)
         for metadata in self.metadata:
-            runtime = {101: None, 102: "linux-x64", 103: "win-x64", 104: "osx-arm64"}[metadata["id"]]
-            metadata["name"] = (f"netratel-client-{self.version}-{runtime}" if runtime else
+            runtime = {101: None, 102: "linux-x64", 103: "win-x64", 104: "osx-arm64", 105: None}[metadata["id"]]
+            metadata["name"] = (f"netratel-mcp-stdio-{self.version}-win-x64" if metadata["id"] == 105 else
+                                f"netratel-client-{self.version}-{runtime}" if runtime else
                                 f"netratel-{self.version}-linux-x64")
             metadata["created_at"] = "2026-01-01T00:00:00Z"
             archive = self.archives[metadata["id"]]
@@ -2785,7 +2960,7 @@ class PublicationImageJournalTests(unittest.TestCase):
         output = self.root / "downloaded-receipt.json"
         self.promotion.create_input_receipt(inputs, output, 1010, self.version, self.revision, download=True)
         receipt = json.loads(output.read_text())
-        self.assertEqual({item["artifactId"] for item in receipt["files"].values()}, {101, 102, 103, 104})
+        self.assertEqual({item["artifactId"] for item in receipt["files"].values()}, {101, 102, 103, 104, 105})
         self.promotion.verified_input_receipt(inputs, output, self.version, self.revision)
         self.assertNotIn(999, self.downloads)
         older["created_at"] = self.metadata[1]["created_at"]

@@ -25,6 +25,7 @@ done
 [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo "Image revision must be a public 40-character SHA." >&2; exit 1; }
 
 docker build \
+  --build-arg "PublicSourceRevision=$revision" \
   --file "$dockerfile" \
   --tag "$image" \
   --label "org.opencontainers.image.title=NetRatel" \

@@ -58,7 +58,8 @@ Keep the API allowlist. Do not add a blanket `/api/{**catch-all}` or `/api/v2/{*
 | `/.well-known/service-jwks.json` | API service public keys; preserve path |
 | `/connect/token` | API service-token endpoint; preserve path |
 | `/api/pairing/v1/metadata` (`GET`) | API RatelDesk pairing metadata; forward only the allowed `X-Pairing-Nonce` request header |
-| `/health/live`, `/health/ready` | Exact GET-only API health routes; retain protected API `HealthRead` authorization. These probe the API, while the private MCP listener has separate host health endpoints. |
+| `/api/v2/mcp/operator/health/live`, `/api/v2/mcp/operator/health/ready` | GET-only API health aliases used by MCP through the existing operator-prefix route; preserve path, bearer and caller attribution, and retain API `HealthRead` authorization. Deploy the alias-capable API before or with MCP. |
+| `/health/live`, `/health/ready` | Compatible exact GET-only API health routes for existing clients and monitoring; retain the same `HealthRead` authorization. The private MCP listener has separate host health endpoints. |
 | `/internal/health`, `/internal/catalog/jobs`, `/internal/catalog/tenants`, `/internal/catalog/request-definitions`, `/internal/ingest` | API orchestration paths; retain their API authentication requirements |
 
 The generated configuration additionally exposes these narrowly scoped onboarding and operator paths; their API auth and policy checks remain authoritative:

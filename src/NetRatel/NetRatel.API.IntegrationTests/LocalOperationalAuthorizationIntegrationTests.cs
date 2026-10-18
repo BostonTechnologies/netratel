@@ -69,6 +69,17 @@ public sealed class LocalOperationalAuthorizationIntegrationTests
                 anonymousLive, anonymousReady, unprivilegedLive, unprivilegedReady,
                 agentLive, agentReady, invalidBearerWithAdministratorCookie, administratorLive, administratorReady
             }));
+
+        foreach (var path in new[] { "/api/v2/mcp/operator/health/live", "/api/v2/mcp/operator/health/ready" })
+        {
+            (await ReadStatusAsync(anonymous, path, timeout.Token)).Should().Be((int)HttpStatusCode.Unauthorized, path);
+            (await ReadStatusAsync(unprivileged, path, timeout.Token)).Should().Be((int)HttpStatusCode.Forbidden, path);
+            (await ReadStatusAsync(agent, path, timeout.Token)).Should().Be((int)HttpStatusCode.Forbidden, path);
+            administrator.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "not-a-valid-token");
+            (await ReadStatusAsync(administrator, path, timeout.Token)).Should().Be((int)HttpStatusCode.Unauthorized, path);
+            administrator.DefaultRequestHeaders.Authorization = null;
+            (await ReadStatusAsync(administrator, path, timeout.Token)).Should().Be((int)HttpStatusCode.OK, path);
+        }
     }
 
     [Fact]

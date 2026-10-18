@@ -339,9 +339,14 @@ the UTC interpretation before creation.
 
 ## Health endpoints
 
-`/health/live` and `/health/ready` are protected by the `HealthRead` policy.
-Use a deployment identity with that policy for authenticated monitoring rather
-than exposing an unauthenticated production probe.
+The API's `/health/live` and `/health/ready` routes and their
+`/api/v2/mcp/operator/health/live` and `/api/v2/mcp/operator/health/ready`
+aliases are protected by the same `HealthRead` policy. Updated MCP hosts use
+the aliases through the existing operator-prefix gateway route; deploy the
+alias-capable API before or with MCP. Existing monitoring clients may retain the
+root routes. Use a deployment identity authorized by `HealthRead` for authenticated
+monitoring. API health, the private MCP listener's host health and delegated
+business admission remain separate observations.
 
 ## Web gateway and operator tooling
 

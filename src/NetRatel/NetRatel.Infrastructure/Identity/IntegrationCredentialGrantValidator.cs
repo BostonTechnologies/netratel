@@ -16,6 +16,7 @@ public sealed class IntegrationCredentialGrantValidationException(string field, 
 {
     public string Field { get; } = field;
     public bool Forbidden { get; } = forbidden;
+    public IntegrationPairingFailure? ReviewFailure { get; init; }
 }
 
 /// <summary>Shared account-create and pairing approval/redemption authority checks.</summary>

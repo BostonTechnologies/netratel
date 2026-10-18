@@ -12,6 +12,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PublicSourceRevision: ${{ github.sha }}
+
 concurrency:
   group: release-build-${{ github.ref }}
   cancel-in-progress: false
@@ -141,7 +144,7 @@ jobs:
             cd artifacts
             sha256sum *.tar.gz *.spdx.json *.nupkg > SHA256SUMS
           )
-          tools/ci/verify-release-artifacts.sh --artifacts artifacts --version "$VERSION"
+          tools/ci/verify-release-artifacts.sh --artifacts artifacts --version "$VERSION" --source-revision "$GITHUB_SHA"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: netratel-${{ needs.validate.outputs.version }}-linux-x64
@@ -151,6 +154,53 @@ jobs:
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: artifacts/**
+
+  mcp-windows:
+    name: Windows MCP archive and protected launcher
+    needs: [validate, contracts]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - name: Package framework-dependent Windows MCP
+        shell: bash
+        run: bash tools/ci/package-windows-mcp.sh
+      - name: Smoke actual Windows archive and encrypted profile migration
+        shell: pwsh
+        run: |
+          ./tools/ci/test-windows-mcp-archive.ps1 -ArchivePath "artifacts/netratel-mcp-stdio-$env:VERSION-win-x64.zip" -Version $env:VERSION -SourceRevision $env:GITHUB_SHA -ReceiptPath TestResults/windows-mcp-smoke.json
+      - name: Retain sanitized Windows smoke receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-mcp-smoke-${{ needs.validate.outputs.version }}
+          path: TestResults/windows-mcp-smoke.json
+          if-no-files-found: warn
+          retention-days: 14
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: netratel-mcp-stdio-${{ needs.validate.outputs.version }}-win-x64
+          path: |
+            artifacts/netratel-mcp-stdio-${{ needs.validate.outputs.version }}-win-x64.zip
+            artifacts/netratel-mcp-stdio-${{ needs.validate.outputs.version }}-win-x64.spdx.json
+            artifacts/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            artifacts/netratel-mcp-stdio-${{ needs.validate.outputs.version }}-win-x64.zip
+            artifacts/netratel-mcp-stdio-${{ needs.validate.outputs.version }}-win-x64.spdx.json
+            artifacts/SHA256SUMS
 
   client-packages:
     name: Native Client (${{ matrix.runtime }})
@@ -234,7 +284,7 @@ jobs:
   release-rehearsal:
     name: Release rehearsal
     if: always()
-    needs: [validate, contracts, package, client-packages]
+    needs: [validate, contracts, package, mcp-windows, client-packages]
     runs-on: ubuntu-latest
     steps:
       - name: Require validated source and authenticated release artifacts
@@ -242,9 +292,11 @@ jobs:
           VALIDATE_RESULT: ${{ needs.validate.result }}
           CONTRACTS_RESULT: ${{ needs.contracts.result }}
           PACKAGE_RESULT: ${{ needs.package.result }}
+          MCP_WINDOWS_RESULT: ${{ needs.mcp-windows.result }}
           CLIENT_PACKAGES_RESULT: ${{ needs.client-packages.result }}
         run: |
           [[ "$VALIDATE_RESULT" == success ]]
           [[ "$CONTRACTS_RESULT" == success ]]
           [[ "$PACKAGE_RESULT" == success ]]
+          [[ "$MCP_WINDOWS_RESULT" == success ]]
           [[ "$CLIENT_PACKAGES_RESULT" == success ]]

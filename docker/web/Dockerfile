@@ -24,6 +24,7 @@ USER ${APP_USER}
 
 # --- Build/Publish
 FROM mcr.microsoft.com/dotnet/sdk:10.0.401-noble AS build
+ARG PublicSourceRevision
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
 COPY ["global.json", "Directory.Build.props", "Directory.Build.targets", "./"]
