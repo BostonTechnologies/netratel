@@ -33,8 +33,8 @@ public sealed class PairingConnectionsTests : AsyncBunitContext
         await Find(panel, "[data-testid='create-connection']").ClickAsync(new());
         Find(panel, "[data-testid='pairing-create-form']").QuerySelectorAll("input").Should().HaveCount(2);
         Find(panel, "[data-testid='pair-and-connect']").HasAttribute("disabled").Should().BeTrue();
-        Find(panel, "[data-testid='pairing-address']").Input("http://10.20.30.40:8080///");
-        Find(panel, "[data-testid='pairing-code']").Input("ABCD-EFGH");
+        await Find(panel, "[data-testid='pairing-address']").InputAsync("http://10.20.30.40:8080///");
+        await Find(panel, "[data-testid='pairing-code']").InputAsync("ABCD-EFGH");
         Find(panel, "[data-testid='pair-and-connect']").HasAttribute("disabled").Should().BeFalse();
         await Find(panel, "[data-testid='pair-and-connect']").ClickAsync(new());
         api.ConnectCalls.Should().Be(1); api.LastConnect!.Address.Should().Be("http://10.20.30.40:8080");
