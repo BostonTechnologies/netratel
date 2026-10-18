@@ -54,15 +54,27 @@ For an already reviewed externally managed profile, use `"--config", "/absolute/
 
 ### Windows x64
 
-Install the [.NET 10 runtime for Windows](https://learn.microsoft.com/dotnet/core/install/windows) and [PowerShell 7.4 or later](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows). Open PowerShell as the same Windows account that runs the consumer. Select the completed published correction release, then download into a new per-version directory under that account's local application data:
+Install the [.NET 10 runtime for Windows](https://learn.microsoft.com/dotnet/core/install/windows) and [PowerShell 7.4 or later](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows). Open PowerShell as the same Windows account that runs the consumer. Select the completed published release and an existing local parent whose complete ancestry is owned by that account or trusted Windows system identities and cannot be replaced by another identity. A directory name such as AppData or Documents does not establish that safety. Create a new private per-version child, then download there:
 
 ```powershell
 $ErrorActionPreference = 'Stop'
 $releaseTag = 'REPLACE_WITH_PUBLISHED_RELEASE_TAG'
 $releaseVersion = $releaseTag.TrimStart('v')
 $archive = "netratel-mcp-stdio-$releaseVersion-win-x64.zip"
-$clientRoot = Join-Path $env:LOCALAPPDATA "NetRatel\mcp-client-$releaseVersion"
+$layoutParent = 'C:\absolute\owner-controlled-parent' # Replace with the selected existing parent.
+if (-not (Test-Path -LiteralPath $layoutParent -PathType Container)) { throw 'Select an existing local parent.' }
+$clientRoot = Join-Path $layoutParent "mcp-client-$releaseVersion"
 New-Item -ItemType Directory -Path $clientRoot | Out-Null
+$account = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$privateAcl = [Security.AccessControl.DirectorySecurity]::new()
+$privateAcl.SetOwner($account)
+$privateAcl.SetAccessRuleProtection($true, $false)
+$privateAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+    $account, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
+Set-Acl -LiteralPath $clientRoot -AclObject $privateAcl
+foreach ($name in @('references', 'state', 'temp')) {
+    New-Item -ItemType Directory -Path (Join-Path $clientRoot $name) | Out-Null
+}
 Set-Location $clientRoot
 $download = "https://github.com/BostonTechnologies/netratel/releases/download/$releaseTag"
 Invoke-WebRequest "$download/$archive" -OutFile $archive
@@ -85,27 +97,40 @@ The archive contains `netratel-mcp-win-x64`, the Windows executable, the protect
 
 The packaged `http-mcp-windows.ps1` supports an existing Windows `Export-Clixml` file whose root value is a `SecureString` or `PSCredential`. Run it under the account and machine that own that DPAPI value. It rejects plaintext strings, custom object formats, network paths, reparse points and paths replaceable by unrelated identities. An unsupported legacy storage format needs an explicit protected-store migration; do not paste its decrypted token into a profile or use a broad API credential.
 
-Prepare a new secret-free profile without changing the source credential, the current consumer configuration or its processes. The following command runs in the extracted Windows directory; replace both absolute private paths and the synthetic resource:
+Prepare a new secret-free profile without changing the source credential, the current consumer configuration or its processes. Continue in the same PowerShell terminal and extracted Windows directory. Select the encrypted source explicitly; if its existing ancestry is unsuitable, make a byte-identical encrypted copy into the new private layout and verify its hash. Leave the original bytes and ACLs intact:
 
 ```powershell
-.\http-mcp-windows.ps1 -Prepare `
-    -Profile 'C:\Users\operator\AppData\Local\NetRatel\http-client-profile.json' `
+$originalCredential = 'C:\absolute\existing-credential.clixml' # Replace with the retained encrypted input.
+$credentialCopy = Join-Path $clientRoot 'credential.clixml'
+Copy-Item -LiteralPath $originalCredential -Destination $credentialCopy
+if ((Get-FileHash -LiteralPath $originalCredential).Hash -cne (Get-FileHash -LiteralPath $credentialCopy).Hash) {
+    throw 'Encrypted credential copy differs.'
+}
+$preparedJson = .\http-mcp-windows.ps1 -Prepare `
+    -Profile (Join-Path $clientRoot 'references\http-client-profile.json') `
     -Resource 'https://netratel.example.invalid/mcp' `
-    -CredentialFile 'C:\Users\operator\AppData\Local\NetRatel\credential.xml'
+    -CredentialFile $credentialCopy `
+    -StateDirectory (Join-Path $clientRoot 'state') `
+    -TemporaryDirectory (Join-Path $clientRoot 'temp')
+if ($LASTEXITCODE -ne 0) { throw 'Protected layout preparation failed; inspect its bounded stage and path role.' }
+$preparation = $preparedJson | ConvertFrom-Json
+$preparation | ConvertTo-Json -Depth 5
 ```
 
-The destination directory must already exist and be controlled by the current account or trusted Windows system identities. Preparation refuses to overwrite a profile. Its inspectable receipt binds the canonical resource, `HttpMcp` purpose, installed bridge version and encrypted file checksum, and includes the exact absolute consumer launch entry. The profile stores only that reference and nonsecret metadata. The source file stays encrypted and unchanged; the launcher decrypts it only in memory and supplies it to the one spawned bridge through that child's environment. A changed encrypted file or bridge version requires a newly reviewed prepared profile.
+Preparation validates the installation and encrypted source, reference parent, private pending-state directory and effective temporary directory, including their ancestry, reparse points and network-drive checks. These directories must already exist. Only new private directories receive ACLs above; do not repair existing ancestry, original credential ACLs, global `TEMP`/`TMP` or machine execution policy. A failed role requires selecting another suitable layout and rerunning preparation with a new reference path. Preparation defaults `-StateDirectory` to the reference parent and the temporary directory to the process's effective selection when omitted; it validates those defaults too.
+
+Preparation refuses to overwrite a profile. Its inspectable receipt binds the canonical resource, `HttpMcp` purpose, installed bridge version and encrypted file checksum, reports the validated layout, and includes the exact absolute consumer launch entry with `-TemporaryDirectory`. That argument reproduces the selected temporary directory even when the consumer inherits different `TEMP`/`TMP`; the bridge child receives the validated values locally. The profile format remains compatible with existing references. The source file stays encrypted and unchanged; the launcher decrypts it only in memory and supplies it to the one spawned bridge through that child's environment. Runtime checks the selected paths again. A changed encrypted file or bridge version requires a newly reviewed prepared profile.
 
 Use the receipt's `command` and `args` in the consumer's supported configuration editor. The launch form is:
 
 ```json
 {
   "command": "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
-  "args": ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", "C:\\absolute\\netratel-mcp-win-x64\\http-mcp-windows.ps1", "-Profile", "C:\\absolute\\http-client-profile.json"]
+  "args": ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", "C:\\absolute\\netratel-mcp-win-x64\\http-mcp-windows.ps1", "-Profile", "C:\\absolute\\references\\http-client-profile.json", "-TemporaryDirectory", "C:\\absolute\\temp"]
 }
 ```
 
-Use the actual paths returned by preparation. Apply the organization's normal downloaded-script review and execution policy; the launcher does not bypass it. The managed relay flushes early stdout notifications and observes broken pipes while stdin remains open. A relay failure first closes its own child's input, then applies a bounded shutdown to that spawned child if required. It does not restart the consumer or replay an uncertain request.
+Use the actual command and complete argument list returned by preparation, retaining `-TemporaryDirectory` for ordinary launch and reviewed auxiliary preparation. Existing references can use that explicit argument without changing their schema; retain the original launch entry and reference for rollback. Apply the organization's normal downloaded-script review and execution policy; the launcher does not bypass it. The managed relay flushes early stdout notifications and observes broken pipes while stdin remains open. A relay failure first closes its own child's input, then applies a bounded shutdown to that spawned child if required. It does not restart the consumer or replay an uncertain request.
 
 Preparation, consumer configuration change, reconnect, loaded metadata and admitted business reads are separate receipt fields. Stop only the selected consumer connection using its supported controls, retain the original configuration as rollback, select the prepared launch entry and reconnect once. Rollback restores that saved entry and reconnects it; keep both encrypted storage and the correction archive. The launcher performs no consumer switch automatically.
 

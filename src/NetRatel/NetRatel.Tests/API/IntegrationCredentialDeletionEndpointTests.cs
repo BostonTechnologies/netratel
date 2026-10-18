@@ -1,4 +1,7 @@
 using System.Net;
+using System.Net.Http.Json;
+using NetRatel.Tests.Infrastructure;
+using NetRatel.Shared.Connectivity;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using AwesomeAssertions;
@@ -57,9 +60,35 @@ public sealed class IntegrationCredentialDeletionEndpointTests
         credentials.Deletions.Should().BeEmpty();
     }
 
-    private static async Task<IHost> BuildAppAsync(RecordingCredentials credentials)
+    [Fact]
+    public async Task Current_admission_is_owner_scoped_secret_free_and_read_only_for_configured_Production_grants()
     {
-        var builder = WebApplication.CreateBuilder();
+        await using var fixture = await ReviewedMcpAccessTests.Fixture.CreateAsync();
+        using var app = await BuildAppAsync(fixture.Credentials, fixture.Pairing);
+        using var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Add("X-Test-Identity", "local");
+        client.DefaultRequestHeaders.Add("X-Test-Owner", "requester");
+        var path = $"/api/v2/account/integration-credentials/{fixture.Credential.CredentialId}/admission";
+        using var response = await client.GetAsync(path);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.Headers.CacheControl!.NoStore.Should().BeTrue();
+        var admission = await response.Content.ReadFromJsonAsync<CredentialMcpAdmission>();
+        admission!.ConfiguredGrants.Should().HaveCount(2);
+        admission.EffectiveAdmission.Should().OnlyContain(x => x.ApplicationGrantConfigured && !x.AuthorizationAdmitted && x.FailureCode == "tenant_not_authorized");
+        (await response.Content.ReadAsStringAsync()).Should().NotContain(fixture.Credential.Secret).And.NotContain("DeviceCapability");
+        (await fixture.App.McpOperatorPolicies.CountAsync()).Should().Be(0);
+        using var invalid = await client.PostAsJsonAsync(path, new { targets = new object?[] { null } });
+        invalid.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        client.DefaultRequestHeaders.Remove("X-Test-Owner");
+        using var unowned = await client.GetAsync(path);
+        using var missing = await client.GetAsync($"/api/v2/account/integration-credentials/{Guid.NewGuid():N}/admission");
+        unowned.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        missing.StatusCode.Should().Be(unowned.StatusCode);
+    }
+
+    private static async Task<IHost> BuildAppAsync(IIntegrationCredentialService credentials, IntegrationPairingService? pairing = null)
+    {
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Production });
         builder.WebHost.UseTestServer();
         builder.Services.AddAuthentication("DeleteTest").AddScheme<AuthenticationSchemeOptions, AccountAuthentication>("DeleteTest", _ => { });
         builder.Services.AddAuthorization(options => options.AddPolicy("InteractiveAccount", policy =>
@@ -69,6 +98,7 @@ public sealed class IntegrationCredentialDeletionEndpointTests
                 (identity.AuthenticationType == "Oidc" || identity.AuthenticationType == LocalAuthenticationOptions.Scheme)));
         }));
         builder.Services.AddSingleton<IIntegrationCredentialService>(credentials);
+        if (pairing is not null) builder.Services.AddSingleton(pairing);
         builder.Services.AddDbContext<NetRatelIdentityDbContext>(options => options.UseInMemoryDatabase("credential-delete-identity-" + Guid.NewGuid().ToString("N")));
         builder.Services.AddDbContext<OrchestratorDbContext>(options => options.UseInMemoryDatabase("credential-delete-app-" + Guid.NewGuid().ToString("N")));
         builder.Services.AddScoped<IEffectiveAccessService, EffectiveAccessService>();
@@ -88,7 +118,7 @@ public sealed class IntegrationCredentialDeletionEndpointTests
         {
             var mode = Request.Headers["X-Test-Identity"].ToString();
             if (mode.Length == 0) return Task.FromResult(AuthenticateResult.NoResult());
-            var identity = new ClaimsIdentity([new Claim("netratel_principal_id", "owner"), new Claim("auth_mode", mode)],
+            var identity = new ClaimsIdentity([new Claim("netratel_principal_id", Request.Headers["X-Test-Owner"].FirstOrDefault() ?? "owner"), new Claim("auth_mode", mode)],
                 mode == "local" ? LocalAuthenticationOptions.Scheme : mode);
             return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), "DeleteTest")));
         }

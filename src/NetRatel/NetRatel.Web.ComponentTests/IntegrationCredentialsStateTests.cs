@@ -9,6 +9,9 @@ using MudBlazor.Services;
 using NetRatel.Web.Components.Pages;
 using NetRatel.Web.Services.Pairing;
 using NetRatel.Shared.SystemPairing;
+using NetRatel.Shared.Connectivity;
+using NetRatel.Infrastructure.Identity;
+using NetRatel.Web.Components.Shared.Integrations;
 using Xunit;
 
 namespace NetRatel.Web.ComponentTests;
@@ -211,6 +214,47 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         await Task.CompletedTask;
     }
 
+    [Fact]
+    public async Task Http_credential_acknowledgment_and_details_refresh_current_admission_without_revealing_stored_secrets()
+    {
+        JSInterop.Mode = JSRuntimeMode.Loose;
+        Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+        using var transport = new CredentialTransport { IncludeHttpMcpCredential = true, Admission = Admission(false) };
+        Services.AddSingleton<IHttpClientFactory>(transport);
+        SetRendererInfo(new RendererInfo("Server", true));
+        var page = Render<IntegrationCredentials>();
+        page.WaitForAssertion(() => Field<object>(page.Instance, "_authority").Should().NotBeNull());
+        Call(page.Instance, "OpenCreate");
+        Set(page.Instance, "_purpose", IntegrationCredentialPurpose.HttpMcp);
+        Set(page.Instance, "_name", "Bounded HTTP reader");
+        Set(page.Instance, "_step", 2); Set(page.Instance, "_createConfirmed", true);
+        transport.CompleteCreate("synthetic-one-time-secret");
+        await CallAsync(page.Instance, "CreateAsync");
+        var configured = Field<CredentialMcpAdmission>(page.Instance, "_createdAdmission");
+        configured.EffectiveAdmission.Should().OnlyContain(x => x.ApplicationGrantConfigured && !x.AuthorizationAdmitted);
+        var view = Render<CredentialAdmissionView>(p => p.Add(x => x.Admission, configured));
+        view.Markup.Should().Contain("Matching Production operator policies").And.Contain("current durable owner permission")
+            .And.Contain("2030-04-01T10:11:12.000000Z").And.NotContain("synthetic-one-time-secret");
+        Call(page.Instance, "CloseCreate");
+        var credential = ((System.Collections.IEnumerable)Field<object>(page.Instance, "_credentials")).Cast<object>().Single();
+        transport.Admission = Admission(true);
+        await (Task)page.Instance.GetType().GetMethod("OpenDetailAsync", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(page.Instance, [credential])!;
+        var refreshed = Field<CredentialMcpAdmission>(page.Instance, "_detailAdmission");
+        refreshed.EffectiveAdmission.Should().OnlyContain(x => x.AuthorizationAdmitted && x.PolicyAllowed == true);
+        var refreshedView = Render<CredentialAdmissionView>(p => p.Add(x => x.Admission, refreshed));
+        refreshedView.Markup.Should().Contain("dispatch readiness not checked").And.NotContain("synthetic-one-time-secret");
+        transport.Admission = Admission(false) with { CredentialState = "revoked", AuthenticationStatus = "delegated_identity_revoked" };
+        await (Task)page.Instance.GetType().GetMethod("RefreshAdmissionAsync", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(page.Instance, ["one", false])!;
+        Field<CredentialMcpAdmission>(page.Instance, "_detailAdmission").CredentialState.Should().Be("revoked");
+    }
+
+    private static CredentialMcpAdmission Admission(bool admitted) => new("one", DateTimeOffset.Parse("2026-10-18T12:00:00Z"), "active",
+        "current_credential_valid", "https://mcp.example.test/mcp", "prod", "Production", DateTimeOffset.Parse("2030-04-01T10:11:12Z"),
+        [new(17, "flow.read")], [], [new(new(17, "netratel_flows", "list"), "netratel.mcp.observe", ["Operator"], true, admitted, admitted,
+            admitted ? null : "tenant_not_authorized", []) { OwnerPermissionGranted = true, AuthorizationAdmitted = admitted }],
+        admitted ? ["Dispatch rechecks runtime readiness."] : ["Matching Production operator policies are a separate prerequisite."],
+        "Use the independently reviewed request, inspect and resume flow.");
+
     private static T Field<T>(object instance, string name) =>
         (T)instance.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(instance)!;
 
@@ -242,6 +286,8 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         private readonly TaskCompletionSource<HttpResponseMessage> _create = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool PostRequested { get; private set; }
         public bool IncludeCredentials { get; set; }
+        public bool IncludeHttpMcpCredential { get; set; }
+        public CredentialMcpAdmission? Admission { get; set; }
         public string? FailDeleteId { get; set; }
         public List<string> DeletedIds { get; } = [];
         public List<string> RevokedIds { get; } = [];
@@ -270,6 +316,8 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
             lastUsedAtUtc = (DateTimeOffset?)null, grants = Array.Empty<object>(), instancePermissions = Array.Empty<string>() };
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/admission", StringComparison.Ordinal))
+                return Task.FromResult(new HttpResponseMessage(Admission is null ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.OK) { Content = JsonContent.Create(Admission) });
             if (request.Method == HttpMethod.Delete)
             {
                 var id = request.RequestUri!.AbsolutePath.Split('/')[^1];
@@ -294,7 +342,12 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
                     Content = JsonContent.Create(new { tenants = Array.Empty<object>(), instancePermissions = Array.Empty<object>(), configuredHttpMcpServerUrl = "https://mcp.example.test/mcp" })
                 });
             var now = DateTimeOffset.UtcNow;
-            object[] credentials = IncludeCredentials ? new[] {
+            object[] credentials = IncludeHttpMcpCredential ? [new {
+                id = "one", publicId = "one", tokenPrefix = "synthetic", name = "Bounded HTTP reader", purpose = 1,
+                resource = "https://mcp.example.test/mcp", createdAtUtc = now, expiresAtUtc = now.AddDays(1),
+                revokedAtUtc = (DateTimeOffset?)null, lastUsedAtUtc = (DateTimeOffset?)null,
+                grants = new[] { new { tenantId = 17, permission = "flow.read" } }, instancePermissions = Array.Empty<string>()
+            }] : IncludeCredentials ? new[] {
                 Credential("active", now.AddDays(1), null), Credential("revoked-ok", now.AddDays(1), now),
                 Credential("revoked-fail", now.AddDays(1), now), Credential("expired-unselected", now.AddDays(-1), null) } : [];
             var snapshot = new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(credentials) };

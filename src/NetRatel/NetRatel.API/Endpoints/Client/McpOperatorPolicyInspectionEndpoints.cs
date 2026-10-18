@@ -192,9 +192,15 @@ public static class McpOperatorPolicyInspectionEndpoints
                 context.CorrelationId,
                 context.RequestId,
                 cancellationToken).ConfigureAwait(false);
+            http.TryGetMcpOperatorDelegation(out var delegation);
             return evaluation is null
                 ? Failure("target_not_found", tenantId, agentId, context.CorrelationId, $"{Tool}/evaluate", StatusCodes.Status404NotFound)
-                : Results.Ok(new { evaluation, correlationId = context.CorrelationId });
+                : Results.Ok(new
+                {
+                    evaluation,
+                    delegationContext = McpOperatorAssertionContext.FromDelegation(delegation!),
+                    correlationId = context.CorrelationId
+                });
         })
         .Produces(StatusCodes.Status200OK)
         .ProducesProblem(StatusCodes.Status400BadRequest)

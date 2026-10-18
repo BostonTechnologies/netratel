@@ -5,6 +5,7 @@ using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Connectivity;
+using NetRatel.Application.Operations;
 
 namespace NetRatel.API.Endpoints.Auth;
 
@@ -116,6 +117,14 @@ public static class IntegrationCredentialEndpoints
             return Results.Ok(await credentials.ListAsync(owner, ct).ConfigureAwait(false));
         });
 
+        group.MapGet("/{credentialId}/admission", async (string credentialId, ClaimsPrincipal principal,
+            [FromServices] IntegrationPairingService pairing, IHostEnvironment environment, HttpContext context, CancellationToken ct) =>
+            await AdmissionAsync(credentialId, null, principal, pairing, environment, context, ct).ConfigureAwait(false));
+        group.MapPost("/{credentialId}/admission", async (string credentialId, CredentialAdmissionRequest request,
+            ClaimsPrincipal principal, [FromServices] IntegrationPairingService pairing, IHostEnvironment environment, HttpContext context, CancellationToken ct) =>
+            request.Targets is null ? Results.BadRequest(new { code = "admission_unavailable" }) :
+                await AdmissionAsync(credentialId, request.Targets, principal, pairing, environment, context, ct).ConfigureAwait(false));
+
         group.MapPost("/", async (
             [FromBody] CreateIntegrationCredentialRequest request,
             ClaimsPrincipal principal,
@@ -199,6 +208,26 @@ public static class IntegrationCredentialEndpoints
 
         return app;
     }
+
+    private static async Task<IResult> AdmissionAsync(string credentialId, IReadOnlyList<ReviewedMcpAccessTarget>? targets,
+        ClaimsPrincipal principal, IntegrationPairingService pairing, IHostEnvironment environment, HttpContext context, CancellationToken ct)
+    {
+        context.Response.Headers.CacheControl = "no-store";
+        var owner = PrincipalId(principal);
+        if (owner is null) return Results.Forbid();
+        if (!environment.IsDevelopment() && !environment.IsProduction())
+            return Results.BadRequest(new { code = "admission_environment_unavailable" });
+        try
+        {
+            var admission = await pairing.InspectCredentialAdmissionAsync(owner, credentialId,
+                environment.IsProduction() ? McpOperatorEnvironment.Production : McpOperatorEnvironment.Development, targets, ct).ConfigureAwait(false);
+            return admission is null ? Results.NotFound() : Results.Ok(admission);
+        }
+        catch (IntegrationPairingUnavailableException) { return Results.BadRequest(new { code = "admission_unavailable" }); }
+        catch (IntegrationCredentialGrantValidationException) { return Results.BadRequest(new { code = "admission_unavailable" }); }
+    }
+
+    public sealed record CredentialAdmissionRequest(IReadOnlyList<ReviewedMcpAccessTarget> Targets);
 
     private static string? PrincipalId(ClaimsPrincipal principal) => principal.FindFirstValue("netratel_principal_id");
 

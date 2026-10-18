@@ -26,12 +26,21 @@ public static class McpOperatorAuthenticationStatusEndpoints
             if (!TryGetDelegation(http, environment, out var delegation, out var failure))
                 return Failure(failure!, http.TraceIdentifier);
 
+            var assertionContext = McpOperatorAssertionContext.FromDelegation(delegation!);
             return Results.Ok(new
             {
                 authenticated = true,
                 name = delegation!.Identity.Subject,
                 authMode = "mcp_operator_delegation",
-                identityProvider = "oidc",
+                identityProvider = assertionContext.AuthenticationSource switch
+                {
+                    "local_http_credential" => "local_integration_credential",
+                    "external_oauth" => "oidc",
+                    _ => "delegated_identity"
+                },
+                credentialId = delegation.IngressCredentialId,
+                delegationContext = assertionContext,
+                nextAction = "Scopes and roles describe this status assertion only. Inspect the caller-owned netratel_access/credential admission or reviewed receipt, then invoke the exact supported operation for its current outcome.",
                 groups = delegation.Identity.Groups.Order(StringComparer.Ordinal).ToArray(),
                 roles = delegation.Identity.Roles.Order(StringComparer.Ordinal).ToArray(),
                 scopes = delegation.Identity.Scopes.Order(StringComparer.Ordinal).ToArray(),

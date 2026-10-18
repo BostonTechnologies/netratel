@@ -213,6 +213,13 @@ public sealed class ReviewedMcpAccessTests
     {
         await using var fixture = await Fixture.CreateAsync();
         var proposal = fixture.Proposal("reconcile", fixture.Credential.CredentialId);
+        var configured = await fixture.Pairing.InspectCredentialAdmissionAsync("requester", fixture.Credential.CredentialId, McpOperatorEnvironment.Production);
+        Assert.Equal("current_credential_valid", configured!.AuthenticationStatus);
+        Assert.Equal(new[] { 17, 29 }, configured.EffectiveAdmission.Select(x => x.Target.TenantId));
+        Assert.All(configured.EffectiveAdmission, x => { Assert.True(x.ApplicationGrantConfigured); Assert.True(x.OwnerPermissionGranted); Assert.Equal("tenant_not_authorized", x.FailureCode); });
+        Assert.Contains(configured.RemainingPrerequisites, x => x.Contains("Matching Production operator policies"));
+        Assert.Empty(await fixture.App.McpOperatorPolicies.ToArrayAsync());
+        Assert.Empty(await fixture.Identity.IntegrationPairingRequests.ToArrayAsync());
         var pending = await fixture.Pairing.RequestReviewedAsync(proposal, "requester", fixture.Credential.CredentialId, Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production);
         Assert.All(pending.EffectiveAdmission, x => { Assert.True(x.ApplicationGrantConfigured); Assert.False(x.TenantVisible); Assert.False(x.PolicyAllowed); });
         var self = fixture.Approval(pending);
@@ -232,6 +239,50 @@ public sealed class ReviewedMcpAccessTests
         var serialized = JsonSerializer.Serialize(approved);
         Assert.DoesNotContain(fixture.Credential.Secret, serialized);
         Assert.DoesNotContain("DeviceCapability", serialized);
+        var refreshed = await fixture.Pairing.InspectCredentialAdmissionAsync("requester", fixture.Credential.CredentialId, McpOperatorEnvironment.Production);
+        Assert.Equal(proposal.ExpiresAtUtc, refreshed!.CredentialExpiresAtUtc);
+        Assert.Equal(Fixture.Resource, refreshed.Resource);
+        Assert.Equal("prod", refreshed.Instance);
+        Assert.All(refreshed.EffectiveAdmission, x => Assert.True(x.AuthorizationAdmitted));
+        Assert.Equal(2, refreshed.MatchingPolicies.Count);
+        Assert.All(refreshed.MatchingPolicies, x => { Assert.Equal("Production", x.Environment); Assert.Equal(proposal.ExpiresAtUtc, x.ExpiresAtUtc); });
+        Assert.DoesNotContain(fixture.Credential.Secret, JsonSerializer.Serialize(refreshed));
+        Assert.Null(await fixture.Pairing.InspectCredentialAdmissionAsync("other-owner", fixture.Credential.CredentialId, McpOperatorEnvironment.Production));
+        await Assert.ThrowsAsync<IntegrationCredentialGrantValidationException>(() => fixture.Pairing.InspectCredentialAdmissionAsync("requester", fixture.Credential.CredentialId,
+            McpOperatorEnvironment.Production, [new(31, "netratel_flows", "list")]));
+
+        var role = await fixture.Identity.AccessRoles.Include(x => x.Permissions).SingleAsync();
+        var permission = role.Permissions.Single(x => x.Permission == NetRatelPermissions.FlowRead);
+        role.Permissions.Remove(permission); fixture.Identity.Remove(permission); await fixture.Identity.SaveChangesAsync();
+        var withdrawn = await fixture.Pairing.InspectCredentialAdmissionAsync("requester", fixture.Credential.CredentialId, McpOperatorEnvironment.Production);
+        var denied = Assert.Single(withdrawn!.EffectiveAdmission.Where(x => x.Target.TenantId == 17));
+        Assert.False(denied.OwnerPermissionGranted); Assert.False(denied.AuthorizationAdmitted); Assert.Equal("owner_permission_missing", denied.FailureCode);
+        var row = await fixture.Identity.IntegrationCredentials.SingleAsync();
+        row.ExpiresAtUtc = fixture.Clock.GetUtcNow().AddSeconds(-1); await fixture.Identity.SaveChangesAsync();
+        var expired = await fixture.Pairing.InspectCredentialAdmissionAsync("requester", fixture.Credential.CredentialId, McpOperatorEnvironment.Production);
+        Assert.Equal("expired", expired!.CredentialState); Assert.All(expired.EffectiveAdmission, x => Assert.False(x.AuthorizationAdmitted));
+        await fixture.Credentials.RevokeAsync("requester", fixture.Credential.CredentialId, "requester");
+        var revoked = await fixture.Pairing.InspectCredentialAdmissionAsync("requester", fixture.Credential.CredentialId, McpOperatorEnvironment.Production);
+        Assert.Equal("revoked", revoked!.CredentialState); Assert.All(revoked.EffectiveAdmission, x => Assert.False(x.AuthorizationAdmitted));
+    }
+
+    [Fact]
+    public async Task Current_admission_keeps_mixed_grants_and_unsupported_samples_explicit_without_policy_side_effects()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var row = await fixture.Identity.IntegrationCredentials.SingleAsync();
+        row.Grants.Add(new IntegrationCredentialGrant { CredentialId = row.Id, TenantId = 17, Permission = NetRatelPermissions.TelemetryRead });
+        await fixture.Identity.SaveChangesAsync();
+        var admission = await fixture.Pairing.InspectCredentialAdmissionAsync("requester", row.Id, McpOperatorEnvironment.Production);
+        Assert.Equal(3, admission!.ConfiguredGrants.Count);
+        Assert.All(admission.EffectiveAdmission, x => { Assert.Equal("netratel_flows", x.Target.Tool); Assert.Equal("list", x.Target.Operation); });
+        Assert.Equal(2, admission.EffectiveAdmission.Count);
+        Assert.False(admission.TargetsTruncated);
+        Assert.Empty(await fixture.App.McpOperatorPolicies.ToArrayAsync());
+        var apiCredential = await fixture.Credentials.CreateAsync("requester", new("API only", IntegrationCredentialPurpose.Api,
+            fixture.Clock.GetUtcNow().AddDays(1), [new(17, NetRatelPermissions.FlowRead)]));
+        Assert.Null(await fixture.Pairing.InspectCredentialAdmissionAsync("requester", apiCredential.CredentialId, McpOperatorEnvironment.Production));
+        await Assert.ThrowsAsync<IntegrationCredentialGrantValidationException>(() => fixture.Pairing.InspectCredentialAdmissionAsync("requester", row.Id, McpOperatorEnvironment.Production, [null!]));
     }
 
     [Theory]
@@ -354,6 +405,11 @@ public sealed class ReviewedMcpAccessTests
         var receipt = await fixture.Pairing.InspectReviewedAsync(proposal.RequestId, "requester", fixture.Credential.CredentialId, resume: true);
         var admission = Assert.Single(receipt.EffectiveAdmission);
         Assert.True(admission.ApplicationGrantConfigured); Assert.True(admission.OwnerPermissionGranted); Assert.True(admission.TenantVisible);
+        var current = await fixture.Pairing.InspectCredentialAdmissionAsync("requester", fixture.Credential.CredentialId,
+            McpOperatorEnvironment.Production, proposal.Targets);
+        var currentAgent = Assert.Single(current!.EffectiveAdmission);
+        Assert.Equal("conditional_runtime_unverified", currentAgent.PolicyAdmissionStatus);
+        Assert.False(currentAgent.AuthorizationAdmitted);
         Assert.Null(admission.PolicyAllowed); Assert.False(admission.AuthorizationAdmitted);
         Assert.Equal("conditional_runtime_unverified", admission.PolicyAdmissionStatus);
         Assert.Equal("target_runtime_not_checked", admission.FailureCode);

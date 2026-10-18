@@ -3,12 +3,14 @@ using System.Net.Http.Headers;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Encodings.Web;
+using System.Text.Json;
 using AwesomeAssertions;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -16,6 +18,8 @@ using Microsoft.Extensions.Options;
 using NetRatel.API.Endpoints.Client;
 using NetRatel.API.Middleware;
 using NetRatel.Application.Operations;
+using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Operations;
 using Xunit;
 
@@ -99,7 +103,54 @@ public sealed class McpOperatorPolicyInspectionEndpointTests
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         (await response.Content.ReadAsStringAsync()).Should().Contain("target_policy_missing")
             .And.Contain("correlation-evaluate");
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var assertion = document.RootElement.GetProperty("delegationContext");
+        assertion.GetProperty("tool").GetString().Should().Be("netratel_policy");
+        assertion.GetProperty("operation").GetString().Should().Be("evaluate");
+        assertion.GetProperty("scopes").EnumerateArray().Select(scope => scope.GetString()).Should().Equal("netratel.mcp.admin");
+        assertion.GetProperty("roles").EnumerateArray().Select(role => role.GetString()).Should().Equal("PolicyAdministrator");
+        assertion.GetProperty("credentialEntitlements").GetString().Should().Be("not_assessed");
+        assertion.GetProperty("businessAdmission").GetString().Should().Be("not_checked");
         access.AdministrativeEvaluations.Should().ContainSingle().Which.Should().Be(("policy.admin@example.test", 42, agentId, "netratel_terminal", "availability"));
+    }
+
+    [Fact]
+    public async Task Policy_evaluate_preserves_scope_denial_and_explains_the_current_inspection_assertion()
+    {
+        await using var db = new OrchestratorDbContext(new DbContextOptionsBuilder<OrchestratorDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString("N")).Options);
+        var agentId = Guid.NewGuid();
+        db.Agents.Add(new Agent { Id = agentId, TenantId = 42, IsEnabled = true, Status = AgentStatus.Active });
+        await db.SaveChangesAsync();
+        using var app = await BuildAppAsync(new RecordingPolicyAdministration(),
+            new McpOperatorAccessEvaluationService(db, new McpOperatorAuthorization(db)));
+        var client = M2mClient(app);
+        var tokens = app.Services.GetRequiredService<McpOperatorDelegationTokenService>();
+        client.DefaultRequestHeaders.Add(McpOperatorDelegationOptions.HeaderName, tokens.Create(
+            new McpOperatorDelegationIdentity("policy.admin@example.test", "automation-client", null, [], ["PolicyAdministrator"], ["netratel.mcp.admin"])
+            {
+                ExternalIssuer = "https://identity.example.invalid"
+            },
+            new McpOperatorDelegationRequest("netratel_policy", "evaluate", "request-context", "https://mcp.dev.example/mcp", "dev", 42, agentId, "correlation-context")));
+
+        using var response = await client.GetAsync($"/api/v2/mcp/operator/policy/evaluate/42/{agentId:D}?tool=netratel_terminal&operation=availability");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var evaluation = document.RootElement.GetProperty("evaluation");
+        evaluation.GetProperty("allowed").GetBoolean().Should().BeFalse();
+        evaluation.GetProperty("failureCode").GetString().Should().Be("oauth_scope_missing");
+        var interpretation = evaluation.GetProperty("interpretation");
+        interpretation.GetProperty("assessment").GetString().Should().Be("current_assertion_only");
+        interpretation.GetProperty("inspectionTool").GetString().Should().Be("netratel_policy");
+        interpretation.GetProperty("evaluatedTool").GetString().Should().Be("netratel_terminal");
+        interpretation.GetProperty("evaluatedOperation").GetString().Should().Be("availability");
+        interpretation.GetProperty("requiredScopes").EnumerateArray().Select(scope => scope.GetString()).Should().Equal("netratel.mcp.observe");
+        interpretation.GetProperty("delegatedScopes").EnumerateArray().Select(scope => scope.GetString()).Should().Equal("netratel.mcp.admin");
+        interpretation.GetProperty("policy").GetString().Should().Be("not_checked");
+        interpretation.GetProperty("tenantAdmission").GetString().Should().Be("not_checked");
+        interpretation.GetProperty("authoritativeAdmissionReceipt").GetBoolean().Should().BeFalse();
+        (await db.McpOperatorAcceptedAudits.CountAsync()).Should().Be(0);
     }
 
     private static HttpClient M2mClient(IHost app)
@@ -111,7 +162,7 @@ public sealed class McpOperatorPolicyInspectionEndpointTests
 
     private static async Task<IHost> BuildAppAsync(
         RecordingPolicyAdministration administration,
-        RecordingPolicyAccessEvaluation? access = null)
+        IMcpOperatorAccessEvaluation? access = null)
     {
         access ??= new RecordingPolicyAccessEvaluation();
         var delegationOptions = new McpOperatorDelegationOptions

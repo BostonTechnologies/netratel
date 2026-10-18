@@ -1492,7 +1492,30 @@ public sealed record McpOperatorExactAccessEvaluation(
     McpOperatorConstraints? EffectiveConstraints,
     string CapabilityReadiness,
     IReadOnlyList<string> MissingPrerequisites,
-    string NextAction);
+    string NextAction)
+{
+    /// <summary>Bounds what this diagnostic assessed without changing its decision or failure code.</summary>
+    public McpOperatorEvaluationInterpretation? Interpretation { get; init; }
+}
+
+/// <summary>Current-assertion evaluation context; unassessed dispatch layers remain explicitly unknown.</summary>
+public sealed record McpOperatorEvaluationInterpretation(
+    string InspectionTool,
+    string InspectionOperation,
+    string Assessment,
+    IReadOnlyList<string> DelegatedScopes,
+    IReadOnlyList<string> DelegatedRoles,
+    string EvaluatedTool,
+    string EvaluatedOperation,
+    IReadOnlyList<string> RequiredScopes,
+    IReadOnlyList<string> RequiredRolesAnyOf,
+    string ApplicationGrants,
+    string TenantAdmission,
+    string Policy,
+    string Runtime,
+    string Capability,
+    bool AuthoritativeAdmissionReceipt,
+    string Guidance);
 
 /// <summary>
 /// Read-only access inspection. It uses the same persisted policy authority as

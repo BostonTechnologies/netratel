@@ -124,7 +124,10 @@ public sealed class McpOperatorAccessEndpointTests
 
         var tokens = app.Services.GetRequiredService<McpOperatorDelegationTokenService>();
         client.DefaultRequestHeaders.Add(McpOperatorDelegationOptions.HeaderName, tokens.Create(
-            new McpOperatorDelegationIdentity("netratel-mcp-dev-ai-agent", "netratel-dev", "netratel-dev", ["netratel-mcp-dev-consumers"], ["AutomationOperator", "Operator", "Observer", "OnboardingOperator"], ["netratel.mcp.read", "netratel.mcp.observe"]),
+            new McpOperatorDelegationIdentity("netratel-mcp-dev-ai-agent", "netratel-dev", "netratel-dev", ["netratel-mcp-dev-consumers"], ["AutomationOperator", "Operator", "Observer", "OnboardingOperator"], ["netratel.mcp.read", "netratel.mcp.observe"])
+            {
+                ExternalIssuer = "https://identity.example.invalid"
+            },
             new McpOperatorDelegationRequest("netratel_auth", "status", "request-auth-status", "https://mcp.dev.example/mcp", "dev", null, null, "correlation-auth-status")));
 
         var response = await client.GetAsync("/api/v2/mcp/operator/auth/status");
@@ -136,6 +139,16 @@ public sealed class McpOperatorAccessEndpointTests
             .And.Contain("AutomationOperator")
             .And.Contain("netratel.mcp.read")
             .And.NotContain("M2M");
+        using var document = JsonDocument.Parse(body);
+        document.RootElement.GetProperty("identityProvider").GetString().Should().Be("oidc");
+        document.RootElement.GetProperty("credentialId").ValueKind.Should().Be(JsonValueKind.Null);
+        var assertion = document.RootElement.GetProperty("delegationContext");
+        assertion.GetProperty("authenticationSource").GetString().Should().Be("external_oauth");
+        assertion.GetProperty("scopeContext").GetString().Should().Be("supplied_assertion");
+        assertion.GetProperty("scopes").EnumerateArray().Select(scope => scope.GetString()).Should()
+            .BeEquivalentTo("netratel.mcp.read", "netratel.mcp.observe");
+        assertion.GetProperty("credentialEntitlements").GetString().Should().Be("not_assessed");
+        assertion.GetProperty("businessAdmission").GetString().Should().Be("not_checked");
     }
 
     private static HttpClient M2mClient(IHost app)

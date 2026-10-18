@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NetRatel.AgentClient;
 using NetRatel.Setup;
+using NetRatel.Shared.Connectivity;
 using NetRatel.Tests.Mcp;
 using R3;
 using Termina.Hosting;
@@ -477,6 +478,61 @@ public sealed class SetupTests
         Assert.False(terminal.Contains("never-render-this-secret")); Assert.Equal(120, model.Width); Assert.Equal(SetupStep.Authentication, model.Step);
         input.EnqueueKey(ConsoleKey.Escape); input.Complete(); await host.StopAsync(); Assert.False(File.Exists(session.Path));
     }
+    [Theory]
+    [InlineData("legacy", "not_checked")]
+    [InlineData("blocked", "blocked")]
+    [InlineData("admitted", "completed")]
+    [InlineData("discovery_only", "not_checked")]
+    [InlineData("admission_unavailable", "unavailable")]
+    [InlineData("malformed_admission", "unavailable")]
+    public async Task Http_mcp_setup_keeps_authentication_completion_separate_from_current_business_admission(string outcome, string expectedAdmission)
+    {
+        using var directory = new TempDirectory();
+        var path = System.IO.Path.Combine(directory.Path, "admission.json");
+        const string resource = "https://instance.example/mcp";
+        const string id = "f3333333333343338333333333333333";
+        new NetRatelConfigurationService().SaveProfile(path, AgentClientConfiguration.Empty with { ApiBaseUrl = resource,
+            IntegrationCredential = "nrt_ic_synthetic", AuthenticationMode = "IntegrationCredential", ProfileName = "test", Instance = "prod" }, ConfigurationSurface.HttpMcpClient);
+        var invoked = new List<string>();
+        var admitted = outcome == "admitted";
+        var grant = new IntegrationPairingGrant(17, "flow.read");
+        var admission = new CredentialMcpAdmission(id, DateTimeOffset.UtcNow, "active", "current_credential_valid", resource, "prod", "Production",
+            DateTimeOffset.Parse("2030-04-01T10:11:12Z"), outcome == "discovery_only" ? [] : [grant], ["mcp.discovery.read"],
+            outcome == "discovery_only" ? [] : [new(new(17, "netratel_flows", "list"), "netratel.mcp.observe", ["Operator"], true, admitted, admitted,
+                admitted ? null : "tenant_not_authorized", []) { OwnerPermissionGranted = true, AuthorizationAdmitted = admitted }],
+            admitted ? ["Dispatch readiness and capability remain not checked."] : ["Matching Production operator policies are a separate prerequisite."],
+            "Use independently reviewed request/receipt/resume with exact targets and original UTC expiry.");
+        var handler = new StubHandler(async request =>
+        {
+            using var body = System.Text.Json.JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            var root = body.RootElement;
+            var method = root.GetProperty("method").GetString();
+            if (method == "initialize") return Json(new { jsonrpc = "2.0", id = 1, result = new { protocolVersion = "2025-03-26" } });
+            if (method == "notifications/initialized") return new(HttpStatusCode.Accepted);
+            if (method == "tools/list") return Json(new { jsonrpc = "2.0", id = 2, result = new { tools = new[] { new { name = "netratel_auth" }, new { name = "netratel_access" } } } });
+            Assert.Equal("tools/call", method);
+            var tool = root.GetProperty("params").GetProperty("name").GetString()!; invoked.Add(tool);
+            if (tool == "netratel_auth") return Json(new { jsonrpc = "2.0", id = 3, result = new { isError = false, structuredContent = new { success = true,
+                data = new { authenticated = true, credentialId = outcome == "legacy" ? null : id, authMode = "mcp_operator_delegation", groups = Array.Empty<string>(), roles = Array.Empty<string>() } } } });
+            Assert.Equal("netratel_access", tool);
+            Assert.Equal(id, root.GetProperty("params").GetProperty("arguments").GetProperty("request").GetProperty("credentialId").GetString());
+            if (outcome == "admission_unavailable") return new(HttpStatusCode.ServiceUnavailable);
+            if (outcome == "malformed_admission") return Json(new { jsonrpc = "2.0", id = 4, result = new { isError = false, structuredContent = new { success = true, data = new { receipt = (object?)null } } } });
+            return Json(new { jsonrpc = "2.0", id = 4, result = new { isError = false, structuredContent = new { success = true, data = new { receipt = new { admission } } } } });
+        });
+        await using var session = new SetupSession(ConfigurationSurface.HttpMcpClient, path, "test", handler);
+        var checks = await session.DoctorAsync(default);
+        Assert.All(checks, x => Assert.Equal("completed", x.Status));
+        var authentication = Assert.Single(checks.Where(x => x.Name == "permitted read-only tool"));
+        Assert.Equal(expectedAdmission, authentication.AdmissionStatus);
+        Assert.Contains("Current business admission: " + expectedAdmission, authentication.Detail);
+        Assert.NotNull(authentication.NextAction);
+        Assert.DoesNotContain("nrt_ic_synthetic", System.Text.Json.JsonSerializer.Serialize(checks));
+        Assert.Equal(outcome == "legacy" ? new[] { "netratel_auth" } : new[] { "netratel_auth", "netratel_access" }, invoked);
+        if (outcome == "blocked") Assert.All(authentication.Admission!.EffectiveAdmission, x => Assert.False(x.AuthorizationAdmitted));
+        if (outcome == "discovery_only") Assert.Empty(authentication.Admission!.EffectiveAdmission);
+    }
+
     [Theory]
     [InlineData(true, "https://instance.example/mcp")]
     [InlineData(true, "https://instance.example/prefix/mcp")]

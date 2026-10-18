@@ -330,33 +330,9 @@ public sealed partial class IntegrationPairingService
         var credentialId = request.CredentialId ?? metadata.Proposal.CredentialId;
         var credential = credentialId is null ? null : await InspectOwnedCredentialAsync(metadata.RequestingPrincipalId, credentialId, ct).ConfigureAwait(false);
         var state = credential is null ? "not_issued" : credential.RevokedAtUtc is not null ? "revoked" : credential.ExpiresAtUtc <= clock.GetUtcNow() ? "expired" : "active";
-        var admissions = new List<ReviewedMcpAccessAdmission>();
+        var admissions = await EvaluateCredentialAdmissionAsync(metadata.RequestingPrincipalId, credential, state,
+            request.Resource!, metadata.Instance, metadata.Environment, metadata.Proposal.Targets, request.Id, ct).ConfigureAwait(false);
         var missing = new List<string>();
-        foreach (var target in metadata.Proposal.Targets)
-        {
-            var access = McpOperationAccessCatalog.Find(target.Tool, target.Operation)!;
-            var scope = McpOperationAccessScopeNames.Canonical(access.RequiredScope);
-            var roles = McpLocalOperationAuthorizationCatalog.RolesFor(access.RequiredScope).ToArray();
-            var permission = McpLocalOperationAuthorizationCatalog.RequiredPermission(target.Tool, target.Operation)!;
-            var configured = credential is not null && new[] { permission }.Concat(McpLocalOperationAuthorizationCatalog.AdditionalPermissions(target.Tool, target.Operation))
-                .All(p => target.TenantId == 0 ? credential!.InstancePermissions.Contains(p) : credential!.Grants.Any(x => x.TenantId == target.TenantId && x.Permission == p));
-            var principal = new McpOperatorPrincipal(metadata.RequestingPrincipalId, credentialId, "netratel-local-http-mcp", new HashSet<string>(), roles.ToHashSet(StringComparer.Ordinal), new HashSet<string>([scope]));
-            var visible = credentialId is not null && (target.TenantId == 0 || await operatorAuthorization!.HasTenantVisibilityAsync(metadata.Environment, principal, target.TenantId, ct).ConfigureAwait(false));
-            var profile = target.AgentId is { } agent ? await policyAdministration!.GetTargetProfileAsync(target.TenantId, agent, ct).ConfigureAwait(false) : null;
-            var descriptor = McpOperatorOperationCatalog.Find(target.Tool, target.Operation)!;
-            var enabled = target.AgentId is null || await applicationDb!.Agents.AsNoTracking().AnyAsync(x => x.Id == target.AgentId && x.TenantId == target.TenantId && x.IsEnabled && x.Status != NetRatel.Infrastructure.Persistence.AgentStatus.Disabled, ct).ConfigureAwait(false);
-            var decision = await operatorAuthorization!.EvaluateAsync(new(metadata.Environment, principal, target.TenantId, target.AgentId,
-                profile?.Classification, descriptor.OperationFamily, target.Tool + "/" + target.Operation, new HashSet<string>([scope]), descriptor.ConfirmationClass,
-                request.Id, request.Id, TargetTags: profile?.Tags.ToHashSet(StringComparer.Ordinal), McpResource: request.Resource, McpInstance: metadata.Instance, Tool: target.Tool, TenantVisible: visible, TargetResolved: target.AgentId is null || profile is not null, TargetEnabled: enabled, TargetOnline: target.AgentId is null, CapabilityAvailable: target.AgentId is null), ct).ConfigureAwait(false);
-            var ownerGranted = true;
-            foreach (var required in new[] { permission }.Concat(McpLocalOperationAuthorizationCatalog.AdditionalPermissions(target.Tool, target.Operation)))
-                ownerGranted &= await effectiveAccess!.AuthorizeAsync(DurablePrincipal(metadata.RequestingPrincipalId), required, target.TenantId == 0 ? null : target.TenantId, ct).ConfigureAwait(false);
-            var runtimeUnverified = target.AgentId is not null && decision.FailureCode is "capability_unavailable" or "target_offline";
-            admissions.Add(new(target, scope, roles, configured, visible, runtimeUnverified ? null : decision.IsAllowed,
-                state != "active" ? "credential_" + state : !configured ? "application_grant_missing" : !ownerGranted ? "owner_permission_missing" : !visible ? "tenant_not_authorized" : runtimeUnverified ? "target_runtime_not_checked" : decision.FailureCode,
-                decision.MatchingPolicyIds)
-            { PolicyAdmissionStatus = runtimeUnverified ? "conditional_runtime_unverified" : "evaluated", OwnerPermissionGranted = ownerGranted, AuthorizationAdmitted = state == "active" && configured && ownerGranted && visible && decision.IsAllowed && !runtimeUnverified });
-        }
         if (request.State == IntegrationPairingState.Pending) missing.Add("An independent operator must review the exact proposal with current credential and MCP policy authority.");
         if (metadata.Proposal.Action == "create" && request.State is not (IntegrationPairingState.Consumed or IntegrationPairingState.Issued)) missing.Add("Complete the supported protected setup client; MCP never delivers credential secrets.");
         if (state != "active") missing.Add("The reviewed credential is " + state + "; configured grants alone do not establish usable access.");

@@ -21,12 +21,14 @@ $rotated = $null
 $captured = [Collections.Generic.List[string]]::new()
 $checks = [Collections.Generic.List[string]]::new()
 $parentToken = [Environment]::GetEnvironmentVariable('NETRATEL_MCP_CLIENT_INTEGRATION_TOKEN')
+$parentTemp = $env:TEMP
+$parentTmp = $env:TMP
 
 function Assert-Smoke([bool] $Condition, [string] $Message) {
     if (-not $Condition) { throw $Message }
 }
 
-function New-Start([string] $Executable, [string[]] $Arguments) {
+function New-Start([string] $Executable, [string[]] $Arguments, [hashtable] $Environment = @{}) {
     $start = [Diagnostics.ProcessStartInfo]::new($Executable)
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
@@ -39,14 +41,13 @@ function New-Start([string] $Executable, [string[]] $Arguments) {
     foreach ($key in @($start.Environment.Keys)) {
         if ($key.StartsWith('NETRATEL', [StringComparison]::OrdinalIgnoreCase)) { [void] $start.Environment.Remove($key) }
     }
-    $start.Environment['TMP'] = $privateTemp
-    $start.Environment['TEMP'] = $privateTemp
+    foreach ($key in $Environment.Keys) { $start.Environment[$key] = $Environment[$key] }
     return $start
 }
 
-function Invoke-Local([string] $Executable, [string[]] $Arguments, [string] $InputText = '') {
+function Invoke-Local([string] $Executable, [string[]] $Arguments, [string] $InputText = '', [hashtable] $Environment = @{}) {
     $process = [Diagnostics.Process]::new()
-    $process.StartInfo = New-Start $Executable $Arguments
+    $process.StartInfo = New-Start $Executable $Arguments $Environment
     try {
         Assert-Smoke ($process.Start()) 'Could not start a local archive fixture.'
         $stdout = $process.StandardOutput.ReadToEndAsync()
@@ -66,8 +67,8 @@ function Invoke-Local([string] $Executable, [string[]] $Arguments, [string] $Inp
     }
 }
 
-function Invoke-Launcher([string[]] $Arguments, [string] $InputText = '') {
-    return Invoke-Local $powershell (@('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $launcher) + $Arguments) $InputText
+function Invoke-Launcher([string[]] $Arguments, [string] $InputText = '', [hashtable] $Environment = @{}) {
+    return Invoke-Local $powershell (@('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $launcher) + $Arguments) $InputText $Environment
 }
 
 function Read-Protocol([Diagnostics.Process] $Process, [string] $Request) {
@@ -125,6 +126,13 @@ try {
     Set-Acl -LiteralPath $fixture -AclObject $acl
     $privateTemp = Join-Path $fixture 'temp'
     [void] [IO.Directory]::CreateDirectory($privateTemp)
+    $unsafeDirectory = Join-Path $fixture 'replaceable'
+    [void] [IO.Directory]::CreateDirectory($unsafeDirectory)
+    $unsafeAcl = Get-Acl -LiteralPath $unsafeDirectory
+    $unsafeAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+        [Security.Principal.SecurityIdentifier]::new('S-1-1-0'), 'Modify', 'ContainerInherit, ObjectInherit', 'None', 'Allow'))
+    Set-Acl -LiteralPath $unsafeDirectory -AclObject $unsafeAcl
+    $unsafeEnvironment = @{ TEMP = $unsafeDirectory; TMP = $unsafeDirectory }
     Expand-Archive -LiteralPath $archive -DestinationPath $fixture
     $distribution = Join-Path $fixture 'netratel-mcp-win-x64'
     $launcher = Join-Path $distribution 'http-mcp-windows.ps1'
@@ -143,45 +151,109 @@ try {
     $secure | Export-Clixml -LiteralPath $credentialFiles[0]
     [Management.Automation.PSCredential]::new('synthetic-account', $secure) | Export-Clixml -LiteralPath $credentialFiles[1]
     $originalHashes = @($credentialFiles | ForEach-Object { (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash })
+    $originalAcls = @($credentialFiles | ForEach-Object { (Get-Acl -LiteralPath $_).Sddl })
+    $fixtureAcl = (Get-Acl -LiteralPath $fixture).Sddl
+    $distributionAcl = (Get-Acl -LiteralPath $distribution).Sddl
     $profiles = @()
+    $launchEntries = @()
     for ($index = 0; $index -lt $credentialFiles.Count; $index++) {
         $profile = Join-Path $fixture "prepared-$index.json"
         $profiles += $profile
-        $prepared = Invoke-Launcher @('-Prepare', '-Profile', $profile, '-Resource', 'https://synthetic.example.invalid/mcp', '-CredentialFile', $credentialFiles[$index])
+        $prepared = Invoke-Launcher @('-Prepare', '-Profile', $profile, '-Resource', 'https://synthetic.example.invalid/mcp', '-CredentialFile', $credentialFiles[$index],
+            '-TemporaryDirectory', $privateTemp, '-StateDirectory', $fixture) '' $unsafeEnvironment
         Assert-Smoke ($prepared.ExitCode -eq 0) 'Preparation of a standard encrypted Windows credential failed.'
         $record = $prepared.Out | ConvertFrom-Json -AsHashtable
+        $launchEntries += $record.launch
         Assert-Smoke ($record.state -eq 'prepared' -and $record.protectedStorage -eq 'windows-powershell-clixml' -and
             $record.consumerSwitch -eq 'pending' -and $record.consumerReconnect -eq 'pending' -and
             $record.nativeLoadedMetadata -eq 'not_observed' -and $record.effectiveAdmission -eq 'not_tested') 'The preparation receipt overstates client reconnect or effective access.'
+        Assert-Smoke ($record.layout.installation -eq $distribution -and $record.layout.encryptedSource -eq $credentialFiles[$index] -and
+            $record.layout.reference -eq $profile -and $record.layout.pendingStateDirectory -eq $fixture -and
+            $record.layout.temporaryDirectory -eq $privateTemp -and $record.launch.args[-2] -eq '-TemporaryDirectory' -and
+            $record.launch.args[-1] -eq $privateTemp) 'The preparation receipt does not reproduce the validated layout.'
         $manifest = Get-Content -LiteralPath $profile -Raw | ConvertFrom-Json -AsHashtable
         Assert-Smoke ($manifest.Count -eq 7 -and $manifest.credentialFileSha256 -ceq $originalHashes[$index].ToLowerInvariant()) 'The nonsecret manifest does not bind the encrypted source.'
         # Malformed stdin is handled locally by the actual archived bridge before any HTTP request.
-        $running = Invoke-Launcher @('-Profile', $profile) "{broken`n"
+        # Execute the returned entry unchanged, even with an unsafe ambient TEMP/TMP.
+        $running = Invoke-Local $record.launch.command @($record.launch.args) "{broken`n" $unsafeEnvironment
         Assert-Smoke ($running.ExitCode -eq 0) 'The actual protected launcher failed its local protocol smoke.'
         $parseError = $running.Out.Trim() | ConvertFrom-Json -AsHashtable
         Assert-Smoke ($parseError.error.code -eq -32700 -and $parseError.ContainsKey('id') -and $null -eq $parseError.id) 'Malformed stdin did not return the expected protocol parse error.'
     }
     $checks.Add('securestring-and-pscredential-dpapi-prepare-run')
+    $checks.Add('returned-launch-entry-reproduces-validated-temporary-directory')
+
+    $unsafeProfile = Join-Path $fixture 'unsafe-temp.json'
+    $unsafeTemp = Invoke-Launcher @('-Prepare', '-Profile', $unsafeProfile, '-Resource', 'https://synthetic.example.invalid/mcp', '-CredentialFile', $credentialFiles[0]) '' $unsafeEnvironment
+    Assert-Smoke ($unsafeTemp.ExitCode -eq 2 -and $unsafeTemp.Error.Contains('stage=preparation; pathRole=temporary-directory') -and
+        -not (Test-Path -LiteralPath $unsafeProfile)) 'An unsafe effective temporary directory did not fail preparation clearly.'
+    foreach ($control in @(
+        @{ Role = 'encrypted-source'; Profile = (Join-Path $fixture 'unsafe-source.json'); Source = (Join-Path $unsafeDirectory 'source.clixml') },
+        @{ Role = 'reference'; Profile = (Join-Path $unsafeDirectory 'reference.json'); Source = $credentialFiles[0] }
+    )) {
+        if ($control.Role -eq 'encrypted-source') {
+            Copy-Item -LiteralPath $credentialFiles[0] -Destination $control.Source
+            $safeSourceAcl = Get-Acl -LiteralPath $credentialFiles[0]
+            $safeSourceAcl.SetAccessRuleProtection($true, $true)
+            Set-Acl -LiteralPath $control.Source -AclObject $safeSourceAcl
+        }
+        $denied = Invoke-Launcher @('-Prepare', '-Profile', $control.Profile, '-Resource', 'https://synthetic.example.invalid/mcp', '-CredentialFile', $control.Source, '-TemporaryDirectory', $privateTemp)
+        Assert-Smoke ($denied.ExitCode -eq 2 -and $denied.Error.Contains('pathRole=' + $control.Role) -and
+            -not (Test-Path -LiteralPath $control.Profile)) 'An unsafe encrypted source or reference ancestor was accepted.'
+    }
+    $unsafeStateProfile = Join-Path $fixture 'unsafe-state.json'
+    $unsafeState = Invoke-Launcher @('-Prepare', '-Profile', $unsafeStateProfile, '-Resource', 'https://synthetic.example.invalid/mcp',
+        '-CredentialFile', $credentialFiles[0], '-TemporaryDirectory', $privateTemp, '-StateDirectory', $unsafeDirectory)
+    Assert-Smoke ($unsafeState.ExitCode -eq 2 -and $unsafeState.Error.Contains('pathRole=pending-state') -and
+        -not (Test-Path -LiteralPath $unsafeStateProfile)) 'An unsafe pending-state directory was accepted.'
+    $checks.Add('unsafe-temp-source-reference-and-state-preparation-rejected')
+
+    $reparse = Join-Path $fixture 'temp-junction'
+    [void] (New-Item -ItemType Junction -Path $reparse -Target $privateTemp)
+    foreach ($invalidTemp in @($reparse, '\\synthetic.invalid\mcp')) {
+        $invalid = Invoke-Launcher @('-Prepare', '-Profile', (Join-Path $fixture 'invalid-temp.json'), '-Resource', 'https://synthetic.example.invalid/mcp',
+            '-CredentialFile', $credentialFiles[0], '-TemporaryDirectory', $invalidTemp)
+        Assert-Smoke ($invalid.ExitCode -eq 2 -and $invalid.Error.Contains('pathRole=temporary-directory')) 'A network or reparse temporary path was accepted.'
+    }
+    Remove-Item -LiteralPath $reparse -Force
+    $checks.Add('network-and-reparse-preparation-rejected')
+
+    $temporaryAcl = Get-Acl -LiteralPath $privateTemp
+    Set-Acl -LiteralPath $privateTemp -AclObject $unsafeAcl
+    $changedTemp = Invoke-Local $launchEntries[0].command @($launchEntries[0].args) "{broken`n"
+    Assert-Smoke ($changedTemp.ExitCode -eq 2 -and $changedTemp.Error.Contains('stage=launch; pathRole=temporary-directory')) 'Runtime did not revalidate the selected temporary path.'
+    Set-Acl -LiteralPath $privateTemp -AclObject $temporaryAcl
+    $checks.Add('runtime-revalidates-selected-temporary-directory')
+
+    # The disposable installation's parent is deliberately replaceable by Everyone.
+    $unsafeInstallation = Join-Path $unsafeDirectory 'installed'
+    Copy-Item -LiteralPath $distribution -Destination $unsafeInstallation -Recurse
+    Set-Acl -LiteralPath $unsafeInstallation -AclObject $acl
+    $unsafeInstall = Invoke-Local $powershell @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', (Join-Path $unsafeInstallation 'http-mcp-windows.ps1'),
+        '-Profile', $profiles[0], '-TemporaryDirectory', $privateTemp)
+    Assert-Smoke ($unsafeInstall.ExitCode -eq 2 -and $unsafeInstall.Error.Contains('pathRole=installation')) 'An unsafe installation ancestor was accepted.'
+    Remove-Item -LiteralPath $unsafeInstallation -Recurse -Force
+    $checks.Add('unsafe-installation-ancestor-rejected')
 
     $profileHash = (Get-FileHash -LiteralPath $profiles[0] -Algorithm SHA256).Hash
-    $overwrite = Invoke-Launcher @('-Prepare', '-Profile', $profiles[0], '-Resource', 'https://synthetic.example.invalid/mcp', '-CredentialFile', $credentialFiles[0])
+    $overwrite = Invoke-Launcher @('-Prepare', '-Profile', $profiles[0], '-Resource', 'https://synthetic.example.invalid/mcp', '-CredentialFile', $credentialFiles[0], '-TemporaryDirectory', $privateTemp)
     Assert-Smoke ($overwrite.ExitCode -eq 2 -and (Get-FileHash -LiteralPath $profiles[0] -Algorithm SHA256).Hash -ceq $profileHash) 'Preparation overwrote an existing profile.'
     $unsupportedSource = Join-Path $fixture 'unsupported.clixml'
     'unsupported-synthetic-object' | Export-Clixml -LiteralPath $unsupportedSource
     $unsupportedProfile = Join-Path $fixture 'unsupported.json'
-    $unsupported = Invoke-Launcher @('-Prepare', '-Profile', $unsupportedProfile, '-Resource', 'https://synthetic.example.invalid/mcp', '-CredentialFile', $unsupportedSource)
+    $unsupported = Invoke-Launcher @('-Prepare', '-Profile', $unsupportedProfile, '-Resource', 'https://synthetic.example.invalid/mcp', '-CredentialFile', $unsupportedSource, '-TemporaryDirectory', $privateTemp)
     Assert-Smoke ($unsupported.ExitCode -eq 2 -and -not (Test-Path -LiteralPath $unsupportedProfile)) 'An unsupported credential object was accepted.'
     $checks.Add('overwrite-and-unsupported-format-rejected')
 
     $staleSource = Join-Path $fixture 'rotation-control.clixml'
     Copy-Item -LiteralPath $credentialFiles[0] -Destination $staleSource
     $staleProfile = Join-Path $fixture 'rotation-control.json'
-    $stalePrepared = Invoke-Launcher @('-Prepare', '-Profile', $staleProfile, '-Resource', 'https://synthetic.example.invalid/mcp', '-CredentialFile', $staleSource)
+    $stalePrepared = Invoke-Launcher @('-Prepare', '-Profile', $staleProfile, '-Resource', 'https://synthetic.example.invalid/mcp', '-CredentialFile', $staleSource, '-TemporaryDirectory', $privateTemp)
     Assert-Smoke ($stalePrepared.ExitCode -eq 0) 'The stale-source control could not be prepared.'
     $staleHash = (Get-FileHash -LiteralPath $staleProfile -Algorithm SHA256).Hash
     $rotated = ConvertTo-SecureString ('synthetic-rotation-' + [Guid]::NewGuid().ToString('N')) -AsPlainText -Force
     $rotated | Export-Clixml -LiteralPath $staleSource # Intentional mutation of a separate disposable control copy.
-    $stale = Invoke-Launcher @('-Profile', $staleProfile) "{broken`n"
+    $stale = Invoke-Launcher @('-Profile', $staleProfile, '-TemporaryDirectory', $privateTemp) "{broken`n"
     Assert-Smoke ($stale.ExitCode -eq 2 -and (Get-FileHash -LiteralPath $staleProfile -Algorithm SHA256).Hash -ceq $staleHash) 'A changed encrypted source was silently consumed.'
     $checks.Add('stale-encrypted-source-rejected')
 
@@ -220,6 +292,7 @@ $stderr = [Console]::OpenStandardError(); $stderr.Write($diagnostics); $stderr.F
 
     for ($index = 0; $index -lt $credentialFiles.Count; $index++) {
         Assert-Smoke ((Get-FileHash -LiteralPath $credentialFiles[$index] -Algorithm SHA256).Hash -ceq $originalHashes[$index]) 'The selected encrypted credential source changed.'
+        Assert-Smoke ((Get-Acl -LiteralPath $credentialFiles[$index]).Sddl -ceq $originalAcls[$index]) 'An original encrypted source ACL changed.'
     }
     foreach ($text in $captured) { Assert-Smoke (-not $text.Contains($token, [StringComparison]::Ordinal)) 'Synthetic plaintext appeared in captured output.' }
     foreach ($file in Get-ChildItem -LiteralPath $fixture -Recurse -File) {
@@ -229,6 +302,8 @@ $stderr = [Console]::OpenStandardError(); $stderr.Write($diagnostics); $stderr.F
     }
     Assert-Smoke (@(Get-ChildItem -LiteralPath $privateTemp -Filter 'netratel-http-client-*.json').Count -eq 0) 'The launcher left temporary client configuration behind.'
     Assert-Smoke ([Environment]::GetEnvironmentVariable('NETRATEL_MCP_CLIENT_INTEGRATION_TOKEN') -ceq $parentToken) 'The parent credential environment changed.'
+    Assert-Smoke ($env:TEMP -ceq $parentTemp -and $env:TMP -ceq $parentTmp -and
+        (Get-Acl -LiteralPath $fixture).Sddl -ceq $fixtureAcl -and (Get-Acl -LiteralPath $distribution).Sddl -ceq $distributionAcl) 'Existing layout ACLs or parent temporary environment changed.'
     $checks.Add('encrypted-source-preserved-no-plaintext-or-temporary-profile')
     [void] [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($receipt))
     [ordered]@{ schemaVersion = 1; state = 'passed'; runtime = 'win-x64'; productVersion = $Version; sourceRevision = $SourceRevision;

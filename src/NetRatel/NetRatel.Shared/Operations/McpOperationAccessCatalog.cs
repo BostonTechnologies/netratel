@@ -54,6 +54,15 @@ public enum McpOperationMinimumRole
 /// </summary>
 public static class McpOperationRoleRequirements
 {
+    /// <summary>Alternative mapped roles accepted by the scope's existing role check; an empty list means no additional mapped-role requirement.</summary>
+    public static IReadOnlyList<string> AnyOfRoles(McpOperationAccessScope requiredScope) => requiredScope switch
+    {
+        McpOperationAccessScope.Observe or McpOperationAccessScope.Files => ["Observer", "Operator", "AutomationOperator"],
+        McpOperationAccessScope.Execute => ["AutomationOperator"],
+        McpOperationAccessScope.Admin => ["PolicyAdministrator"],
+        _ => []
+    };
+
     public static bool IsSatisfied(
         string? toolName,
         string operation,

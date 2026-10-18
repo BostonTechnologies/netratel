@@ -7,7 +7,53 @@ publication integrity and owner functional acceptance are separate stages.
 [campaign #294](https://github.com/BostonTechnologies/netratel/issues/294) remain
 open until the owner explicitly disposes the campaign contexts.
 
-## Beta.23 carry-forward evidence
+## Current authority: final beta.24 evidence and beta.25 order
+
+The final beta.24 root-cause evidence refines the corrected retest, which
+supersedes first-pass interpretations. Production acceptance remains withheld:
+the retained credential has configured application grants but no matching
+persisted Production MCP operator policies. Both original tenant flow reads deny
+before business dispatch. Independently reviewed reconciliation already works in
+isolated Production tests; no live repair, positive tenant business execution or
+admitted hour was achieved. Preserve that reviewed authority path. Do not rewrite
+grant checks, widen delegation, copy a Development blanket policy or silently
+install policies during setup. An Admin-only `policy/evaluate` assertion describes
+its inspection context, not the separate flow call's delegated scope.
+
+The final native ledger has **533 invocations across 114 operations: 307 Passed,
+223 Blocked and 3 invalid tester inputs**. It includes 239 schema-inspection
+attempts and 231 verified selected schemas, not 231 business successes. Separately,
+**438 operation/context rows** comprise 24 direct diagnostic/control successes,
+171 direct denials, 229 uninvoked dependency-linked contexts and 14 prohibited
+contexts. The four-status totals of **24 Passed / 400 Blocked / 14 Prohibited**
+are scope dispositions, not 400 reproduced defects. Keep native resources, prompt
+retrievals, source/protocol tests, launcher diagnostics and synthetic transport
+controls as separate evidence; no native prompt workflow was completed.
+
+Beta.24 verified protected Windows preparation and authenticated diagnostic
+runtime with a complete protected path/temp selection. The actual selected
+consumer switch/reconnect remains unexecuted. Configured-destination API health
+receipts complete [#289](https://github.com/BostonTechnologies/netratel/issues/289)
+within their observed boundary. The beta.24 catalog is **30/231/6/8**; rediscover
+the released/deployed catalog and preserve earlier inventories as history.
+
+| Order | Owner work and completion boundary |
+| --- | --- |
+| 1 | [#301](https://github.com/BostonTechnologies/netratel/issues/301): real independent review, authoritative applied receipt, original intended exact UTC expiry and current Production admission; prove native flow reads in both original tenants. |
+| 2 | [#288](https://github.com/BostonTechnologies/netratel/issues/288): one supported selected-consumer switch/reconnect, actual loaded definitions, caller and admission; finish its progress/cancellation criteria with runtime evidence below. |
+| 3 | [#304](https://github.com/BostonTechnologies/netratel/issues/304): registered disposable targets, current profiles/revisions, reviewed scoped auxiliaries, bounded roots, inert service and verified owned delivery sinks. |
+| 4 | [#305](https://github.com/BostonTechnologies/netratel/issues/305): admitted confirmation/binding/idempotency/readback, runtime, monitoring/flow/event/delivery and lifecycle cases. |
+| 5 | [#306](https://github.com/BostonTechnologies/netratel/issues/306): fresh synthetic secret designation and required reader surfaces/identities; product-side untrusted-context enforcement. |
+| 6 | [#308](https://github.com/BostonTechnologies/netratel/issues/308): eight actual native prompt workflows, saved-dummy autofill, value round trips and populated pagination under controlled change. |
+| 7 | [#310](https://github.com/BostonTechnologies/netratel/issues/310): after all other traffic and review/fixture/alternate-identity phases finish, the isolated admitted hour below; then owned cleanup, effective revocation and preservation checks outside the hour. |
+
+The minimal two-read repair establishes admission only; it does not provision
+full-suite policies, profiles or fixtures. Use exact reviewed operation/target
+bindings and the existing 32-target proposal limit. Source work #302, #303, #307
+and #309 and distribution can finish while legitimate live review remains
+pending. Source completion and release integrity do not complete #294.
+
+## Historical beta.23 carry-forward evidence
 
 Use the final private `report.html` and JSON ledgers rather than the early draft
 report. The final beta.23 decision remains rework before production acceptance.
@@ -37,10 +83,13 @@ and pre-existing sessions while these prerequisites are completed.
 
 ## Connection and reviewed prerequisites
 
-1. Record release/source SHA, configuration revisions, all five deployed registry
-   **manifest** digests and catalog counts. Local image configuration hashes are
-   separate. Preserve the original **30/223/6/8** inventory and beta.23's
-   **30/229/6/8** inventory with all existing matrix rows. The six added
+1. Record release/source SHA, configuration revisions and registry **manifest**
+   digests for the components actually deployed. Verify all five public image
+   families against the publication record for distribution integrity, including
+   anonymous pulls; a selected Windows consumer does not require deployment of
+   the client container. Local image configuration hashes are separate. Preserve
+   the original **30/223/6/8**, beta.23 **30/229/6/8** and beta.24 **30/231/6/8**
+   inventories with all existing matrix rows. The six added
    `netratel_access` operations were `request`, `requests`, `receipt`, `resume`,
    `cancel` and `credential`. Beta.24 also adds read-only
    `netratel_capabilities/status` and `schema`: rediscover the selected deployed
@@ -57,7 +106,9 @@ and pre-existing sessions while these prerequisites are completed.
    retained credential and preserve its **owner-requested exact UTC expiry**;
    restarting the campaign does not restart its approval window. Record the actual
    UI/server expiry separately; the owner-requested instant was not applied in
-   the assessed campaigns.
+   the assessed campaigns. Obtain actual independent approval and verify applied
+   Production policies through #301; a prepared, pending, expired or cancelled
+   request supplies no admission authority.
 4. Discover each original approved tenant and designated target independently,
    following published search pagination and clarifying ambiguity. Inspect
    configured grants, delegation and policy/tenant/target admission separately.
@@ -80,7 +131,8 @@ current tenant/agent binding; a GUID retained in a historical run is not a verif
 positive execution target.
 
 The eight existing live agents and two original tenants remain protected: no
-delete/update/disable/reboot/reenrollment or service control against them. Production
+delete/update/disable/reboot/reenrollment/reconfiguration, commands, terminal
+sessions or service control against them. Production
 delivery and fabricated operator AI decisions remain Prohibited. Reconcile actual
 state before retrying an uncertain mutation; the bridge never automatically replays it.
 
@@ -125,7 +177,8 @@ gh workflow run integration-validation.yml --repo BostonTechnologies/netratel \
 ```
 
 This selection exercises independent reviewed setup and actual reads in synthetic
-tenants, the shipped protected health gateway and gated bridge streaming/recovery.
+tenants in both Development and Production, the shipped protected health gateway
+(three protocol cases minimum) and gated bridge streaming/recovery.
 It is a protocol/client integration receipt, not an actual AI-host invocation or
 the original owner-tenant campaign. Browser selection with
 `browser_classes=NetRatel.Web.PlaywrightTests.JobsAutofillAcceptanceTests` retains
@@ -133,8 +186,10 @@ the existing saved-account control; record the actual owner deployed form separa
 
 ## Original paced comparison
 
-After both original tenant reads succeed, repeat **60 minutes, one call every
-15 seconds, concurrency one, 240 calls**, in this exact order:
+After both original tenant reads succeed and #288, #305, #306 and #308 and all
+associated diagnostic/review/fixture/alternate-identity traffic finish, use the
+actual selected native AI-host invocation path for **60 minutes, one call every
+15 seconds, concurrency one, 240 calls**, in this exact order repeated 60 times:
 
 1. Tenant A: `netratel_flows` with `{"operation":"list","request":{"tenantId":17}}`.
 2. Server: `netratel_auth` with `{"operation":"status"}`.
@@ -143,10 +198,17 @@ After both original tenant reads succeed, repeat **60 minutes, one call every
 
 17 and 29 are synthetic placeholders: use the two independently resolved original
 IDs. Server calls have no tenant argument. Record scheduled/actual UTC start,
-monotonic latency, outcome and cadence deviation for each call; never overlap slow
-calls to recover cadence. Expected admitted workload is 120 core successes and
-60 successful reads per tenant. Report actual completion time and deviations.
-Keep fault/lifecycle/fixture-change phases separate.
+finish, monotonic duration, ordinal, outcome, correlation/evidence reference and
+cadence deviation for each call. Schedule starts at offsets **0, 15, 30 through
+3585 seconds**, retaining the observation window through **3600 seconds**. Never
+overlap slow calls, interleave other traffic, perform reviews/maintenance, issue
+catch-up bursts or replace failed slots with extra calls. Expected admitted
+workload is 120 core successes and 60 successful reads per tenant. Report actual
+completion time and deviations, with separate core/per-tenant latency
+distributions, sample counts and percentile method. Preserve overruns, transport
+failures and interruptions as observed; a later rerun is a new identified phase,
+not a rewritten ledger. Keep fault/lifecycle/fixture-change and cleanup phases
+outside the measured window.
 
 Historical results were 120 core successes, 120 tenant denials and zero transport
 exceptions in each completed hour:
@@ -172,8 +234,9 @@ acceptance decision.
 
 ## Checkpoint, cleanup and handoff
 
-Retain original case IDs, the original 430 operation/context rows and the beta.23
-436-row expansion; add rows for newly discovered operations and required contexts.
+Retain original case IDs, the original 430 operation/context rows, beta.23's
+436-row expansion and final beta.24's 438 rows, all 21 retained NR/NR23 finding
+IDs, 14 gap IDs and G01–G12; add rows for newly discovered operations and required contexts.
 Record Passed, Failed, Blocked or Prohibited with observable postconditions and
 evidence. Track invalid test inputs and their corrected follow-ups separately
 from product failures. Preserve the original `ai-quality-scores.json` and

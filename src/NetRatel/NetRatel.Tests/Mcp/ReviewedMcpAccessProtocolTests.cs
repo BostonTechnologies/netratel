@@ -39,13 +39,15 @@ namespace NetRatel.Tests.Mcp;
 
 public sealed class ReviewedMcpAccessProtocolTests
 {
-    [Fact]
-    public async Task Native_request_independent_approval_resume_then_actual_reads_in_two_tenants()
+    [Theory]
+    [InlineData("Development", "dev")]
+    [InlineData("Production", "prod")]
+    public async Task Native_request_independent_approval_resume_then_actual_reads_in_two_tenants(string environment, string instance)
     {
         await using var fixture = await ReviewedMcpAccessTests.Fixture.CreateAsync();
         var key = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("reviewed-protocol-key-at-least-thirty-two-bytes"));
         var options = new McpOperatorDelegationOptions { Enabled = true, Issuer = "netratel-mcp-dev", Audience = "netratel-api-dev", ServicePrincipal = "netratel-mcp-http-dev", KeyId = "reviewed-test", SharedKeyBase64 = key };
-        var apiBuilder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Development });
+        var apiBuilder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = environment });
         apiBuilder.WebHost.UseTestServer();
         apiBuilder.Configuration["Integration:HttpMcp:PublicResourceUri"] = ReviewedMcpAccessTests.Fixture.Resource;
         apiBuilder.Services.Configure<DeploymentBrandingOptions>(branding => branding.SiteUrl = ReviewedMcpAccessTests.Fixture.Origin);
@@ -80,15 +82,17 @@ public sealed class ReviewedMcpAccessProtocolTests
         await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new NetRatel.AgentClient.AgentClientConfiguration("https://api.example.test", "https://issuer.example.test/token", "gateway", "agent", "synthetic", "mcp:read"), NetRatel.AgentClient.AgentClientConfiguration.JsonOptions));
         try
         {
-            var mcpBuilder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Development });
+            var mcpBuilder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = environment });
             mcpBuilder.WebHost.UseTestServer();
             mcpBuilder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["NetRatel:Mcp:Http:PublicResourceUri"] = ReviewedMcpAccessTests.Fixture.Resource,
                 ["NetRatel:Mcp:Http:AllowedOrigins:0"] = "https://operator.example.test",
-                ["NetRatel:Mcp:Http:Instance"] = "dev", ["NetRatel:Mcp:Http:OperatorSurfaceEnabled"] = "true",
-                ["NetRatel:Mcp:Http:ConfigurationPath"] = configPath, ["NetRatel:Mcp:Http:DevApiBaseUrl"] = "https://api.example.test",
-                ["NetRatel:Mcp:Http:ProdApiBaseUrl"] = "https://prod-api.example.test", ["NetRatel:Mcp:Http:LocalCredentialMode"] = "true",
+                ["NetRatel:Mcp:Http:Instance"] = instance, ["NetRatel:Mcp:Http:OperatorSurfaceEnabled"] = "true",
+                ["NetRatel:Mcp:Http:ConfigurationPath"] = configPath,
+                ["NetRatel:Mcp:Http:DevApiBaseUrl"] = instance == "dev" ? "https://api.example.test" : "https://dev-api.example.test",
+                ["NetRatel:Mcp:Http:ProdApiBaseUrl"] = instance == "prod" ? "https://api.example.test" : "https://prod-api.example.test",
+                ["NetRatel:Mcp:Http:LocalCredentialMode"] = "true",
                 ["NetRatel:Mcp:Delegation:Enabled"] = "true", ["NetRatel:Mcp:Delegation:Issuer"] = options.Issuer,
                 ["NetRatel:Mcp:Delegation:Audience"] = options.Audience, ["NetRatel:Mcp:Delegation:ServicePrincipal"] = options.ServicePrincipal,
                 ["NetRatel:Mcp:Delegation:KeyId"] = options.KeyId, ["NetRatel:Mcp:Delegation:SharedKeyBase64"] = key
@@ -111,8 +115,12 @@ public sealed class ReviewedMcpAccessProtocolTests
                 Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
             }
             Assert.Empty(await fixture.Identity.IntegrationPairingRequests.ToArrayAsync());
-            var before = await CallAsync(client, "netratel_flows", "list", new { tenantId = 17 });
-            Assert.False(before.GetProperty("success").GetBoolean());
+            foreach (var tenant in new[] { 17, 29 })
+            {
+                var before = await CallAsync(client, "netratel_flows", "list", new { tenantId = tenant });
+                Assert.False(before.GetProperty("success").GetBoolean());
+                Assert.Equal("tenant_not_authorized", before.GetProperty("error").GetProperty("code").GetString());
+            }
             var proposal = fixture.Proposal("reconcile", Guid.Parse(fixture.Credential.CredentialId).ToString("D").ToUpperInvariant()) with { ExpiresAtUtc = DateTimeOffset.Parse("2030-04-01T10:11:12.123456Z") };
             var invalidNative = JsonSerializer.SerializeToNode(proposal, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
             invalidNative["expiresAtUtc"] = "2030-04-01T10:11:12.12345601Z";
@@ -245,7 +253,7 @@ public sealed class ReviewedMcpAccessProtocolTests
                     using var failure = JsonDocument.Parse(errorBody);
                     if (failure.RootElement.ValueKind == JsonValueKind.Object &&
                         failure.RootElement.TryGetProperty("code", out var codeValue) && codeValue.ValueKind == JsonValueKind.String &&
-                        IntegrationPairingFailure.IsKnownCode(codeValue.GetString()))
+                        (IntegrationPairingFailure.IsKnownCode(codeValue.GetString()) || codeValue.GetString() == "tenant_not_authorized"))
                     {
                         code = codeValue.GetString();
                         if (failure.RootElement.TryGetProperty("correlationId", out var correlationValue) && correlationValue.ValueKind == JsonValueKind.String)
