@@ -42,10 +42,13 @@ public sealed partial class IntegrationPairingService
         if (authentication != "current_credential_valid") missing.Add("Current credential authentication is " + authentication + ".");
         if (state != "active") missing.Add("The credential is " + state + "; configured grants do not establish usable access.");
         if (admissions.Any(x => !x.OwnerPermissionGranted)) missing.Add("Current durable owner permissions do not include every selected operation.");
-        if (admissions.Any(x => !x.TenantVisible || x.PolicyAllowed == false))
-            missing.Add(environment == McpOperatorEnvironment.Production
-                ? "Matching Production operator policies are a separate prerequisite; configured application grants do not install them."
-                : "Current tenant or operation policies do not admit every selected operation.");
+        var missingProductionPolicy = environment == McpOperatorEnvironment.Production && state == "active" &&
+            admissions.Any(x => x.ApplicationGrantConfigured && x.OwnerPermissionGranted &&
+                x.FailureCode is "tenant_not_authorized" or "target_policy_missing");
+        if (missingProductionPolicy)
+            missing.Add("Matching Production operator policies are a separate prerequisite; configured application grants do not install them.");
+        else if (admissions.Any(x => !x.TenantVisible || x.PolicyAllowed == false))
+            missing.Add("One or more selected operations is not admitted; inspect its exact failure code and current prerequisites.");
         if (admissions.Any(x => x.PolicyAdmissionStatus == "conditional_runtime_unverified")) missing.Add("Agent runtime readiness and operation capability remain unverified.");
         if (targets.Count == 0) missing.Add("No catalogued read sample was selected; inspect an exact operation and target through the reviewed access flow.");
         if (truncated) missing.Add("Only the first 32 named read samples are shown. Select exact targets to inspect additional admission.");
