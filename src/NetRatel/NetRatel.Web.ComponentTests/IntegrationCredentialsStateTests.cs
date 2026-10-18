@@ -234,7 +234,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         configured.EffectiveAdmission.Should().OnlyContain(x => x.ApplicationGrantConfigured && !x.AuthorizationAdmitted);
         var view = Render<CredentialAdmissionView>(p => p.Add(x => x.Admission, configured));
         view.Markup.Should().Contain("Matching Production operator policies").And.Contain("current durable owner permission")
-            .And.Contain("2030-04-01T10:11:12.0000000Z").And.NotContain("synthetic-one-time-secret");
+            .And.Contain("2030-04-01T10:11:12.000000Z").And.NotContain("synthetic-one-time-secret");
         Call(page.Instance, "CloseCreate");
         var credential = ((System.Collections.IEnumerable)Field<object>(page.Instance, "_credentials")).Cast<object>().Single();
         transport.Admission = Admission(true);

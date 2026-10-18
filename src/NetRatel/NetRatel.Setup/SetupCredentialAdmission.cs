@@ -41,7 +41,7 @@ public sealed partial class SetupSession
                 var facts = string.Join("; ", admission.EffectiveAdmission.Select(x =>
                     $"{x.Target.Tool}/{x.Target.Operation} tenant={x.Target.TenantId}: configured={x.ApplicationGrantConfigured}, owner={x.OwnerPermissionGranted}, visible={x.TenantVisible}, policy={x.PolicyAdmissionStatus}, result={x.FailureCode ?? "authorization_admitted"}, readiness={x.TargetReadiness}, capability={x.CapabilityAvailability}"));
                 return new("current admission", admissionStatus,
-                    $"Lifecycle={admission.CredentialState}; authentication validity={admission.AuthenticationStatus}; binding={admission.Resource} {admission.Instance} {admission.Environment}; exact expiry={admission.CredentialExpiresAtUtc.UtcDateTime:O}. {facts}. " +
+                    $"Lifecycle={admission.CredentialState}; authentication validity={admission.AuthenticationStatus}; binding={admission.Resource} {admission.Instance} {admission.Environment}; exact expiry={DisplayAdmissionExpiry(admission.CredentialExpiresAtUtc)}. {facts}. " +
                     string.Join(" ", admission.RemainingPrerequisites), reply.Status)
                 { Layer = "admission", Code = authorized ? null : admissionStatus == "not_checked" ? "admission_not_checked" : "admission_prerequisite_missing", NextAction = admission.NextAction, Admission = admission };
             }
@@ -49,4 +49,11 @@ public sealed partial class SetupSession
         return new("current admission", "unavailable", "The owned current admission view is unavailable; authentication success does not establish configured grants, tenant admission or runtime readiness.", reply.Status)
         { Layer = "admission", Code = "admission_unavailable", NextAction = next };
     }
+    private static string DisplayAdmissionExpiry(DateTimeOffset instant)
+    {
+        var utc = instant.ToUniversalTime();
+        return ReviewedMcpAccessExpiry.IsSupported(utc) ? ReviewedMcpAccessExpiry.Format(utc)
+            : utc.UtcDateTime.ToString("O") + " (precision requires review; not supported in a reviewed proposal)";
+    }
+
 }

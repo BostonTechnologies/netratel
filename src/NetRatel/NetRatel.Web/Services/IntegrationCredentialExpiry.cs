@@ -14,6 +14,12 @@ public static class IntegrationCredentialExpiry
         return reference.Add(TimeSpan.FromHours(30 * 24));
     }
     public static string Format(DateTimeOffset instant) => ReviewedMcpAccessExpiry.Format(instant);
+    public static string Display(DateTimeOffset instant)
+    {
+        var utc = instant.ToUniversalTime();
+        return ReviewedMcpAccessExpiry.IsSupported(utc) ? Format(utc)
+            : utc.UtcDateTime.ToString("O") + " (precision requires review; not supported in a reviewed proposal)";
+    }
     public static DateTimeOffset? ParseUtcInstant(string? value) => ReviewedMcpAccessExpiry.TryParse(value, out var instant) ? instant : null;
     // Retained only for compatibility with historical callers. Creation and approval use ParseUtcInstant.
     public static DateTimeOffset? EndOfUtcDay(DateTime? selectedDate) => selectedDate is null ? null :
