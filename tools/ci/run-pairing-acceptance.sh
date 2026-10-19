@@ -92,7 +92,9 @@ trap cleanup_failure EXIT
 build() {
   PAIRING_STAGE="$2-build"
   PAIRING_BUILD_LOG="$2-build.log"
-  "$DOTNET_PAIRING_HOST" build "$1" --configuration Debug -m:1 -nr:false > "$NETRATEL_PAIRING_RUNTIME_ROOT/$2-build.log" 2>&1
+  # The workflow's NetRatel VERSION would otherwise become MSBuild's Version
+  # property in the companion checkout as well. Each root owns its own version.
+  env -u VERSION "$DOTNET_PAIRING_HOST" build "$1" --configuration Debug -m:1 -nr:false > "$NETRATEL_PAIRING_RUNTIME_ROOT/$2-build.log" 2>&1
 }
 build "$NETRATEL_PAIRING_SOURCE_ROOT/src/NetRatel/NetRatel.Migrations/NetRatel.Migrations.csproj" nr-migrations
 build "$NETRATEL_PAIRING_SOURCE_ROOT/src/NetRatel/NetRatel.API/NetRatel.API.csproj" nr-api
