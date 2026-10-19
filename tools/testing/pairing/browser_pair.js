@@ -230,7 +230,9 @@ async function visiblePair(page, consumer, generatorPage, generator, mappingName
   await expect(page).toHaveURL(consumer.web + '/account/integration-credentials');
   const final = page.getByTestId(ids.final);
   await expect(final).toBeVisible();
-  await expect(final.getByRole('button', { name: 'Save', exact: true })).toHaveCount(1);
+  const finalDialog = page.getByRole('dialog').filter({ has: final });
+  await expect(finalDialog).toHaveCount(1);
+  await expect(finalDialog.getByRole('button', { name: 'Save', exact: true })).toHaveCount(1);
   await expect(final.getByRole('checkbox')).toHaveCount(2);
   await expect(final.getByRole('checkbox', { name: /^Run automation/ })).not.toBeChecked();
   await visualMatrix(page, consumer.name + '-paired-finalization');
@@ -254,7 +256,7 @@ async function visiblePair(page, consumer, generatorPage, generator, mappingName
   }
   else await expect(page.getByTestId(ids.rdCustomer)).toHaveCount(0);
   await final.getByRole('checkbox', { name: /^Run automation/ }).setChecked(capabilities.automation);
-  await expect(final.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+  await expect(finalDialog.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
   const nameInput = final.getByLabel('Connection name', { exact: true });
   const nrChoice = page.getByTestId(ids.nrTenant).and(page.getByRole('combobox'));
   const rdChoice = page.getByTestId(ids.rdOrg).and(page.getByRole('combobox'));
@@ -293,7 +295,7 @@ async function visiblePair(page, consumer, generatorPage, generator, mappingName
       reference, controlState: await saveControl.count() ? await saveControl.isDisabled() ? 'disabled' : 'enabled' : 'absent' };
   };
   try {
-    await final.getByRole('button', { name: 'Save', exact: true }).click();
+    await finalDialog.getByRole('button', { name: 'Save', exact: true }).click();
     // Wait for this one async Save's real outcome at the existing page action deadline.
     await connected.or(saveError).first().waitFor({ state: 'visible' });
     await expect(page.getByTestId(ids.success)).toContainText('Connected');
@@ -359,7 +361,7 @@ async function main() {
     await account(nrPage, nr);
     const selected = nrPage.getByTestId(identifiers.netratel.row).filter({ hasText: first.mapping.name });
     await selected.getByTestId(identifiers.netratel.view).click();
-    await expect(nrPage.getByTestId(identifiers.netratel.final)).toContainText('Connection configuration');
+    await expect(nrPage.getByRole('dialog').filter({ has: nrPage.getByTestId(identifiers.netratel.final) })).toContainText('Connection configuration');
     await nrPage.getByRole('button', { name: /^(Back to connections|Close)$/ }).click();
     const beforeTest = JSON.parse(execFileSync('python3', [path.join(__dirname, 'native_pair.py'), 'counts'], { encoding: 'utf8' }));
     await selected.getByTestId(identifiers.netratel.test).click();
