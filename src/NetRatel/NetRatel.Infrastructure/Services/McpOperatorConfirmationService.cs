@@ -96,6 +96,9 @@ public sealed class McpOperatorConfirmationService(OrchestratorDbContext db) : I
         if (plan.ConsumedAtUtc is not null)
             return McpOperatorConfirmationAdmission.Denied("confirmation_plan_stale");
 
+        if (request.ReplayOnly)
+            return new McpOperatorConfirmationAdmission(false, false, null, null, null, null);
+
         var idempotency = new McpOperatorIdempotencyRecord
         {
             Id = Guid.NewGuid(),

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -189,11 +190,28 @@ public static class McpOperatorJobEndpoints
         if (result.Failure is { } failure) return failure;
         var context = result.Context!;
         if (!HasPlan(request.PlanToken, request.IdempotencyKey)) return Failure("confirmation_plan_invalid", context);
+        var confirmationRequest = new McpOperatorConfirmationRequest(request.PlanToken!, request.IdempotencyKey!, MutationHash(action, request), context.Decision);
+        // Successful mutations advance the version or hide the definition. Only
+        // an authenticated existing admission may bypass those mutable checks;
+        // fresh stale/invalid attempts must not consume their confirmation plan.
+        var replayRequest = confirmationRequest with { ReplayOnly = true };
+        var replay = await confirmations.ConfirmAsync(replayRequest, cancellationToken).ConfigureAwait(false);
+        if (replay.FailureCode is { } replayCode) return Failure(replayCode, context);
+        if (replay.IsReplay) return await ReplayMutationAsync(action, request, replay, jobs, context, cancellationToken).ConfigureAwait(false);
         var validation = await ValidateMutationAsync(action, request, jobs, context, cancellationToken).ConfigureAwait(false);
-        if (validation.FailureCode is { } code) return Failure(code, context);
-        var confirmation = await confirmations.ConfirmAsync(new McpOperatorConfirmationRequest(request.PlanToken!, request.IdempotencyKey!, MutationHash(action, request), context.Decision), cancellationToken).ConfigureAwait(false);
+        if (validation.FailureCode is { } code)
+        {
+            // A concurrent confirmation can finish between the replay lookup
+            // and validation. Reconcile it without admitting a new dispatch.
+            replay = await confirmations.ConfirmAsync(replayRequest, cancellationToken).ConfigureAwait(false);
+            if (replay.FailureCode is { } concurrentCode) return Failure(concurrentCode, context);
+            return replay.IsReplay
+                ? await ReplayMutationAsync(action, request, replay, jobs, context, cancellationToken).ConfigureAwait(false)
+                : Failure(code, context);
+        }
+        var confirmation = await confirmations.ConfirmAsync(confirmationRequest, cancellationToken).ConfigureAwait(false);
         if (confirmation.FailureCode is { } confirmationCode) return Failure(confirmationCode, context);
-        if (confirmation.IsReplay) return await ReplayMutationAsync(action, confirmation, jobs, context, cancellationToken).ConfigureAwait(false);
+        if (confirmation.IsReplay) return await ReplayMutationAsync(action, request, confirmation, jobs, context, cancellationToken).ConfigureAwait(false);
         if (!confirmation.IsNewDispatch || confirmation.IdempotencyId is not { } idempotencyId) return Failure("confirmation_plan_invalid", context);
 
         try
@@ -201,7 +219,8 @@ public static class McpOperatorJobEndpoints
             var audit = await admission.RecordAcceptedAsync(context.Request, cancellationToken).ConfigureAwait(false);
             var mutation = await ApplyMutationAsync(action, request, jobs, context.Decision, audit, cancellationToken).ConfigureAwait(false);
             if (mutation is null) { await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, "job_not_found", CancellationToken.None).ConfigureAwait(false); return Failure("job_not_found", context); }
-            await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, mutation.Value.Job.JobId.ToString(), cancellationToken).ConfigureAwait(false);
+            var resultReference = string.Create(CultureInfo.InvariantCulture, $"job-mutation:{mutation.Value.Job.JobId}:{mutation.Value.Job.Version}:{mutation.Value.ItemId}");
+            await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, resultReference, cancellationToken).ConfigureAwait(false);
             return Results.Ok(new McpOperatorJobMutationResult(Decimal(mutation.Value.Job.JobId), Decimal(mutation.Value.Job.Version), Decimal(mutation.Value.ItemId), action == "delete", false, context.CorrelationId));
         }
         catch (McpOperatorJobConcurrencyException)
@@ -408,11 +427,25 @@ public static class McpOperatorJobEndpoints
         if (result.Failure is { } failure) return failure;
         var context = result.Context!;
         if (!HasPlan(request.PlanToken, request.IdempotencyKey)) return Failure("confirmation_plan_invalid", context);
+        var confirmationRequest = new McpOperatorConfirmationRequest(request.PlanToken!, request.IdempotencyKey!, RunActionHash(action, runId, request.Reason), context.Decision);
+        var replayRequest = confirmationRequest with { ReplayOnly = true };
+        var replay = await confirmations.ConfirmAsync(replayRequest, cancellationToken).ConfigureAwait(false);
+        if (replay.FailureCode is { } replayCode) return Failure(replayCode, context);
+        if (replay.IsReplay) return await ReplayRunActionAsync(runId, replay, jobs, context, cancellationToken).ConfigureAwait(false);
         var run = await GetOwnedRunAsync(runId, jobs, context, cancellationToken).ConfigureAwait(false);
-        if (run is null || run.TargetSetDigest != context.Decision.Request.TargetSetDigest || (action == "cancel" && IsTerminal(run.State)) || (action == "delete" && !IsTerminal(run.State))) return Failure("job_run_action_invalid", context);
-        var confirmation = await confirmations.ConfirmAsync(new McpOperatorConfirmationRequest(request.PlanToken!, request.IdempotencyKey!, RunActionHash(action, runId, request.Reason), context.Decision), cancellationToken).ConfigureAwait(false);
+        if (run is null || run.TargetSetDigest != context.Decision.Request.TargetSetDigest || (action == "cancel" && IsTerminal(run.State)) || (action == "delete" && !IsTerminal(run.State)))
+        {
+            // Cancellation can finish, or deletion can hide the run, while the
+            // same confirmation is being retried. Fresh invalid plans stay unused.
+            replay = await confirmations.ConfirmAsync(replayRequest, cancellationToken).ConfigureAwait(false);
+            if (replay.FailureCode is { } concurrentCode) return Failure(concurrentCode, context);
+            return replay.IsReplay
+                ? await ReplayRunActionAsync(runId, replay, jobs, context, cancellationToken).ConfigureAwait(false)
+                : Failure("job_run_action_invalid", context);
+        }
+        var confirmation = await confirmations.ConfirmAsync(confirmationRequest, cancellationToken).ConfigureAwait(false);
         if (confirmation.FailureCode is { } code) return Failure(code, context);
-        if (confirmation.IsReplay) return ReplayRunAction(confirmation, run, context);
+        if (confirmation.IsReplay) return await ReplayRunActionAsync(runId, confirmation, jobs, context, cancellationToken).ConfigureAwait(false);
         if (!confirmation.IsNewDispatch || confirmation.IdempotencyId is not { } idempotencyId) return Failure("confirmation_plan_invalid", context);
         try
         {
@@ -436,7 +469,8 @@ public static class McpOperatorJobEndpoints
                 await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, "job_run_action_invalid", CancellationToken.None).ConfigureAwait(false);
                 return Failure("job_run_action_invalid", context);
             }
-            await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, runId.ToString(), cancellationToken).ConfigureAwait(false);
+            var resultReference = string.Create(CultureInfo.InvariantCulture, $"job-run-action:{runId}:{updated.State}");
+            await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, resultReference, cancellationToken).ConfigureAwait(false);
             return Results.Ok(new McpOperatorJobRunResult(runId.ToString(), updated.State, false, context.CorrelationId));
         }
         catch (McpOperatorAdmissionRejectedException rejection)
@@ -523,14 +557,32 @@ public static class McpOperatorJobEndpoints
 
     private static (McpOperatorJobLease Job, long? ItemId)? ToMutation(McpOperatorJobLease? job) => job is null ? null : (job, null);
 
-    private static async Task<IResult> ReplayMutationAsync(string action, McpOperatorConfirmationAdmission confirmation, IMcpOperatorJobStore jobs, McpOperatorJobContext context, CancellationToken cancellationToken)
+    private static async Task<IResult> ReplayMutationAsync(string action, McpOperatorJobMutationRequest request, McpOperatorConfirmationAdmission confirmation, IMcpOperatorJobStore jobs, McpOperatorJobContext context, CancellationToken cancellationToken)
     {
         if (confirmation.Outcome == McpOperatorIdempotencyOutcome.Pending) return Failure("idempotency_pending", context);
-        if (confirmation.Outcome != McpOperatorIdempotencyOutcome.Succeeded || !long.TryParse(confirmation.ResultReference, out var jobId)) return Failure("idempotency_replay_unavailable", context);
-        if (action == "delete") return Results.Ok(new McpOperatorJobMutationResult(Decimal(jobId), "0", null, true, true, context.CorrelationId));
-        var job = await GetOwnedJobAsync(jobId, jobs, context, cancellationToken).ConfigureAwait(false);
-        return job is null ? Failure("idempotency_replay_unavailable", context) : Results.Ok(new McpOperatorJobMutationResult(Decimal(job.JobId), Decimal(job.Version), null, false, true, context.CorrelationId));
+        if (confirmation.Outcome != McpOperatorIdempotencyOutcome.Succeeded || ReadMutationReference(confirmation.ResultReference) is not { } recorded ||
+            (action != "create" && request.JobId != recorded.JobId)) return Failure("idempotency_replay_unavailable", context);
+        var job = await jobs.GetOwnedForReplayAsync(recorded.JobId, context.TenantId, context.AgentId,
+            context.Request.Principal, context.Request.McpResource!, context.Request.McpInstance!, cancellationToken).ConfigureAwait(false);
+        if (job is null || job.TargetSetDigest != context.Decision.Request.TargetSetDigest) return Failure("idempotency_replay_unavailable", context);
+        // Older receipts retained only the job id. They still require current
+        // ownership, and can report only the current owner/tombstone version;
+        // their original version and created item id cannot be reconstructed.
+        return Results.Ok(new McpOperatorJobMutationResult(Decimal(recorded.JobId), Decimal(recorded.Version ?? job.Version),
+            Decimal(recorded.ItemId), action == "delete", true, context.CorrelationId));
     }
+
+    private static MutationReference? ReadMutationReference(string? reference)
+    {
+        if (PositiveDecimal(reference, out var legacyJobId)) return new(legacyJobId, null, null);
+        if (reference?.Split(':') is not ["job-mutation", var jobIdText, var versionText, var itemIdText] ||
+            !PositiveDecimal(jobIdText, out var jobId) || !PositiveDecimal(versionText, out var version)) return null;
+        if (itemIdText.Length == 0) return new(jobId, version, null);
+        return PositiveDecimal(itemIdText, out var itemId) ? new(jobId, version, itemId) : null;
+    }
+
+    private static bool PositiveDecimal(string? value, out long parsed) =>
+        long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out parsed) && parsed > 0;
 
     private static async Task<JobRunStartValidation> CanStartAsync(long jobId, McpOperatorJobRunRequest request, IMcpOperatorJobStore jobs, McpOperatorJobContext context, CancellationToken cancellationToken)
     {
@@ -551,10 +603,28 @@ public static class McpOperatorJobEndpoints
         return run is null ? Failure("idempotency_replay_unavailable", context) : Results.Ok(new McpOperatorJobRunResult(runId.ToString(), run.State, true, context.CorrelationId));
     }
 
-    private static IResult ReplayRunAction(McpOperatorConfirmationAdmission confirmation, McpOperatorJobRunLease run, McpOperatorJobContext context) =>
-        confirmation.Outcome == McpOperatorIdempotencyOutcome.Succeeded && confirmation.ResultReference == run.RunId.ToString()
-            ? Results.Ok(new McpOperatorJobRunResult(run.RunId.ToString(), run.State, true, context.CorrelationId))
-            : Failure(confirmation.Outcome == McpOperatorIdempotencyOutcome.Pending ? "idempotency_pending" : "idempotency_replay_unavailable", context);
+    private static async Task<IResult> ReplayRunActionAsync(ulong runId, McpOperatorConfirmationAdmission confirmation,
+        IMcpOperatorJobStore jobs, McpOperatorJobContext context, CancellationToken cancellationToken)
+    {
+        var run = await jobs.GetRunOwnedForReplayAsync(runId, context.TenantId, context.AgentId, context.Request.Principal,
+            context.Request.McpResource!, context.Request.McpInstance!, cancellationToken).ConfigureAwait(false);
+        if (run is null || run.TargetSetDigest != context.Decision.Request.TargetSetDigest) return Failure("idempotency_replay_unavailable", context);
+        if (confirmation.Outcome == McpOperatorIdempotencyOutcome.Pending) return Failure("idempotency_pending", context);
+        if (confirmation.Outcome != McpOperatorIdempotencyOutcome.Succeeded || ReadRunActionReference(confirmation.ResultReference) is not { } recorded ||
+            recorded.RunId != runId) return Failure("idempotency_replay_unavailable", context);
+        // Integer-only legacy receipts can report only the current owned run
+        // state. New receipts retain the original confirmation response state.
+        return Results.Ok(new McpOperatorJobRunResult(runId.ToString(CultureInfo.InvariantCulture), recorded.State ?? run.State, true, context.CorrelationId));
+    }
+
+    private static RunActionReference? ReadRunActionReference(string? reference)
+    {
+        if (PositiveDecimal(reference, out var legacyRunId)) return new((ulong)legacyRunId, null);
+        if (reference?.Split(':') is not ["job-run-action", var runIdText, var stateText] ||
+            !PositiveDecimal(runIdText, out var runId) || !Enum.TryParse<JobRunState>(stateText, out var state) ||
+            !Enum.IsDefined(state) || state.ToString() != stateText) return null;
+        return new((ulong)runId, stateText);
+    }
 
     private static async Task<McpOperatorJobLease?> GetOwnedJobAsync(long jobId, IMcpOperatorJobStore jobs, McpOperatorJobContext context, CancellationToken cancellationToken) =>
         await jobs.GetOwnedAsync(jobId, context.TenantId, context.AgentId, context.Request.Principal, context.Request.McpResource!, context.Request.McpInstance!, cancellationToken).ConfigureAwait(false);
@@ -712,6 +782,9 @@ public static class McpOperatorJobEndpoints
 
     private sealed record McpOperatorJobContext(McpOperatorRouteAccessRequest Request, McpOperatorDecision Decision, string RequiredScope, string Tool, string Operation, int TenantId, Guid AgentId, string CorrelationId);
     private sealed record McpOperatorJobContextResult(McpOperatorJobContext? Context, IResult? Failure);
+    private readonly record struct MutationReference(long JobId, long? Version, long? ItemId);
+    private readonly record struct RunActionReference(ulong RunId, string? State);
+
     private readonly record struct MutationValidation(string? FailureCode)
     {
         public static MutationValidation Valid { get; } = new(null);
