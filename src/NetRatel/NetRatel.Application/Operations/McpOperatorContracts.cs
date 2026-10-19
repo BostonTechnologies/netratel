@@ -484,7 +484,14 @@ public sealed record McpOperatorConfirmationRequest(
     string PlanToken,
     string IdempotencyKey,
     string PayloadHash,
-    McpOperatorDecision CurrentDecision);
+    McpOperatorDecision CurrentDecision)
+{
+    /// <summary>
+    /// Authenticates an existing replay without consuming a fresh plan. A valid,
+    /// unconsumed plan returns neither a replay nor a new dispatch admission.
+    /// </summary>
+    public bool ReplayOnly { get; init; }
+}
 
 /// <summary>
 /// Result of confirmation-plan consumption and idempotency admission. Routes
@@ -1205,6 +1212,11 @@ public interface IMcpOperatorJobStore
         long jobId, int tenantId, Guid agentId, McpOperatorPrincipal principal, string mcpResource, string mcpInstance,
         CancellationToken cancellationToken);
 
+    /// <summary>Checks current ownership, including retained deletion tombstones, for an authenticated mutation replay.</summary>
+    Task<McpOperatorJobLease?> GetOwnedForReplayAsync(
+        long jobId, int tenantId, Guid agentId, McpOperatorPrincipal principal, string mcpResource, string mcpInstance,
+        CancellationToken cancellationToken);
+
     /// <summary>Ensures every enabled step still points at the reviewed exact script revision.</summary>
     Task<bool> IsExecutableAsync(
         long jobId, McpOperatorDecision decision, McpOperatorPrincipal principal, string mcpResource, string mcpInstance,
@@ -1236,6 +1248,8 @@ public interface IMcpOperatorJobStore
     Task<McpOperatorJobLease?> DeleteStepAsync(long jobId, long stepId, long expectedVersion, McpOperatorDecision decision, McpOperatorAcceptedAudit acceptedAudit, DateTimeOffset occurredAtUtc, CancellationToken cancellationToken);
 
     Task<McpOperatorJobRunLease?> GetRunOwnedAsync(ulong runId, int tenantId, Guid agentId, McpOperatorPrincipal principal, string mcpResource, string mcpInstance, CancellationToken cancellationToken);
+    /// <summary>Checks current run ownership, including retained deletion tombstones, for an authenticated action replay.</summary>
+    Task<McpOperatorJobRunLease?> GetRunOwnedForReplayAsync(ulong runId, int tenantId, Guid agentId, McpOperatorPrincipal principal, string mcpResource, string mcpInstance, CancellationToken cancellationToken);
     Task<IReadOnlyList<McpOperatorJobRunLease>> ListRunsOwnedAsync(long? jobId, int tenantId, Guid agentId, McpOperatorPrincipal principal, string mcpResource, string mcpInstance, CancellationToken cancellationToken);
     Task<McpOperatorJobRunLease> RecordStartedRunAsync(long jobId, ulong runId, Guid idempotencyId, McpOperatorDecision decision, McpOperatorAcceptedAudit acceptedAudit, DateTimeOffset occurredAtUtc, CancellationToken cancellationToken);
     Task<McpOperatorJobRunLease?> RecordCancellationRequestedAsync(ulong runId, McpOperatorDecision decision, McpOperatorAcceptedAudit acceptedAudit, DateTimeOffset occurredAtUtc, CancellationToken cancellationToken);

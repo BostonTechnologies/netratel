@@ -7,7 +7,102 @@ publication integrity and owner functional acceptance are separate stages.
 [campaign #294](https://github.com/BostonTechnologies/netratel/issues/294) remain
 open until the owner explicitly disposes the campaign contexts.
 
-## Current authority: beta.27 owner checkpoint and beta.28 continuation
+## Current authority: beta.29 owner checkpoint and beta.30 continuation
+
+The owner tested beta.29 at public source
+`4b148ebe824b3de445a12d30e95b8f5c30d53655`. Its API, Web, HTTP MCP and migration
+deployment digests matched publication; an independent read-only database check
+confirmed the required migrations. Retained key-ring storage was observed;
+full key-file and backup continuity was not established.
+
+The checkpoint contains 33/35 fresh bounded functional assertions. Both failures
+are manifestations of [#333](https://github.com/BostonTechnologies/netratel/issues/333):
+exact successful definition-update and parameter-add confirmations were rejected
+by mutable ETag validation before replay reconciliation. Historical remediation
+(12/12), metadata-only projections (2/2), access controls (7/7), and new-fixture
+cleanup (3/3) are separate populations.
+
+Beta.30 authenticates recorded definition outcomes before fresh-write validation.
+For newly completed mutations, replay must preserve the original job ID,
+resulting version and added item ID even after later edits or soft deletion,
+without another write. Current authority, ownership, target/policy binding and
+plan expiry remain enforced. Legacy ID-only receipts retain their documented
+current ownership/tombstone-version fallback; do not invent missing historical
+fields or replay expired historical plans.
+
+The release source review also identified and repairs
+[#334](https://github.com/BostonTechnologies/netratel/issues/334): exact successful
+cancellation replay after termination and deletion replay after tombstoning.
+This is a separate source-review finding, not a second beta.29 owner-observed
+defect. Retest both on fresh owned disposable runs within the valid confirmation
+window. Compare the original run ID and action-result state, and prove no repeat
+cancellation, deletion or audit mutation. Keep current gateway prerequisites
+for cancellation and current authority/ownership/expiry checks for both actions.
+
+### Beta.30 execution order
+
+1. The owner deploys the verified beta.30 artifacts and confirms actual running
+   image digests, source/version and migration state. Preserve the existing
+   Data Protection key ring and backup. Distribution proof alone does not prove
+   which components are deployed.
+2. The owner recovers the original QA container/volume and supplies independently
+   enrolled beta.30 Windows/Linux disposable executors. The beta.29 campaign's
+   original executors still ran beta.25 and its original QA gateway remained
+   offline. Follow the [isolated fixture guidance](../client/CLIENT.md#disposable-executors-for-owner-acceptance);
+   an extra executable directory does not isolate a canonical device-key store.
+3. The owner replaces/reconnects the selected consumer through supported controls.
+   Prove its exact selected process, loaded implementation assembly and complete
+   raw native schema identity using the [bridge identity guide](../integrations/http-mcp-bridge.md#prove-which-bridge-the-consumer-is-running).
+   The beta.29 checkpoint observed beta.26/beta.27 bridges. Current descriptions,
+   diagnostic bridges and configuration are separate from selected-process proof.
+4. Revalidate exact current target, profile, revision, grant and expiry state.
+   Preserve the primary and auxiliary scope and original deadlines. Do not
+   replay consumed reviews. Four positive contexts, `clients/update_metadata`
+   and `monitoring/permissions` in both original tenants, denied exact admission
+   despite configured grants. Obtain legitimate review from a distinct eligible
+   authenticated reviewer if those positive cases are required; neighboring
+   admitted reads do not establish their admission.
+5. Retest #333 on newly reviewed disposable definitions, covering update,
+   parameter/step operations, deletion, original-result fidelity after later
+   changes, and no duplicate writes. Retain create/start replay, changed-request,
+   stale-new-write, current-authority and single-winner controls. Complete the
+   remaining #305/#306 profile/bootstrap/upsert/classification/tag/revision/race/
+   rollback, fresh secret-reader and output-surface, service timing, injection,
+   monitoring trigger/clear and fresh flow/event/delivery assertions.
+6. Complete all eight actual native prompt workflows with real required human
+   decisions and useful effects. The checkpoint completed 0/8. Prove actual
+   native progress notifications and in-flight protocol cancellation under #288;
+   polling output and application-job cancellation do not supply that evidence.
+   Bounded Linux/Windows browse behavior now has owner regression evidence under
+   #321, including filtered-entry behavior at the exact eligible limit. Preserve
+   the two unsupported continuation contexts and deferred autofill.
+7. After all other campaign and paired-product traffic ends, run #310's unchanged
+   exact isolated hour: 240 serial calls at offsets 0, 15 through 3585 seconds,
+   with observation through 3600 seconds. Repeat tenant A flow list, auth status,
+   tenant B flow list, system version 60 times. Preserve every failed, missed or
+   overrun slot without retries or catch-up; separate 120 core samples and 60
+   admitted reads per tenant. No qualifying endurance hour ran in beta.29.
+8. Reconcile the original receiver incidents and background artifacts without
+   duplicate delivery, then finish original dependency-ordered cleanup, effective
+   auxiliary revocation and update-intent restoration. New beta.29 fixtures and
+   inspection sessions were removed; original cleanup remains open. Preserve
+   terminal audit and protected state. Infrastructure disposal is owner work.
+
+The local test agent performs acceptance, evidence collection and explicitly
+authorized campaign-fixture operations. Deployment, infrastructure recovery,
+restarts/upgrades, installation/enrolment and consumer reconnection are owner
+actions. Continue unaffected admitted checks when a prerequisite blocks one
+area; do not turn a failed acceptance check into source or release work.
+
+Preserve all 518 context IDs and history: 438 original, 60 earlier additions and
+20 beta.27 additions. Beta.29 invocation coverage is 110/518; dispositions are
+104 bounded passes, 2 failed contexts, 4 exact admission denials, 391 untested,
+14 prohibited, 2 unsupported and 1 deferred. All prohibited contexts remained
+uninvoked. Append beta.30 attempts and record each evidence population separately.
+Keep #282/#294/#288/#304/#305/#306/#308/#310 open for their actual remaining
+criteria. Delivered repairs #315–#318 and #321/#322 remain closed.
+
+## Historical beta.27 owner checkpoint and beta.28 continuation
 
 The beta.27 owner checkpoint supplies bounded deployed regression evidence for
 the repairs delivered by [#319](https://github.com/BostonTechnologies/netratel/pull/319).

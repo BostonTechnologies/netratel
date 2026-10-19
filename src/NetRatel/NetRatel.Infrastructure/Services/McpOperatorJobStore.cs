@@ -65,14 +65,24 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
         return rows.Select(entry => ToLease(entry.owner, entry.job)).ToArray();
     }
 
-    public async Task<McpOperatorJobLease?> GetOwnedAsync(
+    public Task<McpOperatorJobLease?> GetOwnedAsync(
         long jobId, int tenantId, Guid agentId, McpOperatorPrincipal principal, string mcpResource, string mcpInstance,
+        CancellationToken cancellationToken) =>
+        GetOwnedAsync(jobId, tenantId, agentId, principal, mcpResource, mcpInstance, includeDeleted: false, cancellationToken);
+
+    public Task<McpOperatorJobLease?> GetOwnedForReplayAsync(
+        long jobId, int tenantId, Guid agentId, McpOperatorPrincipal principal, string mcpResource, string mcpInstance,
+        CancellationToken cancellationToken) =>
+        GetOwnedAsync(jobId, tenantId, agentId, principal, mcpResource, mcpInstance, includeDeleted: true, cancellationToken);
+
+    private async Task<McpOperatorJobLease?> GetOwnedAsync(
+        long jobId, int tenantId, Guid agentId, McpOperatorPrincipal principal, string mcpResource, string mcpInstance, bool includeDeleted,
         CancellationToken cancellationToken)
     {
         if (jobId <= 0 || !IsOwnerInputValid(tenantId, agentId, principal, mcpResource, mcpInstance))
             return null;
 
-        var row = await FindOwnedAsync(jobId, tenantId, agentId, principal, mcpResource, mcpInstance, includeDeleted: false, cancellationToken)
+        var row = await FindOwnedAsync(jobId, tenantId, agentId, principal, mcpResource, mcpInstance, includeDeleted, cancellationToken)
             .ConfigureAwait(false);
         return row is null ? null : ToLease(row.owner, row.job);
     }
@@ -449,10 +459,16 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
         return ToLease(row.owner, row.job);
     }
 
-    public async Task<McpOperatorJobRunLease?> GetRunOwnedAsync(ulong runId, int tenantId, Guid agentId, McpOperatorPrincipal principal, string mcpResource, string mcpInstance, CancellationToken cancellationToken)
+    public Task<McpOperatorJobRunLease?> GetRunOwnedAsync(ulong runId, int tenantId, Guid agentId, McpOperatorPrincipal principal, string mcpResource, string mcpInstance, CancellationToken cancellationToken) =>
+        GetRunOwnedAsync(runId, tenantId, agentId, principal, mcpResource, mcpInstance, includeDeleted: false, cancellationToken);
+
+    public Task<McpOperatorJobRunLease?> GetRunOwnedForReplayAsync(ulong runId, int tenantId, Guid agentId, McpOperatorPrincipal principal, string mcpResource, string mcpInstance, CancellationToken cancellationToken) =>
+        GetRunOwnedAsync(runId, tenantId, agentId, principal, mcpResource, mcpInstance, includeDeleted: true, cancellationToken);
+
+    private async Task<McpOperatorJobRunLease?> GetRunOwnedAsync(ulong runId, int tenantId, Guid agentId, McpOperatorPrincipal principal, string mcpResource, string mcpInstance, bool includeDeleted, CancellationToken cancellationToken)
     {
         if (runId == 0 || runId > long.MaxValue || !IsOwnerInputValid(tenantId, agentId, principal, mcpResource, mcpInstance)) return null;
-        var row = await FindOwnedRunAsync(runId, tenantId, agentId, principal, mcpResource, mcpInstance, includeDeleted: false, cancellationToken).ConfigureAwait(false);
+        var row = await FindOwnedRunAsync(runId, tenantId, agentId, principal, mcpResource, mcpInstance, includeDeleted, cancellationToken).ConfigureAwait(false);
         return row is null ? null : ToRunLease(row.run, row.projection);
     }
 

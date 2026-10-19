@@ -21,10 +21,23 @@ public sealed class McpOperatorConfirmationServiceTests
         var decision = await AllowedDecisionAsync(db);
         var service = new McpOperatorConfirmationService(db);
         var plan = await service.CreatePlanAsync(new(decision, PayloadHash), Ct);
+        var request = new McpOperatorConfirmationRequest(plan.PlanToken, plan.IdempotencyKey, PayloadHash, decision);
 
-        var admitted = await service.ConfirmAsync(new(plan.PlanToken, plan.IdempotencyKey, PayloadHash, decision), Ct);
+        var freshLookup = await service.ConfirmAsync(request with { ReplayOnly = true }, Ct);
+        freshLookup.IsNewDispatch.Should().BeFalse();
+        freshLookup.IsReplay.Should().BeFalse();
+        freshLookup.FailureCode.Should().BeNull();
+        (await db.McpOperatorConfirmationPlans.SingleAsync(Ct)).ConsumedAtUtc.Should().BeNull();
+        (await db.McpOperatorIdempotencyRecords.CountAsync(Ct)).Should().Be(0);
+
+        var admitted = await service.ConfirmAsync(request, Ct);
+        var pendingLookup = await service.ConfirmAsync(request with { ReplayOnly = true }, Ct);
+        pendingLookup.IsNewDispatch.Should().BeFalse();
+        pendingLookup.IsReplay.Should().BeTrue();
+        pendingLookup.Outcome.Should().Be(McpOperatorIdempotencyOutcome.Pending);
         await service.CompleteAsync(admitted.IdempotencyId!.Value, McpOperatorIdempotencyOutcome.Succeeded, "run-42", Ct);
-        var replayed = await service.ConfirmAsync(new(plan.PlanToken, plan.IdempotencyKey, PayloadHash, decision), Ct);
+        var replayed = await service.ConfirmAsync(request with { ReplayOnly = true }, Ct);
+        (await service.ConfirmAsync(request, Ct)).Should().Be(replayed);
 
         admitted.IsNewDispatch.Should().BeTrue();
         admitted.IsReplay.Should().BeFalse();
@@ -50,9 +63,11 @@ public sealed class McpOperatorConfirmationServiceTests
         var current = await new McpOperatorAuthorization(db).EvaluateAsync(decision.Request, Ct);
 
         var result = await service.ConfirmAsync(new(plan.PlanToken, plan.IdempotencyKey, PayloadHash, current), Ct);
+        var replayLookup = await service.ConfirmAsync(new(plan.PlanToken, plan.IdempotencyKey, PayloadHash, current) { ReplayOnly = true }, Ct);
 
         result.IsNewDispatch.Should().BeFalse();
         result.FailureCode.Should().Be("confirmation_plan_stale");
+        replayLookup.Should().Be(result);
     }
 
     [Fact]
