@@ -48,17 +48,32 @@ public sealed partial class McpOperatorClientFileEndpointTests
             request.Tool == "netratel_files" && request.Operation == "browse");
     }
 
-    [Fact]
-    public async Task Browse_EnforcesTheRequestedLimitAcrossGatewayPages()
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(4, false)]
+    [InlineData(5, false)]
+    [InlineData(22, true)]
+    public async Task Browse_EnforcesTheRequestedLimitAcrossGatewayPages(int entryCount, bool truncated)
     {
         var agentId = Guid.NewGuid();
         using var app = await BuildAppAsync(agentId, includeReadRoot: true);
-        app.Services.GetRequiredService<TestFileRegistry>().ListedEntries = Enumerable.Range(0, 22)
-            .Select(index => new GatewayFileEntry($"{index}.log", $"/var/log/{index}.log", false, 1)).ToArray();
+        app.Services.GetRequiredService<TestFileRegistry>().ListedEntries =
+        [
+            new("excluded.log", "/var/log-other/excluded.log", false, 1),
+            .. Enumerable.Range(0, entryCount)
+                .Select(index => new GatewayFileEntry($"{index}.log", $"/var/log/{index}.log", false, 1))
+        ];
         var response = await AuthorizedClient(app).GetAsync($"/api/v2/mcp/operator/agents/7/{agentId:D}/files/browse?path=%2Fvar%2Flog&pageSize=5");
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         using var json = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        json.RootElement.GetProperty("entries").GetArrayLength().Should().Be(5);
+        var entries = json.RootElement.GetProperty("entries");
+        entries.GetArrayLength().Should().Be(Math.Min(5, entryCount));
+        entries.EnumerateArray().Select(entry => entry.GetProperty("path").GetString())
+            .Should().NotContain("/var/log-other/excluded.log");
+        json.RootElement.GetProperty("pageSize").GetInt32().Should().Be(5);
+        json.RootElement.GetProperty("returnedCount").GetInt32().Should().Be(entries.GetArrayLength());
+        json.RootElement.GetProperty("truncated").GetBoolean().Should().Be(truncated);
+        json.RootElement.GetProperty("continuationSupported").GetBoolean().Should().BeFalse();
     }
 
     [Fact]

@@ -313,7 +313,9 @@ public static partial class NetRatelMcpToolDefinitions
             PositiveIntIdentifier("tenantId", "Positive tenant identifier."),
             Uuid("agentId", "Persisted V2 agent identifier.", true),
             RequiredString("path", operatorSurfaceEnabled ? "Canonical absolute path inside an admitted read root." : "Canonical absolute path inside the persisted Development fixture.", 4096),
-            Integer("pageSize", "Optional result limit from 1 through 100.", 1, 100)
+            Integer("pageSize", operatorSurfaceEnabled
+                ? "Optional result limit from 1 through 100; defaults to 100. Returns one bounded listing with truncation metadata and no continuation."
+                : "Optional gateway frame page size from 1 through 100; defaults to 64. Legacy fixture browse has no continuation.", 1, 100)
         ]),
         ("netratel_files", "stat" or "read") => RequiredRequest([
             PositiveIntIdentifier("tenantId", "Positive tenant identifier."),
