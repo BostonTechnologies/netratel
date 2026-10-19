@@ -37,7 +37,42 @@ command -v python3 >/dev/null
 command -v node >/dev/null
 command -v docker >/dev/null
 command -v openssl >/dev/null
+PAIRING_STAGE=build
+PAIRING_BUILD_LOG=''
+cleanup_failure() {
+  local exit_status=$?
+  trap - EXIT
+  if (( exit_status != 0 )); then
+    # Fixed stage labels and compiler codes are safe to retain. Runtime logs,
+    # exception messages and the private fixture can contain credentials.
+    PAIRING_FAILURE_EXIT="$exit_status" PAIRING_FAILURE_STAGE="$PAIRING_STAGE" \
+      PAIRING_FAILURE_BUILD_LOG="$PAIRING_BUILD_LOG" python3 - <<'PY'
+import json, os, re
+from pathlib import Path
+root = Path(os.environ['NETRATEL_PAIRING_RUNTIME_ROOT'])
+output = Path(os.environ.get('NETRATEL_PAIRING_EVIDENCE_DIRECTORY', str(root / 'evidence')))
+output.mkdir(parents=True, exist_ok=True)
+log_name = os.environ['PAIRING_FAILURE_BUILD_LOG']
+codes = []
+if log_name:
+    log = root / log_name
+    if log.is_file():
+        codes = sorted(set(re.findall(r'\berror ((?:CS|MSB|NU|NETSDK)\d+)\b', log.read_text(errors='replace'))))
+receipt = {'outcome': 'failed', 'stage': os.environ['PAIRING_FAILURE_STAGE'],
+           'exitCode': int(os.environ['PAIRING_FAILURE_EXIT']), 'compilerErrorCodes': codes}
+(output / 'failure-stage.json').write_text(json.dumps(receipt, indent=2) + '\n')
+PY
+    if [[ -f "$NETRATEL_PAIRING_RUNTIME_ROOT/actual-pair/private-state.json" ]]; then
+      python3 "$PAIRING_HELPER_ROOT/native_pair.py" cleanup --purge || true
+    fi
+    printf '%s\n' 'Actual product-pair acceptance failed; no passed acceptance receipt was produced' >&2
+  fi
+  exit "$exit_status"
+}
+trap cleanup_failure EXIT
 build() {
+  PAIRING_STAGE="$2-build"
+  PAIRING_BUILD_LOG="$2-build.log"
   "$DOTNET_PAIRING_HOST" build "$1" --configuration Debug -m:1 -nr:false > "$NETRATEL_PAIRING_RUNTIME_ROOT/$2-build.log" 2>&1
 }
 build "$NETRATEL_PAIRING_SOURCE_ROOT/src/NetRatel/NetRatel.Migrations/NetRatel.Migrations.csproj" nr-migrations
@@ -46,24 +81,24 @@ build "$NETRATEL_PAIRING_SOURCE_ROOT/src/NetRatel/NetRatel.Web/NetRatel.Web.cspr
 build "$NETRATEL_PAIRING_SOURCE_ROOT/src/NetRatel/NetRatel.Client/NetRatel.Client.csproj" nr-client
 build "$RATELDESK_PAIRING_SOURCE_ROOT/src/Helpdesk.API/Helpdesk.API.csproj" rd-api
 build "$RATELDESK_PAIRING_SOURCE_ROOT/src/HelpDesk.NewWeb/HelpDesk.NewWeb.csproj" rd-web
+PAIRING_BUILD_LOG=''
+PAIRING_STAGE=browser-install
 npm install --prefix "$NETRATEL_PAIRING_RUNTIME_ROOT/browser" --no-audit --no-fund @playwright/test@1.63.0 > "$NETRATEL_PAIRING_RUNTIME_ROOT/browser-install.log" 2>&1
 PAIRING_BROWSER_ARGS=(install chromium)
 if [[ "${PAIRING_BROWSER_WITH_DEPS:-0}" == 1 ]]; then PAIRING_BROWSER_ARGS=(install --with-deps chromium); fi
+PAIRING_STAGE=browser-engine-install
 node "$NETRATEL_PAIRING_RUNTIME_ROOT/browser/node_modules/@playwright/test/cli.js" "${PAIRING_BROWSER_ARGS[@]}" > "$NETRATEL_PAIRING_RUNTIME_ROOT/browser-install-engine.log" 2>&1
-cleanup_failure() {
-  local exit_status=$?
-  trap - EXIT
-  if (( exit_status != 0 )); then
-    python3 "$PAIRING_HELPER_ROOT/native_pair.py" cleanup --purge || true
-    printf '%s\n' 'Actual product-pair acceptance failed; no passed acceptance receipt was produced' >&2
-  fi
-  exit "$exit_status"
-}
-trap cleanup_failure EXIT
+PAIRING_STAGE=product-start
 python3 "$PAIRING_HELPER_ROOT/native_pair.py" start
+PAIRING_STAGE=browser-pair
 node "$PAIRING_HELPER_ROOT/browser_pair.js"
+PAIRING_STAGE=business-pair
 node "$PAIRING_HELPER_ROOT/business_pair.js"
+PAIRING_STAGE=delete-pair
 node "$PAIRING_HELPER_ROOT/delete_pair.js"
+PAIRING_STAGE=prepare-receipt
 python3 "$PAIRING_HELPER_ROOT/final_receipt.py" prepare
+PAIRING_STAGE=product-cleanup
 python3 "$PAIRING_HELPER_ROOT/native_pair.py" cleanup --purge
+PAIRING_STAGE=finalize-receipt
 python3 "$PAIRING_HELPER_ROOT/final_receipt.py" finalize
