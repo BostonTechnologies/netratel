@@ -23,7 +23,7 @@ EXPOSE 9111 9111
 USER ${APP_USER}
 
 # --- Build/Publish
-FROM mcr.microsoft.com/dotnet/sdk:10.0.401-noble AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.402-noble AS build
 ARG PublicSourceRevision
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
