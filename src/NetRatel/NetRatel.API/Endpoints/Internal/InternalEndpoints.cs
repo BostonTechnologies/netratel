@@ -234,6 +234,9 @@ public static class InternalEndpoints
             agents.TryGetValue(job.AgentId ?? Guid.Empty, out var agent); tenants.TryGetValue(job.TenantId ?? -1, out var tenantName);
             var policy = JobExecutionRuntimePolicy.FromJob(job);
             var name = NormalizeOptional(agent?.Name);
+            // Current job CRUD stores AgentId and leaves the legacy identity empty.
+            // The peer contract still needs the canonical server-owned target identity.
+            var clientIdentity = job.AgentId?.ToString("D") ?? job.ClientIdentity;
             result.Add(new NetRatelCatalogJobDto
             {
                 Id = job.Id.ToString(),
@@ -243,10 +246,10 @@ public static class InternalEndpoints
                 TenantId = job.TenantId,
                 TenantName = tenantName,
                 Description = job.Description,
-                ClientIdentity = job.ClientIdentity,
-                ClientDisplayName = NetRatelCatalogMetadataProjection.BuildClientDisplayName(name, name, NetRatelCatalogMetadataProjection.BuildClientShortId(job.ClientIdentity)),
+                ClientIdentity = clientIdentity,
+                ClientDisplayName = NetRatelCatalogMetadataProjection.BuildClientDisplayName(name, name, NetRatelCatalogMetadataProjection.BuildClientShortId(clientIdentity)),
                 ClientName = name,
-                ClientShortId = NetRatelCatalogMetadataProjection.BuildClientShortId(job.ClientIdentity),
+                ClientShortId = NetRatelCatalogMetadataProjection.BuildClientShortId(clientIdentity),
                 ScriptType = NetRatelCatalogMetadataProjection.ResolveScriptType(scriptTypesByJob[checked((long)job.Id)]),
                 ExpectedRuntimeSeconds = policy.ExpectedRuntimeSeconds,
                 GraceSeconds = policy.GraceSeconds,

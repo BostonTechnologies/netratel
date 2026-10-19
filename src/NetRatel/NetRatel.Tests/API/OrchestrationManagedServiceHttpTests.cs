@@ -195,11 +195,16 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
             {
                 var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>(); var now = DateTimeOffset.UtcNow;
                 db.Agents.Add(new() { Id = agent, TenantId = 71, CreatedAtUtc = now });
-                db.Jobs.Add(new() { Id = 7001, TenantId = 71, AgentId = agent, ClientIdentity = agent.ToString("D"), Name = "Permitted job", FolderPath = "/", CreatedAtUtc = now, UpdatedAtUtc = now });
+                // Match current job CRUD: AgentId is authoritative, legacy identity is empty.
+                db.Jobs.Add(new() { Id = 7001, TenantId = 71, AgentId = agent, ClientIdentity = string.Empty, Name = "Permitted job", FolderPath = "/", CreatedAtUtc = now, UpdatedAtUtc = now });
                 await db.SaveChangesAsync();
             }
             var catalog = await client.GetFromJsonAsync<JsonElement>("/internal/catalog/jobs");
             Assert.Single(catalog.EnumerateArray()); Assert.Equal(71, catalog[0].GetProperty("tenantId").GetInt32());
+            Assert.Equal(agent.ToString("D"), catalog[0].GetProperty("clientIdentity").GetString());
+            var definitions = await client.GetFromJsonAsync<JsonElement>("/internal/catalog/request-definitions");
+            Assert.Single(definitions.EnumerateArray());
+            Assert.Equal(agent.ToString("D"), definitions[0].GetProperty("clientIdentity").GetString());
             var accepted = await client.PostAsJsonAsync("/internal/ingest", Ingest("7001")); accepted.EnsureSuccessStatusCode();
             Assert.Equal(1, app.Services.GetRequiredService<InvocationCounter>().Starts);
             await using (var scope = app.Services.CreateAsyncScope())
