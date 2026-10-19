@@ -19,6 +19,15 @@ POST `/mappings/{mappingId}/test`: returns `PairingTestResult(success, message, 
 
 Pair/mapping generation and revision fences bind all asynchronous writes, retries and hidden cleanup so delayed operations cannot resurrect access or delete a newly paired generation.
 
+For managed automation ingest, the caller persists `correlationId` as the
+execution attempt identity. Repeating the same task and correlation with the
+same payload returns its existing execution; changing its payload is a conflict.
+A new correlation for that logical task admits a new execution only after the
+previous durable run has reached a reconciled terminal state. Concurrent attempts
+are serialized by logical task. All prior request/run bindings remain available
+for callback isolation and history; an unknown predecessor cannot be retried by
+inventing a new correlation.
+
 DELETE `/mappings/{mappingId}` and DELETE `/pair` idempotently revoke local immediately; tombstones prevent resurrection. Last mapping removal deletes pair credential authority. Peer cleanup bounded background record is hidden, protected and expires; offline peer is never claimed to acknowledge.
 
 Authenticated human API: `/api/v1/admin/system-connections`: GET list; POST `/code`; POST `/pair` with `PairingConnectRequest(address, pairingCode, operationId)`; GET `/{pairId}/directory` combines local and authenticated remote choices; PUT `/{pairId}/mappings/{mappingId}` accepts `PairingMapping` only; POST `/{pairId}/mappings/{mappingId}/test`; DELETE corresponding mapping or `/{pairId}` for unused pair. List includes paired incomplete row and each saved mapping with peer/address/names/capabilities/status/test result.

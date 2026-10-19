@@ -80,6 +80,11 @@ async function login(page, entry) {
     page.off('response', observeLogin);
   }
   await account(page, entry);
+  // Use the normal System preference before opening a modal. An operating
+  // system colour change remains available while modal focus blocks the header.
+  await page.getByTestId('theme-preference-menu').click();
+  await page.getByTestId('theme-option-system').click();
+  await expect(page.getByTestId('theme-option-system')).toBeHidden();
 }
 async function account(page, entry) {
   await page.goto(entry.web + '/account/integration-credentials');
@@ -128,7 +133,7 @@ async function resizeForVisualCapture(page, size) {
   // Both normal account layouts use Lg (1280px). Observe a real breakpoint
   // transition, rather than the old geometry before the resize notification.
   const downward = previous.width >= 1280 && size.width < 1280;
-  if (drawer && downward) {
+  if (drawer && downward && !await page.getByRole('dialog').count()) {
     if (!(await drawer.getAttribute('class')).split(/\s+/).includes('mud-drawer--open'))
       await page.getByTestId('navigation-toggle').click();
     await assertNavigationState(page, drawer, 'open');
@@ -155,9 +160,6 @@ async function visualMatrix(page, stem) {
   for (const theme of ['light', 'dark']) {
     await resizeForVisualCapture(page, { width: 1440, height: 900 });
     await page.emulateMedia({ colorScheme: theme });
-    await page.getByTestId('theme-preference-menu').click();
-    await page.getByTestId('theme-option-' + theme).click();
-    await expect(page.getByTestId('theme-option-' + theme)).toBeHidden();
     const attribute = page.url().startsWith(product('netratel').web) ? 'data-netratel-theme' : 'data-helpdesk-theme';
     await expect(page.locator('html')).toHaveAttribute(attribute, theme);
     for (const [viewport, size] of Object.entries({ desktop: { width: 1440, height: 900 }, narrow: { width: 390, height: 844 } })) {
@@ -188,13 +190,18 @@ async function visiblePair(page, consumer, generatorPage, generator, mappingName
   await generatorPage.getByTestId('generate-pairing-code').click();
   const codePanel = generatorPage.getByTestId('generated-pairing-code');
   await expect(codePanel).toBeVisible();
-  const readCode = async () => (generator.name === 'netratel'
-    ? await (await codePanel.evaluate(element => element.tagName === 'INPUT') ? codePanel : codePanel.locator('input')).inputValue() : await codePanel.innerText()).match(/\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/);
+  const readCode = async () => (await (await codePanel.evaluate(element => element.tagName === 'INPUT')
+    ? codePanel : codePanel.locator('input')).inputValue()).match(/\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/);
   const replaced = await readCode();
+  expect(replaced, 'Generator must show the first readable short code').not.toBeNull();
+  await generatorPage.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(generatorPage.getByRole('dialog')).toHaveCount(0);
   await generatorPage.getByTestId('generate-pairing-code').click();
   await expect.poll(async () => (await readCode())?.[0]).not.toBe(replaced?.[0]);
   const code = await readCode();
   expect(code, 'Generator must show a readable short code').not.toBeNull();
+  await generatorPage.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(generatorPage.getByRole('dialog')).toHaveCount(0);
   await account(page, consumer);
   await expect(page.getByTestId(ids.create)).toBeEnabled();
   await page.getByTestId(ids.create).click();
@@ -219,7 +226,9 @@ async function visiblePair(page, consumer, generatorPage, generator, mappingName
   await expect(page).toHaveURL(consumer.web + '/account/integration-credentials');
   const final = page.getByTestId(ids.final);
   await expect(final).toBeVisible();
-  await expect(final.getByRole('button', { name: 'Save', exact: true })).toHaveCount(1);
+  const finalDialog = page.getByRole('dialog').filter({ has: final });
+  await expect(finalDialog).toHaveCount(1);
+  await expect(finalDialog.getByRole('button', { name: 'Save', exact: true })).toHaveCount(1);
   await expect(final.getByRole('checkbox')).toHaveCount(2);
   await expect(final.getByRole('checkbox', { name: /^Run automation/ })).not.toBeChecked();
   await visualMatrix(page, consumer.name + '-paired-finalization');
@@ -243,7 +252,7 @@ async function visiblePair(page, consumer, generatorPage, generator, mappingName
   }
   else await expect(page.getByTestId(ids.rdCustomer)).toHaveCount(0);
   await final.getByRole('checkbox', { name: /^Run automation/ }).setChecked(capabilities.automation);
-  await expect(final.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+  await expect(finalDialog.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
   const nameInput = final.getByLabel('Connection name', { exact: true });
   const nrChoice = page.getByTestId(ids.nrTenant).and(page.getByRole('combobox'));
   const rdChoice = page.getByTestId(ids.rdOrg).and(page.getByRole('combobox'));
@@ -282,7 +291,7 @@ async function visiblePair(page, consumer, generatorPage, generator, mappingName
       reference, controlState: await saveControl.count() ? await saveControl.isDisabled() ? 'disabled' : 'enabled' : 'absent' };
   };
   try {
-    await final.getByRole('button', { name: 'Save', exact: true }).click();
+    await finalDialog.getByRole('button', { name: 'Save', exact: true }).click();
     // Wait for this one async Save's real outcome at the existing page action deadline.
     await connected.or(saveError).first().waitFor({ state: 'visible' });
     await expect(page.getByTestId(ids.success)).toContainText('Connected');
@@ -325,8 +334,10 @@ async function seedCustomer(context, rd) {
 }
 async function main() {
   const browser = await chromium.launch({ headless: true });
+  let activeContext = null;
   try {
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    activeContext = context;
     const nr = product('netratel'), rd = product('rateldesk');
     const nrPage = await context.newPage(), rdPage = await context.newPage();
     for (const page of [nrPage, rdPage]) page.setDefaultTimeout(25000);
@@ -346,7 +357,7 @@ async function main() {
     await account(nrPage, nr);
     const selected = nrPage.getByTestId(identifiers.netratel.row).filter({ hasText: first.mapping.name });
     await selected.getByTestId(identifiers.netratel.view).click();
-    await expect(nrPage.getByTestId(identifiers.netratel.final)).toContainText('Connection configuration');
+    await expect(nrPage.getByRole('dialog').filter({ has: nrPage.getByTestId(identifiers.netratel.final) })).toContainText('Connection configuration');
     await nrPage.getByRole('button', { name: /^(Back to connections|Close)$/ }).click();
     const beforeTest = JSON.parse(execFileSync('python3', [path.join(__dirname, 'native_pair.py'), 'counts'], { encoding: 'utf8' }));
     await selected.getByTestId(identifiers.netratel.test).click();
@@ -360,6 +371,15 @@ async function main() {
     record('side-effect-free-test-current-counts', 'passed');
     await visualMatrix(nrPage, 'netratel-visible-test-result');
     await context.close();
+  } catch (error) {
+    const frame = String(error.stack).match(/browser_pair\.js:(\d+):\d+/);
+    record('rendered-source-failure', 'failed', { sourceLine: frame ? Number(frame[1]) : null });
+    for (const [index, page] of (activeContext?.pages() || []).entries()) {
+      await page.screenshot({ path: path.join(evidence, `rendered-failure-${index}.png`), fullPage: true,
+        animations: 'disabled', mask: [page.locator('input'), page.getByTestId('generated-pairing-code'),
+          page.getByTestId('pairing-code'), page.getByLabel('Pairing code', { exact: true })] });
+    }
+    throw error;
   } finally { await browser.close(); }
 }
 module.exports = { product, record, jsonRequest, login, account, visualMatrix, selectChoice, seedCustomer, identifiers, state, root, fixture, evidence };
