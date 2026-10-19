@@ -16,6 +16,10 @@ async function deleteLocal(page, context, entry, expected) {
     const card = page.getByTestId(identifiers[entry.name].row).filter({ hasText: row.mapping?.name || row.peer.product });
     await expect(card.getByTestId(identifiers[entry.name].delete)).toBeEnabled();
     await card.getByTestId(identifiers[entry.name].delete).click();
+    const confirmation = page.getByRole('dialog').getByTestId(entry.name === 'netratel'
+      ? 'confirm-connection-delete' : 'confirm-system-connection-delete');
+    await expect(confirmation).toBeVisible();
+    await confirmation.click();
     await expect(card).toHaveCount(0);
     const route = '/api/v1/admin/system-connections/' + encodeURIComponent(row.pairId)
       + (row.mapping ? '/mappings/' + row.mapping.id : '');

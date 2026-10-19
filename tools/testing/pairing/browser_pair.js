@@ -194,18 +194,14 @@ async function visiblePair(page, consumer, generatorPage, generator, mappingName
     ? codePanel : codePanel.locator('input')).inputValue()).match(/\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/);
   const replaced = await readCode();
   expect(replaced, 'Generator must show the first readable short code').not.toBeNull();
-  if (generator.name === 'rateldesk') {
-    await generatorPage.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click();
-    await expect(generatorPage.getByRole('dialog')).toHaveCount(0);
-  }
+  await generatorPage.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(generatorPage.getByRole('dialog')).toHaveCount(0);
   await generatorPage.getByTestId('generate-pairing-code').click();
   await expect.poll(async () => (await readCode())?.[0]).not.toBe(replaced?.[0]);
   const code = await readCode();
   expect(code, 'Generator must show a readable short code').not.toBeNull();
-  if (generator.name === 'rateldesk') {
-    await generatorPage.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click();
-    await expect(generatorPage.getByRole('dialog')).toHaveCount(0);
-  }
+  await generatorPage.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(generatorPage.getByRole('dialog')).toHaveCount(0);
   await account(page, consumer);
   await expect(page.getByTestId(ids.create)).toBeEnabled();
   await page.getByTestId(ids.create).click();
