@@ -381,7 +381,7 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
         await using var db = Context(database);
         (await db.Database.GetAppliedMigrationsAsync(ct)).Should().Equal(plan.CurrentMigrationIds);
         (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal(
-            [PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration, ClientOperationsAndNetclawMigration, TenantPromptsAndAiFlowContinuationsMigration, LocalClientReleaseDeletionMigration, ExecutionContextAndLifecycleReceiptsMigration, ClientUpdateReconciliationEvidenceMigration, ProtectJobRunInputsMigration, ProtectTaskOutputsMigration],
+            [PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration, ClientOperationsAndNetclawMigration, TenantPromptsAndAiFlowContinuationsMigration, LocalClientReleaseDeletionMigration, ExecutionContextAndLifecycleReceiptsMigration, ClientUpdateReconciliationEvidenceMigration, ProtectJobRunInputsMigration, ProtectTaskOutputsMigration, ScopeOrchestrationExecutionAttemptsMigration],
             "the historical range leaves exactly the later pairing, client metadata/offboarding, notification connector, client operation, Netclaw investigation, tenant prompt, AI flow continuation and local client release deletion migrations unapplied");
         db.Database.HasPendingModelChanges().Should().BeFalse();
     }
