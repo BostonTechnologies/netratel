@@ -60,6 +60,19 @@ if log_name:
         codes = sorted(set(re.findall(r'\berror ((?:CS|MSB|NU|NETSDK)\d+)\b', log.read_text(errors='replace'))))
 receipt = {'outcome': 'failed', 'stage': os.environ['PAIRING_FAILURE_STAGE'],
            'exitCode': int(os.environ['PAIRING_FAILURE_EXIT']), 'compilerErrorCodes': codes}
+browser_receipt = root / 'actual-pair/browser-evidence/receipt.json'
+if browser_receipt.is_file():
+    records = json.loads(browser_receipt.read_text()).get('results', [])
+    receipt['browserStages'] = [{'stage': row['stage'], 'status': row['status'],
+        'loginHttpStatus': row.get('loginHttpStatus')} for row in records
+        if re.fullmatch(r'[a-z0-9-]{1,100}', row.get('stage', '')) and row.get('status') in ['passed', 'failed']]
+    failure = next((row for row in reversed(records) if row.get('status') == 'failed'), {})
+    reason = failure.get('reason', '')
+    # Retain only a known Playwright operation prefix, never arbitrary exception text.
+    receipt['browserFailureOperation'] = next((prefix for prefix in
+        ['browserType.launch', 'page.goto', 'locator.waitFor', 'locator.fill', 'locator.click',
+         'expect.toBeVisible', 'expect.toHaveURL', 'expect.toContainText', 'expect.toBe']
+        if reason.startswith(prefix)), 'unclassified')
 (output / 'failure-stage.json').write_text(json.dumps(receipt, indent=2) + '\n')
 PY
     if [[ -f "$NETRATEL_PAIRING_RUNTIME_ROOT/actual-pair/private-state.json" ]]; then
