@@ -93,8 +93,18 @@ public static class InternalEndpoints
             var callbackUrl = profile.Peer.ApiOrigin + "/api/v1/orchestration/provider/callback";
             if (request.CallbackUrl is { Length: > 0 } suppliedCallback && suppliedCallback != callbackUrl) return Results.Forbid();
             var fingerprint = IngestFingerprint(request, job, payload);
+            // The persisted correlation identifies an execution attempt. Serialize
+            // admissions for one logical task so distinct concurrent retries cannot
+            // both pass the terminal-predecessor check.
+            await using var transaction = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(ct) : null;
+            if (db.Database.IsNpgsql())
+            {
+                var admissionKey = JsonSerializer.Serialize(new { principal.Id, request.RequestId, request.RequestTaskId });
+                await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({admissionKey}, 0))", ct);
+            }
             var priorBinding = await db.Set<ManagedOrchestrationRequestBinding>().AsNoTracking().SingleOrDefaultAsync(x =>
-                x.ServicePrincipalId == principal.Id && x.ParentRequestId == request.RequestId && x.RequestTaskId == request.RequestTaskId, ct);
+                x.ServicePrincipalId == principal.Id && x.ParentRequestId == request.RequestId && x.RequestTaskId == request.RequestTaskId
+                    && x.CorrelationId == correlationId, ct);
             if (priorBinding is not null)
             {
                 if (priorBinding.IngestFingerprint != fingerprint || priorBinding.CorrelationId != correlationId ||
@@ -107,6 +117,19 @@ public static class InternalEndpoints
                     return Results.Conflict(new { code = "ingest_recovery_required" });
                 return Results.Ok(new NetRatelIngestResponse { RequestId = prior.Id.ToString(), RunId = executionId, ExecutionId = executionId, Status = prior.Status, Message = prior.ResultMessage });
             }
+            var predecessor = await db.Set<ManagedOrchestrationRequestBinding>().AsNoTracking()
+                .Where(x => x.ServicePrincipalId == principal.Id && x.ParentRequestId == request.RequestId && x.RequestTaskId == request.RequestTaskId)
+                .OrderByDescending(x => x.CreatedAtUtc).ThenByDescending(x => x.RequestId).FirstOrDefaultAsync(ct);
+            if (predecessor is not null)
+            {
+                var runs = http.RequestServices.GetRequiredService<IJobRunService>();
+                var previous = await ManagedOrchestrationRecovery.RecoverAsync(db, requests, runs, predecessor, ct);
+                if (previous is null || predecessor.ExecutionId is null ||
+                    !ulong.TryParse(predecessor.ExecutionId, out var previousRunId) ||
+                    await runs.GetAsync(previousRunId, ct) is not { Status: JobRunState.Succeeded or JobRunState.Failed or JobRunState.Cancelled or JobRunState.TimedOut } ||
+                    !await db.Set<JobRunControlRecord>().AnyAsync(x => x.RunId == checked((long)previousRunId) && x.TerminalReadyAtUtc != null, ct))
+                    return Results.Conflict(new { code = "ingest_previous_attempt_not_terminal" });
+            }
             var binding = new ManagedOrchestrationRequestBinding
             {
                 ServicePrincipalId = principal.Id, TenantId = target.TenantId, AgentId = target.AgentId,
@@ -117,7 +140,6 @@ public static class InternalEndpoints
                 CreatedAtUtc = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow()
             };
             RequestInfo created;
-            await using (var transaction = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(ct) : null)
             {
                 created = await requests.CreateAsync(new CreateRequestCommand(binding.SourceSystem, job.ClientIdentity, job.Id.ToString(), request.PayloadJson, target.TenantId, target.AgentId), ct);
                 binding.RequestId = created.Id;
@@ -137,6 +159,7 @@ public static class InternalEndpoints
                 catch (DbUpdateException) { return Results.Conflict(new { code = "ingest_binding_conflict" }); }
                 if (transaction is not null) await transaction.CommitAsync(ct);
             }
+            if (transaction is not null) await transaction.DisposeAsync();
             requestEvents.Publish(new RequestChangedEvent(created.Id, "external-service-created", created.UpdatedAtUtc));
             try
             {

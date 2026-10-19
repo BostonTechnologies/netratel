@@ -47,7 +47,8 @@ public static class ManagedOrchestrationModelConfiguration
             e.ToTable("ManagedOrchestrationRequestBindings");
             e.HasKey(x => x.RequestId);
             e.Ignore(x => x.SourceSystem);
-            e.HasIndex(x => new { x.ServicePrincipalId, x.ParentRequestId, x.RequestTaskId }).IsUnique();
+            e.HasIndex(x => new { x.ServicePrincipalId, x.ParentRequestId, x.RequestTaskId, x.CorrelationId })
+                .HasDatabaseName("IX_ManagedOrchestration_Attempt").IsUnique();
             e.HasIndex(x => x.ExecutionId).IsUnique().HasFilter("\"ExecutionId\" IS NOT NULL");
             e.HasOne<RequestRecord>().WithOne().HasForeignKey<ManagedOrchestrationRequestBinding>(x => x.RequestId).OnDelete(DeleteBehavior.Restrict);
             foreach (var field in new[] { nameof(ManagedOrchestrationRequestBinding.JobDefinitionId), nameof(ManagedOrchestrationRequestBinding.ExecutionId), nameof(ManagedOrchestrationRequestBinding.ParentRequestId), nameof(ManagedOrchestrationRequestBinding.RequestTaskId), nameof(ManagedOrchestrationRequestBinding.CorrelationId), nameof(ManagedOrchestrationRequestBinding.LinkId), nameof(ManagedOrchestrationRequestBinding.PeerInstanceId), nameof(ManagedOrchestrationRequestBinding.PeerTenantId) })

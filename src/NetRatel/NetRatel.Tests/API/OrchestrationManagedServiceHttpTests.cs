@@ -109,6 +109,36 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
             var recovered = await client.PostAsJsonAsync("/internal/ingest", Ingest("7001")); recovered.EnsureSuccessStatusCode();
             Assert.Equal(acknowledgement.ExecutionId, (await recovered.Content.ReadFromJsonAsync<NetRatelIngestResponse>())!.ExecutionId);
             Assert.Equal(1, app.Services.GetRequiredService<InvocationCounter>().Starts);
+            var whileRunning = await client.PostAsJsonAsync("/internal/ingest", Ingest("7001", correlation: "new-attempt"));
+            Assert.Equal(HttpStatusCode.Conflict, whileRunning.StatusCode);
+            Assert.Contains("ingest_previous_attempt_not_terminal", await whileRunning.Content.ReadAsStringAsync());
+            await using (var scope = app.Services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                var oldRun = await db.JobRuns.SingleAsync();
+                oldRun.Status = (int)JobRunState.Failed;
+                (await db.Requests.SingleAsync()).Status = "Failed";
+                (await db.Set<JobRunControlRecord>().SingleAsync()).TerminalReadyAtUtc = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync();
+            }
+            var retries = await Task.WhenAll(
+                client.PostAsJsonAsync("/internal/ingest", Ingest("7001", correlation: "new-attempt")),
+                client.PostAsJsonAsync("/internal/ingest", Ingest("7001", correlation: "concurrent-attempt")));
+            var admitted = Assert.Single(retries, x => x.IsSuccessStatusCode);
+            Assert.Single(retries, x => x.StatusCode == HttpStatusCode.Conflict);
+            var retryAck = (await admitted.Content.ReadFromJsonAsync<NetRatelIngestResponse>())!;
+            Assert.NotEqual(acknowledgement.ExecutionId, retryAck.ExecutionId);
+            Assert.Equal(2, app.Services.GetRequiredService<InvocationCounter>().Starts);
+            await using (var scope = app.Services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                var retained = await db.Set<ManagedOrchestrationRequestBinding>().OrderBy(x => x.RequestId).ToArrayAsync();
+                Assert.Equal(2, retained.Length);
+                Assert.Equal(acknowledgement.ExecutionId, retained[0].ExecutionId);
+                var replay = await client.PostAsJsonAsync("/internal/ingest", Ingest("7001", correlation: retained[1].CorrelationId));
+                replay.EnsureSuccessStatusCode();
+                Assert.Equal(retryAck.ExecutionId, (await replay.Content.ReadFromJsonAsync<NetRatelIngestResponse>())!.ExecutionId);
+            }
             await using (var scope = app.Services.CreateAsyncScope()) await scope.ServiceProvider.GetRequiredService<IServicePrincipalRegistry>().RevokeAsync(invoke.Principal.Id);
             Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/internal/ingest", Ingest("7001"))).StatusCode);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", readToken);
@@ -194,8 +224,8 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
         finally { Directory.Delete(directory, true); }
     }
 
-    private static NetRatelIngestRequest Ingest(string definition, string payload = "{\"value\":1}", string? callback = null) => new()
-    { RequestId = "parent-request", RequestTaskId = "parent-task", CorrelationId = "corr-managed", NetRatelRequestDefinitionId = definition, NetRatelJobDefinitionId = definition, JobName = "Permitted job", PayloadJson = payload, CallbackUrl = callback };
+    private static NetRatelIngestRequest Ingest(string definition, string payload = "{\"value\":1}", string? callback = null, string correlation = "corr-managed") => new()
+    { RequestId = "parent-request", RequestTaskId = "parent-task", CorrelationId = correlation, NetRatelRequestDefinitionId = definition, NetRatelJobDefinitionId = definition, JobName = "Permitted job", PayloadJson = payload, CallbackUrl = callback };
 
     private static async Task<WebApplication> StartAsync(string connection, string directory, ECDsa legacyKey)
     {
