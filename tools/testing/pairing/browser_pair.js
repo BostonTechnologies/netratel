@@ -325,8 +325,10 @@ async function seedCustomer(context, rd) {
 }
 async function main() {
   const browser = await chromium.launch({ headless: true });
+  let activeContext = null;
   try {
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    activeContext = context;
     const nr = product('netratel'), rd = product('rateldesk');
     const nrPage = await context.newPage(), rdPage = await context.newPage();
     for (const page of [nrPage, rdPage]) page.setDefaultTimeout(25000);
@@ -360,6 +362,15 @@ async function main() {
     record('side-effect-free-test-current-counts', 'passed');
     await visualMatrix(nrPage, 'netratel-visible-test-result');
     await context.close();
+  } catch (error) {
+    const frame = String(error.stack).match(/browser_pair\.js:(\d+):\d+/);
+    record('rendered-source-failure', 'failed', { sourceLine: frame ? Number(frame[1]) : null });
+    for (const [index, page] of (activeContext?.pages() || []).entries()) {
+      await page.screenshot({ path: path.join(evidence, `rendered-failure-${index}.png`), fullPage: true,
+        animations: 'disabled', mask: [page.locator('input'), page.getByTestId('generated-pairing-code'),
+          page.getByTestId('pairing-code'), page.getByLabel('Pairing code', { exact: true })] });
+    }
+    throw error;
   } finally { await browser.close(); }
 }
 module.exports = { product, record, jsonRequest, login, account, visualMatrix, selectChoice, seedCustomer, identifiers, state, root, fixture, evidence };

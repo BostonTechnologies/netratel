@@ -47,7 +47,7 @@ cleanup_failure() {
     # exception messages and the private fixture can contain credentials.
     PAIRING_FAILURE_EXIT="$exit_status" PAIRING_FAILURE_STAGE="$PAIRING_STAGE" \
       PAIRING_FAILURE_BUILD_LOG="$PAIRING_BUILD_LOG" python3 - <<'PY'
-import json, os, re
+import json, os, re, shutil
 from pathlib import Path
 root = Path(os.environ['NETRATEL_PAIRING_RUNTIME_ROOT'])
 output = Path(os.environ.get('NETRATEL_PAIRING_EVIDENCE_DIRECTORY', str(root / 'evidence')))
@@ -73,6 +73,12 @@ if browser_receipt.is_file():
         ['browserType.launch', 'page.goto', 'locator.waitFor', 'locator.fill', 'locator.click',
          'expect.toBeVisible', 'expect.toHaveURL', 'expect.toContainText', 'expect.toBe']
         if reason.startswith(prefix)), 'unclassified')
+    source_failure = next((row for row in records if row.get('stage') == 'rendered-source-failure'), {})
+    line = source_failure.get('sourceLine')
+    receipt['browserSourceLine'] = line if isinstance(line, int) and 0 < line < 10000 else None
+    for screenshot in browser_receipt.parent.glob('rendered-failure-*.png'):
+        if re.fullmatch(r'rendered-failure-[0-9]+\.png', screenshot.name) and screenshot.stat().st_size <= 2 * 1024 * 1024:
+            shutil.copyfile(screenshot, output / screenshot.name)
 (output / 'failure-stage.json').write_text(json.dumps(receipt, indent=2) + '\n')
 PY
     if [[ -f "$NETRATEL_PAIRING_RUNTIME_ROOT/actual-pair/private-state.json" ]]; then
