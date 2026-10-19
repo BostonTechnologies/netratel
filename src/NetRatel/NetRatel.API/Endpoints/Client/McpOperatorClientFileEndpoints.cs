@@ -87,32 +87,37 @@ public static partial class McpOperatorClientFileEndpoints
 
         try
         {
+            var entryLimit = pageSize ?? MaximumPageSize;
             var entries = await sessions.ListAsync(
                 new ClientKey(tenantId, agentId),
                 path,
-                pageSize ?? MaximumPageSize,
+                entryLimit,
                 accessPolicy,
                 cancellationToken).ConfigureAwait(false);
             if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context, path, cancellationToken).ConfigureAwait(false) is { } afterDispatch)
                 return Failure(afterDispatch, context);
 
-            var safeEntries = entries
+            var eligibleEntries = entries
                 .Where(entry => entry.Name.Length <= 512 &&
                     TryCreateReadPolicy(context.Decision, entry.FullPath, out _))
+                .Take(entryLimit + 1)
                 .Select(entry => new McpOperatorFileEntry(entry.Name, entry.FullPath, entry.IsDirectory, entry.SizeBytes)
                 {
                     CreatedUtc = entry.CreatedUtc,
                     LastModifiedUtc = entry.LastModifiedUtc
                 })
-                .Take(pageSize ?? MaximumPageSize)
                 .ToArray();
             return Results.Ok(new McpOperatorFileBrowseResult(
                 tenantId,
                 agentId,
                 path,
-                safeEntries,
+                eligibleEntries.Take(entryLimit).ToArray(),
                 "mcp-operator-policy",
-                context.CorrelationId));
+                context.CorrelationId)
+            {
+                PageSize = entryLimit,
+                Truncated = eligibleEntries.Length > entryLimit
+            });
         }
         catch (AgentFileGatewaySessionUnavailableException)
         {
@@ -2041,7 +2046,13 @@ public static partial class McpOperatorClientFileEndpoints
         string Path,
         IReadOnlyList<McpOperatorFileEntry> Entries,
         string Authority,
-        string CorrelationId);
+        string CorrelationId)
+    {
+        public int PageSize { get; init; }
+        public int ReturnedCount => Entries.Count;
+        public bool Truncated { get; init; }
+        public bool ContinuationSupported => false;
+    }
 
     private sealed record McpOperatorFileStatResult(
         int TenantId,

@@ -268,6 +268,27 @@ only: they do not recursively scan folder contents or calculate folder sizes.
 An older client or a filesystem without available metadata can return null;
 do not infer timestamps from those missing values.
 
+Operator browse returns one bounded listing. `--page-size` (MCP `pageSize`)
+is the maximum number of immediate entries to return, from 1 through 100,
+with a default of 100. The operator response includes:
+
+| Field | Meaning |
+| --- | --- |
+| `pageSize` | The result limit applied to this response. |
+| `returnedCount` | The number of entries returned after the existing policy and name filters. |
+| `truncated` | `true` only when at least one additional eligible entry was omitted by the result limit. An exactly full listing can return `false`. |
+| `continuationSupported` | Always `false` for this contract; no cursor, offset, or page input is available. |
+
+A successful response describes a completed live enumeration of the immediate
+directory. Its contents can change during enumeration; the response is not a
+stable snapshot or a total directory count. To inspect a truncated listing,
+browse a known admitted subdirectory or use `stat`/`read` with a known exact
+path. Repeating browse starts another listing and does not advance to a next
+page. These semantics apply to `files-v2 browse` and operator-enabled
+`netratel_files/browse` over HTTP MCP or stdio. The legacy Development fixture
+route retains its separate compatibility response without these operator
+metadata fields.
+
 Use `files-v2 preview-create-directory` followed by
 `confirm-create-directory` to create a folder. Use `preview-delete` followed
 by `confirm-delete` to delete a file or an **empty** folder. These established

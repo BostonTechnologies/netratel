@@ -7,7 +7,92 @@ publication integrity and owner functional acceptance are separate stages.
 [campaign #294](https://github.com/BostonTechnologies/netratel/issues/294) remain
 open until the owner explicitly disposes the campaign contexts.
 
-## Current authority: beta.26 continuation and beta.27 repair order
+## Current authority: beta.27 owner checkpoint and beta.28 continuation
+
+The beta.27 owner checkpoint supplies bounded deployed regression evidence for
+the repairs delivered by [#319](https://github.com/BostonTechnologies/netratel/pull/319).
+Preserve those passes and the historical failures. No new product defect is
+asserted by that checkpoint. Beta.28 makes the bounded browse contract explicit
+under [#321](https://github.com/BostonTechnologies/netratel/issues/321) and updates
+component identity and fixture preparation under
+[#322](https://github.com/BostonTechnologies/netratel/issues/322).
+
+| Existing repair or prerequisite | Accepted observation and remaining scope |
+| --- | --- |
+| [#301](https://github.com/BostonTechnologies/netratel/issues/301) | Supported Production reconciliation was approved by a distinct authenticated principal, applied and read back. The original credential, complete grants and exact expiry were preserved; both original tenant native flow reads pass. Unrelated-tenant and out-of-set controls deny, and resume retains the same effective policy result. This completes the minimal admission prerequisite. |
+| [#315](https://github.com/BostonTechnologies/netratel/issues/315) | Historical task output is withheld from ordinary UI/API and same-owner no-reveal MCP readers. Fresh standalone/job executions and their complete reader/surface matrix remain open in #306. |
+| [#316](https://github.com/BostonTechnologies/netratel/issues/316) | An exact Execute-only owned job reached Succeeded and confirmation replay returned the same run. A multistep run used its reviewed script content after a later edit; a stale new start was refused. Remaining profile/revision and secret-job contexts stay open. |
+| [#317](https://github.com/BostonTechnologies/netratel/issues/317) | Classification-constrained canonical create/replace/disable/revoke and a persisted-classification spoof denial passed. Profile bootstrap, tag/revision changes and race/rollback acceptance remain open. |
+| [#318](https://github.com/BostonTechnologies/netratel/issues/318) | Native service timing repair is delivered. Fixed-native Start/Stop and timing acceptance was not executed in beta.27. |
+
+The supported review/receipt/resume removed only the intended reveal grants
+from the retained auxiliary; its other grants and original expiry were preserved.
+The temporary review roles were removed afterwards. Read back that current
+state before continuation; do not repeat the already applied review merely
+because the historical plan below describes an expired proposal. When changed
+authority is needed, use a fresh currently eligible distinct reviewer. Separate
+authenticated reviewer authority does not establish independent human judgment.
+Never fabricate the explicit human decisions required by the prompt workflows.
+
+The checkpoint observed API/Web/MCP on beta.27, a selected bridge still running
+beta.26 despite beta.27 preparation, and protected native executors on beta.25.
+Diagnostic bridge receipts and configuration readback do not establish selected
+consumer migration. Actual deployed image digests, migration application and
+durable key-ring backup still need direct inspection. The unavailable QA runtime
+produced a capability-unavailable start preview without dispatch; that observation
+is neither successful job admission nor a new admission defect.
+
+### Beta.28 execution order
+
+1. Verify the selected published release, actual deployed component manifest
+   digests, source/version and additive migration receipt. Retain the durable
+   Data Protection key ring and its backup through the existing update process.
+   Published image references do not prove which images are running.
+2. Recover the original owned QA runtime and data through the established host
+   recovery process. Preserve its container/volume and historical identity.
+   Establish [independently enrolled disposable native executors](../client/CLIENT.md#disposable-executors-for-owner-acceptance)
+   on the fixed release. A second executable on a protected Windows host shares
+   its canonical credential store and is not an isolated fixture.
+3. Complete the supported selected-consumer reconnect and
+   [prove its loaded bridge process and definitions](../integrations/http-mcp-bridge.md#prove-which-bridge-the-consumer-is-running).
+   Record the bridge, MCP host, downstream API and native executor separately,
+   then repeat the intended caller and both original tenant business reads.
+4. Revalidate each exact disposable target, profile, revision, authority and
+   cleanup entry. Finish #305/#306: fresh standalone/job secret readers, adjacent
+   values and supported output surfaces; profile/tag/revision/race controls;
+   fixed-native service issuance/expiry/skew and inventory delay; remaining
+   injection, monitoring, flow, event and owned-delivery cases. Denial at an
+   earlier permission layer does not prove resource isolation or redaction.
+5. Under #308, validate the new bounded-browse metadata: effective `pageSize`,
+   `returnedCount`, `truncated`, and `continuationSupported: false`. An extra
+   eligible entry makes the response truncated; an exactly full result need not
+   be truncated. This is a live bounded listing with no cursor or snapshot.
+   Preserve unsupported browse-continuation contexts explicitly; evaluate actual
+   paginated operations under controlled changes against their own contracts.
+6. Complete all eight actual native prompt workflows and their required explicit
+   human decisions using a consumer that exposes native prompt invocation.
+   Prompt retrieval, rendering and separate tool calls do not complete those
+   workflows. Finish actual native progress and in-flight cancellation under #288.
+7. After all functional, review, fixture and alternate-identity traffic ends,
+   run #310's exact isolated 240-call hour below. Keep UTC and monotonic timing,
+   offsets 0 through 3585 seconds, observation through 3600 seconds, concurrency
+   one and the four-operation sequence repeated 60 times. No replacement retries
+   or catch-up calls may be hidden in the count.
+8. Complete the original dependency-ordered cleanup and effective auxiliary
+   revocation. The new beta.27 definitions were removed, child access revoked,
+   temporary reviewer roles removed and both owned receiver incidents resolved;
+   these passes do not dispose the original fixture ledger or uncertain
+   background receiver artifacts. Preserve terminal audit and protected state.
+
+All 438 original context IDs and 60 earlier appended IDs retain their history;
+the 20 new beta.27 contexts remain separate. The 518 current dispositions include
+bounded passes, untested work, prohibited cases and dependency observations.
+Do not calculate a production score by combining them or turn an uninvoked case
+into an access blocker. Preserve all 14 prohibited contexts. Owner acceptance
+remains **NO-GO** until the required individual postconditions are evidenced.
+**Autofill remains owner-deferred and untested.**
+
+## Historical beta.26 continuation and beta.27 repair order
 
 The beta.26 continuation supersedes earlier blocked-admission descriptions for
 current connection state. Both original tenant native flow reads and primary
