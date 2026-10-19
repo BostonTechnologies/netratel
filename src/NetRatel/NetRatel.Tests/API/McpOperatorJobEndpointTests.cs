@@ -200,6 +200,57 @@ public sealed class McpOperatorJobEndpointTests
     }
 
     [Fact]
+    public async Task A_signed_confirmation_proof_requires_the_actual_ingress_credential_as_its_client_even_for_a_live_job()
+    {
+        await using var app = await BuildMutationAppAsync(localDelegation: true);
+        using var client = app.GetTestClient();
+        var request = await PreviewMutationAsync(client, "update", MutationRequest("update"), app);
+        var assertion = await MutationAssertionAsync(app, client, "update", request);
+        var tokens = app.Services.GetRequiredService<McpOperatorDelegationTokenService>();
+        tokens.TryValidate(assertion, out var verified).Should().BeTrue();
+        var wrongClient = tokens.Create(verified!.Identity with { ClientId = "another-signed-application-client" },
+            new McpOperatorDelegationRequest(verified.Tool, verified.Operation, Guid.NewGuid().ToString("N"), verified.Resource,
+                verified.Instance, verified.TenantId, verified.AgentId, verified.CorrelationId)
+            {
+                ObjectReference = verified.ObjectReference, ObjectTargetResolutionEnabled = true,
+                ReplayBinding = verified.ReplayBinding, IngressCredentialId = verified.IngressCredentialId,
+                IngressPermission = verified.IngressPermission
+            });
+        var writes = app.Services.GetRequiredService<MutationWriteCounter>();
+        var beforeAttempt = writes.Count;
+
+        using var denied = await McpJobLocalDelegationTestBoundary.PostAsync(client, MutationRoot + "/confirm/update", request, wrongClient);
+
+        denied.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await denied.Content.ReadAsStringAsync()).Should().Contain("local_delegation_binding_mismatch");
+        writes.Count.Should().Be(beforeAttempt);
+        await using var verification = app.Services.CreateAsyncScope();
+        var db = verification.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        (await db.McpOperatorConfirmationPlans.SingleAsync()).ConsumedAtUtc.Should().BeNull();
+        (await db.McpOperatorIdempotencyRecords.CountAsync()).Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("get")]
+    [InlineData("delete")]
+    public async Task Ordinary_local_object_requests_keep_ownership_failure_distinct_from_current_permission_denial(string operation)
+    {
+        await using var app = await BuildMutationAppAsync(localDelegation: true);
+        using var client = app.GetTestClient();
+        app.Services.GetRequiredService<McpJobLocalDelegationTestBoundary>().HasPermission = false;
+        var writes = app.Services.GetRequiredService<MutationWriteCounter>();
+        var beforeAttempt = writes.Count;
+
+        using var unknown = await McpJobLocalDelegationTestBoundary.ExchangeAsync(app, client, "netratel_jobs", operation, "999999", MutationAgentId);
+        unknown.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await unknown.Content.ReadAsStringAsync()).Should().Contain("local_delegation_binding_mismatch");
+        using var owned = await McpJobLocalDelegationTestBoundary.ExchangeAsync(app, client, "netratel_jobs", operation, MutationJobId.ToString(), MutationAgentId);
+        owned.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await owned.Content.ReadAsStringAsync()).Should().Contain("local_credential_permission_denied");
+        writes.Count.Should().Be(beforeAttempt);
+    }
+
+    [Fact]
     public async Task Changed_confirmation_does_not_consume_the_reviewed_parameter_add()
     {
         await using var app = await BuildMutationAppAsync();
