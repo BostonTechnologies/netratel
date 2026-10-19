@@ -2,6 +2,8 @@
 
 These notes describe the named release and preserve historical status. [Release engineering](../deployment/RELEASES.md) describes the current publication process; the product version is controlled only by `Directory.Build.props`.
 
+- [0.1.1-beta.28 candidate — managed automation retry attempts](0.1.1-beta.28.md)
+
 - [0.1.1-beta.11 — Client operations and Netclaw investigations](0.1.1-beta.11.md)
 - [0.1.1-beta.12 — Tenant guidance and AI-enriched alert flows](0.1.1-beta.12.md)
 - [0.1.1-beta.13 — Compact operator workspaces and release management](0.1.1-beta.13.md)
