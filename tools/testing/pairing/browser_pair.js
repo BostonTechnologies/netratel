@@ -80,6 +80,11 @@ async function login(page, entry) {
     page.off('response', observeLogin);
   }
   await account(page, entry);
+  // Use the normal System preference before opening a modal. An operating
+  // system colour change remains available while modal focus blocks the header.
+  await page.getByTestId('theme-preference-menu').click();
+  await page.getByTestId('theme-option-system').click();
+  await expect(page.getByTestId('theme-option-system')).toBeHidden();
 }
 async function account(page, entry) {
   await page.goto(entry.web + '/account/integration-credentials');
@@ -128,7 +133,7 @@ async function resizeForVisualCapture(page, size) {
   // Both normal account layouts use Lg (1280px). Observe a real breakpoint
   // transition, rather than the old geometry before the resize notification.
   const downward = previous.width >= 1280 && size.width < 1280;
-  if (drawer && downward) {
+  if (drawer && downward && !await page.getByRole('dialog').count()) {
     if (!(await drawer.getAttribute('class')).split(/\s+/).includes('mud-drawer--open'))
       await page.getByTestId('navigation-toggle').click();
     await assertNavigationState(page, drawer, 'open');
@@ -155,9 +160,6 @@ async function visualMatrix(page, stem) {
   for (const theme of ['light', 'dark']) {
     await resizeForVisualCapture(page, { width: 1440, height: 900 });
     await page.emulateMedia({ colorScheme: theme });
-    await page.getByTestId('theme-preference-menu').click();
-    await page.getByTestId('theme-option-' + theme).click();
-    await expect(page.getByTestId('theme-option-' + theme)).toBeHidden();
     const attribute = page.url().startsWith(product('netratel').web) ? 'data-netratel-theme' : 'data-helpdesk-theme';
     await expect(page.locator('html')).toHaveAttribute(attribute, theme);
     for (const [viewport, size] of Object.entries({ desktop: { width: 1440, height: 900 }, narrow: { width: 390, height: 844 } })) {
@@ -188,9 +190,10 @@ async function visiblePair(page, consumer, generatorPage, generator, mappingName
   await generatorPage.getByTestId('generate-pairing-code').click();
   const codePanel = generatorPage.getByTestId('generated-pairing-code');
   await expect(codePanel).toBeVisible();
-  const readCode = async () => (generator.name === 'netratel'
-    ? await (await codePanel.evaluate(element => element.tagName === 'INPUT') ? codePanel : codePanel.locator('input')).inputValue() : await codePanel.innerText()).match(/\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/);
+  const readCode = async () => (await (await codePanel.evaluate(element => element.tagName === 'INPUT')
+    ? codePanel : codePanel.locator('input')).inputValue()).match(/\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/);
   const replaced = await readCode();
+  expect(replaced, 'Generator must show the first readable short code').not.toBeNull();
   if (generator.name === 'rateldesk') {
     await generatorPage.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click();
     await expect(generatorPage.getByRole('dialog')).toHaveCount(0);
