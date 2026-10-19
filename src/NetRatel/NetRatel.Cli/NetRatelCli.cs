@@ -2140,7 +2140,7 @@ internal static partial class NetRatelCli
     private static Command BuildOperatorFilesCommand(CliRuntime runtime, GlobalOptions globals)
     {
         var files = new Command("files-v2", "Operate policy-admitted V2 files for one exact tenant and agent through bounded reads, artifact custody, preview, confirmation, and idempotency. This command has no legacy file-route fallback.");
-        files.AddCommand(BuildOperatorFileReadCommand(runtime, globals, "browse", "List one policy-admitted directory with an optional bounded page size.", "/browse", includePageSize: true));
+        files.AddCommand(BuildOperatorFileReadCommand(runtime, globals, "browse", "Return one bounded listing of a policy-admitted directory with truncation metadata and no continuation.", "/browse", includePageSize: true));
         files.AddCommand(BuildOperatorFileReadCommand(runtime, globals, "stat", "Read bounded metadata for one policy-admitted path.", "/stat", includePageSize: false));
         files.AddCommand(BuildOperatorFileReadCommand(runtime, globals, "read", "Read one policy-admitted file within the server byte bound.", "/read", includePageSize: false));
         files.AddCommand(BuildOperatorFilePathMutationCommand(runtime, globals, "preview-collect-artifact", "Preview collecting one bounded file artifact and receive opaque credentials.", "/artifacts/collect/preview", confirmed: false));
@@ -2173,7 +2173,7 @@ internal static partial class NetRatelCli
         Option<int?>? pageSize = null;
         if (includePageSize)
         {
-            pageSize = new Option<int?>("--page-size") { Description = "Optional page size from 1 through 100." };
+            pageSize = new Option<int?>("--page-size") { Description = "Maximum immediate entries to return, from 1 through 100 (default 100); no continuation is available." };
             command.AddOption(pageSize);
         }
 

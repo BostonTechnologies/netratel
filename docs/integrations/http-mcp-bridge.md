@@ -136,7 +136,75 @@ Preparation, consumer configuration change, reconnect, loaded metadata and admit
 
 ## Verify the selected host and exact operation contract
 
-After the actual consumer reconnects, call `netratel_capabilities` with `{"operation":"status"}`. Record the MCP host's own product and informational versions, available public source revision, catalog revision and SHA-256 digest. `netratel_system/version` describes the downstream API; compare both identities with the selected release. Missing MCP source metadata is reported as unavailable, never inferred from the API version.
+### Prove which bridge the consumer is running
+
+An updated launch entry takes effect when the consumer starts that connection
+again. A prepared profile, a configuration readback and a successful separately
+launched diagnostic bridge do not identify an already running connection. Track
+these states independently under [#288](https://github.com/BostonTechnologies/netratel/issues/288).
+
+Before reconnecting, record the selected consumer connection and its process
+tree, the old bridge PID/start time, and the verified replacement archive and
+release tag. Keep each extracted release directory unchanged. Stop that one
+connection through the consumer's supported controls, select the prepared launch
+entry, then reconnect. Inspect the new process tree from that consumer: the
+protected Windows launcher creates a PowerShell process with one bridge child;
+a direct bridge launch has no PowerShell wrapper. A bridge found by its filename
+alone may belong to a separate diagnostic session. If the selected consumer
+cannot reconnect in the current session, retain `consumerReconnect: "pending"`
+until it is reopened through its supported controls.
+
+On Windows, use the same PowerShell 7 terminal and extracted directory from
+installation. Obtain the **new bridge child's PID from that selected connection's
+process tree**, then replace the placeholder below. Windows supplies
+`Get-CimInstance`; PowerShell supplies `Get-FileHash`. This readback omits command
+lines and environment variables, which can contain protected inputs:
+
+```powershell
+$selectedBridgeProcessId = 0 # Replace with the selected connection's bridge child PID.
+if ($selectedBridgeProcessId -le 0) { throw 'Select the actual consumer bridge process first.' }
+$expectedExecutable = (Resolve-Path -LiteralPath '.\NetRatel.Mcp.exe').Path
+$bridgeProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$selectedBridgeProcessId"
+if (-not $bridgeProcess -or $bridgeProcess.ExecutablePath -ine $expectedExecutable) {
+    throw 'The selected process is absent or is running a different bridge directory.'
+}
+$assemblyPath = Join-Path (Split-Path -Parent $expectedExecutable) 'NetRatel.Mcp.dll'
+$bridgeVersion = (& $expectedExecutable http-bridge --version | Out-String).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'The verified bridge directory failed its local version probe.' }
+$parentProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($bridgeProcess.ParentProcessId)"
+[ordered]@{
+    processId = $bridgeProcess.ProcessId
+    parentProcessId = $bridgeProcess.ParentProcessId
+    parentName = $parentProcess.Name
+    startedAtUtc = $bridgeProcess.CreationDate.ToUniversalTime().ToString('o')
+    executable = $bridgeProcess.ExecutablePath
+    bridgeVersion = $bridgeVersion
+    executableSha256 = (Get-FileHash -LiteralPath $expectedExecutable -Algorithm SHA256).Hash
+    assemblySha256 = (Get-FileHash -LiteralPath $assemblyPath -Algorithm SHA256).Hash
+} | ConvertTo-Json
+```
+
+Match both hashes to the files extracted from the verified archive, and match
+the reported product version and available source suffix to its publication
+record. Windows MCP is framework-dependent: the apphost EXE alone does not
+identify the managed bridge implementation. Retain the process ancestry linking
+this child to the selected consumer and its new start time after the reconnect.
+The `--version` probe identifies the unchanged on-disk package; that process
+linkage supplies the evidence that the selected connection launched it. If the
+process exits or restarts while recording, repeat the readback for the current
+connection. Keep local paths and process receipts private.
+
+For Linux, apply the same process-tree check to the selected `dotnet` process
+and its absolute `NetRatel.Mcp.dll` argument from the saved launch entry. Hash
+that DLL in the verified release directory and compare its `http-bridge
+--version` probe; hashing the shared `dotnet` executable identifies the runtime,
+not the bridge. Use the consumer's process diagnostics to distinguish its child
+from any diagnostic launch. Consumers using native Streamable HTTP have no
+NetRatel bridge process: record that transport and the consumer version instead.
+
+### Verify server identity and loaded definitions
+
+After the actual consumer reconnects, call `netratel_capabilities` with `{"operation":"status"}` through that selected native connection. Record the MCP host's own product and informational versions, available public source revision, catalog revision and SHA-256 digest. `netratel_system/version` describes the downstream API; compare both identities with the selected release. Neither response reports the local bridge version. Missing MCP source metadata is reported as unavailable, never inferred from the API version.
 
 For a complex argument shape, call the bounded discovery operation before constructing the business call:
 
@@ -147,7 +215,7 @@ For a complex argument shape, call the bounded discovery operation before constr
 }
 ```
 
-This returns the complete selected input envelope, confirmation/idempotency requirements and schema digest without dispatching the inspected operation or checking its business authorization. The structured response is limited to 16 KiB; a future oversized contract fails explicitly and points to protocol `tools/list`, with no partial JSON schema. Only exact published tool and operation names are accepted. Compare the current server contract with the consumer's newly loaded definitions; `nativeLoadedMetadata: "not_observed"` means the server cannot certify or refresh that external cache. A successful server-side discovery call alone is not proof that the consumer has reloaded its native tools.
+This returns the complete selected input envelope, confirmation/idempotency requirements and schema digest without dispatching the inspected operation or checking its business authorization. The structured response is limited to 16 KiB; a future oversized contract fails explicitly and points to protocol `tools/list`, with no partial JSON schema. Only exact published tool and operation names are accepted. Compare the current server contract with the consumer's newly loaded definitions; `nativeLoadedMetadata: "not_observed"` means the server cannot certify or refresh that external cache. A successful server-side discovery call alone is not proof that the consumer has reloaded its native tools. Retain the consumer's observed loaded definitions or its supported discovery receipt separately, then make the permitted read through that connection. Keep unobservable loaded metadata marked unobserved even when the read succeeds.
 
 ## Streaming, limits and recovery
 

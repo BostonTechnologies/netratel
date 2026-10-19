@@ -18,6 +18,7 @@ public sealed record McpOperatorFileRelocationV2(string SourcePath, string Desti
 /// </summary>
 public interface IMcpOperatorFileV2Client
 {
+    /// <summary>Returns one live directory listing with pageSize, returnedCount, truncated, and continuationSupported=false. The result limit defaults to 100; there is no continuation or snapshot contract.</summary>
     Task<JsonNode?> BrowseAsync(McpOperatorV2Target target, string path, int? pageSize = null, CancellationToken cancellationToken = default);
     Task<JsonNode?> StatAsync(McpOperatorV2Target target, string path, CancellationToken cancellationToken = default);
     Task<JsonNode?> ReadAsync(McpOperatorV2Target target, string path, CancellationToken cancellationToken = default);
