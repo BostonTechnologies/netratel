@@ -2,8 +2,10 @@ namespace NetRatel.Shared.Operations;
 
 /// <summary>
 /// Resolves the persisted ownership of a closed-schema MCP object reference.
-/// Implementations must fail closed when an object is missing, deleted, or no
-/// longer belongs to the tenant and agent pair in the delegation.
+/// Implementations fail closed when ownership cannot be proved. A deleted
+/// object is admitted only for a signed, exact, successful confirmation replay
+/// owned by the currently authenticated caller; it remains hidden to reads and
+/// fresh previews. Business endpoints still enforce current policy and receipt.
 /// </summary>
 public interface IMcpOperationObjectTargetResolver
 {

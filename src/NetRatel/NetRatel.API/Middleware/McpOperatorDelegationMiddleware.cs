@@ -108,6 +108,7 @@ public sealed class McpOperatorDelegationMiddleware(
         if (current.Credential is not { } credential)
             return current.FailureCode ?? "delegated_identity_invalid";
         if (credential.OwnerPrincipalId != delegation.Identity.Subject ||
+            credential.CredentialId != delegation.Identity.ClientId || credential.CredentialId != delegation.IngressCredentialId ||
             !string.Equals(credential.Resource, delegation.Resource, StringComparison.Ordinal))
             return "local_delegation_binding_mismatch";
         if (!McpLocalDelegationTargetRequirements.TryGetAuthorizationTenant(delegation, out var authorizationTenantId))

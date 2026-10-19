@@ -153,6 +153,7 @@ public static class McpOperatorJobEndpoints
         var result = await TryContextAsync(JobsTool, "create", tenantId, agentId, http, environment, presence, admission, localAgents, dispatcher, false, cancellationToken, delegatedOperation: "create").ConfigureAwait(false);
         if (result.Failure is { } failure) return failure;
         var context = result.Context!;
+        if (http.TryGetMcpOperatorDelegation(out var delegation) && delegation?.ReplayBinding is not null) return Failure("delegated_identity_invalid", context);
         try
         {
             await jobs.ValidateDraftAsync(context.Decision, draft, cancellationToken).ConfigureAwait(false);
@@ -171,6 +172,7 @@ public static class McpOperatorJobEndpoints
         var result = await TryContextAsync(JobsTool, action, tenantId, agentId, http, environment, presence, admission, localAgents, dispatcher, false, cancellationToken).ConfigureAwait(false);
         if (result.Failure is { } failure) return failure;
         var context = result.Context!;
+        if (http.TryGetMcpOperatorDelegation(out var delegation) && delegation?.ReplayBinding is not null) return Failure("delegated_identity_invalid", context);
         var validation = await ValidateMutationAsync(action, request, jobs, context, cancellationToken).ConfigureAwait(false);
         if (validation.FailureCode is { } code) return Failure(code, context);
         try
@@ -190,6 +192,7 @@ public static class McpOperatorJobEndpoints
         if (result.Failure is { } failure) return failure;
         var context = result.Context!;
         if (!HasPlan(request.PlanToken, request.IdempotencyKey)) return Failure("confirmation_plan_invalid", context);
+        if (!MatchesMutationDelegation(http, action, request)) return Failure("delegated_identity_invalid", context);
         var confirmationRequest = new McpOperatorConfirmationRequest(request.PlanToken!, request.IdempotencyKey!, MutationHash(action, request), context.Decision);
         // Successful mutations advance the version or hide the definition. Only
         // an authenticated existing admission may bypass those mutable checks;
@@ -409,6 +412,7 @@ public static class McpOperatorJobEndpoints
         var result = await TryContextAsync(RunsTool, action, tenantId, agentId, http, environment, presence, admission, localAgents, dispatcher, requiresGateway, cancellationToken).ConfigureAwait(false);
         if (result.Failure is { } failure) return failure;
         var context = result.Context!;
+        if (http.TryGetMcpOperatorDelegation(out var delegation) && delegation?.ReplayBinding is not null) return Failure("delegated_identity_invalid", context);
         var run = await GetOwnedRunAsync(runId, jobs, context, cancellationToken).ConfigureAwait(false);
         if (run is null || run.TargetSetDigest != context.Decision.Request.TargetSetDigest || (action == "cancel" && IsTerminal(run.State)) || (action == "delete" && !IsTerminal(run.State))) return Failure("job_run_action_invalid", context);
         try
@@ -427,6 +431,7 @@ public static class McpOperatorJobEndpoints
         if (result.Failure is { } failure) return failure;
         var context = result.Context!;
         if (!HasPlan(request.PlanToken, request.IdempotencyKey)) return Failure("confirmation_plan_invalid", context);
+        if (!MatchesRunActionDelegation(http, action, runId, request)) return Failure("delegated_identity_invalid", context);
         var confirmationRequest = new McpOperatorConfirmationRequest(request.PlanToken!, request.IdempotencyKey!, RunActionHash(action, runId, request.Reason), context.Decision);
         var replayRequest = confirmationRequest with { ReplayOnly = true };
         var replay = await confirmations.ConfirmAsync(replayRequest, cancellationToken).ConfigureAwait(false);
@@ -679,10 +684,28 @@ public static class McpOperatorJobEndpoints
         return inputs.Keys.All(key => schema.Any(parameter => parameter.Name == key));
     }
 
-    private static string MutationHash(string action, McpOperatorJobMutationRequest request) => Hash(JsonSerializer.Serialize(new { action, request.JobId, request.ExpectedVersion, request.Job, request.ParameterId, request.Parameter, request.StepId, request.Step, request.Ordinal }));
+    private static string MutationHash(string action, McpOperatorJobMutationRequest request) =>
+        McpOperatorJobConfirmationPayload.MutationHash(action, JsonSerializer.SerializeToElement(request));
     private static string RunHash(McpOperatorJobExecutionSnapshot snapshot, McpOperatorJobRunRequest request) =>
         Hash(JsonSerializer.Serialize(new { jobId = snapshot.Definition.Job.Id, executionSnapshot = snapshot.ComputeDigest(), request.Inputs }));
-    private static string RunActionHash(string action, ulong runId, string? reason) => Hash(JsonSerializer.Serialize(new { action, runId, reason = BoundedReason(reason) }));
+    private static string RunActionHash(string action, ulong runId, string? reason) =>
+        McpOperatorJobConfirmationPayload.RunActionHash(action, runId, reason);
+
+    private static bool MatchesMutationDelegation(HttpContext http, string action, McpOperatorJobMutationRequest request)
+    {
+        if (!http.TryGetMcpOperatorDelegation(out var delegation) || delegation is not { ObjectTargetResolutionEnabled: true }) return true;
+        if (delegation.ObjectReference != request.JobId?.ToString(CultureInfo.InvariantCulture)) return false;
+        return delegation.ReplayBinding is not { } binding ||
+            McpOperatorJobConfirmationPayload.TryCreateBinding(JobsTool, action, JsonSerializer.SerializeToElement(request), out var actual) && actual == binding;
+    }
+
+    private static bool MatchesRunActionDelegation(HttpContext http, string action, ulong runId, McpOperatorJobRunActionRequest request)
+    {
+        if (!http.TryGetMcpOperatorDelegation(out var delegation) || delegation is not { ObjectTargetResolutionEnabled: true }) return true;
+        if (delegation.ObjectReference != runId.ToString(CultureInfo.InvariantCulture)) return false;
+        return delegation.ReplayBinding is not { } binding || binding ==
+            McpOperatorJobConfirmationPayload.RunActionBinding(action, runId, request.Reason, request.PlanToken!, request.IdempotencyKey!);
+    }
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     private static bool HasPlan(string? plan, string? key) => IsOpaque(plan) && IsOpaque(key);
     private static bool IsOpaque(string? value) => value is { Length: >= 32 and <= 128 } && value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_');

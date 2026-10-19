@@ -66,12 +66,31 @@ public sealed class McpOperatorScriptStore(OrchestratorDbContext db) : IMcpOpera
             .Select(entry => ToLease(entry.record)).ToArray();
     }
 
-    public async Task<(McpOperatorScriptLease Lease, string Content, string? ManifestJson)?> GetOwnedAsync(
+    public Task<(McpOperatorScriptLease Lease, string Content, string? ManifestJson)?> GetOwnedAsync(
         long scriptId,
         int tenantId,
         McpOperatorPrincipal principal,
         string mcpResource,
         string mcpInstance,
+        CancellationToken cancellationToken) =>
+        ReadOwnedAsync(scriptId, tenantId, principal, mcpResource, mcpInstance, false, cancellationToken);
+
+    public Task<(McpOperatorScriptLease Lease, string Content, string? ManifestJson)?> GetOwnedForReplayAsync(
+        long scriptId,
+        int tenantId,
+        McpOperatorPrincipal principal,
+        string mcpResource,
+        string mcpInstance,
+        CancellationToken cancellationToken) =>
+        ReadOwnedAsync(scriptId, tenantId, principal, mcpResource, mcpInstance, true, cancellationToken);
+
+    private async Task<(McpOperatorScriptLease Lease, string Content, string? ManifestJson)?> ReadOwnedAsync(
+        long scriptId,
+        int tenantId,
+        McpOperatorPrincipal principal,
+        string mcpResource,
+        string mcpInstance,
+        bool includeDeleted,
         CancellationToken cancellationToken)
     {
         if (scriptId <= 0 || !IsOwnershipValid(tenantId, principal, mcpResource, mcpInstance))
@@ -85,7 +104,7 @@ public sealed class McpOperatorScriptStore(OrchestratorDbContext db) : IMcpOpera
                                            entry.record.ClientId == ClientId(principal) &&
                                            entry.record.McpResource == mcpResource &&
                                            entry.record.McpInstance == mcpInstance &&
-                                           entry.record.DeletedAtUtc == null,
+                                           (includeDeleted || entry.record.DeletedAtUtc == null),
                 cancellationToken)
             .ConfigureAwait(false);
         if (result is null)

@@ -266,6 +266,9 @@ public sealed record McpOperatorDelegationRequest(
     /// </summary>
     public bool ObjectTargetResolutionEnabled { get; init; }
 
+    /// <summary>Signed hash-only binding for an exact confirmed job request.</summary>
+    public McpOperatorReplayBinding? ReplayBinding { get; init; }
+
     /// <summary>
     /// The opaque HTTP-MCP credential identifier after the API has exchanged
     /// it. This is never the bearer secret and is rechecked by the API before
@@ -296,6 +299,9 @@ public sealed record McpOperatorDelegation(
 
     /// <summary>Whether this assertion requires API-side durable object-owner revalidation.</summary>
     public bool ObjectTargetResolutionEnabled { get; init; }
+
+    /// <summary>Exact confirmation hashes; never independently authorize execution.</summary>
+    public McpOperatorReplayBinding? ReplayBinding { get; init; }
 
     /// <summary>Non-secret source credential identity for local HTTP MCP execution.</summary>
     public string? IngressCredentialId { get; init; }
@@ -361,6 +367,12 @@ public sealed class McpOperatorDelegationTokenService
         AddOptional(claims, "mcp_object_reference", request.ObjectReference);
         if (request.ObjectTargetResolutionEnabled)
             claims.Add(new Claim("mcp_object_target_resolution", "true"));
+        if (request.ReplayBinding is { } replay)
+        {
+            claims.Add(new Claim("mcp_replay_plan_hash", replay.PlanTokenHash));
+            claims.Add(new Claim("mcp_replay_key_hash", replay.IdempotencyKeyHash));
+            claims.Add(new Claim("mcp_replay_payload_hash", replay.PayloadHash));
+        }
         AddOptional(claims, "mcp_ingress_credential_id", request.IngressCredentialId);
         AddOptional(claims, "mcp_ingress_permission", request.IngressPermission);
         if (request.TenantId is { } tenantId)
@@ -441,6 +453,7 @@ public sealed class McpOperatorDelegationTokenService
             {
                 ObjectReference = OptionalClaim(principal, "mcp_object_reference"),
                 ObjectTargetResolutionEnabled = OptionalBooleanClaim(principal, "mcp_object_target_resolution"),
+                ReplayBinding = ReadReplayBinding(principal),
                 IngressCredentialId = OptionalClaim(principal, "mcp_ingress_credential_id"),
                 IngressPermission = OptionalClaim(principal, "mcp_ingress_permission")
             };
@@ -460,6 +473,7 @@ public sealed class McpOperatorDelegationTokenService
             {
                 ObjectReference = delegationRequest.ObjectReference,
                 ObjectTargetResolutionEnabled = delegationRequest.ObjectTargetResolutionEnabled,
+                ReplayBinding = delegationRequest.ReplayBinding,
                 IngressCredentialId = delegationRequest.IngressCredentialId,
                 IngressPermission = delegationRequest.IngressPermission
             };
@@ -532,6 +546,17 @@ public sealed class McpOperatorDelegationTokenService
     private static IReadOnlyCollection<string> Values(ClaimsPrincipal principal, string type)
         => principal.FindAll(type).Select(claim => claim.Value).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
 
+    private static McpOperatorReplayBinding? ReadReplayBinding(ClaimsPrincipal principal)
+    {
+        var plan = principal.FindAll("mcp_replay_plan_hash").ToArray();
+        var key = principal.FindAll("mcp_replay_key_hash").ToArray();
+        var payload = principal.FindAll("mcp_replay_payload_hash").ToArray();
+        if (plan.Length == 0 && key.Length == 0 && payload.Length == 0) return null;
+        if (plan.Length != 1 || key.Length != 1 || payload.Length != 1)
+            throw new InvalidOperationException("Delegation replay binding must contain exactly three hashes.");
+        return new(plan[0].Value, key[0].Value, payload[0].Value);
+    }
+
     private static void ValidateIdentity(McpOperatorDelegationIdentity identity)
     {
         ArgumentNullException.ThrowIfNull(identity);
@@ -558,6 +583,10 @@ public sealed class McpOperatorDelegationTokenService
         ValidateOptional(request.ObjectReference, nameof(request.ObjectReference));
         ValidateOptional(request.IngressCredentialId, nameof(request.IngressCredentialId));
         ValidateOptional(request.IngressPermission, nameof(request.IngressPermission));
+        if (request.ReplayBinding is { } replay && (!replay.IsValid || !request.ObjectTargetResolutionEnabled ||
+            !(request.Tool == "netratel_jobs" && McpOperatorJobConfirmationPayload.IsMutation(request.Operation) ||
+              request.Tool == "netratel_job_runs" && request.Operation is "cancel" or "delete")))
+            throw new InvalidOperationException("Delegation replay binding is invalid for this operation.");
         if (request.TenantId is <= 0)
             throw new InvalidOperationException("Delegation TenantId must be positive when supplied.");
         if (request.AgentId == Guid.Empty)

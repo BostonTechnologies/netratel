@@ -6,12 +6,15 @@ using System.Security.Cryptography;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Encodings.Web;
+using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using AwesomeAssertions;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -24,6 +27,8 @@ using NetRatel.API.Security.Authorization;
 using NetRatel.API.Security.M2M;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Presence;
+using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Operations;
 using Xunit;
 
@@ -134,6 +139,188 @@ public sealed partial class McpOperatorClientFileEndpointTests
         app.Services.GetRequiredService<TestAdmission>().Accepted.Select(request => request.Operation)
             .Should().Equal("collect", "artifact_status", "download", "artifact_cleanup");
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Artifact_cleanup_replays_after_byte_wipe_without_repeating_cleanup_or_consuming_an_independent_plan(bool simulateTimestampPrecisionLoss)
+    {
+        var agentId = Guid.NewGuid();
+        await using var db = new OrchestratorDbContext(new DbContextOptionsBuilder<OrchestratorDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString("N")).Options);
+        using var app = await BuildAppAsync(agentId, includeReadRoot: true, confirmations: new McpOperatorConfirmationService(db));
+        var client = AuthorizedClient(app);
+        var store = app.Services.GetRequiredService<TestArtifactStore>();
+        var artifact = ArtifactFixture(agentId);
+        store.Artifacts.Add(artifact);
+        if (simulateTimestampPrecisionLoss)
+        {
+            var nowTicks = DateTimeOffset.UtcNow.UtcTicks;
+            store.CleanupTimeOverride = new DateTimeOffset(nowTicks - nowTicks % TimeSpan.TicksPerMicrosecond + 7, TimeSpan.Zero);
+        }
+        var root = $"/api/v2/mcp/operator/agents/7/{agentId:D}/files/artifacts/{artifact.ArtifactId:D}";
+        var previewResponse = await client.PostAsync($"{root}/cleanup/preview", null);
+        previewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var preview = (await previewResponse.Content.ReadFromJsonAsync<ArtifactCleanupPlan>())!;
+        var independentPreviewResponse = await client.PostAsync($"{root}/cleanup/preview", null);
+        independentPreviewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var independentPreview = (await independentPreviewResponse.Content.ReadFromJsonAsync<ArtifactCleanupPlan>())!;
+
+        var cleaned = await client.PostAsJsonAsync($"{root}/cleanup/confirm", preview);
+        cleaned.StatusCode.Should().Be(HttpStatusCode.OK);
+        var original = (await cleaned.Content.ReadFromJsonAsync<JsonObject>())!;
+        if (simulateTimestampPrecisionLoss)
+        {
+            var stored = store.Artifacts.Single();
+            var timestamp = stored.DeletedAtUtc!.Value;
+            (timestamp.UtcTicks % TimeSpan.TicksPerMicrosecond).Should().Be(7);
+            var persistedTimestamp = new DateTimeOffset(timestamp.UtcTicks - timestamp.UtcTicks % TimeSpan.TicksPerMicrosecond, TimeSpan.Zero);
+            store.Artifacts[0] = stored with { DeletedAtUtc = persistedTimestamp };
+            original["deletedAtUtc"]!.GetValue<DateTimeOffset>().Should().Be(persistedTimestamp);
+        }
+        var replayResponse = await client.PostAsJsonAsync($"{root}/cleanup/confirm", preview);
+        replayResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var replay = (await replayResponse.Content.ReadFromJsonAsync<JsonObject>())!;
+        replay["replayed"]!.GetValue<bool>().Should().BeTrue();
+        replay["replayed"] = false;
+        JsonNode.DeepEquals(original, replay).Should().BeTrue();
+        var stale = await client.PostAsJsonAsync($"{root}/cleanup/confirm", independentPreview);
+        stale.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await stale.Content.ReadAsStringAsync()).Should().Contain("artifact_already_cleaned");
+        var unused = await db.McpOperatorConfirmationPlans.SingleAsync(plan => plan.IdempotencyKey == independentPreview.IdempotencyKey);
+        unused.ConsumedAtUtc.Should().BeNull();
+        unused.ConsumedIdempotencyId.Should().BeNull();
+        (await db.McpOperatorIdempotencyRecords.CountAsync()).Should().Be(1);
+        store.Cleanups.Should().Be(1);
+        store.Artifacts.Should().ContainSingle().Which.Content.Should().BeNull();
+        app.Services.GetRequiredService<TestAdmission>().Accepted.Should().ContainSingle(request => request.Operation == "artifact_cleanup");
+        (await client.GetAsync(root)).StatusCode.Should().Be(HttpStatusCode.Gone);
+        (await client.GetAsync($"{root}/download")).StatusCode.Should().Be(HttpStatusCode.Gone);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Artifact_cleanup_retains_its_receipt_when_response_delivery_is_cancelled_or_current_authority_is_lost(bool disconnect)
+    {
+        var agentId = Guid.NewGuid();
+        var writes = new ArtifactReceiptPersistence();
+        await using var db = new OrchestratorDbContext(new DbContextOptionsBuilder<OrchestratorDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString("N")).AddInterceptors(writes).Options);
+        using var app = await BuildAppAsync(agentId, includeReadRoot: true, confirmations: new McpOperatorConfirmationService(db));
+        var client = AuthorizedClient(app);
+        var store = app.Services.GetRequiredService<TestArtifactStore>();
+        var admission = app.Services.GetRequiredService<TestAdmission>();
+        var artifact = ArtifactFixture(agentId);
+        store.Artifacts.Add(artifact);
+        var root = $"/api/v2/mcp/operator/agents/7/{agentId:D}/files/artifacts/{artifact.ArtifactId:D}";
+        var previewResponse = await client.PostAsync($"{root}/cleanup/preview", null);
+        previewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var preview = (await previewResponse.Content.ReadFromJsonAsync<ArtifactCleanupPlan>())!;
+        using var disconnected = new CancellationTokenSource();
+        store.AfterCleanup = () =>
+        {
+            if (disconnect) disconnected.Cancel();
+            else admission.FailureCodeOverride = "target_policy_missing";
+        };
+
+        var confirmation = client.PostAsJsonAsync($"{root}/cleanup/confirm", preview, disconnected.Token);
+
+        if (disconnect)
+        {
+            var lostResponse = async () => await confirmation;
+            await lostResponse.Should().ThrowAsync<OperationCanceledException>();
+        }
+        else
+        {
+            (await confirmation).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+            (await client.PostAsJsonAsync($"{root}/cleanup/confirm", preview)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        }
+        await writes.ReceiptSaved.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        (await db.McpOperatorIdempotencyRecords.AsNoTracking().SingleAsync()).Outcome.Should().Be(McpOperatorIdempotencyOutcome.Succeeded);
+        var cleaned = store.Artifacts.Should().ContainSingle().Which;
+        cleaned.Content.Should().BeNull();
+        cleaned.DeletedAtUtc.Should().NotBeNull();
+        admission.FailureCodeOverride = null;
+        var replayResponse = await client.PostAsJsonAsync($"{root}/cleanup/confirm", preview);
+        replayResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var replay = (await replayResponse.Content.ReadFromJsonAsync<JsonObject>())!;
+        replay["replayed"]!.GetValue<bool>().Should().BeTrue();
+        replay["artifactId"]!.GetValue<Guid>().Should().Be(artifact.ArtifactId);
+        store.Cleanups.Should().Be(1);
+        admission.Accepted.Should().ContainSingle(request => request.Operation == "artifact_cleanup");
+        (await db.McpOperatorIdempotencyRecords.CountAsync()).Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData("payload", HttpStatusCode.Conflict)]
+    [InlineData("subject", HttpStatusCode.NotFound)]
+    [InlineData("client", HttpStatusCode.NotFound)]
+    [InlineData("resource", HttpStatusCode.NotFound)]
+    [InlineData("target", HttpStatusCode.Forbidden)]
+    [InlineData("policy_revoked", HttpStatusCode.Forbidden)]
+    [InlineData("policy_version", HttpStatusCode.Conflict)]
+    [InlineData("expired", HttpStatusCode.Conflict)]
+    public async Task Artifact_cleanup_replay_retains_current_ownership_policy_and_expiry_checks(string change, HttpStatusCode expectedStatus)
+    {
+        var agentId = Guid.NewGuid();
+        var changed = false;
+        await using var db = new OrchestratorDbContext(new DbContextOptionsBuilder<OrchestratorDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString("N")).Options);
+        using var app = await BuildAppAsync(agentId, includeReadRoot: true, confirmations: new McpOperatorConfirmationService(db),
+            configureDelegation: delegation => !changed ? delegation : change switch
+            {
+                "subject" => delegation with { Identity = delegation.Identity with { Subject = "other-operator" } },
+                "client" => delegation with { Identity = delegation.Identity with { ClientId = "other-client" } },
+                "resource" => delegation with { Resource = "https://other-mcp.example" },
+                "target" => delegation with { AgentId = Guid.NewGuid() },
+                _ => delegation
+            });
+        var client = AuthorizedClient(app);
+        var store = app.Services.GetRequiredService<TestArtifactStore>();
+        var artifact = ArtifactFixture(agentId);
+        store.Artifacts.Add(artifact);
+        var root = $"/api/v2/mcp/operator/agents/7/{agentId:D}/files/artifacts";
+        var previewResponse = await client.PostAsync($"{root}/{artifact.ArtifactId:D}/cleanup/preview", null);
+        previewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var preview = (await previewResponse.Content.ReadFromJsonAsync<ArtifactCleanupPlan>())!;
+        var cleaned = await client.PostAsJsonAsync($"{root}/{artifact.ArtifactId:D}/cleanup/confirm", preview);
+        cleaned.StatusCode.Should().Be(HttpStatusCode.OK);
+        var replayArtifactId = artifact.ArtifactId;
+        if (change == "payload")
+        {
+            var otherArtifact = ArtifactFixture(agentId);
+            store.Artifacts.Add(otherArtifact);
+            replayArtifactId = otherArtifact.ArtifactId;
+        }
+        if (change == "policy_revoked") app.Services.GetRequiredService<TestAdmission>().FailureCodeOverride = "target_policy_missing";
+        if (change == "policy_version") app.Services.GetRequiredService<TestAdmission>().PolicyVersion++;
+        if (change == "expired")
+        {
+            (await db.McpOperatorConfirmationPlans.SingleAsync()).ExpiresAtUtc = DateTimeOffset.UtcNow.AddSeconds(-1);
+            await db.SaveChangesAsync();
+        }
+        changed = true;
+
+        var denied = await client.PostAsJsonAsync($"{root}/{replayArtifactId:D}/cleanup/confirm", preview);
+
+        denied.StatusCode.Should().Be(expectedStatus);
+        if (change == "expired") (await denied.Content.ReadAsStringAsync()).Should().Contain("confirmation_plan_expired");
+        store.Cleanups.Should().Be(1);
+        (await db.McpOperatorIdempotencyRecords.CountAsync()).Should().Be(1);
+        app.Services.GetRequiredService<TestAdmission>().Accepted.Should().ContainSingle(request => request.Operation == "artifact_cleanup");
+    }
+
+    private static McpOperatorFileArtifact ArtifactFixture(Guid agentId)
+    {
+        var content = Encoding.UTF8.GetBytes("synthetic cleanup fixture");
+        return new McpOperatorFileArtifact(Guid.NewGuid(), 7, agentId, "operator-1", "operator-client",
+            "https://mcp.example", "prod", new string('a', 64), "fixture.txt", content.Length,
+            Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant(), "text/plain", content,
+            Guid.NewGuid(), Guid.NewGuid(), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddHours(1), null);
+    }
+
+    private sealed record ArtifactCleanupPlan(string PlanToken, string IdempotencyKey);
 
     [Fact]
     public async Task ProductionStat_BindsTheExactDelegationAndReturnsMetadataWithoutFileContent()
@@ -585,7 +772,9 @@ public sealed partial class McpOperatorClientFileEndpointTests
         return client;
     }
 
-    private static async Task<IHost> BuildAppAsync(Guid agentId, bool includeReadRoot, bool includeWriteRoot = true)
+    private static async Task<IHost> BuildAppAsync(Guid agentId, bool includeReadRoot, bool includeWriteRoot = true,
+        IMcpOperatorConfirmationService? confirmations = null,
+        Func<McpOperatorDelegation, McpOperatorDelegation>? configureDelegation = null)
     {
         var client = new ClientKey(7, agentId);
         var builder = Host.CreateDefaultBuilder();
@@ -610,7 +799,7 @@ public sealed partial class McpOperatorClientFileEndpointTests
                 services.AddSingleton(new TestAdmission(includeReadRoot, includeWriteRoot));
                 services.AddSingleton<IMcpOperatorRouteAdmission>(provider => provider.GetRequiredService<TestAdmission>());
                 services.AddSingleton<TestConfirmations>();
-                services.AddSingleton<IMcpOperatorConfirmationService>(provider => provider.GetRequiredService<TestConfirmations>());
+                services.AddSingleton<IMcpOperatorConfirmationService>(provider => confirmations ?? provider.GetRequiredService<TestConfirmations>());
                 services.AddSingleton<TestArtifactStore>();
                 services.AddSingleton<IMcpOperatorFileArtifactStore>(provider => provider.GetRequiredService<TestArtifactStore>());
                 services.AddSingleton<TestFileRegistry>();
@@ -646,7 +835,7 @@ public sealed partial class McpOperatorClientFileEndpointTests
                         var path when path.EndsWith("/files/move/preview", StringComparison.Ordinal) => "preview_move",
                         _ => "confirm_move"
                     };
-                    http.Items[McpOperatorDelegationMiddleware.HttpContextItemKey] = new McpOperatorDelegation(
+                    var delegation = new McpOperatorDelegation(
                         new McpOperatorDelegationIdentity("operator-1", "operator-client", null, [], ["Operator"], ["netratel.mcp.files", "netratel.mcp.write"]),
                         "netratel-mcp-http",
                         "netratel_files",
@@ -658,6 +847,7 @@ public sealed partial class McpOperatorClientFileEndpointTests
                         client.TenantId,
                         client.AgentId,
                         "correlation-1");
+                    http.Items[McpOperatorDelegationMiddleware.HttpContextItemKey] = configureDelegation?.Invoke(delegation) ?? delegation;
                     await next();
                 });
                 app.UseAuthorization();
@@ -705,9 +895,12 @@ public sealed partial class McpOperatorClientFileEndpointTests
         public ConcurrentQueue<McpOperatorRouteAccessRequest> Accepted { get; } = [];
         public IReadOnlyList<string>? WriteRootsOverride { get; set; }
         public IReadOnlyList<string>? ReadRootsOverride { get; set; }
+        public string? FailureCodeOverride { get; set; }
+        public long PolicyVersion { get; set; } = 1;
 
         public Task<McpOperatorRouteAdmission> EvaluateAsync(McpOperatorRouteAccessRequest request, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var access = new McpOperatorAccessRequest(
                 request.Environment,
                 request.Principal,
@@ -720,6 +913,7 @@ public sealed partial class McpOperatorClientFileEndpointTests
                 request.Operation is "write_text" or "upload" or "move" or "artifact_cleanup" ? McpOperatorConfirmationClass.Destructive : request.Operation is "copy" or "collect" ? McpOperatorConfirmationClass.StandardMutation : McpOperatorConfirmationClass.None,
                 request.CorrelationId,
                 request.RequestId,
+                TargetSetDigest: new string('a', 64),
                 McpResource: request.McpResource,
                 McpInstance: request.McpInstance,
                 Tool: request.Tool,
@@ -733,9 +927,11 @@ public sealed partial class McpOperatorClientFileEndpointTests
                 new McpOperatorConstraints(
                     ReadRoots: ReadRootsOverride ?? (includeReadRoot ? ["/var/log"] : null),
                     WriteRoots: WriteRootsOverride ?? (includeWriteRoot ? ["/var/lib/netratel"] : null)),
-                "target-digest",
+                access.TargetSetDigest,
                 access,
-                1);
+                PolicyVersion);
+            if (FailureCodeOverride is { } failure)
+                decision = McpOperatorDecision.Denied(access, failure, McpOperatorAuthorizationLayer.Policy);
             return Task.FromResult(new McpOperatorRouteAdmission(decision, McpOperatorOperationCatalog.Find(request.Tool, request.Operation)));
         }
 
@@ -886,7 +1082,9 @@ public sealed partial class McpOperatorClientFileEndpointTests
                 return Task.FromResult(McpOperatorConfirmationAdmission.Denied("confirmation_plan_stale"));
             return Task.FromResult(completed.TryGetValue(request.PayloadHash, out var prior)
                 ? new McpOperatorConfirmationAdmission(false, true, null, idempotencyId, prior.Outcome, prior.ResultReference)
-                : new McpOperatorConfirmationAdmission(true, false, null, idempotencyId, McpOperatorIdempotencyOutcome.Pending, null));
+                : request.ReplayOnly
+                    ? new McpOperatorConfirmationAdmission(false, false, null, null, null, null)
+                    : new McpOperatorConfirmationAdmission(true, false, null, idempotencyId, McpOperatorIdempotencyOutcome.Pending, null));
         }
 
         public Task CompleteAsync(Guid idempotencyId, McpOperatorIdempotencyOutcome outcome, string? resultReference, CancellationToken cancellationToken)
@@ -896,9 +1094,26 @@ public sealed partial class McpOperatorClientFileEndpointTests
         }
     }
 
+    private sealed class ArtifactReceiptPersistence : SaveChangesInterceptor
+    {
+        public TaskCompletionSource ReceiptSaved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData eventData, int result,
+            CancellationToken cancellationToken = default)
+        {
+            if (eventData.Context is { } db && db.ChangeTracker.Entries<McpOperatorIdempotencyRecord>()
+                .Any(entry => entry.Entity.Outcome == McpOperatorIdempotencyOutcome.Succeeded))
+                ReceiptSaved.TrySetResult();
+            return ValueTask.FromResult(result);
+        }
+    }
+
     private sealed class TestArtifactStore : IMcpOperatorFileArtifactStore
     {
         public List<McpOperatorFileArtifact> Artifacts { get; } = [];
+        public int Cleanups { get; private set; }
+        public Action? AfterCleanup { get; set; }
+        public DateTimeOffset? CleanupTimeOverride { get; set; }
 
         public Task<McpOperatorFileArtifact> CreateOrGetAsync(McpOperatorFileArtifactCreateRequest request, CancellationToken cancellationToken)
         {
@@ -947,8 +1162,10 @@ public sealed partial class McpOperatorClientFileEndpointTests
             if (index < 0)
                 return Task.FromResult<McpOperatorFileArtifact?>(null);
 
-            var cleaned = Artifacts[index] with { Content = null, DeletedAtUtc = Artifacts[index].DeletedAtUtc ?? now };
+            Cleanups++;
+            var cleaned = Artifacts[index] with { Content = null, DeletedAtUtc = Artifacts[index].DeletedAtUtc ?? CleanupTimeOverride ?? now };
             Artifacts[index] = cleaned;
+            AfterCleanup?.Invoke();
             return Task.FromResult<McpOperatorFileArtifact?>(cleaned);
         }
 

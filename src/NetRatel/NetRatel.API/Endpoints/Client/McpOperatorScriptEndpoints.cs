@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -218,18 +219,47 @@ public static class McpOperatorScriptEndpoints
         }
 
         if (!HasPlanCredentials(request.PlanToken, request.IdempotencyKey) ||
-            !TryBuildMutationDraft(action, request, tenantId, context, scripts, cancellationToken, out var draftTask))
+            !TryBuildMutationDraft(action, request, tenantId, context, scripts, cancellationToken, out var draftTask, includeDeleted: true))
             return Failure("confirmation_plan_invalid", context);
         McpOperatorScriptDraft? draft;
         try { draft = await draftTask.ConfigureAwait(false); }
         catch (McpOperatorScriptIntegrityException) { return Failure("script_integrity_invalid", context); }
         if (draft is null) return Failure("script_not_found", context);
 
-        var confirmation = await confirmations.ConfirmAsync(new McpOperatorConfirmationRequest(
-            request.PlanToken!, request.IdempotencyKey!, MutationPayloadHash(action, request.ScriptId, request.ExpectedVersion, draft), context.Decision), cancellationToken).ConfigureAwait(false);
+        var confirmationRequest = new McpOperatorConfirmationRequest(request.PlanToken!, request.IdempotencyKey!,
+            MutationPayloadHash(action, request.ScriptId, request.ExpectedVersion, draft), context.Decision);
+        if (action == "delete")
+        {
+            // Retained owner-bound content preserves the original payload hash
+            // after deletion. Only a matching consumed confirmation can replay;
+            // a fresh plan must still name a live revision and stay unconsumed
+            // when that revision has been changed or deleted.
+            var replayRequest = confirmationRequest with { ReplayOnly = true };
+            var replay = await confirmations.ConfirmAsync(replayRequest, cancellationToken).ConfigureAwait(false);
+            if (replay.FailureCode is { } replayCode) return Failure(replayCode, context);
+            if (replay.IsReplay)
+                return await ReplayMutationAsync(action, replay, request.ScriptId, tenantId, context, http, scripts, cancellationToken).ConfigureAwait(false);
+            (McpOperatorScriptLease Lease, string Content, string? ManifestJson)? current;
+            try
+            {
+                current = await scripts.GetOwnedAsync(request.ScriptId!.Value, tenantId, context.Request.Principal,
+                    context.Request.McpResource, context.Request.McpInstance, cancellationToken).ConfigureAwait(false);
+            }
+            catch (McpOperatorScriptIntegrityException) { return Failure("script_integrity_invalid", context); }
+            if (current is null || current.Value.Lease.Version != request.ExpectedVersion)
+            {
+                // Reconcile a confirmation that completed during the live read.
+                replay = await confirmations.ConfirmAsync(replayRequest, cancellationToken).ConfigureAwait(false);
+                if (replay.FailureCode is { } concurrentCode) return Failure(concurrentCode, context);
+                return replay.IsReplay
+                    ? await ReplayMutationAsync(action, replay, request.ScriptId, tenantId, context, http, scripts, cancellationToken).ConfigureAwait(false)
+                    : Failure(current is null ? "script_not_found" : "script_etag_mismatch", context);
+            }
+        }
+        var confirmation = await confirmations.ConfirmAsync(confirmationRequest, cancellationToken).ConfigureAwait(false);
         if (confirmation.FailureCode is { } failureCode) return Failure(failureCode, context);
         if (confirmation.IsReplay)
-            return await ReplayMutationAsync(action, confirmation, request.ScriptId, tenantId, context, scripts, cancellationToken).ConfigureAwait(false);
+            return await ReplayMutationAsync(action, confirmation, request.ScriptId, tenantId, context, http, scripts, cancellationToken).ConfigureAwait(false);
         if (!confirmation.IsNewDispatch || confirmation.IdempotencyId is not { } idempotencyId)
             return Failure("confirmation_plan_invalid", context);
 
@@ -248,7 +278,10 @@ public static class McpOperatorScriptEndpoints
                 await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, "script_not_found", cancellationToken).ConfigureAwait(false);
                 return Failure("script_not_found", context);
             }
-            await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, result.ScriptId.ToString(), cancellationToken).ConfigureAwait(false);
+            var resultReference = string.Create(CultureInfo.InvariantCulture, $"script-mutation:{result.ScriptId}:{result.Version}");
+            // The durable mutation has already succeeded. Persist its receipt
+            // even when the client disconnects before receiving the response.
+            await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, resultReference, CancellationToken.None).ConfigureAwait(false);
             SetEtag(http, result.Version);
             return action == "delete"
                 ? Results.Ok(new McpOperatorScriptMutationResult(result.ScriptId, result.Version, true, false, context.CorrelationId))
@@ -426,7 +459,7 @@ public static class McpOperatorScriptEndpoints
 
     private static bool TryBuildMutationDraft(
         string action, McpOperatorScriptMutationRequest request, int tenantId, McpOperatorScriptContext context,
-        IMcpOperatorScriptStore scripts, CancellationToken cancellationToken, out Task<McpOperatorScriptDraft?> draftTask)
+        IMcpOperatorScriptStore scripts, CancellationToken cancellationToken, out Task<McpOperatorScriptDraft?> draftTask, bool includeDeleted = false)
     {
         if (action is "create" or "update")
         {
@@ -445,12 +478,12 @@ public static class McpOperatorScriptEndpoints
         }
         if (action == "delete")
         {
-            if (request.ScriptId is not > 0 || request.ExpectedVersion is not > 0)
+            if (request.ScriptId is not > 0 || request.ExpectedVersion is not > 0 || request.Script is not null || request.ManifestJson is not null)
             {
                 draftTask = Task.FromResult<McpOperatorScriptDraft?>(null);
                 return false;
             }
-            draftTask = BuildExistingDraftAsync(request.ScriptId.Value, tenantId, context, scripts, cancellationToken);
+            draftTask = BuildExistingDraftAsync(request.ScriptId.Value, tenantId, context, scripts, includeDeleted, cancellationToken);
             return true;
         }
         draftTask = Task.FromResult<McpOperatorScriptDraft?>(null);
@@ -463,9 +496,11 @@ public static class McpOperatorScriptEndpoints
         return existing is null ? null : ToDraft(existing.Value, request.ManifestJson);
     }
 
-    private static async Task<McpOperatorScriptDraft?> BuildExistingDraftAsync(long scriptId, int tenantId, McpOperatorScriptContext context, IMcpOperatorScriptStore scripts, CancellationToken cancellationToken)
+    private static async Task<McpOperatorScriptDraft?> BuildExistingDraftAsync(long scriptId, int tenantId, McpOperatorScriptContext context, IMcpOperatorScriptStore scripts, bool includeDeleted, CancellationToken cancellationToken)
     {
-        var existing = await scripts.GetOwnedAsync(scriptId, tenantId, context.Request.Principal, context.Request.McpResource, context.Request.McpInstance, cancellationToken).ConfigureAwait(false);
+        var existing = includeDeleted
+            ? await scripts.GetOwnedForReplayAsync(scriptId, tenantId, context.Request.Principal, context.Request.McpResource, context.Request.McpInstance, cancellationToken).ConfigureAwait(false)
+            : await scripts.GetOwnedAsync(scriptId, tenantId, context.Request.Principal, context.Request.McpResource, context.Request.McpInstance, cancellationToken).ConfigureAwait(false);
         return existing is null ? null : ToDraft(existing.Value, existing.Value.ManifestJson);
     }
 
@@ -473,25 +508,39 @@ public static class McpOperatorScriptEndpoints
         existing.Lease.Name, existing.Lease.Description, existing.Lease.ShellType, existing.Content, existing.Lease.ContentHash,
         existing.Lease.Parameters, existing.Lease.TimeoutSeconds, existing.Lease.WorkingDirectory, existing.Lease.DeclaredSideEffects, manifestJson);
 
-    private static async Task<IResult> ReplayMutationAsync(string action, McpOperatorConfirmationAdmission confirmation, long? scriptId, int tenantId, McpOperatorScriptContext context, IMcpOperatorScriptStore scripts, CancellationToken cancellationToken)
+    private static async Task<IResult> ReplayMutationAsync(string action, McpOperatorConfirmationAdmission confirmation, long? scriptId, int tenantId, McpOperatorScriptContext context, HttpContext http, IMcpOperatorScriptStore scripts, CancellationToken cancellationToken)
     {
         if (confirmation.Outcome == McpOperatorIdempotencyOutcome.Pending) return Failure("idempotency_pending", context);
-        if (confirmation.Outcome != McpOperatorIdempotencyOutcome.Succeeded || !long.TryParse(confirmation.ResultReference, out var resultId))
+        if (confirmation.Outcome != McpOperatorIdempotencyOutcome.Succeeded || ReadMutationReference(confirmation.ResultReference) is not { } recorded ||
+            (action != "create" && scriptId != recorded.ScriptId))
             return Failure("idempotency_replay_unavailable", context);
-        if (action == "delete") return Results.Ok(new McpOperatorScriptMutationResult(resultId, 0, true, true, context.CorrelationId));
         (McpOperatorScriptLease Lease, string Content, string? ManifestJson)? existing;
         try
         {
-            existing = await scripts.GetOwnedAsync(resultId, tenantId, context.Request.Principal, context.Request.McpResource, context.Request.McpInstance, cancellationToken).ConfigureAwait(false);
+            existing = await scripts.GetOwnedForReplayAsync(recorded.ScriptId, tenantId, context.Request.Principal, context.Request.McpResource, context.Request.McpInstance, cancellationToken).ConfigureAwait(false);
         }
         catch (McpOperatorScriptIntegrityException)
         {
             return Failure("script_integrity_invalid", context);
         }
-        return existing is null
-            ? Failure("idempotency_replay_unavailable", context)
-            : Results.Ok(new McpOperatorScriptMutationResult(resultId, existing.Value.Lease.Version, false, true, context.CorrelationId));
+        if (existing is null) return Failure("idempotency_replay_unavailable", context);
+        // Legacy id-only receipts can supply only the current owned revision.
+        var version = recorded.Version ?? existing.Value.Lease.Version;
+        SetEtag(http, version);
+        return Results.Ok(new McpOperatorScriptMutationResult(recorded.ScriptId, version, action == "delete", true, context.CorrelationId));
     }
+
+    private static ScriptMutationReference? ReadMutationReference(string? reference)
+    {
+        if (PositiveDecimal(reference, out var legacyScriptId)) return new(legacyScriptId, null);
+        return reference?.Split(':') is ["script-mutation", var scriptIdText, var versionText] &&
+               PositiveDecimal(scriptIdText, out var scriptId) && PositiveDecimal(versionText, out var version)
+            ? new(scriptId, version)
+            : null;
+    }
+
+    private static bool PositiveDecimal(string? value, out long parsed) =>
+        long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out parsed) && parsed > 0;
 
     private static async Task<McpOperatorScriptContextResult> TryCreateContextAsync(
         string operation, int tenantId, Guid agentId, HttpContext http, IHostEnvironment environment,
@@ -640,6 +689,7 @@ public static class McpOperatorScriptEndpoints
     private sealed record McpOperatorScriptContext(McpOperatorRouteAccessRequest Request, McpOperatorDecision Decision, string RequiredScope, int TenantId, Guid AgentId, string Operation, string CorrelationId);
     private sealed record McpOperatorScriptContextResult(McpOperatorScriptContext? Context, IResult? Failure);
     private sealed record McpOperatorScriptRunResolution(McpOperatorScriptContext? Context, (McpOperatorScriptLease Lease, string Content, string? ManifestJson)? Script, IResult? Failure);
+    private sealed record ScriptMutationReference(long ScriptId, long? Version);
 }
 
 public sealed record McpOperatorScriptMutationRequest(
