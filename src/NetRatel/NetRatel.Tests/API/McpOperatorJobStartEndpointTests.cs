@@ -16,6 +16,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NetRatel.API.Endpoints.Client;
+using NetRatel.API.Endpoints.Auth;
 using NetRatel.API.Gateway;
 using NetRatel.API.Middleware;
 using NetRatel.API.Services.Jobs;
@@ -44,14 +45,17 @@ public sealed class McpOperatorJobStartEndpointTests
     private static string ActionRoot(string action) => $"/api/v2/mcp/operator/agents/42/{AgentId:D}/jobs/runs/{RunId}/{action}";
 
     [Theory]
-    [InlineData("cancel")]
-    [InlineData("delete")]
-    public async Task Completed_run_actions_replay_the_original_state_without_repeating_dispatch_or_persistence(string action)
+    [InlineData("cancel", false)]
+    [InlineData("delete", false)]
+    [InlineData("cancel", true)]
+    [InlineData("delete", true)]
+    public async Task Completed_run_actions_replay_the_original_state_without_repeating_dispatch_or_persistence(string action, bool localDelegation)
     {
-        await using var app = await BuildAsync(action);
+        await using var app = await BuildAsync(action, localDelegation);
         using var client = app.GetTestClient();
-        var request = await PreviewRunActionAsync(client, action);
-        var confirmed = await ConfirmRunActionAsync(client, action, request);
+        var boundaryApp = localDelegation ? app : null;
+        var request = await PreviewRunActionAsync(client, action, boundaryApp);
+        var confirmed = await ConfirmRunActionAsync(client, action, request, boundaryApp);
         confirmed.Replayed.Should().BeFalse();
         confirmed.State.Should().Be(action == "cancel" ? nameof(JobRunState.Running) : nameof(JobRunState.Succeeded));
         var dispatch = app.Services.GetRequiredService<DispatchCounter>();
@@ -61,6 +65,7 @@ public sealed class McpOperatorJobStartEndpointTests
             var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
             if (action == "cancel") (await db.JobRuns.SingleAsync()).Status = (int)JobRunState.Cancelled;
             (await db.McpOperatorJobs.SingleAsync()).DeletedAtUtc = DateTimeOffset.UtcNow;
+            if (localDelegation) (await db.McpOperatorJobRuns.SingleAsync()).DeletedAtUtc = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync();
             if (action == "delete")
             {
@@ -71,11 +76,27 @@ public sealed class McpOperatorJobStartEndpointTests
         var writes = app.Services.GetRequiredService<RunWriteCounter>();
         var beforeReplay = writes.Count;
 
-        var replayed = await ConfirmRunActionAsync(client, action, request);
+        var replayed = await ConfirmRunActionAsync(client, action, request, boundaryApp);
 
         replayed.Should().Be(confirmed with { Replayed = true });
         writes.Count.Should().Be(beforeReplay);
         dispatch.Cancels.Should().Be(action == "cancel" ? 1 : 0);
+        if (localDelegation)
+        {
+            foreach (var operation in new[] { "get", action })
+            {
+                using var ordinary = await McpJobLocalDelegationTestBoundary.ExchangeAsync(app, client, "netratel_job_runs", operation, RunId.ToString(), AgentId);
+                ordinary.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+            }
+            var assertion = await McpJobLocalDelegationTestBoundary.AssertionAsync(app, client, "netratel_job_runs", action, RunId.ToString(), AgentId,
+                McpOperatorJobConfirmationPayload.RunActionBinding(action, RunId, request.Reason, request.PlanToken!, request.IdempotencyKey!));
+            using var preview = await McpJobLocalDelegationTestBoundary.PostAsync(client, ActionRoot(action) + "/preview", request, assertion);
+            preview.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+            using var changed = await McpJobLocalDelegationTestBoundary.PostAsync(client, ActionRoot(action) + "/confirm", request with { Reason = "another reason" }, assertion);
+            changed.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+            writes.Count.Should().Be(beforeReplay);
+            dispatch.Cancels.Should().Be(action == "cancel" ? 1 : 0);
+        }
         await using var verification = app.Services.CreateAsyncScope();
         var verificationDb = verification.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
         (await verificationDb.McpOperatorAcceptedAudits.CountAsync()).Should().Be(1);
@@ -308,23 +329,28 @@ public sealed class McpOperatorJobStartEndpointTests
         decision.Decision.FailureCode.Should().Be("oauth_scope_missing");
     }
 
-    private static async Task<McpOperatorJobRunActionRequest> PreviewRunActionAsync(HttpClient client, string action)
+    private static async Task<McpOperatorJobRunActionRequest> PreviewRunActionAsync(HttpClient client, string action, WebApplication? app = null)
     {
         var request = new McpOperatorJobRunActionRequest("reviewed action");
-        using var response = await client.PostAsJsonAsync(ActionRoot(action) + "/preview", request);
+        using var response = app is null ? await client.PostAsJsonAsync(ActionRoot(action) + "/preview", request) :
+            await McpJobLocalDelegationTestBoundary.PostAsync(client, ActionRoot(action) + "/preview", request,
+                await McpJobLocalDelegationTestBoundary.AssertionAsync(app, client, "netratel_job_runs", action, RunId.ToString(), AgentId));
         response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
         var preview = (await response.Content.ReadFromJsonAsync<McpOperatorJobRunPreview>())!;
         return request with { PlanToken = preview.PlanToken, IdempotencyKey = preview.IdempotencyKey };
     }
 
-    private static async Task<McpOperatorJobRunResult> ConfirmRunActionAsync(HttpClient client, string action, McpOperatorJobRunActionRequest request)
+    private static async Task<McpOperatorJobRunResult> ConfirmRunActionAsync(HttpClient client, string action, McpOperatorJobRunActionRequest request, WebApplication? app = null)
     {
-        using var response = await client.PostAsJsonAsync(ActionRoot(action) + "/confirm", request);
+        using var response = app is null ? await client.PostAsJsonAsync(ActionRoot(action) + "/confirm", request) :
+            await McpJobLocalDelegationTestBoundary.PostAsync(client, ActionRoot(action) + "/confirm", request,
+                await McpJobLocalDelegationTestBoundary.AssertionAsync(app, client, "netratel_job_runs", action, RunId.ToString(), AgentId,
+                    McpOperatorJobConfirmationPayload.RunActionBinding(action, RunId, request.Reason, request.PlanToken!, request.IdempotencyKey!)));
         response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
         return (await response.Content.ReadFromJsonAsync<McpOperatorJobRunResult>())!;
     }
 
-    private static async Task<WebApplication> BuildAsync(string operation = "start")
+    private static async Task<WebApplication> BuildAsync(string operation = "start", bool localDelegation = false)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Production" });
         builder.WebHost.UseTestServer();
@@ -344,20 +370,25 @@ public sealed class McpOperatorJobStartEndpointTests
         builder.Services.AddSingleton<IClientPresenceRouter, Presence>();
         builder.Services.AddSingleton<IAgentCommandAuthorityDispatcher, Dispatcher>();
         builder.Services.AddSingleton<McpOperatorLocalAgentOptions>();
+        if (localDelegation) McpJobLocalDelegationTestBoundary.Configure(builder, Subject, ClientId, Resource);
         var app = builder.Build();
         app.UseAuthentication();
-        // Current-grant and signed-delegation checks are covered separately in
-        // McpFileDelegationPermissionTests. Exercise real route/store/plan
-        // admission here with the exact Execute-only middleware output.
-        app.Use(async (context, next) =>
+        if (localDelegation) app.UseMiddleware<McpOperatorDelegationMiddleware>();
+        else
         {
-            context.Items[McpOperatorDelegationMiddleware.HttpContextItemKey] = new McpOperatorDelegation(
-                new McpOperatorDelegationIdentity(Subject, ClientId, null, [], ["AutomationOperator"], ["netratel.mcp.execute"]),
-                "mcp-service", "netratel_job_runs", operation, "start-request", DateTimeOffset.UtcNow.AddMinutes(1),
-                Resource, "prod", 42, AgentId, "start-correlation");
-            await next(context);
-        });
+            // Keep the original direct route/store fixture for its focused
+            // policy and execution tests; local cases use the full boundary.
+            app.Use(async (context, next) =>
+            {
+                context.Items[McpOperatorDelegationMiddleware.HttpContextItemKey] = new McpOperatorDelegation(
+                    new McpOperatorDelegationIdentity(Subject, ClientId, null, [], ["AutomationOperator"], ["netratel.mcp.execute"]),
+                    "mcp-service", "netratel_job_runs", operation, "start-request", DateTimeOffset.UtcNow.AddMinutes(1),
+                    Resource, "prod", 42, AgentId, "start-correlation");
+                await next(context);
+            });
+        }
         app.UseAuthorization();
+        if (localDelegation) app.MapMcpLocalDelegationEndpoints();
         app.MapMcpOperatorJobEndpoints();
         await app.StartAsync();
         await using var scope = app.Services.CreateAsyncScope();
@@ -495,6 +526,7 @@ public sealed class McpOperatorJobStartEndpointTests
         : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
     {
         protected override Task<AuthenticateResult> HandleAuthenticateAsync() => Task.FromResult(AuthenticateResult.Success(
-            new AuthenticationTicket(new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "mcp-service")], Scheme.Name)), Scheme.Name)));
+            new AuthenticationTicket(new ClaimsPrincipal(Context.RequestServices.GetService<McpJobLocalDelegationTestBoundary>()?.Identity(Scheme.Name) ??
+                new ClaimsIdentity([new Claim("sub", "mcp-service")], Scheme.Name)), Scheme.Name)));
     }
 }

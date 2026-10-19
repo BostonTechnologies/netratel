@@ -110,6 +110,12 @@ public sealed class McpOperatorDelegationMiddleware(
         if (credential.OwnerPrincipalId != delegation.Identity.Subject ||
             !string.Equals(credential.Resource, delegation.Resource, StringComparison.Ordinal))
             return "local_delegation_binding_mismatch";
+        // Existing signed relay clients keep their own application client id.
+        // A receipt proof instead binds the exact plan to the exchanged ingress
+        // credential identity, so it cannot borrow that compatibility contract.
+        if (delegation.ReplayBinding is not null &&
+            (credential.CredentialId != delegation.Identity.ClientId || credential.CredentialId != delegation.IngressCredentialId))
+            return "local_delegation_binding_mismatch";
         if (!McpLocalDelegationTargetRequirements.TryGetAuthorizationTenant(delegation, out var authorizationTenantId))
             return "local_delegation_target_invalid";
         var target = McpOperationTargetCatalog.Find(delegation.Tool, delegation.Operation);

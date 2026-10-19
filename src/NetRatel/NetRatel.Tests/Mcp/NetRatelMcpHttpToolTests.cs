@@ -1,6 +1,18 @@
 using AwesomeAssertions;
+using Microsoft.AspNetCore.Http;
+using Microsoft.IdentityModel.Tokens;
+using NetRatel.API.Endpoints.Client;
+using NetRatel.Application.Operations;
 using NetRatel.Mcp.Core;
+using NetRatel.Mcp.Http;
+using NetRatel.Shared.Operations;
+using System.IdentityModel.Tokens.Jwt;
 using System.Net;
+using System.Net.Http.Json;
+using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Xunit;
 
@@ -8,6 +20,223 @@ namespace NetRatel.Tests.Mcp;
 
 public sealed class NetRatelMcpHttpToolTests
 {
+    private const string ReplayPlanToken = "pppppppppppppppppppppppppppppppp";
+    private const string ReplayIdempotencyKey = "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii";
+
+    [Theory]
+    [InlineData("create")]
+    [InlineData("update")]
+    [InlineData("delete")]
+    [InlineData("param_add")]
+    [InlineData("param_update")]
+    [InlineData("param_delete")]
+    [InlineData("step_add")]
+    [InlineData("step_update")]
+    [InlineData("step_reorder")]
+    [InlineData("step_delete")]
+    public void Replay_hash_preserves_existing_job_confirmation_serialization_for_typed_and_mcp_inputs(string action)
+    {
+        foreach (var optionalFields in new[] { false, true })
+        {
+            var request = ReplayMutationRequest(action, optionalFields);
+            // This is the pre-shared-helper serialization that existing plans
+            // already persist. Compare actual API DTOs, including null/default
+            // nested properties, with the host's decimal-string request form.
+            var previousJson = JsonSerializer.Serialize(new
+            {
+                action, request.JobId, request.ExpectedVersion, request.Job, request.ParameterId,
+                request.Parameter, request.StepId, request.Step, request.Ordinal
+            });
+            var expected = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(previousJson)));
+            McpOperatorJobConfirmationPayload.MutationHash(action, JsonSerializer.SerializeToElement(request)).Should().Be(expected);
+
+            var hostRequest = (JsonObject)JsonSerializer.SerializeToNode(request, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+            foreach (var property in hostRequest.Where(property => property.Value is null).ToArray())
+                hostRequest.Remove(property.Key);
+            hostRequest["tenantId"] = 42;
+            hostRequest["agentId"] = "e85d8a10-b2aa-4f11-93c0-a4d2f3a400e0";
+            foreach (var field in new[] { "jobId", "expectedVersion", "parameterId", "stepId", "ordinal" })
+                if (hostRequest[field] is { } value) hostRequest[field] = value.ToJsonString();
+            foreach (var field in new[] { "job", "parameter", "step" })
+                if (hostRequest[field] is JsonObject nested)
+                {
+                    foreach (var property in nested.Where(property => property.Value is null).ToArray())
+                        nested.Remove(property.Key);
+                    foreach (var identifier in new[] { "id", "ordinal", "scriptId", "scriptVersion" })
+                        if (nested[identifier] is { } value) nested[identifier] = value.ToJsonString();
+                }
+
+            McpOperatorJobConfirmationPayload.TryCreateBinding("netratel_jobs", action, Request(hostRequest), out var binding).Should().BeTrue();
+            binding!.PayloadHash.Should().Be(expected);
+            binding.PlanTokenHash.Should().Be(Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ReplayPlanToken))));
+            binding.IdempotencyKeyHash.Should().Be(Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ReplayIdempotencyKey))));
+        }
+    }
+
+    [Theory]
+    [InlineData("cancel")]
+    [InlineData("delete")]
+    public void Replay_hash_preserves_job_run_reason_normalization_and_decimal_precision(string action)
+    {
+        const ulong runId = 9007199254740993;
+        foreach (var reason in new[] { null, "", "  reviewed cleanup  ", "has\ncontrol", new string('x', 129) })
+        {
+            var previousReason = string.IsNullOrWhiteSpace(reason) ? "operator_requested" :
+                reason.Trim().Length > 128 || reason.Any(char.IsControl) ? "operator_requested" : reason.Trim();
+            var expected = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { action, runId, reason = previousReason }))));
+            McpOperatorJobConfirmationPayload.RunActionHash(action, runId, reason).Should().Be(expected);
+            var request = JsonSerializer.SerializeToElement(new
+            {
+                tenantId = 42, agentId = Guid.NewGuid(), jobRunId = runId.ToString(), reason,
+                planToken = ReplayPlanToken, idempotencyKey = ReplayIdempotencyKey
+            });
+            McpOperatorJobConfirmationPayload.TryCreateBinding("netratel_job_runs", action, request, out var binding).Should().BeTrue();
+            binding!.PayloadHash.Should().Be(expected);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Replay_proof_propagates_only_hashes_for_confirmed_http_calls(bool localCredentialMode, bool confirmed)
+    {
+        var options = ReplayDelegationOptions();
+        var tokens = new McpOperatorDelegationTokenService(options);
+        var host = new NetRatelMcpHostContext(new NetRatelMcpTarget("prod", new Uri("https://api.example.test"),
+            new Uri("https://mcp.example.test/mcp"), NetRatelMcpCatalog.Revision), NetRatelMcpTransport.StreamableHttp, "test", operatorSurfaceEnabled: true);
+        var httpOptions = new NetRatelMcpHttpOptions { PublicResourceUri = "https://mcp.example.test/mcp", LocalCredentialMode = localCredentialMode };
+        var context = new McpOperatorDelegationContext();
+        var http = new DefaultHttpContext();
+        http.Request.Headers.Authorization = "Bearer nrt_ic_synthetic-replay-credential";
+        var caller = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "replay-owner")], "test"));
+        McpOperatorDelegation? pairing = null;
+        using var clients = new ReplayExchangeClients(request =>
+        {
+            request.RequestUri!.AbsolutePath.Should().Be("/api/v2/mcp/local-delegation/exchange");
+            tokens.TryValidate(request.Headers.GetValues("X-NetRatel-Mcp-Pairing").Single(), out pairing).Should().BeTrue();
+            pairing!.Identity.ClientId.Should().Be("netratel-local-gateway");
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new { assertion = "exchanged-assertion" }) };
+        });
+        var propagation = new McpOperatorDelegationPropagation(options, tokens, context, host, httpOptions,
+            new HttpContextAccessor { HttpContext = http }, clients, new McpLocalCredentialPairingService(tokens, host, httpOptions));
+        var requestBody = JsonSerializer.SerializeToElement(new
+        {
+            tenantId = 42, agentId = Guid.NewGuid(), jobId = "9007199254740993", expectedVersion = "3",
+            planToken = ReplayPlanToken, idempotencyKey = ReplayIdempotencyKey
+        });
+        var arguments = new Dictionary<string, JsonElement>
+        {
+            ["operation"] = JsonSerializer.SerializeToElement("delete"), ["confirm"] = JsonSerializer.SerializeToElement(confirmed),
+            ["request"] = requestBody
+        };
+
+        var assertion = await propagation.CreateAssertionAsync(caller, "netratel_jobs", arguments, default);
+
+        McpOperatorDelegation delegation;
+        if (localCredentialMode)
+        {
+            assertion.Should().Be("exchanged-assertion");
+            pairing.Should().NotBeNull();
+            delegation = pairing!;
+        }
+        else
+        {
+            tokens.TryValidate(assertion!, out var decoded).Should().BeTrue();
+            delegation = decoded!;
+            var payload = new JwtSecurityTokenHandler().ReadJwtToken(assertion!).Payload.SerializeToJson();
+            payload.Should().NotContain(ReplayPlanToken).And.NotContain(ReplayIdempotencyKey).And.NotContain("expectedVersion");
+        }
+        delegation.ObjectReference.Should().Be("9007199254740993");
+        if (confirmed)
+        {
+            McpOperatorJobConfirmationPayload.TryCreateBinding("netratel_jobs", "delete", requestBody, out var expected).Should().BeTrue();
+            delegation.ReplayBinding.Should().Be(expected);
+        }
+        else delegation.ReplayBinding.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("partial")]
+    [InlineData("duplicate")]
+    [InlineData("malformed")]
+    [InlineData("read-operation")]
+    public void Replay_proof_rejects_incomplete_duplicate_invalid_or_read_operation_signed_claims(string change)
+    {
+        var options = ReplayDelegationOptions();
+        var tokens = new McpOperatorDelegationTokenService(options);
+        var binding = new McpOperatorReplayBinding(new string('A', 64), new string('B', 64), new string('C', 64));
+        var valid = tokens.Create(new McpOperatorDelegationIdentity("replay-owner", "replay-client", null, [], [], []),
+            new McpOperatorDelegationRequest("netratel_jobs", "delete", "replay-request", "https://mcp.example.test/mcp", "prod", 42, Guid.NewGuid())
+            { ObjectReference = "901", ObjectTargetResolutionEnabled = true, ReplayBinding = binding });
+        tokens.TryValidate(valid, out var decoded).Should().BeTrue();
+        decoded!.ReplayBinding.Should().Be(binding);
+        var jwt = new JwtSecurityTokenHandler().ReadJwtToken(valid);
+        switch (change)
+        {
+            case "partial": jwt.Payload.Remove("mcp_replay_key_hash"); break;
+            case "duplicate": jwt.Payload["mcp_replay_plan_hash"] = new[] { binding.PlanTokenHash, binding.PlanTokenHash }; break;
+            case "malformed": jwt.Payload["mcp_replay_payload_hash"] = new string('Z', 64); break;
+            case "read-operation": jwt.Payload["mcp_operation"] = "get"; break;
+        }
+        var key = new SymmetricSecurityKey(Convert.FromBase64String(options.SharedKeyBase64!)) { KeyId = options.KeyId };
+        var invalid = new JwtSecurityTokenHandler().WriteToken(new JwtSecurityToken(
+            new JwtHeader(new SigningCredentials(key, SecurityAlgorithms.HmacSha256)), jwt.Payload));
+
+        tokens.TryValidate(invalid, out _).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("\"jobId\":\"901\",\"JobId\":\"902\"")]
+    [InlineData("\"jobId\":\"901\",\"jobId\":\"901\"")]
+    [InlineData("\"jobId\":\"901\",\"job\":{\"name\":\"one\",\"Name\":\"two\",\"folderPath\":\"/\"}")]
+    public void Replay_hash_rejects_case_colliding_or_duplicate_request_properties(string properties)
+    {
+        using var document = JsonDocument.Parse("{" + properties + ",\"expectedVersion\":1,\"planToken\":\"" + ReplayPlanToken +
+            "\",\"idempotencyKey\":\"" + ReplayIdempotencyKey + "\"}");
+
+        McpOperatorJobConfirmationPayload.TryCreateBinding("netratel_jobs", "delete", document.RootElement, out var binding).Should().BeFalse();
+        binding.Should().BeNull();
+    }
+
+    private static McpOperatorJobMutationRequest ReplayMutationRequest(string action, bool optionalFields)
+    {
+        const long jobId = 9007199254740993;
+        var draft = new McpOperatorJobDraft("reviewed job", "/ops", optionalFields ? "description" : null, optionalFields ? "{\"mode\":\"safe\"}" : null);
+        var parameter = new McpOperatorJobParameter("region", "string", optionalFields, optionalFields ? "description" : null,
+            optionalFields ? "north" : null, optionalFields ? ["north", "south"] : null, optionalFields ? "NAMED_REFERENCE" : null, optionalFields ? 301 : null);
+        var step = new McpOperatorJobStep(optionalFields ? 2 : null, 9007199254740995, 7, new string('A', 64), !optionalFields, optionalFields ? 401 : null);
+        return new McpOperatorJobMutationRequest(
+            Job: action is "create" or "update" ? draft : null, JobId: action == "create" ? null : jobId,
+            ExpectedVersion: action == "create" ? null : 3, ParameterId: action is "param_update" or "param_delete" ? 301 : null,
+            Parameter: action is "param_add" or "param_update" ? parameter : null, StepId: action is "step_update" or "step_reorder" or "step_delete" ? 401 : null,
+            Step: action is "step_add" or "step_update" ? step : null, Ordinal: action == "step_reorder" ? 2 : null,
+            PlanToken: ReplayPlanToken, IdempotencyKey: ReplayIdempotencyKey);
+    }
+
+    private static McpOperatorDelegationOptions ReplayDelegationOptions() => new()
+    {
+        Enabled = true, Issuer = "netratel-mcp-test", Audience = "netratel-api-test", ServicePrincipal = "netratel-mcp-http-test", KeyId = "replay-test",
+        SharedKeyBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes("synthetic-replay-delegation-key-at-least-32-bytes"))
+    };
+
+    private sealed class ReplayExchangeClients(Func<HttpRequestMessage, HttpResponseMessage> respond) : IHttpClientFactory, IDisposable
+    {
+        private readonly HttpClient _client = new(new ReplayExchangeHandler(respond)) { BaseAddress = new Uri("https://api.example.test") };
+        public HttpClient CreateClient(string name) => _client;
+        public void Dispose() => _client.Dispose();
+    }
+
+    private sealed class ReplayExchangeHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(respond(request));
+        }
+    }
+
     [Theory]
     [InlineData("create")]
     [InlineData("update")]

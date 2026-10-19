@@ -88,12 +88,12 @@ public static class McpLocalDelegationEndpoints
             }
             if (!McpLocalDelegationTargetRequirements.TryGetAuthorizationTenant(pairing, out var authorizationTenantId))
                 return Denied(http, "local_delegation_target_invalid", StatusCodes.Status400BadRequest, pairing);
+            // Ordinary object requests retain their established target-binding
+            // failure before permission evaluation. They cannot see tombstones.
             if (target?.Model is McpOperationTargetModel.ObjectDerived && pairing.ObjectTargetResolutionEnabled &&
-                (objectTargets is null ||
+                pairing.ReplayBinding is null && (objectTargets is null ||
                  !await objectTargets.MatchesDelegationAsync(pairing, cancellationToken).ConfigureAwait(false)))
-            {
                 return Denied(http, "local_delegation_binding_mismatch", StatusCodes.Status403Forbidden, pairing);
-            }
 
             var credentialId = http.User.FindFirstValue(IntegrationCredentialAuthenticationHandler.CredentialIdClaimType);
             var ownerPrincipalId = http.User.FindFirstValue("netratel_principal_id");
@@ -115,6 +115,16 @@ public static class McpLocalDelegationEndpoints
                 [],
                 McpLocalDelegationPermissionMapper.RolesFor(operationAccess.RequiredScope),
                 [McpOperationAccessScopeNames.Canonical(operationAccess.RequiredScope)]);
+            // The pairing assertion authenticates the gateway, never the
+            // receipt owner. Only the admitted ingress credential supplies
+            // the owner and client used for an exact deleted-object replay.
+            if (target?.Model is McpOperationTargetModel.ObjectDerived && pairing.ObjectTargetResolutionEnabled &&
+                pairing.ReplayBinding is not null &&
+                (objectTargets is null ||
+                 !await objectTargets.MatchesDelegationAsync(pairing with { Identity = identity, IngressCredentialId = credentialId }, cancellationToken).ConfigureAwait(false)))
+            {
+                return Denied(http, "local_delegation_binding_mismatch", StatusCodes.Status403Forbidden, pairing);
+            }
             var assertion = tokens.Create(identity, new McpOperatorDelegationRequest(
                 pairing.Tool,
                 pairing.Operation,
@@ -127,6 +137,7 @@ public static class McpLocalDelegationEndpoints
             {
                 ObjectReference = pairing.ObjectReference,
                 ObjectTargetResolutionEnabled = pairing.ObjectTargetResolutionEnabled,
+                ReplayBinding = pairing.ReplayBinding,
                 IngressCredentialId = credentialId,
                 IngressPermission = requiredPermission
             });

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -145,7 +146,7 @@ public static class McpOperatorPolicyMutationEndpoints
                     decision, context, target, payloadHash, CreateOperation, authorization, administration,
                     mutationToken => administration.CreateAsync(request.Policy, context.Principal.Subject, mutationToken),
                     cancellationToken).ConfigureAwait(false);
-                await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, created.PolicyId.ToString("D"), cancellationToken).ConfigureAwait(false);
+                await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, created.PolicyId.ToString("D"), CancellationToken.None).ConfigureAwait(false);
                 return Results.Created(
                     $"/api/v2/mcp/operator/policy/policies/{created.PolicyId:D}",
                     new McpOperatorPolicyCreateResult(created, false, context.CorrelationId));
@@ -319,7 +320,7 @@ public static class McpOperatorPolicyMutationEndpoints
                     target.TenantId, agentId, request.Classification, request.Tags, request.ExpectedVersion,
                     context.Principal.Subject, mutationToken),
                 cancellationToken).ConfigureAwait(false);
-            await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, profile.AgentId.ToString("D"), cancellationToken).ConfigureAwait(false);
+            await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, profile.AgentId.ToString("D"), CancellationToken.None).ConfigureAwait(false);
             return Results.Ok(new McpOperatorTargetProfileMutationResult(profile, false, context.CorrelationId));
         }
         catch (McpOperatorAdmissionRejectedException rejection)
@@ -420,13 +421,23 @@ public static class McpOperatorPolicyMutationEndpoints
         var policy = existing.Policy!;
         var target = existing.Target!;
 
-        if (!CanReplace(policy, request.ExpectedVersion, request.Policy!, context!.Principal, out failure))
-            return Failure(failure!, target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: ReplaceOperation);
-
         var payloadHash = PayloadHash(ReplaceOperation, new PolicyReplacePayload(request.PolicyId, request.ExpectedVersion, request.Policy!));
-        var decision = await EvaluateAsync(context, target, payloadHash, ReplaceOperation, authorization, administration, cancellationToken).ConfigureAwait(false);
+        var decision = await EvaluateAsync(context!, target, payloadHash, ReplaceOperation, authorization, administration, cancellationToken).ConfigureAwait(false);
         if (!decision.IsAllowed)
-            return Failure(decision.FailureCode ?? "target_policy_missing", target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: ReplaceOperation);
+            return Failure(decision.FailureCode ?? "target_policy_missing", target.TenantId, target.AgentId, context!.CorrelationId, mutationOperation: ReplaceOperation);
+
+        var confirmationRequest = new McpOperatorConfirmationRequest(request.PlanToken!, request.IdempotencyKey!, payloadHash, decision);
+        if (await TryReplayMutationAsync(confirmationRequest, confirmations, administration, target, context!, ReplaceOperation,
+            request.PolicyId, request.ExpectedVersion, request.Policy!, cancellationToken).ConfigureAwait(false) is { } replay)
+            return replay;
+        if (!CanReplace(policy, request.ExpectedVersion, request.Policy!, context!.Principal, out failure))
+        {
+            // A concurrent confirmation may finish between the receipt lookup
+            // and mutable version/state validation. Never consume a stale new plan.
+            return await TryReplayMutationAsync(confirmationRequest, confirmations, administration, target, context!, ReplaceOperation,
+                request.PolicyId, request.ExpectedVersion, request.Policy!, cancellationToken).ConfigureAwait(false)
+                ?? Failure(failure!, target.TenantId, target.AgentId, context!.CorrelationId, mutationOperation: ReplaceOperation);
+        }
 
         try
         {
@@ -445,12 +456,11 @@ public static class McpOperatorPolicyMutationEndpoints
             return Failure("operator_policy_rejected", target.TenantId, target.AgentId, context.CorrelationId, StatusCodes.Status409Conflict, ReplaceOperation);
         }
 
-        var admission = await confirmations.ConfirmAsync(
-            new McpOperatorConfirmationRequest(request.PlanToken!, request.IdempotencyKey!, payloadHash, decision), cancellationToken).ConfigureAwait(false);
+        var admission = await confirmations.ConfirmAsync(confirmationRequest, cancellationToken).ConfigureAwait(false);
         if (admission.FailureCode is { } confirmationFailure)
             return Failure(confirmationFailure, target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: ReplaceOperation);
         if (admission.IsReplay)
-            return await ReplayMutationAsync(admission, administration, target, context, ReplaceOperation, cancellationToken).ConfigureAwait(false);
+            return await ReplayMutationAsync(admission, administration, target, context!, ReplaceOperation, request.PolicyId, request.ExpectedVersion, request.Policy!, cancellationToken).ConfigureAwait(false);
         if (!admission.IsNewDispatch || admission.IdempotencyId is not { } idempotencyId)
             return Failure("confirmation_plan_invalid", target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: ReplaceOperation);
 
@@ -461,7 +471,8 @@ public static class McpOperatorPolicyMutationEndpoints
                 mutationToken => administration.ReplaceAsync(request.PolicyId, request.ExpectedVersion,
                     request.Policy!, context.Principal.Subject, mutationToken),
                 cancellationToken).ConfigureAwait(false);
-            await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, replaced.PolicyId.ToString("D"), cancellationToken).ConfigureAwait(false);
+            // The mutation is durable; preserve its receipt even if response delivery is cancelled.
+            await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, PolicyMutationResultReference(replaced), CancellationToken.None).ConfigureAwait(false);
             return Results.Ok(new McpOperatorPolicyMutationResult(replaced, false, context.CorrelationId));
         }
         catch (McpOperatorAdmissionRejectedException rejection)
@@ -547,20 +558,30 @@ public static class McpOperatorPolicyMutationEndpoints
         var target = existing.Target!;
         if (!SameTarget(policy.TargetSelector, request.Target))
             return Failure("policy_target_immutable", target.TenantId, target.AgentId, context!.CorrelationId, mutationOperation: DisableOperation);
-        if (!CanDisable(policy, request.ExpectedVersion, context!.Principal, out failure))
-            return Failure(failure!, target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: DisableOperation);
 
         var payloadHash = PayloadHash(DisableOperation, new PolicyDisablePayload(request.PolicyId, request.ExpectedVersion, request.Target));
-        var decision = await EvaluateAsync(context, target, payloadHash, DisableOperation, authorization, administration, cancellationToken).ConfigureAwait(false);
+        var decision = await EvaluateAsync(context!, target, payloadHash, DisableOperation, authorization, administration, cancellationToken).ConfigureAwait(false);
         if (!decision.IsAllowed)
-            return Failure(decision.FailureCode ?? "target_policy_missing", target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: DisableOperation);
+            return Failure(decision.FailureCode ?? "target_policy_missing", target.TenantId, target.AgentId, context!.CorrelationId, mutationOperation: DisableOperation);
 
-        var admission = await confirmations.ConfirmAsync(
-            new McpOperatorConfirmationRequest(request.PlanToken!, request.IdempotencyKey!, payloadHash, decision), cancellationToken).ConfigureAwait(false);
+        var confirmationRequest = new McpOperatorConfirmationRequest(request.PlanToken!, request.IdempotencyKey!, payloadHash, decision);
+        if (await TryReplayMutationAsync(confirmationRequest, confirmations, administration, target, context!, DisableOperation,
+            request.PolicyId, request.ExpectedVersion, null, cancellationToken).ConfigureAwait(false) is { } replay)
+            return replay;
+        if (!CanDisable(policy, request.ExpectedVersion, context!.Principal, out failure))
+        {
+            // A concurrent confirmation may finish between the receipt lookup
+            // and mutable version/state validation. Never consume a stale new plan.
+            return await TryReplayMutationAsync(confirmationRequest, confirmations, administration, target, context!, DisableOperation,
+                request.PolicyId, request.ExpectedVersion, null, cancellationToken).ConfigureAwait(false)
+                ?? Failure(failure!, target.TenantId, target.AgentId, context!.CorrelationId, mutationOperation: DisableOperation);
+        }
+
+        var admission = await confirmations.ConfirmAsync(confirmationRequest, cancellationToken).ConfigureAwait(false);
         if (admission.FailureCode is { } confirmationFailure)
             return Failure(confirmationFailure, target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: DisableOperation);
         if (admission.IsReplay)
-            return await ReplayMutationAsync(admission, administration, target, context, DisableOperation, cancellationToken).ConfigureAwait(false);
+            return await ReplayMutationAsync(admission, administration, target, context!, DisableOperation, request.PolicyId, request.ExpectedVersion, null, cancellationToken).ConfigureAwait(false);
         if (!admission.IsNewDispatch || admission.IdempotencyId is not { } idempotencyId)
             return Failure("confirmation_plan_invalid", target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: DisableOperation);
 
@@ -576,7 +597,7 @@ public static class McpOperatorPolicyMutationEndpoints
                 return Failure("operator_policy_not_found", target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: DisableOperation);
             }
 
-            await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, disabled.PolicyId.ToString("D"), cancellationToken).ConfigureAwait(false);
+            await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, PolicyMutationResultReference(disabled), CancellationToken.None).ConfigureAwait(false);
             return Results.Ok(new McpOperatorPolicyMutationResult(disabled, false, context.CorrelationId));
         }
         catch (McpOperatorAdmissionRejectedException rejection)
@@ -605,7 +626,7 @@ public static class McpOperatorPolicyMutationEndpoints
         IMcpOperatorConfirmationService confirmations,
         CancellationToken cancellationToken)
     {
-        if (!TryContext(http, hostEnvironment, "preview_revoke", out var context, out var failure))
+        if (!TryContext(http, hostEnvironment, "preview_revoke", out var context, out var failure) || context is null)
             return Failure(failure!, null, null, http.TraceIdentifier, mutationOperation: RevokeOperation);
         if (!IsValidVersionedPolicyRequest(request.PolicyId, request.ExpectedVersion) || request.Target is null)
             return Failure("validation_error", null, null, context!.CorrelationId, mutationOperation: RevokeOperation);
@@ -638,7 +659,7 @@ public static class McpOperatorPolicyMutationEndpoints
         IMcpOperatorConfirmationService confirmations,
         CancellationToken cancellationToken)
     {
-        if (!TryContext(http, hostEnvironment, "confirm_revoke", out var context, out var failure))
+        if (!TryContext(http, hostEnvironment, "confirm_revoke", out var context, out var failure) || context is null)
             return Failure(failure!, null, null, http.TraceIdentifier, mutationOperation: RevokeOperation);
         if (!IsValidVersionedPolicyRequest(request.PolicyId, request.ExpectedVersion) || request.Target is null ||
             !HasPlanCredentials(request.PlanToken, request.IdempotencyKey))
@@ -653,20 +674,30 @@ public static class McpOperatorPolicyMutationEndpoints
         var target = existing.Target!;
         if (!SameTarget(policy.TargetSelector, request.Target))
             return Failure("policy_target_immutable", target.TenantId, target.AgentId, context!.CorrelationId, mutationOperation: RevokeOperation);
-        if (!CanRevoke(policy, request.ExpectedVersion, context.Principal, out failure))
-            return Failure(failure!, target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: RevokeOperation);
 
         var payloadHash = PayloadHash(RevokeOperation, new PolicyDisablePayload(request.PolicyId, request.ExpectedVersion, request.Target));
-        var decision = await EvaluateAsync(context, target, payloadHash, RevokeOperation, authorization, administration, cancellationToken).ConfigureAwait(false);
+        var decision = await EvaluateAsync(context!, target, payloadHash, RevokeOperation, authorization, administration, cancellationToken).ConfigureAwait(false);
         if (!decision.IsAllowed)
-            return Failure(decision.FailureCode ?? "target_policy_missing", target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: RevokeOperation);
+            return Failure(decision.FailureCode ?? "target_policy_missing", target.TenantId, target.AgentId, context!.CorrelationId, mutationOperation: RevokeOperation);
 
-        var admission = await confirmations.ConfirmAsync(
-            new McpOperatorConfirmationRequest(request.PlanToken!, request.IdempotencyKey!, payloadHash, decision), cancellationToken).ConfigureAwait(false);
+        var confirmationRequest = new McpOperatorConfirmationRequest(request.PlanToken!, request.IdempotencyKey!, payloadHash, decision);
+        if (await TryReplayMutationAsync(confirmationRequest, confirmations, administration, target, context!, RevokeOperation,
+            request.PolicyId, request.ExpectedVersion, null, cancellationToken).ConfigureAwait(false) is { } replay)
+            return replay;
+        if (!CanRevoke(policy, request.ExpectedVersion, context.Principal, out failure))
+        {
+            // A concurrent confirmation may finish between the receipt lookup
+            // and mutable version/state validation. Never consume a stale new plan.
+            return await TryReplayMutationAsync(confirmationRequest, confirmations, administration, target, context!, RevokeOperation,
+                request.PolicyId, request.ExpectedVersion, null, cancellationToken).ConfigureAwait(false)
+                ?? Failure(failure!, target.TenantId, target.AgentId, context!.CorrelationId, mutationOperation: RevokeOperation);
+        }
+
+        var admission = await confirmations.ConfirmAsync(confirmationRequest, cancellationToken).ConfigureAwait(false);
         if (admission.FailureCode is { } confirmationFailure)
             return Failure(confirmationFailure, target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: RevokeOperation);
         if (admission.IsReplay)
-            return await ReplayMutationAsync(admission, administration, target, context, RevokeOperation, cancellationToken).ConfigureAwait(false);
+            return await ReplayMutationAsync(admission, administration, target, context!, RevokeOperation, request.PolicyId, request.ExpectedVersion, null, cancellationToken).ConfigureAwait(false);
         if (!admission.IsNewDispatch || admission.IdempotencyId is not { } idempotencyId)
             return Failure("confirmation_plan_invalid", target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: RevokeOperation);
 
@@ -682,7 +713,7 @@ public static class McpOperatorPolicyMutationEndpoints
                 return Failure("operator_policy_not_found", target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: RevokeOperation);
             }
 
-            await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, revoked.PolicyId.ToString("D"), cancellationToken).ConfigureAwait(false);
+            await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, PolicyMutationResultReference(revoked), CancellationToken.None).ConfigureAwait(false);
             return Results.Ok(new McpOperatorPolicyMutationResult(revoked, false, context.CorrelationId));
         }
         catch (McpOperatorAdmissionRejectedException rejection)
@@ -728,26 +759,133 @@ public static class McpOperatorPolicyMutationEndpoints
             : Results.Ok(new McpOperatorPolicyCreateResult(created, true, context.CorrelationId));
     }
 
+    private static async Task<IResult?> TryReplayMutationAsync(
+        McpOperatorConfirmationRequest request,
+        IMcpOperatorConfirmationService confirmations,
+        IMcpOperatorPolicyAdministration administration,
+        McpOperatorPolicyMutationTarget target,
+        McpOperatorPolicyMutationContext context,
+        string mutationOperation,
+        Guid policyId,
+        long expectedVersion,
+        McpOperatorPolicyDraft? replacement,
+        CancellationToken cancellationToken)
+    {
+        // The current decision binds identity, target, policy revision and exact
+        // payload. A replay-only lookup cannot reserve or consume a new dispatch.
+        var admission = await confirmations.ConfirmAsync(request with { ReplayOnly = true }, cancellationToken).ConfigureAwait(false);
+        if (admission.FailureCode is { } failure)
+            return Failure(failure, target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: mutationOperation);
+        return admission.IsReplay
+            ? await ReplayMutationAsync(admission, administration, target, context, mutationOperation, policyId, expectedVersion, replacement, cancellationToken).ConfigureAwait(false)
+            : null;
+    }
+
     private static async Task<IResult> ReplayMutationAsync(
         McpOperatorConfirmationAdmission admission,
         IMcpOperatorPolicyAdministration administration,
         McpOperatorPolicyMutationTarget target,
         McpOperatorPolicyMutationContext context,
         string mutationOperation,
+        Guid policyId,
+        long expectedVersion,
+        McpOperatorPolicyDraft? replacement,
         CancellationToken cancellationToken)
     {
         if (admission.Outcome == McpOperatorIdempotencyOutcome.Pending)
             return Failure("idempotency_pending", target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: mutationOperation);
-        if (admission.Outcome != McpOperatorIdempotencyOutcome.Succeeded ||
-            !Guid.TryParse(admission.ResultReference, out var policyId))
-        {
+        if (admission.Outcome != McpOperatorIdempotencyOutcome.Succeeded || expectedVersion == long.MaxValue)
             return Failure("idempotency_failed", target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: mutationOperation);
-        }
 
         var policy = await administration.GetAsync(policyId, cancellationToken).ConfigureAwait(false);
-        return policy is null
-            ? Failure("idempotency_replay_unavailable", target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: mutationOperation)
-            : Results.Ok(new McpOperatorPolicyMutationResult(policy, true, context.CorrelationId));
+        if (policy is null || policy.Environment != context.Environment ||
+            !TryBindTarget(context, policy.TargetSelector, out var currentTarget, out _) || currentTarget != target ||
+            !TryReadPolicyMutationResult(admission.ResultReference, policy, expectedVersion + 1, mutationOperation, out var original))
+            return Failure("idempotency_replay_unavailable", target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: mutationOperation);
+
+        // A replaced draft is bound by the consumed plan's payload hash. Rebuild
+        // its normalized fields, retaining immutable creation metadata, so later
+        // replacements or lifecycle changes cannot rewrite the original result.
+        if (replacement is not null)
+        {
+            original = original with
+            {
+                Name = replacement.Name.Trim(),
+                Environment = replacement.Environment,
+                Effect = replacement.Effect,
+                Priority = replacement.Priority,
+                PrincipalSelector = replacement.PrincipalSelector with { Value = replacement.PrincipalSelector.Value.Trim() },
+                TargetSelector = replacement.TargetSelector with { ClientTag = replacement.TargetSelector.ClientTag?.Trim() },
+                TargetClassification = replacement.TargetClassification,
+                OperationFamily = replacement.OperationFamily,
+                Operation = string.IsNullOrWhiteSpace(replacement.Operation) ? null : replacement.Operation.Trim(),
+                Constraints = replacement.Constraints,
+                ExpiresAtUtc = replacement.ExpiresAtUtc,
+                ReviewByUtc = replacement.ReviewByUtc,
+                AuditReference = string.IsNullOrWhiteSpace(replacement.AuditReference) ? null : replacement.AuditReference.Trim()
+            };
+        }
+
+        return Results.Ok(new McpOperatorPolicyMutationResult(original, true, context.CorrelationId));
+    }
+
+    private static string PolicyMutationResultReference(McpOperatorPolicy policy) =>
+        string.Create(CultureInfo.InvariantCulture,
+            $"policy-mutation:{policy.PolicyId:D}:{policy.Version}:{(int)policy.LifecycleState}:{policy.DisabledAtUtc?.UtcTicks ?? 0}");
+
+    private static bool TryReadPolicyMutationResult(
+        string? resultReference,
+        McpOperatorPolicy current,
+        long expectedResultVersion,
+        string mutationOperation,
+        out McpOperatorPolicy original)
+    {
+        original = current;
+        var lifecycle = mutationOperation switch
+        {
+            ReplaceOperation => McpOperatorPolicyLifecycleState.Active,
+            DisableOperation => McpOperatorPolicyLifecycleState.Disabled,
+            _ => McpOperatorPolicyLifecycleState.Revoked
+        };
+        var disabledAtUtc = mutationOperation == ReplaceOperation ? null : current.DisabledAtUtc;
+        if (!Guid.TryParse(resultReference, out var policyId))
+        {
+            var parts = resultReference?.Split(':');
+            if (parts is not { Length: 5 } || parts[0] != "policy-mutation" ||
+                !Guid.TryParse(parts[1], out policyId) ||
+                !long.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out var version) || version != expectedResultVersion ||
+                !int.TryParse(parts[3], NumberStyles.None, CultureInfo.InvariantCulture, out var state) || state != (int)lifecycle ||
+                !long.TryParse(parts[4], NumberStyles.None, CultureInfo.InvariantCulture, out var disabledTicks) ||
+                disabledTicks < 0 || disabledTicks > DateTimeOffset.MaxValue.UtcTicks)
+            {
+                return false;
+            }
+            disabledAtUtc = disabledTicks == 0 ? null : new DateTimeOffset(disabledTicks, TimeSpan.Zero);
+        }
+        // Legacy identifier-only receipts still have an exact versioned payload.
+        // Disabled/revoked definitions and their disabled actor remain immutable.
+        // PostgreSQL retains microseconds; compare at that precision while the
+        // receipt preserves the original response's full timestamp precision.
+        if (policyId != current.PolicyId || current.Version < expectedResultVersion ||
+            (mutationOperation == ReplaceOperation && disabledAtUtc is not null) ||
+            (mutationOperation == DisableOperation && current.LifecycleState is not (McpOperatorPolicyLifecycleState.Disabled or McpOperatorPolicyLifecycleState.Revoked)) ||
+            (mutationOperation == RevokeOperation && current.LifecycleState != McpOperatorPolicyLifecycleState.Revoked) ||
+            (mutationOperation != ReplaceOperation &&
+                (disabledAtUtc is not { } originalDisabledAtUtc || current.DisabledAtUtc is not { } persistedDisabledAtUtc ||
+                 persistedDisabledAtUtc.UtcTicks / TimeSpan.TicksPerMicrosecond != originalDisabledAtUtc.UtcTicks / TimeSpan.TicksPerMicrosecond ||
+                 current.DisabledBy is null)))
+        {
+            return false;
+        }
+
+        original = current with
+        {
+            Version = expectedResultVersion,
+            LifecycleState = lifecycle,
+            DisabledAtUtc = disabledAtUtc,
+            DisabledBy = mutationOperation == ReplaceOperation ? null : current.DisabledBy
+        };
+        return true;
     }
 
     private static async Task<IResult> ReplayTargetProfileAsync(
@@ -1178,7 +1316,7 @@ public static class McpOperatorPolicyMutationEndpoints
             "delegated_identity_required" or "delegated_identity_invalid" => StatusCodes.Status401Unauthorized,
             "target_not_found" or "operator_policy_not_found" => StatusCodes.Status404NotFound,
             "validation_error" or "environment_mismatch" => StatusCodes.Status400BadRequest,
-            "operator_policy_self_escalation" or "operator_policy_version_conflict" or "policy_environment_immutable" or "policy_target_immutable" or "confirmation_plan_invalid" or "confirmation_plan_stale" or "confirmation_plan_expired" or "idempotency_conflict" => StatusCodes.Status409Conflict,
+            "operator_policy_self_escalation" or "operator_policy_version_conflict" or "policy_environment_immutable" or "policy_target_immutable" or "confirmation_plan_invalid" or "confirmation_plan_stale" or "confirmation_plan_expired" or "idempotency_conflict" or "idempotency_pending" => StatusCodes.Status409Conflict,
             _ => StatusCodes.Status403Forbidden
         };
         return Results.Problem(

@@ -1038,6 +1038,15 @@ public interface IMcpOperatorScriptStore
         string mcpInstance,
         CancellationToken cancellationToken);
 
+    /// <summary>Reads an owned retained revision, including a tombstone, only to reconcile an authenticated confirmation receipt.</summary>
+    Task<(McpOperatorScriptLease Lease, string Content, string? ManifestJson)?> GetOwnedForReplayAsync(
+        long scriptId,
+        int tenantId,
+        McpOperatorPrincipal principal,
+        string mcpResource,
+        string mcpInstance,
+        CancellationToken cancellationToken) => GetOwnedAsync(scriptId, tenantId, principal, mcpResource, mcpInstance, cancellationToken);
+
     Task<McpOperatorScriptLease> CreateAsync(
         McpOperatorScriptCreateRequest request,
         CancellationToken cancellationToken);

@@ -55,7 +55,8 @@ public sealed class McpOperatorDelegationPropagation(
                 Activity.Current?.TraceId.ToString() ?? Guid.NewGuid().ToString("N"))
             {
                 ObjectReference = hostContext.OperatorSurfaceEnabled ? ObjectReferenceFor(target, arguments) : null,
-                ObjectTargetResolutionEnabled = hostContext.OperatorSurfaceEnabled
+                ObjectTargetResolutionEnabled = hostContext.OperatorSurfaceEnabled,
+                ReplayBinding = ReplayBindingFor(tool, operation, arguments)
             },
             issuedAtUtc: null);
     }
@@ -93,7 +94,8 @@ public sealed class McpOperatorDelegationPropagation(
             AgentIdFor(target?.Model, arguments),
             hostContext.OperatorSurfaceEnabled ? ObjectReferenceFor(target, arguments) : null,
             hostContext.OperatorSurfaceEnabled,
-            correlationId));
+            correlationId,
+            ReplayBindingFor(tool, operation, arguments)));
         try
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -178,6 +180,12 @@ public sealed class McpOperatorDelegationPropagation(
 
     private static string Token(string? value)
         => string.IsNullOrWhiteSpace(value) || value.Length > 128 || value.Any(char.IsControl) ? "unknown" : value;
+
+    private McpOperatorReplayBinding? ReplayBindingFor(string tool, string operation, IDictionary<string, JsonElement>? arguments) =>
+        hostContext.OperatorSurfaceEnabled && arguments is not null &&
+        arguments.TryGetValue("confirm", out var confirm) && confirm.ValueKind == JsonValueKind.True &&
+        arguments.TryGetValue("request", out var request) &&
+        McpOperatorJobConfirmationPayload.TryCreateBinding(tool, operation, request, out var binding) ? binding : null;
 
     private static bool TryRequestProperty(IDictionary<string, JsonElement>? arguments, string name, out JsonElement value)
     {

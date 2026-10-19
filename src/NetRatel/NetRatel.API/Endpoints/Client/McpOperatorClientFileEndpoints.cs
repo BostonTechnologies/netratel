@@ -573,12 +573,29 @@ public static partial class McpOperatorClientFileEndpoints
         var artifact = await GetOwnedArtifactAsync(artifacts, artifactId, context, includeContent: false, cancellationToken).ConfigureAwait(false);
         if (artifact is null)
             return Results.NotFound();
-        if (artifact.DeletedAtUtc is not null)
-            return ArtifactAlreadyCleaned(context);
 
-        var confirmation = await confirmations.ConfirmAsync(
-            new McpOperatorConfirmationRequest(request.PlanToken, request.IdempotencyKey, ArtifactCleanupPayloadHash(artifactId), context.Decision),
-            cancellationToken).ConfigureAwait(false);
+        var confirmationRequest = new McpOperatorConfirmationRequest(
+            request.PlanToken, request.IdempotencyKey, ArtifactCleanupPayloadHash(artifactId), context.Decision);
+        // A completed cleanup keeps its authenticated ownership record after
+        // wiping the bytes. Reconcile that receipt before rejecting deleted state.
+        var replayRequest = confirmationRequest with { ReplayOnly = true };
+        var replay = await confirmations.ConfirmAsync(replayRequest, cancellationToken).ConfigureAwait(false);
+        if (replay.FailureCode is { } replayFailure)
+            return Failure(replayFailure, context);
+        if (replay.IsReplay)
+            return await ReplayArtifactCleanupAsync(replay, artifacts, context, cancellationToken).ConfigureAwait(false);
+        if (artifact.DeletedAtUtc is not null)
+        {
+            // Another confirmation may have completed after the first lookup.
+            replay = await confirmations.ConfirmAsync(replayRequest, cancellationToken).ConfigureAwait(false);
+            if (replay.FailureCode is { } concurrentFailure)
+                return Failure(concurrentFailure, context);
+            return replay.IsReplay
+                ? await ReplayArtifactCleanupAsync(replay, artifacts, context, cancellationToken).ConfigureAwait(false)
+                : ArtifactAlreadyCleaned(context);
+        }
+
+        var confirmation = await confirmations.ConfirmAsync(confirmationRequest, cancellationToken).ConfigureAwait(false);
         if (confirmation.FailureCode is { } confirmationFailure)
             return Failure(confirmationFailure, context);
         if (confirmation.IsReplay)
@@ -616,14 +633,14 @@ public static partial class McpOperatorClientFileEndpoints
             await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, "artifact_unavailable", cancellationToken).ConfigureAwait(false);
             return Results.NotFound();
         }
+        artifact = NormalizeCleanupTimestamp(artifact);
 
+        // The bytes are already wiped. Preserve that outcome before a cancelled
+        // request or a current-authority recheck can prevent response delivery.
+        await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, artifactId.ToString("D"), CancellationToken.None).ConfigureAwait(false);
         if (await RecheckArtifactCleanupAsync(admission, presence, new ClientKey(tenantId, agentId), context, cancellationToken).ConfigureAwait(false) is { } afterCleanup)
-        {
-            await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, artifactId.ToString("D"), cancellationToken).ConfigureAwait(false);
             return Failure(afterCleanup, context);
-        }
 
-        await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, artifactId.ToString("D"), cancellationToken).ConfigureAwait(false);
         return Results.Ok(ToArtifactMetadata(artifact, replayed: false, context.CorrelationId));
     }
 
@@ -1226,7 +1243,7 @@ public static partial class McpOperatorClientFileEndpoints
         var artifact = await GetOwnedArtifactAsync(artifacts, artifactId, context, includeContent: false, cancellationToken).ConfigureAwait(false);
         return artifact is null
             ? Failure("idempotency_replay_unavailable", context)
-            : Results.Ok(ToArtifactMetadata(artifact, replayed: true, context.CorrelationId));
+            : Results.Ok(ToArtifactMetadata(NormalizeCleanupTimestamp(artifact), replayed: true, context.CorrelationId));
     }
 
     private static Task<McpOperatorFileArtifact?> GetOwnedArtifactAsync(
@@ -1396,6 +1413,13 @@ public static partial class McpOperatorClientFileEndpoints
 
     private static bool IsArtifactAvailable(McpOperatorFileArtifact artifact, DateTimeOffset now) =>
         artifact.DeletedAtUtc is null && artifact.ExpiresAtUtc > now;
+
+    private static McpOperatorFileArtifact NormalizeCleanupTimestamp(McpOperatorFileArtifact artifact) =>
+        // Use the durable PostgreSQL precision for both the first cleanup response
+        // and replay, including legacy identifier-only receipts.
+        artifact.DeletedAtUtc is { } deletedAtUtc
+            ? artifact with { DeletedAtUtc = new DateTimeOffset(deletedAtUtc.UtcTicks - deletedAtUtc.UtcTicks % TimeSpan.TicksPerMicrosecond, TimeSpan.Zero) }
+            : artifact;
 
     private static McpOperatorFileArtifactMetadata ToArtifactMetadata(
         McpOperatorFileArtifact artifact,
