@@ -100,6 +100,10 @@ canonical policy operation across those two phases; the reviewed pair attaches
 that internal permission. A preview-only review does not attach it.
 Consolidate approvals before creating short-lived requests. Original clients
 and unrelated objects remain protected.
+For `netratel_search/clients`, review its control-plane call together with each
+exact tenant/agent candidate that should be discoverable at its current target
+profile revision. The API filters candidates independently; a control-plane
+grant alone cannot authorize an agent or disclose its search result.
 
 Run one preflight, maximum 30 minutes after preparation. Demonstrate each batch's
 first actual prerequisite against its selected target. Report one consolidated

@@ -337,13 +337,22 @@ public sealed partial class IntegrationPairingService
 
     private async Task ValidateTargetsAsync(ReviewedMcpAccessProposal proposal, CancellationToken ct)
     {
+        var clientSearchTargets = proposal.Targets.Where(x => x.Tool == "netratel_search" && x.Operation == "clients").ToArray();
+        // The MCP call itself has no business target, but the API filters each
+        // candidate by its exact persisted agent policy. Review both boundaries
+        // together so a control-plane-only receipt cannot imply usable search.
+        if (clientSearchTargets.Length > 0 &&
+            (!clientSearchTargets.Any(x => x.TenantId == 0 && x.AgentId is null) ||
+             !clientSearchTargets.Any(x => x.TenantId > 0 && x.AgentId is not null)))
+            throw new IntegrationCredentialGrantValidationException("targets");
         foreach (var target in proposal.Targets)
         {
             var operation = McpOperatorOperationCatalog.Find(target.Tool, target.Operation);
             var model = McpOperationTargetCatalog.Find(target.Tool, target.Operation)?.Model;
             var permission = McpLocalOperationAuthorizationCatalog.RequiredPermission(target.Tool, target.Operation);
+            var clientSearchCandidate = target.Tool == "netratel_search" && target.Operation == "clients" && target.AgentId is not null;
             if (operation is null || permission is null || model is null ||
-                target.TenantId < 0 || model == McpOperationTargetModel.NoBusinessTarget && (target.TenantId != 0 || target.AgentId is not null) ||
+                target.TenantId < 0 || model == McpOperationTargetModel.NoBusinessTarget && !clientSearchCandidate && (target.TenantId != 0 || target.AgentId is not null) ||
                 model == McpOperationTargetModel.Tenant && (target.TenantId <= 0 || target.AgentId is not null) ||
                 (model is McpOperationTargetModel.Agent or McpOperationTargetModel.ObjectDerived) && (target.TenantId <= 0 || target.AgentId is null || target.ProfileRevision is null) ||
                 model == McpOperationTargetModel.OptionalTenant && target.AgentId is not null ||
