@@ -23,7 +23,8 @@ public sealed class JobRunServiceTests
         var snapshot = new McpOperatorJobExecutionSnapshot(
             new JobDefinitionDetails(new JobDefinitionInfo(11, "reviewed-job", "/", null, 7, string.Empty, now, now, null, agentId), [], []),
             2, "operator", "client", "https://mcp.example.test/mcp", "prod", new string('A', 64), [],
-            [new McpOperatorScriptExecutionSnapshot(new ScriptInfo(12, "reviewed-script", "/", "fixture", scriptContent, null, "bash", now, now), [], 1, new string('B', 64))]);
+            [new McpOperatorScriptExecutionSnapshot(new ScriptInfo(12, "reviewed-script", "/", "fixture", scriptContent, null, "bash", now, now), [], 1, new string('B', 64),
+                "/tmp/reviewed-script", 15)]);
         service.BindMcpExecutionSnapshot(21, snapshot);
         await service.UpsertRunAsync(new UpsertJobRunCommand(21, 11, 7, string.Empty, "mcp-reviewed:operator", JobRunState.Pending,
             0, now, null, null, null, "{}", null, agentId));
