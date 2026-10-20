@@ -94,6 +94,10 @@ policy administration and exact selected grant authority. The browser labels
 it; the receipt records `owner_self_approval`, and the lifecycle audit records
 the same owner and actor. A different account's approval remains an independent
 review. Do not relabel one as the other or infer approval from a request alone.
+For a policy mutation, review both the published `preview_*` and matching
+`confirm_*` operation on the same target and profile revision. The API uses one
+canonical policy operation across those two phases; the reviewed pair attaches
+that internal permission. A preview-only review does not attach it.
 Consolidate approvals before creating short-lived requests. Original clients
 and unrelated objects remain protected.
 

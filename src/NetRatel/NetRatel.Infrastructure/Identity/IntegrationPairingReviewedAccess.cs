@@ -285,6 +285,49 @@ public sealed partial class IntegrationPairingService
                 new(selector, target.TenantId, target.AgentId), profile?.Classification, descriptor.OperationFamily,
                 target.Tool + "/" + target.Operation, new(), metadata.Proposal.ExpiresAtUtc, metadata.Proposal.ExpiresAtUtc, reference), metadata.ApproverPrincipalId!, ct).ConfigureAwait(false);
         }
+
+        // The policy mutation API evaluates a stable operation shared by its preview and
+        // confirmation routes. Attach that internal operation only when the reviewer
+        // selected both published phases for the same persisted target. The public
+        // phase policies above still guard MCP dispatch independently.
+        var mutationPairs = new (string Preview, string Confirm, string Canonical)[]
+        {
+            ("preview_create", "confirm_create", "create"),
+            ("preview_replace", "confirm_replace", "replace"),
+            ("preview_disable", "confirm_disable", "disable"),
+            ("preview_revoke", "confirm_revoke", "revoke"),
+            ("preview_target_profile", "confirm_target_profile", "upsert_target_profile")
+        };
+        for (var index = 0; index < metadata.Proposal.Targets.Count; index++)
+        {
+            var target = metadata.Proposal.Targets[index];
+            if (target.Tool != "netratel_policy") continue;
+            var pair = mutationPairs.FirstOrDefault(x => x.Preview == target.Operation);
+            if (pair.Canonical is null || !metadata.Proposal.Targets.Any(other =>
+                    other.Tool == target.Tool && other.Operation == pair.Confirm &&
+                    other.TenantId == target.TenantId && other.AgentId == target.AgentId &&
+                    other.ProfileRevision == target.ProfileRevision)) continue;
+
+            var operation = target.Tool + "/" + pair.Canonical;
+            var reference = $"pairing:{request.Id}:canonical:{index}";
+            var existing = (await policyAdministration!.ListAsync(metadata.Environment, target.TenantId, ct).ConfigureAwait(false)).Items
+                .Where(x => x.AuditReference == reference).ToArray();
+            if (existing.Length > 0)
+            {
+                if (existing.Length != 1 || existing[0].Version != 1 || existing[0].LifecycleState != McpOperatorPolicyLifecycleState.Active || existing[0].DisabledAtUtc is not null ||
+                    existing[0].PrincipalSelector.Kind != McpOperatorPrincipalSelectorKind.OAuthClientId || existing[0].PrincipalSelector.Value != credentialId ||
+                    existing[0].TargetSelector.TenantId != target.TenantId || existing[0].TargetSelector.AgentId != target.AgentId ||
+                    existing[0].Operation != operation || existing[0].ExpiresAtUtc != metadata.Proposal.ExpiresAtUtc)
+                    throw new IntegrationPairingUnavailableException();
+                continue;
+            }
+            var profile = target.AgentId is { } agent ? await policyAdministration.GetTargetProfileAsync(target.TenantId, agent, ct).ConfigureAwait(false) : null;
+            var selector = target.AgentId is not null ? McpOperatorTargetSelectorKind.ExactAgent : target.TenantId == 0 ? McpOperatorTargetSelectorKind.ControlPlane : McpOperatorTargetSelectorKind.Tenant;
+            await policyAdministration.CreateAsync(new($"Reviewed client {request.Id[..8]} policy {pair.Canonical}", metadata.Environment,
+                McpOperatorPolicyEffect.Allow, 0, new(McpOperatorPrincipalSelectorKind.OAuthClientId, credentialId),
+                new(selector, target.TenantId, target.AgentId), profile?.Classification, McpOperatorOperationFamily.PolicyAdministration,
+                operation, new(), metadata.Proposal.ExpiresAtUtc, metadata.Proposal.ExpiresAtUtc, reference), metadata.ApproverPrincipalId!, ct).ConfigureAwait(false);
+        }
     }
 
     private static void RequireReviewedExpiry(DateTimeOffset expiry)
