@@ -46,6 +46,10 @@ public sealed class AgentLogGatewayClient
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromSeconds(30);
     private const int MaximumGatewayFrameBytes = 64 * 1024;
+    // The server's default gRPC receive limit is 16 KiB. Windows can expose
+    // 96 event-log sources, so bound the opening hello before the server can
+    // advertise its per-batch limit.
+    private const int MaximumHelloFrameBytes = 12 * 1024;
     private const int QueryResultFrameOverheadBytes = 2 * 1024;
     private const string TruncationSuffix = " … [truncated]";
 
@@ -206,7 +210,7 @@ public sealed class AgentLogGatewayClient
         }
     }
 
-    private AgentLogFrame CreateHello(GatewayPresenceSession session, Guid operationId, IReadOnlyList<ClientLogSourceDescriptor> discoveredSources)
+    internal AgentLogFrame CreateHello(GatewayPresenceSession session, Guid operationId, IReadOnlyList<ClientLogSourceDescriptor> discoveredSources)
     {
         var frame = new AgentLogFrame
         {
@@ -242,6 +246,8 @@ public sealed class AgentLogGatewayClient
             };
             descriptor.FilterCapabilities.AddRange(source.FilterCapabilities);
             frame.Hello.Sources.Add(descriptor);
+            if (frame.CalculateSize() > MaximumHelloFrameBytes)
+                frame.Hello.Sources.RemoveAt(frame.Hello.Sources.Count - 1);
         }
         return frame;
     }
