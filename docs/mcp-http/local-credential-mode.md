@@ -70,7 +70,7 @@ For reviewed bootstrap and campaign-owned auxiliary credentials, use the [review
 Reviewed credential expiry uses exact UTC instants at microsecond resolution: at most six fractional digits, such as `2030-04-01T10:11:12.123456Z`. Unsupported precision is rejected before date parsing; accepted input is never rounded. The 30-day preset adds exactly 720 hours to the displayed representable UTC reference.
 
 
-## Independently reviewed admission
+## Reviewed admission
 
 Ordinary HTTP MCP credential creation stores the configured application grants. It does not install operator policies. A valid credential with `flow.read` grants for synthetic tenants 17 and 29 can authenticate while both `netratel_flows/list` calls correctly return `tenant_not_authorized` when matching Production policies are absent.
 
@@ -78,4 +78,4 @@ The create acknowledgment and credential details show configured grants separate
 
 For an exact additional target, the interactive account API accepts `POST /api/v2/account/integration-credentials/{credentialId}/admission` with `{"targets":[{"tenantId":17,"tool":"netratel_clients","operation":"telemetry","agentId":"11111111-1111-4111-8111-111111111111","profileRevision":1}]}`. Select the actual catalogued operation and persisted target/profile revision from authorized discovery. The API reuses the reviewed-access validator and receipt evaluator; this read-only inspection never creates a policy or changes grants.
 
-Missing Production policies require the [supported independently reviewed proposal](setup.md#reviewed-client-access-and-exact-expiry): submit an exact `reconcile` proposal with the retained configured grants, selected tenant/operation targets and original exact UTC expiry, have a different authorized operator inspect and approve it, then inspect/resume the same saved request ID. Do not self-approve, request blanket scopes, replace a working credential or create hidden setup policies. A renewed current admission view must still leave unrelated tenant 31 unavailable. Native tenant reads and the owner campaign remain separate acceptance work.
+Missing Production policies require the [supported reviewed proposal](setup.md#reviewed-client-access-and-exact-expiry): submit an exact `reconcile` proposal with the retained configured grants, selected tenant/operation targets and original exact UTC expiry, have an authorized operator inspect and approve it, then inspect/resume the same saved request ID. The credential owner may self-approve only with current MCP policy administration and every selected durable permission; the receipt identifies `owner_self_approval`. Do not request blanket scopes, replace a working credential or create hidden setup policies. A renewed current admission view must still leave unrelated tenant 31 unavailable. Native tenant reads and the owner campaign remain separate acceptance work.

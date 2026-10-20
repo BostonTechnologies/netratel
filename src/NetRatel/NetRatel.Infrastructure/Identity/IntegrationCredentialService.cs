@@ -215,7 +215,7 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, T
     {
         var now = (clock ?? TimeProvider.System).GetUtcNow();
         if (approved.ExpiresAtUtc <= now || approved.ExpiresAtUtc > now.Add(MaximumLifetime) ||
-            ownerPrincipalId == approverPrincipalId || string.IsNullOrWhiteSpace(approverPrincipalId))
+            string.IsNullOrWhiteSpace(approverPrincipalId))
             throw new IntegrationCredentialGrantValidationException("reviewedProposal");
         if (db.Database.IsRelational())
         {

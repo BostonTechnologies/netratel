@@ -42,7 +42,7 @@
             }
             else if (review.ReviewedAccess is { } access)
             {
-                <MudAlert Severity="Severity.Info">Independent review required. The requesting client cannot approve its own access. Changing any value requires a new request.</MudAlert>
+                <MudAlert Severity="Severity.Info">@(review.Eligibility?.OwnerSelfApproval == true ? "Owner self-approval: you requested this access and will be recorded as its approver. Current policy administration authority and every exact binding are rechecked." : "Independent review: your account will be recorded as approver. Current authority and every exact binding are rechecked.") Changing any value requires a new request.</MudAlert>
                 <p data-testid="pairing-eligibility">@(review.Eligibility?.CanApprove == true ? "Your current account is eligible to review this proposal. Approval will recheck current authority and bindings." : "Your current account cannot approve this proposal. Follow the review guidance and look up the code again after the prerequisite is resolved.")</p>
                 <p>Requester: @access.RequestingPrincipalId · client @access.RequestingCredentialId</p>
                 <p>Action: @access.Proposal.Action · instance @access.Instance · environment @access.Environment</p>
@@ -65,7 +65,7 @@
                 @if (review.RequestedPermissions.Count > 0) { <details class="my-2"><summary>Client suggestions (@review.RequestedPermissions.Count)</summary><p>@string.Join(", ", review.RequestedPermissions). Select access explicitly below.</p></details> }
                 <IntegrationPermissionSelector Scopes="PermissionScopes" Grants="_grants" InstancePermissions="_instancePermissions" Changed="ChangePermissions" Disabled="_busy" TestIdPrefix="pairing" />
             }
-            <MudCheckBox T="bool" @bind-Value="_confirmed" Label="@($"I recognize code {review.UserCode} and approve this connection with the selected access and expiry.")" Disabled="@(_busy || !CanApprove)" data-testid="pairing-confirm" />
+            <MudCheckBox T="bool" @bind-Value="_confirmed" Label="@(review.Eligibility?.OwnerSelfApproval == true ? $"I requested code {review.UserCode} and approve my own exact access and expiry. Record me as both requester and approver." : $"I recognize code {review.UserCode} and approve this connection with the selected access and expiry.")" Disabled="@(_busy || !CanApprove)" data-testid="pairing-confirm" />
         </div>
         <footer class="approval-footer">
             <MudButton OnClick="Reset" Disabled="_busy">Back</MudButton>
@@ -116,7 +116,7 @@
                     _error = response.StatusCode switch
                     {
                         System.Net.HttpStatusCode.Unauthorized => "Sign in to review this client, then look up the preserved code again.",
-                        System.Net.HttpStatusCode.Forbidden => "Your current account cannot open this review. Ask an authorized independent operator to sign in and enter the code.",
+                        System.Net.HttpStatusCode.Forbidden => "Your current account cannot open this review. Sign in with an account authorized for MCP policy administration and the selected permissions.",
                         System.Net.HttpStatusCode.TooManyRequests => "Review lookup is temporarily rate limited. Keep this code and retry after the server's waiting interval; inspect the client receipt if its review deadline passes.",
                         _ when (int)response.StatusCode >= 500 => "The review service could not complete lookup. Keep this code and inspect the client receipt before retrying; no approval has been submitted.",
                         _ => "This code is unavailable or expired. Check the code or start a new request in your client."

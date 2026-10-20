@@ -31,8 +31,8 @@ public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
         panel.FindAll("[data-testid='permission-selector']").Should().BeEmpty();
         if (!eligible)
         {
-            panel.Find("[data-testid='pairing-error']").TextContent.Should().Contain("different authorized operator account");
-            panel.Find("[data-testid='pairing-failure-reference']").TextContent.Should().Contain("review_independent_approver_required").And.Contain("synthetic-review-reference");
+            panel.Find("[data-testid='pairing-error']").TextContent.Should().Contain("current MCP policy administration");
+            panel.Find("[data-testid='pairing-failure-reference']").TextContent.Should().Contain("review_approver_authority_missing").And.Contain("synthetic-review-reference");
             panel.Find("[data-testid='pairing-confirm']").HasAttribute("disabled").Should().BeTrue();
             return;
         }
@@ -44,6 +44,25 @@ public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
         transport.Approved.Grants.Should().Equal(transport.ReviewedProposal.Grants);
         transport.Approved.InstancePermissions.Should().Equal(transport.ReviewedProposal.InstancePermissions);
         transport.ApprovalRequests.Should().Be(1);
+    }
+
+    [Fact]
+    public void Owner_self_approval_requires_explicit_same_operator_consent()
+    {
+        using var transport = Configure();
+        transport.ReviewedAccess = true;
+        transport.OwnerSelfApproval = true;
+        var panel = Render<IntegrationPairingApprovalPanel>();
+        panel.Find("input").Change("ABCD-EFGH");
+        panel.Find("form").Submit();
+        panel.WaitForAssertion(() => panel.Find("[data-testid='pairing-eligibility']").TextContent.Should().Contain("eligible to review"));
+        panel.Markup.Should().Contain("Owner self-approval");
+        panel.Markup.Should().Contain("both requester and approver");
+        panel.Find("[data-testid='pairing-approve']").HasAttribute("disabled").Should().BeTrue();
+        panel.Find("[data-testid='pairing-confirm']").Change(true);
+        panel.Find("[data-testid='pairing-approve']").Click();
+        panel.WaitForAssertion(() => transport.Approved.Should().NotBeNull());
+        transport.Approved!.ReviewedProposalHash.Should().Be(new string('A', 64));
     }
 
     [Fact]
@@ -357,6 +376,7 @@ public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
         public bool DurableAuthorityRejection { get; set; }
         public bool ReviewedAccess { get; set; }
         public bool ReviewEligible { get; set; } = true;
+        public bool OwnerSelfApproval { get; set; }
         public string? ReviewFailureCode { get; set; }
         public ReviewedMcpAccessProposal ReviewedProposal { get; } = new("b2222222222242228222222222222222", "Synthetic reviewed client", "reconcile",
             DateTimeOffset.FromUnixTimeSeconds(DateTimeOffset.UtcNow.ToUnixTimeSeconds()).AddDays(30).AddTicks(1234560),
@@ -397,7 +417,7 @@ public sealed class IntegrationPairingApprovalTests : AsyncBunitContext
                     TemporaryVerifier = TemporaryVerifier, CredentialExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(15),
                     ReviewedAccess = ReviewedAccess ? new(ReviewedProposal.RequestId, "pending", "https://netratel.example.test/account/integration-credentials", "ABCD-EFGH", ReviewedProposal,
                         "https://netratel.example.test/mcp", "dev", "Development", "synthetic-requester", ReviewedProposal.CredentialId!, 1, new string('A', 64)) : null,
-                    Eligibility = ReviewedAccess ? new(ReviewEligible, ReviewEligible ? null : IntegrationPairingFailure.ForCode("review_independent_approver_required", "lookup") with { CorrelationId = "synthetic-review-reference" }) : null
+                    Eligibility = ReviewedAccess ? new(ReviewEligible, ReviewEligible ? null : IntegrationPairingFailure.ForCode("review_approver_authority_missing", "lookup") with { CorrelationId = "synthetic-review-reference" }) { OwnerSelfApproval = OwnerSelfApproval } : null
                 }) };
             if (path.EndsWith("/authority", StringComparison.Ordinal)) return new(HttpStatusCode.OK)
             { Content = JsonContent.Create(new { tenants = new[] { new { tenantId = 7, name = "Tenant A", permissions = new[] {

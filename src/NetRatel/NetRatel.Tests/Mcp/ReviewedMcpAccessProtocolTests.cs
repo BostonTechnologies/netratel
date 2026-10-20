@@ -173,11 +173,12 @@ public sealed class ReviewedMcpAccessProtocolTests
                 using var ownLookup = await requesterBrowser.PostAsJsonAsync(IntegrationPairingProtocol.AccountRoute + "/lookup", new IntegrationPairingCodeRequest(receipt.Request.UserCode!));
                 var ownReview = (await ownLookup.Content.ReadFromJsonAsync<IntegrationPairingReview>())!;
                 Assert.False(ownReview.Eligibility!.CanApprove);
-                Assert.Equal("review_independent_approver_required", ownReview.Eligibility.Failure!.Code);
+                Assert.True(ownReview.Eligibility.OwnerSelfApproval);
+                Assert.Equal("review_approver_authority_missing", ownReview.Eligibility.Failure!.Code);
                 using var rejected = await requesterBrowser.PostAsJsonAsync(IntegrationPairingProtocol.AccountRoute + "/approve", fixture.Approval(receipt));
                 Assert.Equal(HttpStatusCode.Forbidden, rejected.StatusCode);
                 var reason = (await rejected.Content.ReadFromJsonAsync<IntegrationPairingFailure>())!;
-                Assert.Equal("review_independent_approver_required", reason.Code);
+                Assert.Equal("review_approver_authority_missing", reason.Code);
                 Assert.Equal("approval", reason.Stage);
                 Assert.False(string.IsNullOrWhiteSpace(reason.CorrelationId));
                 Assert.DoesNotContain(fixture.Credential.Secret, await rejected.Content.ReadAsStringAsync());
@@ -208,6 +209,31 @@ public sealed class ReviewedMcpAccessProtocolTests
             Assert.Equal(proposal.ExpiresAtUtc, resumed.GetProperty("data").GetProperty("receipt").GetProperty("credentialExpiresAtUtc").GetDateTimeOffset());
             foreach (var tenant in new[] { 17, 29 }) Assert.True((await CallAsync(client, "netratel_flows", "list", new { tenantId = tenant })).GetProperty("success").GetBoolean());
             Assert.False((await CallAsync(client, "netratel_flows", "list", new { tenantId = 31 })).GetProperty("success").GetBoolean());
+            var requester = await fixture.Identity.Users.SingleAsync(user => user.PrincipalId == "requester");
+            requester.IsInstanceAdministrator = true;
+            await fixture.Identity.SaveChangesAsync();
+            var selfProposal = fixture.Proposal("reconcile", fixture.Credential.CredentialId) with { ExpiresAtUtc = proposal.ExpiresAtUtc, Targets = [proposal.Targets[0]] };
+            var selfRequested = await CallAsync(client, "netratel_access", "request", selfProposal);
+            Assert.True(selfRequested.GetProperty("success").GetBoolean());
+            var selfReceipt = selfRequested.GetProperty("data").GetProperty("receipt").Deserialize<ReviewedMcpAccessReceipt>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+            using (var selfBrowser = api.GetTestClient())
+            {
+                selfBrowser.DefaultRequestHeaders.Add("X-Test-Operator", "requester");
+                selfBrowser.DefaultRequestHeaders.Add("X-NetRatel-Account-Request", "1");
+                using var ownLookup = await selfBrowser.PostAsJsonAsync(IntegrationPairingProtocol.AccountRoute + "/lookup", new IntegrationPairingCodeRequest(selfReceipt.Request.UserCode!));
+                Assert.Equal(HttpStatusCode.OK, ownLookup.StatusCode);
+                var ownReview = (await ownLookup.Content.ReadFromJsonAsync<IntegrationPairingReview>())!;
+                Assert.True(ownReview.Eligibility!.CanApprove);
+                Assert.True(ownReview.Eligibility.OwnerSelfApproval);
+                using var ownApproval = await selfBrowser.PostAsJsonAsync(IntegrationPairingProtocol.AccountRoute + "/approve", fixture.Approval(selfReceipt));
+                Assert.Equal(HttpStatusCode.OK, ownApproval.StatusCode);
+            }
+            var selfResumed = await CallAsync(client, "netratel_access", "resume", new { requestId = selfProposal.RequestId });
+            Assert.True(selfResumed.GetProperty("success").GetBoolean());
+            Assert.Equal("owner_self_approval", selfResumed.GetProperty("data").GetProperty("receipt").GetProperty("request").GetProperty("approvalMode").GetString());
+            Assert.True((await CallAsync(client, "netratel_flows", "list", new { tenantId = 17 })).GetProperty("success").GetBoolean());
+            requester.IsInstanceAdministrator = false;
+            await fixture.Identity.SaveChangesAsync();
             var ownerRole = fixture.Identity.AccessRoles.Local.Single();
             var withdrawn = ownerRole.Permissions.Single(permission => permission.Permission == NetRatelPermissions.FlowRead);
             fixture.Identity.Remove(withdrawn); ownerRole.Permissions.Remove(withdrawn); await fixture.Identity.SaveChangesAsync();

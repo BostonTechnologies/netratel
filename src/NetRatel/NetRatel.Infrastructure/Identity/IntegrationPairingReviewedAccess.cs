@@ -184,8 +184,8 @@ public sealed partial class IntegrationPairingService
     private async Task<IntegrationPairingFailure?> ReviewedAuthorityFailureAsync(IntegrationPairingRequest request,
         ReviewedAccessMetadata metadata, string? approver, string stage, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(approver) || approver == metadata.RequestingPrincipalId)
-            return IntegrationPairingFailure.ForCode("review_independent_approver_required", stage);
+        if (string.IsNullOrWhiteSpace(approver))
+            return IntegrationPairingFailure.ForCode("review_approver_authority_missing", stage);
         if (!await IsPolicyApproverAsync(approver, ct).ConfigureAwait(false))
             return IntegrationPairingFailure.ForCode("review_approver_authority_missing", stage);
         if (metadata.ProposalHash != HashProposal(metadata.Proposal) || metadata.ReviewBindingHash != ReviewHash(request.PublicOrigin, request.Resource!, metadata) || !await BindingIsCurrentAsync(request, ct).ConfigureAwait(false))
@@ -333,7 +333,7 @@ public sealed partial class IntegrationPairingService
         var admissions = await EvaluateCredentialAdmissionAsync(metadata.RequestingPrincipalId, credential, state,
             request.Resource!, metadata.Instance, metadata.Environment, metadata.Proposal.Targets, request.Id, ct).ConfigureAwait(false);
         var missing = new List<string>();
-        if (request.State == IntegrationPairingState.Pending) missing.Add("An independent operator must review the exact proposal with current credential and MCP policy authority.");
+        if (request.State == IntegrationPairingState.Pending) missing.Add("An authorized operator must review the exact proposal with current credential and MCP policy authority. Owner self-approval is recorded explicitly.");
         if (metadata.Proposal.Action == "create" && request.State is not (IntegrationPairingState.Consumed or IntegrationPairingState.Issued)) missing.Add("Complete the supported protected setup client; MCP never delivers credential secrets.");
         if (state != "active") missing.Add("The reviewed credential is " + state + "; configured grants alone do not establish usable access.");
         if (admissions.Any(x => !x.ApplicationGrantConfigured)) missing.Add("Configured credential grants do not include every selected operation.");
@@ -344,7 +344,7 @@ public sealed partial class IntegrationPairingService
         var reviewFailure = request.State == IntegrationPairingState.Expired ? IntegrationPairingFailure.ForCode("review_request_expired", "receipt") : metadata.ReviewFailure;
         return new(AccessRequest(request, metadata, code ?? SafeUserCode(request, metadata)), credentialId, credential?.ExpiresAtUtc, state,
             credential?.Grants.Select(x => new IntegrationPairingGrant(x.TenantId, x.Permission)).ToArray() ?? [], credential?.InstancePermissions ?? [], admissions, missing,
-            reviewFailure?.Remediation ?? (request.State == IntegrationPairingState.Pending ? "Open the review URL and have an independent authorized operator enter the displayed code; then resume this same requestId." : admissions.Any(x => x.PolicyAdmissionStatus == "conditional_runtime_unverified") ? "Read netratel_access target/effective for the exact persisted target and policy, then inspect the operation readiness before dispatch. Runtime admission remains unverified in this receipt." : "Inspect each current admission result; reuse this requestId to reconcile an interrupted outcome."))
+            reviewFailure?.Remediation ?? (request.State == IntegrationPairingState.Pending ? "Open the review URL and have an authorized operator enter the displayed code; then resume this same requestId." : admissions.Any(x => x.PolicyAdmissionStatus == "conditional_runtime_unverified") ? "Read netratel_access target/effective for the exact persisted target and policy, then inspect the operation readiness before dispatch. Runtime admission remains unverified in this receipt." : "Inspect each current admission result; reuse this requestId to reconcile an interrupted outcome."))
         {
             ReviewFailure = reviewFailure
         };
@@ -427,5 +427,6 @@ public sealed partial class IntegrationPairingService
     private static ReviewedMcpAccessRequest AccessRequest(IntegrationPairingRequest request, ReviewedAccessMetadata metadata, string? code) =>
         new(request.Id, Status(request), request.PublicOrigin + "/account/integration-credentials?tab=credentials", code, metadata.Proposal,
             request.Resource!, metadata.Instance, metadata.Environment.ToString(), metadata.RequestingPrincipalId, metadata.RequestingCredentialId, request.Revision, metadata.ReviewBindingHash!)
-        { CredentialRevisionHash = metadata.CredentialRevisionHash, PolicyRevisionHash = metadata.PolicyRevisionHash };
+        { CredentialRevisionHash = metadata.CredentialRevisionHash, PolicyRevisionHash = metadata.PolicyRevisionHash,
+            ApprovalMode = metadata.ApproverPrincipalId is null ? null : metadata.ApproverPrincipalId == metadata.RequestingPrincipalId ? "owner_self_approval" : "independent_review" };
 }

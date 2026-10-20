@@ -93,7 +93,8 @@ public sealed partial class IntegrationPairingService(NetRatelIdentityDbContext 
                 TemporaryVerifier = IsTemporaryVerifier(request),
                 ReviewedAccess = access is not null ? AccessRequest(request, access, FormatCode(NormalizeCode(code))) : null,
                 CredentialExpiresAtUtc = access?.Proposal.ExpiresAtUtc ?? (IsTemporaryVerifier(request) ? clock.GetUtcNow().Add(TemporaryVerifierLifetime) : null),
-                Eligibility = access is not null && principal is not null ? new(failure is null, failure) : null
+                Eligibility = access is not null && principal is not null ? new(failure is null, failure)
+                { OwnerSelfApproval = principal.FindFirstValue("netratel_principal_id") == access.RequestingPrincipalId } : null
             };
         }, cancellationToken);
 

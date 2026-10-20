@@ -107,7 +107,7 @@ public sealed class ReviewedMcpAccessTests
     }
 
     [Theory]
-    [InlineData("requester", "none", "review_independent_approver_required")]
+    [InlineData("requester", "none", "review_approver_authority_missing")]
     [InlineData("reviewer", "approver", "review_approver_authority_missing")]
     [InlineData("reviewer", "owner", "review_owner_authority_missing")]
     [InlineData("reviewer", "credential", "review_credential_changed")]
@@ -264,6 +264,62 @@ public sealed class ReviewedMcpAccessTests
         await fixture.Credentials.RevokeAsync("requester", fixture.Credential.CredentialId, "requester");
         var revoked = await fixture.Pairing.InspectCredentialAdmissionAsync("requester", fixture.Credential.CredentialId, McpOperatorEnvironment.Production);
         Assert.Equal("revoked", revoked!.CredentialState); Assert.All(revoked.EffectiveAdmission, x => Assert.False(x.AuthorizationAdmitted));
+    }
+
+    [Fact]
+    public async Task Authorized_owner_can_approve_own_exact_proposal_with_truthful_receipt_and_actor_audit()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        (await fixture.Identity.Users.SingleAsync(x => x.PrincipalId == "requester")).IsInstanceAdministrator = true;
+        await fixture.Identity.SaveChangesAsync();
+        var proposal = fixture.Proposal("reconcile", fixture.Credential.CredentialId);
+        var pending = await fixture.Pairing.RequestReviewedAsync(proposal, "requester", fixture.Credential.CredentialId,
+            Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production);
+        var review = await fixture.Pairing.ReviewAsync(Principal("requester"), pending.Request.UserCode!);
+        Assert.True(review.Eligibility!.CanApprove);
+        Assert.True(review.Eligibility.OwnerSelfApproval);
+        await fixture.Pairing.ApproveAsync(Principal("requester"), fixture.Approval(pending));
+        var approved = await fixture.Pairing.InspectReviewedAsync(proposal.RequestId, "requester", fixture.Credential.CredentialId, resume: true);
+        Assert.Equal("consumed", approved.Request.Status);
+        Assert.Equal("owner_self_approval", approved.Request.ApprovalMode);
+        Assert.Equal(2, await fixture.App.McpOperatorPolicies.CountAsync());
+        var audit = await fixture.Identity.IntegrationCredentialLifecycleEvents.SingleAsync(x => x.Action == "reconciled");
+        Assert.Equal("requester", audit.OwnerPrincipalId);
+        Assert.Equal("requester", audit.ActorPrincipalId);
+        Assert.Contains("owner_self_approval", JsonSerializer.Serialize(approved));
+
+        var revokeProposal = fixture.Proposal("revoke", fixture.Credential.CredentialId) with { Targets = [] };
+        var revokePending = await fixture.Pairing.RequestReviewedAsync(revokeProposal, "requester", fixture.Credential.CredentialId,
+            Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production);
+        await fixture.Pairing.ApproveAsync(Principal("requester"), fixture.Approval(revokePending));
+        var revoked = await fixture.Pairing.InspectReviewedAsync(revokeProposal.RequestId, "requester", fixture.Credential.CredentialId, resume: true);
+        Assert.Equal("consumed", revoked.Request.Status);
+        Assert.Equal("owner_self_approval", revoked.Request.ApprovalMode);
+        Assert.Equal("revoked", revoked.CredentialState);
+        var current = await fixture.Pairing.InspectCredentialAdmissionAsync("requester", fixture.Credential.CredentialId, McpOperatorEnvironment.Production);
+        Assert.Equal("revoked", current!.CredentialState);
+        Assert.All(current.EffectiveAdmission, admission => Assert.False(admission.AuthorizationAdmitted));
+    }
+
+    [Fact]
+    public async Task Owner_self_approval_is_denied_when_policy_authority_is_withdrawn_before_resume()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var owner = await fixture.Identity.Users.SingleAsync(x => x.PrincipalId == "requester");
+        owner.IsInstanceAdministrator = true;
+        await fixture.Identity.SaveChangesAsync();
+        var proposal = fixture.Proposal("reconcile", fixture.Credential.CredentialId);
+        var pending = await fixture.Pairing.RequestReviewedAsync(proposal, "requester", fixture.Credential.CredentialId,
+            Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production);
+        await fixture.Pairing.ApproveAsync(Principal("requester"), fixture.Approval(pending));
+        owner.IsInstanceAdministrator = false;
+        await fixture.Identity.SaveChangesAsync();
+        var denied = await fixture.Pairing.InspectReviewedAsync(proposal.RequestId, "requester", fixture.Credential.CredentialId, resume: true);
+        Assert.Equal("denied", denied.Request.Status);
+        Assert.Equal("owner_self_approval", denied.Request.ApprovalMode);
+        Assert.Equal("review_approver_authority_missing", denied.ReviewFailure!.Code);
+        Assert.Empty(await fixture.Identity.IntegrationCredentialLifecycleEvents.Where(x => x.Action == "reconciled").ToArrayAsync());
+        Assert.Empty(await fixture.App.McpOperatorPolicies.ToArrayAsync());
     }
 
     [Fact]

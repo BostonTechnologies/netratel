@@ -67,7 +67,7 @@ implementation issues are not reopened merely because full acceptance is pending
 | Prerequisite | Concrete preparation | Completion evidence |
 | --- | --- | --- |
 | Release | Owner deploys the matching published components; select the verified bridge archive. | Running version/source, deployed manifest digests and bridge checksum match the completed publication record. |
-| Authority | Inspect effective target-operation policy separately from credential grants. Prepare a fresh consolidated exact-target review only when an eligible distinct reviewer is ready. | Actual reviewed/applied receipt and admitted no-write first operation for every planned batch. |
+| Authority | Inspect effective target-operation policy separately from credential grants. Prepare a fresh consolidated exact-target review when an authorized operator is ready. A credential owner with current MCP policy administration and every selected durable permission may self-approve; record that mode explicitly. | Actual reviewed/applied receipt, its approval mode, and admitted no-write first operation for every planned batch. |
 | Extra permission | Preserve the original credential's authority and expiry. Use separately reviewed limited scope for genuinely additional permissions. | Current permission, target, expiry and no-reveal readback. |
 | Executors | Independently enrol one disposable Windows VM/host and one disposable Linux VM/host. | Exact tenant/agent identity, binary/source, protected profile, writable roots, inert service and disposal owner. |
 | Owned objects | Create scripts/jobs/runs/tasks, policies, enrollments and receiver objects in dependency order. | Actual IDs and revisions from successful predecessor responses. |
@@ -88,10 +88,14 @@ computers are unnecessary; separate enrolled device identities are required.
 Do not create another client identity over a protected host's canonical state.
 
 Owner-authorized bounded fixture preparation and ordinary admitted preview/
-confirm operations proceed within their recorded scope. Genuine independent
-review remains a real product decision; another agent or account session cannot
-manufacture it. Consolidate necessary human actions before creating short-lived
-requests. Original clients and unrelated objects remain protected.
+confirm operations proceed within their recorded scope. A self-approval is a
+real product decision by the authenticated requesting principal with current
+policy administration and exact selected grant authority. The browser labels
+it; the receipt records `owner_self_approval`, and the lifecycle audit records
+the same owner and actor. A different account's approval remains an independent
+review. Do not relabel one as the other or infer approval from a request alone.
+Consolidate approvals before creating short-lived requests. Original clients
+and unrelated objects remain protected.
 
 Run one preflight, maximum 30 minutes after preparation. Demonstrate each batch's
 first actual prerequisite against its selected target. Report one consolidated
