@@ -363,6 +363,61 @@ public sealed class ReviewedMcpAccessTests
     }
 
     [Fact]
+    public async Task Reviewed_client_search_requires_control_plane_and_exact_candidate_and_admits_only_that_candidate()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        (await fixture.Identity.Users.SingleAsync(x => x.PrincipalId == "requester")).IsInstanceAdministrator = true;
+        await fixture.Identity.SaveChangesAsync();
+        var admittedAgent = Guid.NewGuid();
+        var hiddenAgent = Guid.NewGuid();
+        fixture.App.Agents.AddRange(
+            new Agent { Id = admittedAgent, TenantId = 17, Name = "Reviewed search target", IsEnabled = true, Status = AgentStatus.Active },
+            new Agent { Id = hiddenAgent, TenantId = 17, Name = "Unreviewed search target", IsEnabled = true, Status = AgentStatus.Active });
+        await fixture.App.SaveChangesAsync();
+        var administration = new McpOperatorPolicyAdministration(fixture.App);
+        var admittedProfile = await administration.UpsertTargetProfileAsync(17, admittedAgent,
+            McpOperatorTargetClassification.DedicatedQa, [], null, "requester", default);
+        await administration.UpsertTargetProfileAsync(17, hiddenAgent,
+            McpOperatorTargetClassification.DedicatedQa, [], null, "requester", default);
+        var baseProposal = fixture.Proposal("reconcile", fixture.Credential.CredentialId) with
+        {
+            Grants = [new(17, NetRatelPermissions.FlowRead), new(29, NetRatelPermissions.FlowRead), new(17, NetRatelPermissions.ClientManagement)],
+            InstancePermissions = [NetRatelPermissions.McpDiscoveryRead, NetRatelPermissions.ClientManagement],
+            Targets = [new(0, "netratel_search", "clients")]
+        };
+        var incomplete = await Assert.ThrowsAsync<IntegrationCredentialGrantValidationException>(() => fixture.Pairing.RequestReviewedAsync(
+            baseProposal, "requester", fixture.Credential.CredentialId, Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production));
+        Assert.Equal("targets", incomplete.Field);
+        Assert.Empty(await fixture.Identity.IntegrationPairingRequests.ToArrayAsync());
+
+        var proposal = baseProposal with
+        {
+            Targets = [new(0, "netratel_search", "clients"),
+                new(17, "netratel_search", "clients", admittedAgent, admittedProfile.Version)]
+        };
+        var pending = await fixture.Pairing.RequestReviewedAsync(proposal, "requester", fixture.Credential.CredentialId,
+            Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production);
+        await fixture.Pairing.ApproveAsync(Principal("requester"), fixture.Approval(pending));
+        var applied = await fixture.Pairing.InspectReviewedAsync(proposal.RequestId, "requester", fixture.Credential.CredentialId, resume: true);
+        Assert.Equal("consumed", applied.Request.Status);
+        Assert.Equal("owner_self_approval", applied.Request.ApprovalMode);
+        await fixture.Pairing.InspectReviewedAsync(proposal.RequestId, "requester", fixture.Credential.CredentialId, resume: true);
+        var policies = await fixture.App.McpOperatorPolicies.ToArrayAsync();
+        Assert.Equal(2, policies.Length);
+        Assert.Contains(policies, x => x.Operation == "netratel_search/clients" && x.AgentId == admittedAgent);
+        Assert.DoesNotContain(policies, x => x.AgentId == hiddenAgent);
+
+        var principal = new McpOperatorPrincipal("requester", fixture.Credential.CredentialId,
+            fixture.Credential.CredentialId, new HashSet<string>(), new HashSet<string>(), new HashSet<string>(["netratel.mcp.read"]));
+        async Task<McpOperatorDecision> Evaluate(Guid agent) => await fixture.Authorization.EvaluateAsync(new McpOperatorAccessRequest(
+            McpOperatorEnvironment.Production, principal, 17, agent, McpOperatorTargetClassification.DedicatedQa,
+            McpOperatorOperationFamily.Observability, "netratel_search/clients", new HashSet<string>(["netratel.mcp.read"]),
+            McpOperatorConfirmationClass.None, "corr-reviewed-search", "request-reviewed-search", Tool: "netratel_search"), default);
+        Assert.True((await Evaluate(admittedAgent)).IsAllowed);
+        Assert.False((await Evaluate(hiddenAgent)).IsAllowed);
+    }
+
+    [Fact]
     public async Task Owner_self_approval_is_denied_when_policy_authority_is_withdrawn_before_resume()
     {
         await using var fixture = await Fixture.CreateAsync();
