@@ -68,8 +68,12 @@ public sealed class LinuxUpdaterSemVerTests
                     ;;
                   is-active) test -f "$FAKE_SERVICE_STATE" ;;
                 esac
-                """);
+                """.Replace("\r\n", "\n"));
             File.SetUnixFileMode(systemctl, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            // A minimal supported host has Python but need not have the unzip command.
+            var unavailableUnzip = Path.Combine(bin, "unzip");
+            await File.WriteAllTextAsync(unavailableUnzip, "#!/bin/sh\nexit 127\n");
+            File.SetUnixFileMode(unavailableUnzip, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
             var repositoryRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../../"));
             var updater = Path.Combine(repositoryRoot, "src/NetRatel/NetRatel.Client/tools/netratel-update.sh");
