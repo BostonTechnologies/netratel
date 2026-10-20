@@ -161,7 +161,7 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
                 entry.source.ManifestJson, entry.source.ScriptType, entry.source.CreatedAtUtc, entry.source.UpdatedAtUtc, entry.source.SourceRevision),
             entry.source.Parameters.OrderBy(parameter => parameter.Id).Select(parameter => new ScriptParamInfo((ulong)parameter.Id,
                 (ulong)parameter.ScriptId, parameter.Name, parameter.Type, parameter.Required, parameter.Default, parameter.Description, parameter.OptionsJson)).ToArray(),
-            entry.owner.Version, entry.owner.ContentHash)).ToArray();
+            entry.owner.Version, entry.owner.ContentHash, entry.owner.WorkingDirectory, entry.owner.TimeoutSeconds)).ToArray();
         return new McpOperatorJobExecutionSnapshot(details, row.owner.Version, principal.Subject, ClientId(principal), resource, instance,
             access.TargetSetDigest!, inputSchema, scripts);
     }

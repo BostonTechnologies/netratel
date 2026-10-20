@@ -54,7 +54,8 @@ public sealed class JobTaskBridge
                 !mcpSnapshot.Definition.Steps.Contains(step))
                 return new(false, null, null, "The reviewed job step does not match this run.");
             reviewedScript = mcpSnapshot.Scripts.SingleOrDefault(script => script.Script.Id == step.ScriptId);
-            if (reviewedScript is null || !string.Equals(ComputeContentHash(reviewedScript.Script.Content), reviewedScript.ContentHash, StringComparison.OrdinalIgnoreCase))
+            if (reviewedScript is null || string.IsNullOrWhiteSpace(reviewedScript.WorkingDirectory) || reviewedScript.TimeoutSeconds <= 0 ||
+                !string.Equals(ComputeContentHash(reviewedScript.Script.Content), reviewedScript.ContentHash, StringComparison.OrdinalIgnoreCase))
                 return new(false, null, null, "The reviewed script snapshot is unavailable or invalid.");
         }
         var build = await TryBuildInvocationAsync(
@@ -388,6 +389,8 @@ public sealed class JobTaskBridge
         payload.ScriptType = execution.ScriptType;
         payload.ScriptContent = execution.Script.Content;
         payload.Preferred = execution.Preferred;
+        if (reviewedScript is not null)
+            payload.WorkingDirectory = reviewedScript.WorkingDirectory;
         _logger.LogInformation(
             "JobRun {RunId} step {Ordinal}: library script snapshot scriptId={ScriptId} scriptType={ScriptType} updated={UpdatedAtUtc} contentHash={ContentHash}",
             run.Id,
@@ -400,7 +403,9 @@ public sealed class JobTaskBridge
         var parameters = BuildLibraryScriptParameters(inputs, payloadParameters, payload.Parameters);
 
         payload.Parameters = parameters.Count > 0 ? parameters : new Dictionary<string, string>();
-        payload.TimeoutSeconds = runtimePolicy.HardTimeoutSeconds;
+        payload.TimeoutSeconds = reviewedScript is null
+            ? runtimePolicy.HardTimeoutSeconds
+            : Math.Min(runtimePolicy.HardTimeoutSeconds, reviewedScript.TimeoutSeconds);
 
         _logger.LogInformation(
             "Prepared library script dispatch. RunId={RunId} StepOrdinal={StepOrdinal} TaskRequestPending=true InputKeyCount={InputKeyCount} ExecutableParameterKeyCount={ExecutableParameterKeyCount} ExpectedRuntimeSeconds={ExpectedRuntimeSeconds} GraceSeconds={GraceSeconds} HardTimeoutSeconds={HardTimeoutSeconds}",

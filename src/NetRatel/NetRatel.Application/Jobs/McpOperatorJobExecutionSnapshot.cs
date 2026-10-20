@@ -28,4 +28,6 @@ public sealed record McpOperatorScriptExecutionSnapshot(
     ScriptInfo Script,
     IReadOnlyList<ScriptParamInfo> Parameters,
     long OperatorVersion,
-    string ContentHash);
+    string ContentHash,
+    string WorkingDirectory,
+    int TimeoutSeconds);

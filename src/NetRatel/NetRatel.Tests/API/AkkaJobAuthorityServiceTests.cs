@@ -37,7 +37,8 @@ public sealed class AkkaJobAuthorityServiceTests
         var snapshot = new McpOperatorJobExecutionSnapshot(
             new JobDefinitionDetails(new JobDefinitionInfo(41, "reviewed-job", "/", null, 7, string.Empty, now, now, null, agentId), [], steps),
             2, "operator", "client", "https://mcp.example.test/mcp", "prod", new string('A', 64), [],
-            [new McpOperatorScriptExecutionSnapshot(script, [new ScriptParamInfo(1, 91, "credential", "secret", false, null, null, null)], 3, contentHash)]);
+            [new McpOperatorScriptExecutionSnapshot(script, [new ScriptParamInfo(1, 91, "credential", "secret", false, null, null, null)], 3, contentHash,
+                "/tmp/reviewed-script", 15)]);
         var runs = new InMemoryRuns();
         var gateway = new AvailableGateway();
         // The current definition is now a different shell job and the current
@@ -49,6 +50,8 @@ public sealed class AkkaJobAuthorityServiceTests
         gateway.DispatchCount.Should().Be(1);
         var first = JsonSerializer.Deserialize<ExecLibraryScriptPayload>(gateway.LastDispatch!.PayloadJson)!;
         first.ScriptContent.Should().Be(content);
+        first.WorkingDirectory.Should().Be("/tmp/reviewed-script");
+        first.TimeoutSeconds.Should().Be(15);
         first.OutputPolicy!.SecretParameters.Should().Contain("credential");
         if (loseSnapshot) runs.McpSnapshot = null;
         await service.RecordLifecycleAsync(new ClientKey(7, agentId), Lifecycle(runs, JobGatewayLifecycleStatus.Completed, 3,
@@ -65,6 +68,8 @@ public sealed class AkkaJobAuthorityServiceTests
             gateway.DispatchCount.Should().Be(2);
             var second = JsonSerializer.Deserialize<ExecLibraryScriptPayload>(gateway.LastDispatch!.PayloadJson)!;
             second.ScriptContent.Should().Be(content);
+            second.WorkingDirectory.Should().Be("/tmp/reviewed-script");
+            second.TimeoutSeconds.Should().Be(15);
             second.OutputPolicy!.SecretParameters.Should().Contain("credential");
             gateway.LastDispatch.JobStepId.Should().Be(43);
         }
