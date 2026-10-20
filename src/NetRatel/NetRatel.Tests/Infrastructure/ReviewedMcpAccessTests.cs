@@ -301,6 +301,67 @@ public sealed class ReviewedMcpAccessTests
         Assert.All(current.EffectiveAdmission, admission => Assert.False(admission.AuthorizationAdmitted));
     }
 
+    [Theory]
+    [InlineData("preview_create", "confirm_create", "create", true)]
+    [InlineData("preview_create", "confirm_create", "create", false)]
+    [InlineData("preview_replace", "confirm_replace", "replace", true)]
+    [InlineData("preview_replace", "confirm_replace", "replace", false)]
+    [InlineData("preview_disable", "confirm_disable", "disable", true)]
+    [InlineData("preview_disable", "confirm_disable", "disable", false)]
+    [InlineData("preview_revoke", "confirm_revoke", "revoke", true)]
+    [InlineData("preview_revoke", "confirm_revoke", "revoke", false)]
+    [InlineData("preview_target_profile", "confirm_target_profile", "upsert_target_profile", true)]
+    [InlineData("preview_target_profile", "confirm_target_profile", "upsert_target_profile", false)]
+    public async Task Reviewed_policy_mutation_phases_attach_canonical_API_permission_only_as_a_pair(
+        string preview, string confirm, string canonical, bool includeConfirm)
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        (await fixture.Identity.Users.SingleAsync(x => x.PrincipalId == "requester")).IsInstanceAdministrator = true;
+        await fixture.Identity.SaveChangesAsync();
+        var agent = Guid.NewGuid();
+        fixture.App.Agents.Add(new Agent { Id = agent, TenantId = 17, Name = "Policy test target", IsEnabled = true, Status = AgentStatus.Active });
+        await fixture.App.SaveChangesAsync();
+        var profile = await new McpOperatorPolicyAdministration(fixture.App).UpsertTargetProfileAsync(
+            17, agent, McpOperatorTargetClassification.DedicatedQa, [], null, "requester", default);
+        var baseProposal = fixture.Proposal("reconcile", fixture.Credential.CredentialId);
+        var targets = new List<ReviewedMcpAccessTarget>
+        {
+            new(17, "netratel_policy", preview, agent, profile.Version)
+        };
+        if (includeConfirm) targets.Add(new(17, "netratel_policy", confirm, agent, profile.Version));
+        var proposal = baseProposal with
+        {
+            Grants = [new(17, NetRatelPermissions.FlowRead), new(29, NetRatelPermissions.FlowRead), new(17, NetRatelPermissions.McpPolicyAdministration)],
+            Targets = targets
+        };
+        var pending = await fixture.Pairing.RequestReviewedAsync(proposal, "requester", fixture.Credential.CredentialId,
+            Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production);
+        await fixture.Pairing.ApproveAsync(Principal("requester"), fixture.Approval(pending));
+        var applied = await fixture.Pairing.InspectReviewedAsync(proposal.RequestId, "requester", fixture.Credential.CredentialId, resume: true);
+        Assert.Equal("consumed", applied.Request.Status);
+        Assert.Equal("owner_self_approval", applied.Request.ApprovalMode);
+        await fixture.Pairing.InspectReviewedAsync(proposal.RequestId, "requester", fixture.Credential.CredentialId, resume: true);
+        var policies = await fixture.App.McpOperatorPolicies.ToArrayAsync();
+        Assert.Equal(includeConfirm ? 3 : 1, policies.Length);
+        Assert.Equal(includeConfirm, policies.Any(x => x.Operation == "netratel_policy/" + canonical));
+        Assert.All(policies, x =>
+        {
+            Assert.Equal(fixture.Credential.CredentialId, x.PrincipalSelectorValue);
+            Assert.Equal(agent, x.AgentId);
+            Assert.Equal(proposal.ExpiresAtUtc, x.ExpiresAtUtc);
+        });
+
+        var principal = new McpOperatorPrincipal("requester", fixture.Credential.CredentialId,
+            fixture.Credential.CredentialId, new HashSet<string>(), new HashSet<string>(["PolicyAdministrator"]),
+            new HashSet<string>(["netratel.mcp.admin"]));
+        var decision = await fixture.Authorization.EvaluateAsync(new McpOperatorAccessRequest(
+            McpOperatorEnvironment.Production, principal, 17, agent, profile.Classification,
+            McpOperatorOperationFamily.PolicyAdministration, "netratel_policy/" + canonical,
+            new HashSet<string>(["netratel.mcp.admin"]), McpOperatorConfirmationClass.PolicyAdministration,
+            "corr-reviewed-policy", "request-reviewed-policy", Tool: "netratel_policy"), default);
+        Assert.Equal(includeConfirm, decision.IsAllowed);
+    }
+
     [Fact]
     public async Task Owner_self_approval_is_denied_when_policy_authority_is_withdrawn_before_resume()
     {
