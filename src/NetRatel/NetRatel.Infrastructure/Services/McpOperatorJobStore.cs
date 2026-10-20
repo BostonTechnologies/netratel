@@ -807,7 +807,13 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
         if (raw.Any(char.IsControl) || raw.Contains("..", StringComparison.Ordinal)) throw new ArgumentException("The job folder is invalid.");
         if (!raw.StartsWith("/", StringComparison.Ordinal)) raw = "/" + raw;
         if (!raw.EndsWith("/", StringComparison.Ordinal)) raw += "/";
-        var normalized = $"/mcp-operator/{tenantId}{raw}";
+        const string operatorRoot = "/mcp-operator/";
+        var tenantRoot = $"{operatorRoot}{tenantId}/";
+        if (raw.StartsWith(operatorRoot, StringComparison.Ordinal) && !raw.StartsWith(tenantRoot, StringComparison.Ordinal))
+            throw new ArgumentException("The job folder must use the current tenant's operator namespace.");
+
+        // A folder returned by a previous read is already scoped to this tenant.
+        var normalized = raw.StartsWith(tenantRoot, StringComparison.Ordinal) ? raw : $"/mcp-operator/{tenantId}{raw}";
         if (normalized.Length > 512) throw new ArgumentException("The job folder is too long.");
         return normalized;
     }

@@ -5,6 +5,7 @@ using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading.Channels;
+using Google.Protobuf.WellKnownTypes;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.API.Services;
 using NetRatel.Application.ClientAuth;
@@ -556,6 +557,276 @@ public sealed class ClientUpdateResultDeliveryTests
     }
 
     [Fact]
+    public async Task FreshOperatorResumePreservesBothIdentityConflictResultsAndAllowsFutureDeliveryAfterRestart()
+    {
+        await using var rig = new DeliveryRig();
+        ProtectedUpdateState.AtomicWriteJson(Path.Combine(rig.Root, "policy.json"), new { revision = 5 });
+        rig.Response = () => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        var suspension = File.ReadAllBytes(rig.SuspensionPath);
+        var replacedAttempt = Guid.NewGuid();
+        ProtectedUpdateState.AtomicWriteJson(rig.ResultPath, new { schema = "netratel.update.result.v2",
+            attemptId = replacedAttempt, releaseId = Guid.NewGuid(), state = "Accepted", toVersion = "1.2.4" });
+        var resultBytes = File.ReadAllBytes(rig.ResultPath);
+        byte[] replacement = [0xef, 0xbb, 0xbf, .. resultBytes];
+        File.WriteAllBytes(rig.ResultPath, replacement);
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.Equal("identity_conflict", rig.Status("deliveryState"));
+        Assert.True(rig.Worker.HasUnresolvedResult);
+
+        rig.Clock.Advance(TimeSpan.FromSeconds(1));
+        using (var api = new HttpClient(rig, false) { BaseAddress = new Uri("https://api.example.test") })
+        {
+            await using var coordinator = new AkkaClientAutoUpdateCoordinator(new ClientOptions
+            {
+                ApiBaseUrl = api.BaseAddress.ToString(),
+                AutoUpdate = new AutoUpdateOptions { StateDirectory = rig.Root, RuntimeId = "linux-x64" }
+            }, "1.2.4", rig, api, rig.Clock, () => throw new InvalidOperationException("Unexpected native launch"), true);
+            coordinator.OnAcknowledgement(null, new ClientUpdatePolicy
+            {
+                Revision = 6, ResumeRequested = true, Suspended = false, AutoUpdateEnabled = true,
+                ResumedAtUtc = Timestamp.FromDateTimeOffset(rig.Clock.GetUtcNow())
+            }, null);
+            using var policy = JsonDocument.Parse(File.ReadAllText(Path.Combine(rig.Root, "policy.json")));
+            Assert.Equal(rig.AttemptId, policy.RootElement.GetProperty("resumeAttemptId").GetGuid());
+            Assert.NotEqual(replacedAttempt, policy.RootElement.GetProperty("resumeAttemptId").GetGuid());
+        }
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+
+        Assert.Equal("archived_unresolved", rig.Status("deliveryState"));
+        Assert.Equal("required", rig.Status("reconciliationState"));
+        Assert.Equal("RolledBack", rig.Status("installationState"));
+        Assert.False(File.Exists(rig.ResultPath));
+        Assert.False(rig.Worker.HasUnresolvedResult);
+        Assert.Equal(replacement, File.ReadAllBytes(Assert.Single(Directory.GetFiles(rig.Root, "*.replacement.json"))));
+        Assert.Equal(suspension, File.ReadAllBytes(Assert.Single(Directory.GetFiles(rig.Root, "*.suspension.json"))));
+        using (var receipt = JsonDocument.Parse(File.ReadAllText(Assert.Single(Directory.GetFiles(rig.Root, "*.recovery.json")))))
+        {
+            var original = receipt.RootElement.GetProperty("originalDelivery");
+            Assert.Equal(rig.AttemptId, original.GetProperty("attemptId").GetGuid());
+            Assert.Equal("RolledBack", original.GetProperty("originalResult").GetProperty("state").GetString());
+            Assert.Equal("identity_conflict", original.GetProperty("deliveryState").GetString());
+            Assert.Equal(6, receipt.RootElement.GetProperty("resumeRevision").GetInt64());
+            Assert.Equal("required", receipt.RootElement.GetProperty("reconciliationState").GetString());
+        }
+        rig.Worker = rig.CreateWorker();
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.False(rig.Worker.HasUnresolvedResult);
+        Assert.Equal(1, rig.Requests);
+
+        // Recovery releases future work; it never relabels either retained
+        // installation result or reports the replacement's Accepted claim.
+        rig.ExpectedAttemptId = Guid.NewGuid();
+        rig.ExpectedState = "FailedPreActivation";
+        ProtectedUpdateState.AtomicWriteJson(rig.ResultPath, new { schema = "netratel.update.result.v2",
+            attemptId = rig.ExpectedAttemptId, releaseId = rig.ReleaseId, state = rig.ExpectedState });
+        ProtectedUpdateState.AtomicWriteJson(Path.Combine(rig.Root, "request.json"), new
+        {
+            attemptId = rig.ExpectedAttemptId, releaseId = rig.ReleaseId, admissionNonce = "new-protected-test-nonce"
+        });
+        rig.Response = () => rig.Reply(HttpStatusCode.Accepted, "applied", "report_applied", rig.ExpectedState, suspended: false);
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.Equal(2, rig.Requests);
+        Assert.Equal("acknowledged", rig.Status("deliveryState"));
+        Assert.Equal("new-protected-test-nonce", rig.RequestNonces.Last());
+        Assert.Single(Directory.GetFiles(rig.Root, "*.recovery.json"));
+    }
+
+    [Theory]
+    [InlineData("old-revision")]
+    [InlineData("wrong-attempt")]
+    [InlineData("old-time")]
+    [InlineData("equal-time")]
+    [InlineData("missing-time")]
+    [InlineData("changed-result")]
+    [InlineData("changed-archive")]
+    public async Task IdentityConflictRequiresFreshBoundResumeAndUnchangedArchiveEvidence(string boundary)
+    {
+        await using var rig = new DeliveryRig();
+        ProtectedUpdateState.AtomicWriteJson(Path.Combine(rig.Root, "policy.json"), new
+        {
+            revision = 5, resumeAttemptId = rig.AttemptId, resumeRevision = 5, resumedAtUtc = rig.Clock.GetUtcNow()
+        });
+        rig.Response = () => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        rig.Clock.Advance(TimeSpan.FromSeconds(1));
+        ProtectedUpdateState.AtomicWriteJson(rig.ResultPath, new { schema = "netratel.update.result.v2",
+            attemptId = Guid.NewGuid(), releaseId = Guid.NewGuid(), state = "FailedPreActivation" });
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        var detectedAt = rig.Clock.GetUtcNow();
+        Assert.Equal("identity_conflict", rig.Status("deliveryState"));
+        Assert.True(rig.Worker.HasUnresolvedResult);
+        rig.Clock.Advance(TimeSpan.FromSeconds(1));
+        ProtectedUpdateState.AtomicWriteJson(Path.Combine(rig.Root, "policy.json"), new
+        {
+            revision = 6,
+            resumeAttemptId = boundary == "wrong-attempt" ? Guid.NewGuid() : rig.AttemptId,
+            resumeRevision = boundary == "old-revision" ? 5 : 6,
+            resumedAtUtc = boundary == "missing-time" ? (DateTimeOffset?)null :
+                boundary == "old-time" ? detectedAt.AddSeconds(-1) :
+                boundary == "equal-time" ? detectedAt : rig.Clock.GetUtcNow()
+        });
+        if (boundary == "changed-result")
+            ProtectedUpdateState.AtomicWriteJson(rig.ResultPath, new { schema = "netratel.update.result.v2",
+                attemptId = Guid.NewGuid(), releaseId = Guid.NewGuid(), state = "FailedPreActivation" });
+        var retainedResult = File.ReadAllBytes(rig.ResultPath);
+        string? changedArchive = null;
+        if (boundary == "changed-archive")
+        {
+            changedArchive = Assert.Single(Directory.GetFiles(rig.Root, "*.replacement.json"));
+            File.WriteAllText(changedArchive, "existing archive must not be overwritten");
+        }
+        rig.Worker = rig.CreateWorker();
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+
+        Assert.Equal("identity_conflict", rig.Status("deliveryState"));
+        Assert.True(rig.Worker.HasUnresolvedResult);
+        Assert.Equal(1, rig.Requests);
+        Assert.Equal(retainedResult, File.ReadAllBytes(rig.ResultPath));
+        Assert.Empty(Directory.GetFiles(rig.Root, "*.recovery.json"));
+        if (changedArchive is not null)
+            Assert.Equal("existing archive must not be overwritten", File.ReadAllText(changedArchive));
+    }
+
+    [Fact]
+    public async Task DelayedOperatorResumeKeepsItsAuthoritativeTimeAndCannotRecoverANewerIdentityConflict()
+    {
+        await using var rig = new DeliveryRig();
+        var operatorActedAt = rig.Clock.GetUtcNow();
+        ProtectedUpdateState.AtomicWriteJson(Path.Combine(rig.Root, "policy.json"), new { revision = 5 });
+        rig.Response = () => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        rig.Clock.Advance(TimeSpan.FromSeconds(1));
+        ProtectedUpdateState.AtomicWriteJson(rig.ResultPath, new { schema = "netratel.update.result.v2",
+            attemptId = Guid.NewGuid(), releaseId = Guid.NewGuid(), state = "FailedPreActivation" });
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        rig.Clock.Advance(TimeSpan.FromSeconds(1));
+
+        using (var api = new HttpClient(rig, false) { BaseAddress = new Uri("https://api.example.test") })
+        {
+            await using var coordinator = new AkkaClientAutoUpdateCoordinator(new ClientOptions
+            {
+                ApiBaseUrl = api.BaseAddress.ToString(),
+                AutoUpdate = new AutoUpdateOptions { StateDirectory = rig.Root, RuntimeId = "linux-x64" }
+            }, "1.2.4", rig, api, rig.Clock, () => throw new InvalidOperationException("Unexpected native launch"), true);
+            coordinator.OnAcknowledgement(null, new ClientUpdatePolicy
+            {
+                Revision = 6, ResumeRequested = true, Suspended = false, AutoUpdateEnabled = true,
+                ResumedAtUtc = Timestamp.FromDateTimeOffset(operatorActedAt)
+            }, null);
+            using var policy = JsonDocument.Parse(File.ReadAllText(Path.Combine(rig.Root, "policy.json")));
+            Assert.Equal(operatorActedAt, policy.RootElement.GetProperty("resumedAtUtc").GetDateTimeOffset());
+        }
+
+        rig.Worker = rig.CreateWorker();
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.True(rig.Worker.HasUnresolvedResult);
+        Assert.Equal("identity_conflict", rig.Status("deliveryState"));
+        Assert.True(File.Exists(rig.SuspensionPath));
+        Assert.Equal(1, rig.Requests);
+        Assert.Empty(Directory.GetFiles(rig.Root, "*.recovery.json"));
+    }
+
+    [Fact]
+    public async Task RestartInspectsTheActualAtomicallyRetainedBytesBeforeConsumingResumeAuthorization()
+    {
+        await using var rig = new DeliveryRig();
+        ProtectedUpdateState.AtomicWriteJson(Path.Combine(rig.Root, "policy.json"), new { revision = 5 });
+        rig.Response = () => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        ProtectedUpdateState.AtomicWriteJson(rig.ResultPath, new { schema = "netratel.update.result.v2",
+            attemptId = Guid.NewGuid(), releaseId = Guid.NewGuid(), state = "FailedPreActivation" });
+        var observedReplacement = File.ReadAllBytes(rig.ResultPath);
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        string retainedPath;
+        using (var delivery = JsonDocument.Parse(File.ReadAllText(Path.Combine(rig.Root, "result-delivery.json"))))
+        {
+            var preservationId = delivery.RootElement.GetProperty("identityConflict").GetProperty("preservationId").GetGuid();
+            retainedPath = Path.Combine(rig.Root, $"result-{rig.AttemptId:D}-{preservationId:D}.retained.json");
+        }
+        rig.Clock.Advance(TimeSpan.FromSeconds(1));
+        ProtectedUpdateState.AtomicWriteJson(Path.Combine(rig.Root, "policy.json"), new
+        {
+            revision = 6, resumeAttemptId = rig.AttemptId, resumeRevision = 6, resumedAtUtc = rig.Clock.GetUtcNow()
+        });
+        // Model replacement between observation and atomic move, followed by
+        // process interruption before the worker can inspect what it moved.
+        ProtectedUpdateState.AtomicWriteJson(rig.ResultPath, new { schema = "netratel.update.result.v2",
+            attemptId = Guid.NewGuid(), releaseId = Guid.NewGuid(), state = "Accepted", toVersion = "1.2.5" });
+        var movedReplacement = File.ReadAllBytes(rig.ResultPath);
+        File.Move(rig.ResultPath, retainedPath);
+        rig.Worker = rig.CreateWorker();
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.True(rig.Worker.HasUnresolvedResult);
+        Assert.Equal("identity_conflict", rig.Status("deliveryState"));
+        Assert.Equal(movedReplacement, File.ReadAllBytes(retainedPath));
+        var replacements = Directory.GetFiles(rig.Root, "*.replacement.json").Select(File.ReadAllBytes).ToArray();
+        Assert.Equal(2, replacements.Length);
+        Assert.Contains(replacements, bytes => bytes.AsSpan().SequenceEqual(observedReplacement));
+        Assert.Contains(replacements, bytes => bytes.AsSpan().SequenceEqual(movedReplacement));
+        Assert.Empty(Directory.GetFiles(rig.Root, "*.recovery.json"));
+
+        rig.Clock.Advance(TimeSpan.FromSeconds(1));
+        ProtectedUpdateState.AtomicWriteJson(Path.Combine(rig.Root, "policy.json"), new
+        {
+            revision = 7, resumeAttemptId = rig.AttemptId, resumeRevision = 7, resumedAtUtc = rig.Clock.GetUtcNow()
+        });
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.False(rig.Worker.HasUnresolvedResult);
+        Assert.Equal("archived_unresolved", rig.Status("deliveryState"));
+        Assert.Equal("required", rig.Status("reconciliationState"));
+        Assert.Equal(movedReplacement, File.ReadAllBytes(retainedPath));
+        Assert.Equal(1, rig.Requests);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InFlightResultResponseCannotReplaceAnObservedIdentityConflict(bool transportFailure)
+    {
+        await using var rig = new DeliveryRig();
+        var requestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        rig.AsyncResponse = () => { requestStarted.SetResult(); return response.Task; };
+        var inFlight = rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        await requestStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        ProtectedUpdateState.AtomicWriteJson(rig.ResultPath, new { schema = "netratel.update.result.v2",
+            attemptId = Guid.NewGuid(), releaseId = Guid.NewGuid(), state = "FailedPreActivation" });
+        var replacement = File.ReadAllBytes(rig.ResultPath);
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.Equal("identity_conflict", rig.Status("deliveryState"));
+        if (transportFailure) response.SetException(new HttpRequestException("Synthetic interrupted response"));
+        else response.SetResult(rig.Reply(HttpStatusCode.Accepted, "applied", "report_applied", "RolledBack"));
+        await inFlight;
+        Assert.Equal("identity_conflict", rig.Status("deliveryState"));
+        Assert.Equal("required", rig.Status("reconciliationState"));
+        Assert.Equal("RolledBack", rig.Status("installationState"));
+        Assert.Equal(replacement, File.ReadAllBytes(rig.ResultPath));
+        Assert.True(rig.Worker.HasUnresolvedResult);
+        Assert.Equal(1, rig.Requests);
+    }
+
+    [Fact]
+    public async Task LocalFailureAfterACommittedConflictCannotTurnItBackIntoARetry()
+    {
+        await using var rig = new DeliveryRig();
+        rig.Response = () => rig.Reply(HttpStatusCode.Conflict, "conflict", "accepted_authority_conflict", "Accepted");
+        rig.Worker = rig.CreateWorker(message =>
+        {
+            if (message.Contains("delivery=conflict", StringComparison.Ordinal))
+                throw new IOException("Synthetic diagnostic destination failure");
+        });
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.Equal("conflict", rig.Status("deliveryState"));
+        Assert.Equal("required", rig.Status("reconciliationState"));
+        Assert.Equal("accepted_authority_conflict", rig.Status("lastCode"));
+        Assert.True(rig.Worker.HasUnresolvedResult);
+        rig.Clock.Advance(TimeSpan.FromMinutes(5));
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.Equal(1, rig.Requests);
+    }
+
+    [Fact]
     public async Task TypedRecoverableTokenFailureRetriesAfterTheBackendReturns()
     {
         await using var rig = new DeliveryRig();
@@ -618,12 +889,16 @@ public sealed class ClientUpdateResultDeliveryTests
         internal string SuspensionPath => Path.Combine(Root, "suspension.json");
         internal ClientUpdateResultDelivery Worker;
         internal Func<HttpResponseMessage> Response;
+        internal Func<Task<HttpResponseMessage>>? AsyncResponse;
+        internal Guid ExpectedAttemptId;
+        internal string ExpectedState = "RolledBack";
         internal int Requests, Invalidations;
         internal AgentClientAuthException? TokenFailure;
         private readonly HttpClient _api;
 
         internal DeliveryRig()
         {
+            ExpectedAttemptId = AttemptId;
             Directory.CreateDirectory(Root);
             _api = new HttpClient(this, false) { BaseAddress = new Uri("https://api.example.test") };
             ProtectedUpdateState.AtomicWriteJson(ResultPath, new { schema = "netratel.update.result.v2", AttemptId, ReleaseId,
@@ -633,8 +908,8 @@ public sealed class ClientUpdateResultDeliveryTests
             Response = () => Reply(HttpStatusCode.Accepted, "applied", "report_applied", "RolledBack");
             Worker = CreateWorker();
         }
-        internal ClientUpdateResultDelivery CreateWorker() => new(Root, ResultPath, Path.Combine(Root, "request.json"),
-            Path.Combine(Root, "ready.json"), SuspensionPath, this, _api, Clock, new object(), _ => { });
+        internal ClientUpdateResultDelivery CreateWorker(Action<string>? log = null) => new(Root, ResultPath, Path.Combine(Root, "request.json"),
+            Path.Combine(Root, "ready.json"), SuspensionPath, this, _api, Clock, new object(), log ?? (_ => { }));
         internal string? Status(string key)
         {
             using var record = JsonDocument.Parse(File.ReadAllText(Path.Combine(Root, "result-delivery.json")));
@@ -646,11 +921,11 @@ public sealed class ClientUpdateResultDeliveryTests
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Interlocked.Increment(ref Requests);
-            Assert.EndsWith($"/attempts/{AttemptId:D}/result", request.RequestUri!.AbsolutePath);
+            Assert.EndsWith($"/attempts/{ExpectedAttemptId:D}/result", request.RequestUri!.AbsolutePath);
             using var document = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
-            Assert.Equal("RolledBack", document.RootElement.GetProperty("state").GetString());
+            Assert.Equal(ExpectedState, document.RootElement.GetProperty("state").GetString());
             RequestNonces.Enqueue(document.RootElement.GetProperty("admissionNonce").GetString());
-            return Response();
+            return AsyncResponse is { } asyncResponse ? await asyncResponse() : Response();
         }
         public Task<(string AccessToken, DateTimeOffset ExpiresAtUtc)> GetAccessTokenAsync(CancellationToken cancellationToken)
         {

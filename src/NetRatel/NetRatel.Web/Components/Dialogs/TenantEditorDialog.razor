@@ -87,14 +87,40 @@
                         </MudSelect>
                     </MudItem>
 
-                    @if (!string.IsNullOrWhiteSpace(_model.AutoUpdateTargetVersion))
+                    <MudItem xs="12" md="6">
+                        <MudSelect T="bool" @bind-Value="_pinTargetVersion"
+                                   Label="Target version policy" Variant="Variant.Outlined"
+                                   data-testid="tenant-target-policy">
+                            <MudSelectItem T="bool" Value="false">No pin / follow selected channel</MudSelectItem>
+                            <MudSelectItem T="bool" Value="true">Pin a specific version</MudSelectItem>
+                        </MudSelect>
+                    </MudItem>
+
+                    @if (_pinTargetVersion)
                     {
-                        <MudItem xs="12">
-                            <MudText Typo="Typo.body2" Style="overflow-wrap: anywhere;" data-testid="tenant-target-version">
-                                Target version pin: @_model.AutoUpdateTargetVersion. Only this version is eligible within the selected channel.
-                            </MudText>
+                        <MudItem xs="12" md="6">
+                            <MudTextField T="string" @bind-Value="_model.AutoUpdateTargetVersion"
+                                          Label="Target version" Variant="Variant.Outlined" Immediate="true"
+                                          Required="true" RequiredError="Enter a version or choose no pin."
+                                          Validation="@(new Func<string?, string?>(ValidateTargetVersion))"
+                                          HelperText="Only this version can be offered. Newer releases remain excluded until you change or clear the pin."
+                                          data-testid="tenant-target-version-input" />
                         </MudItem>
                     }
+
+                    <MudItem xs="12">
+                        <MudPaper Outlined="true" Class="pa-3" data-testid="tenant-effective-update-policy">
+                            <MudText Typo="Typo.subtitle2">Effective update policy</MudText>
+                            <MudText Typo="Typo.body2">Automatic updates: @(_model.AutoUpdate ? "on" : "off") · Channel: @(_model.AutoUpdateChannel == "prerelease" ? "Stable releases and prereleases" : "Stable releases only")</MudText>
+                            <MudText Typo="Typo.body2" Style="overflow-wrap: anywhere;" data-testid="tenant-target-version">
+                                @(_pinTargetVersion ? $"Target version pin: {_model.AutoUpdateTargetVersion}. Only this version is eligible within the selected channel." : "No pin / follow selected channel.")
+                            </MudText>
+                            @if (_pinTargetVersion && !TenantUpdatePolicyValidation.IsTargetInChannel(_model.AutoUpdateChannel, _model.AutoUpdateTargetVersion))
+                            {
+                                <MudText Typo="Typo.body2" Color="Color.Warning">This prerelease pin is excluded by the selected channel. Choose the prerelease channel or clear the pin to allow eligible offers.</MudText>
+                            }
+                        </MudPaper>
+                    </MudItem>
                 </MudGrid>
             </MudForm>
         </MudStack>
@@ -118,6 +144,7 @@
     private MudForm? _form;
     private CreateTenantRequest _model = new();
     private string _domainsText = string.Empty;
+    private bool _pinTargetVersion;
 
     protected override void OnParametersSet()
     {
@@ -125,6 +152,7 @@
         {
             _model = new CreateTenantRequest();
             _domainsText = string.Empty;
+            _pinTargetVersion = false;
             return;
         }
 
@@ -142,6 +170,7 @@
         };
 
         _domainsText = string.Join(System.Environment.NewLine, Tenant.Domains);
+        _pinTargetVersion = !string.IsNullOrWhiteSpace(Tenant.AutoUpdateTargetVersion);
     }
 
     private void Cancel() => MudDialog.Cancel();
@@ -163,8 +192,20 @@
         _model.ContactPerson = string.IsNullOrWhiteSpace(_model.ContactPerson) ? null : _model.ContactPerson.Trim();
         _model.ContactEmail = string.IsNullOrWhiteSpace(_model.ContactEmail) ? null : _model.ContactEmail.Trim();
         _model.Domains = ParseDomains(_domainsText);
+        _model.AutoUpdateTargetVersion = _pinTargetVersion ? _model.AutoUpdateTargetVersion?.Trim() : null;
 
         MudDialog.Close(DialogResult.Ok(_model));
+    }
+
+    private string? ValidateTargetVersion(string? value)
+    {
+        var target = value?.Trim();
+        if (TenantUpdatePolicyValidation.TargetVersionError(target) is { } error) return error;
+        if ((!string.Equals(target, Tenant?.AutoUpdateTargetVersion, StringComparison.Ordinal) ||
+             !string.Equals(_model.AutoUpdateChannel, Tenant?.AutoUpdateChannel, StringComparison.Ordinal)) &&
+            !TenantUpdatePolicyValidation.IsTargetInChannel(_model.AutoUpdateChannel, target))
+            return "Select the prerelease channel for this target, or choose no pin.";
+        return null;
     }
 
     private static List<string> ParseDomains(string? raw)

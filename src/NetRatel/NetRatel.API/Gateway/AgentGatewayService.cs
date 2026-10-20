@@ -621,7 +621,8 @@ public sealed class AgentGatewayService(
                 AutoUpdateEnabled = policy.AutoUpdateEnabled,
                 Suspended = policy.Suspended,
                 ResumeRequested = policy.ResumeRequested,
-                SuppressedReleaseId = policy.SuppressedReleaseId?.ToString("D") ?? string.Empty
+                SuppressedReleaseId = policy.SuppressedReleaseId?.ToString("D") ?? string.Empty,
+                ResumedAtUtc = policy.ResumedAtUtc is { } resumedAt ? Timestamp.FromDateTimeOffset(resumedAt) : null
             });
     }
 }

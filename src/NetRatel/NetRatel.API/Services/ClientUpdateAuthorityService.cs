@@ -652,7 +652,19 @@ public sealed class ClientUpdateAuthorityService(
         await LockAgentUpdateAsync(tenantId, agentId, cancellationToken).ConfigureAwait(false);
         var state = await db.AgentClientUpdateStates.SingleOrDefaultAsync(
             x => x.TenantId == tenantId && x.AgentId == agentId,
-            cancellationToken).ConfigureAwait(false) ?? throw new KeyNotFoundException("Agent update state was not found.");
+            cancellationToken).ConfigureAwait(false);
+        if (state is null)
+        {
+            // A protected local result can need operator recovery without a
+            // prior server suspension. Bind the explicit policy action to an
+            // existing tenant agent without creating or changing any attempt.
+            if (!await db.Agents.AsNoTracking().AnyAsync(
+                    candidate => candidate.Id == agentId && candidate.TenantId == tenantId,
+                    cancellationToken).ConfigureAwait(false))
+                throw new KeyNotFoundException("Agent was not found.");
+            state = new AgentClientUpdateStateRecord { TenantId = tenantId, AgentId = agentId };
+            db.AgentClientUpdateStates.Add(state);
+        }
         state.SuspendedAtUtc = null;
         state.SuspensionReason = null;
         state.SuspensionAttemptId = null;

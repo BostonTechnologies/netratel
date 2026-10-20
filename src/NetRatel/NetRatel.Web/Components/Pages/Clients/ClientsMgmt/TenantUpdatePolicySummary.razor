@@ -25,7 +25,11 @@
             </MudText>
             @if (!string.IsNullOrWhiteSpace(selected.AutoUpdateTargetVersion))
             {
-                <MudText Typo="Typo.body2" Style="overflow-wrap: anywhere;">Target version pin: @selected.AutoUpdateTargetVersion. Only this version is eligible within the selected channel.</MudText>
+                <MudText Typo="Typo.body2" Style="overflow-wrap: anywhere;">Target version pin: @selected.AutoUpdateTargetVersion. Only this version is eligible within the selected channel. Newer approved releases are excluded until this pin is changed or cleared.</MudText>
+            }
+            else
+            {
+                <MudText Typo="Typo.body2">No pin / follow selected channel.</MudText>
             }
             @if (selected.AutoUpdate && !AllowsPrereleases(selected) && _publishedPrereleases.Count > 0)
             {

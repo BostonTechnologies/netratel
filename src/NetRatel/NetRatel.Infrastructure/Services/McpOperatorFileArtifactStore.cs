@@ -67,9 +67,14 @@ public sealed class McpOperatorFileArtifactStore(OrchestratorDbContext db) : IMc
             };
             _db.McpOperatorFileArtifacts.Add(record);
             await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            // Project the actual persisted timestamps for both first and replay
+            // responses. Do not reload the bounded file bytes to obtain metadata.
+            var persisted = await MetadataOnly(_db.McpOperatorFileArtifacts.AsNoTracking()
+                    .Where(candidate => candidate.Id == record.Id))
+                .SingleAsync(cancellationToken).ConfigureAwait(false);
             if (transaction is not null)
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return ToArtifact(record, includeContent: false);
+            return ToArtifact(persisted, includeContent: false);
         }
         catch (DbUpdateException)
         {

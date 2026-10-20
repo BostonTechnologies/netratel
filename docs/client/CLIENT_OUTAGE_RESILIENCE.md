@@ -114,6 +114,63 @@ data or raw credential stores. Preserve unresolved evidence while repairing an
 identified routing, authentication or installation problem; Resume is a policy
 action and does not prove installation or reconcile contradictory results.
 
+### Recovering a replaced local result
+
+`identity_conflict` with `local_result_replaced` means an unresolved delivery
+record and the current native result contain different bytes. The original
+attempt remains in `result-delivery.json`; the replacement's attempt is not the
+identity to resume. Recovery requires an explicit operator action after the
+client has durably observed the conflict.
+
+1. Deploy the API and client that support this recovery, then inspect the
+   protected state directory used by the running service. Retain the original
+   delivery record, its embedded native result, the replacement result,
+   request/ready/suspension records and both server attempts. Let the result
+   worker record `identityConflict.detectedAtUtc` and its observed policy
+   revision. Verify client and server UTC clocks before comparing these times.
+2. Review the actual installed version, native activation state and server
+   confirmation separately. Issue a fresh **Resume** for that agent through
+   the suspended-client administration control, or the existing authenticated
+   administrative `POST /api/v1/client-updates/tenants/{tenantId}/agents/{agentId}/resume`
+   endpoint when a local conflict has no server suspension. The endpoint uses
+   the existing `ArtifactPublisher` authorization. It can create the initial
+   policy state for an existing tenant agent; it does not create an update
+   attempt. Scoped automatic-update Resume retains its suspension requirement.
+3. The client binds Resume to the original delivery attempt. Recovery requires
+   both a revision newer than the conflict observation and the server's actual
+   `ResumedAtUtc` later than detection. Receipt time is insufficient. Missing
+   timestamps from an older server, stale Resume, mismatching identities and
+   changed archive bytes leave the fence in place. A newly changed result
+   requires another observation and fresh operator action.
+4. Verify protected archives and the final delivery status. Recovery preserves
+   the embedded original payload, exact replacement bytes including any BOM,
+   delivery metadata and available request/ready/suspension/policy snapshots in
+   files it never overwrites. The original raw result may already be unavailable;
+   its embedded payload is preserved without claiming byte-for-byte recovery of
+   that lost file. An atomic move into a durably identified `.retained.json`
+   archive prevents a concurrent native writer or process interruption from
+   discarding unseen replacement bytes. `archived_unresolved` releases this
+   local fence while retaining `reconciliationState=required`, the original
+   installation outcome and unchanged server attempt history. Explicit Resume
+   clears the active suspension through its normal policy path; archived
+   suspension evidence and failed-release suppression remain.
+
+An `Accepted` native result without `result-delivery.json` needs its own
+diagnosis. Confirm the service's effective `AutoUpdate.StateDirectory`, loaded
+client version, file protection and matching request/ready identities, then
+inspect result-worker startup and local-state diagnostics. `Mode` defaults to
+`Service`; offer eligibility depends on enabled Windows/Linux service mode,
+while the result monitor itself starts independently of offer eligibility.
+Windows PowerShell UTF-8 BOM output is supported. These facts do not identify
+the cause of a particular missing receipt, and an unbound `Accepted` payload
+must retain `confirmation_missing` rather than manufacture confirmation.
+
+For campaign closure, record recovery of each affected original client
+separately from a fresh automatic update on an owned test client. The latter
+must observe offer, download, activation, matching readiness and authoritative
+gateway confirmation, plus its durable terminal delivery status. A manual
+upgrade or successful local archive is not that acceptance result.
+
 ### Owner retest for issue #250
 
 After an approved deployment, record the API/Web/client versions and inspect

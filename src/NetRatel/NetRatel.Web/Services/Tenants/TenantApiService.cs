@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Net;
 using System.Threading;
 using NetRatel.Shared.Contracts;
 using NetRatel.Shared.Contracts.Requests;
@@ -34,6 +35,12 @@ public class TenantApiService : ITenantApiService
     {
         var client = CreateClient();
         var response = await client.PutAsJsonAsync($"/api/v1/tenants/{tenantId}", request, cancellationToken);
+        if (response.StatusCode == HttpStatusCode.Conflict)
+            throw new HttpRequestException("The tenant changed. Reopen its current settings before saving again.", null, response.StatusCode);
+        if (response.StatusCode == HttpStatusCode.Forbidden)
+            throw new HttpRequestException("You do not have permission to change this tenant's settings.", null, response.StatusCode);
+        if (response.StatusCode == HttpStatusCode.BadRequest)
+            throw new HttpRequestException("The tenant settings were rejected. Check the target version and its release channel.", null, response.StatusCode);
         response.EnsureSuccessStatusCode();
     }
 

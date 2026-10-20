@@ -152,6 +152,10 @@ public sealed class McpOperatorPolicyAdministration(OrchestratorDbContext db) : 
         _db.McpOperatorPolicies.Add(record);
         AddChangeAudit("policy_created", record.TenantId, record.Id, null, record.Version, record.CreatedBy, now);
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        // Return the persisted representation on the first response as well as
+        // replays. PostgreSQL timestamps retain microseconds, while the tracked
+        // values can still contain the original .NET sub-microsecond ticks.
+        await _db.Entry(record).ReloadAsync(cancellationToken).ConfigureAwait(false);
         return ToPolicy(record);
     }
 

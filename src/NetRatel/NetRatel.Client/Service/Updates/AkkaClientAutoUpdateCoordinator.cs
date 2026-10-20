@@ -683,15 +683,18 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
     {
         if (policy is null || policy.Revision <= _policyRevision) return;
         var previous = ReadJson<PolicyState>(_policyPath);
-        _policyRevision = policy.Revision;
         var resumed = policy.ResumeRequested && !policy.Suspended;
+        var resumedAt = policy.ResumedAtUtc?.ToDateTimeOffset();
         var resumeAttemptId = resumed
-            ? ReadJson<UpdateResult>(_resultPath)?.AttemptId ?? ReadJson<UpdateResult>(_suspensionPath)?.AttemptId ?? previous?.ResumeAttemptId
+            ? _resultDelivery.GetResumeAttemptId() ?? ReadJson<UpdateResult>(_resultPath)?.AttemptId ??
+                ReadJson<UpdateResult>(_suspensionPath)?.AttemptId ?? previous?.ResumeAttemptId
             : previous?.ResumeAttemptId;
-        AtomicWriteJson(_policyPath, new PolicyState(_policyRevision, resumeAttemptId,
-            resumed ? _timeProvider.GetUtcNow() : previous?.ResumedAtUtc,
-            resumed ? _policyRevision : previous?.ResumeRevision));
-        if (resumed && File.Exists(_suspensionPath)) File.Delete(_suspensionPath);
+        var clearSuspension = resumed && _resultDelivery.CanClearSuspension(policy.Revision, resumedAt);
+        AtomicWriteJson(_policyPath, new PolicyState(policy.Revision, resumeAttemptId,
+            resumed ? resumedAt : previous?.ResumedAtUtc,
+            resumed ? policy.Revision : previous?.ResumeRevision));
+        _policyRevision = policy.Revision;
+        if (clearSuspension && File.Exists(_suspensionPath)) File.Delete(_suspensionPath);
     }
 
     private async Task ReportStateAsync(Guid attemptId, string state, string? failureCode, string? message,

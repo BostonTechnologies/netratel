@@ -127,6 +127,9 @@
                                 <MudText Typo="Typo.caption" Color="Color.Secondary">
                                     @(string.IsNullOrWhiteSpace(context.Description) ? "No description" : context.Description)
                                 </MudText>
+                                <MudText Typo="Typo.caption" Style="overflow-wrap: anywhere;" data-testid="tenant-update-policy-summary">
+                                    Updates @(context.AutoUpdate ? "on" : "off") · @(context.AutoUpdateChannel == "prerelease" ? "Prereleases allowed" : "Stable only") · @(string.IsNullOrWhiteSpace(context.AutoUpdateTargetVersion) ? "No pin" : $"Pinned: {context.AutoUpdateTargetVersion}")
+                                </MudText>
                             </MudStack>
                         </MudTd>
 
@@ -353,7 +356,10 @@
                 ContactEmail = request.ContactEmail,
                 AutoUpdate = request.AutoUpdate,
                 AutoUpdateChannel = request.AutoUpdateChannel,
-                AutoUpdateTargetVersion = request.AutoUpdateTargetVersion
+                // Null retains the existing pin in the partial-update API; an empty
+                // value explicitly clears it and is normalized to null by the service.
+                AutoUpdateTargetVersion = request.AutoUpdateTargetVersion ?? string.Empty,
+                ExpectedVersion = tenant.Version
             });
 
             Snackbar.Add("Tenant updated.", Severity.Success);

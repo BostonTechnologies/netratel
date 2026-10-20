@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
+using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 using NetRatel.Application.Events;
 using NetRatel.Application.Tenants;
 using NetRatel.API.Models.TenantModels;
@@ -27,6 +29,7 @@ public static class TenantEndpoints
 
         group.MapPost("/", async (
             [FromBody] CreateTenantRequest request,
+            HttpContext http,
             ITenantService tenants,
             IEventRecorder events,
             ICorrelationContext correlation,
@@ -70,8 +73,8 @@ public static class TenantEndpoints
                     Payload = new TenantChangedPayload(
                         tenant.TenantId,
                         tenant.Name,
-                        Actor: null,
-                        ChangedFields: ["name", "description", "location", "domains", "contact"])
+                        Actor: Actor(http),
+                        ChangedFields: ["name", "description", "location", "domains", "contact", "autoUpdate", "autoUpdateChannel", "autoUpdateTargetVersion"])
                 }, ct);
 
                 return Results.Created($"/api/v1/tenants/{tenant.TenantId}", MapResponse(tenant));
@@ -86,6 +89,7 @@ public static class TenantEndpoints
         group.MapPut("/{id:int}", async (
             int id,
             [FromBody] UpdateTenantRequest request,
+            HttpContext http,
             ITenantService tenants,
             IEventRecorder events,
             ICorrelationContext correlation,
@@ -113,14 +117,21 @@ public static class TenantEndpoints
                         request.ContactEmail?.Trim(),
                         request.AutoUpdate ?? existing.AutoUpdate,
                         request.AutoUpdateChannel ?? existing.AutoUpdateChannel,
-                        request.AutoUpdateTargetVersion ?? existing.AutoUpdateTargetVersion),
+                        request.AutoUpdateTargetVersion ?? existing.AutoUpdateTargetVersion,
+                        request.ExpectedVersion),
                     ct);
 
+            }
+            catch (Exception ex) when (ex is TenantConcurrencyException or DbUpdateConcurrencyException)
+            {
+                return Results.Conflict(new { code = "tenant_version_conflict", message = "The tenant changed. Reload its current policy before saving again." });
             }
             catch (InvalidOperationException ex)
             {
                 return Results.BadRequest(ex.Message);
             }
+
+            if (updated is null) return Results.NotFound();
 
             var changedFields = new List<string>();
             if (!string.Equals(existing.Name, request.Name?.Trim() ?? existing.Name, StringComparison.Ordinal))
@@ -135,9 +146,9 @@ public static class TenantEndpoints
                 changedFields.Add("contactEmail");
             if (request.AutoUpdate.HasValue && existing.AutoUpdate != request.AutoUpdate.Value)
                 changedFields.Add("autoUpdate");
-            if (updated is not null && existing.AutoUpdateChannel != updated.AutoUpdateChannel)
+            if (existing.AutoUpdateChannel != updated.AutoUpdateChannel)
                 changedFields.Add("autoUpdateChannel");
-            if (updated is not null && existing.AutoUpdateTargetVersion != updated.AutoUpdateTargetVersion)
+            if (existing.AutoUpdateTargetVersion != updated.AutoUpdateTargetVersion)
                 changedFields.Add("autoUpdateTargetVersion");
             if (!existing.Domains.SequenceEqual(domains, StringComparer.OrdinalIgnoreCase))
                 changedFields.Add("domains");
@@ -153,7 +164,9 @@ public static class TenantEndpoints
                     EntityId = id.ToString(),
                     Severity = "Info",
                     Message = $"Tenant {id} updated.",
-                    Payload = new TenantChangedPayload(id, request.Name?.Trim() ?? existing.Name, Actor: null, changedFields)
+                    Payload = new TenantChangedPayload(id, request.Name?.Trim() ?? existing.Name,
+                        Actor: Actor(http),
+                        changedFields)
                 }, ct);
             }
 
@@ -191,6 +204,10 @@ public static class TenantEndpoints
         return app;
     }
 
+    private static string? Actor(HttpContext http) =>
+        http.User.FindFirstValue("netratel_principal_id") ?? http.User.FindFirstValue(ClaimTypes.NameIdentifier) ??
+        http.User.FindFirstValue("sub") ?? http.User.Identity?.Name;
+
     private static List<string> NormalizeDomains(List<string>? domains) =>
         (domains ?? [])
             .Where(d => !string.IsNullOrWhiteSpace(d))
@@ -211,5 +228,6 @@ public static class TenantEndpoints
             tenant.AutoUpdateChannel,
             tenant.AutoUpdateTargetVersion,
             tenant.CreatedAtUtc,
-            tenant.UpdatedAtUtc);
+            tenant.UpdatedAtUtc,
+            tenant.Version);
 }

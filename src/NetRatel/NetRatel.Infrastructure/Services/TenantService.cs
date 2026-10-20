@@ -1,7 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Tenants;
 using NetRatel.Infrastructure.Persistence;
-using System.Text.RegularExpressions;
+using NetRatel.Shared.Contracts;
 
 namespace NetRatel.Infrastructure.Services;
 
@@ -30,6 +30,9 @@ public sealed class TenantService(OrchestratorDbContext db) : ITenantService
     {
         var normalizedName = command.Name.Trim();
         var normalizedDomains = NormalizeDomains(command.Domains);
+        var channel = NormalizeChannel(command.AutoUpdateChannel);
+        var target = NormalizeTarget(command.AutoUpdateTargetVersion);
+        ValidateNewPin(channel, target);
 
         if (await _db.Tenants.AnyAsync(x => x.Name == normalizedName, ct))
         {
@@ -46,8 +49,8 @@ public sealed class TenantService(OrchestratorDbContext db) : ITenantService
             ContactPerson = NormalizeNullable(command.ContactPerson),
             ContactEmail = NormalizeNullable(command.ContactEmail),
             AutoUpdate = command.AutoUpdate,
-            AutoUpdateChannel = NormalizeChannel(command.AutoUpdateChannel),
-            AutoUpdateTargetVersion = NormalizeTarget(command.AutoUpdateTargetVersion),
+            AutoUpdateChannel = channel,
+            AutoUpdateTargetVersion = target,
             CreatedAtUtc = now,
             UpdatedAtUtc = now,
             Version = 1
@@ -81,6 +84,14 @@ public sealed class TenantService(OrchestratorDbContext db) : ITenantService
             throw new InvalidOperationException($"Tenant '{normalizedName}' already exists.");
         }
 
+        var channel = NormalizeChannel(command.AutoUpdateChannel);
+        var target = NormalizeTarget(command.AutoUpdateTargetVersion);
+        // Retain legacy excluded pins during unrelated edits. Changing either
+        // part of the policy must produce an eligible channel/pin combination.
+        if (!string.Equals(target, tenant.AutoUpdateTargetVersion, StringComparison.Ordinal) ||
+            !string.Equals(channel, tenant.AutoUpdateChannel, StringComparison.Ordinal))
+            ValidateNewPin(channel, target);
+
         tenant.Name = normalizedName;
         tenant.Description = NormalizeNullable(command.Description);
         tenant.Location = NormalizeNullable(command.Location);
@@ -88,8 +99,8 @@ public sealed class TenantService(OrchestratorDbContext db) : ITenantService
         tenant.ContactPerson = NormalizeNullable(command.ContactPerson);
         tenant.ContactEmail = NormalizeNullable(command.ContactEmail);
         tenant.AutoUpdate = command.AutoUpdate;
-        tenant.AutoUpdateChannel = NormalizeChannel(command.AutoUpdateChannel);
-        tenant.AutoUpdateTargetVersion = NormalizeTarget(command.AutoUpdateTargetVersion);
+        tenant.AutoUpdateChannel = channel;
+        tenant.AutoUpdateTargetVersion = target;
         tenant.UpdatedAtUtc = DateTimeOffset.UtcNow;
         tenant.Version++;
 
@@ -169,8 +180,14 @@ public sealed class TenantService(OrchestratorDbContext db) : ITenantService
     private static string? NormalizeTarget(string? version)
     {
         if (string.IsNullOrWhiteSpace(version)) return null;
-        if (!Regex.IsMatch(version, @"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$", RegexOptions.CultureInvariant))
-            throw new InvalidOperationException("Auto-update target version must be normalized semantic version.");
+        if (TenantUpdatePolicyValidation.TargetVersionError(version) is { } error)
+            throw new InvalidOperationException(error);
         return version;
+    }
+
+    private static void ValidateNewPin(string channel, string? target)
+    {
+        if (!TenantUpdatePolicyValidation.IsTargetInChannel(channel, target))
+            throw new InvalidOperationException("A prerelease target requires the prerelease channel. Select that channel or clear the pin.");
     }
 }
