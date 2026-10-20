@@ -5,6 +5,11 @@ namespace NetRatel.API.Gateway;
 
 public static class AgentTelemetryProtocolValidator
 {
+    // Transport may receive an honestly collected disk just before its clock catches up
+    // with the client. Monitoring still requires collection <= actual receipt before
+    // promoting that sample to complete evidence.
+    private static readonly TimeSpan MaximumDiskCollectionClockSkew = TimeSpan.FromMilliseconds(500);
+
     public static AgentFrameValidationResult Validate(
         TelemetryFrame frame,
         AuthenticatedAgentIdentity identity,
@@ -142,7 +147,7 @@ public static class AgentTelemetryProtocolValidator
             collectedAtUtc is null || !IsValidTimestamp(collectedAtUtc) ||
             collectedAtUtc.ToDateTimeOffset() == default ||
             collectedAtUtc.ToDateTimeOffset() > envelopeObservedAtUtc ||
-            collectedAtUtc.ToDateTimeOffset() > receivedAtUtc ||
+            collectedAtUtc.ToDateTimeOffset() > receivedAtUtc + MaximumDiskCollectionClockSkew ||
             (int)disk.CollectionQuality is < 1 or > 4) return false;
         return disk.CollectionQuality != TelemetryDiskCollectionQuality.Complete ||
             disk.HasTotalBytes && disk.HasFreeBytes;

@@ -95,6 +95,31 @@ public sealed class GenuineDiskCollectionPipelineTests
         AgentTelemetryProtocolValidator.Validate(frame, new(91, Guid.Parse(frame.ClientId)), "1.0", 64, received).IsValid.Should().BeFalse();
     }
 
+    [Fact]
+    public void SmallClientClockLeadKeepsTransportOpenButCannotBecomeEarlyMonitoringEvidence()
+    {
+        var collected = TimeProvider.System.GetUtcNow();
+        var frame = Frame(collected);
+        var client = new ClientKey(91, Guid.Parse(frame.ClientId));
+        var earlyReceipt = collected.AddMilliseconds(-250);
+        AgentTelemetryProtocolValidator.Validate(frame, new(91, client.AgentId), "1.0", 64, earlyReceipt).IsValid.Should().BeTrue();
+
+        var rule = Rule();
+        var series = new MonitoringSeriesKey(91, rule.RuleId, client.AgentId, "disk:/");
+        var fence = new MonitoringEvidenceFence(client, Guid.Parse(frame.ConnectionId), 7, Guid.NewGuid());
+        var early = AgentTelemetryGatewayMapper.MapSnapshot(frame, client, 7, earlyReceipt);
+        var earlyObservation = MonitoringObservationFactory.FromTelemetry(rule, series, new(fence, early));
+        earlyObservation.Complete.Should().BeFalse();
+
+        var laterReceipt = collected.AddSeconds(1);
+        var later = AgentTelemetryGatewayMapper.MapSnapshot(frame, client, 7, laterReceipt);
+        var laterObservation = MonitoringObservationFactory.FromTelemetry(rule, series, new(fence, later));
+        laterObservation.Complete.Should().BeTrue();
+
+        AgentTelemetryProtocolValidator.Validate(frame, new(91, client.AgentId), "1.0", 64,
+            collected.AddMilliseconds(-501)).IsValid.Should().BeFalse();
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(2)]
