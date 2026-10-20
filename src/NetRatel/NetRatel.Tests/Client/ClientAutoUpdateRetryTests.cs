@@ -5,7 +5,7 @@ using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading.Channels;
-using Google.Protobuf.WellKnownTypes;
+using Timestamp = Google.Protobuf.WellKnownTypes.Timestamp;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.API.Services;
 using NetRatel.Application.ClientAuth;
