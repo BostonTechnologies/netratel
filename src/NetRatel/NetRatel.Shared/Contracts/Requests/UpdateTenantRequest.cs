@@ -13,4 +13,5 @@ public class UpdateTenantRequest
     public bool? AutoUpdate { get; set; }
     public string? AutoUpdateChannel { get; set; }
     public string? AutoUpdateTargetVersion { get; set; }
+    public long? ExpectedVersion { get; set; }
 }

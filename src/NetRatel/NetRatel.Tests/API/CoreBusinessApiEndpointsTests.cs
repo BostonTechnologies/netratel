@@ -87,6 +87,121 @@ public sealed class CoreBusinessApiEndpointsTests
     }
 
     [Fact]
+    public async Task Tenant_target_changes_and_explicit_clear_are_versioned_and_audited()
+    {
+        using var app = await BuildAppAsync();
+        using var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+        var created = await client.PostAsJsonAsync("/api/v1/tenants", new CreateTenantRequest
+        {
+            Name = "Update canary", AutoUpdate = true, AutoUpdateTargetVersion = "1.2.3"
+        });
+        created.StatusCode.Should().Be(HttpStatusCode.Created);
+        var tenant = (await created.Content.ReadFromJsonAsync<TenantResponse>())!;
+        tenant.Version.Should().Be(1);
+        var path = $"/api/v1/tenants/{tenant.TenantId}";
+
+        // An omitted pin is a partial update; an explicit empty string clears it.
+        (await client.PutAsJsonAsync(path, new UpdateTenantRequest
+        {
+            Description = "Preserve current policy", ExpectedVersion = tenant.Version
+        })).StatusCode.Should().Be(HttpStatusCode.Accepted);
+        tenant = (await client.GetFromJsonAsync<TenantResponse>(path))!;
+        tenant.AutoUpdateTargetVersion.Should().Be("1.2.3");
+        tenant.Version.Should().Be(2);
+        (await client.PutAsJsonAsync(path, new UpdateTenantRequest
+        {
+            AutoUpdateTargetVersion = "1.2.4", ExpectedVersion = tenant.Version
+        })).StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        var events = app.Services.GetRequiredService<RecordingEventRecorder>();
+        var beforeStale = events.Events.Count;
+        (await client.PutAsJsonAsync(path, new UpdateTenantRequest
+        {
+            AutoUpdateTargetVersion = string.Empty, ExpectedVersion = tenant.Version
+        })).StatusCode.Should().Be(HttpStatusCode.Conflict);
+        events.Events.Count.Should().Be(beforeStale);
+        tenant = (await client.GetFromJsonAsync<TenantResponse>(path))!;
+        tenant.AutoUpdateTargetVersion.Should().Be("1.2.4");
+        tenant.Version.Should().Be(3);
+        (await client.PutAsJsonAsync(path, new UpdateTenantRequest
+        {
+            AutoUpdateTargetVersion = string.Empty, ExpectedVersion = tenant.Version
+        })).StatusCode.Should().Be(HttpStatusCode.Accepted);
+        tenant = (await client.GetFromJsonAsync<TenantResponse>(path))!;
+        tenant.AutoUpdateTargetVersion.Should().BeNull();
+        tenant.AutoUpdate.Should().BeTrue();
+        tenant.AutoUpdateChannel.Should().Be("stable");
+        tenant.Version.Should().Be(4);
+        var audit = events.Events.Last(domainEvent => domainEvent.EventType == NetRatelEventTypes.Tenant.Updated)
+            .Payload.Should().BeOfType<TenantChangedPayload>().Which;
+        audit.ChangedFields.Should().Contain("autoUpdateTargetVersion");
+        audit.Actor.Should().Be("test-admin");
+    }
+
+    [Fact]
+    public async Task Invalid_and_unauthorized_tenant_pins_leave_policy_and_audit_unchanged()
+    {
+        using var app = await BuildAppAsync();
+        using var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+        var created = await client.PostAsJsonAsync("/api/v1/tenants", new CreateTenantRequest { Name = "Update canary" });
+        var tenant = (await created.Content.ReadFromJsonAsync<TenantResponse>())!;
+        var path = $"/api/v1/tenants/{tenant.TenantId}";
+        var events = app.Services.GetRequiredService<RecordingEventRecorder>();
+        var beforeRejected = events.Events.Count;
+        foreach (var target in new[] { "latest", "1.2.3-beta.1" })
+        {
+            var rejected = await client.PutAsJsonAsync(path, new UpdateTenantRequest
+            {
+                AutoUpdateTargetVersion = target, ExpectedVersion = tenant.Version
+            });
+            rejected.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        }
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Reader");
+        (await client.PutAsJsonAsync(path, new UpdateTenantRequest
+        {
+            AutoUpdateTargetVersion = "1.2.3", ExpectedVersion = tenant.Version
+        })).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+        var after = (await client.GetFromJsonAsync<TenantResponse>(path))!;
+        after.AutoUpdateTargetVersion.Should().BeNull();
+        after.Version.Should().Be(tenant.Version);
+        events.Events.Count.Should().Be(beforeRejected);
+
+        // Older clients could create an excluded pin. Editing unrelated fields
+        // must retain that explicit restriction until the operator clears it.
+        using (var scope = app.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var legacy = await db.Tenants.SingleAsync(row => row.Id == tenant.TenantId);
+            legacy.AutoUpdateTargetVersion = "1.2.3-beta.1";
+            await db.SaveChangesAsync();
+        }
+        (await client.PutAsJsonAsync(path, new UpdateTenantRequest
+        {
+            Location = "New location", ExpectedVersion = tenant.Version
+        })).StatusCode.Should().Be(HttpStatusCode.Accepted);
+        var preserved = (await client.GetFromJsonAsync<TenantResponse>(path))!;
+        preserved.AutoUpdateTargetVersion.Should().Be("1.2.3-beta.1");
+        preserved.AutoUpdateChannel.Should().Be("stable");
+        (await client.PutAsJsonAsync(path, new UpdateTenantRequest
+        {
+            AutoUpdateChannel = "prerelease", ExpectedVersion = preserved.Version
+        })).StatusCode.Should().Be(HttpStatusCode.Accepted);
+        var eligible = (await client.GetFromJsonAsync<TenantResponse>(path))!;
+        var beforeChannelRejected = events.Events.Count;
+        (await client.PutAsJsonAsync(path, new UpdateTenantRequest
+        {
+            AutoUpdateChannel = "stable", ExpectedVersion = eligible.Version
+        })).StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var afterChannelRejected = (await client.GetFromJsonAsync<TenantResponse>(path))!;
+        afterChannelRejected.AutoUpdateChannel.Should().Be("prerelease");
+        afterChannelRejected.Version.Should().Be(eligible.Version);
+        events.Events.Count.Should().Be(beforeChannelRejected);
+    }
+
+    [Fact]
     public async Task ScriptEndpoints_PersistCrudWithoutSpacetimeMirror()
     {
         using var app = await BuildAppAsync();
@@ -188,15 +303,16 @@ public sealed class CoreBusinessApiEndpointsTests
                     // Actual managed grants are covered by the PostgreSQL HTTP fixture.
                     options.AddPolicy(OrchestrationManagedAuthorization.ReadPolicy, policy =>
                         policy.AddAuthenticationSchemes("M2M").RequireAuthenticatedUser());
-                    options.AddPolicy("InstanceAdministrator", policy => policy.RequireAuthenticatedUser());
-                    options.AddPolicy("TenantAdministrator", policy => policy.RequireAuthenticatedUser());
+                    options.AddPolicy("InstanceAdministrator", policy => policy.RequireAuthenticatedUser().RequireRole("Administrator"));
+                    options.AddPolicy("TenantAdministrator", policy => policy.RequireAuthenticatedUser().RequireRole("Administrator"));
                     options.AddPolicy("ScriptEditor", policy => policy.RequireAuthenticatedUser());
                 });
                 services.AddSingleton<IConfiguration>(configuration);
                 services.AddDbContext<OrchestratorDbContext>(options => options.UseInMemoryDatabase(databaseName));
                 services.AddScoped<ITenantService, TenantService>();
                 services.AddScoped<IScriptService, ScriptService>();
-                services.AddScoped<IEventRecorder, NoopEventRecorder>();
+                services.AddSingleton<RecordingEventRecorder>();
+                services.AddSingleton<IEventRecorder>(provider => provider.GetRequiredService<RecordingEventRecorder>());
                 services.AddScoped<ICorrelationContext, TestCorrelationContext>();
                 services.Configure<AgentAuthOptions>(options =>
                 {
@@ -234,9 +350,14 @@ public sealed class CoreBusinessApiEndpointsTests
         string AssemblyVersion,
         string Environment);
 
-    private sealed class NoopEventRecorder : IEventRecorder
+    private sealed class RecordingEventRecorder : IEventRecorder
     {
-        public Task RecordAsync(DomainEvent domainEvent, CancellationToken ct = default) => Task.CompletedTask;
+        public List<DomainEvent> Events { get; } = [];
+        public Task RecordAsync(DomainEvent domainEvent, CancellationToken ct = default)
+        {
+            Events.Add(domainEvent);
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class TestCorrelationContext : ICorrelationContext
@@ -260,6 +381,8 @@ public sealed class CoreBusinessApiEndpointsTests
             }
 
             var identity = new ClaimsIdentity([new Claim(ClaimTypes.Name, "test-admin")], Scheme.Name);
+            if (!string.Equals(Request.Headers.Authorization.ToString(), "Reader", StringComparison.Ordinal))
+                identity.AddClaim(new Claim(ClaimTypes.Role, "Administrator"));
             var principal = new ClaimsPrincipal(identity);
             return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(principal, Scheme.Name)));
         }

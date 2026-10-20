@@ -12,5 +12,6 @@ public record TenantResponse(
     string AutoUpdateChannel,
     string? AutoUpdateTargetVersion,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt
+    DateTimeOffset UpdatedAt,
+    long Version = 1
 );

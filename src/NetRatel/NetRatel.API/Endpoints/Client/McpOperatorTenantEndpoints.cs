@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -7,6 +8,7 @@ using NetRatel.API.Middleware;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Tenants;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Shared.Contracts;
 using NetRatel.Shared.Operations;
 
 namespace NetRatel.API.Endpoints.Client;
@@ -147,12 +149,31 @@ public static class McpOperatorTenantEndpoints
         if (!HasPlan(request.PlanToken, request.IdempotencyKey)) return Failure("confirmation_plan_invalid", context);
         if (IsActiveTenantDeleteWithoutSeparateApproval(action, request, context))
             return Failure("active_caller_tenant_delete_requires_separate_approval", context);
-        var resolution = await ResolveAsync(action, request, tenants, db, cancellationToken).ConfigureAwait(false);
-        if (resolution.FailureCode is { } code) return Failure(code, context);
+        if (!IsPayloadValid(action, request)) return Failure("tenant_invalid", context);
 
-        var confirmed = await confirmations.ConfirmAsync(new McpOperatorConfirmationRequest(request.PlanToken!, request.IdempotencyKey!, MutationHash(action, request), context.Decision), cancellationToken).ConfigureAwait(false);
+        var confirmationRequest = new McpOperatorConfirmationRequest(request.PlanToken!, request.IdempotencyKey!, MutationHash(action, request), context.Decision);
+        // A successful update advances the version and a successful delete
+        // removes the row. Reconcile an authenticated consumed plan before
+        // checking either mutable condition, without consuming fresh plans.
+        var replayRequest = confirmationRequest with { ReplayOnly = true };
+        var replay = await confirmations.ConfirmAsync(replayRequest, cancellationToken).ConfigureAwait(false);
+        if (replay.FailureCode is { } replayFailure) return Failure(replayFailure, context);
+        if (replay.IsReplay) return await ReplayAsync(action, request, replay, tenants, context, cancellationToken).ConfigureAwait(false);
+
+        var resolution = await ResolveAsync(action, request, tenants, db, cancellationToken).ConfigureAwait(false);
+        if (resolution.FailureCode is { } code)
+        {
+            // Another confirmation can finish after the read-only lookup.
+            replay = await confirmations.ConfirmAsync(replayRequest, cancellationToken).ConfigureAwait(false);
+            if (replay.FailureCode is { } concurrentFailure) return Failure(concurrentFailure, context);
+            return replay.IsReplay
+                ? await ReplayAsync(action, request, replay, tenants, context, cancellationToken).ConfigureAwait(false)
+                : Failure(code, context);
+        }
+
+        var confirmed = await confirmations.ConfirmAsync(confirmationRequest, cancellationToken).ConfigureAwait(false);
         if (confirmed.FailureCode is { } confirmationFailure) return Failure(confirmationFailure, context);
-        if (confirmed.IsReplay) return await ReplayAsync(action, confirmed, tenants, context, cancellationToken).ConfigureAwait(false);
+        if (confirmed.IsReplay) return await ReplayAsync(action, request, confirmed, tenants, context, cancellationToken).ConfigureAwait(false);
         if (!confirmed.IsNewDispatch || confirmed.IdempotencyId is not { } idempotencyId) return Failure("confirmation_plan_invalid", context);
 
         try
@@ -166,7 +187,8 @@ public static class McpOperatorTenantEndpoints
             }
 
             var result = mutation.Tenant!;
-            await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, result.TenantId.ToString(System.Globalization.CultureInfo.InvariantCulture), CancellationToken.None).ConfigureAwait(false);
+            var resultReference = string.Create(CultureInfo.InvariantCulture, $"tenant-mutation:{result.TenantId}:{result.Version}:{action}");
+            await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, resultReference, CancellationToken.None).ConfigureAwait(false);
             return Results.Ok(new McpOperatorTenantMutationResult(result.TenantId, result.Version, action == "delete", false, context.CorrelationId));
         }
         catch (McpOperatorAdmissionRejectedException rejection)
@@ -194,11 +216,18 @@ public static class McpOperatorTenantEndpoints
     private static async Task<TenantResolution> ResolveAsync(string action, McpOperatorTenantMutationRequest request, ITenantService tenants, OrchestratorDbContext db, CancellationToken cancellationToken)
     {
         if (!IsPayloadValid(action, request)) return TenantResolution.Invalid;
-        if (action == "create") return TenantResolution.Valid;
+        if (action == "create") return IsPinInChannel(request) ? TenantResolution.Valid : TenantResolution.Invalid;
         var tenant = await tenants.GetAsync(request.TenantId!.Value, cancellationToken).ConfigureAwait(false);
         if (tenant is null) return TenantResolution.NotFound;
         if (tenant.Version != request.ExpectedVersion) return TenantResolution.VersionConflict;
-        if (action != "delete") return new(tenant, null, null);
+        if (action != "delete")
+        {
+            var pinChanged = !string.Equals(Clean(request.AutoUpdateTargetVersion), tenant.AutoUpdateTargetVersion, StringComparison.Ordinal);
+            var channelChanged = !string.Equals(request.AutoUpdateChannel ?? "stable", tenant.AutoUpdateChannel, StringComparison.Ordinal);
+            return (pinChanged || channelChanged) && !IsPinInChannel(request)
+                ? TenantResolution.Invalid
+                : new(tenant, null, null);
+        }
         var impact = await GetImpactAsync(tenant.TenantId, db, cancellationToken).ConfigureAwait(false);
         return new(tenant, impact, null);
     }
@@ -229,10 +258,23 @@ public static class McpOperatorTenantEndpoints
         }
     }
 
-    private static async Task<IResult> ReplayAsync(string action, McpOperatorConfirmationAdmission admission, ITenantService tenants, McpOperatorTenantContext context, CancellationToken cancellationToken)
+    private static async Task<IResult> ReplayAsync(string action, McpOperatorTenantMutationRequest request, McpOperatorConfirmationAdmission admission, ITenantService tenants, McpOperatorTenantContext context, CancellationToken cancellationToken)
     {
         if (admission.Outcome == McpOperatorIdempotencyOutcome.Pending) return Failure("idempotency_pending", context);
-        if (admission.Outcome != McpOperatorIdempotencyOutcome.Succeeded || !int.TryParse(admission.ResultReference, out var tenantId)) return Failure("idempotency_replay_unavailable", context);
+        if (admission.Outcome != McpOperatorIdempotencyOutcome.Succeeded) return Failure("idempotency_replay_unavailable", context);
+        if (admission.ResultReference?.Split(':') is ["tenant-mutation", var idText, var versionText, var recordedAction])
+        {
+            if (!int.TryParse(idText, NumberStyles.None, CultureInfo.InvariantCulture, out var recordedId) || recordedId <= 0 ||
+                !long.TryParse(versionText, NumberStyles.None, CultureInfo.InvariantCulture, out var recordedVersion) || recordedVersion <= 0 ||
+                recordedAction != action || (action != "create" && request.TenantId != recordedId))
+                return Failure("idempotency_replay_unavailable", context);
+            return Results.Ok(new McpOperatorTenantMutationResult(recordedId, recordedVersion, action == "delete", true, context.CorrelationId));
+        }
+
+        // Older receipts stored only the id. Preserve their current-row
+        // fallback; historical versions were never recorded in those receipts.
+        if (!int.TryParse(admission.ResultReference, NumberStyles.None, CultureInfo.InvariantCulture, out var tenantId) || tenantId <= 0 ||
+            (action != "create" && request.TenantId != tenantId)) return Failure("idempotency_replay_unavailable", context);
         var tenant = action == "delete" ? null : await tenants.GetAsync(tenantId, cancellationToken).ConfigureAwait(false);
         if (action != "delete" && tenant is null) return Failure("idempotency_replay_unavailable", context);
         return Results.Ok(new McpOperatorTenantMutationResult(tenantId, tenant?.Version ?? 0, action == "delete", true, context.CorrelationId));
@@ -296,7 +338,11 @@ public static class McpOperatorTenantEndpoints
         request.Domains.Distinct(StringComparer.OrdinalIgnoreCase).Count() == request.Domains.Count && request.AutoUpdate.HasValue &&
         IsOptionalText(request.Description, 4_096) && IsOptionalText(request.Location, 256) && IsOptionalText(request.ContactPerson, 256) &&
         IsOptionalText(request.ContactEmail, 320) && IsOptionalText(request.AutoUpdateTargetVersion, 128) &&
+        TenantUpdatePolicyValidation.TargetVersionError(Clean(request.AutoUpdateTargetVersion)) is null &&
         (request.AutoUpdateChannel is null or "stable" or "prerelease");
+
+    private static bool IsPinInChannel(McpOperatorTenantMutationRequest request) =>
+        TenantUpdatePolicyValidation.IsTargetInChannel(request.AutoUpdateChannel ?? "stable", Clean(request.AutoUpdateTargetVersion));
 
     private static bool IsMutation(string action) => action is "create" or "update" or "delete";
     private static bool IsActiveTenantDeleteWithoutSeparateApproval(string action, McpOperatorTenantMutationRequest request, McpOperatorTenantContext context) =>

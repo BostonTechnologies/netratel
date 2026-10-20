@@ -147,6 +147,7 @@ message ClientUpdatePolicy {
   bool suspended = 3;
   bool resume_requested = 4;
   string suppressed_release_id = 5;
+  google.protobuf.Timestamp resumed_at_utc = 6;
 }
 
 message UpdateActivationConfirmation {

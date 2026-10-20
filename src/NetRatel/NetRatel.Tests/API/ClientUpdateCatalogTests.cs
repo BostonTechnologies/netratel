@@ -71,6 +71,7 @@ public sealed class ClientUpdateCatalogTests
         var agentId = Guid.NewGuid();
         var releaseId = Guid.NewGuid();
         var now = DateTimeOffset.UtcNow;
+        var resumedAt = now.AddMinutes(1);
         var databaseName = $"updates-{Guid.NewGuid():N}";
         await using var services = new ServiceCollection()
             .AddDbContext<OrchestratorDbContext>(options => options.UseInMemoryDatabase(databaseName))
@@ -107,11 +108,14 @@ public sealed class ClientUpdateCatalogTests
             var state = await db.AgentClientUpdateStates.SingleAsync();
             state.SuspendedAtUtc = null;
             state.PolicyRevision = 5;
+            state.ResumedAtUtc = resumedAt;
+            state.ResumedBy = "catalog-test-operator";
             await db.SaveChangesAsync();
         }
         await catalog.RefreshAsync(CancellationToken.None);
 
-        catalog.GetPolicy(tenantId, agentId, 4).Should().Be(new ClientUpdatePolicySnapshot(5, true, false, true, releaseId));
+        catalog.GetPolicy(tenantId, agentId, 4).Should().Be(new ClientUpdatePolicySnapshot(5, true, false, true, releaseId, resumedAt));
+        catalog.GetPolicy(tenantId, agentId, 5).Should().Be(new ClientUpdatePolicySnapshot(5, true, false, false, releaseId, resumedAt));
         catalog.GetOffer(tenantId, agentId, "linux-x64", "0.4.101", "stable").Should().BeNull(
             "resume retains the failed immutable release suppression");
     }

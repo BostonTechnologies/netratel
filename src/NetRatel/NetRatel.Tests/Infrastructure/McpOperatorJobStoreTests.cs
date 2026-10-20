@@ -124,6 +124,70 @@ public sealed class McpOperatorJobStoreTests
             .Select(audit => audit.Action).Should().Equal("created", "param_added");
     }
 
+    [Theory]
+    [InlineData("/", "/mcp-operator/42/")]
+    [InlineData("daily", "/mcp-operator/42/daily/")]
+    [InlineData("/mcp-operator/42/daily/", "/mcp-operator/42/daily/")]
+    [InlineData("\\mcp-operator\\42\\daily", "/mcp-operator/42/daily/")]
+    public async Task Returned_job_folder_survives_repeated_read_modify_write(string folder, string expectedFolder)
+    {
+        await using var db = CreateDb();
+        var fixture = await CreateFixtureAsync(db);
+        var store = new McpOperatorJobStore(db);
+        var created = await store.CreateAsync(new McpOperatorJobCreateRequest(fixture.Decision, fixture.Audit,
+            new McpOperatorJobDraft("inventory", folder), fixture.Now), CancellationToken.None);
+        db.ChangeTracker.Clear();
+        var read = await store.GetOwnedAsync(created.JobId, fixture.TenantId, fixture.AgentId,
+            fixture.Principal, fixture.Resource, fixture.Instance, CancellationToken.None);
+
+        read.Should().NotBeNull();
+        read!.FolderPath.Should().Be(expectedFolder);
+        var updated = await store.ReplaceAsync(new McpOperatorJobReplaceRequest(read.JobId, read.Version,
+            fixture.Decision, fixture.Audit, new McpOperatorJobDraft("renamed", read.FolderPath),
+            fixture.Now.AddSeconds(1)), CancellationToken.None);
+        db.ChangeTracker.Clear();
+        var reread = await store.GetOwnedAsync(created.JobId, fixture.TenantId, fixture.AgentId,
+            fixture.Principal, fixture.Resource, fixture.Instance, CancellationToken.None);
+        var updatedAgain = await store.ReplaceAsync(new McpOperatorJobReplaceRequest(reread!.JobId, reread.Version,
+            fixture.Decision, fixture.Audit, new McpOperatorJobDraft(reread.Name, reread.FolderPath, "new description"),
+            fixture.Now.AddSeconds(2)), CancellationToken.None);
+        db.ChangeTracker.Clear();
+
+        updated!.FolderPath.Should().Be(expectedFolder);
+        updatedAgain!.FolderPath.Should().Be(expectedFolder);
+        updatedAgain.Version.Should().Be(created.Version + 2);
+        (await db.Jobs.SingleAsync()).FolderPath.Should().Be(expectedFolder);
+        (await db.McpOperatorJobAudits.OrderBy(audit => audit.OccurredAtUtc).ToArrayAsync())
+            .Select(audit => audit.Action).Should().Equal("created", "updated", "updated");
+    }
+
+    [Theory]
+    [InlineData("/mcp-operator/43/daily/")]
+    [InlineData("/mcp-operator/420/daily/")]
+    public async Task Another_tenant_operator_folder_is_rejected_without_changing_the_job(string folder)
+    {
+        await using var db = CreateDb();
+        var fixture = await CreateFixtureAsync(db);
+        var store = new McpOperatorJobStore(db);
+        var created = await store.CreateAsync(new McpOperatorJobCreateRequest(fixture.Decision, fixture.Audit,
+            new McpOperatorJobDraft("inventory", "/daily"), fixture.Now), CancellationToken.None);
+
+        var invalidCreate = () => store.CreateAsync(new McpOperatorJobCreateRequest(fixture.Decision, fixture.Audit,
+            new McpOperatorJobDraft("other", folder), fixture.Now), CancellationToken.None);
+        var invalidUpdate = () => store.ReplaceAsync(new McpOperatorJobReplaceRequest(created.JobId, created.Version,
+            fixture.Decision, fixture.Audit, new McpOperatorJobDraft("changed", folder),
+            fixture.Now.AddSeconds(1)), CancellationToken.None);
+
+        await invalidCreate.Should().ThrowAsync<ArgumentException>();
+        await invalidUpdate.Should().ThrowAsync<ArgumentException>();
+        db.ChangeTracker.Clear();
+        var job = await db.Jobs.SingleAsync();
+        job.Name.Should().Be("inventory");
+        job.FolderPath.Should().Be("/mcp-operator/42/daily/");
+        (await db.McpOperatorJobs.SingleAsync()).Version.Should().Be(created.Version);
+        (await db.McpOperatorJobAudits.SingleAsync()).Action.Should().Be("created");
+    }
+
     [Fact]
     public async Task Job_steps_require_an_owned_exact_library_script_revision_before_execution()
     {

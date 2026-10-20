@@ -34,16 +34,42 @@ internal sealed class ClientUpdateResultDelivery(
                 try
                 {
                     var delivery = ReadDelivery();
+                    if (delivery is { DeliveryState: "identity_conflict" })
+                    {
+                        delivery = ObserveIdentityConflict(delivery);
+                        if (TryArchiveResumedIdentityConflict(delivery)) return File.Exists(resultPath);
+                    }
                     if (delivery is { DeliveryState: "conflict" } && IsResumed(delivery))
                     {
                         ArchiveResult(delivery, unresolved: true);
                         return File.Exists(resultPath);
                     }
                     if (File.Exists(resultPath)) return true;
-                    return File.Exists(_deliveryPath) && (delivery is null || delivery.DeliveryState != "acknowledged");
+                    return File.Exists(_deliveryPath) && (delivery is null || delivery.DeliveryState is not ("acknowledged" or "archived_unresolved"));
                 }
                 catch (Exception exception) when (IsLocalStateFailure(exception)) { LocalDiagnostic(exception); return true; }
             }
+        }
+    }
+
+    internal Guid? GetResumeAttemptId()
+    {
+        lock (gate)
+        {
+            var delivery = ReadDelivery();
+            if (delivery is { DeliveryState: "identity_conflict" })
+                return ObserveIdentityConflict(delivery).AttemptId;
+            return delivery is { DeliveryState: "conflict" } ? delivery.AttemptId : null;
+        }
+    }
+
+    internal bool CanClearSuspension(long resumeRevision, DateTimeOffset? resumedAt)
+    {
+        lock (gate)
+        {
+            var delivery = ReadDelivery();
+            return delivery is not { DeliveryState: "identity_conflict" } ||
+                IsFreshIdentityResume(ObserveIdentityConflict(delivery).IdentityConflict, resumeRevision, resumedAt);
         }
     }
 
@@ -113,7 +139,9 @@ internal sealed class ClientUpdateResultDelivery(
                 lock (gate)
                 {
                     // An acknowledgement cannot consume an outcome that changed during the request.
-                    if (ReadDelivery()?.ResultHash != delivery.ResultHash) return;
+                    var current = ReadDelivery();
+                    if (current?.ResultHash != delivery.ResultHash ||
+                        current.DeliveryState is not ("pending" or "retry_wait")) return;
                     var code = reply?.Code is "report_applied" or "report_duplicate" or "invalid_report_state" or
                         "attempt_not_found" or "state_conflict" or "accepted_authority_conflict" or "admission_mismatch" or
                         "newer_attempt_exists" or "invalid_report_details" ? reply.Code : $"http_{(int)response.StatusCode}";
@@ -170,7 +198,7 @@ internal sealed class ClientUpdateResultDelivery(
             {
                 var current = ReadDelivery();
                 if (current?.ResultHash != delivery.ResultHash) return;
-                if (current.DeliveryState == "acknowledged") { LocalDiagnostic(exception); return; }
+                if (current.DeliveryState is not ("pending" or "retry_wait")) { LocalDiagnostic(exception); return; }
                 var transient = exception is AgentClientAuthException { IsRecoverable: true } or
                     HttpRequestException { StatusCode: null } or OperationCanceledException or IOException ||
                     exception is HttpRequestException { StatusCode: { } httpStatus } && IsTransient(httpStatus);
@@ -199,7 +227,12 @@ internal sealed class ClientUpdateResultDelivery(
         var existing = ReadDelivery();
         if (File.Exists(_deliveryPath) && existing is null)
             throw new InvalidDataException("Protected delivery metadata is unreadable.");
-        if (!File.Exists(resultPath)) return existing?.DeliveryState == "acknowledged" ? null : existing;
+        if (existing is { DeliveryState: "identity_conflict" })
+        {
+            existing = ObserveIdentityConflict(existing);
+            return TryArchiveResumedIdentityConflict(existing) ? null : existing;
+        }
+        if (!File.Exists(resultPath)) return existing?.DeliveryState is "acknowledged" or "archived_unresolved" ? null : existing;
         if (!ProtectedUpdateState.IsProtectedFile(resultPath) || new FileInfo(resultPath).Length > 64 * 1024) return null;
         var bytes = File.ReadAllBytes(resultPath);
         var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
@@ -211,14 +244,15 @@ internal sealed class ClientUpdateResultDelivery(
         }
         if (existing is { DeliveryState: "conflict" } && IsResumed(existing))
             ArchiveResult(existing, unresolved: true);
-        if (existing is not null && existing.DeliveryState != "acknowledged" &&
+        if (existing is not null && existing.DeliveryState is not ("acknowledged" or "archived_unresolved") &&
             !(existing.DeliveryState == "conflict" && IsResumed(existing)))
         {
             // Keep the original payload embedded in protected metadata if another producer
             // changed result.json. The prior unresolved attempt continues to fence new work.
             var conflict = existing with { DeliveryState = "identity_conflict", ReconciliationState = "required",
                 LastCode = "local_result_replaced", NextAttemptAtUtc = null, UpdatedAtUtc = clock.GetUtcNow() };
-            if (existing.DeliveryState != "identity_conflict") { Write(conflict); Diagnostic(conflict, "local-state"); }
+            conflict = ObserveIdentityConflict(conflict);
+            Diagnostic(conflict, "local-state");
             return conflict;
         }
         // Windows PowerShell 5.1 emits a UTF-8 BOM. Hash/archive the original
@@ -329,6 +363,138 @@ internal sealed class ClientUpdateResultDelivery(
             resumeRevision >= (delivery.PolicyRevision ?? 0);
     }
 
+    private DeliveryRecord ObserveIdentityConflict(DeliveryRecord delivery, bool observeCurrentResult = false)
+    {
+        // A durable observation identifies the atomic move destination before
+        // recovery starts. On restart inspect the bytes actually moved there.
+        var retainedPath = delivery.IdentityConflict is { } retained ? RetainedResultArchive(delivery, retained) : null;
+        var fromRetained = !observeCurrentResult && retainedPath is not null && File.Exists(retainedPath);
+        var bytes = ReadProtectedBytes(fromRetained ? retainedPath! : resultPath, 64 * 1024);
+        var hash = Hash(bytes);
+        PreserveBytes(ReplacementArchive(delivery, hash), bytes);
+        PreserveRecoveryState(delivery, _deliveryPath, "delivery", 128 * 1024);
+        PreserveRecoveryState(delivery, requestPath, "request");
+        PreserveRecoveryState(delivery, readyPath, "ready");
+        PreserveRecoveryState(delivery, suspensionPath, "suspension");
+        if (!observeCurrentResult && delivery.IdentityConflict?.ResultHash == hash) return delivery;
+
+        var observation = new IdentityConflictObservation(hash, ReadResumeFence()?.Revision ?? 0, clock.GetUtcNow(),
+            fromRetained ? delivery.IdentityConflict!.PreservationId : Guid.NewGuid());
+        var observed = delivery with { IdentityConflict = observation, ArchivedBy = null,
+            UpdatedAtUtc = observation.DetectedAtUtc };
+        Write(observed);
+        return observed;
+    }
+
+    private bool TryArchiveResumedIdentityConflict(DeliveryRecord delivery)
+    {
+        var conflict = delivery.IdentityConflict;
+        var fence = ReadResumeFence();
+        if (conflict is null || fence is not { ResumeRevision: { } revision, ResumedAtUtc: { } resumedAt } ||
+            fence.ResumeAttemptId != delivery.AttemptId || fence.Revision < revision ||
+            !IsFreshIdentityResume(conflict, revision, resumedAt))
+            return false;
+
+        // Require the operator action's authoritative timestamp as well as a
+        // newer revision; late delivery of an older Resume is not authorization.
+        var replacementPath = ReplacementArchive(delivery, conflict.ResultHash);
+        var replacement = ReadProtectedBytes(replacementPath, 64 * 1024);
+        if (Hash(replacement) != conflict.ResultHash)
+            throw new InvalidDataException("The archived conflicting update result changed.");
+
+        // The native producer is another process. Moving first preserves even
+        // bytes replaced between our read and this operation; never check/delete.
+        var retainedPath = RetainedResultArchive(delivery, conflict);
+        if (!File.Exists(retainedPath)) File.Move(resultPath, retainedPath);
+        if (!ReadProtectedBytes(retainedPath, 64 * 1024).AsSpan().SequenceEqual(replacement))
+        {
+            ObserveIdentityConflict(delivery);
+            return false;
+        }
+        if (File.Exists(resultPath))
+        {
+            ObserveIdentityConflict(delivery, observeCurrentResult: true);
+            return false;
+        }
+
+        var original = JsonSerializer.SerializeToUtf8Bytes(delivery.OriginalResult, JsonOptions);
+        PreserveBytes(RecoveryArchive(delivery, "embedded-original", original), original);
+        var receipt = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            schema = "netratel.update.identity-recovery.v1", originalDelivery = delivery,
+            replacementSha256 = conflict.ResultHash, resumeAttemptId = fence.ResumeAttemptId,
+            resumeRevision = revision, resumedAtUtc = resumedAt,
+            reconciliationState = "required"
+        }, JsonOptions);
+        PreserveBytes(RecoveryArchive(delivery, "recovery", receipt), receipt);
+        PreserveRecoveryState(delivery, requestPath, "request");
+        PreserveRecoveryState(delivery, readyPath, "ready");
+        PreserveRecoveryState(delivery, suspensionPath, "suspension");
+        PreserveRecoveryState(delivery, Path.Combine(stateDirectory, "policy.json"), "policy");
+
+        var archived = delivery with { DeliveryState = "archived_unresolved", ReconciliationState = "required",
+            LastCode = "operator_resume_archived_identity_conflict", NextAttemptAtUtc = null,
+            ArchivedBy = new RecoveryAuthorization(revision, resumedAt), UpdatedAtUtc = clock.GetUtcNow() };
+        Write(archived);
+        _retryIdentity = null;
+        _retryDelay = TimeSpan.Zero;
+        Diagnostic(archived, "operator-recovery");
+        return true;
+    }
+
+    private static bool IsFreshIdentityResume(IdentityConflictObservation? conflict, long resumeRevision, DateTimeOffset? resumedAt) =>
+        conflict is not null && resumeRevision > conflict.ObservedPolicyRevision &&
+        resumedAt is { } authorizedAt && authorizedAt > conflict.DetectedAtUtc;
+
+    private string ReplacementArchive(DeliveryRecord delivery, string hash) =>
+        Path.Combine(stateDirectory, $"result-{delivery.AttemptId:D}-{hash}.replacement.json");
+
+    private string RetainedResultArchive(DeliveryRecord delivery, IdentityConflictObservation observation) =>
+        Path.Combine(stateDirectory, $"result-{delivery.AttemptId:D}-{observation.PreservationId:D}.retained.json");
+
+    private string RecoveryArchive(DeliveryRecord delivery, string kind, byte[] bytes) =>
+        Path.Combine(stateDirectory, $"result-{delivery.AttemptId:D}-{Hash(bytes)}.{kind}.json");
+
+    private void PreserveRecoveryState(DeliveryRecord delivery, string path, string kind, int maximumBytes = 64 * 1024)
+    {
+        if (!File.Exists(path)) return;
+        var bytes = ReadProtectedBytes(path, maximumBytes);
+        PreserveBytes(RecoveryArchive(delivery, kind, bytes), bytes);
+    }
+
+    private static byte[] ReadProtectedBytes(string path, int maximumBytes)
+    {
+        if (!ProtectedUpdateState.IsProtectedFile(path) || new FileInfo(path).Length > maximumBytes)
+            throw new InvalidDataException("Protected update recovery state is unreadable or oversized.");
+        return File.ReadAllBytes(path);
+    }
+
+    private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+    private static void PreserveBytes(string destination, byte[] bytes)
+    {
+        if (File.Exists(destination))
+        {
+            if (!ReadProtectedBytes(destination, 256 * 1024).AsSpan().SequenceEqual(bytes))
+                throw new IOException("Archived update recovery evidence differs.");
+            return;
+        }
+        var temporary = $"{destination}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None };
+            if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            using (var stream = new FileStream(temporary, options))
+            {
+                stream.Write(bytes);
+                stream.Flush(flushToDisk: true);
+            }
+            // Never overwrite an earlier archive, including during a racing writer.
+            File.Move(temporary, destination);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
     private void ArchiveResult(DeliveryRecord delivery, bool unresolved = false)
     {
         var receipt = Path.Combine(stateDirectory, $"result-{delivery.AttemptId:D}-{delivery.ResultHash[..12]}.delivery.json");
@@ -355,9 +521,16 @@ internal sealed class ClientUpdateResultDelivery(
             !delivery.ResultHash.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F') ||
             string.IsNullOrWhiteSpace(delivery.InstallationState) || delivery.OriginalResult.ValueKind != JsonValueKind.Object ||
             delivery.DeliveryState is not ("pending" or "retry_wait" or "acknowledged" or "conflict" or "permanent_rejected" or
-                "unclassified_response" or "local_failure" or "authentication_attention" or "identity_conflict" or "confirmation_missing") ||
+                "unclassified_response" or "local_failure" or "authentication_attention" or "identity_conflict" or "confirmation_missing" or "archived_unresolved") ||
             delivery.ReconciliationState is not ("pending" or "required" or "complete" or "gateway_confirmed") ||
             delivery.RetryCount is < 0 or > 20 || delivery.UpdatedAtUtc == default) return null;
+        if (delivery.IdentityConflict is { } conflict &&
+            (conflict.ResultHash is not { Length: 64 } || !conflict.ResultHash.All(char.IsAsciiHexDigit) ||
+             conflict.ObservedPolicyRevision < 0 || conflict.DetectedAtUtc == default || conflict.PreservationId == Guid.Empty)) return null;
+        if (delivery.DeliveryState == "archived_unresolved" &&
+            (delivery.IdentityConflict is not { } archivedConflict || delivery.ArchivedBy is not { } archivedBy ||
+             archivedBy.ResumeRevision <= archivedConflict.ObservedPolicyRevision ||
+             archivedBy.ResumedAtUtc <= archivedConflict.DetectedAtUtc || delivery.ReconciliationState != "required")) return null;
         try
         {
             var original = delivery.OriginalResult.Deserialize<NativeResult>(JsonOptions);
@@ -389,7 +562,10 @@ internal sealed class ClientUpdateResultDelivery(
 
     private sealed record NativeResult(string Schema, Guid AttemptId, Guid ReleaseId, string State, string? FailureCode, string? Message,
         string? ToVersion = null);
-    private sealed record ResumeFence(long Revision, Guid? ResumeAttemptId, long? ResumeRevision);
+    private sealed record ResumeFence(long Revision, Guid? ResumeAttemptId, long? ResumeRevision, DateTimeOffset? ResumedAtUtc = null);
+    private sealed record IdentityConflictObservation(string ResultHash, long ObservedPolicyRevision, DateTimeOffset DetectedAtUtc,
+        Guid PreservationId);
+    private sealed record RecoveryAuthorization(long ResumeRevision, DateTimeOffset ResumedAtUtc);
     private sealed record RequestContext(Guid AttemptId, Guid ReleaseId, string? AdmissionNonce, string? ToVersion = null);
     private sealed record ReadyContext(string Schema, Guid AttemptId, Guid ReleaseId, Guid ConfirmationId, string? Version);
     private sealed record ResultReply(string? Outcome, string? Code, string? State, Guid? ConfirmationId,
@@ -397,5 +573,6 @@ internal sealed class ClientUpdateResultDelivery(
     private sealed record DeliveryRecord(string Schema, Guid AttemptId, Guid ReleaseId, string ResultHash,
         string InstallationState, string? FailureCode, string? Message, string? AdmissionNonce, JsonElement OriginalResult,
         string DeliveryState, string ReconciliationState, int RetryCount, DateTimeOffset? NextAttemptAtUtc,
-        string? LastCode, int? LastHttpStatus, string? ServerState, Guid? ConfirmationId, long? PolicyRevision, DateTimeOffset UpdatedAtUtc);
+        string? LastCode, int? LastHttpStatus, string? ServerState, Guid? ConfirmationId, long? PolicyRevision, DateTimeOffset UpdatedAtUtc,
+        IdentityConflictObservation? IdentityConflict = null, RecoveryAuthorization? ArchivedBy = null);
 }

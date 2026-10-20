@@ -19,4 +19,5 @@ public sealed record TenantDto(
     public int Id => TenantId;
     public string AutoUpdateChannel { get; init; } = "stable";
     public string? AutoUpdateTargetVersion { get; init; }
+    public long Version { get; init; } = 1;
 }

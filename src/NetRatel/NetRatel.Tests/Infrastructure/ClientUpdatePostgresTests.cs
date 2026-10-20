@@ -396,6 +396,64 @@ public sealed class ClientUpdatePostgresTests(PostgreSqlPersistenceFixture postg
     }
 
     [Fact]
+    public async Task AdministrativeResumeWithoutServerSuspensionRecordsExplicitPolicyAndPreservesAttemptHistory()
+    {
+        var clock = new UpdateClock();
+        var identity = await SeedAgentAsync(85);
+        string originalAttempt;
+        await using (var db = new OrchestratorDbContext(_options))
+        {
+            var release = await db.ClientUpdateReleases.SingleAsync();
+            var authority = Authority(db, clock);
+            var claim = await authority.ClaimAsync(identity, release.PublicId, "linux-x64", "0.4.101", "stable", new string('a', 64), default);
+            foreach (var state in new[] { ClientUpdateAttemptState.Downloading, ClientUpdateAttemptState.Staged, ClientUpdateAttemptState.Activating })
+                (await authority.ReportAsync(identity, claim!.AttemptId, state, null, null, default)).Outcome.Should().Be(ClientUpdateReportOutcome.Applied);
+            Assert.Empty(await db.AgentClientUpdateStates.ToListAsync());
+            originalAttempt = JsonSerializer.Serialize(await db.ClientUpdateAttempts.AsNoTracking().SingleAsync());
+        }
+        clock.Now = clock.Now.AddMinutes(1);
+        await using (var db = new OrchestratorDbContext(_options))
+        {
+            var authority = Authority(db, clock);
+            (await authority.ResumeAutomaticUpdatesAsync(identity.TenantId, identity.AgentId, "scoped-operator", default))
+                .Should().Be(new ClientUpdateResumeResult(false, "client_update_not_suspended", null));
+            await authority.ResumeAsync(identity.TenantId, identity.AgentId, "administrator", default);
+        }
+        await using (var restarted = new OrchestratorDbContext(_options))
+        {
+            var state = await restarted.AgentClientUpdateStates.AsNoTracking().SingleAsync();
+            state.AgentId.Should().Be(identity.AgentId);
+            state.TenantId.Should().Be(identity.TenantId);
+            state.PolicyRevision.Should().Be(1);
+            state.ResumedAtUtc.Should().Be(clock.Now);
+            state.ResumedBy.Should().Be("administrator");
+            state.SuspendedAtUtc.Should().BeNull();
+            JsonSerializer.Serialize(await restarted.ClientUpdateAttempts.AsNoTracking().SingleAsync()).Should().Be(originalAttempt);
+            (await restarted.ClientUpdateCatalogRevisions.Select(revision => revision.Revision).SingleAsync()).Should().Be(1);
+
+            clock.Now = clock.Now.AddMinutes(1);
+            await Authority(restarted, clock).ResumeAsync(identity.TenantId, identity.AgentId, "administrator", default);
+        }
+        await using var observed = new OrchestratorDbContext(_options);
+        var latest = await observed.AgentClientUpdateStates.AsNoTracking().SingleAsync();
+        latest.PolicyRevision.Should().Be(2);
+        latest.ResumedAtUtc.Should().Be(clock.Now);
+        JsonSerializer.Serialize(await observed.ClientUpdateAttempts.AsNoTracking().SingleAsync()).Should().Be(originalAttempt);
+    }
+
+    [Fact]
+    public async Task AdministrativeResumeCannotCreatePolicyForAMissingOrWrongTenantAgent()
+    {
+        var identity = await SeedAgentAsync(86);
+        await using var db = new OrchestratorDbContext(_options);
+        var authority = Authority(db);
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => authority.ResumeAsync(identity.TenantId, Guid.NewGuid(), "administrator", default));
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => authority.ResumeAsync(identity.TenantId + 1, identity.AgentId, "administrator", default));
+        Assert.Empty(await db.AgentClientUpdateStates.ToListAsync());
+        Assert.Empty(await db.ClientUpdateCatalogRevisions.ToListAsync());
+    }
+
+    [Fact]
     public async Task Committed_Rollback_Replays_Preserve_Details_Revisions_And_Operator_Resume()
     {
         var clock = new UpdateClock();

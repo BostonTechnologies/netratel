@@ -21,7 +21,8 @@ public sealed record ClientUpdatePolicySnapshot(
     bool AutoUpdateEnabled,
     bool Suspended,
     bool ResumeRequested,
-    Guid? SuppressedReleaseId);
+    Guid? SuppressedReleaseId,
+    DateTimeOffset? ResumedAtUtc = null);
 
 public interface IClientUpdateCatalog
 {
@@ -92,7 +93,8 @@ public sealed class ClientUpdateCatalog(IServiceScopeFactory scopes, TimeProvide
             state.TenantPolicies.TryGetValue(tenantId, out var tenantPolicy) && tenantPolicy.Enabled,
             agentState?.SuspendedAtUtc.HasValue == true,
             policyRevision > clientPolicyRevision && agentState?.SuspendedAtUtc is null,
-            agentState?.SuppressedReleaseId);
+            agentState?.SuppressedReleaseId,
+            agentState?.ResumedAtUtc);
     }
 
     public async Task RefreshAsync(CancellationToken cancellationToken)
@@ -113,7 +115,7 @@ public sealed class ClientUpdateCatalog(IServiceScopeFactory scopes, TimeProvide
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
         var agentStates = await db.AgentClientUpdateStates.AsNoTracking()
-            .Select(x => new CatalogAgentState(x.AgentId, x.SuspendedAtUtc, x.SuppressedReleaseId, x.PolicyRevision))
+            .Select(x => new CatalogAgentState(x.AgentId, x.SuspendedAtUtc, x.SuppressedReleaseId, x.PolicyRevision, x.ResumedAtUtc))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
@@ -144,7 +146,8 @@ public sealed class ClientUpdateCatalog(IServiceScopeFactory scopes, TimeProvide
     }
 
     private sealed record CatalogRelease(Guid PublicId, string RuntimeId, NuGetVersion Version, string Sha256, long SizeBytes);
-    private sealed record CatalogAgentState(Guid AgentId, DateTimeOffset? SuspendedAtUtc, Guid? SuppressedReleaseId, long PolicyRevision);
+    private sealed record CatalogAgentState(Guid AgentId, DateTimeOffset? SuspendedAtUtc, Guid? SuppressedReleaseId,
+        long PolicyRevision, DateTimeOffset? ResumedAtUtc);
     private sealed record CatalogTenantPolicy(bool Enabled, string Channel, string? TargetVersion);
     private sealed record CatalogState(
         long Revision,
