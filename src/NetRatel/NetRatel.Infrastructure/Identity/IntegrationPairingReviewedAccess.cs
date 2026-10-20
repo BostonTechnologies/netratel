@@ -16,7 +16,7 @@ public sealed partial class IntegrationPairingService
         ReviewedMcpAccessProposal Proposal, string RequestingPrincipalId, string RequestingCredentialId,
         string Instance, McpOperatorEnvironment Environment, string PolicyRevisionHash, string ProposalHash,
         string? ApproverPrincipalId = null, bool Applied = false, string? ProtectedSetup = null, string? CredentialRevisionHash = null, string? ReviewBindingHash = null,
-        IntegrationPairingFailure? ReviewFailure = null);
+        IntegrationPairingFailure? ReviewFailure = null, string? ApprovalMode = null);
     private sealed record ProtectedSetupMaterial(string Code, string Capability)
     { public override string ToString() => "Protected setup material (code and capability redacted)"; }
 
@@ -136,6 +136,44 @@ public sealed partial class IntegrationPairingService
                     await ApplyReviewedAsync(request, metadata, ct).ConfigureAwait(false);
             }
             return await ReceiptAsync(request, AccessMetadata(request)!, code, ct).ConfigureAwait(false);
+        }, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Owner-authorized direct decision. The caller must present the saved exact receipt hash and current admin authority.</summary>
+    public async Task<ReviewedMcpAccessReceipt> ApplyOwnerReviewedAsync(string id, string proposalHash, bool confirm,
+        string owner, string requester, CancellationToken ct = default, string? currentResource = null,
+        McpOperatorEnvironment? currentEnvironment = null)
+    {
+        var found = await FindAccessAsync(id, owner, requester, ct).ConfigureAwait(false) ?? throw new IntegrationPairingUnavailableException();
+        RequireCurrentAccessContext(found, currentResource, currentEnvironment);
+        if (!confirm || string.IsNullOrWhiteSpace(proposalHash))
+            throw ReviewValidation("review_proposal_changed", "owner_apply", "proposalHash");
+        return await MutateByAccessIdAsync(found.Id, owner, requester, async request =>
+        {
+            await ExpireAsync(request, ct).ConfigureAwait(false);
+            var metadata = AccessMetadata(request)!;
+            if (!string.Equals(proposalHash, metadata.ReviewBindingHash, StringComparison.Ordinal))
+                throw ReviewValidation("review_proposal_changed", "owner_apply", "proposalHash");
+            if (request.State == IntegrationPairingState.Consumed && metadata.Applied && metadata.ApprovalMode == "owner_direct")
+                return await ReceiptAsync(request, metadata, null, ct).ConfigureAwait(false);
+            if (request.State == IntegrationPairingState.Approved && metadata.ApprovalMode == "owner_direct" && metadata.Proposal.Action == "create")
+                return await ReceiptAsync(request, metadata, null, ct).ConfigureAwait(false);
+            if (request.State != IntegrationPairingState.Pending)
+                throw new IntegrationPairingUnavailableException { ReviewFailure = IntegrationPairingFailure.ForCode("review_request_not_pending", "owner_apply") };
+            if (await ReviewedAuthorityFailureAsync(request, metadata, owner, "owner_apply", ct).ConfigureAwait(false) is { } failure)
+                throw new IntegrationCredentialGrantValidationException("reviewedProposal", true) { ReviewFailure = failure };
+            metadata = metadata with { ApproverPrincipalId = owner, ApprovalMode = "owner_direct" };
+            request.RequestedPermissionsJson = JsonSerializer.Serialize(metadata);
+            request.OwnerPrincipalId = owner;
+            request.ApprovedGrantsJson = JsonSerializer.Serialize(metadata.Proposal.Grants.Select(x =>
+                new IntegrationCredentialGrantRequest(x.TenantId, x.Permission)).ToArray());
+            request.ApprovedInstancePermissionsJson = JsonSerializer.Serialize(metadata.Proposal.InstancePermissions);
+            request.CredentialExpiresAtUtc = metadata.Proposal.ExpiresAtUtc;
+            request.State = IntegrationPairingState.Approved;
+            await SaveAsync(request, ct).ConfigureAwait(false);
+            if (metadata.Proposal.Action != "create")
+                await ApplyReviewedAsync(request, metadata, ct).ConfigureAwait(false);
+            return await ReceiptAsync(request, AccessMetadata(request)!, null, ct).ConfigureAwait(false);
         }, ct).ConfigureAwait(false);
     }
 
@@ -385,7 +423,7 @@ public sealed partial class IntegrationPairingService
         var admissions = await EvaluateCredentialAdmissionAsync(metadata.RequestingPrincipalId, credential, state,
             request.Resource!, metadata.Instance, metadata.Environment, metadata.Proposal.Targets, request.Id, ct).ConfigureAwait(false);
         var missing = new List<string>();
-        if (request.State == IntegrationPairingState.Pending) missing.Add("An authorized operator must review the exact proposal with current credential and MCP policy authority. Owner self-approval is recorded explicitly.");
+        if (request.State == IntegrationPairingState.Pending) missing.Add("An authorized owner administrator may apply this exact proposal with owner_apply and confirm=true; another authorized operator may use browser review. Current credential and MCP policy authority are required.");
         if (metadata.Proposal.Action == "create" && request.State is not (IntegrationPairingState.Consumed or IntegrationPairingState.Issued)) missing.Add("Complete the supported protected setup client; MCP never delivers credential secrets.");
         if (state != "active") missing.Add("The reviewed credential is " + state + "; configured grants alone do not establish usable access.");
         if (admissions.Any(x => !x.ApplicationGrantConfigured)) missing.Add("Configured credential grants do not include every selected operation.");
@@ -396,7 +434,7 @@ public sealed partial class IntegrationPairingService
         var reviewFailure = request.State == IntegrationPairingState.Expired ? IntegrationPairingFailure.ForCode("review_request_expired", "receipt") : metadata.ReviewFailure;
         return new(AccessRequest(request, metadata, code ?? SafeUserCode(request, metadata)), credentialId, credential?.ExpiresAtUtc, state,
             credential?.Grants.Select(x => new IntegrationPairingGrant(x.TenantId, x.Permission)).ToArray() ?? [], credential?.InstancePermissions ?? [], admissions, missing,
-            reviewFailure?.Remediation ?? (request.State == IntegrationPairingState.Pending ? "Open the review URL and have an authorized operator enter the displayed code; then resume this same requestId." : admissions.Any(x => x.PolicyAdmissionStatus == "conditional_runtime_unverified") ? "Read netratel_access target/effective for the exact persisted target and policy, then inspect the operation readiness before dispatch. Runtime admission remains unverified in this receipt." : "Inspect each current admission result; reuse this requestId to reconcile an interrupted outcome."))
+            reviewFailure?.Remediation ?? (request.State == IntegrationPairingState.Pending ? "An authorized owner administrator can call owner_apply with this requestId, exact proposalHash and confirm=true; otherwise use the browser review URL and code, then resume." : admissions.Any(x => x.PolicyAdmissionStatus == "conditional_runtime_unverified") ? "Read netratel_access target/effective for the exact persisted target and policy, then inspect the operation readiness before dispatch. Runtime admission remains unverified in this receipt." : "Inspect each current admission result; reuse this requestId to reconcile an interrupted outcome."))
         {
             ReviewFailure = reviewFailure
         };
@@ -480,5 +518,5 @@ public sealed partial class IntegrationPairingService
         new(request.Id, Status(request), request.PublicOrigin + "/account/integration-credentials?tab=credentials", code, metadata.Proposal,
             request.Resource!, metadata.Instance, metadata.Environment.ToString(), metadata.RequestingPrincipalId, metadata.RequestingCredentialId, request.Revision, metadata.ReviewBindingHash!)
         { CredentialRevisionHash = metadata.CredentialRevisionHash, PolicyRevisionHash = metadata.PolicyRevisionHash,
-            ApprovalMode = metadata.ApproverPrincipalId is null ? null : metadata.ApproverPrincipalId == metadata.RequestingPrincipalId ? "owner_self_approval" : "independent_review" };
+            ApprovalMode = metadata.ApprovalMode ?? (metadata.ApproverPrincipalId is null ? null : metadata.ApproverPrincipalId == metadata.RequestingPrincipalId ? "owner_self_approval" : "independent_review") };
 }

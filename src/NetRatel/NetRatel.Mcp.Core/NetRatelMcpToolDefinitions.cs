@@ -208,6 +208,11 @@ public static partial class NetRatelMcpToolDefinitions
             Integer("limit", "Optional bounded result limit from 1 through 100.", 1, 100)
         ]),
         ("netratel_access", "request") => ReviewedAccessProposalSchema(),
+        ("netratel_access", "owner_apply") => RequiredRequest([
+            Uuid("requestId", "Saved caller-owned reviewed access request identifier.", true),
+            RequiredPatternString("proposalHash", "Exact hash from the saved request receipt; a changed proposal requires a new request.", "^[A-Fa-f0-9]{64}$", 64),
+            ("confirm", new JsonObject { ["type"] = "boolean", ["const"] = true, ["description"] = "Explicitly apply this exact saved proposal with current owner administrator authority." }, true)
+        ]),
         ("netratel_access", "receipt" or "resume" or "cancel") => RequiredRequest([Uuid("requestId", "Your saved non-secret request identifier.", true)]),
         ("netratel_access", "credential") => RequiredRequest([Uuid("credentialId", "Your owned credential identifier.", true)]),
         ("netratel_access", "requests") => null,

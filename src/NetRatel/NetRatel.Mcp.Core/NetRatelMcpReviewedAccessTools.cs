@@ -20,7 +20,12 @@ public sealed partial class NetRatelMcpOperationalTools
         }
         if (!value.TryGetProperty("requestId", out var requestId) || requestId.ValueKind != JsonValueKind.String || !Guid.TryParse(requestId.GetString(), out var requestGuid) || requestGuid == Guid.Empty)
             return Task.FromResult(Invalid("requestId must be your saved non-secret request UUID."));
-        var path = operation == "request" ? "/api/v2/mcp/operator/access/requests" : "/api/v2/mcp/operator/access/" + operation;
+        if (operation == "owner_apply" &&
+            (!value.TryGetProperty("proposalHash", out var hash) || hash.ValueKind != JsonValueKind.String ||
+             hash.GetString() is not { Length: 64 } digest || !digest.All(Uri.IsHexDigit) ||
+             !value.TryGetProperty("confirm", out var confirm) || confirm.ValueKind != JsonValueKind.True))
+            return Task.FromResult(Invalid("owner_apply requires the exact 64-character receipt proposalHash and confirm=true."));
+        var path = operation == "request" ? "/api/v2/mcp/operator/access/requests" : "/api/v2/mcp/operator/access/" + (operation == "owner_apply" ? "owner-apply" : operation);
         return ExecuteAsync("netratel_access", operation, () => client.SendAsync(HttpMethod.Post, path, JsonNode.Parse(value.GetRawText()), ct), ct);
     }
 }

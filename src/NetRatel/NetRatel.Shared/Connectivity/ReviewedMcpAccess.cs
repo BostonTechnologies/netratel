@@ -19,6 +19,10 @@ public sealed record ReviewedMcpAccessProposal(string RequestId, string Name, st
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record ReviewedMcpAccessReference(string RequestId);
 
+/// <summary>Explicit owner decision bound to the immutable receipt; no device capability or user code is accepted.</summary>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record ReviewedMcpOwnerApplyRequest(string RequestId, string ProposalHash, bool Confirm);
+
 public sealed record ReviewedMcpAccessRequest(string RequestId, string Status, string VerificationUri, string? UserCode,
     ReviewedMcpAccessProposal Proposal, string Resource, string Instance, string Environment,
     string RequestingPrincipalId, string RequestingCredentialId, long Revision, string ProposalHash)

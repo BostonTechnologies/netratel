@@ -67,8 +67,8 @@ implementation issues are not reopened merely because full acceptance is pending
 | Prerequisite | Concrete preparation | Completion evidence |
 | --- | --- | --- |
 | Release | Owner deploys the matching published components; select the verified bridge archive. | Running version/source, deployed manifest digests and bridge checksum match the completed publication record. |
-| Authority | Inspect effective target-operation policy separately from credential grants. Prepare a fresh consolidated exact-target review when an authorized operator is ready. A credential owner with current MCP policy administration and every selected durable permission may self-approve; record that mode explicitly. | Actual reviewed/applied receipt, its approval mode, and admitted no-write first operation for every planned batch. |
-| Extra permission | Preserve the original credential's authority and expiry. Use separately reviewed limited scope for genuinely additional permissions. | Current permission, target, expiry and no-reveal readback. |
+| Authority | Inspect effective target-operation policy separately from credential grants. An owner administrator with current MCP policy authority may apply its own exact pending request using `netratel_access/owner_apply`, the saved receipt hash and `confirm=true`. Other callers use browser review. | Actual applied receipt, its decision mode, and admitted no-write first operation for every planned batch. |
+| Extra permission | Preserve the original credential's authority and expiry. Use an exact owner-authorized limited scope for genuinely additional permissions. | Current permission, target, expiry and no-reveal readback. |
 | Executors | Independently enrol one disposable Windows VM/host and one disposable Linux VM/host. | Exact tenant/agent identity, binary/source, protected profile, writable roots, inert service and disposal owner. |
 | Owned objects | Create scripts/jobs/runs/tasks, policies, enrollments and receiver objects in dependency order. | Actual IDs and revisions from successful predecessor responses. |
 | Receiver | Configure one owned synthetic notification/email/AI/flow receiver using supported configuration. | Current connector/revision, authorized destination and a real delivery/readback. |
@@ -88,17 +88,18 @@ computers are unnecessary; separate enrolled device identities are required.
 Do not create another client identity over a protected host's canonical state.
 
 Owner-authorized bounded fixture preparation and ordinary admitted preview/
-confirm operations proceed within their recorded scope. A self-approval is a
-real product decision by the authenticated requesting principal with current
-policy administration and exact selected grant authority. The browser labels
-it; the receipt records `owner_self_approval`, and the lifecycle audit records
-the same owner and actor. A different account's approval remains an independent
-review. Do not relabel one as the other or infer approval from a request alone.
+confirm operations proceed within their recorded scope. The direct owner
+decision is made by the authenticated requesting principal with current policy
+administration and exact selected grant authority. The receipt records
+`owner_direct`; the request retains that mode and the lifecycle audit records
+the same owner and actor. Browser owner self-approval remains marked
+`owner_self_approval`, and a different account's approval remains an
+independent review. Do not infer application from a pending request alone.
 For a policy mutation, review both the published `preview_*` and matching
 `confirm_*` operation on the same target and profile revision. The API uses one
 canonical policy operation across those two phases; the reviewed pair attaches
 that internal permission. A preview-only review does not attach it.
-Consolidate approvals before creating short-lived requests. Original clients
+Consolidate exact targets before creating short-lived requests. Original clients
 and unrelated objects remain protected.
 For `netratel_search/clients`, review its control-plane call together with each
 exact tenant/agent candidate that should be discoverable at its current target
