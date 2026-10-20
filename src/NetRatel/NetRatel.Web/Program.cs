@@ -5,7 +5,6 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Server.Circuits;
 using MudBlazor.Services;
 using Microsoft.AspNetCore.StaticFiles;
-using MudBlazor.Extensions;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Http;
@@ -76,13 +75,8 @@ builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddRazorPages();
 builder.Services.AddControllers();
 
-// Register MudBlazor services and extensions
-// Add MudBlazor services
-//builder.Services.AddMudServices();
-// Prefer scoped registration; DO NOT use AddMudServicesWithExtensions()
-//var scan = new[] { typeof(Program).Assembly };
-//builder.Services.AddMudExtensions(scan);
-builder.Services.AddMudServicesWithExtensions();
+// Register MudBlazor and CodeBeam extension services.
+builder.Services.AddMudServices();
 MudExtensions.Services.ExtensionServiceCollectionExtensions.AddMudExtensions(builder.Services, _ => { });
 
 builder.Services.AddSingleton(new ClientApiOptions());
@@ -454,8 +448,7 @@ app.UseStaticFiles(new StaticFileOptions
             ctx.Context.Response.Headers.Expires = "0";
         }
         else if (app.Environment.IsDevelopment() &&
-                 (path.Contains("MudBlazor", StringComparison.OrdinalIgnoreCase) ||
-                  path.Contains("MudBlazor.Extensions", StringComparison.OrdinalIgnoreCase)))
+                 path.Contains("MudBlazor", StringComparison.OrdinalIgnoreCase))
         {
             ctx.Context.Response.Headers.CacheControl = "no-store, max-age=0";
         }
