@@ -58,12 +58,12 @@ public sealed partial class NetRatelMcpOperationalTools
     public Task<NetRatelToolResponse> netratel_system(string operation = "version", CancellationToken cancellationToken = default)
         => GetAsync("netratel_system", operation, ["version"], "/api/v1/system/version", cancellationToken);
 
-    [McpServerTool(UseStructuredContent = true), Description("Inspect the caller's effective operator access without performing a target operation. Operations are whoami, target, effective, and evaluate. evaluate requires one catalogued target tool and operation inside request.")]
+    [McpServerTool(UseStructuredContent = true), Description("Inspect caller-owned operator access and reviewed requests. owner_apply makes an explicit, exact-hash, administrator-authorized decision on a pending request; it requires current mcp.policy.admin permission and confirm=true. Other operations include whoami, target, effective, evaluate, request, requests, receipt, resume, cancel, and credential.")]
     public Task<NetRatelToolResponse> netratel_access(string operation, JsonElement? request = null, CancellationToken cancellationToken = default)
     {
         return operation switch
         {
-            "request" or "requests" or "receipt" or "resume" or "cancel" or "credential" => ReviewedAccessAsync(operation, request, cancellationToken),
+            "request" or "requests" or "receipt" or "resume" or "cancel" or "credential" or "owner_apply" => ReviewedAccessAsync(operation, request, cancellationToken),
             "whoami" when request is null => GetAsync("netratel_access", operation, AccessOperations, "/api/v2/mcp/operator/access/whoami", cancellationToken),
             "whoami" => Task.FromResult(Invalid("whoami does not accept a request object.")),
             "target" => AccessTargetAsync(operation, request, cancellationToken),
@@ -532,7 +532,7 @@ public sealed partial class NetRatelMcpOperationalTools
     private static readonly string[] DevelopmentClientReadOperations = ["presence", "binding", "telemetry", "update_attempts"];
     private static readonly string[] ProductionClientReadOperations = ["get", "presence", "capabilities", "binding", "telemetry", "update_attempts", "update_metadata"];
     private static readonly string[] ProductionClientOperations = [.. ProductionClientReadOperations, "preview_ping", "ping", "preview_software_update", "software_update", "preview_disable", "disable", "preview_enable", "enable", "preview_delete", "delete"];
-    private static readonly string[] AccessOperations = ["whoami", "effective", "evaluate", "target", "request", "requests", "receipt", "resume", "cancel", "credential"];
+    private static readonly string[] AccessOperations = ["whoami", "effective", "evaluate", "target", "request", "requests", "receipt", "resume", "cancel", "credential", "owner_apply"];
     private static readonly string[] PolicyOperations = ["policies", "policy", "change_audits", "accepted_audits", "target", "matches", "evaluate", "preview_create", "confirm_create", "preview_replace", "confirm_replace", "preview_disable", "confirm_disable", "preview_revoke", "confirm_revoke", "preview_target_profile", "confirm_target_profile"];
     private static readonly string[] DevelopmentFileReadOperations = ["browse", "read", "status", "download"];
     private static readonly string[] DevelopmentFileOperations = ["browse", "read", "status", "download", "collect", "cleanup"];

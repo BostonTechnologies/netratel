@@ -23,6 +23,9 @@ public static class McpReviewedAccessEndpoints
             Guard(http, environment, "receipt", delegation => pairing.InspectReviewedAsync(request.RequestId, delegation.Identity.Subject, delegation.IngressCredentialId!, ct: ct, currentResource: delegation.Resource, currentEnvironment: OperatorEnvironment(environment))));
         api.MapPost("/resume", (ReviewedMcpAccessReference request, HttpContext http, IHostEnvironment environment, IntegrationPairingService pairing, CancellationToken ct) =>
             Guard(http, environment, "resume", delegation => pairing.InspectReviewedAsync(request.RequestId, delegation.Identity.Subject, delegation.IngressCredentialId!, resume: true, ct: ct, currentResource: delegation.Resource, currentEnvironment: OperatorEnvironment(environment))));
+        api.MapPost("/owner-apply", (ReviewedMcpOwnerApplyRequest request, HttpContext http, IHostEnvironment environment, IntegrationPairingService pairing, CancellationToken ct) =>
+            Guard(http, environment, "owner_apply", delegation => pairing.ApplyOwnerReviewedAsync(request.RequestId, request.ProposalHash, request.Confirm,
+                delegation.Identity.Subject, delegation.IngressCredentialId!, ct, delegation.Resource, OperatorEnvironment(environment))));
         api.MapPost("/cancel", (ReviewedMcpAccessReference request, HttpContext http, IHostEnvironment environment, IntegrationPairingService pairing, CancellationToken ct) =>
             Guard(http, environment, "cancel", delegation => pairing.CancelReviewedAsync(request.RequestId, delegation.Identity.Subject, delegation.IngressCredentialId!, ct, delegation.Resource, OperatorEnvironment(environment))));
         api.MapGet("/credentials/{credentialId}", (string credentialId, HttpContext http, IHostEnvironment environment, IntegrationPairingService pairing, TimeProvider clock, CancellationToken ct) =>

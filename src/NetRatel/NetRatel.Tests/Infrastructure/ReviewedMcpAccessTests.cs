@@ -20,6 +20,87 @@ namespace NetRatel.Tests.Infrastructure;
 public sealed class ReviewedMcpAccessTests
 {
     [Fact]
+    public async Task Owner_direct_apply_reconciles_exact_request_once_and_records_its_decision_mode()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        (await fixture.Identity.Users.SingleAsync(x => x.PrincipalId == "requester")).IsInstanceAdministrator = true;
+        await fixture.Identity.SaveChangesAsync();
+        var proposal = fixture.Proposal("reconcile", fixture.Credential.CredentialId);
+        var pending = await fixture.Pairing.RequestReviewedAsync(proposal, "requester", fixture.Credential.CredentialId,
+            Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production);
+        var applied = await fixture.Pairing.ApplyOwnerReviewedAsync(proposal.RequestId, pending.Request.ProposalHash, true,
+            "requester", fixture.Credential.CredentialId, currentResource: Fixture.Resource, currentEnvironment: McpOperatorEnvironment.Production);
+        Assert.Equal("consumed", applied.Request.Status);
+        Assert.Equal("owner_direct", applied.Request.ApprovalMode);
+        Assert.Equal(2, await fixture.App.McpOperatorPolicies.CountAsync());
+        Assert.Single(await fixture.Identity.IntegrationCredentialLifecycleEvents.Where(x => x.Action == "reconciled").ToArrayAsync());
+        var replay = await fixture.Pairing.ApplyOwnerReviewedAsync(proposal.RequestId, pending.Request.ProposalHash, true,
+            "requester", fixture.Credential.CredentialId, currentResource: Fixture.Resource, currentEnvironment: McpOperatorEnvironment.Production);
+        Assert.Equal("consumed", replay.Request.Status);
+        Assert.Equal("owner_direct", replay.Request.ApprovalMode);
+        Assert.Equal(2, await fixture.App.McpOperatorPolicies.CountAsync());
+        Assert.Single(await fixture.Identity.IntegrationCredentialLifecycleEvents.Where(x => x.Action == "reconciled").ToArrayAsync());
+    }
+
+    [Fact]
+    public async Task Owner_direct_apply_rejects_unconfirmed_changed_cross_owner_and_withdrawn_authority()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        (await fixture.Identity.Users.SingleAsync(x => x.PrincipalId == "requester")).IsInstanceAdministrator = true;
+        await fixture.Identity.SaveChangesAsync();
+        var proposal = fixture.Proposal("reconcile", fixture.Credential.CredentialId);
+        var pending = await fixture.Pairing.RequestReviewedAsync(proposal, "requester", fixture.Credential.CredentialId,
+            Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production);
+        await Assert.ThrowsAsync<IntegrationPairingUnavailableException>(() => fixture.Pairing.ApplyOwnerReviewedAsync(
+            proposal.RequestId, pending.Request.ProposalHash, true, "reviewer", fixture.Credential.CredentialId));
+        await Assert.ThrowsAsync<IntegrationPairingUnavailableException>(() => fixture.Pairing.ApplyOwnerReviewedAsync(
+            proposal.RequestId, pending.Request.ProposalHash, true, "requester", fixture.Credential.CredentialId,
+            currentResource: "https://other.example.test/mcp"));
+        var changed = await Assert.ThrowsAsync<IntegrationCredentialGrantValidationException>(() => fixture.Pairing.ApplyOwnerReviewedAsync(
+            proposal.RequestId, new string('a', 64), true, "requester", fixture.Credential.CredentialId));
+        Assert.Equal("review_proposal_changed", changed.ReviewFailure!.Code);
+        await Assert.ThrowsAsync<IntegrationCredentialGrantValidationException>(() => fixture.Pairing.ApplyOwnerReviewedAsync(
+            proposal.RequestId, pending.Request.ProposalHash, false, "requester", fixture.Credential.CredentialId));
+        (await fixture.Identity.Users.SingleAsync(x => x.PrincipalId == "requester")).IsInstanceAdministrator = false;
+        await fixture.Identity.SaveChangesAsync();
+        var withdrawn = await Assert.ThrowsAsync<IntegrationCredentialGrantValidationException>(() => fixture.Pairing.ApplyOwnerReviewedAsync(
+            proposal.RequestId, pending.Request.ProposalHash, true, "requester", fixture.Credential.CredentialId));
+        Assert.Equal("review_approver_authority_missing", withdrawn.ReviewFailure!.Code);
+        Assert.Equal(IntegrationPairingState.Pending, (await fixture.Identity.IntegrationPairingRequests.SingleAsync()).State);
+        Assert.Empty(await fixture.App.McpOperatorPolicies.ToArrayAsync());
+    }
+
+    [Fact]
+    public async Task Owner_direct_create_delivers_only_through_protected_poll_and_direct_revoke_is_idempotent()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        (await fixture.Identity.Users.SingleAsync(x => x.PrincipalId == "requester")).IsInstanceAdministrator = true;
+        await fixture.Identity.SaveChangesAsync();
+        var proposal = fixture.Proposal("create", null);
+        var started = await fixture.Pairing.StartReviewedAsync(proposal, "requester", fixture.Credential.CredentialId,
+            Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production);
+        var pending = await fixture.Pairing.InspectReviewedAsync(proposal.RequestId, "requester", fixture.Credential.CredentialId);
+        var approved = await fixture.Pairing.ApplyOwnerReviewedAsync(proposal.RequestId, pending.Request.ProposalHash, true,
+            "requester", fixture.Credential.CredentialId);
+        Assert.Equal("approved", approved.Request.Status);
+        Assert.Equal("owner_direct", approved.Request.ApprovalMode);
+        Assert.DoesNotContain(started.DeviceCapability, JsonSerializer.Serialize(approved));
+        fixture.Clock.Advance(TimeSpan.FromSeconds(5));
+        var delivery = (await fixture.Pairing.PollAsync(started.DeviceCapability)).Delivery!;
+        Assert.NotNull(delivery);
+        await fixture.Pairing.AcknowledgeAsync(started.DeviceCapability, delivery.CredentialId);
+        var revokedProposal = fixture.Proposal("revoke", delivery.CredentialId) with { Grants = [], InstancePermissions = [], Targets = [] };
+        var revoke = await fixture.Pairing.RequestReviewedAsync(revokedProposal, "requester", fixture.Credential.CredentialId,
+            Fixture.Origin, Fixture.Resource, McpOperatorEnvironment.Production);
+        var result = await fixture.Pairing.ApplyOwnerReviewedAsync(revokedProposal.RequestId, revoke.Request.ProposalHash, true,
+            "requester", fixture.Credential.CredentialId);
+        Assert.Equal("consumed", result.Request.Status);
+        Assert.Equal("owner_direct", result.Request.ApprovalMode);
+        Assert.Equal("revoked", result.CredentialState);
+        Assert.Null(await fixture.Credentials.VerifyAsync(delivery.Secret, IntegrationCredentialPurpose.HttpMcp));
+    }
+
+    [Fact]
     public async Task Equivalent_UUID_representations_share_owned_lookup_proposal_and_reconciliation()
     {
         await using var fixture = await Fixture.CreateAsync();

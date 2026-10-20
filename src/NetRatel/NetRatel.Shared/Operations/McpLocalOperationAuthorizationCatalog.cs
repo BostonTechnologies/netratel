@@ -23,6 +23,7 @@ public static class McpLocalOperationAuthorizationCatalog
             "netratel_connectivity" when operation is "settings" or "netratel" or "preview_test" => "mcp.connectivity.read",
             "netratel_connectivity" when operation is "test" => "mcp.connectivity.test",
             "netratel_policy" or "netratel_config" => "mcp.policy.admin",
+            "netratel_access" when operation == "owner_apply" => "mcp.policy.admin",
             "netratel_tenants" or "netratel_onboarding" => "tenant.admin",
             "netratel_clients" => access.RequiredScope == McpOperationAccessScope.Observe
                 ? "telemetry.read"
