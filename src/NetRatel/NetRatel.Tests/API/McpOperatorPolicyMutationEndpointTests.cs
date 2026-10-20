@@ -116,6 +116,12 @@ public sealed class McpOperatorPolicyMutationEndpointTests
         var confirmedResponse = await client.PostAsJsonAsync($"/api/v2/mcp/operator/policy/{action}/confirm", request);
         confirmedResponse.StatusCode.Should().Be(HttpStatusCode.OK);
         var confirmed = (await confirmedResponse.Content.ReadFromJsonAsync<McpOperatorPolicyMutationResult>())!;
+        if (action == "disable" && !simulateTimestampPrecisionLoss)
+        {
+            confirmed.Policy.DisabledAtUtc.Should().NotBeNull();
+            (confirmed.Policy.DisabledAtUtc!.Value.Ticks % TimeSpan.TicksPerMicrosecond).Should().Be(0);
+            confirmed.Policy.DisabledAtUtc.Should().Be((await administration.GetAsync(policy.PolicyId, CancellationToken.None))!.DisabledAtUtc);
+        }
         if (simulateTimestampPrecisionLoss)
         {
             var originalTimestamp = confirmed.Policy.DisabledAtUtc!.Value;

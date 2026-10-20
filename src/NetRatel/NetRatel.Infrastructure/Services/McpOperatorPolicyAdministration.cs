@@ -215,7 +215,7 @@ public sealed class McpOperatorPolicyAdministration(OrchestratorDbContext db) : 
             throw new InvalidOperationException("A revoked operator policy cannot be disabled.");
         if (record.LifecycleState == McpOperatorPolicyLifecycleState.Active)
         {
-            var now = DateTimeOffset.UtcNow;
+            var now = PersistableUtcNow();
             record.LifecycleState = McpOperatorPolicyLifecycleState.Disabled;
             record.DisabledAtUtc = now;
             record.DisabledBy = actorId.Trim();
@@ -245,7 +245,7 @@ public sealed class McpOperatorPolicyAdministration(OrchestratorDbContext db) : 
         if (record.LifecycleState == McpOperatorPolicyLifecycleState.Revoked)
             return ToPolicy(record);
 
-        var now = DateTimeOffset.UtcNow;
+        var now = PersistableUtcNow();
         record.LifecycleState = McpOperatorPolicyLifecycleState.Revoked;
         record.DisabledAtUtc ??= now;
         record.DisabledBy ??= actorId.Trim();
@@ -577,6 +577,14 @@ public sealed class McpOperatorPolicyAdministration(OrchestratorDbContext db) : 
 
     private static bool IsBoundedText(string? value, int maximumLength) =>
         !string.IsNullOrWhiteSpace(value) && value.Length <= maximumLength && !value.Any(char.IsControl);
+
+    // PostgreSQL timestamp values have microsecond precision. Generate mutation instants at that
+    // precision so the first response, replay, and persisted readback contain the same value.
+    private static DateTimeOffset PersistableUtcNow()
+    {
+        var now = DateTimeOffset.UtcNow;
+        return now.AddTicks(-(now.Ticks % TimeSpan.TicksPerMicrosecond));
+    }
 
     private const McpOperatorOperationFamily KnownOperationFamilies =
         McpOperatorOperationFamily.Observability |

@@ -59,7 +59,7 @@ public sealed partial class IntegrationPairingService
         return new CredentialMcpAdmission(credential.Id, clock.GetUtcNow(), state, authentication, credential.Resource!, instance, environment.ToString(),
             credential.ExpiresAtUtc, credential.Grants.Select(x => new IntegrationPairingGrant(x.TenantId, x.Permission)).ToArray(),
             credential.InstancePermissions, admissions, missing,
-            "Use netratel_access request with an exact reconcile proposal, have an independent authorized operator inspect and approve it, then resume the same requestId. Preserve the configured grants and original exact UTC expiry unless the approved proposal changes them.")
+            "Use netratel_access request with an exact reconcile proposal, have an authorized operator inspect and approve it, then resume the same requestId. An authorized owner may self-approve with an explicit same-operator receipt. Preserve the configured grants and original exact UTC expiry unless the approved proposal changes them.")
         {
             TargetsTruncated = truncated,
             MatchingPolicies = policies.Select(x => new CredentialMcpPolicy(x.Id, x.Environment.ToString(), x.TenantId, x.AgentId,

@@ -25,6 +25,7 @@ public sealed record ReviewedMcpAccessRequest(string RequestId, string Status, s
 {
     public string? CredentialRevisionHash { get; init; }
     public string PolicyRevisionHash { get; init; } = "";
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? ApprovalMode { get; init; }
     public override string ToString() => $"Reviewed access request {RequestId} {Status} (code redacted)";
 }
 

@@ -99,6 +99,8 @@ public sealed class McpOperatorPolicyAdministrationTests
         disabled.Should().NotBeNull();
         disabled!.Version.Should().Be(3);
         disabled.DisabledAtUtc.Should().NotBeNull();
+        (disabled.DisabledAtUtc!.Value.Ticks % TimeSpan.TicksPerMicrosecond).Should().Be(0);
+        disabled.DisabledAtUtc.Should().Be((await administration.GetAsync(disabled.PolicyId, Ct))!.DisabledAtUtc);
         disabled.DisabledBy.Should().Be(actor);
         disabled.LifecycleState.Should().Be(McpOperatorPolicyLifecycleState.Disabled);
         revoked.Should().NotBeNull();

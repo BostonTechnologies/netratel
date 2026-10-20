@@ -68,7 +68,7 @@ public sealed partial class SetupSession
         if (record.Destination != Path || record.Profile != ProfileName || Surface != ConfigurationSurface.HttpMcpClient)
             throw new AgentClientValidationException("Resume must use the destination profile saved by prepare.");
         await DiscoverAsync(record.Origin, ct);
-        if (!McpResourceUri.Equivalent(record.Resource, CanonicalTarget)) throw new AgentClientValidationException("The reviewed resource changed. Request a fresh independent approval.");
+        if (!McpResourceUri.Equivalent(record.Resource, CanonicalTarget)) throw new AgentClientValidationException("The reviewed resource changed. Request a fresh authorized approval.");
         ValidateTrustedLink(record.Pairing.VerificationUri, _origin!);
         if (record.SavedCredentialId is not null && (record.SavedProfileHash is null || record.SavedProfileHash != ReviewedProfileHash()))
             throw new AgentClientValidationException("The saved profile changed after its reviewed save receipt. Inspect the existing credential and profile before resuming; no credential was reissued.");

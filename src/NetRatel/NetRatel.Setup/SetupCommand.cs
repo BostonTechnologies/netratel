@@ -35,7 +35,7 @@ NetRatel setup
   Existing delegation: --delegation-key-file PATH --delegation-key-id ID --delegation-issuer ID --delegation-audience ID
   access prepare --instance WEB_URL --request-file PROPOSAL_JSON --requester-config EXISTING_HTTP_PROFILE --state-file PROTECTED_STATE --config NEW_HTTP_PROFILE [--profile NAME]
   access resume --state-file PROTECTED_STATE --config NEW_HTTP_PROFILE [--profile NAME] [--replace]
-  The proposal contains only safe exact grants, targets, requestId and UTC expiry. An independent operator approves it in the browser.
+  The proposal contains only safe exact grants, targets, requestId and UTC expiry. An authorized operator approves it in the browser; an owner with policy administration authority may self-approve.
   Reviewed access isolates requester and destination profiles from ambient client settings. The Windows protected launcher can supply a requester-only credential.
   Resume saves the one-time new credential to protected storage and acknowledges delivery; no secret is printed.
   config validate [--profile NAME] [--config PATH]
