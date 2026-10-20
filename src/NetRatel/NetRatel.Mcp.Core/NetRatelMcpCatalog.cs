@@ -200,12 +200,12 @@ public static class NetRatelMcpCatalog
         "tenants", "scripts", "jobs", "requests", "clients", "tasks");
 
     private static NetRatelMcpToolDescriptor ReviewedAccess() => new("netratel_access",
-        "Inspect bounded access with whoami/target/effective/evaluate. credential returns safe owned credential metadata and a current bounded admission view separating configured grants, durable owner permission, tenant/policy facts and exact UTC expiry. Its named samples do not establish runtime readiness or complete entitlement coverage; requests/receipt inspect caller-bound reviewed requests. request proposes exact create/reconcile/revoke grants, targets, operation set and UTC expiry for independent browser review; create must first be prepared by the protected setup client. resume applies only the unchanged independently approved request; cancel withdraws a pending request. No MCP operation approves itself or returns credential secrets. Keep requestId for durable reconciliation. Available over HTTP. Set operation and supply only the matching closed request schema.",
+        "Inspect bounded access with whoami/target/effective/evaluate. credential returns safe owned credential metadata and a current bounded admission view separating configured grants, durable owner permission, tenant/policy facts and exact UTC expiry. Its named samples do not establish runtime readiness or complete entitlement coverage; requests/receipt inspect caller-bound reviewed requests. request proposes exact create/reconcile/revoke grants, targets, operation set and UTC expiry; create must first be prepared by the protected setup client. owner_apply requires current owner policy-administration authority, the saved exact receipt hash and confirm=true; it applies an owned pending request without a separate browser review. resume applies an unchanged approved request; cancel withdraws a pending request. No MCP operation returns credential secrets. Keep requestId for durable reconciliation. Available over HTTP. Set operation and supply only the matching closed request schema.",
         NetRatelMcpOperationSafety.OperatorMutation, true,
-        new[] { "whoami", "effective", "evaluate", "target", "request", "requests", "receipt", "resume", "cancel", "credential" }
+        new[] { "whoami", "effective", "evaluate", "target", "request", "requests", "receipt", "resume", "cancel", "credential", "owner_apply" }
             .Select(operation => new NetRatelMcpOperationDescriptor(operation,
-                operation is "request" or "resume" or "cancel" ? NetRatelMcpOperationSafety.OperatorMutation : NetRatelMcpOperationSafety.Read,
-                false, true, NetRatelMcpOperationEnvironment.All) { RequiresIdempotency = operation is "request" or "resume" or "cancel" }).ToArray());
+                operation is "request" or "resume" or "cancel" or "owner_apply" ? NetRatelMcpOperationSafety.OperatorMutation : NetRatelMcpOperationSafety.Read,
+                false, true, NetRatelMcpOperationEnvironment.All) { RequiresIdempotency = operation is "request" or "resume" or "cancel" or "owner_apply" }).ToArray());
 
     private static NetRatelMcpToolDescriptor Read(string name, string description, params string[] operations)
         => new(

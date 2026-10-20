@@ -42,6 +42,28 @@ public sealed class McpOperatorOperationCatalogTests
             .Should().OnlyContain(operation => operation.RequiresIdempotency && operation.ConfirmationClass == McpOperatorConfirmationClass.None);
     }
 
+    [Fact]
+    public void Owner_direct_access_is_an_administrator_mutation_with_exact_confirmation_schema()
+    {
+        var access = McpOperationAccessCatalog.Find("netratel_access", "owner_apply")!;
+        access.RequiredScope.Should().Be(McpOperationAccessScope.Admin);
+        access.MinimumRole.Should().Be(McpOperationMinimumRole.Administrator);
+        McpLocalOperationAuthorizationCatalog.RequiredPermission("netratel_access", "owner_apply").Should().Be("mcp.policy.admin");
+        var operation = NetRatelMcpCatalog.FindOperation("netratel_access", "owner_apply")!;
+        operation.Safety.Should().Be(NetRatelMcpOperationSafety.OperatorMutation);
+        operation.RequiresIdempotency.Should().BeTrue();
+        var schema = NetRatelMcpToolDefinitions.CreateForHttp("prod")
+            .Single(definition => definition.ProtocolTool.Name == "netratel_access").ProtocolTool.InputSchema;
+        var alternative = schema.GetProperty("oneOf").EnumerateArray().Single(item =>
+            item.GetProperty("properties").GetProperty("operation").GetProperty("const").GetString() == "owner_apply");
+        var request = alternative.GetProperty("properties").GetProperty("request");
+        request.GetProperty("properties").GetProperty("confirm").GetProperty("const").GetBoolean().Should().BeTrue();
+        var required = request.GetProperty("required").EnumerateArray().Select(item => item.GetString()).ToArray();
+        required.Should().Contain("requestId");
+        required.Should().Contain("proposalHash");
+        required.Should().Contain("confirm");
+    }
+
     [Theory]
     [InlineData("netratel_services", "control", McpOperatorConfirmationClass.RemoteExecution)]
     [InlineData("netratel_ai", "send", McpOperatorConfirmationClass.RemoteExecution)]
