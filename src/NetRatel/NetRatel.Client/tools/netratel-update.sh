@@ -265,7 +265,11 @@ if [ "${ACTUAL_SHA,,}" != "${SHA256,,}" ]; then
 fi
 log "Checksum verified for NetRatel client update $VERSION."
 
-unzip -o "$ZIP_PATH" -d "$EXTRACT_DIR" >/dev/null
+python3 - "$ZIP_PATH" "$EXTRACT_DIR" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    archive.extractall(sys.argv[2])
+PY
 python3 - "$EXTRACT_DIR/netratel-client-manifest.json" "$VERSION" "$RUNTIME_ID" <<'PY'
 import json, os, sys
 with open(sys.argv[1], encoding="utf-8-sig") as f: manifest=json.load(f)
