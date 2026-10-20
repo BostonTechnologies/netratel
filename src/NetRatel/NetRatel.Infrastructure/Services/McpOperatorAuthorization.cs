@@ -126,9 +126,35 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
             .ToArray();
         var matching = targetMatches
             .Where(policy => OperationMatches(policy, request))
-            .ToArray();
+            .ToList();
 
-        if (matching.Length == 0)
+        // The policy mutation API binds preview and confirmation to one stable
+        // canonical decision. Reviews made before canonical policy attachment
+        // issued separate phase policies. Honor those only as a complete,
+        // unexpired pair from the same review so neither phase is a shortcut.
+        if (CanonicalPolicyMutationPhases(request.Operation) is { } phases)
+        {
+            var reviewed = targetMatches.Where(policy => policy.ExpiresAtUtc is null || policy.ExpiresAtUtc > now).ToArray();
+            foreach (var preview in reviewed.Where(policy => policy.Operation == phases.Preview &&
+                         (policy.OperationFamily & request.OperationFamily) == request.OperationFamily))
+            {
+                var reviewId = PairingReviewId(preview.AuditReference);
+                if (reviewId is null) continue;
+                var confirm = reviewed.FirstOrDefault(policy => policy.Operation == phases.Confirm &&
+                    (policy.OperationFamily & request.OperationFamily) == request.OperationFamily &&
+                    PairingReviewId(policy.AuditReference) == reviewId &&
+                    policy.PrincipalSelectorKind == preview.PrincipalSelectorKind &&
+                    policy.PrincipalSelectorValue == preview.PrincipalSelectorValue &&
+                    policy.TargetSelectorKind == preview.TargetSelectorKind &&
+                    policy.TenantId == preview.TenantId && policy.AgentId == preview.AgentId &&
+                    policy.TargetClassification == preview.TargetClassification);
+                if (confirm is null) continue;
+                matching.Add(preview);
+                matching.Add(confirm);
+            }
+        }
+
+        if (matching.Count == 0)
         {
             if (targetSelectorMatches.Length > 0 && targetMatches.Length == 0)
                 return McpOperatorDecision.Denied(request, "target_classification_denied", McpOperatorAuthorizationLayer.Policy);
@@ -140,7 +166,7 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
             .Where(policy => policy.ExpiresAtUtc is null || policy.ExpiresAtUtc > now)
             .ToArray();
 
-        if (matching.Length > 0 && active.Length == 0)
+        if (matching.Count > 0 && active.Length == 0)
         {
             return McpOperatorDecision.Denied(
                 request,
@@ -322,6 +348,23 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
     private static bool OperationMatches(McpOperatorPolicyRecord policy, McpOperatorAccessRequest request) =>
         (policy.OperationFamily & request.OperationFamily) == request.OperationFamily &&
         (policy.Operation is null || string.Equals(policy.Operation, request.Operation, StringComparison.Ordinal));
+
+    private static (string Preview, string Confirm)? CanonicalPolicyMutationPhases(string operation) => operation switch
+    {
+        "netratel_policy/create" => ("netratel_policy/preview_create", "netratel_policy/confirm_create"),
+        "netratel_policy/replace" => ("netratel_policy/preview_replace", "netratel_policy/confirm_replace"),
+        "netratel_policy/disable" => ("netratel_policy/preview_disable", "netratel_policy/confirm_disable"),
+        "netratel_policy/revoke" => ("netratel_policy/preview_revoke", "netratel_policy/confirm_revoke"),
+        "netratel_policy/upsert_target_profile" => ("netratel_policy/preview_target_profile", "netratel_policy/confirm_target_profile"),
+        _ => null
+    };
+
+    private static string? PairingReviewId(string? auditReference)
+    {
+        if (auditReference is null || !auditReference.StartsWith("pairing:", StringComparison.Ordinal)) return null;
+        var separator = auditReference.IndexOf(':', "pairing:".Length);
+        return separator > "pairing:".Length ? auditReference[..separator] : null;
+    }
 
     private static McpOperatorConstraints? ReadConstraints(string json)
     {
