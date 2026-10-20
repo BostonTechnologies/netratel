@@ -79,7 +79,7 @@ public sealed class TenantUpdateChannelTests : AsyncBunitContext
         policy.Instance.Value.Should().Be(originalPin is not null);
         await dialogs.InvokeAsync(() => policy.Instance.ValueChanged.InvokeAsync(pinEnabled));
         if (pinEnabled)
-            await dialogs.InvokeAsync(() => dialogs.Find("[data-testid='tenant-target-version-input'] input").Input(enteredPin));
+            await dialogs.InvokeAsync(() => dialogs.Find("input[data-testid='tenant-target-version-input']").Input(enteredPin));
         await dialogs.InvokeAsync(() => dialogs.FindAll("button").Single(button => button.TextContent.Trim() == "Save Changes").Click());
 
         page.WaitForAssertion(() => transport.Updated.Should().NotBeNull());
@@ -111,7 +111,7 @@ public sealed class TenantUpdateChannelTests : AsyncBunitContext
         dialogs.WaitForAssertion(() => dialogs.FindComponent<TenantEditorDialog>().Should().NotBeNull());
         await dialogs.InvokeAsync(() => dialogs.Find("input").Input("New tenant"));
         await dialogs.InvokeAsync(() => dialogs.FindComponent<MudSelect<bool>>().Instance.ValueChanged.InvokeAsync(true));
-        await dialogs.InvokeAsync(() => dialogs.Find("[data-testid='tenant-target-version-input'] input").Input(target));
+        await dialogs.InvokeAsync(() => dialogs.Find("input[data-testid='tenant-target-version-input']").Input(target));
         await dialogs.InvokeAsync(() => dialogs.FindAll("button").Single(button => button.TextContent.Trim() == "Create Tenant").Click());
         dialogs.WaitForAssertion(() => dialogs.FindComponent<TenantEditorDialog>().Markup.Should().Contain(error));
         dialogs.FindComponent<MudForm>().Instance.IsValid.Should().BeFalse();
