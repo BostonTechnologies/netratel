@@ -1,5 +1,65 @@
 # Configuration and authentication
 
+- [Choose login method](#choose-login-method)
+- [Enable local login on an existing SSO instance](#enable-local-login-on-an-existing-sso-instance)
+- [Required persistent state](#required-persistent-state)
+
+## Choose login method
+
+| Application key | Container environment | Supplied Compose `.env` input | Services | Values and behavior |
+| --- | --- | --- | --- | --- |
+| `Authentication:Mode` | `Authentication__Mode` | `NETRATEL_AUTHENTICATION_MODE` | **API and Web** | `Local`: password; `Oidc`: SSO; `Hybrid`: both; `Auto` (default): OIDC when supported OIDC/compatibility configuration or client-secret variables are present, otherwise Local. `Auto` does not enable both. |
+
+The supplied source/image Compose recipes map the `.env` input to the application
+variable. A custom Compose stack needs the `Authentication__Mode` entry itself;
+setting `NETRATEL_AUTHENTICATION_MODE` alone has no effect without that mapping.
+OIDC and Hybrid also require complete [OIDC configuration](#interactive-browser-authentication).
+
+## Enable local login on an existing SSO instance
+
+In the deployment terminal on the Docker host, preserve the existing Compose
+configuration and add this environment entry to **both** services:
+
+```yaml
+services:
+  api:
+    environment:
+      Authentication__Mode: Hybrid
+  web:
+    environment:
+      Authentication__Mode: Hybrid
+```
+
+For a supplied source/image recipe, edit its `.env` instead:
+
+```dotenv
+NETRATEL_AUTHENTICATION_MODE=Hybrid
+```
+
+From that stack's directory, use the same `--env-file`, `-f` files and project
+options used to deploy it, then recreate both services. For the supplied image bundle:
+
+```sh
+docker compose --env-file .env -f compose.images.yaml up -d --force-recreate api web
+```
+
+A restart alone does not apply changed Compose environment values. Docker Engine
+and Compose v2 installation prerequisites are in [self-hosting](SELF_HOSTING.md).
+Open `/login` in a fresh browser session: **email/password and SSO sign-in** should
+both be visible.
+
+Account creation, activation/password setup, role assignment and enabling the
+login method are separate steps. Follow [first-run and account administration](FIRST_RUN_SETUP.md)
+for the first three; the mode above controls the available sign-in methods.
+
+| Symptom | Check |
+| --- | --- |
+| Local user exists but no password form | Check API and Web authentication mode; use `Hybrid` for both methods, then recreate both containers. |
+| Password form appears but access is denied | Check account activation, password and assigned roles in account administration. |
+
+Advanced deployment and operational settings follow.
+
+
 NetRatel reads standard .NET configuration providers. Use environment
 variables, a deployment secret mechanism, or mounted configuration files for
 instance-specific values. The repository examples use reserved placeholders and
@@ -279,6 +339,18 @@ usual Azure-compatible authority path.
 `Authentication:Azure`, `AzureAd`, `Authorization:Azure:AdminGroupId`, and
 `AZURE_CLIENT_SECRET` remain temporary compatibility aliases for existing
 deployments. New deployments must use the `Oidc` settings above.
+
+For investigation execution, the API records bounded role/group facts only from
+its validated OIDC identity, keyed by verified issuer and subject. This path
+requires the provider access token to include `iat` and `exp`. Saved authority
+expires with the access token and is checked against current operator-group
+configuration on every worker admission. A newer token without the group/role
+withdraws the saved authority; older tokens cannot restore it. Existing scoped
+NetRatel role assignments remain the durable alternative for work beyond token
+expiry. An expired proof pauses/denies execution until fresh sign-in or a current
+role assignment. Integration credentials remain restricted to their current
+tenant grants and expiry/revocation state. IdP revocation follows the provider's
+access-token lifetime; no provider administration API is consulted.
 
 OIDC discovery, issuer, audience, signing key, and lifetime validation remain
 enabled. Identity-provider-specific administration APIs are not required for

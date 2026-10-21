@@ -16,5 +16,11 @@ public sealed class ApplicationPrincipal
 
     public string? ExternalSubject { get; set; }
 
+    // Only the API's validated OIDC identity writes these bounded authority facts.
+    // They expire with that token and are re-evaluated against current configuration.
+    public string? ExternalAuthorityClaimsJson { get; set; }
+    public DateTimeOffset? ExternalAuthorityIssuedAtUtc { get; set; }
+    public DateTimeOffset? ExternalAuthorityExpiresAtUtc { get; set; }
+
     public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
 }

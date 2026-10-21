@@ -218,6 +218,33 @@ public sealed class WebGatewayConfigurationTests
     }
 
     [Fact]
+    public async Task Scalar_target_administration_preserves_account_cookie_and_API_denials()
+    {
+        var target = "/api/v2/mcp-operator/targets/17/" + Guid.NewGuid();
+        string? cookie = null;
+        await using var backend = await Backend(async context =>
+        {
+            cookie = context.Request.Headers.Cookie.ToString();
+            // The backend remains responsible for account authorization and CSRF checks.
+            context.Response.StatusCode = cookie == "account=authorized" ? 200 : 403;
+            await context.Response.WriteAsync(context.Request.Path + "|" + context.Request.Method);
+        });
+        var source = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["ApiBaseUrl"] = Address(backend) }).Build();
+        await using var proxy = await Proxy(source);
+        using var client = proxy.GetTestClient();
+        using var denied = await client.PutAsync(target, new StringContent("{}"));
+        denied.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        using var request = new HttpRequestMessage(HttpMethod.Put, target) { Content = new StringContent("{}") };
+        request.Headers.Add("Cookie", "account=authorized");
+        using var response = await client.SendAsync(request);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await response.Content.ReadAsStringAsync()).Should().Be(target + "|PUT");
+        cookie.Should().Be("account=authorized");
+        using var unknown = await client.GetAsync("/api/v2/mcp-operator/unlisted");
+        unknown.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
     public async Task Selected_unavailable_MCP_returns_502_and_disabled_MCP_returns_404()
     {
         var backend = await Backend(context => context.Response.WriteAsync("ready"));

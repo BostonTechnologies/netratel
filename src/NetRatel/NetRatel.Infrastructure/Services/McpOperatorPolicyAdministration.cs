@@ -193,6 +193,9 @@ public sealed class McpOperatorPolicyAdministration(OrchestratorDbContext db) : 
         record.Version++;
         AddChangeAudit("policy_replaced", record.TenantId, record.Id, null, record.Version, actorId.Trim(), DateTimeOffset.UtcNow);
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        // Finish readback after a successful save even if the caller disconnects,
+        // so confirmation can preserve the durable success receipt.
+        await _db.Entry(record).ReloadAsync(CancellationToken.None).ConfigureAwait(false);
         return ToPolicy(record);
     }
 
@@ -367,8 +370,8 @@ public sealed class McpOperatorPolicyAdministration(OrchestratorDbContext db) : 
         record.OperationFamily = draft.OperationFamily;
         record.Operation = string.IsNullOrWhiteSpace(draft.Operation) ? null : draft.Operation.Trim();
         record.ConstraintsJson = JsonSerializer.Serialize(draft.Constraints, McpOperatorJsonContext.Default.McpOperatorConstraints);
-        record.ExpiresAtUtc = draft.ExpiresAtUtc;
-        record.ReviewByUtc = draft.ReviewByUtc;
+        record.ExpiresAtUtc = draft.ExpiresAtUtc?.ToUniversalTime();
+        record.ReviewByUtc = draft.ReviewByUtc?.ToUniversalTime();
         record.AuditReference = string.IsNullOrWhiteSpace(draft.AuditReference) ? null : draft.AuditReference.Trim();
     }
 

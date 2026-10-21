@@ -192,6 +192,12 @@ public static class WebGatewayConfiguration
         foreach (var operation in new[] { "authenticate", "exchange" })
             Route($"mcpLocalDelegation{operation}Route", $"/api/v2/mcp/local-delegation/{operation}", false, "POST");
         Route("mcpReviewedAccessStartRoute", "/api/v2/mcp/local-delegation/access/start", false, "POST");
+        // Account-backed administration used by the same-origin Scalar client.
+        // Keep these explicit: the rest of /api/v2 remains private by default.
+        Route("mcpPolicyAdministrationRoute", "/api/v2/mcp-operator/policies/{**catch-all}", true, "GET", "POST", "PUT");
+        Route("mcpTargetAdministrationRoute", "/api/v2/mcp-operator/targets/{tenantId:int}/{agentId:guid}", true, "GET", "PUT");
+        Route("mcpPolicyAuditsRoute", "/api/v2/mcp-operator/audits", true, "GET");
+        Route("mcpAcceptedAuditsRoute", "/api/v2/mcp-operator/accepted-audits", true, "GET");
         Route("mcpOperatorApiRoute", "/api/v2/mcp/operator/{**catch-all}", true);
         Route("mcpDevelopmentApiRoute", "/api/v2/development/mcp/{**catch-all}", true);
         Route("agentTasksRoute", "/api/v2/tasks/{**catch-all}", true);

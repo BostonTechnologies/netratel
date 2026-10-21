@@ -70,8 +70,8 @@ public sealed class NetclawApiService(IHttpClientFactory factory) : INetclawApiS
                 HttpStatusCode.NotFound => "The investigation or connection is unavailable in this tenant.", _ => "The request failed. Reload the saved state before trying again." };
             if (response.Content.Headers.ContentLength is <= 8192)
             {
-                try { var error = await response.Content.ReadFromJsonAsync<JsonElement>(timeout.Token); if (error.TryGetProperty("message", out var text) && text.GetString() is { Length: > 0 and < 1024 } detail) message = detail; }
-                catch (JsonException) { message = "The API returned an unreadable response. Reload the saved state."; }
+                try { var error = await response.Content.ReadFromJsonAsync<JsonElement>(timeout.Token); if (error.ValueKind == JsonValueKind.Object && error.TryGetProperty("message", out var text) && text.ValueKind == JsonValueKind.String && text.GetString() is { Length: > 0 and < 1024 } detail) message = detail; }
+                catch (JsonException) { /* Preserve the status-specific message for empty or non-JSON errors. */ }
             }
             throw new HttpRequestException(message, null, response.StatusCode);
         }
