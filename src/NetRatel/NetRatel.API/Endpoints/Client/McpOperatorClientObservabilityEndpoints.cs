@@ -579,7 +579,7 @@ public static class McpOperatorClientObservabilityEndpoints
             McpOperatorEnvironment.Production => "prod",
             _ => null
         };
-        var access = McpOperationAccessCatalog.Find(LogTool, "resync");
+        var access = McpOperationAccessCatalog.Find(LogTool, delegatedOperation);
         if (operatorEnvironment is null || expectedInstance is null || access is null ||
             !string.Equals(delegation.Instance, expectedInstance, StringComparison.Ordinal) ||
             !string.Equals(delegation.Tool, LogTool, StringComparison.Ordinal) ||
