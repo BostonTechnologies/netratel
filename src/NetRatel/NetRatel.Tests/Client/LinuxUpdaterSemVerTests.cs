@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Formats.Tar;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -8,8 +9,10 @@ namespace NetRatel.Tests.Client;
 
 public sealed class LinuxUpdaterSemVerTests
 {
-    [Fact]
-    public async Task IncreasingPrereleaseInstallsVerifiedPackageAndAcceptsReadiness()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task IncreasingPrereleaseInstallsVerifiedPackageAndAcceptsReadiness(bool repairInstalledHelper)
     {
         if (!OperatingSystem.IsLinux()) return;
 
@@ -77,6 +80,32 @@ public sealed class LinuxUpdaterSemVerTests
 
             var repositoryRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../../"));
             var updater = Path.Combine(repositoryRoot, "src/NetRatel/NetRatel.Client/tools/netratel-update.sh");
+            if (repairInstalledHelper)
+            {
+                var packaged = Path.Combine(root, "netratel-client-linux-x64");
+                Directory.CreateDirectory(Path.Combine(packaged, "updater"));
+                using (var zip = ZipFile.OpenRead(packagePath))
+                    zip.GetEntry("netratel-client-manifest.json")!.ExtractToFile(Path.Combine(packaged, "netratel-client-manifest.json"));
+                File.Copy(updater, Path.Combine(packaged, "updater", "netratel-update.sh"));
+                var archivePath = Path.Combine(root, "repair.tar.gz");
+                using (var compressed = new GZipStream(File.Create(archivePath), CompressionMode.Compress))
+                    TarFile.CreateFromDirectory(packaged, compressed, includeBaseDirectory: true);
+                var archiveHash = Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(archivePath)));
+                var installed = Path.Combine(root, "installed-updater.sh");
+                const string legacy = "#!/usr/bin/env bash\nunzip -q candidate.zip\n";
+                await File.WriteAllTextAsync(installed, legacy);
+                var repair = new ProcessStartInfo("python3") { RedirectStandardError = true, RedirectStandardOutput = true };
+                foreach (var argument in new[] { Path.Combine(repositoryRoot, "src/NetRatel/NetRatel.Client/tools/repair-linux-updater.py"),
+                    "--archive", archivePath, "--sha256", archiveHash, "--updater", installed, "--lock", Path.Combine(state, "update.lock") })
+                    repair.ArgumentList.Add(argument);
+                repair.Environment["PATH"] = $"{bin}:/usr/bin:/bin";
+                using var repaired = Process.Start(repair)!;
+                await repaired.WaitForExitAsync();
+                Assert.True(repaired.ExitCode == 0, await repaired.StandardError.ReadToEndAsync());
+                Assert.Equal(legacy, await File.ReadAllTextAsync(Assert.Single(Directory.GetFiles(root, "*.before-repair.*"))));
+                Assert.Equal(await File.ReadAllBytesAsync(updater), await File.ReadAllBytesAsync(installed));
+                updater = installed;
+            }
             var start = new ProcessStartInfo("bash")
             {
                 RedirectStandardError = true,

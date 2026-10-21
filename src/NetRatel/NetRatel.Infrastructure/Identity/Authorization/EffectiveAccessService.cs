@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 
@@ -56,7 +57,7 @@ public sealed class EffectiveAccessService(NetRatelIdentityDbContext db, IConfig
     {
         if (principal.HasClaim("token_use", "netratel_service") || principal.HasClaim("auth_mode", "service"))
             return new(null, false, false, new HashSet<string>(StringComparer.Ordinal));
-        if (IsLegacyOperator(principal))
+        if (!principal.HasClaim(x => x.Type == IntegrationCredentialIdClaimType) && IsLegacyOperator(principal))
         {
             return new(null, true, true, NetRatelPermissions.All);
         }
@@ -82,7 +83,7 @@ public sealed class EffectiveAccessService(NetRatelIdentityDbContext db, IConfig
             return new(principalId, false, false, new HashSet<string>(StringComparer.Ordinal));
         }
 
-        if (credential is not null && await db.Users.AsNoTracking().AnyAsync(user =>
+        if (await db.Users.AsNoTracking().AnyAsync(user =>
                 user.PrincipalId == principalId && !user.IsEnabled, cancellationToken).ConfigureAwait(false))
         {
             return new(principalId, false, false, new HashSet<string>(StringComparer.Ordinal));
@@ -93,6 +94,17 @@ public sealed class EffectiveAccessService(NetRatelIdentityDbContext db, IConfig
             .Select(user => user.IsInstanceAdministrator)
             .SingleOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        var externalOperator = false;
+        if (principal.Identity?.AuthenticationType == "NetclawSavedAuthority")
+        {
+            var saved = await db.ApplicationPrincipals.AsNoTracking().SingleOrDefaultAsync(x => x.Id == principalId, cancellationToken).ConfigureAwait(false);
+            if (saved?.ExternalAuthorityExpiresAtUtc > DateTimeOffset.UtcNow && saved.ExternalAuthorityClaimsJson is { } json)
+            {
+                var facts = JsonSerializer.Deserialize<ExternalAuthorityClaim[]>(json) ?? [];
+                externalOperator = IsLegacyOperator(new ClaimsPrincipal(new ClaimsIdentity(facts.Select(x => new Claim(x.Type, x.Value)), "ValidatedOidcAuthority")));
+            }
+        }
 
         var assignments = await db.PrincipalRoleAssignments
             .AsNoTracking()
@@ -115,7 +127,7 @@ public sealed class EffectiveAccessService(NetRatelIdentityDbContext db, IConfig
 
         if (credential is not null)
         {
-            if (localInstanceAdministrator || assignedInstanceAdministrator)
+            if (localInstanceAdministrator || assignedInstanceAdministrator || externalOperator)
             {
                 permissions = NetRatelPermissions.All.ToHashSet(StringComparer.Ordinal);
             }
@@ -131,7 +143,7 @@ public sealed class EffectiveAccessService(NetRatelIdentityDbContext db, IConfig
             return new(principalId, false, false, permissions);
         }
 
-        return new(principalId, false, localInstanceAdministrator || assignedInstanceAdministrator, permissions);
+        return new(principalId, false, localInstanceAdministrator || assignedInstanceAdministrator || externalOperator, permissions);
     }
 
     public async Task<int[]?> GetAuthorizedTenantIdsAsync(ClaimsPrincipal principal, string permission, CancellationToken cancellationToken = default)

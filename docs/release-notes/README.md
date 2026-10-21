@@ -17,3 +17,5 @@ These notes describe the named release and preserve historical status. [Release 
 - [NetRatel 0.1.0-rc.14](RELEASE_NOTES_0.1.0-rc.14.md)
 - [NetRatel 0.1.0-rc.5](RELEASE_NOTES_0.1.0-rc.5.md)
 - [NetRatel 0.1.0-rc.6 candidate](RELEASE_NOTES_0.1.0-rc.6.md)
+
+- [Beta.44 operator and login fixes](beta44.md)

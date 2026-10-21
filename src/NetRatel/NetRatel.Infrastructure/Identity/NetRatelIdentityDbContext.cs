@@ -51,6 +51,7 @@ public sealed class NetRatelIdentityDbContext(DbContextOptions<NetRatelIdentityD
             entity.Property(principal => principal.LocalUserId).HasMaxLength(450);
             entity.Property(principal => principal.ExternalIssuer).HasMaxLength(2048);
             entity.Property(principal => principal.ExternalSubject).HasMaxLength(512);
+            entity.Property(principal => principal.ExternalAuthorityClaimsJson).HasMaxLength(131072);
             entity.HasIndex(principal => principal.LocalUserId).IsUnique();
             entity.HasIndex(principal => new { principal.ExternalIssuer, principal.ExternalSubject }).IsUnique();
         });

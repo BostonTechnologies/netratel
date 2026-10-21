@@ -13,7 +13,7 @@ public sealed class LocalPrincipalClaimsTransformation(IApplicationPrincipalReso
     {
         var identity = principal.Identities.OfType<ClaimsIdentity>().FirstOrDefault(candidate =>
             candidate.IsAuthenticated && string.Equals(candidate.AuthenticationType, "Oidc", StringComparison.Ordinal));
-        if (identity is null || identity.HasClaim(claim => claim.Type == PrincipalIdClaimType))
+        if (identity is null)
         {
             return principal;
         }
@@ -21,6 +21,8 @@ public sealed class LocalPrincipalClaimsTransformation(IApplicationPrincipalReso
         var principalId = await principals.ResolveExternalAsync(principal).ConfigureAwait(false);
         if (!string.IsNullOrWhiteSpace(principalId))
         {
+            // This identifier belongs to NetRatel, never to provider-supplied claims.
+            foreach (var incoming in identity.FindAll(PrincipalIdClaimType).ToArray()) identity.RemoveClaim(incoming);
             identity.AddClaim(new Claim(PrincipalIdClaimType, principalId));
         }
 

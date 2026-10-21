@@ -163,6 +163,16 @@ namespace NetRatel.Infrastructure.Identity.Migrations
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("ExternalAuthorityClaimsJson")
+                        .HasMaxLength(131072)
+                        .HasColumnType("character varying(131072)");
+
+                    b.Property<DateTimeOffset?>("ExternalAuthorityExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("ExternalAuthorityIssuedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("ExternalIssuer")
                         .HasMaxLength(2048)
                         .HasColumnType("character varying(2048)");
