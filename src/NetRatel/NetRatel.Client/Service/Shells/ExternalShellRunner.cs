@@ -509,10 +509,16 @@ namespace NetRatel.Client.Service.Shells
         }
 
         [SupportedOSPlatform("windows")]
-        private static void EnsureWindowsPrivateDirectory(string path, SecurityIdentifier owner)
+        internal static void EnsureWindowsPrivateDirectory(string path, SecurityIdentifier owner)
         {
             if (Directory.Exists(path))
             {
+                // A pre-existing LocalSystem AppData root can inherit only SYSTEM and
+                // Administrators ACEs. Verify its owner, path and every readable ACE
+                // before replacing that inheritance with the canonical private ACL.
+                ValidateWindowsPrivateDirectory(path, owner, protectContents: true, requireProtected: false);
+                if (!new DirectoryInfo(path).GetAccessControl().AreAccessRulesProtected)
+                    ProtectWindowsPrivateDirectory(path);
                 ValidateWindowsPrivateDirectory(path, owner, protectContents: true);
                 return;
             }
@@ -523,7 +529,7 @@ namespace NetRatel.Client.Service.Shells
         }
 
         [SupportedOSPlatform("windows")]
-        private static void ValidateWindowsPrivateDirectory(string path, SecurityIdentifier owner, bool protectContents)
+        private static void ValidateWindowsPrivateDirectory(string path, SecurityIdentifier owner, bool protectContents, bool requireProtected = true)
         {
             var info = new DirectoryInfo(path);
             if (!info.Exists || (info.Attributes & FileAttributes.ReparsePoint) != 0)
@@ -537,7 +543,7 @@ namespace NetRatel.Client.Service.Shells
                 throw new UnauthorizedAccessException("A private temporary directory is not owned by the current Windows identity.");
             }
 
-            if (protectContents && !security.AreAccessRulesProtected)
+            if (protectContents && requireProtected && !security.AreAccessRulesProtected)
             {
                 throw new UnauthorizedAccessException("A private temporary directory must not inherit access rules from its parent.");
             }
