@@ -8,6 +8,7 @@ namespace NetRatel.Application.Monitoring;
 /// <summary>Pure per-series decisions. Persistence owns serialization, uniqueness, authorization and dispatch leases.</summary>
 public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Guid>? nextId = null)
 {
+    private static readonly TimeSpan ClientObservationClockTolerance = TimeSpan.FromMilliseconds(250);
     private readonly Func<Guid> _nextId = nextId ?? Guid.NewGuid;
 
     public MonitoringSeriesState CreateInitial(MonitoringSeriesKey series, MonitoringRuleDto rule)
@@ -387,9 +388,11 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
     {
         var offline = MonitoringOfflinePresentation.IsSeries(state.Series);
         var freshness = offline ? MonitoringOfflinePresentation.SnapshotFreshness : rule.FreshnessBudget;
+        var observedClockTolerance = ObservedClockTolerance(rule, offline);
         var reason = collectionReason ?? (!observation.Complete ? "partial" : !observation.Supported ? "unsupported" :
             observation.ObservedAtUtc == default || observation.ReceivedAtUtc == default ? "invalid_clock" :
-            observation.ObservedAtUtc > now || observation.ReceivedAtUtc > now || observation.ObservedAtUtc > observation.ReceivedAtUtc ? "future_clock" :
+            observation.ObservedAtUtc > now + observedClockTolerance || observation.ReceivedAtUtc > now ||
+                observation.ObservedAtUtc > observation.ReceivedAtUtc + observedClockTolerance ? "future_clock" :
             now - observation.ObservedAtUtc > freshness || now - observation.ReceivedAtUtc > freshness ? "stale" :
             state.NotBeforeObservedAtUtc is { } observedFence && observation.ObservedAtUtc <= observedFence ? "before_evaluation_fence" :
             state.NotBeforeReceivedAtUtc is { } receivedFence && observation.ReceivedAtUtc <= receivedFence ? "before_receipt_fence" :
@@ -483,9 +486,14 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
         current is null || incoming.ConnectionEpoch > current.ConnectionEpoch || (incoming.ConnectionEpoch == current.ConnectionEpoch && incoming.Sequence > current.Sequence);
 
     private static bool IsCurrentFresh(MonitoringEvidenceDto? evidence, MonitoringRuleDto rule, DateTimeOffset now) =>
-        evidence is { Quality: MonitoringEvidenceQuality.Fresh } && evidence.ObservedAtUtc <= now && evidence.ReceivedAtUtc <= now &&
+        evidence is { Quality: MonitoringEvidenceQuality.Fresh } &&
+        evidence.ObservedAtUtc <= now + ObservedClockTolerance(rule, evidence.OfflineSummary is not null) && evidence.ReceivedAtUtc <= now &&
         now - evidence.ObservedAtUtc <= (evidence.OfflineSummary is null ? rule.FreshnessBudget : MonitoringOfflinePresentation.SnapshotFreshness) &&
         now - evidence.ReceivedAtUtc <= (evidence.OfflineSummary is null ? rule.FreshnessBudget : MonitoringOfflinePresentation.SnapshotFreshness);
+
+    private static TimeSpan ObservedClockTolerance(MonitoringRuleDto rule, bool offline) =>
+        !offline && rule.Condition.Kind is MonitoringMetricKind.CpuUsagePercent or MonitoringMetricKind.ServiceExpectedState
+            ? ClientObservationClockTolerance : TimeSpan.Zero;
 
     private static bool HasOpenOccurrence(MonitoringSeriesState state) => state.Occurrence is { EndedAtUtc: null };
 

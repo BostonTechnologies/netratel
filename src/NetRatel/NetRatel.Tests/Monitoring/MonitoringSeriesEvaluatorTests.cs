@@ -148,6 +148,27 @@ public void ClockValidation()
     Check(s.State.LatestEvidence!.UnknownReason == "reordered_clock");
 }
 [Fact]
+public void Small_client_observation_clock_lead_preserves_freshness_and_breach_window()
+{
+    var s = new Scenario();
+    foreach (var at in new[] { 0, 20, 40, 60 })
+    {
+        s.Clock.Set(at);
+        var observation = s.Observation(at, 95) with { ObservedAtUtc = s.Clock.At(at).AddMilliseconds(35) };
+        s.Apply(s.Evaluator.Evaluate(s.State, s.Rule, observation, s.Epoch, s.StreamId, []));
+        Check(s.State.EvidenceQuality == MonitoringEvidenceQuality.Fresh);
+        s.Apply(s.Evaluator.Refresh(s.State, s.Rule, [], s.StreamId));
+        Check(s.State.EvidenceQuality == MonitoringEvidenceQuality.Fresh);
+    }
+    Check(s.Raises == 1);
+
+    s.Clock.Set(80);
+    var materiallyFuture = s.Observation(80, 95) with { ObservedAtUtc = s.Clock.At(80).AddMilliseconds(300) };
+    s.Apply(s.Evaluator.Evaluate(s.State, s.Rule, materiallyFuture, s.Epoch, s.StreamId, []));
+    Check(s.State.LatestEvidence!.UnknownReason == "future_clock");
+    Check(s.Raises == 1);
+}
+[Fact]
 public void Clear()
 {
     var s = new Scenario(action: true); s.Fire(); var first = s.State.Occurrence!.OccurrenceId;
