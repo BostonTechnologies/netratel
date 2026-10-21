@@ -44,6 +44,7 @@ public sealed class CommandCancellationTests
     }
 
     [Fact]
+    [Trait("Category", "manual-integration")]
     [SupportedOSPlatform("windows")]
     public void Existing_windows_private_root_with_safe_inherited_aces_is_protected_but_unsafe_aces_are_rejected()
     {
