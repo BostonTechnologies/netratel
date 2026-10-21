@@ -299,7 +299,10 @@ internal sealed class WindowsEventLogPlatform : IWindowsEventLogPlatform
         if (!OperatingSystem.IsWindows()) yield break;
         var events = Channel.CreateUnbounded<WindowsEventLogWatchItem>(new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
         using var session = new EventLogSession();
+        // EventLogWatcher rejects reverse-order queries. History uses newest-first
+        // reads, while a watcher must subscribe in forward event order.
         var query = CreateQuery(session, channel);
+        query.ReverseDirection = false;
         using var watcher = new EventLogWatcher(query);
         EventHandler<EventRecordWrittenEventArgs>? handler = (_, args) =>
         {
