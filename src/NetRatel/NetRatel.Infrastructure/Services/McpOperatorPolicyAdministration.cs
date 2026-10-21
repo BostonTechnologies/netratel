@@ -193,7 +193,9 @@ public sealed class McpOperatorPolicyAdministration(OrchestratorDbContext db) : 
         record.Version++;
         AddChangeAudit("policy_replaced", record.TenantId, record.Id, null, record.Version, actorId.Trim(), DateTimeOffset.UtcNow);
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        await _db.Entry(record).ReloadAsync(cancellationToken).ConfigureAwait(false);
+        // Finish readback after a successful save even if the caller disconnects,
+        // so confirmation can preserve the durable success receipt.
+        await _db.Entry(record).ReloadAsync(CancellationToken.None).ConfigureAwait(false);
         return ToPolicy(record);
     }
 
