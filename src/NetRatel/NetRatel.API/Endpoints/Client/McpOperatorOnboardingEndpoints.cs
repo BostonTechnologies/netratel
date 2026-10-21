@@ -158,8 +158,9 @@ public static class McpOperatorOnboardingEndpoints
             await authorization.RecordAcceptedAsync(context.Decision, context.ServicePrincipal, cancellationToken).ConfigureAwait(false);
             var collateral = await artifacts.GetLatestAsync(runtime, cancellationToken).ConfigureAwait(false);
             if (collateral is null) return Failure("onboarding_collateral_not_found", context);
-            var policyMaximum = context.Decision.EffectiveConstraints?.MaxArtifactBytes ?? MaximumCollateralDownloadBytes;
-            if (policyMaximum < 0 || collateral.Size > policyMaximum) return Failure("onboarding_collateral_download_too_large", context);
+            var policyMaximum = context.Decision.EffectiveConstraints?.MaxArtifactBytes;
+            if (policyMaximum is { } maximum && (maximum < 0 || collateral.Size > maximum))
+                return Failure("onboarding_collateral_download_too_large", context);
             if (collateral.Size > MaximumCollateralDownloadBytes)
             {
                 // Installer bytes belong in an authenticated binary transfer, not an LLM context.
@@ -171,7 +172,7 @@ public static class McpOperatorOnboardingEndpoints
                     Download = new(path, "GET", tenantId, "X-NetRatel-Tenant-Id", "X-NetRatel-Enrollment-Code")
                 });
             }
-            var maximumBytes = Math.Min(MaximumCollateralDownloadBytes, policyMaximum);
+            var maximumBytes = Math.Min(MaximumCollateralDownloadBytes, policyMaximum ?? MaximumCollateralDownloadBytes);
             var download = await artifacts.DownloadRawAsync(runtime, collateral.Version, cancellationToken).ConfigureAwait(false);
             await using var content = download.Content;
             var bytes = await ReadBoundedAsync(content, maximumBytes, cancellationToken).ConfigureAwait(false);
