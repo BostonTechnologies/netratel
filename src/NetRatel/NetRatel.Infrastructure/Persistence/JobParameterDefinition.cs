@@ -6,6 +6,8 @@ public sealed class JobParameterDefinition
     public long JobId { get; set; }
     public JobDefinition Job { get; set; } = null!;
     public string Name { get; set; } = string.Empty;
+    public string? Label { get; set; }
+    public int SortOrder { get; set; }
     public string Type { get; set; } = "string";
     public bool Required { get; set; }
     public string? DefaultValue { get; set; }

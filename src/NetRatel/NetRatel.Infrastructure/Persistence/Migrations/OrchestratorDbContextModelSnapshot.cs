@@ -2844,6 +2844,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<long>("JobId")
                         .HasColumnType("bigint");
 
+                    b.Property<string>("Label")
+                        .HasColumnType("text");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("text");
@@ -2853,6 +2856,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
                     b.Property<bool>("Required")
                         .HasColumnType("boolean");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("integer");
 
                     b.Property<string>("Type")
                         .IsRequired()
