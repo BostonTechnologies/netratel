@@ -537,7 +537,7 @@ public sealed class McpOperatorClientObservabilityEndpointTests
         var admission = app.Services.GetRequiredService<TestAdmission>();
         admission.Evaluated.Select(request => (request.Operation, request.RequiredScopes.Single()))
             .Should().Equal(
-                ("resync", "netratel.mcp.write"),
+                ("resync", "netratel.mcp.observe"),
                 ("resync", "netratel.mcp.write"),
                 ("resync", "netratel.mcp.write"),
                 ("resync", "netratel.mcp.write"));
