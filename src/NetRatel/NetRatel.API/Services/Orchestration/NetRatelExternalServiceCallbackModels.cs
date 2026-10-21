@@ -16,6 +16,13 @@ public sealed class NetRatelExternalServiceCallbackRequest
     public DateTimeOffset? CompletedAtUtc { get; set; }
 }
 
+public enum OrchestrationCallbackDeliveryOutcome
+{
+    Delivered,
+    RetryableFailure,
+    PermanentlyRejected
+}
+
 public interface INetRatelExternalServiceCallbackClient
 {
     Task SendStatusAsync(NetRatelExternalServiceCallbackRequest request, string correlationId, CancellationToken ct = default);
@@ -24,4 +31,10 @@ public interface INetRatelExternalServiceCallbackClient
         await SendStatusAsync(request, correlationId, ct);
         return true;
     }
+
+    async Task<OrchestrationCallbackDeliveryOutcome> TrySendStatusOutcomeAsync(
+        NetRatelExternalServiceCallbackRequest request, string correlationId, CancellationToken ct = default)
+        => await TrySendStatusAsync(request, correlationId, ct)
+            ? OrchestrationCallbackDeliveryOutcome.Delivered
+            : OrchestrationCallbackDeliveryOutcome.RetryableFailure;
 }

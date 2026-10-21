@@ -23,7 +23,8 @@ public sealed class OrchestrationCallbackReconciler(OrchestratorDbContext db, IR
         var bindings = await db.Set<ManagedOrchestrationRequestBinding>().AsNoTracking()
             .Where(x => x.LinkId != null && x.CallbackUrl != null && x.RequestId > afterRequestId &&
                 !db.Set<OrchestrationCallbackDelivery>().Any(delivery => delivery.RequestId == x.RequestId &&
-                    delivery.DeliveredAtUtc != null && (delivery.Phase == "succeeded" || delivery.Phase == "failed")))
+                    (delivery.DeliveredAtUtc != null || delivery.RejectedAtUtc != null) &&
+                    (delivery.Phase == "succeeded" || delivery.Phase == "failed")))
             .OrderBy(x => x.RequestId).Take(16).ToArrayAsync(ct);
         foreach (var binding in bindings)
         {
@@ -70,21 +71,23 @@ public sealed class OrchestrationCallbackReconciler(OrchestratorDbContext db, IR
             try { await db.SaveChangesAsync(ct); }
             catch (DbUpdateException) { db.ChangeTracker.Clear(); return; } // Another replica created the phase.
         }
-        if (delivery.DeliveredAtUtc is not null || delivery.NextAttemptAtUtc > now || delivery.LeaseExpiresAtUtc is { } leaseExpiry && leaseExpiry > now) return;
+        if (delivery.DeliveredAtUtc is not null || delivery.RejectedAtUtc is not null ||
+            delivery.NextAttemptAtUtc > now || delivery.LeaseExpiresAtUtc is { } leaseExpiry && leaseExpiry > now) return;
         var leaseId = Guid.NewGuid();
         delivery.LeaseId = leaseId;
         delivery.LeaseExpiresAtUtc = now.AddMinutes(3);
         delivery.Attempts++;
         delivery.Revision++;
         await db.SaveChangesAsync(ct); // Optimistic CAS wins one current phase lease.
-        var delivered = await callbacks.TrySendStatusAsync(callback, binding.CorrelationId, ct);
+        var outcome = await callbacks.TrySendStatusOutcomeAsync(callback, binding.CorrelationId, ct);
         // The stored phase and run remain the authority even if the process crashes before this ack.
         await db.Entry(delivery).ReloadAsync(ct);
         if (delivery.LeaseId != leaseId) return;
         delivery.LeaseId = null;
         delivery.LeaseExpiresAtUtc = null;
         delivery.NextAttemptAtUtc = clock.GetUtcNow().AddSeconds(15);
-        if (delivered) delivery.DeliveredAtUtc = clock.GetUtcNow();
+        if (outcome == OrchestrationCallbackDeliveryOutcome.Delivered) delivery.DeliveredAtUtc = clock.GetUtcNow();
+        if (outcome == OrchestrationCallbackDeliveryOutcome.PermanentlyRejected) delivery.RejectedAtUtc = clock.GetUtcNow();
         delivery.Revision++;
         await db.SaveChangesAsync(ct);
     }

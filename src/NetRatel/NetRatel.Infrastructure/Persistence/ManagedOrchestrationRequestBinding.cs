@@ -35,6 +35,7 @@ public sealed class OrchestrationCallbackDelivery
     public DateTimeOffset? LeaseExpiresAtUtc { get; set; }
     public DateTimeOffset NextAttemptAtUtc { get; set; }
     public DateTimeOffset? DeliveredAtUtc { get; set; }
+    public DateTimeOffset? RejectedAtUtc { get; set; }
     public int Attempts { get; set; }
 }
 

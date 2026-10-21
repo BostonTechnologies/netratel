@@ -9,8 +9,10 @@ using NetRatel.API.Services.Orchestration;
 using NetRatel.Application.Events;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.RatelDesk;
+using NetRatel.Application.Requests;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Requests;
 using NetRatel.Infrastructure.ServiceIdentity;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Infrastructure.SystemPairing;
@@ -49,13 +51,53 @@ public sealed class NetRatelExternalServiceCallbackClientTests
     public async Task Forbidden_callback_stops_retry_and_records_one_safe_correlated_rejection()
     {
         await using var fixture = await Fixture.CreateAsync(HttpStatusCode.Forbidden);
-        Assert.False(await fixture.Client.TrySendStatusAsync(fixture.Request, "corr-paired"));
+        Assert.Equal(OrchestrationCallbackDeliveryOutcome.PermanentlyRejected,
+            await fixture.Client.TrySendStatusOutcomeAsync(fixture.Request, "corr-paired"));
         Assert.Single(fixture.Http.Callbacks);
         var recorded = Assert.Single(fixture.Events.Values);
         Assert.Equal("DomainEvent.Orchestration.ExternalServiceCallbackRejected", recorded.EventType);
         Assert.Equal("corr-paired", recorded.CorrelationId); Assert.Equal("Warning", recorded.Severity);
         var safe = JsonSerializer.Serialize(recorded);
         Assert.DoesNotContain("owning-layer-fixture-secret", safe); Assert.DoesNotContain("scoped-access-token", safe);
+    }
+
+    [Fact]
+    public async Task Reconciler_persists_peer_rejection_and_does_not_repeat_the_callback()
+    {
+        await using var fixture = await Fixture.CreateAsync(HttpStatusCode.Forbidden);
+        await fixture.AssertReconcilableAsync();
+        var reconciler = fixture.Reconciler();
+        await reconciler.ReconcileBatchAsync(0, CancellationToken.None);
+        var delivery = await fixture.Db.Set<OrchestrationCallbackDelivery>().SingleAsync();
+        Assert.NotNull(delivery.RejectedAtUtc);
+        Assert.Null(delivery.DeliveredAtUtc);
+        Assert.Single(fixture.Http.Callbacks);
+
+        await reconciler.ReconcileBatchAsync(0, CancellationToken.None);
+        Assert.Single(fixture.Http.Callbacks);
+        Assert.Single(fixture.Events.Values);
+    }
+
+    [Fact]
+    public async Task Reconciler_retries_transient_peer_failure_and_acknowledges_recovery()
+    {
+        await using var fixture = await Fixture.CreateAsync(HttpStatusCode.InternalServerError,
+            HttpStatusCode.InternalServerError, HttpStatusCode.InternalServerError,
+            HttpStatusCode.InternalServerError, HttpStatusCode.NoContent);
+        await fixture.AssertReconcilableAsync();
+        var reconciler = fixture.Reconciler();
+        await reconciler.ReconcileBatchAsync(0, CancellationToken.None);
+        var delivery = await fixture.Db.Set<OrchestrationCallbackDelivery>().SingleAsync();
+        Assert.Null(delivery.RejectedAtUtc);
+        Assert.Null(delivery.DeliveredAtUtc);
+        Assert.Equal(4, fixture.Http.Callbacks.Count);
+
+        delivery.NextAttemptAtUtc = DateTimeOffset.UtcNow.AddSeconds(-1);
+        await fixture.Db.SaveChangesAsync();
+        await reconciler.ReconcileBatchAsync(0, CancellationToken.None);
+        Assert.Equal(5, fixture.Http.Callbacks.Count);
+        Assert.NotNull(delivery.DeliveredAtUtc);
+        Assert.Null(delivery.RejectedAtUtc);
     }
 
     [Fact]
@@ -73,13 +115,28 @@ public sealed class NetRatelExternalServiceCallbackClientTests
     }
 
     private sealed class Fixture(OrchestratorDbContext db, NetRatelIdentityDbContext identity,
-        NetRatelExternalServiceCallbackClient client, NetRatelExternalServiceCallbackRequest request, Handler http, Events events) : IAsyncDisposable
+        NetRatelExternalServiceCallbackClient client, NetRatelExternalServiceCallbackRequest request,
+        Handler http, Events events, IRequestService requests, IJobRunService runs,
+        PairingBusinessProfileService profiles) : IAsyncDisposable
     {
         internal OrchestratorDbContext Db => db;
         internal NetRatelExternalServiceCallbackClient Client => client;
         internal NetRatelExternalServiceCallbackRequest Request => request;
         internal Handler Http => http;
         internal Events Events => events;
+        internal async Task AssertReconcilableAsync()
+        {
+            var binding = await db.Set<ManagedOrchestrationRequestBinding>().SingleAsync();
+            var request = await ManagedOrchestrationRecovery.RecoverAsync(db, requests, runs, binding, CancellationToken.None);
+            Assert.NotNull(request);
+            var details = await runs.GetDetailsAsync(8001);
+            Assert.NotNull(details);
+            Assert.True(OrchestrationCallbackProjection.Matches(request, details.Run, binding));
+            Assert.True(await OrchestrationCallbackProjection.TerminalReadyAsync(db, details, CancellationToken.None));
+        }
+        internal OrchestrationCallbackReconciler Reconciler() => new(db, requests, runs,
+            new RequestEventBus(), client, profiles, TimeProvider.System,
+            NullLogger<OrchestrationCallbackReconciler>.Instance);
         internal static async Task<Fixture> CreateAsync(params HttpStatusCode[] statuses)
         {
             var db = new OrchestratorDbContext(new DbContextOptionsBuilder<OrchestratorDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString("N")).Options);
@@ -97,7 +154,8 @@ public sealed class NetRatelExternalServiceCallbackClientTests
             var source = "service:" + credential.Principal.Id.ToString("N");
             var stored = await requests.CreateAsync(new(source, agent.ToString("D"), "7001", "{}", 71, agent));
             await requests.UpdateAsync(new(stored.Id, null, null, null, "8001", "Processing", null, null, null, null));
-            await runs.UpsertRunAsync(new(8001, 7001, 71, agent.ToString("D"), source, JobRunState.Running, 0, now, now, null, null, "{}", null, agent));
+            await runs.UpsertRunAsync(new(8001, 7001, 71, agent.ToString("D"), source, JobRunState.Running, 0, now, now, null, null,
+                JsonSerializer.Serialize(new { meta = new { netratelRequestId = stored.Id.ToString() } }), null, agent));
             db.Add(new ManagedOrchestrationRequestBinding { RequestId = stored.Id, ServicePrincipalId = credential.Principal.Id,
                 LinkId = credential.Principal.LinkId, LinkRevision = credential.Principal.LinkRevision, GrantHash = credential.Principal.GrantHash,
                 PeerInstanceId = credential.Principal.PeerInstanceId, PeerTenantId = credential.Principal.PeerTenantId,
@@ -109,7 +167,7 @@ public sealed class NetRatelExternalServiceCallbackClientTests
             var events = new Events();
             var client = new NetRatelExternalServiceCallbackClient(db, profiles, requests, runs, transport, registry, events, NullLogger<NetRatelExternalServiceCallbackClient>.Instance);
             var request = new NetRatelExternalServiceCallbackRequest { NetRatelRequestId = stored.Id.ToString(), NetRatelRunId = "8001", RequestId = stored.Id.ToString(), RequestTaskId = "parent-task", ExecutionId = "8001", Status = "running" };
-            return new(db, identity, client, request, http, events);
+            return new(db, identity, client, request, http, events, requests, runs, profiles);
         }
         public async ValueTask DisposeAsync() { await db.DisposeAsync(); await identity.DisposeAsync(); }
     }
