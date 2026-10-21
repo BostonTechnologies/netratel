@@ -20,6 +20,7 @@ public static class MonitoringObservationFactory
             series.AgentId == input.Fence.Client.AgentId && series.RuleId == rule.RuleId && rule.TenantId == series.TenantId;
         double? value = null;
         double resolution = 0;
+        var supported = false;
         var observedAtUtc = snapshot.ObservedAtUtc;
         MonitoringDiskCollectionStamp? collection = null;
         if (valid && rule.Condition.Kind == MonitoringMetricKind.CpuUsagePercent && series.ResourceKey == "cpu")
@@ -27,6 +28,7 @@ public static class MonitoringObservationFactory
             value = snapshot.Cpu?.UsagePercent;
             resolution = 0.1d;
             valid = value is not null;
+            supported = valid;
         }
         else if (valid && rule.Condition.Kind is MonitoringMetricKind.DiskFreeSpace or MonitoringMetricKind.DiskFreePercent)
         {
@@ -37,14 +39,17 @@ public static class MonitoringObservationFactory
                 var disk = disks[0];
                 collection = GetDiskCollectionStamp(disk, snapshot);
                 if (collection is not null) observedAtUtc = collection.CollectedAtUtc;
-                valid = collection is not null && disk.CollectionQuality == TelemetryDiskCollectionQuality.Complete &&
+                supported = collection is not null && disk.CollectionQuality == TelemetryDiskCollectionQuality.Complete &&
                     disk.TotalBytes is not null && disk.FreeBytes is not null &&
                     TryDiskValue(disk, rule.Condition.Kind, out value, out resolution);
+                // The transport may accept a bounded client clock lead. Retain its proof for
+                // later frames, but this frame cannot become complete monitoring evidence.
+                valid = supported && collection!.CollectedAtUtc <= snapshot.ReceivedAtUtc;
             }
         }
         else valid = false;
         return new(series, new(snapshot.ConnectionEpoch, snapshot.Sequence), input.Fence.EvidenceStreamId,
-            observedAtUtc, snapshot.ReceivedAtUtc, valid, valid, value, resolution, DiskCollection: collection);
+            observedAtUtc, snapshot.ReceivedAtUtc, valid, supported, value, resolution, DiskCollection: collection);
     }
 
     public static MonitoringObservationDto FromServices(MonitoringRuleDto rule, MonitoringSeriesKey series, MonitoringServicesInput input)
@@ -81,7 +86,8 @@ public static class MonitoringObservationFactory
     {
         if (disk.CollectionId is not Guid id || id == Guid.Empty ||
             disk.CollectedAtUtc is not DateTimeOffset collected || collected == default ||
-            collected > snapshot.ObservedAtUtc || collected > snapshot.ReceivedAtUtc ||
+            collected > snapshot.ObservedAtUtc ||
+            collected > snapshot.ReceivedAtUtc + TelemetryDiskCollectionClock.MaximumAcceptedSkew ||
             (int)disk.CollectionQuality is < 1 or > 4) return null;
         // Integer IEEE-754 representations preserve every raw counter bit, including invalid values, without culture or NaN serialization.
         // The fixed shape is bounded by the admitted scope length and never contains credentials.

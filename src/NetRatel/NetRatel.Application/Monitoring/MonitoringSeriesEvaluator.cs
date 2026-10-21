@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using NetRatel.Shared.Contracts.Monitoring;
 using NetRatel.Shared.Contracts.Services;
 using NetRatel.Shared.Contracts.FileSystem;
+using NetRatel.Application.Telemetry;
 
 namespace NetRatel.Application.Monitoring;
 
@@ -36,6 +37,10 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
         var isDisk = IsDisk(rule) && !offline;
         var freshness = offline ? MonitoringOfflinePresentation.SnapshotFreshness : rule.FreshnessBudget;
         var breachHold = offline ? TimeSpan.FromSeconds(rule.OfflineGraceSeconds ?? MonitoringOfflinePresentation.DefaultGraceSeconds) : rule.BreachHold;
+        // A physically new collection can arrive a few milliseconds ahead of the server
+        // receipt clock. Do not promote it early or break a qualified hold: the next
+        // cached frame may prove the same collection after server time has caught up.
+        if (isDisk && ShouldDeferClockLead(state, rule, observation, now)) return Unchanged(state);
         var collectionReason = isDisk ? DiskCollectionReason(state, observation, now) : null;
         if (isDisk && observation.Complete && observation.Supported && collectionReason is null &&
             state.LastDiskCollection == observation.DiskCollection)
@@ -259,6 +264,21 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
         collection is { CollectionId: var id, CollectedAtUtc: var at, PayloadFingerprint: var fingerprint } &&
         id != Guid.Empty && at != default && fingerprint is { Length: 64 } &&
         fingerprint.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F');
+
+    private static bool ShouldDeferClockLead(MonitoringSeriesState state, MonitoringRuleDto rule,
+        MonitoringObservationDto observation, DateTimeOffset now) =>
+        state.Phase is MonitoringPhase.Pending or MonitoringPhase.Recovering &&
+        state.Cursor?.ConnectionEpoch == observation.Cursor.ConnectionEpoch &&
+        state.EvidenceStreamId == observation.EvidenceStreamId &&
+        state.LastDiskCollection == state.LatestEvidence?.DiskCollection &&
+        IsCurrentFresh(state.LatestEvidence, rule, now) &&
+        observation.Supported && !observation.Complete && observation.NumericValue is not null &&
+        IsWellFormedDiskCollection(observation.DiskCollection) &&
+        observation.ObservedAtUtc == observation.DiskCollection!.CollectedAtUtc &&
+        observation.ReceivedAtUtc != default && observation.ReceivedAtUtc <= now &&
+        observation.DiskCollection.CollectedAtUtc > observation.ReceivedAtUtc &&
+        observation.DiskCollection.CollectedAtUtc <= observation.ReceivedAtUtc + TelemetryDiskCollectionClock.MaximumAcceptedSkew &&
+        (PreviousDiskTransportReceipt(state, observation, now) is not { } previousReceipt || observation.ReceivedAtUtc > previousReceipt);
 
     private static string? DiskCollectionReason(MonitoringSeriesState state, MonitoringObservationDto observation, DateTimeOffset now)
     {

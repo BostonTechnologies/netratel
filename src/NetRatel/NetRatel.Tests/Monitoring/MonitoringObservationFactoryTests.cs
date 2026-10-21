@@ -46,6 +46,38 @@ public sealed class MonitoringObservationFactoryTests
         Assert.InRange(exact.NumericResolution, double.Epsilon, 1e-10);
     }
 
+    [Theory]
+    [InlineData(11, true)]
+    [InlineData(501, false)]
+    public void EarlyDiskCollectionRetainsOnlyBoundedProofForLaterFrame(int skewMilliseconds, bool bounded)
+    {
+        var rule = DiskRule(MonitoringMetricKind.DiskFreePercent) with
+        {
+            Condition = new(MonitoringMetricKind.DiskFreePercent, MonitoringNumericUnit.Percent, 10, 15, "/", null, [])
+        };
+        var series = new MonitoringSeriesKey(Client.TenantId, rule.RuleId, Client.AgentId, "disk:/");
+        var input = Input(new("/", 10, 9.5, 0.5, 95, 1000, 50));
+        var collected = Now.AddMilliseconds(skewMilliseconds);
+        input = input with { Snapshot = input.Snapshot with
+        {
+            ObservedAtUtc = collected,
+            Disks = [input.Snapshot.Disks[0] with { CollectedAtUtc = collected }]
+        } };
+        var observation = MonitoringObservationFactory.FromTelemetry(rule, series, input);
+        Assert.False(observation.Complete);
+        Assert.Equal(bounded, observation.DiskCollection is not null);
+        Assert.Equal(bounded, observation.Supported);
+        var evaluator = new MonitoringSeriesEvaluator(new FrozenClock(Now));
+        var state = evaluator.CreateInitial(series, rule) with
+        {
+            NotBeforeObservedAtUtc = Now.AddSeconds(-1), NotBeforeReceivedAtUtc = Now.AddSeconds(-1)
+        };
+        var result = evaluator.Evaluate(state, rule, observation, Fence.ConnectionEpoch, Fence.EvidenceStreamId, []);
+        Assert.Equal(MonitoringEvidenceQuality.Unknown, result.State.EvidenceQuality);
+        Assert.Equal(MonitoringPhase.Healthy, result.State.Phase);
+        Assert.Equal(bounded ? "future_clock" : "disk_collection_metadata_required", result.State.LatestEvidence!.UnknownReason);
+    }
+
     [Fact]
     public void ExactIntegerCountersAboveDoublePrecisionKeepRepresentableUncertainty()
     {
