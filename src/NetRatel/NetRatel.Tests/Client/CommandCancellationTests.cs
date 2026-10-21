@@ -44,6 +44,57 @@ public sealed class CommandCancellationTests
     }
 
     [Fact]
+    [Trait("Category", "manual-integration")]
+    [SupportedOSPlatform("windows")]
+    public void Existing_windows_private_root_with_safe_inherited_aces_is_protected_but_unsafe_aces_are_rejected()
+    {
+        if (!OperatingSystem.IsWindows()) Assert.Skip("Windows ACL repair requires a Windows host.");
+
+        using var identity = WindowsIdentity.GetCurrent();
+        var owner = identity.User!;
+        var root = Path.Combine(Path.GetTempPath(), $"netratel-private-acl-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var security = new DirectorySecurity();
+            security.SetOwner(owner);
+            security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+            foreach (var sid in new[]
+                     {
+                         owner,
+                         new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+                         new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null)
+                     }.Distinct())
+            {
+                security.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.FullControl,
+                    InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                    PropagationFlags.None, AccessControlType.Allow));
+            }
+            new DirectoryInfo(root).SetAccessControl(security);
+
+            var safe = Path.Combine(root, "NetRatel");
+            Directory.CreateDirectory(safe);
+            new DirectoryInfo(safe).GetAccessControl().AreAccessRulesProtected.Should().BeFalse();
+            ExternalShellRunner.EnsureWindowsPrivateDirectory(safe, owner);
+            AssertWindowsPrivateDirectory(safe);
+
+            var unsafePath = Path.Combine(root, "UnsafeNetRatel");
+            Directory.CreateDirectory(unsafePath);
+            var unsafeSecurity = new DirectoryInfo(unsafePath).GetAccessControl();
+            unsafeSecurity.AddAccessRule(new FileSystemAccessRule(
+                new SecurityIdentifier(WellKnownSidType.WorldSid, null), FileSystemRights.ReadAndExecute,
+                AccessControlType.Allow));
+            new DirectoryInfo(unsafePath).SetAccessControl(unsafeSecurity);
+            Assert.Throws<UnauthorizedAccessException>(() => ExternalShellRunner.EnsureWindowsPrivateDirectory(unsafePath, owner));
+            new DirectoryInfo(unsafePath).GetAccessControl().AreAccessRulesProtected.Should().BeFalse();
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     [SupportedOSPlatform("linux")]
     [SupportedOSPlatform("macos")]
     public void Private_parameter_writer_rejects_an_untrusted_existing_unix_temp_root()
