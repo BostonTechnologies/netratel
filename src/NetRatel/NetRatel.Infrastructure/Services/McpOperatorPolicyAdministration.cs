@@ -311,7 +311,7 @@ public sealed class McpOperatorPolicyAdministration(OrchestratorDbContext db) : 
 
         profile.Classification = classification;
         profile.TagsJson = SerializeValues(normalizedTags);
-        var now = DateTimeOffset.UtcNow;
+        var now = PersistableUtcNow();
         profile.UpdatedAtUtc = now;
         profile.UpdatedBy = actorId.Trim();
         AddChangeAudit("target_profile_upserted", profile.TenantId, null, profile.AgentId, profile.Version, profile.UpdatedBy, now);

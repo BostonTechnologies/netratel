@@ -299,16 +299,23 @@ public static class McpOperatorPolicyMutationEndpoints
         if (!decision.IsAllowed)
             return Failure(decision.FailureCode ?? "target_policy_missing", target.TenantId, target.AgentId, context!.CorrelationId, mutationOperation: UpsertTargetProfileOperation);
 
+        var confirmationRequest = new McpOperatorConfirmationRequest(request.PlanToken, request.IdempotencyKey, payloadHash, decision);
+        if (await TryReplayTargetProfileAsync(confirmationRequest, confirmations, administration, target, context, request.ExpectedVersion, cancellationToken).ConfigureAwait(false) is { } replay)
+            return replay;
+
         var current = await administration.GetTargetProfileAsync(target.TenantId, agentId, cancellationToken).ConfigureAwait(false);
         if (!MatchesExpectedVersion(current, request.ExpectedVersion))
-            return Failure("target_profile_version_conflict", target.TenantId, target.AgentId, context!.CorrelationId, StatusCodes.Status409Conflict, UpsertTargetProfileOperation);
+        {
+            // A concurrent first confirmation may have completed after the replay lookup.
+            return await TryReplayTargetProfileAsync(confirmationRequest, confirmations, administration, target, context, request.ExpectedVersion, cancellationToken).ConfigureAwait(false)
+                ?? Failure("target_profile_version_conflict", target.TenantId, target.AgentId, context.CorrelationId, StatusCodes.Status409Conflict, UpsertTargetProfileOperation);
+        }
 
-        var admission = await confirmations.ConfirmAsync(
-            new McpOperatorConfirmationRequest(request.PlanToken, request.IdempotencyKey, payloadHash, decision), cancellationToken).ConfigureAwait(false);
+        var admission = await confirmations.ConfirmAsync(confirmationRequest, cancellationToken).ConfigureAwait(false);
         if (admission.FailureCode is { } confirmationFailure)
             return Failure(confirmationFailure, target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: UpsertTargetProfileOperation);
         if (admission.IsReplay)
-            return await ReplayTargetProfileAsync(admission, administration, target, context, cancellationToken).ConfigureAwait(false);
+            return await ReplayTargetProfileAsync(admission, administration, target, context, request.ExpectedVersion, cancellationToken).ConfigureAwait(false);
         if (!admission.IsNewDispatch || admission.IdempotencyId is not { } idempotencyId)
             return Failure("confirmation_plan_invalid", target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: UpsertTargetProfileOperation);
 
@@ -888,11 +895,29 @@ public static class McpOperatorPolicyMutationEndpoints
         return true;
     }
 
+    private static async Task<IResult?> TryReplayTargetProfileAsync(
+        McpOperatorConfirmationRequest request,
+        IMcpOperatorConfirmationService confirmations,
+        IMcpOperatorPolicyAdministration administration,
+        McpOperatorPolicyMutationTarget target,
+        McpOperatorPolicyMutationContext context,
+        long? expectedVersion,
+        CancellationToken cancellationToken)
+    {
+        var admission = await confirmations.ConfirmAsync(request with { ReplayOnly = true }, cancellationToken).ConfigureAwait(false);
+        if (admission.FailureCode is { } failure)
+            return Failure(failure, target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: UpsertTargetProfileOperation);
+        return admission.IsReplay
+            ? await ReplayTargetProfileAsync(admission, administration, target, context, expectedVersion, cancellationToken).ConfigureAwait(false)
+            : null;
+    }
+
     private static async Task<IResult> ReplayTargetProfileAsync(
         McpOperatorConfirmationAdmission admission,
         IMcpOperatorPolicyAdministration administration,
         McpOperatorPolicyMutationTarget target,
         McpOperatorPolicyMutationContext context,
+        long? expectedVersion,
         CancellationToken cancellationToken)
     {
         var agentId = target.AgentId!.Value;
@@ -905,7 +930,7 @@ public static class McpOperatorPolicyMutationEndpoints
         }
 
         var profile = await administration.GetTargetProfileAsync(target.TenantId, agentId, cancellationToken).ConfigureAwait(false);
-        return profile is null
+        return profile is null || profile.Version - 1 != (expectedVersion ?? 0)
             ? Failure("idempotency_replay_unavailable", target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: UpsertTargetProfileOperation)
             : Results.Ok(new McpOperatorTargetProfileMutationResult(profile, true, context.CorrelationId));
     }

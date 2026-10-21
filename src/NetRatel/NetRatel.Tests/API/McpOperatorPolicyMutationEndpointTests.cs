@@ -529,6 +529,106 @@ public sealed class McpOperatorPolicyMutationEndpointTests
     }
 
     [Fact]
+    public async Task TargetProfile_ExactConfirmationReplayReturnsPersistedProfileAfterVersionAdvances()
+    {
+        var authorization = new RecordingAuthorization(allowed: true);
+        var administration = new RecordingAdministration();
+        var confirmations = new RecordingConfirmations();
+        using var app = await BuildAppAsync(authorization, administration, confirmations);
+        var client = M2mClient(app);
+        var agentId = Guid.Parse("ef6a3f18-0d0d-45e0-8211-18067a95d9b9");
+        var target = new McpOperatorTargetSelector(McpOperatorTargetSelectorKind.ExactAgent, 42, agentId);
+        administration.CurrentTargetProfile = new McpOperatorTargetProfile(
+            agentId, 42, McpOperatorTargetClassification.DedicatedQa, ["campaign"], DateTimeOffset.UtcNow,
+            "policy.admin@example.test", 1);
+        var previewRequest = new PreviewMcpOperatorTargetProfileUpsertRequest(
+            42, agentId, McpOperatorTargetClassification.DedicatedQa, ["campaign"], 1);
+
+        SetDelegation(client, app, "preview_target_profile", target, ["PolicyAdministrator"], ["netratel.mcp.admin"]);
+        var previewResponse = await client.PostAsJsonAsync("/api/v2/mcp/operator/policy/target-profile/preview", previewRequest);
+        previewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var preview = (await previewResponse.Content.ReadFromJsonAsync<McpOperatorPolicyMutationPreview>())!;
+        var confirmation = new ConfirmMcpOperatorTargetProfileUpsertRequest(
+            42, agentId, McpOperatorTargetClassification.DedicatedQa, ["campaign"], 1,
+            preview.PlanToken, preview.IdempotencyKey);
+
+        SetDelegation(client, app, "confirm_target_profile", target, ["PolicyAdministrator"], ["netratel.mcp.admin"]);
+        var firstResponse = await client.PostAsJsonAsync("/api/v2/mcp/operator/policy/target-profile/confirm", confirmation);
+        firstResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var first = (await firstResponse.Content.ReadFromJsonAsync<McpOperatorTargetProfileMutationResult>())!;
+        first.Replay.Should().BeFalse();
+        first.Profile.Version.Should().Be(2);
+
+        confirmations.ReplayCompleted = true;
+        var replayResponse = await client.PostAsJsonAsync("/api/v2/mcp/operator/policy/target-profile/confirm", confirmation);
+        replayResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var replay = (await replayResponse.Content.ReadFromJsonAsync<McpOperatorTargetProfileMutationResult>())!;
+        replay.Replay.Should().BeTrue();
+        replay.Profile.Should().BeEquivalentTo(first.Profile);
+        administration.TargetProfileUpserts.Should().Be(1);
+        confirmations.Completed.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task TargetProfile_PersistedReplaySucceedsAndFreshStalePlanRemainsUnused()
+    {
+        var target = ExactAgentDraft().TargetSelector;
+        await using var db = await CreatePolicyDbAsync("upsert_target_profile", target);
+        var administration = new RecordingAdministration
+        {
+            CurrentTargetProfile = TargetProfile(target) with { Version = 1 }
+        };
+        using var app = await BuildAppAsync(new McpOperatorAuthorization(db), administration, new McpOperatorConfirmationService(db));
+        var client = M2mClient(app);
+        var previewRequest = new PreviewMcpOperatorTargetProfileUpsertRequest(
+            target.TenantId, target.AgentId!.Value, McpOperatorTargetClassification.ManagedStandard,
+            ["campaign-fixture"], 1);
+        SetDelegation(client, app, "preview_target_profile", target, ["PolicyAdministrator"], ["netratel.mcp.admin"]);
+        var firstPreviewResponse = await client.PostAsJsonAsync("/api/v2/mcp/operator/policy/target-profile/preview", previewRequest);
+        var stalePreviewResponse = await client.PostAsJsonAsync("/api/v2/mcp/operator/policy/target-profile/preview", previewRequest);
+        firstPreviewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        stalePreviewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var firstPreview = (await firstPreviewResponse.Content.ReadFromJsonAsync<McpOperatorPolicyMutationPreview>())!;
+        var stalePreview = (await stalePreviewResponse.Content.ReadFromJsonAsync<McpOperatorPolicyMutationPreview>())!;
+        var request = new ConfirmMcpOperatorTargetProfileUpsertRequest(
+            target.TenantId, target.AgentId.Value, McpOperatorTargetClassification.ManagedStandard,
+            ["campaign-fixture"], 1, firstPreview.PlanToken, firstPreview.IdempotencyKey);
+        SetDelegation(client, app, "confirm_target_profile", target, ["PolicyAdministrator"], ["netratel.mcp.admin"]);
+
+        var firstResponse = await client.PostAsJsonAsync("/api/v2/mcp/operator/policy/target-profile/confirm", request);
+        firstResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var first = (await firstResponse.Content.ReadFromJsonAsync<McpOperatorTargetProfileMutationResult>())!;
+        first.Replay.Should().BeFalse();
+        first.Profile.Version.Should().Be(2);
+
+        var replayResponse = await client.PostAsJsonAsync("/api/v2/mcp/operator/policy/target-profile/confirm", request);
+        replayResponse.StatusCode.Should().Be(HttpStatusCode.OK, await replayResponse.Content.ReadAsStringAsync());
+        var replay = (await replayResponse.Content.ReadFromJsonAsync<McpOperatorTargetProfileMutationResult>())!;
+        replay.Replay.Should().BeTrue();
+        replay.Profile.Should().BeEquivalentTo(first.Profile);
+
+        var changedPayloadReplay = await client.PostAsJsonAsync("/api/v2/mcp/operator/policy/target-profile/confirm",
+            request with { Tags = ["different-campaign"] });
+        changedPayloadReplay.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await changedPayloadReplay.Content.ReadAsStringAsync()).Should().Contain("confirmation_plan_stale");
+
+        var staleRequest = request with { PlanToken = stalePreview.PlanToken, IdempotencyKey = stalePreview.IdempotencyKey };
+        var staleResponse = await client.PostAsJsonAsync("/api/v2/mcp/operator/policy/target-profile/confirm", staleRequest);
+        staleResponse.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await staleResponse.Content.ReadAsStringAsync()).Should().Contain("confirmation_plan_stale");
+        var unused = await db.McpOperatorConfirmationPlans.SingleAsync(plan => plan.IdempotencyKey == stalePreview.IdempotencyKey);
+        unused.ConsumedAtUtc.Should().BeNull();
+        unused.ConsumedIdempotencyId.Should().BeNull();
+        (await db.McpOperatorIdempotencyRecords.CountAsync()).Should().Be(1);
+        administration.TargetProfileUpserts.Should().Be(1);
+
+        administration.CurrentTargetProfile = first.Profile with { Version = 3, UpdatedAtUtc = DateTimeOffset.UtcNow };
+        var changedProfileReplay = await client.PostAsJsonAsync("/api/v2/mcp/operator/policy/target-profile/confirm", request);
+        changedProfileReplay.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await changedProfileReplay.Content.ReadAsStringAsync()).Should().Contain("idempotency_replay_unavailable");
+    }
+
+    [Fact]
     public async Task Preview_RejectsAnAllowPolicyThatWouldEscalateTheDelegatedAdministrator()
     {
         var authorization = new RecordingAuthorization(allowed: true);
@@ -1041,6 +1141,7 @@ public sealed class McpOperatorPolicyMutationEndpointTests
         public List<McpOperatorConfirmationPlanRequest> Plans { get; } = [];
         public List<McpOperatorConfirmationRequest> Confirmed { get; } = [];
         public List<(Guid IdempotencyId, McpOperatorIdempotencyOutcome Outcome, string? ResultReference)> Completed { get; } = [];
+        public bool ReplayCompleted { get; set; }
 
         public Task<McpOperatorConfirmationPlan> CreatePlanAsync(McpOperatorConfirmationPlanRequest request, CancellationToken cancellationToken)
         {
@@ -1051,7 +1152,12 @@ public sealed class McpOperatorPolicyMutationEndpointTests
         public Task<McpOperatorConfirmationAdmission> ConfirmAsync(McpOperatorConfirmationRequest request, CancellationToken cancellationToken)
         {
             if (request.ReplayOnly)
+            {
+                if (ReplayCompleted)
+                    return Task.FromResult(new McpOperatorConfirmationAdmission(false, true, null, null,
+                        McpOperatorIdempotencyOutcome.Succeeded, Completed.Single().ResultReference));
                 return Task.FromResult(new McpOperatorConfirmationAdmission(false, false, null, null, null, null));
+            }
             Confirmed.Add(request);
             return Task.FromResult(new McpOperatorConfirmationAdmission(true, false, null, AdmissionId, McpOperatorIdempotencyOutcome.Pending, null));
         }
