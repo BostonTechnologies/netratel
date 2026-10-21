@@ -182,7 +182,7 @@ public static class McpOperatorTaskEndpoints
         var admitted = await TryContextAsync(action, tenantId, agentId, http, environment, presence, admission, localAgents, dispatcher, false, cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure) return failure;
         var context = admitted.Context!;
-        var resolution = await ResolveMutationAsync(action, request, tasks, scripts, admission, context, cancellationToken).ConfigureAwait(false);
+        var resolution = await ResolveMutationAsync(action, request, tasks, scripts, context, cancellationToken).ConfigureAwait(false);
         if (resolution.FailureCode is { } code) return Failure(code, context);
         try
         {
@@ -214,7 +214,7 @@ public static class McpOperatorTaskEndpoints
         if (admitted.Failure is { } failure) return failure;
         var context = admitted.Context!;
         if (!HasPlan(request.PlanToken, request.IdempotencyKey)) return Failure("confirmation_plan_invalid", context);
-        var resolution = await ResolveMutationAsync(action, request, tasks, scripts, admission, context, cancellationToken).ConfigureAwait(false);
+        var resolution = await ResolveMutationAsync(action, request, tasks, scripts, context, cancellationToken).ConfigureAwait(false);
         if (resolution.FailureCode is { } code) return Failure(code, context);
         var confirmation = await confirmations.ConfirmAsync(new McpOperatorConfirmationRequest(request.PlanToken!, request.IdempotencyKey!, MutationHash(action, request), context.Decision), cancellationToken).ConfigureAwait(false);
         if (confirmation.FailureCode is { } confirmationFailure) return Failure(confirmationFailure, context);
@@ -294,7 +294,7 @@ public static class McpOperatorTaskEndpoints
         }
     }
 
-    private static async Task<TaskMutationResolution> ResolveMutationAsync(string action, McpOperatorTaskMutationRequest request, IMcpOperatorTaskStore tasks, IMcpOperatorScriptStore scripts, IMcpOperatorRouteAdmission admission, McpOperatorTaskContext context, CancellationToken cancellationToken)
+    private static async Task<TaskMutationResolution> ResolveMutationAsync(string action, McpOperatorTaskMutationRequest request, IMcpOperatorTaskStore tasks, IMcpOperatorScriptStore scripts, McpOperatorTaskContext context, CancellationToken cancellationToken)
     {
         if (action == "cancel")
         {
@@ -311,7 +311,7 @@ public static class McpOperatorTaskEndpoints
                 ? new(null, command, null)
                 : new(null, null, commandFailure);
 
-        var source = await ResolveScriptAsync(request.Script!, scripts, admission, context, cancellationToken).ConfigureAwait(false);
+        var source = await ResolveScriptAsync(request.Script!, scripts, context, cancellationToken).ConfigureAwait(false);
         if (source.FailureCode is not null) return new(null, null, source.FailureCode);
         var script = source.Script!.Value;
         var maximumOutput = Math.Min(context.Decision.EffectiveConstraints!.MaxOutputBytes!.Value, MaximumOutputBytes);
@@ -362,7 +362,7 @@ public static class McpOperatorTaskEndpoints
         return true;
     }
 
-    private static async Task<ScriptResolution> ResolveScriptAsync(McpOperatorTaskScriptPayload request, IMcpOperatorScriptStore scripts, IMcpOperatorRouteAdmission admission, McpOperatorTaskContext context, CancellationToken cancellationToken)
+    private static async Task<ScriptResolution> ResolveScriptAsync(McpOperatorTaskScriptPayload request, IMcpOperatorScriptStore scripts, McpOperatorTaskContext context, CancellationToken cancellationToken)
     {
         if (request.ScriptId <= 0 || request.Version <= 0 || !IsSha256(request.ContentHash)) return ScriptResolution.Invalid;
         (McpOperatorScriptLease Lease, string Content, string? ManifestJson)? script;
@@ -373,16 +373,9 @@ public static class McpOperatorTaskEndpoints
         catch (McpOperatorScriptIntegrityException) { return new(null, "script_integrity_invalid"); }
         if (script is null || script.Value.Lease.Version != request.Version || !string.Equals(script.Value.Lease.ContentHash, request.ContentHash, StringComparison.OrdinalIgnoreCase) || !ParametersAreValid(script.Value.Lease.Parameters, request.Parameters))
             return ScriptResolution.Invalid;
-        var access = McpOperationAccessCatalog.Find("netratel_scripts", "get");
-        if (access is null) return ScriptResolution.Invalid;
-        var scriptRequest = context.Request with
-        {
-            Tool = "netratel_scripts",
-            Operation = "get",
-            RequiredScopes = new HashSet<string>([McpOperationAccessScopeNames.Canonical(access.RequiredScope)], StringComparer.Ordinal)
-        };
-        var decision = await admission.EvaluateAsync(scriptRequest, cancellationToken).ConfigureAwait(false);
-        return decision.Decision.IsAllowed ? new(script, null) : new(null, "script_access_not_admitted");
+        // GetOwnedAsync already binds the reviewed script to the caller, resource,
+        // instance and tenant. The task mutation has its own target-bound admission.
+        return new(script, null);
     }
 
     private static async Task<IResult> ReplayAsync(McpOperatorConfirmationAdmission confirmation, IMcpOperatorTaskStore tasks, McpOperatorTaskContext context, CancellationToken cancellationToken)

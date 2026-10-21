@@ -104,7 +104,22 @@ public sealed class McpOperatorOutputDispatchTests
         storedPolicy.Should().NotContain("caller cannot classify output");
     }
 
-    private static async Task<WebApplication> BuildAsync(string route)
+    [Fact]
+    public async Task Library_script_task_rejects_a_script_owned_by_another_caller()
+    {
+        await using var app = await BuildAsync("task_script", scriptOwner: "another-operator");
+        using var client = app.GetTestClient();
+        var root = $"/api/v2/mcp/operator/agents/42/{AgentId:D}/tasks/preview/run_library_script";
+        var response = await client.PostAsJsonAsync(root, new
+        {
+            script = new { scriptId = 81, version = 1, contentHash = Hash(Content), parameters = new { vault = "FIXTURE_REFERENCE" } }
+        });
+
+        response.IsSuccessStatusCode.Should().BeFalse();
+        app.Services.GetRequiredService<Dispatcher>().Count.Should().Be(0);
+    }
+
+    private static async Task<WebApplication> BuildAsync(string route, string scriptOwner = "output-operator")
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Production" });
         builder.WebHost.UseTestServer();
@@ -144,7 +159,7 @@ public sealed class McpOperatorOutputDispatchTests
         db.Scripts.Add(new ScriptDefinition { Id = 81, Name = "reference fixture", ScriptType = "bash", Content = Content });
         db.McpOperatorScripts.Add(new McpOperatorScriptRecord
         {
-            Id = Guid.NewGuid(), ScriptId = 81, TenantId = 42, Subject = "output-operator", ClientId = "output-client",
+            Id = Guid.NewGuid(), ScriptId = 81, TenantId = 42, Subject = scriptOwner, ClientId = "output-client",
             McpResource = Resource, McpInstance = "prod", PolicyId = PolicyId, PolicyVersion = 1, Name = "reference fixture",
             ShellType = "sh", ContentHash = Hash(Content), ManifestHash = Hash(string.Empty), TimeoutSeconds = 15,
             WorkingDirectory = "/tmp", Version = 1,
@@ -160,6 +175,8 @@ public sealed class McpOperatorOutputDispatchTests
     {
         public Task<McpOperatorRouteAdmission> EvaluateAsync(McpOperatorRouteAccessRequest request, CancellationToken cancellationToken)
         {
+            if (request.Tool == "netratel_scripts" && request.Operation == "get")
+                throw new InvalidOperationException("Library-script execution must not require a separate script-read grant.");
             var operation = McpOperatorOperationCatalog.Find(request.Tool, request.Operation)!;
             var access = new McpOperatorAccessRequest(request.Environment, request.Principal, request.TenantId, request.AgentId,
                 McpOperatorTargetClassification.ManagedStandard, operation.OperationFamily, $"{request.Tool}/{request.Operation}",
