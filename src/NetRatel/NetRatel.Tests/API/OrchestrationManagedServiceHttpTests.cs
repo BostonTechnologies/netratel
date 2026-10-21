@@ -113,6 +113,7 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
             Assert.Equal(input.Label, syncedInput.Label);
             Assert.Equal(input.Order, syncedInput.Order);
             Assert.Equal(input.OptionsJson, syncedInput.OptionsJson);
+            Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync(syncPath, new { inputs = new[] { input } })).StatusCode);
             Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync(syncPath,
                 new { inputs = new[] { input, input } })).StatusCode);
             Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/internal/catalog/request-definitions/7002/inputs/sync",
@@ -124,6 +125,7 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
                 var stored = await db.JobParameters.SingleAsync(x => x.JobId == long.Parse(createdDto.RequestDefinitionId, CultureInfo.InvariantCulture));
                 Assert.Equal("Target path", stored.Label);
                 Assert.Equal(3, stored.SortOrder);
+                Assert.Equal(1, await db.JobParameters.CountAsync(x => x.JobId == stored.JobId));
             }
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", readToken);
             var authoredCatalog = await client.GetFromJsonAsync<JsonElement>("/internal/catalog/request-definitions");
@@ -181,6 +183,8 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
             }
             await using (var scope = app.Services.CreateAsyncScope()) await scope.ServiceProvider.GetRequiredService<IServicePrincipalRegistry>().RevokeAsync(invoke.Principal.Id);
             Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/internal/ingest", Ingest("7001"))).StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/internal/catalog/request-definitions", authoring)).StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync(syncPath, new { inputs = new[] { input } })).StatusCode);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", readToken);
             Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/internal/catalog/jobs")).StatusCode);
             await using (var scope = app.Services.CreateAsyncScope())
