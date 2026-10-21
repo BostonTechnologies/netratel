@@ -217,6 +217,32 @@ public sealed class MonitoringDiskCollectionFreshnessTests
     }
 
     [Fact]
+    public void Bounded_clock_lead_defers_one_frame_then_later_receipt_completes_disk_hold()
+    {
+        var s = new Scenario();
+        s.Observe(0, 0, 5, Id(1));
+        s.State.Phase.Should().Be(MonitoringPhase.Pending);
+        var originalRevision = s.State.StateRevision;
+        var originalWindow = s.State.WindowStartedAtUtc;
+        var collected = s.Clock.At(35).AddMilliseconds(11);
+        var stamp = new MonitoringDiskCollectionStamp(Id(2), collected, new string('A', 64));
+        s.Clock.Set(35);
+        var early = new MonitoringObservationDto(s.State.Series, new(s.Epoch, ++s.Sequence), s.StreamId,
+            collected, s.Clock.At(35), false, true, 5, DiskCollection: stamp);
+        s.Apply(s.Evaluator.Evaluate(s.State, s.Rule, early, s.Epoch, s.StreamId, []));
+        s.State.StateRevision.Should().Be(originalRevision);
+        s.State.WindowStartedAtUtc.Should().Be(originalWindow);
+        s.Events.Should().BeEmpty();
+
+        s.Clock.Set(40);
+        var later = early with { Cursor = new(s.Epoch, ++s.Sequence), ReceivedAtUtc = s.Clock.At(40), Complete = true };
+        s.Apply(s.Evaluator.Evaluate(s.State, s.Rule, later, s.Epoch, s.StreamId, []));
+        s.State.Phase.Should().Be(MonitoringPhase.Firing);
+        s.Events.Should().ContainSingle();
+        s.State.LastDiskCollection.Should().Be(stamp);
+    }
+
+    [Fact]
     public void Receipt_clock_regression_interrupts_cached_evidence_and_future_receipts_do_not_poison_the_high_water()
     {
         var s = new Scenario(); var first = s.Observe(0, 0, 5, Id(1));

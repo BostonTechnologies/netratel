@@ -49,7 +49,7 @@ public sealed class MonitoringObservationFactoryTests
     [Theory]
     [InlineData(11, true)]
     [InlineData(501, false)]
-    public void DiskCollectionWithinTransportClockSkewReachesMonitoring(int skewMilliseconds, bool admitted)
+    public void EarlyDiskCollectionRetainsOnlyBoundedProofForLaterFrame(int skewMilliseconds, bool bounded)
     {
         var rule = DiskRule(MonitoringMetricKind.DiskFreePercent) with
         {
@@ -64,16 +64,18 @@ public sealed class MonitoringObservationFactoryTests
             Disks = [input.Snapshot.Disks[0] with { CollectedAtUtc = collected }]
         } };
         var observation = MonitoringObservationFactory.FromTelemetry(rule, series, input);
-        Assert.Equal(admitted, observation.Complete);
+        Assert.False(observation.Complete);
+        Assert.Equal(bounded, observation.DiskCollection is not null);
+        Assert.Equal(bounded, observation.Supported);
         var evaluator = new MonitoringSeriesEvaluator(new FrozenClock(Now));
         var state = evaluator.CreateInitial(series, rule) with
         {
             NotBeforeObservedAtUtc = Now.AddSeconds(-1), NotBeforeReceivedAtUtc = Now.AddSeconds(-1)
         };
         var result = evaluator.Evaluate(state, rule, observation, Fence.ConnectionEpoch, Fence.EvidenceStreamId, []);
-        Assert.Equal(admitted ? MonitoringEvidenceQuality.Fresh : MonitoringEvidenceQuality.Unknown, result.State.EvidenceQuality);
-        Assert.Equal(admitted ? MonitoringPhase.Pending : MonitoringPhase.Healthy, result.State.Phase);
-        if (!admitted) Assert.Equal("disk_collection_metadata_required", result.State.LatestEvidence!.UnknownReason);
+        Assert.Equal(MonitoringEvidenceQuality.Unknown, result.State.EvidenceQuality);
+        Assert.Equal(MonitoringPhase.Healthy, result.State.Phase);
+        Assert.Equal(bounded ? "future_clock" : "disk_collection_metadata_required", result.State.LatestEvidence!.UnknownReason);
     }
 
     [Fact]
