@@ -87,10 +87,50 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
             Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/v1/system/m2m/ping")).StatusCode);
             Assert.Equal(0, app.Services.GetRequiredService<LegacyHandlerCounter>().Authentications);
             Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/internal/ingest", Ingest("7001"))).StatusCode);
-            Assert.NotEqual(HttpStatusCode.OK, (await client.PostAsJsonAsync("/internal/catalog/request-definitions", new { name = "Injected", tenantId = 71, clientIdentity = allowedAgent.ToString("D") })).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/internal/catalog/request-definitions", new { name = "Injected", tenantId = 71, clientIdentity = allowedAgent.ToString("D") })).StatusCode);
             Assert.NotEqual(HttpStatusCode.OK, (await client.GetAsync("/broad-legacy")).StatusCode);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", invokeToken);
             Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/internal/catalog/jobs")).StatusCode);
+            var authoring = new { name = "Paired definition", folderPath = "/campaign", description = "Owned paired target", tenantId = 71, clientIdentity = allowedAgent.ToString("D") };
+            var createdDefinition = await client.PostAsJsonAsync("/internal/catalog/request-definitions", authoring);
+            Assert.Equal(HttpStatusCode.Created, createdDefinition.StatusCode);
+            var createdDto = (await createdDefinition.Content.ReadFromJsonAsync<NetRatelCatalogRequestDefinitionDto>())!;
+            Assert.Equal(71, createdDto.TenantId);
+            Assert.Equal(allowedAgent.ToString("D"), createdDto.ClientIdentity);
+            Assert.Equal("Paired definition", createdDto.RequestDefinitionName);
+            Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/internal/catalog/request-definitions", authoring)).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/internal/catalog/request-definitions",
+                new { name = "Foreign", folderPath = "/", tenantId = 72, clientIdentity = otherAgent.ToString("D") })).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/internal/catalog/request-definitions",
+                new { name = "Wrong agent", folderPath = "/", tenantId = 71, clientIdentity = otherAgent.ToString("D") })).StatusCode);
+            var syncPath = $"/internal/catalog/request-definitions/{createdDto.RequestDefinitionId}/inputs/sync";
+            var input = new NetRatelCatalogInputDefinitionDto { Key = "path", Label = "Target path", Type = "text", Required = true,
+                DefaultValue = "/tmp/synthetic", HelpText = "Owned field", OptionsJson = "{\"widget\":\"text\"}", Order = 3 };
+            var synced = await client.PostAsJsonAsync(syncPath, new { inputs = new[] { input } });
+            synced.EnsureSuccessStatusCode();
+            var syncedDto = (await synced.Content.ReadFromJsonAsync<NetRatelCatalogRequestDefinitionDto>())!;
+            var syncedInput = Assert.Single(syncedDto.Inputs);
+            Assert.Equal(input.Label, syncedInput.Label);
+            Assert.Equal(input.Order, syncedInput.Order);
+            Assert.Equal(input.OptionsJson, syncedInput.OptionsJson);
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync(syncPath,
+                new { inputs = new[] { input, input } })).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/internal/catalog/request-definitions/7002/inputs/sync",
+                new { inputs = new[] { input } })).StatusCode);
+            await using (var scope = app.Services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                Assert.Equal(3, await db.Jobs.CountAsync());
+                var stored = await db.JobParameters.SingleAsync(x => x.JobId == long.Parse(createdDto.RequestDefinitionId, CultureInfo.InvariantCulture));
+                Assert.Equal("Target path", stored.Label);
+                Assert.Equal(3, stored.SortOrder);
+            }
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", readToken);
+            var authoredCatalog = await client.GetFromJsonAsync<JsonElement>("/internal/catalog/request-definitions");
+            Assert.Equal(2, authoredCatalog.GetArrayLength());
+            Assert.Contains(authoredCatalog.EnumerateArray(), x => x.GetProperty("requestDefinitionId").GetString() == createdDto.RequestDefinitionId &&
+                x.GetProperty("inputs")[0].GetProperty("label").GetString() == input.Label);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", invokeToken);
             Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/internal/ingest", Ingest("7002"))).StatusCode);
             Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/internal/ingest", Ingest("7001", callback: "https://attacker.example/callback"))).StatusCode);
             var accepted = await client.PostAsJsonAsync("/internal/ingest", Ingest("7001")); accepted.EnsureSuccessStatusCode();

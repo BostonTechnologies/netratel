@@ -22,7 +22,7 @@ namespace NetRatel.API.Endpoints;
 /// Paired RatelDesk scoped catalogue and submission contract. PostgreSQL owns the
 /// catalogue/request records and the fenced Akka gateway owns dispatch.
 /// </summary>
-public static class InternalEndpoints
+public static partial class InternalEndpoints
 {
     public static IEndpointRouteBuilder MapInternalEndpoints(this IEndpointRouteBuilder app)
     {
@@ -53,6 +53,7 @@ public static class InternalEndpoints
             var catalog = await MapCatalogJobsAsync(db, definitions, ct);
             return Results.Ok(catalog.Select(ToRequestDefinition));
         }).RequireAuthorization(OrchestrationManagedAuthorization.ReadPolicy);
+        group.MapInternalCatalogAuthoringEndpoints();
 
         group.MapPost("/ingest", async (
             NetRatelIngestRequest request,
@@ -219,7 +220,7 @@ public static class InternalEndpoints
         var tenants = await db.Tenants.AsNoTracking().Where(tenant => tenantIds.Contains(tenant.Id)).ToDictionaryAsync(tenant => tenant.Id, tenant => tenant.Name, ct).ConfigureAwait(false);
         var agents = await db.Agents.AsNoTracking().Where(agent => agentIds.Contains(agent.Id)).ToDictionaryAsync(agent => agent.Id, ct).ConfigureAwait(false);
         var parameters = await db.JobParameters.AsNoTracking().Where(parameter => jobIds.Contains(parameter.JobId))
-            .Select(parameter => new CatalogParameter(parameter.JobId, parameter.Name, parameter.Type, parameter.Required, parameter.DefaultValue, parameter.Description, parameter.OptionsJson))
+            .Select(parameter => new CatalogParameter(parameter.JobId, parameter.Name, parameter.Label, parameter.SortOrder, parameter.Type, parameter.Required, parameter.DefaultValue, parameter.Description, parameter.OptionsJson))
             .ToArrayAsync(ct).ConfigureAwait(false);
         var parametersByJob = parameters.ToLookup(parameter => parameter.JobId);
         var scriptTypes = await (from step in db.JobSteps.AsNoTracking()
@@ -254,7 +255,7 @@ public static class InternalEndpoints
                 ExpectedRuntimeSeconds = policy.ExpectedRuntimeSeconds,
                 GraceSeconds = policy.GraceSeconds,
                 HardTimeoutSeconds = policy.HardTimeoutSeconds,
-                Inputs = parametersByJob[checked((long)job.Id)].OrderBy(parameter => parameter.Name, StringComparer.OrdinalIgnoreCase).Select(MapInput).ToArray()
+                Inputs = parametersByJob[checked((long)job.Id)].OrderBy(parameter => parameter.SortOrder).ThenBy(parameter => parameter.Name, StringComparer.OrdinalIgnoreCase).Select(MapInput).ToArray()
             });
         }
         return result.OrderBy(job => job.FolderPath, StringComparer.OrdinalIgnoreCase).ThenBy(job => job.Name, StringComparer.OrdinalIgnoreCase).ToArray();
@@ -313,12 +314,12 @@ public static class InternalEndpoints
     }
 
     private static void Add(JsonObject root, string name, string? value) { if (!string.IsNullOrWhiteSpace(value)) root[name] = value; }
-    private static NetRatelCatalogInputDefinitionDto MapInput(CatalogParameter parameter) => new() { Key = parameter.Name, Label = parameter.Name, Type = parameter.Type, Required = parameter.Required, DefaultValue = parameter.DefaultValue, HelpText = parameter.Description, OptionsJson = parameter.OptionsJson, Order = 0 };
+    private static NetRatelCatalogInputDefinitionDto MapInput(CatalogParameter parameter) => new() { Key = parameter.Name, Label = parameter.Label ?? parameter.Name, Type = parameter.Type, Required = parameter.Required, DefaultValue = parameter.DefaultValue, HelpText = parameter.Description, OptionsJson = parameter.OptionsJson, Order = parameter.SortOrder };
     private static string NormalizeFolder(string? value) { var result = string.IsNullOrWhiteSpace(value) ? "/" : value.Trim(); return result.StartsWith('/') ? result : $"/{result}"; }
     private static string DisplayName(string? folder, string name) { var value = NormalizeFolder(folder).TrimEnd('/'); return string.IsNullOrEmpty(value) ? name : $"{value}/{name}"; }
     private static string? NormalizeOptional(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     private static string? FirstNonEmpty(params string?[] values) => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
     private sealed record ResolvedTarget(int TenantId, Guid AgentId, string ClientIdentity);
-    private sealed record CatalogParameter(long JobId, string Name, string Type, bool Required, string? DefaultValue, string? Description, string? OptionsJson);
+    private sealed record CatalogParameter(long JobId, string Name, string? Label, int SortOrder, string Type, bool Required, string? DefaultValue, string? Description, string? OptionsJson);
     private sealed record CatalogScriptType(long JobId, string ScriptType);
 }
