@@ -62,9 +62,9 @@ public static partial class InternalEndpoints
             var constraints = OrchestrationManagedAuthorization.Constraints(principal);
             if (!constraints.RequestDefinitionIds.Contains(id, StringComparer.Ordinal)) return Results.Forbid();
             var job = await jobs.GetAsync(jobId, ct);
-            if (job is null || job.TenantId != principal.TenantId ||
-                await ValidateTargetAsync(db, job, ct) is null ||
-                job.AgentId is not { } agentId || !constraints.ResourceIds.Contains(agentId.ToString("D"), StringComparer.Ordinal))
+            if (job is null || job.TenantId != principal.TenantId) return Results.Forbid();
+            var target = await ValidateTargetAsync(db, job, ct);
+            if (target is null || !constraints.ResourceIds.Contains(target.AgentId.ToString("D"), StringComparer.Ordinal))
                 return Results.Forbid();
             if (!ValidCatalogInputs(request.Inputs)) return Results.BadRequest(new { code = "invalid_request_definition_inputs" });
 
@@ -73,8 +73,8 @@ public static partial class InternalEndpoints
                 await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({checked((long)jobId)})", ct);
             // Recheck the live target under the write fence, including revocation or a changed job assignment.
             job = await jobs.GetAsync(jobId, ct);
-            if (job is null || job.TenantId != principal.TenantId || job.AgentId != agentId ||
-                await ValidateTargetAsync(db, job, ct) is null)
+            if (job is null || job.TenantId != principal.TenantId ||
+                await ValidateTargetAsync(db, job, ct) is not { } currentTarget || currentTarget.AgentId != target.AgentId)
                 return Results.Forbid();
             var rows = await db.JobParameters.Where(x => x.JobId == checked((long)jobId)).ToListAsync(ct);
             if (rows.Select(x => x.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() != rows.Count)
