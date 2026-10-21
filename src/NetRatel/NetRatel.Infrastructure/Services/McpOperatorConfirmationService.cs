@@ -84,12 +84,17 @@ public sealed class McpOperatorConfirmationService(OrchestratorDbContext db) : I
             return McpOperatorConfirmationAdmission.Denied("confirmation_plan_invalid");
 
         var access = request.CurrentDecision.Request;
-        if (!PlanMatches(plan, request.CurrentDecision, request.PayloadHash, request.IdempotencyKey))
+        var existing = await FindIdempotencyAsync(plan, cancellationToken).ConfigureAwait(false);
+        // A successful target-profile write changes the profile-derived target digest.
+        // Only an exact replay of that completed write may use the original digest.
+        var completedTargetProfileReplay = request.ReplayOnly &&
+            plan.Operation == "netratel_policy/upsert_target_profile" &&
+            existing?.Outcome == McpOperatorIdempotencyOutcome.Succeeded;
+        if (!PlanMatches(plan, request.CurrentDecision, request.PayloadHash, request.IdempotencyKey, completedTargetProfileReplay))
             return McpOperatorConfirmationAdmission.Denied("confirmation_plan_stale");
         if (plan.ExpiresAtUtc <= DateTimeOffset.UtcNow)
             return McpOperatorConfirmationAdmission.Denied("confirmation_plan_expired");
 
-        var existing = await FindIdempotencyAsync(plan, cancellationToken).ConfigureAwait(false);
         if (existing is not null)
             return AdmissionFor(existing, plan);
 
@@ -200,7 +205,8 @@ public sealed class McpOperatorConfirmationService(OrchestratorDbContext db) : I
         McpOperatorConfirmationPlanRecord plan,
         McpOperatorDecision decision,
         string payloadHash,
-        string idempotencyKey)
+        string idempotencyKey,
+        bool allowTargetSetDigestDrift = false)
     {
         var access = decision.Request;
         return plan.Environment == access.Environment &&
@@ -210,7 +216,7 @@ public sealed class McpOperatorConfirmationService(OrchestratorDbContext db) : I
                string.Equals(plan.McpInstance, access.McpInstance, StringComparison.Ordinal) &&
                plan.TenantId == access.TenantId &&
                plan.AgentId == access.AgentId &&
-               plan.TargetSetDigest == access.TargetSetDigest &&
+               (allowTargetSetDigestDrift || plan.TargetSetDigest == access.TargetSetDigest) &&
                plan.PolicyId == decision.MatchingPolicyIds.Single() &&
                plan.PolicyVersion == decision.SelectedPolicyVersion &&
                plan.OperationFamily == access.OperationFamily &&
