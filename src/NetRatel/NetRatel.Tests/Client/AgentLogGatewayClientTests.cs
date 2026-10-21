@@ -23,6 +23,28 @@ public sealed class GatewayLogSessionOwnershipCollection;
 [Collection("Gateway log session ownership")]
 public sealed class AgentLogGatewayClientTests
 {
+    [Fact]
+    public void Windows_hello_keeps_runtime_and_common_sources_within_default_server_receive_limit()
+    {
+        var source = new HeldLogSource();
+        var client = new AgentLogGatewayClient(new GatewayClientOptions { Endpoint = "https://gateway.test" },
+            _ => throw new InvalidOperationException("No transport is used by this test."), () => source);
+        var filters = new[] { "time", "severity", "category", "provider", "event-id", "text" };
+        var channels = Enumerable.Range(0, 96).Select(index => new ClientLogSourceDescriptor(
+            $"windows-eventlog-channel-{index:x16}", "event-log",
+            $"Microsoft-Windows-Application-Experience/Program-Compatibility-Assistant/Analytic-{index:D3}",
+            "windows", true, null, true, true, true, filters)).ToArray();
+
+        var hello = client.CreateHello(new GatewayPresenceSession(9, Guid.NewGuid(), 1, Guid.NewGuid()),
+            Guid.NewGuid(), channels);
+
+        hello.CalculateSize().Should().BeLessThanOrEqualTo(12 * 1024);
+        hello.CalculateSize().Should().BeLessThan(16 * 1024);
+        hello.Hello.Sources[0].SourceId.Should().Be("netratel-runtime");
+        hello.Hello.Sources[1].SourceId.Should().Be(channels[0].SourceId);
+        hello.Hello.Sources.Count.Should().BeLessThan(channels.Length + 1);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
