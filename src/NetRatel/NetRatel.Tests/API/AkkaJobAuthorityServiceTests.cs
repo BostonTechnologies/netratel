@@ -19,6 +19,22 @@ namespace NetRatel.Tests.API;
 
 public sealed class AkkaJobAuthorityServiceTests
 {
+    [Fact]
+    public async Task StartAsync_WithNoEnabledSteps_CompletesWithoutDispatch()
+    {
+        var agentId = Guid.NewGuid();
+        var runs = new InMemoryRuns();
+        var gateway = new AvailableGateway();
+        var service = CreateAuthority(agentId, runs, new OneStepDefinitions(agentId, stepCount: 0), gateway);
+
+        var result = await service.StartAsync(41, new RunJobRequest("test", null, null), CancellationToken.None);
+
+        result.Status.Should().Be(JobRunState.Succeeded);
+        runs.Run!.Status.Should().Be(JobRunState.Succeeded);
+        runs.Steps.Should().BeEmpty();
+        gateway.DispatchCount.Should().Be(0);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

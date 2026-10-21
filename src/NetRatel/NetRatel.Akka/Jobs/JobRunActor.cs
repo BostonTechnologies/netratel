@@ -247,6 +247,9 @@ public sealed class JobRunActor : ReceiveActor
         {
             (JobRunState.Pending, JobRunState.Pending) => true,
             (JobRunState.Pending, JobRunState.Running) => true,
+            // A definition with no enabled steps completes without a physical dispatch.
+            // Keep this narrow so a queued run with observed steps cannot skip them.
+            (JobRunState.Pending, JobRunState.Succeeded) => _steps.Count == 0 && run.CurrentStepOrdinal == 0,
             (JobRunState.Pending, JobRunState.Failed) => true,
             (JobRunState.Pending, JobRunState.Cancelled) => true,
             (JobRunState.Pending, JobRunState.TimedOut) => true,
