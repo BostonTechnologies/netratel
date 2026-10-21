@@ -81,7 +81,8 @@ public static class MonitoringObservationFactory
     {
         if (disk.CollectionId is not Guid id || id == Guid.Empty ||
             disk.CollectedAtUtc is not DateTimeOffset collected || collected == default ||
-            collected > snapshot.ObservedAtUtc || collected > snapshot.ReceivedAtUtc ||
+            collected > snapshot.ObservedAtUtc ||
+            collected > snapshot.ReceivedAtUtc + TelemetryDiskCollectionClock.MaximumAcceptedSkew ||
             (int)disk.CollectionQuality is < 1 or > 4) return null;
         // Integer IEEE-754 representations preserve every raw counter bit, including invalid values, without culture or NaN serialization.
         // The fixed shape is bounded by the admitted scope length and never contains credentials.

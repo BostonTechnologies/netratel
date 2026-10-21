@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using NetRatel.Shared.Contracts.Monitoring;
 using NetRatel.Shared.Contracts.Services;
 using NetRatel.Shared.Contracts.FileSystem;
+using NetRatel.Application.Telemetry;
 
 namespace NetRatel.Application.Monitoring;
 
@@ -269,7 +270,8 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
         if (!IsWellFormedDiskCollection(observation.DiskCollection)) return "disk_collection_metadata_required";
         var collection = observation.DiskCollection!;
         if (observation.ObservedAtUtc != collection.CollectedAtUtc) return "disk_collection_clock_mismatch";
-        if (collection.CollectedAtUtc > now || observation.ReceivedAtUtc > now || collection.CollectedAtUtc > observation.ReceivedAtUtc)
+        if (collection.CollectedAtUtc > now + TelemetryDiskCollectionClock.MaximumAcceptedSkew || observation.ReceivedAtUtc > now ||
+            collection.CollectedAtUtc > observation.ReceivedAtUtc + TelemetryDiskCollectionClock.MaximumAcceptedSkew)
             return "future_clock";
         if (state.LastDiskCollection is not { } previous) return null;
         if (previous.CollectionId == collection.CollectionId)
@@ -491,9 +493,14 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
         now - evidence.ObservedAtUtc <= (evidence.OfflineSummary is null ? rule.FreshnessBudget : MonitoringOfflinePresentation.SnapshotFreshness) &&
         now - evidence.ReceivedAtUtc <= (evidence.OfflineSummary is null ? rule.FreshnessBudget : MonitoringOfflinePresentation.SnapshotFreshness);
 
-    private static TimeSpan ObservedClockTolerance(MonitoringRuleDto rule, bool offline) =>
-        !offline && rule.Condition.Kind is MonitoringMetricKind.CpuUsagePercent or MonitoringMetricKind.ServiceExpectedState
-            ? ClientObservationClockTolerance : TimeSpan.Zero;
+    private static TimeSpan ObservedClockTolerance(MonitoringRuleDto rule, bool offline) => offline
+        ? TimeSpan.Zero
+        : rule.Condition.Kind switch
+        {
+            MonitoringMetricKind.CpuUsagePercent or MonitoringMetricKind.ServiceExpectedState => ClientObservationClockTolerance,
+            MonitoringMetricKind.DiskFreePercent or MonitoringMetricKind.DiskFreeSpace => TelemetryDiskCollectionClock.MaximumAcceptedSkew,
+            _ => TimeSpan.Zero
+        };
 
     private static bool HasOpenOccurrence(MonitoringSeriesState state) => state.Occurrence is { EndedAtUtc: null };
 

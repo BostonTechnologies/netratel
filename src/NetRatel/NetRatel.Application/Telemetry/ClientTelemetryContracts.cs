@@ -15,6 +15,11 @@ public sealed record TelemetryMemory(
 
 public enum TelemetryDiskCollectionQuality { Unknown = 0, Complete = 1, Partial = 2, Unsupported = 3, Failed = 4 }
 
+public static class TelemetryDiskCollectionClock
+{
+    public static readonly TimeSpan MaximumAcceptedSkew = TimeSpan.FromMilliseconds(500);
+}
+
 public sealed record TelemetryDisk(
     string Scope,
     double TotalGb,
