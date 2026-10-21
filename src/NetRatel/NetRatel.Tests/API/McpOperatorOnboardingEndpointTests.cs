@@ -166,6 +166,23 @@ public sealed class McpOperatorOnboardingEndpointTests
     }
 
     [Fact]
+    public async Task Large_installer_without_explicit_policy_size_returns_enrollment_download_referral()
+    {
+        var artifacts = new TestArtifacts { Size = 42_859_780 };
+        using var app = await BuildAppAsync(new RecordingAuthorization(new McpOperatorConstraints()), artifacts);
+        var result = await ClientFor(app, "collateral_download", 42)
+            .GetFromJsonAsync<McpOperatorOnboardingCollateralDownload>("/api/v2/mcp/operator/tenants/42/onboarding/collateral/linux-x64/download");
+
+        result!.TransferMode.Should().Be("enrollment_download");
+        result.ContentBase64.Should().BeEmpty();
+        result.Collateral.Size.Should().Be(42_859_780);
+        result.Download.Should().Be(new McpOperatorOnboardingDownloadDescriptor(
+            "/api/v2/client-artifacts/linux-x64/1.2.3-test/onboarding-download", "GET", 42,
+            "X-NetRatel-Tenant-Id", "X-NetRatel-Enrollment-Code"));
+        artifacts.DownloadedVersion.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Inline_download_pins_the_advertised_version_instead_of_racing_latest()
     {
         var artifacts = new TestArtifacts();
