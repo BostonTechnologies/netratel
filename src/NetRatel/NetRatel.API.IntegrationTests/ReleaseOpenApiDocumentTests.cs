@@ -142,7 +142,7 @@ public sealed class ReleaseOpenApiDocumentTests
         }
         SecuritySchemes(document, "/internal/ingest", "post")
             .Should().BeEquivalentTo([ServiceIdentityAuthenticationHandler.SchemeName]);
-        foreach (var path in new[] { "/internal/catalog/request-definitions", "/internal/catalog/request-definitions/{requestDefinitionId}/inputs/sync" })
+        foreach (var path in new[] { "/internal/catalog/request-definitions", "/internal/catalog/request-definitions/{id}/inputs/sync" })
         {
             SecuritySchemes(document, path, "post")
                 .Should().BeEquivalentTo([ServiceIdentityAuthenticationHandler.SchemeName]);
