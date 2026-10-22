@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.DataProtection;
 using NetRatel.API.Gateway;
 using NetRatel.API.Middleware;
 using NetRatel.API.Security.Authorization;
@@ -61,11 +62,14 @@ public static partial class McpOperatorClientFileEndpoints
         Guid agentId,
         string path,
         int? pageSize,
+        string? cursor,
         HttpContext http,
         IHostEnvironment environment,
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         [FromServices] IAgentFileGatewaySessionRegistry sessions,
+        [FromServices] IDataProtectionProvider dataProtection,
+        [FromServices] TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
         var fallback = MinimalContext(tenantId, agentId, "browse", http.TraceIdentifier);
@@ -80,43 +84,73 @@ public static partial class McpOperatorClientFileEndpoints
         var context = admitted.Context!;
         if (!TryCreateReadPolicy(context.Decision, path, out var accessPolicy))
             return Failure("file_policy_roots_missing", context);
+        var entryLimit = pageSize ?? MaximumPageSize;
+        var binding = BrowseBinding(context, path, entryLimit);
+        var policyFingerprint = BrowsePolicyFingerprint(context.Decision, path);
+        var protector = dataProtection.CreateProtector(BrowseCursorPurpose);
+        var cursorFailure = ReadBrowseCursor(cursor, protector, binding, policyFingerprint, timeProvider.GetUtcNow(), out var continuation);
+        if (cursorFailure is not null)
+            return GatewayFailure(cursorFailure, context);
         if (await RecordAcceptedAsync(admission, context, cancellationToken).ConfigureAwait(false) is { } rejected)
             return rejected;
-        if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context, path, cancellationToken).ConfigureAwait(false) is { } beforeDispatch)
-            return Failure(beforeDispatch, context);
+        if (await RecheckBrowseAdmissionAsync(admission, presence, context, path, policyFingerprint, cancellationToken).ConfigureAwait(false) is { } beforeDispatch)
+            return BrowseAdmissionFailure(beforeDispatch, context);
 
         try
         {
-            var entryLimit = pageSize ?? MaximumPageSize;
             var entries = await sessions.ListAsync(
                 new ClientKey(tenantId, agentId),
                 path,
                 entryLimit,
                 accessPolicy,
                 cancellationToken).ConfigureAwait(false);
-            if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context, path, cancellationToken).ConfigureAwait(false) is { } afterDispatch)
-                return Failure(afterDispatch, context);
+            if (await RecheckBrowseAdmissionAsync(admission, presence, context, path, policyFingerprint, cancellationToken).ConfigureAwait(false) is { } afterDispatch)
+                return BrowseAdmissionFailure(afterDispatch, context);
+            if (continuation is not null && continuation.ExpiresAtUtc <= timeProvider.GetUtcNow())
+                return GatewayFailure("file_cursor_expired", context);
+            if (entries.Count > MaximumBrowseEntries)
+                return GatewayFailure("file_listing_too_large", context);
 
             var eligibleEntries = entries
                 .Where(entry => entry.Name.Length <= 512 &&
                     TryCreateReadPolicy(context.Decision, entry.FullPath, out _))
-                .Take(entryLimit + 1)
+                .OrderBy(entry => entry.IsDirectory ? 0 : 1)
+                .ThenBy(entry => entry.Name, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(entry => entry.Name, StringComparer.Ordinal)
+                .ThenBy(entry => entry.FullPath, StringComparer.Ordinal)
                 .Select(entry => new McpOperatorFileEntry(entry.Name, entry.FullPath, entry.IsDirectory, entry.SizeBytes)
                 {
                     CreatedUtc = entry.CreatedUtc,
                     LastModifiedUtc = entry.LastModifiedUtc
                 })
                 .ToArray();
+            var listingFingerprint = BrowseListingFingerprint(eligibleEntries);
+            if (continuation is not null &&
+                (!CryptographicOperations.FixedTimeEquals(continuation.ListingFingerprint, listingFingerprint) ||
+                 continuation.Offset >= eligibleEntries.Length))
+                return GatewayFailure("file_cursor_stale", context);
+
+            var offset = continuation?.Offset ?? 0;
+            var page = eligibleEntries.Skip(offset).Take(entryLimit).ToArray();
+            var nextOffset = offset + page.Length;
+            var truncated = nextOffset < eligibleEntries.Length;
+            // A chain has one fixed lifetime. Fetching another page does not
+            // prolong a cursor or retain filesystem data on the server.
+            var expiresAt = continuation?.ExpiresAtUtc ?? timeProvider.GetUtcNow().Add(BrowseCursorLifetime);
             return Results.Ok(new McpOperatorFileBrowseResult(
                 tenantId,
                 agentId,
                 path,
-                eligibleEntries.Take(entryLimit).ToArray(),
+                page,
                 "mcp-operator-policy",
                 context.CorrelationId)
             {
                 PageSize = entryLimit,
-                Truncated = eligibleEntries.Length > entryLimit
+                Truncated = truncated,
+                NextCursor = truncated
+                    ? WriteBrowseCursor(protector, binding, policyFingerprint, listingFingerprint, nextOffset, expiresAt)
+                    : null,
+                CursorExpiresAtUtc = truncated ? expiresAt : null
             });
         }
         catch (AgentFileGatewaySessionUnavailableException)
@@ -1967,9 +2001,13 @@ public static partial class McpOperatorClientFileEndpoints
         "session_unavailable" => Failure("target_offline", context),
         "capability_unavailable" => Failure("capability_unavailable", context),
         "access_denied" or "protected_path" => Failure("file_access_denied", context),
-        "file_too_large" or "artifact_too_large" => Results.Problem(
+        "file_too_large" or "artifact_too_large" or "file_listing_too_large" => Results.Problem(
             statusCode: StatusCodes.Status413PayloadTooLarge,
             title: "The file exceeds the policy-admitted MCP transfer limit.",
+            extensions: new Dictionary<string, object?> { ["code"] = code, ["correlationId"] = context.CorrelationId }),
+        "file_cursor_stale" or "file_cursor_expired" => Results.Problem(
+            statusCode: StatusCodes.Status409Conflict,
+            title: "The file browse continuation is no longer current. Restart browse without a cursor.",
             extensions: new Dictionary<string, object?> { ["code"] = code, ["correlationId"] = context.CorrelationId }),
         "file_not_found" or "directory_not_found" or "path_not_found" => Results.Problem(
             statusCode: StatusCodes.Status404NotFound,
@@ -2075,7 +2113,9 @@ public static partial class McpOperatorClientFileEndpoints
         public int PageSize { get; init; }
         public int ReturnedCount => Entries.Count;
         public bool Truncated { get; init; }
-        public bool ContinuationSupported => false;
+        public bool ContinuationSupported => true;
+        public string? NextCursor { get; init; }
+        public DateTimeOffset? CursorExpiresAtUtc { get; init; }
     }
 
     private sealed record McpOperatorFileStatResult(

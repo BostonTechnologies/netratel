@@ -113,7 +113,7 @@ internal sealed class LinuxLogSourceAdapter(ILinuxLogCommandRunner? commandRunne
         }
 
         if (source.Path is null) yield break;
-        await foreach (var record in FollowFileAsync(source.Id, source.Path, query, cancellationToken).ConfigureAwait(false)) yield return new(record);
+        await foreach (var item in FollowFileAsync(source.Id, source.Path, query, cancellationToken).ConfigureAwait(false)) yield return item;
     }
 
     private async Task<IReadOnlyList<string>> DiscoverServiceUnitsAsync(CancellationToken cancellationToken)
@@ -164,7 +164,7 @@ internal sealed class LinuxLogSourceAdapter(ILinuxLogCommandRunner? commandRunne
         return new(page, null, hasMore ? BeforeCursor(page.FirstOrDefault()?.Cursor) : null, hasMore);
     }
 
-    private async IAsyncEnumerable<ClientRuntimeLogRecord> FollowFileAsync(string sourceId, string path, ClientLogQuery query, [EnumeratorCancellation] CancellationToken cancellationToken)
+    internal static async IAsyncEnumerable<ClientLogFollowResult> FollowFileAsync(string sourceId, string path, ClientLogQuery query, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         long offset = new FileInfo(path).Length;
         while (!cancellationToken.IsCancellationRequested)
@@ -172,7 +172,13 @@ internal sealed class LinuxLogSourceAdapter(ILinuxLogCommandRunner? commandRunne
             await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
             if (!System.IO.File.Exists(path)) continue;
             var length = new FileInfo(path).Length;
-            if (length < offset) offset = 0; // truncation or rotation
+            if (length < offset)
+            {
+                // The prior file position no longer identifies retained data.
+                // Publish the discontinuity even when the replacement is empty.
+                offset = 0;
+                yield return new(null, ResyncRequired: true);
+            }
             if (length == offset) continue;
 
             await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
@@ -184,7 +190,7 @@ internal sealed class LinuxLogSourceAdapter(ILinuxLogCommandRunner? commandRunne
                 var line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
                 if (line is null) break;
                 var record = CreateFileRecord(sourceId, lineOffset, line);
-                if (Matches(record, query)) yield return record;
+                if (Matches(record, query)) yield return new(record);
             }
             offset = stream.Position;
         }

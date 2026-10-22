@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -11,6 +13,36 @@ namespace NetRatel.Tests.Client;
 
 public sealed class LinuxLogSourceAdapterTests
 {
+    [Fact]
+    public async Task FollowFileAsync_reports_truncation_before_delivering_the_new_file_contents()
+    {
+        var directory = Directory.CreateTempSubdirectory("netratel-log-source-");
+        var path = Path.Combine(directory.FullName, "fixture.log");
+        try
+        {
+            await File.WriteAllTextAsync(path, new string('x', 1024) + "\n");
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await using var follow = LinuxLogSourceAdapter.FollowFileAsync("linux-file-messages", path,
+                new ClientLogQuery("linux-file-messages", null, 100, null, null, [], [], null), cancellation.Token)
+                .GetAsyncEnumerator(cancellation.Token);
+            // MoveNext captures the genuine initial offset before its provider polling interval.
+            var next = follow.MoveNextAsync().AsTask();
+            await File.WriteAllTextAsync(path, string.Empty, cancellation.Token);
+            Assert.True(await next);
+            Assert.True(follow.Current.ResyncRequired);
+            Assert.Null(follow.Current.Record);
+
+            await File.AppendAllTextAsync(path, "post-truncation-marker\n", cancellation.Token);
+            Assert.True(await follow.MoveNextAsync());
+            Assert.False(follow.Current.ResyncRequired);
+            Assert.Equal("post-truncation-marker", follow.Current.Record!.Message);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
     [Fact]
     public async Task DiscoverAsync_advertises_only_fixed_journal_sources_and_safe_units()
     {

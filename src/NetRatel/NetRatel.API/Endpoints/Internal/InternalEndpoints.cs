@@ -148,9 +148,16 @@ public static partial class InternalEndpoints
                 var runId = http.RequestServices.GetRequiredService<JobAuthorityIdGenerator>().Next();
                 var now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
                 var runs = http.RequestServices.GetRequiredService<IJobRunService>();
-                await runs.UpsertRunAsync(new(runId, job.Id, target.TenantId, job.ClientIdentity, binding.SourceSystem,
-                    JobRunState.Pending, 0, now, null, null, null, EnrichPayload(request, created.Id, job),
-                    JobExecutionRuntimePolicy.MergeOptionsJson(job.OptionsJson, JobExecutionRuntimePolicy.FromJobAndIngest(job, request)), target.AgentId), ct);
+                try
+                {
+                    await runs.UpsertRunAsync(new(runId, job.Id, target.TenantId, job.ClientIdentity, binding.SourceSystem,
+                        JobRunState.Pending, 0, now, null, null, null, EnrichPayload(request, created.Id, job),
+                        JobExecutionRuntimePolicy.MergeOptionsJson(job.OptionsJson, JobExecutionRuntimePolicy.FromJobAndIngest(job, request)), target.AgentId), ct);
+                }
+                catch (JobDefinitionUnavailableException)
+                {
+                    return Results.Conflict(new { code = "job_definition_unavailable", correlationId });
+                }
                 db.Set<JobRunControlRecord>().Add(new() { RunId = checked((long)runId) });
                 binding.ExecutionId = runId.ToString(CultureInfo.InvariantCulture);
                 created = (await requests.UpdateAsync(new(created.Id, null, null, null, binding.ExecutionId,

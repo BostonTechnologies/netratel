@@ -87,6 +87,8 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
 
     public async Task<JobDefinitionInfo?> DeleteAsync(ulong jobId, CancellationToken ct = default)
     {
+        await using var transaction = await JobDefinitionMutationFence.BeginAsync(_db, ct);
+        if (!await JobDefinitionMutationFence.LockActiveAsync(_db, checked((long)jobId), ct)) return null;
         var job = await _db.Jobs
             .Include(x => x.Parameters)
             .Include(x => x.Steps)
@@ -94,6 +96,28 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
         if (job is null)
         {
             return null;
+        }
+
+        // MCP ownership and its accepted audits deliberately restrict physical
+        // deletion. An administrator can retire a definition after credential
+        // rotation without impersonating the old credential or erasing history.
+        var operatorOwner = await _db.McpOperatorJobs.SingleOrDefaultAsync(x => x.JobId == job.Id, ct);
+        if (operatorOwner is not null)
+        {
+            if (await _db.JobRuns.AnyAsync(run => run.JobId == job.Id &&
+                    run.Status != (int)JobRunState.Succeeded && run.Status != (int)JobRunState.Failed &&
+                    run.Status != (int)JobRunState.Cancelled && run.Status != (int)JobRunState.TimedOut &&
+                    run.Status != (int)JobRunState.Unknown, ct))
+                throw new JobDefinitionInUseException();
+
+            var retiredAt = DateTimeOffset.UtcNow;
+            operatorOwner.DeletedAtUtc = retiredAt;
+            operatorOwner.UpdatedAtUtc = retiredAt;
+            operatorOwner.Version++;
+            job.UpdatedAtUtc = retiredAt;
+            await _db.SaveChangesAsync(ct);
+            if (transaction is not null) await transaction.CommitAsync(ct);
+            return Map(job);
         }
 
         var runIds = await _db.JobRuns
@@ -130,6 +154,7 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
         _db.JobRuns.RemoveRange(runs);
         _db.Jobs.Remove(job);
         await _db.SaveChangesAsync(ct);
+        if (transaction is not null) await transaction.CommitAsync(ct);
         return Map(job);
     }
 

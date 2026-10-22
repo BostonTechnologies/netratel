@@ -233,7 +233,10 @@ internal sealed class ClientUpdateResultDelivery(
             return TryArchiveResumedIdentityConflict(existing) ? null : existing;
         }
         if (!File.Exists(resultPath)) return existing?.DeliveryState is "acknowledged" or "archived_unresolved" ? null : existing;
-        if (!ProtectedUpdateState.IsProtectedFile(resultPath) || new FileInfo(resultPath).Length > 64 * 1024) return null;
+        if (!ProtectedUpdateState.IsProtectedFile(resultPath))
+            throw new UnauthorizedAccessException("Native update result permissions do not satisfy the protected-state contract.");
+        if (new FileInfo(resultPath).Length > 64 * 1024)
+            throw new InvalidDataException("Native update result exceeds the protected-state size limit.");
         var bytes = File.ReadAllBytes(resultPath);
         var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
         if (existing?.ResultHash == hash)

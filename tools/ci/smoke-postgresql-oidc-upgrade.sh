@@ -442,11 +442,18 @@ PY
 if [ "$#" -eq 2 ] && [ "$1" = start ] && [ "$2" = netratel-update.service ]; then
   exec /usr/bin/sudo -n /usr/bin/systemctl start netratel-update.service
 fi
+if [ "$#" -eq 4 ] && [ "$1" = start ] && [ "$2" = --no-block ] && [ "$3" = --no-ask-password ] && [ "$4" = netratel-update.service ]; then
+  exec /usr/bin/sudo -n /usr/bin/systemctl start --no-block --no-ask-password netratel-update.service
+fi
+if [ "$#" -eq 3 ] && [ "$1" = show ] && [ "$2" = --property=ActiveState,Job ] && [ "$3" = netratel-update.service ]; then
+  exec /usr/bin/systemctl show --property=ActiveState,Job netratel-update.service
+fi
 exit 1
 SH
   chmod 0755 "$native_directory/bin/systemctl"
   sudo tee /etc/sudoers.d/netratel-upgrade-smoke >/dev/null <<'SUDOERS'
 netratel ALL=(root) NOPASSWD: /usr/bin/systemctl start netratel-update.service
+netratel ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block --no-ask-password netratel-update.service
 SUDOERS
   sudo chmod 0440 /etc/sudoers.d/netratel-upgrade-smoke
   sudo visudo -cf /etc/sudoers.d/netratel-upgrade-smoke >/dev/null

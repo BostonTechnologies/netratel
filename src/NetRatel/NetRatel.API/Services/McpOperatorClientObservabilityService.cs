@@ -140,7 +140,7 @@ public sealed class McpOperatorClientObservabilityService(IServiceProvider servi
                     LogQueryOperation.StartLive,
                     window.Token).ConfigureAwait(false);
                 Add(records, started.Records.Where(record => string.Equals(record.SourceId, sourceId, StringComparison.Ordinal)), boundedLimit);
-                dropped = checked(dropped + started.DroppedRecordCount);
+                dropped = Math.Max(dropped, started.DroppedRecordCount);
                 resyncRequired |= started.ResyncRequired;
                 if (await CurrentAdmissionFailureAsync(currentAdmission, cancellationToken).ConfigureAwait(false) is { } failure)
                     return AdmissionFailure<McpOperatorLogTailResponse>(failure);
@@ -156,7 +156,8 @@ public sealed class McpOperatorClientObservabilityService(IServiceProvider servi
                 {
                     var batch = await subscription.Reader.ReadAsync(window.Token).ConfigureAwait(false);
                     Add(records, batch.Records.Where(record => string.Equals(record.SourceId, sourceId, StringComparison.Ordinal)), boundedLimit);
-                    dropped = checked(dropped + batch.DroppedRecordCount);
+                    // Gateway batches carry the cumulative session count.
+                    dropped = Math.Max(dropped, batch.DroppedRecordCount);
                     resyncRequired |= batch.ResyncRequired;
                     if (await CurrentAdmissionFailureAsync(currentAdmission, cancellationToken).ConfigureAwait(false) is { } failure)
                         return AdmissionFailure<McpOperatorLogTailResponse>(failure);
@@ -192,7 +193,9 @@ public sealed class McpOperatorClientObservabilityService(IServiceProvider servi
         if (await CurrentAdmissionFailureAsync(currentAdmission, cancellationToken).ConfigureAwait(false) is { } finalAdmissionFailure)
             return AdmissionFailure<McpOperatorLogTailResponse>(finalAdmissionFailure);
 
-        var gapDetected = resyncRequired || subscription.Dropped;
+        var retained = sessions.Query(client, new GatewayLogPageRequest(sourceId, null, 1, null, null, null, null, null));
+        dropped = Math.Max(dropped, retained.DroppedRecordCount);
+        var gapDetected = resyncRequired || subscription.Dropped || retained.ResyncRequired;
         return Success(new McpOperatorLogTailResponse(
             sourceId,
             records,
@@ -428,7 +431,8 @@ public sealed class McpOperatorClientObservabilityService(IServiceProvider servi
             Reader = channel.Reader;
             _onBatch = batch =>
             {
-                if (batch.Client == _client && batch.Records.Any(record => string.Equals(record.SourceId, _sourceId, StringComparison.Ordinal)) &&
+                if (batch.Client == _client && (batch.ResyncRequired || batch.DroppedRecordCount > 0 ||
+                    batch.Records.Any(record => string.Equals(record.SourceId, _sourceId, StringComparison.Ordinal))) &&
                     !channel.Writer.TryWrite(batch))
                 {
                     Interlocked.Exchange(ref _dropped, 1);

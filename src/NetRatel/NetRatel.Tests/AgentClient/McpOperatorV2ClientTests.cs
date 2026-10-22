@@ -233,7 +233,7 @@ public sealed class McpOperatorV2ClientTests
         var upload = new McpOperatorFileUploadV2("C:\\netratel\\upload.bin", "AQID");
         var relocation = new McpOperatorFileRelocationV2("C:\\netratel\\review.txt", "C:\\netratel\\published.txt");
 
-        await client.BrowseAsync(target, "C:\\netratel", 25, CancellationToken.None);
+        await client.BrowseAsync(target, "C:\\netratel", 25, "opaque-browse-cursor", CancellationToken.None);
         await client.StatAsync(target, "C:\\netratel\\review.txt", CancellationToken.None);
         await client.ReadAsync(target, "C:\\netratel\\review.txt", CancellationToken.None);
         await client.PreviewCollectArtifactAsync(target, "C:\\netratel\\review.txt", CancellationToken.None);
@@ -256,7 +256,7 @@ public sealed class McpOperatorV2ClientTests
         await client.ConfirmMoveAsync(target, relocation, plan, key, CancellationToken.None);
 
         outbound.Requests.Select(call => call.Path).Should().Equal(
-            "/api/v2/mcp/operator/agents/7/11111111-2222-3333-4444-555555555555/files/browse?path=C%3A%5Cnetratel&pageSize=25",
+            "/api/v2/mcp/operator/agents/7/11111111-2222-3333-4444-555555555555/files/browse?path=C%3A%5Cnetratel&pageSize=25&cursor=opaque-browse-cursor",
             "/api/v2/mcp/operator/agents/7/11111111-2222-3333-4444-555555555555/files/stat?path=C%3A%5Cnetratel%5Creview.txt",
             "/api/v2/mcp/operator/agents/7/11111111-2222-3333-4444-555555555555/files/read?path=C%3A%5Cnetratel%5Creview.txt",
             "/api/v2/mcp/operator/agents/7/11111111-2222-3333-4444-555555555555/files/artifacts/collect/preview",

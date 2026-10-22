@@ -23,7 +23,8 @@ public sealed class OrchestrationCallbackReconciler(OrchestratorDbContext db, IR
         var bindings = await db.Set<ManagedOrchestrationRequestBinding>().AsNoTracking()
             .Where(x => x.LinkId != null && x.CallbackUrl != null && x.RequestId > afterRequestId &&
                 !db.Set<OrchestrationCallbackDelivery>().Any(delivery => delivery.RequestId == x.RequestId &&
-                    delivery.DeliveredAtUtc != null && (delivery.Phase == "succeeded" || delivery.Phase == "failed")))
+                    (delivery.DeliveredAtUtc != null || delivery.RejectedAtUtc != null) &&
+                    (delivery.Phase == "succeeded" || delivery.Phase == "failed" || delivery.Phase == "unknown")))
             .OrderBy(x => x.RequestId).Take(16).ToArrayAsync(ct);
         foreach (var binding in bindings)
         {
@@ -61,32 +62,13 @@ public sealed class OrchestrationCallbackReconciler(OrchestratorDbContext db, IR
                 changes.Publish(new RequestChangedEvent(request.Id, "external-service-job-status", clock.GetUtcNow()));
         }
         if (details.Run.Status == JobRunState.Pending) return;
-        var now = clock.GetUtcNow();
-        var delivery = await db.Set<OrchestrationCallbackDelivery>().SingleOrDefaultAsync(x => x.RequestId == request.Id && x.Phase == callback.Status, ct);
-        if (delivery is null)
-        {
-            delivery = new OrchestrationCallbackDelivery { RequestId = request.Id, Phase = callback.Status, NextAttemptAtUtc = now };
-            db.Set<OrchestrationCallbackDelivery>().Add(delivery);
-            try { await db.SaveChangesAsync(ct); }
-            catch (DbUpdateException) { db.ChangeTracker.Clear(); return; } // Another replica created the phase.
-        }
-        if (delivery.DeliveredAtUtc is not null || delivery.NextAttemptAtUtc > now || delivery.LeaseExpiresAtUtc is { } leaseExpiry && leaseExpiry > now) return;
-        var leaseId = Guid.NewGuid();
-        delivery.LeaseId = leaseId;
-        delivery.LeaseExpiresAtUtc = now.AddMinutes(3);
-        delivery.Attempts++;
-        delivery.Revision++;
-        await db.SaveChangesAsync(ct); // Optimistic CAS wins one current phase lease.
-        var delivered = await callbacks.TrySendStatusAsync(callback, binding.CorrelationId, ct);
+        var lease = await OrchestrationCallbackDeliveryState.TryLeaseAsync(db, request.Id, callback.Status,
+            clock.GetUtcNow(), replay: false, ct);
+        if (lease is null) return;
+        var result = await callbacks.SendWithDispositionAsync(callback, binding.CorrelationId, ct);
         // The stored phase and run remain the authority even if the process crashes before this ack.
-        await db.Entry(delivery).ReloadAsync(ct);
-        if (delivery.LeaseId != leaseId) return;
-        delivery.LeaseId = null;
-        delivery.LeaseExpiresAtUtc = null;
-        delivery.NextAttemptAtUtc = clock.GetUtcNow().AddSeconds(15);
-        if (delivered) delivery.DeliveredAtUtc = clock.GetUtcNow();
-        delivery.Revision++;
-        await db.SaveChangesAsync(ct);
+        await OrchestrationCallbackDeliveryState.CompleteAsync(db, lease.Value.Delivery, lease.Value.LeaseId,
+            result, clock.GetUtcNow(), ct);
     }
 }
 

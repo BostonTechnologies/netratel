@@ -513,6 +513,43 @@ public sealed class McpOperatorClientObservabilityEndpointTests
     }
 
     [Fact]
+    public async Task Tail_preserves_retained_gap_when_initial_history_fills_the_record_limit()
+    {
+        var agentId = Guid.NewGuid();
+        using var app = await BuildAppAsync(agentId, allowed: true);
+        var registry = (TestLogRegistry)app.Services.GetRequiredService<IAgentLogGatewaySessionRegistry>();
+        registry.ResyncRequired = true;
+        registry.DroppedRecordCount = 7;
+        var client = AuthorizedClient(app);
+
+        var response = await client.GetAsync($"/api/v2/mcp/operator/agents/7/{agentId:D}/logs/tail?sourceId=runtime&windowSeconds=1&maxRecords=1");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var content = await response.Content.ReadAsStringAsync();
+        content.Should().Contain("\"resyncRequired\":true").And.Contain("\"droppedRecordCount\":7");
+    }
+
+    [Fact]
+    public async Task Tail_receives_empty_gap_batches_without_double_counting_cumulative_drops()
+    {
+        var agentId = Guid.NewGuid();
+        using var app = await BuildAppAsync(agentId, allowed: true);
+        var registry = (TestLogRegistry)app.Services.GetRequiredService<IAgentLogGatewaySessionRegistry>();
+        app.Services.GetRequiredService<TestLogDispatcher>().OnStartLive = () =>
+        {
+            registry.Publish(new(new ClientKey(7, agentId), "session", [], null, 3, true));
+            registry.Publish(new(new ClientKey(7, agentId), "session", [], null, 3, true));
+        };
+        var client = AuthorizedClient(app);
+
+        var response = await client.GetAsync($"/api/v2/mcp/operator/agents/7/{agentId:D}/logs/tail?sourceId=runtime&windowSeconds=1&maxRecords=2");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var content = await response.Content.ReadAsStringAsync();
+        content.Should().Contain("\"resyncRequired\":true").And.Contain("\"droppedRecordCount\":3");
+    }
+
+    [Fact]
     public async Task ProductionResync_UsesTargetBoundPreviewAndConfirmedIdempotentDispatch()
     {
         var agentId = Guid.NewGuid();
@@ -771,15 +808,14 @@ public sealed class McpOperatorClientObservabilityEndpointTests
 
     private sealed class TestLogRegistry(ClientKey client) : IAgentLogGatewaySessionRegistry
     {
-        public event Action<GatewayLogBatchEvent>? LogBatchAccepted
-        {
-            add { }
-            remove { }
-        }
+        public event Action<GatewayLogBatchEvent>? LogBatchAccepted;
+        public bool ResyncRequired { get; set; }
+        public ulong DroppedRecordCount { get; set; }
+        public void Publish(GatewayLogBatchEvent batch) => LogBatchAccepted?.Invoke(batch);
 
         public AgentLogRegistration Register(ClientKey value, Guid connectionId, ulong connectionEpoch, AgentLogHello hello, bool provisional = false) => throw new NotSupportedException();
         public bool TryCompleteResync(ClientKey value, string sourceId) => false;
-        public GatewayLogPageDto Query(ClientKey value, GatewayLogPageRequest request) => new([], null, null, false, 0, false);
+        public GatewayLogPageDto Query(ClientKey value, GatewayLogPageRequest request) => new([], null, null, false, DroppedRecordCount, ResyncRequired);
 
         public IReadOnlyList<GatewayLogSourceDescriptorDto> GetSources(ClientKey value) => value == client
             ? [

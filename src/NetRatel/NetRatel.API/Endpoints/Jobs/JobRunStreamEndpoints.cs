@@ -69,8 +69,8 @@ public static partial class JobRunEndpoints
                 }
             }
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        catch (IOException) when (ct.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+        catch (IOException) when (ct.IsCancellationRequested) { return; }
 
         async Task<bool> WriteSnapshotAsync()
         {
@@ -93,7 +93,8 @@ public static partial class JobRunEndpoints
         var detail = await runs.GetDetailsAsync(id, ct);
         if (detail is null) return null;
         var run = detail.Run;
-        var job = await jobs.GetAsync(run.JobId, ct);
+        var job = await db.Jobs.IgnoreQueryFilters().AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == checked((long)run.JobId) && x.TenantId == run.TenantId, ct);
         var tenant = (await tenants.ListAsync(ct)).FirstOrDefault(x => x.TenantId == run.TenantId);
         var agent = run.AgentId is { } agentId
             ? await db.Agents.AsNoTracking().SingleOrDefaultAsync(x => x.Id == agentId && x.TenantId == run.TenantId, ct) : null;

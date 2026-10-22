@@ -18,8 +18,10 @@ public sealed record McpOperatorFileRelocationV2(string SourcePath, string Desti
 /// </summary>
 public interface IMcpOperatorFileV2Client
 {
-    /// <summary>Returns one live directory listing with pageSize, returnedCount, truncated, and continuationSupported=false. The result limit defaults to 100; there is no continuation or snapshot contract.</summary>
+    /// <summary>Returns one bounded directory page and an opaque nextCursor when more entries remain. The result limit defaults to 100.</summary>
     Task<JsonNode?> BrowseAsync(McpOperatorV2Target target, string path, int? pageSize = null, CancellationToken cancellationToken = default);
+    /// <summary>Continues the same caller-, target-, path-, page-size- and policy-bound listing. Changed listings and expired cursors require a fresh browse.</summary>
+    Task<JsonNode?> BrowseAsync(McpOperatorV2Target target, string path, int? pageSize, string? cursor, CancellationToken cancellationToken);
     Task<JsonNode?> StatAsync(McpOperatorV2Target target, string path, CancellationToken cancellationToken = default);
     Task<JsonNode?> ReadAsync(McpOperatorV2Target target, string path, CancellationToken cancellationToken = default);
     Task<JsonNode?> PreviewCollectArtifactAsync(McpOperatorV2Target target, string path, CancellationToken cancellationToken = default);
@@ -57,10 +59,15 @@ public sealed class McpOperatorFileV2Client(INetRatelMcpOutboundClient client) :
     private readonly INetRatelMcpOutboundClient _client = client ?? throw new ArgumentNullException(nameof(client));
 
     public Task<JsonNode?> BrowseAsync(McpOperatorV2Target target, string path, int? pageSize = null, CancellationToken cancellationToken = default)
+        => BrowseAsync(target, path, pageSize, null, cancellationToken);
+
+    public Task<JsonNode?> BrowseAsync(McpOperatorV2Target target, string path, int? pageSize, string? cursor, CancellationToken cancellationToken)
     {
         ValidatePath(path);
         if (pageSize is <= 0 or > MaximumPageSize) throw McpOperatorTaskV2Client.Invalid("file pageSize");
-        return _client.GetAsync(McpOperatorTaskV2Client.WithQuery(Path(target, "/browse"), ("path", path), ("pageSize", pageSize?.ToString())), cancellationToken);
+        if (cursor is not null && (cursor.Length is 0 or > 1024 || cursor.Any(char.IsWhiteSpace)))
+            throw McpOperatorTaskV2Client.Invalid("file cursor");
+        return _client.GetAsync(McpOperatorTaskV2Client.WithQuery(Path(target, "/browse"), ("path", path), ("pageSize", pageSize?.ToString()), ("cursor", cursor)), cancellationToken);
     }
 
     public Task<JsonNode?> StatAsync(McpOperatorV2Target target, string path, CancellationToken cancellationToken = default) =>

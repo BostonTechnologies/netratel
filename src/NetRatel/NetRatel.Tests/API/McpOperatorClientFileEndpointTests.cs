@@ -11,6 +11,7 @@ using System.Threading.Channels;
 using AwesomeAssertions;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
@@ -78,7 +79,8 @@ public sealed partial class McpOperatorClientFileEndpointTests
         json.RootElement.GetProperty("pageSize").GetInt32().Should().Be(5);
         json.RootElement.GetProperty("returnedCount").GetInt32().Should().Be(entries.GetArrayLength());
         json.RootElement.GetProperty("truncated").GetBoolean().Should().Be(truncated);
-        json.RootElement.GetProperty("continuationSupported").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("continuationSupported").GetBoolean().Should().BeTrue();
+        (json.RootElement.GetProperty("nextCursor").ValueKind == System.Text.Json.JsonValueKind.String).Should().Be(truncated);
     }
 
     [Fact]
@@ -774,7 +776,8 @@ public sealed partial class McpOperatorClientFileEndpointTests
 
     private static async Task<IHost> BuildAppAsync(Guid agentId, bool includeReadRoot, bool includeWriteRoot = true,
         IMcpOperatorConfirmationService? confirmations = null,
-        Func<McpOperatorDelegation, McpOperatorDelegation>? configureDelegation = null)
+        Func<McpOperatorDelegation, McpOperatorDelegation>? configureDelegation = null,
+        TimeProvider? timeProvider = null)
     {
         var client = new ClientKey(7, agentId);
         var builder = Host.CreateDefaultBuilder();
@@ -785,6 +788,8 @@ public sealed partial class McpOperatorClientFileEndpointTests
             web.ConfigureServices(services =>
             {
                 services.AddRouting();
+                services.AddSingleton<IDataProtectionProvider>(new EphemeralDataProtectionProvider());
+                services.AddSingleton(timeProvider ?? TimeProvider.System);
                 var authentication = services.AddAuthentication("M2M")
                     .AddScheme<AuthenticationSchemeOptions, TestAuthenticationHandler>("M2M", _ => { });
                 ManagedOperationAuthorization.AddAuthentication(authentication);
@@ -980,6 +985,7 @@ public sealed partial class McpOperatorClientFileEndpointTests
         public byte[]? WrittenContent { get; private set; }
         public string? DeleteFailureCode { get; set; }
         public IReadOnlyList<GatewayFileEntry> ListedEntries { get; set; } = [new("agent.log", "/var/log/agent.log", false, Content.Length)];
+        public Action? OnList { get; set; }
 
         public AgentFileGatewayRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch) => throw new NotSupportedException();
         public Task<IReadOnlyList<GatewayFileEntry>> ListAsync(ClientKey client, string path, int pageSize, CancellationToken cancellationToken) =>
@@ -987,6 +993,7 @@ public sealed partial class McpOperatorClientFileEndpointTests
         public Task<IReadOnlyList<GatewayFileEntry>> ListAsync(ClientKey client, string path, int pageSize, GatewayFileAccessPolicy accessPolicy, CancellationToken cancellationToken)
         {
             ListPolicies.Add(accessPolicy);
+            OnList?.Invoke();
             return ListAsync(client, path, pageSize, cancellationToken);
         }
 

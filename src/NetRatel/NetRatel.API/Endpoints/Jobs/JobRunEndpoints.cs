@@ -84,8 +84,16 @@ public static partial class JobRunEndpoints
     }
     private static async Task<List<JobRunDto>> BuildAsync(IJobRunService runs, IJobDefinitionService jobs, ITenantService tenants, OrchestratorDbContext db, CancellationToken ct)
     {
-        var jobNames = (await jobs.ListAsync(ct)).ToDictionary(x => x.Id, x => x.Name); var tenantNames = (await tenants.ListAsync(ct)).ToDictionary(x => x.TenantId, x => x.Name); var agents = await db.Agents.AsNoTracking().ToDictionaryAsync(x => x.Id, ct);
-        return (await runs.ListAsync(ct)).Select(run => { jobNames.TryGetValue(run.JobId, out var job); tenantNames.TryGetValue(run.TenantId ?? -1, out var tenant); agents.TryGetValue(run.AgentId ?? Guid.Empty, out var agent); return Map(run, job ?? string.Empty, tenant, agent?.TenantId == run.TenantId ? agent?.Name : null); }).ToList();
+        var history = await runs.ListAsync(ct);
+        var jobIds = history.Select(run => checked((long)run.JobId)).Distinct().ToArray();
+        // Retired definitions remain useful history, but a name is only joined
+        // within the run's tenant. Callers retain their existing run authorization.
+        var definitions = await db.Jobs.IgnoreQueryFilters().AsNoTracking().Where(job => jobIds.Contains(job.Id))
+            .Select(job => new { job.Id, job.TenantId, job.Name }).ToArrayAsync(ct);
+        var jobNames = definitions.ToDictionary(job => ((ulong)job.Id, job.TenantId), job => job.Name);
+        var tenantNames = (await tenants.ListAsync(ct)).ToDictionary(x => x.TenantId, x => x.Name);
+        var agents = await db.Agents.AsNoTracking().ToDictionaryAsync(x => x.Id, ct);
+        return history.Select(run => { jobNames.TryGetValue((run.JobId, run.TenantId), out var job); tenantNames.TryGetValue(run.TenantId ?? -1, out var tenant); agents.TryGetValue(run.AgentId ?? Guid.Empty, out var agent); return Map(run, job ?? string.Empty, tenant, agent?.TenantId == run.TenantId ? agent?.Name : null); }).ToList();
     }
     private static Task<bool> CanManageAsync(HttpContext http, IEffectiveAccessService access, int? tenantId, CancellationToken ct) =>
         access.AuthorizeAsync(http.User, NetRatelPermissions.JobManagement, tenantId, ct);

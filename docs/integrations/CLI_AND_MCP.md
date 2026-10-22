@@ -268,26 +268,48 @@ only: they do not recursively scan folder contents or calculate folder sizes.
 An older client or a filesystem without available metadata can return null;
 do not infer timestamps from those missing values.
 
-Operator browse returns one bounded listing. `--page-size` (MCP `pageSize`)
+Operator browse returns one bounded page. `--page-size` (MCP `pageSize`)
 is the maximum number of immediate entries to return, from 1 through 100,
 with a default of 100. The operator response includes:
 
 | Field | Meaning |
 | --- | --- |
-| `pageSize` | The result limit applied to this response. |
+| `pageSize` | The result limit applied to this response; preserve it on subsequent pages. |
 | `returnedCount` | The number of entries returned after the existing policy and name filters. |
-| `truncated` | `true` only when at least one additional eligible entry was omitted by the result limit. An exactly full listing can return `false`. |
-| `continuationSupported` | Always `false` for this contract; no cursor, offset, or page input is available. |
+| `truncated` | `true` when more eligible entries remain after this page. An exactly full final page returns `false`. |
+| `continuationSupported` | `true` for policy-admitted operator browse. |
+| `nextCursor` | Opaque continuation for the next page, or null when enumeration is complete. |
+| `cursorExpiresAtUtc` | Expiry of the cursor chain, five minutes after its first page. Fetching a page does not extend it. |
 
-A successful response describes a completed live enumeration of the immediate
-directory. Its contents can change during enumeration; the response is not a
-stable snapshot or a total directory count. To inspect a truncated listing,
-browse a known admitted subdirectory or use `stat`/`read` with a known exact
-path. Repeating browse starts another listing and does not advance to a next
-page. These semantics apply to `files-v2 browse` and operator-enabled
-`netratel_files/browse` over HTTP MCP or stdio. The legacy Development fixture
-route retains its separate compatibility response without these operator
-metadata fields.
+Pass `nextCursor` unchanged as MCP `cursor`, API query parameter `cursor`, or
+CLI `--cursor`. Keep the same identity, tenant, agent, path and page size. For
+example, after a first `files-v2 browse` call, run the same command with
+`--cursor '<returned-nextCursor>'`. The typed client retains its existing
+`BrowseAsync` overload and adds an overload accepting `cursor` before the
+cancellation token.
+
+Each page performs current authorization, root checks and a fresh native
+immediate-directory enumeration, bounded to 4,096 entries. Entries are ordered
+with directories first, then ordinal case-insensitive name and ordinal
+case-sensitive name/path tie breakers. POSIX names differing only by case
+remain distinct. Cursors bind the caller, exact target and request, current
+policy/root fingerprint and the ordered listing's names, paths and metadata.
+There is no retained server snapshot, file content or transferable authority.
+
+A changed listing or policy returns HTTP 409 `file_cursor_stale`; an expired
+chain returns HTTP 409 `file_cursor_expired`. Restart without a cursor and
+discard earlier pages from that chain. Tampered cursors or a different caller,
+path or page size return HTTP 400 `invalid_file_cursor`. Current revocation,
+tenant, path and gateway authorization still apply to every page. Directories
+larger than the native bound return `file_listing_too_large`, without a partial
+success. The fingerprint compares completed enumerations; it does not promise
+an atomic filesystem snapshot during concurrent writes.
+
+These semantics apply to `files-v2 browse` and operator-enabled
+`netratel_files/browse` over HTTP MCP or stdio. Existing native clients already
+stream the complete bounded listing, so continuation requires the updated API
+and tool schema without an additional native protocol capability. The legacy
+Development fixture route retains its separate response and rejects `cursor`.
 
 Use `files-v2 preview-create-directory` followed by
 `confirm-create-directory` to create a folder. Use `preview-delete` followed

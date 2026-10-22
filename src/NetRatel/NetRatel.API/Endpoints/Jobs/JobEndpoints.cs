@@ -70,10 +70,26 @@ public static class JobEndpoints
             await RecordAsync(events, correlation, NetRatelEventTypes.Job.StateChanged, updated!, "updated", ct);
             return Results.Ok(MapJob(updated!, new Dictionary<int, string>(), await db.Agents.AsNoTracking().ToDictionaryAsync(x => x.Id, ct)));
         });
-        group.MapDelete("/{id:long}", async (ulong id, HttpContext http, [FromServices] IEffectiveAccessService access, IJobDefinitionService jobs, CancellationToken ct) =>
+        group.MapDelete("/{id:long}", async (ulong id, HttpContext http, [FromServices] IEffectiveAccessService access, IJobDefinitionService jobs,
+            IEventRecorder events, ICorrelationContext correlation, CancellationToken ct) =>
         {
             var current = await jobs.GetAsync(id, ct); if (current is null) return Results.NotFound();
-            return !await CanManageAsync(http, access, current.TenantId, ct) ? Results.Forbid() : (await jobs.DeleteAsync(id, ct)) is null ? Results.NotFound() : Results.NoContent();
+            if (!await CanManageAsync(http, access, current.TenantId, ct)) return Results.Forbid();
+            try
+            {
+                if (await jobs.DeleteAsync(id, ct) is not { } deleted) return Results.NotFound();
+                await RecordAsync(events, correlation, NetRatelEventTypes.Job.StateChanged, deleted, "deleted", ct,
+                    http.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? http.User.Identity?.Name);
+                return Results.NoContent();
+            }
+            catch (JobDefinitionInUseException)
+            {
+                return Results.Conflict(new { code = "job_has_active_runs", remediation = "Cancel or settle active runs before deleting the job." });
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                return Results.Conflict(new { code = "job_revision_conflict", remediation = "Reload the job before deleting it." });
+            }
         });
         group.MapGet("/{id:long}/params", async (ulong id, HttpContext http, IJobDefinitionService jobs, [FromServices] IEffectiveAccessService access, CancellationToken ct) =>
         {
@@ -178,5 +194,5 @@ public static class JobEndpoints
     private static JobParamDto MapParam(JobParameterInfo p) => new(p.Id, p.JobId, p.Name, p.Type, p.Required, p.DefaultValue, p.Description, p.OptionsJson);
     private static JobStepDto MapStep(JobStepInfo s) => new(s.Id, s.JobId, s.Ordinal, (JobStepTypeDto)s.Type, s.Runner, s.Command, s.ScriptId, s.PayloadJson, s.Enabled);
     private static string NormalizeFolder(string? folder) { var value = string.IsNullOrWhiteSpace(folder) ? "/" : folder.Replace('\\', '/'); return (value.StartsWith('/') ? value : "/" + value).TrimEnd('/') + "/"; }
-    private static Task RecordAsync(IEventRecorder events, ICorrelationContext correlation, string type, JobDefinitionInfo job, string action, CancellationToken ct) => events.RecordAsync(new DomainEvent { EventType = type, Source = "Orchestration", CorrelationId = correlation.GetOrCreate(), TenantId = job.TenantId?.ToString(), EntityId = job.Id.ToString(), Severity = "Info", Message = $"Job {job.Name} {action}.", Payload = new { job.Id, job.TenantId, job.AgentId } }, ct);
+    private static Task RecordAsync(IEventRecorder events, ICorrelationContext correlation, string type, JobDefinitionInfo job, string action, CancellationToken ct, string? actor = null) => events.RecordAsync(new DomainEvent { EventType = type, Source = "Orchestration", CorrelationId = correlation.GetOrCreate(), TenantId = job.TenantId?.ToString(), EntityId = job.Id.ToString(), Severity = "Info", Message = $"Job {job.Name} {action}.", Payload = new { job.Id, job.TenantId, job.AgentId, Actor = actor } }, ct);
 }

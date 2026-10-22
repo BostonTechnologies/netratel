@@ -35,6 +35,9 @@ public sealed class OrchestrationCallbackDelivery
     public DateTimeOffset? LeaseExpiresAtUtc { get; set; }
     public DateTimeOffset NextAttemptAtUtc { get; set; }
     public DateTimeOffset? DeliveredAtUtc { get; set; }
+    public DateTimeOffset? RejectedAtUtc { get; set; }
+    public int? LastStatusCode { get; set; }
+    public string? LastFailureCode { get; set; }
     public int Attempts { get; set; }
 }
 
@@ -62,6 +65,7 @@ public static class ManagedOrchestrationModelConfiguration
             e.ToTable("OrchestrationCallbackDeliveries");
             e.HasKey(x => new { x.RequestId, x.Phase });
             e.Property(x => x.Phase).HasMaxLength(32);
+            e.Property(x => x.LastFailureCode).HasMaxLength(128);
             e.Property(x => x.Revision).IsConcurrencyToken();
             e.HasIndex(x => new { x.DeliveredAtUtc, x.NextAttemptAtUtc });
             e.HasOne<RequestRecord>().WithMany().HasForeignKey(x => x.RequestId).OnDelete(DeleteBehavior.Restrict);

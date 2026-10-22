@@ -180,8 +180,14 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
     {
         var row = await _db.JobRuns.FirstOrDefaultAsync(x => x.Id == (long)command.RunId, ct);
         var isNew = row is null;
+        await using var transaction = isNew ? await JobDefinitionMutationFence.BeginAsync(_db, ct) : null;
         if (row is null)
         {
+            // A captured MCP snapshot does not permit starting a retired definition.
+            // Share retirement's row fence until the Pending intent is committed;
+            // the actor's existing transaction ends before any gateway dispatch.
+            if (!await JobDefinitionMutationFence.LockActiveAsync(_db, checked((long)command.JobId), ct))
+                throw new JobDefinitionUnavailableException();
             row = new JobRunRecord { Id = (long)command.RunId };
             _db.JobRuns.Add(row);
         }
@@ -238,6 +244,7 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
         row.Error = _protection.Diagnostic(row, NormalizeNullable(command.Error));
 
         await SaveAndNotifyAsync(ct);
+        if (transaction is not null) await transaction.CommitAsync(ct);
         return Map(row);
     }
 

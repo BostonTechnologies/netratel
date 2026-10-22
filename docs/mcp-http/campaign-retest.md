@@ -6,13 +6,25 @@ owner's laptop prepares and runs the live campaign. The laptop prompt is an
 execution prompt and contains no source implementation or release assignment.
 
 Keep raw evidence and operational identities private. Track product acceptance
-under [#294](https://github.com/BostonTechnologies/netratel/issues/294), with
-[#282](https://github.com/BostonTechnologies/netratel/issues/282) as its parent.
+under [#294](https://github.com/BostonTechnologies/netratel/issues/294). Its
+remaining-work register supersedes overlapping campaign tracking issues; closing
+superseded tracking is not a passed acceptance assertion.
 The [beta.31 guide](https://github.com/BostonTechnologies/netratel/blob/f89593ccef6fa7385779baf1ba18328426218c07/docs/mcp-http/campaign-retest.md)
 retains the former campaign instructions and historical comparison. The current
 contract below applies prospectively; it does not rewrite historical outcomes.
 
 ## Baseline and finish line
+
+The latest reconciled checkpoint leaves **57 original contexts unresolved**:
+26 P0, 27 P1 and four P2. The 17 planned exclusions are within the original
+518-context universe, not additional contexts. The previous release advanced
+zero exact originals. Load the latest private ledger and original assertion
+definitions once, retain predecessor/effect requirements, and execute ready
+independent groups. Do not reconstruct missing assertions from an operation
+name or replace an original target/outcome with a convenient fixture pass.
+
+The following beta.31 counts are historical planning context, not the current
+remaining-work count.
 
 The final beta.31 checkpoint retains 518 distinct context IDs. It records 335
 invocations, 283 bounded operation passes, 37 admission denials and six failed
@@ -242,6 +254,24 @@ credentials, restore temporary roles with authorized readback, and dispose clien
 fixtures only after their readers, update tests and other dependencies are clear.
 Preserve original assets, retained audit/history and unresolved updater records.
 
+For an MCP-owned job whose original credential has been revoked, an authenticated
+account with current tenant `JobManagement` authority uses the existing
+`GET /api/v1/jobs/{jobId}` and `DELETE /api/v1/jobs/{jobId}` routes. Use the saved
+actual job ID and verify the tenant before deletion. Settle its runs first; an
+active run returns `409 job_has_active_runs`. A successful deletion retires the
+MCP-owned definition: verify it disappears from active get/list, while retained
+history and ownership remain. A different MCP credential's owner-filtered 404
+is not evidence that the object is absent.
+
+After dependent jobs are retired, an account with current `ScriptEditor`
+authority reads `GET /api/v1/script-library/{scriptId}` and uses the returned
+source revision in
+`DELETE /api/v1/script-library/{scriptId}?expectedSourceRevision={revision}`.
+Verify deletion through that same authorized administration path and retain the
+response. Remaining live job references still block script deletion. Record
+retirement/deletion separately from historical-row retention; do not use database
+deletion or change an old object's credential ownership for cleanup.
+
 Deliver one final reconciled ledger, workflow outcomes, hour receipt, fixture/
 cleanup status and private evidence package. Keep original failures and distinguish
 product failures, incorrect test setup, denied access, prohibited actions,
@@ -249,3 +279,69 @@ unsupported capabilities and unobserved host behavior. A scoped product verdict
 must name its exclusions; blanket acceptance remains open when a mandatory product
 or deployment obligation is unresolved. Source CI and artifact publication are
 reported separately from owner acceptance.
+
+## Genuine log-gap fixture
+
+Use `tools/testing/log-gap-fixture.py` from the tested release checkout on each
+selected disposable Linux executor, once for each original tenant. It requires
+Python 3 and root access on that disposable host. In an Ubuntu terminal on that
+executor, install the tools if missing with `sudo apt-get update` followed by
+`sudo apt-get install --no-install-recommends python3 ca-certificates curl`. If the
+release checkout is only on the laptop, obtain the one fixture script in that
+executor's terminal as follows, replacing `FULL_SOURCE_SHA` with the completed
+publication record's exact source commit:
+
+```shell
+mkdir -p netratel-log-gap-fixture/tools/testing
+cd netratel-log-gap-fixture
+curl --fail --show-error --location https://raw.githubusercontent.com/BostonTechnologies/netratel/FULL_SOURCE_SHA/tools/testing/log-gap-fixture.py --output tools/testing/log-gap-fixture.py
+```
+
+Run the following commands from that directory, or from the tested checkout's
+root. The fixture creates a new file
+at the client's existing `linux-file-messages` source (`/var/log/messages`); it
+refuses to overwrite an existing file. If that path already exists, use
+`prepare --source linux-file-syslog` only when `/var/log/syslog` is absent. If both
+exist, use a fresh disposable executor. The script retains the created file's
+device and inode and refuses later mutation or cleanup if the file was replaced.
+
+1. Run `sudo python3 tools/testing/log-gap-fixture.py prepare` inside the selected
+   disposable executor. Save the returned `stateDirectory`, `fixtureId` and
+   `sourceId`. Run `sudo systemctl restart netratel-client.service` only there so
+   source discovery sees the new file, then verify the same enrolled agent and source using the native
+   `netratel_client_logs/sources` operation.
+2. In a separate terminal on that executor, run
+   `sudo python3 tools/testing/log-gap-fixture.py produce STATE_DIRECTORY`, using
+   the returned directory. When it prints `Watching the owned source`, immediately
+   invoke native `netratel_client_logs/tail` with the selected `tenantId`, `agentId`
+   and `sourceId`, `windowSeconds: 15` and `maxRecords: 100`. Keep other readers of
+   this fixture stopped. The producer waits at most 12 seconds for actual history
+   and live read-close events, then appends an unread marker, truncates its own
+   file, holds the shorter file across two polling intervals, and writes a
+   recoverable marker. A timeout performs no truncation; retain the failed producer output
+   and rerun with a fresh fixture after correcting coordination.
+3. Save `fixture.json`, `gap.json`, the producer result and the native tail receipt.
+   Require the tail to report `resyncRequired: true`. The producer receipt proves
+   a real file discontinuity; it does not prove the agent or MCP observed it. A
+   missing native gap indication leaves the original assertion open.
+4. Invoke native `preview_resync` for that exact target and source, then
+   `confirm_resync` with its returned `planToken` and `idempotencyKey`, unchanged
+   target/source/credential and `confirm: true`. Require `resyncObserved: true`,
+   `resyncCompleted: true` and `resyncRequired: false`; retain the confirmation and
+   any required idempotent replay receipt.
+5. After successful confirmation, run
+   `sudo python3 tools/testing/log-gap-fixture.py marker STATE_DIRECTORY`. Start a
+   new native tail for the same target and source. Require the returned unique
+   marker and `resyncRequired: false`. Preserve the marker and tail receipts with
+   the exact original preview/confirm contexts for that tenant.
+6. Once dependent readers finish, run
+   `sudo python3 tools/testing/log-gap-fixture.py cleanup STATE_DIRECTORY`. It
+   removes only the fixture file and retains its receipt directory. Repeat the
+   complete sequence on the other selected tenant's disposable executor.
+
+This fixture uses the production file provider's real truncation detection and
+the ordinary admitted resync operations. A large journal burst is not a reliable
+substitute: the initial history can fill the tail's 100-record cap immediately,
+ending the live subscription before the burst; journal rate limits can also hide
+the intended pressure. The small file fixture keeps the tail open and exercises
+continuity loss without requiring server-buffer saturation or changing authority.

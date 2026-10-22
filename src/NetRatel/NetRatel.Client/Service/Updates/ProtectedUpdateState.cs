@@ -9,6 +9,9 @@ namespace NetRatel.Client.Service.Updates;
 
 internal static class ProtectedUpdateState
 {
+    private const string TrustedInstallerSid = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+    private static readonly Lazy<string?> WindowsServiceSid = new(ResolveWindowsServiceSid);
+
     internal static void AtomicWriteJson<T>(string path, T value)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
@@ -33,7 +36,7 @@ internal static class ProtectedUpdateState
             {
                 FileSystemSecurity acl = entry is FileInfo windowsFile ? windowsFile.GetAccessControl() : ((DirectoryInfo)entry).GetAccessControl();
                 var current = WindowsIdentity.GetCurrent().User?.Value;
-                bool Trusted(string? sid) => sid is not null && (sid == current || sid is "S-1-5-18" or "S-1-5-32-544");
+                bool Trusted(string? sid) => IsTrustedWindowsSid(sid, current, WindowsServiceSid.Value);
                 if (!Trusted(acl.GetOwner(typeof(SecurityIdentifier))?.Value)) return false;
                 var writes = FileSystemRights.Delete | FileSystemRights.DeleteSubdirectoriesAndFiles |
                     FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership;
@@ -55,6 +58,27 @@ internal static class ProtectedUpdateState
             else return false;
         }
         return true;
+    }
+
+    // Match the native updater's allowlist. Windows protects ordinary ancestors
+    // with TrustedInstaller, and historical installations may retain the product's
+    // service SID. Neither identity makes unrelated users or service SIDs trusted.
+    internal static bool IsTrustedWindowsSid(string? sid, string? currentSid, string? serviceSid) =>
+        sid is not null && (sid == currentSid || sid == serviceSid ||
+            sid is "S-1-5-18" or "S-1-5-32-544" or TrustedInstallerSid);
+
+    private static string? ResolveWindowsServiceSid()
+    {
+        if (!OperatingSystem.IsWindows()) return null;
+        try
+        {
+            return new NTAccount("NT SERVICE", "NetRatel.Client").Translate(typeof(SecurityIdentifier)).Value;
+        }
+        catch (IdentityNotMappedException)
+        {
+            // A console-only installation has no registered product service.
+            return null;
+        }
     }
 
     [DllImport("libc")] private static extern uint geteuid();
