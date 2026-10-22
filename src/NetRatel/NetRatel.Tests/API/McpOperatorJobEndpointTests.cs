@@ -97,13 +97,18 @@ public sealed class McpOperatorJobEndpointTests
             var jobId = long.Parse(confirmed.JobId);
             var owner = await db.McpOperatorJobs.SingleAsync(row => row.JobId == jobId);
             owner.Version.Should().Be(long.Parse(confirmed.Version));
+            owner.DeletedAtUtc.HasValue.Should().Be(action == "delete");
+            (await db.Jobs.AnyAsync(row => row.Id == jobId)).Should().Be(action != "delete");
+            var historicalJob = await db.Jobs.IgnoreQueryFilters()
+                .SingleAsync(row => row.Id == jobId && row.TenantId == 42);
             // Later edits/deletion and a changed script must not replace the
             // recorded outcome or require a new validation of execution material.
             owner.Version++;
             owner.DeletedAtUtc = DateTimeOffset.UtcNow;
-            (await db.Jobs.SingleAsync(row => row.Id == jobId)).Name = "later-definition";
+            historicalJob.Name = "later-definition";
             (await db.McpOperatorScripts.SingleAsync()).Version++;
             await db.SaveChangesAsync();
+            (await db.Jobs.AnyAsync(row => row.Id == jobId)).Should().BeFalse();
             var store = scope.ServiceProvider.GetRequiredService<IMcpOperatorJobStore>();
             (await store.GetOwnedAsync(jobId, 42, MutationAgentId, MutationPrincipal(), MutationResource, "prod", default)).Should().BeNull();
         }
