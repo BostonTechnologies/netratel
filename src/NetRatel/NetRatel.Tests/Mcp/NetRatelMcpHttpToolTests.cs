@@ -1565,6 +1565,28 @@ public sealed class NetRatelMcpHttpToolTests
             "/api/v2/mcp/operator/agents/7/35ba3a1d-8665-499d-a8a6-42fa07e9a633/files/artifacts/408bc540-77b0-453a-99df-af20d2b024af/cleanup/confirm");
     }
 
+    [Theory]
+    [InlineData(" cursor")]
+    [InlineData("cursor ")]
+    [InlineData("cur sor")]
+    [InlineData("")]
+    public async Task Production_file_browse_rejects_changed_cursor_text_before_dispatch(string cursor)
+    {
+        var client = new RecordingApiClient(data: new JsonObject());
+        var host = new NetRatelMcpHostContext(
+            new NetRatelMcpTarget("prod", new Uri("https://api.prod.example/"), new Uri("https://mcp.prod.example/mcp"), NetRatelMcpCatalog.Revision),
+            NetRatelMcpTransport.StreamableHttp,
+            "NetRatel.Mcp.Http.Tests");
+        var tools = new NetRatelMcpOperationalTools(client, host);
+        var result = await tools.netratel_files("browse", Request(new JsonObject
+        {
+            ["tenantId"] = 7, ["agentId"] = Guid.NewGuid().ToString("D"),
+            ["path"] = "/var/log", ["pageSize"] = 20, ["cursor"] = cursor
+        }));
+        result.Success.Should().BeFalse();
+        client.Paths.Should().BeEmpty();
+    }
+
     [Fact]
     public async Task Production_client_observability_reads_and_resync_plan_workflow_use_general_operator_routes()
     {
@@ -1584,7 +1606,8 @@ public sealed class NetRatelMcpHttpToolTests
             ["tenantId"] = 7,
             ["agentId"] = agentId.ToString("D"),
             ["path"] = "/var/log/netratel",
-            ["pageSize"] = 20
+            ["pageSize"] = 20,
+            ["cursor"] = "opaque-browse-cursor"
         }));
         var stat = await tools.netratel_files("stat", Request(new JsonObject
         {
@@ -1831,7 +1854,7 @@ public sealed class NetRatelMcpHttpToolTests
         previewResync.Success.Should().BeTrue();
         confirmResync.Success.Should().BeTrue();
         client.Paths.Should().Equal(
-            "/api/v2/mcp/operator/agents/7/35ba3a1d-8665-499d-a8a6-42fa07e9a633/files/browse?path=%2Fvar%2Flog%2Fnetratel&pageSize=20",
+            "/api/v2/mcp/operator/agents/7/35ba3a1d-8665-499d-a8a6-42fa07e9a633/files/browse?path=%2Fvar%2Flog%2Fnetratel&pageSize=20&cursor=opaque-browse-cursor",
             "/api/v2/mcp/operator/agents/7/35ba3a1d-8665-499d-a8a6-42fa07e9a633/files/stat?path=%2Fvar%2Flog%2Fnetratel%2Fagent.log",
             "/api/v2/mcp/operator/agents/7/35ba3a1d-8665-499d-a8a6-42fa07e9a633/files/read?path=%2Fvar%2Flog%2Fnetratel%2Fagent.log",
             "/api/v2/mcp/operator/agents/7/35ba3a1d-8665-499d-a8a6-42fa07e9a633/logs/sources",

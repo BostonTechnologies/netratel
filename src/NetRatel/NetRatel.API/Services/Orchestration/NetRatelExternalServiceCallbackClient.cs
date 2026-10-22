@@ -32,46 +32,62 @@ public sealed class NetRatelExternalServiceCallbackClient(
     }
 
     public async Task<bool> TrySendStatusAsync(NetRatelExternalServiceCallbackRequest request, string correlationId, CancellationToken ct = default)
+        => (await SendWithDispositionAsync(request, correlationId, ct)).Disposition == OrchestrationCallbackDisposition.Delivered;
+
+    public async Task<OrchestrationCallbackResult> SendWithDispositionAsync(NetRatelExternalServiceCallbackRequest request,
+        string correlationId, CancellationToken ct = default)
     {
-        if (!int.TryParse(request.NetRatelRequestId, NumberStyles.None, CultureInfo.InvariantCulture, out var requestId)) return false;
+        if (!int.TryParse(request.NetRatelRequestId, NumberStyles.None, CultureInfo.InvariantCulture, out var requestId))
+            return new(OrchestrationCallbackDisposition.Rejected, FailureCode: "callback-binding-invalid");
         var binding = await db.Set<ManagedOrchestrationRequestBinding>().AsNoTracking().SingleOrDefaultAsync(x => x.RequestId == requestId, ct);
         if (binding is null || binding.LinkId is null || binding.GrantHash is null || binding.CallbackUrl is null ||
             binding.ExecutionId != request.ExecutionId || request.NetRatelRunId != binding.ExecutionId ||
             request.RequestId != binding.RequestId.ToString(CultureInfo.InvariantCulture) || request.RequestTaskId != binding.RequestTaskId ||
-            correlationId != binding.CorrelationId || !ulong.TryParse(binding.ExecutionId, NumberStyles.None, CultureInfo.InvariantCulture, out var runId)) return false;
+            correlationId != binding.CorrelationId || !ulong.TryParse(binding.ExecutionId, NumberStyles.None, CultureInfo.InvariantCulture, out var runId))
+            return new(OrchestrationCallbackDisposition.Rejected, FailureCode: "callback-binding-invalid");
         var stored = await requests.GetAsync(binding.RequestId, ct);
         var details = await runs.GetDetailsAsync(runId, ct);
         if (stored is null || details is null || details.Run.Status == JobRunState.Pending ||
             !OrchestrationCallbackProjection.Matches(stored, details.Run, binding) ||
             !await OrchestrationCallbackProjection.TerminalReadyAsync(db, details, ct) ||
-            request.Status != OrchestrationCallbackProjection.Status(details.Run.Status)) return false;
+            request.Status != OrchestrationCallbackProjection.Status(details.Run.Status))
+            return new(OrchestrationCallbackDisposition.Rejected, FailureCode: "callback-result-unavailable");
         request = OrchestrationCallbackProjection.Build(stored, details, binding);
 
         for (var attempt = 0; attempt <= RetryDelays.Length; attempt++)
         {
             try
             {
-                if (!await CurrentInboundAuthorityAsync(binding, ct)) return false;
+                if (!await CurrentInboundAuthorityAsync(binding, ct))
+                {
+                    await RecordAsync(RejectedEvent, "The current connection no longer authorizes this correlated callback.",
+                        request, correlationId, null, "callback-authority-unavailable", ct);
+                    return new(OrchestrationCallbackDisposition.Rejected, FailureCode: "callback-authority-unavailable");
+                }
                 var authorization = await profiles.GetCallbackAuthorizationAsync(binding.LinkId, binding.TenantId,
                     binding.PeerInstanceId, binding.PeerTenantId, binding.LinkRevision, binding.GrantHash, binding.CallbackUrl,
                     binding.ParentRequestId, binding.RequestTaskId, ct);
                 var uri = new Uri(authorization.CallbackUrl, UriKind.Absolute);
                 var status = await transport.PostBusinessStatusAsync(uri.GetLeftPart(UriPartial.Authority), CallbackPath,
                     OrchestrationCallbackProjection.ManagedWire(request), authorization.BearerToken, correlationId, ct);
-                if (status is >= 200 and < 300) return true;
-                if (status < 500 || attempt == RetryDelays.Length)
+                if (status is >= 200 and < 300) return new(OrchestrationCallbackDisposition.Delivered, status);
+                var rejected = OrchestrationCallbackResult.IsTerminalRejection(status);
+                if (rejected || attempt == RetryDelays.Length)
                 {
-                    await RecordAsync(status is 400 or 401 or 403 ? RejectedEvent : FailedEvent,
+                    await RecordAsync(rejected ? RejectedEvent : FailedEvent,
                         "The paired system rejected the correlated callback.", request, correlationId, status, null, ct);
-                    return false;
+                    return new(rejected ? OrchestrationCallbackDisposition.Rejected : OrchestrationCallbackDisposition.Retryable, status);
                 }
             }
             catch (PairingException error)
             {
-                // Revocation and changed mapping authority stop before business transport.
-                await RecordAsync(RejectedEvent, "The connection no longer authorizes this correlated callback.",
+                // Revocation stops immediately; transient token-exchange failures retain durable retries.
+                var rejected = OrchestrationCallbackResult.IsTerminalRejection(error.StatusCode);
+                await RecordAsync(rejected ? RejectedEvent : FailedEvent,
+                    rejected ? "The connection no longer authorizes this correlated callback." : "The connection could not obtain callback access.",
                     request, correlationId, error.StatusCode, error.Code, ct);
-                return false;
+                return new(rejected ? OrchestrationCallbackDisposition.Rejected : OrchestrationCallbackDisposition.Retryable,
+                    error.StatusCode, error.Code);
             }
             catch (Exception error) when (error is HttpRequestException || error is OperationCanceledException && !ct.IsCancellationRequested)
             {
@@ -79,12 +95,13 @@ public sealed class NetRatelExternalServiceCallbackClient(
                 {
                     await RecordAsync(FailedEvent, "The paired system could not be reached for the correlated callback.",
                         request, correlationId, null, error is OperationCanceledException ? "callback-timeout" : "callback-network-unavailable", ct);
-                    return false;
+                    return new(OrchestrationCallbackDisposition.Retryable,
+                        FailureCode: error is OperationCanceledException ? "callback-timeout" : "callback-network-unavailable");
                 }
             }
             if (attempt < RetryDelays.Length) await Task.Delay(RetryDelays[attempt], ct);
         }
-        return false;
+        return new(OrchestrationCallbackDisposition.Retryable);
     }
 
     private async Task<bool> CurrentInboundAuthorityAsync(ManagedOrchestrationRequestBinding binding, CancellationToken ct)

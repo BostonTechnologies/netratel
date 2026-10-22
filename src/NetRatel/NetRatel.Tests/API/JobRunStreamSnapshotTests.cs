@@ -69,6 +69,34 @@ public sealed class JobRunStreamSnapshotTests
         snapshot.Run.StartedAtMicros.Should().BeNull();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Historical_snapshot_keeps_retired_job_name_only_in_its_original_tenant(bool reassigned)
+    {
+        await using var db = CreateDb();
+        var jobs = new JobDefinitionService(db);
+        var job = await jobs.CreateAsync(new("Retained job name", "/", null, 7, ""));
+        var runs = new JobRunService(db, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
+        var now = DateTimeOffset.UtcNow;
+        await runs.UpsertRunAsync(new(10, job.Id, 7, "", "tester", JobRunState.Succeeded,
+            0, now, now, now, null, null, null));
+        db.McpOperatorJobs.Add(new() { Id = Guid.NewGuid(), JobId = (long)job.Id, TenantId = 7, DeletedAtUtc = now });
+        await db.SaveChangesAsync();
+        Assert.Null(await jobs.GetAsync(job.Id));
+        if (reassigned)
+        {
+            var retained = await db.Jobs.IgnoreQueryFilters().SingleAsync();
+            retained.TenantId = 8;
+            retained.Name = "Private other tenant job";
+            await db.SaveChangesAsync();
+        }
+
+        var snapshot = await JobRunEndpoints.BuildStreamSnapshotAsync(10, runs, jobs, new TenantService(db), db, default);
+        Assert.NotNull(snapshot);
+        Assert.Equal(reassigned ? "Historical job" : "Retained job name", snapshot.Run.JobName);
+    }
+
     private static OrchestratorDbContext CreateDb() => new(new DbContextOptionsBuilder<OrchestratorDbContext>()
         .UseInMemoryDatabase(Guid.NewGuid().ToString("N")).Options);
 }

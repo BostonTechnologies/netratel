@@ -589,6 +589,24 @@ public sealed class NetRatelCliTests
     }
 
     [Fact]
+    public async Task FilesV2Browse_ForwardsTheUnchangedContinuationAndPageSize()
+    {
+        var agentId = Guid.NewGuid();
+        var code = await RunCliAsync([
+            "files-v2", "browse", "--tenant-id", "7", "--agent-id", agentId.ToString("D"),
+            "--path", "/var/log", "--page-size", "20", "--cursor", "opaque-browse-cursor"
+        ], request =>
+        {
+            if (request.RequestUri!.Host == "auth.example")
+                return Task.FromResult(Json(HttpStatusCode.OK, """{"access_token":"minted-token"}"""));
+            request.Method.Should().Be(HttpMethod.Get);
+            request.RequestUri.PathAndQuery.Should().Be($"/api/v2/mcp/operator/agents/7/{agentId:D}/files/browse?path=%2Fvar%2Flog&pageSize=20&cursor=opaque-browse-cursor");
+            return Task.FromResult(Json(HttpStatusCode.OK, """{"entries":[],"truncated":false,"nextCursor":null}"""));
+        });
+        code.Should().Be(CliExitCodes.Success);
+    }
+
+    [Fact]
     public async Task FilesV2PreviewWriteText_Uses_The_Exact_Targeted_Route_Without_Printing_Content()
     {
         var agentId = Guid.Parse("11111111-2222-3333-4444-555555555555");

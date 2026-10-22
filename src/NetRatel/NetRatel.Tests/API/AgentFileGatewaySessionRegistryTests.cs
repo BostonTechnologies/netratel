@@ -11,6 +11,46 @@ namespace NetRatel.Tests.API;
 public sealed class AgentFileGatewaySessionRegistryTests
 {
     [Fact]
+    public async Task ListAsync_PreservesCaseDistinctPosixNamesForContinuation()
+    {
+        var client = new ClientKey(3, Guid.NewGuid());
+        var connection = Guid.NewGuid();
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 2));
+        using var registration = registry.Register(client, connection, 2);
+        var listing = registry.ListAsync(client, "/data", 1, CancellationToken.None);
+        var dispatch = (await registration.Reader.ReadAsync()).Dispatch;
+        registry.TryAccept(client, new FileRequestAccepted { RequestId = dispatch.RequestId, AttemptId = dispatch.AttemptId }).Should().BeTrue();
+        foreach (var (name, index) in new[] { ("a", 0u), ("A", 1u) })
+            registry.TryAddPage(client, new FileListPage
+            {
+                RequestId = dispatch.RequestId, AttemptId = dispatch.AttemptId,
+                PageIndex = index, IsLastPage = index == 1,
+                Entries = { new FileEntry { Name = name, FullPath = "/data/" + name } }
+            }).Should().BeTrue();
+        registry.TryComplete(client, new FileRequestCompleted { RequestId = dispatch.RequestId, AttemptId = dispatch.AttemptId }).Should().BeTrue();
+        (await listing).Select(entry => entry.FullPath).Should().BeEquivalentTo("/data/a", "/data/A");
+    }
+
+    [Fact]
+    public async Task ListAsync_RejectsAnOversizedDirectoryWithABoundedTypedOutcome()
+    {
+        var client = new ClientKey(3, Guid.NewGuid());
+        var connection = Guid.NewGuid();
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 2));
+        using var registration = registry.Register(client, connection, 2);
+        var listing = registry.ListAsync(client, "/data", 100, CancellationToken.None);
+        var dispatch = (await registration.Reader.ReadAsync()).Dispatch;
+        registry.TryAccept(client, new FileRequestAccepted { RequestId = dispatch.RequestId, AttemptId = dispatch.AttemptId }).Should().BeTrue();
+        registry.TryAddPage(client, new FileListPage
+        {
+            RequestId = dispatch.RequestId, AttemptId = dispatch.AttemptId, IsLastPage = true,
+            Entries = { Enumerable.Range(0, 4097).Select(index => new FileEntry { Name = index.ToString(), FullPath = "/data/" + index }) }
+        }).Should().BeFalse();
+        var act = () => listing;
+        (await act.Should().ThrowAsync<AgentFileGatewayOperationException>()).Which.Code.Should().Be("file_listing_too_large");
+    }
+
+    [Fact]
     public async Task ListAsync_RoutesA_FencedPagedRequest_AndReturnsEntries()
     {
         var client = new ClientKey(3, Guid.NewGuid());

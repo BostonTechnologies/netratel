@@ -182,7 +182,8 @@ public sealed class ScriptService(OrchestratorDbContext db) : IScriptService
         }
 
         EnsureRevision(script, expectedSourceRevision);
-        if (await _db.JobSteps.AsNoTracking().AnyAsync(step => step.ScriptId == script.Id, ct))
+        if (await _db.JobSteps.AsNoTracking().AnyAsync(step => step.ScriptId == script.Id &&
+                _db.Jobs.Any(job => job.Id == step.JobId), ct))
             throw new ScriptSourceInUseException();
         // Retain source identity, revision evidence, and references from past
         // runs. The canonical query filter hides the tombstone in all readers.

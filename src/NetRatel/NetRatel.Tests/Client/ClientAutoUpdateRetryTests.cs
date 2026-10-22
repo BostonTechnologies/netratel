@@ -233,6 +233,43 @@ public sealed class ClientAutoUpdateRetryTests
         Assert.Equal(0, rig.Clock.ActiveTimerCount);
     }
 
+    [Fact]
+    public async Task RejectedNativeLaunchCanResumeTheSameStagedAttemptWithoutASecondClaimOrDownload()
+    {
+        await using var rig = new Rig();
+        rig.LaunchFailure = new NativeUpdaterLaunchException("linux_updater_start_rejected", retrySafe: true);
+        rig.Offer();
+        var diagnostic = await rig.Outcome("retry-on-fresh-offer");
+        Assert.Contains("stage=activation-handover", diagnostic);
+        Assert.Contains("code=linux_updater_start_rejected", diagnostic);
+        Assert.Equal(1, rig.Claims);
+        Assert.Equal(1, rig.Downloads);
+        Assert.Equal(0, rig.Launches);
+        rig.Clock.Advance(TimeSpan.FromSeconds(30));
+        rig.Offer();
+        await rig.Launched.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await rig.Coordinator.DisposeAsync();
+        Assert.Equal(1, rig.Claims);
+        Assert.Equal(1, rig.Downloads);
+        Assert.Equal(1, rig.Launches);
+        Assert.Single(rig.Nonces.Distinct());
+    }
+
+    [Fact]
+    public async Task UncertainNativeLaunchRemainsFencedAcrossRepeatedOffers()
+    {
+        await using var rig = new Rig();
+        rig.LaunchFailure = new NativeUpdaterLaunchException("linux_updater_acknowledgement_timeout", retrySafe: false);
+        rig.Offer();
+        await rig.Outcome("handover-uncertain-no-relaunch");
+        rig.Clock.Advance(TimeSpan.FromMinutes(10));
+        for (var i = 0; i < 20; i++) rig.Offer();
+        await rig.Coordinator.DisposeAsync();
+        Assert.Equal(1, rig.Claims);
+        Assert.Equal(1, rig.Downloads);
+        Assert.Equal(0, rig.Launches);
+    }
+
     private sealed class Rig : HttpMessageHandler, IAgentTokenService, IAsyncDisposable
     {
         internal readonly GatewayPresenceTestClock Clock = new();
@@ -249,6 +286,7 @@ public sealed class ClientAutoUpdateRetryTests
         internal readonly AkkaClientAutoUpdateCoordinator Coordinator;
         internal HttpStatusCode? ClaimFailure, DownloadFailure, TokenFailure;
         internal string? ReportFailure;
+        internal NativeUpdaterLaunchException? LaunchFailure;
         internal bool DropClaimResponse, FailAfterCommit, InvalidArtifact, HoldDownload, DelayCancellation;
         internal int Claims, Downloads, Launches;
         internal ClientUpdateAttemptState ServerState = ClientUpdateAttemptState.Claimed;
@@ -263,7 +301,12 @@ public sealed class ClientAutoUpdateRetryTests
             _client = new HttpClient(this) { BaseAddress = new Uri("https://web.example.test") };
             Coordinator = new AkkaClientAutoUpdateCoordinator(new ClientOptions { ApiBaseUrl = _client.BaseAddress.ToString(),
                 AutoUpdate = new AutoUpdateOptions { StateDirectory = _root, RuntimeId = "linux-x64" } }, "1.2.3", this, _client,
-                Clock, () => { Interlocked.Increment(ref Launches); Launched.TrySetResult(); }, true, log =>
+                Clock, () =>
+                {
+                    if (LaunchFailure is { } failure) { LaunchFailure = null; throw failure; }
+                    Interlocked.Increment(ref Launches);
+                    Launched.TrySetResult();
+                }, true, log =>
                 { Diagnostics.Enqueue(log); Logs.Writer.TryWrite(log); });
         }
 
@@ -328,7 +371,8 @@ public sealed class ClientAutoUpdateRetryTests
                 DownloadStarted.TrySetResult();
                 if (hold)
                 {
-                    try { await Task.Delay(Timeout.InfiniteTimeSpan, ct); }
+                    var downloadHeld = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    try { await downloadHeld.Task.WaitAsync(ct); }
                     catch (OperationCanceledException)
                     {
                         DownloadCancelled.TrySetResult();
@@ -395,6 +439,23 @@ public sealed class ClientAutoUpdateRetryTests
 
 public sealed class ClientUpdateResultDeliveryTests
 {
+    [Fact]
+    public async Task OversizedNativeResultIsRetainedAndReportedOnceWithoutAFalseDeliveryReceipt()
+    {
+        await using var rig = new DeliveryRig();
+        File.WriteAllText(rig.ResultPath, new string('x', 64 * 1024 + 1));
+        var logs = new List<string>();
+        rig.Worker = rig.CreateWorker(logs.Add);
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        Assert.True(rig.Worker.HasUnresolvedResult);
+        Assert.Equal(0, rig.Requests);
+        Assert.Single(logs);
+        Assert.Contains("delivery=local_state_unreadable reconciliation=required", logs[0]);
+        Assert.True(File.Exists(rig.ResultPath));
+        Assert.False(File.Exists(Path.Combine(rig.Root, "result-delivery.json")));
+    }
+
     [Fact]
     public async Task PlainRoute404SurvivesRestartAndRecoversWithoutChangingTheInstallationOutcome()
     {

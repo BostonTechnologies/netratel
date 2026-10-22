@@ -276,6 +276,8 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
     {
         ValidateAdmission(decision, acceptedAudit);
         if (jobId <= 0 || expectedVersion <= 0) throw new ArgumentException("A positive job id and expected ETag version are required.");
+        await using var transaction = await JobDefinitionMutationFence.BeginAsync(_db, cancellationToken);
+        if (!await JobDefinitionMutationFence.LockActiveAsync(_db, jobId, cancellationToken)) return null;
         var row = await FindMutableOwnedAsync(jobId, decision.Request, cancellationToken).ConfigureAwait(false);
         if (row is null) return null;
         EnsureVersion(row.owner, expectedVersion);
@@ -287,6 +289,7 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
         row.job.UpdatedAtUtc = occurredAtUtc;
         _db.McpOperatorJobAudits.Add(JobAudit(row.owner, "deleted", acceptedAudit.AuditId, occurredAtUtc));
         await SaveWithConcurrencyAsync(cancellationToken).ConfigureAwait(false);
+        if (transaction is not null) await transaction.CommitAsync(cancellationToken);
         return ToLease(row.owner, row.job);
     }
 
@@ -560,8 +563,9 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
     {
         var subject = principal.Subject;
         var clientId = ClientId(principal);
+        var definitions = includeDeleted ? _db.Jobs.IgnoreQueryFilters() : _db.Jobs;
         var rows = await _db.McpOperatorJobs.AsNoTracking()
-            .Join(_db.Jobs.AsNoTracking(), owner => owner.JobId, job => job.Id, (owner, job) => new { owner, job })
+            .Join(definitions.AsNoTracking(), owner => owner.JobId, job => job.Id, (owner, job) => new { owner, job })
             .SingleOrDefaultAsync(entry => entry.owner.JobId == jobId && entry.owner.TenantId == tenantId && entry.owner.AgentId == agentId &&
                 entry.owner.Subject == subject && entry.owner.ClientId == clientId && entry.owner.McpResource == resource && entry.owner.McpInstance == instance &&
                 (includeDeleted || entry.owner.DeletedAtUtc == null), cancellationToken)

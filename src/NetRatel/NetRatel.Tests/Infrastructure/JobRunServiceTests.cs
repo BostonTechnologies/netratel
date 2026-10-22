@@ -19,6 +19,8 @@ public sealed class JobRunServiceTests
         var service = new JobRunService(db, keys);
         var now = DateTimeOffset.UtcNow;
         var agentId = Guid.NewGuid();
+        db.Jobs.Add(new() { Id = 11, Name = "reviewed-job", TenantId = 7, AgentId = agentId, CreatedAtUtc = now, UpdatedAtUtc = now });
+        await db.SaveChangesAsync();
         const string scriptContent = "printf 'private-reviewed-script-snapshot'";
         var snapshot = new McpOperatorJobExecutionSnapshot(
             new JobDefinitionDetails(new JobDefinitionInfo(11, "reviewed-job", "/", null, 7, string.Empty, now, now, null, agentId), [], []),

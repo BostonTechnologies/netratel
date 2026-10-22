@@ -2952,9 +2952,6 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<string>("InputSensitivityJson")
                         .HasColumnType("text");
 
-                    b.Property<string>("ProtectedExecutionJson")
-                        .HasColumnType("text");
-
                     b.Property<string>("InputsJson")
                         .HasColumnType("text");
 
@@ -2962,6 +2959,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .HasColumnType("bigint");
 
                     b.Property<string>("OptionsJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ProtectedExecutionJson")
                         .HasColumnType("text");
 
                     b.Property<DateTimeOffset?>("StartedAtUtc")
@@ -5513,6 +5513,13 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset?>("DeliveredAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("LastFailureCode")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<int?>("LastStatusCode")
+                        .HasColumnType("integer");
+
                     b.Property<DateTimeOffset?>("LeaseExpiresAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -5520,6 +5527,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid");
 
                     b.Property<DateTimeOffset>("NextAttemptAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("RejectedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<long>("Revision")
@@ -5980,16 +5990,13 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("RundeckExecutionId");
 
+                    b.Property<string>("InputSensitivityJson")
+                        .HasColumnType("text");
+
                     b.Property<string>("JobDefinitionId")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("RundeckJobDefinitionId");
-
-                    b.Property<string>("InputSensitivityJson")
-                        .HasColumnType("text");
-
-                    b.Property<string>("ProtectedJobInputsJson")
-                        .HasColumnType("text");
 
                     b.Property<string>("JobInputs")
                         .HasColumnType("text");
@@ -5997,6 +6004,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.PrimitiveCollection<List<string>>("Logs")
                         .IsRequired()
                         .HasColumnType("text[]");
+
+                    b.Property<string>("ProtectedJobInputsJson")
+                        .HasColumnType("text");
 
                     b.Property<string>("ResultData")
                         .HasColumnType("text");

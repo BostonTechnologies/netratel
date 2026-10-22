@@ -1273,14 +1273,18 @@ public sealed partial class NetRatelMcpOperationalTools
     private Task<NetRatelToolResponse> OperatorFileReadAsync(string operation, JsonElement? request, bool allowPageSize, CancellationToken cancellationToken)
     {
         int? pageSize = null;
+        string? cursor = null;
         if (!TryObject(request, out var payload) ||
-            !ContainsOnly(payload, allowPageSize ? ["tenantId", "agentId", "path", "pageSize"] : ["tenantId", "agentId", "path"]) ||
+            !ContainsOnly(payload, allowPageSize
+                ? UsesProductionOperatorRoutes ? ["tenantId", "agentId", "path", "pageSize", "cursor"] : ["tenantId", "agentId", "path", "pageSize"]
+                : ["tenantId", "agentId", "path"]) ||
             !TryRequiredInt(payload, "tenantId", 1, int.MaxValue, out var tenantId) ||
             !TryRequiredGuid(payload, "agentId", out var agentId) ||
             !TryRequiredString(payload, "path", 4096, out var path) ||
-            (allowPageSize && !TryOptionalInt(payload, "pageSize", 1, 100, out pageSize)))
+            (allowPageSize && (!TryOptionalInt(payload, "pageSize", 1, 100, out pageSize) ||
+                !TryGetUnchangedFileCursor(payload, out cursor))))
         {
-            return Task.FromResult(Invalid("request requires a positive tenantId, persisted V2 agentId, a bounded canonical path, and (for browse) pageSize from 1 through 100."));
+            return Task.FromResult(Invalid("request requires a positive tenantId, persisted V2 agentId, a bounded canonical path, and (for browse) pageSize from 1 through 100 with an optional unchanged nextCursor as cursor on the Production operator surface."));
         }
 
         if (UsesProductionOperatorRoutes)
@@ -1291,7 +1295,7 @@ public sealed partial class NetRatelMcpOperationalTools
                 "stat" => "/files/stat",
                 _ => "/files/browse"
             });
-            productionEndpoint = WithQuery(productionEndpoint, ("path", path), ("pageSize", allowPageSize ? Format(pageSize) : null));
+            productionEndpoint = WithQuery(productionEndpoint, ("path", path), ("pageSize", allowPageSize ? Format(pageSize) : null), ("cursor", cursor));
             return GetAsync("netratel_files", operation, ProductionFileReadOperations, productionEndpoint, cancellationToken);
         }
 
@@ -1299,6 +1303,18 @@ public sealed partial class NetRatelMcpOperationalTools
         endpoint += operation == "read" ? "/inline" : string.Empty;
         endpoint = WithQuery(endpoint, ("path", path), ("pageSize", allowPageSize ? Format(pageSize) : null));
         return GetAsync("netratel_files", operation, DevelopmentFileReadOperations, endpoint, cancellationToken);
+    }
+
+    private static bool TryGetUnchangedFileCursor(JsonObject? payload, out string? cursor)
+    {
+        cursor = null;
+        if (payload is null || !payload.TryGetPropertyValue("cursor", out var node))
+            return true;
+        if (node is not JsonValue raw || !raw.TryGetValue<string>(out var text) ||
+            text.Length is 0 or > 1024 || text.Any(char.IsWhiteSpace))
+            return false;
+        cursor = text;
+        return true;
     }
 
     private Task<NetRatelToolResponse> ProductionFileArtifactStatusAsync(JsonElement? request, CancellationToken cancellationToken)

@@ -2140,7 +2140,7 @@ internal static partial class NetRatelCli
     private static Command BuildOperatorFilesCommand(CliRuntime runtime, GlobalOptions globals)
     {
         var files = new Command("files-v2", "Operate policy-admitted V2 files for one exact tenant and agent through bounded reads, artifact custody, preview, confirmation, and idempotency. This command has no legacy file-route fallback.");
-        files.AddCommand(BuildOperatorFileReadCommand(runtime, globals, "browse", "Return one bounded listing of a policy-admitted directory with truncation metadata and no continuation.", "/browse", includePageSize: true));
+        files.AddCommand(BuildOperatorFileReadCommand(runtime, globals, "browse", "Return a bounded page of a policy-admitted directory and nextCursor when more entries remain.", "/browse", includePageSize: true));
         files.AddCommand(BuildOperatorFileReadCommand(runtime, globals, "stat", "Read bounded metadata for one policy-admitted path.", "/stat", includePageSize: false));
         files.AddCommand(BuildOperatorFileReadCommand(runtime, globals, "read", "Read one policy-admitted file within the server byte bound.", "/read", includePageSize: false));
         files.AddCommand(BuildOperatorFilePathMutationCommand(runtime, globals, "preview-collect-artifact", "Preview collecting one bounded file artifact and receive opaque credentials.", "/artifacts/collect/preview", confirmed: false));
@@ -2171,10 +2171,13 @@ internal static partial class NetRatelCli
         var path = RequiredOption("--path", "Exact policy-admitted remote path.");
         command.AddOption(path);
         Option<int?>? pageSize = null;
+        Option<string?>? cursor = null;
         if (includePageSize)
         {
-            pageSize = new Option<int?>("--page-size") { Description = "Maximum immediate entries to return, from 1 through 100 (default 100); no continuation is available." };
+            pageSize = new Option<int?>("--page-size") { Description = "Maximum immediate entries to return, from 1 through 100 (default 100); keep unchanged when continuing." };
+            cursor = new Option<string?>("--cursor") { Description = "Opaque nextCursor from the preceding browse of this exact target/path. Restart browse after a stale or expired cursor." };
             command.AddOption(pageSize);
+            command.AddOption(cursor);
         }
 
         command.SetHandler(ctx =>
@@ -2182,10 +2185,13 @@ internal static partial class NetRatelCli
             var remotePath = ctx.ParseResult.GetValueForOption(path);
             ValidateOperatorFilePath(remotePath, "--path");
             var requestedPageSize = pageSize is null ? null : ctx.ParseResult.GetValueForOption(pageSize);
+            var requestedCursor = cursor is null ? null : ctx.ParseResult.GetValueForOption(cursor);
             if (requestedPageSize is <= 0 or > 100) throw new CliValidationException("--page-size must be from 1 through 100.");
+            if (requestedCursor is not null && (requestedCursor.Length is 0 or > 1024 || requestedCursor.Any(char.IsWhiteSpace)))
+                throw new CliValidationException("--cursor must be the unchanged bounded nextCursor from browse.");
             return SendAsync(runtime, globals, ctx, HttpMethod.Get,
                 FileV2Path(ctx.ParseResult.GetValueForOption(tenantId), ctx.ParseResult.GetValueForOption(agentId), suffix) +
-                Query(("path", remotePath), ("pageSize", requestedPageSize?.ToString(CultureInfo.InvariantCulture))));
+                Query(("path", remotePath), ("pageSize", requestedPageSize?.ToString(CultureInfo.InvariantCulture)), ("cursor", requestedCursor)));
         });
         return command;
     }
@@ -3470,6 +3476,7 @@ internal static partial class NetRatelCli
             catch (JsonException)
             {
                 // Treat malformed JSON-looking values as strings so agent commands still return validation from the API.
+                return JsonValue.Create(value);
             }
         }
 

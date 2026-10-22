@@ -24,4 +24,20 @@ public interface INetRatelExternalServiceCallbackClient
         await SendStatusAsync(request, correlationId, ct);
         return true;
     }
+
+    async Task<OrchestrationCallbackResult> SendWithDispositionAsync(NetRatelExternalServiceCallbackRequest request,
+        string correlationId, CancellationToken ct = default)
+        => await TrySendStatusAsync(request, correlationId, ct)
+            ? new(OrchestrationCallbackDisposition.Delivered)
+            : new(OrchestrationCallbackDisposition.Retryable);
+}
+
+public enum OrchestrationCallbackDisposition { Delivered, Retryable, Rejected }
+
+/// <summary>Safe delivery metadata only; payloads and credentials remain outside durable delivery state.</summary>
+public sealed record OrchestrationCallbackResult(OrchestrationCallbackDisposition Disposition,
+    int? StatusCode = null, string? FailureCode = null)
+{
+    internal static bool IsTerminalRejection(int status)
+        => status is >= 400 and < 500 and not (408 or 425 or 429);
 }

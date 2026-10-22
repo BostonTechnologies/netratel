@@ -55,7 +55,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
     private readonly CancellationTokenSource _stopping = new();
     private readonly Task _processor;
     private readonly TimeProvider _timeProvider;
-    private readonly Action _startUpdater;
+    private readonly Func<CancellationToken, Task> _startUpdater;
     private readonly bool? _enabled;
     private readonly Action<string> _writeLog;
     private readonly object _offerGate = new();
@@ -82,7 +82,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
     {
         _writeLog = writeLog ?? LogManager.WriteLog;
         _timeProvider = timeProvider;
-        _startUpdater = startUpdater ?? StartUpdater;
+        _startUpdater = startUpdater is null ? StartUpdaterAsync : _ => { startUpdater(); return Task.CompletedTask; };
         _enabled = enabled;
         _options = options;
         _currentVersion = NormalizeVersion(currentVersion);
@@ -460,7 +460,17 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
                         // Fence every offer before invoking the native updater. An uncertain
                         // launch outcome must never cause a second activation.
                         _handoverStarted = true;
-                        _startUpdater();
+                    }
+                    try
+                    {
+                        await _startUpdater(cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (NativeUpdaterLaunchException launch) when (launch.RetrySafe)
+                    {
+                        // No updater process/job has started. Keep the existing
+                        // staged request and nonce for the next eligible heartbeat.
+                        lock (_offerGate) _handoverStarted = false;
+                        throw;
                     }
                     return;
                 case UpdatePhase.FailureReport:
@@ -495,6 +505,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
 
     private static bool IsRecoverable(Exception exception, string operation) => exception switch
     {
+        NativeUpdaterLaunchException launch => launch.RetrySafe,
         HttpRequestException { StatusCode: { } status } => IsTransientStatus(status) ||
             operation == "claim" && status == HttpStatusCode.Conflict,
         HttpRequestException or OperationCanceledException => true,
@@ -508,6 +519,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
 
     private static string FailureCode(Exception exception) => exception switch
     {
+        NativeUpdaterLaunchException launch => launch.Code,
         HttpRequestException { StatusCode: { } status } => $"http_{(int)status}",
         HttpRequestException => "transport_error",
         OperationCanceledException => "transport_timeout",
@@ -709,7 +721,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
         response.EnsureSuccessStatusCode();
     }
 
-    private void StartUpdater()
+    private async Task StartUpdaterAsync(CancellationToken cancellationToken)
     {
         if (OperatingSystem.IsWindows())
         {
@@ -728,9 +740,10 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
                 ?? throw new InvalidOperationException("The verified Windows updater process could not be started.");
             return;
         }
-        using var linuxUpdaterProcess = Process.Start(new ProcessStartInfo("systemctl", $"start {_options.AutoUpdate.LinuxServiceName}")
-        { UseShellExecute = false, CreateNoWindow = true })
-            ?? throw new InvalidOperationException("The Linux updater process could not be started.");
+        var attemptId = ReadJson<UpdateRequest>(_requestPath)?.AttemptId
+            ?? throw new InvalidOperationException("The Linux updater request is unavailable.");
+        await LinuxUpdaterServiceLauncher.StartAsync(_options.AutoUpdate.LinuxServiceName, _stateDirectory, attemptId,
+            cancellationToken).ConfigureAwait(false);
     }
 
     internal static ProcessStartInfo CreateWindowsUpdaterStartInfo(

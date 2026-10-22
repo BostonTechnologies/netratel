@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using AwesomeAssertions;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using NetRatel.AgentGateway.Contracts.V1;
@@ -181,6 +182,8 @@ public sealed partial class ManagedOperationIngressTests
 
         private void AddFileServices(IServiceCollection services)
         {
+            services.AddSingleton<IDataProtectionProvider>(new EphemeralDataProtectionProvider());
+            services.AddSingleton(TimeProvider.System);
             services.AddAuthorization(McpOperatorFileAuthorization.AddPolicies);
             McpOperatorFileAuthorization.AddHandlers(services);
             services.AddSingleton<IClientPresenceRouter>(new FilePresence());

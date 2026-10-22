@@ -774,8 +774,13 @@ internal sealed class AgentFileGatewaySession(
             return false;
         }
 
-        if (pending.ListCompleted || page.PageIndex != pending.NextPageIndex ||
-            pending.Entries.Count + page.Entries.Count > MaximumEntriesPerRequest)
+        if (pending.Entries.Count + page.Entries.Count > MaximumEntriesPerRequest)
+        {
+            FailAndRemove(pending, new AgentFileGatewayOperationException("file_listing_too_large"));
+            return false;
+        }
+
+        if (pending.ListCompleted || page.PageIndex != pending.NextPageIndex)
         {
             FailAndRemove(pending, "The agent sent an invalid, out-of-order, or oversized file list page.");
             return false;
@@ -1158,7 +1163,9 @@ internal sealed class AgentFileGatewaySession(
         public string Operation { get; }
         public TaskCompletionSource Accepted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public Dictionary<string, GatewayFileEntry> Entries { get; } = new(StringComparer.OrdinalIgnoreCase);
+        // POSIX directories may legitimately contain both "A" and "a". The
+        // admitted agent supplies canonical names on Windows as well.
+        public Dictionary<string, GatewayFileEntry> Entries { get; } = new(StringComparer.Ordinal);
         public Channel<ReadOnlyMemory<byte>>? ReadChunks { get; }
         public TaskCompletionSource<GatewayFileMetadata>? Metadata { get; }
         public ulong NextReadChunkIndex { get; set; }

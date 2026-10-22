@@ -35,6 +35,118 @@ public sealed class ScriptSourceRevisionPostgresTests(PostgreSqlPersistenceFixtu
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     [Fact]
+    public async Task Administrator_can_retire_orphaned_MCP_job_then_script_without_erasing_audits()
+    {
+        var fixture = await CreateReferenceFixtureAsync();
+        await using var db = new OrchestratorDbContext(options);
+        var jobs = new JobDefinitionService(db);
+        await jobs.UpdateStepAsync(new((ulong)fixture.StepId, JobStepKind.LibraryScript, null, null,
+            fixture.Source.Id, null, null));
+        var request = fixture.Decision.Request;
+        var operators = new McpOperatorJobStore(db);
+        var rotated = request.Principal with { ClientId = "rotated-client", AuthorizedParty = "rotated-client" };
+        Assert.Null(await operators.GetOwnedAsync(fixture.JobId, request.TenantId, request.AgentId!.Value,
+            rotated, request.McpResource!, request.McpInstance!, CancellationToken.None));
+        Assert.NotNull(await jobs.GetAsync((ulong)fixture.JobId));
+        await Assert.ThrowsAsync<ScriptSourceInUseException>(() => new ScriptService(db)
+            .DeleteAsync(fixture.Source.Id, fixture.Source.SourceRevision));
+
+        Assert.NotNull(await jobs.DeleteAsync((ulong)fixture.JobId));
+        Assert.Null(await jobs.GetAsync((ulong)fixture.JobId));
+        Assert.Empty(await jobs.ListAsync());
+        Assert.Single(await db.Jobs.IgnoreQueryFilters().ToArrayAsync());
+        Assert.Single(await db.McpOperatorJobAudits.ToArrayAsync());
+        Assert.Single(await db.JobSteps.IgnoreQueryFilters().ToArrayAsync());
+        var retained = await operators.GetOwnedForReplayAsync(fixture.JobId, request.TenantId, request.AgentId.Value,
+            request.Principal, request.McpResource!, request.McpInstance!, CancellationToken.None);
+        Assert.NotNull(retained);
+        Assert.True(retained.IsDeleted);
+        Assert.NotNull(await new ScriptService(db).DeleteAsync(fixture.Source.Id, fixture.Source.SourceRevision));
+        Assert.Null(await new ScriptService(db).GetAsync(fixture.Source.Id));
+        Assert.Single(await db.Scripts.IgnoreQueryFilters().ToArrayAsync());
+        Assert.Single(await db.McpOperatorAcceptedAudits.ToArrayAsync());
+    }
+
+    [Theory]
+    [InlineData(JobRunState.Pending)]
+    [InlineData(JobRunState.Running)]
+    public async Task Administrator_cleanup_rejects_an_active_MCP_job_run(JobRunState state)
+    {
+        var fixture = await CreateReferenceFixtureAsync();
+        await using var db = new OrchestratorDbContext(options);
+        var now = DateTimeOffset.UtcNow;
+        await new JobRunService(db, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider())
+            .UpsertRunAsync(new(902, (ulong)fixture.JobId, fixture.Decision.Request.TenantId, "fixture-agent",
+                fixture.Decision.Request.Principal.Subject, state, 1, now, now, null, null, null, null,
+                fixture.Decision.Request.AgentId));
+        await Assert.ThrowsAsync<JobDefinitionInUseException>(() => new JobDefinitionService(db).DeleteAsync((ulong)fixture.JobId));
+        Assert.NotNull(await new JobDefinitionService(db).GetAsync((ulong)fixture.JobId));
+        Assert.Null((await db.McpOperatorJobs.SingleAsync()).DeletedAtUtc);
+        Assert.Single(await db.JobRuns.ToArrayAsync());
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Job_retirement_and_new_run_admission_share_a_transaction_fence(bool ownedDelete, bool deleteFirst)
+    {
+        var fixture = await CreateReferenceFixtureAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var ct = timeout.Token;
+        await using var winner = new OrchestratorDbContext(options);
+        await using var loser = new OrchestratorDbContext(options);
+        var captured = (await new JobDefinitionService(winner).GetDetailsAsync((ulong)fixture.JobId, ct))!;
+        await loser.Database.OpenConnectionAsync(ct);
+        var loserPid = ((NpgsqlConnection)loser.Database.GetDbConnection()).ProcessID;
+        await using var transaction = await winner.Database.BeginTransactionAsync(ct);
+
+        async Task AdmitAsync(OrchestratorDbContext db)
+        {
+            var runs = new JobRunService(db, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
+            // Admission must recheck retirement even when its caller already captured
+            // the definition, as reviewed MCP execution does before invoking the actor.
+            runs.BindSubmittedDefinition(903, captured);
+            await runs.UpsertRunAsync(new(903, (ulong)fixture.JobId, fixture.Decision.Request.TenantId,
+                "fixture-agent", fixture.Decision.Request.Principal.Subject, JobRunState.Pending, 0,
+                DateTimeOffset.UtcNow, null, null, null, null, null, fixture.Decision.Request.AgentId), ct);
+        }
+
+        async Task DeleteAsync(OrchestratorDbContext db)
+        {
+            if (ownedDelete)
+                Assert.NotNull(await new McpOperatorJobStore(db).DeleteAsync(fixture.JobId, 1, fixture.Decision,
+                    fixture.Audit, DateTimeOffset.UtcNow, ct));
+            else
+                Assert.NotNull(await new JobDefinitionService(db).DeleteAsync((ulong)fixture.JobId, ct));
+        }
+
+        Task pending;
+        if (deleteFirst)
+        {
+            await DeleteAsync(winner);
+            pending = AdmitAsync(loser);
+        }
+        else
+        {
+            await AdmitAsync(winner);
+            pending = DeleteAsync(loser);
+        }
+
+        // Require an observed PostgreSQL lock wait, not a timing-based assumption.
+        await WaitForDatabaseBlockAsync(loserPid, pending, ct);
+        await transaction.CommitAsync(ct);
+        if (deleteFirst) await Assert.ThrowsAsync<JobDefinitionUnavailableException>(() => pending);
+        else await Assert.ThrowsAnyAsync<InvalidOperationException>(() => pending);
+
+        await using var verify = new OrchestratorDbContext(options);
+        Assert.Equal(deleteFirst, (await verify.McpOperatorJobs.SingleAsync(ct)).DeletedAtUtc.HasValue);
+        Assert.Equal(deleteFirst ? 0 : 1, await verify.JobRuns.CountAsync(ct));
+        Assert.Equal(deleteFirst ? 0 : 1, await verify.Jobs.CountAsync(ct));
+    }
+
+    [Fact]
     public async Task Concurrent_library_creation_rechecks_the_committed_path_before_accepting_a_duplicate()
     {
         var folder = $"/creation-{Guid.NewGuid():N}/";
@@ -140,7 +252,7 @@ public sealed class ScriptSourceRevisionPostgresTests(PostgreSqlPersistenceFixtu
             await using var command = new NpgsqlCommand("SELECT cardinality(pg_blocking_pids(@pid)) > 0", connection);
             command.Parameters.AddWithValue("pid", processId);
             if ((bool)(await command.ExecuteScalarAsync(ct))!) return;
-            pending.IsCompleted.Should().BeFalse("the competing source operation must wait for the transaction fence");
+            pending.IsCompleted.Should().BeFalse("the competing operation must wait for the transaction fence");
         } while (await timer.WaitForNextTickAsync(ct));
         throw new InvalidOperationException("The database lock observation ended before a fence was acquired.");
     }
