@@ -62,6 +62,41 @@ public sealed class JobCoordinatorActorTests
     }
 
     [Fact]
+    public async Task PendingNoStepRun_CompletesButQueuedStepCannotBeSkipped()
+    {
+        await using var provider = CreateProvider();
+        var actorSystem = ActorSystem.Create($"job-runtime-no-step-{Guid.NewGuid():N}");
+
+        try
+        {
+            var actor = actorSystem.ActorOf(JobCoordinatorActor.Props(
+                provider.GetRequiredService<IJobObservationStore>()));
+            var noStep = 1901UL;
+            await RecordAsync(actor, Run(1, noStep, 7, "client-a", JobRunState.Pending));
+            var completed = await RecordAsync(actor,
+                Run(2, noStep, 7, "client-a", JobRunState.Succeeded) with { CurrentStepOrdinal = 0, StartedAtUtc = null });
+
+            completed.Disposition.Should().Be(JobMessageDisposition.Accepted);
+            (await actor.Ask<JobRunView>(new GetJobRunProjection(noStep))).Status.Should().Be(JobRunState.Succeeded);
+
+            var withStep = 1902UL;
+            await RecordAsync(actor, Run(3, withStep, 7, "client-a", JobRunState.Pending));
+            var queued = await RecordAsync(actor, Step(4, withStep, 7, "client-a", JobStepRunState.Pending, null));
+            queued.Disposition.Should().Be(JobMessageDisposition.Accepted);
+            (await actor.Ask<JobRunView>(new GetJobRunProjection(withStep))).Steps.Should().ContainSingle();
+            var skipped = await RecordAsync(actor,
+                Run(5, withStep, 7, "client-a", JobRunState.Succeeded) with { CurrentStepOrdinal = 0, StartedAtUtc = null });
+
+            skipped.Disposition.Should().Be(JobMessageDisposition.InvalidTransition);
+            (await actor.Ask<JobRunView>(new GetJobRunProjection(withStep))).Status.Should().Be(JobRunState.Pending);
+        }
+        finally
+        {
+            await actorSystem.Terminate();
+        }
+    }
+
+    [Fact]
     public async Task TerminalToRunning_IsRejectedAndCountedAsInvalid()
     {
         await using var provider = CreateProvider();
