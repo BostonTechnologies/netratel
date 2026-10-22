@@ -142,9 +142,10 @@ public sealed class ReleaseOpenApiDocumentTests
         }
         SecuritySchemes(document, "/internal/ingest", "post")
             .Should().BeEquivalentTo([ServiceIdentityAuthenticationHandler.SchemeName]);
-        foreach (var path in new[] { "/internal/catalog/request-definitions", "/internal/catalog/request-definitions/{requestDefinitionId}/inputs/sync" })
+        foreach (var path in new[] { "/internal/catalog/request-definitions", "/internal/catalog/request-definitions/{id}/inputs/sync" })
         {
-            document["paths"]![path]?["post"].Should().BeNull("the retired M2M write operation is absent");
+            SecuritySchemes(document, path, "post")
+                .Should().BeEquivalentTo([ServiceIdentityAuthenticationHandler.SchemeName]);
         }
 
         (await client.GetAsync("/api/v1/system/version")).StatusCode.Should().Be(HttpStatusCode.OK);
@@ -162,6 +163,11 @@ public sealed class ReleaseOpenApiDocumentTests
         }
         (await client.PostAsync("/internal/ingest", new StringContent("{}", System.Text.Encoding.UTF8, "application/json")))
             .StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        foreach (var path in new[] { "/internal/catalog/request-definitions", $"/internal/catalog/request-definitions/{Guid.NewGuid():D}/inputs/sync" })
+        {
+            using var protectedWrite = await client.PostAsync(path, new StringContent("{}", System.Text.Encoding.UTF8, "application/json"));
+            protectedWrite.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        }
     }
 
     private static IReadOnlyCollection<string> SecuritySchemes(JsonObject document, string path, string method)

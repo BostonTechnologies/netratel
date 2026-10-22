@@ -37,6 +37,20 @@ public sealed class NetRatelCatalogInputDefinitionDto
     public int Order { get; set; }
 }
 
+public sealed class CreateNetRatelRequestDefinitionDto
+{
+    public string Name { get; set; } = string.Empty;
+    public string FolderPath { get; set; } = "/";
+    public string? Description { get; set; }
+    public int? TenantId { get; set; }
+    public string ClientIdentity { get; set; } = string.Empty;
+}
+
+public sealed class SyncNetRatelRequestDefinitionInputsDto
+{
+    public IReadOnlyList<NetRatelCatalogInputDefinitionDto> Inputs { get; set; } = [];
+}
+
 public sealed class NetRatelCatalogJobDto
 {
     public string Id { get; set; } = string.Empty;
