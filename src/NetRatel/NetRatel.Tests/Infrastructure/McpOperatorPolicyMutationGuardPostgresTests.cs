@@ -126,6 +126,35 @@ public sealed class McpOperatorPolicyMutationGuardPostgresTests(PostgreSqlPersis
         await AssertMutationCountsAsync(0, CancellationToken.None);
     }
 
+    [Fact]
+    public async Task Production_tenant_all_family_policy_can_be_replaced_with_script_and_temp_bounds()
+    {
+        await using var db = new OrchestratorDbContext(_options);
+        var administration = new McpOperatorPolicyAdministration(db);
+        var draft = Draft() with
+        {
+            Name = "bounded production policy", Environment = McpOperatorEnvironment.Production,
+            Effect = McpOperatorPolicyEffect.Allow,
+            PrincipalSelector = new(McpOperatorPrincipalSelectorKind.OAuthSubject, "other-operator"),
+            TargetSelector = new(McpOperatorTargetSelectorKind.Tenant, TenantId), TargetClassification = null,
+            OperationFamily = Enum.GetValues<McpOperatorOperationFamily>().Aggregate((left, right) => left | right),
+            AuditReference = "synthetic-rotation", ReviewByUtc = DateTimeOffset.UtcNow.AddMinutes(30)
+        };
+        var created = await administration.CreateAsync(draft, Administrator, CancellationToken.None);
+        db.ChangeTracker.Clear();
+        var bounded = draft with { ExpiresAtUtc = created.ExpiresAtUtc!.Value.ToOffset(TimeSpan.FromHours(2)), ReviewByUtc = created.ReviewByUtc!.Value.ToOffset(TimeSpan.FromHours(2)), Constraints = new(ReadRoots: ["/tmp/netratel"], WriteRoots: ["/tmp/netratel"], MaxScriptBytes: 65536) };
+        var replaced = await administration.ReplaceAsync(created.PolicyId, created.Version, bounded, Administrator, CancellationToken.None);
+        db.ChangeTracker.Clear();
+        var readback = await administration.GetAsync(created.PolicyId, CancellationToken.None);
+        replaced.Version.Should().Be(created.Version + 1);
+        readback.Should().BeEquivalentTo(replaced);
+        readback!.Constraints.MaxScriptBytes.Should().Be(65536);
+        readback.ExpiresAtUtc.Should().Be(created.ExpiresAtUtc);
+        readback.ReviewByUtc.Should().Be(created.ReviewByUtc);
+        var stale = () => administration.ReplaceAsync(created.PolicyId, created.Version, bounded, Administrator, CancellationToken.None);
+        await stale.Should().ThrowAsync<DbUpdateConcurrencyException>();
+    }
+
     private async Task<McpOperatorPolicy> AcceptAndCreateAsync(OrchestratorDbContext db,
         McpOperatorPolicyAdministration administration, CancellationToken ct)
     {

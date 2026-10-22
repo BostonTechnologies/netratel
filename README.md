@@ -32,8 +32,9 @@ normal operation.
 
 ## Self-hosting
 
-The documented deployment supports PostgreSQL for durable multi-instance
-application data and a single-node SQLite profile for smaller local installs.
+[Choose login method: Local, SSO, or both](docs/deployment/CONFIGURATION.md#choose-login-method).
+
+PostgreSQL is the only supported application and identity database.
 Persist Data Protection and agent-signing material outside the container
 filesystem. A fresh local installation can use its built-in local accounts with
 no external identity provider; configure OIDC only for an optional OIDC or

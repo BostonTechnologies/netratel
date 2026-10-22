@@ -81,12 +81,14 @@ public sealed class LocalIdentityFoundationTests
             .Options;
         await using var db = new NetRatelIdentityDbContext(options);
 
+        ((ClaimsIdentity)validated.Identity!).AddClaim(new("netratel_principal_id", "provider-supplied-id"));
         var transformed = await new LocalPrincipalClaimsTransformation(new ApplicationPrincipalResolver(db))
             .TransformAsync(validated);
 
         transformed.Identity!.AuthenticationType.Should().Be("Oidc");
         var principalId = transformed.FindFirstValue(LocalPrincipalClaimsTransformation.PrincipalIdClaimType);
         principalId.Should().NotBeNullOrWhiteSpace();
+        principalId.Should().NotBe("provider-supplied-id");
         (await db.ApplicationPrincipals.SingleAsync()).Should().Match<ApplicationPrincipal>(principal =>
             principal.Id == principalId && principal.ExternalIssuer == issuer && principal.ExternalSubject == subject);
     }

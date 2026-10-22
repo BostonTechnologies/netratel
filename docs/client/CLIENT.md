@@ -512,9 +512,18 @@ inspection of their existing lifecycle rather than clearing records or bypassing
 nonce checks. A routing failure before claiming needs no re-enrollment or
 identity reset. These are later owner actions, not deployment evidence.
 
-### Previously installed prerelease updater
+### Repair an older installed Linux updater
 
-The published `v0.1.0-rc.7` Linux updater rejects a newer prerelease with
+An installation from beta.35 or beta.36 can retain an updater that calls
+`unzip`, even after installing a newer executable. On minimal Ubuntu this
+fails with exit 127 / `unzip: command not found` and gateway
+`FailedPreActivation`. The verified incoming archive cannot repair the helper
+before the old helper runs. Use the one-time repair below with Python 3
+(`sudo apt-get install python3` on Ubuntu, if absent); installing `unzip` is
+not required. Stop any scheduled retry while inspecting the failed attempt,
+then repair and allow a fresh normal offer. Do not delete attempt state.
+
+The published `v0.1.0-rc.7` Linux updater also rejects a newer prerelease with
 the same `0.1.0` core before it can read the candidate package. The generic
 Linux client archive now includes `updater/repair-linux-updater.py` for this
 one-time installed-script repair. It works with any verified candidate Linux

@@ -1,5 +1,17 @@
 # Self-host NetRatel
 
+Choose login before deploying. Set the application environment on **both API and Web**:
+
+| Sign-in experience | `Authentication__Mode` | Supplied Compose `.env` input |
+| --- | --- | --- |
+| Email and password | `Local` | `NETRATEL_AUTHENTICATION_MODE=Local` |
+| SSO only | `Oidc` | `NETRATEL_AUTHENTICATION_MODE=Oidc` |
+| Email/password and SSO | `Hybrid` | `NETRATEL_AUTHENTICATION_MODE=Hybrid` |
+
+See [choose login method](CONFIGURATION.md#choose-login-method) for exact service placement,
+existing-instance changes, account setup and troubleshooting. Creating a local
+account does not enable the password form in an OIDC-only deployment.
+
 ## 1. Choose PostgreSQL and prepare the host
 
 Use the image bundle with its bundled PostgreSQL service for a normal first

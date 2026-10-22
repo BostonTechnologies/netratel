@@ -4,6 +4,7 @@ using System.Threading.Channels;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using NetRatel.Application.Netclaw;
 using NetRatel.Infrastructure.Netclaw;
@@ -23,19 +24,29 @@ public sealed class NetclawPersistencePostgresTests(PostgreSqlPersistenceFixture
     public async Task Worker_sends_and_records_exact_canonical_context_on_first_and_later_turns_with_saved_guidance()
     {
         var options = await DatabaseAsync(); var daemon = new Daemon(); var services = new ServiceCollection();
-        var identityOptions = new DbContextOptionsBuilder<NetRatelIdentityDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
+        await using var connectionSource = new OrchestratorDbContext(options);
+        var identityOptions = new DbContextOptionsBuilder<NetRatelIdentityDbContext>().UseNpgsql(connectionSource.Database.GetConnectionString()).Options;
         services.AddLogging(); services.AddSingleton<TimeProvider>(TimeProvider.System);
         services.AddSingleton(options); services.AddScoped<OrchestratorDbContext>();
         services.AddSingleton(identityOptions); services.AddScoped<NetRatelIdentityDbContext>();
         services.AddSingleton<IDataProtectionProvider>(new EphemeralDataProtectionProvider());
         services.AddSingleton<INetclawPairingService, Pairing>(); services.AddSingleton<IAiAssistantChatClientFactory>(daemon);
         services.AddScoped<NetclawProfileService>(); services.AddScoped<InvestigationStore>();
-        services.AddScoped<NetclawAuthority>(); services.AddSingleton<IEffectiveAccessService, ContextAccess>();
+        services.AddScoped<NetclawAuthority>(); services.AddScoped<IEffectiveAccessService, EffectiveAccessService>();
+        services.AddSingleton<IConfiguration>(new ConfigurationBuilder().Build());
         await using var provider = services.BuildServiceProvider(); var agent = Guid.NewGuid(); Guid id; Guid promptId;
         await using (var scope = provider.CreateAsyncScope())
         {
             var identity = scope.ServiceProvider.GetRequiredService<NetRatelIdentityDbContext>();
-            identity.ApplicationPrincipals.Add(new() { Id = "operator" }); await identity.SaveChangesAsync();
+            await identity.Database.MigrateAsync();
+            identity.ApplicationPrincipals.Add(new() { Id = "operator", ExternalIssuer = "https://issuer.example.test", ExternalSubject = "sso-operator" });
+            await identity.SaveChangesAsync();
+            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var sso = new ClaimsPrincipal(new ClaimsIdentity([new("iss", "https://issuer.example.test"), new("sub", "sso-operator"),
+                new("roles", "Operator"), new("iat", (now - 60).ToString()), new("exp", (now + 3600).ToString())], "Oidc"));
+            Assert.Equal("operator", await new ApplicationPrincipalResolver(identity).ResolveExternalAsync(sso));
+            Assert.Empty(await identity.PrincipalRoleAssignments.ToListAsync());
+            Assert.True(await scope.ServiceProvider.GetRequiredService<NetclawAuthority>().CanInvokeAsync(17, "operator", null, false, default));
             var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
             db.Agents.Add(new Agent { Id = agent, TenantId = 17, Name = agent.ToString(), FriendlyName = "Friendly worker",
                 Tags = ["production"], CreatedAtUtc = DateTimeOffset.UtcNow, LastSeenUtc = DateTimeOffset.UtcNow,
