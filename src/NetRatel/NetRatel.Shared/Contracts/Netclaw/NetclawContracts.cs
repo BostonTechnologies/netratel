@@ -4,7 +4,10 @@ public enum InvestigationState { Idle, Processing, AwaitingApproval, DeliveryUnk
 
 public sealed record NetclawTenantDto(int TenantId, string TenantName, bool CanInvestigate, bool CanConfigure);
 public sealed record NetclawConnectionDto(Guid Id, int TenantId, long Revision, bool Enabled, string? DaemonAddress,
-    bool HasDeviceToken, DateTimeOffset? LastTestedAtUtc, bool? LastTestSucceeded, string? LastTestCode);
+    bool HasDeviceToken, DateTimeOffset? LastTestedAtUtc, bool? LastTestSucceeded, string? LastTestCode)
+{
+    public string? LastTestRemediation => LastTestSucceeded == false ? NetclawConnectionTestHelp.ForCode(LastTestCode) : null;
+}
 public enum NetclawSignalRState { Unknown, Disconnected, Connecting, Connected, Reconnecting }
 public sealed record NetclawSessionObservationDto(Guid InvestigationId, NetclawSignalRState SignalRState,
     DateTimeOffset AuthenticatedAtUtc, DateTimeOffset LastActivityUtc);
@@ -12,7 +15,10 @@ public sealed record NetclawConnectionDiagnosticsDto(int TenantId, Guid Connecti
     bool ObservationAvailable, DateTimeOffset ObservedAtUtc, IReadOnlyList<NetclawSessionObservationDto> Sessions);
 public sealed record NetclawPairRequest(string Address, string PairingCode, long ExpectedRevision = 0);
 public sealed record NetclawEnabledRequest(long ExpectedRevision, bool Enabled);
-public sealed record NetclawTestResult(bool Success, string Code, NetclawConnectionDto Connection);
+public sealed record NetclawTestResult(bool Success, string Code, NetclawConnectionDto Connection)
+{
+    public string? Remediation => Success ? null : NetclawConnectionTestHelp.ForCode(Code);
+}
 public sealed record InvestigationCreateRequest(Guid RequestId, string Title, IReadOnlyList<Guid> AgentIds, Guid? OccurrenceId = null,
     IReadOnlyList<AiPromptReference>? SelectedPrompts = null);
 public sealed record InvestigationMessageRequest(Guid MessageId, string Text);

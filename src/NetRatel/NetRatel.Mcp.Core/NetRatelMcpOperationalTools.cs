@@ -510,7 +510,7 @@ public sealed partial class NetRatelMcpOperationalTools
         var payload = ToObject(request);
         return operation switch
         {
-            "list" when UsesProductionOperatorRoutes => ControlPlanePageAsync("netratel_events", ProductionEventOperations, "/api/v2/mcp/operator/events", payload, cancellationToken),
+            "list" when UsesProductionOperatorRoutes => ProductionEventListAsync(payload, cancellationToken),
             "get" when UsesProductionOperatorRoutes => ProductionEventGetAsync(payload, cancellationToken),
             "preview_retry" when UsesProductionOperatorRoutes => ProductionEventMutationAsync("retry", payload, preview: true, confirm: false, cancellationToken),
             "retry" when UsesProductionOperatorRoutes => ProductionEventMutationAsync("retry", payload, preview: false, confirm, cancellationToken),
@@ -518,6 +518,22 @@ public sealed partial class NetRatelMcpOperationalTools
             "disable" when UsesProductionOperatorRoutes => ProductionEventMutationAsync("disable", payload, preview: false, confirm, cancellationToken),
             _ => Task.FromResult(Unsupported("netratel_events", operation, ProductionEventOperations))
         };
+    }
+
+    private Task<NetRatelToolResponse> ProductionEventListAsync(JsonObject? payload, CancellationToken cancellationToken)
+    {
+        if (!ContainsOnly(payload, "page", "pageSize", "eventType", "correlationId", "status") ||
+            !TryOptionalInt(payload, "page", 1, 10_000, out var page) ||
+            !TryOptionalInt(payload, "pageSize", 1, 100, out var pageSize) ||
+            !TryOptionalString(payload, "eventType", McpOperatorEventQuery.MaximumFilterLength, out var eventType) ||
+            !TryOptionalString(payload, "correlationId", McpOperatorEventQuery.MaximumFilterLength, out var correlationId) ||
+            !TryOptionalString(payload, "status", 16, out var status) ||
+            !new McpOperatorEventQuery(eventType, correlationId, status).IsValid)
+            return Task.FromResult(Invalid("request supports page from 1 through 10000, pageSize from 1 through 100, bounded exact eventType/correlationId, and status Pending, Published, Failed or Disabled."));
+
+        return GetAsync("netratel_events", "list", ProductionEventOperations,
+            WithQuery("/api/v2/mcp/operator/events", ("page", Format(page)), ("pageSize", Format(pageSize)),
+                ("eventType", eventType), ("correlationId", correlationId), ("status", status)), cancellationToken);
     }
 
     private Task<NetRatelToolResponse> ControlPlanePageAsync(string tool, string[] operations, string path, JsonObject? payload, CancellationToken cancellationToken)

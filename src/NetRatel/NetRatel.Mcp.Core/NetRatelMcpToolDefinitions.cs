@@ -718,7 +718,14 @@ public static partial class NetRatelMcpToolDefinitions
         ]),
         ("netratel_events", "get" or "preview_retry" or "preview_disable") => RequiredRequest([Uuid("eventId", "Persisted event UUID.", true)]),
         ("netratel_events", "retry" or "disable") => ProductionEventConfirmRequest(),
-        ("netratel_notifications" or "netratel_events", "list") when operatorSurfaceEnabled => Request([
+        ("netratel_events", "list") when operatorSurfaceEnabled => Request([
+            Integer("page", "One-based page number; defaults to 1.", 1, 10_000),
+            Integer("pageSize", "Page size from 1 through 100; defaults to 20.", 1, 100),
+            PatternString("eventType", "Optional exact event type. Callback rejection/failure events can have Published outbox status.", @"^[^\u0000-\u001F\u007F-\u009F]+$", McpOperatorEventQuery.MaximumFilterLength),
+            PatternString("correlationId", "Optional exact owned event correlation identifier.", @"^[^\u0000-\u001F\u007F-\u009F]+$", McpOperatorEventQuery.MaximumFilterLength),
+            Enum("status", "Optional outbox publication status; not the receiver callback outcome.", "Pending", "Published", "Failed", "Disabled")
+        ]),
+        ("netratel_notifications", "list") when operatorSurfaceEnabled => Request([
             Integer("page", "One-based page number; defaults to 1.", 1, 10_000),
             Integer("pageSize", "Page size from 1 through 100; defaults to 20.", 1, 100)
         ]),

@@ -2,6 +2,7 @@
 
 These notes describe the named release and preserve historical status. [Release engineering](../deployment/RELEASES.md) describes the current publication process; the product version is controlled only by `Directory.Build.props`.
 
+- [0.1.1-beta.46 — actionable connection diagnosis and campaign completion](beta46.md)
 - [0.1.1-beta.45 — callback, update, paging and cleanup recovery](beta45.md)
 - [0.1.1-beta.32 — acceptance corrections and completion preparation](0.1.1-beta.32.md)
 - [0.1.1-beta.31 — final-audit confirmation replay corrections](0.1.1-beta.31.md)

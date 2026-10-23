@@ -355,6 +355,37 @@ public sealed class NetRatelMcpHttpToolTests
         client.Paths.Should().ContainSingle();
     }
 
+    [Fact]
+    public async Task Event_list_forwards_exact_callback_filters_and_rejects_invalid_filters_before_dispatch()
+    {
+        var client = new RecordingApiClient();
+        var context = new NetRatelMcpHostContext(
+            new NetRatelMcpTarget("prod", new Uri("https://api.example"), new Uri("https://api.example/mcp"), NetRatelMcpCatalog.Revision),
+            NetRatelMcpTransport.StreamableHttp, "test", operatorSurfaceEnabled: true);
+        var tools = new NetRatelMcpOperationalTools(client, context);
+        var request = new JsonObject
+        {
+            ["page"] = 2, ["pageSize"] = 10,
+            ["eventType"] = "DomainEvent.Orchestration.ExternalServiceCallbackRejected",
+            ["correlationId"] = "owned&correlation=1", ["status"] = "Published"
+        };
+
+        (await tools.netratel_events("list", Request(request))).Success.Should().BeTrue();
+        client.Paths.Should().ContainSingle().Which.Should().Be(
+            "/api/v2/mcp/operator/events?page=2&pageSize=10&eventType=DomainEvent.Orchestration.ExternalServiceCallbackRejected&correlationId=owned%26correlation%3D1&status=Published");
+
+        foreach (var invalid in new[]
+        {
+            new JsonObject { ["status"] = "Rejected" },
+            new JsonObject { ["eventType"] = new string('x', 257) },
+            new JsonObject { ["correlationId"] = "embedded\nnewline" },
+            new JsonObject { ["correlationId"] = 123 },
+            new JsonObject { ["eventType"] = "" }
+        })
+            (await tools.netratel_events("list", Request(invalid))).Success.Should().BeFalse();
+        client.Paths.Should().ContainSingle();
+    }
+
     [Theory]
     [InlineData("line\n")]
     [InlineData("  indented\r\n\t")]

@@ -77,6 +77,7 @@ public sealed class NetRatelNotificationService(
 
         var pageItems = await query
             .OrderByDescending(x => x.OccurredUtc)
+            .ThenByDescending(x => x.Id)
             .Skip(skip)
             .Take(safePageSize)
             .ToListAsync(ct);
