@@ -77,6 +77,7 @@ public sealed class NetRatelNotificationService(
 
         var pageItems = await query
             .OrderByDescending(x => x.OccurredUtc)
+            .ThenByDescending(x => x.Id)
             .Skip(skip)
             .Take(safePageSize)
             .ToListAsync(ct);
@@ -208,6 +209,12 @@ public sealed class NetRatelNotificationService(
         message.Status = OutboxStatuses.Disabled;
         message.LockOwner = null;
         message.LockedUntilUtc = null;
+        // A worker may claim the event after this context read an empty lease.
+        // Persist all disable fields even when their tracked values were unchanged.
+        var entry = _db.Entry(message);
+        entry.Property(x => x.Status).IsModified = true;
+        entry.Property(x => x.LockOwner).IsModified = true;
+        entry.Property(x => x.LockedUntilUtc).IsModified = true;
         await _db.SaveChangesAsync(ct);
     }
 

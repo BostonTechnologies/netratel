@@ -51,8 +51,7 @@ public sealed class NetclawProfileService(OrchestratorDbContext db, IDataProtect
         if (row is null || string.IsNullOrWhiteSpace(row.ProtectedDeviceToken)) return null;
         try
         {
-            return new(row.TenantId, row.Id, row.Revision, row.Endpoint,
-                Protector(row).Unprotect(row.ProtectedDeviceToken), row.AllowPrivateHttp, row.ProfileFingerprint);
+            return RuntimeProfile(row);
         }
         catch (CryptographicException) { return null; }
     }
@@ -94,26 +93,35 @@ public sealed class NetclawProfileService(OrchestratorDbContext db, IDataProtect
 
     public async Task<NetclawTestResult> TestAsync(int tenantId, long? expectedRevision = null, CancellationToken ct = default)
     {
-        var profile = await ResolveAsync(tenantId, ct) ?? throw new InvestigationConflictException("Pair and enable a Netclaw daemon first.");
-        if (expectedRevision.HasValue && profile.Revision != expectedRevision)
+        var saved = await db.Set<NetclawConnectionRecord>().AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == tenantId, ct)
+            ?? throw new InvestigationConflictException("Pair a Netclaw daemon for this tenant before testing its connection.");
+        if (expectedRevision.HasValue && saved.Revision != expectedRevision)
             throw new InvestigationConflictException("The connection changed during verification.");
+        if (!saved.Enabled)
+            throw new InvestigationConflictException("Enable this tenant's saved Netclaw connection before testing it.");
+        if (string.IsNullOrWhiteSpace(saved.ProtectedDeviceToken))
+            throw new InvestigationConflictException("This tenant has no saved Netclaw device credential. Pair its daemon before testing the connection.");
         var success = false; var code = "authenticated-session-unavailable";
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(TimeSpan.FromSeconds(30));
         try
         {
-            await using var client = clients.Create(profile);
+            await using var client = clients.Create(RuntimeProfile(saved));
             var result = await client.ConnectAsync(null, _ => Task.CompletedTask, deadline.Token);
             success = !string.IsNullOrWhiteSpace(result.SessionId); code = success ? "authenticated-signalr-verified" : "session-not-confirmed";
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { code = "session-test-timeout"; }
-        catch (Exception) when (!ct.IsCancellationRequested) { code = "authenticated-session-unavailable"; }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { success = false; code = "session-test-timeout"; }
+        catch (Exception exception) when (!ct.IsCancellationRequested) { success = false; code = NetclawConnectionFailure.Classify(exception); }
+        ct.ThrowIfCancellationRequested();
         db.ChangeTracker.Clear();
         var row = await db.Set<NetclawConnectionRecord>().SingleAsync(x => x.TenantId == tenantId, ct);
-        if (row.Revision != profile.Revision) throw new InvestigationConflictException("The connection changed during verification. Test the current profile.");
+        if (row.Revision != saved.Revision) throw new InvestigationConflictException("The connection changed during verification. Test the current profile.");
         row.LastTestSucceeded = success; row.LastTestedAtUtc = clock.GetUtcNow(); row.LastTestCode = code;
         await db.SaveChangesAsync(ct);
         return new(success, code, Dto(row));
     }
+
+    private NetclawRuntimeProfile RuntimeProfile(NetclawConnectionRecord row) => new(row.TenantId, row.Id, row.Revision, row.Endpoint,
+        Protector(row).Unprotect(row.ProtectedDeviceToken), row.AllowPrivateHttp, row.ProfileFingerprint);
 
     private IDataProtector Protector(NetclawConnectionRecord row) => protection.CreateProtector("NetRatel.Netclaw.DeviceToken.v1",
         row.TenantId.ToString(CultureInfo.InvariantCulture), row.Id.ToString("N"), row.ProfileFingerprint);

@@ -15,10 +15,12 @@ contract below applies prospectively; it does not rewrite historical outcomes.
 
 ## Baseline and finish line
 
-The latest reconciled checkpoint leaves **57 original contexts unresolved**:
-26 P0, 27 P1 and four P2. The 17 planned exclusions are within the original
-518-context universe, not additional contexts. The previous release advanced
-zero exact originals. Load the latest private ledger and original assertion
+The beta.45 checkpoint of 23 October 2026 leaves **53 original contexts unresolved**:
+22 P0, 27 P1 and four P2. Four original log-gap/resynchronization contexts passed
+on the two original tenants. The 17 planned exclusions remain within the original
+518-context universe, not additional contexts. The checkpoint records the
+remaining rows as unattempted or prerequisite-gated; it does not establish 53
+product defects. Load the latest private ledger and original assertion
 definitions once, retain predecessor/effect requirements, and execute ready
 independent groups. Do not reconstruct missing assertions from an operation
 name or replace an original target/outcome with a convenient fixture pass.
@@ -125,6 +127,50 @@ validator checks records; it does not establish live admission or product succes
 Continue ready independent batches, but do not start an inaccessible batch or
 spend hours repeating denied calls and process logs without a new question.
 
+Prepare and execute each independent group as soon as its own prerequisites are
+available. Read the original QA client's durable registration and the original
+job's retained definition even when that client's runtime is offline. Runtime
+restoration and start-preview admission have their own requirements; they must
+not hold those two durable reads or unrelated Linux work. A new enrollment does
+not restore the original identity. Recover the original runtime, state volume,
+or an identity-preserving backup through the supported host recovery path.
+
+For AI readiness, call `netratel_ai/test_connection` against each tenant's saved
+connection. This probe runs from the API's network and authenticates to the
+daemon; laptop reachability and a saved enabled flag are different observations.
+Use the returned bounded error code and remediation to repair the relevant
+network, TLS, pairing, token, or session prerequisite. Preserve the saved
+revision and enabled state. Do not repeatedly create investigations while an
+authenticated connection is unavailable. Once connected, complete the real
+turn, pending approval, reconciliation, transcript and archive sequence.
+
+When the owner assigns development-daemon preparation to laptop Codex, that
+preparation is execution work: inspect the existing development Netclaw checkout
+or supported deployment, start or repair its daemon with the intended real
+provider configuration, and establish authenticated reachability from the
+NetRatel API. Use the supported pairing flow independently for each selected
+tenant and verify an actual completed investigation turn. Do not end the batch
+at a missing-daemon observation when the assigned setup can be performed. Reuse
+protected credentials through their supported references and retain a private
+record of startup, network, pairing and session results.
+
+For event retry/disable discovery, notification publication status is distinct
+from callback delivery status. A published rejection notification may describe
+an unsuccessful receiver delivery. Use exact `eventType` and `correlationId`
+filters on `netratel_events/list` to locate the owned predecessor; `status` is an
+optional notification-publication filter. Read the event's supported replay
+metadata and then obtain its current preview. If no owned predecessor exists,
+prepare a bounded real receiver failure through the supported paired workflow;
+do not scan unrelated event pages or insert artificial database records.
+
+Disabling an event disables its notification outbox record and prevents MCP retry
+while it remains disabled. The signed-in administrative Retry action can explicitly
+requeue an ordinary disabled notification. Disable does not cancel the originating workflow or its separate
+durable callback reconciler. An already admitted publication may finish; current
+disable state must remain durable. Verify the owned event's readback, audit,
+idempotent confirmation and disabled retry rejection under the original assertion,
+and retain actual receiver effects separately from notification state.
+
 The private kit includes the standard-library-only
 [preflight checker](../../tools/testing/mcp-campaign-preflight.py) and its register
 template. On the owner's laptop, use Python 3 (`python3`, or `py -3` on Windows)
@@ -133,7 +179,7 @@ fill it with the actual preparation receipts. Substitute the completed release's
 tag and full source SHA in this command:
 
 ```shell
-python3 tools/mcp-campaign-preflight.py --register private-preflight-register.json --baseline beta31/acceptance-gap-ledger.json --history beta31/context-ledger.json --context-map next-campaign-context-map.json --expected-tag PUBLISHED_TAG --expected-source FULL_SOURCE_SHA --session-minutes 360 --output preflight-report.json
+python3 tools/mcp-campaign-preflight.py --register private-preflight-register.json --baseline beta31/acceptance-gap-ledger.json --history beta31/context-ledger.json --context-map next-campaign-context-map.json --remaining-ledger readiness-extension-beta45-live.json --remaining-ledger-sha256 VERIFIED_LEDGER_SHA256 --expected-tag PUBLISHED_TAG --expected-source FULL_SOURCE_SHA --session-minutes 360 --output preflight-report.json
 ```
 
 The checker performs no network calls or live mutations. It rejects altered
@@ -141,6 +187,24 @@ history, missing preparation records, protected executor reuse and insufficient
 credential lifetime, and refuses to overwrite its inputs or an existing output.
 A zero exit code only establishes that the preparation records are complete;
 live admission and the actual assertions still need to execute.
+
+`--remaining-ledger` selects the exact unresolved original IDs from the latest
+private extension. Supply its independently retained SHA-256 with
+`--remaining-ledger-sha256`; any change to requirements, exclusions or other
+ledger content fails the integrity check. It also rejects unknown/duplicate
+IDs, changed counts, exclusion overlap and missing original batch assignments.
+The original baseline and history remain unchanged. Omit the option only when
+checking the historical full preparation plan.
+
+Set `review.approvalMode` to the actual receipt's `owner_direct`,
+`owner_self_approval`, or `independent_review`. The first two retain the current
+owner authority and exact applied decision requirements without demanding a
+different reviewer. Omitting the field keeps the original independent-review
+requirement. In residual mode, record the independent local receipt references
+`operational.originalQaClientReceipt`, `operational.originalQaJobReceipt`, and
+`operational.originalQaRuntimeReceipt`. The checker reports missing gates per
+remaining context, so unavailable Windows or QA runtime preparation does not
+hide ready independent reads or Linux paging.
 
 ## Declare the consumer evidence contract
 
@@ -197,25 +261,36 @@ and collateral, while actual installation is a client-lifecycle obligation.
 
 ## Finite batches
 
-Counts are assigned outstanding contexts, not forecast passes. The private
-completion map retains every exact ID, original disposition and dependency.
+Counts below are the beta.45 residual population, not forecast passes. The
+private completion map retains every exact ID, original disposition and
+dependency. The older 213-row planning map remains historical input; it must not
+be used to schedule already completed work as newly outstanding.
 
 | Batch | Contexts | Execution order |
 | --- | ---: | --- |
-| Consumer/runtime preflight | 1 | First; declare observable evidence modes. |
-| Tenant replay/timestamp regressions | 6 | Verify the corrective release before broader mutations. |
-| Access and policy/profile lifecycle | 24 | Apply reviewed scope; retain exact primary authority. |
-| Reads/discovery/connectivity | 18 | Resolve actual IDs and target readiness. |
-| Jobs/tasks/scripts/terminal/snapshots | 51 | Produce the owned predecessor objects. |
-| Fresh secret producers/readers | 14 | Reuse actual execution objects; test ordinary/reveal/isolation boundaries. |
-| Services/log resync/protocol | 12 | Only inert services and isolated controlled fault mechanisms. |
-| Monitoring/events/notifications/flows/AI | 51 | Verify controlled receiver before effects. |
-| Onboarding/disposable administration | 20 | Enrol early when useful; disable/delete after dependencies. |
-| Prompt preparation/eight workflows | 9 | Integrate actual prompts before the corresponding actions above. |
-| Original QA/durable runtime disposition | 4 | Obtain infrastructure evidence during preparation. |
+| Authenticated AI | 18 | Actual pairing/session and the complete investigation sequence in each original tenant. |
+| Original QA durable reads | 2 | Read the retained client and job independently of runtime availability. |
+| Original QA runtime/start preview | 2 | Restore the same enrolled runtime, then the original admission assertion. |
+| Event retry/disable | 4 | Locate the owned failed delivery by type/correlation; preview and verify actual receiver effects. |
+| Protected producers and designated readers | 14 | Actual fresh and historical predecessors, with each distinct reader's required visibility boundary. |
+| Classification and attenuation | 3 | Trusted target profile, bounded auxiliary authority and caller-spoof denial. |
+| Windows inert service/native progress | 2 | Verified disposable Windows fixture and selected observable consumer. |
+| Job snapshot integrity | 2 | Captured source execution and original stale-definition conflict. |
+| Selected-consumer client prompt | 1 | Use the returned prompt messages for real tool effects in the selected AI conversation. |
+| Temporary reviewer restoration | 1 | Authoritative readback of the historical authority's retained state. |
+| Linux/Windows paging | 2 | Complete ordered membership and every original negative boundary on the corresponding OS. |
 | Measured endurance | 1 | After preceding gates and competing traffic stop. |
-| Cleanup/reviewer restoration | 2 | Last, with explicit dependency receipts. |
-| **Total** | **213** | |
+| Full cleanup | 1 | Last, with explicit dependency receipts and the already recorded owned retirements. |
+| **Total** | **53** | |
+
+Separate release/issue gates include the original Windows automatic update and
+recovery, the new Linux coordinator's first eligible successor update, paired
+incident/rejection/request-authoring journeys, genuine SSO first-turn execution,
+and off-host Data Protection restore. Attribute shared receipts to their exact
+assertions without adding those gates to the 53-row count. A beta.45 client
+updating automatically to the next eligible published release can establish the
+beta.45 coordinator's first-trigger behavior; manually replacing its binary
+before that offer removes the predecessor required for this check.
 
 Plan for one prepared 4–6 hour session including the full hour. Provisioning,
 deployment and reviewer availability are preparation, not hidden diagnostic time.

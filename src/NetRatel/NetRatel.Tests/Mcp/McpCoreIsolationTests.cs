@@ -349,6 +349,14 @@ public sealed class McpCoreIsolationTests
             .Should().Be(AlternativesByOperation(productionTools["netratel_commands"].ProtocolTool.InputSchema)["execute"].GetRawText());
         AlternativesByOperation(tools["netratel_jobs"].ProtocolTool.InputSchema)["list"].GetRawText()
             .Should().Be(AlternativesByOperation(productionTools["netratel_jobs"].ProtocolTool.InputSchema)["list"].GetRawText());
+        var eventList = AlternativesByOperation(tools["netratel_events"].ProtocolTool.InputSchema)["list"];
+        eventList.GetRawText().Should().Be(AlternativesByOperation(productionTools["netratel_events"].ProtocolTool.InputSchema)["list"].GetRawText());
+        var eventFilters = eventList.GetProperty("properties").GetProperty("request").GetProperty("properties");
+        eventFilters.EnumerateObject().Select(property => property.Name).Should().BeEquivalentTo("page", "pageSize", "eventType", "correlationId", "status");
+        eventFilters.GetProperty("eventType").GetProperty("maxLength").GetInt32().Should().Be(256);
+        eventFilters.GetProperty("correlationId").GetProperty("minLength").GetInt32().Should().Be(1);
+        eventFilters.GetProperty("status").GetProperty("enum").EnumerateArray().Select(value => value.GetString())
+            .Should().BeEquivalentTo("Pending", "Published", "Failed", "Disabled");
         JsonSerializer.Serialize(NetRatelMcpCatalogTools.CatalogSchema(hostContext)).Should().Contain("netratel_commands");
         foreach (var (name, tool) in tools)
             AlternativesByOperation(tool.ProtocolTool.InputSchema).Keys.Should()

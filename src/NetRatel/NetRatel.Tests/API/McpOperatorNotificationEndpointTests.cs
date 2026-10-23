@@ -106,6 +106,53 @@ public sealed class McpOperatorNotificationEndpointTests
     }
 
     [Fact]
+    public async Task Event_list_preserves_control_plane_admission_and_exact_filters()
+    {
+        var events = new RecordingEvents();
+        var authorization = new RecordingAuthorization();
+        using var app = await BuildAppAsync(new RecordingNotifications(), authorization, events: events);
+        var client = ClientFor(app, "list", "netratel_events", "netratel.mcp.observe");
+        var response = await client.GetAsync("/api/v2/mcp/operator/events?page=2&pageSize=10&eventType=DomainEvent.Orchestration.ExternalServiceCallbackRejected&correlationId=owned%26correlation%3D1&status=Published");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        events.Queries.Should().ContainSingle().Which.Should().Be((2, 10,
+            new McpOperatorEventQuery("DomainEvent.Orchestration.ExternalServiceCallbackRejected", "owned&correlation=1", "Published")));
+        authorization.Accepted.Should().ContainSingle();
+        authorization.Requests.Should().ContainSingle(request => request.TenantId == 0 && request.AgentId == null &&
+            request.OperationFamily == McpOperatorOperationFamily.Events && request.RequiredScopes.SetEquals(new[] { "netratel.mcp.observe" }));
+    }
+
+    [Theory]
+    [InlineData("status=Rejected")]
+    [InlineData("page=10001")]
+    [InlineData("eventType=")]
+    [InlineData("correlationId=embedded%0Anewline")]
+    public async Task Event_list_rejects_invalid_filters_without_querying(string query)
+    {
+        var events = new RecordingEvents();
+        using var app = await BuildAppAsync(new RecordingNotifications(), new RecordingAuthorization(), events: events);
+        var response = await ClientFor(app, "list", "netratel_events", "netratel.mcp.observe")
+            .GetAsync("/api/v2/mcp/operator/events?" + query);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("event_query_invalid");
+        events.Queries.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Disabled_event_cannot_receive_a_retry_confirmation_plan()
+    {
+        var events = new RecordingEvents { Status = "Disabled" };
+        using var app = await BuildAppAsync(new RecordingNotifications(), new RecordingAuthorization(), events: events);
+        var response = await ClientFor(app, "preview_retry", "netratel_events", "netratel.mcp.execute")
+            .PostAsync($"/api/v2/mcp/operator/events/{Guid.NewGuid():D}/retry/preview", null);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("event_retry_not_allowed");
+        events.RetryCalls.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Connectivity_test_is_server_owned_and_replays_without_second_probe()
     {
         var connectivity = new RecordingConnectivity();
@@ -329,10 +376,17 @@ public sealed class McpOperatorNotificationEndpointTests
 
     private sealed class RecordingEvents : IMcpOperatorEventAuthority
     {
+        public string Status { get; init; } = "Pending";
         public List<Guid> RetryCalls { get; } = [];
+        public List<(int Page, int PageSize, McpOperatorEventQuery Query)> Queries { get; } = [];
         public Task<IReadOnlyList<McpOperatorEventSummary>> ListAsync(int page, int pageSize, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<McpOperatorEventSummary>>([]);
+        public Task<IReadOnlyList<McpOperatorEventSummary>> ListAsync(int page, int pageSize, McpOperatorEventQuery query, CancellationToken cancellationToken)
+        {
+            Queries.Add((page, pageSize, query));
+            return Task.FromResult<IReadOnlyList<McpOperatorEventSummary>>([]);
+        }
         public Task<McpOperatorEventSummary?> GetAsync(Guid eventId, CancellationToken cancellationToken) =>
-            Task.FromResult<McpOperatorEventSummary?>(new McpOperatorEventSummary(eventId, "DomainEvent.Test", DateTimeOffset.UtcNow, "test", "Pending", NetRatelNotificationSeverity.Info, 0));
+            Task.FromResult<McpOperatorEventSummary?>(new McpOperatorEventSummary(eventId, "DomainEvent.Test", DateTimeOffset.UtcNow, "test", Status, NetRatelNotificationSeverity.Info, 0));
         public Task<McpOperatorEventMutationOutcome> RetryAsync(Guid eventId, CancellationToken cancellationToken)
         {
             RetryCalls.Add(eventId);

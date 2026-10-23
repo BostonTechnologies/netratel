@@ -1,5 +1,6 @@
 using NetRatel.API.Services.Orchestration;
 using NetRatel.Application.Notifications;
+using NetRatel.Shared.Operations;
 
 namespace NetRatel.API.Services;
 
@@ -10,7 +11,15 @@ public sealed record McpOperatorEventSummary(
     string Source,
     string Status,
     NetRatelNotificationSeverity Severity,
-    int Attempts);
+    int Attempts)
+{
+    /// <summary>The delivery path used by retry; publication status is not the callback delivery outcome.</summary>
+    public string RetryTarget { get; init; } = "outbox-publication";
+
+    /// <summary>Whether this event state permits retry, subject to current admission and delivery prerequisites.</summary>
+    public bool RetrySupported => !string.Equals(Status, "Disabled", StringComparison.OrdinalIgnoreCase);
+    public string? RetryBlockedReason => RetrySupported ? null : "event_disabled";
+}
 
 public sealed record McpOperatorEventMutationOutcome(bool Succeeded, string? FailureCode = null);
 
@@ -22,6 +31,10 @@ public sealed record McpOperatorEventMutationOutcome(bool Succeeded, string? Fai
 public interface IMcpOperatorEventAuthority
 {
     Task<IReadOnlyList<McpOperatorEventSummary>> ListAsync(int page, int pageSize, CancellationToken cancellationToken);
+    Task<IReadOnlyList<McpOperatorEventSummary>> ListAsync(int page, int pageSize, McpOperatorEventQuery query, CancellationToken cancellationToken) =>
+        query.HasFilters
+            ? throw new NotSupportedException("This event authority does not support filtered queries.")
+            : ListAsync(page, pageSize, cancellationToken);
     Task<McpOperatorEventSummary?> GetAsync(Guid eventId, CancellationToken cancellationToken);
     Task<McpOperatorEventMutationOutcome> RetryAsync(Guid eventId, CancellationToken cancellationToken);
     Task<McpOperatorEventMutationOutcome> DisableAsync(Guid eventId, CancellationToken cancellationToken);
@@ -33,10 +46,15 @@ public sealed class McpOperatorEventAuthority(
 {
     private const string OperatorReader = "mcp.operator.events";
 
-    public async Task<IReadOnlyList<McpOperatorEventSummary>> ListAsync(int page, int pageSize, CancellationToken cancellationToken)
+    public Task<IReadOnlyList<McpOperatorEventSummary>> ListAsync(int page, int pageSize, CancellationToken cancellationToken) =>
+        ListAsync(page, pageSize, new McpOperatorEventQuery(), cancellationToken);
+
+    public async Task<IReadOnlyList<McpOperatorEventSummary>> ListAsync(int page, int pageSize, McpOperatorEventQuery query, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(query);
+        if (!query.IsValid) throw new ArgumentException("Event filters must be bounded exact metadata values.", nameof(query));
         var result = await notifications.GetPageAsync(
-            OperatorReader, page, pageSize, null, null, null, null, null, null, null, null, null, cancellationToken)
+            OperatorReader, page, pageSize, query.EventType, query.CorrelationId, null, query.Status, null, null, null, null, null, cancellationToken)
             .ConfigureAwait(false);
         return result.Items.Select(ToSummary).ToArray();
     }
@@ -83,12 +101,15 @@ public sealed class McpOperatorEventAuthority(
         return new(true);
     }
 
-    private static McpOperatorEventSummary ToSummary(NetRatelNotificationDto notification) => new(
+    private McpOperatorEventSummary ToSummary(NetRatelNotificationDto notification) => new(
         notification.Id,
         notification.EventType,
         notification.OccurredUtc,
         notification.Source,
         notification.Status,
         notification.Severity,
-        notification.Attempts);
+        notification.Attempts)
+    {
+        RetryTarget = callbackReplay.CanReplay(notification) ? "external-service-callback" : "outbox-publication"
+    };
 }

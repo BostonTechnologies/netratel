@@ -3,6 +3,7 @@
 import base64
 import contextlib
 import copy
+from datetime import datetime, timezone
 import runpy
 import stat
 from types import SimpleNamespace
@@ -35,6 +36,189 @@ def module(name):
 
 ROOT = Path(__file__).resolve().parents[2]
 SCANNER = ROOT / "tools/ci/verify-product-version.py"
+
+
+class CampaignPreflightTests(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("campaign_preflight", ROOT / "tools/testing/mcp-campaign-preflight.py")
+        self.checker = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.checker)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        receipt = self.directory / "receipt.json"
+        receipt.write_text('{"syntheticPreparationRecord": true}')
+        self.paths = {name: self.directory / (name + ".json")
+                      for name in ("register", "baseline", "history", "context_map", "remaining_ledger")}
+        context_gates = {
+            "beta27/qa-durable-client": ["QA", "DISPOSABLE-CLIENT"],
+            "beta27/qa-durable-job": ["QA", "DISPOSABLE-CLIENT"],
+            "beta27/qa-start-preview": ["QA", "DISPOSABLE-CLIENT"],
+            "beta27/wsl-recovery": ["QA", "DISPOSABLE-CLIENT"],
+            "beta26-continuation/B26-linux-paging-continuation": [],
+            "beta26-continuation/B26-windows-paging-continuation": [],
+            "synthetic/already-completed": ["LOG-FIXTURE"],
+            "synthetic/excluded": [],
+        }
+        self.baseline = {"contexts": [{"contextId": key, "origin": "synthetic", "currentDisposition": "Untested",
+                                      "invoked": False, "requiredGateIds": gates, "actualReceiptIds": []}
+                                     for key, gates in context_gates.items()]}
+        self.history = copy.deepcopy(self.baseline)
+        self.paths["baseline"].write_text(json.dumps(self.baseline))
+        self.paths["history"].write_text(json.dumps(self.history))
+        self.mapping = {"contexts": [{"contextId": key, "origin": "synthetic", "disposition": "Untested",
+                                      "invoked": False, "requiredGateIds": gates, "receiptIds": [],
+                                      "prospectiveRequiredGateIds": gates, "completionBatch": "work",
+                                      "planningPopulation": "excluded" if key.endswith("excluded") else "outstanding"}
+                                     for key, gates in context_gates.items()],
+                        "baselineFieldNames": {"disposition": "disposition", "invoked": "invoked",
+                                               "requiredGateIds": "requiredGateIds", "receiptIds": "receiptIds"},
+                        "retainedContextCount": len(context_gates), "batches": {"work": {}},
+                        "sourceEvidenceSha256": self.checker.digest(self.paths["baseline"]),
+                        "historyEvidenceSha256": self.checker.digest(self.paths["history"]),
+                        "protectedOriginalAgentIds": ["00000000-0000-0000-0000-000000000001"],
+                        "protectedPrimaryExpiresAtUtc": "2030-01-01T00:00:00Z"}
+        self.register = {}
+
+        def put(field, value):
+            target = self.register
+            parts = field.split(".")
+            for part in parts[:-1]:
+                target = target.setdefault(part, {})
+            target[parts[-1]] = value
+
+        for fields in self.checker.RECEIPTS.values():
+            for field in fields:
+                put(field, receipt.name)
+        for field in ("consumer.aiConsumerNameAndVersion", "consumer.connectionReference", "consumer.bridgeArchiveSha256",
+                      "review.eligibleDistinctReviewerReference", "actors.primary.protectedReference", "actors.noReveal.protectedReference",
+                      "receiver.connectorReference", "receiver.syntheticDestinationReference", "receiver.allowedDeliveryAndCleanup"):
+            put(field, "synthetic-label")
+        for actor in ("primary", "noReveal", "additionalPermissionTestCredential"):
+            put("actors." + actor + ".expiry", "2030-01-01T00:00:00Z")
+        put("release.tag", "v1.2.3")
+        put("release.sourceSha", "a" * 40)
+        put("consumer.consumerLoadedSchemaObserved", True)
+        put("consumer.promptMessageExecutionMode", "native-menu")
+        put("consumer.protocolControlMode", "ai-host")
+        put("consumer.enduranceMode", "ai-host-native")
+        for index, os_name in enumerate(("windows", "linux"), 2):
+            prefix = "fixtures." + os_name + "."
+            for field in ("independentDeviceIdentityReceipt", "runningVersionSourceAndExecutableHashReceipt"):
+                put(prefix + field, receipt.name)
+            for field in ("protectedConnectionProfileReference", "inertServiceName", "inertServiceInitialState", "cleanupOwnerAndScope"):
+                put(prefix + field, "synthetic-label")
+            put(prefix + "tenantId", index)
+            put(prefix + "agentId", "00000000-0000-0000-0000-" + str(index).zfill(12))
+            put(prefix + "writableRoots", ["synthetic-root"])
+            put(prefix + "allowedOperations", ["synthetic-operation"])
+        for field in ("originalQaClientReceipt", "originalQaJobReceipt", "originalQaRuntimeReceipt"):
+            put("operational." + field, receipt.name)
+        self.remaining = {"requiredContexts": len(context_gates), "unresolvedOriginalContexts": 6,
+                          "remainingOriginalContexts": [{"contextId": key} for key in list(context_gates)[:6]],
+                          "plannedExclusions": [{"contextId": "synthetic/excluded"}]}
+        self.paths["remaining_ledger"].write_text(json.dumps(self.remaining))
+        self.remaining_sha256 = self.checker.digest(self.paths["remaining_ledger"])
+
+    def inspect(self, use_remaining=True):
+        self.paths["remaining_ledger"].write_text(json.dumps(self.remaining))
+        return self.checker.inspect(self.register, self.baseline, self.history, self.mapping, self.paths,
+                                    "v1.2.3", "a" * 40, datetime(2026, 1, 1, tzinfo=timezone.utc), 360,
+                                    self.remaining if use_remaining else None, self.remaining_sha256 if use_remaining else None)
+
+    def test_current_residuals_select_work_without_changing_baseline_or_claiming_live_acceptance(self):
+        before = {key: self.paths[key].read_bytes() for key in ("baseline", "history")}
+        report = self.inspect()
+        self.assertEqual("complete-for-declared-plan", report["recordCheck"])
+        self.assertEqual(8, report["retainedContextCount"])
+        self.assertEqual(6, report["selectedOutstandingContexts"])
+        self.assertEqual(6, report["batches"][0]["assignedOutstandingContexts"])
+        self.assertFalse(report["liveAcceptanceEstablished"])
+        self.assertEqual(before, {key: self.paths[key].read_bytes() for key in before})
+        self.assertEqual(self.checker.digest(self.paths["remaining_ledger"]), report["residualLedgerSha256"])
+
+    def test_absent_runtime_and_windows_do_not_block_durable_qa_or_linux_rows(self):
+        del self.register["operational"]["originalQaRuntimeReceipt"]
+        del self.register["fixtures"]["windows"]["runningVersionSourceAndExecutableHashReceipt"]
+        report = self.inspect()
+        rows = {row["contextId"]: row["missingGateIds"] for row in report["batches"][0]["contexts"]}
+        self.assertEqual([], rows["beta27/qa-durable-client"])
+        self.assertEqual([], rows["beta27/qa-durable-job"])
+        self.assertEqual([], rows["beta26-continuation/B26-linux-paging-continuation"])
+        self.assertEqual(["QA-RUNTIME"], rows["beta27/qa-start-preview"])
+        self.assertEqual(["QA-RUNTIME"], rows["beta27/wsl-recovery"])
+        self.assertEqual(["EXECUTORS-WINDOWS"], rows["beta26-continuation/B26-windows-paging-continuation"])
+
+    def test_invalid_residual_scope_rejects_every_selected_context(self):
+        original = copy.deepcopy(self.remaining)
+        for change in ("unknown", "duplicate", "excluded", "count", "universe"):
+            with self.subTest(change=change):
+                self.remaining = copy.deepcopy(original)
+                if change in {"unknown", "duplicate", "excluded"}:
+                    self.remaining["remainingOriginalContexts"][0]["contextId"] = {
+                        "unknown": "synthetic/unknown", "duplicate": "beta27/qa-durable-job",
+                        "excluded": "synthetic/excluded"}[change]
+                else:
+                    self.remaining["unresolvedOriginalContexts" if change == "count" else "requiredContexts"] += 1
+                report = self.inspect()
+                self.assertEqual("missing-or-inconsistent", report["recordCheck"])
+                self.assertTrue(any(f["gate"] == "HISTORY" for f in report["findings"]))
+                self.assertTrue(all("HISTORY" in row["missingGateIds"] for row in report["batches"][0]["contexts"]))
+
+    def test_owner_decision_does_not_require_an_independent_reviewer_but_keeps_applied_evidence(self):
+        del self.register["review"]["eligibleDistinctReviewerReference"]
+        self.assertTrue(any(f["gate"] == "REVIEW" for f in self.inspect()["findings"]))
+        for mode in ("owner_direct", "owner_self_approval"):
+            self.register["review"]["approvalMode"] = mode
+            self.assertFalse(any(f["gate"] == "REVIEW" for f in self.inspect()["findings"]))
+        del self.register["review"]["appliedReceipt"]
+        self.assertTrue(any(f["gate"] == "REVIEW" for f in self.inspect()["findings"]))
+
+    def test_pinned_current_ledger_rejects_removed_or_added_exclusions_and_changed_requirements(self):
+        original = copy.deepcopy(self.remaining)
+        for change in ("removed-exclusion", "added-exclusion", "changed-requirement", "wrong-hash"):
+            with self.subTest(change=change):
+                self.remaining = copy.deepcopy(original)
+                if change == "removed-exclusion":
+                    self.remaining["plannedExclusions"] = []
+                elif change == "added-exclusion":
+                    self.remaining["plannedExclusions"].append({"contextId": "synthetic/already-completed"})
+                elif change == "changed-requirement":
+                    self.remaining["remainingOriginalContexts"][0]["requirement"] = "Different assertion"
+                else:
+                    self.remaining_sha256 = "0" * 64
+                report = self.inspect()
+                self.assertEqual("missing-or-inconsistent", report["recordCheck"])
+                self.assertTrue(any(record["field"] == "remaining-ledger-sha256"
+                                    for finding in report["findings"] for record in finding["missingRecords"]))
+                self.assertTrue(all("HISTORY" in row["missingGateIds"] for row in report["batches"][0]["contexts"]))
+
+    def test_legacy_input_still_checks_all_outstanding_rows_and_original_qa_record(self):
+        report = self.inspect(use_remaining=False)
+        self.assertEqual(7, report["selectedOutstandingContexts"])
+        self.assertEqual("complete-for-declared-plan", report["recordCheck"])
+        del self.register["operational"]["originalQaDisposition"]
+        self.assertTrue(any(f["gate"] == "QA" for f in self.inspect(use_remaining=False)["findings"]))
+
+    def test_unrepresentable_expiry_and_session_window_are_rejected_without_a_traceback(self):
+        for name, value in (("baseline", self.baseline), ("history", self.history), ("context_map", self.mapping),
+                            ("remaining_ledger", self.remaining)):
+            self.paths[name].write_text(json.dumps(value))
+        command = [sys.executable, str(ROOT / "tools/testing/mcp-campaign-preflight.py")]
+        for name, path in self.paths.items():
+            command += ["--" + name.replace("_", "-"), str(path)]
+        command += ["--expected-tag", "v1.2.3", "--expected-source", "a" * 40,
+                    "--remaining-ledger-sha256", self.remaining_sha256]
+        for expiry, minutes in (("0001-01-01T00:00:00+01:00", "360"), ("2030-01-01T00:00:00Z", str(10 ** 30))):
+            with self.subTest(expiry=expiry, minutes=minutes):
+                self.register["actors"]["primary"]["expiry"] = expiry
+                self.paths["register"].write_text(json.dumps(self.register))
+                result = subprocess.run(command + ["--session-minutes", minutes], capture_output=True, text=True)
+                self.assertEqual(2, result.returncode)
+                self.assertNotIn("Traceback", result.stdout + result.stderr)
+                self.assertNotIn('"recordCheck": "complete-for-declared-plan"', result.stdout)
+                if result.stdout:
+                    self.assertFalse(json.loads(result.stdout)["liveAcceptanceEstablished"])
 
 
 class PublicGatewayRouteTests(unittest.TestCase):

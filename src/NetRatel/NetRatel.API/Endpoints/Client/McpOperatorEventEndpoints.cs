@@ -34,13 +34,17 @@ public static class McpOperatorEventEndpoints
     private static async Task<IResult> ListAsync(
         int? page,
         int? pageSize,
+        string? eventType,
+        string? correlationId,
+        string? status,
         HttpContext http,
         IHostEnvironment environment,
         IMcpOperatorAuthorization authorization,
         IMcpOperatorEventAuthority events,
         CancellationToken cancellationToken)
     {
-        if (page is < 1 || pageSize is < 1 or > MaximumPageSize)
+        var query = new McpOperatorEventQuery(eventType?.Trim(), correlationId?.Trim(), status?.Trim());
+        if (page is < 1 or > 10_000 || pageSize is < 1 or > MaximumPageSize || !query.IsValid)
         {
             return Failure("event_query_invalid", McpOperatorControlPlaneAdmission.MinimalContext(Tool, "list", http.TraceIdentifier));
         }
@@ -55,7 +59,7 @@ public static class McpOperatorEventEndpoints
         try
         {
             await authorization.RecordAcceptedAsync(context.Decision, context.ServicePrincipal, cancellationToken).ConfigureAwait(false);
-            return Results.Ok(await events.ListAsync(page ?? 1, pageSize ?? DefaultPageSize, cancellationToken).ConfigureAwait(false));
+            return Results.Ok(await events.ListAsync(page ?? 1, pageSize ?? DefaultPageSize, query, cancellationToken).ConfigureAwait(false));
         }
         catch (McpOperatorAdmissionRejectedException rejection)
         {
@@ -129,9 +133,14 @@ public static class McpOperatorEventEndpoints
         }
 
         var context = admitted.Context!;
-        if (await events.GetAsync(eventId, cancellationToken).ConfigureAwait(false) is null)
+        var summary = await events.GetAsync(eventId, cancellationToken).ConfigureAwait(false);
+        if (summary is null)
         {
             return Failure("event_not_found", context);
+        }
+        if (operation == "retry" && !summary.RetrySupported)
+        {
+            return Failure("event_retry_not_allowed", context);
         }
 
         try

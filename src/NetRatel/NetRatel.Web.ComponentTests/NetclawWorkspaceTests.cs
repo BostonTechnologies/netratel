@@ -29,6 +29,8 @@ public sealed class NetclawWorkspaceTests : AsyncBunitContext
         Assert.DoesNotContain("one-time-secret-code", cut.Markup);
         Assert.DoesNotContain("netclaw-pairing-code", cut.Markup);
         Assert.Contains("Saved Netclaw connection", cut.Markup);
+        Assert.Contains("Start its listener", cut.Markup);
+        Assert.Contains("API host or container", cut.Markup);
     }
 
     [Fact]
@@ -101,7 +103,7 @@ public sealed class NetclawWorkspaceTests : AsyncBunitContext
         public Task<IReadOnlyList<NetclawTenantDto>> TenantsAsync(CancellationToken ct = default) => Task.FromResult<IReadOnlyList<NetclawTenantDto>>([new(17, "Operations", CanInvestigate, true)]);
         public Task<NetclawConnectionDto> ConnectionAsync(int tenantId, CancellationToken ct = default) => Task.FromResult(new NetclawConnectionDto(Guid.Empty, 17, 0, false, null, false, null, null, null));
         public Task<NetclawTestResult> PairAsync(int tenantId, NetclawPairRequest request, CancellationToken ct = default)
-        { PairRequests.Add(request); return Task.FromResult(new NetclawTestResult(false, "authenticated-session-unavailable", new(Guid.NewGuid(), 17, 1, true, request.Address, true, DateTimeOffset.UtcNow, false, "authenticated-session-unavailable"))); }
+        { PairRequests.Add(request); return Task.FromResult(new NetclawTestResult(false, "daemon-connection-refused", new(Guid.NewGuid(), 17, 1, true, request.Address, true, DateTimeOffset.UtcNow, false, "daemon-connection-refused"))); }
         public Task<NetclawTestResult> TestAsync(int tenantId, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<NetclawConnectionDto> EnabledAsync(int tenantId, NetclawEnabledRequest request, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<IReadOnlyList<InvestigationClientDto>> ClientsAsync(int tenantId, CancellationToken ct = default) => Task.FromResult<IReadOnlyList<InvestigationClientDto>>([Client]);
