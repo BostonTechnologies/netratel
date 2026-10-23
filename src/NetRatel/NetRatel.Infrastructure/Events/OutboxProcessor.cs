@@ -35,7 +35,7 @@ public sealed class OutboxProcessor(IServiceProvider services, ILogger<OutboxPro
         }
     }
 
-    private async Task ProcessBatchAsync(CancellationToken ct)
+    internal async Task ProcessBatchAsync(CancellationToken ct)
     {
         await using var scope = _services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
@@ -43,33 +43,48 @@ public sealed class OutboxProcessor(IServiceProvider services, ILogger<OutboxPro
 
         var now = DateTimeOffset.UtcNow;
 
-        var batch = await db.OutboxMessages
+        var candidates = await db.OutboxMessages.AsNoTracking()
             .Where(x => !x.Type.StartsWith(MonitoringLimits.NotificationEventPrefix) && x.Status == OutboxStatuses.Pending
                         && (x.NextAttemptUtc == null || x.NextAttemptUtc <= now)
                         && (x.LockedUntilUtc == null || x.LockedUntilUtc <= now))
             .OrderBy(x => x.OccurredUtc)
             .Take(50)
+            .Select(x => x.Id)
             .ToListAsync(ct);
 
-        foreach (var message in batch)
+        foreach (var id in candidates)
         {
-            message.LockOwner = _lockOwner;
-            message.LockedUntilUtc = now.Add(_lockDuration);
-        }
+            now = DateTimeOffset.UtcNow;
+            var leaseOwner = $"{_lockOwner}:{Guid.NewGuid():N}";
+            var lockedUntil = now.Add(_lockDuration);
+            var claimed = await db.OutboxMessages
+                .Where(x => x.Id == id && x.Status == OutboxStatuses.Pending
+                            && (x.NextAttemptUtc == null || x.NextAttemptUtc <= now)
+                            && (x.LockedUntilUtc == null || x.LockedUntilUtc <= now))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(x => x.LockOwner, leaseOwner)
+                    .SetProperty(x => x.LockedUntilUtc, lockedUntil), ct);
+            if (claimed == 0) continue;
 
-        if (batch.Count > 0)
-            await db.SaveChangesAsync(ct);
+            // A candidate may have been disabled or claimed elsewhere since selection.
+            // Recheck immediately before admitting publication; an already admitted
+            // publication may finish after disable, but cannot overwrite that state.
+            var dispatchTime = DateTimeOffset.UtcNow;
+            var message = await db.OutboxMessages.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.Id == id && x.Status == OutboxStatuses.Pending
+                                          && x.LockOwner == leaseOwner && x.LockedUntilUtc > dispatchTime, ct);
+            if (message is null) continue;
 
-        foreach (var message in batch)
-        {
+            var owned = db.OutboxMessages.Where(x => x.Id == id && x.Status == OutboxStatuses.Pending && x.LockOwner == leaseOwner);
             var envelope = MapEnvelope(message);
             try
             {
                 await publisher.PublishAsync(envelope, ct);
-                message.Status = OutboxStatuses.Published;
-                message.LastError = null;
-                message.LockOwner = null;
-                message.LockedUntilUtc = null;
+                await owned.ExecuteUpdateAsync(setters => setters
+                    .SetProperty(x => x.Status, OutboxStatuses.Published)
+                    .SetProperty(x => x.LastError, (string?)null)
+                    .SetProperty(x => x.LockOwner, (string?)null)
+                    .SetProperty(x => x.LockedUntilUtc, (DateTimeOffset?)null), ct);
                 NetRatelTelemetry.RecordOutboxEventPublished(envelope);
                 _logger.LogInformation(
                     "Published NetRatel outbox event {EventType} from {Source} with severity {Severity}",
@@ -79,28 +94,30 @@ public sealed class OutboxProcessor(IServiceProvider services, ILogger<OutboxPro
             }
             catch (Exception ex)
             {
-                message.Attempts += 1;
-                message.LastError = ex.ToString();
-                message.LockOwner = null;
-                message.LockedUntilUtc = null;
-                var delaySeconds = Math.Min(300, Math.Pow(2, Math.Min(10, message.Attempts)));
-                message.NextAttemptUtc = DateTimeOffset.UtcNow.AddSeconds(delaySeconds);
-                if (message.Attempts >= 20)
-                    message.Status = OutboxStatuses.Failed;
+                var attempts = message.Attempts + 1;
+                var error = ex.ToString();
+                var delaySeconds = Math.Min(300, Math.Pow(2, Math.Min(10, attempts)));
+                var nextAttempt = DateTimeOffset.UtcNow.AddSeconds(delaySeconds);
+                var status = attempts >= 20 ? OutboxStatuses.Failed : OutboxStatuses.Pending;
+                var recorded = await owned.ExecuteUpdateAsync(setters => setters
+                    .SetProperty(x => x.Attempts, attempts)
+                    .SetProperty(x => x.LastError, error)
+                    .SetProperty(x => x.NextAttemptUtc, nextAttempt)
+                    .SetProperty(x => x.Status, status)
+                    .SetProperty(x => x.LockOwner, (string?)null)
+                    .SetProperty(x => x.LockedUntilUtc, (DateTimeOffset?)null), ct);
+                if (recorded == 0) continue;
 
-                NetRatelTelemetry.RecordOutboxEventFailed(envelope, message.Status);
+                NetRatelTelemetry.RecordOutboxEventFailed(envelope, status);
                 _logger.LogWarning(
                     ex,
                     "Failed publishing NetRatel outbox event {EventType} from {Source} on attempt {Attempts}; next status {Status}",
                     envelope.Type,
                     envelope.Source,
-                    message.Attempts,
-                    message.Status);
+                    attempts,
+                    status);
             }
         }
-
-        if (batch.Count > 0)
-            await db.SaveChangesAsync(ct);
     }
 
     private static OutboxEnvelope MapEnvelope(OutboxMessage message)

@@ -14,14 +14,21 @@ inside the original 518-context universe.
   still uses the saved tenant pairing and a real authenticated daemon session;
   current revisions and cancellation remain enforced. A transport disposal
   failure can no longer leave a successful result paired with a failure code.
+  The setup guide now uses supported daemon lifecycle commands and requires
+  isolated tenant daemon contexts for native SignalR sessions, which share
+  Netclaw's Personal tool audience within a daemon.
 - **Owned event discovery:** `netratel_events/list` accepts bounded exact
   `eventType`, `correlationId` and notification `status` filters. Callback
   rejection/failure notifications can be `Published`; that status describes the
   notification outbox, not callback success. Redacted summary metadata identifies
   the replay path and disabled-state rejection. Retry preview rejects disabled
   events before issuing a plan. Notification pages use an identity tie-breaker
-  for equal occurrence timestamps. Existing admission, confirmation, callback
-  leases and replay behavior remain authoritative.
+  for equal occurrence timestamps. Outbox claims and completion writes respect
+  current notification state and lease ownership, so an accepted disable cannot
+  be overwritten by a stale publishing worker. An already admitted publication
+  can finish; disabling a notification does not cancel its originating workflow
+  or the separate durable callback reconciler. Existing admission, confirmation,
+  callback leases and replay behavior remain authoritative.
 - **Campaign preparation:** the existing offline checker accepts the latest
   remaining-context ledger, checks its original IDs/counts/exclusions and pins
   its hash. It reports prerequisites per remaining context, separating original

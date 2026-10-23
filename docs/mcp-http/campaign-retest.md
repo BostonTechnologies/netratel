@@ -163,6 +163,13 @@ metadata and then obtain its current preview. If no owned predecessor exists,
 prepare a bounded real receiver failure through the supported paired workflow;
 do not scan unrelated event pages or insert artificial database records.
 
+Disabling an event disables its notification outbox record and subsequent
+notification retries. It does not cancel the originating workflow or its separate
+durable callback reconciler. An already admitted publication may finish; current
+disable state must remain durable. Verify the owned event's readback, audit,
+idempotent confirmation and disabled retry rejection under the original assertion,
+and retain actual receiver effects separately from notification state.
+
 The private kit includes the standard-library-only
 [preflight checker](../../tools/testing/mcp-campaign-preflight.py) and its register
 template. On the owner's laptop, use Python 3 (`python3`, or `py -3` on Windows)

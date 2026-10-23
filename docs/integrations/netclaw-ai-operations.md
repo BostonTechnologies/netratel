@@ -20,6 +20,8 @@ The device token authorizes chat with Netclaw. A NetRatel MCP credential authori
 
 First [configure and verify the HTTP MCP server's connection to NetRatel](../mcp-http/setup.md). Then follow [Give Netclaw customer connections HTTP MCP access](netclaw-http-mcp.md) for the exact HTTP transport, protected bearer storage, per-customer grants and allowed/denied read checks. Each customer can use the same MCP endpoint with a separately scoped HTTP MCP credential. The daemon pairing above does not provision that server or install those client connections. HTTP MCP, stdio MCP and API credentials retain distinct authentication and delegation rules.
 
+For tenant-isolated AI Ops, pair each tenant to its own isolated Netclaw daemon and endpoint, containing only that tenant's NetRatel MCP credential. Current native SignalR turns all use Netclaw's Personal audience; separate device tokens, registration names or prompts do not partition tools within one shared daemon. Follow [customer SignalR isolation](netclaw-http-mcp.md#isolate-customer-signalr-sessions) before registering or pairing multiple tenants.
+
 Choose a credential whose permitted tenant and clients match the investigation's intended scope. Selected systems supply context; they do not widen a credential's authority or grant the daemon additional permissions. Every actual tool operation still passes through NetRatel's current tenant authorization and MCP operation policy. Configure write tools to request an operator decision in Netclaw if that is the intended runbook. The chat prompt asks for approval, but the daemon's configured tool policy is the execution authority.
 
 ## Investigate manually or from an alert

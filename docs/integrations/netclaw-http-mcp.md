@@ -9,7 +9,7 @@ Netclaw customer connections → NetRatel HTTP MCP → NetRatel API
 
 This guide configures the first arrow. NetRatel's `setup --mode host` configures the second. Bare `dotnet NetRatel.Mcp.Http.dll setup` saves a NetRatel HTTP-client profile for the machine running it; it does not install a connection in Netclaw. Neither mode means home versus company or single tenant versus multiple tenants.
 
-The Netclaw steps follow its documented [HTTP transport](https://netclaw.dev/configuration/mcp-servers/), [MCP CLI](https://netclaw.dev/cli/mcp-tools/) and [encrypted secret store](https://netclaw.dev/cli/secrets/). Run **Netclaw commands** on the Netclaw machine as the operating-system user that runs its daemon, or inside that daemon's container with its persistent home mounted. A separate shell user has a separate configuration and key ring. The NetRatel policy block has its own administrator-machine instructions.
+The Netclaw steps follow its documented [installation](https://netclaw.dev/getting-started/installation/), [HTTP transport](https://netclaw.dev/configuration/mcp-servers/), [MCP CLI](https://netclaw.dev/cli/mcp-tools/) and [encrypted secret store](https://netclaw.dev/cli/secrets/). Run **Netclaw commands** on the Netclaw machine as the operating-system user that runs its daemon, or inside that daemon's container with its persistent home mounted. A separate shell user has a separate configuration and key ring. The NetRatel policy block has its own administrator-machine instructions.
 
 A **NetRatel credential owner** prepares each customer connection, and an independent **NetRatel policy administrator** reviews its access through the supported reviewed workflow in step 2. The **Netclaw administrator** securely installs the resulting customer credential in steps 3–4. The requesting identity cannot approve its own reviewed request. The optional advanced policy-administration procedure requires its own established administrator authority.
 
@@ -130,15 +130,21 @@ This local-account recipe does not sign into an OIDC-only installation. Its admi
 
 ## 3. Register the HTTP connections in Netclaw
 
-**Netclaw machine:** replace the example URL with the endpoint from completed server setup. NetRatel uses Netclaw's `http` transport, which is Streamable HTTP.
+### Isolate customer SignalR sessions
+
+Use **a separate Netclaw daemon and endpoint for each customer** when connecting tenant-isolated NetRatel AI Ops sessions. The current native SignalR implementation assigns every incoming turn to the **Personal** audience; its MCP authorization selects a profile by audience, not by NetRatel tenant, paired device name or session ID. Two customer registrations available to Personal on one daemon are therefore available to both customers' SignalR sessions. Changing a connection name, prompt or selected client does not restrict that access. These behaviors are explicit in upstream [SignalR session admission](https://github.com/netclaw-dev/netclaw/blob/aecbe73e1714e9acc2d68612e0cfa0d3abc4f33d/src/Netclaw.Daemon/Gateway/SessionRegistry.cs) and [MCP audience authorization](https://github.com/netclaw-dev/netclaw/blob/aecbe73e1714e9acc2d68612e0cfa0d3abc4f33d/src/Netclaw.Actors/Tools/ToolAudienceProfileResolver.cs).
+
+Give each daemon its own persistent home, protected credentials, session store and network endpoint. Install only that customer's NetRatel MCP credential in it, and pair the matching NetRatel tenant to that endpoint. Separate containers or operating-system accounts must also prevent tools from reading the other customer's home or credentials; a shared writable volume, unrestricted host shell or Docker socket defeats that boundary. `NETCLAW_HOME` selects separate state, but changing that variable alone does not restrict filesystem access. Retain existing provider credentials through the deployment's protected provisioning mechanism; do not clone a complete home containing other customer credentials or sessions. See upstream [home selection](https://github.com/netclaw-dev/netclaw/blob/aecbe73e1714e9acc2d68612e0cfa0d3abc4f33d/src/Netclaw.Configuration/NetclawPaths.cs), [Docker deployment](https://netclaw.dev/deployment/docker/) and [exposure modes](https://netclaw.dev/deployment/exposure-modes/).
+
+**Inside customer 1's isolated daemon context:** replace the example URL with the endpoint from completed server setup. NetRatel uses Netclaw's `http` transport, which is Streamable HTTP. Inspect `netclaw mcp list` first; keep an existing correct entry instead of re-adding it and replacing its connection or secret settings.
 
 ```sh
 netclaw mcp add customer1-netclaw https://netratel.example.invalid/mcp --transport http
-netclaw mcp add customer2-netclaw https://netratel.example.invalid/mcp --transport http
-netclaw mcp add customer3-netclaw https://netratel.example.invalid/mcp --transport http
 ```
 
-**Netclaw machine, Bash terminal:** store each bearer through Netclaw's encrypted secret store. The prompt hides your paste and the command entered into shell history contains only a variable reference. Keep shell tracing disabled. Run this block separately for each customer, changing both `customer1` occurrences to the matching customer before pasting its credential.
+Repeat in customer 2's and customer 3's separate daemon contexts, substituting their matching connection names. Do not register all three credentials in the Personal audience of a daemon serving tenant-isolated AI Ops.
+
+**Inside the same customer's daemon context, Bash terminal:** store its bearer through Netclaw's encrypted secret store. The prompt hides your paste and the command entered into shell history contains only a variable reference. Keep shell tracing disabled. Run this block separately for each customer, changing both `customer1` occurrences to the matching customer before pasting its credential.
 
 ```bash
 set +x
@@ -148,30 +154,53 @@ netclaw secrets set McpServers.customer1-netclaw.Headers.Authorization "Bearer $
 unset customer_credential
 ```
 
-Netclaw stores secret values encrypted in `~/.netclaw/config/secrets.json`; preserve `~/.netclaw/keys/` with it. Endpoint and transport metadata live in `~/.netclaw/config/netclaw.json`. Use Netclaw's protected secret-management equivalent for your deployment manager; do not put the bearer in a URL, Compose editor, plaintext configuration, chat, or committed example. A NetRatel profile saved in the MCP container is a separate consumer and supplies none of this configuration automatically.
+Netclaw stores secret values encrypted in `<Netclaw home>/config/secrets.json`; preserve that home's `keys/` with it. Endpoint and transport metadata live in `<Netclaw home>/config/netclaw.json`; the default home is `~/.netclaw`, unless `NETCLAW_HOME` selects another. Use Netclaw's protected secret-management equivalent for your deployment manager; do not put the bearer in a URL, Compose editor, plaintext configuration, chat, or committed example. A NetRatel profile saved in the MCP container is a separate consumer and supplies none of this configuration automatically.
 
 ## 4. Grant Netclaw tools, then verify customer boundaries
 
-**Netclaw machine:**
+**Inside each customer's daemon context:** for an unmanaged CLI daemon, apply connection changes with the supported lifecycle commands, then inspect its tools:
 
 ```sh
-netclaw daemon restart
+netclaw daemon stop
+netclaw daemon start
 netclaw mcp list
 netclaw mcp permissions
 ```
 
-The daemon must run for discovery and the permissions screen. New Netclaw entries start with empty tool grants. In **mcp permissions**, enable each intended server and grant `netratel_flows` for this initial read. Grant further tools only for intended operations; retain approval for operations requiring an operator decision. Netclaw's **Personal**, **Team** and **Public** audiences control who may use a tool. They are separate from NetRatel tenant grants. A shared audience that can select all three credentials can access all three customers through those entries; give customer users/sessions only their permitted server entries through Netclaw's supported audience/deployment isolation.
+For a supervised container or service, use its existing supervisor's restart operation instead of starting a second daemon. Check installed-version help: current upstream [CLI dispatch](https://github.com/netclaw-dev/netclaw/blob/aecbe73e1714e9acc2d68612e0cfa0d3abc4f33d/src/Netclaw.Cli/Program.cs) supports separate `daemon stop` and `daemon start` commands, even where older instructions mention a restart verb.
+
+The daemon must run for discovery and the permissions screen. **Personal defaults to allowing all MCP servers and tools**; new Team/Public entries start without tool grants. Inspect the actual configuration rather than assuming Personal is restricted. For the first read in this guide, merge the following into the customer's existing `config/netclaw.json`, preserving unrelated settings and any stricter approval policy. Substitute the matching customer name in that daemon only:
+
+```json
+{
+  "Tools": {
+    "AudienceProfiles": {
+      "Personal": {
+        "McpServersMode": "Allowlist",
+        "AllowedMcpServers": ["customer1-netclaw"],
+        "McpServerToolGrants": {
+          "customer1-netclaw": ["netratel_flows"]
+        }
+      }
+    }
+  }
+}
+```
+
+In **mcp permissions**, verify that Personal exposes only the intended server and tools. Grant further tools only for intended operations and retain approval for actions requiring an operator decision. Netclaw's audiences and approval policies are separate from NetRatel's tenant grants and operation policy; all must permit an actual call. See [upstream MCP permissions](https://netclaw.dev/guides/mcp-tool-permissions/) and [registration defaults](https://github.com/netclaw-dev/netclaw/blob/aecbe73e1714e9acc2d68612e0cfa0d3abc4f33d/src/Netclaw.Cli/Mcp/McpCommand.cs).
 
 Save, restart the daemon again to load permission changes, and inspect:
 
 ```sh
-netclaw daemon restart
+netclaw daemon stop
+netclaw daemon start
 netclaw mcp list
 netclaw mcp get customer1-netclaw
+netclaw mcp tools customer1-netclaw --audience personal
 netclaw status
 ```
 
-`mcp get` redacts credentials. **Connected (N tools)** establishes transport and catalog discovery. For each customer, call `netratel_flows` with `{"operation":"list","request":{"tenantId":7}}`, replacing `7` with that customer's approved tenant ID from the administrator's policy summary. A successful result can be an empty flow list. Then call the same operation with another customer's tenant ID using that connection: it must be denied without returning that customer's data. Repeat for all three connections, and after recreating the deployment. Record successful reads and expected denials separately. A prompt, connection name, catalog or generic HTTP 200 is insufficient evidence of tenant isolation.
+`mcp get` redacts credentials. **Connected (N tools)** establishes transport and catalog discovery. For each customer, call `netratel_flows` with `{"operation":"list","request":{"tenantId":7}}`, replacing `7` with that customer's approved tenant ID from the administrator's policy summary. A successful result can be an empty flow list. Then call the same operation with another customer's tenant ID using that connection: it must be denied without returning that customer's data. Also confirm that the customer's SignalR session has no other customer's MCP registration available; denial with one credential does not prove isolation if the assistant can select a second credential. Repeat for all three isolated daemons, and after recreating the deployment. Record successful reads and expected denials separately. A prompt, connection name, catalog or generic HTTP 200 is insufficient evidence of tenant isolation.
 
 Revoke one test credential in NetRatel and confirm that its connection can no longer execute; leave the other two active. Replace that credential securely if the connection should remain available. Removing local Netclaw configuration does not revoke its NetRatel credential.
 
