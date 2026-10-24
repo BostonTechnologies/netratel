@@ -11,6 +11,7 @@ $ExpectedSha256 = @@ARTIFACT_SHA256@@
 $ValidToUtc = @@VALID_TO_UTC@@
 $InstallAsService = @@INSTALL_AS_SERVICE@@
 $SilentInstall = @@SILENT_INSTALL@@
+$offlineRepair = $false
 $phase = 'preflight'
 $updateLock = $null
 $stageDir = $null
@@ -20,6 +21,92 @@ $serviceRegistry = "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName"
 $serviceControlExited = $true
 $trustedSids = @('S-1-5-18', 'S-1-5-32-544')
 $versionPattern = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$'
+
+function Assert-OfflineRepairInvocation([string]$RepairMode, [string]$LegacyAclMode) {
+    if ($RepairMode -notin @('Preview', 'Apply')) { throw 'Select Preview or Apply.' }
+    if ($LegacyAclMode) { throw 'Clear NetRatel_LEGACY_ACL_REPAIR before offline recovery; legacy ACL repair is a separate operation.' }
+}
+
+function Merge-InstalledSettings($Candidate, $Previous) {
+    if (-not $Candidate) { $Candidate = [pscustomobject]@{} }
+    foreach ($property in $Previous.PSObject.Properties) {
+        $current = $Candidate.PSObject.Properties[$property.Name]
+        $value = $property.Value
+        if ($current -and $current.Value -is [pscustomobject] -and $value -is [pscustomobject]) {
+            $value = Merge-InstalledSettings $current.Value $value
+        }
+        $Candidate | Add-Member -NotePropertyName $property.Name -NotePropertyValue $value -Force
+    }
+    return $Candidate
+}
+
+function Get-RegisteredProductServiceSid {
+    $registered = Get-CimInstance Win32_Service -Filter "Name='NetRatel.Client'" -OperationTimeoutSec 10
+    if (-not $registered) { return }
+    if ($registered.StartName -notin @('LocalSystem', 'NT AUTHORITY\SYSTEM') -or
+        $registered.PathName -notmatch '^\s*(?:"[A-Za-z]:[\\/][^"]*[\\/]NetRatel\.Client\.exe"|[A-Za-z]:[\\/]\S*[\\/]NetRatel\.Client\.exe)\s+--service\s*$') {
+        throw 'The registered product service identity is unsupported; refusing to extend installer trust.'
+    }
+    return ([Security.Principal.NTAccount]::new('NT SERVICE', 'NetRatel.Client')).Translate([Security.Principal.SecurityIdentifier]).Value
+}
+
+function Read-RepairArchive([string]$Path, [string]$Sha256) {
+    if ($Sha256 -notmatch '^[a-fA-F0-9]{64}$') { throw 'Repair requires the archive SHA256 from the completed publication.' }
+    $path = Get-CanonicalPath $Path
+    Assert-OwnedPath $path -File
+    $size = (Get-Item -LiteralPath $path).Length
+    if ($size -le 0 -or $size -gt 1GB -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $Sha256) {
+        throw 'Repair archive size or SHA256 verification failed.'
+    }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($path)
+    try {
+        $expected = "netratel-client-$Runtime/netratel-client-manifest.json"
+        $entries = @($archive.Entries | Where-Object { $_.FullName -ceq $expected -or $_.FullName -ceq 'netratel-client-manifest.json' })
+        if ($entries.Count -ne 1 -or $entries[0].Length -gt 16KB) { throw 'Repair archive must contain one bounded product manifest.' }
+        $reader = [IO.StreamReader]::new($entries[0].Open())
+        try { $manifest = $reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }
+        if ($manifest.schema -cne 'netratel.client.manifest.v1' -or $manifest.product -cne 'NetRatel.Client' -or
+            $manifest.runtimeId -cne $Runtime -or $manifest.version -cne $Version -or
+            $manifest.executable -cne 'NetRatel.Client.exe' -or $manifest.commitSha -notmatch '^[a-fA-F0-9]{40}$' -or
+            ($repairSourceRevision -and $manifest.commitSha -cne $repairSourceRevision)) {
+            throw 'Repair archive does not match this published recovery entry point.'
+        }
+        return [pscustomobject]@{ Path=$path; Sha256=$Sha256; Size=$size; Version=$manifest.version; Source=$manifest.commitSha }
+    }
+    finally { $archive.Dispose() }
+}
+
+function Compare-RepairVersion([string]$Candidate, [string]$Installed) {
+    if ($Candidate -notmatch $versionPattern -or $Installed -notmatch $versionPattern) { throw 'Recovery requires explicit valid product versions.' }
+    $left = ($Candidate -split '\+', 2)[0] -split '-', 2
+    $right = ($Installed -split '\+', 2)[0] -split '-', 2
+    $leftParts = $left[0].Split('.')
+    $rightParts = $right[0].Split('.')
+    for ($i = 0; $i -lt 3; $i++) {
+        $order = $leftParts[$i].Length.CompareTo($rightParts[$i].Length)
+        if (-not $order) { $order = [string]::CompareOrdinal($leftParts[$i], $rightParts[$i]) }
+        if ($order) { return [Math]::Sign($order) }
+    }
+    if ($left.Count -eq 1 -and $right.Count -eq 1) { return 0 }
+    if ($left.Count -eq 1) { return 1 }
+    if ($right.Count -eq 1) { return -1 }
+    $leftParts = $left[1].Split('.')
+    $rightParts = $right[1].Split('.')
+    for ($i = 0; $i -lt [Math]::Min($leftParts.Count, $rightParts.Count); $i++) {
+        $a = $leftParts[$i]; $b = $rightParts[$i]
+        $aNumeric = $a -match '^[0-9]+$'; $bNumeric = $b -match '^[0-9]+$'
+        if ($aNumeric -and $bNumeric) {
+            $a = $a.TrimStart('0'); $b = $b.TrimStart('0')
+            $order = $a.Length.CompareTo($b.Length)
+            if (-not $order) { $order = [string]::CompareOrdinal($a, $b) }
+        }
+        elseif ($aNumeric -ne $bNumeric) { $order = if ($aNumeric) { -1 } else { 1 } }
+        else { $order = [string]::CompareOrdinal($a, $b) }
+        if ($order) { return [Math]::Sign($order) }
+    }
+    return [Math]::Sign($leftParts.Count.CompareTo($rightParts.Count))
+}
 
 function Get-CanonicalPath([string]$Path) {
     if ($Path -notmatch '^[A-Za-z]:[\\/]') { throw 'Use an absolute local drive installation path.' }
@@ -102,6 +189,10 @@ function Assert-OwnedTree([string]$Path) {
 }
 
 function Write-PrivateFile([string]$Path, [string]$Text) {
+    Write-PrivateBytes $Path ([Text.UTF8Encoding]::new($false).GetBytes($Text))
+}
+
+function Write-PrivateBytes([string]$Path, [byte[]]$Bytes) {
     Assert-OwnedPath $Path -AllowMissing -File
     $acl = New-Object Security.AccessControl.FileSecurity
     $acl.SetAccessRuleProtection($true, $false)
@@ -111,8 +202,24 @@ function Write-PrivateFile([string]$Path, [string]$Text) {
     }
     $stream = [IO.FileStream]::new($Path, [IO.FileMode]::CreateNew, [Security.AccessControl.FileSystemRights]::FullControl,
         [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough, $acl)
-    try { $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Text); $stream.Write($bytes, 0, $bytes.Length) }
+    try { $stream.Write($Bytes, 0, $Bytes.Length) }
     finally { $stream.Dispose() }
+}
+
+function Save-RepairUpdateEvidence([string]$StateDirectory, [string]$RequestPath, [string]$ReadyPath, [string]$Destination) {
+    # Copy bytes under the activation lock before installer cutover writes state.json.
+    # Never move, clear or manufacture a native result, nonce or acknowledgement.
+    New-OwnedDirectory $Destination
+    $paths = @('state.json', 'request.json', 'ready.json', 'result.json', 'result-delivery.json', 'suspension.json')
+    foreach ($name in $paths) {
+        $source = Join-Path $StateDirectory $name
+        if ($name -eq 'request.json') { $source = $RequestPath }
+        if ($name -eq 'ready.json') { $source = $ReadyPath }
+        if (-not (Test-Path -LiteralPath $source)) { continue }
+        Assert-OwnedPath $source -File
+        if ((Get-Item -LiteralPath $source).Length -gt 1MB) { throw 'Existing update evidence exceeds the recovery size limit.' }
+        Write-PrivateBytes (Join-Path $Destination $name) ([IO.File]::ReadAllBytes($source))
+    }
 }
 
 # Fixed product roots only; no caller-supplied repair target or recursive ACL reset.
@@ -315,12 +422,17 @@ function Write-CutoverState($Record) {
     Move-Item -LiteralPath $temporary -Destination $path -Force
 }
 
+function Test-OwnedCutoverGuard($Registered, $Record) {
+    return $Record.startModeGuardActive -and $Registered -and
+        [string]$Registered.PathName -in @([string]$Record.previousPath, [string]$Record.activePath) -and
+        [string]$Record.intendedStartMode -in @('Auto', 'Manual') -and
+        $Registered.StartMode -in @('Disabled', [string]$Record.intendedStartMode)
+}
+
 function Restore-CutoverMode($Record) {
     if (-not $Record.startModeGuardActive) { return }
     $registered = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -OperationTimeoutSec 10
-    if (-not $registered -or [string]$registered.PathName -notin @([string]$Record.previousPath, [string]$Record.activePath) -or
-        [string]$Record.intendedStartMode -notin @('Auto', 'Manual') -or
-        $registered.StartMode -notin @('Disabled', [string]$Record.intendedStartMode)) {
+    if (-not (Test-OwnedCutoverGuard $registered $Record)) {
         throw 'The interrupted cutover service was changed by an administrator; inspect its preserved state before repair.'
     }
     $start = @{ Auto = 'auto'; Manual = 'demand' }[[string]$Record.intendedStartMode]
@@ -456,6 +568,7 @@ function Expand-Artifact([string]$ZipPath, [string]$StageDir) {
 }
 
 try {
+    if ($offlineRepair) { Assert-OfflineRepairInvocation $Mode $env:NetRatel_LEGACY_ACL_REPAIR }
     @@SEED_INITIALIZE@@
     if ($env:OS -ne 'Windows_NT' -or $PSVersionTable.PSVersion.Major -lt 5) { throw 'Run this installer using Windows PowerShell 5.1 or later on Windows.' }
     Initialize-ServiceController
@@ -463,18 +576,21 @@ try {
     if (-not ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run Windows PowerShell as Administrator.' }
     $trustedSids += $identity.User.Value
     $trustedSids += 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464' # TrustedInstaller service SID.
+    $productServiceSid = Get-RegisteredProductServiceSid
+    if ($productServiceSid) { $trustedSids += $productServiceSid }
     $administrators = Get-CimInstance Win32_Group -Filter "SID='S-1-5-32-544'" -OperationTimeoutSec 10
     $trustedSids += @(Get-CimAssociatedInstance -InputObject $administrators -Association Win32_GroupUser -ResultClassName Win32_UserAccount -OperationTimeoutSec 10 | Select-Object -ExpandProperty SID)
     if ($env:NetRatel_LEGACY_ACL_REPAIR) {
         Invoke-LegacyAclRepair $env:NetRatel_LEGACY_ACL_REPAIR
         if ($env:NetRatel_LEGACY_ACL_REPAIR -eq 'preview') { return }
     }
-    $ApiBase = Get-Origin $ApiBase
+    if (-not $offlineRepair) { $ApiBase = Get-Origin $ApiBase }
     if ($GatewayEndpoint) { $GatewayEndpoint = Get-Origin $GatewayEndpoint -Gateway }
     if ($Runtime -notin @('win-x64', 'win-arm64') -or ($Version -ne 'latest' -and $Version -notmatch $versionPattern) -or
-        $TenantId -le 0 -or $EnrollmentCode -match '[\r\n]' -or [string]::IsNullOrWhiteSpace($EnrollmentCode) -or
+        (-not $offlineRepair -and ($TenantId -le 0 -or $EnrollmentCode -match '[\r\n]' -or [string]::IsNullOrWhiteSpace($EnrollmentCode))) -or
         ($ExpectedSha256 -and $ExpectedSha256 -notmatch '^[a-fA-F0-9]{64}$')) { throw 'The installer request has an invalid runtime, version, tenant, grant, or checksum.' }
     $existingService = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -OperationTimeoutSec 10
+    if ($offlineRepair -and -not $existingService) { throw 'Offline repair requires an existing enrolled NetRatel.Client service.' }
     $previousEnvironment = @()
     $previousDir = $null
     $registeredRoot = $null
@@ -489,6 +605,7 @@ try {
         if ((Split-Path -Leaf $previousDir) -match $versionPattern -and (Split-Path -Leaf (Split-Path -Parent $previousDir)) -eq 'versions') { $registeredRoot = Split-Path -Parent (Split-Path -Parent $previousDir) }
         $previousEnvironment = @((Get-ItemProperty -LiteralPath $serviceRegistry).Environment | Where-Object { $_ -is [string] })
         if (-not (Test-Path -LiteralPath $previousExe -PathType Leaf)) {
+            if ($offlineRepair -and $Mode -eq 'Preview') { throw 'The registered executable is missing; preview will not mutate an interrupted cutover.' }
             $recoveryRoot = Resolve-PathSetting $env:NetRatel_ROOT @((Get-ServiceEnvironment 'NetRatel_UPDATE_ROOT'), $registeredRoot) (Join-Path $env:ProgramFiles 'NetRatel\Client') 'package root'
             $recoveryState = Resolve-PathSetting $env:NetRatel_STATE @((Get-ServiceEnvironment 'NetRatel_UPDATE_STATE'), (Get-ClientSetting 'Client__AutoUpdate__StateDirectory')) (Join-Path $env:ProgramData 'NetRatel\update') 'updater state'
             Repair-InterruptedPackageMove $recoveryRoot $recoveryState
@@ -515,6 +632,15 @@ try {
         }
     }
     $installedClient = if ($installedSettings.Client -and @($installedSettings.Client.PSObject.Properties).Count) { $installedSettings.Client } else { $installedSettings }
+    if ($offlineRepair) {
+        $ApiBase = Get-ClientSetting 'Client__ApiBaseUrl'
+        if (-not $ApiBase) { $ApiBase = $installedClient.ApiBaseUrl }
+        if (-not $ApiBase) { $ApiBase = $installedDefaults.Client.ApiBaseUrl }
+        if (-not $ApiBase) { $ApiBase = $installedDefaults.ApiBaseUrl }
+        $ApiBase = Get-Origin $ApiBase
+        $repairArtifact = Read-RepairArchive $ArchivePath $Sha256
+        if ((Compare-RepairVersion $Version $oldManifest.version) -lt 0) { throw 'Offline repair refuses a package downgrade.' }
+    }
     $configuredState = Get-ClientSetting 'Client__AutoUpdate__StateDirectory'
     if (-not $configuredState) { $configuredState = $installedClient.AutoUpdate.StateDirectory }
     if (-not $configuredState) { $configuredState = $installedDefaults.Client.AutoUpdate.StateDirectory }
@@ -523,11 +649,32 @@ try {
     if (-not $clientRequest) { $clientRequest = $installedClient.AutoUpdate.RequestPath }
     if (-not $clientRequest) { $clientRequest = $installedDefaults.Client.AutoUpdate.RequestPath }
     $updateRequest = Resolve-PathSetting '' @((Get-ServiceEnvironment 'NetRatel_UPDATE_REQUEST'), $clientRequest) (Join-Path $StateDir 'request.json') 'updater request'
+    $clientReady = Get-ClientSetting 'Client__AutoUpdate__ReadyPath'
+    if (-not $clientReady) { $clientReady = $installedClient.AutoUpdate.ReadyPath }
+    if (-not $clientReady) { $clientReady = $installedDefaults.Client.AutoUpdate.ReadyPath }
+    $updateReady = Resolve-PathSetting '' @($clientReady) (Join-Path $StateDir 'ready.json') 'updater readiness'
     $LogDir = Resolve-PathSetting $env:NetRatel_LOG_DIR @((Get-ServiceEnvironment 'NetRatel_CLIENT_LOG_DIR')) (Join-Path $env:ProgramData 'NetRatel\logs') 'client log'
     $VersionsDir = Join-Path $RootDir 'versions'
     $StagingDir = Join-Path $RootDir 'staging'
     $FailedDir = Join-Path $RootDir 'failed'
     $credentialDir = Join-Path $env:ProgramData 'NetRatel'
+    if ($offlineRepair) {
+        Assert-OwnedPath (Join-Path $credentialDir 'agent.dat') -File
+        foreach ($path in @($RootDir, $StateDir, $LogDir)) { Assert-OwnedPath $path -AllowMissing }
+        Assert-OwnedPath $updateRequest -AllowMissing -File
+        Assert-OwnedPath $updateReady -AllowMissing -File
+        if ($existingService.StartMode -notin @('Auto', 'Manual')) {
+            $guardPath = Join-Path $StateDir 'state.json'
+            Assert-OwnedPath $guardPath -File
+            $guard = Get-Content -LiteralPath $guardPath -Raw | ConvertFrom-Json
+            if (-not (Test-OwnedCutoverGuard $existingService $guard)) { throw 'Existing administrator suspension/start mode must be reconciled before repair.' }
+            Write-Host 'Recovery plan includes resuming the exact protected interrupted installer cutover under the updater lock.'
+        }
+        Write-Host "Recovery plan: installed=$($oldManifest.version); candidate=$Version; runtime=$Runtime; source=$($repairArtifact.Source); archiveSha256=$Sha256."
+        Write-Host 'Preserve the existing enrollment, service account, settings, pending outcomes and history; replace only the verified package and updater using the protected installer transaction.'
+        if ($Mode -eq 'Preview') { Write-Host 'Preview complete. No files, locks, services or ACLs changed.'; return }
+        if ($Mode -ne 'Apply') { throw 'Select Preview or Apply.' }
+    }
     New-OwnedDirectory $credentialDir
     foreach ($path in @($RootDir, $StateDir, $LogDir)) {
         if ($path -in @($env:ProgramFiles, $env:ProgramData, $env:SystemRoot, $credentialDir, [IO.Path]::GetPathRoot($path))) { throw 'Choose a product subdirectory, not a shared system directory.' }
@@ -567,6 +714,13 @@ try {
     New-OwnedDirectory $stageDir
     $zipPath = Join-Path $downloadDir 'client.zip'
     $phase = 'artifact verification'
+    if ($offlineRepair) {
+        $resolvedVersion = $repairArtifact.Version
+        $sha = $repairArtifact.Sha256
+        $size = $repairArtifact.Size
+        Copy-Item -LiteralPath $repairArtifact.Path -Destination $zipPath
+    }
+    else {
     Write-Host "Downloading requested version=$Version; API=$ApiBase (installer request)."
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     $request = [Net.HttpWebRequest]::Create("$ApiBase/api/v1/client-artifacts/$Runtime/$Version/onboarding-download")
@@ -598,6 +752,7 @@ try {
         finally { $output.Dispose(); $input.Dispose() }
     }
     finally { $response.Dispose() }
+    }
     if ((Get-Item -LiteralPath $zipPath).Length -ne $size -or (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash -ne $sha) { throw 'Artifact size or SHA-256 verification failed.' }
     Expand-Artifact $zipPath $stageDir
     $manifestName = 'netratel-client-manifest.json'
@@ -625,6 +780,14 @@ try {
         if (-not $previousDir) { $previousDir = $target }
     }
     $settingsPath = Join-Path $stageDir 'clientsettings.json'
+    if ($offlineRepair -and $installedDefaults) {
+        # Runtime precedence stays appsettings < clientsettings < service environment.
+        # Preserve operator values from either installed JSON file, including a
+        # separate gateway and update channel, while retaining new package defaults.
+        $defaultsPath = Join-Path $stageDir 'appsettings.json'
+        $candidateDefaults = if (Test-Path -LiteralPath $defaultsPath) { Get-Content -LiteralPath $defaultsPath -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
+        Merge-InstalledSettings $candidateDefaults $installedDefaults | ConvertTo-Json -Depth 32 | Set-Content -LiteralPath $defaultsPath -Encoding UTF8
+    }
     if ($previousDir -and (Test-Path -LiteralPath (Join-Path $previousDir 'clientsettings.json'))) {
         Assert-OwnedPath (Join-Path $previousDir 'clientsettings.json') -File
         Copy-Item -LiteralPath (Join-Path $previousDir 'clientsettings.json') -Destination $settingsPath -Force
@@ -634,6 +797,7 @@ try {
     $settings | ConvertTo-Json -Depth 32 | Set-Content -LiteralPath $settingsPath -Encoding UTF8
     $gatewaySource = 'API default'
     $effectiveGateway = $ApiBase
+    if ($offlineRepair -and $candidateDefaults.Gateway.Endpoint) { $effectiveGateway = Get-Origin $candidateDefaults.Gateway.Endpoint -Gateway; $gatewaySource = 'installed appsettings' }
     $preservedGateway = Get-ClientSetting 'Gateway__Endpoint'
     $preservedGatewaySource = $script:settingSource
     if ($settings.Gateway.Endpoint) { $effectiveGateway = Get-Origin $settings.Gateway.Endpoint -Gateway; $gatewaySource = 'installed settings' }
@@ -655,6 +819,7 @@ try {
         if ($existingService -and -not $InstallAsService) { throw 'A registered service owns this installation; use its service repair installer.' }
         if ($existingService) {
             if ($existingService.StartMode -notin @('Auto', 'Manual')) { throw 'The existing service is disabled by an administrator; reconcile its start mode before repair.' }
+            Save-RepairUpdateEvidence $StateDir $updateRequest $updateReady (Join-Path $FailedDir "repair-state-$attempt")
             $cutoverRecord = [pscustomobject]@{ state = 'guarding_cutover'; version = $resolvedVersion;
                 intendedStartMode = $existingService.StartMode; startModeGuardActive = $true;
                 previousPath = $existingService.PathName; activePath = $existingService.PathName;
@@ -675,8 +840,10 @@ try {
         if ($cutoverRecord) { $cutoverRecord.packageMovePending = $false; Write-CutoverState $cutoverRecord }
         $exe = Join-Path $target 'NetRatel.Client.exe'
         if ($InstallAsService) {
-            $enrollment = @{ schema = 'netratel.enroll.v1'; tenantId = [int]$TenantId; enrollmentCode = $EnrollmentCode; issuer = $ApiBase; createdAtUtc = [DateTimeOffset]::UtcNow.ToString('O'); validToUtc = $ValidToUtc } | ConvertTo-Json
-            Write-PrivateFile (Join-Path $target 'netratel.enroll.json') $enrollment
+            if (-not $offlineRepair) {
+                $enrollment = @{ schema = 'netratel.enroll.v1'; tenantId = [int]$TenantId; enrollmentCode = $EnrollmentCode; issuer = $ApiBase; createdAtUtc = [DateTimeOffset]::UtcNow.ToString('O'); validToUtc = $ValidToUtc } | ConvertTo-Json
+                Write-PrivateFile (Join-Path $target 'netratel.enroll.json') $enrollment
+            }
             $updaterSource = Join-Path $target 'updater\netratel-update.ps1'
             Assert-OwnedPath $updaterSource -File
             Assert-OwnedPath $updaterPath -AllowMissing -File

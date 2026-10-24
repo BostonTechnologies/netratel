@@ -428,7 +428,15 @@ public sealed record McpOperatorAccessRequest(
     bool TargetResolved = true,
     bool TargetEnabled = true,
     bool TargetOnline = true,
-    bool CapabilityAvailable = true);
+    bool CapabilityAvailable = true)
+{
+    /// <summary>
+    /// A development-wide policy mutation requires an independently assigned
+    /// development-wide parent. Its tenant-zero tuple alone also describes a
+    /// narrower control-plane target and must not widen that parent's authority.
+    /// </summary>
+    public bool RequiresDevelopmentEnvironmentPolicy { get; init; }
+}
 
 /// <summary>Safe, deterministic result of one authorization evaluation.</summary>
 public sealed record McpOperatorDecision(

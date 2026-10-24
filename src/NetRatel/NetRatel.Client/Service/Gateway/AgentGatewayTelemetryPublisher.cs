@@ -152,7 +152,7 @@ public sealed class AgentGatewayTelemetryPublisher(
                 ConnectionEpoch = session.ConnectionEpoch,
                 ConnectionId = session.ConnectionId.ToString("D"),
                 Sequence = 0,
-                Hello = new AgentTelemetryHello { AgentVersion = agentVersion, Capabilities = { "telemetry-rate-control-v1", ClientServicesLimits.Capability } }
+                Hello = new AgentTelemetryHello { AgentVersion = agentVersion, Capabilities = { "telemetry-rate-control-v1", ClientServicesLimits.Capability, ClientServicesLimits.RefreshCorrelationCapability } }
             }).ConfigureAwait(false);
             var admission = await accepted.Task.WaitAsync(streamToken).ConfigureAwait(false);
             if (!GatewayWireProtocol.HasAkkaAuthority(admission.TelemetryAuthority))

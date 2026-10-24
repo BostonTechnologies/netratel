@@ -202,6 +202,7 @@ public sealed class ClientServiceControlServiceTests
 
     private sealed class Router : IClientServicesRouter
     {
+        public Task<ClientServicesState> UpdateRefreshAsync(UpdateClientServicesRefresh message, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<ClientServicesState> GetSnapshotAsync(ClientKey client, CancellationToken cancellationToken) => Task.FromResult(new ClientServicesState(Key,
             1, 1, 1, new(Guid.NewGuid(), 1, 1, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
                 [new("worker.service", "Worker", ClientServicePlatform.LinuxSystemd, ClientServiceState.Running, "active", null, "loaded", "active", "running", "enabled", DateTimeOffset.UtcNow)]),

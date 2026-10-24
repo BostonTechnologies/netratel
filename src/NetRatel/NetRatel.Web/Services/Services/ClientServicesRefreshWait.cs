@@ -2,14 +2,20 @@ using NetRatel.Shared.Contracts.Services;
 
 namespace NetRatel.Web.Services.Services;
 
-/// <summary>Older clients do not echo request IDs: wait for subsequent inventory evidence, not a correlated response.</summary>
-public sealed class ClientServicesRefreshWait(ClientServicesReadModelDto? baseline, DateTimeOffset startedAt)
+/// <summary>Use exact persisted request outcomes when supported; legacy collections remain explicitly unattributed.</summary>
+public sealed class ClientServicesRefreshWait(ClientServicesReadModelDto? baseline, DateTimeOffset startedAt, Guid? requestId = null, bool correlationSupported = false)
 {
-    public DateTimeOffset Deadline { get; } = startedAt + ClientServicesLimits.MinimumRefreshInterval +
-        ClientServicesLimits.CollectionTimeout + ClientServicesLimits.AssemblyTimeout + TimeSpan.FromSeconds(15);
+    public DateTimeOffset Deadline { get; } = startedAt + ClientServicesLimits.RefreshTimeout;
 
     public string? Outcome(ClientServicesReadModelDto? model, DateTimeOffset now)
     {
+        if (correlationSupported)
+        {
+            var request = model?.RefreshRequests?.FirstOrDefault(item => item.RequestId == requestId);
+            if (request is { Outcome: not ClientServicesRefreshOutcome.Pending })
+                return $"Refresh {request.RequestId:D} finished: {request.Outcome}. {ClientServicesPresentation.Reason(request.ErrorCode)}".Trim();
+            return now >= Deadline ? $"Timed out waiting for the recorded outcome of refresh {requestId:D}. Available observations remain visible." : null;
+        }
         if (model is { Connected: false }) return "The client went offline while waiting for inventory.";
         if (model is { Connected: true, SupportsServices: false }) return "Services collection is unsupported by this client.";
         var attempt = InventoryAttempt(model);
@@ -52,7 +58,10 @@ public static class ClientServicesPresentation
         "systemd-query-partial" => "Some systemd service properties could not be collected.",
         "systemd-query-failed" => "Systemd service enumeration failed.",
         "systemd-unavailable" or "platform-unsupported" => "The operating system service collector is unavailable.",
-        "collection-timeout" or "assembly_timeout" => "Collection or inventory delivery timed out.",
+        "collection-timeout" or "assembly_timeout" or "refresh-timeout" => "Collection or inventory delivery timed out.",
+        "refresh-connection-ended" => "The telemetry connection ended before this refresh completed.",
+        "refresh-dispatch-failed" => "The refresh could not be queued to the client.",
+        "client-correlation-unsupported" => "The client cannot attribute this collection to the refresh request.",
         "collection-cancelled" => "The service collection was interrupted.",
         "collection-failed" => "The operating system service collection failed.",
         null or "" => "",

@@ -75,6 +75,9 @@ if [[ "$runtime" == linux-* ]]; then
   }
 fi
 if [[ "$runtime" == win-* ]]; then
+  grep -qx "netratel-client-${runtime}/updater/repair-windows-client.ps1" <<<"$entries" || {
+    echo "Windows Client archive is missing its supported recovery entry point." >&2; exit 1;
+  }
   grep -Eq "^netratel-client-${runtime}/NetRatel\.Client\.exe$" <<<"$entries" || {
     echo "Windows Client archive is missing its executable." >&2; exit 1;
   }
@@ -119,6 +122,10 @@ if [[ "$runtime" == linux-* ]]; then
       echo "Client archive repair utility differs from its source." >&2
       exit 1
     }
+fi
+if [[ "$runtime" == win-* ]]; then
+  python3 "$(dirname "${BASH_SOURCE[0]}")/prepare-windows-client-repair.py" \
+    --distribution "$extract_dir/netratel-client-${runtime}" --check
 fi
 if grep -rI -q -E -- '-----BEGIN ([A-Z ]*PRIVATE KEY|CERTIFICATE)|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}' "$extract_dir"; then
   echo "Client archive contains potential key material." >&2

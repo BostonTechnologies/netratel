@@ -82,7 +82,7 @@ jobs:
         run: bash tools/ci/run-fast-regressions.sh TestResults/fast
       - name: Retain fast regression receipts
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dotnet-test-results
           path: TestResults/fast
@@ -145,7 +145,7 @@ jobs:
             sha256sum *.tar.gz *.spdx.json *.nupkg > SHA256SUMS
           )
           tools/ci/verify-release-artifacts.sh --artifacts artifacts --version "$VERSION" --source-revision "$GITHUB_SHA"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: netratel-${{ needs.validate.outputs.version }}-linux-x64
           path: artifacts
@@ -180,13 +180,13 @@ jobs:
           ./tools/ci/test-windows-mcp-archive.ps1 -ArchivePath "artifacts/netratel-mcp-stdio-$env:VERSION-win-x64.zip" -Version $env:VERSION -SourceRevision $env:GITHUB_SHA -ReceiptPath TestResults/windows-mcp-smoke.json
       - name: Retain sanitized Windows smoke receipt
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-mcp-smoke-${{ needs.validate.outputs.version }}
           path: TestResults/windows-mcp-smoke.json
           if-no-files-found: warn
           retention-days: 14
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: netratel-mcp-stdio-${{ needs.validate.outputs.version }}-win-x64
           path: |
@@ -233,6 +233,7 @@ jobs:
         run: |
           dotnet restore src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --runtime "${{ matrix.runtime }}"
           dotnet publish src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --configuration Release --no-restore --runtime "${{ matrix.runtime }}" --self-contained true --output "artifacts/netratel-client-${{ matrix.runtime }}"
+          python3 tools/ci/prepare-windows-client-repair.py --distribution "artifacts/netratel-client-${{ matrix.runtime }}"
           cp LICENSE NOTICE "artifacts/netratel-client-${{ matrix.runtime }}/"
           python3 tools/ci/generate-runtime-sbom.py \
             --project-assets src/NetRatel/NetRatel.Client/obj/project.assets.json \
@@ -271,7 +272,7 @@ jobs:
             --runtime "${{ matrix.runtime }}" \
             --extension "${{ matrix.extension }}" \
             --integrity-only
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: netratel-client-${{ needs.validate.outputs.version }}-${{ matrix.runtime }}
           path: artifacts

@@ -1,0 +1,9 @@
+.operator-policy-page ::deep .policy-definition dl { display: grid; grid-template-columns: minmax(10rem, 1fr) minmax(0, 3fr); gap: .4rem 1rem; margin: 1rem 0; }
+.operator-policy-page ::deep .policy-definition dt { font-weight: 600; }
+.operator-policy-page ::deep .policy-definition dd { margin: 0; overflow-wrap: anywhere; }
+.operator-policy-page ::deep .policy-definition code { overflow-wrap: anywhere; }
+.operator-policy-page ::deep details summary { cursor: pointer; font-weight: 600; }
+@media (max-width: 600px) { .operator-policy-page ::deep .policy-definition dl { grid-template-columns: 1fr; } .operator-policy-page ::deep .policy-definition dd { margin-bottom: .5rem; } }
+
+.policy-credential-picker { display: flex; flex-direction: column; gap: .4rem; margin-top: 1rem; font-size: .875rem; }
+.policy-credential-picker select { min-height: 2.6rem; padding: .5rem; color: var(--mud-palette-text-primary); background: var(--mud-palette-surface); border: 1px solid var(--mud-palette-lines-inputs); border-radius: var(--mud-default-borderradius); }

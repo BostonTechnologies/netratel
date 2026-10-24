@@ -68,6 +68,7 @@ public sealed class AgentTelemetryGatewayV2Service(
         var supportsDynamicSampling = hello.Hello.Capabilities.Contains("telemetry-rate-control-v1", StringComparer.Ordinal);
         var supportsServices = servicesRouter is not null && watchPolicySource is not null &&
             hello.Hello.Capabilities.Contains(ClientServicesLimits.Capability, StringComparer.Ordinal);
+        var supportsRefreshCorrelation = supportsServices && hello.Hello.Capabilities.Contains(ClientServicesLimits.RefreshCorrelationCapability, StringComparer.Ordinal);
         var registrationId = Guid.NewGuid();
         // Durable ordering is reserved before a delayed local Register can be overtaken on another replica.
         var evidenceFence = monitoring is null ? null : await monitoring.ReserveEvidenceRegistrationAsync(client, connectionId,
@@ -78,8 +79,8 @@ public sealed class AgentTelemetryGatewayV2Service(
         try
         {
             registration = evidenceFence is not null
-                ? sessions.RegisterReserved(evidenceFence, supportsDynamicSampling, hello.Hello.AgentVersion, supportsServices)
-                : sessions.Register(client, connectionId, hello.ConnectionEpoch, supportsDynamicSampling, hello.Hello.AgentVersion, provisional: true, supportsServices);
+                ? sessions.RegisterReserved(evidenceFence, supportsDynamicSampling, hello.Hello.AgentVersion, supportsServices, supportsRefreshCorrelation)
+                : sessions.Register(client, connectionId, hello.ConnectionEpoch, supportsDynamicSampling, hello.Hello.AgentVersion, provisional: true, supportsServices, supportsRefreshCorrelation);
         }
         catch (AgentGatewayRegistrationFencedException exception)
         {
@@ -115,6 +116,7 @@ public sealed class AgentTelemetryGatewayV2Service(
                 {
                     var accepted = new TelemetryConnectAccepted { TelemetryAuthority = "akka", MaximumInFlightFrames = 1 };
                     if (registration.SupportsServices) accepted.AcceptedCapabilities.Add(ClientServicesLimits.Capability);
+                    if (registration.SupportsRefreshCorrelation) accepted.AcceptedCapabilities.Add(ClientServicesLimits.RefreshCorrelationCapability);
                     await registration.EnqueueReliableAsync(new GatewayTelemetryFrame
                     {
                         ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
@@ -173,7 +175,7 @@ public sealed class AgentTelemetryGatewayV2Service(
                         ulong acceptedSequence;
                         if (isServices)
                         {
-                            var chunk = ClientServicesGatewayMapper.Map(envelope, client, timeProvider.GetUtcNow());
+                            var chunk = ClientServicesGatewayMapper.Map(envelope, client, timeProvider.GetUtcNow(), registration.RegistrationId);
                             var servicesResult = await servicesRouter!.RecordAsync(new(chunk), cancellationToken).ConfigureAwait(false);
                             if (servicesResult.Disposition != ClientServicesMessageDisposition.Accepted)
                                 throw new RpcException(new Status(servicesResult.Disposition switch

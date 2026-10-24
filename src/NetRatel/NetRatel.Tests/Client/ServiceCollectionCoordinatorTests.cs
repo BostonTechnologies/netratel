@@ -15,14 +15,44 @@ public sealed class ServiceCollectionCoordinatorTests
         using var coordinator = new ServiceCollectionCoordinator(collector, time);
         coordinator.BeginStream();
         coordinator.StartDueCollection(CancellationToken.None);
-        coordinator.ApplyPolicy(Policy(time, 1, [], Guid.NewGuid())).Should().BeTrue();
+        var requestId = Guid.NewGuid();
+        coordinator.ApplyPolicy(Policy(time, 1, [], requestId)).Should().BeTrue();
         collector.Complete(ServiceSnapshotKind.Inventory);
         await coordinator.PendingCollection!;
         coordinator.TryTakeCompleted(out var result).Should().BeTrue();
         result!.Status.Should().Be(ServiceCollectionStatus.Complete);
+        result.RefreshRequestId.Should().Be(requestId);
         time.Advance(ClientServicesLimits.MinimumRefreshInterval);
         coordinator.StartDueCollection(CancellationToken.None);
         collector.InventoryCalls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RefreshAfterInventoryCompleted_WaitsForTheNextCollectionWithoutClaimingTheReadyResult()
+    {
+        var time = new ManualTimeProvider();
+        var collector = new RecordingCollector(time);
+        using var coordinator = new ServiceCollectionCoordinator(collector, time);
+        coordinator.BeginStream();
+        coordinator.StartDueCollection(CancellationToken.None);
+        collector.Complete(ServiceSnapshotKind.Inventory);
+        await coordinator.PendingCollection!;
+
+        time.Advance(TimeSpan.FromSeconds(1));
+        var requestId = Guid.NewGuid();
+        coordinator.ApplyPolicy(Policy(time, 1, [], requestId)).Should().BeTrue();
+        coordinator.TryTakeCompleted(out var preceding).Should().BeTrue();
+        preceding!.RefreshRequestId.Should().BeNull("the OS collection completed before this request arrived");
+        coordinator.StartDueCollection(CancellationToken.None);
+        collector.InventoryCalls.Should().Be(1);
+
+        time.Advance(ClientServicesLimits.MinimumRefreshInterval - TimeSpan.FromSeconds(1));
+        coordinator.StartDueCollection(CancellationToken.None);
+        collector.InventoryCalls.Should().Be(2);
+        collector.Complete(ServiceSnapshotKind.Inventory);
+        await coordinator.PendingCollection!;
+        coordinator.TryTakeCompleted(out var requested).Should().BeTrue();
+        requested!.RefreshRequestId.Should().Be(requestId);
     }
 
     [Fact]
@@ -118,6 +148,7 @@ public sealed class ServiceCollectionCoordinatorTests
         using var coordinator = new ServiceCollectionCoordinator(collector, time);
         coordinator.BeginStream();
         coordinator.StartDueCollection(CancellationToken.None);
+        coordinator.ApplyPolicy(Policy(time, 1, [], Guid.NewGuid())).Should().BeTrue();
         coordinator.BeginStream();
         collector.LastCancellation.IsCancellationRequested.Should().BeTrue();
         coordinator.StartDueCollection(CancellationToken.None);
@@ -128,6 +159,10 @@ public sealed class ServiceCollectionCoordinatorTests
         stale.Should().BeNull();
         coordinator.StartDueCollection(CancellationToken.None);
         collector.InventoryCalls.Should().Be(2);
+        collector.Complete(ServiceSnapshotKind.Inventory);
+        await coordinator.PendingCollection!;
+        coordinator.TryTakeCompleted(out var fresh).Should().BeTrue();
+        fresh!.RefreshRequestId.Should().BeNull("an old registration request is not retried on reconnect");
     }
 
     [Fact]

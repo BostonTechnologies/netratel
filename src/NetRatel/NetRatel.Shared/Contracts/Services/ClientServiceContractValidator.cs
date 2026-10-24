@@ -54,7 +54,8 @@ public static class ClientServiceContractValidator
         if (result is null || result.CollectionId == Guid.Empty ||
             result.Kind is not (ServiceSnapshotKind.Inventory or ServiceSnapshotKind.Watch) ||
             result.Status is not (ServiceCollectionStatus.Complete or ServiceCollectionStatus.Partial or ServiceCollectionStatus.Error or ServiceCollectionStatus.Unsupported) ||
-            result.ObservedAtUtc == default || result.Services is null || !IsValidErrorCode(result.ErrorCode))
+            result.ObservedAtUtc == default || result.Services is null || !IsValidErrorCode(result.ErrorCode) ||
+            result.RefreshRequestId == Guid.Empty || result.Kind == ServiceSnapshotKind.Watch && result.RefreshRequestId is not null)
         {
             error = "invalid_collection";
             return false;

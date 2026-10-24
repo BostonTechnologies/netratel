@@ -17,6 +17,122 @@ namespace NetRatel.Tests.Infrastructure;
 public sealed class WindowsInstallerTemplateTests
 {
     [Fact]
+    public async Task OfflineRecoveryRejectsChangedArchiveIdentityAndPreservesNativeEvidenceBytes()
+    {
+        await WithFixture(async root =>
+        {
+            var archivePath = Path.Combine(root, "candidate.zip");
+            using (var archive = ZipFile.Open(archivePath, ZipArchiveMode.Create))
+            {
+                var entry = archive.CreateEntry("netratel-client-win-x64/netratel-client-manifest.json");
+                await using var writer = new StreamWriter(entry.Open());
+                await writer.WriteAsync(JsonSerializer.Serialize(new
+                {
+                    schema = "netratel.client.manifest.v1", product = "NetRatel.Client", runtimeId = "win-x64",
+                    version = "1.2.3-beta.10", executable = "NetRatel.Client.exe", commitSha = new string('a', 40)
+                }));
+            }
+            var state = Path.Combine(root, "state");
+            Directory.CreateDirectory(state);
+            byte[] outcome = [0xEF, 0xBB, 0xBF, .. System.Text.Encoding.UTF8.GetBytes("{\"attemptId\":\"synthetic-original-attempt\",\"state\":\"Accepted\"}\r\n")];
+            await File.WriteAllBytesAsync(Path.Combine(state, "result.json"), outcome);
+            await File.WriteAllTextAsync(Path.Combine(state, "result-delivery.json"), "{\"deliveryState\":\"pending\"}");
+            var result = await RunFunctions(root, """
+                $Runtime = 'win-x64'; $Version = '1.2.3-beta.10'; $repairSourceRevision = 'a' * 40
+                function Get-CanonicalPath { param($Path) [IO.Path]::GetFullPath($Path) }
+                function Assert-OwnedPath { param($Path,[switch]$File) if(-not (Test-Path -LiteralPath $Path)){throw 'Required fixture file missing.'} }
+                function New-OwnedDirectory { param($Path) [void][IO.Directory]::CreateDirectory($Path) }
+                function Write-PrivateBytes { param($Path,[byte[]]$Bytes) [IO.File]::WriteAllBytes($Path,$Bytes) }
+                $archive = $args[1]; $state = $args[2]; $saved = $args[3]
+                $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+                $observed = Read-RepairArchive $archive $hash
+                if($observed.Version -cne $Version){throw 'Expected candidate was not accepted.'}
+                $rejected = $false
+                try { Read-RepairArchive $archive ('0' * 64) | Out-Null } catch { $rejected = $true }
+                if(-not $rejected){throw 'Incorrect archive digest was accepted.'}
+                $repairSourceRevision = 'b' * 40
+                $rejected = $false
+                try { Read-RepairArchive $archive $hash | Out-Null } catch { $rejected = $true }
+                if(-not $rejected){throw 'Another source at the same version was accepted.'}
+                $repairSourceRevision = 'a' * 40; $Runtime = 'win-arm64'
+                $rejected = $false
+                try { Read-RepairArchive $archive $hash | Out-Null } catch { $rejected = $true }
+                if(-not $rejected){throw 'Wrong runtime was accepted.'}
+                $ready = Join-Path $state 'custom-ready.json'
+                [IO.File]::WriteAllText($ready,'{"attemptId":"synthetic-original-attempt"}')
+                Save-RepairUpdateEvidence $state (Join-Path $state 'request.json') $ready $saved
+                if([IO.File]::ReadAllText((Join-Path $saved 'ready.json')) -cne [IO.File]::ReadAllText($ready)){throw 'Configured readiness evidence was not retained.'}
+                """, archivePath, state, Path.Combine(root, "retained"));
+            result.ExitCode.Should().Be(0, result.Output);
+            (await File.ReadAllBytesAsync(Path.Combine(state, "result.json"))).Should().Equal(outcome);
+            (await File.ReadAllBytesAsync(Path.Combine(root, "retained", "result.json"))).Should().Equal(outcome);
+            (await File.ReadAllTextAsync(Path.Combine(state, "result-delivery.json"))).Should().Be("{\"deliveryState\":\"pending\"}");
+        });
+    }
+
+    [Fact]
+    public async Task OfflineRecoveryVersionOrderAndRegisteredServiceBoundaryAreEnforced()
+    {
+        await WithFixture(async root =>
+        {
+            var result = await RunFunctions(root, """
+                $versionPattern = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$'
+                Assert-OfflineRepairInvocation 'Preview' ''
+                $rejected = $false
+                try { Assert-OfflineRepairInvocation 'Preview' 'apply' } catch { $rejected = $true }
+                if(-not $rejected){throw 'An inherited ACL mutation was admitted into read-only preview.'}
+                foreach($pair in @(@('1.2.3-beta.10','1.2.3-beta.9'), @('1.2.3','1.2.3-rc.9'), @('10.0.0','9.99.99'), @('1.2.3-rc','1.2.3-2'))) {
+                    if((Compare-RepairVersion $pair[0] $pair[1]) -ne 1 -or (Compare-RepairVersion $pair[1] $pair[0]) -ne -1){throw 'Recovery version order was wrong.'}
+                }
+                if((Compare-RepairVersion '1.2.3+first' '1.2.3+second') -ne 0){throw 'Build metadata changed precedence.'}
+                $guard = [pscustomobject]@{startModeGuardActive=$true;previousPath='"C:\owned\NetRatel.Client.exe" --service';activePath='"C:\owned\next\NetRatel.Client.exe" --service';intendedStartMode='Manual'}
+                $registered = [pscustomobject]@{PathName=$guard.previousPath;StartMode='Disabled'}
+                if(-not (Test-OwnedCutoverGuard $registered $guard)){throw 'An exact interrupted cutover cannot be recovered.'}
+                $guard.startModeGuardActive=$false
+                if(Test-OwnedCutoverGuard $registered $guard){throw 'Administrator-disabled service was treated as an installer fence.'}
+                $guard.startModeGuardActive=$true; $registered.PathName='"C:\other\NetRatel.Client.exe" --service'
+                if(Test-OwnedCutoverGuard $registered $guard){throw 'Changed service registration matched another cutover.'}
+                $script:service = $null
+                function Get-CimInstance { param($ClassName,$Filter,$OperationTimeoutSec) $script:service }
+                if(Get-RegisteredProductServiceSid){throw 'An absent service acquired trust.'}
+                foreach($registration in @(
+                    [pscustomobject]@{StartName='other-account';PathName='"C:\owned\NetRatel.Client.exe" --service'},
+                    [pscustomobject]@{StartName='LocalSystem';PathName='"C:\owned\foreign.exe" --service'},
+                    [pscustomobject]@{StartName='LocalSystem';PathName='"C:\owned\NetRatel.Client.exe" --service -Command unexpected'})) {
+                    $script:service = $registration; $rejected = $false
+                    try { Get-RegisteredProductServiceSid | Out-Null } catch { $rejected = $_.Exception.Message -like '*unsupported*' }
+                    if(-not $rejected){throw 'Unverified service registration reached SID resolution.'}
+                }
+                """);
+            result.ExitCode.Should().Be(0, result.Output);
+        });
+    }
+
+    [Fact]
+    public async Task OfflineRecoveryPreservesSplitGatewayAndInstalledDefaultsWithRuntimePrecedence()
+    {
+        await WithFixture(async root =>
+        {
+            var result = await RunFunctions(root, """
+                $candidate = '{"Client":{"ApiBaseUrl":"https://new.example","AutoUpdate":{"Channel":"Stable","ActivationTimeoutSeconds":120}},"Gateway":{"Endpoint":""}}' | ConvertFrom-Json
+                $installed = '{"Client":{"ApiBaseUrl":"https://api.example","AutoUpdate":{"Channel":"Preview"}},"Gateway":{"Endpoint":"https://gateway.example"}}' | ConvertFrom-Json
+                $merged = Merge-InstalledSettings $candidate $installed
+                [IO.File]::WriteAllText((Join-Path $args[1] 'appsettings.json'), ($merged | ConvertTo-Json -Depth 32))
+                [IO.File]::WriteAllText((Join-Path $args[1] 'clientsettings.json'), '{"Client":{"AutoUpdate":{"ActivationTimeoutSeconds":47}}}')
+                """, root);
+            result.ExitCode.Should().Be(0, result.Output);
+            var defaults = ClientConfigurationLoader.BuildPackagedDefaults(root, null);
+            var options = ClientConfigurationLoader.Load(defaults, null, root, []);
+            options.ApiBaseUrl.Should().Be("https://api.example");
+            options.AutoUpdate.Channel.Should().Be("Preview");
+            options.AutoUpdate.ActivationTimeoutSeconds.Should().Be(47);
+            using var retained = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(root, "appsettings.json")));
+            retained.RootElement.GetProperty("Gateway").GetProperty("Endpoint").GetString().Should().Be("https://gateway.example");
+            retained.RootElement.GetProperty("Client").GetProperty("AutoUpdate").GetProperty("ActivationTimeoutSeconds").GetInt32().Should().Be(120);
+        });
+    }
+
+    [Fact]
     public async Task UpdaterInterruptedRollback_KeepsRegisteredExecutablePresent_AndRestoresGuardOnRerun()
     {
         await WithFixture(async root =>

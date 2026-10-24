@@ -26,14 +26,18 @@ public sealed class ClientServicesContractTests
         var json = JsonSerializer.SerializeToNode(state)!.AsObject();
         json.Remove("LastPartialInventory");
         json.Remove("LatestInventoryAttempt");
+        json.Remove("RefreshRequests");
         json["LastCompleteInventory"]!.AsObject().Remove("Status");
         json["LastCompleteInventory"]!.AsObject().Remove("ErrorCode");
         json["LatestAttempt"]!.AsObject().Remove("IsFinal");
+        json["LatestAttempt"]!.AsObject().Remove("RefreshRequestId");
         var loaded = json.Deserialize<ClientServicesState>()!;
         loaded.LastCompleteInventory!.Status.Should().Be(ServiceCollectionStatus.Complete);
         loaded.LastCompleteInventory.Services.Single().Name.Should().Be(state.LastCompleteInventory.Services.Single().Name);
         loaded.LastPartialInventory.Should().BeNull();
         loaded.LatestInventoryAttempt.Should().BeNull();
+        loaded.RefreshRequests.Should().BeNull();
+        loaded.LatestAttempt!.RefreshRequestId.Should().BeNull();
         loaded.LatestAttempt!.IsFinal.Should().BeFalse("historical Partial does not establish collection completion");
     }
 

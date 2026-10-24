@@ -59,7 +59,8 @@ public sealed record ServiceCollectionResult(
     DateTimeOffset ObservedAtUtc,
     IReadOnlyList<ClientServiceObservation> Services,
     string? ErrorCode = null,
-    ulong WatchPolicyRevision = 0);
+    ulong WatchPolicyRevision = 0,
+    Guid? RefreshRequestId = null);
 
 public sealed record ClientServicesSnapshotDto(
     Guid CollectionId,
@@ -81,7 +82,9 @@ public sealed record ServiceCollectionAttemptDto(
     DateTimeOffset ReceivedAtUtc,
     ulong WatchPolicyRevision,
     string? ErrorCode = null,
-    bool IsFinal = false);
+    bool IsFinal = false,
+    Guid? RefreshRequestId = null,
+    Guid? RegistrationId = null);
 
 /// <summary>Server-selected exact names. Expiration stops stale watches; it never runs service control.</summary>
 public sealed record ClientServiceWatchPolicyDto(
@@ -108,7 +111,9 @@ public sealed record ClientServicesReadModelDto(
     ClientServicesSnapshotDto? LastPartialInventory = null,
     ServiceCollectionAttemptDto? LatestInventoryAttempt = null,
     bool SupportsServiceControl = false,
-    bool CanControlServices = false);
+    bool CanControlServices = false,
+    bool SupportsRefreshCorrelation = false,
+    IReadOnlyList<ClientServicesRefreshRequestDto>? RefreshRequests = null);
 
 public enum ClientServicesRefreshStatus
 {
@@ -121,12 +126,41 @@ public enum ClientServicesRefreshStatus
 public sealed record ClientServicesRefreshResponse(
     ClientServicesRefreshStatus Status,
     Guid? RequestId,
-    DateTimeOffset? RetryAfterUtc = null);
+    DateTimeOffset? RetryAfterUtc = null,
+    bool CorrelationSupported = false);
+
+public enum ClientServicesRefreshOutcome
+{
+    Pending = 0,
+    Complete = 1,
+    Partial = 2,
+    Error = 3,
+    Unsupported = 4,
+    Offline = 5,
+    TimedOut = 6,
+    Unattributed = 7
+}
+
+/// <summary>Server admission and terminal evidence for one request on one telemetry registration.</summary>
+public sealed record ClientServicesRefreshRequestDto(
+    Guid RequestId,
+    Guid ConnectionId,
+    long ConnectionEpoch,
+    Guid RegistrationId,
+    DateTimeOffset RequestedAtUtc,
+    DateTimeOffset DeadlineUtc,
+    bool CorrelationSupported,
+    ClientServicesRefreshOutcome Outcome = ClientServicesRefreshOutcome.Pending,
+    Guid? CollectionId = null,
+    DateTimeOffset? CompletedAtUtc = null,
+    string? ErrorCode = null);
 
 /// <summary>Generic collection/transport bounds; the existing 16 KiB gRPC limit remains unchanged.</summary>
 public static class ClientServicesLimits
 {
     public const string Capability = "client-services-v1";
+    public const string RefreshCorrelationCapability = "client-services-refresh-v1";
+    public const int MaximumRefreshHistory = 128;
     public const int MaximumChunkPayloadBytes = 12 * 1024 - 1;
     public const int MaximumInventoryBytes = 1024 * 1024;
     public const int MaximumChunks = 128;
@@ -145,5 +179,6 @@ public static class ClientServicesLimits
     public static readonly TimeSpan CollectionTimeout = TimeSpan.FromSeconds(10);
     public static readonly TimeSpan AssemblyTimeout = TimeSpan.FromSeconds(30);
     public static readonly TimeSpan MinimumRefreshInterval = TimeSpan.FromSeconds(15);
+    public static readonly TimeSpan RefreshTimeout = MinimumRefreshInterval + CollectionTimeout + AssemblyTimeout + TimeSpan.FromSeconds(15);
     public static readonly TimeSpan MaximumPolicyLifetime = TimeSpan.FromHours(1);
 }

@@ -545,6 +545,7 @@ public sealed class MonitoringApiTests
         public int Collections { get; private set; }
         public Func<Task>? BeforePolicyUpdate { get; set; }
         public Task<ClientServicesMessageResult> RecordAsync(RecordClientServicesChunk input, CancellationToken ct) { Collections++; throw new NotSupportedException(); }
+        public Task<ClientServicesState> UpdateRefreshAsync(UpdateClientServicesRefresh message, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<ClientServicesState> GetSnapshotAsync(ClientKey client, CancellationToken ct) => Task.FromResult(_states.GetValueOrDefault(client) ?? ClientServicesState.Empty(client));
         public async Task<ClientServicesState> UpdateWatchPolicyAsync(ClientServiceWatchPolicy policy, CancellationToken ct)
         {

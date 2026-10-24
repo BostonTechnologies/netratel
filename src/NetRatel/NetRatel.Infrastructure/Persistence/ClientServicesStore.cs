@@ -29,7 +29,7 @@ public sealed class ClientServicesStore(IServiceScopeFactory scopeFactory, TimeP
         ValidateClient(candidate.Client);
         if (expectedRevision < 0 || candidate.Revision != checked(expectedRevision + 1))
             throw new ArgumentException("A cache write must advance its expected revision once.", nameof(candidate));
-        if (candidate.ConnectionEpoch < 0 || candidate.WatchedServices.Count > ClientServicesLimits.MaximumWatchServices ||
+        if (candidate.ConnectionEpoch < 0 || candidate.RefreshRequests?.Count > ClientServicesLimits.MaximumRefreshHistory || candidate.WatchedServices.Count > ClientServicesLimits.MaximumWatchServices ||
             candidate.MonitoredServiceNames.Count > ClientServicesLimits.MaximumWatchServices ||
             candidate.LastCompleteInventory?.Services.Count > ClientServicesLimits.MaximumServices ||
             candidate.LastPartialInventory?.Services.Count > ClientServicesLimits.MaximumServices ||
@@ -66,7 +66,8 @@ public sealed class ClientServicesStore(IServiceScopeFactory scopeFactory, TimeP
         // Equal cursor alone is not proof of an offline policy write: timeout,
         // inventory and watch payload mutations also require committed authority.
         var requiresOwner = advancesIngress ||
-            !(IsPolicyOnlyUpdate(current, candidate) || IsTimeoutOnlyUpdate(current, candidate, timeProvider.GetUtcNow()));
+            !(IsPolicyOnlyUpdate(current, candidate) || IsTimeoutOnlyUpdate(current, candidate, timeProvider.GetUtcNow()) ||
+              IsRefreshOnlyUpdate(current, candidate, timeProvider.GetUtcNow()));
         var concurrentConflict = false;
         // Accepted ingress locks the committed owner before its snapshot CAS.
         // Reservation is counter-only and never participates in business authority.
@@ -112,6 +113,7 @@ public sealed class ClientServicesStore(IServiceScopeFactory scopeFactory, TimeP
             await LoadAsync(client, cancellationToken).ConfigureAwait(false) ?? ClientServicesState.Empty(client));
 
     private static bool IsPolicyOnlyUpdate(ClientServicesState current, ClientServicesState candidate) =>
+        SamePhysicalValue(current.RefreshRequests, candidate.RefreshRequests) &&
         candidate.WatchPolicyRevision > current.WatchPolicyRevision &&
         candidate.ConnectionId == current.ConnectionId && candidate.ConnectionEpoch == current.ConnectionEpoch &&
         candidate.LastAcceptedSequence == current.LastAcceptedSequence &&
@@ -125,7 +127,9 @@ public sealed class ClientServicesStore(IServiceScopeFactory scopeFactory, TimeP
 
     private static bool IsTimeoutOnlyUpdate(ClientServicesState current, ClientServicesState candidate, DateTimeOffset now)
     {
-        if (candidate.ConnectionId != current.ConnectionId || candidate.ConnectionEpoch != current.ConnectionEpoch ||
+        var completedAt = candidate.RefreshRequests?.FirstOrDefault(request => request.RequestId == current.LatestAttempt?.RefreshRequestId)?.CompletedAtUtc ?? now;
+        if (completedAt > now || !SamePhysicalValue((current.LatestAttempt is { } latest ? ClientServicesRefreshLifecycle.AssemblyTimedOut(current, latest, completedAt) : current).RefreshRequests, candidate.RefreshRequests) ||
+            candidate.ConnectionId != current.ConnectionId || candidate.ConnectionEpoch != current.ConnectionEpoch ||
             candidate.LastAcceptedSequence != current.LastAcceptedSequence ||
             candidate.WatchPolicyRevision != current.WatchPolicyRevision ||
             !candidate.MonitoredServiceNames.SequenceEqual(current.MonitoredServiceNames, StringComparer.Ordinal) ||
@@ -155,6 +159,10 @@ public sealed class ClientServicesStore(IServiceScopeFactory scopeFactory, TimeP
         }
         return true;
     }
+
+    private static bool IsRefreshOnlyUpdate(ClientServicesState current, ClientServicesState candidate, DateTimeOffset now) =>
+        SamePhysicalValue(current, candidate with { Revision = current.Revision, RefreshRequests = current.RefreshRequests }) &&
+        ClientServicesRefreshLifecycle.IsValidServerTransition(current, candidate, now);
 
     private static bool MatchesName(ClientServiceObservation observation, string name) =>
         string.Equals(observation.Name, name, observation.Platform == ClientServicePlatform.Windows

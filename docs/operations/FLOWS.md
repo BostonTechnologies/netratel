@@ -55,7 +55,7 @@ The initial bounds are eight nodes, seven edges, 32 KiB canonical graph, 8 KiB e
 
 ## VeloxDev compatibility and notices
 
-NetRatel pins the actual published `VeloxDev.Core` and `VeloxDev.Razor` packages to **8.0.0**. The published source metadata points to upstream commit `784efa2f28a25568a9d37a263035b92d3873f068`. Core's assets target net5.0 and Razor's assets target net6.0; the host targets .NET 10 InteractiveServer with MudBlazor 9.11.0. Compatibility is checked by the assembled stage's normal build and browser tests.
+NetRatel pins the actual published `VeloxDev.Core` and `VeloxDev.Razor` packages to **10.0.1**. The published source metadata points to upstream commit `f2ac8a79de0448bcb29398a5ec77b13a5985b922`. Both packages supply the net8.0 assets selected by the .NET 10 InteractiveServer host with MudBlazor 9.11.0. Compatibility is checked by the assembled stage's normal build and focused runtime/editor tests; browser acceptance covers native gestures and geometry.
 
 The adapter uses real native create/connect/move commands and waits for the matching completion event before replaying a following edge. Library command task completion alone does not guarantee model mutation has finished. Replacement canvases get unique instance IDs and keyed component lifetimes; callbacks and JS imports are fenced by cancellation and the selected tenant/flow generation. Captured geometry is canonical finite data. The backend adapter reconstructs only the reviewed node types, including the bounded action group, and uses the actual Core compiler/runtime; it never calls the library's arbitrary-type deserializer.
 

@@ -28,7 +28,6 @@ public sealed class ClientServicesCoordinator(
     IAgentCommandGatewaySessionRegistry? commands = null)
 {
     private readonly object _gate = new();
-    private readonly Dictionary<ClientKey, (DateTimeOffset At, Guid Request)> _refreshes = [];
     private readonly Dictionary<ClientKey, int> _viewers = [];
     private int _viewerCount;
 
@@ -39,11 +38,25 @@ public sealed class ClientServicesCoordinator(
         var session = sessions.GetStatus(client);
         var connected = session.Connected && await MatchesPresenceAsync(client, session, cancellationToken).ConfigureAwait(false) &&
             sessions.GetStatus(client).RegistrationId == session.RegistrationId;
+        foreach (var pending in ClientServicesRefreshLifecycle.Requests(state).Where(request => request.Outcome == ClientServicesRefreshOutcome.Pending).ToArray())
+        {
+            if (connected && pending.RegistrationId == session.RegistrationId && pending.ConnectionId == session.ConnectionId &&
+                pending.ConnectionEpoch == session.ConnectionEpoch) continue;
+            var active = await presence.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
+            // A replica without the telemetry child cannot declare another replica's request offline.
+            var replaced = active.Client == client && active.IsAuthoritative &&
+                (active.Status == ClientPresenceStatus.Offline || active.ConnectionEpoch > pending.ConnectionEpoch ||
+                 active.ConnectionEpoch == pending.ConnectionEpoch && active.ConnectionId is { } currentConnection && currentConnection != pending.ConnectionId);
+            if (!replaced && !(connected && session.RegistrationId != pending.RegistrationId)) continue;
+            state = await router.UpdateRefreshAsync(new(client, pending with { Outcome = ClientServicesRefreshOutcome.Offline,
+                CompletedAtUtc = timeProvider.GetUtcNow(), ErrorCode = "refresh-connection-ended" }), cancellationToken).ConfigureAwait(false);
+        }
         return new(client.TenantId, client.AgentId, state.LastCompleteInventory, state.LatestAttempt,
             state.WatchedServices, state.MonitoredServiceNames, state.WatchPolicyRevision,
             connected, connected && session.SupportsServices, timeProvider.GetUtcNow(), state.Revision,
             state.LastPartialInventory, state.LatestInventoryAttempt,
-            connected && commands?.SupportsServiceControl(client) == true);
+            connected && commands?.SupportsServiceControl(client) == true, false, connected && session.SupportsRefreshCorrelation,
+            ClientServicesRefreshLifecycle.Requests(state));
     }
 
     public async Task<ClientServiceWatchPolicyDto> GetPolicyAsync(ClientKey client, CancellationToken cancellationToken)
@@ -60,42 +73,53 @@ public sealed class ClientServicesCoordinator(
         if (!status.Connected || !await MatchesPresenceAsync(client, status, cancellationToken).ConfigureAwait(false))
             return new(ClientServicesRefreshStatus.Offline, null);
         if (!status.SupportsServices) return new(ClientServicesRefreshStatus.Unsupported, null);
-        Guid request;
-        lock (_gate)
-        {
-            var now = timeProvider.GetUtcNow();
-            if (_refreshes.TryGetValue(client, out var previous) && now < previous.At.Add(ClientServicesLimits.MinimumRefreshInterval))
-                return new(ClientServicesRefreshStatus.Throttled, previous.Request, previous.At.Add(ClientServicesLimits.MinimumRefreshInterval));
-            if (_refreshes.Count >= 4096)
-            {
-                foreach (var key in _refreshes.Where(entry => entry.Value.At < now.AddHours(-1)).Select(entry => entry.Key).ToArray()) _refreshes.Remove(key);
-                if (_refreshes.Count >= 4096) return new(ClientServicesRefreshStatus.Throttled, null, now.Add(ClientServicesLimits.MinimumRefreshInterval));
-            }
-            request = Guid.NewGuid();
-            _refreshes[client] = (now, request);
-        }
+        var policy = await GetPolicyAsync(client, cancellationToken).ConfigureAwait(false);
+        await router.UpdateWatchPolicyAsync(new(client, policy), cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!await MatchesPresenceAsync(client, status, cancellationToken).ConfigureAwait(false) ||
+            sessions.GetStatus(client).RegistrationId != status.RegistrationId || status.RegistrationId is not Guid registrationId ||
+            status.ConnectionId is not Guid connectionId || status.ConnectionEpoch is not long epoch)
+            return new(ClientServicesRefreshStatus.Offline, null);
+
+        // Reconcile a previous registration before admission; its request can never move to this connection.
+        await ReadAsync(client, cancellationToken).ConfigureAwait(false);
+        var now = timeProvider.GetUtcNow();
+        var request = new ClientServicesRefreshRequestDto(Guid.NewGuid(), connectionId, epoch, registrationId,
+            now, now + ClientServicesLimits.RefreshTimeout, status.SupportsRefreshCorrelation);
+        var state = await router.UpdateRefreshAsync(new(client, request), cancellationToken).ConfigureAwait(false);
+        var admitted = ClientServicesRefreshLifecycle.Requests(state).LastOrDefault()
+            ?? throw new InvalidOperationException("Services refresh admission was not persisted.");
+        if (admitted.RequestId != request.RequestId)
+            return new(ClientServicesRefreshStatus.Throttled, admitted.RequestId,
+                admitted.Outcome == ClientServicesRefreshOutcome.Pending ? admitted.DeadlineUtc : admitted.RequestedAtUtc + ClientServicesLimits.MinimumRefreshInterval,
+                admitted.CorrelationSupported);
+
         var published = false;
         try
         {
-            var policy = await GetPolicyAsync(client, cancellationToken).ConfigureAwait(false);
-            await router.UpdateWatchPolicyAsync(new(client, policy), cancellationToken).ConfigureAwait(false);
-            cancellationToken.ThrowIfCancellationRequested();
             if (!await MatchesPresenceAsync(client, status, cancellationToken).ConfigureAwait(false) ||
-                sessions.GetStatus(client).RegistrationId != status.RegistrationId || status.RegistrationId is not Guid registrationId)
-                return new(ClientServicesRefreshStatus.Offline, null);
-            published = sessions.TryPublishServicesPolicy(client, policy with { RefreshRequestId = request }, registrationId);
-            if (published) return new(ClientServicesRefreshStatus.Requested, request);
+                sessions.GetStatus(client).RegistrationId != registrationId)
+                return new(ClientServicesRefreshStatus.Offline, request.RequestId, CorrelationSupported: request.CorrelationSupported);
+            published = sessions.TryPublishServicesPolicy(client, policy with { RefreshRequestId = request.RequestId }, registrationId);
+            if (published) return new(ClientServicesRefreshStatus.Requested, request.RequestId, CorrelationSupported: request.CorrelationSupported);
             var current = sessions.GetStatus(client);
-            if (current.Connected && current.SupportsServices)
-                return new(ClientServicesRefreshStatus.Throttled, null, timeProvider.GetUtcNow().Add(ClientServicesLimits.MinimumRefreshInterval));
-            return new(current.Connected ? ClientServicesRefreshStatus.Unsupported : ClientServicesRefreshStatus.Offline, null);
+            return new(current.Connected ? ClientServicesRefreshStatus.Throttled : ClientServicesRefreshStatus.Offline,
+                request.RequestId, now + ClientServicesLimits.MinimumRefreshInterval, request.CorrelationSupported);
         }
         finally
         {
             if (!published)
             {
-                lock (_gate)
-                    if (_refreshes.TryGetValue(client, out var pending) && pending.Request == request) _refreshes.Remove(client);
+                // The admission already committed. Preserve an explicit noncollection result even if the caller disconnected.
+                using var completion = new CancellationTokenSource(ClientServicesLimits.CollectionTimeout);
+                var current = sessions.GetStatus(client);
+                var offline = !current.Connected || current.RegistrationId != registrationId;
+                await router.UpdateRefreshAsync(new(client, request with
+                {
+                    Outcome = offline ? ClientServicesRefreshOutcome.Offline : ClientServicesRefreshOutcome.Error,
+                    CompletedAtUtc = timeProvider.GetUtcNow(),
+                    ErrorCode = offline ? "refresh-connection-ended" : "refresh-dispatch-failed"
+                }), completion.Token).ConfigureAwait(false);
             }
         }
     }

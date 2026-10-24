@@ -38,6 +38,42 @@ ROOT = Path(__file__).resolve().parents[2]
 SCANNER = ROOT / "tools/ci/verify-product-version.py"
 
 
+class WindowsClientRecoveryPackagingTests(unittest.TestCase):
+    def test_entrypoint_is_generated_from_validated_manifest_and_canonical_installer(self):
+        generator = module("prepare-windows-client-repair")
+        manifest = {"schema": "netratel.client.manifest.v1", "product": "NetRatel.Client",
+                    "runtimeId": "win-x64", "version": "1.2.3-beta.10", "commitSha": "a" * 40,
+                    "executable": "NetRatel.Client.exe"}
+        content = generator.render(manifest)
+        self.assertNotIn("@@", content)
+        self.assertIn("$offlineRepair = $true", content)
+        self.assertIn("$repairSourceRevision = '" + "a" * 40 + "'", content)
+        self.assertIn("[ValidateSet('Preview','Apply')]", content)
+        self.assertIn("function Save-RepairUpdateEvidence", content)
+        with tempfile.TemporaryDirectory() as directory:
+            distribution = Path(directory)
+            (distribution / "netratel-client-manifest.json").write_text(json.dumps(manifest))
+            command = [sys.executable, str(ROOT / "tools/ci/prepare-windows-client-repair.py"),
+                       "--distribution", directory]
+            subprocess.run(command, check=True, capture_output=True)
+            subprocess.run(command + ["--check"], check=True, capture_output=True)
+            entrypoint = distribution / "updater/repair-windows-client.ps1"
+            entrypoint.write_text(entrypoint.read_text().replace("$offlineRepair = $true", "$offlineRepair = $false"))
+            changed = subprocess.run(command + ["--check"], capture_output=True, text=True)
+            self.assertNotEqual(0, changed.returncode)
+            self.assertIn("differs", changed.stderr)
+
+    def test_manifest_cannot_inject_powershell_or_an_unpublished_source(self):
+        generator = module("prepare-windows-client-repair")
+        manifest = {"schema": "netratel.client.manifest.v1", "product": "NetRatel.Client",
+                    "runtimeId": "win-x64", "version": "1.2.3", "commitSha": "a" * 40,
+                    "executable": "NetRatel.Client.exe"}
+        for name, value in (("version", "1.2.3'; unexpected"), ("commitSha", "unknown"),
+                            ("runtimeId", "linux-x64"), ("executable", "another.exe")):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                generator.render({**manifest, name: value})
+
+
 class CampaignPreflightTests(unittest.TestCase):
     def setUp(self):
         spec = importlib.util.spec_from_file_location("campaign_preflight", ROOT / "tools/testing/mcp-campaign-preflight.py")

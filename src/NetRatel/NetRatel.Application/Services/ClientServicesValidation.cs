@@ -37,6 +37,6 @@ public static class ClientServicesValidation
 
         return ClientServiceContractValidator.TryValidateResult(new ServiceCollectionResult(
             chunk.CollectionId, chunk.Kind, chunk.Status, chunk.ObservedAtUtc, chunk.Services,
-            chunk.ErrorCode, chunk.WatchPolicyRevision), out error);
+            chunk.ErrorCode, chunk.WatchPolicyRevision, chunk.RefreshRequestId), out error);
     }
 }

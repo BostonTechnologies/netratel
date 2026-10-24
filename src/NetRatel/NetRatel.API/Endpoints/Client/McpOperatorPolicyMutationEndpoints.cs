@@ -6,14 +6,14 @@ using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.API.Middleware;
 using NetRatel.Application.Operations;
+using NetRatel.Shared.Operations;
 
 namespace NetRatel.API.Endpoints.Client;
 
 /// <summary>
-/// Delegated, two-stage creation of an operator policy. The caller must first
-/// obtain a plan for the exact target-bound draft, then submit the same draft
-/// with the server-issued plan and idempotency credentials. This route never
-/// accepts a forwarded user bearer token.
+/// Reviewed, two-stage operator policy lifecycle. Native MCP requests require
+/// signed delegation; the account adapter requires current application authority.
+/// Both bind the exact target and payload to durable confirmation and idempotency.
 /// </summary>
 public static class McpOperatorPolicyMutationEndpoints
 {
@@ -28,10 +28,29 @@ public static class McpOperatorPolicyMutationEndpoints
 
     public static IEndpointRouteBuilder MapMcpOperatorPolicyMutationEndpoints(this IEndpointRouteBuilder app)
     {
-        var group = app.MapGroup("/api/v2/mcp/operator/policy")
+        MapMutations(app.MapGroup("/api/v2/mcp/operator/policy")
             .WithTags("MCP Operator Policy Mutation")
-            .RequireAuthorization("M2MOnly");
+            .RequireAuthorization("M2MOnly"));
+        return app;
+    }
 
+    /// <summary>Account requests use the same reviewed lifecycle without a fabricated MCP delegation.</summary>
+    public static IEndpointRouteBuilder MapMcpOperatorAccountPolicyMutationEndpoints(this IEndpointRouteBuilder app)
+    {
+        var group = app.MapGroup("/api/v2/mcp-operator/policies/manage")
+            .WithTags("MCP Operator Administration")
+            .RequireAuthorization("McpOperatorPolicyAdmin")
+            .WithMetadata(new AccountPolicyMutation());
+        group.MapGet("/self", (HttpContext http, IHostEnvironment environment) =>
+            TryAccountContext(http, environment, out var context)
+                ? Results.Ok(new { subject = context!.Principal.Subject, environment = context.Environment })
+                : Results.Forbid());
+        MapMutations(group, includeTargetProfileMutations: false);
+        return app;
+    }
+
+    private static void MapMutations(RouteGroupBuilder group, bool includeTargetProfileMutations = true)
+    {
         group.MapPost("/create/preview", async (
             PreviewMcpOperatorPolicyCreateRequest request,
             HttpContext http,
@@ -136,7 +155,7 @@ public static class McpOperatorPolicyMutationEndpoints
             if (admission.FailureCode is { } confirmationFailure)
                 return Failure(confirmationFailure, target.TenantId, target.AgentId, context.CorrelationId);
             if (admission.IsReplay)
-                return await ReplayAsync(admission, administration, target, context, cancellationToken).ConfigureAwait(false);
+                return await ReplayAsync(admission, administration, target, context, request.Policy, cancellationToken).ConfigureAwait(false);
             if (!admission.IsNewDispatch || admission.IdempotencyId is not { } idempotencyId)
                 return Failure("confirmation_plan_invalid", target.TenantId, target.AgentId, context.CorrelationId);
 
@@ -146,7 +165,7 @@ public static class McpOperatorPolicyMutationEndpoints
                     decision, context, target, payloadHash, CreateOperation, authorization, administration,
                     mutationToken => administration.CreateAsync(request.Policy, context.Principal.Subject, mutationToken),
                     cancellationToken).ConfigureAwait(false);
-                await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, created.PolicyId.ToString("D"), CancellationToken.None).ConfigureAwait(false);
+                await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, PolicyCreateResultReference(created), CancellationToken.None).ConfigureAwait(false);
                 return Results.Created(
                     $"/api/v2/mcp/operator/policy/policies/{created.PolicyId:D}",
                     new McpOperatorPolicyCreateResult(created, false, context.CorrelationId));
@@ -228,23 +247,24 @@ public static class McpOperatorPolicyMutationEndpoints
             .ProducesProblem(StatusCodes.Status404NotFound)
             .ProducesProblem(StatusCodes.Status409Conflict);
 
-        group.MapPost("/target-profile/preview", PreviewTargetProfileAsync)
-            .Produces<McpOperatorPolicyMutationPreview>(StatusCodes.Status200OK)
-            .ProducesProblem(StatusCodes.Status400BadRequest)
-            .ProducesProblem(StatusCodes.Status401Unauthorized)
-            .ProducesProblem(StatusCodes.Status403Forbidden)
-            .ProducesProblem(StatusCodes.Status404NotFound)
-            .ProducesProblem(StatusCodes.Status409Conflict);
+        if (includeTargetProfileMutations)
+        {
+            group.MapPost("/target-profile/preview", PreviewTargetProfileAsync)
+                .Produces<McpOperatorPolicyMutationPreview>(StatusCodes.Status200OK)
+                .ProducesProblem(StatusCodes.Status400BadRequest)
+                .ProducesProblem(StatusCodes.Status401Unauthorized)
+                .ProducesProblem(StatusCodes.Status403Forbidden)
+                .ProducesProblem(StatusCodes.Status404NotFound)
+                .ProducesProblem(StatusCodes.Status409Conflict);
 
-        group.MapPost("/target-profile/confirm", ConfirmTargetProfileAsync)
-            .Produces<McpOperatorTargetProfileMutationResult>(StatusCodes.Status200OK)
-            .ProducesProblem(StatusCodes.Status400BadRequest)
-            .ProducesProblem(StatusCodes.Status401Unauthorized)
-            .ProducesProblem(StatusCodes.Status403Forbidden)
-            .ProducesProblem(StatusCodes.Status404NotFound)
-            .ProducesProblem(StatusCodes.Status409Conflict);
-
-        return app;
+            group.MapPost("/target-profile/confirm", ConfirmTargetProfileAsync)
+                .Produces<McpOperatorTargetProfileMutationResult>(StatusCodes.Status200OK)
+                .ProducesProblem(StatusCodes.Status400BadRequest)
+                .ProducesProblem(StatusCodes.Status401Unauthorized)
+                .ProducesProblem(StatusCodes.Status403Forbidden)
+                .ProducesProblem(StatusCodes.Status404NotFound)
+                .ProducesProblem(StatusCodes.Status409Conflict);
+        }
     }
 
     private static async Task<IResult> PreviewTargetProfileAsync(
@@ -750,21 +770,70 @@ public static class McpOperatorPolicyMutationEndpoints
         IMcpOperatorPolicyAdministration administration,
         McpOperatorPolicyMutationTarget target,
         McpOperatorPolicyMutationContext context,
+        McpOperatorPolicyDraft draft,
         CancellationToken cancellationToken)
     {
         if (admission.Outcome == McpOperatorIdempotencyOutcome.Pending)
             return Failure("idempotency_pending", target.TenantId, target.AgentId, context.CorrelationId, StatusCodes.Status409Conflict);
-        if (admission.Outcome != McpOperatorIdempotencyOutcome.Succeeded ||
-            !Guid.TryParse(admission.ResultReference, out var policyId))
+        if (admission.Outcome != McpOperatorIdempotencyOutcome.Succeeded)
         {
             return Failure("idempotency_failed", target.TenantId, target.AgentId, context.CorrelationId, StatusCodes.Status409Conflict);
         }
 
-        var created = await administration.GetAsync(policyId, cancellationToken).ConfigureAwait(false);
-        return created is null
+        var parts = admission.ResultReference?.Split(':');
+        var legacy = Guid.TryParse(admission.ResultReference, out var policyId);
+        if (!legacy && (parts is not { Length: 7 } || parts[0] != "policy-create" || !Guid.TryParse(parts[1], out policyId)))
+            return Failure("idempotency_replay_unavailable", target.TenantId, target.AgentId, context.CorrelationId, StatusCodes.Status409Conflict);
+        var current = await administration.GetAsync(policyId, cancellationToken).ConfigureAwait(false);
+        if (current is null || current.Environment != context.Environment ||
+            !TryBindTarget(context, current.TargetSelector, out var currentTarget, out _) || currentTarget != target)
+            return Failure("idempotency_replay_unavailable", target.TenantId, target.AgentId, context.CorrelationId, StatusCodes.Status409Conflict);
+
+        // Identifier-only receipts predate retained creation metadata. They are
+        // exact only while the original version remains unchanged; never relabel
+        // a later definition as the accepted create result.
+        if (legacy)
+            return current.Version == 1 && current.LifecycleState == McpOperatorPolicyLifecycleState.Active && current.DisabledAtUtc is null
+                ? Results.Ok(new McpOperatorPolicyCreateResult(current, true, context.CorrelationId))
+                : Failure("idempotency_replay_unavailable", target.TenantId, target.AgentId, context.CorrelationId, StatusCodes.Status409Conflict);
+
+        return !TryReadPolicyCreateResult(parts!, current.PolicyId, draft, out var original)
             ? Failure("idempotency_replay_unavailable", target.TenantId, target.AgentId, context.CorrelationId, StatusCodes.Status409Conflict)
-            : Results.Ok(new McpOperatorPolicyCreateResult(created, true, context.CorrelationId));
+            : Results.Ok(new McpOperatorPolicyCreateResult(original!, true, context.CorrelationId));
     }
+
+    private static string PolicyCreateResultReference(McpOperatorPolicy policy) =>
+        string.Create(CultureInfo.InvariantCulture,
+            $"policy-create:{policy.PolicyId:D}:{policy.Version}:{policy.CreatedAtUtc.UtcTicks}:{policy.ExpiresAtUtc?.UtcTicks ?? 0}:{policy.ReviewByUtc?.UtcTicks ?? 0}:{Convert.ToBase64String(Encoding.UTF8.GetBytes(policy.CreatedBy))}");
+
+    private static bool TryReadPolicyCreateResult(string[] parts, Guid policyId, McpOperatorPolicyDraft draft,
+        out McpOperatorPolicy? original)
+    {
+        original = null;
+        if (!long.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out var version) || version != 1 ||
+            !TryUtcTicks(parts[3], out var createdAt) || createdAt == 0 ||
+            !TryUtcTicks(parts[4], out var expiresAt) || !TryUtcTicks(parts[5], out var reviewBy)) return false;
+        string actor;
+        try { actor = Encoding.UTF8.GetString(Convert.FromBase64String(parts[6])); }
+        catch (FormatException) { return false; }
+        if (string.IsNullOrWhiteSpace(actor) || actor.Length > 256 || actor.Any(char.IsControl)) return false;
+
+        // The original normalized definition comes only from the exact draft
+        // authenticated by the consumed plan. Persisted receipt metadata retains
+        // creation identity and timestamp precision independently of later edits.
+        original = new(policyId, draft.Name.Trim(), draft.Environment, draft.Effect, draft.Priority,
+            draft.PrincipalSelector with { Value = draft.PrincipalSelector.Value.Trim() },
+            draft.TargetSelector with { ClientTag = draft.TargetSelector.ClientTag?.Trim() },
+            draft.TargetClassification, draft.OperationFamily, string.IsNullOrWhiteSpace(draft.Operation) ? null : draft.Operation.Trim(),
+            draft.Constraints, new DateTimeOffset(createdAt, TimeSpan.Zero), actor,
+            expiresAt == 0 ? null : new DateTimeOffset(expiresAt, TimeSpan.Zero),
+            reviewBy == 0 ? null : new DateTimeOffset(reviewBy, TimeSpan.Zero), null, null, version,
+            string.IsNullOrWhiteSpace(draft.AuditReference) ? null : draft.AuditReference.Trim());
+        return true;
+    }
+
+    private static bool TryUtcTicks(string value, out long ticks) =>
+        long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out ticks) && ticks >= 0 && ticks <= DateTimeOffset.MaxValue.UtcTicks;
 
     private static async Task<IResult?> TryReplayMutationAsync(
         McpOperatorConfirmationRequest request,
@@ -1156,7 +1225,10 @@ public static class McpOperatorPolicyMutationEndpoints
             TargetResolved: true,
             TargetEnabled: true,
             TargetOnline: true,
-            CapabilityAvailable: true);
+            CapabilityAvailable: true)
+        {
+            RequiresDevelopmentEnvironmentPolicy = target.Kind == McpOperatorTargetSelectorKind.DevelopmentEnvironment
+        };
         // Creating an initial profile is the reviewed bootstrap operation.
         // A policy mutation for an exact agent must already have that profile.
         if (tenantVisible && target.AgentId is not null && profile is null && mutationOperation != UpsertTargetProfileOperation)
@@ -1202,6 +1274,12 @@ public static class McpOperatorPolicyMutationEndpoints
     {
         context = null;
         failure = null;
+        if (http.GetEndpoint()?.Metadata.GetMetadata<AccountPolicyMutation>() is not null)
+        {
+            if (TryAccountContext(http, environment, out context)) return true;
+            failure = "delegated_identity_required";
+            return false;
+        }
         if (!http.TryGetMcpOperatorDelegation(out var delegation) || delegation is null)
         {
             failure = "delegated_identity_required";
@@ -1260,6 +1338,39 @@ public static class McpOperatorPolicyMutationEndpoints
         return true;
     }
 
+    private static bool TryAccountContext(HttpContext http, IHostEnvironment environment,
+        out McpOperatorPolicyMutationContext? context)
+    {
+        context = null;
+        // The route's effective-access policy rechecks the current account assignment on
+        // every phase. Credentials and service tokens cannot enter this account adapter.
+        if (http.User.Identity?.IsAuthenticated != true ||
+            !http.User.HasClaim(claim => claim.Type == "netratel_principal_id" && !string.IsNullOrWhiteSpace(claim.Value)) ||
+            http.User.HasClaim(claim => claim.Type == "netratel_integration_credential_id") ||
+            http.User.HasClaim("token_use", "netratel_service") || http.User.HasClaim("auth_mode", "service") ||
+            !McpOperatorDelegationIdentityFactory.TryCreate(http.User, out var identity) || identity is null)
+            return false;
+        var selectedEnvironment = environment.IsDevelopment() ? McpOperatorEnvironment.Development
+            : environment.IsProduction() ? McpOperatorEnvironment.Production : (McpOperatorEnvironment?)null;
+        if (selectedEnvironment is null) return false;
+        // Translate the already-authorized application permission into the shared
+        // policy engine's role/scope vocabulary. Parent policies still bound all targets
+        // and operations, and their current versions are re-evaluated at confirmation.
+        var roles = identity.Roles.ToHashSet(StringComparer.Ordinal);
+        roles.Add(PolicyAdministratorRole);
+        var scopes = identity.Scopes.ToHashSet(StringComparer.Ordinal);
+        scopes.Add(RequiredScope);
+        context = new McpOperatorPolicyMutationContext(selectedEnvironment.Value,
+            new McpOperatorPrincipal(identity.Subject, identity.ClientId, identity.AuthorizedParty,
+                identity.Groups.ToHashSet(StringComparer.Ordinal), roles, scopes, "netratel-web"),
+            "netratel-web", "netratel-web-policy-administration",
+            selectedEnvironment == McpOperatorEnvironment.Development ? "dev" : "prod",
+            http.TraceIdentifier, Guid.NewGuid().ToString("N"), null, null) { SignedInAccount = true };
+        return true;
+    }
+
+    private sealed record AccountPolicyMutation;
+
     private static bool TryBindTarget(
         McpOperatorPolicyMutationContext context,
         McpOperatorPolicyDraft? draft,
@@ -1299,7 +1410,8 @@ public static class McpOperatorPolicyMutationEndpoints
         }
 
         var delegatedTenantId = isControlPlane ? (int?)null : selector.TenantId;
-        if (context.DelegatedTenantId != delegatedTenantId || context.DelegatedAgentId != agentId)
+        if (!context.SignedInAccount &&
+            (context.DelegatedTenantId != delegatedTenantId || context.DelegatedAgentId != agentId))
         {
             failure = "delegated_identity_invalid";
             return false;
@@ -1549,7 +1661,10 @@ internal sealed record McpOperatorPolicyMutationContext(
     string CorrelationId,
     string RequestId,
     int? DelegatedTenantId,
-    Guid? DelegatedAgentId);
+    Guid? DelegatedAgentId)
+{
+    public bool SignedInAccount { get; init; }
+}
 
 internal readonly record struct McpOperatorPolicyMutationTarget(
     int TenantId,

@@ -4,7 +4,7 @@ using VeloxDev.WorkflowSystem;
 
 namespace NetRatel.Web.Services.Flows;
 
-/// <summary>Canonical NetRatel DTOs are translated to reviewed Core8 models. The editor cannot execute nodes.</summary>
+/// <summary>Canonical NetRatel DTOs are translated to reviewed Velox models. The editor cannot execute nodes.</summary>
 public sealed class FlowCanvasAdapter : IAsyncDisposable
 {
     public event Action? Changed;

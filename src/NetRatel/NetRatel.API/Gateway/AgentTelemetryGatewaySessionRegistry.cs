@@ -19,6 +19,10 @@ public interface IAgentTelemetryGatewaySessionRegistry
         Register(client, connectionId, connectionEpoch, supportsDynamicSampling, agentVersion);
     AgentTelemetryGatewaySessionRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch, bool supportsDynamicSampling, string agentVersion, bool provisional, bool supportsServices) =>
         Register(client, connectionId, connectionEpoch, supportsDynamicSampling, agentVersion, provisional);
+    AgentTelemetryGatewaySessionRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch, bool supportsDynamicSampling, string agentVersion, bool provisional, bool supportsServices, bool supportsRefreshCorrelation) =>
+        Register(client, connectionId, connectionEpoch, supportsDynamicSampling, agentVersion, provisional, supportsServices);
+    AgentTelemetryGatewaySessionRegistration RegisterReserved(MonitoringEvidenceFence fence, bool supportsDynamicSampling, string agentVersion, bool supportsServices, bool supportsRefreshCorrelation) =>
+        RegisterReserved(fence, supportsDynamicSampling, agentVersion, supportsServices);
     AgentTelemetryGatewaySessionRegistration RegisterReserved(MonitoringEvidenceFence fence, bool supportsDynamicSampling, string agentVersion, bool supportsServices) =>
         throw new InvalidOperationException("durable_evidence_registration_required");
     bool IsPresentedRegistration(MonitoringEvidenceFence fence) => false;
@@ -40,6 +44,7 @@ public sealed record AgentTelemetryGatewaySessionStatus(
     long? ConnectionEpoch)
 {
     public bool SupportsServices { get; init; }
+    public bool SupportsRefreshCorrelation { get; init; }
     public Guid? ConnectionId { get; init; }
     public Guid? RegistrationId { get; init; }
     public long RegistrationOrdinal { get; init; }
@@ -72,24 +77,30 @@ public sealed class AgentTelemetryGatewaySessionRegistry : IAgentTelemetryGatewa
     public AgentTelemetryGatewaySessionRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch, bool supportsDynamicSampling, string agentVersion, bool provisional)
         => Register(client, connectionId, connectionEpoch, supportsDynamicSampling, agentVersion, provisional, supportsServices: false);
 
-    public AgentTelemetryGatewaySessionRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch, bool supportsDynamicSampling, string agentVersion, bool provisional, bool supportsServices)
+    public AgentTelemetryGatewaySessionRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch, bool supportsDynamicSampling, string agentVersion, bool provisional, bool supportsServices) =>
+        Register(client, connectionId, connectionEpoch, supportsDynamicSampling, agentVersion, provisional, supportsServices, false);
+
+    public AgentTelemetryGatewaySessionRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch, bool supportsDynamicSampling, string agentVersion, bool provisional, bool supportsServices, bool supportsRefreshCorrelation)
     {
         return RegisterCore(client, connectionId, connectionEpoch, supportsDynamicSampling, agentVersion, supportsServices,
-            provisional, Guid.NewGuid(), 0);
+            provisional, Guid.NewGuid(), 0, supportsRefreshCorrelation);
     }
 
-    public AgentTelemetryGatewaySessionRegistration RegisterReserved(MonitoringEvidenceFence fence, bool supportsDynamicSampling, string agentVersion, bool supportsServices)
+    public AgentTelemetryGatewaySessionRegistration RegisterReserved(MonitoringEvidenceFence fence, bool supportsDynamicSampling, string agentVersion, bool supportsServices) =>
+        RegisterReserved(fence, supportsDynamicSampling, agentVersion, supportsServices, false);
+
+    public AgentTelemetryGatewaySessionRegistration RegisterReserved(MonitoringEvidenceFence fence, bool supportsDynamicSampling, string agentVersion, bool supportsServices, bool supportsRefreshCorrelation)
     {
         if (fence.RegistrationOrdinal <= 0 || !fence.Client.IsValid || fence.ConnectionId == Guid.Empty ||
             fence.ConnectionEpoch <= 0 || fence.EvidenceStreamId == Guid.Empty) throw new ArgumentException("invalid_evidence_registration");
         return RegisterCore(fence.Client, fence.ConnectionId, checked((ulong)fence.ConnectionEpoch), supportsDynamicSampling,
-            agentVersion, supportsServices, true, fence.EvidenceStreamId, fence.RegistrationOrdinal);
+            agentVersion, supportsServices, true, fence.EvidenceStreamId, fence.RegistrationOrdinal, supportsRefreshCorrelation);
     }
 
     private AgentTelemetryGatewaySessionRegistration RegisterCore(ClientKey client, Guid connectionId, ulong connectionEpoch,
-        bool supportsDynamicSampling, string agentVersion, bool supportsServices, bool provisional, Guid registrationId, long ordinal)
+        bool supportsDynamicSampling, string agentVersion, bool supportsServices, bool provisional, Guid registrationId, long ordinal, bool supportsRefreshCorrelation)
     {
-        var replacement = new Session(client, connectionId, connectionEpoch, supportsDynamicSampling, agentVersion, supportsServices, registrationId, ordinal);
+        var replacement = new Session(client, connectionId, connectionEpoch, supportsDynamicSampling, agentVersion, supportsServices, registrationId, ordinal, supportsRefreshCorrelation);
         lock (_registrationGate)
         {
             if (_sessions.TryGetValue(client, out var current) &&
@@ -176,7 +187,7 @@ public sealed class AgentTelemetryGatewaySessionRegistry : IAgentTelemetryGatewa
             return _sessions.TryGetValue(client, out var session) && session.Active
                 ? new(true, session.SupportsDynamicSampling, session.AgentVersion, checked((long)session.ConnectionEpoch))
                 {
-                    SupportsServices = session.SupportsServices, ConnectionId = session.ConnectionId, RegistrationId = session.RegistrationId, RegistrationOrdinal = session.RegistrationOrdinal
+                    SupportsServices = session.SupportsServices, SupportsRefreshCorrelation = session.SupportsRefreshCorrelation, ConnectionId = session.ConnectionId, RegistrationId = session.RegistrationId, RegistrationOrdinal = session.RegistrationOrdinal
                 }
                 : new(false, false, null, null);
         }
@@ -265,7 +276,7 @@ public sealed class AgentTelemetryGatewaySessionRegistry : IAgentTelemetryGatewa
             effective ? policy.Reason : session.SupportsDynamicSampling ? "baseline" : "client-upgrade-required"));
     }
 
-    internal sealed class Session(ClientKey client, Guid connectionId, ulong connectionEpoch, bool supportsDynamicSampling, string agentVersion, bool supportsServices, Guid registrationId, long registrationOrdinal)
+    internal sealed class Session(ClientKey client, Guid connectionId, ulong connectionEpoch, bool supportsDynamicSampling, string agentVersion, bool supportsServices, Guid registrationId, long registrationOrdinal, bool supportsRefreshCorrelation)
     {
         private readonly Channel<GatewayTelemetryFrame> _reliable = Channel.CreateBounded<GatewayTelemetryFrame>(new BoundedChannelOptions(4)
         {
@@ -297,6 +308,7 @@ public sealed class AgentTelemetryGatewaySessionRegistry : IAgentTelemetryGatewa
         public ulong ConnectionEpoch { get; } = connectionEpoch;
         public bool SupportsDynamicSampling { get; } = supportsDynamicSampling;
         public bool SupportsServices { get; } = supportsServices;
+        public bool SupportsRefreshCorrelation { get; } = supportsServices && supportsRefreshCorrelation;
         public string AgentVersion { get; } = agentVersion;
         public CancellationToken CompletionToken => _completion.Token;
 
@@ -458,6 +470,7 @@ public sealed class AgentTelemetryGatewaySessionRegistration : IAsyncDisposable
     public bool TryPublish(Action publish) => IsCurrent && _tryPublish(publish);
     public bool SupportsDynamicSampling => _session.SupportsDynamicSampling;
     public bool SupportsServices => _session.SupportsServices;
+    public bool SupportsRefreshCorrelation => _session.SupportsRefreshCorrelation;
     public CancellationToken CompletionToken => _session.CompletionToken;
     public ValueTask EnqueueReliableAsync(GatewayTelemetryFrame frame, CancellationToken cancellationToken) => _session.EnqueueReliableAsync(frame, cancellationToken);
     public IAsyncEnumerable<GatewayTelemetryFrame> ReadOutboundAsync(CancellationToken cancellationToken) => _session.ReadOutboundAsync(cancellationToken);

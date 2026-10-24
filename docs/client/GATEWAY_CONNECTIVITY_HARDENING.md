@@ -238,7 +238,7 @@ exhausted bounded identity storage; missing identities are counted separately.
 
 ## Repository validation commands
 
-`global.json` requires SDK **10.0.401** with roll-forward disabled and
+`global.json` requires SDK **10.0.402** with roll-forward disabled and
 Microsoft.Testing.Platform. The authoritative invocation and receipt verifier
 are in [.github/workflows/public-pr-validation.yml](../../.github/workflows/public-pr-validation.yml).
 Under the 7 October 2026 owner policy, required PR/main validation runs source

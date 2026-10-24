@@ -19,6 +19,7 @@ public static class ClientServicesEndpoints
             .WithTags("Client Services").RequireAuthorization("TelemetryReader");
         group.MapGet("", ReadAsync).WithName("ClientServices_Read").Produces<ClientServicesReadModelDto>();
         group.MapPost("/refresh", RefreshAsync).WithName("ClientServices_Refresh").Produces<ClientServicesRefreshResponse>();
+        group.MapGet("/refresh/{requestId:guid}", RefreshOutcomeAsync).WithName("ClientServices_RefreshOutcome").Produces<ClientServicesRefreshRequestDto>();
         group.MapGet("/watch-policy", PolicyAsync).WithName("ClientServices_WatchPolicy").Produces<ClientServiceWatchPolicyDto>();
         group.MapGet("/events", EventsAsync).WithName("ClientServices_Events");
         var control = app.MapGroup("/api/v2/agents/{tenantId:int}/{agentId:guid}/services")
@@ -42,6 +43,16 @@ public static class ClientServicesEndpoints
         var rejection = await AuthorizeTargetAsync(tenantId, agentId, http, access, agents, cancellationToken).ConfigureAwait(false);
         if (rejection is not null) return rejection;
         return Results.Ok(await services.RefreshAsync(new(tenantId, agentId), cancellationToken).ConfigureAwait(false));
+    }
+
+    internal static async Task<IResult> RefreshOutcomeAsync(int tenantId, Guid agentId, Guid requestId, HttpContext http,
+        IEffectiveAccessService access, IAgentManagementService agents, ClientServicesCoordinator services, CancellationToken cancellationToken)
+    {
+        var rejection = await AuthorizeTargetAsync(tenantId, agentId, http, access, agents, cancellationToken).ConfigureAwait(false);
+        if (rejection is not null) return rejection;
+        var model = await services.ReadAsync(new(tenantId, agentId), cancellationToken).ConfigureAwait(false);
+        var request = model.RefreshRequests?.FirstOrDefault(item => item.RequestId == requestId);
+        return request is null ? Results.NotFound() : Results.Ok(request);
     }
 
     private static async Task<IResult> PolicyAsync(int tenantId, Guid agentId, HttpContext http,

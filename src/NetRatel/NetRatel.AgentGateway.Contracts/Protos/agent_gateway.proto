@@ -356,6 +356,7 @@ message ServiceSnapshotChunk {
   uint64 watch_policy_revision = 7;
   repeated ServiceObservation services = 8;
   string error_code = 9;
+  string refresh_request_id = 10;
 }
 
 message ServiceObservation {

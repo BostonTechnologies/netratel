@@ -17,16 +17,16 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="AwesomeAssertions" Version="9.6.0" PrivateAssets="all" />
-    <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.0.12" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.12" />
-    <PackageReference Include="Microsoft.Testing.Extensions.TrxReport" Version="2.4.1" />
-    <PackageReference Include="Testcontainers.PostgreSql" Version="4.15.0" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0">
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.0.13" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.13" />
+    <PackageReference Include="Microsoft.Testing.Extensions.TrxReport" Version="2.5.1" />
+    <PackageReference Include="Testcontainers.PostgreSql" Version="4.16.0" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.1">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
-    <PackageReference Include="xunit.v3" Version="4.0.1" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
+    <PackageReference Include="xunit.v3" Version="4.0.2" />
   </ItemGroup>
 
   <ItemGroup>
@@ -48,22 +48,15 @@
     <ProjectReference Include="..\NetRatel.Akka\NetRatel.Akka.csproj" />
     <ProjectReference Include="..\NetRatel.Mcp.Core\NetRatel.Mcp.Core.csproj" />
     <ProjectReference Include="..\NetRatel.Mcp.Http\NetRatel.Mcp.Http.csproj" />
-    <ProjectReference Include="..\..\..\tools\NetRatel.ClientArtifactCrashProbe\NetRatel.ClientArtifactCrashProbe.csproj"
-                      ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\..\tools\NetRatel.ClientArtifactCrashProbe\NetRatel.ClientArtifactCrashProbe.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
   <ItemGroup>
-    <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedConnectionOwnershipFoundation.sql"
-                      LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.Foundation.sql" />
-    <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedConnectionOwnershipHistoricalServices.sql"
-                      LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.HistoricalServices.sql" />
-    <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedMonitoringRegistrationPreceding.sql"
-                      LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.Current148.sql" />
-    <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedMonitoringRegistrationCurrent149.sql"
-                      LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.Current14970.sql" />
-    <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedHistoricalFlowOnlyDown.sql"
-                      LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.HistoricalFlowOnlyDown.sql" />
-    <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedHistoricalFlowOnlyUp.sql"
-                      LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.HistoricalFlowOnlyUp.sql" />
+    <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedConnectionOwnershipFoundation.sql" LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.Foundation.sql" />
+    <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedConnectionOwnershipHistoricalServices.sql" LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.HistoricalServices.sql" />
+    <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedMonitoringRegistrationPreceding.sql" LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.Current148.sql" />
+    <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedMonitoringRegistrationCurrent149.sql" LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.Current14970.sql" />
+    <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedHistoricalFlowOnlyDown.sql" LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.HistoricalFlowOnlyDown.sql" />
+    <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedHistoricalFlowOnlyUp.sql" LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.HistoricalFlowOnlyUp.sql" />
     <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedMonitoringRegistrationCurrent151.sql" LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.Current15171.sql" />
     <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedReceiverEvidenceOnlyDown.sql" LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.ReceiverEvidenceOnlyDown.sql" />
     <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedReceiverEvidenceOnlyUp.sql" LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.ReceiverEvidenceOnlyUp.sql" />
