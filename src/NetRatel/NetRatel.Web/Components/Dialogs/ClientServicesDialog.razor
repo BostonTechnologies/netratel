@@ -417,24 +417,30 @@ else
         var token = _runCancellation.Token;
         _refreshing = true;
         _refreshMessage = null;
-        var wait = new ClientServicesRefreshWait(_model, DateTimeOffset.UtcNow);
-        _refreshWait = wait;
+        var baseline = _model;
+        var startedAt = DateTimeOffset.UtcNow;
+        _refreshWait = null;
         try
         {
             var response = await ServicesApi.RefreshAsync(_activeTenant, _activeAgent, token);
             if (!IsCurrent(generation)) return;
             _refreshMessage = response.Status switch
             {
-                ClientServicesRefreshStatus.Requested => "Refresh requested. Waiting for a subsequent inventory outcome. Available observations remain visible.",
+                ClientServicesRefreshStatus.Requested => response.CorrelationSupported
+                    ? $"Refresh {response.RequestId:D} requested. Waiting for its recorded inventory outcome."
+                    : "Refresh requested. Waiting for a subsequent inventory outcome. This client cannot attribute it to the request.",
                 ClientServicesRefreshStatus.Offline => "The client is offline. No refresh was requested.",
                 ClientServicesRefreshStatus.Unsupported => "This client does not support services collection. No refresh was requested.",
-                ClientServicesRefreshStatus.Throttled => response.RetryAfterUtc is { } retry
-                    ? $"A refresh was requested recently. Waiting for a subsequent inventory outcome. Try again after {retry.ToUniversalTime():HH:mm:ss} UTC."
-                    : "A refresh was requested recently. Try again shortly.",
+                ClientServicesRefreshStatus.Throttled => response.CorrelationSupported && response.RequestId is { } pendingId
+                    ? $"Refresh {pendingId:D} is already tracked. Waiting for its recorded outcome."
+                    : response.RetryAfterUtc is { } retry
+                        ? $"A refresh was requested recently. Waiting for a subsequent inventory outcome. Try again after {retry.ToUniversalTime():HH:mm:ss} UTC."
+                        : "A refresh was requested recently. Try again shortly.",
                 _ => "The refresh result is unavailable."
             };
             _refreshWait = response.Status == ClientServicesRefreshStatus.Requested ||
-                response.Status == ClientServicesRefreshStatus.Throttled && response.RequestId is not null ? wait : null;
+                response.Status == ClientServicesRefreshStatus.Throttled && response.RequestId is not null
+                    ? new ClientServicesRefreshWait(baseline, startedAt, response.RequestId, response.CorrelationSupported) : null;
             _now = DateTimeOffset.UtcNow;
             CheckRefreshOutcome();
         }

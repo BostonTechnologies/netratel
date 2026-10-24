@@ -19,6 +19,8 @@ internal sealed class ServiceCollectionCoordinator(IServiceInventoryCollector co
     private DateTimeOffset _nextWatchAt = DateTimeOffset.MinValue;
     private DateTimeOffset _lastInventoryStartedAt = DateTimeOffset.MinValue;
     private Guid? _lastRefreshRequest;
+    private Guid? _pendingRefreshRequest;
+    private Guid? _collectionRefreshRequest;
     private ulong _streamGeneration;
     private ulong _collectionGeneration;
     private bool _collectingInventory;
@@ -41,6 +43,8 @@ internal sealed class ServiceCollectionCoordinator(IServiceInventoryCollector co
         if (_collection is { IsCompleted: true }) TryTakeCompleted(out _);
         _policy = null;
         _lastRefreshRequest = null;
+        _pendingRefreshRequest = null;
+        _collectionRefreshRequest = null;
         _nextInventoryAt = DateTimeOffset.MinValue;
         _nextWatchAt = DateTimeOffset.MinValue;
     }
@@ -63,10 +67,16 @@ internal sealed class ServiceCollectionCoordinator(IServiceInventoryCollector co
         if (policy.RefreshRequestId is Guid request && request != _lastRefreshRequest)
         {
             _lastRefreshRequest = request;
-            // The in-flight inventory already supplies subsequent evidence to an open viewer.
-            if (_collection is null || !_collectingInventory || _collectionGeneration != _streamGeneration)
+            // Bind a coalesced request explicitly to this in-flight inventory. A watch never satisfies it.
+            if (_collection is { IsCompleted: false } && _collectingInventory && _collectionGeneration == _streamGeneration &&
+                _collectionRefreshRequest is null)
+                _collectionRefreshRequest = request;
+            else
+            {
+                _pendingRefreshRequest = request;
                 _nextInventoryAt = now > _lastInventoryStartedAt.Add(ClientServicesLimits.MinimumRefreshInterval)
                     ? now : _lastInventoryStartedAt.Add(ClientServicesLimits.MinimumRefreshInterval);
+            }
         }
         return true;
     }
@@ -92,6 +102,8 @@ internal sealed class ServiceCollectionCoordinator(IServiceInventoryCollector co
         }
         _collectionGeneration = _streamGeneration;
         _collectingInventory = inventory;
+        _collectionRefreshRequest = inventory ? _pendingRefreshRequest : null;
+        if (inventory) _pendingRefreshRequest = null;
         _collection = CollectAsync(inventory, activePolicy, _collectionCancellation.Token, streamCancellation);
     }
 
@@ -99,10 +111,15 @@ internal sealed class ServiceCollectionCoordinator(IServiceInventoryCollector co
     {
         result = null;
         if (_collection is null || !_collection.IsCompleted) return false;
-        try { result = _collection.GetAwaiter().GetResult(); }
+        try
+        {
+            result = _collection.GetAwaiter().GetResult();
+            if (result.Kind == ServiceSnapshotKind.Inventory) result = result with { RefreshRequestId = _collectionRefreshRequest };
+        }
         finally
         {
             _collection = null;
+            _collectionRefreshRequest = null;
             _collectionCancellation?.Dispose();
             _collectionCancellation = null;
         }

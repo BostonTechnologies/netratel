@@ -105,6 +105,7 @@ builder.Services.AddTransient<TelemetryOverviewStreamService>();
 builder.Services.AddTransient<ClientTelemetryStreamService>();
 builder.Services.AddScoped<TenantApiService>();
 builder.Services.AddScoped<IAccessAdministrationApiService, AccessAdministrationApiService>();
+builder.Services.AddScoped<NetRatel.Web.Services.OperatorPolicy.IMcpOperatorPolicyApiService, NetRatel.Web.Services.OperatorPolicy.McpOperatorPolicyApiService>();
 builder.Services.AddScoped<IDeploymentBrandingApiService, DeploymentBrandingApiService>();
 builder.Services.AddScoped<RequestApiService>();
 builder.Services.AddScoped<RequestStreamService>();

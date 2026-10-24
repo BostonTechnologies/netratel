@@ -7,6 +7,7 @@ HTTP MCP lets Netclaw and other MCP clients use the NetRatel API. First connect 
 - [Host setup and recovery reference](hosting-reference.md): deployment ownership, alternate launch contexts, storage, headless generation and rotation.
 - [Configuration reference](configuration.md): every host, outbound, delegation and Compose setting, defaults, secret-file mappings and precedence.
 - [Authentication modes](authentication.md): local integration credentials, browser client approval and explicit external OIDC.
+- [Bounded operator policies in Web](authentication.md#bounded-operator-policies-in-the-web-ui): inspect policy/target bounds, review and confirm lifecycle changes, and retain audit readback.
 - [Local credential mode](local-credential-mode.md): the API-bound credential/delegation flow.
 - [Troubleshooting and verification](troubleshooting.md): configuration, TLS, routing, authentication, initialize, published tool argument contracts and one permitted read-only call.
 - [Owner repeat campaign](campaign-retest.md): reviewed fixtures, G01–G12, unchanged paced comparison and cleanup.

@@ -326,7 +326,8 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
         _ => false
     };
 
-    private static bool TargetSelectorMatches(McpOperatorPolicyRecord policy, McpOperatorAccessRequest request) => policy.TargetSelectorKind switch
+    private static bool TargetSelectorMatches(McpOperatorPolicyRecord policy, McpOperatorAccessRequest request) =>
+        (policy.Effect == McpOperatorPolicyEffect.Deny || !request.RequiresDevelopmentEnvironmentPolicy || IsDevelopmentPolicy(policy)) && policy.TargetSelectorKind switch
     {
         McpOperatorTargetSelectorKind.ExactAgent => policy.AgentId is { } agentId && request.AgentId == agentId,
         McpOperatorTargetSelectorKind.Tenant => true,

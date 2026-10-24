@@ -49,6 +49,10 @@
             <MudNavLink Href="/account/security" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Person" aria-label="@userName" title="@userName">@userName</MudNavLink>
             <MudNavGroup Title="Admin" UserAttributes="@(Disclosure("Admin"))" @bind-Expanded="adminExpanded" Icon="@Icons.Material.Filled.Settings">
                 <MudNavLink Href="/account/integration-credentials" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Key" aria-label="Integration" title="Integration">Integration</MudNavLink>
+                @if (canAdministerPolicies)
+                {
+                    <MudNavLink Href="/admin/operator-policies" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Policy" aria-label="MCP Policies" title="MCP Policies">MCP Policies</MudNavLink>
+                }
                 @if (canAdministerAccess)
                 {
                     <MudNavLink Href="/admin/access" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.AdminPanelSettings" aria-label="Access" title="Access">Access</MudNavLink>
@@ -75,6 +79,7 @@
     private string? currentUrl;
     private string? userName;
     private bool canAdministerAccess;
+    private bool canAdministerPolicies;
     private bool canReadFlows;
     private bool canReadMonitoring;
     private bool orchestrationExpanded = true;
@@ -114,11 +119,14 @@
             catch (HttpRequestException) { canReadFlows = false; }
             try
             {
-                canAdministerAccess = (await AccessApi.GetSelfAsync()).IsInstanceAdministrator;
+                var access = await AccessApi.GetSelfAsync();
+                canAdministerAccess = access.IsInstanceAdministrator;
+                canAdministerPolicies = access.IsInstanceAdministrator || access.Permissions.Contains("mcp.policy.admin");
             }
             catch (HttpRequestException)
             {
                 canAdministerAccess = false;
+                canAdministerPolicies = false;
             }
         }
         try { var monitoring = Services.GetService<NetRatel.Web.Services.Monitoring.IMonitoringApiService>(); canReadMonitoring = authState.User.Identity?.IsAuthenticated == true && monitoring is not null && (await monitoring.GetTenantsAsync()).Count > 0; }
@@ -147,7 +155,7 @@
             estateExpanded = true;
         if (new[] { "ai/ops", "ai/prompts" }.Any(route => IsRouteBranch(path, route)))
             aiOpsExpanded = true;
-        if (new[] { "account/integration-credentials", "admin/access", "admin/branding", "admin/app-settings", "clients/settings" }
+        if (new[] { "account/integration-credentials", "admin/access", "admin/operator-policies", "admin/branding", "admin/app-settings", "clients/settings" }
             .Any(route => IsRouteBranch(path, route)))
             adminExpanded = true;
     }

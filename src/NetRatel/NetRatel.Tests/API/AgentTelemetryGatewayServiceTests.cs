@@ -737,6 +737,7 @@ public sealed class AgentTelemetryGatewayServiceTests
             };
             return Task.FromResult(new ClientServicesMessageResult(message.Client, ClientServicesMessageDisposition.Accepted, message.Chunk.Sequence, state));
         }
+        public Task<ClientServicesState> UpdateRefreshAsync(UpdateClientServicesRefresh message, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<ClientServicesState> GetSnapshotAsync(ClientKey client, CancellationToken cancellationToken) => Task.FromResult(ClientServicesState.Empty(client));
         public Task<ClientServicesState> UpdateWatchPolicyAsync(ClientServiceWatchPolicy policy, CancellationToken cancellationToken) => Task.FromResult(ClientServicesState.Empty(policy.Client));
     }

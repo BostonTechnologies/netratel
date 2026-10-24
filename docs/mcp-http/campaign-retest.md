@@ -15,12 +15,12 @@ contract below applies prospectively; it does not rewrite historical outcomes.
 
 ## Baseline and finish line
 
-The beta.45 checkpoint of 23 October 2026 leaves **53 original contexts unresolved**:
-22 P0, 27 P1 and four P2. Four original log-gap/resynchronization contexts passed
-on the two original tenants. The 17 planned exclusions remain within the original
-518-context universe, not additional contexts. The checkpoint records the
-remaining rows as unattempted or prerequisite-gated; it does not establish 53
-product defects. Load the latest private ledger and original assertion
+The beta.46 checkpoint advances 16 of the 53 retained contexts and leaves
+**37 original contexts unresolved**: 12 P0, 23 P1 and two P2. The 17 planned
+exclusions remain within the original 518-context universe, not additional
+contexts. The checkpoint records the remaining rows as unattempted or
+prerequisite-gated; it does not establish 37 product defects. Load the latest
+private ledger and original assertion
 definitions once, retain predecessor/effect requirements, and execute ready
 independent groups. Do not reconstruct missing assertions from an operation
 name or replace an original target/outcome with a convenient fixture pass.
@@ -49,6 +49,32 @@ cleanup. Required positive product behavior must be demonstrated; a missing
 mandatory fixture or failed assertion remains a blocker. Protected, unsupported,
 deferred and unobservable consumer-specific assertions remain explicitly named.
 There is no meaningful target of 518 positive business passes in this population.
+
+### Permanently unavailable historical fixtures
+
+Preserve the original unresolved row when its exact prerequisite cannot be
+recovered. Examples include a deleted runtime/state volume with no usable
+identity-preserving backup, an expired immutable caller-owner tuple, an exact
+question that was never recorded, and a refresh issued before causal inventory
+telemetry existed. Do not rewrite ownership, reactivate expired credentials,
+invent the missing question or attribute a new completion to the old request.
+
+For current-release coverage, define a versioned successor before execution.
+Record its original context ID, why the historical assertion is no longer
+executable, the precise new fixture/input, every retained positive and negative
+assertion, and the current consumer/evidence boundary. Create new owned fixtures
+through supported product paths. A restore successor must prove recovery of its
+own previously captured identity; a new enrollment alone is not recovery. A
+reconciliation successor must first obtain a real uncertain-delivery predecessor;
+an empty reconciliation response is not the required business outcome.
+
+Keep successor results in a separate register linked to the original coverage
+anchor. Do not change the original count, exclusions or historical disposition,
+and do not call a successor pass an original pass. The final decision must state
+both unresolved historical evidence and completed prospective coverage. Mandatory
+current product behavior, negative security boundaries, the selected native
+consumer and the measured-hour requirements are unchanged. Missing prerequisites
+for one group do not stop other independently ready groups.
 
 ## Product corrections to verify
 

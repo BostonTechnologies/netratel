@@ -101,6 +101,7 @@ internal static class ServiceSnapshotSerializer
     private static ServiceSnapshotChunk CreateChunk(ServiceCollectionResult result, uint index) => new()
     {
         CollectionId = result.CollectionId.ToString("D"),
+        RefreshRequestId = result.RefreshRequestId?.ToString("D") ?? string.Empty,
         ChunkIndex = index,
         Kind = (ServiceSnapshotType)(int)result.Kind,
         Status = (ServiceCollectionCompleteness)(int)result.Status,

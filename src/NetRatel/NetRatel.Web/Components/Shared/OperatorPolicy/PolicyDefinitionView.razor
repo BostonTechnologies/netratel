@@ -1,0 +1,47 @@
+@using NetRatel.Application.Operations
+
+<div class="policy-definition" data-testid="policy-definition">
+    <dl>
+        <dt>Name</dt><dd>@Draft.Name</dd>
+        <dt>Environment / effect / priority</dt><dd>@Draft.Environment · @Draft.Effect · @Draft.Priority</dd>
+        <dt>Principal selector</dt><dd>@Draft.PrincipalSelector.Kind: <code>@Draft.PrincipalSelector.Value</code></dd>
+        <dt>Target selector</dt><dd>@Draft.TargetSelector.Kind · tenant @Draft.TargetSelector.TenantId @Draft.TargetSelector.AgentId @Draft.TargetSelector.ClientTag</dd>
+        <dt>Classification filter</dt><dd>@(Draft.TargetClassification?.ToString() ?? "Any persisted classification")</dd>
+        <dt>Operation families</dt><dd>@Draft.OperationFamily</dd>
+        <dt>Exact operation</dt><dd>@(Draft.Operation ?? "All operations in the selected families")</dd>
+        <dt>Expiry</dt><dd>@Instant(Draft.ExpiresAtUtc)</dd>
+        <dt>Review by</dt><dd>@Instant(Draft.ReviewByUtc)</dd>
+        <dt>Audit reference</dt><dd>@(Draft.AuditReference ?? "None")</dd>
+        <dt>Exact working directories</dt><dd>@List(Draft.Constraints.WorkingDirectories)</dd>
+        <dt>Read roots</dt><dd>@List(Draft.Constraints.ReadRoots)</dd>
+        <dt>Write roots</dt><dd>@List(Draft.Constraints.WriteRoots)</dd>
+        <dt>Allowed shells</dt><dd>@List(Draft.Constraints.AllowedShells)</dd>
+        <dt>Allowed target classifications</dt><dd>@(Draft.Constraints.AllowedTargetClassifications is { } classes ? string.Join(", ", classes) : "Unspecified")</dd>
+        <dt>Required confirmation</dt><dd>@(Draft.Constraints.RequiredConfirmationClass?.ToString() ?? "Operation default")</dd>
+        <dt>Destructive operations</dt><dd>@Flag(Draft.Constraints.DestructiveOperationsAllowed)</dd>
+        <dt>Active tenant deletion</dt><dd>@Flag(Draft.Constraints.AllowActiveTenantDeletion)</dd>
+    </dl>
+    <MudSimpleTable Dense="true" Elevation="0">
+        <thead><tr><th>Limit</th><th>Reviewed value</th></tr></thead>
+        <tbody>@foreach (var bound in Limits) { <tr><td>@bound.Name</td><td>@(bound.Value?.ToString() ?? "Unspecified")</td></tr> }</tbody>
+    </MudSimpleTable>
+    <MudText Typo="Typo.caption">Working directories match exactly: /tmp does not grant /tmp/example. Other matching policies, current credential grants and server-owned target facts continue to apply.</MudText>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public McpOperatorPolicyDraft Draft { get; set; } = default!;
+    private (string Name, int? Value)[] Limits => [
+        ("Command duration (seconds)", Draft.Constraints.MaxCommandDurationSeconds),
+        ("Terminal idle (seconds)", Draft.Constraints.MaxTerminalIdleSeconds),
+        ("Terminal lifetime (seconds)", Draft.Constraints.MaxTerminalLifetimeSeconds),
+        ("Concurrent terminal sessions", Draft.Constraints.MaxConcurrentTerminalSessions),
+        ("Concurrent commands", Draft.Constraints.MaxConcurrentCommands),
+        ("Output bytes", Draft.Constraints.MaxOutputBytes), ("Artifact bytes", Draft.Constraints.MaxArtifactBytes),
+        ("Script bytes", Draft.Constraints.MaxScriptBytes), ("Job target count", Draft.Constraints.MaxJobTargetCount),
+        ("Task target count", Draft.Constraints.MaxTaskTargetCount), ("Fan-out", Draft.Constraints.MaxFanOut),
+        ("Onboarding lifetime (seconds)", Draft.Constraints.MaxOnboardingCodeLifetimeSeconds),
+        ("Onboarding uses", Draft.Constraints.MaxOnboardingCodeUses)];
+    private static string List(IReadOnlyList<string>? values) => values is null ? "Unspecified" : values.Count == 0 ? "Empty grant" : string.Join("; ", values);
+    private static string Flag(bool? value) => value is null ? "Unspecified" : value.Value ? "Allowed" : "Denied";
+    private static string Instant(DateTimeOffset? value) => value?.ToUniversalTime().ToString("u") ?? "None";
+}

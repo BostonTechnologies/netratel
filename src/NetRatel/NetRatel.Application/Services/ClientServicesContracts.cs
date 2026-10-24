@@ -19,7 +19,9 @@ public sealed record ClientServicesChunk(
     ulong WatchPolicyRevision,
     IReadOnlyList<ClientServiceObservation> Services,
     int PayloadBytes,
-    string? ErrorCode = null);
+    string? ErrorCode = null,
+    Guid? RefreshRequestId = null,
+    Guid? RegistrationId = null);
 
 public interface IClientServicesMessage
 {
@@ -32,6 +34,10 @@ public sealed record RecordClientServicesChunk(ClientServicesChunk Chunk) : ICli
 }
 
 public sealed record GetClientServices(ClientKey Client) : IClientServicesMessage;
+
+public sealed record UpdateClientServicesRefresh(
+    ClientKey Client,
+    ClientServicesRefreshRequestDto Request) : IClientServicesMessage;
 
 public sealed record ClientServiceWatchPolicy(ClientKey Client, ClientServiceWatchPolicyDto Policy);
 
@@ -71,7 +77,8 @@ public sealed record ClientServicesState(
     ulong WatchPolicyRevision,
     Guid? ConnectionId = null,
     ClientServicesSnapshotDto? LastPartialInventory = null,
-    ServiceCollectionAttemptDto? LatestInventoryAttempt = null)
+    ServiceCollectionAttemptDto? LatestInventoryAttempt = null,
+    IReadOnlyList<ClientServicesRefreshRequestDto>? RefreshRequests = null)
 {
     public static ClientServicesState Empty(ClientKey client) =>
         new(client, 0, 0, 0, null, null, [], [], 0);
@@ -81,6 +88,7 @@ public interface IClientServicesRouter
 {
     Task<ClientServicesMessageResult> RecordAsync(RecordClientServicesChunk message, CancellationToken cancellationToken);
     Task<ClientServicesState> GetSnapshotAsync(ClientKey client, CancellationToken cancellationToken);
+    Task<ClientServicesState> UpdateRefreshAsync(UpdateClientServicesRefresh message, CancellationToken cancellationToken);
     Task<ClientServicesState> UpdateWatchPolicyAsync(ClientServiceWatchPolicy policy, CancellationToken cancellationToken);
 }
 

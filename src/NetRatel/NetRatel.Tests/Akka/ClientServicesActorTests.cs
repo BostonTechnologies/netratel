@@ -45,6 +45,56 @@ public sealed class ClientServicesActorTests : IAsyncLifetime
         state.LastCompleteInventory!.Services.Single().Name.Should().Be("complete");
     }
 
+    [Theory]
+    [InlineData(ServiceCollectionStatus.Complete, ClientServicesRefreshOutcome.Complete)]
+    [InlineData(ServiceCollectionStatus.Partial, ClientServicesRefreshOutcome.Partial)]
+    [InlineData(ServiceCollectionStatus.Error, ClientServicesRefreshOutcome.Error)]
+    [InlineData(ServiceCollectionStatus.Unsupported, ClientServicesRefreshOutcome.Unsupported)]
+    public async Task RefreshCompletionRequiresExactRequestAndRegistration_AndSurvivesRestart(
+        ServiceCollectionStatus status, ClientServicesRefreshOutcome outcome)
+    {
+        var client = new ClientKey(17, Guid.NewGuid());
+        var actor = _system.ActorOf(ClientServicesActor.Props(client, _store));
+        var chunk = ServicesTestData.Chunk(client, 1);
+        var now = DateTimeOffset.UtcNow;
+        var request = new ClientServicesRefreshRequestDto(Guid.NewGuid(), chunk.ConnectionId, chunk.ConnectionEpoch,
+            Guid.NewGuid(), now, now + ClientServicesLimits.RefreshTimeout, true);
+        await actor.Ask<ClientServicesState>(new UpdateClientServicesRefresh(client, request));
+        // A new unrelated inventory and a replay from a replaced telemetry registration do not complete the request.
+        await Record(actor, chunk with { RefreshRequestId = Guid.NewGuid(), RegistrationId = request.RegistrationId });
+        await Record(actor, chunk with { Sequence = 2, RefreshRequestId = request.RequestId, RegistrationId = Guid.NewGuid() });
+        var pending = await actor.Ask<ClientServicesState>(new GetClientServices(client));
+        pending.RefreshRequests!.Single().Outcome.Should().Be(ClientServicesRefreshOutcome.Pending);
+        var terminal = chunk with { Sequence = 3, Status = status, RefreshRequestId = request.RequestId, RegistrationId = request.RegistrationId };
+        (await Record(actor, terminal)).Disposition.Should().Be(ClientServicesMessageDisposition.Accepted);
+        await actor.GracefulStop(TimeSpan.FromSeconds(3));
+        actor = _system.ActorOf(ClientServicesActor.Props(client, _store));
+        var saved = (await actor.Ask<ClientServicesState>(new GetClientServices(client))).RefreshRequests!.Single();
+        saved.Outcome.Should().Be(outcome);
+        saved.CollectionId.Should().Be(terminal.CollectionId);
+        saved.CompletedAtUtc.Should().NotBeNull();
+        await Record(actor, chunk with { Sequence = 4, CollectionId = Guid.NewGuid(), RefreshRequestId = request.RequestId,
+            RegistrationId = request.RegistrationId, Status = ServiceCollectionStatus.Error });
+        (await actor.Ask<ClientServicesState>(new GetClientServices(client))).RefreshRequests!.Single().Should().Be(saved);
+    }
+
+    [Fact]
+    public async Task LegacyRefreshRecordsUnattributedOutcome_AndCannotClaimExactCompletion()
+    {
+        var client = new ClientKey(18, Guid.NewGuid());
+        var actor = _system.ActorOf(ClientServicesActor.Props(client, _store));
+        var chunk = ServicesTestData.Chunk(client, 1);
+        var now = DateTimeOffset.UtcNow;
+        var request = new ClientServicesRefreshRequestDto(Guid.NewGuid(), chunk.ConnectionId, chunk.ConnectionEpoch,
+            Guid.NewGuid(), now, now + ClientServicesLimits.RefreshTimeout, false);
+        await actor.Ask<ClientServicesState>(new UpdateClientServicesRefresh(client, request));
+        await Record(actor, chunk with { RegistrationId = request.RegistrationId });
+        var saved = (await actor.Ask<ClientServicesState>(new GetClientServices(client))).RefreshRequests!.Single();
+        saved.Outcome.Should().Be(ClientServicesRefreshOutcome.Unattributed);
+        saved.CollectionId.Should().Be(chunk.CollectionId);
+        saved.CorrelationSupported.Should().BeFalse();
+    }
+
     private ActorSystem _system = null!;
     private readonly MemoryServicesStore _store = new();
     public ValueTask InitializeAsync() { _system = ActorSystem.Create($"services-tests-{Guid.NewGuid():N}"); return ValueTask.CompletedTask; }

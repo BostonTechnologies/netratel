@@ -190,6 +190,12 @@ internal sealed class AkkaClientServicesRouter(IRequiredActor<ClientServicesRegi
         return await actor.Ask<ClientServicesState>(new GetClientServices(client), askTimeout, cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<ClientServicesState> UpdateRefreshAsync(UpdateClientServicesRefresh message, CancellationToken cancellationToken)
+    {
+        var actor = await region.GetAsync(cancellationToken).ConfigureAwait(false);
+        return await actor.Ask<ClientServicesState>(message, askTimeout, cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<ClientServicesState> UpdateWatchPolicyAsync(ClientServiceWatchPolicy policy, CancellationToken cancellationToken)
     {
         var actor = await region.GetAsync(cancellationToken).ConfigureAwait(false);

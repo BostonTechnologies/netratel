@@ -32,6 +32,7 @@ public static class ApiEndpointRegistrationExtensions
         app.MapScriptEndpoints();
         app.MapPrimaryClientAgentBindingReadEndpoints();
         app.MapMcpOperatorPolicyAdministrationEndpoints();
+        app.MapMcpOperatorAccountPolicyMutationEndpoints();
         app.MapMcpOperatorAccessEndpoints();
         app.MapMcpOperatorAuthenticationStatusEndpoints();
         app.MapMcpOperatorClientSearchEndpoints();

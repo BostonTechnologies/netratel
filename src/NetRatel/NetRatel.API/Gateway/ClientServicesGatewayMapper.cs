@@ -9,11 +9,18 @@ namespace NetRatel.API.Gateway;
 
 public static class ClientServicesGatewayMapper
 {
-    public static ClientServicesChunk Map(AgentTelemetryFrame envelope, ClientKey client, DateTimeOffset receivedAtUtc)
+    public static ClientServicesChunk Map(AgentTelemetryFrame envelope, ClientKey client, DateTimeOffset receivedAtUtc, Guid? registrationId = null)
     {
         var chunk = envelope.ServicesChunk;
         if (chunk is null || !Guid.TryParse(chunk.CollectionId, out var collectionId))
             throw Invalid("The services collection metadata is invalid.");
+        Guid? refreshRequestId = null;
+        if (!string.IsNullOrEmpty(chunk.RefreshRequestId))
+        {
+            if (!Guid.TryParse(chunk.RefreshRequestId, out var request) || request == Guid.Empty)
+                throw Invalid("The services refresh identity is invalid.");
+            refreshRequestId = request;
+        }
         var bytes = envelope.CalculateSize();
         if (bytes > ClientServicesLimits.MaximumChunkPayloadBytes)
             throw new RpcException(new Status(StatusCode.ResourceExhausted, "The services chunk exceeds its bounded envelope size."));
@@ -30,7 +37,7 @@ public static class ClientServicesGatewayMapper
         var mapped = new ClientServicesChunk(client, Guid.Parse(envelope.ConnectionId), checked((long)envelope.ConnectionEpoch), envelope.Sequence,
             collectionId, chunk.ChunkIndex, chunk.IsFinal, (ServiceSnapshotKind)(int)chunk.Kind,
             (ServiceCollectionStatus)(int)chunk.Status, observed, receivedAtUtc, chunk.WatchPolicyRevision,
-            observations, bytes, Optional(chunk.ErrorCode));
+            observations, bytes, Optional(chunk.ErrorCode), refreshRequestId, registrationId);
         if (!ClientServicesValidation.IsValidChunk(mapped)) throw Invalid("The services collection violates its bounded evidence contract.");
         return mapped;
     }

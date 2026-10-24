@@ -107,16 +107,53 @@ public sealed class ClientServicesEndpointTests
         var second = await Refresh(http);
         second.Status.Should().Be(ClientServicesRefreshStatus.Throttled);
         second.RequestId.Should().Be(first.RequestId);
-        second.RetryAfterUtc.Should().Be(clock.GetUtcNow().Add(ClientServicesLimits.MinimumRefreshInterval));
-        router.PolicyWrites.Should().Be(1);
+        second.RetryAfterUtc.Should().Be(clock.GetUtcNow().Add(ClientServicesLimits.RefreshTimeout));
+        router.PolicyWrites.Should().Be(2);
         await using var reader = current.ReadOutboundAsync(CancellationToken.None).GetAsyncEnumerator();
         (await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2))).Should().BeTrue();
         reader.Current.ServiceWatchPolicy.RefreshRequestId.Should().Be(first.RequestId!.Value.ToString("D"));
         reader.Current.ServiceWatchPolicy.ServiceNames.Should().BeEmpty();
         clock.Now = clock.Now.Add(ClientServicesLimits.MinimumRefreshInterval);
+        var pending = await Refresh(http);
+        pending.Status.Should().Be(ClientServicesRefreshStatus.Throttled);
+        pending.RequestId.Should().Be(first.RequestId);
+        clock.Now = clock.Now.Add(ClientServicesLimits.RefreshTimeout);
         var next = await Refresh(http);
         next.Status.Should().Be(ClientServicesRefreshStatus.Requested);
         next.RequestId!.Value.Should().NotBe(first.RequestId!.Value);
+    }
+
+    [Fact]
+    public async Task RefreshOutcomeReadIsAuthorized_AndReconnectRetainsAnOfflineTerminalRecord()
+    {
+        using var host = await HostAsync();
+        var http = host.GetTestClient();
+        var registry = host.Services.GetRequiredService<IAgentTelemetryGatewaySessionRegistry>();
+        var presence = host.Services.GetRequiredService<Presence>();
+        var connection = Guid.NewGuid();
+        await using var session = registry.Register(Key, connection, 4, false, "correlated", false, true, true);
+        presence.Set(connection, 4);
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+        var refresh = await Refresh(http);
+        refresh.CorrelationSupported.Should().BeTrue();
+        var path = Path + $"/refresh/{refresh.RequestId:D}";
+        var pending = await http.GetFromJsonAsync<ClientServicesRefreshRequestDto>(path);
+        pending!.RequestId.Should().Be(refresh.RequestId!.Value);
+        pending.Outcome.Should().Be(ClientServicesRefreshOutcome.Pending);
+        (await http.GetAsync(path.Replace("/agents/7/", "/agents/8/", StringComparison.Ordinal))).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        http.DefaultRequestHeaders.Authorization = null;
+        (await http.GetAsync(path)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+        await session.DisposeAsync();
+        (await http.GetFromJsonAsync<ClientServicesRefreshRequestDto>(path))!.Outcome.Should().Be(ClientServicesRefreshOutcome.Pending,
+            "a replica without the telemetry child cannot declare a still-authoritative presence offline");
+        var replacementConnection = Guid.NewGuid();
+        await using var replacement = registry.Register(Key, replacementConnection, 5, false, "correlated", false, true, true);
+        presence.Set(replacementConnection, 5);
+        var terminal = await http.GetFromJsonAsync<ClientServicesRefreshRequestDto>(path);
+        terminal!.Outcome.Should().Be(ClientServicesRefreshOutcome.Offline);
+        terminal.CollectionId.Should().BeNull();
+        terminal.RegistrationId.Should().Be(session.RegistrationId);
     }
 
     [Theory]
@@ -327,7 +364,7 @@ public sealed class ClientServicesEndpointTests
         public Task DeleteAsync(int tenantId, Guid agentId, string reason, string actor, CancellationToken ct) => throw new NotSupportedException();
     }
 
-    private sealed class RecordingRouter : IClientServicesRouter
+    private sealed class RecordingRouter(Clock clock) : IClientServicesRouter
     {
         public int Reads { get; private set; }
         public int PolicyWrites { get; private set; }
@@ -336,7 +373,17 @@ public sealed class ClientServicesEndpointTests
             new(Guid.NewGuid(), 1, 2, DateTimeOffset.UtcNow.AddHours(-1), DateTimeOffset.UtcNow.AddHours(-1),
                 [new("synthetic-service", "Synthetic", ClientServicePlatform.Windows, ClientServiceState.Stopped, "Stopped", "Automatic", null, null, null, null, DateTimeOffset.UtcNow.AddHours(-1))]),
             null, [], [], 0);
-        public Task<ClientServicesState> GetSnapshotAsync(ClientKey client, CancellationToken cancellationToken) { Reads++; return Task.FromResult(State); }
+        public Task<ClientServicesState> GetSnapshotAsync(ClientKey client, CancellationToken cancellationToken)
+        {
+            Reads++;
+            State = ClientServicesRefreshLifecycle.Expire(State, clock.GetUtcNow());
+            return Task.FromResult(State);
+        }
+        public Task<ClientServicesState> UpdateRefreshAsync(UpdateClientServicesRefresh message, CancellationToken cancellationToken)
+        {
+            State = ClientServicesRefreshLifecycle.Update(State, message.Request, clock.GetUtcNow());
+            return Task.FromResult(State);
+        }
         public async Task<ClientServicesState> UpdateWatchPolicyAsync(ClientServiceWatchPolicy policy, CancellationToken cancellationToken)
         {
             PolicyWrites++;

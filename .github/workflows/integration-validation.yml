@@ -87,7 +87,7 @@ jobs:
           global-json-file: global.json
       - name: Set up pairing browser runtime
         if: inputs.suite == 'pairing'
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
       - name: Record selected source and version
@@ -419,7 +419,7 @@ jobs:
           PY
       - name: Retain selected TRX, screenshots and sanitized receipts
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: manual-${{ inputs.suite }}-evidence
           path: |
@@ -459,7 +459,7 @@ jobs:
           ./tools/ci/test-windows-mcp-archive.ps1 -ArchivePath "artifacts/netratel-mcp-stdio-$env:VERSION-win-x64.zip" -Version $env:VERSION -SourceRevision $env:PublicSourceRevision -ReceiptPath TestResults/windows-mcp-smoke.json
       - name: Retain sanitized Windows branch receipt
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-mcp-branch-smoke
           path: TestResults/windows-mcp-smoke.json
@@ -519,7 +519,7 @@ jobs:
             --evidence TestResults/client-measurement/trimmed/linux-x64
       - name: Download original measurement evidence
         if: inputs.measurement_verify_run != ''
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: client-measurement-evidence-win-x64
           path: downloaded-client-measurement
@@ -527,7 +527,7 @@ jobs:
           github-token: ${{ github.token }}
       - name: Download original native archives
         if: inputs.measurement_verify_run != ''
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: client-measurement-archives-win-x64
           path: downloaded-client-measurement
@@ -576,7 +576,7 @@ jobs:
           PY
       - name: Retain measurement logs and inventories
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: client-measurement-evidence-${{ matrix.runtime }}
           path: |
@@ -586,7 +586,7 @@ jobs:
           retention-days: 14
       - name: Retain native archives, SBOMs and checksums
         if: ${{ always() && inputs.measurement_verify_run == '' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: client-measurement-archives-${{ matrix.runtime }}
           path: TestResults/client-measurement/**/artifacts/**

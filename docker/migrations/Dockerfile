@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:10.0.401-noble AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.402-noble AS build
 ARG PublicSourceRevision
 WORKDIR /src
 COPY . .

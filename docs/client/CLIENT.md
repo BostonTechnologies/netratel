@@ -512,6 +512,79 @@ inspection of their existing lifecycle rather than clearing records or bypassing
 nonce checks. A routing failure before claiming needs no re-enrollment or
 identity reset. These are later owner actions, not deployment evidence.
 
+### Recover an enrolled Windows client from a verified archive
+
+The published Windows client archive includes
+`updater/repair-windows-client.ps1`. This entry point uses the same protected
+transaction as the generated installer, accepts a local archive instead of an
+enrollment download, and requires an existing LocalSystem service and protected
+`agent.dat`. It preserves the installed API/gateway configuration, enrollment,
+tenant binding, administrator suspension, pending update result and delivery
+metadata. It does not create another client or report an installation as Accepted.
+
+On the affected Windows host, download the approved Windows archive and
+`SHA256SUMS` from the same completed publication. Verify its SHA256 before
+extracting the recovery script. Open **Windows PowerShell 5.1 as Administrator**
+and use the verified archive's actual local path and checksum:
+
+```powershell
+$archive = 'D:\NetRatelRecovery\netratel-client-<approved-version>-win-x64.zip'
+$sha256 = '<64 hexadecimal characters from the release SHA256SUMS>'
+if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $sha256) {
+    throw 'Archive does not match the approved publication.'
+}
+Expand-Archive -LiteralPath $archive -DestinationPath 'D:\NetRatelRecovery\verified-package'
+$repair = 'D:\NetRatelRecovery\verified-package\netratel-client-win-x64\updater\repair-windows-client.ps1'
+& $repair -ArchivePath $archive -Sha256 $sha256 -Mode Preview
+& $repair -ArchivePath $archive -Sha256 $sha256 -Mode Apply
+```
+
+The preview validates the existing registration, protected paths, exact archive
+checksum, runtime, version and source. It performs no service, file, lock or ACL
+write. Apply repeats verification, takes the existing activation lock, retains
+the native state bytes below the protected package `failed/repair-state-*`
+directory, and uses the installer's guarded service cutover and rollback. Native
+result/request/ready/delivery records remain in place for authenticated delivery;
+the installer cutover record has a retained predecessor copy. Re-running an
+apply preserves the enrollment and uses a new protected transaction. An
+administrator-disabled service remains a prerequisite to reconcile separately.
+
+Both the installer and runtime accept only the exact registered NetRatel
+service SID, SYSTEM, Administrators and their existing bounded trusted-owner
+rules. A different service SID, untrusted writer, unexpected registration or
+reparse point remains rejected. The existing `NetRatel_LEGACY_ACL_REPAIR=preview`
+and offline `apply` handle only the documented inherited Users-write pattern;
+they do not authorize a broad ACL reset. ACL backups remain protected.
+Use those modes with the generated installer as a separate operation and clear
+the environment variable before invoking archive recovery. Archive recovery
+rejects an inherited legacy ACL mode, including during Preview.
+
+For an **automatic progression test**, use the recovery script from the new
+archive to recover to a fixed, earlier completed publication, then let the server
+offer the new release normally. Pass that earlier archive's checksum, exact
+version and source together:
+
+```powershell
+& $repair -ArchivePath $earlierArchive -Sha256 $earlierSha256 `
+    -PackageVersion $earlierVersion -PackageSourceRevision $earlierSource -Mode Preview
+& $repair -ArchivePath $earlierArchive -Sha256 $earlierSha256 `
+    -PackageVersion $earlierVersion -PackageSourceRevision $earlierSource -Mode Apply
+```
+
+Both metadata overrides are mandatory together and must match the selected
+archive. Older-than-installed packages are refused. The supported earlier
+package must already contain the result-reader correction required by the
+affected installation. Verify the same enrolled identity, actual running hash,
+authenticated result acknowledgement or supported conflict reconciliation, and
+then the distinct automatic offer/claim/activation/Accepted chain to the newer
+release. A repaired service reaching Running proves local startup only.
+
+Enterprise deployment can run the same checked script once as LocalSystem from
+a protected local directory. Record the actual execution identity, preserve its
+exit status and protected state receipt, and remove only that owned deployment
+task afterwards. The archive is protected by release checksum and publication
+attestation; this entry point does not claim an Authenticode signature.
+
 ### Repair an older installed Linux updater
 
 An installation from beta.35 or beta.36 can retain an updater that calls

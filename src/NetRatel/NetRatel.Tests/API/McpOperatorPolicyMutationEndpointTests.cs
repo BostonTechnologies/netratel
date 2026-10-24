@@ -34,6 +34,192 @@ public sealed class McpOperatorPolicyMutationEndpointTests
     [InlineData("replace")]
     [InlineData("disable")]
     [InlineData("revoke")]
+    public async Task Development_wide_lifecycle_requires_development_wide_parent_at_preview_and_confirmation(string action)
+    {
+        await using var db = new OrchestratorDbContext(new DbContextOptionsBuilder<OrchestratorDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString("N")).Options);
+        var administration = new McpOperatorPolicyAdministration(db);
+        var draft = Draft() with { TargetSelector = new(McpOperatorTargetSelectorKind.DevelopmentEnvironment, 0) };
+        var parentDraft = draft with
+        {
+            Name = "independent policy administration authority",
+            PrincipalSelector = new(McpOperatorPrincipalSelectorKind.OAuthSubject, "policy.admin@example.test"),
+            TargetSelector = new(McpOperatorTargetSelectorKind.ControlPlane, 0),
+            OperationFamily = McpOperatorOperationFamily.PolicyAdministration,
+            Operation = $"netratel_policy/{action}",
+            Constraints = new(RequiredConfirmationClass: McpOperatorConfirmationClass.PolicyAdministration)
+        };
+        var parent = await administration.CreateAsync(parentDraft, "independent-admin@example.test", CancellationToken.None);
+        var stored = await administration.CreateAsync(draft, "independent-admin@example.test", CancellationToken.None);
+        using var app = await BuildAppAsync(new McpOperatorAuthorization(db), administration,
+            new McpOperatorConfirmationService(db), accountRoutes: true);
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Account");
+        var path = $"/api/v2/mcp-operator/policies/manage/{action}";
+        object previewRequest = action == "create" ? new PreviewMcpOperatorPolicyCreateRequest(draft)
+            : PolicyPreviewRequest(action, stored, draft);
+
+        // Both selectors use tenant zero and no agent. A control-plane parent
+        // must still be unable to administer an all-tenants Development grant.
+        var deniedPreview = await client.PostAsJsonAsync($"{path}/preview", previewRequest);
+        deniedPreview.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await db.McpOperatorConfirmationPlans.CountAsync()).Should().Be(0);
+
+        parent = await administration.ReplaceAsync(parent.PolicyId, parent.Version,
+            parentDraft with { TargetSelector = draft.TargetSelector }, "independent-admin@example.test", CancellationToken.None);
+        var previewResponse = await client.PostAsJsonAsync($"{path}/preview", previewRequest);
+        previewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var preview = (await previewResponse.Content.ReadFromJsonAsync<McpOperatorPolicyMutationPreview>())!;
+        object confirmation = action == "create" ? new ConfirmMcpOperatorPolicyCreateRequest(draft, preview.PlanToken, preview.IdempotencyKey)
+            : PolicyConfirmRequest(action, stored, draft, preview);
+
+        parent = await administration.ReplaceAsync(parent.PolicyId, parent.Version, parentDraft,
+            "independent-admin@example.test", CancellationToken.None);
+        var deniedConfirmation = await client.PostAsJsonAsync($"{path}/confirm", confirmation);
+        deniedConfirmation.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await db.McpOperatorIdempotencyRecords.CountAsync()).Should().Be(0);
+        (await db.McpOperatorAcceptedAudits.CountAsync()).Should().Be(0);
+        (await administration.GetAsync(stored.PolicyId, CancellationToken.None)).Should().BeEquivalentTo(stored);
+
+        await administration.ReplaceAsync(parent.PolicyId, parent.Version,
+            parentDraft with { TargetSelector = draft.TargetSelector }, "independent-admin@example.test", CancellationToken.None);
+        var deniedParent = await administration.CreateAsync(parentDraft with { Effect = McpOperatorPolicyEffect.Deny },
+            "independent-admin@example.test", CancellationToken.None);
+        var deniedByExistingControlPlaneRule = await client.PostAsJsonAsync($"{path}/preview", previewRequest);
+        deniedByExistingControlPlaneRule.StatusCode.Should().Be(HttpStatusCode.Forbidden,
+            "restricting positive parent authority must preserve matching control-plane deny rules");
+        await administration.DisableAsync(deniedParent.PolicyId, deniedParent.Version, "independent-admin@example.test", CancellationToken.None);
+        var freshPreviewResponse = await client.PostAsJsonAsync($"{path}/preview", previewRequest);
+        freshPreviewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var freshPreview = (await freshPreviewResponse.Content.ReadFromJsonAsync<McpOperatorPolicyMutationPreview>())!;
+        object freshConfirmation = action == "create" ? new ConfirmMcpOperatorPolicyCreateRequest(draft, freshPreview.PlanToken, freshPreview.IdempotencyKey)
+            : PolicyConfirmRequest(action, stored, draft, freshPreview);
+        var accepted = await client.PostAsJsonAsync($"{path}/confirm", freshConfirmation);
+        accepted.StatusCode.Should().Be(action == "create" ? HttpStatusCode.Created : HttpStatusCode.OK);
+        (await db.McpOperatorAcceptedAudits.CountAsync()).Should().Be(1);
+        (await db.McpOperatorIdempotencyRecords.CountAsync()).Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData("create")]
+    [InlineData("replace")]
+    [InlineData("disable")]
+    [InlineData("revoke")]
+    public async Task Account_lifecycle_uses_the_same_target_bound_durable_confirmation_and_audit(string action)
+    {
+        var draft = ExactAgentDraft() with { Constraints = new(WorkingDirectories: ["/tmp"]) };
+        await using var db = await CreatePolicyDbAsync(action, draft.TargetSelector);
+        var administration = new McpOperatorPolicyAdministration(db);
+        var stored = await CreateStoredPolicyAsync(db, administration, draft);
+        var proposed = draft with { Constraints = draft.Constraints with { WorkingDirectories = ["/tmp", "/tmp/example"] } };
+        using var app = await BuildAppAsync(new McpOperatorAuthorization(db), administration, new McpOperatorConfirmationService(db), accountRoutes: true);
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Account");
+        var path = $"/api/v2/mcp-operator/policies/manage/{action}";
+        object previewRequest = action == "create" ? new PreviewMcpOperatorPolicyCreateRequest(proposed) : PolicyPreviewRequest(action, stored, proposed);
+        var previewResponse = await client.PostAsJsonAsync($"{path}/preview", previewRequest);
+        previewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var preview = (await previewResponse.Content.ReadFromJsonAsync<McpOperatorPolicyMutationPreview>())!;
+        object confirmRequest = action == "create" ? new ConfirmMcpOperatorPolicyCreateRequest(proposed, preview.PlanToken, preview.IdempotencyKey)
+            : PolicyConfirmRequest(action, stored, proposed, preview);
+
+        var response = await client.PostAsJsonAsync($"{path}/confirm", confirmRequest);
+        response.StatusCode.Should().Be(action == "create" ? HttpStatusCode.Created : HttpStatusCode.OK);
+        var result = (await response.Content.ReadFromJsonAsync<McpOperatorPolicyMutationResult>())!;
+        var replay = await client.PostAsJsonAsync($"{path}/confirm", confirmRequest);
+        replay.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await replay.Content.ReadFromJsonAsync<McpOperatorPolicyMutationResult>())!.Replay.Should().BeTrue();
+        var persisted = (await administration.GetAsync(result.Policy.PolicyId, CancellationToken.None))!;
+        if (action is "create" or "replace") persisted.Constraints.WorkingDirectories.Should().Equal("/tmp", "/tmp/example");
+        else persisted.LifecycleState.Should().Be(action == "disable" ? McpOperatorPolicyLifecycleState.Disabled : McpOperatorPolicyLifecycleState.Revoked);
+        var audit = await db.McpOperatorAcceptedAudits.SingleAsync();
+        audit.Subject.Should().Be("policy.admin@example.test");
+        audit.ServicePrincipal.Should().Be("netratel-web");
+        audit.McpResource.Should().Be("netratel-web-policy-administration");
+        audit.TenantId.Should().Be(draft.TargetSelector.TenantId);
+        audit.AgentId.Should().Be(draft.TargetSelector.AgentId);
+        (await db.McpOperatorIdempotencyRecords.CountAsync()).Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData("AccountReadOnly", HttpStatusCode.Forbidden)]
+    [InlineData("AccountCredential", HttpStatusCode.Unauthorized)]
+    public async Task Account_policy_route_rejects_non_administrators_and_integration_credentials(string authentication, HttpStatusCode expected)
+    {
+        var administration = new RecordingAdministration();
+        var confirmations = new RecordingConfirmations();
+        using var app = await BuildAppAsync(new RecordingAuthorization(true), administration, confirmations, accountRoutes: true);
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(authentication);
+        var response = await client.PostAsJsonAsync("/api/v2/mcp-operator/policies/manage/create/preview", new PreviewMcpOperatorPolicyCreateRequest(Draft()));
+        response.StatusCode.Should().Be(expected);
+        confirmations.Plans.Should().BeEmpty();
+        administration.Creates.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("create")]
+    [InlineData("replace")]
+    public async Task Account_lifecycle_rejects_padded_caller_selectors_before_plan_or_persistence(string action)
+    {
+        var draft = ExactAgentDraft();
+        await using var db = await CreatePolicyDbAsync(action, draft.TargetSelector);
+        var administration = new McpOperatorPolicyAdministration(db);
+        var stored = await CreateStoredPolicyAsync(db, administration, draft);
+        var proposed = draft with { PrincipalSelector = new(McpOperatorPrincipalSelectorKind.OAuthSubject, " policy.admin@example.test ") };
+        var policyCount = await db.McpOperatorPolicies.CountAsync();
+        var auditCount = await db.McpOperatorPolicyChangeAudits.CountAsync();
+        using var app = await BuildAppAsync(new McpOperatorAuthorization(db), administration, new McpOperatorConfirmationService(db), accountRoutes: true);
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Account");
+        object request = action == "create" ? new PreviewMcpOperatorPolicyCreateRequest(proposed)
+            : new PreviewMcpOperatorPolicyReplaceRequest(stored.PolicyId, stored.Version, proposed);
+
+        var response = await client.PostAsJsonAsync($"/api/v2/mcp-operator/policies/manage/{action}/preview", request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("validation_error");
+        (await db.McpOperatorPolicies.CountAsync()).Should().Be(policyCount);
+        (await db.McpOperatorPolicyChangeAudits.CountAsync()).Should().Be(auditCount);
+        (await administration.GetAsync(stored.PolicyId, CancellationToken.None)).Should().BeEquivalentTo(stored);
+        (await db.McpOperatorConfirmationPlans.CountAsync()).Should().Be(0);
+        (await db.McpOperatorIdempotencyRecords.CountAsync()).Should().Be(0);
+        (await db.McpOperatorAcceptedAudits.CountAsync()).Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("authority")]
+    [InlineData("version")]
+    [InlineData("self")]
+    public async Task Account_confirmation_rejects_lost_authority_stale_versions_and_self_escalation(string change)
+    {
+        var draft = ExactAgentDraft();
+        await using var db = await CreatePolicyDbAsync("replace", draft.TargetSelector);
+        var administration = new McpOperatorPolicyAdministration(db);
+        var stored = await CreateStoredPolicyAsync(db, administration, draft);
+        using var app = await BuildAppAsync(new McpOperatorAuthorization(db), administration, new McpOperatorConfirmationService(db), accountRoutes: true);
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Account");
+        const string path = "/api/v2/mcp-operator/policies/manage/replace";
+        var previewResponse = await client.PostAsJsonAsync($"{path}/preview", new PreviewMcpOperatorPolicyReplaceRequest(stored.PolicyId, 1, draft));
+        previewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var preview = (await previewResponse.Content.ReadFromJsonAsync<McpOperatorPolicyMutationPreview>())!;
+        if (change == "authority") client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("AccountReadOnly");
+        if (change == "version") await administration.ReplaceAsync(stored.PolicyId, 1, draft with { Name = "Independent reviewed edit" }, "independent-admin@example.test", CancellationToken.None);
+        if (change == "self") draft = draft with { PrincipalSelector = new(McpOperatorPrincipalSelectorKind.OAuthSubject, "policy.admin@example.test") };
+        var before = (await administration.GetAsync(stored.PolicyId, CancellationToken.None))!;
+        var response = await client.PostAsJsonAsync($"{path}/confirm", new ConfirmMcpOperatorPolicyReplaceRequest(stored.PolicyId, 1, draft, preview.PlanToken, preview.IdempotencyKey));
+        response.StatusCode.Should().Be(change == "authority" ? HttpStatusCode.Forbidden : HttpStatusCode.Conflict);
+        (await administration.GetAsync(stored.PolicyId, CancellationToken.None)).Should().BeEquivalentTo(before);
+        (await db.McpOperatorAcceptedAudits.CountAsync()).Should().Be(0);
+        (await db.McpOperatorIdempotencyRecords.CountAsync()).Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("create")]
+    [InlineData("replace")]
+    [InlineData("disable")]
+    [InlineData("revoke")]
     public async Task Exact_agent_policy_lifecycle_uses_persisted_classification_and_canonical_action(string action)
     {
         var draft = ExactAgentDraft();
@@ -166,6 +352,76 @@ public sealed class McpOperatorPolicyMutationEndpointTests
         laterReplay.Policy.Should().BeEquivalentTo(confirmed.Policy);
         (await db.McpOperatorPolicyChangeAudits.CountAsync()).Should().Be(changesBeforeReplay);
         (await db.McpOperatorAcceptedAudits.CountAsync()).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Create_replay_retains_original_definition_and_persisted_timestamps_after_later_changes()
+    {
+        var timestamp = DateTimeOffset.UtcNow.AddHours(1);
+        timestamp = new DateTimeOffset(timestamp.UtcTicks - timestamp.UtcTicks % TimeSpan.TicksPerMicrosecond + 7, TimeSpan.Zero);
+        var draft = ExactAgentDraft() with { Name = "  original reviewed grant  ", ExpiresAtUtc = timestamp,
+            ReviewByUtc = timestamp.AddMinutes(-15), Constraints = new(WorkingDirectories: ["/tmp"], MaxOutputBytes: 1024) };
+        await using var db = await CreatePolicyDbAsync("create", draft.TargetSelector);
+        var administration = new McpOperatorPolicyAdministration(db);
+        await CreateStoredPolicyAsync(db, administration, draft);
+        // Model PostgreSQL's persisted timestamp precision on the first response.
+        db.SavingChanges += (_, _) =>
+        {
+            foreach (var entry in db.ChangeTracker.Entries<McpOperatorPolicyRecord>().Where(entry => entry.State == EntityState.Added))
+            {
+                entry.Entity.CreatedAtUtc = Microseconds(entry.Entity.CreatedAtUtc);
+                entry.Entity.ExpiresAtUtc = entry.Entity.ExpiresAtUtc is { } expiry ? Microseconds(expiry) : null;
+                entry.Entity.ReviewByUtc = entry.Entity.ReviewByUtc is { } review ? Microseconds(review) : null;
+            }
+        };
+        using var app = await BuildAppAsync(new McpOperatorAuthorization(db), administration, new McpOperatorConfirmationService(db), accountRoutes: true);
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Account");
+        const string path = "/api/v2/mcp-operator/policies/manage/create";
+        var previewResponse = await client.PostAsJsonAsync($"{path}/preview", new PreviewMcpOperatorPolicyCreateRequest(draft));
+        previewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var preview = (await previewResponse.Content.ReadFromJsonAsync<McpOperatorPolicyMutationPreview>())!;
+        var request = new ConfirmMcpOperatorPolicyCreateRequest(draft, preview.PlanToken, preview.IdempotencyKey);
+        var response = await client.PostAsJsonAsync($"{path}/confirm", request);
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        var accepted = (await response.Content.ReadFromJsonAsync<McpOperatorPolicyCreateResult>())!;
+        accepted.Policy.ExpiresAtUtc.Should().Be(Microseconds(timestamp));
+        var receipt = await db.McpOperatorIdempotencyRecords.SingleAsync();
+        var originalReference = receipt.ResultReference;
+        originalReference.Should().StartWith("policy-create:");
+        originalReference!.Length.Should().BeLessThanOrEqualTo(512);
+
+        receipt.ResultReference = accepted.Policy.PolicyId.ToString("D");
+        await db.SaveChangesAsync();
+        var unchangedLegacy = await client.PostAsJsonAsync($"{path}/confirm", request);
+        unchangedLegacy.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await unchangedLegacy.Content.ReadFromJsonAsync<McpOperatorPolicyCreateResult>())!.Policy.Should().BeEquivalentTo(accepted.Policy);
+        receipt.ResultReference = originalReference;
+        await db.SaveChangesAsync();
+
+        var replaced = await administration.ReplaceAsync(accepted.Policy.PolicyId, 1,
+            draft with { Name = "later grant", Constraints = new(WorkingDirectories: ["/tmp/later"], MaxOutputBytes: 2048),
+                ExpiresAtUtc = timestamp.AddHours(1), ReviewByUtc = timestamp.AddMinutes(20) }, "independent-admin@example.test", CancellationToken.None);
+        var disabled = await administration.DisableAsync(replaced.PolicyId, replaced.Version, "independent-admin@example.test", CancellationToken.None);
+        var auditsBeforeReplay = await db.McpOperatorPolicyChangeAudits.CountAsync();
+        var replayResponse = await client.PostAsJsonAsync($"{path}/confirm", request);
+        replayResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var replay = (await replayResponse.Content.ReadFromJsonAsync<McpOperatorPolicyCreateResult>())!;
+        replay.Replay.Should().BeTrue();
+        replay.Policy.Should().BeEquivalentTo(accepted.Policy);
+        (await administration.GetAsync(replaced.PolicyId, CancellationToken.None)).Should().BeEquivalentTo(disabled);
+
+        receipt.ResultReference = accepted.Policy.PolicyId.ToString("D");
+        await db.SaveChangesAsync();
+        var unavailableLegacy = await client.PostAsJsonAsync($"{path}/confirm", request);
+        unavailableLegacy.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await unavailableLegacy.Content.ReadAsStringAsync()).Should().Contain("idempotency_replay_unavailable");
+        (await db.McpOperatorPolicyChangeAudits.CountAsync()).Should().Be(auditsBeforeReplay);
+        (await db.McpOperatorAcceptedAudits.CountAsync()).Should().Be(1);
+        (await db.McpOperatorIdempotencyRecords.CountAsync()).Should().Be(1);
+
+        static DateTimeOffset Microseconds(DateTimeOffset value) =>
+            new(value.UtcTicks - value.UtcTicks % TimeSpan.TicksPerMicrosecond, TimeSpan.Zero);
     }
 
     [Theory]
@@ -478,7 +734,10 @@ public sealed class McpOperatorPolicyMutationEndpointTests
         authorization.Accepted.Should().ContainSingle().Which.Operation.Should().Be("netratel_policy/create");
         administration.Creates.Should().Be(1);
         confirmations.Confirmed.Should().ContainSingle().Which.PayloadHash.Should().Be(confirmations.Plans[0].PayloadHash);
-        confirmations.Completed.Should().ContainSingle().Which.Should().Be((RecordingConfirmations.AdmissionId, McpOperatorIdempotencyOutcome.Succeeded, administration.CreatedPolicy.PolicyId.ToString("D")));
+        var completion = confirmations.Completed.Should().ContainSingle().Which;
+        completion.IdempotencyId.Should().Be(RecordingConfirmations.AdmissionId);
+        completion.Outcome.Should().Be(McpOperatorIdempotencyOutcome.Succeeded);
+        completion.ResultReference.Should().StartWith($"policy-create:{administration.CreatedPolicy.PolicyId:D}:1:");
     }
 
     [Fact]
@@ -870,7 +1129,8 @@ public sealed class McpOperatorPolicyMutationEndpointTests
     private static async Task<IHost> BuildAppAsync(
         IMcpOperatorAuthorization authorization,
         IMcpOperatorPolicyAdministration administration,
-        IMcpOperatorConfirmationService confirmations)
+        IMcpOperatorConfirmationService confirmations,
+        bool accountRoutes = false)
     {
         var delegationOptions = new McpOperatorDelegationOptions
         {
@@ -899,6 +1159,8 @@ public sealed class McpOperatorPolicyMutationEndpointTests
                     policy.AddAuthenticationSchemes("M2M");
                     policy.RequireAuthenticatedUser();
                 }));
+                services.AddAuthorization(options => options.AddPolicy("McpOperatorPolicyAdmin", policy =>
+                    policy.RequireAuthenticatedUser().RequireClaim("test-policy-permission", "mcp.policy.admin")));
                 services.AddSingleton(delegationOptions);
                 services.AddSingleton<McpOperatorDelegationTokenService>();
                 services.AddSingleton<IMcpOperatorAuthorization>(authorization);
@@ -912,7 +1174,11 @@ public sealed class McpOperatorPolicyMutationEndpointTests
                 app.UseAuthentication();
                 app.UseMiddleware<McpOperatorDelegationMiddleware>();
                 app.UseAuthorization();
-                app.UseEndpoints(endpoints => endpoints.MapMcpOperatorPolicyMutationEndpoints());
+                app.UseEndpoints(endpoints =>
+                {
+                    endpoints.MapMcpOperatorPolicyMutationEndpoints();
+                    if (accountRoutes) endpoints.MapMcpOperatorAccountPolicyMutationEndpoints();
+                });
             });
         });
         return await builder.StartAsync();
@@ -1175,11 +1441,18 @@ public sealed class McpOperatorPolicyMutationEndpointTests
         UrlEncoder encoder)
         : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
     {
-        protected override Task<AuthenticateResult> HandleAuthenticateAsync() =>
-            Request.Headers.Authorization == "M2M"
-                ? Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(
-                    new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "netratel-mcp-http-dev")], Scheme.Name)),
-                    Scheme.Name)))
-                : Task.FromResult(AuthenticateResult.Fail("Missing M2M authentication."));
+        protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+        {
+            var mode = Request.Headers.Authorization.ToString();
+            if (mode == "M2M") return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(
+                new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "netratel-mcp-http-dev")], Scheme.Name)), Scheme.Name)));
+            if (mode is not ("Account" or "AccountReadOnly" or "AccountCredential"))
+                return Task.FromResult(AuthenticateResult.Fail("Missing authentication."));
+            var claims = new List<Claim> { new("sub", "policy.admin@example.test"), new("netratel_principal_id", "policy-admin-principal") };
+            if (mode != "AccountReadOnly") claims.Add(new("test-policy-permission", "mcp.policy.admin"));
+            if (mode == "AccountCredential") claims.Add(new("netratel_integration_credential_id", "synthetic-credential"));
+            return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(
+                new ClaimsPrincipal(new ClaimsIdentity(claims, "Account")), Scheme.Name)));
+        }
     }
 }

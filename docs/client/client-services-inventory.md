@@ -33,14 +33,45 @@ Search, filters and rerenders do not request collection. Live updates use the
 existing SSE projection stream. “Live” describes that update connection; inventory
 age uses the client's observation time, not API receipt or browser refresh time.
 
-Existing clients do not echo the refresh request ID in telemetry. The viewer
-therefore reports a **subsequent inventory outcome**, without claiming that a
-particular request caused it. Only newer inventory cursors and terminal outcomes
-end the wait: intermediate chunks and selected watches do not. Complete, Partial,
-Error, Unsupported and offline outcomes are explicit. A 70-second deadline
-(admission spacing + collection + assembly + delivery allowance), checked by the
-existing display timer, also ends an unfulfilled wait. Closing or changing client
-or tenant cancels requests/subscriptions and fences late responses.
+Updated clients negotiate `client-services-refresh-v1` alongside the existing
+services capability. Each admitted refresh is saved before dispatch with its
+request ID, tenant/client, presence connection/epoch, telemetry registration and
+70-second deadline. Its request ID is carried on every chunk of the selected
+inventory. A request can join an in-flight inventory; that collection explicitly
+echoes the joined ID. Requests arriving after collection completes wait for the
+next collection within the existing rate limit. A watch, an unrelated collection,
+a different registration or an expired request cannot complete it. Reconnect
+clears native pending IDs.
+
+The existing authorized inventory API and native `netratel_services/inventory`
+readback include `supportsRefreshCorrelation` and `refreshRequests`. Each request
+has a terminal `outcome`, optional `collectionId`, completion time and fixed error
+code. `GET /api/v2/agents/{tenantId}/{agentId}/services/refresh/{requestId}` reads one
+exact request under the same target and `telemetry.read` checks. The projection
+retains the latest 128 requests per client across process restarts; export the
+readback into campaign evidence when longer retention is needed. A missing ID
+returns 404 and must not be replaced by the latest collection.
+
+Complete, Partial, Error and Unsupported terminal collections are bound only to
+the exact admitted request on its original registration. Assembly failures retain
+the request's error outcome. An authoritative offline presence or replaced registration is recorded as
+Offline on the next authorized read; elapsed deadlines are durably recorded as
+TimedOut on the next projection access. Neither result claims collection success.
+Throttled calls return the already tracked request ID without scheduling another
+collection. A pending request is coalesced until its terminal outcome or deadline;
+after completion, the existing 15-second admission spacing still applies.
+
+Older clients remain compatible. Their refresh response has
+`correlationSupported: false`; a subsequent terminal collection is recorded as
+Unattributed, never Complete for that request. Their viewer keeps the explicit
+**subsequent inventory outcome** wording and cursor-based wait. On upgraded
+clients the viewer waits for the exact persisted request outcome and displays its
+ID. Both paths retain the bounded 70-second display deadline. Closing or changing
+client or tenant cancels requests/subscriptions and fences late responses.
+
+Historical uncorrelated requests remain unproven. Owner acceptance of this contract
+requires a new explicitly versioned request on an upgraded client and a retained
+readback linking that new request ID to its terminal collection ID.
 
 The dialog owns the tenant and client captured at opening. Replacing directory
 rows, changing heartbeat data, reconnecting the inventory stream, or disposing the
@@ -86,8 +117,8 @@ associated with the original tenant, client, service, actor, reason, and operati
 ID in persisted state and audit.
 
 Deploy the updated API and Web, and upgrade the Linux client binary to obtain the
-collector fix. Existing Windows clients continue to work with the additive backend
-fields. Release publication is separate from the source merge.
+collector fix. Upgrade either Windows or Linux clients to obtain refresh correlation. Older clients
+continue to work with the additive backend fields and unattributed outcomes. Release publication is separate from the source merge.
 
 Owner acceptance: open Services, confirm actual rows and the observation timestamp,
 then request Refresh after the opening request finishes. Leave the dialog open and

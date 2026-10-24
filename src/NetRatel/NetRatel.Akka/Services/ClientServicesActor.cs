@@ -47,6 +47,11 @@ public sealed class ClientServicesActor : ReceiveActor
             var replyTo = Sender;
             replyTo.Tell(await ExecuteAsync(message));
         });
+        ReceiveAsync<UpdateClientServicesRefresh>(async message =>
+        {
+            var replyTo = Sender;
+            replyTo.Tell(await ExecuteAsync(message));
+        });
         ReceiveAsync<ExpireAssembly>(ExpireAssemblyAsync);
         Receive<ReceiveTimeout>(_ =>
         {
@@ -81,11 +86,13 @@ public sealed class ClientServicesActor : ReceiveActor
                 _state = await _store.LoadAsync(_client, timeout.Token) ?? ClientServicesState.Empty(_client);
                 _loaded = true;
             }
+            await SaveRefreshChangeAsync(ClientServicesRefreshLifecycle.Expire(_state, _timeProvider.GetUtcNow()), timeout.Token);
             return message switch
             {
                 RecordClientServicesChunk record => await RecordAsync(record.Chunk, timeout.Token),
                 UpdateClientServiceWatchPolicy update => await UpdatePolicyAsync(update.Policy, timeout.Token),
                 GetClientServices => Clone(_state),
+                UpdateClientServicesRefresh refresh => await UpdateRefreshAsync(refresh.Request, timeout.Token),
                 _ => new Status.Failure(new ArgumentException("Unknown services message."))
             };
         }
@@ -157,7 +164,7 @@ public sealed class ClientServicesActor : ReceiveActor
             LastAcceptedSequence = chunk.Sequence,
             Revision = checked(_state.Revision + 1),
             LatestAttempt = new(chunk.CollectionId, chunk.Kind, attemptStatus, chunk.ConnectionEpoch, chunk.Sequence,
-                chunk.ObservedAtUtc, chunk.ReceivedAtUtc, chunk.WatchPolicyRevision, chunk.ErrorCode, chunk.IsFinal)
+                chunk.ObservedAtUtc, chunk.ReceivedAtUtc, chunk.WatchPolicyRevision, chunk.ErrorCode, chunk.IsFinal, chunk.RefreshRequestId, chunk.RegistrationId)
         };
         if (chunk.Kind == ServiceSnapshotKind.Inventory)
             candidate = candidate with { LatestInventoryAttempt = candidate.LatestAttempt };
@@ -171,6 +178,7 @@ public sealed class ClientServicesActor : ReceiveActor
             candidate = candidate with { WatchedServices = chunk.Status == ServiceCollectionStatus.Complete
                 ? next.Services.ToArray() : UnknownWatchEvidence(next.Services, chunk.ObservedAtUtc) };
 
+        candidate = ClientServicesRefreshLifecycle.Observe(candidate, chunk, _timeProvider.GetUtcNow());
         var saved = await _store.SaveAsync(candidate, _state.Revision, cancellationToken);
         _state = saved.State;
         if (saved.Disposition != ClientServicesStoreWriteDisposition.Stored)
@@ -191,6 +199,22 @@ public sealed class ClientServicesActor : ReceiveActor
             _assembly = next;
         }
         return Result(ClientServicesMessageDisposition.Accepted);
+    }
+
+    private async Task<ClientServicesState> UpdateRefreshAsync(ClientServicesRefreshRequestDto request, CancellationToken cancellationToken)
+    {
+        await SaveRefreshChangeAsync(ClientServicesRefreshLifecycle.Update(_state, request, _timeProvider.GetUtcNow()), cancellationToken);
+        return Clone(_state);
+    }
+
+    private async Task SaveRefreshChangeAsync(ClientServicesState candidate, CancellationToken cancellationToken)
+    {
+        if (ReferenceEquals(candidate, _state)) return;
+        candidate = candidate with { Revision = checked(_state.Revision + 1) };
+        var saved = await _store.SaveAsync(candidate, _state.Revision, cancellationToken);
+        _state = saved.State;
+        if (saved.Disposition != ClientServicesStoreWriteDisposition.Stored)
+            throw new InvalidOperationException("Services refresh state changed concurrently.");
     }
 
     private async Task<ClientServicesState> UpdatePolicyAsync(ClientServiceWatchPolicy update, CancellationToken cancellationToken)
@@ -259,7 +283,10 @@ public sealed class ClientServicesActor : ReceiveActor
                 ? UnknownWatchEvidence([], _timeProvider.GetUtcNow()) : _state.WatchedServices
         };
         if (_assembly.First.Kind == ServiceSnapshotKind.Inventory)
+        {
             candidate = candidate with { LatestInventoryAttempt = candidate.LatestAttempt };
+            candidate = ClientServicesRefreshLifecycle.AssemblyTimedOut(candidate, candidate.LatestAttempt!, _timeProvider.GetUtcNow());
+        }
         var saved = await _store.SaveAsync(candidate, _state.Revision, cancellationToken);
         _state = saved.State;
         ClearAssembly();
@@ -277,13 +304,15 @@ public sealed class ClientServicesActor : ReceiveActor
         LastPartialInventory = state.LastPartialInventory is null ? null : state.LastPartialInventory with
             { Services = state.LastPartialInventory.Services.ToArray() },
         WatchedServices = state.WatchedServices.ToArray(),
-        MonitoredServiceNames = state.MonitoredServiceNames.ToArray()
+        MonitoredServiceNames = state.MonitoredServiceNames.ToArray(),
+        RefreshRequests = state.RefreshRequests?.ToArray()
     };
 
     private static bool Matches(ClientServicesChunk first, ClientServicesChunk next) =>
         first.CollectionId == next.CollectionId && first.Kind == next.Kind && first.ConnectionEpoch == next.ConnectionEpoch &&
         first.ConnectionId == next.ConnectionId && first.ObservedAtUtc == next.ObservedAtUtc && first.WatchPolicyRevision == next.WatchPolicyRevision &&
-        first.Status == next.Status && first.ErrorCode == next.ErrorCode;
+        first.Status == next.Status && first.ErrorCode == next.ErrorCode &&
+        first.RefreshRequestId == next.RefreshRequestId && first.RegistrationId == next.RegistrationId;
 
     private static bool MatchesName(ClientServiceObservation observation, string name) =>
         string.Equals(observation.Name, name, observation.Platform == ClientServicePlatform.Windows

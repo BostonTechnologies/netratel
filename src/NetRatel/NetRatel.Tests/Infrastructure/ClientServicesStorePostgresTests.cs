@@ -32,12 +32,15 @@ public sealed class ClientServicesStorePostgresTests(PostgreSqlPersistenceFixtur
         var owner = await ActivateAsync(epochs, client);
         var store = provider.GetRequiredService<IClientServicesStore>();
         var observed = DateTimeOffset.UtcNow;
+        var refresh = new ClientServicesRefreshRequestDto(Guid.NewGuid(), owner.Owner.ConnectionId, owner.Owner.Epoch,
+            Guid.NewGuid(), observed, observed + ClientServicesLimits.RefreshTimeout, true);
         var attempt = new ServiceCollectionAttemptDto(Guid.NewGuid(), ServiceSnapshotKind.Inventory,
-            ServiceCollectionStatus.Partial, owner.Owner.Epoch, 2, observed, observed, 0);
+            ServiceCollectionStatus.Partial, owner.Owner.Epoch, 2, observed, observed, 0,
+            RefreshRequestId: refresh.RequestId, RegistrationId: refresh.RegistrationId);
         var state = ClientServicesState.Empty(client) with
         {
             Revision = 1, ConnectionId = owner.Owner.ConnectionId, ConnectionEpoch = owner.Owner.Epoch, LastAcceptedSequence = 2,
-            LatestAttempt = attempt, LatestInventoryAttempt = attempt,
+            LatestAttempt = attempt, LatestInventoryAttempt = attempt, RefreshRequests = [refresh],
             LastPartialInventory = new(Guid.NewGuid(), owner.Owner.Epoch, 1, observed, observed,
                 [ServicesTestData.Service("partial")], ServiceCollectionStatus.Partial, "systemd-query-partial")
         };
@@ -49,10 +52,17 @@ public sealed class ClientServicesStorePostgresTests(PostgreSqlPersistenceFixtur
         (await store.SaveAsync(policy with { LatestInventoryAttempt = attempt with { IsFinal = true } }, 1, default)).Disposition.Should().Be(ClientServicesStoreWriteDisposition.Conflict);
         (await store.SaveAsync(policy, 1, default)).Disposition.Should().Be(ClientServicesStoreWriteDisposition.Stored);
         var timeoutAttempt = attempt with { IsFinal = true, Status = ServiceCollectionStatus.Error, ErrorCode = "assembly_timeout" };
-        var timeout = policy with { Revision = 3, LatestAttempt = timeoutAttempt, LatestInventoryAttempt = timeoutAttempt };
+        var timeout = ClientServicesRefreshLifecycle.AssemblyTimedOut(policy with
+            { Revision = 3, LatestAttempt = timeoutAttempt, LatestInventoryAttempt = timeoutAttempt }, timeoutAttempt, DateTimeOffset.UtcNow);
         (await store.SaveAsync(timeout with { LastPartialInventory = altered }, 2, default)).Disposition.Should().Be(ClientServicesStoreWriteDisposition.Conflict);
         (await store.SaveAsync(timeout, 2, default)).Disposition.Should().Be(ClientServicesStoreWriteDisposition.Stored);
-        (await store.LoadAsync(client, default))!.LastPartialInventory!.Services.Single().Name.Should().Be("partial");
+        var restored = (await store.LoadAsync(client, default))!;
+        restored.LastPartialInventory!.Services.Single().Name.Should().Be("partial");
+        restored.RefreshRequests!.Single().Outcome.Should().Be(ClientServicesRefreshOutcome.Error);
+        restored.RefreshRequests.Single().CollectionId.Should().Be(attempt.CollectionId);
+        var inventedCompletion = restored with { Revision = 4, RefreshRequests = [restored.RefreshRequests.Single() with
+            { Outcome = ClientServicesRefreshOutcome.Complete }] };
+        (await store.SaveAsync(inventedCompletion, 3, default)).Disposition.Should().Be(ClientServicesStoreWriteDisposition.Conflict);
     }
 
     [Fact]
