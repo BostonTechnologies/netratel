@@ -230,16 +230,19 @@ public class MainLayoutTests : AsyncBunitContext
     }
 
     [Theory]
-    [InlineData(false, false)]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
-    [InlineData(true, true)]
-    public void Navigation_AdminKeepsIndependentLeafPermissions(bool isOperator, bool isInstanceAdministrator)
+    [InlineData(false, false, false)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(true, true, false)]
+    [InlineData(false, false, true)]
+    public void Navigation_AdminKeepsIndependentLeafPermissions(
+        bool isOperator, bool isInstanceAdministrator, bool hasPolicyPermission)
     {
         var authorization = AddAuthorization();
         authorization.SetAuthorized("An operator with a long account name");
         if (isOperator) authorization.SetRoles("Operator");
-        Services.AddSingleton<IAccessAdministrationApiService>(new StubAccessAdministrationApiService(isInstanceAdministrator));
+        Services.AddSingleton<IAccessAdministrationApiService>(new StubAccessAdministrationApiService(
+            isInstanceAdministrator, hasPolicyPermission ? ["mcp.policy.admin"] : []));
         AddConfiguration(new Dictionary<string, string?>());
         var cut = RenderMainLayout();
 
@@ -248,6 +251,7 @@ public class MainLayoutTests : AsyncBunitContext
             var admin = Assert.Single(cut.FindAll(".netratel-nav .mud-nav-group[aria-label='Admin']"));
             var destinations = admin.QuerySelectorAll("a").Select(link => link.GetAttribute("href")).ToArray();
             var expected = new List<string> { "/account/integration-credentials" };
+            if (isInstanceAdministrator || hasPolicyPermission) expected.Add("/admin/operator-policies");
             if (isInstanceAdministrator) expected.AddRange(["/admin/access", "/admin/branding"]);
             if (isOperator) expected.AddRange(["/admin/app-settings", "/clients/settings"]);
             destinations.Should().Equal(expected);
@@ -262,6 +266,7 @@ public class MainLayoutTests : AsyncBunitContext
     [Theory]
     [InlineData("/account/integration-credentials?tab=personal", "Admin")]
     [InlineData("/admin/access", "Admin")]
+    [InlineData("/admin/operator-policies", "Admin")]
     [InlineData("/clients/settings", "Admin")]
     [InlineData("/clients/detail/fixture-agent", "Estate Management")]
     [InlineData("/tenants", "Estate Management")]
@@ -454,7 +459,8 @@ public class MainLayoutTests : AsyncBunitContext
                 "Test"));
     }
 
-    private sealed class StubAccessAdministrationApiService(bool isInstanceAdministrator = false) : IAccessAdministrationApiService
+    private sealed class StubAccessAdministrationApiService(
+        bool isInstanceAdministrator = false, IReadOnlyList<string>? permissions = null) : IAccessAdministrationApiService
     {
         public Task<IReadOnlyList<AccessTenantDto>> GetTenantsAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<AccessTenantDto>>([]);
@@ -463,7 +469,7 @@ public class MainLayoutTests : AsyncBunitContext
             Task.FromResult<IReadOnlyList<AccessRoleDto>>([]);
 
         public Task<EffectiveAccessSummaryDto> GetSelfAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult(new EffectiveAccessSummaryDto(null, isInstanceAdministrator, []));
+            Task.FromResult(new EffectiveAccessSummaryDto(null, isInstanceAdministrator, permissions ?? []));
 
         public Task<IReadOnlyList<LocalUserAccessDto>> GetUsersAsync(int? tenantId, CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<LocalUserAccessDto>>([]);
