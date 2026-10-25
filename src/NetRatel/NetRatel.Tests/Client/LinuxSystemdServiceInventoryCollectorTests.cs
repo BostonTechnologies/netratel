@@ -78,6 +78,26 @@ public sealed class LinuxSystemdServiceInventoryCollectorTests
         ClientServiceContractValidator.TryValidateResult(result, out _).Should().BeTrue();
     }
 
+    [Fact]
+    public async Task UnresolvedDependencyPlaceholdersDoNotMakeInstalledAndTransientInventoryPartial()
+    {
+        var adapter = new FixtureAdapter(arguments => arguments[0] switch
+        {
+            "list-unit-files" => new(0, "installed.service enabled enabled\n"),
+            "list-units" => new(0, "missing.service not-found inactive dead Missing dependency\ntransient.service loaded active running Transient\n"),
+            "show" => new(arguments.Contains("missing.service") ? 1 : 0,
+                Block("installed.service", "inactive", "dead", "enabled") +
+                Block("transient.service", "active", "running", "transient")),
+            _ => throw new InvalidOperationException()
+        });
+
+        var result = await new LinuxSystemdServiceInventoryCollector(adapter).CollectInventoryAsync(CancellationToken.None);
+
+        result.Status.Should().Be(ServiceCollectionStatus.Complete);
+        result.Services.Select(service => service.Name).Should().BeEquivalentTo("installed.service", "transient.service");
+        adapter.Commands.Single(command => command[0] == "show").Should().NotContain("missing.service");
+    }
+
     [Theory]
     [InlineData("loaded", "active", "running", false, ClientServiceState.Running)]
     [InlineData("loaded", "active", "exited", false, ClientServiceState.Running)]
