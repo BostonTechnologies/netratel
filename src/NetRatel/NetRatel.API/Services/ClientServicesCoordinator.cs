@@ -15,7 +15,7 @@ public sealed class EmptyClientServiceWatchPolicySource(IClientServicesRouter ro
         if (state.MonitoredServiceNames.Count != 0) revision = checked(revision + 1);
         return new ClientServiceWatchPolicy(client, new(revision, [],
             ClientServicesLimits.DefaultWatchIntervalSeconds, ClientServicesLimits.DefaultInventoryIntervalSeconds,
-            timeProvider.GetUtcNow().Add(ClientServicesLimits.MaximumPolicyLifetime)));
+            timeProvider.GetUtcNow().Add(ClientServicesLimits.MaximumPolicyLifetime - ClientServicesLimits.PolicyClockSkewHeadroom)));
     }
 }
 

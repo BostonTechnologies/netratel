@@ -352,6 +352,16 @@ public sealed class MonitoringApiTests
     }
 
     [Fact]
+    public async Task IssuedServiceWatchPolicyIsAcceptedByAClientClockBehindTheServer()
+    {
+        var fixture = new Fixture();
+        fixture.Config.Current = fixture.Config.Current with { Rules = [fixture.ServiceRule("Spooler")] };
+        var policy = (await fixture.Source.GetPolicyAsync(new(7, fixture.AgentId), default)).Policy;
+
+        ClientServiceContractValidator.IsValidPolicy(policy, fixture.Clock.Now.AddSeconds(-30)).Should().BeTrue();
+    }
+
+    [Fact]
     public async Task EffectiveServiceWatchesAreExactEnabledRuleUnionAndCapacityIsRejectedBeforeSave()
     {
         var fixture = new Fixture();
