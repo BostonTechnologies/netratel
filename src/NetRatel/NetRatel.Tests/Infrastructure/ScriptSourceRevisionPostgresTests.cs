@@ -68,11 +68,13 @@ public sealed class ScriptSourceRevisionPostgresTests(PostgreSqlPersistenceFixtu
     }
 
     [Theory]
-    [InlineData(JobRunState.Pending)]
-    [InlineData(JobRunState.Running)]
-    public async Task Administrator_cleanup_rejects_an_active_MCP_job_run(JobRunState state)
+    [InlineData(JobRunState.Pending, false)]
+    [InlineData(JobRunState.Running, false)]
+    [InlineData(JobRunState.Pending, true)]
+    [InlineData(JobRunState.Running, true)]
+    public async Task Administrator_cleanup_rejects_an_active_job_run(JobRunState state, bool mcpOwned)
     {
-        var fixture = await CreateReferenceFixtureAsync();
+        var fixture = await CreateReferenceFixtureAsync(mcpOwned);
         await using var db = new OrchestratorDbContext(options);
         var now = DateTimeOffset.UtcNow;
         await new JobRunService(db, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider())
@@ -81,18 +83,21 @@ public sealed class ScriptSourceRevisionPostgresTests(PostgreSqlPersistenceFixtu
                 fixture.Decision.Request.AgentId));
         await Assert.ThrowsAsync<JobDefinitionInUseException>(() => new JobDefinitionService(db).DeleteAsync((ulong)fixture.JobId));
         Assert.NotNull(await new JobDefinitionService(db).GetAsync((ulong)fixture.JobId));
-        Assert.Null((await db.McpOperatorJobs.SingleAsync()).DeletedAtUtc);
+        Assert.Null((await db.Jobs.IgnoreQueryFilters().SingleAsync()).DeletedAtUtc);
+        if (mcpOwned) Assert.Null((await db.McpOperatorJobs.SingleAsync()).DeletedAtUtc);
         Assert.Single(await db.JobRuns.ToArrayAsync());
     }
 
     [Theory]
-    [InlineData(false, false)]
-    [InlineData(false, true)]
-    [InlineData(true, false)]
-    [InlineData(true, true)]
-    public async Task Job_retirement_and_new_run_admission_share_a_transaction_fence(bool ownedDelete, bool deleteFirst)
+    [InlineData(false, false, false)]
+    [InlineData(false, false, true)]
+    [InlineData(true, false, false)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, false)]
+    [InlineData(true, true, true)]
+    public async Task Job_retirement_and_new_run_admission_share_a_transaction_fence(bool mcpOwned, bool ownedDelete, bool deleteFirst)
     {
-        var fixture = await CreateReferenceFixtureAsync();
+        var fixture = await CreateReferenceFixtureAsync(mcpOwned);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var ct = timeout.Token;
         await using var winner = new OrchestratorDbContext(options);
@@ -141,9 +146,85 @@ public sealed class ScriptSourceRevisionPostgresTests(PostgreSqlPersistenceFixtu
         else await Assert.ThrowsAnyAsync<InvalidOperationException>(() => pending);
 
         await using var verify = new OrchestratorDbContext(options);
-        Assert.Equal(deleteFirst, (await verify.McpOperatorJobs.SingleAsync(ct)).DeletedAtUtc.HasValue);
+        Assert.Equal(deleteFirst, (await verify.Jobs.IgnoreQueryFilters().SingleAsync(ct)).DeletedAtUtc.HasValue);
+        if (mcpOwned) Assert.Equal(deleteFirst, (await verify.McpOperatorJobs.SingleAsync(ct)).DeletedAtUtc.HasValue);
         Assert.Equal(deleteFirst ? 0 : 1, await verify.JobRuns.CountAsync(ct));
         Assert.Equal(deleteFirst ? 0 : 1, await verify.Jobs.CountAsync(ct));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Job_retirement_and_child_edit_share_a_transaction_fence(bool deleteFirst)
+    {
+        var fixture = await CreateReferenceFixtureAsync(mcpOwned: false);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var ct = timeout.Token;
+        await using var winner = new OrchestratorDbContext(options);
+        await using var loser = new OrchestratorDbContext(options);
+        await loser.Database.OpenConnectionAsync(ct);
+        var loserPid = ((NpgsqlConnection)loser.Database.GetDbConnection()).ProcessID;
+        await using var transaction = await winner.Database.BeginTransactionAsync(ct);
+
+        Task<JobStepInfo?> EditAsync(OrchestratorDbContext db) => new JobDefinitionService(db)
+            .UpdateStepAsync(new((ulong)fixture.StepId, null, null, "edited before retirement", null, null, null), ct);
+
+        if (deleteFirst)
+        {
+            Assert.NotNull(await new JobDefinitionService(winner).DeleteAsync((ulong)fixture.JobId, ct));
+            var pending = EditAsync(loser);
+            await WaitForDatabaseBlockAsync(loserPid, pending, ct);
+            await transaction.CommitAsync(ct);
+            Assert.Null(await pending);
+        }
+        else
+        {
+            Assert.NotNull(await EditAsync(winner));
+            var pending = new JobDefinitionService(loser).DeleteAsync((ulong)fixture.JobId, ct);
+            await WaitForDatabaseBlockAsync(loserPid, pending, ct);
+            await transaction.CommitAsync(ct);
+            Assert.NotNull(await pending);
+        }
+
+        await using var verify = new OrchestratorDbContext(options);
+        Assert.Empty(await verify.Jobs.ToArrayAsync(ct));
+        Assert.NotNull((await verify.Jobs.IgnoreQueryFilters().SingleAsync(ct)).DeletedAtUtc);
+        Assert.Equal(deleteFirst ? "true" : "edited before retirement", (await verify.JobSteps.SingleAsync(ct)).Command);
+    }
+
+    [Fact]
+    public async Task Waiting_step_reorder_refreshes_the_committed_ordinal_after_acquiring_the_fence()
+    {
+        var fixture = await CreateReferenceFixtureAsync(mcpOwned: false);
+        JobStepInfo second;
+        JobStepInfo third;
+        await using (var seed = new OrchestratorDbContext(options))
+        {
+            var jobs = new JobDefinitionService(seed);
+            second = (await jobs.AddStepAsync(new((ulong)fixture.JobId, 2, JobStepKind.RunCommand,
+                "sh", "second", null, null, true)))!;
+            third = (await jobs.AddStepAsync(new((ulong)fixture.JobId, 3, JobStepKind.RunCommand,
+                "sh", "third", null, null, true)))!;
+        }
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var ct = timeout.Token;
+        await using var winner = new OrchestratorDbContext(options);
+        await using var loser = new OrchestratorDbContext(options);
+        await loser.Database.OpenConnectionAsync(ct);
+        var loserPid = ((NpgsqlConnection)loser.Database.GetDbConnection()).ProcessID;
+        await using var transaction = await winner.Database.BeginTransactionAsync(ct);
+
+        Assert.NotNull(await new JobDefinitionService(winner).ReorderStepAsync((ulong)fixture.StepId, 3, ct));
+        var pending = new JobDefinitionService(loser).ReorderStepAsync(second.Id, 3, ct);
+        await WaitForDatabaseBlockAsync(loserPid, pending, ct);
+        await transaction.CommitAsync(ct);
+        Assert.NotNull(await pending);
+
+        await using var verify = new OrchestratorDbContext(options);
+        var ordered = await verify.JobSteps.OrderBy(step => step.Ordinal).ToArrayAsync(ct);
+        Assert.Equal(new[] { (long)third.Id, fixture.StepId, (long)second.Id }, ordered.Select(step => step.Id));
+        Assert.Equal(new[] { 1, 2, 3 }, ordered.Select(step => step.Ordinal));
     }
 
     [Fact]
@@ -279,7 +360,7 @@ public sealed class ScriptSourceRevisionPostgresTests(PostgreSqlPersistenceFixtu
         }
     }
 
-    private async Task<ReferenceFixture> CreateReferenceFixtureAsync()
+    private async Task<ReferenceFixture> CreateReferenceFixtureAsync(bool mcpOwned = true)
     {
         var source = await CreateAsync();
         var now = DateTimeOffset.UtcNow;
@@ -321,10 +402,13 @@ public sealed class ScriptSourceRevisionPostgresTests(PostgreSqlPersistenceFixtu
             ManifestHash = digest, TimeoutSeconds = 60, WorkingDirectory = "/tmp", CreatedAtUtc = now, UpdatedAtUtc = now, Version = 1
         });
         await db.SaveChangesAsync();
-        var job = await new McpOperatorJobStore(db).CreateAsync(new(decision, audit, new("reference-job", "/"), now), CancellationToken.None);
-        var step = await new JobDefinitionService(db).AddStepAsync(new((ulong)job.JobId, 1, JobStepKind.RunCommand,
+        var jobId = mcpOwned
+            ? (await new McpOperatorJobStore(db).CreateAsync(new(decision, audit, new("reference-job", "/"), now), CancellationToken.None)).JobId
+            : (long)(await new JobDefinitionService(db).CreateAsync(new("reference-job", "/", null,
+                access.TenantId, string.Empty, AgentId: access.AgentId))).Id;
+        var step = await new JobDefinitionService(db).AddStepAsync(new((ulong)jobId, 1, JobStepKind.RunCommand,
             "sh", "true", null, null, true));
-        return new(source, job.JobId, (long)step!.Id, decision, audit);
+        return new(source, jobId, (long)step!.Id, decision, audit);
     }
 
     private sealed record ReferenceFixture(ScriptInfo Source, long JobId, long StepId,

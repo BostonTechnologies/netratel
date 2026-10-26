@@ -132,7 +132,22 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
             Assert.Equal(2, authoredCatalog.GetArrayLength());
             Assert.Contains(authoredCatalog.EnumerateArray(), x => x.GetProperty("requestDefinitionId").GetString() == createdDto.RequestDefinitionId &&
                 x.GetProperty("inputs")[0].GetProperty("label").GetString() == input.Label);
+            await using (var scope = app.Services.CreateAsyncScope())
+            {
+                Assert.NotNull(await scope.ServiceProvider.GetRequiredService<IJobDefinitionService>()
+                    .DeleteAsync(ulong.Parse(createdDto.RequestDefinitionId, CultureInfo.InvariantCulture)));
+            }
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", invokeToken);
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync(syncPath, new { inputs = Array.Empty<NetRatelCatalogInputDefinitionDto>() })).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/internal/ingest", Ingest(createdDto.RequestDefinitionId))).StatusCode);
+            Assert.Equal(0, app.Services.GetRequiredService<InvocationCounter>().Starts);
+            await using (var scope = app.Services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                var retainedInput = await db.JobParameters.SingleAsync(x => x.JobId == long.Parse(createdDto.RequestDefinitionId, CultureInfo.InvariantCulture));
+                Assert.Equal(input.Label, retainedInput.Label);
+                Assert.Equal(input.DefaultValue, retainedInput.DefaultValue);
+            }
             Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/internal/ingest", Ingest("7002"))).StatusCode);
             Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/internal/ingest", Ingest("7001", callback: "https://attacker.example/callback"))).StatusCode);
             var accepted = await client.PostAsJsonAsync("/internal/ingest", Ingest("7001")); accepted.EnsureSuccessStatusCode();

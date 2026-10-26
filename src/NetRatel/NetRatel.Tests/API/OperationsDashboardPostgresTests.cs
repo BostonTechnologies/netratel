@@ -9,6 +9,7 @@ using NetRatel.API.Services.Monitoring;
 using NetRatel.Application.Presence;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Monitoring;
 using NetRatel.Tests.Infrastructure;
 using Xunit;
@@ -93,6 +94,35 @@ public sealed class OperationsDashboardPostgresTests(PostgreSqlPersistenceFixtur
         var jobs = await new OperationsRecentJobsService(new JobsAccess(), provider.GetRequiredService<IServiceScopeFactory>()).ReadAsync(1, new(), default);
         jobs.Should().HaveCount(6); jobs.Select(job => job.RunId).Should().Equal(8, 7, 6, 5, 4, 3);
         jobs.Should().OnlyContain(job => job.JobName == "Inventory" && job.ClientIdentity!.DisplayName == "Client 0");
+    }
+
+    [Fact]
+    public async Task Recent_runs_keep_retired_job_names_only_in_the_original_tenant()
+    {
+        var connection = await fixture.CreateDatabaseAsync();
+        var now = DateTimeOffset.UtcNow;
+        await using var provider = new ServiceCollection()
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(connection)).BuildServiceProvider();
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            await db.Database.MigrateAsync();
+            db.Jobs.AddRange(
+                new JobDefinition { Id = 1, TenantId = 1, Name = "Retained inventory", CreatedAtUtc = now, UpdatedAtUtc = now },
+                new JobDefinition { Id = 2, TenantId = 2, Name = "Private other tenant job", CreatedAtUtc = now, UpdatedAtUtc = now });
+            db.JobRuns.AddRange(
+                new JobRunRecord { Id = 1, JobId = 1, TenantId = 1, CreatedAtUtc = now, Status = 2 },
+                new JobRunRecord { Id = 2, JobId = 2, TenantId = 1, CreatedAtUtc = now.AddSeconds(1), Status = 2 },
+                new JobRunRecord { Id = 3, JobId = 1, TenantId = 2, CreatedAtUtc = now.AddSeconds(2), Status = 2 });
+            await db.SaveChangesAsync();
+            (await new JobDefinitionService(db).DeleteAsync(1)).Should().NotBeNull();
+        }
+
+        var rows = await new OperationsRecentJobsService(new JobsAccess(), provider.GetRequiredService<IServiceScopeFactory>())
+            .ReadAsync(1, new(), default);
+        rows.Select(row => row.RunId).Should().Equal(2, 1);
+        rows.Single(row => row.RunId == 1).JobName.Should().Be("Retained inventory");
+        rows.Single(row => row.RunId == 2).JobName.Should().Be("Job unavailable");
     }
 
     [Fact]

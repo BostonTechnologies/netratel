@@ -1185,9 +1185,9 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
         {
             entity.ToTable("Jobs");
             entity.HasKey(x => x.Id);
-            // Retain MCP-owned rows for immutable run/audit references while
-            // hiding retired definitions from every active reader/scheduler.
-            entity.HasQueryFilter(job => !McpOperatorJobs.Any(owner =>
+            // Retain definitions for immutable run/audit references while hiding
+            // every retired job, including legacy MCP tombstones, from active readers.
+            entity.HasQueryFilter(job => job.DeletedAtUtc == null && !McpOperatorJobs.Any(owner =>
                 owner.JobId == job.Id && owner.DeletedAtUtc != null));
             entity.Property(x => x.Name).IsRequired();
             entity.Property(x => x.FolderPath).IsRequired();

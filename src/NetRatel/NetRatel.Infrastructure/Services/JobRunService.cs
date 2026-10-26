@@ -183,7 +183,7 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
         await using var transaction = isNew ? await JobDefinitionMutationFence.BeginAsync(_db, ct) : null;
         if (row is null)
         {
-            // A captured MCP snapshot does not permit starting a retired definition.
+            // A captured definition does not permit starting a retired job.
             // Share retirement's row fence until the Pending intent is committed;
             // the actor's existing transaction ends before any gateway dispatch.
             if (!await JobDefinitionMutationFence.LockActiveAsync(_db, checked((long)command.JobId), ct))

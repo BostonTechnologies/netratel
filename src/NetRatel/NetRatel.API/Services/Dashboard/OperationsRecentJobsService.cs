@@ -20,13 +20,13 @@ public sealed class OperationsRecentJobsService(IEffectiveAccessService access, 
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
         var rows = await (from run in db.JobRuns.AsNoTracking()
-                          join job in db.Jobs.AsNoTracking() on run.JobId equals job.Id into definitions
+                          join job in db.Jobs.IgnoreQueryFilters().AsNoTracking() on run.JobId equals job.Id into definitions
                           from job in definitions.DefaultIfEmpty()
                           where run.TenantId == tenantId
                           orderby run.CreatedAtUtc descending, run.Id descending
                           select new { run.Id, run.JobId, run.AgentId, run.Status,
                               StartedAtUtc = run.StartedAtUtc ?? run.CreatedAtUtc,
-                              JobName = job != null && (job.TenantId == tenantId || job.TenantId == null) ? job.Name : "Job unavailable" })
+                              JobName = job != null && job.TenantId == run.TenantId ? job.Name : "Job unavailable" })
             .Take(6).ToListAsync(cancellationToken).ConfigureAwait(false);
         var identities = (await MonitoringIdentityProjection.ReadAsync(db, tenantId,
             rows.Where(row => row.AgentId.HasValue).Select(row => row.AgentId!.Value), cancellationToken).ConfigureAwait(false)).ToDictionary(identity => identity.AgentId);

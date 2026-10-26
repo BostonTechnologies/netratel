@@ -37,7 +37,7 @@ public sealed class JobDefinitionServiceTests
     }
 
     [Fact]
-    public async Task DeleteAsync_Removes_Job_Run_History_Before_Deleting_Definition()
+    public async Task DeleteAsync_Retires_Definition_And_Preserves_Job_Run_History()
     {
         await using var db = CreateDb();
         var service = new JobDefinitionService(db);
@@ -58,6 +58,7 @@ public sealed class JobDefinitionServiceTests
             ScriptId: null,
             PayloadJson: null,
             Enabled: true));
+        var parameter = await service.AddParamAsync(new(job.Id, "fixture", "string", false, "retained", null, null));
 
         db.JobRuns.Add(new JobRunRecord
         {
@@ -143,11 +144,37 @@ public sealed class JobDefinitionServiceTests
 
         deleted.Should().NotBeNull();
         (await db.Jobs.CountAsync()).Should().Be(0);
-        (await db.JobSteps.CountAsync()).Should().Be(0);
-        (await db.JobRuns.CountAsync()).Should().Be(0);
-        (await db.JobStepRuns.CountAsync()).Should().Be(0);
-        (await db.JobTaskActivities.CountAsync()).Should().Be(0);
-        (await db.JobTaskLogs.CountAsync()).Should().Be(0);
+        var retained = await db.Jobs.IgnoreQueryFilters().SingleAsync();
+        retained.Id.Should().Be((long)job.Id);
+        retained.Name.Should().Be(job.Name);
+        retained.DeletedAtUtc.Should().NotBeNull();
+        retained.UpdatedAtUtc.Should().Be(retained.DeletedAtUtc!.Value);
+        (await service.GetAsync(job.Id)).Should().BeNull();
+        (await service.GetDetailsAsync(job.Id)).Should().BeNull();
+        (await service.ListAsync()).Should().BeEmpty();
+        (await service.DeleteAsync(job.Id)).Should().BeNull();
+        (await service.ListParamsAsync(job.Id)).Should().BeEmpty();
+        (await service.ListStepsAsync(job.Id)).Should().BeEmpty();
+        (await service.AddParamAsync(new(job.Id, "new", "string", false, null, null, null))).Should().BeNull();
+        (await service.UpdateParamAsync(new(parameter!.Id, "changed", null, null, null, null, null))).Should().BeNull();
+        (await service.DeleteParamAsync(parameter.Id)).Should().BeFalse();
+        (await service.AddStepAsync(new(job.Id, 2, JobStepKind.RunCommand, "sh", "changed", null, null, true))).Should().BeNull();
+        (await service.UpdateStepAsync(new(step.Id, null, null, "changed", null, null, null))).Should().BeNull();
+        (await service.ReorderStepAsync(step.Id, 2)).Should().BeNull();
+        (await service.DeleteStepAsync(step.Id)).Should().BeFalse();
+        (await db.JobParameters.SingleAsync()).DefaultValue.Should().Be("retained");
+        (await db.JobSteps.SingleAsync()).Command.Should().Be("whoami");
+        (await db.JobRuns.SingleAsync()).Id.Should().Be(4100);
+        (await db.JobStepRuns.SingleAsync()).Id.Should().Be(5100);
+        (await db.JobTaskActivities.Select(x => x.Id).ToArrayAsync()).Should().BeEquivalentTo([6100L, 6200L]);
+        (await db.JobTaskLogs.Select(x => x.Message).ToArrayAsync()).Should().BeEquivalentTo(["done", "ad hoc done"]);
+
+        var runs = new JobRunService(db, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
+        (await runs.GetDetailsAsync(4100))!.Steps.Should().ContainSingle(x => x.Id == 5100);
+        Func<Task> startRetired = () => runs.UpsertRunAsync(new(4101, job.Id, 1, job.ClientIdentity,
+            "test", JobRunState.Pending, 0, DateTimeOffset.UtcNow, null, null, null, null, null));
+        await startRetired.Should().ThrowAsync<JobDefinitionUnavailableException>();
+        (await db.JobRuns.CountAsync()).Should().Be(1);
     }
 
     private static OrchestratorDbContext CreateDb()

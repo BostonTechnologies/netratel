@@ -241,6 +241,14 @@ public sealed class DevelopmentMcpScriptEndpointTests
         var delete = await client.DeleteAsync($"{markerJobRoot}/{markerJob.JobId}");
 
         delete.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        using (var scope = app.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            (await db.Jobs.AnyAsync(job => job.Id == (long)markerJob.JobId)).Should().BeFalse();
+            (await db.Jobs.IgnoreQueryFilters().SingleAsync(job => job.Id == (long)markerJob.JobId)).DeletedAtUtc.Should().NotBeNull();
+            (await scope.ServiceProvider.GetRequiredService<IJobRunService>().GetAsync(started.RunId))!
+                .Status.Should().Be(JobRunState.Cancelled);
+        }
         app.Services.GetRequiredService<TestTargetAuthority>().AcceptedOperations.Should().Contain([DevelopmentOperatorOperation.ScriptMutation, DevelopmentOperatorOperation.JobDefinitionMutation, DevelopmentOperatorOperation.JobRunStart, DevelopmentOperatorOperation.JobRunCancel, DevelopmentOperatorOperation.JobRunDelete]);
     }
 

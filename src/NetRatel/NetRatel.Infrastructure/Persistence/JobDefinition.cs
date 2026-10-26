@@ -13,6 +13,7 @@ public sealed class JobDefinition
     public string? OptionsJson { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; }
     public DateTimeOffset UpdatedAtUtc { get; set; }
+    public DateTimeOffset? DeletedAtUtc { get; set; }
     public List<JobParameterDefinition> Parameters { get; set; } = [];
     public List<JobStepDefinition> Steps { get; set; } = [];
 }
