@@ -319,7 +319,13 @@ public sealed class RuntimeInventoryHostIntegrationTests
     [Fact]
     public async Task DatabaseFailureAfterReadyReturnsSanitizedUnavailableAndRecoversOnTheSameHost()
     {
-        using var host = _factory.CreateRuntimeSibling(CreateRuntimeSettings("NetRatelRuntimeDependencyRecovery"));
+        using var sharedClient = _factory.CreateClient();
+        var sharedHealthChecks = _factory.Services.GetRequiredService<HealthCheckService>();
+
+        var outageFactory = new ApiFactory();
+        await using var outageFactoryOwner = (IAsyncDisposable)outageFactory;
+        await outageFactory.InitializeAsync();
+        using var host = outageFactory.CreateRuntimeSibling(CreateRuntimeSettings("NetRatelRuntimeDependencyRecovery"));
         using var administrator = await host.CreateLocalAdministratorClientAsync(TimeSpan.FromSeconds(10));
 
         var search = $"dependency-recovery-{Guid.NewGuid():N}";
@@ -357,8 +363,10 @@ public sealed class RuntimeInventoryHostIntegrationTests
         var healthChecks = host.Services.GetRequiredService<HealthCheckService>();
         var healthy = await CheckHealthAsync(healthChecks);
         healthy.Status.Should().Be(HealthStatus.Healthy);
+        var sharedHealthy = await CheckHealthAsync(sharedHealthChecks);
+        sharedHealthy.Status.Should().Be(HealthStatus.Healthy);
 
-        var outage = await _factory.DenyApplicationDatabaseConnectionsAsync();
+        var outage = await outageFactory.DenyApplicationDatabaseConnectionsAsync();
         try
         {
             using var unavailable = await administrator.GetAsync(route);
@@ -377,6 +385,10 @@ public sealed class RuntimeInventoryHostIntegrationTests
                 "the registered readiness checks must report durable-store unavailability instead of an operational runtime that appears healthy");
             unhealthy.Entries["akka-command-persistence"].Status.Should().Be(HealthStatus.Unhealthy);
             unhealthy.Entries["akka-job"].Status.Should().Be(HealthStatus.Unhealthy);
+
+            var sharedDuringOutage = await CheckHealthAsync(sharedHealthChecks);
+            sharedDuringOutage.Status.Should().Be(HealthStatus.Healthy,
+                "the isolated outage must not interrupt the shared collection host");
         }
         finally
         {
@@ -392,6 +404,11 @@ public sealed class RuntimeInventoryHostIntegrationTests
         restoredDirectory.Should().NotBeNull();
         restoredDirectory!.Items.Should().ContainSingle(agent =>
             agent.AgentId == agentId && agent.TenantId == tenantId && !agent.Online);
+
+        using var sharedResponse = await sharedClient.GetAsync("/api/v1/system/version");
+        sharedResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var sharedAfterRecovery = await CheckHealthAsync(sharedHealthChecks);
+        sharedAfterRecovery.Status.Should().Be(HealthStatus.Healthy);
     }
 
     [Fact]
