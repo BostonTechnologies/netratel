@@ -42,8 +42,8 @@ using Xunit;
 
 namespace NetRatel.Tests.API;
 
-[Collection(PostgreSqlPersistenceCollection.Name)]
 public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFixture postgres)
+    : IClassFixture<PostgreSqlPersistenceFixture>
 {
     [Fact]
     public async Task Actual_tokens_filter_catalog_bound_invocation_retry_and_live_revocation_without_legacy_authority()
