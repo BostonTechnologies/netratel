@@ -463,6 +463,33 @@ partial publication evidence are shown instead of treating an incomplete pack
 as installable. A client receives updates from its NetRatel instance; it does
 not need direct GitHub access.
 
+### Controlled update cohort
+
+Publication makes a pack available to the existing enabled tenant policies.
+Before publishing a campaign candidate, record all eligible tenant settings,
+target-version pins, enabled agents, suspended/suppressed update states and
+existing attempts. Include offline records: they can receive an offer when they
+reconnect. Select the exact disposable cohort and use the supported tenant
+policy or agent suspension controls to exclude every other eligible agent.
+Creating a new test tenant alone does not isolate a shared release catalogue.
+
+Tenant channel and target-version settings affect the whole tenant. Preserve
+existing administrator suspensions and use current policy versions when making
+bounded changes. Capture authoritative eligibility readback before **Approve
+and publish for deployment**, and account for scheduled automatic publication
+while preparing the cohort. If the available controls cannot bound the shared
+instance, use an isolated instance for the update test rather than assuming
+that unrelated agents will stay offline.
+
+Observe offer, authenticated claim, verified staging, updater handover,
+same-identity readmission, target executable hash, terminal acceptance and result
+acknowledgement on the same canary. Compare excluded agents' attempts and
+versions before and after. Keep a journal of temporary holds and their intended
+final state. Restoring an unpinned prerelease policy while the new pack remains
+published expands the rollout; restore it only as part of the owner's intended
+deployment. A supported manual recovery installation does not prove this
+automatic chain.
+
 ### Automatic update routing and recovery
 
 The configured REST origin may be the Web hostname. Web forwards

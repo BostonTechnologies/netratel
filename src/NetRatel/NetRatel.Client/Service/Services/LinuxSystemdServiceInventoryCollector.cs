@@ -35,6 +35,7 @@ public sealed class LinuxSystemdServiceInventoryCollector(
         try
         {
             // Installed units include stopped/unloaded services; loaded units include transient services.
+            // systemctl --all also lists unresolved dependency placeholders with LOAD=not-found.
             var installed = await _adapter.QueryAsync(["list-unit-files", "--type=service", "--no-legend", "--no-pager", "--plain", "--full"], deadline.Token).ConfigureAwait(false);
             var loaded = await _adapter.QueryAsync(["list-units", "--type=service", "--all", "--no-legend", "--no-pager", "--plain", "--full"], deadline.Token).ConfigureAwait(false);
             var unitFiles = ParseUnitFiles(installed.Output);
@@ -150,7 +151,7 @@ public sealed class LinuxSystemdServiceInventoryCollector(
 
     internal static IEnumerable<string> ParseLoadedNames(string output) => output.Split('\n')
         .Select(line => line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
-        .Where(parts => parts.Length >= 4 && IsUnitName(parts[0]))
+        .Where(parts => parts.Length >= 4 && IsUnitName(parts[0]) && parts[1] != "not-found")
         .Select(parts => parts[0]);
 
     internal static Dictionary<string, Dictionary<string, string>> ParsePropertyBlocks(string output, bool truncated = false)

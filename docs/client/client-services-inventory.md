@@ -4,6 +4,9 @@ Linux inventory unions installed `.service` unit files with loaded service units
 including stopped/unloaded services and transient services. Bare template
 definitions (`worker@.service`) are excluded: they are definitions, not runtime
 services. Concrete instances (`worker@blue.service`) remain in inventory.
+Loaded-unit discovery also excludes unresolved `not-found` dependency
+placeholders. An unresolved dependency is not an installed or loadable service;
+it must not by itself turn otherwise complete inventory into a partial result.
 `systemctl` runs with argument vectors, C locale, full unit names and bounded
 output under the existing collection deadline. Valid property blocks survive
 another unit's failed query; unresolved units remain Unknown. A truncated trailing
@@ -43,6 +46,14 @@ next collection within the existing rate limit. A watch, an unrelated collection
 a different registration or an expired request cannot complete it. Reconnect
 clears native pending IDs.
 
+While the telemetry publisher waits for a metrics or inventory acknowledgement,
+incoming Services policies share one bounded pending slot. An ordinary renewal
+updates that slot's policy without erasing its selected refresh request ID.
+After acknowledgement credit returns, the publisher applies the pending policy
+and retains that request for the corresponding inventory. The slot belongs to
+the current presence session; reconnect does not carry a request into another
+connection.
+
 The existing authorized inventory API and native `netratel_services/inventory`
 readback include `supportsRefreshCorrelation` and `refreshRequests`. Each request
 has a terminal `outcome`, optional `collectionId`, completion time and fixed error
@@ -72,6 +83,42 @@ client or tenant cancels requests/subscriptions and fences late responses.
 Historical uncorrelated requests remain unproven. Owner acceptance of this contract
 requires a new explicitly versioned request on an upgraded client and a retained
 readback linking that new request ID to its terminal collection ID.
+
+The API issues watched and empty-fallback Services policies with a 59-minute
+lifetime. This leaves one minute below the client's unchanged one-hour maximum
+for bounded clock lag and transport time. It does not relax the client's policy
+validation or require the operator to advance the guest clock.
+
+Rejected converted policies emit a fixed reason category with the normalized
+refresh GUID, policy revision, expiry, client UTC, connection ID and epoch.
+Reasons distinguish expiry, excessive lifetime, stale revision and a conflicting
+or replayed policy. Invalid wire conversion emits only its fixed rejection
+category. These diagnostics omit service names, tokens and raw policy payloads;
+they help identify the rejected stage without changing admission rules.
+
+## Normal-clock post-reboot acceptance
+
+Use an explicitly disposable hosted client running the verified published
+binary. After reboot, capture service account/start mode, executable hash,
+enrollment continuity, authenticated Online presence, connection epoch and
+registration, plus the normal time service's source, successful sync and observed
+offset. Keep the guest's normal clock throughout the acceptance sequence.
+
+Through the selected native consumer, admit a fresh Services refresh and retain
+its request ID. Read that exact request until its terminal outcome. A success
+requires `Complete`, a nonempty `collectionId` and a retained collection whose
+`refreshRequestId` equals that request ID under the matching tenant, client and
+registration. Wait until the first request is terminal and the advertised
+throttle interval has passed, then admit a second distinct request and require
+the same relationship. Throttling/coalescing that returns the first ID does not
+create another successful assertion. Background inventory with no request ID
+does not complete either request.
+
+If a request fails, retain its first failure and any bounded policy-rejection
+diagnostic with source/version and clock observations. A temporary positive
+clock adjustment can support a timing diagnosis, but its successful refresh
+cannot supply normal-clock acceptance. Keep the historical failed or
+uncorrelated request separate from the new candidate's result.
 
 The dialog owns the tenant and client captured at opening. Replacing directory
 rows, changing heartbeat data, reconnecting the inventory stream, or disposing the

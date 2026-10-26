@@ -1,3 +1,4 @@
+using System.Text.Json;
 using AwesomeAssertions;
 using Xunit;
 
@@ -40,19 +41,24 @@ public sealed class Net10TargetFrameworkTests
     [Fact]
     public void GlobalJson_PinsTheNet10Sdk()
     {
-        File.ReadAllText(Path.Combine(GetRepositoryRoot(), "global.json"))
-            .Should().Contain("\"version\": \"10.0.402\"")
-            .And.Contain("\"rollForward\": \"disable\"");
+        using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(GetRepositoryRoot(), "global.json")));
+        var sdk = document.RootElement.GetProperty("sdk");
+        sdk.GetProperty("version").GetString().Should().MatchRegex(@"^10\.0\.\d{3}$");
+        sdk.GetProperty("rollForward").GetString().Should().Be("disable");
     }
 
     [Theory]
     [InlineData("docker/api/Dockerfile")]
     [InlineData("docker/web/Dockerfile")]
     [InlineData("docker/client/Dockerfile.public")]
+    [InlineData("docker/mcp-http/Dockerfile")]
+    [InlineData("docker/migrations/Dockerfile")]
     public void DockerBuildStages_PinTheSdkRequiredByGlobalJson(string dockerfile)
     {
+        using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(GetRepositoryRoot(), "global.json")));
+        var sdkVersion = document.RootElement.GetProperty("sdk").GetProperty("version").GetString();
         File.ReadAllText(Path.Combine(GetRepositoryRoot(), dockerfile))
-            .Should().Contain("mcr.microsoft.com/dotnet/sdk:10.0.402-noble", dockerfile);
+            .Should().Contain($"mcr.microsoft.com/dotnet/sdk:{sdkVersion}-noble", dockerfile);
     }
 
     private static string GetRepositoryRoot() =>

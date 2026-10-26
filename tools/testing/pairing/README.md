@@ -1,6 +1,6 @@
 # Actual source-pair acceptance
 
-`tools/ci/run-pairing-acceptance.sh` runs the current NetRatel and an explicitly selected RatelDesk source checkout through ordinary Debug builds, PostgreSQL migrations, unattended local-administrator bootstrap, and normal production hosting. It requires .NET SDK 10.0.402, Python 3, Node 20 or newer with npm, OpenSSL, and the Linux Docker socket. The current Debug production Client executes in a disposable .NET 10 runtime container so its real enrollment credentials cannot affect a host installation.
+`tools/ci/run-pairing-acceptance.sh` runs the current NetRatel and an explicitly selected RatelDesk source checkout through ordinary Debug builds, PostgreSQL migrations, unattended local-administrator bootstrap, and normal production hosting. It requires the .NET SDK pinned in `global.json`, Python 3, Node 20 or newer with npm, OpenSSL, and the Linux Docker socket. The current Debug production Client executes in a disposable .NET 10 runtime container so its real enrollment credentials cannot affect a host installation.
 
 Set absolute source roots and a fresh runtime directory outside either checkout:
 

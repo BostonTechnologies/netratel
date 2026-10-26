@@ -59,9 +59,27 @@ Reviewed credential expiry uses exact UTC instants at microsecond resolution: at
 
 Open **Admin → MCP Policies** (`/admin/operator-policies`) while signed in with current `mcp.policy.admin` authority. The page is hidden from accounts without this permission, and its API checks the current assignment on every request. Integration credentials and service tokens cannot use the account mutation adapter.
 
-Choose the environment and optional tenant filter, then **Inspect** a policy. The page shows its exact principal and target selectors, classification filter, operation families, path grants, limits, expiry, version, lifecycle state and immutable change audit. Exact-client policies also show the server-owned target profile and its version. Working-directory grants are exact: `/tmp` does not grant `/tmp/example`.
+Choose the environment and optional tenant filter to load the authorized scope.
+Within those results, search by policy name or ID, principal, tenant, client/tag,
+or operation/family. Search is case-insensitive. Lifecycle filters select Active,
+Disabled or Revoked policies; target filters select Exact client, Tenant, Client
+tag, Control plane or Development environment. The list starts at ten rows per
+page and offers page sizes of 10, 25, 50 or 100. Changing a search or filter
+returns to the first page.
 
-For an existing active policy, select **Replace / restore reviewed bounds**, add the required directory as a separate line and choose a bounded expiry and audit reference. Unchanged limits are preserved. **Preview exact change** freezes the draft and shows the complete proposed authority. Tick the review acknowledgement and confirm. Create, replace, disable and revoke use the same policy engine, target-profile binding, durable preview/confirm service and idempotency checks as native MCP. Plan credentials remain in server-side component memory and are never displayed. An interrupted confirmation can retry the same plan to retrieve its original receipt. After acceptance, the accepted version and correlation remain visible while policy and audit readback is checked. A different current version, missing change audit or failed read is shown separately; **Refresh accepted receipt** repeats only the reads.
+Choose **Inspect** on the required row. A centered, bounded dialog opens with a
+loading state, so inspection stays visible even when the selected policy is
+near the end of the list. The dialog shows its exact principal and target
+selectors, classification filter, operation families, path grants, limits,
+expiry, version, lifecycle state and immutable change audit. Exact-client
+policies also show the server-owned target profile and its version.
+Working-directory grants are exact: `/tmp` does not grant `/tmp/example`.
+Inspection, editing, frozen preview, confirmation and readback remain inside the
+scrollable dialog with its footer actions available. Closing it preserves the
+list's search, filters, page and selected row; it does not undo an accepted
+change or discard its receipt.
+
+For an existing active policy, select **Edit reviewed bounds**, add the required directory as a separate line and choose a bounded expiry and audit reference. Unchanged limits are preserved. **Preview exact change** freezes the draft and shows the complete proposed authority. Tick the review acknowledgement and confirm. Create, replace, disable and revoke use the same policy engine, target-profile binding, durable preview/confirm service and idempotency checks as native MCP. Plan credentials remain in server-side component memory and are never displayed. An interrupted confirmation can retry the same plan to retrieve its original receipt. After acceptance, the accepted version and correlation remain visible while policy and audit readback is checked. A different current version, missing change audit or failed read is shown separately; **Refresh accepted receipt** repeats only the reads.
 
 New create receipts retain the original creation metadata and persisted timestamp precision. Exact replay returns that accepted definition even after a later replacement or disable. Legacy identifier-only create receipts can replay only while the original version remains unchanged; otherwise `idempotency_replay_unavailable` requires current policy/audit inspection instead of presenting a later definition as the original result. Current authority, plan expiry and exact payload checks still apply, and replay does not write another policy or audit.
 

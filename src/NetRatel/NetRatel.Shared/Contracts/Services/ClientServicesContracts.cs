@@ -181,4 +181,6 @@ public static class ClientServicesLimits
     public static readonly TimeSpan MinimumRefreshInterval = TimeSpan.FromSeconds(15);
     public static readonly TimeSpan RefreshTimeout = MinimumRefreshInterval + CollectionTimeout + AssemblyTimeout + TimeSpan.FromSeconds(15);
     public static readonly TimeSpan MaximumPolicyLifetime = TimeSpan.FromHours(1);
+    // Server-issued policies must leave room for client clock skew and transport before this maximum is checked.
+    public static readonly TimeSpan PolicyClockSkewHeadroom = TimeSpan.FromMinutes(1);
 }

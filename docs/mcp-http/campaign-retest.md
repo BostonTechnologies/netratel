@@ -15,11 +15,14 @@ contract below applies prospectively; it does not rewrite historical outcomes.
 
 ## Baseline and finish line
 
-The beta.46 checkpoint advances 16 of the 53 retained contexts and leaves
-**37 original contexts unresolved**: 12 P0, 23 P1 and two P2. The 17 planned
+The beta.47 checkpoint retains **21 passed and 32 open original contexts** out
+of the 53 carried rows: the open set is 12 P0, 18 P1 and two P2. The 17 planned
 exclusions remain within the original 518-context universe, not additional
-contexts. The checkpoint records the remaining rows as unattempted or
-prerequisite-gated; it does not establish 37 product defects. Load the latest
+contexts. These rows include missing historical predecessors and unproved
+assertions; they are not 32 demonstrated product defects. Beta.47 and beta.48
+retain separate **NO-GO** deployed verdicts. New candidate observations append
+their own source and outcome without rewriting either historical verdict.
+Load the latest
 private ledger and original assertion
 definitions once, retain predecessor/effect requirements, and execute ready
 independent groups. Do not reconstruct missing assertions from an operation
@@ -101,6 +104,48 @@ for one group do not stop other independently ready groups.
 The original five replay repairs already have 25 bounded beta.31 regression
 contexts. Keep those results and repeat only the affected boundaries. Their
 implementation issues are not reopened merely because full acceptance is pending.
+
+### Keep the deployed candidate and update cohort explicit
+
+Record the published tag/source, deployed component image digests, selected
+consumer and installed client executable hashes before testing. Keep the same
+NetRatel and companion candidates through a multi-window workflow. A deployment
+between an incident's creation and recovery makes that sequence mixed-version
+evidence; retain the partial result and give a later complete sequence its own
+identity. The release agent publishes, the owner deploys, and the laptop
+consumer controls explicitly disposable hosted executors. The laptop itself is
+not an execution-agent fixture for this continuation.
+
+Before an update pack can be published or automatically offered, establish a
+[controlled update cohort](../client/CLIENT.md#controlled-update-cohort).
+Inventory all eligible tenants and agents, including offline records, and use
+supported policy controls to exclude everything outside the chosen cohort.
+After publication, verify both the intended update chain and the absence of
+unintended attempts. A manual recovery install is a separate observation.
+
+For [Services correlation](../client/client-services-inventory.md#normal-clock-post-reboot-acceptance),
+reboot the upgraded hosted client and retain its normal time-service readback,
+same enrolled identity and fresh connection. Two separately admitted selected
+native requests must each reach `Complete` with their own exact request-to-
+collection relationship. A coalesced response with the first request ID or an
+unattributed startup collection is not a second completed request. Preserve any
+rejection diagnostic; a clock-adjusted success does not establish normal-clock
+acceptance.
+
+Exercise the [operator policy Web workspace](authentication.md#bounded-operator-policies-in-the-web-ui)
+through its search, filters, pagination and inspection/edit dialog. Inspect a
+policy from a later page and verify the dialog keeps that exact policy/version
+through preview and confirmation. Complete the temporary exact-directory
+grant, actual operation, removal, retained audit and nonadministrator/stale-
+review/self-escalation boundaries. List usability does not replace policy
+lifecycle acceptance.
+
+For retired jobs, retain the original terminal run, steps and logs while proving
+that a new start is denied. A foreign-tenant history probe must reach the product
+API under a genuine, correctly bound principal before it can establish that
+API's denial. A local consumer delegation rejection records only that earlier
+boundary. Use supported authenticated paths; do not change ownership or weaken
+delegation to make the request reach the server.
 
 ## Prepare once, before the timed session
 

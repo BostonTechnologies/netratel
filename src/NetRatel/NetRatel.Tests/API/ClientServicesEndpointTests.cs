@@ -113,6 +113,10 @@ public sealed class ClientServicesEndpointTests
         (await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2))).Should().BeTrue();
         reader.Current.ServiceWatchPolicy.RefreshRequestId.Should().Be(first.RequestId!.Value.ToString("D"));
         reader.Current.ServiceWatchPolicy.ServiceNames.Should().BeEmpty();
+        var issued = reader.Current.ServiceWatchPolicy;
+        ClientServiceContractValidator.IsValidPolicy(new(issued.Revision, issued.ServiceNames.ToArray(),
+            issued.WatchIntervalSeconds, issued.InventoryIntervalSeconds, issued.ExpiresAtUtc.ToDateTimeOffset(), first.RequestId),
+            clock.GetUtcNow().AddSeconds(-30)).Should().BeTrue("a server-issued policy must survive bounded client clock lag");
         clock.Now = clock.Now.Add(ClientServicesLimits.MinimumRefreshInterval);
         var pending = await Refresh(http);
         pending.Status.Should().Be(ClientServicesRefreshStatus.Throttled);

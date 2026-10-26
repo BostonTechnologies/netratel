@@ -6,9 +6,9 @@
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="NetRatel.Tests" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.13" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.14" />
     <PackageReference Include="NJsonSchema" Version="11.6.1" />
-    <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
+    <PackageReference Include="ModelContextProtocol" Version="2.3.0" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\NetRatel.Shared\NetRatel.Shared.csproj" />
