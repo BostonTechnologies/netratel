@@ -49,9 +49,24 @@ internal sealed class ServiceCollectionCoordinator(IServiceInventoryCollector co
         _nextWatchAt = DateTimeOffset.MinValue;
     }
 
-    public bool ApplyPolicy(ClientServiceWatchPolicyDto policy)
+    public bool ApplyPolicy(ClientServiceWatchPolicyDto policy) => ApplyPolicy(policy, out _);
+
+    public bool ApplyPolicy(ClientServiceWatchPolicyDto policy, out string? rejectionReason)
     {
-        if (!ClientServiceContractValidator.IsValidPolicy(policy, timeProvider.GetUtcNow()) || policy.Revision < (_policy?.Revision ?? 0)) return false;
+        var validatedAtUtc = timeProvider.GetUtcNow();
+        if (!ClientServiceContractValidator.TryValidatePolicy(policy, validatedAtUtc, out rejectionReason))
+        {
+            // Keep the existing admission limits; distinguish timing failures without logging the selection.
+            if (policy is not null && policy.ExpiresAtUtc <= validatedAtUtc) rejectionReason = "expired_watch_policy";
+            else if (policy is not null && policy.ExpiresAtUtc - validatedAtUtc > ClientServicesLimits.MaximumPolicyLifetime)
+                rejectionReason = "watch_policy_lifetime_exceeded";
+            return false;
+        }
+        if (policy.Revision < (_policy?.Revision ?? 0))
+        {
+            rejectionReason = "stale_watch_policy";
+            return false;
+        }
         var changedSelection = _policy is null || policy.Revision > _policy.Revision;
         if (!changedSelection && _policy is { } current)
         {
@@ -59,7 +74,11 @@ internal sealed class ServiceCollectionCoordinator(IServiceInventoryCollector co
                 policy.WatchIntervalSeconds == current.WatchIntervalSeconds && policy.InventoryIntervalSeconds == current.InventoryIntervalSeconds;
             var freshRefresh = policy.RefreshRequestId is Guid requestId && requestId != _lastRefreshRequest;
             if (!sameConfiguration || policy.ExpiresAtUtc < current.ExpiresAtUtc ||
-                (!freshRefresh && policy.ExpiresAtUtc == current.ExpiresAtUtc)) return false;
+                (!freshRefresh && policy.ExpiresAtUtc == current.ExpiresAtUtc))
+            {
+                rejectionReason = "conflicting_or_replayed_watch_policy";
+                return false;
+            }
         }
         var now = timeProvider.GetUtcNow();
         _policy = policy;

@@ -1,5 +1,7 @@
 using System.Net;
 using System.Text.Json;
+using Microsoft.AspNetCore.Components.Web;
+using MudBlazor;
 using NetRatel.Application.Operations;
 using NetRatel.Shared.Connectivity;
 using NetRatel.Web.Services.OperatorPolicy;
@@ -14,6 +16,15 @@ public partial class OperatorPolicies
     private IReadOnlyList<PolicyCredentialOption> _credentials = [];
     private McpOperatorEnvironment _environment;
     private int? _tenantFilter;
+    private string _search = "";
+    private McpOperatorPolicyLifecycleState? _lifecycleFilter;
+    private McpOperatorTargetSelectorKind? _targetFilter;
+    private int _currentPage;
+    private int _pageSize = 10;
+    private Guid? _selectedPolicyId;
+    private bool _dialogOpen;
+    private bool _selectionLoading;
+    private int _dialogGeneration;
     private McpOperatorPolicy? _selected;
     private McpOperatorTargetProfile? _targetProfile;
     private IReadOnlyList<McpOperatorPolicyChangeAudit> _audits = [];
@@ -34,6 +45,52 @@ public partial class OperatorPolicies
     private string? _success;
     private string? _readbackWarning;
     private AcceptedPolicyChange? _accepted;
+
+    private static readonly int[] PageSizes = [10, 25, 50, 100];
+    private static readonly DialogOptions PolicyDialogOptions = new()
+    {
+        FullWidth = true, MaxWidth = MaxWidth.Large, CloseButton = false,
+        BackdropClick = false, CloseOnEscapeKey = false
+    };
+    private string DialogTitle => _preview is not null ? "Review policy change"
+        : _editing ? _editExisting ? "Edit policy bounds" : "Create operator policy"
+        : _selected?.Name ?? "Policy details";
+    private bool HasListFilters => !string.IsNullOrWhiteSpace(_search) || _lifecycleFilter is not null || _targetFilter is not null;
+    private IEnumerable<McpOperatorPolicy> FilteredPolicies => _policies.Where(MatchesListFilters);
+
+    private bool MatchesListFilters(McpOperatorPolicy policy)
+    {
+        if (_lifecycleFilter is { } lifecycle && policy.LifecycleState != lifecycle ||
+            _targetFilter is { } target && policy.TargetSelector.Kind != target) return false;
+        var search = _search.Trim();
+        if (search.Length == 0) return true;
+        return new[] { policy.Name, policy.PrincipalSelector.Kind.ToString(), policy.PrincipalSelector.Value,
+                policy.PolicyId.ToString(), policy.TargetSelector.TenantId.ToString(), policy.TargetSelector.AgentId?.ToString(),
+                policy.TargetSelector.ClientTag, policy.Operation, policy.OperationFamily.ToString() }
+            .Any(value => value?.Contains(search, StringComparison.OrdinalIgnoreCase) == true);
+    }
+
+    private void SearchChanged(string? value) { _search = value ?? ""; _currentPage = 0; }
+    private void LifecycleFilterChanged(McpOperatorPolicyLifecycleState? value) { _lifecycleFilter = value; _currentPage = 0; }
+    private void TargetFilterChanged(McpOperatorTargetSelectorKind? value) { _targetFilter = value; _currentPage = 0; }
+    private void PageSizeChanged(int value) { _pageSize = value; _currentPage = 0; }
+    private void ResetListFilters() { _search = ""; _lifecycleFilter = null; _targetFilter = null; _currentPage = 0; }
+    private string PolicyRowClass(McpOperatorPolicy policy, int _) => policy.PolicyId == _selectedPolicyId ? "policy-row-selected" : "";
+    private static Color LifecycleColor(McpOperatorPolicyLifecycleState state) => state switch
+    {
+        McpOperatorPolicyLifecycleState.Active => Color.Success,
+        McpOperatorPolicyLifecycleState.Disabled => Color.Warning,
+        McpOperatorPolicyLifecycleState.Revoked => Color.Default,
+        _ => Color.Default
+    };
+    private static string TargetLabel(McpOperatorTargetSelectorKind target) => target switch
+    {
+        McpOperatorTargetSelectorKind.ExactAgent => "Exact client",
+        McpOperatorTargetSelectorKind.ClientTag => "Client tag",
+        McpOperatorTargetSelectorKind.ControlPlane => "Control plane",
+        McpOperatorTargetSelectorKind.DevelopmentEnvironment => "Development environment",
+        _ => target.ToString()
+    };
 
     private bool CanReplace => _selected is { LifecycleState: McpOperatorPolicyLifecycleState.Active, DisabledAtUtc: null } &&
         _selected.Environment == _authority?.Environment;
@@ -57,6 +114,17 @@ public partial class OperatorPolicies
     {
         if (_busy) return;
         _environment = value;
+        _currentPage = 0;
+        _selectedPolicyId = null;
+        await ReloadAsync();
+    }
+
+    private async Task TenantFilterChangedAsync(int? value)
+    {
+        if (_busy || _tenantFilter == value) return;
+        _tenantFilter = value;
+        _currentPage = 0;
+        _selectedPolicyId = null;
         await ReloadAsync();
     }
 
@@ -68,7 +136,11 @@ public partial class OperatorPolicies
         _selected = null;
         _targetProfile = null;
         _audits = [];
-        await RunAsync(async () => _policies = (await PolicyApi.ListAsync(_environment, _tenantFilter, _lifetime.Token)).Items);
+        await RunAsync(async () =>
+        {
+            _policies = (await PolicyApi.ListAsync(_environment, _tenantFilter, _lifetime.Token)).Items;
+            ClampCurrentPage();
+        });
     }
 
     private async Task SelectAsync(Guid policyId)
@@ -79,7 +151,11 @@ public partial class OperatorPolicies
         _selected = null;
         _targetProfile = null;
         _audits = [];
+        _selectedPolicyId = policyId;
+        _selectionLoading = true;
+        OpenDialog();
         await RunAsync(() => ReadSelectionAsync(policyId));
+        _selectionLoading = false;
     }
 
     private async Task ReadSelectionAsync(Guid policyId)
@@ -90,6 +166,7 @@ public partial class OperatorPolicies
             ? await PolicyApi.GetTargetAsync(policy.TargetSelector.TenantId, agentId, _lifetime.Token) : null;
         if (_disposed) return;
         _selected = policy;
+        _selectedPolicyId = policy.PolicyId;
         _credentialAdmission = null;
         _credentialId = policy.PrincipalSelector.Kind == McpOperatorPrincipalSelectorKind.OAuthClientId &&
             _credentials.Any(credential => credential.Id == policy.PrincipalSelector.Value) ? policy.PrincipalSelector.Value : "";
@@ -103,8 +180,12 @@ public partial class OperatorPolicies
         ResetPreview();
         ClearAcceptedReceipt();
         _error = null;
+        _selected = null;
+        _targetProfile = null;
+        _audits = [];
         _editExisting = false;
         _editing = true;
+        OpenDialog();
         _editor = new OperatorPolicyDraftEditor
         {
             Environment = _environment, TenantId = _tenantFilter ?? 0,
@@ -197,6 +278,7 @@ public partial class OperatorPolicies
             await ReadSelectionAsync(accepted.Result.Policy.PolicyId);
             if (_disposed) return;
             _policies = (await PolicyApi.ListAsync(_environment, _tenantFilter, _lifetime.Token)).Items;
+            ClampCurrentPage();
             var matchesReceipt = _selected!.Version == accepted.Result.Policy.Version;
             var hasAcceptedAudit = _audits.Any(audit => audit.PolicyId == accepted.Result.Policy.PolicyId &&
                 audit.Version == accepted.Result.Policy.Version && audit.Action == ExpectedAuditAction(accepted.Action));
@@ -270,6 +352,28 @@ public partial class OperatorPolicies
     };
 
     private void DiscardPreview() { if (!_busy) ResetPreview(); }
+    private void OpenDialog() { _dialogGeneration++; _dialogOpen = true; }
+    private void DialogKeyDown(KeyboardEventArgs args)
+    {
+        if (args.Key == "Escape") CloseDialog();
+    }
+    private void DialogVisibleChanged(int generation, bool visible)
+    {
+        if (generation == _dialogGeneration && !visible) CloseDialog();
+    }
+    private void CloseDialog()
+    {
+        if (_busy) return;
+        _dialogOpen = false;
+        CancelEdit();
+        _credentialAdmission = null;
+    }
+    private void CancelEditing()
+    {
+        CancelEdit();
+        if (_selected is null) CloseDialog();
+    }
+    private void ClampCurrentPage() => _currentPage = Math.Min(_currentPage, Math.Max(0, (FilteredPolicies.Count() - 1) / _pageSize));
     private void CancelEdit()
     {
         if (_busy) return;

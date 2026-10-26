@@ -89,7 +89,9 @@ public sealed class AgentGatewayTelemetryPublisher(
             AllowSynchronousContinuations = false
         });
         var ackGate = new object();
-        var servicePolicies = System.Threading.Channels.Channel.CreateBounded<ServiceWatchPolicy>(new System.Threading.Channels.BoundedChannelOptions(1)
+        var servicePolicyGate = new object();
+        ServiceWatchPolicy? latestServicePolicy = null;
+        var servicePolicies = System.Threading.Channels.Channel.CreateBounded<byte>(new System.Threading.Channels.BoundedChannelOptions(1)
         {
             FullMode = System.Threading.Channels.BoundedChannelFullMode.DropOldest,
             SingleReader = true,
@@ -119,7 +121,20 @@ public sealed class AgentGatewayTelemetryPublisher(
                             policies.Writer.TryWrite(frame.TelemetrySamplingPolicy);
                             break;
                         case GatewayTelemetryFrame.PayloadOneofCase.ServiceWatchPolicy:
-                            servicePolicies.Writer.TryWrite(frame.ServiceWatchPolicy);
+                            lock (servicePolicyGate)
+                            {
+                                var incoming = frame.ServiceWatchPolicy;
+                                // Match server coalescing: an ordinary renewal must not erase a selected refresh
+                                // while the publisher is waiting for metrics or inventory ACK credit.
+                                if (string.IsNullOrEmpty(incoming.RefreshRequestId) &&
+                                    latestServicePolicy is { RefreshRequestId.Length: > 0 } pending)
+                                {
+                                    incoming = incoming.Clone();
+                                    incoming.RefreshRequestId = pending.RefreshRequestId;
+                                }
+                                latestServicePolicy = incoming;
+                            }
+                            servicePolicies.Writer.TryWrite(0);
                             break;
                     }
                 }
@@ -190,9 +205,26 @@ public sealed class AgentGatewayTelemetryPublisher(
                         policyExpiresAtUtc = policy.ExpiresAtUtc.ToDateTimeOffset();
                     }
                 }
-                while (servicePolicies.Reader.TryRead(out var servicePolicy))
+                while (servicePolicies.Reader.TryRead(out _))
                 {
-                    if (servicesEnabled && TryConvertServicePolicy(servicePolicy, out var converted)) services.ApplyPolicy(converted!);
+                    ServiceWatchPolicy? servicePolicy;
+                    lock (servicePolicyGate)
+                    {
+                        servicePolicy = latestServicePolicy;
+                        latestServicePolicy = null;
+                    }
+                    if (servicePolicy is null) continue;
+                    if (!servicesEnabled) continue;
+                    if (!TryConvertServicePolicy(servicePolicy, out var converted))
+                    {
+                        log("Services watch policy rejected: reason=invalid_watch_policy_wire.");
+                        continue;
+                    }
+                    if (!services.ApplyPolicy(converted!, out var rejectionReason))
+                    {
+                        // Only normalized identifiers and timing metadata are logged, never names or wire payloads.
+                        log(FormattableString.Invariant($"Services watch policy rejected: reason={rejectionReason}; refreshRequestId={converted!.RefreshRequestId?.ToString("D") ?? "none"}; revision={converted.Revision}; expiresAtUtc={converted.ExpiresAtUtc:O}; clientUtc={_timeProvider.GetUtcNow():O}; connectionId={session.ConnectionId:D}; connectionEpoch={session.ConnectionEpoch}."));
+                    }
                 }
                 var now = _timeProvider.GetUtcNow();
                 if (servicesEnabled) services.StartDueCollection(streamCancellation.Token);

@@ -29,7 +29,7 @@ public sealed class MonitoringServiceWatchPolicySource(IMonitoringConfigurationS
             var revision = unchanged ? Math.Max(1UL, current.WatchPolicyRevision) : checked(current.WatchPolicyRevision + 1);
             var policy = new ClientServiceWatchPolicy(client, new(revision, names,
                 ClientServicesLimits.DefaultWatchIntervalSeconds, ClientServicesLimits.DefaultInventoryIntervalSeconds,
-                timeProvider.GetUtcNow().Add(ClientServicesLimits.MaximumPolicyLifetime)));
+                timeProvider.GetUtcNow().Add(ClientServicesLimits.MaximumPolicyLifetime - ClientServicesLimits.PolicyClockSkewHeadroom)));
             if (!ClientServicesCoordinator.IsValidPolicy(policy.Policy, timeProvider.GetUtcNow()))
                 throw new ArgumentException("service_watch_capacity_exceeded");
             cancellationToken.ThrowIfCancellationRequested();

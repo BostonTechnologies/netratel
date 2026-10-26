@@ -227,12 +227,102 @@ public sealed class AgentGatewayServicesPublisherTests
         finally { await StopAsync(stopping, run); }
     }
 
+    [Fact]
+    public async Task Cadence_renewal_received_behind_pending_ack_preserves_the_selected_refresh_request()
+    {
+        var time = new MutableTimeProvider();
+        var requestId = Guid.NewGuid();
+        var selected = new ServiceWatchPolicy
+        {
+            Revision = 7,
+            WatchIntervalSeconds = 30,
+            InventoryIntervalSeconds = 900,
+            ExpiresAtUtc = Timestamp.FromDateTimeOffset(time.GetUtcNow().AddMinutes(30)),
+            RefreshRequestId = requestId.ToString("D")
+        };
+        var renewal = selected.Clone();
+        renewal.RefreshRequestId = "";
+        var gateway = new RecordingTelemetryGateway(holdFirstAcknowledgement: true)
+        {
+            ServicePoliciesBeforeFirstAcknowledgement = [selected, renewal]
+        };
+        using var host = await BuildHostAsync(gateway);
+        using var stopping = new CancellationTokenSource();
+        var collector = new RecordingCollector();
+        var run = Publisher(host, collector, timeProvider: time).RunForPresenceSessionAsync(Session(), "test-token", stopping.Token);
+        try
+        {
+            await gateway.ReadBeforeAcknowledgement.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            time.Advance(ClientServicesLimits.MinimumRefreshInterval.Add(TimeSpan.FromSeconds(1)));
+            // The server sends both policies before the ACK on the same response stream. The reader must
+            // consume both while the publisher is still waiting for its first metrics acknowledgement.
+            gateway.ReleaseFirstAcknowledgement.TrySetResult();
+            await gateway.SecondCompleteInventory.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var inventories = gateway.Frames.Select(record => record.Frame.ServicesChunk)
+                .Where(chunk => chunk is { IsFinal: true }).ToArray();
+            Assert.Equal(2, inventories.Length);
+            Assert.Equal("", inventories[0].RefreshRequestId);
+            Assert.Equal(requestId.ToString("D"), inventories[1].RefreshRequestId);
+            Assert.NotEqual(inventories[0].CollectionId, inventories[1].CollectionId);
+            Assert.Equal(2, collector.InventoryCalls);
+        }
+        finally
+        {
+            gateway.ReleaseFirstAcknowledgement.TrySetResult();
+            await StopAsync(stopping, run);
+        }
+    }
+
+    [Theory]
+    [InlineData(-1, "expired_watch_policy")]
+    [InlineData(3601, "watch_policy_lifetime_exceeded")]
+    public async Task Rejected_policy_logs_exact_request_and_timing_without_exposing_service_names(int lifetimeSeconds, string reason)
+    {
+        var time = new MutableTimeProvider();
+        var requestId = Guid.NewGuid();
+        var policy = new ServiceWatchPolicy
+        {
+            Revision = 7,
+            WatchIntervalSeconds = 30,
+            InventoryIntervalSeconds = 900,
+            ExpiresAtUtc = Timestamp.FromDateTimeOffset(time.GetUtcNow().AddSeconds(lifetimeSeconds)),
+            RefreshRequestId = requestId.ToString("D"),
+            ServiceNames = { "private-watch-name.service" }
+        };
+        var gateway = new RecordingTelemetryGateway { InitialServicePolicy = policy };
+        using var host = await BuildHostAsync(gateway);
+        using var stopping = new CancellationTokenSource();
+        var collector = new RecordingCollector();
+        var session = Session();
+        var rejected = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var run = Publisher(host, collector, fastIntervalSeconds: 1, timeProvider: time, onLog: message =>
+        {
+            if (message.StartsWith("Services watch policy rejected:", StringComparison.Ordinal)) rejected.TrySetResult(message);
+        }).RunForPresenceSessionAsync(session, "test-token", stopping.Token);
+        try
+        {
+            var diagnostic = await rejected.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await gateway.SecondMetric.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Contains($"reason={reason};", diagnostic);
+            Assert.Contains($"refreshRequestId={requestId:D};", diagnostic);
+            Assert.Contains($"clientUtc={time.GetUtcNow():O};", diagnostic);
+            Assert.Contains($"expiresAtUtc={policy.ExpiresAtUtc.ToDateTimeOffset():O};", diagnostic);
+            Assert.Contains($"connectionId={session.ConnectionId:D}; connectionEpoch={session.ConnectionEpoch}", diagnostic);
+            Assert.DoesNotContain("private-watch-name", diagnostic);
+            Assert.DoesNotContain("test-token", diagnostic);
+            Assert.Equal(0, collector.WatchCalls);
+            Assert.False(run.IsCompleted);
+            Assert.DoesNotContain(gateway.Frames, record => record.Frame.ServicesChunk?.RefreshRequestId == requestId.ToString("D"));
+        }
+        finally { await StopAsync(stopping, run); }
+    }
+
     private static GatewayPresenceSession Session() => new(29, Guid.NewGuid(), 8, Guid.NewGuid());
 
     private static AgentGatewayTelemetryPublisher Publisher(IHost host, RecordingCollector collector,
-        int fastIntervalSeconds = 60, ConcurrentQueue<string>? logs = null, TimeProvider? timeProvider = null) => new(
+        int fastIntervalSeconds = 60, ConcurrentQueue<string>? logs = null, TimeProvider? timeProvider = null, Action<string>? onLog = null) => new(
         new GatewayClientOptions { Endpoint = "https://gateway.test", TelemetryFastIntervalSeconds = fastIntervalSeconds },
-        "services-integration", message => logs?.Enqueue(message), timeProvider: timeProvider, serviceInventoryCollector: collector,
+        "services-integration", message => { logs?.Enqueue(message); onLog?.Invoke(message); }, timeProvider: timeProvider, serviceInventoryCollector: collector,
         channelFactory: _ => GrpcChannel.ForAddress("http://localhost", new GrpcChannelOptions
         {
             HttpHandler = host.GetTestServer().CreateHandler()
@@ -318,6 +408,7 @@ public sealed class AgentGatewayServicesPublisherTests
         public ConcurrentQueue<string> AuthorizationHeaders { get; } = new();
         public ConcurrentQueue<ServiceWatchPolicy> SentServicePolicies { get; } = new();
         public ServiceWatchPolicy? InitialServicePolicy { get; init; }
+        public IReadOnlyList<ServiceWatchPolicy> ServicePoliciesBeforeFirstAcknowledgement { get; init; } = [];
         public bool RefreshAfterFirstInventory { get; init; }
         public TaskCompletionSource SecondMetric { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource CompleteInventory { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -361,6 +452,11 @@ public sealed class AgentGatewayServicesPublisherTests
                             pendingRead = requestStream.MoveNext(context.CancellationToken);
                             ReadBeforeAcknowledgement.TrySetResult(pendingRead);
                             await ReleaseFirstAcknowledgement.Task.WaitAsync(context.CancellationToken);
+                            foreach (var policy in ServicePoliciesBeforeFirstAcknowledgement)
+                            {
+                                SentServicePolicies.Enqueue(policy.Clone());
+                                await responseStream.WriteAsync(new GatewayTelemetryFrame { ServiceWatchPolicy = policy });
+                            }
                         }
                     }
                     if (enforceDurableSequence)
