@@ -66,6 +66,8 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
 
     public async Task<JobDefinitionInfo?> UpdateAsync(UpdateJobDefinitionCommand command, CancellationToken ct = default)
     {
+        await using var transaction = await JobDefinitionMutationFence.BeginAsync(_db, ct);
+        if (!await JobDefinitionMutationFence.LockActiveAsync(_db, checked((long)command.JobId), ct)) return null;
         var job = await _db.Jobs.FirstOrDefaultAsync(x => x.Id == (long)command.JobId, ct);
         if (job is null)
         {
@@ -82,6 +84,7 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
         job.UpdatedAtUtc = DateTimeOffset.UtcNow;
 
         await _db.SaveChangesAsync(ct);
+        if (transaction is not null) await transaction.CommitAsync(ct);
         return Map(job);
     }
 
@@ -90,69 +93,33 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
         await using var transaction = await JobDefinitionMutationFence.BeginAsync(_db, ct);
         if (!await JobDefinitionMutationFence.LockActiveAsync(_db, checked((long)jobId), ct)) return null;
         var job = await _db.Jobs
-            .Include(x => x.Parameters)
-            .Include(x => x.Steps)
             .FirstOrDefaultAsync(x => x.Id == (long)jobId, ct);
         if (job is null)
         {
             return null;
         }
 
-        // MCP ownership and its accepted audits deliberately restrict physical
-        // deletion. An administrator can retire a definition after credential
-        // rotation without impersonating the old credential or erasing history.
+        // Retirement and new run admission share the row fence. Preserve the
+        // definition and all historical work regardless of how the job was created.
+        if (await _db.JobRuns.AnyAsync(run => run.JobId == job.Id &&
+                run.Status != (int)JobRunState.Succeeded && run.Status != (int)JobRunState.Failed &&
+                run.Status != (int)JobRunState.Cancelled && run.Status != (int)JobRunState.TimedOut &&
+                run.Status != (int)JobRunState.Unknown, ct))
+            throw new JobDefinitionInUseException();
+
+        var retiredAt = DateTimeOffset.UtcNow;
+        job.DeletedAtUtc = retiredAt;
+        job.UpdatedAtUtc = retiredAt;
         var operatorOwner = await _db.McpOperatorJobs.SingleOrDefaultAsync(x => x.JobId == job.Id, ct);
         if (operatorOwner is not null)
         {
-            if (await _db.JobRuns.AnyAsync(run => run.JobId == job.Id &&
-                    run.Status != (int)JobRunState.Succeeded && run.Status != (int)JobRunState.Failed &&
-                    run.Status != (int)JobRunState.Cancelled && run.Status != (int)JobRunState.TimedOut &&
-                    run.Status != (int)JobRunState.Unknown, ct))
-                throw new JobDefinitionInUseException();
-
-            var retiredAt = DateTimeOffset.UtcNow;
+            // Current tenant administration can retire an orphaned owner binding
+            // without impersonating its old credential or discarding accepted audits.
             operatorOwner.DeletedAtUtc = retiredAt;
             operatorOwner.UpdatedAtUtc = retiredAt;
             operatorOwner.Version++;
-            job.UpdatedAtUtc = retiredAt;
-            await _db.SaveChangesAsync(ct);
-            if (transaction is not null) await transaction.CommitAsync(ct);
-            return Map(job);
         }
 
-        var runIds = await _db.JobRuns
-            .Where(x => x.JobId == (long)jobId)
-            .Select(x => x.Id)
-            .ToListAsync(ct);
-        var stepIds = job.Steps.Select(x => x.Id).ToList();
-
-        var activities = await _db.JobTaskActivities
-            .Include(x => x.Logs)
-            .Where(x =>
-                (x.JobRunId.HasValue && runIds.Contains(x.JobRunId.Value)) ||
-                (x.JobStepId.HasValue && stepIds.Contains(x.JobStepId.Value)))
-            .ToListAsync(ct);
-        if (activities.Count > 0)
-        {
-            _db.JobTaskLogs.RemoveRange(activities.SelectMany(x => x.Logs));
-            _db.JobTaskActivities.RemoveRange(activities);
-        }
-
-        var stepRuns = await _db.JobStepRuns
-            .Where(x =>
-                runIds.Contains(x.JobRunId) ||
-                (x.JobStepId.HasValue && stepIds.Contains(x.JobStepId.Value)))
-            .ToListAsync(ct);
-        if (stepRuns.Count > 0)
-        {
-            _db.JobStepRuns.RemoveRange(stepRuns);
-        }
-
-        var runs = await _db.JobRuns
-            .Where(x => x.JobId == (long)jobId)
-            .ToListAsync(ct);
-        _db.JobRuns.RemoveRange(runs);
-        _db.Jobs.Remove(job);
         await _db.SaveChangesAsync(ct);
         if (transaction is not null) await transaction.CommitAsync(ct);
         return Map(job);
@@ -161,15 +128,15 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
     public async Task<IReadOnlyList<JobParameterInfo>> ListParamsAsync(ulong jobId, CancellationToken ct = default)
         => await _db.JobParameters
             .AsNoTracking()
-            .Where(x => x.JobId == (long)jobId)
+            .Where(x => x.JobId == (long)jobId && _db.Jobs.Any(job => job.Id == x.JobId))
             .OrderBy(x => x.Name)
             .Select(MapParam())
             .ToListAsync(ct);
 
     public async Task<JobParameterInfo?> AddParamAsync(AddJobParameterCommand command, CancellationToken ct = default)
     {
-        var jobExists = await _db.Jobs.AnyAsync(x => x.Id == (long)command.JobId, ct);
-        if (!jobExists)
+        await using var transaction = await JobDefinitionMutationFence.BeginAsync(_db, ct);
+        if (!await JobDefinitionMutationFence.LockActiveAsync(_db, checked((long)command.JobId), ct))
         {
             return null;
         }
@@ -187,16 +154,23 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
 
         _db.JobParameters.Add(row);
         await _db.SaveChangesAsync(ct);
+        if (transaction is not null) await transaction.CommitAsync(ct);
         return Map(row);
     }
 
     public async Task<JobParameterInfo?> UpdateParamAsync(UpdateJobParameterCommand command, CancellationToken ct = default)
     {
+        await using var transaction = await JobDefinitionMutationFence.BeginAsync(_db, ct);
         var row = await _db.JobParameters.FirstOrDefaultAsync(x => x.Id == (long)command.ParamId, ct);
-        if (row is null)
+        if (row is null || !await JobDefinitionMutationFence.LockActiveAsync(_db, row.JobId, ct))
         {
             return null;
         }
+
+        // The child may have changed or disappeared while the parent fence was held.
+        var entry = _db.Entry(row);
+        await entry.ReloadAsync(ct);
+        if (entry.State == EntityState.Detached) return null;
 
         if (command.Name is not null) row.Name = command.Name.Trim();
         if (command.Type is not null) row.Type = NormalizeParamType(command.Type);
@@ -206,26 +180,34 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
         if (command.OptionsJson is not null) row.OptionsJson = NormalizeNullable(command.OptionsJson);
 
         await _db.SaveChangesAsync(ct);
+        if (transaction is not null) await transaction.CommitAsync(ct);
         return Map(row);
     }
 
     public async Task<bool> DeleteParamAsync(ulong paramId, CancellationToken ct = default)
     {
+        await using var transaction = await JobDefinitionMutationFence.BeginAsync(_db, ct);
         var row = await _db.JobParameters.FirstOrDefaultAsync(x => x.Id == (long)paramId, ct);
-        if (row is null)
+        if (row is null || !await JobDefinitionMutationFence.LockActiveAsync(_db, row.JobId, ct))
         {
             return false;
         }
 
+        // The child may have changed or disappeared while the parent fence was held.
+        var entry = _db.Entry(row);
+        await entry.ReloadAsync(ct);
+        if (entry.State == EntityState.Detached) return false;
+
         _db.JobParameters.Remove(row);
         await _db.SaveChangesAsync(ct);
+        if (transaction is not null) await transaction.CommitAsync(ct);
         return true;
     }
 
     public async Task<IReadOnlyList<JobStepInfo>> ListStepsAsync(ulong jobId, CancellationToken ct = default)
         => await _db.JobSteps
             .AsNoTracking()
-            .Where(x => x.JobId == (long)jobId)
+            .Where(x => x.JobId == (long)jobId && _db.Jobs.Any(job => job.Id == x.JobId))
             .OrderBy(x => x.Ordinal)
             .ThenBy(x => x.Id)
             .Select(MapStep())
@@ -233,7 +215,8 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
 
     public async Task<JobStepInfo?> AddStepAsync(AddJobStepCommand command, CancellationToken ct = default)
     {
-        await using var transaction = await ScriptReferenceFence.BeginAsync(_db, ct);
+        await using var transaction = await JobDefinitionMutationFence.BeginAsync(_db, ct);
+        if (!await JobDefinitionMutationFence.LockActiveAsync(_db, checked((long)command.JobId), ct)) return null;
         var job = await _db.Jobs.Include(x => x.Steps).FirstOrDefaultAsync(x => x.Id == (long)command.JobId, ct);
         if (job is null)
         {
@@ -271,12 +254,17 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
 
     public async Task<JobStepInfo?> UpdateStepAsync(UpdateJobStepCommand command, CancellationToken ct = default)
     {
-        await using var transaction = await ScriptReferenceFence.BeginAsync(_db, ct);
+        await using var transaction = await JobDefinitionMutationFence.BeginAsync(_db, ct);
         var row = await _db.JobSteps.FirstOrDefaultAsync(x => x.Id == (long)command.StepId, ct);
-        if (row is null)
+        if (row is null || !await JobDefinitionMutationFence.LockActiveAsync(_db, row.JobId, ct))
         {
             return null;
         }
+
+        // The child may have changed or disappeared while the parent fence was held.
+        var entry = _db.Entry(row);
+        await entry.ReloadAsync(ct);
+        if (entry.State == EntityState.Detached) return null;
 
         var scriptId = command.ScriptId.HasValue ? checked((long)command.ScriptId.Value) : row.ScriptId;
         if (scriptId.HasValue && !await ScriptReferenceFence.LockActiveAsync(_db, scriptId.Value, ct))
@@ -296,11 +284,17 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
 
     public async Task<JobStepInfo?> ReorderStepAsync(ulong stepId, int newOrdinal, CancellationToken ct = default)
     {
+        await using var transaction = await JobDefinitionMutationFence.BeginAsync(_db, ct);
         var row = await _db.JobSteps.FirstOrDefaultAsync(x => x.Id == (long)stepId, ct);
-        if (row is null)
+        if (row is null || !await JobDefinitionMutationFence.LockActiveAsync(_db, row.JobId, ct))
         {
             return null;
         }
+
+        // The child may have changed or disappeared while the parent fence was held.
+        var entry = _db.Entry(row);
+        await entry.ReloadAsync(ct);
+        if (entry.State == EntityState.Detached) return null;
 
         var siblings = await _db.JobSteps
             .Where(x => x.JobId == row.JobId && x.Id != row.Id)
@@ -326,16 +320,23 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
 
         row.Ordinal = bounded;
         await _db.SaveChangesAsync(ct);
+        if (transaction is not null) await transaction.CommitAsync(ct);
         return Map(row);
     }
 
     public async Task<bool> DeleteStepAsync(ulong stepId, CancellationToken ct = default)
     {
+        await using var transaction = await JobDefinitionMutationFence.BeginAsync(_db, ct);
         var row = await _db.JobSteps.FirstOrDefaultAsync(x => x.Id == (long)stepId, ct);
-        if (row is null)
+        if (row is null || !await JobDefinitionMutationFence.LockActiveAsync(_db, row.JobId, ct))
         {
             return false;
         }
+
+        // The child may have changed or disappeared while the parent fence was held.
+        var entry = _db.Entry(row);
+        await entry.ReloadAsync(ct);
+        if (entry.State == EntityState.Detached) return false;
 
         var stepRuns = await _db.JobStepRuns
             .Where(x => x.JobStepId == row.Id)
@@ -366,6 +367,7 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
 
         _db.JobSteps.Remove(row);
         await _db.SaveChangesAsync(ct);
+        if (transaction is not null) await transaction.CommitAsync(ct);
         return true;
     }
 

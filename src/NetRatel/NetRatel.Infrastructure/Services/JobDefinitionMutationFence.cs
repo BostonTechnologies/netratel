@@ -4,7 +4,7 @@ using NetRatel.Infrastructure.Persistence;
 
 namespace NetRatel.Infrastructure.Services;
 
-/// <summary>Serializes new durable run admission with definition retirement across replicas.</summary>
+/// <summary>Serializes active definition changes and new run admission with retirement across replicas.</summary>
 internal static class JobDefinitionMutationFence
 {
     internal static async Task<IDbContextTransaction?> BeginAsync(OrchestratorDbContext db, CancellationToken ct) =>

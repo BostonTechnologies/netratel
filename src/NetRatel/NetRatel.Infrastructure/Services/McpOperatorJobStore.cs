@@ -257,6 +257,8 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
         if (request.JobId <= 0 || request.ExpectedVersion <= 0)
             throw new ArgumentException("A positive job id and expected ETag version are required.", nameof(request));
         var prepared = PrepareDraft(request.Decision.Request.TenantId, request.Draft);
+        await using var transaction = await JobDefinitionMutationFence.BeginAsync(_db, cancellationToken);
+        if (!await JobDefinitionMutationFence.LockActiveAsync(_db, request.JobId, cancellationToken)) return null;
         var row = await FindMutableOwnedAsync(request.JobId, request.Decision.Request, cancellationToken).ConfigureAwait(false);
         if (row is null) return null;
         EnsureVersion(row.owner, request.ExpectedVersion);
@@ -269,6 +271,7 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
         Advance(row.owner, request.Decision, request.OccurredAtUtc);
         _db.McpOperatorJobAudits.Add(JobAudit(row.owner, "updated", request.AcceptedAudit.AuditId, request.OccurredAtUtc));
         await SaveWithConcurrencyAsync(cancellationToken).ConfigureAwait(false);
+        if (transaction is not null) await transaction.CommitAsync(cancellationToken);
         return ToLease(row.owner, row.job);
     }
 
@@ -286,6 +289,7 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
 
         Advance(row.owner, decision, occurredAtUtc);
         row.owner.DeletedAtUtc = occurredAtUtc;
+        row.job.DeletedAtUtc = occurredAtUtc;
         row.job.UpdatedAtUtc = occurredAtUtc;
         _db.McpOperatorJobAudits.Add(JobAudit(row.owner, "deleted", acceptedAudit.AuditId, occurredAtUtc));
         await SaveWithConcurrencyAsync(cancellationToken).ConfigureAwait(false);
@@ -299,6 +303,8 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
         ValidateAdmission(request.Decision, request.AcceptedAudit);
         if (request.JobId <= 0 || request.ExpectedVersion <= 0) throw new ArgumentException("A positive job id and expected ETag version are required.");
         var parameter = PrepareParameter(request.Parameter);
+        await using var transaction = await JobDefinitionMutationFence.BeginAsync(_db, cancellationToken);
+        if (!await JobDefinitionMutationFence.LockActiveAsync(_db, request.JobId, cancellationToken)) return null;
         var row = await FindMutableOwnedAsync(request.JobId, request.Decision.Request, cancellationToken).ConfigureAwait(false);
         if (row is null) return null;
         EnsureVersion(row.owner, request.ExpectedVersion);
@@ -319,6 +325,7 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
         _db.JobParameters.Add(created);
         Touch(row, request.Decision, request.AcceptedAudit, "param_added", request.OccurredAtUtc);
         await SaveWithConcurrencyAsync(cancellationToken).ConfigureAwait(false);
+        if (transaction is not null) await transaction.CommitAsync(cancellationToken);
         return (ToLease(row.owner, row.job), created.Id);
     }
 
@@ -328,6 +335,8 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
         ValidateAdmission(request.Decision, request.AcceptedAudit);
         if (request.JobId <= 0 || request.ParameterId is not > 0 || request.ExpectedVersion <= 0) throw new ArgumentException("A job, parameter, and expected ETag version are required.");
         var parameter = PrepareParameter(request.Parameter);
+        await using var transaction = await JobDefinitionMutationFence.BeginAsync(_db, cancellationToken);
+        if (!await JobDefinitionMutationFence.LockActiveAsync(_db, request.JobId, cancellationToken)) return null;
         var row = await FindMutableOwnedAsync(request.JobId, request.Decision.Request, cancellationToken).ConfigureAwait(false);
         if (row is null) return null;
         EnsureVersion(row.owner, request.ExpectedVersion);
@@ -343,6 +352,7 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
         existing.OptionsJson = SerializeParameterMetadata(parameter);
         Touch(row, request.Decision, request.AcceptedAudit, "param_updated", request.OccurredAtUtc);
         await SaveWithConcurrencyAsync(cancellationToken).ConfigureAwait(false);
+        if (transaction is not null) await transaction.CommitAsync(cancellationToken);
         return ToLease(row.owner, row.job);
     }
 
@@ -350,6 +360,8 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
     {
         ValidateAdmission(decision, acceptedAudit);
         if (jobId <= 0 || parameterId <= 0 || expectedVersion <= 0) throw new ArgumentException("A job, parameter, and expected ETag version are required.");
+        await using var transaction = await JobDefinitionMutationFence.BeginAsync(_db, cancellationToken);
+        if (!await JobDefinitionMutationFence.LockActiveAsync(_db, jobId, cancellationToken)) return null;
         var row = await FindMutableOwnedAsync(jobId, decision.Request, cancellationToken).ConfigureAwait(false);
         if (row is null) return null;
         EnsureVersion(row.owner, expectedVersion);
@@ -358,6 +370,7 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
         _db.JobParameters.Remove(existing);
         Touch(row, decision, acceptedAudit, "param_deleted", occurredAtUtc);
         await SaveWithConcurrencyAsync(cancellationToken).ConfigureAwait(false);
+        if (transaction is not null) await transaction.CommitAsync(cancellationToken);
         return ToLease(row.owner, row.job);
     }
 
@@ -365,8 +378,9 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
     {
         ArgumentNullException.ThrowIfNull(request);
         ValidateAdmission(request.Decision, request.AcceptedAudit);
-        await using var transaction = await ScriptReferenceFence.BeginAsync(_db, cancellationToken);
+        await using var transaction = await JobDefinitionMutationFence.BeginAsync(_db, cancellationToken);
         if (request.JobId <= 0 || request.ExpectedVersion <= 0) throw new ArgumentException("A positive job id and expected ETag version are required.");
+        if (!await JobDefinitionMutationFence.LockActiveAsync(_db, request.JobId, cancellationToken)) return null;
         var row = await FindMutableOwnedAsync(request.JobId, request.Decision.Request, cancellationToken).ConfigureAwait(false);
         if (row is null) return null;
         EnsureVersion(row.owner, request.ExpectedVersion);
@@ -396,8 +410,9 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
     {
         ArgumentNullException.ThrowIfNull(request);
         ValidateAdmission(request.Decision, request.AcceptedAudit);
-        await using var transaction = await ScriptReferenceFence.BeginAsync(_db, cancellationToken);
+        await using var transaction = await JobDefinitionMutationFence.BeginAsync(_db, cancellationToken);
         if (request.JobId <= 0 || request.StepId is not > 0 || request.ExpectedVersion <= 0) throw new ArgumentException("A job, step, and expected ETag version are required.");
+        if (!await JobDefinitionMutationFence.LockActiveAsync(_db, request.JobId, cancellationToken)) return null;
         var row = await FindMutableOwnedAsync(request.JobId, request.Decision.Request, cancellationToken).ConfigureAwait(false);
         if (row is null) return null;
         EnsureVersion(row.owner, request.ExpectedVersion);
@@ -420,6 +435,8 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
     {
         ValidateAdmission(decision, acceptedAudit);
         if (jobId <= 0 || stepId <= 0 || expectedVersion <= 0) throw new ArgumentException("A job, step, and expected ETag version are required.");
+        await using var transaction = await JobDefinitionMutationFence.BeginAsync(_db, cancellationToken);
+        if (!await JobDefinitionMutationFence.LockActiveAsync(_db, jobId, cancellationToken)) return null;
         var row = await FindMutableOwnedAsync(jobId, decision.Request, cancellationToken).ConfigureAwait(false);
         if (row is null) return null;
         EnsureVersion(row.owner, expectedVersion);
@@ -434,6 +451,7 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
         existing.Ordinal = target;
         Touch(row, decision, acceptedAudit, "step_reordered", occurredAtUtc);
         await SaveWithConcurrencyAsync(cancellationToken).ConfigureAwait(false);
+        if (transaction is not null) await transaction.CommitAsync(cancellationToken);
         return ToLease(row.owner, row.job);
     }
 
@@ -441,6 +459,8 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
     {
         ValidateAdmission(decision, acceptedAudit);
         if (jobId <= 0 || stepId <= 0 || expectedVersion <= 0) throw new ArgumentException("A job, step, and expected ETag version are required.");
+        await using var transaction = await JobDefinitionMutationFence.BeginAsync(_db, cancellationToken);
+        if (!await JobDefinitionMutationFence.LockActiveAsync(_db, jobId, cancellationToken)) return null;
         var row = await FindMutableOwnedAsync(jobId, decision.Request, cancellationToken).ConfigureAwait(false);
         if (row is null) return null;
         EnsureVersion(row.owner, expectedVersion);
@@ -459,6 +479,7 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
         _db.JobSteps.Remove(existing);
         Touch(row, decision, acceptedAudit, "step_deleted", occurredAtUtc);
         await SaveWithConcurrencyAsync(cancellationToken).ConfigureAwait(false);
+        if (transaction is not null) await transaction.CommitAsync(cancellationToken);
         return ToLease(row.owner, row.job);
     }
 

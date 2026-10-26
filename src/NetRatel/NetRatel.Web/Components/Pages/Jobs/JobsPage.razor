@@ -508,7 +508,7 @@
     {
         var confirm = await DialogService.ShowMessageBoxAsync(
             "Delete Job",
-            $"Are you sure you want to delete job '{job.Name}'?",
+            $"Delete job '{job.Name}' from active jobs? Its run history and logs will remain available. Active runs must finish or be cancelled first.",
             yesText: "Delete",
             cancelText: "Cancel");
 

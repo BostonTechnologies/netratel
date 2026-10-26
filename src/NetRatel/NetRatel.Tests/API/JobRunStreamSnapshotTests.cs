@@ -70,9 +70,11 @@ public sealed class JobRunStreamSnapshotTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Historical_snapshot_keeps_retired_job_name_only_in_its_original_tenant(bool reassigned)
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Historical_snapshot_keeps_retired_job_name_only_in_its_original_tenant(bool legacyMcpTombstone, bool reassigned)
     {
         await using var db = CreateDb();
         var jobs = new JobDefinitionService(db);
@@ -81,8 +83,15 @@ public sealed class JobRunStreamSnapshotTests
         var now = DateTimeOffset.UtcNow;
         await runs.UpsertRunAsync(new(10, job.Id, 7, "", "tester", JobRunState.Succeeded,
             0, now, now, now, null, null, null));
-        db.McpOperatorJobs.Add(new() { Id = Guid.NewGuid(), JobId = (long)job.Id, TenantId = 7, DeletedAtUtc = now });
-        await db.SaveChangesAsync();
+        if (legacyMcpTombstone)
+        {
+            db.McpOperatorJobs.Add(new() { Id = Guid.NewGuid(), JobId = (long)job.Id, TenantId = 7, DeletedAtUtc = now });
+            await db.SaveChangesAsync();
+        }
+        else
+        {
+            Assert.NotNull(await jobs.DeleteAsync(job.Id));
+        }
         Assert.Null(await jobs.GetAsync(job.Id));
         if (reassigned)
         {

@@ -233,9 +233,17 @@ public static class DevelopmentMcpMarkerJobEndpoints
         {
             return Results.Conflict(new { code = "marker_job_has_active_run" });
         }
-        if (await jobs.DeleteAsync(checked((ulong)jobId), cancellationToken).ConfigureAwait(false) is null)
+        try
         {
-            return Results.NotFound(new { code = "marker_job_not_found" });
+            if (await jobs.DeleteAsync(checked((ulong)jobId), cancellationToken).ConfigureAwait(false) is null)
+            {
+                return Results.NotFound(new { code = "marker_job_not_found" });
+            }
+        }
+        catch (JobDefinitionInUseException)
+        {
+            // A run may be admitted after the advisory read but before the row fence.
+            return Results.Conflict(new { code = "marker_job_has_active_run" });
         }
 
         jobRecord.DeletedAtUtc = DateTimeOffset.UtcNow;

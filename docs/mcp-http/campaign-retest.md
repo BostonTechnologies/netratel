@@ -355,14 +355,24 @@ credentials, restore temporary roles with authorized readback, and dispose clien
 fixtures only after their readers, update tests and other dependencies are clear.
 Preserve original assets, retained audit/history and unresolved updater records.
 
-For an MCP-owned job whose original credential has been revoked, an authenticated
-account with current tenant `JobManagement` authority uses the existing
+For any job definition, including an MCP-owned job whose original credential has
+been revoked, an authenticated account with current tenant `JobManagement` authority uses the existing
 `GET /api/v1/jobs/{jobId}` and `DELETE /api/v1/jobs/{jobId}` routes. Use the saved
 actual job ID and verify the tenant before deletion. Settle its runs first; an
 active run returns `409 job_has_active_runs`. A successful deletion retires the
-MCP-owned definition: verify it disappears from active get/list, while retained
-history and ownership remain. A different MCP credential's owner-filtered 404
+definition: verify it disappears from active get/list and cannot start another run,
+while its existing runs, steps, activities, logs and any MCP ownership remain.
+Read retained run detail, list and stream through the original tenant's authorized
+history routes; deleting a definition does not delete an execution record. Historical
+names are resolved only within the run's tenant. A different MCP credential's owner-filtered 404
 is not evidence that the object is absent.
+
+The additive retirement migration preserves definitions that still exist and
+backfills existing MCP retirement timestamps. It cannot reconstruct history already
+removed by an older release. Prove retention with a fresh owned terminal run while
+keeping any earlier loss receipt. The migration refuses to drop retirement state
+while retired definitions exist. Keep API and worker binaries on a version that
+enforces retirement; use the deployment's normal backup recovery procedure for rollback.
 
 After dependent jobs are retired, an account with current `ScriptEditor`
 authority reads `GET /api/v1/script-library/{scriptId}` and uses the returned

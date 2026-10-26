@@ -947,7 +947,7 @@
     {
         if (!_createdInWorkspace || !_jobId.HasValue || _isSaving || _detailsBusy || _parameterDialogOpen) return;
         var confirm = await DialogService.ShowMessageBoxAsync("Delete created draft?",
-            "This deletes the new job and its saved steps and parameters. The source job of a copy is kept.",
+            "This removes the new job from active jobs. Its saved definition and any run history are retained. The source job of a copy is kept.",
             yesText: "Delete draft", cancelText: "Keep editing");
         if (confirm is not true) return;
         _isSaving = true;

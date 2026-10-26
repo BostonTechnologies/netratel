@@ -71,6 +71,10 @@ public static partial class InternalEndpoints
             await using var transaction = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(ct) : null;
             if (db.Database.IsNpgsql())
                 await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({checked((long)jobId)})", ct);
+            // Share definition retirement's row fence until the input replacement commits.
+            if (db.Database.IsRelational())
+                await db.Database.ExecuteSqlInterpolatedAsync(
+                    $"UPDATE \"Jobs\" SET \"UpdatedAtUtc\" = \"UpdatedAtUtc\" WHERE \"Id\" = {checked((long)jobId)}", ct);
             // Recheck the live target under the write fence, including revocation or a changed job assignment.
             job = await jobs.GetAsync(jobId, ct);
             if (job is null || job.TenantId != principal.TenantId ||

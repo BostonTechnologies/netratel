@@ -77,6 +77,7 @@ public sealed class McpOperatorJobStoreTests
         await store.RecordStartedRunAsync(job.JobId, runId, Guid.NewGuid(), fixture.Decision, fixture.Audit,
             fixture.Now, CancellationToken.None);
         await store.DeleteAsync(job.JobId, job.Version, fixture.Decision, fixture.Audit, fixture.Now.AddSeconds(1), CancellationToken.None);
+        (await db.Jobs.IgnoreQueryFilters().SingleAsync()).DeletedAtUtc.Should().Be(fixture.Now.AddSeconds(1));
 
         (await store.GetRunOwnedAsync(runId, fixture.TenantId, fixture.AgentId, fixture.Principal,
             fixture.Resource, fixture.Instance, CancellationToken.None)).Should().NotBeNull();
