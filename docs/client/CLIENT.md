@@ -469,14 +469,25 @@ Publication makes a pack available to the existing enabled tenant policies.
 Before publishing a campaign candidate, record all eligible tenant settings,
 target-version pins, enabled agents, suspended/suppressed update states and
 existing attempts. Include offline records: they can receive an offer when they
-reconnect. Select the exact disposable cohort and use the supported tenant
-policy or agent suspension controls to exclude every other eligible agent.
-Creating a new test tenant alone does not isolate a shared release catalogue.
+reconnect. The supported operator controls are tenant update policies and global
+release enablement. The management API and MCP can resume an agent already
+suspended after an update failure; they cannot create an update-only hold for
+one agent or push a chosen release to that agent.
 
-Tenant channel and target-version settings affect the whole tenant. Preserve
-existing administrator suspensions and use current policy versions when making
-bounded changes. Capture authoritative eligibility readback before **Approve
-and publish for deployment**, and account for scheduled automatic publication
+Tenant channel, automatic-update enablement and target-version settings affect
+every agent in that tenant. Put an independently enrolled disposable canary in
+a dedicated tenant when other agents in its current tenant must remain outside
+the rollout. Preserve the original agents' identities and history. Disable
+automatic updates on excluded tenants through their supported versioned policy
+before publishing, or use another already-proven tenant-wide exclusion. A pin
+to an older release can still update agents below that version; it does not
+freeze each agent at its own current version. Creating a new test tenant alone
+does not isolate a shared release catalogue.
+
+Preserve existing update suspensions and use the complete current tenant data
+and expected version when saving a policy. Keep the selected canary tenant's
+channel and exact candidate pin explicit. Capture authoritative eligibility
+readback before **Approve and publish**, and account for scheduled automatic publication
 while preparing the cohort. If the available controls cannot bound the shared
 instance, use an isolated instance for the update test rather than assuming
 that unrelated agents will stay offline.
