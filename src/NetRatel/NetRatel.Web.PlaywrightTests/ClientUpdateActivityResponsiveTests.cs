@@ -26,12 +26,54 @@ public sealed class ClientUpdateActivityResponsiveTests(ClientsManagementBrowser
             await Assertions.Expect(page.GetByTestId("activity-live-status")).ToContainTextAsync("Live");
             await page.Locator("button.mud-table-row-expander").ClickAsync();
             await Assertions.Expect(page.GetByTestId("attempt-table")).ToContainTextAsync("RolledBack");
+            var detailsToggle = page.GetByTestId("attempt-details-toggle");
+            await detailsToggle.ClickAsync();
+            var detailsRow = page.GetByTestId("attempt-details-row");
+            var installedVersions = detailsRow.GetByRole(AriaRole.Heading, new() { Name = "Installed versions", Exact = true });
+            await Assertions.Expect(installedVersions).ToBeVisibleAsync();
+            await Assertions.Expect(detailsToggle).ToHaveAttributeAsync("aria-expanded", "true");
+            var detailsId = await detailsToggle.GetAttributeAsync("aria-controls");
+            Assert.False(string.IsNullOrWhiteSpace(detailsId));
+            var geometry = await detailsRow.EvaluateAsync<JsonElement>("""
+                row => {
+                  const toggle = document.querySelector('[data-testid="attempt-details-toggle"]');
+                  const summary = toggle.closest('tr');
+                  const failureCell = toggle.closest('td');
+                  const cell = row.querySelector(':scope > td');
+                  const tableBounds = row.closest('table').getBoundingClientRect();
+                  const rowBounds = row.getBoundingClientRect();
+                  const cellBounds = cell.getBoundingClientRect();
+                  return {
+                    followsSummary: summary.nextElementSibling === row,
+                    outsideSummaryCell: !failureCell.contains(row) && row.parentElement === summary.parentElement,
+                    columnSpan: cell.colSpan,
+                    summaryColumns: summary.cells.length,
+                    tableWidth: tableBounds.width,
+                    rowWidth: rowBounds.width,
+                    cellWidth: cellBounds.width,
+                    leftOffset: cellBounds.left - tableBounds.left,
+                    belowSummary: rowBounds.top >= summary.getBoundingClientRect().bottom - 1
+                  };
+                }
+                """);
+            Assert.True(geometry.GetProperty("followsSummary").GetBoolean() &&
+                geometry.GetProperty("outsideSummaryCell").GetBoolean() &&
+                geometry.GetProperty("belowSummary").GetBoolean(), $"Details must be a separate row below the summary: {geometry}");
+            Assert.Equal(geometry.GetProperty("summaryColumns").GetInt32(), geometry.GetProperty("columnSpan").GetInt32());
+            var tableWidth = geometry.GetProperty("tableWidth").GetDouble();
+            Assert.InRange(Math.Abs(geometry.GetProperty("rowWidth").GetDouble() - tableWidth), 0, 2);
+            Assert.InRange(Math.Abs(geometry.GetProperty("cellWidth").GetDouble() - tableWidth), 0, 2);
+            Assert.InRange(Math.Abs(geometry.GetProperty("leftOffset").GetDouble()), 0, 2);
+            await CaptureAsync(page, "activity-details-expanded");
             var search = page.GetByTestId("attempt-search");
             await search.FocusAsync();
             fixture.Data.HistoryStatus = "Accepted";
             await fixture.ActivityStream.SendAsync("invalidate");
             await Assertions.Expect(page.GetByTestId("attempt-table")).ToContainTextAsync("Accepted");
             await Assertions.Expect(search).ToBeFocusedAsync();
+            await Assertions.Expect(detailsToggle).ToHaveAttributeAsync("aria-controls", detailsId!);
+            await Assertions.Expect(detailsToggle).ToHaveAttributeAsync("aria-expanded", "true");
+            await Assertions.Expect(installedVersions).ToBeVisibleAsync();
             await CaptureAsync(page, "activity-live-transition");
             fixture.ActivityStream.Disconnect();
             await Assertions.Expect(page.GetByTestId("activity-live-status")).ToContainTextAsync("Reconnecting");
@@ -40,6 +82,9 @@ public sealed class ClientUpdateActivityResponsiveTests(ClientsManagementBrowser
             await Assertions.Expect(page.GetByTestId("attempt-table")).ToContainTextAsync("FailedPreActivation");
             await Assertions.Expect(page.GetByTestId("activity-live-status")).ToContainTextAsync("Live");
             await Assertions.Expect(search).ToBeFocusedAsync();
+            await Assertions.Expect(detailsToggle).ToHaveAttributeAsync("aria-controls", detailsId!);
+            await Assertions.Expect(detailsToggle).ToHaveAttributeAsync("aria-expanded", "true");
+            await Assertions.Expect(installedVersions).ToBeVisibleAsync();
             await CaptureAsync(page, "activity-reconnect-reconciled");
             Assert.Empty(errors);
         }
@@ -54,6 +99,7 @@ public sealed class ClientUpdateActivityResponsiveTests(ClientsManagementBrowser
                   live: document.querySelector('[data-testid="activity-live-status"]')?.textContent,
                   table: document.querySelector('[data-testid="attempt-table"]')?.textContent?.slice(0,3000),
                   expandedGroups: document.querySelectorAll('button.mud-table-row-expander[aria-expanded="true"]').length,
+                  expandedDetails: document.querySelectorAll('[data-testid="attempt-details-toggle"][aria-expanded="true"]').length,
                   focusedTestId: document.activeElement?.getAttribute('data-testid'),
                   resources: performance.getEntriesByType('resource').slice(-30).map(e => ({
                     path: new URL(e.name).origin + new URL(e.name).pathname, duration: e.duration, responseEnd: e.responseEnd

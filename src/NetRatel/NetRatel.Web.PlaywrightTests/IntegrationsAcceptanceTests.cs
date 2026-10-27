@@ -148,7 +148,8 @@ public sealed class IntegrationsAcceptanceTests(ClientsManagementBrowserFixture 
         var search = page.GetByTestId("credential-search");
         await search.FillAsync("Synthetic client 01");
         await Assertions.Expect(page.GetByTestId("credential-row")).ToHaveCountAsync(1);
-        await page.GetByTestId("credential-row").GetByRole(AriaRole.Button, new() { Name = "Details", Exact = true }).ClickAsync();
+        var detailsOpener = page.GetByTestId("credential-row").GetByRole(AriaRole.Button, new() { Name = "Details", Exact = true });
+        await detailsOpener.ClickAsync();
         var dialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Credential details", Exact = true });
         await Assertions.Expect(dialog).ToBeVisibleAsync();
         await Assertions.Expect(dialog.GetByTestId("credential-admission")).ToContainTextAsync("Authorization admitted");
@@ -162,14 +163,35 @@ public sealed class IntegrationsAcceptanceTests(ClientsManagementBrowserFixture 
         var root = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.GetFullPath("TestResults/playwright");
         Directory.CreateDirectory(root);
         await page.ScreenshotAsync(new() { Path = Path.Combine(root, $"credential-details-{width}x{height}-{theme}.png"), Animations = ScreenshotAnimations.Disabled });
-        await dialog.GetByRole(AriaRole.Button, new() { NameRegex = new System.Text.RegularExpressions.Regex("netratel_flows") }).ClickAsync();
+        var operation = dialog.Locator(".mud-expand-panel-header").Filter(new() { HasText = "Authorization admitted" });
+        await Assertions.Expect(operation).ToContainTextAsync("netratel_flows/list");
+        await Assertions.Expect(operation).ToHaveAttributeAsync("tabindex", "0");
+        await operation.FocusAsync();
+        await operation.PressAsync("Enter");
         await Assertions.Expect(dialog.GetByText("Required delegation", new() { Exact = true })).ToBeVisibleAsync();
         await dialog.GetByText("Required delegation", new() { Exact = true }).ScrollIntoViewIfNeededAsync();
         await page.ScreenshotAsync(new() { Path = Path.Combine(root, $"credential-admission-{width}x{height}-{theme}.png"), Animations = ScreenshotAnimations.Disabled });
         await page.Keyboard.PressAsync("Escape");
         await Assertions.Expect(dialog).ToHaveCountAsync(0);
         await Assertions.Expect(search).ToHaveValueAsync("Synthetic client 01");
-        await Assertions.Expect(page.Locator(".credential-toolbar")).ToBeFocusedAsync();
+        var returnedFocus = detailsOpener.And(page.Locator(":focus")).Or(page.Locator(".credential-toolbar:focus"));
+        try
+        {
+            await Assertions.Expect(returnedFocus).ToHaveCountAsync(1);
+            await Assertions.Expect(returnedFocus).ToBeVisibleAsync();
+        }
+        finally
+        {
+            var focus = await page.EvaluateAsync<string>("""
+                () => {
+                    const active = document.activeElement;
+                    return JSON.stringify({ tag: active?.tagName, id: active?.id, classes: active?.className,
+                      text: active?.textContent?.trim().slice(0, 100), connected: active?.isConnected,
+                      inDialog: !!active?.closest('[role=dialog]') });
+                }
+                """);
+            await File.WriteAllTextAsync(Path.Combine(root, $"credential-details-focus-{width}x{height}-{theme}.json"), focus);
+        }
         await Assertions.Expect(page.GetByTestId("credential-row")).ToHaveCountAsync(1);
         Assert.Empty(api.Deleted); Assert.Empty(errors);
         Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());

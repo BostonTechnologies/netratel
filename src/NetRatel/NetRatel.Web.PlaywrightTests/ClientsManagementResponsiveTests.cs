@@ -2090,6 +2090,7 @@ internal sealed class FixtureClientArtifactsService : IClientArtifactsService
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private static readonly Guid AgentId = Guid.Parse("7b2f5d97-0d1b-4d25-b3ca-b5f58f069abf");
     private static readonly Guid ReleaseId = Guid.Parse("ee60f7aa-d994-455c-a7bd-30d6ebdbebf0");
+    private static readonly Guid HistoryAttemptId = Guid.Parse("d2f16bf1-76a6-48f1-9d78-1f8f845b1de9");
     private readonly ClientUpdateReleaseModel _release = new()
     {
         ReleaseId = ReleaseId,
@@ -2130,7 +2131,7 @@ internal sealed class FixtureClientArtifactsService : IClientArtifactsService
     public Task<ClientUpdateHistoryPageModel> GetUpdateHistoryAsync(int page, int pageSize, string? search = null, string? status = null, int? releaseId = null, string? runtimeId = null, int? tenantId = null, string? version = null, CancellationToken ct = default)
     {
         AttemptPageRequests++;
-        return Task.FromResult(new ClientUpdateHistoryPageModel { Total = 1, Page = page, PageSize = pageSize, Items = [new ClientUpdateHistoryItemModel { AttemptId = Guid.NewGuid(), TenantId = 7, TenantName = "Visual fixture", AgentId = AgentId, ClientDisplayName = "Fixture agent", ClientHostName = "fixture-host", RuntimeId = "win-x64", TargetVersion = "0.4.102", Status = HistoryStatus, FailureCode = "fixture_failure", Message = "A bounded visual-fixture failure summary", UpdatedAtUtc = DateTimeOffset.UtcNow }] });
+        return Task.FromResult(new ClientUpdateHistoryPageModel { Total = 1, Page = page, PageSize = pageSize, Items = [new ClientUpdateHistoryItemModel { AttemptId = HistoryAttemptId, TenantId = 7, TenantName = "Visual fixture", AgentId = AgentId, ClientDisplayName = "Fixture agent", ClientHostName = "fixture-host", RuntimeId = "win-x64", TargetVersion = "0.4.102", Status = HistoryStatus, FailureCode = "fixture_failure", Message = "A bounded visual-fixture failure summary", UpdatedAtUtc = DateTimeOffset.UtcNow }] });
     }
 
     public Task<AgentClientUpdateStatePageModel> GetSuspendedAgentsAsync(int page, int pageSize, string? search = null, int? tenantId = null, CancellationToken ct = default) =>

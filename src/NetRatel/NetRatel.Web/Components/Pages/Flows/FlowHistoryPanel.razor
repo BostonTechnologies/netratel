@@ -90,7 +90,7 @@
                 @foreach (var version in Versions)
                 {
                     <article class="history-version">
-                        <div class="history-version-number">v@version.VersionNumber</div>
+                        <div class="history-version-number">@($"v{version.VersionNumber}")</div>
                         <div><strong>Version @version.VersionNumber</strong><p>@version.PublishedAtUtc.ToUniversalTime().ToString("u")</p><p>@version.PublishedBy</p>
                             <MudButton id="@($"flow-version-{version.Id:N}")" Size="Size.Small" Color="Color.Primary" EndIcon="@Icons.Material.Filled.ArrowForward" Disabled="Busy" OnClick="() => ViewVersion.InvokeAsync(version)" data-testid="flow-view-version">View immutable graph</MudButton>
                         </div>

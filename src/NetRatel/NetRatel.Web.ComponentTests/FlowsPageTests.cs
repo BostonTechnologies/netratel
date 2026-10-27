@@ -143,6 +143,7 @@ public sealed class FlowsPageTests : AsyncBunitContext
         cut.FindAll("[data-testid=flows-error]").Should().BeEmpty();
         await _dialogs.Find("[data-testid=flow-history-retry]").ClickAsync(new());
         await _dialogs.WaitForAssertionAsync(() => _dialogs.FindAll("[data-testid=flow-view-version]").Should().HaveCount(1));
+        _dialogs.Find(".history-version-number").TextContent.Should().Be("v1");
         attempts.Should().Be(2);
         await _dialogs.Find("[data-testid=flow-run-detail]").ClickAsync(new());
         await _dialogs.WaitForAssertionAsync(() => _dialogs.Find("[data-testid=flow-run-result]").TextContent.Should().Contain("Fixture client").And.Contain("Succeeded"));

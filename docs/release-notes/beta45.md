@@ -24,9 +24,7 @@ previous release.
 - **Log continuity:** real Linux file truncation emits a gap even when the
   shortened file is empty. MCP tail retains empty gap notifications and session
   gap state when initial history fills the record limit. Cumulative dropped
-  counts are no longer repeatedly added. The canonical
-  [campaign guide](https://github.com/BostonTechnologies/netratel/blob/8c5fb3b8169335af233c281a36a9e5afe9113d2c/docs/mcp-http/campaign-retest.md#genuine-log-gap-fixture) includes
-  a bounded disposable-file fixture for the real tail/resync/tail sequence.
+  counts are no longer repeatedly added.
 - **File browse continuation (#308):** API, typed client, CLI and MCP support
   protected five-minute continuation cursors. Every page rechecks current
   authority and the complete bounded native listing. Changed policy or listing
@@ -40,7 +38,7 @@ previous release.
   prevent retirement. Active job lists and scheduling exclude retired jobs,
   while run history, original ownership, audit and idempotent deletion receipts
   remain. Retired references no longer prevent the associated script's supported
-  deletion. See [cleanup](https://github.com/BostonTechnologies/netratel/blob/8c5fb3b8169335af233c281a36a9e5afe9113d2c/docs/mcp-http/campaign-retest.md#cleanup-and-final-report).
+  deletion.
 - **Paired authoring (#390):** include the scoped request-definition create and
   input-sync routes from #392, including current mapping/grant/revision checks
   and idempotent results. The empty-job completion correction from #393 is also
@@ -51,11 +49,3 @@ request-input metadata and nullable durable callback rejection fields. API,
 Web, migrations, MCP and native assets must use the same published source and
 verified artifact set. The MCP catalog changes for cursor support; reconnect
 consumers and verify their advertised catalog after deployment.
-
-Source regression checks and distribution verification do not advance the
-original acceptance ledger. Preserve the previous 57 unresolved original
-contexts and 17 planned exclusions within its 518-context universe until exact
-new evidence changes an individual disposition. Earlier attributed passes remain
-valid within their recorded scope. Genuine SSO/Netclaw, paired application,
-Windows recovery, unattended Linux activation, deployment/keyring and the exact
-measured-hour obligations still require the owner's prepared live environment.
