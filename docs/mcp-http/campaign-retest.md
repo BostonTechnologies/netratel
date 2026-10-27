@@ -28,6 +28,38 @@ definitions once, retain predecessor/effect requirements, and execute ready
 independent groups. Do not reconstruct missing assertions from an operation
 name or replace an original target/outcome with a convenient fixture pass.
 
+### Completed feature gates and focused release deltas
+
+The final beta.49 owner packet retains the same **21 PASS / 32 OPEN** original
+ledger and completes the current bounded criteria of #399, #394, #390, #382,
+#361, #312 and #141. Preserve each pass at its actual product, companion,
+consumer and fixture identity. The later OIDC refresh crash (#414) does not
+reverse #382's genuine first-turn and continuation result. The policy Web
+parent #398 retains the refresh and exact-opener focus (#415) acceptance gates.
+
+For a release limited to these Web repairs, run a finite targeted campaign:
+verify actual published/deployed identities and the selected bridge; exercise a
+genuine long-lived OIDC circuit across refresh, cookie continuation after reload,
+one reviewed mutation with independent readback and current authority; test
+Inspect Escape/Close focus on later filtered pages at short/normal viewports;
+then clean up only newly owned state. Carry unaffected feature results with
+their original attribution. Do not recreate legacy updater or receiver
+fixtures solely because the version changed.
+
+The completed beta.49 observation contains 240 actual successful calls over
+3,600 seconds from the declared observable published live-bridge protocol
+consumer. Its selected native Codex preflight is a separate result. It neither
+establishes opaque AI-host scheduling nor closes the original historical hour.
+A Web-only delta does not mandate another full hour. If a distinct new endurance
+verdict is needed because relevant transport/runtime behavior changes, declare
+and execute the same contract below under a new identity; never rename old
+timing evidence as the new candidate.
+
+Keep the original unavailable predicates OPEN. Search already-inspected
+historical locations again only when new evidence or an actual backup source
+appears. A focused Web campaign finishes after its defined tests and cleanup,
+reporting targeted acceptance and the original historical register separately.
+
 The following beta.31 counts are historical planning context, not the current
 remaining-work count.
 

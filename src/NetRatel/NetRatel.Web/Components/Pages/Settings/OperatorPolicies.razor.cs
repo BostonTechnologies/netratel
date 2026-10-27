@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using Microsoft.AspNetCore.Components.Web;
+using Microsoft.JSInterop;
 using MudBlazor;
 using NetRatel.Application.Operations;
 using NetRatel.Shared.Connectivity;
@@ -25,6 +26,8 @@ public partial class OperatorPolicies
     private bool _dialogOpen;
     private bool _selectionLoading;
     private int _dialogGeneration;
+    private string? _dialogOpenerId;
+    private bool _restoreDialogFocus;
     private McpOperatorPolicy? _selected;
     private McpOperatorTargetProfile? _targetProfile;
     private IReadOnlyList<McpOperatorPolicyChangeAudit> _audits = [];
@@ -110,6 +113,36 @@ public partial class OperatorPolicies
         _loading = false;
     }
 
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_restoreDialogFocus || _dialogOpen || _disposed) return;
+        _restoreDialogFocus = false;
+        var generation = _dialogGeneration;
+        var openerId = _dialogOpenerId;
+        try
+        {
+            await using var focus = await JS.InvokeAsync<IJSObjectReference>("import", _lifetime.Token, "./js/operator-policy-dialog.js");
+            if (!CanRestoreDialogFocus(generation)) return;
+            // The inline dialog's VisibleChanged callback precedes provider DOM removal.
+            // Wait for that exact dialog, then restore the captured opener after its trap is gone.
+            await focus.InvokeVoidAsync("waitForDismissal", _lifetime.Token, DialogBodyId(generation));
+            if (CanRestoreDialogFocus(generation))
+                await focus.InvokeVoidAsync("restoreFocus", _lifetime.Token, openerId, "policy-search", "policy-page-heading");
+        }
+        catch (JSDisconnectedException exception)
+        {
+            Logger.LogDebug(exception, "Policy dialog focus restoration ended with the browser circuit.");
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
+            Logger.LogDebug("Policy dialog focus restoration ended with the page lifetime.");
+        }
+    }
+
+    private bool CanRestoreDialogFocus(int generation) => !_disposed && !_dialogOpen && generation == _dialogGeneration;
+    private static string InspectButtonId(Guid policyId) => $"policy-inspect-{policyId:D}";
+    private static string DialogBodyId(int generation) => $"policy-dialog-body-{generation}";
+
     private async Task EnvironmentChangedAsync(McpOperatorEnvironment value)
     {
         if (_busy) return;
@@ -153,7 +186,7 @@ public partial class OperatorPolicies
         _audits = [];
         _selectedPolicyId = policyId;
         _selectionLoading = true;
-        OpenDialog();
+        OpenDialog(InspectButtonId(policyId));
         await RunAsync(() => ReadSelectionAsync(policyId));
         _selectionLoading = false;
     }
@@ -185,7 +218,7 @@ public partial class OperatorPolicies
         _audits = [];
         _editExisting = false;
         _editing = true;
-        OpenDialog();
+        OpenDialog("policy-create");
         _editor = new OperatorPolicyDraftEditor
         {
             Environment = _environment, TenantId = _tenantFilter ?? 0,
@@ -352,7 +385,13 @@ public partial class OperatorPolicies
     };
 
     private void DiscardPreview() { if (!_busy) ResetPreview(); }
-    private void OpenDialog() { _dialogGeneration++; _dialogOpen = true; }
+    private void OpenDialog(string openerId)
+    {
+        _dialogOpenerId = openerId;
+        _restoreDialogFocus = false;
+        _dialogGeneration++;
+        _dialogOpen = true;
+    }
     private void DialogKeyDown(KeyboardEventArgs args)
     {
         if (args.Key == "Escape") CloseDialog();
@@ -363,8 +402,9 @@ public partial class OperatorPolicies
     }
     private void CloseDialog()
     {
-        if (_busy) return;
+        if (_busy || !_dialogOpen) return;
         _dialogOpen = false;
+        _restoreDialogFocus = true;
         CancelEdit();
         _credentialAdmission = null;
     }

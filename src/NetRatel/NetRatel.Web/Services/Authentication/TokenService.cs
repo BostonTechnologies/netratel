@@ -16,8 +16,8 @@ namespace NetRatel.Web.Services.Authentication;
 
 /// <summary>
 /// Keeps OIDC token state in the encrypted authentication ticket. A short-lived
-/// access-token cache is retained only for an already-authenticated Blazor circuit
-/// with no request context; refresh tokens are never process-local.
+/// access-token cache is retained only for an already-authenticated Blazor circuit.
+/// Circuit renewal uses a fresh browser HTTP request to persist the rotated cookie.
 /// </summary>
 public sealed class TokenService : ITokenService
 {
@@ -40,6 +40,8 @@ public sealed class TokenService : ITokenService
     private readonly ISystemTokenService _systemTokenService;
     private readonly OperatorApiCredentialState _operatorApiCredentialState;
     private readonly ILogger<TokenService> _logger;
+    private readonly BrowserSessionRenewal? _browserSessionRenewal;
+    private readonly SemaphoreSlim _circuitRefreshGate = new(1, 1);
     private readonly object _circuitTokenLock = new();
     private string? _circuitAccessToken;
     private DateTimeOffset? _circuitAccessTokenExpiresAt;
@@ -52,7 +54,8 @@ public sealed class TokenService : ITokenService
         IConfiguration configuration,
         ISystemTokenService systemTokenService,
         OperatorApiCredentialState operatorApiCredentialState,
-        ILogger<TokenService> logger)
+        ILogger<TokenService> logger,
+        BrowserSessionRenewal? browserSessionRenewal = null)
     {
         _httpContextAccessor = httpContextAccessor;
         _httpClientFactory = httpClientFactory;
@@ -60,6 +63,7 @@ public sealed class TokenService : ITokenService
         _systemTokenService = systemTokenService;
         _operatorApiCredentialState = operatorApiCredentialState;
         _logger = logger;
+        _browserSessionRenewal = browserSessionRenewal;
     }
 
     public Task<string> GetValidAccessTokenAsync() => GetValidAccessTokenAsync(CancellationToken.None);
@@ -68,18 +72,9 @@ public sealed class TokenService : ITokenService
     {
         cancellationToken.ThrowIfCancellationRequested();
         var context = _httpContextAccessor.HttpContext;
-        if (context is null)
+        if (context is null || context.Response.HasStarted)
         {
-            var circuitPrincipal = _operatorApiCredentialState.GetBoundPrincipal();
-            var circuitToken = circuitPrincipal is { Identity.IsAuthenticated: true }
-                ? GetCircuitAccessToken(circuitPrincipal)
-                : null;
-            if (!string.IsNullOrWhiteSpace(circuitToken))
-            {
-                return circuitToken;
-            }
-
-            throw new ReauthRequiredException(ReauthMessage);
+            return await GetCircuitAccessTokenAsync(cancellationToken).ConfigureAwait(false);
         }
 
         using var requestCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, context.RequestAborted);
@@ -129,13 +124,53 @@ public sealed class TokenService : ITokenService
         CancellationToken cancellationToken = default) =>
         TryRefreshSessionCoreAsync(context, authentication, cancellationToken, _operatorApiCredentialState.GetGeneration());
 
+    private async Task<string> GetCircuitAccessTokenAsync(CancellationToken cancellationToken)
+    {
+        var principal = _operatorApiCredentialState.GetBoundPrincipal(out var generation);
+        if (principal is not { Identity.IsAuthenticated: true })
+        {
+            throw new ReauthRequiredException(ReauthMessage);
+        }
+
+        await _circuitRefreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!_operatorApiCredentialState.IsBoundTo(principal, generation))
+            {
+                throw new ReauthRequiredException(ReauthMessage);
+            }
+
+            var cached = GetCircuitAccessToken(principal);
+            if (!string.IsNullOrWhiteSpace(cached))
+            {
+                return cached;
+            }
+
+            var renewed = _browserSessionRenewal is null
+                ? null
+                : await _browserSessionRenewal.RenewAsync(principal, generation, cancellationToken).ConfigureAwait(false);
+            if (renewed is null || !_operatorApiCredentialState.IsBoundTo(principal, generation))
+            {
+                throw new ReauthRequiredException(ReauthMessage);
+            }
+
+            CacheCircuitAccessToken(renewed.Value, renewed.ExpiresAt, principal, generation);
+            return renewed.Value;
+        }
+        finally
+        {
+            _circuitRefreshGate.Release();
+        }
+    }
+
     private async Task<bool> TryRefreshSessionCoreAsync(
         HttpContext context,
         AuthenticateResult authentication,
         CancellationToken cancellationToken,
         long credentialGeneration)
     {
-        if (authentication.Principal is not { Identity.IsAuthenticated: true } principal)
+        if (context.Response.HasStarted
+            || authentication.Principal is not { Identity.IsAuthenticated: true } principal)
         {
             return false;
         }

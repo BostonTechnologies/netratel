@@ -19,7 +19,7 @@ public sealed class OperatorApiCredentialProvider(
     {
         cancellationToken.ThrowIfCancellationRequested();
         var context = httpContextAccessor.HttpContext;
-        if (context is { User.Identity.IsAuthenticated: true })
+        if (context is { User.Identity.IsAuthenticated: true, Response.HasStarted: false })
         {
             return await CaptureAuthenticatedRequestAsync(context, cancellationToken).ConfigureAwait(false);
         }
@@ -74,8 +74,11 @@ public sealed class OperatorApiCredentialProvider(
 
         var context = httpContextAccessor.HttpContext;
         if (context?.User.Identity?.IsAuthenticated != true
+            || context.Response.HasStarted && !OperatorApiCredentialState.IsLocal(circuitPrincipal)
             || !OperatorApiCredentialState.SamePrincipal(circuitPrincipal, context.User))
         {
+            // Reconnect callbacks run while the transport is establishing the
+            // circuit. Defer browser interop to its first actual API request.
             return;
         }
 

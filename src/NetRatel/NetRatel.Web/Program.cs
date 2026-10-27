@@ -156,6 +156,8 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddTransient<TokenAuthorizationHandler>();
 builder.Services.AddTransient<SystemTokenAuthorizationHandler>();
 builder.Services.AddScoped<ITokenService, TokenService>();
+builder.Services.AddSingleton<BrowserSessionRenewalBroker>();
+builder.Services.AddScoped<BrowserSessionRenewal>();
 builder.Services.AddScoped<OperatorApiCredentialState>();
 builder.Services.AddScoped<OperatorApiCredentialProvider>();
 builder.Services.AddScoped<CircuitHandler, OperatorApiCredentialCircuitHandler>();
