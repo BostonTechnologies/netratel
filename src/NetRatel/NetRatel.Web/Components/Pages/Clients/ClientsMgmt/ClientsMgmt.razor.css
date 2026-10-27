@@ -1,0 +1,8 @@
+.client-activity-table { min-width:0; }
+.client-activity-table ::deep .mud-table-cell { vertical-align:top; }
+.client-activity-table ::deep .client-activity-details-row:hover { background:transparent; }
+.client-activity-details-cell { padding:0; border-bottom:1px solid var(--mud-palette-divider); }
+.client-activity-details-toggle { display:flex; align-items:center; gap:.25rem; margin-top:.4rem; padding:.25rem .375rem; border:0; border-radius:6px; background:transparent; color:var(--mud-palette-primary); font:inherit; font-size:.8125rem; cursor:pointer; }
+.client-activity-details-toggle:hover { background:var(--mud-palette-action-default-hover); }
+.client-activity-details-toggle:focus-visible { outline:2px solid var(--mud-palette-primary); outline-offset:2px; }
+@media(max-width:600px) { .client-activity-details-cell { display:block; width:100%; } }

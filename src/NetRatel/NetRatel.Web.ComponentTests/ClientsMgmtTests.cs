@@ -20,6 +20,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
 {
     private static readonly Guid ReleaseId = Guid.Parse("4df89355-f24b-4df6-a954-87d0ebcf6bf0");
     private static readonly Guid AgentId = Guid.Parse("628a2aa8-45bc-4fab-a424-afc26a3851dd");
+    private static readonly Guid AttemptId = Guid.Parse("7f745b7b-4060-4b88-9ed5-6eab40a6fb5c");
     private readonly StubClientArtifactsService _artifacts = new();
     private readonly StubActivityStream _activity = new();
 
@@ -501,11 +502,52 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         await cut.InvokeAsync(() => _activity.SendAsync("ready"));
         await cut.WaitForAssertionAsync(() => cut.Markup.Should().Contain("Reconciliation required"));
         await cut.InvokeAsync(() => cut.Find("button.mud-table-row-expander").ClickAsync(new()));
+        await cut.InvokeAsync(() => cut.Find("[data-testid='attempt-details-toggle']").ClickAsync(new()));
         cut.Markup.Should().Contain("Target 0.4.102").And.Contain("Running observed: 0.4.101")
             .And.Contain("Accepted").And.Contain("Installation: previous version restored")
             .And.Contain("Server report: conflicts with accepted confirmation")
-            .And.Contain("Automatic updates suspended").And.Contain("Reported installation: RolledBack")
+            .And.Contain("Automatic updates suspended")
             .And.Contain("2026-10-14 06:12:00 UTC").And.Contain("before resuming automatic updates");
+        cut.Find("[aria-label='Client report']").TextContent.Should().Contain("Reported installation").And.Contain("RolledBack");
+    }
+
+    [Fact]
+    public async Task Activity_details_expand_below_the_summary_and_follow_group_visibility_and_live_refresh()
+    {
+        var cut = Render<ClientsMgmt>();
+        await cut.WaitForAssertionAsync(() => cut.FindAll(".mud-tab").Should().NotBeEmpty());
+        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Activity").ClickAsync(new()));
+        await cut.InvokeAsync(() => _activity.SendAsync("ready"));
+        await cut.WaitForAssertionAsync(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
+        await cut.InvokeAsync(() => cut.Find("button.mud-table-row-expander").ClickAsync(new()));
+
+        cut.FindAll("[data-testid='attempt-details-row']").Should().BeEmpty();
+        var toggle = cut.Find("[data-testid='attempt-details-toggle']");
+        toggle.GetAttribute("aria-expanded").Should().Be("false");
+        await cut.InvokeAsync(() => toggle.ClickAsync(new()));
+        var summaryRow = cut.Find("[data-testid='attempt-details-toggle']").Closest("tr")!;
+        summaryRow.Children.Should().HaveCount(5);
+        summaryRow.QuerySelector(".attempt-details").Should().BeNull();
+        var detailsRow = cut.Find("[data-testid='attempt-details-row']");
+        summaryRow.NextElementSibling!.GetAttribute("data-testid").Should().Be("attempt-details-row");
+        detailsRow.QuerySelector("td")!.GetAttribute("colspan").Should().Be("5");
+        detailsRow.TextContent.Should().Contain(AttemptId.ToString()).And.Contain("Installed versions").And.Contain("Server confirmation");
+
+        await cut.InvokeAsync(() => cut.Find("button.mud-table-row-expander").ClickAsync(new()));
+        cut.Find("[data-testid='attempt-details-row']").GetAttribute("style").Should().Contain("display:none");
+        await cut.InvokeAsync(() => cut.Find("button.mud-table-row-expander").ClickAsync(new()));
+        var reads = _artifacts.AttemptPageRequests;
+        _artifacts.HistoryStatus = "Accepted";
+        await cut.InvokeAsync(() => _activity.SendAsync("invalidate"));
+        await cut.WaitForAssertionAsync(() =>
+        {
+            _artifacts.AttemptPageRequests.Should().BeGreaterThan(reads);
+            cut.Find("[data-testid='attempt-details-toggle']").GetAttribute("aria-expanded").Should().Be("true");
+            cut.Find("[data-testid='attempt-details-row']").TextContent.Should().Contain(AttemptId.ToString());
+        });
+        await cut.InvokeAsync(() => cut.Find("[data-testid='attempt-details-row'] .mud-expand-panel-header").ClickAsync(new()));
+        await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid='attempt-details-row']").Should().BeEmpty());
+        cut.Find("[data-testid='attempt-details-toggle']").GetAttribute("aria-expanded").Should().Be("false");
     }
 
     [Fact]
@@ -857,7 +899,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
                 [
                     new ClientUpdateHistoryItemModel
                     {
-                        AttemptId = Guid.NewGuid(),
+                        AttemptId = AttemptId,
                         TenantId = 7,
                         TenantName = "Canary",
                         AgentId = AgentId,

@@ -60,7 +60,7 @@ has a terminal `outcome`, optional `collectionId`, completion time and fixed err
 code. `GET /api/v2/agents/{tenantId}/{agentId}/services/refresh/{requestId}` reads one
 exact request under the same target and `telemetry.read` checks. The projection
 retains the latest 128 requests per client across process restarts; export the
-readback into campaign evidence when longer retention is needed. A missing ID
+readback into the operational record when longer retention is needed. A missing ID
 returns 404 and must not be replaced by the latest collection.
 
 Complete, Partial, Error and Unsupported terminal collections are bound only to
@@ -80,10 +80,6 @@ clients the viewer waits for the exact persisted request outcome and displays it
 ID. Both paths retain the bounded 70-second display deadline. Closing or changing
 client or tenant cancels requests/subscriptions and fences late responses.
 
-Historical uncorrelated requests remain unproven. Owner acceptance of this contract
-requires a new explicitly versioned request on an upgraded client and a retained
-readback linking that new request ID to its terminal collection ID.
-
 The API issues watched and empty-fallback Services policies with a 59-minute
 lifetime. This leaves one minute below the client's unchanged one-hour maximum
 for bounded clock lag and transport time. It does not relax the client's policy
@@ -96,29 +92,18 @@ or replayed policy. Invalid wire conversion emits only its fixed rejection
 category. These diagnostics omit service names, tokens and raw policy payloads;
 they help identify the rejected stage without changing admission rules.
 
-## Normal-clock post-reboot acceptance
+## Verify a refresh
 
-Use an explicitly disposable hosted client running the verified published
-binary. After reboot, capture service account/start mode, executable hash,
-enrollment continuity, authenticated Online presence, connection epoch and
-registration, plus the normal time service's source, successful sync and observed
-offset. Keep the guest's normal clock throughout the acceptance sequence.
+Use the request ID returned by the refresh call to read its terminal outcome.
+A completed refresh has `outcome: Complete`, a nonempty `collectionId`, and a
+collection whose `refreshRequestId` matches under the same tenant, client and
+registration. A throttled or coalesced response can return an existing request
+ID; background inventory does not complete a different request.
 
-Through the selected native consumer, admit a fresh Services refresh and retain
-its request ID. Read that exact request until its terminal outcome. A success
-requires `Complete`, a nonempty `collectionId` and a retained collection whose
-`refreshRequestId` equals that request ID under the matching tenant, client and
-registration. Wait until the first request is terminal and the advertised
-throttle interval has passed, then admit a second distinct request and require
-the same relationship. Throttling/coalescing that returns the first ID does not
-create another successful assertion. Background inventory with no request ID
-does not complete either request.
-
-If a request fails, retain its first failure and any bounded policy-rejection
-diagnostic with source/version and clock observations. A temporary positive
-clock adjustment can support a timing diagnosis, but its successful refresh
-cannot supply normal-clock acceptance. Keep the historical failed or
-uncorrelated request separate from the new candidate's result.
+For a failed refresh, inspect the returned error code and bounded policy
+rejection diagnostics alongside the client's connection and normal time-service
+status. Keep the clock synchronized; changing it does not repair a policy or
+inventory problem.
 
 The dialog owns the tenant and client captured at opening. Replacing directory
 rows, changing heartbeat data, reconnecting the inventory stream, or disposing the

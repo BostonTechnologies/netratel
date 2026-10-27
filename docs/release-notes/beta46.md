@@ -43,7 +43,7 @@ published archives, immutable images and completed publication record together.
 Run the supplied migration step before API/Web startup as in the canonical
 [release installation guide](../../release/INSTALL.md).
 
-The [completion guide](../mcp-http/campaign-retest.md) records the 53 remaining
+The [completion guide](https://github.com/BostonTechnologies/netratel/blob/8c5fb3b8169335af233c281a36a9e5afe9113d2c/docs/mcp-http/campaign-retest.md) records the 53 remaining
 assertions and their execution order. It retains the genuine authenticated AI,
 original QA recovery, designated reader, Windows, paired-application, keyring,
 240-call/3,600-second endurance and cleanup obligations. Source tests and release

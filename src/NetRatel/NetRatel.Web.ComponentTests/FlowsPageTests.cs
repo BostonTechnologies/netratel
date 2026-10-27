@@ -15,6 +15,7 @@ namespace NetRatel.Web.ComponentTests;
 public sealed class FlowsPageTests : AsyncBunitContext
 {
     private readonly FakeFlowApi _api = new();
+    private readonly IRenderedComponent<MudDialogProvider> _dialogs;
     public FlowsPageTests()
     {
         JSInterop.Mode = JSRuntimeMode.Loose;
@@ -23,7 +24,7 @@ public sealed class FlowsPageTests : AsyncBunitContext
         module.Setup<double[]>("geometry", _ => true).SetResult([0, 0, 1000, 800, 1200, 1000]);
         Services.AddSingleton<IFlowApiService>(_api);
         Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
-        Render<MudDialogProvider>();
+        _dialogs = Render<MudDialogProvider>();
     }
 
     [Theory]
@@ -80,8 +81,8 @@ public sealed class FlowsPageTests : AsyncBunitContext
         _api.VersionLookup = (_, _, _) => Task.FromResult(version);
         Services.GetRequiredService<NavigationManager>().NavigateTo($"/flows?tenantId=17&run={runId:D}");
         var cut = Render<FlowsPage>();
-        await cut.WaitForAssertionAsync(() => cut.Find("[data-testid=flow-action-result]").TextContent.Should().Contain("Status: Succeeded · Attempts: 1"));
-        var result = cut.Find("[data-testid=flow-action-result]");
+        await _dialogs.WaitForAssertionAsync(() => _dialogs.Find("[data-testid=flow-action-result]").TextContent.Should().Contain("Status: Succeeded · Attempts: 1"));
+        var result = _dialogs.Find("[data-testid=flow-action-result]");
         result.QuerySelector("[data-testid=flow-action-code]")!.TextContent.Should().Be("incident-created");
         result.QuerySelector("[data-testid=flow-incident-id]")!.TextContent.Should().Be("123");
         result.QuerySelectorAll("dt").Select(e => e.TextContent).Should().Contain("Incident ID");
@@ -94,6 +95,60 @@ public sealed class FlowsPageTests : AsyncBunitContext
         var anchor = result.QuerySelector("a");
         if (hasLink) { anchor!.GetAttribute("href").Should().Be(link); anchor.GetAttribute("rel").Should().Be("noopener noreferrer"); }
         else anchor.Should().BeNull();
+        _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task History_Opens_While_Loading_And_Close_Cancels_Without_Resetting_The_List()
+    {
+        var pending = new TaskCompletionSource<IReadOnlyList<FlowVersionDto>>();
+        CancellationToken historyToken = default;
+        _api.VersionsLookup = (_, _, token) => { historyToken = token; return pending.Task; };
+        var cut = Render<FlowsPage>();
+        cut.Find("[data-testid=flows-search]").Input("Incident");
+        var opening = cut.Find("[data-testid=flow-history]").ClickAsync(new());
+        await _dialogs.WaitForAssertionAsync(() => _dialogs.Find("[data-testid=flow-history-loading]").TextContent.Should().Contain("Loading flow history"));
+        _dialogs.Find("[role=dialog]").GetAttribute("aria-modal").Should().Be("true");
+        await _dialogs.Find("[data-testid=flow-history-close]").ClickAsync(new());
+        historyToken.IsCancellationRequested.Should().BeTrue();
+        await cut.InvokeAsync(() => pending.SetResult([Version(1, "Late history")]));
+        await opening;
+        await _dialogs.WaitForAssertionAsync(() => _dialogs.FindAll("[data-testid=flow-history-panel]").Should().BeEmpty());
+        cut.Find("[data-testid=flows-search]").GetAttribute("value").Should().Be("Incident");
+        cut.FindAll("[data-testid=flow-row]").Should().HaveCount(1);
+        await cut.WaitForAssertionAsync(() => JSInterop.Invocations["restoreFocus"].Should().Contain(call =>
+            call.Arguments.Count > 0 && Equals(call.Arguments[0], $"flow-history-{FlowEditorTests.Definition().Id:N}")));
+        _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task History_Read_Error_Retries_Inside_The_Dialog_And_Run_Result_Returns_To_History()
+    {
+        var attempts = 0;
+        var definition = FlowEditorTests.Definition(); var version = Version(1, "History graph"); var now = DateTimeOffset.UtcNow;
+        var run = new FlowRunSummaryDto(Guid.NewGuid(), definition.Id, version.Id, Guid.NewGuid(), Guid.NewGuid(), FlowRunStatus.Succeeded, now, now, "complete");
+        _api.VersionsLookup = (_, _, _) => ++attempts == 1
+            ? Task.FromException<IReadOnlyList<FlowVersionDto>>(new HttpRequestException("Unavailable"))
+            : Task.FromResult<IReadOnlyList<FlowVersionDto>>([version]);
+        _api.RunsLookup = (_, _, _) => Task.FromResult<IReadOnlyList<FlowRunSummaryDto>>([run]);
+        _api.FlowRunLookup = (tenant, flowId, runId, _) =>
+        {
+            tenant.Should().Be(17); flowId.Should().Be(definition.Id); runId.Should().Be(run.Id);
+            return Task.FromResult(new FlowRunDetailDto(run,
+                new(Guid.NewGuid(), Guid.NewGuid(), "CPU rule", "Fixture client", "cpu", "CPU", "warning", 96, null, now), []));
+        };
+        var cut = Render<FlowsPage>();
+        await cut.Find("[data-testid=flow-history]").ClickAsync(new());
+        await _dialogs.WaitForAssertionAsync(() => _dialogs.Find("[data-testid=flow-history-error]").TextContent.Should().Contain("The flow request failed"));
+        cut.FindAll("[data-testid=flows-error]").Should().BeEmpty();
+        await _dialogs.Find("[data-testid=flow-history-retry]").ClickAsync(new());
+        await _dialogs.WaitForAssertionAsync(() => _dialogs.FindAll("[data-testid=flow-view-version]").Should().HaveCount(1));
+        attempts.Should().Be(2);
+        await _dialogs.Find("[data-testid=flow-run-detail]").ClickAsync(new());
+        await _dialogs.WaitForAssertionAsync(() => _dialogs.Find("[data-testid=flow-run-result]").TextContent.Should().Contain("Fixture client").And.Contain("Succeeded"));
+        await _dialogs.Find("[data-testid=flow-history-back]").ClickAsync(new());
+        _dialogs.FindAll("[data-testid=flow-run-result]").Should().BeEmpty();
+        _dialogs.FindAll("[data-testid=flow-run-detail]").Should().HaveCount(1);
         _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
     }
 
@@ -117,8 +172,8 @@ public sealed class FlowsPageTests : AsyncBunitContext
         _api.RunLookup = (_, _, _) => Task.FromResult(detail); _api.VersionLookup = (_, _, _) => Task.FromResult(version);
         Services.GetRequiredService<NavigationManager>().NavigateTo($"/flows?tenantId=17&run={runId:D}");
         var cut = Render<FlowsPage>();
-        await cut.WaitForAssertionAsync(() => Assert.Contains("AI result: Timeout", cut.Find("[data-testid=flow-ai-result]").TextContent));
-        Assert.Contains("Stop the flow", cut.Find("[data-testid=flow-ai-result]").TextContent);
-        Assert.Equal($"/ai/ops?tenantId=17&investigation={investigationId:D}", cut.Find("[data-testid=flow-ai-result] a").GetAttribute("href"));
+        await _dialogs.WaitForAssertionAsync(() => Assert.Contains("AI result: Timeout", _dialogs.Find("[data-testid=flow-ai-result]").TextContent));
+        Assert.Contains("Stop the flow", _dialogs.Find("[data-testid=flow-ai-result]").TextContent);
+        Assert.Equal($"/ai/ops?tenantId=17&investigation={investigationId:D}", _dialogs.Find("[data-testid=flow-ai-result] a").GetAttribute("href"));
     }
 }

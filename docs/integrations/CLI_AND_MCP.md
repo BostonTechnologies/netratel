@@ -13,8 +13,8 @@ HTTP MCP requires HTTPS OIDC discovery metadata by default. The
 Development host for disposable local integration tests; it must never be used
 for a deployed instance.
 
-The rc.1 tag and archives are historical artifacts. Obtain tooling only
-from its matching prerelease, verify `SHA256SUMS` before extraction, and keep
+Obtain tooling from the matching completed GitHub release,
+verify `SHA256SUMS` before extraction, and keep
 the archive together with its SBOM and provenance record. A source checkout is
 appropriate for development rather than a substitute for a promoted release
 bundle.

@@ -25,7 +25,7 @@ previous release.
   shortened file is empty. MCP tail retains empty gap notifications and session
   gap state when initial history fills the record limit. Cumulative dropped
   counts are no longer repeatedly added. The canonical
-  [campaign guide](../mcp-http/campaign-retest.md#genuine-log-gap-fixture) includes
+  [campaign guide](https://github.com/BostonTechnologies/netratel/blob/8c5fb3b8169335af233c281a36a9e5afe9113d2c/docs/mcp-http/campaign-retest.md#genuine-log-gap-fixture) includes
   a bounded disposable-file fixture for the real tail/resync/tail sequence.
 - **File browse continuation (#308):** API, typed client, CLI and MCP support
   protected five-minute continuation cursors. Every page rechecks current
@@ -40,7 +40,7 @@ previous release.
   prevent retirement. Active job lists and scheduling exclude retired jobs,
   while run history, original ownership, audit and idempotent deletion receipts
   remain. Retired references no longer prevent the associated script's supported
-  deletion. See [cleanup](../mcp-http/campaign-retest.md#cleanup-and-final-report).
+  deletion. See [cleanup](https://github.com/BostonTechnologies/netratel/blob/8c5fb3b8169335af233c281a36a9e5afe9113d2c/docs/mcp-http/campaign-retest.md#cleanup-and-final-report).
 - **Paired authoring (#390):** include the scoped request-definition create and
   input-sync routes from #392, including current mapping/grant/revision checks
   and idempotent results. The empty-job completion correction from #393 is also

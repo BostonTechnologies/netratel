@@ -44,11 +44,12 @@
             <div class="monitoring-client-filter"><MudChip T="Guid" Variant="Variant.Outlined" OnClose="ClearClientFilter">Client: @ClientName(filteredClient)</MudChip><MudText Typo="Typo.caption">Alert rows show this client. Counts show the whole tenant.</MudText></div>
         }
         <div class="monitoring-counts" aria-label="Counts across this tenant">
-            <MudButton ButtonType="ButtonType.Button" Variant="Variant.Outlined" Color="Color.Error" Size="Size.Small" OnClick='() => FilterState("firing")' aria-pressed="@(_stateFilter == "firing")">Firing <strong>@snapshot.Summary.FiringOccurrences</strong></MudButton>
-            <MudButton ButtonType="ButtonType.Button" Variant="Variant.Outlined" Color="Color.Error" Size="Size.Small" OnClick='() => FilterState("offline")' aria-pressed="@(_stateFilter == "offline")" data-testid="monitoring-offline-count">Offline clients <strong>@snapshot.Summary.OfflineClients</strong></MudButton>
-            <MudButton ButtonType="ButtonType.Button" Variant="Variant.Outlined" Size="Size.Small" OnClick='() => FilterState("pending")' aria-pressed="@(_stateFilter == "pending")">Pending <strong>@snapshot.Summary.PendingSeries</strong></MudButton>
-            <MudButton ButtonType="ButtonType.Button" Variant="Variant.Outlined" Size="Size.Small" OnClick='() => FilterState("unknown")' aria-pressed="@(_stateFilter == "unknown")">Unknown <strong>@snapshot.Summary.UnknownSeries</strong></MudButton>
-            <MudButton ButtonType="ButtonType.Button" Variant="Variant.Outlined" Size="Size.Small" OnClick='() => FilterState("suppressed")' aria-pressed="@(_stateFilter == "suppressed")">Suppressed <strong>@snapshot.Summary.SuppressedOccurrences</strong></MudButton>
+            <MudButton ButtonType="ButtonType.Button" Variant="@(_stateFilter == "firing" ? Variant.Filled : Variant.Outlined)" Color="Color.Error" Size="Size.Small" data-testid="monitoring-state-firing" OnClick='() => FilterState("firing")' aria-pressed="@((_stateFilter == "firing").ToString().ToLowerInvariant())">Firing <strong>@snapshot.Summary.FiringOccurrences</strong></MudButton>
+            <MudButton ButtonType="ButtonType.Button" Variant="@(_stateFilter == "offline" ? Variant.Filled : Variant.Outlined)" Color="Color.Error" Size="Size.Small" OnClick='() => FilterState("offline")' aria-pressed="@((_stateFilter == "offline").ToString().ToLowerInvariant())" data-testid="monitoring-offline-count">Offline clients <strong>@snapshot.Summary.OfflineClients</strong></MudButton>
+            <MudButton ButtonType="ButtonType.Button" Variant="@(_stateFilter == "pending" ? Variant.Filled : Variant.Outlined)" Size="Size.Small" data-testid="monitoring-state-pending" OnClick='() => FilterState("pending")' aria-pressed="@((_stateFilter == "pending").ToString().ToLowerInvariant())">Pending <strong>@snapshot.Summary.PendingSeries</strong></MudButton>
+            <MudButton ButtonType="ButtonType.Button" Variant="@(_stateFilter == "unknown" ? Variant.Filled : Variant.Outlined)" Size="Size.Small" data-testid="monitoring-state-unknown" OnClick='() => FilterState("unknown")' aria-pressed="@((_stateFilter == "unknown").ToString().ToLowerInvariant())">Unknown <strong>@snapshot.Summary.UnknownSeries</strong></MudButton>
+            <MudButton ButtonType="ButtonType.Button" Variant="@(_stateFilter == "suppressed" ? Variant.Filled : Variant.Outlined)" Size="Size.Small" data-testid="monitoring-state-suppressed" OnClick='() => FilterState("suppressed")' aria-pressed="@((_stateFilter == "suppressed").ToString().ToLowerInvariant())">Suppressed <strong>@snapshot.Summary.SuppressedOccurrences</strong></MudButton>
+            <MudButton ButtonType="ButtonType.Button" Variant="@(_stateFilter == "all" ? Variant.Filled : Variant.Outlined)" Size="Size.Small" OnClick='() => FilterState("all")' aria-pressed="@((_stateFilter == "all").ToString().ToLowerInvariant())" data-testid="monitoring-state-all">All states</MudButton>
             <MudText Typo="Typo.caption">Tenant totals · @_timeZone.Id</MudText>
         </div>
         <nav class="monitoring-tabs" role="tablist" aria-label="Monitoring views">
@@ -57,6 +58,7 @@
         @if (_tab == "Active")
         {
             <MudPaper Class="monitoring-panel pa-3">
+                <div class="monitoring-filter-heading" data-testid="monitoring-active-filter"><strong>@ActiveFilterLabel</strong><span>Current page · use the state filters above to change this view</span></div>
                 <div class="monitoring-table-wrap"><table class="monitoring-table"><caption class="monitoring-visually-hidden">Current alert occurrences and evidence</caption><thead><tr><th>Client / host</th><th>Rule</th><th>Severity / state</th><th>Latest reading</th><th>Since / acknowledgement</th><th>Actions</th></tr></thead><tbody>
                     @foreach (var row in ActiveRows)
                     {

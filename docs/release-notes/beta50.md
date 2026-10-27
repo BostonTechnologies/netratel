@@ -61,4 +61,4 @@ not relabelled as a beta.50 hour. This Web-only delta does not require another
 mandatory hour. The original ledger remains **21 PASS / 32 OPEN of 53** until
 exact new evidence advances its specific predicates. A targeted Web pass is
 reported separately from that historical acceptance state. See the
-[campaign guide](../mcp-http/campaign-retest.md).
+[campaign guide](https://github.com/BostonTechnologies/netratel/blob/8c5fb3b8169335af233c281a36a9e5afe9113d2c/docs/mcp-http/campaign-retest.md).

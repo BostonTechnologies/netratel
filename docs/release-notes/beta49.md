@@ -93,7 +93,7 @@ independently ready work rather than restarting already evidenced contexts.
 Source delivery and publication do not close the following live requirements.
 Retain qualified earlier receipts at their actual source and scope, then complete
 the missing assertions through the
-[campaign guide](../mcp-http/campaign-retest.md).
+[campaign guide](https://github.com/BostonTechnologies/netratel/blob/8c5fb3b8169335af233c281a36a9e5afe9113d2c/docs/mcp-http/campaign-retest.md).
 
 | Issue | Delivered behavior and remaining deployed evidence |
 | --- | --- |

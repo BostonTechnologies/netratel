@@ -116,6 +116,7 @@ internal class MonitoringTestApi : IMonitoringApiService
     public IReadOnlyList<MonitoringPublishedFlowDto> PublishedFlows { get; set; } = [];
     public bool CanRead { get; set; } = true;
     public Func<int, CancellationToken, Task<MonitoringConfigurationDto>>? ConfigurationRead { get; set; }
+    public Func<int, CancellationToken, Task<MonitoringSummaryDto>>? SummaryRead { get; set; }
     public Func<int, string?, CancellationToken, Task<MonitoringSeriesPageDto>>? SeriesRead { get; set; }
     public Func<int, string?, CancellationToken, Task<MonitoringEventPageDto>>? EventsRead { get; set; }
     public Func<int, MonitoringRuleWriteDto, CancellationToken, Task<MonitoringConfigurationDto>>? RuleSave { get; set; }
@@ -123,7 +124,7 @@ internal class MonitoringTestApi : IMonitoringApiService
     public Task<IReadOnlyList<MonitoringTenantDto>> GetTenantsAsync(CancellationToken token = default) => Task.FromResult<IReadOnlyList<MonitoringTenantDto>>([new(1, "SQL tenant"), new(2, "Other tenant")]);
     public Task<MonitoringPermissionsDto> GetPermissionsAsync(int tenantId, CancellationToken token = default) => Task.FromResult(new MonitoringPermissionsDto(tenantId, CanRead, true, true, true, true, true));
     public Task<MonitoringConfigurationDto> GetConfigurationAsync(int tenantId, CancellationToken token = default) => ConfigurationRead?.Invoke(tenantId, token) ?? Task.FromResult(Configuration(tenantId));
-    public Task<MonitoringSummaryDto> GetSummaryAsync(int tenantId, CancellationToken token = default) => Task.FromResult(new MonitoringSummaryDto(tenantId, 0, 0, 0, 0, 0, 0, DateTimeOffset.UtcNow));
+    public Task<MonitoringSummaryDto> GetSummaryAsync(int tenantId, CancellationToken token = default) => SummaryRead?.Invoke(tenantId, token) ?? Task.FromResult(new MonitoringSummaryDto(tenantId, 0, 0, 0, 0, 0, 0, DateTimeOffset.UtcNow));
     public Task<MonitoringSeriesPageDto> GetSeriesAsync(int tenantId, string? cursor = null, CancellationToken token = default) => SeriesRead?.Invoke(tenantId, cursor, token) ?? Task.FromResult(new MonitoringSeriesPageDto([], null));
     public Task<MonitoringEventPageDto> GetEventsAsync(int tenantId, string? cursor = null, CancellationToken token = default) => EventsRead?.Invoke(tenantId, cursor, token) ?? Task.FromResult(new MonitoringEventPageDto([], null));
     public Task<MonitoringClientPageDto> GetClientsAsync(int tenantId, string? cursor = null, CancellationToken token = default) => Task.FromResult(new MonitoringClientPageDto([new(Guid.Parse("11111111-1111-1111-1111-111111111111"), "SQL Server", NetRatel.Shared.Contracts.Services.ClientServicePlatform.Windows, MonitoringTargetSupport.Supported, "cached")], null, 1));

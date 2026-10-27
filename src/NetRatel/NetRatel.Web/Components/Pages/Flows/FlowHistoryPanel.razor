@@ -1,0 +1,170 @@
+@using NetRatel.Shared.Contracts.Flows
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+<div id="@BodyId" class="flow-history-panel" tabindex="0" aria-label="Flow history and execution results" data-testid="flow-history-panel">
+    <div class="history-summary">
+        <MudChip T="string" Size="Size.Small" Color="@(Flow.Enabled ? Color.Success : Color.Default)" Variant="Variant.Outlined">@(Flow.Enabled ? "Enabled" : "Disabled")</MudChip>
+        <span>Draft revision <strong>@Flow.Revision</strong></span>
+        <span>@(Flow.PublishedVersionNumber > 0 ? $"Published version {Flow.PublishedVersionNumber}" : "Not published")</span>
+    </div>
+    @if (Error is not null)
+    {
+        <div class="history-error" role="alert" data-testid="flow-history-error">
+            <MudIcon Icon="@Icons.Material.Outlined.ErrorOutline" Color="Color.Error" />
+            <div><strong>History could not be loaded</strong><p>@Error</p></div>
+            <MudButton Variant="Variant.Outlined" OnClick="Reload" Disabled="Busy" data-testid="flow-history-retry">Reload history</MudButton>
+        </div>
+    }
+    @if (Loading)
+    {
+        <div class="history-empty" role="status" data-testid="flow-history-loading"><MudProgressCircular Color="Color.Primary" Indeterminate="true" Size="Size.Medium" /><h3>Loading flow history</h3><p>Retrieving published versions and recent runs…</p></div>
+    }
+    else if (RunLoading)
+    {
+        <div class="history-empty" role="status" data-testid="flow-run-loading"><MudProgressCircular Color="Color.Primary" Indeterminate="true" Size="Size.Medium" /><h3 id="flow-run-heading" tabindex="-1">Loading run result</h3><p>Retrieving the trigger, action outcomes and receipts…</p></div>
+    }
+    else if (Detail is { } detail)
+    {
+        <div class="history-result" data-testid="flow-run-result">
+            <MudButton StartIcon="@Icons.Material.Filled.ArrowBack" OnClick="Back" data-testid="flow-history-back">Back to history</MudButton>
+            <div class="history-result-heading">
+                <div><span class="history-eyebrow">RUN RESULT</span><h3 id="flow-run-heading" tabindex="-1">@RunStatusLabel(detail.Run.Status)</h3><p>@detail.Run.Code · @(detail.Run.CompletedAtUtc?.ToUniversalTime().ToString("u") ?? "Not completed")</p></div>
+                <MudChip T="string" Color="@RunColor(detail.Run.Status)" Variant="Variant.Outlined" Icon="@RunIcon(detail.Run.Status)">@RunStatusLabel(detail.Run.Status)</MudChip>
+            </div>
+            <section class="history-card" aria-label="Trigger details">
+                <header><MudIcon Icon="@Icons.Material.Outlined.NotificationsActive" /><h4>Alert that started this run</h4></header>
+                <dl class="history-facts">
+                    <div><dt>Rule</dt><dd>@detail.Input.RuleName</dd></div><div><dt>Client</dt><dd>@detail.Input.ClientName</dd></div>
+                    <div><dt>Resource</dt><dd>@detail.Input.Resource</dd></div><div><dt>Metric</dt><dd>@detail.Input.Metric</dd></div>
+                    <div><dt>Severity</dt><dd>@detail.Input.Severity</dd></div><div><dt>Observed value</dt><dd>@(detail.Input.NumericValue?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? detail.Input.ServiceState ?? "Unknown")</dd></div>
+                    <div><dt>Observed at (UTC)</dt><dd>@detail.Input.ObservedAtUtc.ToUniversalTime().ToString("u")</dd></div>
+                    <div><dt>Run ID</dt><dd><code>@detail.Run.Id</code></dd></div>
+                </dl>
+            </section>
+            <div class="history-section-heading"><h4>Action outcomes</h4><span>@detail.Actions.Count action@(detail.Actions.Count == 1 ? "" : "s")</span></div>
+            @if (detail.Actions.Count == 0) { <p class="history-hint">No action outcomes have been recorded for this run.</p> }
+            @foreach (var action in detail.Actions)
+            {
+                <section class="history-card flow-run-action" aria-label="Action result" data-testid="flow-action-result">
+                    <header><MudIcon Icon="@Icons.Material.Outlined.AccountTree" /><div><h4>@(action.Name ?? FlowActionGroupFields.KindLabel(action.Kind))</h4><p>@FlowActionGroupFields.KindLabel(action.Kind)</p></div></header>
+                    <p>Status: @action.Status · Attempts: @action.Attempts</p>
+                    @if (action.AiResult is { } ai)
+                    {
+                        <div class="history-ai-result" data-testid="flow-ai-result">
+                            <p>AI result: @AiStatusLabel(ai.Status) · @(ai.CompletedAtUtc?.ToUniversalTime().ToString("u") ?? "Waiting for completion")</p>
+                            <p>Failure policy: @(action.AiFailureBehavior == FlowAiFailureBehavior.StopFlow ? "Stop the flow" : "Continue with the alert")</p>
+                            @if (ai.InvestigationId is { } aiInvestigation && aiInvestigation != Guid.Empty)
+                            { <a href="@($"/ai/ops?tenantId={TenantId}&investigation={aiInvestigation:D}")">Open AI investigation</a> }
+                            @if (!string.IsNullOrWhiteSpace(ai.Summary)) { <p>@ai.Summary</p> }
+                        </div>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(action.Code)) { <p>Code: <code data-testid="flow-action-code">@action.Code</code></p> }
+                    @if (action.Receipt is { } receipt)
+                    {
+                        <dl class="history-facts">
+                            @if (action.Kind == FlowActionKind.RatelDeskIncident)
+                            { <div><dt>Incident ID</dt><dd data-testid="flow-incident-id">@receipt.IncidentId</dd></div> }
+                            else if (action.Kind == FlowActionKind.NetclawInvestigation)
+                            { <div><dt>Investigation ID</dt><dd>@receipt.IncidentId</dd></div> }
+                            else
+                            { <div><dt>Delivery reference</dt><dd data-testid="flow-notification-receipt">@receipt.IncidentId</dd></div> }
+                            @if (!string.IsNullOrWhiteSpace(receipt.TrackingId)) { <div><dt>Tracking number</dt><dd data-testid="flow-incident-tracking">@receipt.TrackingId</dd></div> }
+                        </dl>
+                        @if (action.Kind == FlowActionKind.NetclawInvestigation && Guid.TryParse(receipt.IncidentId, out var investigationId))
+                        { <p><a href="@($"/ai/ops?tenantId={TenantId}&investigation={investigationId:D}")">Open AI investigation</a> · Admission confirmed; follow the conversation for its result.</p> }
+                        else if (SafeReceiptLink(receipt.SafeLink) is { } link) { <p><a href="@link" target="_blank" rel="noopener noreferrer">@(action.Kind == FlowActionKind.RatelDeskIncident ? "Open incident" : "Open notification")</a></p> }
+                    }
+                </section>
+            }
+        </div>
+    }
+    else if (Error is null)
+    {
+        <div class="history-columns">
+            <section class="history-section" aria-labelledby="flow-history-versions-heading">
+                <div class="history-section-heading"><div><MudIcon Icon="@Icons.Material.Outlined.Layers" /><h3 id="flow-history-versions-heading">Published versions</h3></div><span>@Versions.Count</span></div>
+                <p class="history-hint">Immutable snapshots of this flow.</p>
+                @if (Versions.Count == 0)
+                { <div class="history-empty history-empty-small"><MudIcon Icon="@Icons.Material.Outlined.Layers" /><h4>No published versions</h4><p>Published snapshots will appear here.</p></div> }
+                @foreach (var version in Versions)
+                {
+                    <article class="history-version">
+                        <div class="history-version-number">v@version.VersionNumber</div>
+                        <div><strong>Version @version.VersionNumber</strong><p>@version.PublishedAtUtc.ToUniversalTime().ToString("u")</p><p>@version.PublishedBy</p>
+                            <MudButton id="@($"flow-version-{version.Id:N}")" Size="Size.Small" Color="Color.Primary" EndIcon="@Icons.Material.Filled.ArrowForward" Disabled="Busy" OnClick="() => ViewVersion.InvokeAsync(version)" data-testid="flow-view-version">View immutable graph</MudButton>
+                        </div>
+                    </article>
+                }
+            </section>
+            <section class="history-section" aria-labelledby="flow-history-runs-heading">
+                <div class="history-section-heading"><div><MudIcon Icon="@Icons.Material.Outlined.PlayCircle" /><h3 id="flow-history-runs-heading" tabindex="-1">Recent runs</h3></div><span>@Runs.Count</span></div>
+                <p class="history-hint">Execution status and individual action results.</p>
+                @if (Runs.Count == 0)
+                { <div class="history-empty history-empty-small"><MudIcon Icon="@Icons.Material.Outlined.History" /><h4>No runs yet</h4><p>Opening history does not execute a flow.</p></div> }
+                @foreach (var run in Runs)
+                {
+                    <article class="history-run">
+                        <div><MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="@RunColor(run.Status)" Icon="@RunIcon(run.Status)">@RunStatusLabel(run.Status)</MudChip><time datetime="@run.CreatedAtUtc.ToUniversalTime().ToString("O")">@run.CreatedAtUtc.ToUniversalTime().ToString("u")</time><p>@run.Code</p></div>
+                        <MudButton Size="Size.Small" Variant="Variant.Outlined" Disabled="Busy" OnClick="() => ViewRun.InvokeAsync(run)" EndIcon="@Icons.Material.Filled.ArrowForward" data-testid="flow-run-detail">View result</MudButton>
+                    </article>
+                }
+            </section>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public FlowDefinitionDto Flow { get; set; } = default!;
+    [Parameter] public int TenantId { get; set; }
+    [Parameter] public IReadOnlyList<FlowVersionDto> Versions { get; set; } = [];
+    [Parameter] public IReadOnlyList<FlowRunSummaryDto> Runs { get; set; } = [];
+    [Parameter] public FlowRunDetailDto? Detail { get; set; }
+    [Parameter] public bool Loading { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public bool RunLoading { get; set; }
+    [Parameter] public string? Error { get; set; }
+    [Parameter] public string BodyId { get; set; } = "";
+    [Parameter] public string? FocusTarget { get; set; }
+    [Parameter] public EventCallback Reload { get; set; }
+    [Parameter] public EventCallback<FlowVersionDto> ViewVersion { get; set; }
+    [Parameter] public EventCallback<FlowRunSummaryDto> ViewRun { get; set; }
+    [Parameter] public EventCallback Back { get; set; }
+    private string? _focusedTarget;
+    private bool _disposed;
+    private IJSObjectReference? _focusModule;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_disposed || FocusTarget is not { } target || _focusedTarget == target) return;
+        _focusedTarget = target;
+        try
+        {
+            _focusModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/operator-policy-dialog.js");
+            if (_disposed) { await _focusModule.DisposeAsync(); return; }
+            if (FocusTarget != target) return;
+            await _focusModule.InvokeVoidAsync("restoreFocus", target, "flow-history-dismiss");
+        }
+        catch (JSDisconnectedException) { _focusModule = null; }
+    }
+
+    private static Color RunColor(FlowRunStatus status) => status switch
+    { FlowRunStatus.Succeeded => Color.Success, FlowRunStatus.Failed => Color.Error, FlowRunStatus.PartiallySucceeded or FlowRunStatus.DeliveryUnknown => Color.Warning, _ => Color.Info };
+    private static string RunIcon(FlowRunStatus status) => status switch
+    { FlowRunStatus.Succeeded => Icons.Material.Outlined.CheckCircle, FlowRunStatus.Failed => Icons.Material.Outlined.ErrorOutline, _ => Icons.Material.Outlined.Schedule };
+    private static string RunStatusLabel(FlowRunStatus status) => status switch
+    { FlowRunStatus.PartiallySucceeded => "Partially succeeded", FlowRunStatus.RetryWaiting => "Waiting to retry", FlowRunStatus.DeliveryUnknown => "Delivery unconfirmed",
+        FlowRunStatus.WaitingForAi => "Waiting for AI completion", FlowRunStatus.AwaitingApproval => "Awaiting AI approval", _ => status.ToString() };
+    private static string AiStatusLabel(FlowAiResultStatus status) => status switch
+    { FlowAiResultStatus.AwaitingApproval => "Awaiting operator approval", FlowAiResultStatus.DeliveryUnknown => "Completion unconfirmed", _ => status.ToString() };
+    private static string? SafeReceiptLink(string? link) => Uri.TryCreate(link, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps ? uri.AbsoluteUri : null;
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        if (_focusModule is not null)
+        {
+            try { await _focusModule.DisposeAsync(); }
+            catch (JSDisconnectedException) { _focusModule = null; }
+        }
+    }
+}

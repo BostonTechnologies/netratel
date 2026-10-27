@@ -46,7 +46,7 @@ rollback.
 
 ## Owner acceptance
 
-Use the [campaign cleanup guide](../mcp-http/campaign-retest.md) with one
+Use the [campaign cleanup guide](https://github.com/BostonTechnologies/netratel/blob/8c5fb3b8169335af233c281a36a9e5afe9113d2c/docs/mcp-http/campaign-retest.md) with one
 explicitly selected disposable job and its saved run ID. Verify that deletion
 is rejected while the run is active. After independently observing its terminal
 outcome, delete the definition and confirm active get/list absence, denial of

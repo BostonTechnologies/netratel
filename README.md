@@ -1,9 +1,8 @@
 # NetRatel
 
-> [!WARNING]
-> 🟠 **Early development:** NetRatel is under active development. Features and
-> installation behavior may change, and prerelease builds can contain defects.
-> Evaluate RC.17 on disposable systems before using it on managed machines.
+[Latest release](https://github.com/BostonTechnologies/netratel/releases/latest) ·
+[All releases](https://github.com/BostonTechnologies/netratel/releases) ·
+[Installation guide](release/INSTALL.md)
 
 <img src="docs/assets/netratel/netratel-readme-hero.webp" width="960" alt="NetRatel — secure, connected automation" />
 
@@ -16,9 +15,9 @@ API, command-line tools, a native Client/agent, and optional Model Context
 Protocol (MCP) integrations. AI services are optional and are not required for
 normal operation.
 
-> Prerelease candidates are evaluation builds. Do not use them as a stable
-> channel or for unattended fleet updates. The product version is set in
-> `Directory.Build.props`.
+Published releases include native Client archives, CLI and MCP tooling, and a
+Compose bundle with verified image digests. Choose a completed release and use
+its matching downloads, checksums and installation instructions.
 
 ## Components
 
@@ -42,10 +41,10 @@ hybrid deployment. Supply all secrets at deployment time; the tracked
 configuration contains only reserved example values.
 
 Read [self-hosting](docs/deployment/SELF_HOSTING.md) before deployment. Obtain the public
-release bundle only from the matching prerelease and verify its checksums;
-the bundle supplies immutable image digests only after promotion has completed.
-See [supported platforms](docs/deployment/SUPPORTED_PLATFORMS.md) for the rc.3 release
-matrix and its explicit non-goals.
+release bundle from a completed [GitHub release](https://github.com/BostonTechnologies/netratel/releases)
+and verify its checksums. The bundle supplies immutable image digests after
+publication has completed. See [supported platforms](docs/deployment/SUPPORTED_PLATFORMS.md)
+for the current distribution targets and runtime requirements.
 
 Useful references: [architecture](docs/implementation/ARCHITECTURE.md),
 [configuration](docs/deployment/CONFIGURATION.md), [CLI and MCP](docs/integrations/CLI_AND_MCP.md),

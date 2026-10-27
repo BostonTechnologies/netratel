@@ -165,36 +165,11 @@ Windows PowerShell UTF-8 BOM output is supported. These facts do not identify
 the cause of a particular missing receipt, and an unbound `Accepted` payload
 must retain `confirmation_missing` rather than manufacture confirmation.
 
-For campaign closure, record recovery of each affected original client
-separately from a fresh automatic update on an owned test client. The latter
-must observe offer, download, activation, matching readiness and authoritative
-gateway confirmation, plus its durable terminal delivery status. A manual
-upgrade or successful local archive is not that acceptance result.
-
-### Owner retest for issue #250
-
-After an approved deployment, record the API/Web/client versions and inspect
-each reported client individually: its actual executable/current
-link, observed version, historical attempt, verification time and suspension
-reason. Keep the 13 October rollback outcomes separate from the 14 October
-gateway interruption. Resolve the unnamed second log's agent identity before
-assigning it to a host, and verify the deployed UI timezone before comparing
-UI timestamps with UTC logs.
-
-For attempt `414118ca-148f-45ef-9e76-67bd6ae594fe`, retrieve the original
-notification Error/StackTrace and inner exception, submitted state, actual HTTP
-response, persisted attempt/release/agent/policy records and request traces.
-Check that delivery is durably acknowledged or has one explicit reconciliation
-outcome, with repeated fault occurrences retained. Confirm ordinary recovery
-through an observed backend return without false authentication attention.
-Production outage injection, fleet restarts, blind Resume, identity/journal
-deletion and release/rollout are outside this source-fix authorization. A later
-canary update requires separate approval.
-
-The source fixes and deterministic regressions establish the contract defects;
-they do not identify the deployed exception, ingress failure or original native
-rollback cause. Those incident attributions and installed-host acceptance remain
-pending production evidence. Tracking: [issue #250](https://github.com/BostonTechnologies/netratel/issues/250).
+Verify recovery against the affected client's original identity and update
+attempt. For an automatic update, check the offer, download, activation,
+matching readiness, authoritative gateway confirmation and durable terminal
+delivery status. A manual upgrade and an automatic update have distinct
+outcomes and should be recorded separately.
 
 ## Native authentication and rollback
 

@@ -65,7 +65,7 @@ The next campaign uses explicit, linked successor specifications only where the
 original fixture or exact input is permanently unavailable. It keeps the original
 unresolved history and records prospective coverage separately; fresh fixture
 passes never become fabricated original passes. See the current
-[campaign guide](../mcp-http/campaign-retest.md).
+[campaign guide](https://github.com/BostonTechnologies/netratel/blob/8c5fb3b8169335af233c281a36a9e5afe9113d2c/docs/mcp-http/campaign-retest.md).
 
 | Issue | Required owner result after deployment |
 | --- | --- |
