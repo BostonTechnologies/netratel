@@ -6,14 +6,16 @@
 @using NetRatel.Web.Services.OperatorPolicy
 @using NetRatel.Web.Components.Shared.OperatorPolicy
 @inject IMcpOperatorPolicyApiService PolicyApi
+@inject IJSRuntime JS
+@inject ILogger<OperatorPolicies> Logger
 
 <PageTitle>MCP operator policies</PageTitle>
 <MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="mt-4 mb-6 operator-policy-page">
     <MudStack Spacing="3">
-        <div class="policy-page-heading">
+        <div class="policy-page-heading" id="policy-page-heading" tabindex="-1">
             <div><MudText Typo="Typo.h4">MCP operator policies</MudText><MudText Typo="Typo.body2">Find an operator's access, inspect its bounds and history, then review any change before applying it.</MudText></div>
             @if (_authority is not null)
-            { <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Add" OnClick="NewPolicy" Disabled="@(_busy || _environment != _authority.Environment)" data-testid="policy-create">Create policy</MudButton> }
+            { <MudButton id="policy-create" Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Add" OnClick="NewPolicy" Disabled="@(_busy || _environment != _authority.Environment)" data-testid="policy-create">Create policy</MudButton> }
         </div>
         @if (!_dialogOpen)
         {
@@ -38,7 +40,7 @@
                     <MudItem xs="4" sm="2" md="6" Class="d-flex align-center justify-end"><MudButton StartIcon="@Icons.Material.Filled.Refresh" OnClick="ReloadAsync" Disabled="_busy" data-testid="policy-list-refresh">Refresh</MudButton></MudItem>
                 </MudGrid>
                 <MudGrid Spacing="2" Class="mb-2">
-                    <MudItem xs="12" md="6"><MudTextField T="string" Label="Search policies" Value="_search" ValueChanged="SearchChanged" Immediate="true" Clearable="true" Placeholder="Name, principal, policy ID, client or tag" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_busy" data-testid="policy-search" /></MudItem>
+                    <MudItem xs="12" md="6"><MudTextField T="string" InputId="policy-search" Label="Search policies" Value="_search" ValueChanged="SearchChanged" Immediate="true" Clearable="true" Placeholder="Name, principal, policy ID, client or tag" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_busy" data-testid="policy-search" /></MudItem>
                     <MudItem xs="12" sm="6" md="3"><MudSelect T="McpOperatorPolicyLifecycleState?" Label="Lifecycle" Value="_lifecycleFilter" ValueChanged="LifecycleFilterChanged" Clearable="true" Placeholder="All states" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_busy" data-testid="policy-lifecycle-filter">
                         @foreach (var state in Enum.GetValues<McpOperatorPolicyLifecycleState>()) { <MudSelectItem T="McpOperatorPolicyLifecycleState?" Value="@((McpOperatorPolicyLifecycleState?)state)">@state</MudSelectItem> }
                     </MudSelect></MudItem>
@@ -57,7 +59,7 @@
                         <MudTd DataLabel="Target"><span>@TargetLabel(context.TargetSelector.Kind) · tenant @context.TargetSelector.TenantId</span><div class="policy-secondary policy-target">@context.TargetSelector.AgentId @context.TargetSelector.ClientTag</div></MudTd>
                         <MudTd DataLabel="State / version"><MudChip T="string" Size="Size.Small" Color="@LifecycleColor(context.LifecycleState)" Variant="Variant.Outlined">@context.LifecycleState</MudChip><span class="policy-version">@($"v{context.Version}")</span></MudTd>
                         <MudTd DataLabel="Expiry (UTC)"><span class="policy-expiry">@(context.ExpiresAtUtc?.ToUniversalTime().ToString("u") ?? "None")</span></MudTd>
-                        <MudTd DataLabel="Actions"><MudButton Color="Color.Primary" Size="Size.Small" EndIcon="@Icons.Material.Filled.ChevronRight" OnClick="@(() => SelectAsync(context.PolicyId))" Disabled="_busy" aria-label="@($"Inspect {context.Name}")" data-testid="@($"policy-inspect-{context.PolicyId:D}")">Inspect</MudButton></MudTd>
+                        <MudTd DataLabel="Actions"><MudButton id="@InspectButtonId(context.PolicyId)" Color="Color.Primary" Size="Size.Small" EndIcon="@Icons.Material.Filled.ChevronRight" OnClick="@(() => SelectAsync(context.PolicyId))" Disabled="_busy" aria-label="@($"Inspect {context.Name}")" data-testid="@InspectButtonId(context.PolicyId)">Inspect</MudButton></MudTd>
                     </RowTemplate>
                     <NoRecordsContent><div class="policy-empty"><MudIcon Icon="@Icons.Material.Filled.SearchOff" Size="Size.Large" /><MudText Typo="Typo.subtitle1">No matching policies</MudText><MudText Typo="Typo.body2">Adjust the search, lifecycle or target filter, or choose another environment and tenant.</MudText></div></NoRecordsContent>
                     <PagerContent><MudTablePager PageSizeOptions="PageSizes" RowsPerPageString="Policies per page" InfoFormat="{first_item}-{last_item} of {all_items}" /></PagerContent>
@@ -78,7 +80,7 @@
         </div>
     </TitleContent>
     <DialogContent>
-        <div class="policy-dialog-body" tabindex="0" @onkeydown="DialogKeyDown" aria-label="Policy details and review">
+        <div id="@DialogBodyId(dialogGeneration)" class="policy-dialog-body" tabindex="0" @onkeydown="DialogKeyDown" aria-label="Policy details and review">
             @if (_error is not null) { <MudAlert Severity="Severity.Error" Class="mb-3" data-testid="policy-error">@_error</MudAlert> }
             @if (_success is not null) { <MudAlert Severity="Severity.Success" Class="mb-3" data-testid="policy-success">@_success</MudAlert> }
             @if (_readbackWarning is not null) { <MudAlert Severity="Severity.Warning" Class="mb-3" data-testid="policy-readback-warning">@_readbackWarning</MudAlert> }

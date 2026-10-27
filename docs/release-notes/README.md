@@ -2,6 +2,7 @@
 
 These notes describe the named release and preserve historical status. [Release engineering](../deployment/RELEASES.md) describes the current publication process; the product version is controlled only by `Directory.Build.props`.
 
+- [0.1.1-beta.50 — live session renewal and policy dialog focus](beta50.md)
 - [0.1.1-beta.49 — Services clock tolerance and operator policy workspace](beta49.md)
 - [0.1.1-beta.48 — retained job history after definition deletion](beta48.md)
 - [0.1.1-beta.47 — bounded operator policies, correlated inventory and supported recovery](beta47.md)

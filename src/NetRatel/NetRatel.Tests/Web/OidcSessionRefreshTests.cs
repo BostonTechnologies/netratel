@@ -4,6 +4,7 @@ using System.Text;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -14,6 +15,21 @@ namespace NetRatel.Tests.Web;
 
 public sealed class OidcSessionRefreshTests
 {
+    [Fact]
+    public async Task Started_Response_Does_Not_Consume_Refresh_Grant_Or_Rewrite_The_Cookie()
+    {
+        var (context, authentication) = CreateContext(
+            "old-access-token", DateTimeOffset.UtcNow.AddMinutes(2), "unconsumed-refresh-token");
+        context.Features.Set<IHttpResponseFeature>(new StartedResponseFeature());
+        var service = CreateService(new StubHttpClientFactory(new RecordingHandler(_ =>
+            throw new InvalidOperationException("A circuit must not consume the refresh grant."))), context);
+
+        Assert.False(await service.TryRefreshSessionAsync(context, await context.AuthenticateAsync()));
+        await Assert.ThrowsAsync<ReauthRequiredException>(() => service.GetValidAccessTokenAsync());
+        Assert.Null(authentication.LastSignInProperties);
+        Assert.Equal("unconsumed-refresh-token", (await context.AuthenticateAsync()).Properties!.GetTokenValue("refresh_token"));
+    }
+
     [Fact]
     public async Task Expiring_Oidc_Token_Is_Rotated_And_Reissued_In_The_Cookie()
     {
@@ -235,5 +251,10 @@ public sealed class OidcSessionRefreshTests
             context.Items[TokenService.SessionRefreshedItemKey] = true;
             return Task.FromResult(true);
         }
+    }
+
+    private sealed class StartedResponseFeature : HttpResponseFeature
+    {
+        public override bool HasStarted => true;
     }
 }

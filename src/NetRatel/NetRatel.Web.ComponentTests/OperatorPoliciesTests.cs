@@ -239,6 +239,7 @@ public sealed class OperatorPoliciesTests : AsyncBunitContext
     private IRenderedComponent<OperatorPolicies> RenderPage(PolicyApi api)
     {
         JSInterop.Mode = JSRuntimeMode.Loose;
+        JSInterop.SetupModule("./js/operator-policy-dialog.js").Mode = JSRuntimeMode.Loose;
         Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
         Services.AddSingleton<IMcpOperatorPolicyApiService>(api);
         SetRendererInfo(new RendererInfo("Server", true));

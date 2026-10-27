@@ -59,6 +59,9 @@
        fingerprinted asset before Blazor can dispatch those component events. *@
     <script id="netratel-downloads-script" src=@Assets["download.js"]></script>
 
+    @* Cookie renewal must run in a new browser HTTP request, never on the circuit response. *@
+    <script src=@Assets["js/session-renewal.js"]></script>
+
     <!-- Blazor Framework Script -->
     <script src="_framework/blazor.web.js"></script>
     <script src="/js/notifications.js"></script>

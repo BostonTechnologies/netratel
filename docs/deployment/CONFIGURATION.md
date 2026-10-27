@@ -336,6 +336,16 @@ secret mechanism; never place it in an appsettings file. `TokenEndpoint` is
 required when your provider does not publish its refresh-token endpoint at the
 usual Azure-compatible authority path.
 
+An interactive circuit renews its OIDC session through a same-origin
+`POST /auth/session/renew` before sending an API operation when its access token
+needs renewal. The fresh HTTP response persists the protected cookie and any
+rotated refresh token. The browser receives only an opaque correlation and
+success status; tokens stay on the server or in the HTTP-only protected cookie.
+The existing circuit and draft remain open. Rejected renewal requires normal
+reauthentication and does not replay an API operation. With multiple Web
+replicas, retain Blazor's connection affinity for both the circuit and this
+same-origin request.
+
 `Authentication:Azure`, `AzureAd`, `Authorization:Azure:AdminGroupId`, and
 `AZURE_CLIENT_SECRET` remain temporary compatibility aliases for existing
 deployments. New deployments must use the `Oidc` settings above.
