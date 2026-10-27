@@ -41,6 +41,10 @@
 .monitoring-heading { gap:.5rem; }
 .monitoring-counts { margin:.75rem 0 .25rem; gap:.5rem; }
 .monitoring-counts ::deep strong { margin-left:.4rem; }
+.monitoring-counts ::deep [aria-pressed=true] { box-shadow:var(--mud-elevation-2); }
+.monitoring-filter-heading { display:flex; align-items:baseline; flex-wrap:wrap; gap:.35rem .75rem; padding:.25rem .5rem .75rem; }
+.monitoring-filter-heading strong { font-size:.9375rem; }
+.monitoring-filter-heading span { color:var(--mud-palette-text-secondary); font-size:.75rem; }
 .monitoring-tabs { border-bottom:1px solid var(--mud-palette-divider); margin:.5rem 0; gap:.25rem; }
 .monitoring-tabs ::deep .mud-button-root { border-radius:4px 4px 0 0; box-shadow:none; }
 .monitoring-table th { color:var(--mud-palette-text-secondary); font-weight:500; font-size:.75rem; }

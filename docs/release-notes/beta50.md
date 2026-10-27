@@ -1,7 +1,7 @@
 # NetRatel 0.1.1-beta.50
 
-This release fixes the two Web defects observed in the completed beta.49 owner
-campaign: token renewal terminating an active Blazor circuit and policy-dialog
+This release fixes two Web defects observed in beta.49: token renewal
+terminating an active Blazor circuit and policy-dialog
 dismissal losing keyboard focus. Build and distribution verification remain
 separate from the owner's deployed acceptance.
 
@@ -23,11 +23,6 @@ separate from the owner's deployed acceptance.
   filter, focus returns to the search field. An obsolete dismissal cannot steal
   focus from a newly opened dialog. Pagination, filters and accepted receipts
   retain their existing behavior.
-- **Acceptance accounting**: the final beta.49 packet supplies the remaining
-  bounded evidence for #399, #394, #390, #382, #361, #312 and #141. Their recorded
-  source, companion versions and historical limits are retained. The policy Web
-  parent #398 and original evidence register #294 remain open for their own
-  acceptance requirements.
 
 ## Deployment
 
@@ -38,27 +33,11 @@ Web repair. Use the matching fingerprinted Web assets and retain the existing
 Blazor connection affinity when running more than one Web replica; the renewal
 HTTP request and circuit must reach the same Web process.
 
-The existing controlled rollout hold is preserved by the owner. This change
-does not require another native-client automatic-update campaign. Publication
+The existing controlled rollout hold is preserved by the owner. Publication
 and owner deployment are separate steps.
 
-## Focused owner acceptance
+## Recorded validation
 
-Keep a genuine OIDC policy circuit open into its normal refresh window. Verify
-renewal, preview without mutation, one reviewed change with independent version
-and audit readback, current authority enforcement, continued reads beyond the
-old access-token expiry and after a full reload. Confirm that browser renewal
-responses contain no tokens and the pending API operation is sent only once.
-
-At short and normal viewports, inspect a policy on a later filtered page and
-check exact opener focus after both Escape and Close. Check the search fallback
-when a lifecycle change removes that row. Retain existing stale-review,
-nonadministrator and accepted-write/readback recovery evidence.
-
-The beta.49 measured hour remains **240/240 successful calls over 3,600 seconds**
-at its actual source and declared observable bridge-consumer boundary. It is
-not relabelled as a beta.50 hour. This Web-only delta does not require another
-mandatory hour. The original ledger remains **21 PASS / 32 OPEN of 53** until
-exact new evidence advances its specific predicates. A targeted Web pass is
-reported separately from that historical acceptance state. See the
-[campaign guide](../mcp-http/campaign-retest.md).
+Beta.49 recorded **240/240 successful calls over 3,600 seconds** at its declared
+observable bridge-consumer boundary. That result belongs to beta.49; it does
+not claim an equivalent beta.50 execution.

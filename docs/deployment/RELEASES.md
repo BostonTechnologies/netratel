@@ -6,9 +6,8 @@ is `release/release-manifest.json`; CI adds the derived version to the bundled
 copy.
 
 Review the GitHub release notes for each candidate before publishing its draft.
-The [rc.5 notes](../release-notes/RELEASE_NOTES_0.1.0-rc.5.md) and
-[rc.6 notes](../release-notes/RELEASE_NOTES_0.1.0-rc.6.md) are historical; neither sets the
-product version. Each candidate is source preparation until the owner merges,
+[Historical release notes](../release-notes/README.md) describe their released
+versions; they do not set the current product version. Each candidate is source preparation until the owner merges,
 tags, publishes the release, and verifies the public downloads.
 
 `tools/ci/verify-product-version.sh` checks evaluated project metadata against
@@ -16,7 +15,7 @@ tags, publishes the release, and verifies the public downloads.
 value exactly matches that source version before it builds review artifacts.
 
 The release-build workflow is deliberately non-publishing. It creates a Linux
-CLI archive, a local .NET tool package, a Linux stdio MCP archive, an image-only
+CLI archive, a local .NET tool package, Linux and Windows stdio MCP archives, an image-only
 Compose template, and native Client archives for each supported runtime.
 The Linux review bundle and every
 native Client archive set have generated SPDX SBOMs. Every uploaded artifact set carries `SHA256SUMS`; the
@@ -32,7 +31,7 @@ SBOM coverage and checksums. Native archive producers use
 updater execution and the Linux native PTY self-test are opt-in diagnostics.
 GitHub Actions creates a Sigstore-backed build-provenance attestation for each
 uploaded release artifact; verify it with `gh attestation verify` after it is
-publicly released. A public GitHub prerelease, OCI publication, or recording
+publicly released. A public GitHub release, OCI publication, or recording
 immutable artifact digests requires an explicit authorized promotion decision;
 it is never performed by a PR or non-publishing build workflow.
 Every final image is built with public OCI source, revision, and product-version
@@ -57,10 +56,9 @@ For the native Client, the generated publish directory includes the executable,
 its update manifest, required sidecars, and the Linux PTY helper. Do not
 advertise a runtime until its final archive has been built and integrity-verified.
 Report functional acceptance as pending unless a matching manual run exists.
-NetRatel `0.1.0-rc.1` archives and tag remain published historical release
-artifacts. Release availability for `0.1.0-rc.5` is determined by its matching
-immutable prerelease tag and release record; never infer it from a source
-checkout. The release workflow validates the committed version and
+Release availability is determined by the matching immutable tag, completed
+publication record and verified downloadable artifacts; never infer it from a
+source checkout. The release workflow validates the committed version and
 packages CLI, stdio MCP, and native Client
 artifacts. Native Client packages are built on their matching Linux, Windows,
 and macOS runners. Publication, signing, package visibility, and a release tag

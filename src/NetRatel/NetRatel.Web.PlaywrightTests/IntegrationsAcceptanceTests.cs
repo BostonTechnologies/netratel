@@ -124,8 +124,83 @@ public sealed class IntegrationsAcceptanceTests(ClientsManagementBrowserFixture 
         }
     }
 
+    [Theory]
+    [InlineData(1366, 768, "light")]
+    [InlineData(390, 844, "dark")]
+    public async Task Credential_details_dialog_keeps_metadata_and_admission_reachable_and_preserves_search(int width, int height, string theme)
+    {
+        using var api = new IntegrationBrowserApi();
+        await using var host = await ClientsManagementFixtureHost.StartAsync(services =>
+        {
+            services.AddSingleton<IHttpClientFactory>(api);
+            services.AddSingleton<IPairingApiClient>(new SystemConnections());
+        });
+        await using var context = await browser.Browser.NewContextAsync(new()
+        { ViewportSize = new() { Width = width, Height = height } });
+        await context.AddInitScriptAsync($"localStorage.setItem('netratel.theme.preference', '{theme}');");
+        var page = await context.NewPageAsync(); page.SetDefaultTimeout(20_000);
+        var errors = new List<string>(); page.PageError += (_, error) => errors.Add(error);
+        await page.GotoAsync(host.BaseAddress + "/account/integration-credentials?tab=credentials", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("integration-credentials-client-ready").WaitForAsync(new() { State = WaitForSelectorState.Attached });
+        var drawer = page.GetByTestId("app-navigation-drawer");
+        if (width < 1280 && !await drawer.EvaluateAsync<bool>("e => e.classList.contains('mud-drawer--closed')"))
+            await page.GetByTestId("navigation-toggle").ClickAsync();
+        var search = page.GetByTestId("credential-search");
+        await search.FillAsync("Synthetic client 01");
+        await Assertions.Expect(page.GetByTestId("credential-row")).ToHaveCountAsync(1);
+        var detailsOpener = page.GetByTestId("credential-row").GetByRole(AriaRole.Button, new() { Name = "Details", Exact = true });
+        await detailsOpener.ClickAsync();
+        var dialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Credential details", Exact = true });
+        await Assertions.Expect(dialog).ToBeVisibleAsync();
+        await Assertions.Expect(dialog.GetByTestId("credential-admission")).ToContainTextAsync("Authorization admitted");
+        await Assertions.Expect(dialog).ToContainTextAsync("HTTP MCP server");
+        await Assertions.Expect(dialog).ToContainTextAsync("Exact expiry (UTC)");
+        Assert.True(await dialog.EvaluateAsync<bool>("e => e.contains(document.activeElement)"));
+        var bounds = (await dialog.BoundingBoxAsync())!;
+        Assert.InRange(bounds.X, 0, width); Assert.True(bounds.X + bounds.Width <= width + 1);
+        Assert.InRange(bounds.Y, 0, height); Assert.True(bounds.Y + bounds.Height <= height + 1);
+        Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth + 1"));
+        var root = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.GetFullPath("TestResults/playwright");
+        Directory.CreateDirectory(root);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(root, $"credential-details-{width}x{height}-{theme}.png"), Animations = ScreenshotAnimations.Disabled });
+        var operation = dialog.Locator(".mud-expand-panel-header").Filter(new() { HasText = "Authorization admitted" });
+        await Assertions.Expect(operation).ToContainTextAsync("netratel_flows/list");
+        await Assertions.Expect(operation).ToHaveAttributeAsync("tabindex", "0");
+        await operation.FocusAsync();
+        await operation.PressAsync("Enter");
+        await Assertions.Expect(dialog.GetByText("Required delegation", new() { Exact = true })).ToBeVisibleAsync();
+        await dialog.GetByText("Required delegation", new() { Exact = true }).ScrollIntoViewIfNeededAsync();
+        await page.ScreenshotAsync(new() { Path = Path.Combine(root, $"credential-admission-{width}x{height}-{theme}.png"), Animations = ScreenshotAnimations.Disabled });
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(dialog).ToHaveCountAsync(0);
+        await Assertions.Expect(search).ToHaveValueAsync("Synthetic client 01");
+        var returnedFocus = detailsOpener.And(page.Locator(":focus")).Or(page.Locator(".credential-toolbar:focus"));
+        try
+        {
+            await Assertions.Expect(returnedFocus).ToHaveCountAsync(1);
+            await Assertions.Expect(returnedFocus).ToBeVisibleAsync();
+        }
+        finally
+        {
+            var focus = await page.EvaluateAsync<string>("""
+                () => {
+                    const active = document.activeElement;
+                    return JSON.stringify({ tag: active?.tagName, id: active?.id, classes: active?.className,
+                      text: active?.textContent?.trim().slice(0, 100), connected: active?.isConnected,
+                      inDialog: !!active?.closest('[role=dialog]') });
+                }
+                """);
+            await File.WriteAllTextAsync(Path.Combine(root, $"credential-details-focus-{width}x{height}-{theme}.json"), focus);
+        }
+        await Assertions.Expect(page.GetByTestId("credential-row")).ToHaveCountAsync(1);
+        Assert.Empty(api.Deleted); Assert.Empty(errors);
+        Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
+    }
+
     private sealed class IntegrationBrowserApi : HttpMessageHandler, IHttpClientFactory
     {
+        private static readonly DateTimeOffset CredentialExpiry = DateTimeOffset.Parse("2030-04-01T10:11:12Z");
+        private static readonly Guid PolicyId = Guid.Parse("be1c136e-1cd2-44d8-8043-d047d16983ad");
         public List<string> Deleted { get; } = [];
         public HttpClient CreateClient(string name) => new(this, false) { BaseAddress = new("https://fixture.example.test") };
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
@@ -134,7 +209,13 @@ public sealed class IntegrationsAcceptanceTests(ClientsManagementBrowserFixture 
             object response;
             if (request.Method == HttpMethod.Delete)
             { Deleted.Add(path.Split('/').Last()); return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NoContent)); }
-            if (path == "/api/v2/access/self") response = new { isInstanceAdministrator = true };
+            if (path.EndsWith("/admission")) response = new CredentialMcpAdmission("credential-01", DateTimeOffset.UtcNow, "active",
+                "current_credential_valid", "https://fixture.example.test/mcp", "fixture", "Production", CredentialExpiry,
+                [new(7, "flow.read")], ["mcp.discovery.read"],
+                [new(new(7, "netratel_flows", "list"), "netratel.mcp.observe", ["Operator"], true, true, true, null, [PolicyId])
+                    { OwnerPermissionGranted = true, AuthorizationAdmitted = true }], [], "Review the intended operation before dispatch.")
+                { MatchingPolicies = [new(PolicyId, "Production", 7, null, "netratel_flows/list", "Allow", CredentialExpiry, CredentialExpiry, 1)] };
+            else if (path == "/api/v2/access/self") response = new { isInstanceAdministrator = true };
             else if (path.EndsWith("/authority")) response = new
             {
                 tenants = new[] { new { tenantId = 7, name = "Synthetic operations", permissions = TenantPermissions } },
@@ -147,9 +228,9 @@ public sealed class IntegrationsAcceptanceTests(ClientsManagementBrowserFixture 
             {
                 id = $"credential-{i:00}", publicId = $"public-{i:00}", tokenPrefix = "synthetic", name = $"Synthetic client {i:00}", purpose = i % 2,
                 resource = i % 2 == 1 ? "https://fixture.example.test/mcp" : null,
-                createdAtUtc = DateTimeOffset.UtcNow.AddDays(-1), expiresAtUtc = DateTimeOffset.UtcNow.AddDays(i % 3 == 2 ? -1 : 30),
+                createdAtUtc = DateTimeOffset.UtcNow.AddDays(-1), expiresAtUtc = i == 1 ? CredentialExpiry : DateTimeOffset.UtcNow.AddDays(i % 3 == 2 ? -1 : 30),
                 revokedAtUtc = i % 3 == 0 ? DateTimeOffset.UtcNow.AddHours(-1) : (DateTimeOffset?)null,
-                lastUsedAtUtc = (DateTimeOffset?)null, grants = Array.Empty<object>(), instancePermissions = new[] { "mcp.discovery.read" }
+                lastUsedAtUtc = (DateTimeOffset?)null, grants = i == 1 ? new[] { new IntegrationPairingGrant(7, "flow.read") } : Array.Empty<IntegrationPairingGrant>(), instancePermissions = new[] { "mcp.discovery.read" }
             }).ToArray();
             else response = new { };
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(response, response.GetType()) });

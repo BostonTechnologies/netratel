@@ -226,6 +226,7 @@
                         <MudItem xs="12" sm="6" md="2"><MudSelect T="string" Value="@_attemptStatus" ValueChanged="OnAttemptStatusChanged" Label="Status"><MudSelectItem Value="@string.Empty">All states</MudSelectItem>@foreach (var state in UpdateStatuses) { <MudSelectItem Value="@state">@state</MudSelectItem> }</MudSelect></MudItem>
                         <MudItem xs="12" sm="6" md="3"><MudSelect T="string" Value="@_attemptGrouping" ValueChanged="OnAttemptGroupingChanged" Label="Group current page" data-testid="attempt-grouping"><MudSelectItem Value="@("None")">None</MudSelectItem><MudSelectItem Value="@("Tenant")">Tenant</MudSelectItem><MudSelectItem Value="@("Version")">Version</MudSelectItem><MudSelectItem Value="@("RID")">RID</MudSelectItem><MudSelectItem Value="@("Status")">Status</MudSelectItem></MudSelect></MudItem>
                     </MudGrid>
+                    <div class="client-activity-table">
                     <MudTable T="ClientUpdateHistoryItemModel" @ref="_attemptTable" ServerData="LoadAttemptsAsync" GroupBy="AttemptGroup" RowStyleFunc="ActivityRowStyle" Dense="true" Hover="true" Loading="_attemptsLoading" Breakpoint="Breakpoint.Sm" data-testid="attempt-table">
                         <HeaderContent><MudTh>Client</MudTh><MudTh>Release</MudTh><MudTh>Status</MudTh><MudTh>Failure</MudTh><MudTh>Updated</MudTh></HeaderContent>
                         <GroupHeaderTemplate><td colspan="5"><MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1"><MudIconButton Class="mud-table-row-expander" Size="Size.Small" Icon="@(IsActivityGroupExpanded(context.Key) ? Icons.Material.Filled.ExpandMore : Icons.Material.Filled.ChevronRight)" OnClick="@(() => ToggleActivityGroup(context.Key))" aria-label="@(IsActivityGroupExpanded(context.Key) ? "Collapse group" : "Expand group")" aria-expanded="@IsActivityGroupExpanded(context.Key).ToString().ToLowerInvariant()" /><MudText Typo="Typo.subtitle2">@context.Key <span class="text-secondary">(@context.Items.Count() on this page)</span></MudText></MudStack></td></GroupHeaderTemplate>
@@ -233,11 +234,28 @@
                             <MudTd DataLabel="Client"><MudTooltip Text="@context.AgentId.ToString()"><MudStack Spacing="0"><MudText Typo="Typo.body2">@ClientTarget(context.ClientHostName, context.ClientDisplayName, context.AgentId)</MudText><MudText Typo="Typo.caption" Color="Color.Secondary">@(context.TenantName ?? $"Tenant {context.TenantId}")@(DisplaySecondaryName(context.ClientHostName, context.ClientDisplayName))</MudText></MudStack></MudTooltip></MudTd>
                             <MudTd DataLabel="Release"><MudText Typo="Typo.body2">@context.RuntimeId · Target @context.TargetVersion</MudText><MudText Typo="Typo.caption" Color="Color.Secondary">Running observed: @(context.ObservedRunningVersion ?? "unknown")@(context.ObservedRunningVersion is null ? string.Empty : context.PresenceActive ? " · online" : " · last known")</MudText>@if (context.LocalPackagePurged) { <MudText Typo="Typo.caption" Color="Color.Secondary">Historical · local package deleted</MudText> }</MudTd>
                             <MudTd DataLabel="Status"><MudChip T="string" Size="Size.Small" Color="@UpdateStatusColor(context.Status)">@context.Status</MudChip><MudText Typo="Typo.caption">@InstallationSummary(context)</MudText><MudText Typo="Typo.caption">@ServerReportSummary(context)</MudText>@if (context.ReconciliationState is not null) { <MudText Typo="Typo.caption" Color="Color.Warning">Reconciliation required</MudText> }@if (context.SuspendedAtUtc is not null) { <MudText Typo="Typo.caption" Color="Color.Warning">Automatic updates suspended</MudText> }</MudTd>
-                            <MudTd DataLabel="Failure"><MudTooltip Text="@(context.ReportedMessage ?? context.Message ?? context.ReportedFailureCode ?? context.FailureCode ?? "No failure detail")"><span class="client-mgmt-clamp">@(context.ReportedFailureCode ?? context.FailureCode ?? context.ReportedMessage ?? context.Message ?? "—")</span></MudTooltip><details class="client-mgmt-activity-details"><summary>Details</summary><MudStack Spacing="0"><MudText Typo="Typo.caption">Attempt: @context.AttemptId</MudText><MudText Typo="Typo.caption">From: @(context.FromVersion ?? "unknown") · Target: @context.TargetVersion</MudText><MudText Typo="Typo.caption">Running observation: @ActivityTime(context.ObservedAtUtc)</MudText><MudText Typo="Typo.caption">Confirmation: @(context.ConfirmationId?.ToString() ?? "not recorded") · @ActivityTime(context.ConfirmedAtUtc)</MudText>@if (context.ReportedState is not null) { <MudText Typo="Typo.caption">Reported installation: @context.ReportedState · @ActivityTime(context.ReportedAtUtc)</MudText><MudText Typo="Typo.caption" Class="client-mgmt-clamp">@context.ReportedMessage</MudText> }<MudText Typo="Typo.caption">Current automation policy: @context.PolicyRevision</MudText>@if (context.SuspendedAtUtc is not null) { <MudText Typo="Typo.caption">Suspended: @ActivityTime(context.SuspendedAtUtc) · @context.SuspensionReason</MudText> }@if (context.ResumedAtUtc is not null) { <MudText Typo="Typo.caption">Last resumed: @ActivityTime(context.ResumedAtUtc) · @(context.ResumedBy ?? "operator unavailable")</MudText> }<MudText Typo="Typo.caption">@OperatorAction(context)</MudText></MudStack></details></MudTd><MudTd DataLabel="Updated">@ActivityTime(context.UpdatedAtUtc)</MudTd>
+                            <MudTd DataLabel="Failure">
+                                <MudTooltip Text="@(context.ReportedMessage ?? context.Message ?? context.ReportedFailureCode ?? context.FailureCode ?? "No failure detail")"><span class="client-mgmt-clamp">@(context.ReportedFailureCode ?? context.FailureCode ?? context.ReportedMessage ?? context.Message ?? "—")</span></MudTooltip>
+                                <button type="button" class="client-activity-details-toggle" @ref="_activityDetailLaunchers[context.AttemptId]" @onclick="() => ToggleActivityDetails(context.AttemptId)" aria-expanded="@_expandedActivityAttempts.Contains(context.AttemptId).ToString().ToLowerInvariant()" aria-controls="@($"attempt-details-{context.AttemptId:D}")" data-testid="attempt-details-toggle">
+                                    <MudIcon Icon="@(_expandedActivityAttempts.Contains(context.AttemptId) ? Icons.Material.Filled.ExpandLess : Icons.Material.Filled.ExpandMore)" Size="Size.Small" />Details
+                                </button>
+                            </MudTd>
+                            <MudTd DataLabel="Updated">@ActivityTime(context.UpdatedAtUtc)</MudTd>
                         </RowTemplate>
+                        <ChildRowContent>
+                            @if (_expandedActivityAttempts.Contains(context.AttemptId))
+                            {
+                                <MudTr @key="context.AttemptId" Class="client-activity-details-row" Style="@ActivityRowStyle(context, 0)" data-testid="attempt-details-row">
+                                    <td colspan="5" class="client-activity-details-cell">
+                                        <ClientUpdateAttemptDetails Item="context" OperatorAction="@OperatorAction(context)" ExpandedChanged="expanded => SetActivityDetailsExpanded(context.AttemptId, expanded)" />
+                                    </td>
+                                </MudTr>
+                            }
+                        </ChildRowContent>
                         <NoRecordsContent><MudText Typo="Typo.body2" Color="Color.Secondary">@(_activityError is null ? "No update attempts match the active filters." : "Activity is unavailable. Use Refresh to retry.")</MudText></NoRecordsContent>
                         <PagerContent><MudTablePager PageSizeOptions="PageSizes" InfoFormat="@ActivityCountFormat" /></PagerContent>
                     </MudTable>
+                    </div>
                 </MudStack>
         </MudTabPanel>
 
@@ -536,6 +554,13 @@
         {
             _interactiveReady = true;
             StateHasChanged();
+        }
+
+        if (_restoreActivityDetailsFocus is { } attemptId)
+        {
+            _restoreActivityDetailsFocus = null;
+            if (_activeTab == 3 && _activityDetailLaunchers.TryGetValue(attemptId, out var launcher))
+                await launcher.FocusAsync();
         }
 
         if (_restoreAutomationFocus && _automationOpener is not null)
@@ -1244,7 +1269,6 @@
     .client-mgmt-hero, .client-mgmt-surface { border: 1px solid var(--mud-palette-divider); border-radius: var(--netratel-radius-surface, 7px); min-width: 0; }
     .client-mgmt-hero { border-left: 3px solid var(--mud-palette-primary); }
     .client-mgmt-tab-panel { min-width: 0; }
-    .client-mgmt-activity-details { max-width: 32rem; overflow-wrap: anywhere; }
     .client-mgmt-clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
     .client-mgmt-surface .mud-table-container { max-width: 100%; overflow-x: auto; }
     .client-mgmt-surface .mud-tabs-toolbar { min-height: 42px; }

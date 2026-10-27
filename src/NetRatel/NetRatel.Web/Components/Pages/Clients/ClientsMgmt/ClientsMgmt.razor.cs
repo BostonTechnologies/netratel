@@ -29,6 +29,9 @@ public partial class ClientsMgmt
         HasCurrentActivitySnapshot ? "{first_item}-{last_item} of {all_items} (last loaded)" : "Count unavailable";
 
     private readonly Dictionary<string, long> _activityExpandedGroups = [];
+    private readonly HashSet<Guid> _expandedActivityAttempts = [];
+    private readonly Dictionary<Guid, ElementReference> _activityDetailLaunchers = [];
+    private Guid? _restoreActivityDetailsFocus;
     private long _activityGroupOrder;
     private string ActivityGroupKey(object key) => _attemptGrouping + "\0" + key;
     private bool IsActivityGroupExpanded(object key) => _activityExpandedGroups.ContainsKey(ActivityGroupKey(key));
@@ -45,6 +48,14 @@ public partial class ClientsMgmt
 
     private string ActivityRowStyle(ClientUpdateHistoryItemModel item, int _) =>
         AttemptGroup?.Selector is { } selector && !IsActivityGroupExpanded(selector(item)) ? "display:none" : string.Empty;
+
+    private void ToggleActivityDetails(Guid attemptId) => SetActivityDetailsExpanded(attemptId, !_expandedActivityAttempts.Contains(attemptId));
+
+    private void SetActivityDetailsExpanded(Guid attemptId, bool expanded)
+    {
+        if (expanded) _expandedActivityAttempts.Add(attemptId);
+        else if (_expandedActivityAttempts.Remove(attemptId)) _restoreActivityDetailsFocus = attemptId;
+    }
 
     private static string ActivityTime(DateTimeOffset? at) => at is { } value
         ? value.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'") : "not recorded";
@@ -215,6 +226,10 @@ public partial class ClientsMgmt
                 if (_automationDisposed || generation != _activityGeneration) return ActivitySnapshot();
             }
             _activityItems = page.Items;
+            var currentAttempts = page.Items.Select(item => item.AttemptId).ToHashSet();
+            _expandedActivityAttempts.IntersectWith(currentAttempts);
+            foreach (var attemptId in _activityDetailLaunchers.Keys.Where(id => !currentAttempts.Contains(id)).ToArray())
+                _activityDetailLaunchers.Remove(attemptId);
             _activityTotal = page.Total;
             _activitySnapshotGeneration = generation;
             _activitySnapshotPage = page.Page;

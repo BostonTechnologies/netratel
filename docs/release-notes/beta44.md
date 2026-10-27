@@ -8,8 +8,7 @@ browser administration routing and login setup discoverability.
   a different timezone offset. Return the persisted version/readback; stale
   expected versions still return conflict. A real PostgreSQL regression covers
   an active Production tenant policy with all operation families and added
-  script/temp-root bounds. Live reproduction of the original incident remains
-  an owner acceptance check.
+  script/temp-root bounds.
 - **SSO investigations (#382):** retain bounded authority facts from validated
   OIDC tokens for saved worker execution, with token expiry, monotonic claim
   refresh, current group configuration and credential attenuation. External
@@ -40,9 +39,4 @@ browser administration routing and login setup discoverability.
 
 Run the supplied migrations before starting API/Web: this release adds nullable
 external-authority fields to the identity schema. Sign in with a fresh OIDC
-access token before retesting an investigation.
-
-Build/distribution verification and owner functional acceptance are separate.
-Publication does not establish production readiness. Retest the original live
-policy edit, SSO first turn, browser target-profile bootstrap, bounded owner-mode
-negative cases and applicable installed-client repair on disposable fixtures.
+access token when verifying an investigation.

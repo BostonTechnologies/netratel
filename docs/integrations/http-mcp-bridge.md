@@ -10,7 +10,7 @@ Run these commands on the **consumer's machine**, as the operating-system user r
 
 Install the [.NET 10 runtime](https://learn.microsoft.com/dotnet/core/install/linux), and obtain Bash, `curl`, Python 3, `tar` and GNU coreutils through the operating system's package manager.
 
-Select the completed published correction release from [GitHub Releases](https://github.com/BostonTechnologies/netratel/releases). Replace the placeholder below with that release tag. Download its matching stdio archive and checksums into a new directory:
+Select the completed published release from [GitHub Releases](https://github.com/BostonTechnologies/netratel/releases). Replace the placeholder below with that release tag. Download its matching stdio archive and checksums into a new directory:
 
 ```sh
 set -eu
@@ -36,7 +36,7 @@ PY
 tar -xzf "$archive"
 cd netratel-mcp-linux-x64
 dotnet ./NetRatel.Mcp.dll http-bridge --version
-dotnet ./NetRatel.Mcp.dll setup --transport http --profile campaign
+dotnet ./NetRatel.Mcp.dll setup --transport http --profile http-operator
 ```
 
 The archive contains the `netratel-mcp-linux-x64` directory. If a selected older release does not support `http-bridge`, obtain the correction release before migration. Retain the verified archive/checksum and release publication record privately. Review the Web URL, canonical MCP resource, credential purpose, least-privilege grants and exact UTC expiry during setup. Complete the separate reviewed operation-admission workflow before tenant calls. The bridge consumes the same isolated `HttpMcpClient` profile and protected credential-file references as setup; no raw token belongs in command arguments, launch configuration, output or receipts.
@@ -46,11 +46,11 @@ Configure the stdio consumer using absolute paths after extraction:
 ```json
 {
   "command": "dotnet",
-  "args": ["/absolute/path/netratel-http-client/netratel-mcp-linux-x64/NetRatel.Mcp.dll", "http-bridge", "--profile", "campaign"]
+  "args": ["/absolute/path/netratel-http-client/netratel-mcp-linux-x64/NetRatel.Mcp.dll", "http-bridge", "--profile", "http-operator"]
 }
 ```
 
-For an already reviewed externally managed profile, use `"--config", "/absolute/protected/http-client.json"` in place of `"--profile", "campaign"`. Do not point the bridge at a stdio/API-purpose profile or a server outbound profile. Setup, configuration validation and doctor remain explicit commands; ordinary bridge startup writes only JSON-RPC to stdout and fixed, redacted diagnostics to stderr. Profile precedence and origin/purpose bindings remain those of [shared configuration](configuration.md).
+For an already reviewed externally managed profile, use `"--config", "/absolute/protected/http-client.json"` in place of `"--profile", "http-operator"`. Do not point the bridge at a stdio/API-purpose profile or a server outbound profile. Setup, configuration validation and doctor remain explicit commands; ordinary bridge startup writes only JSON-RPC to stdout and fixed, redacted diagnostics to stderr. Profile precedence and origin/purpose bindings remain those of [shared configuration](configuration.md).
 
 ### Windows x64
 
@@ -91,7 +91,7 @@ Set-Location netratel-mcp-win-x64
 .\NetRatel.Mcp.exe http-bridge --version
 ```
 
-The archive contains `netratel-mcp-win-x64`, the Windows executable, the protected launcher and its small managed byte relay, notices, and this guide. Keep the archive, checksum and publication record. For an ordinary shared HTTP client profile, run `.\NetRatel.Mcp.exe setup --transport http --profile campaign`, then use its absolute executable path with `http-bridge --profile campaign` in the consumer launch entry. Windows PowerShell 5.1 is not the supported launcher runtime.
+The archive contains `netratel-mcp-win-x64`, the Windows executable, the protected launcher and its small managed byte relay, notices, and this guide. Keep the archive, checksum and publication record. For an ordinary shared HTTP client profile, run `.\NetRatel.Mcp.exe setup --transport http --profile http-operator`, then use its absolute executable path with `http-bridge --profile http-operator` in the consumer launch entry. Windows PowerShell 5.1 is not the supported launcher runtime.
 
 ### Retain an existing Windows DPAPI credential
 
@@ -229,8 +229,8 @@ HTTP 429 yields safe typed `retryAfterSeconds` or `retryAfterUtc` when the heade
 
 ## Private migration and acceptance receipt
 
-Before switching the consumer, privately record the old adapter's executable/package, source repository or vendor, version, owner and binary checksum where available. If these are unavailable, retain `unknown`; do not attribute that adapter's measured failures to NetRatel's deployed server. The campaign's original adapter source and runnable historical harness are not part of this repository.
+Before switching the consumer, privately record the old adapter's executable/package, source repository or vendor, version, owner and binary checksum where available. If these are unavailable, retain `unknown`; do not attribute that adapter's measured failures to NetRatel's deployed server.
 
 Stop the consumer's old connection, preserve its protected credential storage, install the verified replacement, and replace its launch entry with the explicit bridge command above (or the consumer's maintained native HTTP connection). Reuse a credential only through its reviewed protected storage reference and matching canonical resource; otherwise use client setup to obtain a fresh reviewed credential. Restart/reconnect the consumer and confirm its initialize, catalog and permitted read against the intended deployment. Never run both connections as an accidental retry path.
 
-Keep a private receipt containing the release tag/source SHA, archive checksum, bridge `--version`, transport choice, credential reference identifier (no contents), canonical resource, exact UTC expiry, old adapter provenance or unknowns, reconnect result, and owner acceptance results. Record streaming-before-final and in-flight cancellation separately from repository loopback tests. Include denied/blocked and unexecuted cases accurately. Installed migration and live campaign claims remain pending until this receipt exists; repository delivery and synthetic regression success establish neither of those outcomes.
+Keep a private receipt containing the release tag/source SHA, archive checksum, bridge `--version`, transport choice, credential reference identifier (no contents), canonical resource, exact UTC expiry, old adapter provenance or unknowns, reconnect result, and owner acceptance results. Record streaming-before-final and in-flight cancellation separately from repository loopback tests. Include denied/blocked and unexecuted cases accurately. Verify the installed connection and its live behavior before completing the migration.

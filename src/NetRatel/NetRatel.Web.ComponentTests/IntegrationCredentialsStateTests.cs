@@ -5,6 +5,7 @@ using Bunit;
 using AwesomeAssertions;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
+using MudBlazor;
 using MudBlazor.Services;
 using NetRatel.Web.Components.Pages;
 using NetRatel.Web.Services.Pairing;
@@ -233,7 +234,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         var configured = Field<CredentialMcpAdmission>(page.Instance, "_createdAdmission");
         configured.EffectiveAdmission.Should().OnlyContain(x => x.ApplicationGrantConfigured && !x.AuthorizationAdmitted);
         var view = Render<CredentialAdmissionView>(p => p.Add(x => x.Admission, configured));
-        view.Markup.Should().Contain("Matching Production operator policies").And.Contain("current durable owner permission")
+        view.Markup.Should().Contain("Matching Production operator policies").And.Contain("Current durable owner permission")
             .And.Contain("2030-04-01T10:11:12.000000Z").And.NotContain("synthetic-one-time-secret");
         Call(page.Instance, "CloseCreate");
         var credential = ((System.Collections.IEnumerable)Field<object>(page.Instance, "_credentials")).Cast<object>().Single();
@@ -246,6 +247,36 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         transport.Admission = Admission(false) with { CredentialState = "revoked", AuthenticationStatus = "delegated_identity_revoked" };
         await (Task)page.Instance.GetType().GetMethod("RefreshAdmissionAsync", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(page.Instance, ["one", false])!;
         Field<CredentialMcpAdmission>(page.Instance, "_detailAdmission").CredentialState.Should().Be("revoked");
+    }
+
+    [Fact]
+    public void Details_dialog_preserves_search_and_replaces_stale_admission_when_refresh_is_unavailable()
+    {
+        JSInterop.Mode = JSRuntimeMode.Loose;
+        Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+        using var transport = new CredentialTransport { IncludeHttpMcpCredential = true, Admission = Admission(true) };
+        Services.AddSingleton<IHttpClientFactory>(transport);
+        Services.GetRequiredService<NavigationManager>().NavigateTo("/account/integration-credentials?tab=credentials");
+        SetRendererInfo(new RendererInfo("Server", true));
+        var dialogs = Render<MudDialogProvider>();
+        var page = Render<IntegrationCredentials>();
+        page.WaitForAssertion(() => page.FindAll("[data-testid='credential-row']").Should().ContainSingle());
+        page.Find("[data-testid='credential-search']").Input("Bounded");
+        page.Find(".credential-actions button").Click();
+
+        dialogs.WaitForAssertion(() => dialogs.Find("[data-testid='credential-detail']").TextContent
+            .Should().Contain("HTTP MCP server").And.Contain("Exact expiry (UTC)").And.Contain("https://mcp.example.test/mcp")
+            .And.Contain("Authorization admitted").And.NotContain("synthetic-one-time-secret"));
+        dialogs.Find("[role='dialog']").GetAttribute("aria-label").Should().Be("Credential details");
+        transport.Admission = null;
+        dialogs.Find("[data-testid='refresh-credential-admission']").Click();
+        dialogs.WaitForAssertion(() => dialogs.Find("[data-testid='credential-admission']").TextContent
+            .Should().Contain("Current admission is unavailable or not checked").And.NotContain("Authorization admitted"));
+
+        dialogs.Find("[data-testid='close-credential-details']").Click();
+        dialogs.WaitForAssertion(() => dialogs.FindAll("[data-testid='credential-detail']").Should().BeEmpty());
+        page.Find("[data-testid='credential-search']").GetAttribute("value").Should().Be("Bounded");
+        page.FindAll("[data-testid='credential-row']").Should().ContainSingle();
     }
 
     private static CredentialMcpAdmission Admission(bool admitted) => new("one", DateTimeOffset.Parse("2026-10-18T12:00:00Z"), "active",

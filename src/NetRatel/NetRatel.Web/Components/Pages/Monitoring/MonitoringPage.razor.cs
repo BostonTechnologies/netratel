@@ -29,7 +29,7 @@ public partial class MonitoringPage
     private int? _appliedQueryTenant;
     private Guid? _appliedQueryClient;
     private string? _appliedQueryState;
-    private string _stateFilter = "";
+    private string _stateFilter = "firing";
     private bool _conflict, _reviewedConflict;
     private string? _reviewDescription;
     private ulong _editorConfigurationRevision;
@@ -97,7 +97,7 @@ public partial class MonitoringPage
             _tenants = await Api.GetTenantsAsync(_lifetime.Token);
             if (_tenants.Count > 0)
             {
-                State.ClientFilter = RequestedClientId; _stateFilter = RequestedState ?? ""; _search = RequestedSearch ?? "";
+                State.ClientFilter = RequestedClientId; _stateFilter = NormalizeStateFilter(RequestedState); _search = RequestedSearch ?? "";
                 var tenant = RequestedTenantId is { } requested ? _tenants.Any(item => item.TenantId == requested) ? requested : 0 : _tenants[0].TenantId;
                 if (tenant == 0) { _startupError = "The linked tenant does not grant Monitoring access."; RememberQuery(); return; }
                 await State.SelectTenantAsync(tenant); RememberQuery(); await LoadRequestedAlert();
@@ -126,7 +126,7 @@ public partial class MonitoringPage
         CloseEditor(); _search = RequestedSearch ?? "";
         if (tenant == 0) { _startupError = "The linked tenant does not grant Monitoring access."; _state?.Dispose(); _state = new(Api); return true; }
         _startupError = null;
-        if (stateChanged) _stateFilter = RequestedState ?? "";
+        if (stateChanged || State.TenantId != tenant) _stateFilter = NormalizeStateFilter(RequestedState);
         State.ClientFilter = RequestedClientId;
         if (State.TenantId != tenant) _pendingWatchAtSaveRevision = null;
         await State.SelectTenantAsync(tenant);
@@ -203,7 +203,7 @@ public partial class MonitoringPage
     private async Task ChangeTenant(ChangeEventArgs args)
     {
         if (_editor is not null || !int.TryParse(args.Value?.ToString(), out var tenant) || !_tenants.Any(t => t.TenantId == tenant)) return;
-        FenceAlert(); CloseEditor(); _search = ""; _stateFilter = ""; RequestedTenantId = tenant; RequestedClientId = null; RequestedState = null; RequestedAlertId = null; RequestedSearch = null;
+        FenceAlert(); CloseEditor(); _search = ""; _stateFilter = "firing"; RequestedTenantId = tenant; RequestedClientId = null; RequestedState = null; RequestedAlertId = null; RequestedSearch = null;
         RememberQuery(); State.ClientFilter = null; _pendingWatchAtSaveRevision = null; _successMessage = null; await State.SelectTenantAsync(tenant);
         Navigation.NavigateTo($"/monitoring?tenantId={tenant}", replace: true);
     }
@@ -250,7 +250,25 @@ public partial class MonitoringPage
         "suppressed" => row.Suppressed,
         _ => true
     };
-    private void FilterState(string filter) { _stateFilter = _stateFilter == filter ? "" : filter; _tab = "Active"; }
+    private static string NormalizeStateFilter(string? filter) => filter?.Trim().ToLowerInvariant() switch
+    {
+        "all" => "all",
+        "offline" => "offline",
+        "pending" => "pending",
+        "unknown" => "unknown",
+        "suppressed" => "suppressed",
+        _ => "firing"
+    };
+    private string ActiveFilterLabel => _stateFilter switch
+    {
+        "all" => "All alert states",
+        "offline" => "Offline clients",
+        "pending" => "Pending alerts",
+        "unknown" => "Unknown states",
+        "suppressed" => "Suppressed alerts",
+        _ => "Firing alerts"
+    };
+    private void FilterState(string filter) { _stateFilter = NormalizeStateFilter(filter); _tab = "Active"; }
     private static string HistoryActor(MonitoringEventIntent item) => item.OperatorDisplayName ??
         (item.Kind is MonitoringEventKind.AlertCleared or MonitoringEventKind.AlertAcknowledged ? "Recorded operator unavailable" : "System");
     private static string ActionName(string action) => action.Replace('_', '-') switch { "rule-upsert" => "Rule changed", "group-upsert" => "Group changed", "bypass-upsert" => "Bypass applied", "rule-delete" => "Rule removed", "group-delete" => "Group removed", "bypass-delete" => "Bypass revoked", "save-rule" => "Rule changed", "save-group" => "Group changed", "save-bypass" => "Bypass applied", "delete-rule" => "Rule removed", "delete-group" => "Group removed", "delete-bypass" => "Bypass revoked", "ack" => "Acknowledged", "clear" => "Alert cleared", _ => action.Replace('_', ' ').Replace('-', ' ') };

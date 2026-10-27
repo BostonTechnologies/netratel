@@ -257,13 +257,25 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await page.GotoAsync(fixture.BaseAddress + "/flows", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByTestId("flow-row").WaitForAsync(new() { Timeout = 90_000 });
     }
-    [Fact]
-    public async Task History_Opens_Immutable_Published_Graph_And_Clone_Creates_Independent_Disabled_Draft()
+    [Theory]
+    [InlineData(1280, 800)]
+    [InlineData(390, 844)]
+    public async Task History_Opens_Immutable_Published_Graph_And_Clone_Creates_Independent_Disabled_Draft(int width, int height)
     {
         var fixture = _fixture!; fixture.FlowsData.SeedPublishedVersion();
-        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1280, Height = 800 } });
-        var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000); await OpenPageAsync(page, fixture);
-        await page.GetByTestId("flow-history").ClickAsync(); await page.GetByTestId("flow-history-panel").WaitForAsync();
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = width, Height = height } });
+        var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000);
+        var errors = new List<string>(); page.PageError += (_, error) => errors.Add(error);
+        await OpenPageAsync(page, fixture);
+        var historyOpener = page.GetByTestId("flow-history");
+        await historyOpener.ClickAsync(); await page.GetByTestId("flow-history-panel").WaitForAsync();
+        await Assertions.Expect(page.GetByTestId("flow-history-dismiss")).ToBeFocusedAsync();
+        var bounds = (await page.GetByRole(AriaRole.Dialog).BoundingBoxAsync())!;
+        Assert.InRange(bounds.X, 0, width); Assert.True(bounds.X + bounds.Width <= width);
+        Assert.InRange(bounds.Y, 0, height); Assert.True(bounds.Y + bounds.Height <= height);
+        await AssertNoOverflowAsync(page);
+        var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"flow-history-{width}x{height}.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
         var versionOpener = page.GetByTestId("flow-view-version"); await versionOpener.ClickAsync();
         await Assertions.Expect(page.GetByTestId("flow-dirty")).ToContainTextAsync("Immutable version 1");
         Assert.Equal(0, await page.GetByTestId("flow-save").CountAsync());
@@ -272,6 +284,9 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await Assertions.Expect(page.GetByTestId("flow-node-delete").First).ToBeDisabledAsync();
         await page.GetByTestId("flow-close").ClickAsync();
         await Assertions.Expect(versionOpener).ToBeFocusedAsync();
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(page.GetByTestId("flow-history-panel")).ToHaveCountAsync(0);
+        await Assertions.Expect(historyOpener).ToBeFocusedAsync();
         await page.GetByTestId("flow-clone").ClickAsync(); await page.GetByTestId("flow-clone-name").FillAsync("Independent copy");
         await page.GetByTestId("flow-clone-confirm").ClickAsync(); await page.GetByTestId("flow-name").WaitForAsync();
         await Assertions.Expect(page.GetByTestId("flow-name")).ToHaveValueAsync("Independent copy");
@@ -280,6 +295,7 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await Assertions.Expect(copy).ToContainTextAsync("Disabled"); await Assertions.Expect(copy).ToContainTextAsync("Not published");
         await Assertions.Expect(page.GetByTestId("flow-row")).ToHaveCountAsync(2);
         Assert.Equal(0, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls);
+        Assert.Empty(errors); Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
     }
     private static async Task SetThemeAsync(IPage page, string theme)
     {

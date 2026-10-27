@@ -31,6 +31,9 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
         Assert.Equal(0, _api.Writes);
         Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth + 1"));
         Assert.Equal("16px", await page.EvaluateAsync<string>("() => getComputedStyle(document.documentElement).fontSize"));
+        await Assertions.Expect(page.GetByTestId("monitoring-series-row")).ToHaveCountAsync(1);
+        await Assertions.Expect(page.GetByTestId("monitoring-state-firing")).ToHaveAttributeAsync("aria-pressed", "true");
+        await page.GetByTestId("monitoring-state-all").ClickAsync();
         await Assertions.Expect(page.GetByTestId("monitoring-series-row").Last).ToHaveAttributeAsync("data-health", "Unknown");
 
         var serviceButton = page.GetByTestId("monitoring-services").First.Locator("button");

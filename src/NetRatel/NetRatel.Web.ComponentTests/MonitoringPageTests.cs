@@ -22,6 +22,72 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         Services.AddSingleton<IMonitoringApiService>(_api);
         Services.AddSingleton<IClientServicesApiService>(new EmptyServices());
     }
+
+    [Theory]
+    [InlineData("/monitoring")]
+    [InlineData("/monitoring?tenantId=2")]
+    public void Active_alerts_default_to_firing_and_keep_other_states_explicit(string url)
+    {
+        ConfigureMixedAlertStates();
+        Services.GetRequiredService<NavigationManager>().NavigateTo(url);
+        var cut = Render<MonitoringPage>();
+        cut.WaitForAssertion(() => Assert.Single(cut.FindAll("[data-testid=monitoring-series-row]")));
+        Assert.Equal("true", cut.Find("[data-testid=monitoring-state-firing]").GetAttribute("aria-pressed"));
+        Assert.Contains("Firing", cut.Find("[data-testid=monitoring-series-row]").TextContent);
+        Assert.Contains("1", cut.Find("[data-testid=monitoring-state-firing]").TextContent);
+
+        cut.Find("[data-testid=monitoring-state-unknown]").Click();
+        Assert.Contains("Unknown", Assert.Single(cut.FindAll("[data-testid=monitoring-series-row]")).TextContent);
+        cut.Find("[data-testid=monitoring-state-all]").Click();
+        Assert.Equal(3, cut.FindAll("[data-testid=monitoring-series-row]").Count);
+        cut.Find("[data-testid=monitoring-state-firing]").Click();
+        cut.Find("[data-testid=monitoring-state-firing]").Click();
+        Assert.Single(cut.FindAll("[data-testid=monitoring-series-row]"));
+        cut.Find("[data-testid=monitoring-refresh]").Click();
+        cut.WaitForAssertion(() => Assert.Single(cut.FindAll("[data-testid=monitoring-series-row]")));
+
+        cut.Find("[data-testid=monitoring-state-unknown]").Click();
+        cut.Find("[data-testid=monitoring-tenant]").Change(url.Contains("tenantId=2", StringComparison.Ordinal) ? "1" : "2");
+        cut.WaitForAssertion(() => Assert.Equal("true", cut.Find("[data-testid=monitoring-state-firing]").GetAttribute("aria-pressed")));
+        Assert.Contains("Firing", Assert.Single(cut.FindAll("[data-testid=monitoring-series-row]")).TextContent);
+    }
+
+    [Fact]
+    public async Task Explicit_state_links_are_respected_and_unfiltered_tenant_links_restore_firing()
+    {
+        ConfigureMixedAlertStates();
+        var navigation = Services.GetRequiredService<NavigationManager>();
+        navigation.NavigateTo("/monitoring?tenantId=2&state=unknown");
+        var cut = Render<MonitoringPage>();
+        await cut.WaitForAssertionAsync(() => Assert.Equal("true", cut.Find("[data-testid=monitoring-state-unknown]").GetAttribute("aria-pressed")));
+        Assert.Contains("Unknown", Assert.Single(cut.FindAll("[data-testid=monitoring-series-row]")).TextContent);
+        await cut.InvokeAsync(() => navigation.NavigateTo("/monitoring?tenantId=1"));
+        await cut.WaitForAssertionAsync(() => Assert.Equal("true", cut.Find("[data-testid=monitoring-state-firing]").GetAttribute("aria-pressed")));
+        Assert.Contains("Firing", Assert.Single(cut.FindAll("[data-testid=monitoring-series-row]")).TextContent);
+    }
+
+    private void ConfigureMixedAlertStates()
+    {
+        var draft = MonitoringRuleDraft.Create();
+        draft.Name = "CPU threshold";
+        var rules = new Dictionary<int, MonitoringRuleDto> { [1] = draft.Build(1), [2] = draft.Build(2) };
+        _api.ConfigurationRead = (tenant, _) => Task.FromResult(_api.Configuration(tenant) with { Rules = [rules[tenant]] });
+        _api.SummaryRead = (tenant, _) => Task.FromResult(new MonitoringSummaryDto(tenant, 3, 1, 1, 1, 0, 0, DateTimeOffset.UtcNow, FiringOccurrences: 1));
+        _api.SeriesRead = (tenant, _, _) =>
+        {
+            var rule = rules[tenant];
+            var now = DateTimeOffset.UtcNow;
+            var evidence = new MonitoringEvidenceDto(new(1, 1), Guid.NewGuid(), now, now, MonitoringEvidenceQuality.Fresh, MonitoringClassification.Breach, 95, 0, null);
+            var occurrence = new MonitoringOccurrenceDto(Guid.NewGuid(), Guid.NewGuid(), now, now, rule, evidence, MonitoringFlowDispatchDisposition.NoFlowSelected);
+            MonitoringSeriesState firing = new(new(tenant, rule.RuleId, Guid.NewGuid(), "cpu"), 1, 1, MonitoringPhase.Firing,
+                MonitoringEvidenceQuality.Fresh, LatestEvidence: evidence, Occurrence: occurrence, ApplicableBypassIds: []);
+            MonitoringSeriesState unknown = new(new(tenant, rule.RuleId, Guid.NewGuid(), "cpu"), 1, 1, MonitoringPhase.Healthy,
+                MonitoringEvidenceQuality.Unknown, ApplicableBypassIds: []);
+            MonitoringSeriesState pending = new(new(tenant, rule.RuleId, Guid.NewGuid(), "cpu"), 1, 1, MonitoringPhase.Pending,
+                MonitoringEvidenceQuality.Fresh, LatestEvidence: evidence, ApplicableBypassIds: []);
+            return Task.FromResult(new MonitoringSeriesPageDto([unknown, firing, pending], null));
+        };
+    }
     [Fact]
     public async Task Selected_closed_alert_loads_exact_persisted_occurrence_and_fences_a_prior_response()
     {

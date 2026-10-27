@@ -10,7 +10,6 @@ HTTP MCP lets Netclaw and other MCP clients use the NetRatel API. First connect 
 - [Bounded operator policies in Web](authentication.md#bounded-operator-policies-in-the-web-ui): inspect policy/target bounds, review and confirm lifecycle changes, and retain audit readback.
 - [Local credential mode](local-credential-mode.md): the API-bound credential/delegation flow.
 - [Troubleshooting and verification](troubleshooting.md): configuration, TLS, routing, authentication, initialize, published tool argument contracts and one permitted read-only call.
-- [Owner repeat campaign](campaign-retest.md): reviewed fixtures, G01–G12, unchanged paced comparison and cleanup.
 - [Web/YARP routing](../deployment/web-gateway.md): generated defaults and manual JSON/environment overrides.
 - [CLI and stdio MCP](../integrations/CLI_AND_MCP.md): separate tooling entry points and isolated identities.
 - [Release installation](../../release/INSTALL.md): verified image bundle and first-run Web/API setup.

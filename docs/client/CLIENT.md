@@ -21,147 +21,24 @@ them between machines or use an operator OIDC credential in their place. A
 Client that has not enrolled exits rather than starting an unauthenticated
 service.
 
-## Disposable executors for owner acceptance
+## Installation identity
 
-Use an independently enrolled disposable Windows VM or separate Windows host
-when fixed-native execution is required while existing agents remain protected.
-Create it from an image that has never enrolled in NetRatel. A clone containing
-an existing installation's credential store also contains that installation's
-device identity. Use a fresh Linux VM, or the exact owner-designated Linux
-container and its separately registered persistent volume, for Linux cases.
-Keep the original tenant/agent bindings, credentials, update intent and runtime
-data intact. Register each fixture and its eventual cleanup under
-[#304](https://github.com/BostonTechnologies/netratel/issues/304) and the
-[owner campaign procedure](../mcp-http/campaign-retest.md).
+Each machine must enroll independently. Cloning an enrolled installation also
+copies its device identity and protected credentials. Preserve the tenant/agent
+binding, credential store and runtime state when updating or recovering an
+existing installation. Use a fresh machine image for a separate test client.
 
-### Windows identity boundary
+On Windows, the credential and device-key store is
+`%ProgramData%\NetRatel\agent.dat`; the pending native-refresh exchange is beside
+it. A different executable directory, Windows account, log directory or
+`Client:AutoUpdate:StateDirectory` does not create a second installation identity.
+Updater, service and offboarding state also belong to that installed host.
 
-The packaged Windows client reads its credential and device-key store from
-`%ProgramData%\NetRatel\agent.dat`. Its pending native-refresh exchange is beside
-that file. The runtime does not expose a supported command-line or configuration
-option selecting a different credential store. Another executable directory,
-Windows account, `--agent-id`, log directory or `Client:AutoUpdate:StateDirectory`
-does not establish a second installation identity. Do not launch a purported
-second agent on a protected host or reset that host's identity to create a test
-fixture. Native updater, service and offboarding state also belong to the
-installed host; changing only a credential filename would not isolate them.
-
-Open an **administrator PowerShell terminal inside the new disposable Windows
-VM**. PowerShell and the Windows service/CIM commands are supplied by Windows.
-Before installing, verify that this VM has no existing installation:
-
-```powershell
-$ErrorActionPreference = 'Stop'
-$dataRoot = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'NetRatel'
-$installRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'NetRatel\Client'
-$existingService = Get-CimInstance Win32_Service -Filter "Name='NetRatel.Client'"
-if ($existingService -or (Test-Path -LiteralPath $dataRoot) -or (Test-Path -LiteralPath $installRoot)) {
-    throw 'This VM already has NetRatel installation state. Select an unused disposable VM.'
-}
-```
-
-Select the exact completed release tag from
-[GitHub Releases](https://github.com/BostonTechnologies/netratel/releases), retain
-its publication record and checksums, and use
-[GitHub release import](#release-import-and-instance-automation) to import the
-matching verified client pack. Generate a **fresh Windows installer** for the
-designated fixture tenant and that pack after the corrected server is deployed.
-In **Agent Installers & Updates**, choose **Generate script** on the matching
-artifact row. Verify **Selected artifact** shows the expected version and
-`win-x64`, choose the fixture tenant, and select **Install as Service**. Use one
-enrollment use for this one fixture, then **Generate link** and **Download
-script**. Existing generated links retain their original installer snapshot.
-Save the script in a private directory in this VM and run its downloaded local
-file under the normal script-review and execution-policy process:
-
-```powershell
-& 'C:\absolute\private-fixture-install.ps1' # Replace with the fresh generated installer path.
-```
-
-Native client archives contain their .NET runtime. Shell execution still needs
-the [interpreter appropriate to the test](#script-interpreters); install
-[PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows)
-inside the fixture when testing `Pwsh`. Use only the fixture's fresh short-lived
-enrollment grant. Leave instance-wide automatic publication/deployment settings
-and protected agents' update policies unchanged. Inspect the resulting distinct
-agent ID and tenant before granting exact fixture operations or executing a
-task.
-
-### Prove the native executable actually serving the fixture
-
-In the **same VM's administrator PowerShell terminal**, inspect the running
-service process, its installed manifest and its executable version. Replace the
-release-tag placeholder with the tag selected above:
-
-```powershell
-$releaseTag = 'REPLACE_WITH_PUBLISHED_RELEASE_TAG'
-$expectedVersion = $releaseTag.TrimStart('v')
-$service = Get-CimInstance Win32_Service -Filter "Name='NetRatel.Client'"
-if (-not $service -or $service.State -ne 'Running' -or $service.ProcessId -le 0) {
-    throw 'The fixture native service is not running.'
-}
-$clientProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($service.ProcessId)"
-if (-not $clientProcess.ExecutablePath) { throw 'The running fixture executable could not be identified.' }
-$clientExecutable = $clientProcess.ExecutablePath
-$manifestPath = Join-Path (Split-Path -Parent $clientExecutable) 'netratel-client-manifest.json'
-$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-$nativeVersion = (& $clientExecutable --version | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or $nativeVersion.Split('+')[0] -cne $expectedVersion -or
-    $manifest.version -cne $expectedVersion -or $manifest.runtimeId -cne 'win-x64') {
-    throw 'The running fixture package does not match the selected Windows release.'
-}
-[ordered]@{
-    selectedRelease = $releaseTag
-    version = $nativeVersion
-    manifestSourceRevision = $manifest.commitSha
-    processId = $clientProcess.ProcessId
-    startedAtUtc = $clientProcess.CreationDate.ToUniversalTime().ToString('o')
-    executable = $clientExecutable
-    executableSha256 = (Get-FileHash -LiteralPath $clientExecutable -Algorithm SHA256).Hash
-    serviceAccount = $service.StartName
-} | ConvertTo-Json
-```
-
-Compare the manifest source revision and executable checksum with the matching
-verified pack. Import can normalize an archive: use the source archive checksum
-for the GitHub download and the imported artifact/manifest receipt for the local
-pack. Retain the installation directory unchanged during this readback. If the
-service restarts or changes executable during inspection, repeat for its current
-PID. In the platform, read the exact fixture's durable tenant/agent binding,
-current gateway presence, reported native version and required capability. A
-running service or a local `--version` result alone does not establish that the
-expected identity connected or that execution was admitted.
-
-For a disposable Linux VM installed through the generated systemd installer,
-run these **read-only commands in that VM's administrator shell**. The commands
-use the systemd and GNU coreutils supplied by the supported Linux distribution:
-
-```sh
-set -eu
-fixture_pid=$(systemctl show netratel-client.service --property MainPID --value)
-test "$fixture_pid" -gt 0
-fixture_executable=$(readlink -e "/proc/$fixture_pid/exe")
-printf '%s\n' "$fixture_executable"
-"$fixture_executable" --version
-sha256sum "$fixture_executable"
-cat "$(dirname "$fixture_executable")/netratel-client-manifest.json"
-```
-
-Match that executable/manifest to the selected Linux release and the same
-fixture's current gateway identity. For an existing registered container,
-inspect its exact container ID, image digest and mounted credential volume
-before an owner-authorized update; changing an image tag does not prove the
-running digest changed. Recover an unavailable runtime with its established
-host recovery procedure and preserve the historical volume. A new VM or
-container is a new fixture and cannot substitute for recovery or cleanup of
-the original one.
-
-Run native secret/service acceptance only after these identity, version and
-capability checks and the exact reviewed fixture policies succeed. Windows
-service tests require an explicitly designated inert service on the Windows
-fixture; retain its initial and final status/start type. Server, bridge and
-native-agent versions are separate evidence. Keep fixture cleanup and retained
-audit readback in the campaign ledger.
+Verify an installation using the running service's actual executable, its
+`--version` output and `netratel-client-manifest.json`, together with the same
+client's tenant/agent binding and authenticated gateway presence. Generate
+installer scripts and import client packs through
+[Agent Installers & Updates](#release-import-and-instance-automation).
 
 ## Client labels and offboarding
 
@@ -422,9 +299,9 @@ grant.
 The package includes runtime-specific update helpers and a manifest. Preserve
 the existing installation identity and rollback material during an update; do
 not bypass ordinary downgrade protection or point a Client at an unapproved
-feed. Rc.1 is historical. Install an rc.3 Client only from the matching
-prerelease asset after verifying its checksum, manifest and supported runtime;
-neither prerelease establishes an unattended update channel.
+feed. Install a Client from the matching completed release after verifying its
+checksum, manifest and supported runtime. Automatic rollout follows the
+instance and tenant update policies described below.
 
 ## Release import and instance automation
 
@@ -466,7 +343,7 @@ not need direct GitHub access.
 ### Controlled update cohort
 
 Publication makes a pack available to the existing enabled tenant policies.
-Before publishing a campaign candidate, record all eligible tenant settings,
+Before publishing a client pack for deployment, record all eligible tenant settings,
 target-version pins, enabled agents, suspended/suppressed update states and
 existing attempts. Include offline records: they can receive an offer when they
 reconnect. The supported operator controls are tenant update policies and global
@@ -667,14 +544,6 @@ After repair, approve the candidate through the ordinary instance policy and
 verify the update attempt, readmission, agent ID and tenant binding. Keep the
 reported backup until that check succeeds; restore it if the replacement
 fails before activation. No Client reinstall or re-enrollment is needed.
-
-Hosted acceptance extracts the actual published updater and records its version
-gate result. For rc.7, that result is rejection. It runs the packaged repair
-utility with the built candidate archive, and then activates that verified
-candidate. The OIDC
-previous-release upgrade also runs the enrolled published Client under its
-original credential owner, repairs its updater, and checks the server-offered
-update, readmission, confirmation, and original identity.
 
 ## Public install links
 

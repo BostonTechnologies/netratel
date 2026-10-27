@@ -1,0 +1,74 @@
+@using NetRatel.Web.Services
+
+<div class="attempt-details" id="@($"attempt-details-{Item.AttemptId:D}")">
+    <MudExpansionPanels Elevation="0" Outlined="true">
+        <MudExpansionPanel Expanded="true" ExpandedChanged="ExpandedChanged" Class="attempt-details-panel">
+            <TitleContent>
+                <div class="attempt-details-heading">
+                    <MudIcon Icon="@Icons.Material.Outlined.Update" Color="Color.Primary" Size="Size.Small" />
+                    <strong>Update details</strong>
+                    <span>@(Item.ClientHostName ?? Item.ClientDisplayName ?? "Client update")</span>
+                </div>
+            </TitleContent>
+            <ChildContent>
+                <div class="attempt-details-identity"><span>Attempt ID</span><code>@Item.AttemptId</code></div>
+                <div class="attempt-details-grid">
+                    <section class="attempt-details-card" aria-label="Installed versions">
+                        <h3><MudIcon Icon="@Icons.Material.Outlined.Memory" Size="Size.Small" />Installed versions</h3>
+                        <dl>
+                            <div><dt>From</dt><dd>@(Item.FromVersion ?? "Unknown")</dd></div>
+                            <div><dt>Target</dt><dd>@Item.TargetVersion</dd></div>
+                            <div><dt>Running observed</dt><dd>@(Item.ObservedRunningVersion ?? "Unknown")</dd></div>
+                            <div><dt>Observation (UTC)</dt><dd>@Time(Item.ObservedAtUtc)</dd></div>
+                        </dl>
+                    </section>
+                    <section class="attempt-details-card" aria-label="Server confirmation">
+                        <h3><MudIcon Icon="@Icons.Material.Outlined.Verified" Size="Size.Small" />Server confirmation</h3>
+                        <dl>
+                            <div><dt>Confirmation ID</dt><dd><code>@(Item.ConfirmationId?.ToString() ?? "Not recorded")</code></dd></div>
+                            <div><dt>Confirmed (UTC)</dt><dd>@Time(Item.ConfirmedAtUtc)</dd></div>
+                        </dl>
+                    </section>
+                    <section class="attempt-details-card" aria-label="Client report">
+                        <h3><MudIcon Icon="@Icons.Material.Outlined.Description" Size="Size.Small" />Client report</h3>
+                        <dl>
+                            <div><dt>Reported installation</dt><dd>@(Item.ReportedState ?? "Awaiting report")</dd></div>
+                            <div><dt>Reported (UTC)</dt><dd>@Time(Item.ReportedAtUtc)</dd></div>
+                            <div><dt>Failure code</dt><dd><code>@(Item.ReportedFailureCode ?? Item.FailureCode ?? "None recorded")</code></dd></div>
+                        </dl>
+                        @if (!string.IsNullOrWhiteSpace(Item.ReportedMessage ?? Item.Message))
+                        {
+                            <p class="attempt-details-message">@(Item.ReportedMessage ?? Item.Message)</p>
+                        }
+                    </section>
+                    <section class="attempt-details-card" aria-label="Automation policy">
+                        <h3><MudIcon Icon="@Icons.Material.Outlined.Tune" Size="Size.Small" />Automation policy</h3>
+                        <dl>
+                            <div><dt>Current revision</dt><dd>@Item.PolicyRevision</dd></div>
+                            @if (Item.SuspendedAtUtc is not null)
+                            {
+                                <div><dt>Suspended (UTC)</dt><dd>@Time(Item.SuspendedAtUtc)</dd></div>
+                                <div><dt>Reason</dt><dd>@Item.SuspensionReason</dd></div>
+                            }
+                            @if (Item.ResumedAtUtc is not null)
+                            {
+                                <div><dt>Last resumed (UTC)</dt><dd>@Time(Item.ResumedAtUtc)</dd></div>
+                                <div><dt>Resumed by</dt><dd>@(Item.ResumedBy ?? "Operator unavailable")</dd></div>
+                            }
+                        </dl>
+                    </section>
+                </div>
+                <div class="attempt-details-action"><MudIcon Icon="@Icons.Material.Outlined.Info" Size="Size.Small" /><span>@OperatorAction</span></div>
+            </ChildContent>
+        </MudExpansionPanel>
+    </MudExpansionPanels>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ClientUpdateHistoryItemModel Item { get; set; } = default!;
+    [Parameter, EditorRequired] public string OperatorAction { get; set; } = string.Empty;
+    [Parameter] public EventCallback<bool> ExpandedChanged { get; set; }
+
+    private static string Time(DateTimeOffset? at) => at is { } value
+        ? value.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'") : "Not recorded";
+}
