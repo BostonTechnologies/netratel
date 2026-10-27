@@ -7,6 +7,7 @@ using NetRatel.Web.Services.OperatorPolicy;
 namespace NetRatel.Web.PlaywrightTests;
 
 [Collection(PlaywrightCollection.Name)]
+[Trait("Category", "BrowserAcceptance")]
 public sealed class OperatorPolicyDialogFocusTests(ClientsManagementBrowserFixture browserFixture)
     : IClassFixture<ClientsManagementBrowserFixture>, IAsyncLifetime
 {
@@ -26,7 +27,9 @@ public sealed class OperatorPolicyDialogFocusTests(ClientsManagementBrowserFixtu
         page.SetDefaultTimeout(30_000);
         var errors = new List<string>();
         page.PageError += (_, error) => errors.Add(error);
-        await page.GotoAsync(_host!.BaseAddress + "/admin/operator-policies", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        var response = await page.GotoAsync(_host!.BaseAddress + "/admin/operator-policies", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        Assert.NotNull(response);
+        Assert.Equal(200, response.Status);
         var search = page.GetByRole(AriaRole.Textbox, new() { Name = "Search policies", Exact = true });
         await search.FillAsync("Reviewed grant");
         await page.GetByTestId("policy-lifecycle-filter").ClickAsync();

@@ -53,7 +53,10 @@ public sealed class SessionRenewalBrowserTests(ClientsManagementBrowserFixture b
         await page.GetByRole(AriaRole.Button, new() { Name = "Read current session", Exact = true }).ClickAsync();
         var response = await renewal;
         Assert.Equal(204, response.Status);
-        Assert.Empty(await response.BodyAsync());
+        await response.FinishedAsync();
+        // Chromium does not retain a body for 204 responses. Assert the
+        // completed transfer has no content without requesting a CDP body.
+        Assert.Equal(0, (await response.Request.SizesAsync()).ResponseBodySize);
         await Assertions.Expect(page.GetByTestId("renewal-status")).ToHaveTextAsync("Read 2");
         await Assertions.Expect(draft).ToHaveValueAsync("Keep the current reviewed draft");
         await Assertions.Expect(page.GetByTestId("renewal-circuit")).ToHaveTextAsync(identity!);
