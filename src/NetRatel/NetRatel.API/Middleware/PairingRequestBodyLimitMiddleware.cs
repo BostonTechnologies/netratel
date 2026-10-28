@@ -13,7 +13,10 @@ public sealed class PairingRequestBodyLimitMiddleware(RequestDelegate next)
     {
         var path = http.Request.Path;
         var exact = new PathString(path.Value?.TrimEnd('/'));
-        var isReviewedAccess = exact.Equals(new PathString(McpLocalDelegationEndpoints.AccessStartPath), StringComparison.OrdinalIgnoreCase) ||
+        var isAccountAccessEdit = path.StartsWithSegments("/api/v2/account/integration-credentials", StringComparison.OrdinalIgnoreCase, out var accountPath) &&
+            accountPath.Value?.Split('/', StringSplitOptions.RemoveEmptyEntries) is [_, var accountAction, ..] &&
+            string.Equals(accountAction, "access-requests", StringComparison.OrdinalIgnoreCase);
+        var isReviewedAccess = isAccountAccessEdit || exact.Equals(new PathString(McpLocalDelegationEndpoints.AccessStartPath), StringComparison.OrdinalIgnoreCase) ||
             exact.Equals(new PathString("/api/v2/mcp/operator/access/requests"), StringComparison.OrdinalIgnoreCase) ||
             exact.Equals(new PathString("/api/v2/mcp/operator/access/receipt"), StringComparison.OrdinalIgnoreCase) ||
             exact.Equals(new PathString("/api/v2/mcp/operator/access/resume"), StringComparison.OrdinalIgnoreCase) ||

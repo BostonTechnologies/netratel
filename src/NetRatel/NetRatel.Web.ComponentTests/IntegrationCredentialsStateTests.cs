@@ -279,6 +279,50 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         page.FindAll("[data-testid='credential-row']").Should().ContainSingle();
     }
 
+    [Fact]
+    public async Task Applied_access_refreshes_list_details_and_admission_and_cannot_be_replaced_by_an_older_list_response()
+    {
+        JSInterop.Mode = JSRuntimeMode.Loose;
+        Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+        using var transport = new CredentialTransport { IncludeHttpMcpCredential = true, Admission = Admission(false) };
+        Services.AddSingleton<IHttpClientFactory>(transport);
+        Services.GetRequiredService<NavigationManager>().NavigateTo("/account/integration-credentials?tab=credentials");
+        SetRendererInfo(new RendererInfo("Server", true));
+        var dialogs = Render<MudDialogProvider>();
+        var page = Render<IntegrationCredentials>();
+        page.WaitForAssertion(() => page.FindAll("[data-testid='credential-row']").Should().ContainSingle());
+        page.Find(".credential-actions button").Click();
+        dialogs.WaitForAssertion(() => dialogs.Find(".credential-section-heading").TextContent.Should().Contain("1 tenant grants"));
+
+        transport.PauseNextList();
+        var oldRefresh = CallAsync(page.Instance, "LoadAsync");
+        transport.DelayedListRequested.Should().BeTrue();
+        IntegrationPairingGrant[] grants = [new(17, "flow.read"), new(18, "flow.read")];
+        transport.HttpGrants = grants;
+        transport.HttpInstancePermissions = ["mcp.discovery.read"];
+        transport.Admission = Admission(false) with { ConfiguredGrants = grants, ConfiguredInstancePermissions = transport.HttpInstancePermissions };
+        var proposal = new ReviewedMcpAccessProposal("synthetic-request", "Bounded HTTP reader", "reconcile",
+            transport.Admission.CredentialExpiresAtUtc, grants, transport.HttpInstancePermissions, [], "one");
+        var request = new ReviewedMcpAccessRequest(proposal.RequestId, "consumed", "https://netratel.example.test/account/integration-credentials",
+            null, proposal, "https://mcp.example.test/mcp", "prod", "Production", "synthetic-owner", "one", 3, "synthetic-reviewed-hash");
+        var receipt = new ReviewedMcpAccessReceipt(request, "one", proposal.ExpiresAtUtc, "active", grants, transport.HttpInstancePermissions,
+            transport.Admission.EffectiveAdmission, transport.Admission.RemainingPrerequisites, "Inspect current admission.");
+        var appliedCallback = EventCallback.Factory.Create<ReviewedMcpAccessReceipt>(page.Instance, saved =>
+            (Task)page.Instance.GetType().GetMethod("AccessAppliedAsync", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(page.Instance, [saved])!);
+        await page.InvokeAsync(() => appliedCallback.InvokeAsync(receipt));
+
+        transport.CompleteDelayedList();
+        await oldRefresh;
+        page.WaitForAssertion(() => page.Find(".credential-secondary").TextContent.Should().Be("2 tenant grants · 1 server grants"));
+        dialogs.WaitForAssertion(() => dialogs.Find(".credential-section-heading").TextContent.Should().Contain("2 tenant grants · 1 server grants"));
+        dialogs.Find("[data-testid='credential-admission']").TextContent.Should().Contain("Matching Production operator policies");
+        Field<CredentialMcpAdmission>(page.Instance, "_detailAdmission").ConfiguredGrants.Should().BeEquivalentTo(grants);
+        Field<CredentialMcpAdmission>(page.Instance, "_detailAdmission").ConfiguredInstancePermissions.Should().Equal("mcp.discovery.read");
+        dialogs.Find("[data-testid='close-credential-details']").Click();
+        page.Find(".credential-actions button").Click();
+        dialogs.WaitForAssertion(() => dialogs.Find(".credential-section-heading").TextContent.Should().Contain("2 tenant grants · 1 server grants"));
+    }
+
     private static CredentialMcpAdmission Admission(bool admitted) => new("one", DateTimeOffset.Parse("2026-10-18T12:00:00Z"), "active",
         "current_credential_valid", "https://mcp.example.test/mcp", "prod", "Production", DateTimeOffset.Parse("2030-04-01T10:11:12Z"),
         [new(17, "flow.read")], [], [new(new(17, "netratel_flows", "list"), "netratel.mcp.observe", ["Operator"], true, admitted, admitted,
@@ -318,6 +362,8 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         public bool PostRequested { get; private set; }
         public bool IncludeCredentials { get; set; }
         public bool IncludeHttpMcpCredential { get; set; }
+        public IReadOnlyList<IntegrationPairingGrant> HttpGrants { get; set; } = [new(17, "flow.read")];
+        public IReadOnlyList<string> HttpInstancePermissions { get; set; } = [];
         public CredentialMcpAdmission? Admission { get; set; }
         public string? FailDeleteId { get; set; }
         public List<string> DeletedIds { get; } = [];
@@ -377,7 +423,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
                 id = "one", publicId = "one", tokenPrefix = "synthetic", name = "Bounded HTTP reader", purpose = 1,
                 resource = "https://mcp.example.test/mcp", createdAtUtc = now, expiresAtUtc = now.AddDays(1),
                 revokedAtUtc = (DateTimeOffset?)null, lastUsedAtUtc = (DateTimeOffset?)null,
-                grants = new[] { new { tenantId = 17, permission = "flow.read" } }, instancePermissions = Array.Empty<string>()
+                grants = HttpGrants, instancePermissions = HttpInstancePermissions
             }] : IncludeCredentials ? new[] {
                 Credential("active", now.AddDays(1), null), Credential("revoked-ok", now.AddDays(1), now),
                 Credential("revoked-fail", now.AddDays(1), now), Credential("expired-unselected", now.AddDays(-1), null) } : [];
