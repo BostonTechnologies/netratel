@@ -321,11 +321,8 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         // Backdrop close clears the page only through the dialog's completed VisibleChanged callback.
         // Wait for that callback and provider removal before reopening the same inline dialog.
         await dialogs.Find(".mud-overlay").ClickAsync(new());
-        await dialogs.WaitForAssertionAsync(() =>
-        {
-            dialogs.FindAll("[role='dialog']").Should().BeEmpty();
-            Field<object?>(page.Instance, "_detail").Should().BeNull();
-        });
+        await page.WaitForAssertionAsync(() => Field<object?>(page.Instance, "_detail").Should().BeNull());
+        await dialogs.WaitForAssertionAsync(() => dialogs.FindAll("[role='dialog']").Should().BeEmpty());
         await page.Find(".credential-actions button").ClickAsync(new());
         dialogs.WaitForAssertion(() => dialogs.Find(".credential-section-heading").TextContent.Should().Contain("2 tenant grants · 1 server grants"));
     }
