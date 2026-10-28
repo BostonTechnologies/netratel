@@ -176,6 +176,8 @@ public sealed class AgentRemoteSupportGatewayClient(GatewayClientOptions options
         }
     }
 
+    internal RemoteDesktopUserHelperPipeHost? GetHelperPipeHost() => EnsureGatewayHelperPipeHost();
+
     private RemoteDesktopUserHelperPipeHost? EnsureGatewayHelperPipeHost()
     {
         if (!OperatingSystem.IsWindows())

@@ -27,6 +27,8 @@ public static class IntegrationPermissionCatalog
         new(NetRatelPermissions.TerminalAccess, "Use terminal", "Open a terminal on authorized clients."),
         new(NetRatelPermissions.ClientManagement, "Manage clients", "Change client enrollment and settings."),
         new(NetRatelPermissions.RemoteSupport, "Use remote support", "Start authorized remote support sessions."),
+        new(NetRatelPermissions.ComputerUseView, "Observe computer use", "Inspect exact interactive windows through the opted-in computer-use provider; also requires remote support access."),
+        new(NetRatelPermissions.ComputerUseControl, "Control computer use", "Perform reviewed, bounded actions in an owned computer-use session; also requires remote support access."),
         new(NetRatelPermissions.AuditRead, "Read audit history", "View recorded activity."),
         new(NetRatelPermissions.SecretUse, "Use secrets", "Use configured secrets without revealing their values."),
         new(NetRatelPermissions.SecretReveal, "Reveal secrets", "Read secret values where authorized."),

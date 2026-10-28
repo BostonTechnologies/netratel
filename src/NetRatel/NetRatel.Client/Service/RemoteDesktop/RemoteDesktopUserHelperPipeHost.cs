@@ -1,4 +1,5 @@
 using NetRatel.Client.Service.Logging;
+using NetRatel.Client.Service.ComputerUse;
 using NetRatel.Shared.Contracts.RemoteDesktop;
 using System;
 using System.Collections.Generic;
@@ -172,7 +173,8 @@ internal sealed class RemoteDesktopUserHelperPipeHost : IDisposable
                 hello.User,
                 DateTimeOffset.UtcNow,
                 writer,
-                pipe);
+                pipe,
+                ComputerUsePipeSecurity.IsVerifiedHelper(pipe, hello.ProcessId, hello.SessionId));
             if (!TryRegisterHelper(helper, out var replaced, out var rejectionReason))
             {
                 LogManager.WriteLog($"[RemoteDesktop] Helper registration rejected pid={helper.ProcessId} sessionId={helper.SessionId} reason={rejectionReason}");
@@ -380,7 +382,8 @@ internal sealed class ConnectedUserHelper
         string userName,
         DateTimeOffset connectedAtUtc,
         StreamWriter writer,
-        NamedPipeServerStream? pipe = null)
+        NamedPipeServerStream? pipe = null,
+        bool computerUseAuthenticated = false)
     {
         SessionId = sessionId;
         ProcessId = processId;
@@ -390,6 +393,7 @@ internal sealed class ConnectedUserHelper
         LastHeartbeatUtc = connectedAtUtc;
         Writer = writer;
         Pipe = pipe;
+        ComputerUseAuthenticated = computerUseAuthenticated;
     }
 
     public int SessionId { get; }
@@ -401,6 +405,7 @@ internal sealed class ConnectedUserHelper
     public DateTimeOffset LastHeartbeatUtc { get; set; }
     public StreamWriter Writer { get; }
     public NamedPipeServerStream? Pipe { get; }
+    public bool ComputerUseAuthenticated { get; }
     public object WriterSync { get; } = new();
 
     public void Send(RemoteDesktopPipeMessage message, JsonSerializerOptions json)

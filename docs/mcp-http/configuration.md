@@ -74,8 +74,12 @@ Canonical prefix: `NetRatel__Mcp__Http__`. Each table property appends to that p
 | `ExecuteScope` | `netratel.mcp.execute` |
 | `DevelopmentOnboardingScope` | `netratel.mcp.onboarding` |
 | `AdminScope` | `netratel.mcp.admin` |
+| `CuaViewScope` | `netratel.mcp.cua.view` |
+| `CuaControlScope` | `netratel.mcp.cua.control` |
 
 Scope values are nonempty bounded OAuth scope tokens; scope admission does not replace application permission, current account/tenant membership, target policy or review/confirmation checks. External OIDC metadata advertises applicable scopes plus `openid`, `profile` and `offline_access`.
+
+CUA view and control scopes must differ from each other, every other operation scope and the OAuth identity/session scopes `openid`, `profile` and `offline_access`. Neither terminal execution nor general observation scope grants desktop access. The API and endpoint independently opt in to [computer use](computer-use.md); publishing the tool schema grants no endpoint capability.
 
 The HTTP container listens on `9224` through its ASP.NET Core/Kestrel endpoint configuration (`ASPNETCORE_URLS=http://+:9224`). Keep it private in the normal single-origin stack. An explicit custom port binding is an operator choice; it does not replace the public HTTPS resource or validation.
 

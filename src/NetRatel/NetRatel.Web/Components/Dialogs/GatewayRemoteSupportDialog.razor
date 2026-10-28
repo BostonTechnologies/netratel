@@ -1,5 +1,6 @@
 @using Microsoft.JSInterop
 @using NetRatel.Shared.Contracts.RemoteSupport
+@using NetRatel.Shared.Contracts.ComputerUse
 @using NetRatel.Web.Services.RemoteSupport
 @implements IAsyncDisposable
 @inject GatewayRemoteSupportApiService RemoteSupport
@@ -12,6 +13,32 @@
     <DialogContent>
         <MudStack Spacing="2">
             <MudText Typo="Typo.body2" Color="Color.Secondary">@_detail</MudText>
+            @if (_computerUse is { Enabled: true } or { Session: not null })
+            {
+                <MudPaper Outlined="true" Class="pa-3" data-testid="computer-use-controls">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                        <MudText Typo="Typo.subtitle2">Computer use</MudText>
+                        <MudButton Size="Size.Small" Variant="Variant.Text" Disabled="@_computerUseBusy" OnClick="RefreshComputerUseAsync">Refresh status</MudButton>
+                    </MudStack>
+                    @if (_computerUse.Session is { } automation)
+                    {
+                        <MudText Typo="Typo.body2">@ComputerUseStateLabel(automation.State) · Windows session @automation.Target.WindowsSessionId · @(automation.Provider == ComputerUseProviders.CuaDriver ? "Cua Driver" : "Native Windows")</MudText>
+                        @if (_computerUse.CanControl)
+                        {
+                            <MudStack Row="true" Spacing="1" Class="mt-2">
+                                <MudButton Size="Size.Small" Variant="Variant.Outlined" Disabled="@(_computerUseBusy || automation.State == "paused")" OnClick="@(() => ControlComputerUseAsync("pause"))">Pause automation</MudButton>
+                                <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" Disabled="@_computerUseBusy" OnClick="TakeOverComputerUseAsync">Take control</MudButton>
+                                <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error" Disabled="@_computerUseBusy" OnClick="@(() => ControlComputerUseAsync("terminate"))">Terminate automation</MudButton>
+                            </MudStack>
+                        }
+                    }
+                    else
+                    {
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">No active automation session.</MudText>
+                    }
+                    @if (_computerUseMessage is not null) { <MudText Typo="Typo.body2" Class="mt-2">@_computerUseMessage</MudText> }
+                </MudPaper>
+            }
             @if (!string.IsNullOrWhiteSpace(_error)) { <MudAlert Severity="Severity.Error" Variant="Variant.Outlined">@_error</MudAlert> }
             @if (_discovering) { <MudProgressCircular Indeterminate="true" Color="Color.Primary" /> }
             else if (_session is null && _capabilities is not null)
@@ -61,11 +88,47 @@
     private bool _discovering = true, _controlEnabled, _offerCreated, _answerApplied, _firstFrameReported, _dataChannelReported;
     private string _qualityProfile = "balanced", _stateLabel = "Discovering capabilities", _detail = "Checking this agent's current Remote Support V2 capabilities.";
     private string? _error;
+    private ComputerUseOperatorStatus? _computerUse;
+    private bool _computerUseBusy;
+    private string? _computerUseMessage;
     private long _generation = 1, _browserSequence, _lastAuditSequence, _transitionResetRevision;
     private IReadOnlyList<RemoteSupportTargetInventoryEntry> AssistTargets => _inventory?.Entries.Where(x => x.WindowsSessionId > 0 && !x.IsConsoleSession && x.IsConnected && !x.IsLocked && !x.IsWinlogon).OrderBy(x => x.DisplayLabel ?? x.WindowsSessionId.ToString()).ToArray() ?? [];
     private Color StateColor => _error is not null ? Color.Error : _session?.State switch { RemoteSupportV2SessionStates.Connected => Color.Success, RemoteSupportV2SessionStates.Failed or RemoteSupportV2SessionStates.Expired => Color.Error, _ => Color.Info };
 
-    protected override async Task OnInitializedAsync() { _self = DotNetObjectReference.Create(this); await RefreshDiscoveryAsync(); }
+    protected override async Task OnInitializedAsync() { _self = DotNetObjectReference.Create(this); await Task.WhenAll(RefreshDiscoveryAsync(), RefreshComputerUseAsync()); }
+    private async Task RefreshComputerUseAsync()
+    {
+        try { _computerUse = await RemoteSupport.GetComputerUseStatusAsync(TenantId, AgentId); }
+        catch (Exception exception) { Logger.LogDebug(exception, "Computer-use status could not be loaded for {TenantId}/{AgentId}.", TenantId, AgentId); _computerUseMessage = "Automation status could not be refreshed."; }
+    }
+    private async Task<bool> ControlComputerUseAsync(string operation)
+    {
+        if (_computerUse is not { CanControl: true, Session: { } automation } || _computerUseBusy) return false;
+        _computerUseBusy = true;
+        try
+        {
+            var result = await RemoteSupport.ControlComputerUseAsync(TenantId, AgentId, automation.SessionId, operation);
+            var confirmed = result.Status == ComputerUseStatuses.Completed;
+            _computerUseMessage = confirmed
+                ? operation == "pause" ? "Automation paused. A fresh observation is required before it can act again." : "Automation terminated."
+                : "Automation control has not been confirmed by the endpoint. Refresh its status before taking control.";
+            await RefreshComputerUseAsync();
+            return confirmed;
+        }
+        catch (Exception exception) { Logger.LogWarning(exception, "Computer-use operator control failed for {TenantId}/{AgentId}.", TenantId, AgentId); _computerUseMessage = "Automation control could not be completed."; return false; }
+        finally { _computerUseBusy = false; }
+    }
+    private async Task TakeOverComputerUseAsync()
+    {
+        if (!await ControlComputerUseAsync("terminate")) return;
+        if (_session is not null && !_controlEnabled && CanUse(RemoteSupportV2CapabilityNames.InputControl)) await ToggleControlAsync();
+        else if (_session is null) _computerUseMessage = "Automation terminated. Choose a target below to start Remote Support.";
+    }
+    private static string ComputerUseStateLabel(string state) => state switch
+    {
+        "active" => "Automation active", "paused" => "Automation paused", "opening" => "Automation starting",
+        "closed" => "Automation closed", "expired" => "Automation expired", "failed" => "Automation unavailable", _ => "Automation status updating"
+    };
     private async Task RefreshDiscoveryAsync()
     {
         _discovering = true; _error = null; _stateLabel = "Discovering capabilities"; _detail = "Checking this agent's current Remote Support V2 capabilities.";

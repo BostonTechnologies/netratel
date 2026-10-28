@@ -34,26 +34,54 @@ public sealed class McpOperatorPolicyFoundationPostgresTests : IAsyncLifetime
         "20260831133310_SeedDevMcpPolicyAdminTenantProvisioning"
     ];
     [Fact]
-    public async Task SeededFullDevGrant_AdmitsEveryCatalogOperationWithAllScopesAndRoles()
+    public async Task SeededFullDevGrant_PreservesLegacyOperations_AndRequiresExplicitCuaExtension()
     {
         await using var db = new OrchestratorDbContext(_options);
         var policy = await db.McpOperatorPolicies.SingleAsync(p =>
             p.PrincipalSelectorValue == "netratel-mcp-dev-feature-testers");
         policy.TargetSelectorKind.Should().Be(McpOperatorTargetSelectorKind.DevelopmentEnvironment);
+        policy.OperationFamily.Should().Be((McpOperatorOperationFamily)524287,
+            "the historical full-Dev grant must not silently acquire computer-use authority");
+        const McpOperatorOperationFamily computerUse =
+            McpOperatorOperationFamily.ComputerUseView | McpOperatorOperationFamily.ComputerUseControl;
         var principal = new McpOperatorPrincipal("feature-tester", "mcp-client", "mcp-client",
             new HashSet<string> { "netratel-mcp-dev-feature-testers" },
             new HashSet<string> { "Observer", "Operator", "AutomationOperator", "OnboardingOperator", "PolicyAdministrator" },
-            new HashSet<string> { "netratel.mcp.read", "netratel.mcp.observe", "netratel.mcp.files", "netratel.mcp.write", "netratel.mcp.execute", "netratel.mcp.onboarding", "netratel.mcp.admin" });
+            new HashSet<string> { "netratel.mcp.read", "netratel.mcp.observe", "netratel.mcp.files", "netratel.mcp.write", "netratel.mcp.execute", "netratel.mcp.onboarding", "netratel.mcp.admin", "netratel.mcp.cua.view", "netratel.mcp.cua.control" });
         var authority = new McpOperatorAuthorization(db);
-        foreach (var operation in McpOperatorOperationCatalog.Operations)
-        {
-            var request = new McpOperatorAccessRequest(McpOperatorEnvironment.Development, principal,
+        var requests = McpOperatorOperationCatalog.Operations.Select(operation =>
+            new McpOperatorAccessRequest(McpOperatorEnvironment.Development, principal,
                 12345, Guid.NewGuid(), null, operation.OperationFamily,
                 $"{operation.ToolName}/{operation.OperationName}",
                 new HashSet<string> { NetRatel.Shared.Operations.McpOperationAccessScopeNames.Canonical(operation.RequiredScope) },
-                operation.ConfirmationClass, "certification-correlation", "certification-request", Tool: operation.ToolName);
+                operation.ConfirmationClass, "certification-correlation", "certification-request", Tool: operation.ToolName)).ToArray();
+        foreach (var request in requests)
+        {
             var decision = await authority.EvaluateAsync(request, CancellationToken.None);
-            decision.IsAllowed.Should().BeTrue($"the seeded grant covers {request.Operation}");
+            if ((request.OperationFamily & computerUse) != 0)
+            {
+                decision.IsAllowed.Should().BeFalse($"{request.Operation} requires an explicit computer-use policy grant");
+                decision.FailureLayer.Should().Be(McpOperatorAuthorizationLayer.Policy);
+                decision.FailureCode.Should().Be("target_operation_not_authorized",
+                    "the principal already has every required OAuth scope and role");
+            }
+            else
+            {
+                decision.IsAllowed.Should().BeTrue($"the historical seeded grant still covers {request.Operation}");
+                decision.DevelopmentEnvironmentAccess.Should().BeTrue();
+            }
+        }
+
+        // Explicit opt-in changes only this test's policy; production migration
+        // history deliberately leaves the original feature-testing grant intact.
+        policy.OperationFamily |= computerUse;
+        policy.Version++;
+        policy.AuditReference = "test-explicit-computer-use-opt-in";
+        await db.SaveChangesAsync();
+        foreach (var request in requests)
+        {
+            var decision = await authority.EvaluateAsync(request, CancellationToken.None);
+            decision.IsAllowed.Should().BeTrue($"the explicitly extended grant covers {request.Operation}");
             decision.DevelopmentEnvironmentAccess.Should().BeTrue();
         }
     }

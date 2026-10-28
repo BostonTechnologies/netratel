@@ -16,6 +16,7 @@ using NetRatel.Application.Commands;
 using NetRatel.Application.Presence;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Application.Services;
+using NetRatel.Shared.Contracts.ComputerUse;
 
 namespace NetRatel.API.Gateway;
 
@@ -49,6 +50,13 @@ public static class NetRatelAkkaRuntimeRegistration
         services.AddNetRatelAkkaActors(
             configuration[$"{NetRatelAkkaOptions.SectionName}:ActorSystemName"] ?? "NetRatel");
         services.AddGrpc();
+        // CUA screenshots are bounded transient replies on the control stream.
+        // Preserve the smaller global limits for presence and other RPCs.
+        services.AddOptions<GrpcServiceOptions<AgentControlGatewayService>>().Configure(grpc =>
+        {
+            grpc.MaxReceiveMessageSize = ComputerUseContract.MaximumResponseBytes + 4096;
+            grpc.MaxSendMessageSize = ComputerUseContract.MaximumRequestBytes + 4096;
+        });
         services.AddOptions<GrpcServiceOptions>()
             .Configure<NetRatelAkkaOptions>((grpc, options) =>
         {

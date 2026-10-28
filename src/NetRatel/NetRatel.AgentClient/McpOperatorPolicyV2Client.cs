@@ -83,7 +83,9 @@ public enum McpOperatorPolicyOperationFamilyV2
     Notifications = 1 << 15,
     Events = 1 << 16,
     Connectivity = 1 << 17,
-    PolicyAdministration = 1 << 18
+    PolicyAdministration = 1 << 18,
+    ComputerUseView = 1 << 19,
+    ComputerUseControl = 1 << 20
 }
 
 /// <summary>One bounded delegated principal selector.</summary>
@@ -167,7 +169,7 @@ public interface IMcpOperatorPolicyV2Client
 /// </summary>
 public sealed class McpOperatorPolicyV2Client(INetRatelMcpOutboundClient client) : IMcpOperatorPolicyV2Client
 {
-    private const int KnownOperationFamilies = (1 << 19) - 1;
+    private const int KnownOperationFamilies = (1 << 21) - 1;
     private readonly INetRatelMcpOutboundClient _client = client ?? throw new ArgumentNullException(nameof(client));
 
     public Task<JsonNode?> ListAsync(McpOperatorPolicyEnvironmentV2? environment = null, int? tenantId = null, CancellationToken cancellationToken = default)

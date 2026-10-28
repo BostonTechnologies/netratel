@@ -9,6 +9,7 @@ public sealed record IntegrationPermission(string Id, string Label, string Descr
         "job" or "jobs" or "script" or "scripts" or "automation" or "flow" or "flows" => "Jobs and automation",
         "telemetry" or "monitoring" or "log" or "logs" or "service" or "services" => "Monitoring and services",
         "file" or "files" or "terminal" or "remote-support" => "Files, terminals and remote support",
+        "computer-use" => "Computer use automation",
         "tenant" or "tenants" or "user" or "users" or "role" or "roles" or "access" or "identity" => "Accounts and access",
         "mcp" => "MCP capabilities and policy",
         "notification" or "notifications" or "connector" or "connectors" or "integration" or "integrations" => "Connections and notifications",

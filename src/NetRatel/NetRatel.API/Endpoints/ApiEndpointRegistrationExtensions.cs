@@ -40,6 +40,8 @@ public static class ApiEndpointRegistrationExtensions
         app.MapMcpOperatorPolicyMutationEndpoints();
         app.MapMcpOperatorTerminalAvailabilityEndpoints();
         app.MapMcpOperatorRemoteSupportEndpoints();
+        app.MapMcpOperatorComputerUseEndpoints();
+        app.MapComputerUseOperatorEndpoints();
         app.MapMcpOperatorTerminalSessionEndpoints();
         app.MapMcpOperatorCommandEndpoints();
         app.MapMcpOperatorScriptEndpoints();

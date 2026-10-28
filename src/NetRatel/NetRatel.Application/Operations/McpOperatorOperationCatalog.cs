@@ -109,7 +109,12 @@ public static class McpOperatorOperationCatalog
         .. Register(McpOperatorOperationFamily.ClientAdministration, McpOperatorConfirmationClass.None, "netratel_config", "show", "get"),
         .. Register(McpOperatorOperationFamily.ClientAdministration, McpOperatorConfirmationClass.PolicyAdministration, "netratel_config", "set", "unset"),
         .. Register(McpOperatorOperationFamily.Connectivity, McpOperatorConfirmationClass.None, "netratel_remote_support_v2", "presence", "capabilities", "inventory"),
-        .. Register(McpOperatorOperationFamily.Connectivity, McpOperatorConfirmationClass.RemoteExecution, "netratel_remote_support_v2", "refresh_inventory")
+        .. Register(McpOperatorOperationFamily.Connectivity, McpOperatorConfirmationClass.RemoteExecution, "netratel_remote_support_v2", "refresh_inventory"),
+        .. Register(McpOperatorOperationFamily.ComputerUseView, McpOperatorConfirmationClass.None, "netratel_computer_use", "capabilities", "list_windows", "get", "observe"),
+        .. Register(McpOperatorOperationFamily.ComputerUseView, McpOperatorConfirmationClass.None, true, "netratel_computer_use", "open_view", "close_view"),
+        .. Register(McpOperatorOperationFamily.ComputerUseControl, McpOperatorConfirmationClass.None, "netratel_computer_use", "preview_open", "preview_act"),
+        .. Register(McpOperatorOperationFamily.ComputerUseControl, McpOperatorConfirmationClass.RemoteExecution, "netratel_computer_use", "open", "act"),
+        .. Register(McpOperatorOperationFamily.ComputerUseControl, McpOperatorConfirmationClass.None, true, "netratel_computer_use", "pause", "resume", "close")
     ];
 
     public static McpOperatorOperationDescriptor? Find(string toolName, string? operationName) =>

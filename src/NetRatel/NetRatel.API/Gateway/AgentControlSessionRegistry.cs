@@ -1,6 +1,7 @@
 using Google.Protobuf.WellKnownTypes;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Application.Presence;
+using NetRatel.Shared.Contracts.ComputerUse;
 using System.Collections.Concurrent;
 using System.Threading.Channels;
 
@@ -39,9 +40,13 @@ public interface IAgentControlSessionRegistry
     Task<UninstallAcknowledgement> RequestUninstallAsync(ClientKey client, Guid connectionId, ulong connectionEpoch,
         UninstallRequest request, TimeSpan timeout, CancellationToken cancellationToken) =>
         Task.FromException<UninstallAcknowledgement>(new AgentControlSessionUnavailableException(client));
+
+    Task<ComputerUseResult> RequestComputerUseAsync(ClientKey client, Guid connectionId, ulong connectionEpoch,
+        ComputerUseCommand command, TimeSpan timeout, CancellationToken cancellationToken) =>
+        Task.FromException<ComputerUseResult>(new AgentControlSessionUnavailableException(client));
 }
 
-public sealed class AgentControlSessionRegistry(TimeProvider timeProvider) : IAgentControlSessionRegistry
+public sealed partial class AgentControlSessionRegistry(TimeProvider timeProvider) : IAgentControlSessionRegistry
 {
     private readonly ConcurrentDictionary<ClientKey, AgentControlSession> _sessions = new();
     private readonly ConcurrentDictionary<ClientKey, AgentControlPingResult> _latestPings = new();
@@ -96,7 +101,7 @@ public sealed class AgentControlSessionRegistry(TimeProvider timeProvider) : IAg
                 ((ICollection<KeyValuePair<ClientKey, AgentControlSession>>)_sessions)
                     .Remove(new KeyValuePair<ClientKey, AgentControlSession>(client, session));
                 session.Complete();
-            }, session.SetCapabilities, session.TryCompleteUninstall);
+            }, session.SetCapabilities, session.TryCompleteUninstall, session.TryCompleteComputerUse);
     }
 
     public async Task<AgentControlPingResult> RequestPingAsync(
@@ -148,7 +153,8 @@ public sealed class AgentControlSessionRegistration(
     Func<bool> activate,
     Action unregister,
     Action<IReadOnlyList<string>>? setCapabilities = null,
-    Func<UninstallAcknowledgement, bool>? completeUninstall = null) : IDisposable
+    Func<UninstallAcknowledgement, bool>? completeUninstall = null,
+    Func<ComputerUseCompletion, bool>? completeComputerUse = null) : IDisposable
 {
     private int _disposed;
 
@@ -163,6 +169,7 @@ public sealed class AgentControlSessionRegistration(
 
     public void SetCapabilities(IReadOnlyList<string> capabilities) => setCapabilities?.Invoke(capabilities);
     public bool TryCompleteUninstall(UninstallAcknowledgement acknowledgement) => IsCurrent && completeUninstall?.Invoke(acknowledgement) == true;
+    public bool TryCompleteComputerUse(ComputerUseCompletion completion) => IsCurrent && completeComputerUse?.Invoke(completion) == true;
 
     public void Dispose()
     {
@@ -173,7 +180,7 @@ public sealed class AgentControlSessionRegistration(
     }
 }
 
-internal sealed class AgentControlSession(
+internal sealed partial class AgentControlSession(
     ClientKey client,
     Guid connectionId,
     ulong connectionEpoch,
@@ -317,6 +324,8 @@ internal sealed class AgentControlSession(
             pending.Completion.TrySetException(new OperationCanceledException("The agent control session ended."));
         }
         foreach (var pending in _pendingUninstalls.Values)
+            pending.Completion.TrySetException(new OperationCanceledException("The agent control session ended."));
+        foreach (var pending in _pendingComputerUse.Values)
             pending.Completion.TrySetException(new OperationCanceledException("The agent control session ended."));
     }
 

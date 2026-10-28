@@ -276,6 +276,8 @@ public static class NetRatelMcpHttpApplication
         destination.FilesScope = source.FilesScope;
         destination.ExecuteScope = source.ExecuteScope;
         destination.AdminScope = source.AdminScope;
+        destination.CuaViewScope = source.CuaViewScope;
+        destination.CuaControlScope = source.CuaControlScope;
         destination.AllowedOrigins = source.AllowedOrigins;
         destination.MaxRequestBodyBytes = source.MaxRequestBodyBytes;
     }
