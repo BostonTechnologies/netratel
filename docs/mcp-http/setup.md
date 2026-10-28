@@ -94,9 +94,40 @@ See [CLI/stdio commands](../integrations/CLI_AND_MCP.md), [host/storage recovery
 
 For a consumer that supports only stdio launch commands, obtain the versioned `NetRatel.Mcp` archive and configure `http-bridge --profile NAME` using [the supported client transport and migration guide](../integrations/http-mcp-bridge.md). Run its acquisition and client setup commands on the consumer machine; a container profile does not migrate that machine's installed adapter. Native HTTP connections remain available through the consumer's maintained transport.
 
+### Choose tenant and server access yourself
+
+**An authorized operator can select both tenant grants and server-level grants. An AI agent is optional.** These are separate scopes on the same client credential:
+
+| Access | Where to configure it | What it permits |
+| --- | --- | --- |
+| MCP host connection to the API | Host setup and **Review host** above | The server's backend service identity; separate from client grants |
+| Client tenant grants | **Create credential → Access → Access scope → the selected tenant** | A named application permission in that tenant, such as tenant 17 `flow.read` |
+| Client server-level grants | **Create credential → Access → Access scope → Server-level access** | Instance-level operations, such as discovery and authentication-status checks with `mcp.discovery.read` |
+| MCP operator policies | **Admin → MCP Policies**, or the reviewed proposal's exact `targets` | Admission for the named credential/principal, environment, operation and target |
+
+Web sign-in mode and HTTP MCP ingress authentication are independent. To use a NetRatel `nrt_ic_…` credential, configure [Local credential MCP mode](local-credential-mode.md); a Hybrid Web login does not select that MCP mode automatically.
+
+In **Integrations → API & MCP credentials → Create credential**, choose **HTTP MCP gateway**, enter the verified `/mcp` URL and exact expiry, then choose **Next**. On the **Access** step, use **Add tenant** to include the intended tenant and select its permissions in **Access scope**. Switch that same dropdown to **Server-level access** to select the required instance permissions; changing scopes preserves your selections. Review both grant counts before creating the credential. The same scope selector is available when approving an ordinary client pairing code through **Review client**.
+
+For a first flow read, select **Read flows** (`flow.read`) under exactly the intended tenant and **Discover MCP capabilities** (`mcp.discovery.read`) under **Server-level access**. A credential with only server grants still lacks the tenant grant for that read, even if server-level `flow.read` is selected. Creating the credential stores its grants; the matching operator policy remains a separate requirement. Customer credentials do not need every server permission or `mcp.policy.admin` for this workflow.
+
+A credential created with **Create credential** belongs to the signed-in account that creates it. Local and OIDC logins are separate principals, and their credential lists are owner-scoped. Its owner must have the current durable NetRatel permissions for the requested access. Selecting a grant or approving a policy does not create missing owner role assignments. **Admin → Access** currently lists local users; assignments for an OIDC principal require the authenticated [access-administration API](../operations/rbac.md).
+
+The current credential list has **Details**, **Revoke** and deletion actions, without an **Edit** action. To change an existing credential's grants and reconcile selected operation policies while retaining its secret, use the reviewed MCP flow below. For initial creation, operators can also use the authenticated account API or the client setup wizard; an AI agent is not required. The protected CLI `access prepare` / `access resume` commands later in this guide create a new auxiliary credential, rather than editing an existing one.
+
 ### Reviewed client access and exact expiry
 
 A local HTTP MCP credential's configured grants and the current operation delegation are separate from tenant visibility and target policy. Start with `netratel_access` operation `credential` and the caller-owned `credentialId` to inspect safe grants and the exact UTC expiry. `request` proposes `reconcile` or `revoke` for an owned credential; include a durable UUID `requestId`, exact `expiresAtUtc`, explicit `grants`, `instancePermissions` and `targets`. Each target names `tenantId`, `tool` and `operation`; agent operations also require the independently resolved `agentId` and current `profileRevision`. Use `requests`, `receipt`, `resume` and `cancel` with the saved request ID to reconcile interrupted setup. A changed proposal needs a new request ID and review. Reconciliation does not silently start a new thirty-day period.
+
+**For an existing credential, the complete browser-reviewed sequence is:**
+
+1. **Inspect through the existing HTTP MCP connection.** Call `netratel_auth` with `{"operation":"status"}` to obtain the caller's non-secret credential ID, then `netratel_access` with operation `credential` and that `credentialId`. These calls require the server-level `mcp.discovery.read` grant. Retain the current complete tenant grants, server grants and exact UTC expiry.
+2. **Prepare the exact change.** A person using an MCP client, or an AI agent acting for them, calls `netratel_access` with operation `request` and a `request` object containing `action: "reconcile"`, the owned `credentialId`, name, a new UUID `requestId`, exact `expiresAtUtc`, complete desired `grants` and `instancePermissions`, and exact operation `targets`. Preserve existing grants and expiry unless their change is explicitly intended. These arrays describe the resulting grant set, not just additions. For a tenant 17 flow read, the tenant grant is `{"tenantId":17,"permission":"flow.read"}`, the required server permission is `mcp.discovery.read`, and the target is `{"tenantId":17,"tool":"netratel_flows","operation":"list"}`. Keep the returned request ID, proposal hash, verification URL and user code. Submitting the proposal does not apply its grants or policies.
+3. **Review in the browser.** An authorized operator opens the returned verification URL, enters the user code under **Connect CLI / MCP client**, and selects **Review client**. Inspect and approve the exact credential, grant sets, operation targets and expiry. An eligible owner may explicitly self-approve as described below. Browser approval leaves the request ready for resume.
+4. **Resume the same request.** The requesting MCP client calls `netratel_access` with `{"operation":"resume","request":{"requestId":"SAVED_REQUEST_UUID"}}`. NetRatel rechecks authority and applies the approved grant set and policies for the named targets; the successful receipt reports `consumed`. After an interrupted response, inspect operation `receipt` with the same request ID before repeating the unchanged resume.
+5. **Verify actual access.** Inspect the receipt and refreshed credential admission, then call the approved read, for example `netratel_flows` with `{"operation":"list","request":{"tenantId":17}}`. A successful empty list is valid. Only the reviewed operation targets receive matching policies; granting `flow.edit` does not itself admit a flow-edit operation.
+
+A successful reconcile keeps the existing credential secret and canonical MCP URL. A client such as Netclaw that already stores that secret does not need a replacement connection for this grant change. Use the same process to propose tenant grants, server grants or both; their scope does not determine whether a human or an agent must initiate the proposal. Authority and explicit approval determine whether it can be applied.
 
 Credential and request UUIDs accept standard representations, including hyphenated and compact values, with case-independent identity. New proposals normalize those IDs before storage and hashing. A replay in another UUID representation keeps the same request and exact original reviewed binding; it does not grant permission to change the proposal. Existing reviewed requests retain their original hash and approval binding.
 
@@ -127,7 +158,7 @@ Choose a real future expiry within one year and replace synthetic tenant IDs wit
 dotnet /path/to/netratel-mcp-linux-x64/NetRatel.Mcp.dll access prepare --instance https://netratel.example.test \
   --request-file ./reviewed-proposal.json --requester-config ./existing-http-profile.json \
   --state-file ./private/access-request.json --config ./auxiliary-http-profile.json --profile auxiliary
-# After independent browser approval, poll/resume the same saved request.
+# After an authorized operator approves in the browser, poll/resume the same saved request.
 dotnet /path/to/netratel-mcp-linux-x64/NetRatel.Mcp.dll access resume --state-file ./private/access-request.json \
   --config ./auxiliary-http-profile.json --profile auxiliary
 ```
