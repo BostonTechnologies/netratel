@@ -11,7 +11,7 @@ This guide configures the first arrow. NetRatel's `setup --mode host` configures
 
 The Netclaw steps follow its documented [installation](https://netclaw.dev/getting-started/installation/), [HTTP transport](https://netclaw.dev/configuration/mcp-servers/), [MCP CLI](https://netclaw.dev/cli/mcp-tools/) and [encrypted secret store](https://netclaw.dev/cli/secrets/). Run **Netclaw commands** on the Netclaw machine as the operating-system user that runs its daemon, or inside that daemon's container with its persistent home mounted. A separate shell user has a separate configuration and key ring. The NetRatel policy block has its own administrator-machine instructions.
 
-A **NetRatel credential owner** prepares each customer connection, and an authorized **NetRatel policy administrator** reviews its access through the supported reviewed workflow in step 2. The **Netclaw administrator** securely installs the resulting customer credential in steps 3–4. An eligible credential owner with current durable permissions and MCP policy-administration authority may explicitly self-approve; the receipt records `owner_self_approval`. Other requests need another authorized operator. The optional advanced policy-administration procedure requires its own established administrator authority.
+A **NetRatel credential owner** prepares each customer connection, and an authorized **NetRatel policy administrator** reviews its access through the supported reviewed workflow in step 2. The **Netclaw administrator** securely installs the resulting customer credential in steps 3–4. An eligible credential owner with current durable permissions and MCP policy-administration authority may explicitly approve its own change; the review records that owner as the approving actor. Other requests need another authorized operator. The optional advanced policy-administration procedure requires its own established administrator authority.
 
 ## 1. Create one credential per customer
 
@@ -31,11 +31,40 @@ Keep each returned credential in a protected password manager until it is instal
 
 Connection names label the entries. NetRatel enforces isolation through each credential's grants on every operation. A default tenant or a prompt naming a customer does not restrict another credential that has broader grants.
 
+### Maintain an existing Netclaw credential
+
+An existing connection can keep its installed secret while you change its tenant and server permissions. Sign in as the credential owner and open **API & MCP credentials → existing credential → Details → Configured access → Edit access**. The editor starts with its complete saved grants and loads your currently authorized tenant choices.
+
+1. Use **Add tenant** to select a newly created tenant, then select the required permissions in **Access scope**. For an intentionally shared operator connection, this can add Customer B while retaining Customer A. Keep the separate customer credentials in this guide scoped to their intended customers; broadening one credential broadens the access available to its Netclaw connection.
+2. Select an existing tenant to add or clear permissions, or remove its grant group. Switch **Access scope** to **Server-level access** to edit instance permissions independently. Retain unrelated tenant grants and the server discovery permission needed by the connection.
+3. Choose **Review changes** and inspect the complete resulting grant set and unchanged expiry. Explicitly confirm and choose **Apply changes** if eligible to approve. When another operator must approve, give that authorized operator the pending code and review URL for **Connect CLI / MCP client → Review client**. Keep the editor open or reopen it on the same credential after review: it checks the request and automatically applies an approved result without an agent or MCP `resume` call.
+4. Confirm the refreshed list and Details counts, tenant/server groups and current admission. The credential ID, secret, purpose, MCP URL and exact UTC expiry remain unchanged. Netclaw continues using the stored bearer; this grant update requires no replacement credential or connection registration.
+
+**Back to edit** cancels the exact pending review and retains your draft; reviewing again creates a new request. Closing a pending editor leaves its request available to reopen. Errors retain the draft and identify the missing authority or other prerequisite. See the [complete browser workflow and recovery steps](../mcp-http/setup.md#edit-an-existing-credentials-access-in-the-browser).
+
+Grant changes do not create operation policies. Complete the exact-operation review below for a newly authorized tenant, and inspect admission after saving. For retesting, record the original credential ID/expiry and Customer A/server grants, add Customer B, reload and compare, then read both approved tenants using the existing connection. Remove Customer B's grant and confirm only that tenant's read is denied. Check that switching scopes or an unsuccessful save does not drop unrelated selections.
+
 ## 2. Approve the customer's read operation in NetRatel
 
 **NetRatel policy administrator:** complete this step before handing the connection to the Netclaw administrator. Credential grants do not create an Allow policy. Approve only the exact customer credential, tenant, environment and read operation; keep the default deny. Customer credentials do not need **Manage MCP policy**.
 
-Use the [reviewed client access workflow](../mcp-http/setup.md#reviewed-client-access-and-exact-expiry) to propose `netratel_access/request` with action `reconcile` for the caller-owned customer credential. Preserve its previously approved exact UTC expiry, request only that customer's `flow.read` grant and server `mcp.discovery.read`, and select the exact tenant-bound `netratel_flows/list` target. An authorized operator reviews the identity, resource, environment, grants, scopes/roles, target and expiry before approval; an eligible owner may explicitly self-approve. Enter the returned code under **Connect CLI / MCP client → Review client**, approve, then have the requesting MCP client resume the same request ID. Inspect the safe receipt and complete the actual permitted read in step 4. Missing owner authority remains a prerequisite; requesting access does not create it. New credentials use the protected preparation and delivery commands in that guide. No administrative API token is required for this workflow, and a successful reconcile keeps the existing credential secret.
+**Browser policy review:** open **Admin → MCP Policies** and select the deployment's actual **Environment**. Inspect an existing matching policy before creating another. For the first flow read, choose **Create policy** with these exact bounds:
+
+| Field | Value |
+| --- | --- |
+| Effect | `Allow` |
+| Principal selector | `OAuthClientId` |
+| Exact principal value | The HTTP MCP credential ID from Details |
+| Target selector | `Tenant` |
+| Tenant ID | The customer's exact tenant ID |
+| Operation families | Only `AutomationRead` |
+| Exact operation | `netratel_flows/list` |
+| Expires at | An exact UTC instant no later than the credential expiry |
+| Review by and audit / change reference | The intended review date and the reason for this exact read |
+
+Choose **Preview exact change**, inspect the principal, target, operation and bounds, explicitly confirm, then select **Confirm reviewed change**. In the saved policy's **Check credential admission** section, select the owned HTTP MCP credential, enter tool `netratel_flows` and operation `list`, and choose **Check current admission**. That picker lists only credentials owned by the signed-in account. If a different administrator reviewed the policy, the credential owner checks current admission in the credential's **Details** instead. This completes the policy review in the browser using existing administrator authority. **Admin → Access** manages account roles separately.
+
+**MCP alternative:** use the [reviewed client access workflow](../mcp-http/setup.md#reviewed-client-access-and-exact-expiry) to propose `netratel_access/request` with action `reconcile` for the caller-owned customer credential. Preserve its previously approved exact UTC expiry, request only that customer's `flow.read` grant and server `mcp.discovery.read`, and select the exact tenant-bound `netratel_flows/list` target. An authorized operator reviews the identity, resource, environment, grants, scopes/roles, target and expiry before approval; an eligible owner may explicitly self-approve. Enter the returned code under **Connect CLI / MCP client → Review client**, approve, then have the requesting MCP client resume the same request ID. Inspect the safe receipt and complete the actual permitted read in step 4. Missing owner authority remains a prerequisite; requesting access does not create it. New credentials use the protected preparation and delivery commands in that guide. No administrative API token is required for this workflow, and a successful reconcile keeps the existing credential secret.
 
 **Optional advanced policy administration:** established policy administrators can also use the [administrative API](../contracts/API_REFERENCE.md) directly. **Admin → Access** manages [RBAC](../operations/rbac.md), not these policy records. This maintenance path is separate from MCP client bootstrap and its reviewed approval; it is not a fallback for a requesting client that lacks authority. The block below calls the **actual API HTTPS host**, not the Web sign-in URL or gateway. Use an account with instance-administrator authority or `mcp.policy.admin`.
 

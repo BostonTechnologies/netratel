@@ -10,13 +10,15 @@ using NetRatel.Application.Operations;
 namespace NetRatel.API.Endpoints.Auth;
 
 /// <summary>Current-account lifecycle for one-time-revealed integration credentials.</summary>
-public static class IntegrationCredentialEndpoints
+public static partial class IntegrationCredentialEndpoints
 {
     public static IEndpointRouteBuilder MapIntegrationCredentialEndpoints(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/v2/account/integration-credentials")
             .WithTags("Integration credentials")
             .RequireAuthorization("InteractiveAccount");
+
+        MapAccessEditing(group);
 
         group.MapGet("/tenant-scopes", async (
             ClaimsPrincipal principal,

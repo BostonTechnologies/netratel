@@ -16,6 +16,8 @@ public sealed class IntegrationPairingBodyLimitTests
     [InlineData("/api/v2/mcp/operator/access/requests", false)]
     [InlineData("/api/v2/mcp/operator/access/requests", true)]
     [InlineData("/API/V2/MCP/OPERATOR/ACCESS/REQUESTS/", true)]
+    [InlineData("/api/v2/account/integration-credentials/credential/access-requests", false)]
+    [InlineData("/API/V2/ACCOUNT/INTEGRATION-CREDENTIALS/credential/ACCESS-REQUESTS/request/apply", true)]
     [InlineData(IntegrationPairingProtocol.Route + "/start", false)]
     [InlineData(IntegrationPairingProtocol.Route + "/start", true)]
     [InlineData(HttpHostSetupProtocol.Route + "/start", false)]
