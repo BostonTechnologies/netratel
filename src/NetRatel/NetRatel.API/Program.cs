@@ -198,6 +198,10 @@ var mcpLocalAgentOptions = builder.Configuration.GetSection(McpOperatorLocalAgen
 mcpLocalAgentOptions.EnsureValid();
 builder.Services.AddSingleton(mcpLocalAgentOptions);
 builder.Services.AddScoped<McpOperatorClientObservabilityService>();
+builder.Services.Configure<NetRatel.API.Services.ComputerUse.ComputerUseOptions>(
+    builder.Configuration.GetSection(NetRatel.API.Services.ComputerUse.ComputerUseOptions.SectionName));
+builder.Services.AddScoped<NetRatel.API.Endpoints.Client.ComputerUseOperatorService>();
+builder.Services.AddSingleton<NetRatel.API.Services.ComputerUse.IComputerUseGateway, NetRatel.API.Services.ComputerUse.ComputerUseGateway>();
 builder.Services.AddScoped<NetRatel.API.Services.Operations.McpDevelopmentScriptAdapter>();
 builder.Services.AddScoped<McpOperatorTaskReconciliationService>();
 builder.Services.AddHostedService<McpOperatorTaskReconciliationHostedService>();
@@ -1043,6 +1047,7 @@ app.UseExceptionHandler(errorApp =>
 });
 app.UseMiddleware<NetRatel.API.Middleware.ExceptionNotificationMiddleware>();
 app.UseMiddleware<NetRatel.API.Middleware.MonitoringHttpBoundsMiddleware>();
+app.UseMiddleware<NetRatel.API.Middleware.ComputerUseRequestBodyLimitMiddleware>();
 app.UseHttpsRedirection();
 app.UseCors();
 app.UseWebSockets();

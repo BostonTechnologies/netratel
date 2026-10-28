@@ -157,7 +157,8 @@ public static class McpOperationTargetCatalog
         ("netratel_client_telemetry", _) or
         ("netratel_terminal", _) or
         ("netratel_commands", _) or
-        ("netratel_remote_support_v2", _) => McpOperationTargetModel.Agent,
+        ("netratel_remote_support_v2", _) or
+        ("netratel_computer_use", _) => McpOperationTargetModel.Agent,
 
         _ => throw new InvalidOperationException($"MCP operation '{tool}/{operation}' has no target-model classification.")
     };

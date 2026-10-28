@@ -16,6 +16,8 @@ public sealed class NetRatelMcpHttpOptions
     public const string DefaultExecuteScope = "netratel.mcp.execute";
     public const string DefaultDevelopmentOnboardingScope = "netratel.mcp.onboarding";
     public const string DefaultAdminScope = "netratel.mcp.admin";
+    public const string DefaultCuaViewScope = "netratel.mcp.cua.view";
+    public const string DefaultCuaControlScope = "netratel.mcp.cua.control";
     public const string OpenIdScope = "openid";
     public const string ProfileScope = "profile";
     public const string OfflineAccessScope = "offline_access";
@@ -62,6 +64,8 @@ public sealed class NetRatelMcpHttpOptions
     [Required] public string FilesScope { get; set; } = DefaultFilesScope;
     [Required] public string ExecuteScope { get; set; } = DefaultExecuteScope;
     [Required] public string AdminScope { get; set; } = DefaultAdminScope;
+    [Required] public string CuaViewScope { get; set; } = DefaultCuaViewScope;
+    [Required] public string CuaControlScope { get; set; } = DefaultCuaControlScope;
     public string[] AllowedOrigins { get; set; } = [];
     [Range(1_024, 1_048_576)] public long MaxRequestBodyBytes { get; set; } = 1_048_576;
 
@@ -101,6 +105,8 @@ public sealed class NetRatelMcpHttpOptions
             FilesScope = configured.FilesScope,
             ExecuteScope = configured.ExecuteScope,
             AdminScope = configured.AdminScope,
+            CuaViewScope = configured.CuaViewScope,
+            CuaControlScope = configured.CuaControlScope,
             AllowedOrigins = ResolveArray(configuration, nameof(AllowedOrigins), configured.AllowedOrigins),
             MaxRequestBodyBytes = configured.MaxRequestBodyBytes
         };
@@ -158,6 +164,8 @@ public sealed class NetRatelMcpHttpOptions
         McpOperationAccessScope.Execute => ExecuteScope,
         McpOperationAccessScope.Onboarding => DevelopmentOnboardingScope,
         McpOperationAccessScope.Admin => AdminScope,
+        McpOperationAccessScope.CuaView => CuaViewScope,
+        McpOperationAccessScope.CuaControl => CuaControlScope,
         _ => throw new ArgumentOutOfRangeException(nameof(scope), scope, "The scope class is not an MCP operation permission.")
     };
 
@@ -176,6 +184,7 @@ public sealed class NetRatelMcpHttpOptions
         .Append(ReadScope).Append(ObserveScope).Append(FilesScope)
         .Append(DevelopmentWriteScope).Append(ExecuteScope)
         .Append(DevelopmentOnboardingScope).Append(AdminScope).Append(OfflineAccessScope)
+        .Append(CuaViewScope).Append(CuaControlScope)
         .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
 }
 
@@ -218,12 +227,21 @@ public sealed class NetRatelMcpHttpOptionsValidator : IValidateOptions<NetRatelM
                      (nameof(options.DevelopmentWriteScope), options.DevelopmentWriteScope),
                      (nameof(options.ExecuteScope), options.ExecuteScope),
                      (nameof(options.DevelopmentOnboardingScope), options.DevelopmentOnboardingScope),
-                     (nameof(options.AdminScope), options.AdminScope)
+                     (nameof(options.AdminScope), options.AdminScope),
+                     (nameof(options.CuaViewScope), options.CuaViewScope),
+                     (nameof(options.CuaControlScope), options.CuaControlScope)
                  })
         {
             if (!IsScopeToken(scope))
                 failures.Add($"NetRatel:Mcp:Http:{scopeName} must be a non-empty OAuth scope token.");
         }
+        string[] existingScopes = [options.ReadScope, options.ObserveScope, options.FilesScope,
+            options.DevelopmentWriteScope, options.ExecuteScope, options.DevelopmentOnboardingScope, options.AdminScope,
+            NetRatelMcpHttpOptions.OpenIdScope, NetRatelMcpHttpOptions.ProfileScope, NetRatelMcpHttpOptions.OfflineAccessScope];
+        if (string.Equals(options.CuaViewScope, options.CuaControlScope, StringComparison.Ordinal) ||
+            existingScopes.Contains(options.CuaViewScope, StringComparer.Ordinal) ||
+            existingScopes.Contains(options.CuaControlScope, StringComparer.Ordinal))
+            failures.Add("CUA view and control scopes must be distinct from each other, every other MCP operation scope and OAuth identity/session scopes.");
         if (options.AllowedOrigins.Any(origin => !IsOrigin(origin)))
             failures.Add("NetRatel:Mcp:Http:AllowedOrigins must contain absolute HTTPS origins only.");
         if (options.AllowedOrigins.Distinct(StringComparer.Ordinal).Count() != options.AllowedOrigins.Length)

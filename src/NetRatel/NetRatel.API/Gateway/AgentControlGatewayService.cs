@@ -5,6 +5,7 @@ using NetRatel.Akka.Configuration;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Presence;
 using NetRatel.API.Services;
+using NetRatel.Shared.Contracts.ComputerUse;
 
 namespace NetRatel.API.Gateway;
 
@@ -159,6 +160,18 @@ public sealed class AgentControlGatewayService(
         }
 
         lastInboundSequence = frame.Sequence;
+        if (frame.PayloadCase == AgentControlFrame.PayloadOneofCase.ComputerUseCompletion)
+        {
+            if (!Guid.TryParse(frame.ComputerUseCompletion.OperationId, out var operationId) || operationId == Guid.Empty ||
+                frame.ComputerUseCompletion.ResultJson.Length is 0 or > ComputerUseContract.MaximumResponseBytes)
+                throw new RpcException(new Status(StatusCode.InvalidArgument, "The computer-use result is invalid."));
+            try { registration.TryCompleteComputerUse(frame.ComputerUseCompletion); }
+            catch (InvalidDataException)
+            {
+                throw new RpcException(new Status(StatusCode.InvalidArgument, "The computer-use result does not match its command."));
+            }
+            return;
+        }
         if (frame.PayloadCase == AgentControlFrame.PayloadOneofCase.UninstallAcknowledgement)
         {
             var acknowledgement = frame.UninstallAcknowledgement;

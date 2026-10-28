@@ -21,6 +21,8 @@ public static class NetRatelPermissions
     public const string FileWrite = "file.write";
     public const string FileDelete = "file.delete";
     public const string RemoteSupport = "remote-support.access";
+    public const string ComputerUseView = "computer-use.view";
+    public const string ComputerUseControl = "computer-use.control";
     public const string SecretUse = "secret.use";
     public const string SecretReveal = "secret.reveal";
     public const string AuditRead = "audit.read";
@@ -41,7 +43,7 @@ public static class NetRatelPermissions
         TelemetryRead, MonitoringRead, MonitoringManage, MonitoringAcknowledge,
         MonitoringClear, MonitoringBypass, MonitoringAllTargets,
         ScriptEdit, ScriptExecute, JobManagement, TerminalAccess,
-        FileRead, FileWrite, FileDelete, RemoteSupport, SecretUse, SecretReveal,
+        FileRead, FileWrite, FileDelete, RemoteSupport, ComputerUseView, ComputerUseControl, SecretUse, SecretReveal,
         AuditRead, IntegrationManagement, ArtifactPublication, McpPolicyAdministration, McpDiscoveryRead,
         McpConnectivityRead, McpConnectivityTest,
         FlowRead, FlowEdit, FlowPublish, FlowExecute

@@ -7,7 +7,7 @@ using NetRatel.Shared.Contracts.RemoteSupport;
 namespace NetRatel.Web.Services.RemoteSupport;
 
 /// <summary>Web adapter for the additive Agent-ID remote-support gateway API.</summary>
-public sealed class GatewayRemoteSupportApiService(IHttpClientFactory factory)
+public sealed partial class GatewayRemoteSupportApiService(IHttpClientFactory factory)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly HttpClient _http = factory.CreateClient("OrchestratorApi");

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using Microsoft.Win32;
 using NetRatel.Application.ClientAuth;
@@ -6,6 +7,7 @@ using NetRatel.Client;
 using NetRatel.Client.Service;
 using NetRatel.Client.Service.Auth;
 using NetRatel.Client.Service.Gateway;
+using NetRatel.Client.Service.ComputerUse;
 using NetRatel.Client.Service.Logging;
 using NetRatel.Client.Service.Offboarding;
 using NetRatel.Client.Service.RemoteDesktop;
@@ -424,6 +426,13 @@ async Task RunClientAsync(CancellationToken nativeStopping)
     var remoteSupportGateway = new AgentRemoteSupportGatewayClient(
         gatewayOptions,
         message => LogManager.WriteLog($"[Gateway] {message}"));
+    var computerUseOptions = configuration.GetSection("ComputerUse").Get<ComputerUseOptions>() ?? new();
+    if (string.IsNullOrWhiteSpace(configuration["ComputerUse:CuaDriverPath"]))
+        computerUseOptions = computerUseOptions with
+        {
+            CuaDriverPath = Path.Combine(appBaseDir, "computer-use", "cua-driver", "cua-driver.exe")
+        };
+    await using var computerUse = new ComputerUseServiceBridge(remoteSupportGateway.GetHelperPipeHost, computerUseOptions);
     var terminalShells = ShellInventoryDetector.NormalizeKeywords(ShellInventoryDetector.Detect());
     using var terminalGateway = new AgentTerminalGatewayClient(
         gatewayOptions,
@@ -446,7 +455,9 @@ async Task RunClientAsync(CancellationToken nativeStopping)
         rootProvider.GetRequiredService<IAgentDeviceKeyStore>(), updateCoordinator,
         message => LogManager.WriteLog($"[Offboarding] {message}"), applicationStopping.Token).ConfigureAwait(false);
     var controlGateway = new AgentControlGatewayClient(gatewayOptions,
-        message => LogManager.WriteLog($"[Gateway] {message}"), offboarding);
+        message => LogManager.WriteLog($"[Gateway] {message}"), offboarding,
+        computerUseOptions.Enabled && OperatingSystem.IsWindows() ? computerUse.ExecuteAsync : null,
+        computerUse.RevokeAllAsync);
     var gatewayExtensionSupervisor = new GatewayPresenceExtensionSupervisor(
         message => LogManager.WriteLog($"[Gateway] {message}"));
     var gatewayClient = new AgentGatewayPresenceClient(

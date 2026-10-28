@@ -93,6 +93,7 @@ public static class DependencyInjection
         services.AddScoped<IMcpOperatorFileArtifactStore, McpOperatorFileArtifactStore>();
         services.AddScoped<IMcpOperatorTerminalSessionRecovery, McpOperatorTerminalSessionRecoveryService>();
         services.AddScoped<IMcpOperatorTerminalSessionStore, McpOperatorTerminalSessionStore>();
+        services.AddScoped<IComputerUseSessionStore, ComputerUseSessionStore>();
         services.AddScoped<IMcpOperatorTerminalActionStore, McpOperatorTerminalActionStore>();
         services.AddScoped<IMcpOperatorCommandStore, McpOperatorCommandStore>();
         services.AddScoped<IMcpOperatorScriptStore, McpOperatorScriptStore>();

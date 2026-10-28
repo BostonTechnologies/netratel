@@ -15,6 +15,8 @@ public enum McpOperationAccessScope
     Onboarding = 6,
     Admin = 7,
     OfflineAccess = 8,
+    CuaView = 9,
+    CuaControl = 10,
 
     // Compatibility names retained while existing Dev deployments migrate to
     // the general catalog vocabulary.
@@ -35,6 +37,8 @@ public static class McpOperationAccessScopeNames
         McpOperationAccessScope.Onboarding => "netratel.mcp.onboarding",
         McpOperationAccessScope.Admin => "netratel.mcp.admin",
         McpOperationAccessScope.OfflineAccess => "offline_access",
+        McpOperationAccessScope.CuaView => "netratel.mcp.cua.view",
+        McpOperationAccessScope.CuaControl => "netratel.mcp.cua.control",
         _ => throw new ArgumentOutOfRangeException(nameof(scope), scope, "The MCP access scope is not catalogued.")
     };
 }
@@ -57,8 +61,8 @@ public static class McpOperationRoleRequirements
     /// <summary>Alternative mapped roles accepted by the scope's existing role check; an empty list means no additional mapped-role requirement.</summary>
     public static IReadOnlyList<string> AnyOfRoles(McpOperationAccessScope requiredScope) => requiredScope switch
     {
-        McpOperationAccessScope.Observe or McpOperationAccessScope.Files => ["Observer", "Operator", "AutomationOperator"],
-        McpOperationAccessScope.Execute => ["AutomationOperator"],
+        McpOperationAccessScope.Observe or McpOperationAccessScope.Files or McpOperationAccessScope.CuaView => ["Observer", "Operator", "AutomationOperator"],
+        McpOperationAccessScope.Execute or McpOperationAccessScope.CuaControl => ["AutomationOperator"],
         McpOperationAccessScope.Admin => ["PolicyAdministrator"],
         _ => []
     };
@@ -88,9 +92,9 @@ public static class McpOperationRoleRequirements
 
         return requiredScope switch
         {
-            McpOperationAccessScope.Observe or McpOperationAccessScope.Files =>
+            McpOperationAccessScope.Observe or McpOperationAccessScope.Files or McpOperationAccessScope.CuaView =>
                 HasObservationRole(roles),
-            McpOperationAccessScope.Execute => roles.Contains("AutomationOperator"),
+            McpOperationAccessScope.Execute or McpOperationAccessScope.CuaControl => roles.Contains("AutomationOperator"),
             McpOperationAccessScope.Admin => roles.Contains("PolicyAdministrator"),
             _ => true
         };
@@ -183,7 +187,9 @@ public static class McpOperationAccessCatalog
         .. Register(McpOperationAccessScope.Admin, "netratel_events", McpOperationMinimumRole.Administrator, "preview_disable", "disable"),
         .. Register(McpOperationAccessScope.Admin, "netratel_config", McpOperationMinimumRole.Administrator, "show", "get", "set", "unset"),
         .. Register(McpOperationAccessScope.Observe, "netratel_remote_support_v2", "presence", "capabilities", "inventory"),
-        .. Register(McpOperationAccessScope.Execute, "netratel_remote_support_v2", "refresh_inventory")
+        .. Register(McpOperationAccessScope.Execute, "netratel_remote_support_v2", "refresh_inventory"),
+        .. Register(McpOperationAccessScope.CuaView, "netratel_computer_use", "capabilities", "list_windows", "open_view", "close_view", "get", "observe"),
+        .. Register(McpOperationAccessScope.CuaControl, "netratel_computer_use", "preview_open", "open", "preview_act", "act", "pause", "resume", "close")
     ];
 
     /// <summary>

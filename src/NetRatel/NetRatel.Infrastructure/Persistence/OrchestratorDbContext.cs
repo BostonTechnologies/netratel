@@ -99,6 +99,9 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<RemoteSupportTargetSelectionEvent> RemoteSupportTargetSelectionEvents => Set<RemoteSupportTargetSelectionEvent>();
     public DbSet<RemoteSupportSessionRecord> RemoteSupportSessions => Set<RemoteSupportSessionRecord>();
     public DbSet<RemoteSupportAuditEventRecord> RemoteSupportAuditEvents => Set<RemoteSupportAuditEventRecord>();
+    public DbSet<ComputerUseSessionRecord> ComputerUseSessions => Set<ComputerUseSessionRecord>();
+    public DbSet<ComputerUseOperationRecord> ComputerUseOperations => Set<ComputerUseOperationRecord>();
+    public DbSet<ComputerUseAuditRecord> ComputerUseAudits => Set<ComputerUseAuditRecord>();
 
     public DbSet<ClientReleaseDeletionReceipt> ClientReleaseDeletionReceipts => Set<ClientReleaseDeletionReceipt>();
     public DbSet<ClientArtifactDownloadLease> ClientArtifactDownloadLeases => Set<ClientArtifactDownloadLease>();
@@ -121,6 +124,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
+        PreserveComputerUseAudit();
         AdvanceScriptSourceRevisions();
         PreserveUpdateReleaseReference();
         return base.SaveChanges(acceptAllChangesOnSuccess);
@@ -128,6 +132,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
 
     public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
+        PreserveComputerUseAudit();
         AdvanceScriptSourceRevisions();
         PreserveUpdateReleaseReference();
         return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
@@ -143,8 +148,15 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entry.Entity.SourceRevision = checked(entry.Property(script => script.SourceRevision).OriginalValue + 1);
     }
 
+    private void PreserveComputerUseAudit()
+    {
+        if (ChangeTracker.Entries<ComputerUseAuditRecord>().Any(entry => entry.State is EntityState.Modified or EntityState.Deleted))
+            throw new InvalidOperationException("Computer-use audit records are append-only.");
+    }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        ComputerUsePersistenceModel.Configure(modelBuilder);
         ClientServiceOperationModel.Configure(modelBuilder);
         NetclawPersistenceModel.Configure(modelBuilder);
         AiInvestigationContextRecord.Configure(modelBuilder);

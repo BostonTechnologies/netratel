@@ -3,6 +3,7 @@ using Grpc.Core;
 using Grpc.Net.Client;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Client.Service.Offboarding;
+using NetRatel.Shared.Contracts.ComputerUse;
 using System;
 using System.IO;
 using System.Net.Http;
@@ -18,7 +19,9 @@ namespace NetRatel.Client.Service.Gateway;
 public sealed class AgentControlGatewayClient(
     GatewayClientOptions options,
     Action<string> log,
-    ClientOffboardingCoordinator? offboarding = null)
+    ClientOffboardingCoordinator? offboarding = null,
+    Func<ComputerUseCommand, CancellationToken, Task<ComputerUseResult>>? executeComputerUse = null,
+    Func<CancellationToken, Task>? revokeComputerUse = null)
 {
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromSeconds(30);
@@ -65,10 +68,31 @@ public sealed class AgentControlGatewayClient(
         var client = new global::NetRatel.AgentGateway.Contracts.V1.AgentControlGateway.AgentControlGatewayClient(channel);
         var headers = new Metadata { { "Authorization", $"Bearer {session.GetAccessToken(accessToken)}" } };
         using var call = client.Connect(headers, cancellationToken: stoppingToken);
+        using var streamLifetime = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        using var writerGate = new SemaphoreSlim(1, 1);
+        ulong sequence = 0;
+        async Task WriteResponseAsync(AgentControlFrame frame, CancellationToken cancellationToken)
+        {
+            await writerGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                frame.ProtocolVersion = options.ProtocolVersion;
+                frame.TenantId = session.TenantId;
+                frame.ClientId = session.AgentId.ToString("D");
+                frame.ConnectionEpoch = session.ConnectionEpoch;
+                frame.ConnectionId = session.ConnectionId.ToString("D");
+                frame.Sequence = checked(++sequence);
+                await call.RequestStream.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
+            }
+            finally { writerGate.Release(); }
+        }
+        var computerUse = new AgentComputerUseDispatcher(executeComputerUse, revokeComputerUse,
+            WriteResponseAsync, streamLifetime.Cancel, streamLifetime.Token, log);
         try
         {
             var hello = new AgentControlHello { Capabilities = { "ping" } };
             if (offboarding is not null) hello.Capabilities.Add(ClientOffboardingCoordinator.Capability);
+            if (executeComputerUse is not null) hello.Capabilities.Add(ComputerUseContract.Capability);
             await call.RequestStream.WriteAsync(new AgentControlFrame
             {
                 ProtocolVersion = options.ProtocolVersion,
@@ -89,23 +113,29 @@ public sealed class AgentControlGatewayClient(
             ValidateAccepted(call.ResponseStream.Current, session);
             log($"Control gateway admitted. authority={call.ResponseStream.Current.Accepted.ControlAuthority}.");
 
-            ulong sequence = 0;
             ulong lastInboundSequence = 0;
-            while (await call.ResponseStream.MoveNext(stoppingToken).ConfigureAwait(false))
+            while (await call.ResponseStream.MoveNext(streamLifetime.Token).ConfigureAwait(false))
             {
                 var request = call.ResponseStream.Current;
                 ValidateRequest(request, session, lastInboundSequence);
                 lastInboundSequence = request.Sequence;
+                if (request.PayloadCase == GatewayControlFrame.PayloadOneofCase.ComputerUseDispatch)
+                {
+                    computerUse.Dispatch(request.ComputerUseDispatch);
+                    continue;
+                }
+                if (request.PayloadCase == GatewayControlFrame.PayloadOneofCase.ComputerUseCancellation)
+                {
+                    computerUse.Cancel(request.ComputerUseCancellation);
+                    continue;
+                }
                 if (request.PayloadCase == GatewayControlFrame.PayloadOneofCase.UninstallRequest)
                 {
                     var acknowledgement = offboarding is null
                         ? new UninstallAcknowledgement { OperationId = request.UninstallRequest.OperationId, FailureCode = "uninstall_not_supported" }
                         : await offboarding.PrepareAsync(session, request.UninstallRequest, stoppingToken).ConfigureAwait(false);
-                    await call.RequestStream.WriteAsync(new AgentControlFrame
+                    await WriteResponseAsync(new AgentControlFrame
                     {
-                        ProtocolVersion = options.ProtocolVersion, TenantId = session.TenantId,
-                        ClientId = session.AgentId.ToString("D"), ConnectionEpoch = session.ConnectionEpoch,
-                        ConnectionId = session.ConnectionId.ToString("D"), Sequence = checked(++sequence),
                         UninstallAcknowledgement = acknowledgement
                     }, stoppingToken).ConfigureAwait(false);
                     if (acknowledgement.Accepted && offboarding is not null)
@@ -122,26 +152,25 @@ public sealed class AgentControlGatewayClient(
                     throw new RpcException(new Status(StatusCode.DataLoss, "Control gateway returned an invalid ping request ID."));
                 }
 
-                await call.RequestStream.WriteAsync(new AgentControlFrame
+                await WriteResponseAsync(new AgentControlFrame
                 {
-                    ProtocolVersion = options.ProtocolVersion,
-                    TenantId = session.TenantId,
-                    ClientId = session.AgentId.ToString("D"),
-                    ConnectionEpoch = session.ConnectionEpoch,
-                    ConnectionId = session.ConnectionId.ToString("D"),
-                    Sequence = checked(++sequence),
                     PingResponse = new PingResponse
                     {
                         RequestId = requestId.ToString("D"),
                         RespondedAtUtc = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow)
                     }
-                }).ConfigureAwait(false);
+                }, stoppingToken).ConfigureAwait(false);
             }
 
             throw new RpcException(new Status(StatusCode.Unavailable, "Control gateway closed the session."));
         }
+        catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested && streamLifetime.IsCancellationRequested)
+        {
+            throw new RpcException(new Status(StatusCode.Unavailable, "Control gateway helper execution failed."));
+        }
         finally
         {
+            await computerUse.DisposeAsync().ConfigureAwait(false);
             if (!await TryCompleteStreamAsync(call.RequestStream).ConfigureAwait(false))
                 log("Control gateway stream was already closed during cleanup.");
         }

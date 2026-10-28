@@ -43,6 +43,9 @@ public static class McpLocalOperationAuthorizationCatalog
             "netratel_jobs" or "netratel_job_runs" or "netratel_marker_jobs" => "job.manage",
             "netratel_terminal" or "netratel_commands" or "netratel_tasks" => "terminal.access",
             "netratel_remote_support_v2" => "remote-support.access",
+            "netratel_computer_use" => access.RequiredScope == McpOperationAccessScope.CuaView
+                ? "computer-use.view"
+                : "computer-use.control",
             "netratel_client_logs" or "netratel_client_telemetry" or "netratel_telemetry" or "netratel_logs" or "netratel_events" or "netratel_notifications" => "telemetry.read",
             "netratel_requests" or "netratel_search" or "netratel_access" or "netratel_health" or "netratel_system" or "netratel_capabilities" => "client.manage",
             _ => null
@@ -51,8 +54,8 @@ public static class McpLocalOperationAuthorizationCatalog
 
     public static IReadOnlyCollection<string> RolesFor(McpOperationAccessScope scope) => scope switch
     {
-        McpOperationAccessScope.Observe or McpOperationAccessScope.Files => ["Operator"],
-        McpOperationAccessScope.Execute => ["AutomationOperator"],
+        McpOperationAccessScope.Observe or McpOperationAccessScope.Files or McpOperationAccessScope.CuaView => ["Operator"],
+        McpOperationAccessScope.Execute or McpOperationAccessScope.CuaControl => ["AutomationOperator"],
         McpOperationAccessScope.Admin => ["PolicyAdministrator"],
         _ => []
     };
@@ -66,6 +69,7 @@ public static class McpLocalOperationAuthorizationCatalog
         ("netratel_connectivity", "test") => ["mcp.connectivity.read"],
         ("netratel_files", "preview_copy" or "copy" or "confirm_copy") => ["file.read"],
         ("netratel_files", "preview_move" or "move" or "confirm_move") => ["file.delete"],
+        ("netratel_computer_use", _) => ["remote-support.access"],
         _ => ManagedOperationCatalog.Find(tool, operation)?.AdditionalPermissions ?? []
     };
 

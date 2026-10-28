@@ -1,8 +1,11 @@
 using NetRatel.Client.Service.Logging;
+using NetRatel.Client.Service.ComputerUse;
 using NetRatel.Client.Service.RemoteSupport;
 using NetRatel.Shared.Contracts.RemoteDesktop;
+using NetRatel.Shared.Contracts.ComputerUse;
 using System;
 using System.Diagnostics;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
@@ -90,7 +93,7 @@ internal static class RemoteDesktopInteractiveHelper
                 var heartbeatTask = Task.Run(() => HeartbeatLoopAsync(writer, writerSync, connectionCts.Token), connectionCts.Token);
                 try
                 {
-                    await RunResidentControlLoopAsync(reader, writer, writerSync, connectionCts.Token).ConfigureAwait(false);
+                    await RunResidentControlLoopAsync(reader, writer, writerSync, ComputerUsePipeSecurity.IsVerifiedService(pipe), connectionCts.Token).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -137,11 +140,18 @@ internal static class RemoteDesktopInteractiveHelper
         StreamReader reader,
         StreamWriter writer,
         object writerSync,
+        bool computerUseServiceVerified,
         CancellationToken ct)
     {
         CancellationTokenSource? captureCts = null;
         Task? captureTask = null;
-        using var remoteSupport = new RemoteSupportInteractiveWebRtcManager();
+        ComputerUseInteractiveHost? computerUse = null;
+        using var remoteSupport = new RemoteSupportInteractiveWebRtcManager(beforeManualInput: () => computerUse?.RevokeAllAsync() ?? Task.CompletedTask);
+        var legacyManualController = 0;
+        await using var computerUseHost = ComputerUseInteractiveHost.Create(computerUseServiceVerified,
+            () => remoteSupport.HasManualController || Volatile.Read(ref legacyManualController) != 0);
+        computerUse = computerUseHost;
+        List<Task> computerUseTasks = [];
 
         try
         {
@@ -156,6 +166,33 @@ internal static class RemoteDesktopInteractiveHelper
                 var message = DeserializeMessage(line);
                 if (message is null)
                 {
+                    continue;
+                }
+
+                if (message.Kind == ComputerUsePipeKinds.Request && message.PayloadJson is { } requestJson &&
+                    requestJson.Length <= ComputerUseContract.MaximumRequestBytes)
+                {
+                    try
+                    {
+                        var request = JsonSerializer.Deserialize<ComputerUsePipeRequest>(requestJson, ComputerUseContract.JsonOptions);
+                        if (request?.Command is null || request.Options is null) continue;
+                        // Register synchronously in pipe order before scheduling so cancellation/revoke also fences queued work.
+                        var registration = computerUseHost.RegisterOperation(request.Command.OperationId);
+                        computerUseTasks.RemoveAll(task => task.IsCompleted);
+                        computerUseTasks.Add(Task.Run(() => HandleComputerUseRequestAsync(computerUseHost, request, registration, writer, writerSync, ct), CancellationToken.None));
+                    }
+                    catch (JsonException exception) { ComputerUseDiagnostics.Record("invalid_helper_request", exception); }
+                    continue;
+                }
+                if (message.Kind == ComputerUsePipeKinds.Cancel && Guid.TryParse(message.StreamId, out var cancelledOperation))
+                {
+                    computerUseHost.Cancel(cancelledOperation);
+                    continue;
+                }
+                if (message.Kind == ComputerUsePipeKinds.Revoke)
+                {
+                    await computerUseHost.RevokeAllAsync().ConfigureAwait(false);
+                    await WriteMessageAsync(writer, writerSync, new RemoteDesktopPipeMessage(ComputerUsePipeKinds.Revoked, null, message.StreamId), ct).ConfigureAwait(false);
                     continue;
                 }
 
@@ -178,6 +215,7 @@ internal static class RemoteDesktopInteractiveHelper
                 if (string.Equals(message.Kind, "stop", StringComparison.OrdinalIgnoreCase))
                 {
                     captureCts?.Cancel();
+                    Volatile.Write(ref legacyManualController, 0);
                     continue;
                 }
 
@@ -225,6 +263,8 @@ internal static class RemoteDesktopInteractiveHelper
                         var input = JsonSerializer.Deserialize<RemoteDesktopInputRequest>(message.PayloadJson, Json);
                         if (input is not null)
                         {
+                            Volatile.Write(ref legacyManualController, 1);
+                            await computerUseHost.RevokeAllAsync().ConfigureAwait(false);
                             ApplyWindowsInput(input);
                         }
                     }
@@ -238,6 +278,8 @@ internal static class RemoteDesktopInteractiveHelper
         }
         finally
         {
+            await computerUseHost.RevokeAllAsync().ConfigureAwait(false);
+            await Task.WhenAll(computerUseTasks).ConfigureAwait(false);
             captureCts?.Cancel();
             if (captureTask is not null)
             {
@@ -251,6 +293,25 @@ internal static class RemoteDesktopInteractiveHelper
             }
 
             captureCts?.Dispose();
+        }
+    }
+
+    private static async Task HandleComputerUseRequestAsync(ComputerUseInteractiveHost host, ComputerUsePipeRequest request, ComputerUseInteractiveHost.RegisteredOperation registration, StreamWriter writer, object writerSync, CancellationToken ct)
+    {
+        try
+        {
+            var result = await host.ExecuteRegisteredAsync(request, registration, ct).ConfigureAwait(false);
+            var resultJson = JsonSerializer.Serialize(result, ComputerUseContract.JsonOptions);
+            if (Encoding.UTF8.GetByteCount(resultJson) > ComputerUseContract.MaximumResponseBytes)
+                resultJson = JsonSerializer.Serialize(new ComputerUseResult(ComputerUseContract.Version, request.Command.OperationId,
+                    request.Command.SessionId, ComputerUseStatuses.Failed, "provider_result_too_large", Provider: request.Command.Provider,
+                    MayHaveApplied: result.MayHaveApplied), ComputerUseContract.JsonOptions);
+            await WriteMessageAsync(writer, writerSync, new RemoteDesktopPipeMessage(ComputerUsePipeKinds.Result, resultJson, request.Command.OperationId.ToString("D")), ct).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is JsonException or IOException or OperationCanceledException or ObjectDisposedException)
+        {
+            // A disconnected service has no recipient; the host lifetime disposes its scoped provider.
+            ComputerUseDiagnostics.Record("helper_response_unavailable", exception);
         }
     }
 

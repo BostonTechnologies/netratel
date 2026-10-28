@@ -92,7 +92,9 @@ public enum McpOperatorOperationFamily
     Notifications = 1 << 15,
     Events = 1 << 16,
     Connectivity = 1 << 17,
-    PolicyAdministration = 1 << 18
+    PolicyAdministration = 1 << 18,
+    ComputerUseView = 1 << 19,
+    ComputerUseControl = 1 << 20
 }
 
 /// <summary>Risk class used by the two-stage mutation confirmation workflow.</summary>

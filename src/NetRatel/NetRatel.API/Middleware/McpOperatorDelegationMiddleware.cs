@@ -4,6 +4,7 @@ using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.API.Security.Integration;
 using System.Security.Claims;
 using Microsoft.Extensions.DependencyInjection;
+using NetRatel.Application.Operations;
 
 namespace NetRatel.API.Middleware;
 
@@ -37,6 +38,7 @@ public sealed class McpOperatorDelegationMiddleware(
 
         if (headers.Count != 1 || !tokens.TryValidate(headers[0], out var delegation))
         {
+            await RecordComputerUseRefusalAsync(context, null, "delegated_identity_invalid").ConfigureAwait(false);
             var failure = McpDelegationFailure.ForCode("delegated_identity_invalid")!;
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             await context.Response.WriteAsJsonAsync(new
@@ -57,6 +59,7 @@ public sealed class McpOperatorDelegationMiddleware(
             var objectTargets = context.RequestServices.GetService<IMcpOperationObjectTargetResolver>();
             if (await LocalExecutionFailureAsync(delegation, currentCredentials, access, objectTargets, context.RequestAborted).ConfigureAwait(false) is { } failureCode)
             {
+                await RecordComputerUseRefusalAsync(context, delegation, failureCode).ConfigureAwait(false);
                 var failure = McpDelegationFailure.ForCode(failureCode)!;
                 context.Response.StatusCode = failureCode == "delegated_identity_invalid" ? StatusCodes.Status401Unauthorized : failure.Layer switch
                 {
@@ -74,10 +77,11 @@ public sealed class McpOperatorDelegationMiddleware(
                 return;
             }
         }
-        else if ((delegation.Tool is "netratel_files" or "netratel_connectivity" ||
+        else if ((delegation.Tool is "netratel_files" or "netratel_connectivity" or "netratel_computer_use" ||
                   delegation.Tool == "netratel_job_runs" && delegation.Operation == "start") &&
             !await IsAuthorizedExternalApplicationExecutionAsync(delegation, context.RequestServices, context.RequestAborted).ConfigureAwait(false))
         {
+            await RecordComputerUseRefusalAsync(context, delegation, "application_permission_denied").ConfigureAwait(false);
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
             await context.Response.WriteAsJsonAsync(new
             {
@@ -92,6 +96,23 @@ public sealed class McpOperatorDelegationMiddleware(
 
         context.Items[HttpContextItemKey] = delegation;
         await next(context);
+    }
+
+    private static async Task RecordComputerUseRefusalAsync(HttpContext context, McpOperatorDelegation? delegation, string code)
+    {
+        if (context.Request.Path.Value?.Contains("/computer-use", StringComparison.Ordinal) != true ||
+            !int.TryParse(context.Request.RouteValues["tenantId"]?.ToString(), out var tenantId) ||
+            !Guid.TryParse(context.Request.RouteValues["agentId"]?.ToString(), out var agentId) ||
+            context.RequestServices.GetService<IComputerUseSessionStore>() is not { } sessions)
+            return;
+        var owner = delegation is null
+            ? new ComputerUseOwner("unattributed", string.Empty, "unattributed", string.Empty, string.Empty)
+            : new ComputerUseOwner(delegation.Identity.Subject, delegation.Identity.ClientId ?? delegation.Identity.Subject,
+                delegation.ServicePrincipal, delegation.Resource ?? string.Empty,
+                delegation.Instance is { Length: <= 32 } instance ? instance : "invalid_instance");
+        await sessions.RecordAuditAsync(new(Guid.NewGuid(), tenantId, agentId, null, null, owner,
+            delegation?.Operation is { Length: <= 32 } operation ? operation : "admission", "refused", code, delegation?.CorrelationId ?? context.TraceIdentifier,
+            null, null, DateTimeOffset.UtcNow), context.RequestAborted).ConfigureAwait(false);
     }
 
     private static async Task<string?> LocalExecutionFailureAsync(
@@ -142,7 +163,7 @@ public sealed class McpOperatorDelegationMiddleware(
     {
         if (delegation.Identity.ExternalIssuer is not { Length: > 0 } issuer ||
             !McpLocalDelegationTargetRequirements.TryGetAuthorizationTenant(delegation, out var tenantId) ||
-            (delegation.Tool == "netratel_files" && tenantId is not > 0) ||
+            (delegation.Tool is "netratel_files" or "netratel_computer_use" && tenantId is not > 0) ||
             services.GetService<IApplicationPrincipalResolver>() is not { } principals ||
             services.GetService<IEffectiveAccessService>() is not { } access)
             return false;

@@ -8,3 +8,4 @@
 - [Native renewal findings and installed-host check](CLIENT_RENEWAL_DIAGNOSTICS.md)
 - [Gateway connectivity deployment and acceptance](GATEWAY_CONNECTIVITY_HARDENING.md)
 - [Services inventory and refresh](client-services-inventory.md)
+- [Windows computer use](computer-use.md): optional pinned driver, native fallback, exact interactive-session targeting and owner-run canary acceptance.

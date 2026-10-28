@@ -195,6 +195,7 @@ public static partial class NetRatelMcpToolDefinitions
 
     private static RequestDefinition? RequestSchema(string tool, string operation, string instance, bool operatorSurfaceEnabled) => (tool, operation) switch
     {
+        ("netratel_computer_use", _) => ComputerUseRequest(operation),
         _ when ManagedOperationCatalog.Find(tool, operation) is { } managed => ManagedRequestSchema(managed),
         ("netratel_capabilities", "schema") => RequiredRequest([
             RequiredPatternString("tool", "Exact tool name published by this MCP host; inspection does not invoke it.", "^[A-Za-z0-9_-]{1,128}$", 128),
@@ -1096,7 +1097,7 @@ public static partial class NetRatelMcpToolDefinitions
             ["principalSelector"] = PrincipalSelectorSchema(),
             ["targetSelector"] = TargetSelectorSchema(),
             ["targetClassification"] = IntegerEnum(0, 5, "Optional target classification enum value."),
-            ["operationFamily"] = new JsonObject { ["type"] = "integer", ["minimum"] = 1, ["maximum"] = 524_287, ["description"] = "One or more known McpOperatorOperationFamily flag values." },
+            ["operationFamily"] = new JsonObject { ["type"] = "integer", ["minimum"] = 1, ["maximum"] = 2_097_151, ["description"] = "One or more known McpOperatorOperationFamily flag values, including separate ComputerUseView (524288) and ComputerUseControl (1048576)." },
             ["operation"] = new JsonObject { ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 256 },
             ["constraints"] = PolicyConstraintsSchema(),
             ["expiresAtUtc"] = new JsonObject { ["type"] = "string", ["format"] = "date-time" },

@@ -16,6 +16,20 @@ credentials. HTTP MCP is an optional separately deployed service with an
 independent OAuth/resource boundary. Optional MCP and AI integrations are not
 required for Web, API, or native Client operation.
 
+Optional [computer use](../mcp-http/computer-use.md) follows the same control
+boundary. The API binds each bounded operation to a tenant, enrolled client,
+gateway connection, delegated owner and short-lived desktop lease. The native
+Client forwards it over the authenticated Remote Support helper pipe into the
+exact Windows user session. `IComputerUseProvider` keeps the pinned Cua Driver
+stdio MCP process and the limited native Windows fallback behind the same
+versioned contracts. The HTTP MCP host exposes only the allowlisted NetRatel
+operations, never the driver's tool catalog or socket. Separate view/control
+permissions and policy families do not inherit terminal execution permission.
+Desktop content and screenshots are transient; persistence retains operation
+identity, target, request hashes and outcomes for audit. CUA remains opt-in on
+both server and endpoint while [Windows canary acceptance](../client/computer-use.md#owner-run-windows-canary)
+is performed separately from source and component validation.
+
 ```text
 Browser ──OIDC session──> Web ──protected API calls──> API ──> PostgreSQL
                                                  │

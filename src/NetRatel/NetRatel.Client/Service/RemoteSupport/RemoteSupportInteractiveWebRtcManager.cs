@@ -30,11 +30,23 @@ internal sealed class RemoteSupportInteractiveWebRtcManager : IDisposable
     private readonly JsonSerializerOptions _json = new(JsonSerializerDefaults.Web);
     private readonly RemoteSupportProviderMetadata _providerMetadata;
     private readonly Action<RemoteSupportSasPipeRequest>? _sendSasRequest;
+    private readonly Func<Task>? _beforeManualInput;
+    private readonly ConcurrentDictionary<string, byte> _manualControllers = new(StringComparer.Ordinal);
 
-    public RemoteSupportInteractiveWebRtcManager(RemoteSupportProviderMetadata? providerMetadata = null, Action<RemoteSupportSasPipeRequest>? sendSasRequest = null)
+    public RemoteSupportInteractiveWebRtcManager(RemoteSupportProviderMetadata? providerMetadata = null, Action<RemoteSupportSasPipeRequest>? sendSasRequest = null, Func<Task>? beforeManualInput = null)
     {
         _providerMetadata = providerMetadata ?? RemoteSupportProviderMetadata.InteractiveUserHelper;
         _sendSasRequest = sendSasRequest;
+        _beforeManualInput = beforeManualInput;
+    }
+
+    internal bool HasManualController => !_manualControllers.IsEmpty;
+
+    private Task BeforeManualInputAsync(string sessionId)
+    {
+        // Claim the controller before waiting for automation cancellation, so new CUA cannot race takeover.
+        _manualControllers[sessionId] = 0;
+        return _beforeManualInput?.Invoke() ?? Task.CompletedTask;
     }
 
     public async Task HandleOfferAsync(
@@ -47,7 +59,7 @@ internal sealed class RemoteSupportInteractiveWebRtcManager : IDisposable
 
         var offer = ParseOfferPayload(signal.PayloadJson);
         var session = new RemoteSupportInteractiveWebRtcSession(signal.SessionId, offer.IceServers, offer.MediaProfile, _providerMetadata, offer.TargetWindowsSessionId, offer.TargetUserSidHash, payload =>
-            WriteSignal(writer, writerSync, payload), _sendSasRequest);
+            WriteSignal(writer, writerSync, payload), _sendSasRequest, () => BeforeManualInputAsync(signal.SessionId));
         if (!_sessions.TryAdd(signal.SessionId, session))
         {
             session.Dispose();
@@ -110,6 +122,8 @@ internal sealed class RemoteSupportInteractiveWebRtcManager : IDisposable
             session.Dispose();
         }
 
+        _manualControllers.TryRemove(sessionId, out _);
+
         return Task.CompletedTask;
     }
 
@@ -154,6 +168,8 @@ internal sealed class RemoteSupportInteractiveWebRtcSession : IDisposable
     private readonly string? _targetUserSidHash;
     private readonly IRemoteSupportCaptureProvider _captureProvider;
     private readonly Action<RemoteSupportSasPipeRequest>? _sendSasRequest;
+    private readonly Lazy<Task>? _beforeManualInput;
+    private readonly SemaphoreSlim _controlMessageGate = new(1, 1);
     private readonly RemoteSupportDesktopContextCoordinator _desktopContextCoordinator = new();
     private readonly InteractiveInputDispatcher? _inputDispatcher;
     private readonly JsonSerializerOptions _json = new(JsonSerializerDefaults.Web);
@@ -222,11 +238,13 @@ internal sealed class RemoteSupportInteractiveWebRtcSession : IDisposable
         int? targetWindowsSessionId,
         string? targetUserSidHash,
         Action<RemoteSupportPipeSignal> sendSignal,
-        Action<RemoteSupportSasPipeRequest>? sendSasRequest = null)
+        Action<RemoteSupportSasPipeRequest>? sendSasRequest = null,
+        Func<Task>? beforeManualInput = null)
     {
         _sessionId = sessionId;
         _sendSignal = sendSignal;
         _sendSasRequest = sendSasRequest;
+        _beforeManualInput = beforeManualInput is null ? null : new Lazy<Task>(beforeManualInput, LazyThreadSafetyMode.ExecutionAndPublication);
         _providerMetadata = providerMetadata;
         _targetWindowsSessionId = targetWindowsSessionId;
         _targetUserSidHash = targetUserSidHash;
@@ -334,7 +352,7 @@ internal sealed class RemoteSupportInteractiveWebRtcSession : IDisposable
             channel.onmessage += (_, _, data) =>
             {
                 var text = Encoding.UTF8.GetString(data);
-                HandleDataChannelMessage(text);
+                _ = HandleDataChannelMessageAsync(text);
             };
         };
     }
@@ -401,14 +419,16 @@ internal sealed class RemoteSupportInteractiveWebRtcSession : IDisposable
         });
     }
 
-    private void HandleDataChannelMessage(string text)
+    private async Task HandleDataChannelMessageAsync(string text)
     {
+        await _controlMessageGate.WaitAsync().ConfigureAwait(false);
         string? inputEventId = null;
         string? inputCategory = null;
         var injectionAttempted = false;
         var helperReceivedAt = DateTimeOffset.UtcNow;
         try
         {
+            if (_disposed) return;
             using var doc = JsonDocument.Parse(text);
             var type = doc.RootElement.TryGetProperty("type", out var typeElement)
                 ? typeElement.GetString()
@@ -433,6 +453,8 @@ internal sealed class RemoteSupportInteractiveWebRtcSession : IDisposable
 
             if (type.Equals("sas", StringComparison.OrdinalIgnoreCase))
             {
+                if (_beforeManualInput is not null) await _beforeManualInput.Value.ConfigureAwait(false);
+                if (_disposed) return;
                 HandleSasMessage(doc.RootElement);
                 return;
             }
@@ -485,6 +507,8 @@ internal sealed class RemoteSupportInteractiveWebRtcSession : IDisposable
             _lastInputReceivedAt = helperReceivedAt;
             LogRemoteInput("remote_input_payload_parsed", inputEventId, inputCategory, helperReceivedAt, input, null);
             ValidateInputTarget(input);
+            if (_beforeManualInput is not null) await _beforeManualInput.Value.ConfigureAwait(false);
+            if (_disposed) return;
             LogRemoteInput("remote_input_target_validated", inputEventId, inputCategory, DateTimeOffset.UtcNow, input, null);
             UpdateInputProviderState(inputReceived: true);
             Interlocked.Increment(ref _inputAttempted);
@@ -561,6 +585,7 @@ internal sealed class RemoteSupportInteractiveWebRtcSession : IDisposable
 
             LogManager.WriteLog($"[RemoteSupportInput] remote_input_injection_failed session={_sessionId} targetSession={_targetWindowsSessionId?.ToString() ?? "none"} helperPid={Environment.ProcessId} helperSession={Process.GetCurrentProcess().SessionId} inputEventId={inputEventId ?? "missing"} category={inputCategory ?? "other"} status={status} win32={Marshal.GetLastWin32Error()}");
         }
+        finally { _controlMessageGate.Release(); }
     }
 
     private void HandleSasMessage(JsonElement root)

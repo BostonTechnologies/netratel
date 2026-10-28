@@ -608,5 +608,7 @@ public sealed class McpOperatorPolicyAdministration(OrchestratorDbContext db) : 
         McpOperatorOperationFamily.Notifications |
         McpOperatorOperationFamily.Events |
         McpOperatorOperationFamily.Connectivity |
-        McpOperatorOperationFamily.PolicyAdministration;
+        McpOperatorOperationFamily.PolicyAdministration |
+        McpOperatorOperationFamily.ComputerUseView |
+        McpOperatorOperationFamily.ComputerUseControl;
 }
