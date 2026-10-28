@@ -318,8 +318,12 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         dialogs.Find("[data-testid='credential-admission']").TextContent.Should().Contain("Matching Production operator policies");
         Field<CredentialMcpAdmission>(page.Instance, "_detailAdmission").ConfiguredGrants.Should().BeEquivalentTo(grants);
         Field<CredentialMcpAdmission>(page.Instance, "_detailAdmission").ConfiguredInstancePermissions.Should().Equal("mcp.discovery.read");
-        dialogs.Find("[data-testid='close-credential-details']").Click();
-        page.Find(".credential-actions button").Click();
+        // Backdrop close clears the page only through the dialog's completed VisibleChanged callback.
+        // Wait for that callback and provider removal before reopening the same inline dialog.
+        await dialogs.Find(".mud-overlay").ClickAsync(new());
+        await page.WaitForAssertionAsync(() => Field<object?>(page.Instance, "_detail").Should().BeNull());
+        await dialogs.WaitForAssertionAsync(() => dialogs.FindAll("[role='dialog']").Should().BeEmpty());
+        await page.Find(".credential-actions button").ClickAsync(new());
         dialogs.WaitForAssertion(() => dialogs.Find(".credential-section-heading").TextContent.Should().Contain("2 tenant grants · 1 server grants"));
     }
 
