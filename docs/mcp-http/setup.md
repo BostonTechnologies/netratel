@@ -101,7 +101,7 @@ For a consumer that supports only stdio launch commands, obtain the versioned `N
 | Access | Where to configure it | What it permits |
 | --- | --- | --- |
 | MCP host connection to the API | Host setup and **Review host** above | The server's backend service identity; separate from client grants |
-| Client tenant grants | **Create credential → Tenant access**, or **Details → Configured access → Edit access**, then **Access scope → the selected tenant** | A named application permission in that tenant, such as tenant 17 `flow.read` |
+| Client tenant grants | **Create credential → Tenant access → Selected tenant**, or **Details → Configured access → Edit access → Access scope → the selected tenant** | A named application permission in that tenant, such as tenant 17 `flow.read` |
 | Client server-level grants | **Create credential → Server access**, or the editing selector under **Access scope → Server-level access** | Instance-level operations, such as discovery and authentication-status checks with `mcp.discovery.read` |
 | MCP operator policies | **Admin → MCP Policies**, or the reviewed proposal's exact `targets` | Admission for the named credential/principal, environment, operation and target |
 
