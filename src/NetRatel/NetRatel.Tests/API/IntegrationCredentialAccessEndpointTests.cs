@@ -26,8 +26,10 @@ namespace NetRatel.Tests.API;
 
 public sealed class IntegrationCredentialAccessEndpointTests
 {
-    [Fact]
-    public async Task Browser_review_adds_a_new_tenant_and_edits_scopes_without_replacing_secret_expiry_or_policies()
+    [Theory]
+    [InlineData("local")]
+    [InlineData("Oidc")]
+    public async Task Browser_review_adds_a_new_tenant_and_edits_scopes_without_replacing_secret_expiry_or_policies(string identity)
     {
         await using var fixture = await ReviewedMcpAccessTests.Fixture.CreateAsync();
         (await fixture.Identity.Users.SingleAsync(user => user.PrincipalId == "requester")).IsInstanceAdministrator = true;
@@ -39,7 +41,7 @@ public sealed class IntegrationCredentialAccessEndpointTests
         fixture.App.Tenants.Add(new Tenant { Id = 41, Name = "New synthetic customer" });
         await fixture.App.SaveChangesAsync();
         await using var app = await BuildAppAsync(fixture);
-        using var client = AccountClient(app);
+        using var client = AccountClient(app, identity);
         var path = AccessPath(fixture);
         var proposal = new IntegrationCredentialEndpoints.CredentialAccessRequest(Guid.NewGuid().ToString(),
             [new(17, NetRatelPermissions.McpDiscoveryRead), new(29, NetRatelPermissions.FlowRead), new(41, NetRatelPermissions.FlowRead)],
@@ -184,10 +186,31 @@ public sealed class IntegrationCredentialAccessEndpointTests
         [new(17, NetRatelPermissions.FlowRead)], [NetRatelPermissions.McpDiscoveryRead]);
     private static string AccessPath(ReviewedMcpAccessTests.Fixture fixture) =>
         $"/api/v2/account/integration-credentials/{fixture.Credential.CredentialId}/access-requests";
-    private static HttpClient AccountClient(WebApplication app)
+    [Theory]
+    [InlineData("local")]
+    [InlineData("Oidc")]
+    public async Task Literal_page_binding_returns_invalid_id_with_a_safe_correlated_response(string identity)
+    {
+        await using var fixture = await ReviewedMcpAccessTests.Fixture.CreateAsync();
+        await using var app = await BuildAppAsync(fixture);
+        using var client = AccountClient(app, identity);
+        using var invalid = await client.GetAsync("/api/v2/account/integration-credentials/detail.Id/access-requests");
+        Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+        var failure = (await invalid.Content.ReadFromJsonAsync<IntegrationPairingFailure>())!;
+        Assert.Equal("review_credential_id_invalid", failure.Code);
+        Assert.Equal("list", failure.Stage);
+        Assert.False(string.IsNullOrWhiteSpace(failure.CorrelationId));
+        Assert.Equal(failure.CorrelationId, Assert.Single(invalid.Headers.GetValues("X-Correlation-ID")));
+        Assert.DoesNotContain(fixture.Credential.Secret, await invalid.Content.ReadAsStringAsync());
+        using var valid = await client.GetAsync(AccessPath(fixture));
+        Assert.Equal(HttpStatusCode.OK, valid.StatusCode);
+        Assert.Empty((await valid.Content.ReadFromJsonAsync<ReviewedMcpAccessRequest[]>())!);
+    }
+
+    private static HttpClient AccountClient(WebApplication app, string identity = "local")
     {
         var client = app.GetTestClient();
-        client.DefaultRequestHeaders.Add("X-Test-Identity", "local");
+        client.DefaultRequestHeaders.Add("X-Test-Identity", identity);
         client.DefaultRequestHeaders.Add("X-Test-Owner", "requester");
         client.DefaultRequestHeaders.Add("X-NetRatel-Account-Request", "1");
         return client;

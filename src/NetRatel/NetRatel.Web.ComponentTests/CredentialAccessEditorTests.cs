@@ -15,6 +15,35 @@ namespace NetRatel.Web.ComponentTests;
 
 public sealed class CredentialAccessEditorTests : AsyncBunitContext
 {
+    [Theory]
+    [InlineData("/authority", "load-authority", HttpStatusCode.Unauthorized, "Sign in again")]
+    [InlineData("/", "load-credentials", HttpStatusCode.Forbidden, "cannot approve or delegate")]
+    [InlineData("/access-requests", "load-reviews", HttpStatusCode.BadRequest, "different HTTP MCP resource")]
+    [InlineData("/access-requests", "load-reviews", HttpStatusCode.TooManyRequests, "wait a moment")]
+    [InlineData("/access-requests", "load-reviews", HttpStatusCode.ServiceUnavailable, "temporarily unavailable")]
+    public void Loading_failures_identify_the_request_and_recover_the_complete_snapshot(string suffix, string stage,
+        HttpStatusCode status, string recovery)
+    {
+        using var transport = Configure();
+        transport.LoadFailureSuffix = suffix;
+        transport.LoadFailureStatus = status;
+        var editor = RenderEditor();
+        editor.WaitForAssertion(() => editor.Find("[data-testid='access-edit-error']").TextContent.Should().Contain(recovery));
+        editor.Find("[data-testid='access-edit-diagnostic']").TextContent.Should()
+            .Contain(stage).And.Contain(((int)status).ToString()).And.Contain("synthetic-trace-429");
+        editor.FindAll("[data-testid='permission-selector']").Should().BeEmpty();
+        editor.Markup.Should().NotContain("upstream-secret-marker");
+        transport.Submitted.Should().BeEmpty();
+
+        transport.LoadFailureSuffix = null;
+        editor.Find("[data-testid='access-edit-retry-load']").Click();
+        editor.WaitForAssertion(() => editor.FindAll("[data-testid='access-review']").Should().ContainSingle());
+        editor.Find("[data-testid='access-edit-permission-17-flow.read']").HasAttribute("checked").Should().BeTrue();
+        editor.Find("[data-testid='permission-scope']").Change("server");
+        editor.Find("[data-testid='access-edit-instance-permission-mcp.discovery.read']").HasAttribute("checked").Should().BeTrue();
+        editor.FindAll("[data-testid='access-edit-error']").Should().BeEmpty();
+    }
+
     [Fact]
     public void Adding_a_tenant_preserves_existing_access_and_exact_expiry_and_requires_explicit_apply()
     {
@@ -281,6 +310,8 @@ public sealed class CredentialAccessEditorTests : AsyncBunitContext
         public HttpStatusCode ReviewStatus { get; set; } = HttpStatusCode.OK;
         public HttpStatusCode ApplyStatus { get; set; } = HttpStatusCode.OK;
         public HttpStatusCode InspectStatus { get; set; } = HttpStatusCode.OK;
+        public string? LoadFailureSuffix { get; set; }
+        public HttpStatusCode LoadFailureStatus { get; set; }
         public bool InterruptReviewResponse { get; set; }
         public bool ConsumeOnInspect { get; set; }
         public HttpClient CreateClient(string name) => new(this, disposeHandler: false) { BaseAddress = new Uri("https://api.example.test") };
@@ -298,6 +329,13 @@ public sealed class CredentialAccessEditorTests : AsyncBunitContext
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var path = request.RequestUri!.AbsolutePath;
+            if (request.Method == HttpMethod.Get && LoadFailureSuffix is { } suffix && path.EndsWith(suffix, StringComparison.Ordinal))
+            {
+                var code = LoadFailureStatus switch { HttpStatusCode.BadRequest => "review_resource_mismatch", HttpStatusCode.ServiceUnavailable => "review_service_unavailable", _ => "upstream-secret-marker" };
+                var response = Json(new { code, stage = "list", correlationId = "synthetic-trace-429", remediation = "upstream-secret-marker" }, LoadFailureStatus);
+                response.Headers.Add("X-Correlation-ID", "synthetic-trace-429");
+                return response;
+            }
             if (path.EndsWith("/authority", StringComparison.Ordinal))
                 return Json(new
                 {

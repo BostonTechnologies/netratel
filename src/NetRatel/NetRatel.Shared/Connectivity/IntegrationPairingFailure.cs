@@ -10,6 +10,9 @@ public sealed record IntegrationPairingFailure(string Code, string Stage, string
     public static IntegrationPairingFailure ForCode(string code, string stage) => new(code, stage, code switch
     {
         "review_code_invalid" => "Enter the eight-character verification code shown by your client; spaces around the code and its separator are optional.",
+        "review_destination_unconfigured" => "The public review destination is not configured correctly. Ask the deployment administrator to check the public Web address and HTTP MCP resource configuration, then retry loading access. Your saved grants are unchanged.",
+        "review_credential_unavailable" => "This HTTP MCP credential is unavailable to the signed-in owner. Refresh the credential list and reopen Details under the account that created it.",
+        "review_resource_mismatch" => "This credential belongs to a different HTTP MCP resource from the configured review destination. Ask the deployment administrator to check the canonical MCP resource configuration. The credential and its saved grants have not changed.",
         "review_service_unavailable" => "The review service is temporarily unavailable. Keep the existing code and requestId; once service recovers, inspect its receipt to reconcile any decision before retrying.",
         "review_request_expired" => "The review deadline has passed. Inspect the existing request receipt, then prepare a new request with a new requestId and obtain a new authorized review.",
         "review_credential_expiry_passed" => "The exact proposed credential expiry has already passed, even if the review code is still valid. Inspect the receipt and prepare a new requestId with a future UTC expiry for authorized review.",
@@ -33,7 +36,7 @@ public sealed record IntegrationPairingFailure(string Code, string Stage, string
     });
 
     public static bool IsKnownCode(string? code) => code is
-        "review_code_invalid" or "review_service_unavailable" or "review_request_expired" or "review_credential_expiry_passed" or "review_request_not_pending" or
+        "review_code_invalid" or "review_destination_unconfigured" or "review_credential_unavailable" or "review_resource_mismatch" or "review_service_unavailable" or "review_request_expired" or "review_credential_expiry_passed" or "review_request_not_pending" or
         "review_independent_approver_required" or "review_approver_authority_missing" or "review_owner_authority_missing" or
         "review_proposal_changed" or "review_binding_changed" or "review_credential_changed" or "review_policy_changed" or
         "review_target_changed" or "review_requester_unavailable" or "review_request_id_invalid" or
