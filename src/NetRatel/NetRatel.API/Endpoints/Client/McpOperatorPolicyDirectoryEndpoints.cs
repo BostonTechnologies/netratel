@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Mvc;
 using NetRatel.Application.Operations;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
@@ -15,7 +16,7 @@ public static class McpOperatorPolicyDirectoryEndpoints
     public static void MapPolicyDirectory(this RouteGroupBuilder group)
     {
         group.MapGet("/directory", async (string? search, int? tenantId, HttpContext http,
-            OrchestratorDbContext db, NetRatelIdentityDbContext identity, CancellationToken ct) =>
+            [FromServices] OrchestratorDbContext db, [FromServices] NetRatelIdentityDbContext identity, CancellationToken ct) =>
         {
             if ((search?.Length ?? 0) > 100 || tenantId < 0) return Results.BadRequest();
             http.Response.Headers.CacheControl = "no-store";
