@@ -28,8 +28,8 @@ record_stage() {
   fi
 }
 
-# Each independent process still runs one MTP module at a time. Overlap the
-# assemblies so API/component time does not follow the longest Core suite.
+# Each independent process still runs one MTP module at a time. Components
+# run alone before overlapping the independent Core and API backend suites.
 run_assembly() {
   local assembly="$1" project report stage_start status
   project="src/NetRatel/$assembly/$assembly.csproj"
@@ -52,17 +52,33 @@ run_assembly() {
   fi
 }
 
+# UI polling has short deadlines. Keep this group free of backend CPU/DB load.
+component_assembly="NetRatel.Web.ComponentTests"
+run_assembly "$component_assembly" > "$results_directory/fast-$component_assembly.log" 2>&1 &
+component_pid="$!"
+result=0
+if wait "$component_pid"; then
+  cat "$results_directory/fast-$component_assembly.log"
+else
+  result="$?"
+  cat "$results_directory/fast-$component_assembly.log"
+fi
+
 pids=()
+parallel_assemblies=()
 for assembly in "${assemblies[@]}"; do
+  if [[ "$assembly" == "$component_assembly" ]]; then
+    continue
+  fi
   run_assembly "$assembly" > "$results_directory/fast-$assembly.log" 2>&1 &
   pids+=("$!")
+  parallel_assemblies+=("$assembly")
 done
 
 # Wait for every group and keep each command/receipt failure. Separate logs keep
 # concurrent test output readable and retain diagnostics with the TRX artifacts.
-result=0
-for index in "${!assemblies[@]}"; do
-  assembly="${assemblies[$index]}"
+for index in "${!parallel_assemblies[@]}"; do
+  assembly="${parallel_assemblies[$index]}"
   if wait "${pids[$index]}"; then
     cat "$results_directory/fast-$assembly.log"
   else
