@@ -13,7 +13,7 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
     public async Task<IReadOnlyList<InvestigationSummaryDto>> ListAsync(int tenantId, int skip, CancellationToken ct, bool includeAlerts = true)
     {
         if (skip < 0 || skip > 100000) throw new ArgumentException("Invalid history offset.");
-        var rows = await db.Set<AiInvestigationRecord>().AsNoTracking().Where(x => x.TenantId == tenantId && (includeAlerts || x.OccurrenceId == null))
+        var rows = await db.Set<AiInvestigationRecord>().AsNoTracking().Where(x => x.TenantId == tenantId && x.AgentIds.Length > 0 && (includeAlerts || x.OccurrenceId == null))
             .OrderByDescending(x => x.LastActivityUtc).ThenBy(x => x.Id).Skip(skip).Take(100).ToListAsync(ct);
         return rows.Select(Summary).ToArray();
     }
@@ -91,6 +91,8 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
             throw new ArgumentException("A message ID and 1–16000 characters are required.");
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         var row = await LockAsync(tenantId, id, ct);
+        if (row.AgentIds.Length == 0 && automated)
+            throw new ArgumentException("General chats require an explicit operator message.");
         var existing = await db.Set<AiInvestigationEventRecord>().SingleOrDefaultAsync(x => x.InvestigationId == id && x.MessageId == request.MessageId, ct);
         if (existing is not null)
         {
@@ -100,7 +102,7 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
         }
         if (row.State != InvestigationState.Idle) throw new InvestigationConflictException("The investigation already has an active or unresolved turn.");
         if (row.LastSequence >= 10000) throw new InvestigationConflictException("This transcript is full. Start a new investigation.");
-        await ValidateClientsAsync(tenantId, row.AgentIds, ct);
+        await ValidateContextAsync(row, ct);
         await ComposeAsync(row, request.MessageId, request.Text, row.RemoteSessionId ?? new string('s', 256), ct);
         row.State = InvestigationState.Queued; row.ActiveMessageId = request.MessageId; row.Automated = automated;
         row.ActiveCredentialId = credential; row.LastTransportActivityAtUtc = clock.GetUtcNow();
@@ -139,13 +141,14 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
             throw new InvestigationConflictException("Acknowledge possible remote activity for the current turn before archiving it.");
         await StageTurnResultAsync(db, row, Shared.Contracts.Flows.FlowAiResultStatus.Cancelled, clock.GetUtcNow(), ct);
         row.State = InvestigationState.Archived;
-        Append(db, row, "archived", "Investigation archived. The remote conversation and its previous actions are preserved.", actor);
+        Append(db, row, "archived", (row.AgentIds.Length == 0 ? "Chat" : "Investigation") + " archived. The remote conversation and its previous actions are preserved.", actor);
         await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
     }
 
     public async Task<IReadOnlyList<InvestigationClientDto>> ClientsAsync(int tenantId, IReadOnlyList<Guid>? ids, CancellationToken ct)
     {
         if (ids is null) return (await SearchClientsAsync(tenantId, null, 0, ct)).Items;
+        if (ids.Count == 0) return [];
         var tenantName = await TenantNameAsync(tenantId, ct);
         var agents = await db.Agents.AsNoTracking().Where(x => x.TenantId == tenantId && ids.Contains(x.Id))
             .OrderBy(x => x.Id).Take(20).ToListAsync(ct);
@@ -207,8 +210,10 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
 
     public async Task<InvestigationSentContextDto> ComposeAsync(AiInvestigationRecord row, Guid messageId, string question, string sessionId, CancellationToken ct)
     {
-        await ValidateClientsAsync(row.TenantId, row.AgentIds, ct);
+        await ValidateContextAsync(row, ct);
         var tenantName = await TenantNameAsync(row.TenantId, ct);
+        if (row.AgentIds.Length == 0)
+            return GeneralChatContextComposer.Compose(row, tenantName, messageId, question, sessionId, clock.GetUtcNow());
         var clients = await ClientsAsync(row.TenantId, row.AgentIds, ct);
         var alertJson = row.OccurrenceId is { } occurrence
             ? await db.MonitoringOccurrences.AsNoTracking().Where(x => x.TenantId == row.TenantId && x.OccurrenceId == occurrence)

@@ -27,7 +27,7 @@
     [SupplyParameterFromQuery(Name = "page")] public int? RequestedPage { get; set; }
     [CascadingParameter] private Task<AuthenticationState>? Authentication { get; set; }
     private int Page => Math.Clamp(RequestedPage ?? 1, 1, 4000);
-    private string Title => Section switch { "alerts" => "Monitoring alerts", "flows" => "Flows", "investigations" => "AI investigations", _ => "Search results" };
+    private string Title => Section switch { "alerts" => "Monitoring alerts", "flows" => "Flows", "investigations" => "AI Ops", _ => "Search results" };
     private IReadOnlyList<GlobalSearchResult> _results = [];
     private CancellationTokenSource? _read;
     private long _generation;
@@ -50,8 +50,8 @@
                     new GlobalSearchResult(Title, row.Title, $"{row.TenantName} · {row.ClientName}", $"{row.Severity} · {row.State} · {row.Resource}", $"/monitoring?tenantId={row.TenantId}&alert={row.OccurrenceId:D}", "")).ToArray(),
                 "flows" => (await client.GetFromJsonAsync<PagedResult<GlobalSearchFlowDto>>(path, token))?.Items.Select(row =>
                     new GlobalSearchResult(Title, row.Title, row.TenantName, $"{(row.Enabled ? "Enabled" : "Disabled")} · {(row.PublishedVersionNumber > 0 ? $"Published v{row.PublishedVersionNumber}" : "Draft")}", $"/flows?tenantId={row.TenantId}&draftId={row.FlowId:D}", "")).ToArray(),
-                _ => (await client.GetFromJsonAsync<PagedResult<GlobalSearchInvestigationDto>>(path, token))?.Items.Select(row =>
-                    new GlobalSearchResult(Title, row.Title, $"{row.TenantName} · {row.ClientContext}", row.State, $"/ai/ops?tenantId={row.TenantId}&investigation={row.InvestigationId:D}", "")).ToArray()
+                _ => (await client.GetFromJsonAsync<PagedResult<GlobalSearchInvestigationDto>>(path, token))?.Items
+                    .Select(GlobalSearchService.InvestigationResult).ToArray()
             };
             if (token.IsCancellationRequested || generation != _generation) return;
             _results = results ?? []; _hasMore = _results.Count == 25;

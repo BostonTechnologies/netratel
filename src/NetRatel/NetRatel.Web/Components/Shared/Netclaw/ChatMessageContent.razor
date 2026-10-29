@@ -1,0 +1,126 @@
+@using System.Text.RegularExpressions
+@inject IJSRuntime JS
+
+<div class="chat-message-content">
+    @foreach (var block in _blocks)
+    {
+        @if (block.Kind == BlockKind.Code)
+        {
+            <div class="chat-code-block"><header><span>@(string.IsNullOrWhiteSpace(block.Language) ? "Code" : block.Language)</span><button type="button" @onclick="() => CopyAsync(block.Text)" aria-label="Copy code">Copy code</button></header><pre><code>@block.Text</code></pre></div>
+        }
+        else if (block.Kind == BlockKind.Heading)
+        {
+            <h3>@Inline(block.Text)</h3>
+        }
+        else if (block.Kind == BlockKind.List)
+        {
+            <ul>@foreach (var line in block.Text.Split('\n')) { <li>@Inline(line)</li> }</ul>
+        }
+        else if (block.Kind == BlockKind.Quote)
+        {
+            <blockquote>@Inline(block.Text)</blockquote>
+        }
+        else
+        {
+            <p>@Inline(block.Text)</p>
+        }
+    }
+    @if (!IsStreaming && !string.IsNullOrWhiteSpace(Text))
+    {
+        <div class="chat-response-actions"><button type="button" @onclick="() => CopyAsync(Text)">Copy response</button><span role="status">@_copyStatus</span></div>
+    }
+</div>
+
+@code {
+    [Parameter] public string Text { get; set; } = "";
+    [Parameter] public bool IsStreaming { get; set; }
+    private string? _parsedText, _copyStatus;
+    private IReadOnlyList<TextBlock> _blocks = [];
+    private static readonly Regex InlineTokens = new(@"(`[^`\n]+`|\*\*[^*\n]+\*\*)", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+
+    protected override void OnParametersSet()
+    {
+        if (_parsedText == Text) return;
+        _parsedText = Text; _copyStatus = null; _blocks = Parse(Text);
+    }
+
+    private static IReadOnlyList<TextBlock> Parse(string text)
+    {
+        var result = new List<TextBlock>();
+        var lines = text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        for (var index = 0; index < lines.Length;)
+        {
+            var line = lines[index];
+            var trimmed = line.TrimStart();
+            if (string.IsNullOrWhiteSpace(line)) { index++; continue; }
+            if (trimmed.StartsWith("```", StringComparison.Ordinal) || trimmed.StartsWith("~~~", StringComparison.Ordinal))
+            {
+                var fence = trimmed[..3];
+                var language = trimmed[3..].Trim();
+                var code = new List<string>();
+                index++;
+                while (index < lines.Length && !lines[index].TrimStart().StartsWith(fence, StringComparison.Ordinal)) code.Add(lines[index++]);
+                if (index < lines.Length) index++;
+                result.Add(new(BlockKind.Code, string.Join('\n', code), language));
+                continue;
+            }
+            if (Heading(trimmed))
+            {
+                result.Add(new(BlockKind.Heading, trimmed.TrimStart('#').TrimStart())); index++; continue;
+            }
+            if (Bullet(trimmed))
+            {
+                var items = new List<string>();
+                while (index < lines.Length && Bullet(lines[index].TrimStart())) items.Add(lines[index++].TrimStart()[2..]);
+                result.Add(new(BlockKind.List, string.Join('\n', items))); continue;
+            }
+            if (trimmed.StartsWith("> ", StringComparison.Ordinal))
+            {
+                var quote = new List<string>();
+                while (index < lines.Length && lines[index].TrimStart().StartsWith("> ", StringComparison.Ordinal)) quote.Add(lines[index++].TrimStart()[2..]);
+                result.Add(new(BlockKind.Quote, string.Join('\n', quote))); continue;
+            }
+            var paragraph = new List<string> { line }; index++;
+            while (index < lines.Length && !string.IsNullOrWhiteSpace(lines[index]) && !Special(lines[index].TrimStart())) paragraph.Add(lines[index++]);
+            result.Add(new(BlockKind.Paragraph, string.Join('\n', paragraph)));
+        }
+        return result;
+    }
+
+    private static bool Heading(string text)
+    {
+        var length = text.TakeWhile(character => character == '#').Count();
+        return length is > 0 and <= 6 && text.Length > length && text[length] == ' ';
+    }
+    private static bool Bullet(string text) => text.StartsWith("- ", StringComparison.Ordinal) || text.StartsWith("* ", StringComparison.Ordinal);
+    private static bool Special(string text) => Heading(text) || Bullet(text) || text.StartsWith("> ", StringComparison.Ordinal) ||
+        text.StartsWith("```", StringComparison.Ordinal) || text.StartsWith("~~~", StringComparison.Ordinal);
+
+    // Render text as encoded content. Netclaw output is never treated as HTML or executable markup.
+    private static RenderFragment Inline(string text) => builder =>
+    {
+        Match[] matches;
+        try { matches = InlineTokens.Matches(text).Cast<Match>().ToArray(); }
+        catch (RegexMatchTimeoutException) { builder.AddContent(0, text); return; }
+        var position = 0;
+        foreach (var match in matches)
+        {
+            builder.AddContent(0, text[position..match.Index]);
+            var code = match.Value[0] == '`';
+            builder.OpenElement(1, code ? "code" : "strong");
+            builder.AddContent(2, code ? match.Value[1..^1] : match.Value[2..^2]);
+            builder.CloseElement();
+            position = match.Index + match.Length;
+        }
+        builder.AddContent(3, text[position..]);
+    };
+
+    private async Task CopyAsync(string value)
+    {
+        try { await JS.InvokeVoidAsync("navigator.clipboard.writeText", value); _copyStatus = "Copied"; }
+        catch (JSException) { _copyStatus = "Select the text and copy it manually."; }
+    }
+
+    private enum BlockKind { Paragraph, Heading, List, Quote, Code }
+    private sealed record TextBlock(BlockKind Kind, string Text, string? Language = null);
+}

@@ -70,12 +70,24 @@ public sealed class GlobalSearchAuthorizationEndpointTests(PostgreSqlPersistence
     public async Task Telemetry_grant_without_monitoring_permission_cannot_discover_alert_backed_investigations()
     {
         using var app = await BuildAppAsync(await postgres.CreateDatabaseAsync()); await SeedAsync(app.Services);
+        await using (var scope = app.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            db.AiInvestigations.AddRange(
+                new AiInvestigationRecord { TenantId = 1, RequestId = Guid.NewGuid(), Title = "Tenant A general chat", AgentIds = [], LastActivityUtc = DateTimeOffset.UtcNow },
+                new AiInvestigationRecord { TenantId = 2, RequestId = Guid.NewGuid(), Title = "Tenant A request in Tenant B", AgentIds = [], LastActivityUtc = DateTimeOffset.UtcNow });
+            await db.SaveChangesAsync();
+        }
         var client = app.GetTestClient(); client.DefaultRequestHeaders.Add("X-NetRatel-Principal", "telemetry-reader");
         var response = await client.GetAsync("/api/v1/global-search/investigations?q=Tenant%20A");
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var payload = await response.Content.ReadAsStringAsync();
         payload.Should().Contain("Tenant A investigation").And.NotContain("Tenant A secret alert investigation").And.NotContain("Tenant B");
-        payload.Should().Contain("\"totalCount\":1");
+        payload.Should().Contain("Tenant A general chat").And.Contain("\"totalCount\":2");
+        using var json = JsonDocument.Parse(payload);
+        var chat = json.RootElement.GetProperty("items").EnumerateArray().Single(row => row.GetProperty("title").GetString() == "Tenant A general chat");
+        Assert.True(chat.GetProperty("isGeneralChat").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, chat.GetProperty("clientContext").ValueKind);
     }
 
     [Theory]

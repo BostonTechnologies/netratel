@@ -23,6 +23,12 @@ public static class InvestigationContextComposer
         IReadOnlyList<InvestigationClientDto> systems, MonitoringOccurrenceDto? alert,
         Guid messageId, string question, string sessionId, DateTimeOffset now, int optionalTagLimit = 20, int optionalAddressLimit = 8)
     {
+        if (row.AgentIds.Length == 0)
+        {
+            if (systems.Count != 0 || alert is not null)
+                throw new ArgumentException("General chats cannot include investigation context.");
+            return GeneralChatContextComposer.Compose(row, tenantName, messageId, question, sessionId, now);
+        }
         var notes = new List<string>();
         var metadata = JsonSerializer.Serialize(new
         {

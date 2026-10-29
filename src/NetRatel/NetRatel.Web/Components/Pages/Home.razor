@@ -9,6 +9,7 @@
 
 <PageTitle>Dashboard</PageTitle>
 
+<div class="dashboard-page">
 <MudContainer MaxWidth="MaxWidth.False" Class="dashboard-shell" data-testid="operations-dashboard">
     <header class="dashboard-toolbar">
         <MudText Typo="Typo.h5">Dashboard</MudText>
@@ -33,11 +34,16 @@
             </MudAlert>
         }
         <div class="dashboard-metrics" aria-label="Tenant operations counts">
-            <MudPaper Outlined="true" Class="dashboard-metric"><MudText Typo="Typo.caption">Online clients</MudText><MudText Typo="Typo.h5" Color="Color.Success">@Count(_snapshot?.OnlineClients)</MudText></MudPaper>
-            <MudPaper Outlined="true" Class="dashboard-metric"><MudText Typo="Typo.caption">Offline clients</MudText><MudText Typo="Typo.h5">@Count(_snapshot?.OfflineClients)</MudText></MudPaper>
+            <a class="dashboard-metric-link" href="@ClientsLink("online")" aria-label="View online clients" data-testid="dashboard-online-clients">
+                <MudPaper Outlined="true" Class="dashboard-metric"><div><MudText Typo="Typo.caption">Online clients</MudText><MudText Typo="Typo.h5" Color="Color.Success">@Count(_snapshot?.OnlineClients)</MudText></div><MudIcon Icon="@Icons.Material.Filled.ArrowForward" Size="Size.Small" /></MudPaper>
+            </a>
+            <a class="dashboard-metric-link" href="@ClientsLink("offline")" aria-label="View offline clients" data-testid="dashboard-offline-clients">
+                <MudPaper Outlined="true" Class="dashboard-metric"><div><MudText Typo="Typo.caption">Offline clients</MudText><MudText Typo="Typo.h5">@Count(_snapshot?.OfflineClients)</MudText></div><MudIcon Icon="@Icons.Material.Filled.ArrowForward" Size="Size.Small" /></MudPaper>
+            </a>
             <MudPaper Outlined="true" Class="dashboard-metric"><MudText Typo="Typo.caption">Clients with firing alerts</MudText><MudText Typo="Typo.h5" Color="Color.Warning">@Count(_snapshot?.FiringClients)</MudText></MudPaper>
             <MudPaper Outlined="true" Class="dashboard-metric"><MudText Typo="Typo.caption">Active alert occurrences</MudText><MudText Typo="Typo.h5" Color="Color.Error">@Count(_snapshot?.ActiveOccurrences)</MudText></MudPaper>
         </div>
+        <div class="dashboard-sections">
         <MudPaper Outlined="true" Class="dashboard-panel">
             <div class="dashboard-section-heading">
                 <MudText Typo="Typo.h6">Clients with active alerts</MudText>
@@ -66,7 +72,7 @@
                                 @if (context.FiringOccurrences == 0 && context.UnknownOccurrences == 0 && context.SuppressedOccurrences == 0) { <span>Recovery pending</span> }
                             </div>
                         </MudTd>
-                        <MudTd DataLabel="Actions"><div class="dashboard-row-actions"><MudButton Size="Size.Small" Href="@MonitoringLink(context.AgentId)">Alerts</MudButton><MudButton Size="Size.Small" Href="@ClientLink(context.AgentId)">Client</MudButton></div></MudTd>
+                        <MudTd DataLabel="Actions"><div class="dashboard-row-actions"><MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.NotificationsActive" Href="@MonitoringLink(context.AgentId)">Alerts</MudButton><MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Computer" Href="@ClientLink(context.AgentId)">Client</MudButton></div></MudTd>
                     </RowTemplate>
                     <NoRecordsContent><MudText Typo="Typo.body2" Class="pa-4" data-testid="dashboard-no-alerts">No active alert occurrences in this tenant.</MudText></NoRecordsContent>
                 </MudTable>
@@ -89,8 +95,10 @@
                 </MudTable>
             }
         </MudPaper>
+        </div>
     }
 </MudContainer>
+</div>
 
 @code {
     [SupplyParameterFromQuery(Name = "tenantId")] public int? InitialTenantId { get; set; }
@@ -200,7 +208,8 @@
     private Task PreviousPageAsync() { _page = Math.Max(0, (_snapshot?.Page ?? _page) - 1); return RefreshAsync(); }
     private Task NextPageAsync() { _page = (_snapshot?.Page ?? _page) + 1; return RefreshAsync(); }
     private string MonitoringLink(Guid? agentId = null) => $"/monitoring?tenantId={_tenantId}" + (agentId is null ? "" : $"&clientId={agentId:D}");
-    private static string ClientLink(Guid agentId) => "/clients?search=" + Uri.EscapeDataString(agentId.ToString("D"));
+    private string ClientsLink(string status) => $"/clients?tenantId={_tenantId}&status={status}";
+    private string ClientLink(Guid agentId) => $"/clients?tenantId={_tenantId}&clientId={agentId:D}";
     private static string Count(long? value) => value?.ToString("N0") ?? "—";
     private static string Acknowledgement(OperationsAlertClientDto client) => client.AcknowledgedOccurrences switch
     {

@@ -21,6 +21,7 @@ public sealed record NetclawTestResult(bool Success, string Code, NetclawConnect
 }
 public sealed record InvestigationCreateRequest(Guid RequestId, string Title, IReadOnlyList<Guid> AgentIds, Guid? OccurrenceId = null,
     IReadOnlyList<AiPromptReference>? SelectedPrompts = null);
+public sealed record GeneralChatCreateRequest(Guid RequestId, string Title);
 public sealed record InvestigationMessageRequest(Guid MessageId, string Text);
 public sealed record InvestigationApprovalRequest(string SelectedKey);
 public sealed record InvestigationArchiveRequest(Guid ExpectedMessageId, bool AcknowledgePossibleDelivery = false);
@@ -31,7 +32,10 @@ public sealed record InvestigationClientDto(Guid AgentId, string HostName, strin
     string? TenantName = null, string? DisplayName = null);
 public sealed record InvestigationClientPageDto(IReadOnlyList<InvestigationClientDto> Items, int? NextOffset);
 public sealed record InvestigationSummaryDto(Guid Id, int TenantId, string Title, InvestigationState State,
-    IReadOnlyList<Guid> AgentIds, Guid? OccurrenceId, Guid? FlowRunId, DateTimeOffset LastActivityUtc, string CreatedBy);
+    IReadOnlyList<Guid> AgentIds, Guid? OccurrenceId, Guid? FlowRunId, DateTimeOffset LastActivityUtc, string CreatedBy)
+{
+    public bool IsGeneralChat => AgentIds.Count == 0;
+}
 public sealed record InvestigationEventDto(long Sequence, string Type, string Text, string? Actor, string? CallId,
     IReadOnlyList<InvestigationOptionDto>? Options, DateTimeOffset CreatedAtUtc, Guid? MessageId = null);
 public sealed record InvestigationOptionDto(string Key, string Label);

@@ -11,6 +11,20 @@ namespace NetRatel.Tests.API;
 public sealed class AiPromptAuthorizationTests
 {
     [Fact]
+    public async Task General_chat_checks_current_tenant_read_and_manage_permissions_before_any_data_access()
+    {
+        var http = new DefaultHttpContext { User = new(new ClaimsIdentity([new Claim("netratel_principal_id", "operator")], "Oidc")) };
+        var denied = new Access();
+        Assert.IsType<ForbidHttpResult>(await NetclawEndpoints.ListChatsAsync(17, 0, http, denied, null!, default));
+        Assert.IsType<ForbidHttpResult>(await NetclawEndpoints.CreateChatAsync(17, new(Guid.NewGuid(), "Chat"), http, denied, null!, null!, default));
+        var readOnly = new Access { AllowRead = true };
+        Assert.IsType<ForbidHttpResult>(await NetclawEndpoints.CreateChatAsync(17, new(Guid.NewGuid(), "Chat"), http, readOnly, null!, null!, default));
+        Assert.IsType<ForbidHttpResult>(await NetclawEndpoints.ListChatsAsync(18, 0, http, readOnly, null!, default));
+        Assert.Contains((NetRatelPermissions.ClientManagement, (int?)17), readOnly.Checks);
+        Assert.Contains((NetRatelPermissions.TelemetryRead, (int?)18), readOnly.Checks);
+    }
+
+    [Fact]
     public async Task Current_tenant_permissions_are_checked_before_prompt_load_or_save()
     {
         var http = new DefaultHttpContext { User = new(new ClaimsIdentity([new Claim("netratel_principal_id", "operator")], "Oidc")) };

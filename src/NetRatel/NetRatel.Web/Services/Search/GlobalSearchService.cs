@@ -27,7 +27,7 @@ public sealed class GlobalSearchService : IGlobalSearchService
         new("tasks", "Tasks", Icons.Material.Filled.TaskAlt, "/tasks/history"),
         new("alerts", "Monitoring alerts", Icons.Material.Filled.NotificationsActive, "/monitoring"),
         new("flows", "Flows", Icons.Material.Filled.AccountTree, "/flows"),
-        new("investigations", "AI investigations", Icons.Material.Filled.Psychology, "/ai/ops")
+        new("investigations", "AI Ops", Icons.Material.Filled.Psychology, "/ai/ops")
     ];
 
     private readonly IHttpClientFactory _clientFactory;
@@ -259,8 +259,13 @@ public sealed class GlobalSearchService : IGlobalSearchService
 
     private static IEnumerable<ScoredResult> MatchInvestigations(IEnumerable<GlobalSearchInvestigationDto> rows, string term) =>
         rows.Select(row => new ScoredResult(Math.Max(1, Score(term, row.Title, [row.Title, row.TenantName, row.ClientContext, row.State])),
-            new GlobalSearchResult("AI investigations", row.Title, Join(row.TenantName, row.ClientContext), row.State,
-                $"/ai/ops?tenantId={row.TenantId}&investigation={row.InvestigationId:D}", Icons.Material.Filled.Psychology)));
+            InvestigationResult(row)));
+
+    internal static GlobalSearchResult InvestigationResult(GlobalSearchInvestigationDto row) => row.IsGeneralChat
+        ? new("Chat", row.Title, row.TenantName, Join("Chat", row.State),
+            $"/ai/chat?tenantId={row.TenantId}&chat={row.InvestigationId:D}", Icons.Material.Filled.ChatBubbleOutline)
+        : new("AI investigations", row.Title, Join(row.TenantName, row.ClientContext), row.State,
+            $"/ai/ops?tenantId={row.TenantId}&investigation={row.InvestigationId:D}", Icons.Material.Filled.Psychology);
 
     private static IEnumerable<ScoredResult> MatchTenants(IEnumerable<TenantDto> tenants, string term)
     {

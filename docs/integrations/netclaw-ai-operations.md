@@ -1,6 +1,6 @@
 # Netclaw AI operations
 
-NetRatel uses the same authenticated native SignalR chat protocol as RatelDesk. Each tenant has its own protected device credential and durable investigations. The AI Ops workspace is `/ai/ops`; connection administration is the **Netclaw** tab at `/account/integration-credentials?tab=netclaw&tenantId=<id>`. Older `/ai/integration` bookmarks redirect while preserving the tenant.
+NetRatel uses the same authenticated native SignalR chat protocol as RatelDesk. Each tenant has its own protected device credential, general chats and durable investigations. **AI Ops → Chat** opens `/ai/chat`; **AI Ops → Investigations** opens `/ai/ops`. Connection administration is the **Netclaw** tab at `/account/integration-credentials?tab=netclaw&tenantId=<id>`. Older `/ai/integration` bookmarks redirect while preserving the tenant.
 
 ## Connect a daemon
 
@@ -8,7 +8,7 @@ NetRatel uses the same authenticated native SignalR chat protocol as RatelDesk. 
 2. On the Netclaw host, run `netclaw daemon pair`. Enter the address and one-time pairing code it prints, then choose **Pair & connect**. See the [Netclaw pairing guide](https://netclaw.dev/guides/pairing-remote-devices/).
 3. NetRatel exchanges the code, protects the returned device token using the deployment's ASP.NET Core Data Protection key ring, and saves it before verifying an authenticated SignalR session. Neither the code nor device token is returned to the browser or MCP response.
 4. If verification fails, the exchanged credential remains saved. Use **Test connection** after fixing connectivity. If the request itself was interrupted, use **Reload saved connection** before obtaining another code. Changing a profile requires its current revision; a stale request is rejected before sending a pairing code.
-5. Open AI Ops, select one or more systems, create an investigation, and send the first question.
+5. Choose **Open Chat** to ask a general question, or open **Investigations** to select systems and start a scoped investigation. Both use the saved tenant connection.
 
 Use the daemon root address or its `/hub/session` URL. HTTPS is supported. Explicit private IP literals printed by Netclaw can use HTTP under the same private-network policy as RatelDesk; arbitrary public HTTP, URL credentials, query strings, alternate hub paths, metadata destinations, redirects, and unsafe resolved addresses are rejected. Preserve the deployment's Data Protection keys when replacing an API container so stored device credentials remain usable.
 
@@ -24,6 +24,20 @@ For tenant-isolated AI Ops, pair each tenant to its own isolated Netclaw daemon 
 
 Choose a credential whose permitted tenant and clients match the investigation's intended scope. Selected systems supply context; they do not widen a credential's authority or grant the daemon additional permissions. Every actual tool operation still passes through NetRatel's current tenant authorization and MCP operation policy. Configure write tools to request an operator decision in Netclaw if that is the intended runbook. The chat prompt asks for approval, but the daemon's configured tool policy is the execution authority.
 
+## General chat
+
+Open **AI Ops → Chat**, select the intended tenant, and type a message. The tenant must have an enabled Netclaw connection with a saved device credential. The connection badge opens its tenant-specific settings; an unconfigured tenant shows a setup action. A saved successful connection check and a currently connected session remain distinct states.
+
+Chat starts directly from the first **Send**. It needs no system selection, title dialog, or prompt selection. The first message supplies the conversation title. The welcome cards help draft requests to create a script, review notifications, plan a flow or ask an operational question; selecting a card fills the composer and leaves sending to the operator. Use **Ctrl+Enter** (or **⌘+Enter** on macOS) to send; **Enter** adds a new line.
+
+The history sidebar contains this tenant's general chats. Search it by title, open a conversation to resume its saved transcript, or choose **New chat** for another topic. **Show archived** includes retained completed conversations. Conversation links preserve both the tenant and chat ID, for example `/ai/chat?tenantId=17&chat=<conversation-uuid>`. Tenant changes clear the previous transcript and pending local input before loading the new tenant.
+
+Chat sends the operator's question with the tenant identity and fixed platform instructions for scope, tool authorization, approvals and recovery. It does not attach selected clients, system observations, alert occurrences, or the investigation prompt library's default and optional guidance. Netclaw can retrieve information through its configured permitted tools when the operator asks. Pairing, tool grants and the daemon's own configured behavior continue to apply.
+
+Assistant replies retain readable text and fenced code blocks with **Copy** actions. Tool activity can be expanded separately. The transcript follows new output when already at the bottom and lets the operator scroll back to read earlier messages. Approval requests, interrupted delivery, recovery and archive confirmation use the same durable mechanisms described below for investigations. Refreshing or opening history never submits an AI turn.
+
+General chats and investigations have separate history lists. They share the existing transcript store, transport and tenant conversation limits; this feature adds no database migration. Read access requires `telemetry.read`; creating or archiving requires `client.manage` as well, and sending, approvals and recovery also require `secret.use`.
+
 ## Investigate manually or from an alert
 
 The workspace lists recent manual and alert-linked investigations, with separate counts for running turns, pending approvals, and unconfirmed outcomes. Choose a title and 1–20 client IDs for a new investigation. The picker searches hostname, friendly name, IP addresses and tags using the authorized client directory. It excludes deleted and superseded registrations. Unknown hostnames are labelled explicitly; immutable IDs remain available as references. The selected scope stays attached to the investigation so later messages refer to the same systems.
@@ -34,7 +48,7 @@ Each request supplies tenant ID/name, selected client identities, OS/architectur
 
 Open **AI Ops → Prompts** to create, view, edit, copy or archive tenant guidance using Monaco. Read/use follows `telemetry.read`; management follows `client.manage`. Every save creates an immutable revision and requires the current edit token. Setting or removing the single tenant default also requires its current token. Archiving a default requires explicitly removing or replacing it; archive preserves historical revisions.
 
-New sessions automatically snapshot the tenant default when configured, followed by ordered optional selections from **Add prompts to LLM context**. Zero optional selections is valid. Existing sessions retain their saved guidance after library edits. Published flow optional guidance retains its deliberately published revisions; the tenant default is resolved when a new investigation session is created. Fixed platform instructions, tenant guidance, clearly delimited untrusted observations and the question use one shared composer. Prompt names for MCP connections are guidance text and do not create credentials or expand grants. Creating or previewing a manual investigation does not send an LLM turn; **Send** remains explicit.
+New investigation sessions automatically snapshot the tenant default when configured, followed by ordered optional selections from **Add prompts to LLM context**. Zero optional selections is valid. Existing sessions retain their saved guidance after library edits. Published flow optional guidance retains its deliberately published revisions; the tenant default is resolved when a new investigation session is created. Fixed platform instructions, tenant guidance, clearly delimited untrusted observations and the question use one shared composer. Prompt names for MCP connections are guidance text and do not create credentials or expand grants. Creating or previewing a manual investigation does not send an LLM turn; **Send** remains explicit.
 
 The conversation keeps operator messages, completed assistant text, tool activity, approval requests and decisions, and recovery events. Streaming draft text is temporary; committed transcript entries survive browser navigation and API restarts. Refresh and polling retain the existing conversation during transient failures. Text is rendered as text, including untrusted client or assistant content; it is not executed as HTML.
 
@@ -82,11 +96,15 @@ The AI and client-metadata APIs accept OIDC accounts, local sessions, and API-pu
 | --- | --- | --- |
 | `GET /connection`, `GET /clients` | Safe connection status and selectable client metadata | `telemetry.read` |
 | `POST /connection/pair`, `POST /connection/test`, `PUT /connection/enabled` | Pair, verify, or change profile availability | `tenant.admin` |
+| `GET /chats` | Recent general chats, separately from investigations | `telemetry.read` |
+| `POST /chats` | Create a general chat without selected systems or investigation prompts | `client.manage`, `telemetry.read`; requires an enabled configured connection |
 | `GET /investigations`, `GET /investigations/{id}` | Recent investigations and paged transcript | `telemetry.read`; linked alerts also require `monitoring.read` |
 | `POST /investigations` | Create a titled investigation with explicit clients | `client.manage`, `telemetry.read`; linked alerts also require `monitoring.read` |
 | `POST /investigations/{id}/messages` | Admit an operator turn | `client.manage`, `telemetry.read`, `secret.use`; linked alerts also require `monitoring.read` |
 | `POST /investigations/{id}/approvals/{callId}`, `POST /investigations/{id}/reconcile` | Answer a current interaction or recover existing history | Same as operator turns |
 | `POST /investigations/{id}/archive` | Archive while retaining history | `client.manage`, `telemetry.read`; linked alerts also require `monitoring.read` |
+
+General chats reuse the existing conversation item routes for transcript reads, messages, approvals, recovery and archiving. Their summaries set `isGeneralChat` to `true`. Chat creation accepts `requestId` and `title`; the separate investigation creation contract continues to require explicit client IDs. Browser chat does not add new MCP or CLI operation names.
 
 HTTP MCP and stdio MCP expose `netratel_ai`; CLI exposes `netratel ai`. Operations are `connection`, `pair`, `test_connection`, `set_enabled`, `clients`, `list`, `get`, `create`, `send`, `respond`, `reconcile`, and `archive`. CLI operation names use hyphens. Their typed schemas derive from the shared API contracts. MCP and CLI additionally apply current credential purpose, operation policy and target admission at preview and acceptance; mutations require explicit confirmation. An unconfirmed mutation produces a preview. Queue acceptance is the MCP policy authorization point. Before daemon invocation the worker rechecks canonical actor and credential grants; it does not reconstruct or re-evaluate the original MCP request policy context. The daemon's subsequent NetRatel tool calls each undergo their own current permissions and operation policy.
 

@@ -8,6 +8,49 @@ namespace NetRatel.Tests.Netclaw;
 
 public sealed class InvestigationContextTests
 {
+    [Fact]
+    public void General_chat_payload_has_only_tenant_scope_and_preserves_the_question_and_byte_budget()
+    {
+        var row = new AiInvestigationRecord { TenantId = 17, Title = "Private conversation title" };
+        const string question = "Draft a script to review notifications; do not save or execute it.";
+        var context = InvestigationContextComposer.Compose(row, "Tenant operations", [], null, Guid.NewGuid(), question, "session", DateTimeOffset.UtcNow);
+        Assert.Equal(InvestigationContextComposer.SerializedPayloadBytes("session", context.Request), context.PayloadBytes);
+        Assert.EndsWith(question, context.Request);
+        Assert.Contains("request human approval", context.Request, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("authorized for this tenant", context.Request);
+        Assert.DoesNotContain("Private conversation title", context.Request);
+        Assert.DoesNotContain("selectedAgentIds", context.Request);
+        Assert.DoesNotContain("Saved tenant default guidance", context.Request);
+        using var metadata = JsonDocument.Parse(context.MetadataJson);
+        Assert.Equal(17, metadata.RootElement.GetProperty("tenantId").GetInt32());
+        Assert.Equal("chat", metadata.RootElement.GetProperty("conversationKind").GetString());
+        Assert.False(metadata.RootElement.TryGetProperty("systems", out _));
+        Assert.False(metadata.RootElement.TryGetProperty("alert", out _));
+        Assert.Throws<ArgumentException>(() => InvestigationContextComposer.Compose(row, "Tenant", [], null,
+            Guid.NewGuid(), new string('界', 8000), "session", DateTimeOffset.UtcNow));
+    }
+
+    [Fact]
+    public void General_chat_rejects_mixed_investigation_context_and_saved_prompt_leakage()
+    {
+        var prompt = new AiPromptSnapshot(Guid.NewGuid(), 1, "Investigation only", null, "Private investigation guidance", true);
+        var rows = new[]
+        {
+            new AiInvestigationRecord { TenantId = 17, OccurrenceId = Guid.NewGuid() },
+            new AiInvestigationRecord { TenantId = 17, FlowRunId = Guid.NewGuid() },
+            new AiInvestigationRecord { TenantId = 17, SourceActionKey = "flow-action" },
+            new AiInvestigationRecord { TenantId = 17, Automated = true },
+            new AiInvestigationRecord { TenantId = 17, PromptSnapshotsJson = JsonSerializer.Serialize(new[] { prompt }) },
+            new AiInvestigationRecord { TenantId = 17, SelectedPromptReferencesJson = JsonSerializer.Serialize(new[] { new AiPromptReference(prompt.PromptId, 1) }) }
+        };
+        foreach (var row in rows)
+            Assert.Throws<ArgumentException>(() => InvestigationContextComposer.Compose(row, "Tenant", [], null,
+                Guid.NewGuid(), "Question", "session", DateTimeOffset.UtcNow));
+        Assert.Throws<ArgumentException>(() => InvestigationContextComposer.Compose(new AiInvestigationRecord { TenantId = 17 }, "Tenant",
+            [new InvestigationClientDto(Guid.NewGuid(), "Unselected worker", null, [], null)], null,
+            Guid.NewGuid(), "Question", "session", DateTimeOffset.UtcNow));
+    }
+
     [Theory]
     [InlineData("Windows", "x64")]
     [InlineData("Linux", "arm64")]

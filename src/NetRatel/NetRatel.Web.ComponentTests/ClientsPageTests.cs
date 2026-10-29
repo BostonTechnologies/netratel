@@ -331,11 +331,97 @@ public sealed class ClientsPageTests : AsyncBunitContext
         });
     }
 
-    private IRenderedComponent<IComponent> RenderClientsRoute(string? search = null, string? view = null)
+    [Theory]
+    [InlineData("online", "gateway-agent-01")]
+    [InlineData("offline", "registered-offline-agent")]
+    public void Dashboard_status_links_apply_tenant_and_presence_filters(string status, string expectedClient)
+    {
+        var factory = (StubHttpClientFactory)Services.GetRequiredService<IHttpClientFactory>();
+        factory.AdditionalClients = [OtherTenantClient()];
+        var cut = RenderClientsRoute(tenantId: 3, status: status);
+
+        cut.WaitForAssertion(() =>
+        {
+            cut.FindAll(".client-card").Should().ContainSingle();
+            cut.Find(".client-card").TextContent.Should().Contain(expectedClient);
+            cut.Markup.Should().NotContain("other-tenant-client");
+        });
+    }
+
+    [Fact]
+    public async Task Exact_client_links_match_the_tenant_and_agent_and_can_be_cleared()
+    {
+        var factory = (StubHttpClientFactory)Services.GetRequiredService<IHttpClientFactory>();
+        factory.AdditionalClients = [OtherTenantClient()];
+        var cut = RenderClientsRoute(tenantId: 3, clientId: AgentId);
+        cut.WaitForAssertion(() =>
+        {
+            cut.FindAll(".client-card").Should().ContainSingle();
+            cut.Find(".client-card").TextContent.Should().Contain("gateway-agent-01");
+            cut.Find("[data-testid='client-exact-filter']").TextContent.Should().Contain("gateway-agent-01");
+            cut.Markup.Should().NotContain("other-tenant-client");
+        });
+
+        var chip = cut.FindComponent<MudBlazor.MudChip<Guid>>();
+        await cut.InvokeAsync(() => chip.Instance.OnClose.InvokeAsync(chip.Instance));
+        cut.WaitForAssertion(() => cut.FindAll(".client-card").Should().HaveCount(2));
+        Services.GetRequiredService<NavigationManager>().Uri.Should().Contain("tenantId=3").And.NotContain("clientId=");
+    }
+
+    [Fact]
+    public void Legacy_agent_guid_search_finds_the_authorized_client()
+    {
+        var cut = RenderClientsRoute(search: AgentId.ToString("D").ToUpperInvariant());
+        cut.WaitForAssertion(() =>
+        {
+            cut.FindAll(".client-card").Should().ContainSingle();
+            cut.Find(".client-card").GetAttribute("data-agent-id").Should().Be(AgentId.ToString("D"));
+        });
+    }
+
+    [Fact]
+    public async Task Query_navigation_reapplies_filters_without_reloading_the_directory()
+    {
+        var cut = RenderClientsRoute(tenantId: 3, status: "online");
+        cut.WaitForAssertion(() => cut.FindAll(".client-card").Should().ContainSingle());
+        var navigation = Services.GetRequiredService<NavigationManager>();
+        var initialLoads = cut.Find("[data-testid='client-directory-state']").GetAttribute("data-load-count");
+
+        await cut.InvokeAsync(() => navigation.NavigateTo("/clients?tenantId=3&status=offline"));
+        cut.WaitForAssertion(() => cut.Find(".client-card").TextContent.Should().Contain("registered-offline-agent"));
+        await cut.InvokeAsync(() => navigation.NavigateTo($"/clients?tenantId=99&clientId={AgentId:D}"));
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("No clients match the active filters."));
+        await cut.InvokeAsync(() => navigation.NavigateTo("/clients"));
+        cut.WaitForAssertion(() => cut.FindAll(".client-card").Should().HaveCount(2));
+        cut.Find("[data-testid='client-directory-state']").GetAttribute("data-load-count").Should().Be(initialLoads);
+    }
+
+    [Fact]
+    public void Filter_controls_preserve_the_other_link_filters()
+    {
+        var cut = RenderClientsRoute(tenantId: 3, clientId: AgentId, search: "gateway-agent-01", status: "online");
+        cut.WaitForAssertion(() => cut.FindAll(".client-card").Should().ContainSingle());
+        cut.Find("[aria-label='Show all clients']").Click();
+        cut.Find("button[aria-label='Switch client view']").Click();
+
+        var uri = Services.GetRequiredService<NavigationManager>().Uri;
+        uri.Should().Contain("tenantId=3").And.Contain($"clientId={AgentId:D}")
+            .And.Contain("search=gateway-agent-01").And.Contain("view=table").And.NotContain("status=");
+    }
+
+    private static ClientPresenceDto OtherTenantClient() => new(
+        $"gateway:4:{AgentId:D}", 4, AgentId, "other-tenant-client", "other-tenant-client", "Linux", "x64", true, true,
+        DateTimeOffset.UtcNow, "0.4.101", [], "gateway", "akka", true, 12, null, "Other tenant");
+
+    private IRenderedComponent<IComponent> RenderClientsRoute(string? search = null, string? view = null,
+        int? tenantId = null, string? status = null, Guid? clientId = null)
     {
         var query = new List<string>();
         if (search is not null) query.Add($"search={Uri.EscapeDataString(search)}");
         if (view is not null) query.Add($"view={Uri.EscapeDataString(view)}");
+        if (tenantId is not null) query.Add($"tenantId={tenantId}");
+        if (status is not null) query.Add($"status={Uri.EscapeDataString(status)}");
+        if (clientId is not null) query.Add($"clientId={clientId:D}");
         var uri = query.Count == 0 ? "/clients" : $"/clients?{string.Join('&', query)}";
         Services.GetRequiredService<NavigationManager>().NavigateTo(uri);
         return Render(builder =>
@@ -358,6 +444,7 @@ public sealed class ClientsPageTests : AsyncBunitContext
         public HttpStatusCode? TelemetryFailureStatus { get; set; }
         public HttpStatusCode? DirectoryFailureStatus { get; set; }
         public bool EmptyDirectory { get; set; }
+        public IReadOnlyList<ClientPresenceDto> AdditionalClients { get; set; } = [];
         public bool TelemetryTimesOut { get; set; }
         public bool BlockTelemetryRequest { get; set; }
         public string? TelemetryResponseJson { get; set; }
@@ -480,7 +567,8 @@ public sealed class ClientsPageTests : AsyncBunitContext
                         LatencyExpiresAtUtc: factory.LatencyMilliseconds.HasValue ? DateTimeOffset.UtcNow.AddSeconds(35) : null,
                         ReportedAddress: factory.ReportedAddress, Tags: factory.Tags, FriendlyName: factory.FriendlyName),
                     new ClientPresenceDto("gateway:3:offline", 3, Guid.Parse("99f5a0b0-5e61-4039-8d09-6c9d44c7c100"), "registered-offline-agent", null, "Linux", "x64", false, true,
-                        null, null, [], "gateway", "unobserved", false, 12, null, "NetRatel")
+                        null, null, [], "gateway", "unobserved", false, 12, null, "NetRatel"),
+                    .. factory.AdditionalClients
                 ]),
                 "/api/v2/agent-telemetry" => new[]
                 {

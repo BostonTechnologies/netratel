@@ -20,7 +20,7 @@
             <span>Session observation: @Time(observation.ObservedAtUtc)</span>
             @foreach (var session in observation.Sessions)
             {
-                <span>SignalR: @session.SignalRState · investigation @session.InvestigationId</span>
+                <span>SignalR: @session.SignalRState · conversation @session.InvestigationId</span>
                 <span>Authenticated: @Time(session.AuthenticatedAtUtc)</span>
                 <span>Last activity: @Time(session.LastActivityUtc)</span>
             }

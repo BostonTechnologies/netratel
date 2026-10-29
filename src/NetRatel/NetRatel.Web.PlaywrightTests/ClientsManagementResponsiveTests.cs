@@ -1499,6 +1499,7 @@ public sealed class ClientsManagementBrowserFixture : IAsyncLifetime
 [Route("/monitoring")]
 [Route("/flows/connectors")]
 [Route("/ai/prompts")]
+[Route("/ai/chat")]
 [Route("/scriptlibrary")]
 [Route("/tasks/new")]
 [Route("/jobs")]

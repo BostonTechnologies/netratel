@@ -36,6 +36,7 @@
                 <MudNavLink Href="/flows" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.AccountTree" aria-label="Flows" title="Flows">Flows</MudNavLink>
             }
             <MudNavGroup Title="AI Ops" UserAttributes="@(Disclosure("AI Ops"))" @bind-Expanded="aiOpsExpanded">
+                <MudNavLink Href="/ai/chat" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.ChatBubbleOutline" aria-label="Chat" title="Chat">Chat</MudNavLink>
                 <MudNavLink Href="/ai/ops" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Insights" aria-label="Investigations" title="Investigations">Investigations</MudNavLink>
                 <MudNavLink Href="/ai/prompts" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.EditNote" aria-label="Prompts" title="Prompts">Prompts</MudNavLink>
             </MudNavGroup>

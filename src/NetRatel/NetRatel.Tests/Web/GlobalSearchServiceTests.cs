@@ -108,16 +108,27 @@ public sealed class GlobalSearchServiceTests
     public async Task Ops_sources_keep_server_metadata_matches_and_link_exact_tenant_entities()
     {
         var id = Guid.Parse("df714e94-dcf0-4656-9734-6eb1ecc4681e");
+        var chatId = Guid.Parse("eac9c48e-fb78-44db-92be-31f3a4eb48fb");
         var service = new GlobalSearchService(new FakeHttpClientFactory(new Dictionary<string, object?>
         {
             ["/api/v1/global-search/alerts?q=human-tag&pageSize=6"] = Page(new[] { new GlobalSearchAlertDto(id, 7, "CPU threshold", "Operations", "Host", "cpu", "Critical", "Firing") }),
             ["/api/v1/global-search/flows?q=human-tag&pageSize=6"] = Page(new[] { new GlobalSearchFlowDto(id, 7, "Incident flow", "Operations", true, 2) }),
-            ["/api/v1/global-search/investigations?q=human-tag&pageSize=6"] = Page(new[] { new GlobalSearchInvestigationDto(id, 7, "Diagnose host", "Operations", "Idle", "Host", null, null) })
+            ["/api/v1/global-search/investigations?q=human-tag&pageSize=6"] = Page(new[]
+            {
+                new GlobalSearchInvestigationDto(id, 7, "Diagnose host", "Operations", "Idle", "Host", null, null),
+                new GlobalSearchInvestigationDto(chatId, 7, "Draft automation", "Operations", "Idle", null, null, null, IsGeneralChat: true)
+            })
         }), NullLogger<GlobalSearchService>.Instance);
         var groups = await service.SearchAsync("human-tag");
         groups.Single(group => group.Key == "alerts").Results.Should().ContainSingle().Which.Href.Should().Be($"/monitoring?tenantId=7&alert={id:D}");
         groups.Single(group => group.Key == "flows").Results.Should().ContainSingle().Which.Href.Should().Be($"/flows?tenantId=7&draftId={id:D}");
-        groups.Single(group => group.Key == "investigations").Results.Should().ContainSingle().Which.Href.Should().Be($"/ai/ops?tenantId=7&investigation={id:D}");
+        var conversations = groups.Single(group => group.Key == "investigations").Results;
+        conversations.Should().HaveCount(2);
+        conversations.Single(row => row.Section == "AI investigations").Href.Should().Be($"/ai/ops?tenantId=7&investigation={id:D}");
+        var chat = conversations.Single(row => row.Section == "Chat");
+        chat.Href.Should().Be($"/ai/chat?tenantId=7&chat={chatId:D}");
+        chat.Subtitle.Should().Be("Operations");
+        chat.Meta.Should().Be("Chat · Idle");
     }
 
     [Fact]
