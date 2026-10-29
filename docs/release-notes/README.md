@@ -2,6 +2,7 @@
 
 These notes describe the named release and preserve historical status. [Release engineering](../deployment/RELEASES.md) describes the current publication process; the product version is controlled only by `Directory.Build.props`.
 
+- [0.1.2 — stable Netclaw chat, integration policies and optional Windows computer use](0.1.2.md)
 - [0.1.2-beta.5 — general Netclaw chat and dashboard navigation](0.1.2-beta.5.md)
 - [0.1.2-beta.4 — complete integration setup and compact policy management](0.1.2-beta.4.md)
 - [0.1.2-beta.3 — credential access loading and separate creation scopes](0.1.2-beta.3.md)
