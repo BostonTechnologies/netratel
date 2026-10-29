@@ -21,6 +21,86 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
 {
     public IntegrationCredentialsStateTests() => Services.AddSingleton<IPairingApiClient>(new NoPairingApi());
 
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(false, false)]
+    public async Task Creation_separates_scopes_retains_the_draft_and_requires_a_combined_grant(bool server, bool tenant)
+    {
+        JSInterop.Mode = JSRuntimeMode.Loose;
+        Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+        using var transport = new CredentialTransport { IncludeHttpMcpCredential = true, HttpInstancePermissions = ["mcp.discovery.read"] };
+        Services.AddSingleton<IHttpClientFactory>(transport);
+        SetRendererInfo(new RendererInfo("Server", true));
+        var dialogs = Render<MudDialogProvider>();
+        var page = Render<IntegrationCredentials>();
+        page.WaitForAssertion(() => Field<object>(page.Instance, "_authority").Should().NotBeNull());
+        await page.InvokeAsync(() => { Call(page.Instance, "OpenCreate"); Set(page.Instance, "_name", "Synthetic scope test"); Call(page.Instance, "Next"); });
+        page.Render();
+        dialogs.WaitForAssertion(() => dialogs.Find("[data-testid='credential-step']").TextContent.Should().Contain("Step 2 of 4 · Server access"));
+        dialogs.Find("[data-testid='permission-scope']").Children.Should().ContainSingle().Which.GetAttribute("value").Should().Be("server");
+        if (server) dialogs.Find("[data-testid='credential-instance-permission-mcp.discovery.read']").Change(true);
+        await page.InvokeAsync(() => Call(page.Instance, "Next"));
+        page.Render();
+        dialogs.WaitForAssertion(() => dialogs.Find("[data-testid='credential-step']").TextContent.Should().Contain("Step 3 of 4 · Tenant access"));
+        await page.InvokeAsync(() => { Set(page.Instance, "_tenantToAdd", 17); Call(page.Instance, "AddTenant"); });
+        page.Render();
+        dialogs.Find("[data-testid='permission-scope']").TextContent.Should().NotContain("Server access");
+        if (tenant) dialogs.Find("[data-testid='credential-permission-17-flow.read']").Change(true);
+        await page.InvokeAsync(() => Call(page.Instance, "Next"));
+        page.Render();
+        if (!server && !tenant)
+        {
+            Field<int>(page.Instance, "_step").Should().Be(2);
+            dialogs.Find("[data-testid='credential-error']").TextContent.Should().Contain("at least one");
+            return;
+        }
+        dialogs.WaitForAssertion(() => dialogs.Find("[data-testid='credential-step']").TextContent.Should().Contain("Step 4 of 4 · Review & create"));
+        await page.InvokeAsync(() => Call(page.Instance, "Previous"));
+        page.Render();
+        dialogs.Find("[data-testid='credential-permission-17-flow.read']").HasAttribute("checked").Should().Be(tenant);
+        await page.InvokeAsync(() => Call(page.Instance, "Previous"));
+        page.Render();
+        dialogs.Find("[data-testid='credential-instance-permission-mcp.discovery.read']").HasAttribute("checked").Should().Be(server);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(30)]
+    public void Details_opens_access_for_the_selected_credential_and_restores_all_scopes(int count)
+    {
+        JSInterop.Mode = JSRuntimeMode.Loose;
+        Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+        using var transport = new CredentialTransport
+        {
+            IncludeHttpMcpCredential = true, HttpCredentialId = "fbd7b3a9da4b4f01a643c5c71dbec5cb",
+            HttpGrants = Enumerable.Range(17, count).Select(tenant => new IntegrationPairingGrant(tenant, "flow.read")).ToArray(),
+            HttpInstancePermissions = NetRatel.Infrastructure.Identity.Authorization.IntegrationPermissionCatalog.Delegable.Take(count).Select(permission => permission.Id).ToArray()
+        };
+        Services.AddSingleton<IHttpClientFactory>(transport);
+        Services.GetRequiredService<NavigationManager>().NavigateTo("/account/integration-credentials?tab=credentials");
+        SetRendererInfo(new RendererInfo("Server", true));
+        var dialogs = Render<MudDialogProvider>();
+        var page = Render<IntegrationCredentials>();
+        page.WaitForAssertion(() => page.FindAll("[data-testid='credential-row']").Should().ContainSingle());
+        page.Find(".credential-actions button").Click();
+        dialogs.WaitForAssertion(() => dialogs.FindAll("[data-testid='edit-credential-access']").Should().ContainSingle());
+        dialogs.Find("[data-testid='edit-credential-access']").Click();
+
+        dialogs.WaitForAssertion(() => transport.AccessLookups.Should().Equal($"/api/v2/account/integration-credentials/{transport.HttpCredentialId}/access-requests"));
+        dialogs.FindAll("[data-testid='access-edit-error']").Should().BeEmpty();
+        dialogs.FindAll("[data-testid^='access-remove-tenant-']").Should().HaveCount(count);
+        dialogs.Find("[data-testid='access-add-tenant-select']").TextContent.Should().Contain("Tenant choice 48");
+        dialogs.Find("[data-testid='permission-scope']").Change("server");
+        foreach (var permission in transport.HttpInstancePermissions)
+            dialogs.Find($"[data-testid='access-edit-instance-permission-{permission}']").HasAttribute("checked").Should().BeTrue();
+        dialogs.Find("[data-testid='access-close']").Click();
+        dialogs.Find("[data-testid='edit-credential-access']").Click();
+        dialogs.WaitForAssertion(() => transport.AccessLookups.Should().HaveCount(2));
+        dialogs.FindAll("[data-testid='access-edit-error']").Should().BeEmpty();
+        transport.AccessLookups.Should().OnlyContain(path => path.Contains(transport.HttpCredentialId));
+    }
+
     [Fact]
     public async Task Pending_create_cannot_close_back_or_reopen_and_its_secret_stays_in_its_acknowledgment()
     {
@@ -34,7 +114,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
 
         Call(page.Instance, "OpenCreate");
         Set(page.Instance, "_name", "Draft A");
-        Set(page.Instance, "_step", 2);
+        Set(page.Instance, "_step", 3);
         Set(page.Instance, "_createConfirmed", true);
         var pending = CallAsync(page.Instance, "CreateAsync");
         transport.PostRequested.Should().BeTrue();
@@ -44,12 +124,12 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         Call(page.Instance, "Previous");
         Call(page.Instance, "OpenCreate");
         Field<bool>(page.Instance, "_createOpen").Should().BeTrue();
-        Field<int>(page.Instance, "_step").Should().Be(2);
+        Field<int>(page.Instance, "_step").Should().Be(3);
         Field<string>(page.Instance, "_name").Should().Be("Draft A");
 
         transport.CompleteCreate("synthetic-one-time-secret");
         await pending;
-        Field<int>(page.Instance, "_step").Should().Be(3);
+        Field<int>(page.Instance, "_step").Should().Be(4);
         Field<string>(page.Instance, "_revealedSecret").Should().Be("synthetic-one-time-secret");
         Call(page.Instance, "CloseCreate");
         Field<string?>(page.Instance, "_revealedSecret").Should().BeNull();
@@ -70,7 +150,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         page.WaitForAssertion(() => Field<object>(page.Instance, "_authority").Should().NotBeNull());
         Call(page.Instance, "OpenCreate");
         Set(page.Instance, "_name", "Draft A");
-        Set(page.Instance, "_step", 2);
+        Set(page.Instance, "_step", 3);
         Set(page.Instance, "_createConfirmed", true);
         var pending = CallAsync(page.Instance, "CreateAsync");
 
@@ -93,7 +173,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         page.WaitForAssertion(() => Field<object>(page.Instance, "_authority").Should().NotBeNull());
         Call(page.Instance, "OpenCreate");
         Set(page.Instance, "_name", "Draft A");
-        Set(page.Instance, "_step", 2);
+        Set(page.Instance, "_step", 3);
         Set(page.Instance, "_createConfirmed", true);
         var pending = CallAsync(page.Instance, "CreateAsync");
 
@@ -228,7 +308,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         Call(page.Instance, "OpenCreate");
         Set(page.Instance, "_purpose", IntegrationCredentialPurpose.HttpMcp);
         Set(page.Instance, "_name", "Bounded HTTP reader");
-        Set(page.Instance, "_step", 2); Set(page.Instance, "_createConfirmed", true);
+        Set(page.Instance, "_step", 3); Set(page.Instance, "_createConfirmed", true);
         transport.CompleteCreate("synthetic-one-time-secret");
         await CallAsync(page.Instance, "CreateAsync");
         var configured = Field<CredentialMcpAdmission>(page.Instance, "_createdAdmission");
@@ -366,6 +446,8 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         public bool PostRequested { get; private set; }
         public bool IncludeCredentials { get; set; }
         public bool IncludeHttpMcpCredential { get; set; }
+        public string HttpCredentialId { get; set; } = "one";
+        public List<string> AccessLookups { get; } = [];
         public IReadOnlyList<IntegrationPairingGrant> HttpGrants { get; set; } = [new(17, "flow.read")];
         public IReadOnlyList<string> HttpInstancePermissions { get; set; } = [];
         public CredentialMcpAdmission? Admission { get; set; }
@@ -397,6 +479,14 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
             lastUsedAtUtc = (DateTimeOffset?)null, grants = Array.Empty<object>(), instancePermissions = Array.Empty<string>() };
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/access-requests", StringComparison.Ordinal))
+            {
+                var path = request.RequestUri.AbsolutePath;
+                AccessLookups.Add(path);
+                return Task.FromResult(path.Contains("/" + HttpCredentialId + "/", StringComparison.Ordinal)
+                    ? new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(Array.Empty<ReviewedMcpAccessRequest>()) }
+                    : new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = JsonContent.Create(IntegrationPairingFailure.ForCode("review_credential_id_invalid", "list") with { CorrelationId = "synthetic-invalid-id-trace" }) });
+            }
             if (request.RequestUri!.AbsolutePath.EndsWith("/admission", StringComparison.Ordinal))
                 return Task.FromResult(new HttpResponseMessage(Admission is null ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.OK) { Content = JsonContent.Create(Admission) });
             if (request.Method == HttpMethod.Delete)
@@ -420,11 +510,11 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
             if (request.RequestUri!.AbsolutePath.EndsWith("/authority", StringComparison.Ordinal))
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = JsonContent.Create(new { tenants = Array.Empty<object>(), instancePermissions = Array.Empty<object>(), configuredHttpMcpServerUrl = "https://mcp.example.test/mcp" })
+                    Content = JsonContent.Create(new { tenants = IncludeHttpMcpCredential ? Enumerable.Range(17, 32).Select(id => new { tenantId = id, name = $"Tenant choice {id}", permissions = new[] { new { id = "flow.read", label = "Read flows", description = "Read flows" } } }).ToArray() : [], instancePermissions = HttpInstancePermissions.Select(id => new { id, label = id, description = id }).ToArray(), configuredHttpMcpServerUrl = "https://mcp.example.test/mcp" })
                 });
             var now = DateTimeOffset.UtcNow;
             object[] credentials = IncludeHttpMcpCredential ? [new {
-                id = "one", publicId = "one", tokenPrefix = "synthetic", name = "Bounded HTTP reader", purpose = 1,
+                id = HttpCredentialId, publicId = "one", tokenPrefix = "synthetic", name = "Bounded HTTP reader", purpose = 1,
                 resource = "https://mcp.example.test/mcp", createdAtUtc = now, expiresAtUtc = now.AddDays(1),
                 revokedAtUtc = (DateTimeOffset?)null, lastUsedAtUtc = (DateTimeOffset?)null,
                 grants = HttpGrants, instancePermissions = HttpInstancePermissions

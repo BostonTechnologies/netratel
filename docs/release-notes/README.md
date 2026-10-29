@@ -2,6 +2,8 @@
 
 These notes describe the named release and preserve historical status. [Release engineering](../deployment/RELEASES.md) describes the current publication process; the product version is controlled only by `Directory.Build.props`.
 
+- [0.1.2-beta.3 — credential access loading and separate creation scopes](0.1.2-beta.3.md)
+
 - [0.1.1 — operator dialogs, client details and monitoring defaults](0.1.1.md)
 - [0.1.1-beta.50 — live session renewal and policy dialog focus](beta50.md)
 - [0.1.1-beta.49 — Services clock tolerance and operator policy workspace](beta49.md)

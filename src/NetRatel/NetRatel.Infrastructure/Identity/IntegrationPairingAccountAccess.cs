@@ -68,8 +68,11 @@ public sealed partial class IntegrationPairingService
         string resource, CancellationToken ct)
     {
         var credential = await InspectOwnedCredentialAsync(owner, credentialId, ct).ConfigureAwait(false);
-        return credential is not null && McpResourceUri.Equivalent(credential.Resource, resource)
-            ? credential : throw new IntegrationPairingUnavailableException();
+        if (credential is null) throw new IntegrationPairingUnavailableException
+            { ReviewFailure = IntegrationPairingFailure.ForCode("review_credential_unavailable", "credential") };
+        if (!McpResourceUri.Equivalent(credential.Resource, resource)) throw new IntegrationPairingUnavailableException
+            { ReviewFailure = IntegrationPairingFailure.ForCode("review_resource_mismatch", "credential") };
+        return credential;
     }
 
     private async Task<IntegrationPairingRequest> AccountAccessRequestAsync(string owner, string credentialId,

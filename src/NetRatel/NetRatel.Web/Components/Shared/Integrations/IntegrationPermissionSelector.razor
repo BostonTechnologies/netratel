@@ -2,7 +2,7 @@
 <div class="permission-selector" data-testid="permission-selector">
     <div class="permission-heading">
     <div class="permission-toolbar">
-        <label>Access scope
+        <label>@ScopeLabel
             <select value="@ScopeKey" @onchange="ChangeScope" disabled="@Disabled" data-testid="permission-scope">
                 @foreach (var scope in Scopes)
                 { <option value="@Key(scope)">@scope.Name (@SelectedCount(scope)/@scope.Permissions.Count)</option> }
@@ -47,7 +47,7 @@
         </div>
         @if (!Visible.Any()) { <p role="status">No permissions match this search. Existing selections are preserved.</p> }
     }
-    else { <p>Add a tenant or choose an available server-level scope to select access.</p> }
+    else { <p role="status">@EmptyMessage</p> }
     <details class="permission-summary"><summary>Selected access: @Grants.Count tenant grants · @InstancePermissions.Count server-level grants</summary>
         @foreach (var scope in Scopes.Where(scope => SelectedCount(scope) > 0))
         {
@@ -64,6 +64,8 @@
     [Parameter] public EventCallback<IntegrationPermissionChange> Changed { get; set; }
     [Parameter] public bool Disabled { get; set; }
     [Parameter] public string TestIdPrefix { get; set; } = "credential";
+    [Parameter] public string ScopeLabel { get; set; } = "Access scope";
+    [Parameter] public string EmptyMessage { get; set; } = "Add a tenant or choose an available server-level scope to select access.";
     private string? _scopeKey;
     private string _search = "";
     private string ScopeKey => Current is { } scope ? Key(scope) : "";

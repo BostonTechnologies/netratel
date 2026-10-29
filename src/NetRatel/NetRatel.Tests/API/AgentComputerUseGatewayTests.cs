@@ -117,14 +117,17 @@ public sealed class AgentComputerUseGatewayTests
         start.SetResult();
         await Task.WhenAll(callers);
 
-        var dispatched = 0;
-        while (registration.Reader.TryRead(out var frame))
+        // Starting a request can suspend on the ordered writer before its frame is
+        // queued. Await every admitted dispatch rather than treating a momentarily
+        // empty channel as the end of the concurrent batch.
+        using var dispatchDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        for (var dispatched = 0; dispatched < 8; dispatched++)
         {
+            var frame = await registration.Reader.ReadAsync(dispatchDeadline.Token);
             var command = JsonSerializer.Deserialize<ComputerUseCommand>(frame.ComputerUseDispatch.CommandJson.Span, ComputerUseContract.JsonOptions)!;
             Assert.True(registration.TryCompleteComputerUse(Completion(Result(command))));
-            dispatched++;
         }
-        Assert.Equal(8, dispatched);
+        Assert.False(registration.Reader.TryRead(out _));
         var results = await Task.WhenAll(executions);
         Assert.Equal(24, results.Count(result => result.Code == "agent_busy"));
         Assert.True(registration.IsCurrent);
