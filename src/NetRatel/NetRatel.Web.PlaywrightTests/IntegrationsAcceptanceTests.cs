@@ -116,6 +116,7 @@ public sealed class IntegrationsAcceptanceTests(ClientsManagementBrowserFixture 
         await Capture("create-policies");
         await page.GetByRole(AriaRole.Button, new() { Name = "Next", Exact = true }).ClickAsync();
         await Assertions.Expect(page.GetByTestId("credential-step")).ToContainTextAsync("Step 5 of 5 · Review & create");
+        await Assertions.Expect(page.GetByTestId("setup-step-start")).ToBeFocusedAsync();
         await Assertions.Expect(page.GetByTestId("integration-setup-review")).ToContainTextAsync("Synthetic workflow client");
         await Capture("create-review");
         await Assertions.Expect(page.GetByTestId("create-credential")).ToBeDisabledAsync();

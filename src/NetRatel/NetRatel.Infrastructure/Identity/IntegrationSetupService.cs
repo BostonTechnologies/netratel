@@ -20,7 +20,7 @@ public sealed class IntegrationSetupService(NetRatelIdentityDbContext identity, 
         McpOperatorEnvironment environment, CancellationToken ct)
     {
         var owner = principal.FindFirstValue("netratel_principal_id") ?? throw new UnauthorizedAccessException();
-        if (!Guid.TryParse(requestId, out var id) || id == Guid.Empty || request.Purpose != IntegrationCredentialPurpose.HttpMcp ||
+        if (!Guid.TryParse(requestId, out var id) || id == Guid.Empty || !ReviewedMcpAccessExpiry.IsSupported(request.ExpiresAtUtc) || request.Purpose != IntegrationCredentialPurpose.HttpMcp ||
             !McpResourceUri.TryNormalize(request.Resource, out var resource) || request.Resource != resource || !Enum.IsDefined(environment))
             throw new ArgumentException("Review the connection and setup request.");
         if (!await access.AuthorizeAsync(principal, NetRatelPermissions.McpPolicyAdministration, null, ct).ConfigureAwait(false))

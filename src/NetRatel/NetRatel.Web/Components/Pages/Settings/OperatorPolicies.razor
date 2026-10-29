@@ -55,7 +55,7 @@
                     </MudSelect></MudItem>
                 </MudGrid>
                 <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Wrap="Wrap.Wrap" Class="mt-2 mb-2">
-                    <MudText Typo="Typo.body2" data-testid="policy-result-count">@FilteredPolicies.Count() base policies · @_policies.Count(p => p.ParentPolicyId is not null) child exceptions · @_policies.Count(p => p.LifecycleState != McpOperatorPolicyLifecycleState.Active || p.ExpiresAtUtc <= DateTimeOffset.UtcNow) historical records</MudText>
+                    <MudText Typo="Typo.body2" data-testid="policy-result-count">@FilteredPolicies.Count() base policies · @FilteredPolicies.Sum(p => VisibleChildren(p).Count()) child exceptions · @_policies.Count(p => p.LifecycleState != McpOperatorPolicyLifecycleState.Active || p.ExpiresAtUtc <= DateTimeOffset.UtcNow) historical records</MudText>
                     @if (HasListFilters) { <MudButton Size="Size.Small" OnClick="ResetListFilters" Disabled="_busy" data-testid="policy-reset-filters">Reset list filters</MudButton> }
                 </MudStack>
                 @if (_bulkSelection.Count > 0) { <MudButton Color="Color.Error" Variant="Variant.Outlined" OnClick="PrepareBulkDeleteAsync" Disabled="_busy" Class="mb-3">Delete selected (@_bulkSelection.Count)</MudButton> }
@@ -63,7 +63,7 @@
                     <HeaderContent><MudTh>Policy / principal</MudTh><MudTh>Target</MudTh><MudTh>State / version</MudTh><MudTh>Expiry (UTC)</MudTh><MudTh></MudTh></HeaderContent>
                     <RowTemplate>
                         <MudTd DataLabel="Policy / principal"><div class="policy-name">@context.Name</div>
-                            @if (Children(context).Any()) { <MudButton Size="Size.Small" OnClick="@(() => ToggleChildren(context.PolicyId))" aria-expanded="@_expandedPolicies.Contains(context.PolicyId)">@Children(context).Count() exceptions</MudButton> }<div class="policy-secondary policy-principal">@PrincipalName(context.PrincipalSelector)</div></MudTd>
+                            @if (VisibleChildren(context).Any()) { <MudButton Size="Size.Small" OnClick="@(() => ToggleChildren(context.PolicyId))" aria-expanded="@_expandedPolicies.Contains(context.PolicyId)">@VisibleChildren(context).Count() exceptions</MudButton> }<div class="policy-secondary policy-principal">@PrincipalName(context.PrincipalSelector)</div></MudTd>
                         <MudTd DataLabel="Target"><span>@TenantName(context.TargetSelector.TenantId) · @TargetLabel(context.TargetSelector.Kind)</span><div class="policy-secondary policy-target">@context.TargetSelector.AgentId @context.TargetSelector.ClientTag</div></MudTd>
                         <MudTd DataLabel="State / version"><MudChip T="string" Size="Size.Small" Color="@LifecycleColor(context.LifecycleState)" Variant="Variant.Outlined">@(context.LifecycleState == McpOperatorPolicyLifecycleState.Active && context.ExpiresAtUtc <= DateTimeOffset.UtcNow ? "Expired" : context.LifecycleState.ToString())</MudChip><span class="policy-version">@($"v{context.Version}")</span></MudTd>
                         <MudTd DataLabel="Expiry (UTC)"><span class="policy-expiry">@(context.ExpiresAtUtc?.ToUniversalTime().ToString("u") ?? "None")</span></MudTd>
@@ -71,8 +71,8 @@
                     </RowTemplate>
                     <ChildRowContent>
                         @if (_expandedPolicies.Contains(context.PolicyId)) {
-                            <MudTr><MudTd colspan="6"><MudStack Class="pa-3" Spacing="2">@foreach (var child in Children(context).Where(p => _lifecycleFilter != McpOperatorPolicyLifecycleState.Active || p.LifecycleState == McpOperatorPolicyLifecycleState.Active)) {
-                                <MudPaper Outlined="true" Class="pa-3"><MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Wrap="Wrap.Wrap"><div><MudText Typo="Typo.subtitle2">@child.Name</MudText><MudText Typo="Typo.caption">@child.Effect · @child.LifecycleState · @(child.Operations is { } ops ? string.Join(", ", ops) : child.Operation ?? child.OperationFamily.ToString()) · @ClientsLabel(child.TargetSelector)</MudText></div><MudButton OnClick="@(() => SelectAsync(child.PolicyId))">Inspect</MudButton></MudStack></MudPaper>
+                            <MudTr><MudTd colspan="6"><MudStack Class="pa-3" Spacing="2">@foreach (var child in VisibleChildren(context)) {
+                                <MudPaper Outlined="true" Class="pa-3"><MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Wrap="Wrap.Wrap"><div><MudText Typo="Typo.subtitle2">@child.Name</MudText><MudText Typo="Typo.caption">@child.Effect · @child.LifecycleState · @(child.Operations is { } ops ? string.Join(", ", ops) : child.Operation ?? child.OperationFamily.ToString()) · @ClientsLabel(child.TargetSelector)</MudText></div><MudButton id="@InspectButtonId(child.PolicyId)" OnClick="@(() => SelectAsync(child.PolicyId))">Inspect</MudButton></MudStack></MudPaper>
                             }</MudStack></MudTd></MudTr>
                         }
                     </ChildRowContent>
@@ -250,7 +250,7 @@
 <MudDialog Visible="_bulkOpen" Options="PolicyDialogOptions" AriaLabel="Review bulk policy deletion">
     <TitleContent><MudText Typo="Typo.h6">Delete @_bulkPlans.Count selected policies</MudText></TitleContent>
     <DialogContent><MudAlert Severity="Severity.Warning">This removes @BulkAffectedCount policies including child exceptions from management and authorization. Immutable audit/tombstone history is retained. Deletion cannot be undone.</MudAlert>
-        <MudList T="string">@foreach(var item in _bulkPlans) { <MudListItem Text="@($"{item.Policy.Name} · v{item.Policy.Version} · {Children(item.Policy).Count()} child exceptions")" /> }</MudList>
+        <MudList T="string">@foreach(var item in _bulkPlans) { <MudListItem Text="@($"{item.Policy.Name} · v{item.Policy.Version} · {DeleteChildCount(item.Policy)} child exceptions")" /> }</MudList>
         @foreach(var result in _bulkResults) { <MudText Typo="Typo.body2">@result</MudText> }
         <MudCheckBox T="bool" @bind-Value="_bulkConfirmed" Label="I reviewed these policies and all affected child exceptions." Disabled="_busy" />
     </DialogContent>

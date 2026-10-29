@@ -36,7 +36,9 @@ public partial class OperatorPolicies
             _success = "Legacy policies consolidated. Existing restrictions and audit references were preserved.";
         });
     }
-    private int BulkAffectedCount => _bulkPlans.Sum(item => 1 + Children(item.Policy).Count());
+    private int BulkAffectedCount => _bulkPlans.Sum(item => 1 + DeleteChildCount(item.Policy));
+    private int DeleteChildCount(McpOperatorPolicy policy) => Children(policy).Count(child => child.LifecycleState != McpOperatorPolicyLifecycleState.Deleted);
+    private IEnumerable<McpOperatorPolicy> VisibleChildren(McpOperatorPolicy policy) => Children(policy).Where(child => _lifecycleFilter is null || child.LifecycleState == _lifecycleFilter && (_lifecycleFilter != McpOperatorPolicyLifecycleState.Active || child.ExpiresAtUtc is null || child.ExpiresAtUtc > DateTimeOffset.UtcNow));
     private IEnumerable<McpOperatorPolicy> Children(McpOperatorPolicy policy) => _policies.Where(p => p.ParentPolicyId == policy.PolicyId);
     private void ToggleChildren(Guid id) { if (!_expandedPolicies.Add(id)) _expandedPolicies.Remove(id); }
     private string TenantName(int id) => id == 0 ? "Server / instance" : _directory.Tenants.FirstOrDefault(t => t.Id == id)?.Name ?? $"Unavailable tenant (ID {id})";
