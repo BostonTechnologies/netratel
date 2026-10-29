@@ -6,6 +6,7 @@ using Bunit;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor.Services;
+using NetRatel.Application.Operations;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Shared.Connectivity;
 using NetRatel.Web.Components.Shared.Integrations;
@@ -65,7 +66,7 @@ public sealed class CredentialAccessEditorTests : AsyncBunitContext
             .Should().Contain("2 tenant grants").And.Contain("1 server-level grants").And.Contain("Customer B"));
         transport.Submitted.Single().Grants.Should().BeEquivalentTo([new IntegrationPairingGrant(17, "flow.read"), new(18, "flow.read")]);
         transport.Submitted.Single().InstancePermissions.Should().Equal("mcp.discovery.read");
-        transport.SubmittedFields.Single().Should().BeEquivalentTo(["requestId", "grants", "instancePermissions"]);
+        transport.SubmittedFields.Single().Should().BeEquivalentTo(["requestId", "grants", "instancePermissions", "policies"]);
         editor.Markup.Should().Contain("2030-04-01T10:11:12.123456Z");
         transport.Receipt!.Request.Proposal.Targets.Should().BeEmpty();
         editor.Find("[data-testid='access-apply']").HasAttribute("disabled").Should().BeTrue();
@@ -329,6 +330,7 @@ public sealed class CredentialAccessEditorTests : AsyncBunitContext
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/base-policies", StringComparison.Ordinal)) return Json(Array.Empty<McpIntegrationPolicy>());
             if (request.Method == HttpMethod.Get && LoadFailureSuffix is { } suffix && path.EndsWith(suffix, StringComparison.Ordinal))
             {
                 var code = LoadFailureStatus switch { HttpStatusCode.BadRequest => "review_resource_mismatch", HttpStatusCode.ServiceUnavailable => "review_service_unavailable", _ => "upstream-secret-marker" };

@@ -6,6 +6,7 @@
 @using NetRatel.Web.Services.OperatorPolicy
 @using NetRatel.Web.Components.Shared.OperatorPolicy
 @inject IMcpOperatorPolicyApiService PolicyApi
+@inject NavigationManager Navigation
 @inject IJSRuntime JS
 @inject ILogger<OperatorPolicies> Logger
 
@@ -30,13 +31,18 @@
         else
         {
             <MudPaper Class="pa-4 policy-list-panel" Outlined="true" Elevation="0">
+                <MudExpansionPanels Elevation="0" Class="mb-3"><MudExpansionPanel Text="Consolidate legacy integration policies">
+                    <MudText Typo="Typo.body2">Group eligible rules under one base per tenant while preserving each rule's operations, limits, expiry and denies. Conflicts stay unchanged.</MudText>
+                    <MudAutocomplete T="string" Label="Integration" @bind-Value="_consolidationCredential" SearchFunc="SearchConsolidationCredentials" ToStringFunc="ConsolidationCredentialName" CoerceValue="false" Disabled="_busy" />
+                    <MudButton OnClick="PreviewConsolidationAsync" Disabled="@(_busy || string.IsNullOrEmpty(_consolidationCredential))">Review consolidation</MudButton>
+                </MudExpansionPanel></MudExpansionPanels>
                 <MudGrid Spacing="2" Class="mb-2">
                     <MudItem xs="12" sm="5" md="3">
                         <MudSelect T="McpOperatorEnvironment" Label="Environment" Value="_environment" ValueChanged="EnvironmentChangedAsync" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_busy" data-testid="policy-environment">
                             @foreach (var environment in Enum.GetValues<McpOperatorEnvironment>()) { <MudSelectItem Value="environment">@environment</MudSelectItem> }
                         </MudSelect>
                     </MudItem>
-                    <MudItem xs="8" sm="5" md="3"><MudNumericField T="int?" Label="Tenant ID (optional)" Value="_tenantFilter" ValueChanged="TenantFilterChangedAsync" Min="0" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_busy" data-testid="policy-tenant-filter" /></MudItem>
+                    <MudItem xs="8" sm="5" md="3"><MudAutocomplete T="int?" Label="Tenant or server" Value="_tenantFilter" ValueChanged="TenantFilterChangedAsync" SearchFunc="SearchTenantsAsync" ToStringFunc="TenantOptionName" Clearable="true" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_busy" data-testid="policy-tenant-filter" /></MudItem>
                     <MudItem xs="4" sm="2" md="6" Class="d-flex align-center justify-end"><MudButton StartIcon="@Icons.Material.Filled.Refresh" OnClick="ReloadAsync" Disabled="_busy" data-testid="policy-list-refresh">Refresh</MudButton></MudItem>
                 </MudGrid>
                 <MudGrid Spacing="2" Class="mb-2">
@@ -49,18 +55,27 @@
                     </MudSelect></MudItem>
                 </MudGrid>
                 <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Wrap="Wrap.Wrap" Class="mt-2 mb-2">
-                    <MudText Typo="Typo.body2" data-testid="policy-result-count">@FilteredPolicies.Count() of @_policies.Count policies</MudText>
+                    <MudText Typo="Typo.body2" data-testid="policy-result-count">@FilteredPolicies.Count() base policies · @FilteredPolicies.Sum(p => VisibleChildren(p).Count()) child exceptions · @_policies.Count(p => p.LifecycleState != McpOperatorPolicyLifecycleState.Active || p.ExpiresAtUtc <= DateTimeOffset.UtcNow) historical records</MudText>
                     @if (HasListFilters) { <MudButton Size="Size.Small" OnClick="ResetListFilters" Disabled="_busy" data-testid="policy-reset-filters">Reset list filters</MudButton> }
                 </MudStack>
-                <MudTable T="McpOperatorPolicy" Items="FilteredPolicies" @bind-CurrentPage="_currentPage" RowsPerPage="_pageSize" RowsPerPageChanged="PageSizeChanged" RowClassFunc="PolicyRowClass" Dense="true" Hover="true" Elevation="0" Breakpoint="Breakpoint.Sm" Loading="_busy && !_dialogOpen" data-testid="policy-list">
+                @if (_bulkSelection.Count > 0) { <MudButton Color="Color.Error" Variant="Variant.Outlined" OnClick="PrepareBulkDeleteAsync" Disabled="_busy" Class="mb-3">Delete selected (@_bulkSelection.Count)</MudButton> }
+                <MudTable T="McpOperatorPolicy" Items="FilteredPolicies" MultiSelection="true" @bind-SelectedItems="_bulkSelection" @bind-CurrentPage="_currentPage" RowsPerPage="_pageSize" RowsPerPageChanged="PageSizeChanged" RowClassFunc="PolicyRowClass" Dense="true" Hover="true" Elevation="0" Breakpoint="Breakpoint.Sm" Loading="_busy && !_dialogOpen" data-testid="policy-list">
                     <HeaderContent><MudTh>Policy / principal</MudTh><MudTh>Target</MudTh><MudTh>State / version</MudTh><MudTh>Expiry (UTC)</MudTh><MudTh></MudTh></HeaderContent>
                     <RowTemplate>
-                        <MudTd DataLabel="Policy / principal"><div class="policy-name">@context.Name</div><div class="policy-secondary policy-principal">@context.PrincipalSelector.Kind: @context.PrincipalSelector.Value</div></MudTd>
-                        <MudTd DataLabel="Target"><span>@TargetLabel(context.TargetSelector.Kind) · tenant @context.TargetSelector.TenantId</span><div class="policy-secondary policy-target">@context.TargetSelector.AgentId @context.TargetSelector.ClientTag</div></MudTd>
-                        <MudTd DataLabel="State / version"><MudChip T="string" Size="Size.Small" Color="@LifecycleColor(context.LifecycleState)" Variant="Variant.Outlined">@context.LifecycleState</MudChip><span class="policy-version">@($"v{context.Version}")</span></MudTd>
+                        <MudTd DataLabel="Policy / principal"><div class="policy-name">@context.Name</div>
+                            @if (VisibleChildren(context).Any()) { <MudButton Size="Size.Small" OnClick="@(() => ToggleChildren(context.PolicyId))" aria-expanded="@_expandedPolicies.Contains(context.PolicyId)">@VisibleChildren(context).Count() exceptions</MudButton> }<div class="policy-secondary policy-principal">@PrincipalName(context.PrincipalSelector)</div></MudTd>
+                        <MudTd DataLabel="Target"><span>@TenantName(context.TargetSelector.TenantId) · @TargetLabel(context.TargetSelector.Kind)</span><div class="policy-secondary policy-target">@context.TargetSelector.AgentId @context.TargetSelector.ClientTag</div></MudTd>
+                        <MudTd DataLabel="State / version"><MudChip T="string" Size="Size.Small" Color="@LifecycleColor(context.LifecycleState)" Variant="Variant.Outlined">@(context.LifecycleState == McpOperatorPolicyLifecycleState.Active && context.ExpiresAtUtc <= DateTimeOffset.UtcNow ? "Expired" : context.LifecycleState.ToString())</MudChip><span class="policy-version">@($"v{context.Version}")</span></MudTd>
                         <MudTd DataLabel="Expiry (UTC)"><span class="policy-expiry">@(context.ExpiresAtUtc?.ToUniversalTime().ToString("u") ?? "None")</span></MudTd>
                         <MudTd DataLabel="Actions"><MudButton id="@InspectButtonId(context.PolicyId)" Color="Color.Primary" Size="Size.Small" EndIcon="@Icons.Material.Filled.ChevronRight" OnClick="@(() => SelectAsync(context.PolicyId))" Disabled="_busy" aria-label="@($"Inspect {context.Name}")" data-testid="@InspectButtonId(context.PolicyId)">Inspect</MudButton></MudTd>
                     </RowTemplate>
+                    <ChildRowContent>
+                        @if (_expandedPolicies.Contains(context.PolicyId)) {
+                            <MudTr><MudTd colspan="6"><MudStack Class="pa-3" Spacing="2">@foreach (var child in VisibleChildren(context)) {
+                                <MudPaper Outlined="true" Class="pa-3"><MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Wrap="Wrap.Wrap"><div><MudText Typo="Typo.subtitle2">@child.Name</MudText><MudText Typo="Typo.caption">@child.Effect · @child.LifecycleState · @(child.Operations is { } ops ? string.Join(", ", ops) : child.Operation ?? child.OperationFamily.ToString()) · @ClientsLabel(child.TargetSelector)</MudText></div><MudButton id="@InspectButtonId(child.PolicyId)" OnClick="@(() => SelectAsync(child.PolicyId))">Inspect</MudButton></MudStack></MudPaper>
+                            }</MudStack></MudTd></MudTr>
+                        }
+                    </ChildRowContent>
                     <NoRecordsContent><div class="policy-empty"><MudIcon Icon="@Icons.Material.Filled.SearchOff" Size="Size.Large" /><MudText Typo="Typo.subtitle1">No matching policies</MudText><MudText Typo="Typo.body2">Adjust the search, lifecycle or target filter, or choose another environment and tenant.</MudText></div></NoRecordsContent>
                     <PagerContent><MudTablePager PageSizeOptions="PageSizes" RowsPerPageString="Policies per page" InfoFormat="{first_item}-{last_item} of {all_items}" /></PagerContent>
                 </MudTable>
@@ -98,10 +113,10 @@
                         <MudChip T="string" Size="Size.Small" Color="@LifecycleColor(selected.LifecycleState)">@selected.LifecycleState</MudChip>
                         <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@selected.Effect</MudChip>
                         <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">Version @selected.Version</MudChip>
-                        <MudText Typo="Typo.body2">@TargetLabel(selected.TargetSelector.Kind) · tenant @selected.TargetSelector.TenantId</MudText>
+                        <MudText Typo="Typo.body2">@TenantName(selected.TargetSelector.TenantId) · @TargetLabel(selected.TargetSelector.Kind)</MudText>
                     </MudStack>
                     <MudText Typo="Typo.caption">Policy @selected.PolicyId · created by @selected.CreatedBy at @selected.CreatedAtUtc.ToUniversalTime().ToString("u")</MudText>
-                    <PolicyDefinitionView Draft="@ToDraft(selected)" />
+                    <PolicyDefinitionView Draft="@ToDraft(selected)" TenantName="@TenantName(selected.TargetSelector.TenantId)" PrincipalName="@PrincipalName(selected.PrincipalSelector)" ClientNames="@ClientsLabel(selected.TargetSelector)" />
                     @if (_targetProfile is { } target)
                     { <MudAlert Severity="Severity.Info" Class="mt-2" data-testid="policy-target-profile">Persisted target: @target.Classification · profile @($"v{target.Version}") · tags @string.Join(", ", target.Tags). Updated by @target.UpdatedBy at @target.UpdatedAtUtc.ToUniversalTime().ToString("u").</MudAlert> }
                     else if (selected.TargetSelector.Kind == McpOperatorTargetSelectorKind.ExactAgent)
@@ -112,8 +127,7 @@
                             <MudText Typo="Typo.body2">Select a credential owned by this signed-in account. This read-only check uses the selected policy's tenant/client and the current profile revision.</MudText>
                             <MudGrid>
                                 <MudItem xs="12" md="4"><label class="policy-credential-picker">Owned HTTP MCP credential<select @bind="_credentialId" disabled="_busy" data-testid="policy-admission-credential"><option value="">Select credential</option>@foreach (var credential in _credentials) { <option value="@credential.Id">@credential.Name</option> }</select></label></MudItem>
-                                <MudItem xs="12" md="4"><MudTextField Label="Tool" @bind-Value="_admissionTool" Disabled="_busy" /></MudItem>
-                                <MudItem xs="12" md="4"><MudTextField Label="Operation" @bind-Value="_admissionOperation" Disabled="_busy" /></MudItem>
+                                <MudItem xs="12" md="8"><MudAutocomplete T="string" Label="Admission operation" Value="@($"{_admissionTool}/{_admissionOperation}")" ValueChanged="SelectAdmissionOperation" SearchFunc="SearchAdmissionOperations" CoerceValue="false" Disabled="_busy" /></MudItem>
                             </MudGrid>
                             <MudButton OnClick="CheckAdmissionAsync" Disabled="@(_busy || string.IsNullOrWhiteSpace(_credentialId))" data-testid="policy-admission-check">Check current admission</MudButton>
                             @if (_credentialAdmission is { } admission)
@@ -146,18 +160,26 @@
                         <MudItem xs="12" md="6"><MudTextField Label="Policy name" @bind-Value="_editor.Name" Disabled="_busy" /></MudItem>
                         <MudItem xs="6" md="3"><MudSelect T="McpOperatorPolicyEffect" Label="Effect" @bind-Value="_editor.Effect" Disabled="_busy">@foreach (var effect in Enum.GetValues<McpOperatorPolicyEffect>()) { <MudSelectItem Value="effect">@effect</MudSelectItem> }</MudSelect></MudItem>
                         <MudItem xs="6" md="3"><MudNumericField T="int" Label="Priority" @bind-Value="_editor.Priority" Min="-10000" Max="10000" Disabled="_busy" /></MudItem>
-                        <MudItem xs="12" md="4"><MudSelect T="McpOperatorPrincipalSelectorKind" Label="Principal selector" @bind-Value="_editor.PrincipalKind" Disabled="_busy">@foreach (var kind in Enum.GetValues<McpOperatorPrincipalSelectorKind>()) { <MudSelectItem Value="kind">@kind</MudSelectItem> }</MudSelect></MudItem>
-                        <MudItem xs="12" md="8"><MudTextField Label="Exact principal value" @bind-Value="_editor.PrincipalValue" Disabled="_busy" /></MudItem>
+                        <MudItem xs="12" md="4"><MudSelect T="McpOperatorPrincipalSelectorKind" Label="Principal type" Value="_editor.PrincipalKind" ValueChanged="PrincipalKindChanged" Disabled="@(_busy || _editor.IntegrationCredentialId is not null || _editor.ParentPolicyId is not null)">@foreach (var kind in Enum.GetValues<McpOperatorPrincipalSelectorKind>()) { <MudSelectItem Value="kind">@kind</MudSelectItem> }</MudSelect></MudItem>
+                        <MudItem xs="12" md="8"><MudAutocomplete T="string" Label="Principal" Value="_editor.PrincipalValue" ValueChanged="@((string value) => _editor.PrincipalValue = value)" SearchFunc="SearchPrincipalsAsync" ToStringFunc="PrincipalOptionName" Disabled="@(_busy || _editor.IntegrationCredentialId is not null || _editor.ParentPolicyId is not null)" CoerceValue="false" HelperText="Choose a known identity. Unresolved existing values are preserved." /></MudItem>
                         <MudItem xs="12" md="4"><MudSelect T="McpOperatorTargetSelectorKind" Label="Target selector" @bind-Value="_editor.TargetKind" Disabled="@(_busy || _editExisting)">@foreach (var kind in Enum.GetValues<McpOperatorTargetSelectorKind>()) { <MudSelectItem Value="kind">@kind</MudSelectItem> }</MudSelect></MudItem>
-                        <MudItem xs="12" md="3"><MudNumericField T="int" Label="Tenant ID" @bind-Value="_editor.TenantId" Min="0" Disabled="@(_busy || _editExisting)" /></MudItem>
-                        <MudItem xs="12" md="5"><MudTextField Label="Exact client ID" @bind-Value="_editor.AgentId" Disabled="@(_busy || _editExisting || _editor.TargetKind != McpOperatorTargetSelectorKind.ExactAgent)" /></MudItem>
-                        @if (_editor.TargetKind == McpOperatorTargetSelectorKind.ClientTag) { <MudItem xs="12"><MudTextField Label="Exact client tag" @bind-Value="_editor.ClientTag" Disabled="@(_busy || _editExisting)" /></MudItem> }
+                        <MudItem xs="12" md="3"><MudAutocomplete T="int?" Label="Tenant" Value="@((int?)_editor.TenantId)" ValueChanged="EditorTenantChangedAsync" SearchFunc="SearchTenantsAsync" ToStringFunc="TenantOptionName" Disabled="@(_busy || _editExisting || _editor.ParentPolicyId is not null || _editor.TargetKind == McpOperatorTargetSelectorKind.ControlPlane)" /></MudItem>
+                        <MudItem xs="12" md="5"><MudAutocomplete T="string" Label="Client" Value="_editor.AgentId" ValueChanged="@((string value) => _editor.AgentId = value)" SearchFunc="SearchClientsAsync" ToStringFunc="ClientOptionName" CoerceValue="false" Disabled="@(_busy || _editExisting || _editor.TargetKind != McpOperatorTargetSelectorKind.ExactAgent)" /></MudItem>
+                        @if (_editor.TargetKind == McpOperatorTargetSelectorKind.ClientTag) { <MudItem xs="12"><MudAutocomplete T="string" Label="Client tag" Value="_editor.ClientTag" ValueChanged="@((string value) => _editor.ClientTag = value)" SearchFunc="SearchTagsAsync" Disabled="@(_busy || _editExisting)" /></MudItem> }
                         <MudItem xs="12" md="6"><MudSelect T="McpOperatorTargetClassification?" Label="Classification filter" @bind-Value="_editor.Classification" Clearable="true" Disabled="_busy">@foreach (var classification in Enum.GetValues<McpOperatorTargetClassification>().Where(value => value != McpOperatorTargetClassification.Unknown)) { <MudSelectItem T="McpOperatorTargetClassification?" Value="@((McpOperatorTargetClassification?)classification)">@classification</MudSelectItem> }</MudSelect></MudItem>
                         <MudItem xs="12" md="6"><MudSelect T="McpOperatorOperationFamily" Label="Operation families" MultiSelection="true" @bind-SelectedValues="_editor.Families" Disabled="_busy">@foreach (var family in OperatorPolicyDraftEditor.OperationFamilies) { <MudSelectItem Value="family">@family</MudSelectItem> }</MudSelect></MudItem>
-                        <MudItem xs="12"><MudTextField Label="Exact operation (optional; tool/operation)" @bind-Value="_editor.Operation" Disabled="_busy" /></MudItem>
+                        <MudItem xs="12"><MudAutocomplete T="string" @ref="_operationPicker" Label="Add catalog operation" Value="@(string.IsNullOrEmpty(_editor.Operation) ? "" : _editor.Operation)" ValueChanged="AddOperation" SearchFunc="SearchOperationsAsync" CoerceValue="false" Disabled="_busy" ResetValueOnEmptyText="true" />
+                            <MudText Typo="Typo.caption">@(_editor.Operations is null ? "Existing family-wide selection" : $"{_editor.Operations.Count} selected operations")</MudText>
+                            @if (_editor.Operations is { Count: > 0 }) { <MudExpansionPanels Elevation="0"><MudExpansionPanel Text="Inspect selected operations"><MudStack Row="true" Wrap="Wrap.Wrap">@foreach(var op in _editor.Operations) { <MudChip T="string" OnClose="@(() => RemoveOperation(op))">@op</MudChip> }</MudStack></MudExpansionPanel></MudExpansionPanels> }
+                            <MudButton Size="Size.Small" OnClick="@(() => { _editor.Operations = []; _editor.Operation = ""; })" Disabled="_busy">Choose a new operation selection</MudButton>
+                            @if (_editor.TargetKind == McpOperatorTargetSelectorKind.Tenant) {
+                                <MudAutocomplete T="string" @ref="_clientPicker" Label="Add client exception (optional; all clients when empty)" Value="@(string.Empty)" ValueChanged="AddClient" SearchFunc="SearchClientsAsync" ToStringFunc="ClientOptionName" CoerceValue="false" Disabled="_busy" />
+                                <MudStack Row="true" Wrap="Wrap.Wrap">@foreach(var client in _editor.AgentIds ?? []) { <MudChip T="string" OnClose="@(() => RemoveClient(client))">@ClientOptionName(client.ToString())</MudChip> }</MudStack>
+                                <MudSelect T="string" Label="Client tags (optional)" MultiSelection="true" SelectedValues="@(_editor.ClientTags ?? [])" SelectedValuesChanged="@(tags => _editor.ClientTags = tags.Any() ? tags.ToArray() : null)" Disabled="_busy">@foreach(var tag in _directory.Tags.Concat(_editor.ClientTags ?? []).Distinct()) { <MudSelectItem Value="tag">@tag</MudSelectItem> }</MudSelect>
+                            }</MudItem>
                         <MudItem xs="12"><MudText Typo="Typo.subtitle1" Class="mt-3">Paths and execution bounds</MudText></MudItem>
                         <MudItem xs="12" md="6"><MudTextField Label="Exact working directories" Lines="3" @bind-Value="_editor.WorkingDirectories" Disabled="_busy" data-testid="policy-working-directories" HelperText="/tmp does not include /tmp/example; add each required directory." /></MudItem>
-                        <MudItem xs="12" md="6"><MudTextField Label="Allowed shells" Lines="3" @bind-Value="_editor.Shells" Disabled="_busy" /></MudItem>
+                        <MudItem xs="12" md="6"><MudSelect T="string" Label="Allowed shells" MultiSelection="true" SelectedValues="EditorShells" SelectedValuesChanged="@(shells => _editor.Shells = string.Join('\n', shells))" Disabled="_busy">@foreach(var shell in KnownShells) { <MudSelectItem Value="shell">@shell</MudSelectItem> }</MudSelect></MudItem>
                         <MudItem xs="12" md="6"><MudTextField Label="Read roots" Lines="3" @bind-Value="_editor.ReadRoots" Disabled="_busy" /></MudItem>
                         <MudItem xs="12" md="6"><MudTextField Label="Write roots" Lines="3" @bind-Value="_editor.WriteRoots" Disabled="_busy" /></MudItem>
                         <MudItem xs="12"><MudText Typo="Typo.subtitle1" Class="mt-3">Validity and review</MudText></MudItem>
@@ -173,8 +195,8 @@
                 <div data-testid="policy-preview-review">
                     <MudText Typo="Typo.h6">Confirm @prepared.Action.ToString().ToLowerInvariant()</MudText>
                     <MudText Typo="Typo.body2">@(prepared.PolicyId is { } id ? $"Policy {id} · expected version {prepared.ExpectedVersion}" : "New policy")</MudText>
-                    @if (prepared.Draft is { } draft) { <PolicyDefinitionView Draft="draft" /> }
-                    else if (_selected is { } current) { <PolicyDefinitionView Draft="@ToDraft(current)" /> }
+                    @if (prepared.Draft is { } draft) { <PolicyDefinitionView Draft="draft" TenantName="@TenantName(draft.TargetSelector.TenantId)" PrincipalName="@PrincipalName(draft.PrincipalSelector)" ClientNames="@ClientsLabel(draft.TargetSelector)" /> }
+                    else if (_selected is { } current) { <PolicyDefinitionView Draft="@ToDraft(current)" TenantName="@TenantName(current.TargetSelector.TenantId)" PrincipalName="@PrincipalName(current.PrincipalSelector)" ClientNames="@ClientsLabel(current.TargetSelector)" /> }
                     <MudAlert Severity="Severity.Info" Class="mt-3">@StateChangeDescription(prepared.Action) Preview expires @preview.ExpiresAtUtc.ToUniversalTime().ToString("u"). Correlation: @preview.CorrelationId.</MudAlert>
                     <MudCheckBox T="bool" @bind-Value="_confirmed" Label="I reviewed the exact principal, target, bounds and expiry above." Disabled="_busy" data-testid="policy-confirm-checkbox" />
                 </div>
@@ -202,12 +224,35 @@
             {
                 @if (_selected is not null && _authority is not null)
                 {
-                    <MudButton Color="Color.Error" OnClick="@(() => PreviewStateAsync(PolicyChangeAction.Revoke))" Disabled="@(_busy || !CanRevoke)" data-testid="policy-revoke">Revoke…</MudButton>
-                    <MudButton OnClick="@(() => PreviewStateAsync(PolicyChangeAction.Disable))" Disabled="@(_busy || !CanDisable)" data-testid="policy-disable">Disable…</MudButton>
-                    <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Edit" OnClick="EditPolicy" Disabled="@(_busy || !CanReplace)" data-testid="policy-edit">Edit reviewed bounds</MudButton>
+                    <MudButton Color="Color.Error" OnClick="@(() => PreviewStateAsync(PolicyChangeAction.Delete))" Disabled="@(_busy || _selected.LifecycleState == McpOperatorPolicyLifecycleState.Deleted)" data-testid="policy-delete">Delete</MudButton>
+                    @if (_selected.ParentPolicyId is null && CanReplace) { <MudButton OnClick="NewException" Disabled="_busy">Add exception</MudButton> }
+                    <MudButton Color="Color.Error" OnClick="@(() => PreviewStateAsync(PolicyChangeAction.Revoke))" Disabled="@(_busy || !CanRevoke)" data-testid="policy-revoke">Revoke</MudButton>
+                    <MudButton OnClick="@(() => PreviewStateAsync(PolicyChangeAction.Disable))" Disabled="@(_busy || !CanDisable)" data-testid="policy-disable">Disable</MudButton>
+                    <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Edit" OnClick="EditPolicy" Disabled="@(_busy || !CanReplace)" data-testid="policy-edit">Edit</MudButton>
                 }
                 <MudButton OnClick="CloseDialog" Disabled="_busy">Close</MudButton>
             }
         </div>
     </DialogActions>
+</MudDialog>
+
+<MudDialog Visible="@(_consolidationPlan is not null)" Options="PolicyDialogOptions" AriaLabel="Review legacy policy consolidation">
+    <TitleContent><MudText Typo="Typo.h6">Consolidate legacy policies</MudText></TitleContent>
+    <DialogContent>@if(_consolidationPlan is { } plan) {
+        <MudAlert Severity="Severity.Info">Eligible rules keep their limits, expiry, target restrictions and deny behavior. Their policy IDs and audit history remain available under the new base.</MudAlert>
+        <MudList T="string">@foreach(var scope in plan.Scopes) { <MudListItem Text="@($"{scope.Name}: {scope.PolicyCount} existing policies")" /> }</MudList>
+        @foreach(var conflict in plan.Conflicts) { <MudAlert Severity="Severity.Warning">@conflict</MudAlert> }
+        <MudCheckBox T="bool" @bind-Value="_consolidationConfirmed" Label="I reviewed these exact scopes and the preserved conflicts." Disabled="_busy" />
+    }</DialogContent>
+    <DialogActions><MudButton OnClick="@(() => _consolidationPlan = null)" Disabled="_busy">Cancel</MudButton><MudButton OnClick="ConfirmConsolidationAsync" Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_busy || !_consolidationConfirmed || _consolidationPlan?.Scopes.Count == 0)">Consolidate</MudButton></DialogActions>
+</MudDialog>
+
+<MudDialog Visible="_bulkOpen" Options="PolicyDialogOptions" AriaLabel="Review bulk policy deletion">
+    <TitleContent><MudText Typo="Typo.h6">Delete @_bulkPlans.Count selected policies</MudText></TitleContent>
+    <DialogContent><MudAlert Severity="Severity.Warning">This removes @BulkAffectedCount policies including child exceptions from management and authorization. Immutable audit/tombstone history is retained. Deletion cannot be undone.</MudAlert>
+        <MudList T="string">@foreach(var item in _bulkPlans) { <MudListItem Text="@($"{item.Policy.Name} · v{item.Policy.Version} · {DeleteChildCount(item.Policy)} child exceptions")" /> }</MudList>
+        @foreach(var result in _bulkResults) { <MudText Typo="Typo.body2">@result</MudText> }
+        <MudCheckBox T="bool" @bind-Value="_bulkConfirmed" Label="I reviewed these policies and all affected child exceptions." Disabled="_busy" />
+    </DialogContent>
+    <DialogActions><MudButton OnClick="@(() => _bulkOpen = false)" Disabled="_busy">Close</MudButton><MudButton Color="Color.Error" Variant="Variant.Filled" OnClick="ConfirmBulkDeleteAsync" Disabled="@(_busy || !_bulkConfirmed || _bulkResults.Count > 0)">Delete selected</MudButton></DialogActions>
 </MudDialog>

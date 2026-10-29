@@ -170,6 +170,7 @@ public sealed class IntegrationPairingCleanupWorker(IServiceScopeFactory scopes,
             {
                 await using var scope = scopes.CreateAsyncScope();
                 await scope.ServiceProvider.GetRequiredService<IntegrationPairingService>().CleanupAsync(stoppingToken).ConfigureAwait(false);
+                await scope.ServiceProvider.GetRequiredService<IntegrationSetupService>().CleanupAsync(stoppingToken).ConfigureAwait(false);
                 await scope.ServiceProvider.GetRequiredService<HttpHostSetupService>().CleanupAsync(stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }

@@ -30,8 +30,13 @@ public sealed record ReviewedMcpAccessRequest(string RequestId, string Status, s
     public string? CredentialRevisionHash { get; init; }
     public string PolicyRevisionHash { get; init; } = "";
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? ApprovalMode { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public IReadOnlyList<ReviewedMcpBasePolicy>? BasePolicies { get; init; }
     public override string ToString() => $"Reviewed access request {RequestId} {Status} (code redacted)";
 }
+
+/// <summary>Secret-free policy review across transports; the exact saved plan remains the authority.</summary>
+public sealed record ReviewedMcpBasePolicy(int TenantId, string Name, string Effect, string Families,
+    DateTimeOffset ExpiresAtUtc, IReadOnlyList<string> Operations, IReadOnlyDictionary<string, string> Limits);
 
 public sealed record ReviewedMcpAccessAdmission(ReviewedMcpAccessTarget Target, string RequiredScope,
     IReadOnlyList<string> RequiredRoles, bool ApplicationGrantConfigured, bool TenantVisible, bool? PolicyAllowed,

@@ -60,12 +60,16 @@ public sealed class ReviewedAccessRecoveryTests(PostgreSqlPersistenceFixture pos
             delivery.ExpiresAtUtc.Should().Be(proposal.ExpiresAtUtc);
             (await identity.IntegrationCredentials.AsNoTracking().CountAsync()).Should().Be(2, "there is one ingress credential and one issued credential");
             var attached = await policies.McpOperatorPolicies.AsNoTracking().ToArrayAsync();
-            attached.Should().HaveCount(2).And.OnlyContain(policy => policy.PrincipalSelectorValue == delivery.CredentialId);
+            var recoveredBase = attached.Should().ContainSingle().Which;
+            recoveredBase.PrincipalSelectorValue.Should().Be(delivery.CredentialId);
+            recoveredBase.IntegrationCredentialId.Should().Be(delivery.CredentialId);
+            recoveredBase.ParentPolicyId.Should().BeNull();
+            recoveredBase.Operations.Should().BeEquivalentTo(["netratel_auth/status", "netratel_health/get"]);
             clock.Advance(TimeSpan.FromSeconds(10));
             var replay = await pairing.PollAsync(started.DeviceCapability);
             replay.Delivery!.CredentialId.Should().Be(delivery.CredentialId);
             replay.Delivery.Secret.Should().Be(delivery.Secret);
-            (await policies.McpOperatorPolicies.AsNoTracking().CountAsync()).Should().Be(2);
+            (await policies.McpOperatorPolicies.AsNoTracking().CountAsync()).Should().Be(1);
         }
 
         IntegrationPairingService Pairing(NetRatelIdentityDbContext identity, OrchestratorDbContext policies, IntegrationCredentialService credentials) =>

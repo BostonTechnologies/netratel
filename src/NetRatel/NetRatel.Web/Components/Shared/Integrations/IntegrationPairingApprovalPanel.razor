@@ -55,6 +55,7 @@
                         @if (McpOperationAccessCatalog.Find(target.Tool, target.Operation) is { } requirement)
                         { <span> · scope @McpOperationAccessScopeNames.Canonical(requirement.RequiredScope) · roles @(McpLocalOperationAuthorizationCatalog.RolesFor(requirement.RequiredScope).Count > 0 ? string.Join(", ", McpLocalOperationAuthorizationCatalog.RolesFor(requirement.RequiredScope)) : "none required")</span> }
                     </li> }</ul>
+                <ReviewedBasePolicySummary Policies="access.BasePolicies" />
                 <p>The review reference binds these operation scopes, role mappings and application permissions. Approval rechecks current policy and target revisions.</p>
             }
             else

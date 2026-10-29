@@ -72,7 +72,7 @@ Reviewed credential expiry uses exact UTC instants at microsecond resolution: at
 
 ## Reviewed admission
 
-Ordinary HTTP MCP credential creation stores the configured application grants. It does not install operator policies. A valid credential with `flow.read` grants for synthetic tenants 17 and 29 can authenticate while both `netratel_flows/list` calls correctly return `tenant_not_authorized` when matching Production policies are absent.
+The browser HTTP MCP wizard reviews configured application grants and one base policy per tenant, plus a separate Server access policy, and saves them in one transaction. Existing credentials created without policies can still authenticate while an operation is denied. Use **Edit access → Base policies** to review and reconcile their missing policies. Credential grants, current owner authority, policies, confirmations and runtime capabilities remain independent checks.
 
 The create acknowledgment and credential details show configured grants separately from the current owner-scoped admission view. Open **Details → Refresh admission** after a reviewed reconciliation or an owner-authority change. The view identifies the credential lifecycle, current authentication validity, canonical resource, instance/environment, exact UTC expiry, durable owner permission, tenant visibility and matching exact-operation policies with their expiry. Its default read samples cover only `netratel_flows/list` in configured flow-read tenants, up to 32 targets with an explicit truncation notice. Other grants remain visible without an inferred operation decision. Agent readiness and capability remain not checked or conditional; authorization admission does not certify dispatch success.
 

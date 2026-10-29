@@ -1,0 +1,51 @@
+@using NetRatel.Application.Operations
+@using NetRatel.Web.Services
+
+<MudStack Spacing="3" data-testid="integration-setup-review">
+    <MudPaper Outlined="true" Class="pa-4" Elevation="0">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+            <div style="min-width:0;flex:1"><MudText Typo="Typo.overline">Connection</MudText><MudText Typo="Typo.h5">@Name</MudText></div>
+            <MudButton Style="flex-shrink:0;white-space:nowrap" OnClick="@(() => Edit.InvokeAsync(0))" StartIcon="@Icons.Material.Filled.Edit" aria-label="Edit connection">Edit</MudButton>
+        </MudStack>
+        <MudChip T="string" Color="Color.Primary" Variant="Variant.Outlined">@(HttpMcp ? "HTTP MCP gateway" : "API / CLI / stdio MCP")</MudChip>
+        @if (HttpMcp) { <MudText Class="mt-2" Style="overflow-wrap:anywhere">@Resource</MudText> }
+        <MudTooltip Text="@IntegrationCredentialExpiry.Format(ExpiresAtUtc)"><MudText Typo="Typo.body2" Class="mt-2">Expires @ExpiresAtUtc.ToUniversalTime().ToString("dddd, dd MMM yyyy HH:mm:ss") UTC</MudText></MudTooltip>
+        <MudText Typo="Typo.caption" Class="d-block">Exact UTC: @IntegrationCredentialExpiry.Format(ExpiresAtUtc)</MudText>
+    </MudPaper>
+    <MudGrid Spacing="3">
+        @foreach(var scope in Scopes)
+        {
+            var policy = Policies.FirstOrDefault(p => p.TenantId == (scope.TenantId ?? 0));
+            <MudItem xs="12" md="6">
+                <MudCard Outlined="true" Elevation="0" Class="h-100">
+                    <MudCardHeader><CardHeaderContent><MudText Typo="Typo.h6">@scope.Name</MudText></CardHeaderContent><CardHeaderActions><MudButton Size="Size.Small" OnClick="@(() => Edit.InvokeAsync(scope.TenantId is null ? 1 : 2))" aria-label="@($"Edit {scope.Name} access")">Edit access</MudButton></CardHeaderActions></MudCardHeader>
+                    <MudCardContent>
+                        <MudStack Row="true" Wrap="Wrap.Wrap" Spacing="1" Class="mb-3"><MudChip T="string" Size="Size.Small" Color="Color.Info">@scope.Permissions.Count grants</MudChip>@if(policy is not null) { <MudChip T="string" Size="Size.Small" Color="@(policy.Effect == McpOperatorPolicyEffect.Allow ? Color.Success : Color.Warning)">@policy.Effect · 1 base policy</MudChip> }</MudStack>
+                        <MudExpansionPanels Elevation="0" MultiExpansion="true">
+                            <MudExpansionPanel Text="Selected permissions">@foreach(var permission in scope.Permissions) { <MudText Typo="Typo.body2" Class="mb-1">@permission.Label</MudText> }</MudExpansionPanel>
+                            @if(policy is not null) {
+                                <MudExpansionPanel Expanded="true" Text="@policy.Name">
+                                    <MudText Typo="Typo.body2">@policy.Families</MudText><MudText Typo="Typo.caption">Expires @IntegrationCredentialExpiry.Format(policy.ExpiresAtUtc)</MudText>
+                                    <MudText Typo="Typo.body2" Class="mt-2">Read: @string.Join(", ", policy.Constraints.ReadRoots ?? []) · Write: @string.Join(", ", policy.Constraints.WriteRoots ?? [])</MudText>
+                                    <MudText Typo="Typo.body2">Command: @policy.Constraints.MaxCommandDurationSeconds s · Onboarding: @policy.Constraints.MaxOnboardingCodeUses uses / @policy.Constraints.MaxOnboardingCodeLifetimeSeconds s</MudText>
+                                    <MudButton OnClick="@(() => Edit.InvokeAsync(3))" Size="Size.Small">Inspect or edit policy</MudButton>
+                                </MudExpansionPanel>
+                            }
+                        </MudExpansionPanels>
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+        }
+    </MudGrid>
+    @if(HttpMcp) { <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">Approval saves the credential and @Policies.Count base policies together. This configures admission; endpoint connectivity and client capabilities are checked when you connect.</MudAlert> }
+</MudStack>
+
+@code {
+    [Parameter] public string Name { get; set; } = "";
+    [Parameter] public bool HttpMcp { get; set; }
+    [Parameter] public string? Resource { get; set; }
+    [Parameter] public DateTimeOffset ExpiresAtUtc { get; set; }
+    [Parameter] public IReadOnlyList<IntegrationPermissionScope> Scopes { get; set; } = [];
+    [Parameter] public IReadOnlyList<McpIntegrationPolicy> Policies { get; set; } = [];
+    [Parameter] public EventCallback<int> Edit { get; set; }
+}

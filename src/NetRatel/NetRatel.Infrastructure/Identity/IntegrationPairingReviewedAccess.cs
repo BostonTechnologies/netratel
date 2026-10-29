@@ -16,14 +16,14 @@ public sealed partial class IntegrationPairingService
         ReviewedMcpAccessProposal Proposal, string RequestingPrincipalId, string RequestingCredentialId,
         string Instance, McpOperatorEnvironment Environment, string PolicyRevisionHash, string ProposalHash,
         string? ApproverPrincipalId = null, bool Applied = false, string? ProtectedSetup = null, string? CredentialRevisionHash = null, string? ReviewBindingHash = null,
-        IntegrationPairingFailure? ReviewFailure = null, string? ApprovalMode = null);
+        IntegrationPairingFailure? ReviewFailure = null, string? ApprovalMode = null, IReadOnlyList<McpIntegrationPolicy>? BasePolicies = null, McpOperatorConstraints? TargetPolicyLimits = null);
     private sealed record ProtectedSetupMaterial(string Code, string Capability)
     { public override string ToString() => "Protected setup material (code and capability redacted)"; }
 
     /// <summary>Protected client initiation. The returned device capability must never enter an MCP tool response.</summary>
     public async Task<IntegrationPairingStartResponse> StartReviewedAsync(ReviewedMcpAccessProposal proposal,
         string owner, string requestingCredentialId, string origin, string resource, McpOperatorEnvironment environment,
-        CancellationToken ct = default)
+        CancellationToken ct = default, IReadOnlyList<McpIntegrationPolicy>? basePolicies = null)
     {
         RequireReviewedExpiry(proposal.ExpiresAtUtc);
         proposal = CanonicalProposal(proposal);
@@ -72,6 +72,7 @@ public sealed partial class IntegrationPairingService
             await PolicyRevisionHashAsync(proposal, environment, id, ct).ConfigureAwait(false), hash,
             ProtectedSetup: protection.CreateProtector("NetRatel.IntegrationPairing.Setup.v1", id).Protect(JsonSerializer.Serialize(new ProtectedSetupMaterial(code, capability))),
             CredentialRevisionHash: await CredentialRevisionHashAsync(proposal.CredentialId, owner, ct).ConfigureAwait(false));
+        metadata = metadata with { BasePolicies = basePolicies, TargetPolicyLimits = basePolicies is null && proposal.Targets.Count > 0 ? McpIntegrationPolicyCatalog.AllAccessLimits : null };
         metadata = metadata with { ReviewBindingHash = ReviewHash(origin, resource!, metadata) };
         var request = new IntegrationPairingRequest
         {
@@ -93,7 +94,7 @@ public sealed partial class IntegrationPairingService
 
     /// <summary>MCP initiation for an existing credential; no credential-delivery capability is returned.</summary>
     public async Task<ReviewedMcpAccessReceipt> RequestReviewedAsync(ReviewedMcpAccessProposal proposal, string owner,
-        string requester, string origin, string resource, McpOperatorEnvironment environment, CancellationToken ct = default)
+        string requester, string origin, string resource, McpOperatorEnvironment environment, CancellationToken ct = default, IReadOnlyList<McpIntegrationPolicy>? basePolicies = null)
     {
         RequireReviewedExpiry(proposal.ExpiresAtUtc);
         proposal = CanonicalProposal(proposal);
@@ -104,12 +105,12 @@ public sealed partial class IntegrationPairingService
         {
             var metadata = AccessMetadata(existing)!;
             if (metadata.Environment != environment || !McpResourceUri.Equivalent(existing.Resource, resource) || existing.PublicOrigin != HttpHostSetupProtocol.NormalizeWebAddress(origin).TrimEnd('/')) throw new IntegrationPairingUnavailableException();
-            if (!SameProposal(metadata, proposal)) throw ReviewValidation("review_proposal_conflict", "request", "requestId");
+            if (!SameProposal(metadata, proposal) || JsonSerializer.Serialize(metadata.BasePolicies) != JsonSerializer.Serialize(basePolicies)) throw ReviewValidation("review_proposal_conflict", "request", "requestId");
         }
         else
         {
             if (proposal.Action == "create") throw ReviewValidation("review_protected_setup_required", "request", "protectedSetupRequired");
-            var start = await StartReviewedAsync(proposal, owner, requester, origin, resource, environment, ct).ConfigureAwait(false);
+            var start = await StartReviewedAsync(proposal, owner, requester, origin, resource, environment, ct, basePolicies).ConfigureAwait(false);
             code = start.UserCode;
         }
         return await InspectReviewedAsync(proposal.RequestId, owner, requester, false, code, ct).ConfigureAwait(false);
@@ -240,6 +241,7 @@ public sealed partial class IntegrationPairingService
         try
         {
             await ValidateTargetsAsync(metadata.Proposal, ct).ConfigureAwait(false);
+            if (metadata.BasePolicies is { } basePlan) await ValidateBasePlanAsync(metadata.Proposal, basePlan, ct).ConfigureAwait(false);
         }
         catch (IntegrationCredentialGrantValidationException) { return IntegrationPairingFailure.ForCode("review_target_changed", stage); }
         if (await PolicyRevisionHashAsync(metadata.Proposal, metadata.Environment, request.Id, ct).ConfigureAwait(false) != metadata.PolicyRevisionHash)
@@ -300,72 +302,8 @@ public sealed partial class IntegrationPairingService
 
     private async Task ApplyPoliciesAsync(IntegrationPairingRequest request, ReviewedAccessMetadata metadata, string credentialId, CancellationToken ct)
     {
-        for (var index = 0; index < metadata.Proposal.Targets.Count; index++)
-        {
-            var target = metadata.Proposal.Targets[index];
-            var reference = $"pairing:{request.Id}:{index}";
-            var existing = (await policyAdministration!.ListAsync(metadata.Environment, target.TenantId, ct).ConfigureAwait(false)).Items
-                .Where(x => x.AuditReference == reference).ToArray();
-            if (existing.Length > 0)
-            {
-                if (existing.Length != 1 || existing[0].Version != 1 || existing[0].LifecycleState != McpOperatorPolicyLifecycleState.Active || existing[0].DisabledAtUtc is not null ||
-                    existing[0].PrincipalSelector.Kind != McpOperatorPrincipalSelectorKind.OAuthClientId || existing[0].PrincipalSelector.Value != credentialId ||
-                    existing[0].TargetSelector.TenantId != target.TenantId || existing[0].TargetSelector.AgentId != target.AgentId ||
-                    existing[0].Operation != target.Tool + "/" + target.Operation || existing[0].ExpiresAtUtc != metadata.Proposal.ExpiresAtUtc)
-                    throw new IntegrationPairingUnavailableException();
-                continue;
-            }
-            var descriptor = McpOperatorOperationCatalog.Find(target.Tool, target.Operation)!;
-            var profile = target.AgentId is { } agent ? await policyAdministration.GetTargetProfileAsync(target.TenantId, agent, ct).ConfigureAwait(false) : null;
-            var selector = target.AgentId is not null ? McpOperatorTargetSelectorKind.ExactAgent : target.TenantId == 0 ? McpOperatorTargetSelectorKind.ControlPlane : McpOperatorTargetSelectorKind.Tenant;
-            await policyAdministration.CreateAsync(new($"Reviewed client {request.Id[..8]} operation {index + 1}", metadata.Environment,
-                McpOperatorPolicyEffect.Allow, 0, new(McpOperatorPrincipalSelectorKind.OAuthClientId, credentialId),
-                new(selector, target.TenantId, target.AgentId), profile?.Classification, descriptor.OperationFamily,
-                target.Tool + "/" + target.Operation, new(), metadata.Proposal.ExpiresAtUtc, metadata.Proposal.ExpiresAtUtc, reference), metadata.ApproverPrincipalId!, ct).ConfigureAwait(false);
-        }
-
-        // The policy mutation API evaluates a stable operation shared by its preview and
-        // confirmation routes. Attach that internal operation only when the reviewer
-        // selected both published phases for the same persisted target. The public
-        // phase policies above still guard MCP dispatch independently.
-        var mutationPairs = new (string Preview, string Confirm, string Canonical)[]
-        {
-            ("preview_create", "confirm_create", "create"),
-            ("preview_replace", "confirm_replace", "replace"),
-            ("preview_disable", "confirm_disable", "disable"),
-            ("preview_revoke", "confirm_revoke", "revoke"),
-            ("preview_target_profile", "confirm_target_profile", "upsert_target_profile")
-        };
-        for (var index = 0; index < metadata.Proposal.Targets.Count; index++)
-        {
-            var target = metadata.Proposal.Targets[index];
-            if (target.Tool != "netratel_policy") continue;
-            var pair = mutationPairs.FirstOrDefault(x => x.Preview == target.Operation);
-            if (pair.Canonical is null || !metadata.Proposal.Targets.Any(other =>
-                    other.Tool == target.Tool && other.Operation == pair.Confirm &&
-                    other.TenantId == target.TenantId && other.AgentId == target.AgentId &&
-                    other.ProfileRevision == target.ProfileRevision)) continue;
-
-            var operation = target.Tool + "/" + pair.Canonical;
-            var reference = $"pairing:{request.Id}:canonical:{index}";
-            var existing = (await policyAdministration!.ListAsync(metadata.Environment, target.TenantId, ct).ConfigureAwait(false)).Items
-                .Where(x => x.AuditReference == reference).ToArray();
-            if (existing.Length > 0)
-            {
-                if (existing.Length != 1 || existing[0].Version != 1 || existing[0].LifecycleState != McpOperatorPolicyLifecycleState.Active || existing[0].DisabledAtUtc is not null ||
-                    existing[0].PrincipalSelector.Kind != McpOperatorPrincipalSelectorKind.OAuthClientId || existing[0].PrincipalSelector.Value != credentialId ||
-                    existing[0].TargetSelector.TenantId != target.TenantId || existing[0].TargetSelector.AgentId != target.AgentId ||
-                    existing[0].Operation != operation || existing[0].ExpiresAtUtc != metadata.Proposal.ExpiresAtUtc)
-                    throw new IntegrationPairingUnavailableException();
-                continue;
-            }
-            var profile = target.AgentId is { } agent ? await policyAdministration.GetTargetProfileAsync(target.TenantId, agent, ct).ConfigureAwait(false) : null;
-            var selector = target.AgentId is not null ? McpOperatorTargetSelectorKind.ExactAgent : target.TenantId == 0 ? McpOperatorTargetSelectorKind.ControlPlane : McpOperatorTargetSelectorKind.Tenant;
-            await policyAdministration.CreateAsync(new($"Reviewed client {request.Id[..8]} policy {pair.Canonical}", metadata.Environment,
-                McpOperatorPolicyEffect.Allow, 0, new(McpOperatorPrincipalSelectorKind.OAuthClientId, credentialId),
-                new(selector, target.TenantId, target.AgentId), profile?.Classification, McpOperatorOperationFamily.PolicyAdministration,
-                operation, new(), metadata.Proposal.ExpiresAtUtc, metadata.Proposal.ExpiresAtUtc, reference), metadata.ApproverPrincipalId!, ct).ConfigureAwait(false);
-        }
+        if (metadata.BasePolicies is not null) await ReconcileBasesAsync(request, metadata, credentialId, ct).ConfigureAwait(false);
+        else await ApplyCompactTargetPoliciesAsync(request, metadata, credentialId, ct).ConfigureAwait(false);
     }
 
     private static void RequireReviewedExpiry(DateTimeOffset expiry)
@@ -409,10 +347,13 @@ public sealed partial class IntegrationPairingService
 
     private async Task<string> PolicyRevisionHashAsync(ReviewedMcpAccessProposal proposal, McpOperatorEnvironment environment, string requestId, CancellationToken ct)
     {
-        var tenants = proposal.Targets.Select(x => x.TenantId).Distinct().ToArray();
+        var tenants = proposal.Targets.Select(x => x.TenantId).Concat(proposal.Grants.Select(g => g.TenantId)).Append(0).Distinct().ToArray();
         var policies = await applicationDb!.McpOperatorPolicies.AsNoTracking().Where(x => x.Environment == environment && tenants.Contains(x.TenantId))
-            .OrderBy(x => x.Id).Select(x => new { x.Id, x.Version, x.LifecycleState, x.AuditReference }).ToArrayAsync(ct).ConfigureAwait(false);
-        return IntegrationCredentialService.Hash(JsonSerializer.Serialize(policies.Where(x => x.AuditReference is null || !x.AuditReference.StartsWith("pairing:" + requestId + ":", StringComparison.Ordinal) || x.Version != 1 || x.LifecycleState != McpOperatorPolicyLifecycleState.Active)));
+            .OrderBy(x => x.Id).Select(x => new { x.Id, x.Version, x.LifecycleState, x.AuditReference, x.ParentPolicyId }).ToArrayAsync(ct).ConfigureAwait(false);
+        return IntegrationCredentialService.Hash(JsonSerializer.Serialize(policies.Where(x =>
+            x.AuditReference is null || !x.AuditReference.StartsWith("pairing:" + requestId + ":", StringComparison.Ordinal) ||
+            x.Version != (x.ParentPolicyId is null ? 1 + policies.Count(child => child.ParentPolicyId == x.Id && child.AuditReference != null && child.AuditReference.StartsWith("pairing:" + requestId + ":", StringComparison.Ordinal)) : 1) ||
+            x.LifecycleState != McpOperatorPolicyLifecycleState.Active)));
     }
 
     private async Task<ReviewedMcpAccessReceipt> ReceiptAsync(IntegrationPairingRequest request, ReviewedAccessMetadata metadata, string? code, CancellationToken ct)
@@ -491,8 +432,9 @@ public sealed partial class IntegrationPairingService
         // exact original proposal/hash so an already reviewed or approved binding is never rewritten by a retry.
         metadata.ProposalHash == HashProposal(metadata.Proposal) &&
         HashProposal(CanonicalProposal(metadata.Proposal)) == HashProposal(CanonicalProposal(proposal));
-    private static string ReviewHash(string origin, string resource, ReviewedAccessMetadata metadata) => IntegrationCredentialService.Hash(JsonSerializer.Serialize(new
-    { origin, resource, metadata.RequestingPrincipalId, metadata.RequestingCredentialId, metadata.Instance, metadata.Environment, metadata.ProposalHash, metadata.CredentialRevisionHash, metadata.PolicyRevisionHash }));
+    private static string ReviewHash(string origin, string resource, ReviewedAccessMetadata metadata) => metadata.BasePolicies is null && metadata.TargetPolicyLimits is null
+        ? IntegrationCredentialService.Hash(JsonSerializer.Serialize(new { origin, resource, metadata.RequestingPrincipalId, metadata.RequestingCredentialId, metadata.Instance, metadata.Environment, metadata.ProposalHash, metadata.CredentialRevisionHash, metadata.PolicyRevisionHash }))
+        : IntegrationCredentialService.Hash(JsonSerializer.Serialize(new { origin, resource, metadata.RequestingPrincipalId, metadata.RequestingCredentialId, metadata.Instance, metadata.Environment, metadata.ProposalHash, metadata.CredentialRevisionHash, metadata.PolicyRevisionHash, metadata.BasePolicies, metadata.TargetPolicyLimits }));
     private static string HashProposal(ReviewedMcpAccessProposal proposal) => IntegrationCredentialService.Hash(JsonSerializer.Serialize(new
     {
         Proposal = proposal,
@@ -517,6 +459,6 @@ public sealed partial class IntegrationPairingService
     private static ReviewedMcpAccessRequest AccessRequest(IntegrationPairingRequest request, ReviewedAccessMetadata metadata, string? code) =>
         new(request.Id, Status(request), request.PublicOrigin + "/account/integration-credentials?tab=credentials", code, metadata.Proposal,
             request.Resource!, metadata.Instance, metadata.Environment.ToString(), metadata.RequestingPrincipalId, metadata.RequestingCredentialId, request.Revision, metadata.ReviewBindingHash!)
-        { CredentialRevisionHash = metadata.CredentialRevisionHash, PolicyRevisionHash = metadata.PolicyRevisionHash,
+        { BasePolicies = BaseSummaries(metadata), CredentialRevisionHash = metadata.CredentialRevisionHash, PolicyRevisionHash = metadata.PolicyRevisionHash,
             ApprovalMode = metadata.ApprovalMode ?? (metadata.ApproverPrincipalId is null ? null : metadata.ApproverPrincipalId == metadata.RequestingPrincipalId ? "owner_self_approval" : "independent_review") };
 }

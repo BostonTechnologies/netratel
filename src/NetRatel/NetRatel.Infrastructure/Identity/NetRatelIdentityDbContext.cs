@@ -21,6 +21,7 @@ public sealed class NetRatelIdentityDbContext(DbContextOptions<NetRatelIdentityD
     public DbSet<IntegrationPairingRequest> IntegrationPairingRequests => Set<IntegrationPairingRequest>();
     public DbSet<HttpHostSetupRequest> HttpHostSetupRequests => Set<HttpHostSetupRequest>();
     public DbSet<IntegrationCredential> IntegrationCredentials => Set<IntegrationCredential>();
+    public DbSet<IntegrationSetupAttempt> IntegrationSetupAttempts => Set<IntegrationSetupAttempt>();
     public DbSet<IntegrationCredentialLifecycleEvent> IntegrationCredentialLifecycleEvents => Set<IntegrationCredentialLifecycleEvent>();
     public DbSet<IntegrationCredentialGrant> IntegrationCredentialGrants => Set<IntegrationCredentialGrant>();
     public DbSet<IntegrationCredentialInstanceGrant> IntegrationCredentialInstanceGrants => Set<IntegrationCredentialInstanceGrant>();
@@ -30,6 +31,17 @@ public sealed class NetRatelIdentityDbContext(DbContextOptions<NetRatelIdentityD
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);
+
+        builder.Entity<IntegrationSetupAttempt>(entity =>
+        {
+            entity.ToTable("IntegrationSetupAttempts");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Id).HasMaxLength(32);
+            entity.Property(x => x.OwnerPrincipalId).HasMaxLength(32).IsRequired();
+            entity.Property(x => x.RequestHash).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.CredentialId).HasMaxLength(32).IsRequired();
+            entity.HasIndex(x => new { x.Acknowledged, x.DeliveryExpiresAtUtc });
+        });
 
         builder.Entity<LocalUser>(entity =>
         {

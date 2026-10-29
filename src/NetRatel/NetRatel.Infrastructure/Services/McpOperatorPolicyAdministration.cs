@@ -12,7 +12,7 @@ namespace NetRatel.Infrastructure.Services;
 /// optimistic versions, and never accepts a hostname or online-state as a
 /// target classification.
 /// </summary>
-public sealed class McpOperatorPolicyAdministration(OrchestratorDbContext db) : IMcpOperatorPolicyAdministration, IMcpOperatorPolicyRevocation
+public sealed partial class McpOperatorPolicyAdministration(OrchestratorDbContext db) : IMcpOperatorPolicyAdministration, IMcpOperatorPolicyRevocation, IMcpOperatorPolicyDeletion
 {
     private const int MaxIdentityLength = 256;
     private readonly OrchestratorDbContext _db = db;
@@ -139,6 +139,8 @@ public sealed class McpOperatorPolicyAdministration(OrchestratorDbContext db) : 
         string actorId,
         CancellationToken cancellationToken)
     {
+        await using var transaction = await BeginProfileTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await LockParentAsync(draft.ParentPolicyId, cancellationToken).ConfigureAwait(false);
         await ValidateDraftAsync(draft, actorId, cancellationToken).ConfigureAwait(false);
         var now = DateTimeOffset.UtcNow;
         var record = new McpOperatorPolicyRecord
@@ -151,11 +153,13 @@ public sealed class McpOperatorPolicyAdministration(OrchestratorDbContext db) : 
         Apply(record, draft);
         _db.McpOperatorPolicies.Add(record);
         AddChangeAudit("policy_created", record.TenantId, record.Id, null, record.Version, record.CreatedBy, now);
+        await TouchParentAsync(record, actorId, cancellationToken).ConfigureAwait(false);
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         // Return the persisted representation on the first response as well as
         // replays. PostgreSQL timestamps retain microseconds, while the tracked
         // values can still contain the original .NET sub-microsecond ticks.
         await _db.Entry(record).ReloadAsync(cancellationToken).ConfigureAwait(false);
+        if (transaction is not null) await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return ToPolicy(record);
     }
 
@@ -166,6 +170,7 @@ public sealed class McpOperatorPolicyAdministration(OrchestratorDbContext db) : 
     {
         ValidateDraft(draft, actorId);
         await EnsureExactTargetExistsAsync(draft.TargetSelector, cancellationToken).ConfigureAwait(false);
+        await ValidateHierarchyAsync(draft, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<McpOperatorPolicy> ReplaceAsync(
@@ -175,6 +180,8 @@ public sealed class McpOperatorPolicyAdministration(OrchestratorDbContext db) : 
         string actorId,
         CancellationToken cancellationToken)
     {
+        await using var transaction = await BeginProfileTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await LockParentAsync(draft.ParentPolicyId ?? policyId, cancellationToken).ConfigureAwait(false);
         await ValidateDraftAsync(draft, actorId, cancellationToken).ConfigureAwait(false);
         if (expectedVersion <= 0)
             throw new ArgumentOutOfRangeException(nameof(expectedVersion));
@@ -188,75 +195,42 @@ public sealed class McpOperatorPolicyAdministration(OrchestratorDbContext db) : 
             throw new InvalidOperationException("A disabled operator policy cannot be replaced; create a new reviewed policy instead.");
         if (record.Version != expectedVersion)
             throw new DbUpdateConcurrencyException("The operator policy changed before replacement.");
+        if (record.ParentPolicyId != draft.ParentPolicyId || record.IntegrationCredentialId != draft.IntegrationCredentialId ||
+            record.Resource != draft.Resource || record.Environment != draft.Environment || record.TenantId != draft.TargetSelector.TenantId ||
+            record.IsContainer != draft.IsContainer)
+            throw new InvalidOperationException("Policy integration, parent and scope linkage are immutable.");
 
         Apply(record, draft);
         record.Version++;
         AddChangeAudit("policy_replaced", record.TenantId, record.Id, null, record.Version, actorId.Trim(), DateTimeOffset.UtcNow);
+        if (record.ParentPolicyId is null)
+        {
+            var children = await _db.McpOperatorPolicies.Where(p => p.ParentPolicyId == record.Id &&
+                p.LifecycleState != McpOperatorPolicyLifecycleState.Deleted).ToListAsync(cancellationToken).ConfigureAwait(false);
+            foreach (var child in children)
+            {
+                child.Version++;
+                if (!record.IsContainer && child.Effect == McpOperatorPolicyEffect.Allow) child.ConstraintsJson = record.ConstraintsJson;
+                AddChangeAudit("policy_base_changed", child.TenantId, child.Id, null, child.Version, actorId.Trim(), DateTimeOffset.UtcNow);
+            }
+        }
+        await TouchParentAsync(record, actorId, cancellationToken).ConfigureAwait(false);
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         // Finish readback after a successful save even if the caller disconnects,
         // so confirmation can preserve the durable success receipt.
         await _db.Entry(record).ReloadAsync(CancellationToken.None).ConfigureAwait(false);
+        if (transaction is not null) await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return ToPolicy(record);
     }
 
-    public async Task<McpOperatorPolicy?> DisableAsync(
-        Guid policyId,
-        long expectedVersion,
-        string actorId,
-        CancellationToken cancellationToken)
-    {
-        if (!IsSafeValue(actorId, MaxIdentityLength) || expectedVersion <= 0)
-            throw new ArgumentException("A trusted administrator identity and positive expected version are required.");
+    public Task<McpOperatorPolicy?> DisableAsync(Guid policyId, long expectedVersion, string actorId, CancellationToken cancellationToken) =>
+        ChangeLifecycleAsync(policyId, expectedVersion, actorId, McpOperatorPolicyLifecycleState.Disabled, cancellationToken);
 
-        var record = await _db.McpOperatorPolicies.SingleOrDefaultAsync(policy => policy.Id == policyId, cancellationToken)
-            .ConfigureAwait(false);
-        if (record is null)
-            return null;
-        if (record.Version != expectedVersion)
-            throw new DbUpdateConcurrencyException("The operator policy changed before disable.");
-        if (record.LifecycleState == McpOperatorPolicyLifecycleState.Revoked)
-            throw new InvalidOperationException("A revoked operator policy cannot be disabled.");
-        if (record.LifecycleState == McpOperatorPolicyLifecycleState.Active)
-        {
-            var now = PersistableUtcNow();
-            record.LifecycleState = McpOperatorPolicyLifecycleState.Disabled;
-            record.DisabledAtUtc = now;
-            record.DisabledBy = actorId.Trim();
-            record.Version++;
-            AddChangeAudit("policy_disabled", record.TenantId, record.Id, null, record.Version, record.DisabledBy, now);
-            await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        }
+    public Task<McpOperatorPolicy?> RevokeAsync(Guid policyId, long expectedVersion, string actorId, CancellationToken cancellationToken) =>
+        ChangeLifecycleAsync(policyId, expectedVersion, actorId, McpOperatorPolicyLifecycleState.Revoked, cancellationToken);
 
-        return ToPolicy(record);
-    }
-
-    public async Task<McpOperatorPolicy?> RevokeAsync(
-        Guid policyId,
-        long expectedVersion,
-        string actorId,
-        CancellationToken cancellationToken)
-    {
-        if (!IsSafeValue(actorId, MaxIdentityLength) || expectedVersion <= 0)
-            throw new ArgumentException("A trusted administrator identity and positive expected version are required.");
-
-        var record = await _db.McpOperatorPolicies.SingleOrDefaultAsync(policy => policy.Id == policyId, cancellationToken)
-            .ConfigureAwait(false);
-        if (record is null)
-            return null;
-        if (record.Version != expectedVersion)
-            throw new DbUpdateConcurrencyException("The operator policy changed before revocation.");
-        if (record.LifecycleState == McpOperatorPolicyLifecycleState.Revoked)
-            return ToPolicy(record);
-
-        var now = PersistableUtcNow();
-        record.LifecycleState = McpOperatorPolicyLifecycleState.Revoked;
-        record.DisabledAtUtc ??= now;
-        record.DisabledBy ??= actorId.Trim();
-        record.Version++;
-        AddChangeAudit("policy_revoked", record.TenantId, record.Id, null, record.Version, actorId.Trim(), now);
-        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        return ToPolicy(record);
-    }
+    public Task<McpOperatorPolicy?> DeleteAsync(Guid policyId, long expectedVersion, string actorId, CancellationToken cancellationToken) =>
+        ChangeLifecycleAsync(policyId, expectedVersion, actorId, McpOperatorPolicyLifecycleState.Deleted, cancellationToken);
 
     public async Task<McpOperatorTargetProfile?> GetTargetProfileAsync(
         int tenantId,
@@ -373,6 +347,13 @@ public sealed class McpOperatorPolicyAdministration(OrchestratorDbContext db) : 
         record.ExpiresAtUtc = draft.ExpiresAtUtc?.ToUniversalTime();
         record.ReviewByUtc = draft.ReviewByUtc?.ToUniversalTime();
         record.AuditReference = string.IsNullOrWhiteSpace(draft.AuditReference) ? null : draft.AuditReference.Trim();
+        record.ParentPolicyId = draft.ParentPolicyId;
+        record.IntegrationCredentialId = draft.IntegrationCredentialId;
+        record.Resource = draft.Resource;
+        record.Operations = draft.Operations?.ToArray();
+        record.AgentIds = draft.TargetSelector.AgentIds?.ToArray();
+        record.ClientTags = draft.TargetSelector.ClientTags?.ToArray();
+        record.IsContainer = draft.IsContainer;
     }
 
     private static McpOperatorPolicy ToPolicy(McpOperatorPolicyRecord record) => new(
@@ -382,7 +363,8 @@ public sealed class McpOperatorPolicyAdministration(OrchestratorDbContext db) : 
         record.Effect,
         record.Priority,
         new McpOperatorPrincipalSelector(record.PrincipalSelectorKind, record.PrincipalSelectorValue),
-        new McpOperatorTargetSelector(record.TargetSelectorKind, record.TenantId, record.AgentId, record.ClientTag),
+        new McpOperatorTargetSelector(record.TargetSelectorKind, record.TenantId, record.AgentId, record.ClientTag)
+        { AgentIds = record.AgentIds, ClientTags = record.ClientTags },
         record.TargetClassification,
         record.OperationFamily,
         record.Operation,
@@ -396,7 +378,9 @@ public sealed class McpOperatorPolicyAdministration(OrchestratorDbContext db) : 
         record.Version,
         record.AuditReference)
     {
-        LifecycleState = record.LifecycleState
+        LifecycleState = record.LifecycleState, ParentPolicyId = record.ParentPolicyId,
+        IntegrationCredentialId = record.IntegrationCredentialId, Resource = record.Resource,
+        Operations = record.Operations, IsContainer = record.IsContainer
     };
 
     private static McpOperatorTargetProfile ToProfile(McpOperatorTargetProfileRecord record) => new(

@@ -32,7 +32,7 @@ public sealed class OperatorPolicyDialogFocusTests(ClientsManagementBrowserFixtu
         Assert.Equal(200, response.Status);
         var search = page.GetByRole(AriaRole.Textbox, new() { Name = "Search policies", Exact = true });
         await search.FillAsync("Reviewed grant");
-        await page.GetByTestId("policy-lifecycle-filter").ClickAsync();
+        await page.GetByRole(AriaRole.Combobox, new() { Name = "Lifecycle", Exact = true }).ClickAsync();
         await page.GetByRole(AriaRole.Option, new() { Name = "Active", Exact = true }).ClickAsync();
         await page.GetByRole(AriaRole.Button, new() { Name = "Next page", Exact = true }).ClickAsync();
         var policy = _api.Policies[13];

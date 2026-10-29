@@ -36,7 +36,9 @@ public enum McpOperatorPolicyLifecycleState : short
 {
     Active = 1,
     Disabled = 2,
-    Revoked = 3
+    Revoked = 3,
+    /// <summary>Irrecoverable management deletion; retained only for referential audit history.</summary>
+    Deleted = 4
 }
 
 /// <summary>Bounded caller selectors supported by the persisted policy model.</summary>
@@ -144,7 +146,11 @@ public sealed record McpOperatorTargetSelector(
     McpOperatorTargetSelectorKind Kind,
     int TenantId,
     Guid? AgentId = null,
-    string? ClientTag = null);
+    string? ClientTag = null)
+{
+    public IReadOnlyList<Guid>? AgentIds { get; init; }
+    public IReadOnlyList<string>? ClientTags { get; init; }
+}
 
 /// <summary>
 /// Policy-enforced limits. Null means the policy does not add that constraint;
@@ -206,6 +212,12 @@ public sealed record McpOperatorPolicy(
 {
     /// <summary>Lifecycle state added without changing the established constructor contract.</summary>
     public McpOperatorPolicyLifecycleState LifecycleState { get; init; } = McpOperatorPolicyLifecycleState.Active;
+    public Guid? ParentPolicyId { get; init; }
+    public string? IntegrationCredentialId { get; init; }
+    public string? Resource { get; init; }
+    public IReadOnlyList<string>? Operations { get; init; }
+    /// <summary>A legacy consolidation container admits only its preserved child rules.</summary>
+    public bool IsContainer { get; init; }
 }
 
 /// <summary>
@@ -236,7 +248,14 @@ public sealed record McpOperatorPolicyDraft(
     McpOperatorConstraints Constraints,
     DateTimeOffset? ExpiresAtUtc,
     DateTimeOffset? ReviewByUtc,
-    string? AuditReference = null);
+    string? AuditReference = null)
+{
+    public Guid? ParentPolicyId { get; init; }
+    public string? IntegrationCredentialId { get; init; }
+    public string? Resource { get; init; }
+    public IReadOnlyList<string>? Operations { get; init; }
+    public bool IsContainer { get; init; }
+}
 
 public sealed record McpOperatorPolicyPage(IReadOnlyList<McpOperatorPolicy> Items);
 
@@ -377,6 +396,11 @@ public interface IMcpOperatorPolicyRevocation
         long expectedVersion,
         string actorId,
         CancellationToken cancellationToken);
+}
+
+public interface IMcpOperatorPolicyDeletion
+{
+    Task<McpOperatorPolicy?> DeleteAsync(Guid policyId, long expectedVersion, string actorId, CancellationToken cancellationToken);
 }
 
 /// <summary>

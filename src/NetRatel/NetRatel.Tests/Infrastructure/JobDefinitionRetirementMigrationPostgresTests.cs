@@ -31,8 +31,13 @@ public sealed class JobDefinitionRetirementMigrationPostgresTests(PostgreSqlPers
             """, ct);
         var retiredAt = DateTimeOffset.Parse("2026-10-01T10:01:00Z");
         var policyId = Guid.NewGuid();
-        db.McpOperatorPolicies.Add(new() { Id = policyId, Name = "retirement fixture", TenantId = 7,
-            PrincipalSelectorValue = "fixture", CreatedBy = "fixture", CreatedAtUtc = retiredAt, Version = 1 });
+        // Seed the actual predecessor schema without projecting later policy columns into it.
+        await db.Database.ExecuteSqlInterpolatedAsync($$"""
+            INSERT INTO "McpOperatorPolicies" ("Id","Name","Environment","Effect","Priority",
+                "PrincipalSelectorKind","PrincipalSelectorValue","TargetSelectorKind","TenantId",
+                "OperationFamily","ConstraintsJson","CreatedAtUtc","CreatedBy","Version")
+            VALUES ({{policyId}},'retirement fixture',0,0,0,0,'fixture',0,7,0,'{}'::jsonb,{{retiredAt}},'fixture',1);
+            """, ct);
         db.McpOperatorJobs.Add(new() { Id = Guid.NewGuid(), JobId = 42, TenantId = 7,
             AgentId = Guid.NewGuid(), Subject = "fixture", ClientId = "fixture",
             McpResource = "https://mcp.example/mcp", McpInstance = "fixture", PolicyId = policyId,

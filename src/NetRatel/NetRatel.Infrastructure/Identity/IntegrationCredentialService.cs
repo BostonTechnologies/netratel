@@ -257,6 +257,7 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, T
             // Conditional writes serialize with deletion without loading a stale tracked credential.
             await using var transaction = db.Database.CurrentTransaction is null
                 ? await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false) : null;
+            await ClearSetupHandoffsAsync(ownerPrincipalId, credentialId, cancellationToken).ConfigureAwait(false);
             var now = (clock ?? TimeProvider.System).GetUtcNow();
             var owned = db.IntegrationCredentials.Where(candidate => candidate.Id == credentialId && candidate.OwnerPrincipalId == ownerPrincipalId);
             var changed = await owned.Where(candidate => candidate.RevokedAtUtc == null)
@@ -281,6 +282,7 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, T
 
         if (credential.RevokedAtUtc is null)
         {
+            await ClearSetupHandoffsAsync(ownerPrincipalId, credentialId, cancellationToken).ConfigureAwait(false);
             credential.RevokedAtUtc = (clock ?? TimeProvider.System).GetUtcNow();
             credential.RevokedByPrincipalId = revokedByPrincipalId;
             db.IntegrationCredentialLifecycleEvents.Add(LifecycleEvent(credential.Id, ownerPrincipalId, revokedByPrincipalId, credential.RevokedAtUtc.Value, "revoked"));
@@ -308,6 +310,8 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, T
                     .SetProperty(request => request.ApprovedInstancePermissionsJson, (string?)null)
                     .SetProperty(request => request.CredentialExpiresAtUtc, (DateTimeOffset?)null)
                     .SetProperty(request => request.Revision, request => request.Revision + 1), cancellationToken).ConfigureAwait(false);
+            // Keep request -> setup handoff -> credential ordering, as reviewed revocation does.
+            await ClearSetupHandoffsAsync(ownerPrincipalId, credentialId, cancellationToken).ConfigureAwait(false);
             // Removing the verifier invalidates active access and cascades only this credential's
             // grants, at the same commit as protected delivery cancellation and lifecycle history.
             var removed = await db.IntegrationCredentials.Where(candidate => candidate.Id == credentialId && candidate.OwnerPrincipalId == ownerPrincipalId)
@@ -339,6 +343,15 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, T
         db.IntegrationCredentialLifecycleEvents.Add(LifecycleEvent(credentialId, ownerPrincipalId, deletedByPrincipalId, now, "deleted"));
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         return true;
+    }
+
+    private async Task ClearSetupHandoffsAsync(string owner, string credential, CancellationToken ct)
+    {
+        var attempts = db.IntegrationSetupAttempts.Where(a => a.OwnerPrincipalId == owner && a.CredentialId == credential);
+        if (db.Database.IsRelational())
+            await attempts.ExecuteUpdateAsync(update => update.SetProperty(a => a.ProtectedDelivery, (string?)null).SetProperty(a => a.Acknowledged, true), ct).ConfigureAwait(false);
+        else
+            foreach (var attempt in await attempts.ToListAsync(ct).ConfigureAwait(false)) { attempt.ProtectedDelivery = null; attempt.Acknowledged = true; }
     }
 
     private static IntegrationCredentialLifecycleEvent LifecycleEvent(string credentialId, string owner, string actor, DateTimeOffset now, string action) => new()

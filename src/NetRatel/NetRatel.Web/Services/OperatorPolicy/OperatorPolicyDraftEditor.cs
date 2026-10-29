@@ -19,6 +19,13 @@ public sealed class OperatorPolicyDraftEditor
     public McpOperatorTargetClassification? Classification { get; set; }
     public IReadOnlyCollection<McpOperatorOperationFamily> Families { get; set; } = [McpOperatorOperationFamily.Observability];
     public string Operation { get; set; } = "";
+    public IReadOnlyList<string>? Operations { get; set; }
+    public IReadOnlyList<Guid>? AgentIds { get; set; }
+    public IReadOnlyList<string>? ClientTags { get; set; }
+    public Guid? ParentPolicyId { get; set; }
+    public string? IntegrationCredentialId { get; set; }
+    public string? Resource { get; set; }
+    public bool IsContainer { get; set; }
     public string WorkingDirectories { get; set; } = "";
     public string ReadRoots { get; set; } = "";
     public string WriteRoots { get; set; } = "";
@@ -38,6 +45,8 @@ public sealed class OperatorPolicyDraftEditor
         Operation = policy.Operation ?? "", WorkingDirectories = Lines(policy.Constraints.WorkingDirectories),
         ReadRoots = Lines(policy.Constraints.ReadRoots), WriteRoots = Lines(policy.Constraints.WriteRoots), Shells = Lines(policy.Constraints.AllowedShells),
         ExpiresAt = Instant(policy.ExpiresAtUtc), ReviewBy = Instant(policy.ReviewByUtc), AuditReference = policy.AuditReference ?? "",
+        Operations = policy.Operations, AgentIds = policy.TargetSelector.AgentIds, ClientTags = policy.TargetSelector.ClientTags,
+        ParentPolicyId = policy.ParentPolicyId, IntegrationCredentialId = policy.IntegrationCredentialId, Resource = policy.Resource, IsContainer = policy.IsContainer,
         Constraints = policy.Constraints
     };
 
@@ -46,14 +55,17 @@ public sealed class OperatorPolicyDraftEditor
         var selector = new McpOperatorTargetSelector(TargetKind,
             TargetKind is McpOperatorTargetSelectorKind.ControlPlane or McpOperatorTargetSelectorKind.DevelopmentEnvironment ? 0 : TenantId,
             TargetKind == McpOperatorTargetSelectorKind.ExactAgent ? Guid.Parse(AgentId) : null,
-            TargetKind == McpOperatorTargetSelectorKind.ClientTag ? ClientTag.Trim() : null);
-        return new(Name.Trim(), Environment, Effect, Priority,
+            TargetKind == McpOperatorTargetSelectorKind.ClientTag ? ClientTag.Trim() : null) { AgentIds = AgentIds, ClientTags = ClientTags };
+        return new McpOperatorPolicyDraft(Name.Trim(), Environment, Effect, Priority,
             new(PrincipalKind, PrincipalValue.Trim()), selector, Classification,
             Families.Aggregate(McpOperatorOperationFamily.None, (value, family) => value | family), Optional(Operation),
             Constraints with { WorkingDirectories = Values(WorkingDirectories, Constraints.WorkingDirectories),
                 ReadRoots = Values(ReadRoots, Constraints.ReadRoots), WriteRoots = Values(WriteRoots, Constraints.WriteRoots),
                 AllowedShells = Values(Shells, Constraints.AllowedShells) },
-            ParseInstant(ExpiresAt), ParseInstant(ReviewBy), Optional(AuditReference));
+            ParseInstant(ExpiresAt), ParseInstant(ReviewBy), Optional(AuditReference)) {
+                ParentPolicyId = ParentPolicyId, IntegrationCredentialId = IntegrationCredentialId, Resource = Resource,
+                Operations = Operations, IsContainer = IsContainer
+            };
     }
 
     public static McpOperatorOperationFamily[] OperationFamilies { get; } = Enum.GetValues<McpOperatorOperationFamily>()

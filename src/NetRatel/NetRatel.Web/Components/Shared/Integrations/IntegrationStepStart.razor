@@ -1,0 +1,12 @@
+<div @ref="_start" tabindex="-1" aria-label="@Title" style="height:1px;outline:none" data-testid="setup-step-start"></div>
+
+@code {
+    [Parameter] public string Title { get; set; } = "";
+    private ElementReference _start;
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // A new step begins at its top even when the previous step was scrolled.
+        // Keeping focus inside the dialog also gives screen readers the new context.
+        if (firstRender) await _start.FocusAsync();
+    }
+}

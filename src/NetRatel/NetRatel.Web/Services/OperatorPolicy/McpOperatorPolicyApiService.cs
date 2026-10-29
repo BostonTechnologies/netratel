@@ -7,7 +7,7 @@ using NetRatel.Infrastructure.Identity;
 
 namespace NetRatel.Web.Services.OperatorPolicy;
 
-public enum PolicyChangeAction { Create, Replace, Disable, Revoke }
+public enum PolicyChangeAction { Create, Replace, Disable, Revoke, Delete }
 public sealed record PolicyCredentialOption(string Id, string Name, IntegrationCredentialPurpose Purpose);
 public sealed record PolicyAccountAuthority(string Subject, McpOperatorEnvironment Environment);
 public sealed record PolicyMutationPreview(string PlanToken, string IdempotencyKey, DateTimeOffset ExpiresAtUtc,
@@ -21,6 +21,10 @@ public sealed record PreparedPolicyChange(PolicyChangeAction Action, McpOperator
 
 public interface IMcpOperatorPolicyApiService
 {
+    Task<McpPolicyConsolidationPlan> PreviewConsolidationAsync(string credentialId, CancellationToken ct = default) => throw new NotSupportedException();
+    Task<McpPolicyConsolidationPlan> ConfirmConsolidationAsync(string credentialId, string planToken, CancellationToken ct = default) => throw new NotSupportedException();
+    Task<McpPolicyDirectory> GetDirectoryAsync(string? search, int? tenantId, CancellationToken ct = default) =>
+        Task.FromResult(new McpPolicyDirectory([], [], [], [], false));
     Task<PolicyAccountAuthority> GetAuthorityAsync(CancellationToken cancellationToken = default);
     Task<IReadOnlyList<PolicyCredentialOption>> GetOwnedCredentialsAsync(CancellationToken cancellationToken = default);
     Task<McpOperatorPolicyPage> ListAsync(McpOperatorEnvironment environment, int? tenantId, CancellationToken cancellationToken = default);
@@ -37,6 +41,18 @@ public sealed class McpOperatorPolicyApiService(IHttpClientFactory clients) : IM
 {
     private const string BasePath = "/api/v2/mcp-operator/policies";
     private HttpClient Client => clients.CreateClient("OrchestratorApi");
+    public async Task<McpPolicyConsolidationPlan> PreviewConsolidationAsync(string credentialId, CancellationToken ct = default)
+    {
+        using var response = await Client.PostAsJsonAsync($"/api/v2/account/integration-credentials/{Uri.EscapeDataString(credentialId)}/policy-consolidation/preview", new { }, ct);
+        return await ReadAsync<McpPolicyConsolidationPlan>(response, ct);
+    }
+    public async Task<McpPolicyConsolidationPlan> ConfirmConsolidationAsync(string credentialId, string planToken, CancellationToken ct = default)
+    {
+        using var response = await Client.PostAsJsonAsync($"/api/v2/account/integration-credentials/{Uri.EscapeDataString(credentialId)}/policy-consolidation/confirm", new { planToken, confirm = true }, ct);
+        return await ReadAsync<McpPolicyConsolidationPlan>(response, ct);
+    }
+    public Task<McpPolicyDirectory> GetDirectoryAsync(string? search, int? tenantId, CancellationToken ct = default) =>
+        GetAsync<McpPolicyDirectory>($"/api/v2/mcp-operator/directory?search={Uri.EscapeDataString(search ?? "")}" + (tenantId is { } id ? $"&tenantId={id}" : ""), ct);
 
     public Task<PolicyAccountAuthority> GetAuthorityAsync(CancellationToken cancellationToken = default) =>
         GetAsync<PolicyAccountAuthority>($"{BasePath}/manage/self", cancellationToken);
@@ -46,7 +62,7 @@ public sealed class McpOperatorPolicyApiService(IHttpClientFactory clients) : IM
             .Where(credential => credential.Purpose == IntegrationCredentialPurpose.HttpMcp).ToArray();
 
     public Task<McpOperatorPolicyPage> ListAsync(McpOperatorEnvironment environment, int? tenantId, CancellationToken cancellationToken = default) =>
-        GetAsync<McpOperatorPolicyPage>($"{BasePath}?environment={environment}" + (tenantId is { } id ? $"&tenantId={id}" : ""), cancellationToken);
+        GetAsync<McpOperatorPolicyPage>($"{BasePath}?includeHistory=true&environment={environment}" + (tenantId is { } id ? $"&tenantId={id}" : ""), cancellationToken);
 
     public Task<McpOperatorPolicy> GetAsync(Guid policyId, CancellationToken cancellationToken = default) =>
         GetAsync<McpOperatorPolicy>($"{BasePath}/{policyId:D}", cancellationToken);
@@ -80,6 +96,7 @@ public sealed class McpOperatorPolicyApiService(IHttpClientFactory clients) : IM
         {
             PolicyChangeAction.Create => "create", PolicyChangeAction.Replace => "replace",
             PolicyChangeAction.Disable => "disable", PolicyChangeAction.Revoke => "revoke",
+            PolicyChangeAction.Delete => "delete",
             _ => throw new ArgumentOutOfRangeException(nameof(change))
         };
         var body = new Dictionary<string, object?>();
@@ -89,7 +106,7 @@ public sealed class McpOperatorPolicyApiService(IHttpClientFactory clients) : IM
             body["policyId"] = change.PolicyId;
             body["expectedVersion"] = change.ExpectedVersion;
         }
-        if (change.Action is PolicyChangeAction.Disable or PolicyChangeAction.Revoke) body["target"] = change.Target;
+        if (change.Action is PolicyChangeAction.Disable or PolicyChangeAction.Revoke or PolicyChangeAction.Delete) body["target"] = change.Target;
         if (preview is not null)
         {
             body["planToken"] = preview.PlanToken;

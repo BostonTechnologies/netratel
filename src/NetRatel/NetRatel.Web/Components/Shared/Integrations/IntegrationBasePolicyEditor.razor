@@ -1,0 +1,72 @@
+@using NetRatel.Application.Operations
+@using NetRatel.Web.Components.Shared.OperatorPolicy
+@using NetRatel.Web.Services
+
+<MudPaper Outlined="true" Elevation="0" Class="pa-4 mb-3" data-testid="integration-base-policy">
+    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Wrap="Wrap.Wrap">
+        <div><MudText Typo="Typo.h6">@ScopeName</MudText><MudText Typo="Typo.caption">One base policy · @Supported.Count supported operations within selected grants</MudText></div>
+        <MudChip T="string" Color="Color.Primary" Variant="Variant.Outlined">@Value.Effect · @(Value.ExistingPolicyId is null ? "New base policy" : $"{Value.LifecycleState} v{Value.ExpectedVersion}")</MudChip>
+    </MudStack>
+    <MudStack Row="true" Wrap="Wrap.Wrap" Class="my-3">
+        <MudButton Variant="Variant.Outlined" Color="Color.Primary" OnClick="@(() => Preset(false))" Disabled="Disabled" data-testid="policy-preset-all">All access</MudButton>
+        <MudButton Variant="Variant.Text" OnClick="@(() => Preset(true))" Disabled="Disabled">Read only</MudButton>
+    </MudStack>
+    <MudGrid Spacing="2">
+        <MudItem xs="12" md="8"><MudTextField T="string" Label="Base policy name" Value="Value.Name" ValueChanged="@((string name) => Change(Value with { Name = name }))" Variant="Variant.Outlined" Disabled="Disabled" /></MudItem>
+        <MudItem xs="12" md="4"><MudSelect T="McpOperatorPolicyEffect" Label="Effect" Value="Value.Effect" ValueChanged="@(effect => Change(Value with { Effect = effect }))" Variant="Variant.Outlined" Disabled="Disabled">@foreach(var effect in Enum.GetValues<McpOperatorPolicyEffect>()) { <MudSelectItem Value="effect">@effect</MudSelectItem> }</MudSelect></MudItem>
+        <MudItem xs="12" md="6"><MudSelect T="McpOperatorOperationFamily" Label="Operation families" MultiSelection="true" SelectedValues="SelectedFamilies" SelectedValuesChanged="ChangeFamilies" Variant="Variant.Outlined" Disabled="Disabled">@foreach(var family in AvailableFamilies) { <MudSelectItem Value="family">@family</MudSelectItem> }</MudSelect></MudItem>
+        <MudItem xs="12" md="6"><MudTextField T="string" Label="Exact policy expiry (UTC)" Value="@_expiryText" ValueChanged="ChangeExpiry" Variant="Variant.Outlined" Disabled="Disabled" HelperText="Must be no later than the credential expiry." /></MudItem>
+    </MudGrid>
+    @if (_expiryError is not null) { <MudAlert Severity="Severity.Error">@_expiryError</MudAlert> }
+    <MudExpansionPanels Elevation="0" Class="mt-3" MultiExpansion="true">
+        <MudExpansionPanel Text="Inspect supported operations">
+            <MudStack Row="true" Wrap="Wrap.Wrap">@foreach(var operation in Supported.Where(op => Value.Families.HasFlag(op.OperationFamily))) { <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@operation.ToolName/@operation.OperationName</MudChip> }</MudStack>
+        </MudExpansionPanel>
+        <MudExpansionPanel Text="Paths, shells and limits">
+            <MudAlert Severity="Severity.Info" Class="mb-3">All access includes the displayed file roots and execution limits. Change these bounds to match the work you approve. Runtime capability and operation confirmations still apply.</MudAlert>
+            <MudGrid Spacing="2">
+                <MudItem xs="12" md="6"><MudTextField T="string" Label="Read roots (one per line)" Lines="2" Value="Lines(Value.Constraints.ReadRoots)" ValueChanged="@((string text) => ChangeLimits(Value.Constraints with { ReadRoots = Values(text) }))" Disabled="Disabled" /></MudItem>
+                <MudItem xs="12" md="6"><MudTextField T="string" Label="Write roots (one per line)" Lines="2" Value="Lines(Value.Constraints.WriteRoots)" ValueChanged="@((string text) => ChangeLimits(Value.Constraints with { WriteRoots = Values(text) }))" Disabled="Disabled" /></MudItem>
+                <MudItem xs="12" md="6"><MudTextField T="string" Label="Exact working directories (one per line)" Lines="2" Value="Lines(Value.Constraints.WorkingDirectories)" ValueChanged="@((string text) => ChangeLimits(Value.Constraints with { WorkingDirectories = Values(text) }))" Disabled="Disabled" /></MudItem>
+                <MudItem xs="12" md="6"><MudSelect T="string" Label="Allowed shells" MultiSelection="true" SelectedValues="@(Value.Constraints.AllowedShells ?? [])" SelectedValuesChanged="@(shells => ChangeLimits(Value.Constraints with { AllowedShells = shells.ToArray() }))" Disabled="Disabled">@foreach(var shell in McpIntegrationPolicyCatalog.AllAccessLimits.AllowedShells!) { <MudSelectItem Value="shell">@shell</MudSelectItem> }</MudSelect></MudItem>
+            </MudGrid>
+            <OperatorPolicyLimitsEditor Value="Value.Constraints" ValueChanged="ChangeLimits" Disabled="Disabled" />
+        </MudExpansionPanel>
+    </MudExpansionPanels>
+</MudPaper>
+
+@code {
+    [Parameter, EditorRequired] public McpIntegrationPolicy Value { get; set; } = default!;
+    [Parameter] public EventCallback<McpIntegrationPolicy> ValueChanged { get; set; }
+    [Parameter] public string ScopeName { get; set; } = "";
+    [Parameter] public IReadOnlyList<string> Permissions { get; set; } = [];
+    [Parameter] public bool Disabled { get; set; }
+    private string? _expiryError;
+    private string? _expiryText;
+    private DateTimeOffset _lastExpiry;
+    protected override void OnParametersSet() { if (_expiryText is null || _lastExpiry != Value.ExpiresAtUtc) { _expiryText = IntegrationCredentialExpiry.Display(Value.ExpiresAtUtc); _lastExpiry = Value.ExpiresAtUtc; } }
+    private IReadOnlyList<McpOperatorOperationDescriptor> Supported => McpIntegrationPolicyCatalog.Supported(Value.TenantId, Permissions);
+    private IEnumerable<McpOperatorOperationFamily> AvailableFamilies => Supported.Select(op => op.OperationFamily).Distinct();
+    private IReadOnlyCollection<McpOperatorOperationFamily> SelectedFamilies => AvailableFamilies.Where(f => Value.Families.HasFlag(f)).ToArray();
+    private Task Change(McpIntegrationPolicy policy) => ValueChanged.InvokeAsync(policy);
+    private Task ChangeLimits(McpOperatorConstraints limits) => Change(Value with { Constraints = limits });
+    private Task ChangeFamilies(IReadOnlyCollection<McpOperatorOperationFamily> families)
+    {
+        var selected = families.Aggregate(McpOperatorOperationFamily.None, (f, next) => f | next);
+        var allowed = McpIntegrationPolicyCatalog.WithCanonicalPolicyOperations(Supported.Where(op => selected.HasFlag(op.OperationFamily)).Select(op => op.ToolName + "/" + op.OperationName));
+        return Change(Value with { Families = selected, Operations = Value.Operations?.Where(allowed.Contains).ToArray() });
+    }
+    private Task Preset(bool readOnly) => Change(Value with {
+        Name = Value.Name[..(Value.Name.LastIndexOf(" · ", StringComparison.Ordinal) is var index && index >= 0 ? index : Value.Name.Length)] + (readOnly ? " · Read only" : " · All access"),
+        Effect = McpOperatorPolicyEffect.Allow, Operations = null,
+        Families = Supported.Where(op => !readOnly || op.ConfirmationClass == McpOperatorConfirmationClass.None && op.OperationFamily is
+            McpOperatorOperationFamily.Observability or McpOperatorOperationFamily.FileRead or McpOperatorOperationFamily.ScriptsRead or McpOperatorOperationFamily.AutomationRead or McpOperatorOperationFamily.TerminalRead)
+            .Aggregate(McpOperatorOperationFamily.None, (f, op) => f | op.OperationFamily), Constraints = McpIntegrationPolicyCatalog.AllAccessLimits });
+    private async Task ChangeExpiry(string text) {
+        _expiryText = text;
+        if (IntegrationCredentialExpiry.ParseUtcInstant(text) is not { } expiry) { _expiryError = "Enter an exact UTC expiry ending in Z."; _lastExpiry = default; await Change(Value with { ExpiresAtUtc = default }); return; }
+        _expiryError = null; _lastExpiry = expiry; await Change(Value with { ExpiresAtUtc = expiry });
+    }
+    private static string Lines(IReadOnlyList<string>? values) => string.Join('\n', values ?? []);
+    private static string[] Values(string value) => value.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Distinct().ToArray();
+}

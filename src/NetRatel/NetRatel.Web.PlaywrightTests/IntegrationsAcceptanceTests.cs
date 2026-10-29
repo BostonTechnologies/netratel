@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Playwright;
+using NetRatel.Application.Operations;
 using NetRatel.Shared.Connectivity;
 using NetRatel.Shared.SystemPairing;
 using NetRatel.Web.Services.Pairing;
@@ -81,9 +82,11 @@ public sealed class IntegrationsAcceptanceTests(ClientsManagementBrowserFixture 
         await page.Keyboard.PressAsync("Escape");
         await Assertions.Expect(page.GetByTestId("client-review-dialog")).ToHaveCountAsync(0);
         await page.GetByTestId("open-create-integration").ClickAsync();
+        await page.GetByRole(AriaRole.Combobox, new() { Name = "Connection type", Exact = true }).ClickAsync();
+        await page.Locator(".mud-popover-open").GetByText("HTTP MCP gateway", new() { Exact = true }).ClickAsync();
         await page.GetByTestId("credential-name").FillAsync("Synthetic workflow client");
         await page.GetByRole(AriaRole.Button, new() { Name = "Next", Exact = true }).ClickAsync();
-        await Assertions.Expect(page.GetByTestId("credential-step")).ToContainTextAsync("Step 2 of 4 · Server access");
+        await Assertions.Expect(page.GetByTestId("credential-step")).ToContainTextAsync("Step 2 of 5 · Server access");
         await Assertions.Expect(page.GetByTestId("permission-scope").Locator("option")).ToHaveCountAsync(1);
         await page.GetByTestId("credential-server-help").FocusAsync();
         await page.Keyboard.PressAsync("Enter");
@@ -95,7 +98,7 @@ public sealed class IntegrationsAcceptanceTests(ClientsManagementBrowserFixture 
         await page.GetByTestId("credential-instance-permission-mcp.discovery.read").CheckAsync();
         await Capture("create-server-access");
         await page.GetByRole(AriaRole.Button, new() { Name = "Next", Exact = true }).ClickAsync();
-        await Assertions.Expect(page.GetByTestId("credential-step")).ToContainTextAsync("Step 3 of 4 · Tenant access");
+        await Assertions.Expect(page.GetByTestId("credential-step")).ToContainTextAsync("Step 3 of 5 · Tenant access");
         await page.GetByTestId("permission-scope").WaitForAsync();
         await page.GetByRole(AriaRole.Combobox, new() { Name = "Add tenant", Exact = true }).ClickAsync();
         await page.Locator(".mud-popover-open").GetByText("Synthetic operations", new() { Exact = true }).ClickAsync();
@@ -108,8 +111,21 @@ public sealed class IntegrationsAcceptanceTests(ClientsManagementBrowserFixture 
         await page.GetByTestId("credential-permission-7-flow.read").CheckAsync();
         await Capture("create-tenant-access");
         await page.GetByRole(AriaRole.Button, new() { Name = "Next", Exact = true }).ClickAsync();
-        await Assertions.Expect(page.GetByTestId("credential-step")).ToContainTextAsync("Step 4 of 4 · Review & create");
+        await Assertions.Expect(page.GetByTestId("credential-step")).ToContainTextAsync("Step 4 of 5 · Policies");
+        await Assertions.Expect(page.GetByTestId("integration-base-policy")).ToHaveCountAsync(2);
+        await Capture("create-policies");
+        await page.GetByRole(AriaRole.Button, new() { Name = "Next", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.GetByTestId("credential-step")).ToContainTextAsync("Step 5 of 5 · Review & create");
+        await Assertions.Expect(page.GetByTestId("setup-step-start")).ToBeFocusedAsync();
+        await Assertions.Expect(page.GetByTestId("setup-step-start")).ToBeInViewportAsync();
+        var stepLabels = await page.Locator(".mud-stepper-nav").InnerTextAsync();
+        Assert.True(stepLabels.IndexOf("Policies", StringComparison.Ordinal) < stepLabels.IndexOf("Review & create", StringComparison.Ordinal));
+        await Assertions.Expect(page.Locator(".mud-stepper-nav").GetByText("Policies", new() { Exact = true })).ToBeInViewportAsync();
+        await Assertions.Expect(page.GetByTestId("integration-setup-review")).ToContainTextAsync("Synthetic workflow client");
+        await Capture("create-review");
         await Assertions.Expect(page.GetByTestId("create-credential")).ToBeDisabledAsync();
+        await page.GetByRole(AriaRole.Button, new() { Name = "Back", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.GetByTestId("integration-base-policy")).ToHaveCountAsync(2);
         await page.GetByRole(AriaRole.Button, new() { Name = "Back", Exact = true }).ClickAsync();
         await Assertions.Expect(page.GetByTestId("credential-permission-7-flow.read")).ToBeCheckedAsync();
         await page.GetByRole(AriaRole.Button, new() { Name = "Back", Exact = true }).ClickAsync();
@@ -240,6 +256,7 @@ public sealed class IntegrationsAcceptanceTests(ClientsManagementBrowserFixture 
                     { OwnerPermissionGranted = true, AuthorizationAdmitted = true }], [], "Review the intended operation before dispatch.")
                 { MatchingPolicies = [new(PolicyId, "Production", 7, null, "netratel_flows/list", "Allow", CredentialExpiry, CredentialExpiry, 1)] };
             else if (path == "/api/v2/access/self") response = new { isInstanceAdministrator = true };
+            else if (path.EndsWith("/base-policies")) response = Array.Empty<McpIntegrationPolicy>();
             else if (path.EndsWith("/authority")) response = new
             {
                 tenants = new[] { new { tenantId = 7, name = "Synthetic operations", permissions = TenantPermissions } },

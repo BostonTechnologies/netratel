@@ -34,6 +34,13 @@ public sealed class McpOperatorPolicyRecord
     public McpOperatorPolicyLifecycleState LifecycleState { get; set; } = McpOperatorPolicyLifecycleState.Active;
     public long Version { get; set; }
     public string? AuditReference { get; set; }
+    public Guid? ParentPolicyId { get; set; }
+    public string? IntegrationCredentialId { get; set; }
+    public string? Resource { get; set; }
+    public string[]? Operations { get; set; }
+    public Guid[]? AgentIds { get; set; }
+    public string[]? ClientTags { get; set; }
+    public bool IsContainer { get; set; }
 }
 
 /// <summary>

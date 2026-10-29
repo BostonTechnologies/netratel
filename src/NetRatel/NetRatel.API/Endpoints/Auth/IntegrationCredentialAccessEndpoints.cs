@@ -11,13 +11,28 @@ public static partial class IntegrationCredentialEndpoints
 {
     private static void MapAccessEditing(RouteGroupBuilder credentials)
     {
+        credentials.MapPost("/{credentialId}/policy-consolidation/preview", (string credentialId,
+            [FromServices] IntegrationPolicyConsolidation consolidation, HttpContext http, CancellationToken ct) =>
+            AccessGuardAsync(http, "consolidation_preview", true, context => consolidation.PreviewAsync(context.Owner, credentialId, context.Environment, ct)))
+            .RequireAuthorization("McpOperatorPolicyAdmin");
+        credentials.MapPost("/{credentialId}/policy-consolidation/confirm", (string credentialId, ConsolidationDecision decision,
+            [FromServices] IntegrationPolicyConsolidation consolidation, HttpContext http, CancellationToken ct) =>
+            !decision.Confirm ? Task.FromResult<IResult>(Results.BadRequest()) : AccessGuardAsync(http, "consolidation_confirm", true,
+                context => consolidation.ApplyAsync(context.Owner, credentialId, context.Environment, decision.PlanToken, ct)))
+            .RequireAuthorization("McpOperatorPolicyAdmin");
         var access = credentials.MapGroup("/{credentialId}/access-requests")
             .RequireRateLimiting("integration-pairing-account");
         access.MapPost("/", (string credentialId, [FromBody] CredentialAccessRequest request,
             [FromServices] IntegrationPairingService pairing, HttpContext http, CancellationToken ct) =>
             AccessGuardAsync(http, "request", true, context => pairing.RequestAccountAccessAsync(context.Owner,
                 credentialId, request.RequestId, request.Grants, request.InstancePermissions,
-                context.Origin, context.Resource, context.Environment, ct)));
+                context.Origin, context.Resource, context.Environment, ct, request.Policies)));
+        credentials.MapGet("/{credentialId}/base-policies", (string credentialId, [FromServices] IntegrationPairingService pairing,
+            HttpContext http, CancellationToken ct) => AccessGuardAsync(http, "policies", false,
+            context => pairing.GetAccountBasePoliciesAsync(context.Owner, credentialId, context.Environment, ct: ct)));
+        access.MapGet("/{requestId}/base-policies", (string credentialId, string requestId, [FromServices] IntegrationPairingService pairing,
+            HttpContext http, CancellationToken ct) => AccessGuardAsync(http, "policies", false,
+            context => pairing.GetAccountBasePoliciesAsync(context.Owner, credentialId, context.Environment, requestId, ct)));
         access.MapGet("/", (string credentialId, [FromServices] IntegrationPairingService pairing,
             HttpContext http, CancellationToken ct) => AccessGuardAsync(http, "list", false,
             context => pairing.ListAccountAccessAsync(context.Owner, credentialId, context.Resource, context.Environment, ct)));
@@ -82,6 +97,11 @@ public static partial class IntegrationCredentialEndpoints
             return Results.Json(failure with { Stage = stage, CorrelationId = http.TraceIdentifier },
                 statusCode: exception.Forbidden ? StatusCodes.Status403Forbidden : StatusCodes.Status400BadRequest);
         }
+        catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+        { return Results.Conflict(new { code = "review_policy_changed", stage }); }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or System.Security.Cryptography.CryptographicException)
+        { return Results.BadRequest(new { code = "review_proposal_changed", stage }); }
+        catch (KeyNotFoundException) { return Results.NotFound(new { code = "review_credential_unavailable", stage }); }
         catch (Exception exception) when (IntegrationPairingFailureResponses.IsTransient(exception))
         {
             logger.LogWarning("Credential access failed. Stage {Stage}, HTTP {HttpStatus}, code {FailureCode}, exception type {ExceptionType}, reference {CorrelationId}",
@@ -98,8 +118,9 @@ public static partial class IntegrationCredentialEndpoints
 
     [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public sealed record CredentialAccessRequest(string RequestId, IReadOnlyList<IntegrationPairingGrant> Grants,
-        IReadOnlyList<string> InstancePermissions);
+        IReadOnlyList<string> InstancePermissions, IReadOnlyList<McpIntegrationPolicy>? Policies = null);
     [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public sealed record CredentialAccessDecision(string ProposalHash, bool Confirm);
+    public sealed record ConsolidationDecision(string PlanToken, bool Confirm);
     private sealed record CredentialAccessContext(string Owner, string Origin, string Resource, McpOperatorEnvironment Environment);
 }
