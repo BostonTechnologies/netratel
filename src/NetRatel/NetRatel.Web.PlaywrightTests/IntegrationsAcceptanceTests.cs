@@ -117,6 +117,10 @@ public sealed class IntegrationsAcceptanceTests(ClientsManagementBrowserFixture 
         await page.GetByRole(AriaRole.Button, new() { Name = "Next", Exact = true }).ClickAsync();
         await Assertions.Expect(page.GetByTestId("credential-step")).ToContainTextAsync("Step 5 of 5 · Review & create");
         await Assertions.Expect(page.GetByTestId("setup-step-start")).ToBeFocusedAsync();
+        await Assertions.Expect(page.GetByTestId("setup-step-start")).ToBeInViewportAsync();
+        var stepLabels = await page.Locator(".mud-stepper-nav").InnerTextAsync();
+        Assert.True(stepLabels.IndexOf("Policies", StringComparison.Ordinal) < stepLabels.IndexOf("Review & create", StringComparison.Ordinal));
+        await Assertions.Expect(page.Locator(".mud-stepper-nav").GetByText("Policies", new() { Exact = true })).ToBeInViewportAsync();
         await Assertions.Expect(page.GetByTestId("integration-setup-review")).ToContainTextAsync("Synthetic workflow client");
         await Capture("create-review");
         await Assertions.Expect(page.GetByTestId("create-credential")).ToBeDisabledAsync();

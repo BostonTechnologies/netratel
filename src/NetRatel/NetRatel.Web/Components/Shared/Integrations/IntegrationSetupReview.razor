@@ -4,13 +4,13 @@
 <MudStack Spacing="3" data-testid="integration-setup-review">
     <MudPaper Outlined="true" Class="pa-4" Elevation="0">
         <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
-            <div><MudText Typo="Typo.overline">Connection</MudText><MudText Typo="Typo.h5">@Name</MudText></div>
-            <MudButton OnClick="@(() => Edit.InvokeAsync(0))" StartIcon="@Icons.Material.Filled.Edit" aria-label="Edit connection">Edit</MudButton>
+            <div style="min-width:0;flex:1"><MudText Typo="Typo.overline">Connection</MudText><MudText Typo="Typo.h5">@Name</MudText></div>
+            <MudButton Style="flex-shrink:0;white-space:nowrap" OnClick="@(() => Edit.InvokeAsync(0))" StartIcon="@Icons.Material.Filled.Edit" aria-label="Edit connection">Edit</MudButton>
         </MudStack>
         <MudChip T="string" Color="Color.Primary" Variant="Variant.Outlined">@(HttpMcp ? "HTTP MCP gateway" : "API / CLI / stdio MCP")</MudChip>
         @if (HttpMcp) { <MudText Class="mt-2" Style="overflow-wrap:anywhere">@Resource</MudText> }
         <MudTooltip Text="@IntegrationCredentialExpiry.Format(ExpiresAtUtc)"><MudText Typo="Typo.body2" Class="mt-2">Expires @ExpiresAtUtc.ToUniversalTime().ToString("dddd, dd MMM yyyy HH:mm:ss") UTC</MudText></MudTooltip>
-        <MudText Typo="Typo.caption">Exact UTC: @IntegrationCredentialExpiry.Format(ExpiresAtUtc)</MudText>
+        <MudText Typo="Typo.caption" Class="d-block">Exact UTC: @IntegrationCredentialExpiry.Format(ExpiresAtUtc)</MudText>
     </MudPaper>
     <MudGrid Spacing="3">
         @foreach(var scope in Scopes)

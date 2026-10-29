@@ -47,6 +47,8 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         review.Instance.Name.Should().Be("Synthetic HTTP connection");
         review.Instance.Scopes.Select(scope => scope.Name).Should().Contain(["Tenant choice 17", "Tenant choice 18", "Server / instance"]);
         review.Instance.Policies.Should().HaveCount(3);
+        var steps = dialogs.Find(".mud-stepper-nav").TextContent;
+        steps.IndexOf("Policies", StringComparison.Ordinal).Should().BeLessThan(steps.IndexOf("Review & create", StringComparison.Ordinal));
         review.FindAll("details").Should().BeEmpty();
         review.FindComponents<MudCard>().Should().HaveCount(3);
         dialogs.Find("[data-testid='create-credential']").HasAttribute("disabled").Should().BeTrue();
