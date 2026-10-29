@@ -28,7 +28,10 @@ record_stage() {
   fi
 }
 
-for assembly in "${assemblies[@]}"; do
+# Each independent process still runs one MTP module at a time. Overlap the
+# assemblies so API/component time does not follow the longest Core suite.
+run_assembly() {
+  local assembly="$1" project report stage_start status
   project="src/NetRatel/$assembly/$assembly.csproj"
   report="$results_directory/fast-$assembly.trx"
   rm -f "$report"
@@ -40,11 +43,34 @@ for assembly in "${assemblies[@]}"; do
     else
       status="$?"
       record_stage "$assembly" "$((SECONDS - stage_start))" "receipt-failed($status)"
-      exit "$status"
+      return "$status"
     fi
   else
     status="$?"
     record_stage "$assembly" "$((SECONDS - stage_start))" "failed($status)"
-    exit "$status"
+    return "$status"
+  fi
+}
+
+pids=()
+for assembly in "${assemblies[@]}"; do
+  run_assembly "$assembly" > "$results_directory/fast-$assembly.log" 2>&1 &
+  pids+=("$!")
+done
+
+# Wait for every group and keep each command/receipt failure. Separate logs keep
+# concurrent test output readable and retain diagnostics with the TRX artifacts.
+result=0
+for index in "${!assemblies[@]}"; do
+  assembly="${assemblies[$index]}"
+  if wait "${pids[$index]}"; then
+    cat "$results_directory/fast-$assembly.log"
+  else
+    status="$?"
+    cat "$results_directory/fast-$assembly.log"
+    if [[ "$result" -eq 0 ]]; then
+      result="$status"
+    fi
   fi
 done
+exit "$result"
