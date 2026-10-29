@@ -18,7 +18,7 @@ public partial class OperatorPolicies
     private McpOperatorEnvironment _environment;
     private int? _tenantFilter;
     private string _search = "";
-    private McpOperatorPolicyLifecycleState? _lifecycleFilter;
+    private McpOperatorPolicyLifecycleState? _lifecycleFilter = McpOperatorPolicyLifecycleState.Active;
     private McpOperatorTargetSelectorKind? _targetFilter;
     private int _currentPage;
     private int _pageSize = 10;
@@ -56,28 +56,30 @@ public partial class OperatorPolicies
         BackdropClick = false, CloseOnEscapeKey = false
     };
     private string DialogTitle => _preview is not null ? "Review policy change"
-        : _editing ? _editExisting ? "Edit policy bounds" : "Create operator policy"
+        : _editing ? _editExisting ? "Edit policy" : "Create operator policy"
         : _selected?.Name ?? "Policy details";
-    private bool HasListFilters => !string.IsNullOrWhiteSpace(_search) || _lifecycleFilter is not null || _targetFilter is not null;
-    private IEnumerable<McpOperatorPolicy> FilteredPolicies => _policies.Where(MatchesListFilters);
+    private bool HasListFilters => !string.IsNullOrWhiteSpace(_search) || _lifecycleFilter != McpOperatorPolicyLifecycleState.Active || _tenantFilter is not null || _targetFilter is not null;
+    private IEnumerable<McpOperatorPolicy> FilteredPolicies => _policies.Where(p => p.ParentPolicyId is null && (_lifecycleFilter != McpOperatorPolicyLifecycleState.Active || p.LifecycleState == McpOperatorPolicyLifecycleState.Active && (p.ExpiresAtUtc is null || p.ExpiresAtUtc > DateTimeOffset.UtcNow)) && (MatchesListFilters(p) || Children(p).Any(MatchesListFilters)))
+        .OrderBy(p => PrincipalName(p.PrincipalSelector)).ThenBy(p => TenantName(p.TargetSelector.TenantId));
 
     private bool MatchesListFilters(McpOperatorPolicy policy)
     {
+        if (_lifecycleFilter == McpOperatorPolicyLifecycleState.Active && policy.ExpiresAtUtc <= DateTimeOffset.UtcNow) return false;
         if (_lifecycleFilter is { } lifecycle && policy.LifecycleState != lifecycle ||
             _targetFilter is { } target && policy.TargetSelector.Kind != target) return false;
         var search = _search.Trim();
         if (search.Length == 0) return true;
         return new[] { policy.Name, policy.PrincipalSelector.Kind.ToString(), policy.PrincipalSelector.Value,
                 policy.PolicyId.ToString(), policy.TargetSelector.TenantId.ToString(), policy.TargetSelector.AgentId?.ToString(),
-                policy.TargetSelector.ClientTag, policy.Operation, policy.OperationFamily.ToString() }
+                policy.TargetSelector.ClientTag, policy.Operation, policy.OperationFamily.ToString(), TenantName(policy.TargetSelector.TenantId), PrincipalName(policy.PrincipalSelector) }
             .Any(value => value?.Contains(search, StringComparison.OrdinalIgnoreCase) == true);
     }
 
-    private void SearchChanged(string? value) { _search = value ?? ""; _currentPage = 0; }
-    private void LifecycleFilterChanged(McpOperatorPolicyLifecycleState? value) { _lifecycleFilter = value; _currentPage = 0; }
-    private void TargetFilterChanged(McpOperatorTargetSelectorKind? value) { _targetFilter = value; _currentPage = 0; }
-    private void PageSizeChanged(int value) { _pageSize = value; _currentPage = 0; }
-    private void ResetListFilters() { _search = ""; _lifecycleFilter = null; _targetFilter = null; _currentPage = 0; }
+    private void SearchChanged(string? value) { _search = value ?? ""; _currentPage = 0; PersistFilters(); }
+    private void LifecycleFilterChanged(McpOperatorPolicyLifecycleState? value) { _lifecycleFilter = value; _currentPage = 0; PersistFilters(); }
+    private void TargetFilterChanged(McpOperatorTargetSelectorKind? value) { _targetFilter = value; _currentPage = 0; PersistFilters(); }
+    private void PageSizeChanged(int value) { _pageSize = value; _currentPage = 0; PersistFilters(); }
+    private void ResetListFilters() { _search = ""; _lifecycleFilter = McpOperatorPolicyLifecycleState.Active; _tenantFilter = null; _targetFilter = null; _currentPage = 0; PersistFilters(); }
     private string PolicyRowClass(McpOperatorPolicy policy, int _) => policy.PolicyId == _selectedPolicyId ? "policy-row-selected" : "";
     private static Color LifecycleColor(McpOperatorPolicyLifecycleState state) => state switch
     {
@@ -90,7 +92,7 @@ public partial class OperatorPolicies
     {
         McpOperatorTargetSelectorKind.ExactAgent => "Exact client",
         McpOperatorTargetSelectorKind.ClientTag => "Client tag",
-        McpOperatorTargetSelectorKind.ControlPlane => "Control plane",
+        McpOperatorTargetSelectorKind.ControlPlane => "Server / instance",
         McpOperatorTargetSelectorKind.DevelopmentEnvironment => "Development environment",
         _ => target.ToString()
     };
@@ -98,7 +100,7 @@ public partial class OperatorPolicies
     private bool CanReplace => _selected is { LifecycleState: McpOperatorPolicyLifecycleState.Active, DisabledAtUtc: null } &&
         _selected.Environment == _authority?.Environment;
     private bool CanDisable => CanReplace;
-    private bool CanRevoke => _selected is { LifecycleState: not McpOperatorPolicyLifecycleState.Revoked } &&
+    private bool CanRevoke => _selected is { LifecycleState: not (McpOperatorPolicyLifecycleState.Revoked or McpOperatorPolicyLifecycleState.Deleted) } &&
         _selected.Environment == _authority?.Environment;
 
     protected override async Task OnInitializedAsync()
@@ -109,6 +111,9 @@ public partial class OperatorPolicies
             _environment = _authority.Environment;
             _policies = (await PolicyApi.ListAsync(_environment, null, _lifetime.Token)).Items;
             _credentials = await PolicyApi.GetOwnedCredentialsAsync(_lifetime.Token);
+            await LoadDirectoryAsync();
+            RestoreFilters();
+            if (_tenantFilter is not null) _policies = (await PolicyApi.ListAsync(_environment, _tenantFilter, _lifetime.Token)).Items;
         });
         _loading = false;
     }
@@ -147,6 +152,7 @@ public partial class OperatorPolicies
     {
         if (_busy) return;
         _environment = value;
+        PersistFilters();
         _currentPage = 0;
         _selectedPolicyId = null;
         await ReloadAsync();
@@ -156,6 +162,7 @@ public partial class OperatorPolicies
     {
         if (_busy || _tenantFilter == value) return;
         _tenantFilter = value;
+        PersistFilters();
         _currentPage = 0;
         _selectedPolicyId = null;
         await ReloadAsync();
@@ -198,6 +205,7 @@ public partial class OperatorPolicies
         var profile = policy.TargetSelector.AgentId is { } agentId
             ? await PolicyApi.GetTargetAsync(policy.TargetSelector.TenantId, agentId, _lifetime.Token) : null;
         if (_disposed) return;
+        await LoadDirectoryAsync(tenant: policy.TargetSelector.TenantId, ct: _lifetime.Token);
         _selected = policy;
         _selectedPolicyId = policy.PolicyId;
         _credentialAdmission = null;
@@ -253,7 +261,7 @@ public partial class OperatorPolicies
     private async Task PreviewStateAsync(PolicyChangeAction action)
     {
         if (_busy || _authority is null || _selected is null ||
-            (action == PolicyChangeAction.Disable ? !CanDisable : action != PolicyChangeAction.Revoke || !CanRevoke)) return;
+            (action == PolicyChangeAction.Disable ? !CanDisable : action == PolicyChangeAction.Delete ? _selected.LifecycleState == McpOperatorPolicyLifecycleState.Deleted : action != PolicyChangeAction.Revoke || !CanRevoke)) return;
         _editing = false;
         ResetPreview();
         var selected = _selected;
@@ -428,17 +436,16 @@ public partial class OperatorPolicies
     private static string ExpectedAuditAction(PolicyChangeAction action) => action switch
     {
         PolicyChangeAction.Create => "policy_created", PolicyChangeAction.Replace => "policy_replaced",
-        PolicyChangeAction.Disable => "policy_disabled", PolicyChangeAction.Revoke => "policy_revoked",
+        PolicyChangeAction.Disable => "policy_disabled", PolicyChangeAction.Revoke => "policy_revoked", PolicyChangeAction.Delete => "policy_deleted",
         _ => throw new ArgumentOutOfRangeException(nameof(action))
     };
     private sealed record AcceptedPolicyChange(PolicyChangeAction Action, PolicyMutationResult Result);
-    private static McpOperatorPolicyDraft ToDraft(McpOperatorPolicy policy) => new(policy.Name, policy.Environment, policy.Effect,
-        policy.Priority, policy.PrincipalSelector, policy.TargetSelector, policy.TargetClassification, policy.OperationFamily,
-        policy.Operation, policy.Constraints, policy.ExpiresAtUtc, policy.ReviewByUtc, policy.AuditReference);
+    private static McpOperatorPolicyDraft ToDraft(McpOperatorPolicy policy) => policy.ToDraft();
     private static string StateChangeDescription(PolicyChangeAction action) => action switch
     {
-        PolicyChangeAction.Disable => "This makes the selected policy inactive and retains its history. A later grant requires a separately reviewed successor.",
-        PolicyChangeAction.Revoke => "Revocation is terminal. This policy cannot be reactivated; history remains available.",
+        PolicyChangeAction.Delete => "This deletes the policy and all its child exceptions from management and authorization. Only immutable audit/tombstone history is retained; it cannot be restored.",
+        PolicyChangeAction.Disable => "This makes the selected policy inactive together with all child exceptions, and retains its history. A later grant requires a separately reviewed successor.",
+        PolicyChangeAction.Revoke => "Revocation is terminal and includes all child exceptions. This policy cannot be reactivated; history remains available.",
         _ => "The confirmed change must match this preview exactly. Current credential grants and other matching policies still constrain admission."
     };
 

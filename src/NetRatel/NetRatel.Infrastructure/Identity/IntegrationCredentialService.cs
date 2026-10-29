@@ -257,6 +257,7 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, T
             // Conditional writes serialize with deletion without loading a stale tracked credential.
             await using var transaction = db.Database.CurrentTransaction is null
                 ? await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false) : null;
+            await ClearSetupHandoffsAsync(ownerPrincipalId, credentialId, cancellationToken).ConfigureAwait(false);
             var now = (clock ?? TimeProvider.System).GetUtcNow();
             var owned = db.IntegrationCredentials.Where(candidate => candidate.Id == credentialId && candidate.OwnerPrincipalId == ownerPrincipalId);
             var changed = await owned.Where(candidate => candidate.RevokedAtUtc == null)
@@ -281,6 +282,7 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, T
 
         if (credential.RevokedAtUtc is null)
         {
+            await ClearSetupHandoffsAsync(ownerPrincipalId, credentialId, cancellationToken).ConfigureAwait(false);
             credential.RevokedAtUtc = (clock ?? TimeProvider.System).GetUtcNow();
             credential.RevokedByPrincipalId = revokedByPrincipalId;
             db.IntegrationCredentialLifecycleEvents.Add(LifecycleEvent(credential.Id, ownerPrincipalId, revokedByPrincipalId, credential.RevokedAtUtc.Value, "revoked"));
@@ -297,6 +299,7 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, T
         {
             await using var transaction = db.Database.CurrentTransaction is null
                 ? await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false) : null;
+            await ClearSetupHandoffsAsync(ownerPrincipalId, credentialId, cancellationToken).ConfigureAwait(false);
             // Pairing mutations take the request lock before touching its credential. Keep that
             // order here too, including concurrent cancellation, expiry and acknowledgement.
             await db.IntegrationPairingRequests.Where(request => request.CredentialId == credentialId && request.OwnerPrincipalId == ownerPrincipalId &&
@@ -339,6 +342,15 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, T
         db.IntegrationCredentialLifecycleEvents.Add(LifecycleEvent(credentialId, ownerPrincipalId, deletedByPrincipalId, now, "deleted"));
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         return true;
+    }
+
+    private async Task ClearSetupHandoffsAsync(string owner, string credential, CancellationToken ct)
+    {
+        var attempts = db.IntegrationSetupAttempts.Where(a => a.OwnerPrincipalId == owner && a.CredentialId == credential);
+        if (db.Database.IsRelational())
+            await attempts.ExecuteUpdateAsync(update => update.SetProperty(a => a.ProtectedDelivery, (string?)null).SetProperty(a => a.Acknowledged, true), ct).ConfigureAwait(false);
+        else
+            foreach (var attempt in await attempts.ToListAsync(ct).ConfigureAwait(false)) { attempt.ProtectedDelivery = null; attempt.Acknowledged = true; }
     }
 
     private static IntegrationCredentialLifecycleEvent LifecycleEvent(string credentialId, string owner, string actor, DateTimeOffset now, string action) => new()

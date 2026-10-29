@@ -164,25 +164,25 @@ public sealed class OperatorPoliciesTests : AsyncBunitContext
             TargetSelector = index % 3 == 0 ? new(McpOperatorTargetSelectorKind.ClientTag, 42, ClientTag: "qa-scope") : api.Policy.TargetSelector
         }).ToArray();
         var page = RenderPage(api);
-        page.WaitForAssertion(() => page.Find("[data-testid='policy-result-count']").TextContent.Should().Contain("25 of 25"));
+        page.WaitForAssertion(() => page.Find("[data-testid='policy-result-count']").TextContent.Should().Contain("13 base policies"));
         var table = page.FindComponent<MudTable<McpOperatorPolicy>>();
         page.FindAll("[data-testid^='policy-inspect-']").Should().HaveCount(10);
         await page.InvokeAsync(() => table.Instance.NavigateTo(1));
-        page.FindAll("[data-testid^='policy-inspect-']").Should().HaveCount(10);
+        page.FindAll("[data-testid^='policy-inspect-']").Should().HaveCount(3);
         page.Find("[data-testid='policy-search']").Input("reviewed GRANT 23");
         page.WaitForAssertion(() => page.FindAll("[data-testid^='policy-inspect-']").Should().ContainSingle());
         table.Instance.CurrentPage.Should().Be(0);
-        page.Find("[data-testid='policy-result-count']").TextContent.Should().Contain("1 of 25");
+        page.Find("[data-testid='policy-result-count']").TextContent.Should().Contain("1 base policies");
         page.Find("[data-testid='policy-search']").Input("");
         await page.InvokeAsync(() => page.FindComponent<MudSelect<McpOperatorPolicyLifecycleState?>>().Instance.ValueChanged.InvokeAsync(McpOperatorPolicyLifecycleState.Revoked));
         await page.InvokeAsync(() => page.FindComponent<MudSelect<McpOperatorTargetSelectorKind?>>().Instance.ValueChanged.InvokeAsync(McpOperatorTargetSelectorKind.ClientTag));
-        page.WaitForAssertion(() => page.Find("[data-testid='policy-result-count']").TextContent.Should().Contain("4 of 25"));
+        page.WaitForAssertion(() => page.Find("[data-testid='policy-result-count']").TextContent.Should().Contain("4 base policies"));
         page.FindAll("[data-testid^='policy-inspect-']").Should().HaveCount(4);
         page.Find("[data-testid='policy-search']").Input("no matching identity");
         page.WaitForAssertion(() => page.FindAll("[data-testid^='policy-inspect-']").Should().BeEmpty());
         page.Find("[data-testid='policy-reset-filters']").Click();
         await page.InvokeAsync(() => table.Instance.SetRowsPerPage(25));
-        page.WaitForAssertion(() => page.FindAll("[data-testid^='policy-inspect-']").Should().HaveCount(25));
+        page.WaitForAssertion(() => page.FindAll("[data-testid^='policy-inspect-']").Should().HaveCount(13));
         api.ListCalls.Should().Be(1);
         api.Confirmed.Should().BeEmpty();
     }

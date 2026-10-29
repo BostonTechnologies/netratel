@@ -4,11 +4,11 @@
     <dl>
         <dt>Name</dt><dd>@Draft.Name</dd>
         <dt>Environment / effect / priority</dt><dd>@Draft.Environment · @Draft.Effect · @Draft.Priority</dd>
-        <dt>Principal selector</dt><dd>@Draft.PrincipalSelector.Kind: <code>@Draft.PrincipalSelector.Value</code></dd>
-        <dt>Target selector</dt><dd>@Draft.TargetSelector.Kind · tenant @Draft.TargetSelector.TenantId @Draft.TargetSelector.AgentId @Draft.TargetSelector.ClientTag</dd>
+        <dt>Principal selector</dt><dd>@(PrincipalName ?? Draft.PrincipalSelector.Kind.ToString())<div><MudText Typo="Typo.caption">@Draft.PrincipalSelector.Value</MudText></div></dd>
+        <dt>Target selector</dt><dd>@(Draft.TargetSelector.TenantId == 0 ? "Server / instance" : TenantName ?? $"Unavailable tenant (ID {Draft.TargetSelector.TenantId})") · @ClientNames</dd>
         <dt>Classification filter</dt><dd>@(Draft.TargetClassification?.ToString() ?? "Any persisted classification")</dd>
         <dt>Operation families</dt><dd>@Draft.OperationFamily</dd>
-        <dt>Exact operation</dt><dd>@(Draft.Operation ?? "All operations in the selected families")</dd>
+        <dt>Exact operation</dt><dd>@(Draft.Operations is { } operations ? string.Join(", ", operations) : Draft.Operation ?? "All operations in the selected families")</dd>
         <dt>Expiry</dt><dd>@Instant(Draft.ExpiresAtUtc)</dd>
         <dt>Review by</dt><dd>@Instant(Draft.ReviewByUtc)</dd>
         <dt>Audit reference</dt><dd>@(Draft.AuditReference ?? "None")</dd>
@@ -30,6 +30,9 @@
 
 @code {
     [Parameter, EditorRequired] public McpOperatorPolicyDraft Draft { get; set; } = default!;
+    [Parameter] public string? TenantName { get; set; }
+    [Parameter] public string? PrincipalName { get; set; }
+    [Parameter] public string? ClientNames { get; set; }
     private (string Name, int? Value)[] Limits => [
         ("Command duration (seconds)", Draft.Constraints.MaxCommandDurationSeconds),
         ("Terminal idle (seconds)", Draft.Constraints.MaxTerminalIdleSeconds),

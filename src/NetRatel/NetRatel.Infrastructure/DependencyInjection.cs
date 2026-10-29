@@ -89,6 +89,9 @@ public static class DependencyInjection
         services.AddScoped<McpOperatorPolicyAdministration>();
         services.AddScoped<IMcpOperatorPolicyAdministration>(serviceProvider => serviceProvider.GetRequiredService<McpOperatorPolicyAdministration>());
         services.AddScoped<IMcpOperatorPolicyRevocation>(serviceProvider => serviceProvider.GetRequiredService<McpOperatorPolicyAdministration>());
+        services.AddScoped<IMcpOperatorPolicyDeletion>(serviceProvider => serviceProvider.GetRequiredService<McpOperatorPolicyAdministration>());
+        services.AddScoped<IntegrationSetupService>();
+        services.AddScoped<IntegrationPolicyConsolidation>();
         services.AddScoped<IMcpOperatorConfirmationService, McpOperatorConfirmationService>();
         services.AddScoped<IMcpOperatorFileArtifactStore, McpOperatorFileArtifactStore>();
         services.AddScoped<IMcpOperatorTerminalSessionRecovery, McpOperatorTerminalSessionRecoveryService>();

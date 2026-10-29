@@ -13,6 +13,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NetRatel.API.Endpoints.Auth;
+using NetRatel.Application.Operations;
 using NetRatel.API.Security.Local;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
@@ -29,7 +30,7 @@ public sealed class IntegrationCredentialAccessEndpointTests
     [Theory]
     [InlineData("local")]
     [InlineData("Oidc")]
-    public async Task Browser_review_adds_a_new_tenant_and_edits_scopes_without_replacing_secret_expiry_or_policies(string identity)
+    public async Task Browser_review_adds_a_new_tenant_and_edits_scopes_without_replacing_secret_expiry_and_reconciles_reviewed_base_policies(string identity)
     {
         await using var fixture = await ReviewedMcpAccessTests.Fixture.CreateAsync();
         (await fixture.Identity.Users.SingleAsync(user => user.PrincipalId == "requester")).IsInstanceAdministrator = true;
@@ -44,7 +45,7 @@ public sealed class IntegrationCredentialAccessEndpointTests
         using var client = AccountClient(app, identity);
         var path = AccessPath(fixture);
         var proposal = new IntegrationCredentialEndpoints.CredentialAccessRequest(Guid.NewGuid().ToString(),
-            [new(17, NetRatelPermissions.McpDiscoveryRead), new(29, NetRatelPermissions.FlowRead), new(41, NetRatelPermissions.FlowRead)],
+            [new(17, NetRatelPermissions.TelemetryRead), new(29, NetRatelPermissions.FlowRead), new(41, NetRatelPermissions.FlowRead)],
             [NetRatelPermissions.McpDiscoveryRead, NetRatelPermissions.FlowRead]);
 
         using var prepared = await client.PostAsJsonAsync(path, proposal);
@@ -79,7 +80,7 @@ public sealed class IntegrationCredentialAccessEndpointTests
         Assert.Equal(ReviewedMcpAccessTests.Fixture.Resource, saved.Resource);
         Assert.Equal(originalHash, (await fixture.Identity.IntegrationCredentials.SingleAsync()).SecretHash);
         Assert.NotNull(await fixture.Credentials.VerifyAsync(fixture.Credential.Secret, IntegrationCredentialPurpose.HttpMcp));
-        Assert.Empty(await fixture.App.McpOperatorPolicies.ToArrayAsync());
+        Assert.Equal(4, await fixture.App.McpOperatorPolicies.CountAsync(p => p.ParentPolicyId == null && p.IntegrationCredentialId == original.Id));
         using var replay = await client.PostAsJsonAsync(applyPath, decision);
         Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
         Assert.Single(await fixture.Identity.IntegrationCredentialLifecycleEvents.Where(item => item.Action == "reconciled").ToArrayAsync());
@@ -120,7 +121,7 @@ public sealed class IntegrationCredentialAccessEndpointTests
         Assert.Equal(HttpStatusCode.OK, applied.StatusCode);
         Assert.Equal("consumed", (await applied.Content.ReadFromJsonAsync<ReviewedMcpAccessReceipt>())!.Request.Status);
         Assert.Single((await fixture.Credentials.ListAsync("requester")).Single().Grants);
-        Assert.Empty(await fixture.App.McpOperatorPolicies.ToArrayAsync());
+        Assert.Equal(2, await fixture.App.McpOperatorPolicies.CountAsync(p => p.ParentPolicyId == null && p.IntegrationCredentialId == fixture.Credential.CredentialId));
     }
 
     [Theory]

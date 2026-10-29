@@ -339,6 +339,11 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entity.Property(x => x.DisabledBy).HasMaxLength(256);
             entity.Property(x => x.LifecycleState).HasConversion<short>().HasDefaultValue(McpOperatorPolicyLifecycleState.Active);
             entity.Property(x => x.AuditReference).HasMaxLength(512);
+            entity.Property(x => x.IntegrationCredentialId).HasMaxLength(32);
+            entity.Property(x => x.Resource).HasMaxLength(512);
+            entity.HasIndex(x => new { x.IntegrationCredentialId, x.Environment, x.TenantId })
+                .IsUnique().HasFilter("\"IntegrationCredentialId\" IS NOT NULL AND \"ParentPolicyId\" IS NULL AND \"LifecycleState\" = 1");
+            entity.HasOne<McpOperatorPolicyRecord>().WithMany().HasForeignKey(x => x.ParentPolicyId).OnDelete(DeleteBehavior.Restrict);
             entity.Property(x => x.Version).IsConcurrencyToken();
             entity.HasIndex(x => new { x.Environment, x.TenantId, x.DisabledAtUtc, x.ExpiresAtUtc, x.Effect, x.Priority });
             entity.HasIndex(x => new { x.Environment, x.TargetSelectorKind, x.TenantId, x.AgentId });

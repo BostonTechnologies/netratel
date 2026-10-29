@@ -4426,6 +4426,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("AgentId")
                         .HasColumnType("uuid");
 
+                    b.PrimitiveCollection<Guid[]>("AgentIds")
+                        .HasColumnType("uuid[]");
+
                     b.Property<string>("AuditReference")
                         .HasMaxLength(512)
                         .HasColumnType("character varying(512)");
@@ -4433,6 +4436,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<string>("ClientTag")
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)");
+
+                    b.PrimitiveCollection<string[]>("ClientTags")
+                        .HasColumnType("text[]");
 
                     b.Property<string>("ConstraintsJson")
                         .IsRequired()
@@ -4462,6 +4468,13 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset?>("ExpiresAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("IntegrationCredentialId")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<bool>("IsContainer")
+                        .HasColumnType("boolean");
+
                     b.Property<short>("LifecycleState")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("smallint")
@@ -4479,6 +4492,12 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<int>("OperationFamily")
                         .HasColumnType("integer");
 
+                    b.PrimitiveCollection<string[]>("Operations")
+                        .HasColumnType("text[]");
+
+                    b.Property<Guid?>("ParentPolicyId")
+                        .HasColumnType("uuid");
+
                     b.Property<short>("PrincipalSelectorKind")
                         .HasColumnType("smallint");
 
@@ -4489,6 +4508,10 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
                     b.Property<int>("Priority")
                         .HasColumnType("integer");
+
+                    b.Property<string>("Resource")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
 
                     b.Property<DateTimeOffset?>("ReviewByUtc")
                         .HasColumnType("timestamp with time zone");
@@ -4508,7 +4531,13 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("ParentPolicyId");
+
                     b.HasIndex("Environment", "PrincipalSelectorKind", "PrincipalSelectorValue");
+
+                    b.HasIndex("IntegrationCredentialId", "Environment", "TenantId")
+                        .IsUnique()
+                        .HasFilter("\"IntegrationCredentialId\" IS NOT NULL AND \"ParentPolicyId\" IS NULL AND \"LifecycleState\" = 1");
 
                     b.HasIndex("Environment", "TargetSelectorKind", "TenantId", "AgentId");
 
@@ -7477,6 +7506,14 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .HasForeignKey("JobRecordId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.McpOperatorPolicyRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.McpOperatorPolicyRecord", null)
+                        .WithMany()
+                        .HasForeignKey("ParentPolicyId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.McpOperatorRequestAuditRecord", b =>

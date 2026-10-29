@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using NetRatel.Infrastructure.Identity.Branding;
@@ -274,6 +275,10 @@ public sealed partial class IntegrationPairingService(NetRatelIdentityDbContext 
                 // Lock/CAS the setup attempt before any credential mutation. Deletion uses the same
                 // request -> credential order, and a stale tracked request retries before delivery.
                 await SaveAsync(request, ct).ConfigureAwait(false);
+                // Both models share the database; an access change and its policies must commit together.
+                if (applicationDb is not null && db.Database.IsRelational() && applicationDb.Database.IsRelational()) applicationDb.Database.SetDbConnection(db.Database.GetDbConnection(), contextOwnsConnection: false);
+                await using var policyTransaction = applicationDb is not null && db.Database.IsRelational() && applicationDb.Database.IsRelational()
+                    ? await applicationDb.Database.UseTransactionAsync(transaction.GetDbTransaction(), ct).ConfigureAwait(false) : null;
                 var result = await mutate(request).ConfigureAwait(false);
                 await transaction.CommitAsync(ct).ConfigureAwait(false);
                 return result;
@@ -282,6 +287,7 @@ public sealed partial class IntegrationPairingService(NetRatelIdentityDbContext 
             {
                 await transaction.RollbackAsync(ct).ConfigureAwait(false);
                 db.ChangeTracker.Clear();
+                applicationDb?.ChangeTracker.Clear();
             }
         }
     }

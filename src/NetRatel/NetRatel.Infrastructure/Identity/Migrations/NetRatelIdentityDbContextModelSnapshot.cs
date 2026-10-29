@@ -17,7 +17,7 @@ namespace NetRatel.Infrastructure.Identity.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.12")
+                .HasAnnotation("ProductVersion", "10.0.14")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -690,6 +690,43 @@ namespace NetRatel.Infrastructure.Identity.Migrations
                     b.HasIndex("State", "ExpiresAtUtc");
 
                     b.ToTable("IntegrationPairingRequests", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Identity.IntegrationSetupAttempt", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<bool>("Acknowledged")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("CredentialId")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTimeOffset>("DeliveryExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("OwnerPrincipalId")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("ProtectedDelivery")
+                        .HasColumnType("text");
+
+                    b.Property<string>("RequestHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Acknowledged", "DeliveryExpiresAtUtc");
+
+                    b.ToTable("IntegrationSetupAttempts", (string)null);
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Identity.LocalUser", b =>

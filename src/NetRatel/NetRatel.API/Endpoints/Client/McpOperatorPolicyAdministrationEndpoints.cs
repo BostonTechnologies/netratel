@@ -18,12 +18,17 @@ public static class McpOperatorPolicyAdministrationEndpoints
             .WithTags("MCP Operator Administration")
             .RequireAuthorization("McpOperatorPolicyAdmin");
 
+        group.MapPolicyDirectory();
+
         group.MapGet("/policies", async (
             McpOperatorEnvironment? environment,
             int? tenantId,
+            bool? includeHistory,
             IMcpOperatorPolicyAdministration administration,
             CancellationToken cancellationToken) =>
-            Results.Ok(await administration.ListAsync(environment, tenantId, cancellationToken).ConfigureAwait(false)))
+            Results.Ok(new McpOperatorPolicyPage((await administration.ListAsync(environment, tenantId, cancellationToken).ConfigureAwait(false)).Items
+                .Where(p => includeHistory == true || p.LifecycleState == McpOperatorPolicyLifecycleState.Active && p.DisabledAtUtc is null &&
+                    (p.ExpiresAtUtc is null || p.ExpiresAtUtc > DateTimeOffset.UtcNow)).ToArray())))
             .Produces<McpOperatorPolicyPage>(StatusCodes.Status200OK)
             .ProducesProblem(StatusCodes.Status400BadRequest);
 

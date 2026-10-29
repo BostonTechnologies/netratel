@@ -21,6 +21,39 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
 {
     public IntegrationCredentialsStateTests() => Services.AddSingleton<IPairingApiClient>(new NoPairingApi());
 
+    [Fact]
+    public async Task Http_setup_reviews_three_base_policies_with_the_named_connection_and_keeps_policy_choices_when_going_back()
+    {
+        JSInterop.Mode = JSRuntimeMode.Loose;
+        Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+        using var transport = new CredentialTransport { IncludeHttpMcpCredential = true, HttpInstancePermissions = ["mcp.discovery.read"] };
+        Services.AddSingleton<IHttpClientFactory>(transport);
+        SetRendererInfo(new RendererInfo("Server", true));
+        var dialogs = Render<MudDialogProvider>(); var page = Render<IntegrationCredentials>();
+        page.WaitForAssertion(() => Field<object>(page.Instance, "_authority").Should().NotBeNull());
+        await page.InvokeAsync(() => {
+            Call(page.Instance, "OpenCreate"); Set(page.Instance, "_purpose", IntegrationCredentialPurpose.HttpMcp); Set(page.Instance, "_name", "Synthetic HTTP connection");
+            Call(page.Instance, "Next");
+            Field<HashSet<string>>(page.Instance, "_instancePermissions").Add("mcp.discovery.read"); Call(page.Instance, "Next");
+            Field<HashSet<(int, string)>>(page.Instance, "_selectedGrants").UnionWith([(17, "flow.read"), (18, "flow.read")]); Call(page.Instance, "Next");
+        });
+        page.Render();
+        dialogs.WaitForAssertion(() => dialogs.Find("[data-testid='credential-step']").TextContent.Should().Contain("Step 4 of 5 · Policies"));
+        dialogs.FindComponents<IntegrationBasePolicyEditor>().Should().HaveCount(3);
+        dialogs.FindComponents<MudTextField<string>>().Where(field => field.Instance.Label == "Base policy name")
+            .Select(field => field.Instance.Value).Should().OnlyContain(name => name!.StartsWith("Synthetic HTTP connection"));
+        await page.InvokeAsync(() => Call(page.Instance, "Next")); page.Render();
+        var review = dialogs.FindComponent<IntegrationSetupReview>();
+        review.Instance.Name.Should().Be("Synthetic HTTP connection");
+        review.Instance.Scopes.Select(scope => scope.Name).Should().Contain(["Tenant choice 17", "Tenant choice 18", "Server / instance"]);
+        review.Instance.Policies.Should().HaveCount(3);
+        review.FindAll("details").Should().BeEmpty();
+        review.FindComponents<MudCard>().Should().HaveCount(3);
+        dialogs.Find("[data-testid='create-credential']").HasAttribute("disabled").Should().BeTrue();
+        await page.InvokeAsync(() => Call(page.Instance, "Previous")); page.Render();
+        dialogs.FindComponents<IntegrationBasePolicyEditor>().Select(editor => editor.Instance.Value.Name).Should().OnlyContain(name => name.StartsWith("Synthetic HTTP connection"));
+    }
+
     [Theory]
     [InlineData(true, false)]
     [InlineData(false, true)]
@@ -308,7 +341,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         Call(page.Instance, "OpenCreate");
         Set(page.Instance, "_purpose", IntegrationCredentialPurpose.HttpMcp);
         Set(page.Instance, "_name", "Bounded HTTP reader");
-        Set(page.Instance, "_step", 3); Set(page.Instance, "_createConfirmed", true);
+        Set(page.Instance, "_step", 4); Set(page.Instance, "_createConfirmed", true);
         transport.CompleteCreate("synthetic-one-time-secret");
         await CallAsync(page.Instance, "CreateAsync");
         var configured = Field<CredentialMcpAdmission>(page.Instance, "_createdAdmission");
@@ -479,6 +512,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
             lastUsedAtUtc = (DateTimeOffset?)null, grants = Array.Empty<object>(), instancePermissions = Array.Empty<string>() };
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/base-policies", StringComparison.Ordinal)) return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(Array.Empty<NetRatel.Application.Operations.McpIntegrationPolicy>()) });
             if (request.RequestUri!.AbsolutePath.EndsWith("/access-requests", StringComparison.Ordinal))
             {
                 var path = request.RequestUri.AbsolutePath;

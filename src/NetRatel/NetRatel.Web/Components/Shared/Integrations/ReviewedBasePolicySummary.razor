@@ -1,0 +1,17 @@
+@using NetRatel.Shared.Connectivity
+@using NetRatel.Web.Services
+@if(Policies is { Count: > 0 }) {
+    <MudExpansionPanels Elevation="0" MultiExpansion="true" Class="my-3" data-testid="reviewed-base-policies">
+        @foreach(var policy in Policies) {
+            <MudExpansionPanel Text="@policy.Name" Expanded="true">
+                <MudChip T="string" Color="Color.Primary">@policy.Effect</MudChip>
+                <MudText Typo="Typo.body2">@policy.Families · @policy.Operations.Count operations · expires @IntegrationCredentialExpiry.Format(policy.ExpiresAtUtc)</MudText>
+                <MudExpansionPanels Elevation="0"><MudExpansionPanel Text="Inspect exact operations and limits">
+                    <MudText Typo="Typo.body2">@string.Join(", ", policy.Operations)</MudText>
+                    <MudSimpleTable Dense="true"><tbody>@foreach(var limit in policy.Limits) { <tr><th>@limit.Key</th><td>@limit.Value</td></tr> }</tbody></MudSimpleTable>
+                </MudExpansionPanel></MudExpansionPanels>
+            </MudExpansionPanel>
+        }
+    </MudExpansionPanels>
+}
+@code { [Parameter] public IReadOnlyList<ReviewedMcpBasePolicy>? Policies { get; set; } }

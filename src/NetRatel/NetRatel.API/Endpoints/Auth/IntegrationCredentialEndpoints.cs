@@ -132,6 +132,8 @@ public static partial class IntegrationCredentialEndpoints
             ClaimsPrincipal principal,
             IIntegrationCredentialService credentials,
             IIntegrationCredentialGrantValidator validator,
+            IServiceProvider services,
+            IHostEnvironment environment,
             HttpContext context,
             CancellationToken ct) =>
         {
@@ -157,13 +159,23 @@ public static partial class IntegrationCredentialEndpoints
 
             try
             {
-                var created = await credentials.CreateAsync(owner, new IntegrationCredentialCreateRequest(
+                var approvedRequest = new IntegrationCredentialCreateRequest(
                     request.Name,
                     request.Purpose,
                     request.ExpiresAtUtc,
                     grants.Select(grant => new IntegrationCredentialGrantRequest(grant.TenantId, grant.Permission)).ToArray(),
                     request.Resource,
-                    instancePermissions), ct).ConfigureAwait(false);
+                    instancePermissions);
+                IntegrationCredentialSecret created;
+                if (request.Purpose == IntegrationCredentialPurpose.HttpMcp)
+                {
+                    if (request.SetupRequestId is null || request.Policies is null || !request.ConfirmPolicies ||
+                        !environment.IsProduction() && !environment.IsDevelopment())
+                        return Results.BadRequest(new { code = "integration_policies_required", stage = "policies" });
+                    created = await services.GetRequiredService<IntegrationSetupService>().CreateAsync(principal, request.SetupRequestId, approvedRequest, request.Policies,
+                        environment.IsProduction() ? McpOperatorEnvironment.Production : McpOperatorEnvironment.Development, ct).ConfigureAwait(false);
+                }
+                else created = await credentials.CreateAsync(owner, approvedRequest, ct).ConfigureAwait(false);
                 context.Response.Headers.CacheControl = "no-store";
                 return Results.Created($"/api/v2/account/integration-credentials/{created.CredentialId}", created);
             }
@@ -171,6 +183,23 @@ public static partial class IntegrationCredentialEndpoints
             {
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["credential"] = ["Review the credential fields and selected access, then retry."] });
             }
+            catch (UnauthorizedAccessException) { return Results.Forbid(); }
+            catch (InvalidOperationException)
+            { return Results.Conflict(new { code = "integration_setup_conflict", stage = "policies", message = "Review the existing setup and retained draft before retrying." }); }
+            catch (Exception exception) when (IntegrationPairingFailureResponses.IsTransient(exception))
+            { return Results.Json(new { code = "integration_setup_unavailable", stage = "credential_and_policies", message = "Setup did not complete. Retry the same approved draft." }, statusCode: 503); }
+        });
+
+        group.MapPost("/setup/{requestId}/acknowledge", async (string requestId, ClaimsPrincipal principal,
+            [FromServices] IntegrationSetupService setup, HttpContext http, CancellationToken ct) =>
+        {
+            var owner = PrincipalId(principal);
+            if (owner is null || !IsCookieMutationValidated(principal, http)) return Results.Forbid();
+            http.Response.Headers.CacheControl = "no-store";
+            try { await setup.AcknowledgeAsync(owner, requestId, ct).ConfigureAwait(false); }
+            catch (InvalidOperationException) { return Results.Conflict(new { code = "integration_handoff_expired", stage = "secret_handoff" }); }
+            catch (ArgumentException) { return Results.BadRequest(new { code = "integration_setup_invalid", stage = "secret_handoff" }); }
+            return Results.NoContent();
         });
 
         group.MapPost("/{credentialId}/revoke", async (
@@ -243,7 +272,10 @@ public static partial class IntegrationCredentialEndpoints
         DateTimeOffset ExpiresAtUtc,
         IReadOnlyList<IntegrationCredentialGrantRequest>? Grants,
         string? Resource = null,
-        IReadOnlyList<string>? InstancePermissions = null);
+        IReadOnlyList<string>? InstancePermissions = null,
+        string? SetupRequestId = null,
+        IReadOnlyList<McpIntegrationPolicy>? Policies = null,
+        bool ConfirmPolicies = false);
 
     public sealed record CredentialTenantScopeResponse(int TenantId, string Name);
     public sealed record CredentialTenantAuthorityResponse(int TenantId, string Name, IReadOnlyList<IntegrationPermissionDescriptor> Permissions);

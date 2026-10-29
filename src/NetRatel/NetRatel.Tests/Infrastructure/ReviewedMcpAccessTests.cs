@@ -423,12 +423,15 @@ public sealed class ReviewedMcpAccessTests
         Assert.Equal("owner_self_approval", applied.Request.ApprovalMode);
         await fixture.Pairing.InspectReviewedAsync(proposal.RequestId, "requester", fixture.Credential.CredentialId, resume: true);
         var policies = await fixture.App.McpOperatorPolicies.ToArrayAsync();
-        Assert.Equal(includeConfirm ? 3 : 1, policies.Length);
-        Assert.Equal(includeConfirm, policies.Any(x => x.Operation == "netratel_policy/" + canonical));
+        Assert.Equal(2, policies.Length);
+        var basePolicy = Assert.Single(policies.Where(x => x.ParentPolicyId is null));
+        var exception = Assert.Single(policies.Where(x => x.ParentPolicyId == basePolicy.Id));
+        Assert.True(basePolicy.IsContainer);
+        Assert.Equal(agent, exception.AgentId);
+        Assert.Equal(includeConfirm, exception.Operations!.Contains("netratel_policy/" + canonical));
         Assert.All(policies, x =>
         {
             Assert.Equal(fixture.Credential.CredentialId, x.PrincipalSelectorValue);
-            Assert.Equal(agent, x.AgentId);
             Assert.Equal(proposal.ExpiresAtUtc, x.ExpiresAtUtc);
         });
 
@@ -439,7 +442,7 @@ public sealed class ReviewedMcpAccessTests
             McpOperatorEnvironment.Production, principal, 17, agent, profile.Classification,
             McpOperatorOperationFamily.PolicyAdministration, "netratel_policy/" + canonical,
             new HashSet<string>(["netratel.mcp.admin"]), McpOperatorConfirmationClass.PolicyAdministration,
-            "corr-reviewed-policy", "request-reviewed-policy", Tool: "netratel_policy"), default);
+            "corr-reviewed-policy", "request-reviewed-policy", McpResource: Fixture.Resource, Tool: "netratel_policy"), default);
         Assert.Equal(includeConfirm, decision.IsAllowed);
     }
 
@@ -484,8 +487,8 @@ public sealed class ReviewedMcpAccessTests
         Assert.Equal("owner_self_approval", applied.Request.ApprovalMode);
         await fixture.Pairing.InspectReviewedAsync(proposal.RequestId, "requester", fixture.Credential.CredentialId, resume: true);
         var policies = await fixture.App.McpOperatorPolicies.ToArrayAsync();
-        Assert.Equal(2, policies.Length);
-        Assert.Contains(policies, x => x.Operation == "netratel_search/clients" && x.AgentId == admittedAgent);
+        Assert.Equal(3, policies.Length);
+        Assert.Contains(policies, x => x.Operations!.Contains("netratel_search/clients") && x.AgentId == admittedAgent);
         Assert.DoesNotContain(policies, x => x.AgentId == hiddenAgent);
 
         var principal = new McpOperatorPrincipal("requester", fixture.Credential.CredentialId,
@@ -493,7 +496,7 @@ public sealed class ReviewedMcpAccessTests
         async Task<McpOperatorDecision> Evaluate(Guid agent) => await fixture.Authorization.EvaluateAsync(new McpOperatorAccessRequest(
             McpOperatorEnvironment.Production, principal, 17, agent, McpOperatorTargetClassification.DedicatedQa,
             McpOperatorOperationFamily.Observability, "netratel_search/clients", new HashSet<string>(["netratel.mcp.read"]),
-            McpOperatorConfirmationClass.None, "corr-reviewed-search", "request-reviewed-search", Tool: "netratel_search"), default);
+            McpOperatorConfirmationClass.None, "corr-reviewed-search", "request-reviewed-search", McpResource: Fixture.Resource, Tool: "netratel_search"), default);
         Assert.True((await Evaluate(admittedAgent)).IsAllowed);
         Assert.False((await Evaluate(hiddenAgent)).IsAllowed);
     }
@@ -671,7 +674,7 @@ public sealed class ReviewedMcpAccessTests
         var offline = await fixture.Authorization.EvaluateAsync(new(McpOperatorEnvironment.Production,
             new("requester", fixture.Credential.CredentialId, null, new HashSet<string>(), new HashSet<string>(["Operator"]), new HashSet<string>(["netratel.mcp.observe"])),
             17, agentId, profile.Classification, descriptor.OperationFamily, "netratel_clients/telemetry", new HashSet<string>(["netratel.mcp.observe"]),
-            descriptor.ConfirmationClass, "offline-control", "offline-control", TargetOnline: false, CapabilityAvailable: false), default);
+            descriptor.ConfirmationClass, "offline-control", "offline-control", McpResource: Fixture.Resource, TargetOnline: false, CapabilityAvailable: false), default);
         Assert.False(offline.IsAllowed);
         Assert.Equal("capability_unavailable", offline.FailureCode);
     }

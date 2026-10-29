@@ -8,7 +8,7 @@ public sealed partial class IntegrationPairingService
     /// <summary>Browser grant editing derives immutable credential fields from the owned record.</summary>
     public async Task<ReviewedMcpAccessReceipt> RequestAccountAccessAsync(string owner, string credentialId,
         string requestId, IReadOnlyList<IntegrationPairingGrant> grants, IReadOnlyList<string> instancePermissions,
-        string origin, string resource, McpOperatorEnvironment environment, CancellationToken ct = default)
+        string origin, string resource, McpOperatorEnvironment environment, CancellationToken ct = default, IReadOnlyList<McpIntegrationPolicy>? basePolicies = null)
     {
         if (grants is null || instancePermissions is null || grants.Count > 64 || instancePermissions.Count > 32 ||
             grants.Any(grant => grant is null))
@@ -19,7 +19,10 @@ public sealed partial class IntegrationPairingService
         var proposal = new ReviewedMcpAccessProposal(requestId, credential.Name, "reconcile", credential.ExpiresAtUtc,
             grants.OrderBy(grant => grant.TenantId).ThenBy(grant => grant.Permission, StringComparer.Ordinal).ToArray(),
             instancePermissions.Order(StringComparer.Ordinal).ToArray(), [], credential.Id);
-        return await RequestReviewedAsync(proposal, owner, credential.Id, origin, resource, environment, ct).ConfigureAwait(false);
+        var existing = await FindAccessAsync(requestId, owner, credential.Id, ct).ConfigureAwait(false);
+        basePolicies ??= existing is not null ? AccessMetadata(existing)!.BasePolicies : await ProposeBasesAsync(credential, grants, instancePermissions, environment, ct).ConfigureAwait(false);
+        if (basePolicies is not null) await ValidateBasePlanAsync(proposal, basePolicies, ct).ConfigureAwait(false);
+        return await RequestReviewedAsync(proposal, owner, credential.Id, origin, resource, environment, ct, basePolicies).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<ReviewedMcpAccessRequest>> ListAccountAccessAsync(string owner, string credentialId,
