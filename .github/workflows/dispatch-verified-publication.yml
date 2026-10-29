@@ -1,0 +1,147 @@
+name: Dispatch verified release publication
+
+on:
+  push:
+    branches: [release/publication]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-publication-dispatch
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: Publish prepared release and dispatch generic publisher
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
+      - name: Resolve canonical version and public release source
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(python3 tools/ci/product-version.py)"
+          tag="v$version"
+          git fetch --no-tags origin main
+          git fetch origin "refs/tags/$tag:refs/tags/$tag"
+          revision="$(git rev-parse "refs/tags/$tag^{commit}")"
+          git merge-base --is-ancestor "$revision" origin/main
+          git diff --exit-code "$revision" HEAD -- Directory.Build.props
+          printf 'version=%s\ntag=%s\nrevision=%s\nmain_revision=%s\n' "$version" "$tag" "$revision" "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Require successful main validation and tag-triggered release build
+        env:
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
+          RELEASE_TAG: ${{ steps.source.outputs.tag }}
+          RELEASE_REVISION: ${{ steps.source.outputs.revision }}
+          MAIN_REVISION: ${{ steps.source.outputs.main_revision }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import datetime, json, os, pathlib, subprocess, time
+
+          repo = os.environ["GH_REPO"]
+          tag = os.environ["RELEASE_TAG"]
+          revision = os.environ["RELEASE_REVISION"]
+          main_revision = os.environ["MAIN_REVISION"]
+
+          def api(path):
+              result = subprocess.run(["gh", "api", path], check=True, capture_output=True, text=True)
+              return json.loads(result.stdout)
+
+          def runs(sha):
+              return api(f"repos/{repo}/actions/runs?head_sha={sha}&event=push&per_page=100")["workflow_runs"]
+
+          deadline = time.monotonic() + 20 * 60
+          while True:
+              candidates = [run for run in runs(main_revision)
+                            if run["path"] == ".github/workflows/public-pr-validation.yml"
+                            and run["head_branch"] == "main"]
+              current = candidates[0] if candidates else None
+              if current and current["status"] == "completed":
+                  if current["conclusion"] != "success":
+                      raise SystemExit(f"Main validation did not pass: {current['html_url']}")
+                  elapsed = (datetime.datetime.fromisoformat(current["updated_at"].replace("Z", "+00:00"))
+                             - datetime.datetime.fromisoformat(current["created_at"].replace("Z", "+00:00")))
+                  if elapsed.total_seconds() >= 20 * 60:
+                      raise SystemExit("Main validation exceeded the required twenty-minute budget.")
+                  break
+              if time.monotonic() >= deadline:
+                  raise SystemExit("Main validation did not complete before the dispatch deadline.")
+              print("Waiting for required main validation", flush=True)
+              time.sleep(10)
+
+          builds = [run for run in runs(revision)
+                    if run["path"] == ".github/workflows/release-build.yml"
+                    and run["head_branch"] == tag]
+          if not builds or builds[0]["status"] != "completed" or builds[0]["conclusion"] != "success":
+              raise SystemExit("A successful canonical tag-triggered release build is required.")
+          releases = [release for release in api(f"repos/{repo}/releases?per_page=100")
+                      if release["tag_name"] == tag]
+          if len(releases) != 1:
+              raise SystemExit("Exactly one prepared release must exist for the canonical tag.")
+          release = releases[0]
+          if release["prerelease"] != ("-" in os.environ["RELEASE_VERSION"]):
+              raise SystemExit("Prepared release prerelease status differs from its version.")
+          receipt = {
+              "tag": tag, "publicCommit": revision, "mainCommit": main_revision,
+              "mainValidationRun": current["id"], "releaseBuildRun": builds[0]["id"],
+              "releaseId": release["id"], "wasDraft": release["draft"]
+          }
+          path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "release-publication-dispatch.json"
+          path.write_text(json.dumps(receipt, indent=2) + "\n")
+          print(json.dumps(receipt, indent=2))
+          PY
+      - name: Retain verified dispatch inputs before publication
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: release-publication-dispatch-receipt
+          path: ${{ runner.temp }}/release-publication-dispatch.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish prepared draft and dispatch the existing publication workflow
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+
+          repo = os.environ["GH_REPO"]
+          receipt = json.loads((pathlib.Path(os.environ["RUNNER_TEMP"]) / "release-publication-dispatch.json").read_text())
+
+          def api(path, method="GET", payload=None):
+              command = ["gh", "api", "--method", method, path]
+              arguments = {"check": True, "capture_output": True, "text": True}
+              if payload is not None:
+                  command += ["--input", "-"]
+                  arguments["input"] = json.dumps(payload)
+              result = subprocess.run(command, **arguments)
+              return json.loads(result.stdout) if result.stdout.strip() else None
+
+          release_path = f"repos/{repo}/releases/{receipt['releaseId']}"
+          release = api(release_path)
+          if release["tag_name"] != receipt["tag"]:
+              raise SystemExit("Prepared release identity changed after verification.")
+          if release["draft"]:
+              release = api(release_path, "PATCH", {"draft": False})
+          # GitHub's workflow token does not emit a recursive release workflow run.
+          # Explicit workflow_dispatch is supported and still runs every publisher gate.
+          api(f"repos/{repo}/actions/workflows/release-publish.yml/dispatches", "POST",
+              {"ref": "main", "inputs": {"tag": receipt["tag"]}})
+          print(f"Published prepared release: {release['html_url']}")
+          print("Dispatched the existing generic publication workflow; distribution verification is pending.")
+          PY
