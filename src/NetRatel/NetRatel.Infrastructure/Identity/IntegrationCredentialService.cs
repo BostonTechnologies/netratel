@@ -299,7 +299,6 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, T
         {
             await using var transaction = db.Database.CurrentTransaction is null
                 ? await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false) : null;
-            await ClearSetupHandoffsAsync(ownerPrincipalId, credentialId, cancellationToken).ConfigureAwait(false);
             // Pairing mutations take the request lock before touching its credential. Keep that
             // order here too, including concurrent cancellation, expiry and acknowledgement.
             await db.IntegrationPairingRequests.Where(request => request.CredentialId == credentialId && request.OwnerPrincipalId == ownerPrincipalId &&
@@ -311,6 +310,8 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, T
                     .SetProperty(request => request.ApprovedInstancePermissionsJson, (string?)null)
                     .SetProperty(request => request.CredentialExpiresAtUtc, (DateTimeOffset?)null)
                     .SetProperty(request => request.Revision, request => request.Revision + 1), cancellationToken).ConfigureAwait(false);
+            // Keep request -> setup handoff -> credential ordering, as reviewed revocation does.
+            await ClearSetupHandoffsAsync(ownerPrincipalId, credentialId, cancellationToken).ConfigureAwait(false);
             // Removing the verifier invalidates active access and cascades only this credential's
             // grants, at the same commit as protected delivery cancellation and lifecycle history.
             var removed = await db.IntegrationCredentials.Where(candidate => candidate.Id == credentialId && candidate.OwnerPrincipalId == ownerPrincipalId)
