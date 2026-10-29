@@ -48,9 +48,14 @@ public partial class OperatorPolicies
     private string PrincipalOptionName(string? value) => string.IsNullOrEmpty(value) ? "" : PrincipalName(new(_editor.PrincipalKind, value));
     private string ClientOptionName(string? value) => Guid.TryParse(value, out var id) && _directory.Clients.FirstOrDefault(c => c.Id == id) is { } client
         ? $"{client.Name} · {id.ToString()[..8]}" : string.IsNullOrEmpty(value) ? "" : $"Unresolved client: {value}";
-    private string ClientsLabel(McpOperatorTargetSelector selector) => selector.AgentId is { } id ? ClientOptionName(id.ToString()) :
-        selector.AgentIds is { Count: > 0 } ids ? string.Join(", ", ids.Select(id => ClientOptionName(id.ToString()))) :
-        selector.ClientTag ?? (selector.ClientTags is { } tags ? string.Join(", ", tags) : "All clients in scope");
+    private string ClientsLabel(McpOperatorTargetSelector selector)
+    {
+        if (selector.Kind == McpOperatorTargetSelectorKind.ControlPlane) return "Instance operations";
+        var clients = selector.AgentId is { } id ? ClientOptionName(id.ToString()) :
+            selector.AgentIds is { Count: > 0 } ids ? string.Join(", ", ids.Select(client => ClientOptionName(client.ToString()))) : "All clients in scope";
+        var tags = (selector.ClientTag is { } tag ? new[] { tag } : []).Concat(selector.ClientTags ?? []).Distinct().ToArray();
+        return tags.Length == 0 ? clients : clients + " · tags: " + string.Join(", ", tags);
+    }
     private IReadOnlyCollection<string> EditorShells => _editor.Shells.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     private IEnumerable<string> KnownShells => McpIntegrationPolicyCatalog.AllAccessLimits.AllowedShells!.Concat(EditorShells).Distinct();
 
