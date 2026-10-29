@@ -699,8 +699,8 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertIn("selected zero test cases", (ROOT / "tools/ci/verify-mtp-trx.py").read_text())
 
     def test_generic_test_modules_are_serialized_and_browser_failure_evidence_is_collected(self):
-        # Preserve this existing test ID while verifying the amended fast-only
-        # runner and immediate command/receipt failure propagation.
+        # Preserve this existing test ID. Each process still serializes MTP modules;
+        # independent assemblies overlap, and every command/receipt must succeed.
         helper = ROOT / "tools/ci/run-fast-regressions.sh"
         verifier = module("verify-mtp-trx")
         expected_projects = [
@@ -749,9 +749,9 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
                     env=environment, check=False, capture_output=True, text=True,
                 )
                 commands = [json.loads(line) for line in command_log.read_text().splitlines()]
-                expected_count = 3 if failure == "none" else 1
+                expected_count = 3
                 self.assertEqual(expected_count, len(commands), completed.stdout + completed.stderr)
-                self.assertEqual(expected_projects[:expected_count], [args[args.index("--project") + 1] for args in commands])
+                self.assertCountEqual(expected_projects, [args[args.index("--project") + 1] for args in commands])
                 for args in commands:
                     self.assertEqual("test", args[0])
                     self.assertIn("--no-build", args)
@@ -767,7 +767,7 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
                     self.assertFalse(stale_report.exists())
                 else:
                     self.assertNotEqual(0, completed.returncode)
-                    self.assertIn("selected zero test cases", completed.stderr)
+                    self.assertIn("selected zero test cases", completed.stdout + completed.stderr)
                 if failure != "summary":
                     self.assertIn("NetRatel.Tests:", (directory / "summary.md").read_text())
                 else:
