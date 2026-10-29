@@ -144,7 +144,7 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
                     InvestigationStore.Append(db, row, "dispatch_denied", "Current tenant permissions no longer allow this request.");
                     await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); return;
                 }
-                await provider.GetRequiredService<InvestigationStore>().ValidateClientsAsync(tenantId, row.AgentIds, ct);
+                await provider.GetRequiredService<InvestigationStore>().ValidateContextAsync(row, ct);
                 row.State = InvestigationState.Processing; row.LastTransportActivityAtUtc = clock.GetUtcNow();
                 await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
             }
@@ -168,7 +168,7 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
                 await NotSentAsync(id, messageId, "The connection, permissions or monitoring state changed before the message was sent.", ct);
                 await RetireAsync(id); return;
             }
-            await store.ValidateClientsAsync(tenantId, row.AgentIds, ct);
+            await store.ValidateContextAsync(row, ct);
             await store.RecordContextAsync(id, context with { SendAttemptedAtUtc = clock.GetUtcNow() }, ct);
             sendAttempted = true; owner.SendStarted = true;
             await owner.Client.SendAsync(owner.SessionId, request, timeout.Token);

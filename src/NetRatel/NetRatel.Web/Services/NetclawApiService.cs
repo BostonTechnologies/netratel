@@ -27,6 +27,10 @@ public interface INetclawApiService
     }
     Task<IReadOnlyList<InvestigationSummaryDto>> ListAsync(int tenantId, CancellationToken ct = default);
     Task<InvestigationSnapshotDto> CreateAsync(int tenantId, InvestigationCreateRequest request, CancellationToken ct = default);
+    Task<IReadOnlyList<InvestigationSummaryDto>> ListChatsAsync(int tenantId, CancellationToken ct = default) =>
+        throw new NotSupportedException("General chat is unavailable.");
+    Task<InvestigationSnapshotDto> CreateChatAsync(int tenantId, GeneralChatCreateRequest request, CancellationToken ct = default) =>
+        throw new NotSupportedException("General chat is unavailable.");
     Task<InvestigationSnapshotDto> GetAsync(int tenantId, Guid id, long after = 0, CancellationToken ct = default);
     Task<InvestigationSnapshotDto> SendAsync(int tenantId, Guid id, InvestigationMessageRequest request, CancellationToken ct = default);
     Task<InvestigationSnapshotDto> ApproveAsync(int tenantId, Guid id, string callId, string key, CancellationToken ct = default);
@@ -52,6 +56,8 @@ public sealed class NetclawApiService(IHttpClientFactory factory) : INetclawApiS
         Read<InvestigationClientPageDto>(Root(tenantId) + $"/clients/search?offset={offset}&search={Uri.EscapeDataString(search ?? "")}", ct);
     public Task<IReadOnlyList<InvestigationSummaryDto>> ListAsync(int tenantId, CancellationToken ct = default) => Read<IReadOnlyList<InvestigationSummaryDto>>(Root(tenantId) + "/investigations", ct);
     public Task<InvestigationSnapshotDto> CreateAsync(int tenantId, InvestigationCreateRequest request, CancellationToken ct = default) => Write<InvestigationSnapshotDto>(Root(tenantId) + "/investigations", request, ct);
+    public Task<IReadOnlyList<InvestigationSummaryDto>> ListChatsAsync(int tenantId, CancellationToken ct = default) => Read<IReadOnlyList<InvestigationSummaryDto>>(Root(tenantId) + "/chats", ct);
+    public Task<InvestigationSnapshotDto> CreateChatAsync(int tenantId, GeneralChatCreateRequest request, CancellationToken ct = default) => Write<InvestigationSnapshotDto>(Root(tenantId) + "/chats", request, ct);
     public Task<InvestigationSnapshotDto> GetAsync(int tenantId, Guid id, long after = 0, CancellationToken ct = default) => Read<InvestigationSnapshotDto>(Item(tenantId, id) + $"?after={after}", ct);
     public Task<InvestigationSnapshotDto> SendAsync(int tenantId, Guid id, InvestigationMessageRequest request, CancellationToken ct = default) => Write<InvestigationSnapshotDto>(Item(tenantId, id) + "/messages", request, ct);
     public Task<InvestigationSnapshotDto> ApproveAsync(int tenantId, Guid id, string callId, string key, CancellationToken ct = default) => Write<InvestigationSnapshotDto>(Item(tenantId, id) + "/approvals/" + Uri.EscapeDataString(callId), new InvestigationApprovalRequest(key), ct);
@@ -67,7 +73,7 @@ public sealed class NetclawApiService(IHttpClientFactory factory) : INetclawApiS
         if (!response.IsSuccessStatusCode)
         {
             var message = response.StatusCode switch { HttpStatusCode.Forbidden => "Your current permissions do not allow this operation in this tenant.",
-                HttpStatusCode.NotFound => "The investigation or connection is unavailable in this tenant.", _ => "The request failed. Reload the saved state before trying again." };
+                HttpStatusCode.NotFound => "The conversation or connection is unavailable in this tenant.", _ => "The request failed. Reload the saved state before trying again." };
             if (response.Content.Headers.ContentLength is <= 8192)
             {
                 try { var error = await response.Content.ReadFromJsonAsync<JsonElement>(timeout.Token); if (error.ValueKind == JsonValueKind.Object && error.TryGetProperty("message", out var text) && text.ValueKind == JsonValueKind.String && text.GetString() is { Length: > 0 and < 1024 } detail) message = detail; }

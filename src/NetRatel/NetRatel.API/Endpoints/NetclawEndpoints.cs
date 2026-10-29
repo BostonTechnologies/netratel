@@ -26,6 +26,8 @@ public static class NetclawEndpoints
         group.MapGet("/clients", ClientsAsync).RequireAuthorization(NetclawAuthorization.ReadPolicy);
         group.MapGet("/investigations", ListAsync).RequireAuthorization(NetclawAuthorization.ReadPolicy);
         group.MapPost("/investigations", CreateAsync).RequireAuthorization(NetclawAuthorization.ReadPolicy, NetclawAuthorization.ManagePolicy);
+        group.MapGet("/chats", ListChatsAsync).RequireAuthorization(NetclawAuthorization.ReadPolicy);
+        group.MapPost("/chats", CreateChatAsync).RequireAuthorization(NetclawAuthorization.ReadPolicy, NetclawAuthorization.ManagePolicy);
         group.MapGet("/investigations/{investigationId:guid}", GetAsync).RequireAuthorization(NetclawAuthorization.ReadPolicy);
         group.MapPost("/investigations/{investigationId:guid}/messages", SendAsync)
             .RequireAuthorization(NetclawAuthorization.ReadPolicy, NetclawAuthorization.ManagePolicy, NetclawAuthorization.SecretUsePolicy);
@@ -118,6 +120,23 @@ public static class NetclawEndpoints
             !await AllowedAsync(tenantId, NetRatelPermissions.TelemetryRead, http, access, ct)) return Results.Forbid();
         if (request.OccurrenceId is not null && !await AllowedAsync(tenantId, NetRatelPermissions.MonitoringRead, http, access, ct)) return Results.Forbid();
         var row = await store.CreateAsync(tenantId, request, Actor(http), ct);
+        return Results.Ok(await store.LoadAsync(tenantId, row.Id, 0, ct));
+    }
+
+    internal static async Task<IResult> ListChatsAsync(int tenantId, int? skip, HttpContext http,
+        IEffectiveAccessService access, InvestigationStore store, CancellationToken ct) =>
+        await AllowedAsync(tenantId, NetRatelPermissions.TelemetryRead, http, access, ct)
+            ? Results.Ok(await store.ListChatsAsync(tenantId, skip ?? 0, ct)) : Results.Forbid();
+
+    internal static async Task<IResult> CreateChatAsync(int tenantId, GeneralChatCreateRequest request, HttpContext http,
+        IEffectiveAccessService access, InvestigationStore store, NetclawProfileService profiles, CancellationToken ct)
+    {
+        if (!await AllowedAsync(tenantId, NetRatelPermissions.ClientManagement, http, access, ct) ||
+            !await AllowedAsync(tenantId, NetRatelPermissions.TelemetryRead, http, access, ct)) return Results.Forbid();
+        var connection = await profiles.GetAsync(tenantId, ct);
+        if (!connection.Enabled || !connection.HasDeviceToken || string.IsNullOrWhiteSpace(connection.DaemonAddress))
+            throw new InvestigationConflictException("Configure and enable Netclaw for this tenant before starting a chat.");
+        var row = await store.CreateChatAsync(tenantId, request, Actor(http), ct);
         return Results.Ok(await store.LoadAsync(tenantId, row.Id, 0, ct));
     }
 

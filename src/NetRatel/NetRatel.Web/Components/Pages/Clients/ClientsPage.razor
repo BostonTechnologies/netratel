@@ -39,7 +39,7 @@
                               Value="_search"
                               ValueChanged="OnSearchChanged"
                               Label="Search"
-                              Placeholder="Name, host, tag or IP"
+                              Placeholder="Name, host, tag, IP or client ID"
                               Adornment="Adornment.Start"
                               AdornmentIcon="@Icons.Material.Filled.Search"
                               Immediate="true"
@@ -80,6 +80,12 @@
                 </MudStack>
             </MudItem>
         </MudGrid>
+        @if (_selectedClientId is { } clientId)
+        {
+            <div class="mt-3" data-testid="client-exact-filter">
+                <MudChip T="Guid" Value="clientId" Variant="Variant.Outlined" Color="Color.Primary" OnClose="ClearClientFilter">Client: @SelectedClientName</MudChip>
+            </div>
+        }
     </MudPaper>
 
     @if (_isLoading && _clients.Count == 0)
@@ -140,6 +146,18 @@
     [SupplyParameterFromQuery(Name = "view")]
     public string? View { get; set; }
 
+    [SupplyParameterFromQuery(Name = "tenantId")]
+    public int? TenantId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "status")]
+    public string? Status { get; set; }
+
+    [SupplyParameterFromQuery(Name = "clientId")]
+    public Guid? ClientId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "os")]
+    public string? OperatingSystem { get; set; }
+
     private IReadOnlyList<ClientPresentationModel> _clients = [];
     private bool _isLoading = true;
     private bool _loadStarted;
@@ -148,6 +166,7 @@
     private string _lastLoadTrigger = "initial";
     private ClientPresentationFailure? _directoryFailure;
     private int? _selectedTenantId;
+    private Guid? _selectedClientId;
     private string? _selectedOs;
     private ClientStatusFilter _selectedStatus = ClientStatusFilter.All;
     private string _search = string.Empty;
@@ -157,19 +176,19 @@
     private int? SelectedTenantId
     {
         get => _selectedTenantId;
-        set { if (_selectedTenantId != value) { _selectedTenantId = value; StateHasChanged(); } }
+        set { if (_selectedTenantId != value) { _selectedTenantId = value; NavigateWithQuery(); } }
     }
 
     private string? SelectedOs
     {
         get => _selectedOs;
-        set { if (!string.Equals(_selectedOs, value, StringComparison.OrdinalIgnoreCase)) { _selectedOs = value; StateHasChanged(); } }
+        set { if (!string.Equals(_selectedOs, value, StringComparison.OrdinalIgnoreCase)) { _selectedOs = value; NavigateWithQuery(); } }
     }
 
     private ClientStatusFilter SelectedStatus
     {
         get => _selectedStatus;
-        set { if (_selectedStatus != value) { _selectedStatus = value; StateHasChanged(); } }
+        set { if (_selectedStatus != value) { _selectedStatus = value; NavigateWithQuery(); } }
     }
 
     private IReadOnlyList<(int TenantId, string Name)> TenantOptions => _clients
@@ -186,8 +205,12 @@
         .OrderBy(os => os, StringComparer.OrdinalIgnoreCase)
         .ToArray();
 
+    private string SelectedClientName => _clients.FirstOrDefault(client => client.AgentId == _selectedClientId &&
+        (!_selectedTenantId.HasValue || client.TenantId == _selectedTenantId.Value))?.DisplayName ?? _selectedClientId?.ToString("D") ?? string.Empty;
+
     private IReadOnlyList<ClientPresentationModel> FilteredClients => _clients
         .Where(client => !_selectedTenantId.HasValue || client.TenantId == _selectedTenantId.Value)
+        .Where(client => !_selectedClientId.HasValue || client.AgentId == _selectedClientId.Value)
         .Where(client => string.IsNullOrWhiteSpace(_selectedOs) || string.Equals(client.OperatingSystem, _selectedOs, StringComparison.OrdinalIgnoreCase))
         .Where(client => _selectedStatus == ClientStatusFilter.All ||
                          (_selectedStatus == ClientStatusFilter.Online && client.Online) ||
@@ -221,6 +244,10 @@
     {
         _search = Search ?? string.Empty;
         _view = NormalizeView(View);
+        _selectedTenantId = TenantId;
+        _selectedClientId = ClientId;
+        _selectedStatus = NormalizeStatus(Status);
+        _selectedOs = OperatingSystem;
     }
 
     private Task ReloadClientsAsync() => ReloadClientsAsync(_refreshLoop?.Token ?? CancellationToken.None, "manual");
@@ -290,6 +317,7 @@
     {
         if (string.IsNullOrWhiteSpace(_search)) return true;
         var term = _search.Trim();
+        if (Guid.TryParse(term, out var agentId)) return client.AgentId == agentId;
         return Contains(client.DisplayName, term) || Contains(client.HostName, term) ||
                Contains(client.OperatingSystem, term) || Contains(client.TenantName, term) ||
                Contains(client.AgentVersion, term) || Contains(client.FriendlyName, term) ||
@@ -299,6 +327,12 @@
     private void OnSearchChanged(string? value)
     {
         _search = value ?? string.Empty;
+        NavigateWithQuery(replaceHistory: true);
+    }
+
+    private void ClearClientFilter()
+    {
+        _selectedClientId = null;
         NavigateWithQuery();
     }
 
@@ -308,15 +342,26 @@
         NavigateWithQuery();
     }
 
-    private void NavigateWithQuery()
+    private void NavigateWithQuery(bool replaceHistory = false)
     {
         var uri = Navigation.GetUriWithQueryParameters(new Dictionary<string, object?>
         {
             ["search"] = string.IsNullOrWhiteSpace(_search) ? null : _search.Trim(),
-            ["view"] = _view == ClientListView.Table ? "table" : "cards"
+            ["view"] = _view == ClientListView.Table ? "table" : "cards",
+            ["tenantId"] = _selectedTenantId,
+            ["clientId"] = _selectedClientId,
+            ["status"] = _selectedStatus switch { ClientStatusFilter.Online => "online", ClientStatusFilter.Offline => "offline", _ => null },
+            ["os"] = string.IsNullOrWhiteSpace(_selectedOs) ? null : _selectedOs
         });
-        Navigation.NavigateTo(uri, replace: true);
+        Navigation.NavigateTo(uri, replace: replaceHistory);
     }
+
+    private static ClientStatusFilter NormalizeStatus(string? status) => status?.ToLowerInvariant() switch
+    {
+        "online" => ClientStatusFilter.Online,
+        "offline" => ClientStatusFilter.Offline,
+        _ => ClientStatusFilter.All
+    };
 
     private static ClientListView NormalizeView(string? view) =>
         string.Equals(view, "table", StringComparison.OrdinalIgnoreCase) ? ClientListView.Table : ClientListView.Cards;

@@ -74,6 +74,8 @@ public sealed class ReleaseOpenApiDocumentTests
             ("/api/v1/ai/tenants", "get"),
             ("/api/v1/tenants/{tenantId}/ai/connection", "get"),
             ("/api/v1/tenants/{tenantId}/ai/connection/pair", "post"),
+            ("/api/v1/tenants/{tenantId}/ai/chats", "get"),
+            ("/api/v1/tenants/{tenantId}/ai/chats", "post"),
             ("/api/v1/tenants/{tenantId}/ai/investigations", "post"),
             ("/api/v1/tenants/{tenantId}/ai/investigations/{investigationId}/messages", "post")
         })

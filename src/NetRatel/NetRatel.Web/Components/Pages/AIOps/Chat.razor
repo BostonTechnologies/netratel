@@ -1,0 +1,202 @@
+@page "/ai/chat"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using NetRatel.Shared.Contracts.Netclaw
+@using NetRatel.Web.Components.Shared.Netclaw
+@implements IAsyncDisposable
+@inject NetRatel.Web.Services.INetclawApiService Api
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+<PageTitle>Chat · NetRatel</PageTitle>
+
+<main class="chat-page" data-testid="netclaw-chat">
+    <header class="chat-page-heading">
+        <div>
+            <p class="chat-eyebrow">AI OPERATIONS</p>
+            <h1>Chat</h1>
+            <p class="chat-page-description">A place to work things through with Netclaw.</p>
+        </div>
+        <div class="chat-workspace-controls">
+            <label class="chat-tenant">Tenant
+                <select value="@_tenant" @onchange="ChooseTenant" disabled="@(_busy || _tenants.Count == 0)" data-testid="chat-tenant">
+                    @if (_tenant == 0) { <option value="0">Select a tenant</option> }
+                    @foreach (var tenant in _tenants) { <option value="@tenant.TenantId">@tenant.TenantName</option> }
+                </select>
+            </label>
+            @if (_tenant > 0)
+            {
+                <NetclawConnectionStatus TenantId="_tenant" TenantName="@(Access?.TenantName)" Connection="_connection" />
+            }
+        </div>
+    </header>
+
+    @if (_error is not null)
+    {
+        <div class="chat-notice chat-error" role="alert"><MudIcon Icon="@Icons.Material.Outlined.Info" Size="Size.Small" /><span>@_error</span></div>
+    }
+    @if (_loading)
+    {
+        <div class="chat-loading" role="status"><span class="chat-loading-dot"></span>Opening your chat workspace…</div>
+    }
+    else if (_tenant == 0)
+    {
+        <section class="chat-no-access"><MudIcon Icon="@Icons.Material.Outlined.ChatBubbleOutline" /><h2>No chat workspace available</h2><p>Select an available tenant with AI Ops access to continue.</p></section>
+    }
+    else
+    {
+        <div class="chat-workspace">
+            <aside class="chat-history" aria-label="Chat history">
+                <button type="button" class="chat-new-button" @onclick="NewChat" disabled="@(_busy || !CanStart)" data-testid="chat-new">
+                    <MudIcon Icon="@Icons.Material.Outlined.Add" Size="Size.Small" /><span>New chat</span>
+                </button>
+                <label class="chat-history-search"><span class="chat-visually-hidden">Search recent chats</span><MudIcon Icon="@Icons.Material.Outlined.Search" Size="Size.Small" /><input @bind="_search" @bind:event="oninput" placeholder="Search recent chats" /></label>
+                <div class="chat-history-label"><span>RECENT CONVERSATIONS</span><button type="button" class="chat-icon-button" @onclick="RefreshAsync" disabled="@_busy" title="Refresh chats" aria-label="Refresh chats"><MudIcon Icon="@Icons.Material.Outlined.Refresh" Size="Size.Small" /></button></div>
+                <nav class="chat-history-list" aria-label="Saved conversations">
+                    @if (!FilteredItems.Any())
+                    {
+                        <p class="chat-history-empty">@(_search.Length > 0 ? "No matching chats." : "Tenant conversations will appear here.")</p>
+                    }
+                    @foreach (var item in FilteredItems)
+                    {
+                        <a @key="item.Id" href="@ChatUrl(_tenant, item.Id)" class="chat-history-item @(_snapshot?.Investigation.Id == item.Id ? "selected" : "")" aria-current="@(_snapshot?.Investigation.Id == item.Id ? "page" : null)">
+                            <MudIcon Icon="@Icons.Material.Outlined.ChatBubbleOutline" Size="Size.Small" />
+                            <span><strong>@item.Title</strong><small><span class="chat-state-dot @StateClass(item.State)"></span>@StateLabel(item.State)<span class="chat-history-time" title="@TimestampTitle(item.LastActivityUtc)">@HistoryDate(item.LastActivityUtc)</span></small></span>
+                        </a>
+                    }
+                </nav>
+                <label class="chat-archive-toggle"><input type="checkbox" @bind="_showArchived" />Show archived chats</label>
+                <a class="chat-settings-link" href="@ConnectionUrl"><MudIcon Icon="@Icons.Material.Outlined.Settings" Size="Size.Small" />Netclaw connection</a>
+            </aside>
+
+            <section class="chat-canvas" aria-label="Netclaw conversation">
+                <header class="chat-conversation-heading">
+                    <div class="chat-assistant-identity"><span class="chat-avatar"><MudIcon Icon="@Icons.Material.Outlined.AutoAwesome" Size="Size.Small" /></span><div><h2>@(_snapshot?.Investigation.Title ?? "Netclaw")</h2><p>@Access?.TenantName <span>·</span> @(_snapshot is null ? "New conversation" : StateLabel(_snapshot.Investigation.State))</p></div></div>
+                    @if (_snapshot is { Investigation.State: not InvestigationState.Archived } && Access?.CanInvestigate == true)
+                    {
+                        <button type="button" class="chat-icon-button" @onclick="() => _confirmArchive = !_confirmArchive" disabled="@_busy" aria-label="Archive chat" title="Archive chat"><MudIcon Icon="@Icons.Material.Outlined.Archive" Size="Size.Small" /></button>
+                    }
+                </header>
+
+                @if (_confirmArchive)
+                {
+                    <div class="chat-notice chat-archive-confirmation">
+                        <div><strong>Archive this conversation?</strong><p>You can find its saved transcript in archived chats.</p>
+                        @if (_snapshot?.Investigation.State != InvestigationState.Idle)
+                        {
+                            <label class="chat-check"><input type="checkbox" @bind="_acknowledgeRemote" />I understand that the current Netclaw turn may still be running.</label>
+                        }</div>
+                        <div class="chat-notice-actions"><button type="button" class="chat-secondary-button" @onclick="() => _confirmArchive = false">Keep open</button><button type="button" class="chat-primary-button" @onclick="ArchiveAsync" disabled="@(_busy || _snapshot?.Investigation.State != InvestigationState.Idle && !_acknowledgeRemote)">Archive chat</button></div>
+                    </div>
+                }
+
+                <div class="chat-transcript" @ref="_transcript" role="log" aria-label="Saved chat messages" aria-live="polite" aria-relevant="additions text">
+                    @if (_snapshot is null)
+                    {
+                        @if (!ConnectionReady)
+                        {
+                            <div class="chat-welcome chat-connect">
+                                <div class="chat-welcome-mark"><MudIcon Icon="@Icons.Material.Outlined.Forum" /></div>
+                                <p class="chat-eyebrow">YOUR TENANT WORKSPACE</p>
+                                <h2>Connect with Netclaw</h2>
+                                <p>@(Access?.CanConfigure == true ? "Connect or enable Netclaw for this tenant to start a conversation." : "A tenant administrator can connect or enable Netclaw in Integration.")</p>
+                                @if (Access?.CanConfigure == true) { <a class="chat-primary-button" href="@ConnectionUrl">Set up Netclaw <MudIcon Icon="@Icons.Material.Outlined.ArrowForward" Size="Size.Small" /></a> }
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="chat-welcome">
+                                <div class="chat-welcome-mark"><MudIcon Icon="@Icons.Material.Outlined.AutoAwesome" /></div>
+                                <p class="chat-eyebrow">NETCLAW · @Access?.TenantName</p>
+                                <h2>What would you like to work on?</h2>
+                                <p>Write a script, review notifications, or talk through your next task.</p>
+                                <div class="chat-starters" aria-label="Conversation starters">
+                                    @foreach (var starter in Starters)
+                                    {
+                                        <button type="button" class="chat-starter" @onclick="() => UseStarterAsync(starter.Prompt)" disabled="@(!CanStart || _busy)"><MudIcon Icon="@starter.Icon" Size="Size.Small" /><strong>@starter.Title</strong><span>@starter.Description</span></button>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    }
+                    else
+                    {
+                        @if (_events.Count == 0 && _snapshot.Draft is null)
+                        {
+                            <div class="chat-conversation-empty"><p>This conversation is ready.</p><span>Ask Netclaw a question to get started.</span></div>
+                        }
+                        @foreach (var item in _events)
+                        {
+                            @if (item.Type is "operator" or "assistant")
+                            {
+                                <article @key="item.Sequence" class="chat-message @(item.Type == "operator" ? "chat-message-operator" : "chat-message-assistant")">
+                                    <header><strong>@(item.Type == "operator" ? "Operator" : "Netclaw")</strong><time datetime="@item.CreatedAtUtc.ToString("O")" title="@TimestampTitle(item.CreatedAtUtc)">@MessageTime(item.CreatedAtUtc)</time></header>
+                                    @if (item.Type == "assistant") { <ChatMessageContent Text="@item.Text" /> }
+                                    else { <div class="chat-operator-text">@item.Text</div> }
+                                </article>
+                            }
+                            else if (item.Type is "tool_call" or "tool_result")
+                            {
+                                <details @key="item.Sequence" class="chat-tool-activity"><summary><MudIcon Icon="@Icons.Material.Outlined.Build" Size="Size.Small" /><span>@(item.Type == "tool_call" ? "Tool activity" : "Tool result")</span></summary><pre>@item.Text</pre><time title="@TimestampTitle(item.CreatedAtUtc)">@MessageTime(item.CreatedAtUtc)</time></details>
+                            }
+                            else if (item.Type != "approval_request")
+                            {
+                                <p @key="item.Sequence" class="chat-timeline">@item.Text</p>
+                            }
+                        }
+                        @if (_snapshot.Draft is { Length: > 0 } draft)
+                        {
+                            <article class="chat-message chat-message-assistant chat-draft"><header><strong>Netclaw</strong><span class="chat-working-label">Writing<span class="chat-loading-dot"></span></span></header><ChatMessageContent Text="@draft" IsStreaming="true" /></article>
+                        }
+                        @if (Cursor < _snapshot.LastSequence)
+                        {
+                            <button type="button" class="chat-secondary-button chat-load-more" @onclick="LoadMoreAsync" disabled="@_busy">Load more saved messages</button>
+                        }
+                    }
+                </div>
+
+                @if (_snapshot?.Investigation.State == InvestigationState.AwaitingApproval)
+                {
+                    @foreach (var approval in _snapshot.PendingApprovals)
+                    {
+                        var details = _events.LastOrDefault(x => x.CallId == approval.CallId && x.Type == "approval_request");
+                        <div class="chat-approval" role="status" @key="approval.CallId"><strong>Netclaw needs your decision</strong><p>@(details?.Text ?? "Load the saved request details before making a decision.")</p>
+                            <div class="chat-notice-actions">
+                                @if (details is null && Cursor < _snapshot.LastSequence) { <button type="button" class="chat-secondary-button" @onclick="LoadMoreAsync" disabled="@_busy">Load request details</button> }
+                                @foreach (var option in approval.Options) { <button type="button" class="@(option.Key == "deny" ? "chat-secondary-button" : "chat-primary-button")" disabled="@(_busy || Access?.CanInvestigate != true || details is null)" @onclick="() => ApproveAsync(approval.CallId, option.Key)">@option.Label</button> }
+                            </div>
+                        </div>
+                    }
+                }
+                @if (_snapshot?.Investigation.State == InvestigationState.DeliveryUnknown)
+                {
+                    <div class="chat-notice chat-recovery"><div><strong>Reconnect to this conversation</strong><p>The last turn has an unconfirmed outcome. Recover the saved session to check its progress.</p></div><button type="button" class="chat-secondary-button" @onclick="RecoverAsync" disabled="@(_busy || Access?.CanInvestigate != true)">Recover session</button></div>
+                }
+                @if (_liveError is not null) { <p class="chat-live-status" role="status">@_liveError</p> }
+                @if (_snapshot?.Investigation.State is InvestigationState.Processing or InvestigationState.Queued)
+                {
+                    <p class="chat-processing" role="status"><span class="chat-loading-dot"></span>@(_snapshot.Investigation.State == InvestigationState.Queued ? "Message saved. Connecting to Netclaw…" : "Netclaw is working…")</p>
+                }
+                @if (_snapshot?.Investigation.State == InvestigationState.Archived)
+                {
+                    <div class="chat-archived"><span>This conversation is archived.</span><button type="button" class="chat-secondary-button" @onclick="NewChat" disabled="@(!CanStart)">Start a new chat</button></div>
+                }
+                else if (ConnectionReady)
+                {
+                    <div class="chat-composer-area">
+                        <div class="chat-composer">
+                            <label class="chat-visually-hidden" for="netclaw-chat-message">Message Netclaw</label>
+                            <textarea id="netclaw-chat-message" @ref="_composer" @bind="_message" @bind:event="oninput" @onkeydown="ComposerKeyDownAsync" placeholder="Message Netclaw…" maxlength="16000" rows="3" disabled="@(!CanEditMessage)" data-testid="chat-message"></textarea>
+                            <div class="chat-composer-toolbar"><span class="chat-composer-tenant"><MudIcon Icon="@Icons.Material.Outlined.AutoAwesome" Size="Size.Small" />Netclaw<span>· @Access?.TenantName</span></span><button type="button" class="chat-send-button" @onclick="SendAsync" disabled="@(!CanSend)" data-testid="chat-send"><span>@(_pendingMessage is null ? "Send" : "Retry message")</span><MudIcon Icon="@Icons.Material.Outlined.ArrowUpward" Size="Size.Small" /></button></div>
+                        </div>
+                        <p class="chat-composer-hint">@(Access?.CanInvestigate == true ? "Ctrl / ⌘ + Enter to send · Enter for a new line" : "Your current access allows you to read saved conversations.")</p>
+                    </div>
+                }
+                else if (_snapshot is not null)
+                {
+                    <div class="chat-archived"><span>Enable this tenant’s Netclaw connection to continue chatting.</span>@if (Access?.CanConfigure == true) { <a class="chat-secondary-button" href="@ConnectionUrl">Open connection</a> }</div>
+                }
+            </section>
+        </div>
+    }
+</main>

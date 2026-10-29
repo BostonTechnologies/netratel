@@ -34,7 +34,7 @@ public sealed record GlobalSearchFlowDto(Guid FlowId, int TenantId, string Title
     bool Enabled, int PublishedVersionNumber);
 
 public sealed record GlobalSearchInvestigationDto(Guid InvestigationId, int TenantId, string Title, string TenantName,
-    string State, string? ClientContext, Guid? OccurrenceId, Guid? FlowRunId);
+    string State, string? ClientContext, Guid? OccurrenceId, Guid? FlowRunId, bool IsGeneralChat = false);
 
 /// <summary>Exact persisted occurrence selection, including closed alerts outside the loaded page.</summary>
 public sealed record MonitoringAlertDetailDto(int TenantId, Guid RuleId, Guid AgentId, string Resource,

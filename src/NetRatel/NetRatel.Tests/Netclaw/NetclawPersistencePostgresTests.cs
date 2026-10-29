@@ -2,11 +2,14 @@ using System.Text.Json;
 using System.Security.Claims;
 using System.Threading.Channels;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using NetRatel.Application.Netclaw;
+using NetRatel.API.Endpoints;
 using NetRatel.Infrastructure.Netclaw;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Identity;
@@ -21,7 +24,66 @@ namespace NetRatel.Tests.Netclaw;
 public sealed class NetclawPersistencePostgresTests(PostgreSqlPersistenceFixture fixture)
 {
     [Fact]
-    public async Task Worker_sends_and_records_exact_canonical_context_on_first_and_later_turns_with_saved_guidance()
+    public async Task General_chat_requires_a_saved_connection_and_preserves_identity_without_systems_or_prompt_context()
+    {
+        var options = await DatabaseAsync(); var agent = Guid.NewGuid(); var daemon = new Daemon();
+        var request = new GeneralChatCreateRequest(Guid.NewGuid(), "Review notifications");
+        var message = new InvestigationMessageRequest(Guid.NewGuid(), "Review my notifications without changing anything.");
+        Guid id;
+        await using (var db = new OrchestratorDbContext(options))
+        {
+            db.Tenants.Add(new Tenant { Id = 18, Name = "Other tenant" });
+            db.Agents.Add(new Agent { Id = agent, TenantId = 17, Name = "Selected worker", CreatedAtUtc = DateTimeOffset.UtcNow });
+            await db.SaveChangesAsync();
+            var library = new PromptLibraryService(db, TimeProvider.System);
+            var guide = await library.CreateAsync(17, new("Investigation guide", null, "Investigation-only private guidance"), "operator");
+            await library.SetDefaultAsync(17, new(guide.Summary.Id, 0, 1));
+            var store = new InvestigationStore(db, TimeProvider.System, library);
+            var profiles = new NetclawProfileService(db, new EphemeralDataProtectionProvider(), new Pairing(), daemon, TimeProvider.System);
+            var http = new DefaultHttpContext { User = new(new ClaimsIdentity([new Claim("netratel_principal_id", "operator")], "Oidc")) };
+            await Assert.ThrowsAsync<InvestigationConflictException>(() => NetclawEndpoints.CreateChatAsync(17, request, http, new ContextAccess(), store, profiles, default));
+            Assert.Empty(await db.AiInvestigations.ToListAsync());
+            var connection = new NetclawConnectionRecord { TenantId = 17, Endpoint = "https://netclaw.example/hub/session", ProtectedDeviceToken = "synthetic-protected-token" };
+            db.Add(connection); await db.SaveChangesAsync();
+            await Assert.ThrowsAsync<InvestigationConflictException>(() => NetclawEndpoints.CreateChatAsync(17, request, http, new ContextAccess(), store, profiles, default));
+            connection.Enabled = true; await db.SaveChangesAsync();
+            var created = Assert.IsType<Ok<InvestigationSnapshotDto>>(await NetclawEndpoints.CreateChatAsync(17, request, http, new ContextAccess(), store, profiles, default)).Value!;
+            id = created.Investigation.Id;
+            Assert.True(created.Investigation.IsGeneralChat); Assert.Empty(created.Clients); Assert.Empty(created.Prompts!);
+            Assert.Equal(InvestigationState.Idle, created.Investigation.State);
+            Assert.Equal(id, (await store.CreateChatAsync(17, request, "operator", default)).Id);
+            await Assert.ThrowsAsync<InvestigationConflictException>(() => store.CreateChatAsync(17, request with { Title = "Different request" }, "operator", default));
+            await Assert.ThrowsAsync<InvestigationConflictException>(() => store.CreateChatAsync(17, request, "other-operator", default));
+            await Assert.ThrowsAsync<InvestigationConflictException>(() => store.CreateAsync(17, new(request.RequestId, request.Title, [agent]), "operator", default));
+            await Assert.ThrowsAsync<ArgumentException>(() => store.CreateAsync(17, new(Guid.NewGuid(), "Still needs systems", []), "operator", default));
+            var investigation = await store.CreateAsync(17, new(Guid.NewGuid(), "System investigation", [agent]), "operator", default);
+            await Assert.ThrowsAsync<InvestigationConflictException>(() => store.CreateChatAsync(17, new(investigation.RequestId, investigation.Title), "operator", default));
+            Assert.Equal(id, Assert.Single(await store.ListChatsAsync(17, 0, default)).Id);
+            Assert.Equal(investigation.Id, Assert.Single(await store.ListAsync(17, 0, default)).Id);
+            await Assert.ThrowsAsync<ArgumentException>(() => store.AcceptMessageAsync(17, id, message, "operator", null, true, default));
+            Assert.True(await store.AcceptMessageAsync(17, id, message, "operator", null, false, default));
+            Assert.Equal(0, daemon.Sends); Assert.Empty(daemon.Joins);
+        }
+        await using (var db = new OrchestratorDbContext(options))
+        {
+            var store = new InvestigationStore(db, TimeProvider.System);
+            Assert.Equal(id, (await store.CreateChatAsync(17, request, "operator", default)).Id);
+            Assert.False(await store.AcceptMessageAsync(17, id, message, "operator", null, false, default));
+            await Assert.ThrowsAsync<InvestigationConflictException>(() => store.AcceptMessageAsync(17, id, message with { Text = "Different message" }, "operator", null, false, default));
+            await Assert.ThrowsAsync<KeyNotFoundException>(() => store.LoadAsync(18, id, 0, default));
+            Assert.Empty(await store.ListChatsAsync(18, 0, default));
+            var snapshot = await store.LoadAsync(17, id, 0, default);
+            Assert.Equal(InvestigationState.Queued, snapshot.Investigation.State);
+            Assert.Equal(message.MessageId, snapshot.ActiveMessageId);
+            Assert.Single(snapshot.Events, item => item.Type == "operator");
+            Assert.Empty(snapshot.Clients); Assert.Empty(snapshot.Prompts!);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Worker_sends_and_records_exact_canonical_context_on_first_and_later_turns(bool generalChat)
     {
         var options = await DatabaseAsync(); var daemon = new Daemon(); var services = new ServiceCollection();
         await using var connectionSource = new OrchestratorDbContext(options);
@@ -57,8 +119,11 @@ public sealed class NetclawPersistencePostgresTests(PostgreSqlPersistenceFixture
             promptId = guide.Summary.Id; await library.SetDefaultAsync(17, new(promptId, 0, 1));
             await scope.ServiceProvider.GetRequiredService<NetclawProfileService>().PairAsync(17, new("https://netclaw.example", "test-code"), "operator", default);
             var store = scope.ServiceProvider.GetRequiredService<InvestigationStore>();
-            var row = await store.CreateAsync(17, new(Guid.NewGuid(), "Canonical context", [agent]), "operator", default);
+            var row = generalChat
+                ? await store.CreateChatAsync(17, new(Guid.NewGuid(), "General conversation"), "operator", default)
+                : await store.CreateAsync(17, new(Guid.NewGuid(), "Canonical context", [agent]), "operator", default);
             id = row.Id; Assert.Equal(0, daemon.Sends);
+            Assert.Equal(generalChat, (await store.LoadAsync(17, id, 0, default)).Investigation.IsGeneralChat);
             var picker = Assert.Single(await store.ClientsAsync(17, [agent], default));
             Assert.Equal("real-worker", picker.HostName); Assert.Equal("10.0.0.17", picker.PrimaryIpAddress);
             await store.AcceptMessageAsync(17, id, new(Guid.NewGuid(), "First question"), "operator", null, false, default);
@@ -76,8 +141,17 @@ public sealed class NetclawPersistencePostgresTests(PostgreSqlPersistenceFixture
                 var saved = Assert.Single(await db.Set<AiInvestigationContextRecord>().AsNoTracking().ToListAsync());
                 Assert.Equal(first.Text, saved.Request); Assert.NotNull(saved.SendAttemptedAtUtc);
                 Assert.Equal(saved.PayloadBytes, JsonSerializer.SerializeToUtf8Bytes(new[] { first.SessionId, first.Text }).Length);
-                Assert.Contains("Netclaw fixture", first.Text); Assert.Contains("real-worker", first.Text);
-                Assert.Contains("10.0.0.17", first.Text); Assert.Contains("Original tenant guidance", first.Text);
+                Assert.Contains("Netclaw fixture", first.Text);
+                if (generalChat)
+                {
+                    Assert.DoesNotContain("real-worker", first.Text); Assert.DoesNotContain("10.0.0.17", first.Text);
+                    Assert.DoesNotContain("Original tenant guidance", first.Text); Assert.DoesNotContain("selectedAgentIds", saved.MetadataJson);
+                }
+                else
+                {
+                    Assert.Contains("real-worker", first.Text); Assert.Contains("10.0.0.17", first.Text);
+                    Assert.Contains("Original tenant guidance", first.Text);
+                }
             }
             await daemon.Output!(JsonSerializer.SerializeToElement(new { type = "turn_completed", sessionId = first.SessionId }));
             await daemon.TurnClosed.Reader.ReadAsync(deadline.Token);
@@ -92,7 +166,14 @@ public sealed class NetclawPersistencePostgresTests(PostgreSqlPersistenceFixture
                     new(Guid.NewGuid(), "Later question"), "operator", null, false, default);
             }
             var later = await daemon.Sent.Reader.ReadAsync(deadline.Token);
-            Assert.Contains("10.0.0.18", later.Text); Assert.Contains("Original tenant guidance", later.Text);
+            if (generalChat)
+            {
+                Assert.DoesNotContain("10.0.0.18", later.Text); Assert.DoesNotContain("Original tenant guidance", later.Text);
+            }
+            else
+            {
+                Assert.Contains("10.0.0.18", later.Text); Assert.Contains("Original tenant guidance", later.Text);
+            }
             Assert.DoesNotContain("New default for future sessions", later.Text);
             Assert.Equal(first.SessionId, later.SessionId);
             await using var check = new OrchestratorDbContext(options);

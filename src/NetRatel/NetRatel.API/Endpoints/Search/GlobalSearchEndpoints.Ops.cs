@@ -117,7 +117,8 @@ public static partial class GlobalSearchEndpoints
                 row.TenantName.Length > 160 ? row.TenantName.Substring(0, 160) : row.TenantName,
                 row.Investigation.State.ToString(), db.Agents.Where(agent => agent.TenantId == row.Investigation.TenantId && row.Investigation.AgentIds.Contains(agent.Id))
                     .OrderBy(agent => agent.Id).Select(agent => (agent.FriendlyName ?? agent.Name ?? "").Substring(0,
-                        Math.Min(160, (agent.FriendlyName ?? agent.Name ?? "").Length))).FirstOrDefault(), row.Investigation.OccurrenceId, row.Investigation.FlowRunId));
+                        Math.Min(160, (agent.FriendlyName ?? agent.Name ?? "").Length))).FirstOrDefault(), row.Investigation.OccurrenceId, row.Investigation.FlowRunId,
+                row.Investigation.AgentIds.Length == 0));
     }
 
     internal static IQueryable<GlobalSearchAlertDto> BuildAlertQuery(OrchestratorDbContext db, string? term, int[]? ids = null)

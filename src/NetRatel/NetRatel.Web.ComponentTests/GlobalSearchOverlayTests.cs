@@ -1,9 +1,13 @@
 using System.Runtime.CompilerServices;
+using System.Net;
+using System.Net.Http.Json;
 using Bunit;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor.Services;
+using NetRatel.Shared.Contracts;
 using NetRatel.Web.Components.Layout;
+using NetRatel.Web.Components.Pages;
 using NetRatel.Web.Services.Search;
 using Xunit;
 
@@ -46,6 +50,35 @@ public sealed class GlobalSearchOverlayTests : AsyncBunitContext
         var cut = Render<GlobalSearchOverlay>(parameters => parameters.Add(component => component.Open, true));
         await cut.Find("input").KeyDownAsync(new Microsoft.AspNetCore.Components.Web.KeyboardEventArgs { Key = "Enter" });
         Assert.EndsWith("/monitoring", Services.GetRequiredService<NavigationManager>().Uri);
+    }
+
+    [Fact]
+    public void Search_continuation_opens_chats_and_investigations_in_their_own_workspaces()
+    {
+        var chatId = Guid.Parse("c10ec4f7-1bd8-409a-af82-31017ea66dc9");
+        var investigationId = Guid.Parse("7410f120-5ed4-47fd-b957-30cc7abf938c");
+        Services.AddSingleton<IHttpClientFactory>(new SearchResultsClientFactory([
+            new(chatId, 7, "Draft automation", "Operations", "Idle", null, null, null, IsGeneralChat: true),
+            new(investigationId, 7, "Investigate storage", "Operations", "Idle", "Storage host", null, null)
+        ]));
+        Services.GetRequiredService<NavigationManager>().NavigateTo("/search?section=investigations&search=Operations");
+        var cut = Render<GlobalSearchResults>();
+
+        cut.WaitForAssertion(() => Assert.Equal(2, cut.FindAll("a").Count));
+        Assert.Equal($"/ai/chat?tenantId=7&chat={chatId:D}", cut.FindAll("a")[0].GetAttribute("href"));
+        Assert.Equal($"/ai/ops?tenantId=7&investigation={investigationId:D}", cut.FindAll("a")[1].GetAttribute("href"));
+        Assert.Contains("Chat · Idle", cut.Markup);
+    }
+
+    private sealed class SearchResultsClientFactory(IReadOnlyList<GlobalSearchInvestigationDto> rows) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new(new SearchResultsHandler(rows)) { BaseAddress = new Uri("https://netratel.test") };
+    }
+
+    private sealed class SearchResultsHandler(IReadOnlyList<GlobalSearchInvestigationDto> rows) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new PagedResult<GlobalSearchInvestigationDto>(rows, 1, 25, rows.Count)) });
     }
 
     private static GlobalSearchGroup Result(string title, string href) => new("alerts", "Monitoring alerts", "", "/monitoring",

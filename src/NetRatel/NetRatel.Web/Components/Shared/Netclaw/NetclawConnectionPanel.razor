@@ -31,10 +31,10 @@
                 </div>
             </section>
         }
-        @if (_result is not null) { <p role="status" class="netclaw-notice">@(_result.Success ? "Authenticated SignalR session verified. Open an investigation to chat." : $"The connection is saved. {_result.Remediation}")</p> }
+        @if (_result is not null) { <p role="status" class="netclaw-notice">@(_result.Success ? "Authenticated SignalR session verified. Open Chat to get started." : $"The connection is saved. {_result.Remediation}")</p> }
         <details><summary>Advanced diagnostics</summary><dl><dt>Profile revision</dt><dd>@(_connection?.Revision ?? 0)</dd><dt>Device credential</dt><dd>@(_connection?.HasDeviceToken == true ? "Stored securely" : "Not configured")</dd><dt>Protocol</dt><dd>Native SignalR · /hub/session · EnsureSession</dd><dt>Last result</dt><dd>@(_connection?.LastTestCode ?? "Not tested")</dd></dl></details>
-        <details><summary>Grant Netclaw access to NetRatel tools</summary><p>The chat connection and the MCP tool credential are separate. Create an HTTP MCP credential for this tenant and register it with your Netclaw daemon. Choose the permissions for telemetry, services, files, monitoring and flows.</p><a href="@($"/account/integration-credentials?tab=credentials&tenantId={_tenant}")">Manage API &amp; MCP credentials</a><p>Netclaw tool approvals appear inside the investigation conversation. The selected credential permissions continue to govern each operation.</p></details>
-        <footer><a href="@($"/ai/ops?tenantId={_tenant}")">Open AI investigations</a><a href="https://netclaw.dev/architecture/overview/" target="_blank" rel="noopener noreferrer">Netclaw documentation</a></footer>
+        <details><summary>Grant Netclaw access to NetRatel tools</summary><p>The chat connection and the MCP tool credential are separate. Create an HTTP MCP credential for this tenant and register it with your Netclaw daemon. Choose the permissions for telemetry, services, files, monitoring and flows.</p><a href="@($"/account/integration-credentials?tab=credentials&tenantId={_tenant}")">Manage API &amp; MCP credentials</a><p>Netclaw tool approvals appear inside Chat and investigation conversations. The selected credential permissions continue to govern each operation.</p></details>
+        <footer><a href="@($"/ai/chat?tenantId={_tenant}")">Open Chat</a><a href="@($"/ai/ops?tenantId={_tenant}")">Open AI investigations</a><a href="https://netclaw.dev/architecture/overview/" target="_blank" rel="noopener noreferrer">Netclaw documentation</a></footer>
     }
 </main>
 
