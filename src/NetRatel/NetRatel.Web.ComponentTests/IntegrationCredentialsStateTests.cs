@@ -331,6 +331,26 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
     }
 
     [Fact]
+    public async Task Expired_secret_handoff_clears_the_secret_and_allows_the_setup_to_close()
+    {
+        JSInterop.Mode = JSRuntimeMode.Loose;
+        Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+        using var transport = new CredentialTransport { IncludeHttpMcpCredential = true, AcknowledgementStatus = HttpStatusCode.Conflict };
+        Services.AddSingleton<IHttpClientFactory>(transport);
+        SetRendererInfo(new RendererInfo("Server", true));
+        var page = Render<IntegrationCredentials>();
+        page.WaitForAssertion(() => Field<object>(page.Instance, "_authority").Should().NotBeNull());
+        Call(page.Instance, "OpenCreate"); Set(page.Instance, "_purpose", IntegrationCredentialPurpose.HttpMcp);
+        Set(page.Instance, "_name", "Synthetic handoff"); Set(page.Instance, "_step", 4); Set(page.Instance, "_createConfirmed", true);
+        transport.CompleteCreate("synthetic-one-time-secret");
+        await CallAsync(page.Instance, "CreateAsync"); await CallAsync(page.Instance, "StoreSecretAsync");
+        Field<bool>(page.Instance, "_handoffExpired").Should().BeTrue();
+        Field<string?>(page.Instance, "_revealedSecret").Should().BeNull();
+        Field<string>(page.Instance, "_error").Should().Contain("expired");
+        Call(page.Instance, "CloseCreate"); Field<bool>(page.Instance, "_createOpen").Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Http_credential_acknowledgment_and_details_refresh_current_admission_without_revealing_stored_secrets()
     {
         JSInterop.Mode = JSRuntimeMode.Loose;
@@ -481,6 +501,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         public bool PostRequested { get; private set; }
         public bool IncludeCredentials { get; set; }
         public bool IncludeHttpMcpCredential { get; set; }
+        public HttpStatusCode AcknowledgementStatus { get; set; } = HttpStatusCode.NoContent;
         public string HttpCredentialId { get; set; } = "one";
         public List<string> AccessLookups { get; } = [];
         public IReadOnlyList<IntegrationPairingGrant> HttpGrants { get; set; } = [new(17, "flow.read")];
@@ -525,6 +546,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
             }
             if (request.RequestUri!.AbsolutePath.EndsWith("/admission", StringComparison.Ordinal))
                 return Task.FromResult(new HttpResponseMessage(Admission is null ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.OK) { Content = JsonContent.Create(Admission) });
+            if (request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath.EndsWith("/acknowledge", StringComparison.Ordinal)) return Task.FromResult(new HttpResponseMessage(AcknowledgementStatus));
             if (request.Method == HttpMethod.Delete)
             {
                 var id = request.RequestUri!.AbsolutePath.Split('/')[^1];
