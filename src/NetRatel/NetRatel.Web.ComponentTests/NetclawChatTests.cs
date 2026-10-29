@@ -39,7 +39,7 @@ public sealed class NetclawChatTests : AsyncBunitContext
         var created = Assert.Single(api.Creates);
         Assert.Equal(title, created.Title);
         Assert.True(cut.Find("textarea").HasAttribute("disabled"));
-        Assert.Equal(question, cut.Find("textarea").GetAttribute("value"));
+        Assert.Equal(question.ReplaceLineEndings("\n"), cut.Find("textarea").GetAttribute("value"));
         await cut.Find("[data-testid=chat-send]").ClickAsync(new());
         await cut.WaitForAssertionAsync(() => Assert.Contains("Message saved", cut.Markup));
         Assert.Single(api.Creates);
