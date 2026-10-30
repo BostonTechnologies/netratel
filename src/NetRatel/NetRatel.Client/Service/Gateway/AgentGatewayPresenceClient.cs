@@ -45,7 +45,8 @@ public sealed class AgentGatewayPresenceClient(
     Func<CancellationToken, Task<Guid>>? resolveAgentId = null,
     Guid? pendingUpdateAttemptId = null,
     bool supportsUninstall = false,
-    Func<Action, IDisposable>? subscribeRecoveryNotifications = null)
+    Func<Action, IDisposable>? subscribeRecoveryNotifications = null,
+    bool remoteDesktopPocEnabled = false)
 {
     private static readonly TimeSpan DefaultExtensionShutdownTimeout = TimeSpan.FromSeconds(5);
     private readonly TimeSpan _extensionShutdownTimeout = ResolveExtensionShutdownTimeout(extensionShutdownTimeout);
@@ -287,8 +288,11 @@ public sealed class AgentGatewayPresenceClient(
             hello.Capabilities.Add("telemetry-shadow");
             hello.Capabilities.Add("file-gateway");
             hello.Capabilities.Add("log-gateway");
-            hello.Capabilities.Add("remote-support-gateway");
-            hello.Capabilities.Add("remote-support-v2-inventory");
+            if (remoteDesktopPocEnabled)
+            {
+                hello.Capabilities.Add("remote-support-gateway");
+                hello.Capabilities.Add("remote-support-v2-inventory");
+            }
             hello.Capabilities.Add("terminal-gateway");
             hello.TerminalCapability = new TerminalCapability { Supported = true, AvailableShells = { terminalShells } };
             updateHandler?.PopulateHello(hello);

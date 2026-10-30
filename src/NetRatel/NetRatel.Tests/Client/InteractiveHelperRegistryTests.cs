@@ -52,6 +52,20 @@ public sealed class InteractiveHelperRegistryTests
     }
 
     [Fact]
+    public void Registry_DoesNotReplaceAlreadyConnectedSameVersionHelper()
+    {
+        var registry = new InteractiveHelperRegistry("0.4.86");
+        var first = Helper(sessionId: 2, processId: 3844, version: "0.4.86+first");
+        var second = Helper(sessionId: 2, processId: 7148, version: "0.4.86+second");
+        registry.TryRegister(first, out _, out _).Should().BeTrue();
+
+        registry.TryRegister(second, out var replaced, out var rejectionReason).Should().BeFalse();
+        replaced.Should().BeNull();
+        rejectionReason.Should().Be("existing_service_compatible_helper_already_connected");
+        registry.Get(2).Should().BeSameAs(first);
+    }
+
+    [Fact]
     public void Registry_RemovesOnlyMatchingConnectionInstance()
     {
         var registry = new InteractiveHelperRegistry("0.4.86");
