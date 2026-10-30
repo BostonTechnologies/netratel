@@ -30,6 +30,7 @@ internal sealed class RemoteDesktopUserHelperTask
 {
     private const int TaskRunUseSessionId = 0x4;
     private const uint ErrorFileNotFound = 0x80070002;
+    private const uint SchedulerUnknownObject = 0x8004130F;
     private static readonly ConcurrentDictionary<string, HelperTaskRegistrationState> Registrations = new(StringComparer.OrdinalIgnoreCase);
     private readonly string _launcherDirectory;
     private readonly string _commandLauncherPath;
@@ -48,6 +49,123 @@ internal sealed class RemoteDesktopUserHelperTask
         _launcherDirectory = Path.Combine(programData, "NetRatel", "remote-desktop");
         _commandLauncherPath = Path.Combine(_launcherDirectory, "netratel-remote-desktop-user-helper.cmd");
         _hiddenLauncherPath = Path.Combine(_launcherDirectory, "netratel-remote-desktop-user-helper.vbs");
+    }
+
+    /// <summary>
+    /// Idempotent migration from the pre-release desktop POC. Only its exact task,
+    /// Run value, launchers and command-line-identified resident helpers are retired.
+    /// Never stop the NetRatel.Client Windows service or other agent processes.
+    /// </summary>
+    public static async Task RetireLegacyPocAsync(CancellationToken ct)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var helper = new RemoteDesktopUserHelperTask();
+        try { UnregisterLegacyTask(); }
+        catch (Exception ex) { LogManager.WriteLog($"[RemoteDesktop] Unable to retire POC task: {ex.Message}"); }
+
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", writable: true);
+            key?.DeleteValue(RemoteDesktopUserHelperConstants.RunValueName, throwOnMissingValue: false);
+        }
+        catch (Exception ex) { LogManager.WriteLog($"[RemoteDesktop] Unable to retire POC Run value: {ex.Message}"); }
+
+        foreach (var launcher in new[] { helper._commandLauncherPath, helper._hiddenLauncherPath })
+        {
+            try { File.Delete(launcher); }
+            catch (Exception ex) { LogManager.WriteLog($"[RemoteDesktop] Unable to retire POC launcher: {ex.Message}"); }
+        }
+
+        // A previous release's helper executable can remain resident after an update.
+        // Query the command line and installation path before terminating a process;
+        // executable names alone would also match the live service and terminal host.
+        try
+        {
+            var startInfo = BuildLegacyHelperCleanupStartInfo();
+            var result = await BoundedProcessRunner.RunAsync(startInfo, TimeSpan.FromSeconds(15),
+                "retire obsolete remote desktop POC helpers", ct).ConfigureAwait(false);
+            if (result.ExitCode != 0)
+                LogManager.WriteLog($"[RemoteDesktop] POC helper cleanup returned exit={result.ExitCode}: {TrimForLog(result.Error)}");
+            else
+                LogManager.WriteLog($"[RemoteDesktop] Legacy POC retirement complete: {TrimForLog(result.Output)}");
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex) { LogManager.WriteLog($"[RemoteDesktop] POC helper process cleanup unavailable: {ex.Message}"); }
+    }
+
+    private static void UnregisterLegacyTask()
+    {
+        object? serviceObject = null;
+        object? folderObject = null;
+        object? taskObject = null;
+        object? instancesObject = null;
+        try
+        {
+            var serviceType = Type.GetTypeFromProgID("Schedule.Service")
+                ?? throw new InvalidOperationException("Task Scheduler COM service is unavailable.");
+            serviceObject = Activator.CreateInstance(serviceType)
+                ?? throw new InvalidOperationException("Unable to create Task Scheduler COM service.");
+            dynamic service = serviceObject;
+            service.Connect();
+            folderObject = service.GetFolder("\\");
+            dynamic folder = folderObject;
+            try { taskObject = folder.GetTask(RemoteDesktopUserHelperConstants.TaskName); }
+            catch (COMException ex) when (unchecked((uint)ex.HResult) is ErrorFileNotFound or SchedulerUnknownObject) { return; }
+
+            dynamic task = taskObject!;
+            instancesObject = task.GetInstances(0);
+            dynamic instances = instancesObject;
+            for (var index = 1; index <= (int)instances.Count; index++)
+            {
+                object? instanceObject = null;
+                try
+                {
+                    instanceObject = instances.Item(index);
+                    dynamic instance = instanceObject;
+                    instance.Stop();
+                }
+                finally { ReleaseComObject(instanceObject); }
+            }
+
+            folder.DeleteTask(RemoteDesktopUserHelperConstants.TaskName, 0);
+        }
+        finally
+        {
+            ReleaseComObject(instancesObject);
+            ReleaseComObject(taskObject);
+            ReleaseComObject(folderObject);
+            ReleaseComObject(serviceObject);
+        }
+    }
+
+    internal static ProcessStartInfo BuildLegacyHelperCleanupStartInfo()
+    {
+        // System.Management is deliberately not required by the installer: Windows
+        // PowerShell's built-in CIM provider identifies only the obsolete helper mode.
+        const string script = """
+$ErrorActionPreference = 'Stop'
+$root = Join-Path $env:ProgramFiles 'NetRatel\Client\versions\'
+$helpers = @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'NetRatel.Client.exe'" |
+    Where-Object {
+        $_.ExecutablePath -and
+        $_.ExecutablePath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -and
+        $_.CommandLine -match '(?i)(?:^|\s)--remote-desktop-user-helper(?:\s|$)'
+    })
+foreach ($helper in $helpers) { Stop-Process -Id $helper.ProcessId -Force -ErrorAction Stop }
+Write-Output ('stopped=' + $helpers.Count)
+""";
+        var startInfo = new ProcessStartInfo("powershell.exe")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        startInfo.ArgumentList.Add("-NoProfile");
+        startInfo.ArgumentList.Add("-NonInteractive");
+        startInfo.ArgumentList.Add("-EncodedCommand");
+        startInfo.ArgumentList.Add(Convert.ToBase64String(Encoding.Unicode.GetBytes(script)));
+        return startInfo;
     }
 
     public async Task<bool> EnsureRegisteredAsync(CancellationToken ct, bool force = false)

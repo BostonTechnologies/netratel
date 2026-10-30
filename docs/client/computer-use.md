@@ -1,5 +1,30 @@
 # Windows computer-use setup and acceptance
 
+> **Release status (0.1.3-beta.1): disabled by default.** The Windows remote-desktop,
+> interactive helper and computer-use bridge share an unfinished proof-of-concept
+> transport. Production Client installations do not start the desktop gateway,
+> register a helper, create remote-support firewall rules or advertise desktop
+> support. Terminal, telemetry, commands, jobs, file/log transfer and updates
+> remain available. Setting `ComputerUse:Enabled` alone does not enable desktop
+> support.
+
+For a disposable development canary only, set the Windows **NetRatel.Client
+service process environment** variable `NETRATEL_REMOTE_DESKTOP_POC_ENABLED=true`
+and restart the service. The `ComputerUse:Enabled` setting remains a *separate*
+opt-in for actual CUA execution. Remove the environment override and restart
+to restore the default-off behavior.
+
+On first startup with the desktop POC disabled, the client retires its exact
+`NetRatel.RemoteDesktop.UserHelper` Task Scheduler task and HKLM Run entry,
+removes only its two launcher files, and stops older resident helpers only when
+their command line contains `--remote-desktop-user-helper` **and** their executable
+is under `Program Files\NetRatel\Client\versions`. It never terminates the
+NetRatel service, terminal, or other Client processes. This bounded, idempotent
+cleanup is logged under `[RemoteDesktop]` in the Client log. For canary
+acceptance, confirm the Client service remains running, inspect the two
+autostarts, check that no resident desktop helpers remain, and compare CPU
+samples before and after upgrade.
+
 Computer Use Automation (CUA) is an opt-in Windows Client capability for observing and operating one explicitly selected interactive application. The Windows service remains in Session 0 and delegates execution through the existing authenticated Remote Support helper in the selected logged-in user session. The model/planner is separate from the execution provider.
 
 The provider-neutral `IComputerUseProvider` contract has two implementations:

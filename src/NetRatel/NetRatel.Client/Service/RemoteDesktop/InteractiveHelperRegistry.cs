@@ -50,6 +50,14 @@ internal sealed class InteractiveHelperRegistry
                 return false;
             }
 
+            // One healthy owner per Windows session. A duplicate helper of the
+            // same service version must not evict it and reconnect indefinitely.
+            if (currentCompatible && candidateCompatible)
+            {
+                rejectionReason = "existing_service_compatible_helper_already_connected";
+                return false;
+            }
+
             if (_helpers.TryUpdate(candidate.SessionId, candidate, current))
             {
                 replaced = current;

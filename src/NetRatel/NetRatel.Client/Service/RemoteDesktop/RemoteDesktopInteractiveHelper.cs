@@ -50,6 +50,15 @@ internal static class RemoteDesktopInteractiveHelper
     [SupportedOSPlatform("windows")]
     private static async Task RunResidentWindowsAsync(CancellationToken ct)
     {
+        // Local mutex names are isolated by Windows logon session. Task Scheduler
+        // and HKLM Run must never create competing helpers in the same session.
+        using var ownerMutex = new Mutex(initiallyOwned: true, @"Local\NetRatel.RemoteDesktop.UserHelper", out var ownsSession);
+        if (!ownsSession)
+        {
+            LogManager.WriteLog("[RemoteDesktopHelper] Another resident helper already owns this user session; exiting.");
+            return;
+        }
+
         LogManager.WriteLog($"[RemoteDesktopHelper] Resident helper starting sessionId={Process.GetCurrentProcess().SessionId} interactive={Environment.UserInteractive}");
         var lastWaitingLog = DateTimeOffset.MinValue;
 
@@ -114,14 +123,17 @@ internal static class RemoteDesktopInteractiveHelper
             catch (Exception ex)
             {
                 LogManager.WriteLog($"[RemoteDesktopHelper] Resident helper pipe loop failed: {ex.Message}");
-                try
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(3), ct).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested)
-                {
-                    return;
-                }
+            }
+
+            // Clean server-side disconnects also require a backoff: otherwise two
+            // logon helpers can repeatedly displace one another at CPU-bound speed.
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(3), ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return;
             }
         }
     }

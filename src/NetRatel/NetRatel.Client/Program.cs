@@ -52,6 +52,8 @@ async Task RunClientAsync(CancellationToken nativeStopping)
     var runtimeBaseDir = AppContext.BaseDirectory ?? Environment.CurrentDirectory;
     var appBaseDir = ResolveExecutableDirectory(runtimeBaseDir);
     var cliArgs = Environment.GetCommandLineArgs().Skip(1).ToArray();
+    var remoteDesktopPocEnabled = OperatingSystem.IsWindows() && RemoteDesktopPocFeature.IsEnabled(
+        Environment.GetEnvironmentVariable(RemoteDesktopPocFeature.EnvironmentVariable));
 
     // Keep this probe before logging, configuration, and service initialization so packaged
     // Clients can be validated on every supported platform without credentials, network access,
@@ -73,7 +75,7 @@ async Task RunClientAsync(CancellationToken nativeStopping)
     // child mode never initializes the client, enrolls, or opens a desktop.
     if (cliArgs.Length == 1 && string.Equals(cliArgs[0], RemoteDesktopUserHelperConstants.RegistrationCommand, StringComparison.Ordinal))
     {
-        if (!OperatingSystem.IsWindows())
+        if (!remoteDesktopPocEnabled)
         {
             Environment.ExitCode = 2;
             return;
@@ -97,6 +99,12 @@ async Task RunClientAsync(CancellationToken nativeStopping)
     LogStartupBlock(appBaseDir, cliArgs);
     using var applicationStopping = CancellationTokenSource.CreateLinkedTokenSource(nativeStopping);
 
+    if (OperatingSystem.IsWindows() && IsWindowsServiceMode(cliArgs) && !remoteDesktopPocEnabled)
+    {
+        await RemoteDesktopUserHelperTask.RetireLegacyPocAsync(applicationStopping.Token).ConfigureAwait(false);
+        LogManager.WriteLog("[RemoteDesktop] Unfinished desktop POC disabled; terminal and other gateway extensions remain enabled.");
+    }
+
     if (cliArgs.Any(a => string.Equals(a, "--terminal-pty-self-test", StringComparison.OrdinalIgnoreCase)) ||
         cliArgs.Any(a => string.Equals(a, "--terminal-pty-self-test-native", StringComparison.OrdinalIgnoreCase)) ||
         cliArgs.Any(a => string.Equals(a, "--terminal-pty-self-test-python", StringComparison.OrdinalIgnoreCase)))
@@ -107,7 +115,7 @@ async Task RunClientAsync(CancellationToken nativeStopping)
         return;
     }
 
-    if (OperatingSystem.IsWindows() && IsWindowsServiceMode(cliArgs))
+    if (remoteDesktopPocEnabled && IsWindowsServiceMode(cliArgs))
     {
         WindowsRemoteSupportFirewall.EnsureRulesForCurrentProcess();
     }
@@ -133,6 +141,7 @@ async Task RunClientAsync(CancellationToken nativeStopping)
 
     if (OperatingSystem.IsWindows() && cliArgs.Any(a => string.Equals(a, "--remote-support-helper-fix", StringComparison.OrdinalIgnoreCase)))
     {
+        if (!remoteDesktopPocEnabled) { Environment.ExitCode = 2; return; }
 #pragma warning disable CA1416
         var result = await RemoteSupportInteractiveHelperRepairService.RunManualRepairAsync(CancellationToken.None).ConfigureAwait(false);
 #pragma warning restore CA1416
@@ -160,6 +169,7 @@ async Task RunClientAsync(CancellationToken nativeStopping)
 
     if (OperatingSystem.IsWindows() && cliArgs.Any(a => string.Equals(a, "--remote-support-console-helper", StringComparison.OrdinalIgnoreCase)))
     {
+        if (!remoteDesktopPocEnabled) { Environment.ExitCode = 2; return; }
         await RemoteSupportConsoleHelper.RunAsync(
             cliArgs.Any(a => string.Equals(a, "--self-test", StringComparison.OrdinalIgnoreCase)),
             cliArgs.Any(a => string.Equals(a, "--capture-self-test", StringComparison.OrdinalIgnoreCase)),
@@ -177,6 +187,7 @@ async Task RunClientAsync(CancellationToken nativeStopping)
 
     if (OperatingSystem.IsWindows() && cliArgs.Any(a => string.Equals(a, "--remote-desktop-user-helper", StringComparison.OrdinalIgnoreCase)))
     {
+        if (!remoteDesktopPocEnabled) { Environment.ExitCode = 2; return; }
         await RemoteDesktopInteractiveHelper.RunResidentAsync(CancellationToken.None).ConfigureAwait(false);
         return;
     }
@@ -184,6 +195,7 @@ async Task RunClientAsync(CancellationToken nativeStopping)
     var remoteDesktopHelperPipe = GetArgValue(cliArgs, "--remote-desktop-helper");
     if (!string.IsNullOrWhiteSpace(remoteDesktopHelperPipe))
     {
+        if (!remoteDesktopPocEnabled) { Environment.ExitCode = 2; return; }
         await RemoteDesktopInteractiveHelper.RunAsync(remoteDesktopHelperPipe, CancellationToken.None).ConfigureAwait(false);
         return;
     }
@@ -423,16 +435,18 @@ async Task RunClientAsync(CancellationToken nativeStopping)
         new FileSystemService(),
         message => LogManager.WriteLog($"[Gateway] {message}"));
     var logGateway = new AgentLogGatewayClient(gatewayOptions);
-    var remoteSupportGateway = new AgentRemoteSupportGatewayClient(
-        gatewayOptions,
-        message => LogManager.WriteLog($"[Gateway] {message}"));
+    var remoteSupportGateway = remoteDesktopPocEnabled
+        ? new AgentRemoteSupportGatewayClient(gatewayOptions,
+            message => LogManager.WriteLog($"[Gateway] {message}"))
+        : null;
     var computerUseOptions = configuration.GetSection("ComputerUse").Get<ComputerUseOptions>() ?? new();
     if (string.IsNullOrWhiteSpace(configuration["ComputerUse:CuaDriverPath"]))
         computerUseOptions = computerUseOptions with
         {
             CuaDriverPath = Path.Combine(appBaseDir, "computer-use", "cua-driver", "cua-driver.exe")
         };
-    await using var computerUse = new ComputerUseServiceBridge(remoteSupportGateway.GetHelperPipeHost, computerUseOptions);
+    await using var computerUse = new ComputerUseServiceBridge(
+        () => remoteSupportGateway?.GetHelperPipeHost(), computerUseOptions);
     var terminalShells = ShellInventoryDetector.NormalizeKeywords(ShellInventoryDetector.Detect());
     using var terminalGateway = new AgentTerminalGatewayClient(
         gatewayOptions,
@@ -456,7 +470,7 @@ async Task RunClientAsync(CancellationToken nativeStopping)
         message => LogManager.WriteLog($"[Offboarding] {message}"), applicationStopping.Token).ConfigureAwait(false);
     var controlGateway = new AgentControlGatewayClient(gatewayOptions,
         message => LogManager.WriteLog($"[Gateway] {message}"), offboarding,
-        computerUseOptions.Enabled && OperatingSystem.IsWindows() ? computerUse.ExecuteAsync : null,
+        remoteDesktopPocEnabled && computerUseOptions.Enabled ? computerUse.ExecuteAsync : null,
         computerUse.RevokeAllAsync);
     var gatewayExtensionSupervisor = new GatewayPresenceExtensionSupervisor(
         message => LogManager.WriteLog($"[Gateway] {message}"));
@@ -472,16 +486,21 @@ async Task RunClientAsync(CancellationToken nativeStopping)
             session,
             accessToken,
             stoppingToken,
+            (remoteDesktopPocEnabled
+                ? new[]
+                {
+                    new GatewayPresenceExtension("remote-support", remoteSupportGateway!.RunForPresenceSessionAsync)
+                }
+                : Array.Empty<GatewayPresenceExtension>()).Concat(
             [
                 new GatewayPresenceExtension("telemetry", telemetryPublisher.RunForPresenceSessionAsync),
                 new GatewayPresenceExtension("control", controlGateway.RunForPresenceSessionAsync),
                 new GatewayPresenceExtension("file", fileGateway.RunForPresenceSessionAsync),
                 new GatewayPresenceExtension("log", logGateway.RunForPresenceSessionAsync),
-                new GatewayPresenceExtension("remote-support", remoteSupportGateway.RunForPresenceSessionAsync),
                 new GatewayPresenceExtension("terminal", terminalGateway.RunForPresenceSessionAsync),
                 new GatewayPresenceExtension("command", commandGateway.RunForPresenceSessionAsync),
                 new GatewayPresenceExtension("job", jobGateway.RunForPresenceSessionAsync)
-            ]),
+            ]).ToArray()),
         updateCoordinator,
         recoveryOptions: cfg.OutageRecovery,
         recoveryStateStore: OperationalRecoveryStateStore.ForInstallation(cfg.AutoUpdate.StateDirectory,
@@ -497,7 +516,8 @@ async Task RunClientAsync(CancellationToken nativeStopping)
                 ? currentAgentId : throw new InvalidOperationException("The enrolled agent ID is invalid.");
         },
         pendingUpdateAttemptId: updateCoordinator.ReadPendingActivation(DateTimeOffset.UtcNow)?.AttemptId,
-        supportsUninstall: offboarding is not null);
+        supportsUninstall: offboarding is not null,
+        remoteDesktopPocEnabled: remoteDesktopPocEnabled);
     await gatewayClient.RunAsync(applicationStopping.Token).ConfigureAwait(false);
     return;
 }
