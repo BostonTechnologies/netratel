@@ -202,6 +202,9 @@ public sealed class ScriptLibraryWorkspaceTests : AsyncBunitContext
     [Fact]
     public async Task Inline_name_is_saved_with_content_and_rename_failure_retains_the_draft()
     {
+        // bUnit's loose JS runtime otherwise returns null for Monaco's GetValue.
+        // A name-only edit must read the actual unchanged editor content on Save.
+        JSInterop.Setup<string>("blazorMonaco.editor.getValue", _ => true).SetResult("saved content");
         var cut = Render<ScriptLibraryView>(p => p.Add(view => view.AllowEditing, true));
         await SelectExistingAsync(cut);
         Assert.Empty(cut.FindAll(".script-library-row-actions"));
@@ -211,6 +214,7 @@ public sealed class ScriptLibraryWorkspaceTests : AsyncBunitContext
         Assert.False(cut.Find("[data-testid=script-editor-save]").HasAttribute("disabled"));
         transport.FailUpdate = true;
         await cut.Find("[data-testid=script-editor-save]").ClickAsync(new());
+        Assert.Equal("saved content", Assert.Single(transport.Updated).Content);
         Assert.Contains("already occupies", cut.Find("[data-testid=script-editor-error]").TextContent);
         Assert.Equal("  Renamed.ps1  ", cut.Find("[data-testid=script-editor-name]").GetAttribute("value"));
         Assert.Contains("unsaved", cut.Markup);
