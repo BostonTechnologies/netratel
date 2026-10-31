@@ -1,0 +1,44 @@
+name: Branch workspace
+on:
+  push:
+    branches: [fix/instance-policy-admin-and-ops-ux]
+    paths:
+      - .github/workflows/branch-workspace.yml
+      - .github/maintenance/branch-workspace-patch.py
+permissions:
+  contents: write
+concurrency:
+  group: branch-workspace-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  workspace:
+    if: github.ref == 'refs/heads/fix/instance-policy-admin-and-ops-ux'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+      - name: Apply reviewed source edits on this branch only
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -f .github/maintenance/branch-workspace-patch.py ]; then
+            python3 .github/maintenance/branch-workspace-patch.py
+            git diff --check
+            if ! git diff --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+              git config user.name 'github-actions[bot]'
+              git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+              git add -- src docs Directory.Build.props
+              git commit -m 'fix: apply reviewed account-policy and operations regressions'
+              git push origin HEAD:"$BRANCH"
+            fi
+          fi
+      - name: Export exact branch source for review
+        run: git archive --format=zip --output=branch-source.zip HEAD
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: branch-workspace-source
+          path: branch-source.zip
+          retention-days: 1
