@@ -9,25 +9,23 @@
 @inject INetclawApiService Api
 
 <PageTitle>AI Ops · Investigations</PageTitle>
-<main class="ai-ops" data-testid="ai-ops">
-    <header class="ai-heading">
-        <div><p class="ai-eyebrow">AI OPERATIONS</p><h1>Investigations</h1><p>Follow alerts, inspect systems and work through the evidence with your AI assistant.</p></div>
-        <NetclawConnectionStatus TenantId="_tenant" TenantName="@(Access?.TenantName)" Connection="_connection" />
-    </header>
-    <div class="ai-toolbar">
+<main class="ai-ops @(_creating ? "is-creating" : "")" data-testid="ai-ops">
+    <header class="ai-toolbar" aria-label="Investigation workspace">
+        <h1 title="Follow alerts, inspect systems and work through the evidence with your AI assistant.">Investigations</h1>
         <label>Tenant<select value="@_tenant" @onchange="ChooseTenantAsync" disabled="@(_loading || _busy)">
             @foreach (var tenant in _tenants) { <option value="@tenant.TenantId">@tenant.TenantName</option> }
         </select></label>
-        <button type="button" @onclick="ReloadAsync" disabled="@(_loading || _busy || _tenant == 0)">Refresh</button>
+        <button type="button" @onclick="ReloadAsync" disabled="@(_loading || _busy || _tenant == 0)" aria-label="Refresh investigations">Refresh</button>
         <button type="button" class="ai-primary" @onclick="() => _creating = !_creating" disabled="@(Access?.CanInvestigate != true || _busy)" data-testid="ai-new-investigation">New investigation</button>
-    </div>
+        <div class="ai-connection-slot"><NetclawConnectionStatus TenantId="_tenant" TenantName="@(Access?.TenantName)" Connection="_connection" /></div>
+    </header>
     @if (_error is not null) { <div class="ai-notice" role="alert">@_error</div> }
     @if (_loading) { <p role="status">Loading your authorized investigation workspace…</p> }
     else if (_tenants.Count == 0) { <div class="ai-empty"><h2>No investigation access</h2><p>A tenant role with read telemetry permission grants access to this workspace.</p></div> }
     else
     {
         <div class="ai-metrics" aria-label="Recent investigation status">
-            <div><span>Active in recent history</span><strong>@_items.Count(x => x.State is InvestigationState.Processing or InvestigationState.Queued)</strong></div>
+            <div title="Active in recent history"><span>Active</span><strong>@_items.Count(x => x.State is InvestigationState.Processing or InvestigationState.Queued)</strong></div>
             <div><span>Waiting for your decision</span><strong>@_items.Count(x => x.State == InvestigationState.AwaitingApproval)</strong></div>
             <div><span>Needs recovery</span><strong>@_items.Count(x => x.State == InvestigationState.DeliveryUnknown)</strong></div>
         </div>
