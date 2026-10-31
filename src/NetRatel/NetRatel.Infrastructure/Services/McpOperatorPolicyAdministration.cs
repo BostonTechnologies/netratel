@@ -134,14 +134,21 @@ public sealed partial class McpOperatorPolicyAdministration(OrchestratorDbContex
         return new McpOperatorAcceptedAuditPage(records.Select(ToAcceptedAudit).ToArray());
     }
 
+    public Task<McpOperatorPolicy> CreateAsync(
+        McpOperatorPolicyDraft draft,
+        string actorId,
+        CancellationToken cancellationToken) =>
+        CreateAsync(draft, actorId, cancellationToken, null);
+
     public async Task<McpOperatorPolicy> CreateAsync(
         McpOperatorPolicyDraft draft,
         string actorId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        McpOperatorAccountAuthority? accountAuthority)
     {
         await using var transaction = await BeginProfileTransactionAsync(cancellationToken).ConfigureAwait(false);
         await LockParentAsync(draft.ParentPolicyId, cancellationToken).ConfigureAwait(false);
-        await ValidateDraftAsync(draft, actorId, cancellationToken).ConfigureAwait(false);
+        await ValidateDraftAsync(draft, actorId, cancellationToken, accountAuthority).ConfigureAwait(false);
         var now = DateTimeOffset.UtcNow;
         var record = new McpOperatorPolicyRecord
         {
@@ -163,26 +170,44 @@ public sealed partial class McpOperatorPolicyAdministration(OrchestratorDbContex
         return ToPolicy(record);
     }
 
+    public Task ValidateDraftAsync(
+        McpOperatorPolicyDraft draft,
+        string actorId,
+        CancellationToken cancellationToken) =>
+        ValidateDraftAsync(draft, actorId, cancellationToken, null);
+
     public async Task ValidateDraftAsync(
         McpOperatorPolicyDraft draft,
         string actorId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        McpOperatorAccountAuthority? accountAuthority)
     {
-        ValidateDraft(draft, actorId);
+        if (accountAuthority is not null && !IsSafeValue(accountAuthority.PrincipalId, MaxIdentityLength))
+            throw new ArgumentException("A valid verified instance-account identity is required.", nameof(accountAuthority));
+        ValidateDraft(draft, actorId, allowSelfGrant: accountAuthority is not null);
         await EnsureExactTargetExistsAsync(draft.TargetSelector, cancellationToken).ConfigureAwait(false);
         await ValidateHierarchyAsync(draft, cancellationToken).ConfigureAwait(false);
     }
+
+    public Task<McpOperatorPolicy> ReplaceAsync(
+        Guid policyId,
+        long expectedVersion,
+        McpOperatorPolicyDraft draft,
+        string actorId,
+        CancellationToken cancellationToken) =>
+        ReplaceAsync(policyId, expectedVersion, draft, actorId, cancellationToken, null);
 
     public async Task<McpOperatorPolicy> ReplaceAsync(
         Guid policyId,
         long expectedVersion,
         McpOperatorPolicyDraft draft,
         string actorId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        McpOperatorAccountAuthority? accountAuthority)
     {
         await using var transaction = await BeginProfileTransactionAsync(cancellationToken).ConfigureAwait(false);
         await LockParentAsync(draft.ParentPolicyId ?? policyId, cancellationToken).ConfigureAwait(false);
-        await ValidateDraftAsync(draft, actorId, cancellationToken).ConfigureAwait(false);
+        await ValidateDraftAsync(draft, actorId, cancellationToken, accountAuthority).ConfigureAwait(false);
         if (expectedVersion <= 0)
             throw new ArgumentOutOfRangeException(nameof(expectedVersion));
 
@@ -444,7 +469,7 @@ public sealed partial class McpOperatorPolicyAdministration(OrchestratorDbContex
             OccurredAtUtc = occurredAtUtc
         });
 
-    private static void ValidateDraft(McpOperatorPolicyDraft draft, string actorId)
+    private static void ValidateDraft(McpOperatorPolicyDraft draft, string actorId, bool allowSelfGrant = false)
     {
         ArgumentNullException.ThrowIfNull(draft);
         if (!IsSafeValue(actorId, MaxIdentityLength) || !IsBoundedText(draft.Name, 160) ||
@@ -473,7 +498,7 @@ public sealed partial class McpOperatorPolicyAdministration(OrchestratorDbContex
             throw new ArgumentException("The policy expiry must be in the future.");
         if (draft.ReviewByUtc is { } review && review <= DateTimeOffset.UtcNow)
             throw new ArgumentException("The policy review date must be in the future.");
-        if (draft.Effect == McpOperatorPolicyEffect.Allow &&
+        if (!allowSelfGrant && draft.Effect == McpOperatorPolicyEffect.Allow &&
             draft.PrincipalSelector.Kind == McpOperatorPrincipalSelectorKind.OAuthSubject &&
             string.Equals(draft.PrincipalSelector.Value, actorId, StringComparison.Ordinal))
             throw new InvalidOperationException("Policy administrators cannot grant themselves an allow policy through this API.");

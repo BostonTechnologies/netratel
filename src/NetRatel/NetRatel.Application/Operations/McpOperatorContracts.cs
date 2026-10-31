@@ -364,6 +364,28 @@ public interface IMcpOperatorPolicyAdministration
         string actorId,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Trusted account-adapter overloads. The caller must establish current
+    /// instance authority before preview and again immediately before persistence.
+    /// They preserve the real audit actor; ordinary callers keep self-grant checks.
+    /// Custom implementations fail closed until they support account authority.
+    /// </summary>
+    Task ValidateDraftAsync(McpOperatorPolicyDraft draft, string actorId,
+        CancellationToken cancellationToken, McpOperatorAccountAuthority? accountAuthority) =>
+        accountAuthority is null ? ValidateDraftAsync(draft, actorId, cancellationToken)
+            : throw new InvalidOperationException("Instance-account policy administration is not supported.");
+
+    Task<McpOperatorPolicy> CreateAsync(McpOperatorPolicyDraft draft, string actorId,
+        CancellationToken cancellationToken, McpOperatorAccountAuthority? accountAuthority) =>
+        accountAuthority is null ? CreateAsync(draft, actorId, cancellationToken)
+            : throw new InvalidOperationException("Instance-account policy administration is not supported.");
+
+    Task<McpOperatorPolicy> ReplaceAsync(Guid policyId, long expectedVersion,
+        McpOperatorPolicyDraft draft, string actorId, CancellationToken cancellationToken,
+        McpOperatorAccountAuthority? accountAuthority) =>
+        accountAuthority is null ? ReplaceAsync(policyId, expectedVersion, draft, actorId, cancellationToken)
+            : throw new InvalidOperationException("Instance-account policy administration is not supported.");
+
     Task<McpOperatorPolicy?> DisableAsync(
         Guid policyId,
         long expectedVersion,

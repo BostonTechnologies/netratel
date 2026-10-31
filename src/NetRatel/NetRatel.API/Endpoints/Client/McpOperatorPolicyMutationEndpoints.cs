@@ -80,7 +80,7 @@ public static class McpOperatorPolicyMutationEndpoints
 
             try
             {
-                await administration.ValidateDraftAsync(request.Policy, context.Principal.Subject, cancellationToken).ConfigureAwait(false);
+                await administration.ValidateDraftAsync(request.Policy, context.Principal.Subject, cancellationToken, decision.AccountAuthority).ConfigureAwait(false);
             }
             catch (KeyNotFoundException)
             {
@@ -138,7 +138,7 @@ public static class McpOperatorPolicyMutationEndpoints
 
             try
             {
-                await administration.ValidateDraftAsync(request.Policy, context.Principal.Subject, cancellationToken).ConfigureAwait(false);
+                await administration.ValidateDraftAsync(request.Policy, context.Principal.Subject, cancellationToken, decision.AccountAuthority).ConfigureAwait(false);
             }
             catch (KeyNotFoundException)
             {
@@ -167,7 +167,7 @@ public static class McpOperatorPolicyMutationEndpoints
             {
                 var created = await ExecuteMutationAsync(
                     decision, context, target, payloadHash, CreateOperation, authorization, administration,
-                    mutationToken => administration.CreateAsync(request.Policy, context.Principal.Subject, mutationToken),
+                    mutationToken => administration.CreateAsync(request.Policy, context.Principal.Subject, mutationToken, decision.AccountAuthority),
                     cancellationToken).ConfigureAwait(false);
                 await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, PolicyCreateResultReference(created), CancellationToken.None).ConfigureAwait(false);
                 return Results.Created(
@@ -411,7 +411,7 @@ public static class McpOperatorPolicyMutationEndpoints
 
         try
         {
-            await administration.ValidateDraftAsync(request.Policy!, context.Principal.Subject, cancellationToken).ConfigureAwait(false);
+            await administration.ValidateDraftAsync(request.Policy!, context.Principal.Subject, cancellationToken, decision.AccountAuthority).ConfigureAwait(false);
         }
         catch (KeyNotFoundException)
         {
@@ -472,7 +472,7 @@ public static class McpOperatorPolicyMutationEndpoints
 
         try
         {
-            await administration.ValidateDraftAsync(request.Policy!, context.Principal.Subject, cancellationToken).ConfigureAwait(false);
+            await administration.ValidateDraftAsync(request.Policy!, context.Principal.Subject, cancellationToken, decision.AccountAuthority).ConfigureAwait(false);
         }
         catch (KeyNotFoundException)
         {
@@ -500,7 +500,7 @@ public static class McpOperatorPolicyMutationEndpoints
             var replaced = await ExecuteMutationAsync(
                 decision, context, target, payloadHash, ReplaceOperation, authorization, administration,
                 mutationToken => administration.ReplaceAsync(request.PolicyId, request.ExpectedVersion,
-                    request.Policy!, context.Principal.Subject, mutationToken),
+                    request.Policy!, context.Principal.Subject, mutationToken, decision.AccountAuthority),
                 cancellationToken).ConfigureAwait(false);
             // The mutation is durable; preserve its receipt even if response delivery is cancelled.
             await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, PolicyMutationResultReference(replaced), CancellationToken.None).ConfigureAwait(false);
