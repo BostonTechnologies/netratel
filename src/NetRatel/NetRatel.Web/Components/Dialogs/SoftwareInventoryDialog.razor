@@ -1,0 +1,14 @@
+@using NetRatel.Web.Components.SoftwareInventory
+
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">Software Inventory · @HostLabel</MudText></TitleContent>
+    <DialogContent><SoftwareInventoryPanel TenantId="TenantId" AgentId="AgentId" AutoRefreshOnOpen="true" /></DialogContent>
+    <DialogActions><MudButton OnClick="@(() => MudDialog?.Close())">Close</MudButton></DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter] public int TenantId { get; set; }
+    [Parameter] public Guid AgentId { get; set; }
+    [Parameter] public string HostLabel { get; set; } = "Client";
+    [CascadingParameter] public IMudDialogInstance? MudDialog { get; set; }
+}

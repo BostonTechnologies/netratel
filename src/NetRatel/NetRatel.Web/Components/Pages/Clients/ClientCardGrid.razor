@@ -145,6 +145,9 @@
                                     </MudTooltip>
                                     <ClientServicesLauncher @key="(client.TenantId, client.AgentId)" TenantId="@client.TenantId" AgentId="@client.AgentId"
                                                             HostLabel="@(client.HostName ?? client.DisplayName)" TenantLabel="@client.TenantName" />
+                                    <MudTooltip Text="Software Inventory">
+                                        <MudIconButton Icon="@Icons.Material.Filled.Inventory2" Size="Size.Small" OnClick="@(() => OpenSoftwareInventoryAsync(client))" aria-label="Software Inventory" />
+                                    </MudTooltip>
                                     @if (client.CanManage)
                                     {
                                         <MudTooltip Text="Edit name and tags">
@@ -263,6 +266,17 @@
     {
         await JsRuntime.InvokeVoidAsync("navigator.clipboard.writeText", client.HostName);
         Snackbar.Add("Host copied.", Severity.Success);
+    }
+
+    private async Task OpenSoftwareInventoryAsync(ClientPresentationModel client)
+    {
+        var parameters = new DialogParameters<SoftwareInventoryDialog>
+        {
+            { dialog => dialog.TenantId, client.TenantId }, { dialog => dialog.AgentId, client.AgentId },
+            { dialog => dialog.HostLabel, client.HostName ?? client.DisplayName }
+        };
+        await DialogService.ShowAsync<SoftwareInventoryDialog>("Software Inventory", parameters,
+            new DialogOptions { FullScreen = true, FullWidth = true, CloseOnEscapeKey = true, CloseOnNavigation = true });
     }
 
     private async Task OpenTelemetryDialogAsync(ClientPresentationModel client, GatewayTelemetrySummary? telemetry)

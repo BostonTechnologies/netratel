@@ -59,6 +59,12 @@ public sealed class ReleaseOpenApiDocumentTests
             .Should().BeEquivalentTo(["Agent", "Bearer", "LocalSession", "M2M"]);
         SecuritySchemes(document, "/api/v2/mcp/operator/application/{tool}/{operation}", "post")
             .Should().BeEquivalentTo(["Bearer", "LocalSession", "IntegrationCredential", "M2M"]);
+        SecuritySchemes(document, "/api/v2/software-inventory/tenants", "get")
+            .Should().BeEquivalentTo(["Bearer", "LocalSession", "IntegrationCredential"]);
+        SecuritySchemes(document, "/api/v2/agent/software-inventory/work", "post")
+            .Should().BeEquivalentTo(["Agent"]);
+        SecuritySchemes(document, "/api/v2/agent/software-inventory/chunks", "post")
+            .Should().BeEquivalentTo(["Agent"]);
         foreach (var (method, suffix) in new[]
         {
             ("get", "/browse"), ("post", "/create-directory/preview"), ("post", "/delete/confirm")

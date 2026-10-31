@@ -29,6 +29,9 @@ public sealed class WebGatewayConfigurationTests
         effective["ReverseProxy:Routes:api-openapi-route:Transforms:0:PathRemovePrefix"].Should().Be("/api");
         effective["ReverseProxy:Routes:public-client-install-route:Match:Path"].Should().Be("/clients/install/{**catch-all}");
         effective["ReverseProxy:Routes:agent-updates-route:Match:Path"].Should().Be("/api/v2/agent-updates/{**catch-all}");
+        effective["ReverseProxy:Routes:software-inventory-route:Match:Path"].Should().Be("/api/v2/tenants/{tenantId:int}/software-inventory/{**catch-all}");
+        effective["ReverseProxy:Routes:agent-software-inventory-route:Match:Path"].Should().Be("/api/v2/agent/software-inventory/{**catch-all}");
+        effective.GetSection("ReverseProxy:Routes:agent-software-inventory-route:Match:Methods").GetChildren().Select(method => method.Value).Should().Equal("POST");
         effective.GetSection("ReverseProxy:Routes").GetChildren().Should().NotContain(route =>
             route["Match:Path"] == "/api/{**catch-all}" || route["Match:Path"] == "/api/v2/{**catch-all}");
         effective.GetSection("ReverseProxy:Routes:mcpRoute").Exists().Should().BeFalse();

@@ -93,6 +93,8 @@ public static class ManagedOperationEndpoints
         var tenant = request.GetProperty("tenantId").GetInt32();
         var access = http.RequestServices.GetRequiredService<IEffectiveAccessService>();
         var db = http.RequestServices.GetRequiredService<OrchestratorDbContext>();
+        if (descriptor.Tool == "netratel_software")
+            return SoftwareInventoryEndpoints.ManagedAsync(descriptor, request, http, ct);
         if (descriptor.Tool == "netratel_clients")
             return descriptor.Operation switch
             {

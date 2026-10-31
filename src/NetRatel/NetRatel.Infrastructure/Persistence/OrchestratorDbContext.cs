@@ -156,6 +156,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        SoftwareInventoryPersistenceModel.Configure(modelBuilder);
         ComputerUsePersistenceModel.Configure(modelBuilder);
         ClientServiceOperationModel.Configure(modelBuilder);
         NetclawPersistenceModel.Configure(modelBuilder);

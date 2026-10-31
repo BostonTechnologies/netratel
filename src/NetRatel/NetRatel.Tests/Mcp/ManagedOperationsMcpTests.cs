@@ -22,7 +22,7 @@ public sealed class ManagedOperationsMcpTests
         {
             ["netratel_config"] = typeof(ReadOnlyTools), ["netratel_remote_support_v2"] = typeof(MutationTools)
         }, "prod").ToDictionary(tool => tool.ProtocolTool.Name);
-        foreach (var name in new[] { "netratel_services", "netratel_monitoring", "netratel_flows", "netratel_ai" })
+        foreach (var name in new[] { "netratel_services", "netratel_monitoring", "netratel_flows", "netratel_ai", "netratel_software" })
         {
             var schema = http[name].ProtocolTool.InputSchema;
             schema.GetRawText().Should().Be(stdio[name].ProtocolTool.InputSchema.GetRawText());
@@ -181,6 +181,25 @@ public sealed class ManagedOperationsMcpTests
         tokens.TryValidate(signed, out var restored).Should().BeTrue();
         restored!.Identity.ExternalIssuer.Should().Be("https://id.example/realm");
         restored.Identity.Subject.Should().Be("external-subject");
+    }
+
+    [Theory]
+    [InlineData(NetRatelMcpTransport.StreamableHttp)]
+    [InlineData(NetRatelMcpTransport.Stdio)]
+    public async Task Software_reads_are_inert_and_refresh_is_explicitly_confirmed(NetRatelMcpTransport transport)
+    {
+        var client = new RecordingClient();
+        var tools = Tools(client, transport);
+        var agentId = Guid.NewGuid();
+        var read = JsonSerializer.SerializeToElement(new { tenantId = 7, agentId, data = new NetRatel.Shared.Contracts.SoftwareInventory.SoftwareInventoryQuery() }, ManagedOperationCatalog.JsonOptions);
+        (await tools.netratel_software("snapshot", read)).Success.Should().BeTrue();
+        client.Calls.Should().ContainSingle().Which.Path.Should().EndWith("/netratel_software/snapshot");
+        var refresh = JsonSerializer.SerializeToElement(new { tenantId = 7, agentId, data = new NetRatel.Shared.Contracts.SoftwareInventory.SoftwareRefreshRequest() }, ManagedOperationCatalog.JsonOptions);
+        (await tools.netratel_software("refresh", refresh)).RequiresConfirmation.Should().BeTrue();
+        (await tools.netratel_software("refresh", refresh, true)).Success.Should().BeTrue();
+        client.Calls.Last().Body!["confirm"]!.GetValue<bool>().Should().BeTrue();
+        ManagedOperationCatalog.Find("netratel_software", "refresh")!.Permission.Should().Be("client.manage");
+        ManagedOperationCatalog.Find("netratel_software", "set_policy")!.Permission.Should().Be("tenant.admin");
     }
 
     private static NetRatelMcpOperationalTools Tools(RecordingClient client, NetRatelMcpTransport transport) => new(client,

@@ -9,6 +9,11 @@ namespace NetRatel.Mcp.Core;
 
 public sealed partial class NetRatelMcpOperationalTools
 {
+    [McpServerTool(UseStructuredContent = true), Description("Read tenant-scoped Windows/Linux software inventory, policy, status, scan_status, snapshot, installations, aggregate and changes. Reads use cached evidence and never scan. Resolve tenantId and agentId first. refresh requires client.manage, explicit confirm:true and data.force; poll status/scan_status for completion, including offline queued work. set_policy requires tenant.admin and confirm:true. Query data supports bounded pagination and name, version, publisher, OS, source, client and freshness/status filters.")]
+    public Task<NetRatelToolResponse> netratel_software(string operation, JsonElement? request = null,
+        bool confirm = false, CancellationToken cancellationToken = default) =>
+        ManagedOperationAsync("netratel_software", operation, request, confirm, cancellationToken);
+
     [McpServerTool(UseStructuredContent = true), Description("Connect a tenant to native Netclaw SignalR and manage durable AI investigations. Inspect connection/clients, create with a stable requestId and explicit client UUIDs, send with a stable messageId, then read get after the last event sequence actually received until reaching lastSequence. Only respond to an actual pendingApproval using its exact callId and selectedKey. Never automatically approve daemon requests. DeliveryUnknown requires reconcile, never automatic resend. Invocations require client.manage, telemetry.read and secret.use; connection changes require tenant.admin. Mutations require confirm:true.")]
     public Task<NetRatelToolResponse> netratel_ai(string operation, JsonElement? request = null,
         bool confirm = false, CancellationToken cancellationToken = default) =>

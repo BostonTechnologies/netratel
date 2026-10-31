@@ -1,0 +1,64 @@
+@using NetRatel.Shared.Contracts.SoftwareInventory
+@using NetRatel.Web.Services.SoftwareInventory
+@implements IDisposable
+@inject ISoftwareInventoryApiService Api
+
+<section aria-label="Software Inventory policy" class="pa-4">
+    <MudText Typo="Typo.subtitle1">Software Inventory</MudText>
+    <MudText Typo="Typo.body2">New and upgraded clients scan on first connection. The default schedule is every 7 days, with up to 10% jitter. Minimum interval: one hour.</MudText>
+    @if (_loading) { <MudProgressLinear Indeterminate="true" /> }
+    else
+    {
+        <MudSwitch T="bool" @bind-Value="_enabled" Color="Color.Primary">Enable scheduled software inventory</MudSwitch>
+        <MudNumericField T="int" Label="Interval" @bind-Value="_interval" Min="1" Max="8760" Variant="Variant.Outlined" />
+        <MudSelect T="string" Label="Interval unit" @bind-Value="_unit" Variant="Variant.Outlined">
+            @foreach (var unit in Units) { <MudSelectItem Value="@unit">@unit</MudSelectItem> }
+        </MudSelect>
+        <MudButton OnClick="SaveAsync" Disabled="@(_saving || !_loaded)" Variant="Variant.Outlined" Color="Color.Primary">Save inventory policy</MudButton>
+    }
+    @if (_message is not null) { <p role="status">@_message</p> }
+</section>
+
+@code {
+    [Parameter] public int TenantId { get; set; }
+    private bool _enabled = true, _loading = true, _saving, _loaded;
+    private int _interval = 7, _activeTenant;
+    private string _unit = "days";
+    private string? _message;
+    private static readonly string[] Units = ["hours", "days", "weeks", "months"];
+    private CancellationTokenSource _scope = new();
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_activeTenant == TenantId) return;
+        _scope.Cancel(); _scope.Dispose(); _scope = new();
+        var token = _scope.Token;
+        _activeTenant = TenantId; _loading = true; _message = null; _saving = false; _loaded = false;
+        try
+        {
+            var policy = await Api.PolicyAsync(TenantId, token);
+            token.ThrowIfCancellationRequested();
+            _enabled = policy.Enabled; _interval = policy.Interval; _unit = policy.Unit;
+            _loaded = true;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception error) when (error is HttpRequestException or OperationCanceledException) { if (!token.IsCancellationRequested) _message = "Unable to load the inventory policy."; }
+        finally { if (!token.IsCancellationRequested) _loading = false; }
+    }
+    private async Task SaveAsync()
+    {
+        var token = _scope.Token;
+        _saving = true; _message = null;
+        try
+        {
+            var policy = new SoftwareInventoryPolicy(_enabled, _interval, _unit);
+            policy.Validate();
+            await Api.SetPolicyAsync(TenantId, policy, token);
+            if (!token.IsCancellationRequested) _message = "Inventory policy saved. Connected agents receive it on their next poll.";
+        }
+        catch (ArgumentException error) { _message = error.Message; }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception error) when (error is HttpRequestException or OperationCanceledException) { if (!token.IsCancellationRequested) _message = "Unable to save. Tenant administrator permission is required."; }
+        finally { if (!token.IsCancellationRequested) _saving = false; }
+    }
+    public void Dispose() { _scope.Cancel(); _scope.Dispose(); }
+}
