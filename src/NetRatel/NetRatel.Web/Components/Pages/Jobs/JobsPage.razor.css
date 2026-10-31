@@ -1,23 +1,26 @@
 .jobs-console { padding-top: 12px; padding-bottom: 12px; }
 .jobs-console ::deep .jobs-toolbar { gap: 8px; flex-wrap: wrap; }
 .jobs-console ::deep .jobs-panel { border: 1px solid var(--mud-palette-divider); border-radius: var(--netratel-radius-surface, 7px); }
-.jobs-row-actions { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px; }
+.jobs-row-actions { display: inline-flex; flex-wrap: nowrap; justify-content: flex-end; gap: 2px; white-space: nowrap; min-width: max-content; }
+.jobs-row-actions ::deep .mud-tooltip-root { flex: 0 0 auto; }
 .jobs-console ::deep .jobs-table .mud-table-body td { vertical-align: middle; padding-top: 6px; padding-bottom: 6px; }
 .jobs-console ::deep .jobs-table .mud-table-head th { color: var(--mud-palette-text-secondary); }
-.jobs-console ::deep .jobs-row-actions .mud-icon-button { width: 34px; height: 34px; }
+.jobs-console ::deep .jobs-row-actions .mud-icon-button { width: 30px; height: 30px; padding: 5px; flex: 0 0 auto; }
 .jobs-console ::deep .jobs-row-actions .mud-icon-button:focus-visible { outline: 2px solid var(--mud-palette-primary); outline-offset: 2px; }
 .jobs-console ::deep .jobs-workspace .mud-tab { min-height: 36px; padding: 6px 12px; text-transform: none; }
+.jobs-console ::deep .jobs-table table { table-layout: fixed; width: 100%; }
+.jobs-console ::deep .jobs-table td { overflow-wrap: anywhere; }
+.jobs-console ::deep .jobs-table th:nth-last-child(2) { width: 150px; }
+/* Reserve the four hit targets, their gaps and the table cell's horizontal padding. */
+.jobs-console ::deep .jobs-table th:last-child { width: 184px; }
+.jobs-console ::deep .jobs-runs-table th:last-child { width: 64px; }
+.jobs-console ::deep .jobs-definition-description { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 @media (max-width: 959px) {
     .jobs-console ::deep .mud-table-container { min-height: 220px; }
     .jobs-row-actions { justify-content: flex-start; }
 }
 @media (pointer: coarse) {
-    .jobs-console ::deep .jobs-row-actions .mud-icon-button { width: 44px; height: 44px; }
+    .jobs-console ::deep .jobs-row-actions .mud-icon-button { width: 44px; height: 44px; padding: 10px; }
+    .jobs-console ::deep .jobs-table th:last-child { width: 236px; }
+    .jobs-console ::deep .jobs-runs-table th:last-child { width: 76px; }
 }
-
-.jobs-console ::deep .jobs-table table { table-layout: fixed; width: 100%; }
-.jobs-console ::deep .jobs-table td { overflow-wrap: anywhere; }
-.jobs-console ::deep .jobs-table th:nth-last-child(2) { width: 150px; }
-.jobs-console ::deep .jobs-table th:last-child { width: 170px; }
-.jobs-console ::deep .jobs-runs-table th:last-child { width: 64px; }
-.jobs-console ::deep .jobs-definition-description { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
