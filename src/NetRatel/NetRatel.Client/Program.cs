@@ -474,6 +474,13 @@ async Task RunClientAsync(CancellationToken nativeStopping)
         computerUse.RevokeAllAsync);
     var gatewayExtensionSupervisor = new GatewayPresenceExtensionSupervisor(
         message => LogManager.WriteLog($"[Gateway] {message}"));
+    using var softwareHttp = rootProvider.GetRequiredService<IHttpClientFactory>().CreateClient("AgentAuthApi");
+    softwareHttp.MaxResponseContentBufferSize = 4 * 1024 * 1024;
+    var softwareInventory = new NetRatel.Client.Service.SoftwareInventory.SoftwareInventoryWorker(softwareHttp,
+        string.IsNullOrWhiteSpace(cfg.AutoUpdate.StateDirectory)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "NetRatel", "state")
+            : cfg.AutoUpdate.StateDirectory,
+        message => LogManager.WriteLog($"[SoftwareInventory] {message}"));
     var gatewayClient = new AgentGatewayPresenceClient(
         gatewayOptions,
         tokenService,
@@ -494,6 +501,7 @@ async Task RunClientAsync(CancellationToken nativeStopping)
                 : Array.Empty<GatewayPresenceExtension>()).Concat(
             [
                 new GatewayPresenceExtension("telemetry", telemetryPublisher.RunForPresenceSessionAsync),
+                new GatewayPresenceExtension("software-inventory", softwareInventory.RunAsync),
                 new GatewayPresenceExtension("control", controlGateway.RunForPresenceSessionAsync),
                 new GatewayPresenceExtension("file", fileGateway.RunForPresenceSessionAsync),
                 new GatewayPresenceExtension("log", logGateway.RunForPresenceSessionAsync),

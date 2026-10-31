@@ -6,6 +6,7 @@ using NetRatel.Shared.Contracts.Flows;
 using NetRatel.Shared.Contracts.Monitoring;
 using NetRatel.Shared.Contracts.Netclaw;
 using NetRatel.Shared.Contracts.Services;
+using NetRatel.Shared.Contracts.SoftwareInventory;
 
 namespace NetRatel.Shared.Operations;
 
@@ -62,6 +63,16 @@ public static class ManagedOperationCatalog
 
     public static IReadOnlyList<ManagedOperationDescriptor> Operations { get; } =
     [
+        new("netratel_software", "policy", "telemetry.read", false, false),
+        new("netratel_software", "set_policy", "tenant.admin", true, false, typeof(SoftwareInventoryPolicy)),
+        new("netratel_software", "status", "telemetry.read", false, true),
+        new("netratel_software", "scan_status", "telemetry.read", false, true, IdProperty: "collectionId"),
+        new("netratel_software", "snapshot", "telemetry.read", false, true, typeof(SoftwareInventoryQuery)),
+        new("netratel_software", "refresh", "client.manage", true, true, typeof(SoftwareRefreshRequest)),
+        new("netratel_software", "changes", "telemetry.read", false, true, typeof(SoftwareInventoryQuery)),
+        new("netratel_software", "estate_changes", "telemetry.read", false, false, typeof(SoftwareInventoryQuery)),
+        new("netratel_software", "installations", "telemetry.read", false, false, typeof(SoftwareInventoryQuery)),
+        new("netratel_software", "aggregate", "telemetry.read", false, false, typeof(SoftwareInventoryQuery)),
         new("netratel_clients", "metadata", "telemetry.read", false, true),
         new("netratel_clients", "set_metadata", "client.manage", true, true, typeof(UpdateClientMetadataRequest)),
         new("netratel_services", "inventory", "telemetry.read", false, true),

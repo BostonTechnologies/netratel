@@ -6466,6 +6466,247 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("Secrets", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.SoftwareInstallationRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Identity")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Architecture")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset>("DetectedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("InstallDate")
+                        .HasColumnType("text");
+
+                    b.Property<string>("InstallLocation")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<string>("Os")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("PackageId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Publisher")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<string>("Scope")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Version")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.HasKey("TenantId", "AgentId", "Identity");
+
+                    b.HasIndex("TenantId", "Publisher");
+
+                    b.HasIndex("TenantId", "Name", "Version");
+
+                    b.HasIndex("TenantId", "Source", "Os");
+
+                    b.ToTable("SoftwareInstallations", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.SoftwareInventoryChangeRecord", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("CollectionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("DetectedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("PreviousVersion")
+                        .HasColumnType("text");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Version")
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "AgentId", "CollectionId");
+
+                    b.HasIndex("TenantId", "AgentId", "Id");
+
+                    b.ToTable("SoftwareInventoryChanges", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.SoftwareInventoryChunkRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("CollectionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Index")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Hash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("PackagesJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("TenantId", "AgentId", "CollectionId", "Index");
+
+                    b.ToTable("SoftwareInventoryChunks", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.SoftwareInventoryPolicyRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<int>("Interval")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Unit")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.HasKey("TenantId");
+
+                    b.ToTable("SoftwareInventoryPolicies", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.SoftwareInventoryScanRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("CollectionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("Complete")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset?>("CompletedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("DetectedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ErrorsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Os")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<int>("ReceivedChunks")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("RequestedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("StartedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<int>("TotalChunks")
+                        .HasColumnType("integer");
+
+                    b.HasKey("TenantId", "AgentId", "CollectionId");
+
+                    b.HasIndex("TenantId", "AgentId", "RequestedAtUtc");
+
+                    b.ToTable("SoftwareInventoryScans", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.SoftwareInventoryStateRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("LastSuccessfulScanUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("LatestScanId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("NextDueUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("TenantId", "AgentId");
+
+                    b.HasIndex("AgentId");
+
+                    b.HasIndex("TenantId", "NextDueUtc");
+
+                    b.ToTable("SoftwareInventoryStates", (string)null);
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.Tenant", b =>
                 {
                     b.Property<int>("Id")
@@ -7768,6 +8009,60 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Script");
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.SoftwareInstallationRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.SoftwareInventoryStateRecord", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "AgentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.SoftwareInventoryChangeRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.SoftwareInventoryScanRecord", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "AgentId", "CollectionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.SoftwareInventoryChunkRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.SoftwareInventoryScanRecord", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "AgentId", "CollectionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.SoftwareInventoryPolicyRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.SoftwareInventoryScanRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.SoftwareInventoryStateRecord", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "AgentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.SoftwareInventoryStateRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.Agent", null)
+                        .WithMany()
+                        .HasForeignKey("AgentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.ServiceIdentity.ServicePrincipalRegistration", b =>

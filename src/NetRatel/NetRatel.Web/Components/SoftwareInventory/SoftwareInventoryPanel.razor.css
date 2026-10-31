@@ -1,0 +1,14 @@
+.software-inventory { padding: 1rem; max-width: 100%; }
+.inventory-toolbar { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; margin: 1rem 0; }
+.inventory-toolbar label { display: flex; flex-direction: column; gap: .25rem; }
+.inventory-toolbar input, .inventory-toolbar select { border: 1px solid var(--mud-palette-lines-default); border-radius: .3rem; padding: .5rem; background: var(--mud-palette-surface); color: inherit; }
+.software-inventory button, .software-inventory a { color: var(--mud-palette-primary); padding: .4rem; }
+.software-inventory button:disabled { opacity: .45; }
+.inventory-table-scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; text-align: left; }
+th, td { padding: .75rem; border-bottom: 1px solid var(--mud-palette-lines-default); vertical-align: top; overflow-wrap: anywhere; }
+caption { text-align: left; padding: .75rem; font-weight: 600; }
+dd { margin: 0 0 .5rem; overflow-wrap: anywhere; }
+dt { font-weight: 600; }
+summary { cursor: pointer; }
+@media (max-width: 600px) { .software-inventory { padding: .25rem; } th, td { padding: .4rem; } }

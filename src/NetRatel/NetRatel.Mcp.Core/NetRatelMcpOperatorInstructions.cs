@@ -5,7 +5,7 @@ internal static class NetRatelMcpOperatorInstructions
 {
     public static string Describe(NetRatelMcpToolDescriptor tool)
     {
-        if (tool.Name is "netratel_services" or "netratel_monitoring" or "netratel_flows" or "netratel_ai")
+        if (tool.Name is "netratel_services" or "netratel_monitoring" or "netratel_flows" or "netratel_ai" or "netratel_software")
             return tool.Description;
         var instructions = tool.Name switch
         {

@@ -100,6 +100,7 @@ if (args is ["--gssapi-application-smoke"])
 }
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddScoped<NetRatel.API.Services.SoftwareInventoryService>();
 // Public install URLs are bearer capabilities; framework request-start logs include raw paths.
 builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
 NetRatelDatabaseConfigurationResolver.ValidateProvider(builder.Configuration);
@@ -588,6 +589,7 @@ builder.Services.AddAuthorization(options =>
         policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.ClientManagement));
     });
 
+    MonitoringFlowPermissionAuthorization.AddDiscoveryPolicy(options, "SoftwareInventoryDiscovery", NetRatel.Infrastructure.Identity.Authorization.NetRatelPermissions.TelemetryRead);
     options.AddPolicy("TelemetryReader", policy =>
     {
         policy.RequireAuthenticatedUser();

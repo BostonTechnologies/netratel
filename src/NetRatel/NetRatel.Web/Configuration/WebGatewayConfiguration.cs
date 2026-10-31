@@ -169,6 +169,9 @@ public static class WebGatewayConfiguration
         Route("public-client-install-route", "/clients/install/{**catch-all}");
         Route("agent-telemetry-route", "/api/v2/agents/{**catch-all}", true);
         Route("agent-updates-route", "/api/v2/agent-updates/{**catch-all}", true);
+        Route("software-inventory-route", "/api/v2/tenants/{tenantId:int}/software-inventory/{**catch-all}", true, "GET", "PUT");
+        Route("software-inventory-tenants-route", "/api/v2/software-inventory/tenants", true, "GET");
+        Route("agent-software-inventory-route", "/api/v2/agent/software-inventory/{**catch-all}", true, "POST");
         Route("bootstrap-setup-route", "/api/v2/setup/{**catch-all}", true);
         Route("deployment-branding-route", "/api/v2/branding/{**catch-all}", true);
         Route("local-auth-route", "/api/v2/local-auth/{**catch-all}", true);

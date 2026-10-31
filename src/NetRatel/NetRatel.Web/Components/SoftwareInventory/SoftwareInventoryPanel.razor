@@ -1,0 +1,184 @@
+@using NetRatel.Shared.Contracts.SoftwareInventory
+@using NetRatel.Web.Services.SoftwareInventory
+@implements IDisposable
+@inject ISoftwareInventoryApiService Api
+
+<section class="software-inventory" aria-label="Software Inventory" data-testid="software-inventory">
+    @if (_status is { } status)
+    {
+        <p data-testid="inventory-freshness">Last complete scan: @Time(status.LastSuccessfulScanUtc) · Next due: @Time(status.NextDueUtc)</p>
+        <p>Tenant policy: @(status.Policy.Enabled ? $"every {status.Policy.Interval} {status.Policy.Unit}" : "scheduled scans disabled") · No client override</p>
+        @if (status.LatestScan is { } scan)
+        {
+            <p role="status" data-testid="inventory-scan-status">@scan.Status · @scan.ReceivedChunks / @scan.TotalChunks chunks
+                @if (scan.Status == "Pending") { <span> · Queued; waiting for the client to connect.</span> }
+            </p>
+            @if (scan.Status is "Collecting" or "Pending") { <MudProgressLinear Indeterminate="true" aria-label="Inventory scan in progress" /> }
+            @if (scan.Errors.Count > 0 || scan.Status is "Partial" or "Error")
+            {
+                <MudAlert Severity="Severity.Warning" data-testid="inventory-scan-errors">@string.Join(", ", scan.Errors). The last complete inventory is retained; this attempt does not establish uninstallations.</MudAlert>
+            }
+        }
+        <MudButton Variant="Variant.Outlined" OnClick="ForceRefreshAsync" Disabled="@(_refreshing || !status.CanRefresh)" data-testid="inventory-refresh">Refresh inventory</MudButton>
+    }
+    <div class="inventory-toolbar">
+        <label>Search <input aria-label="Search software" @bind="_search" /></label>
+        <button type="button" @onclick="ApplyAsync" disabled="@_loading">Search</button>
+        <label>View <select aria-label="Inventory view" @bind="_view" @bind:after="ApplyAsync"><option value="installations">Installations</option><option value="aggregate">Software prevalence</option><option value="changes">Change history</option></select></label>
+        <a href="@ExportUrl()" download>Export CSV</a>
+    </div>
+    <details class="inventory-filters"><summary>Filters</summary>
+        <div class="inventory-toolbar">
+            <label>Name <input @bind="_name" /></label><label>Version <input @bind="_version" /></label><label>Publisher <input @bind="_publisher" /></label>
+            <label>OS <select @bind="_os"><option value="">All</option><option value="windows">Windows</option><option value="linux">Linux</option></select></label>
+            <label>Package source <select @bind="_source"><option value="">All</option>@foreach (var source in Sources) { <option value="@source">@source</option> }</select></label>
+            <label>Status <select @bind="_filterStatus"><option value="">All</option>@foreach (var value in Statuses) { <option value="@value">@value</option> }</select></label>
+            @if (!AgentId.HasValue) { <label>Client UUID <input @bind="_clientId" /></label> }
+            <button type="button" @onclick="ApplyAsync" disabled="@_loading">Apply filters</button>
+        </div>
+    </details>
+    @if (_error is not null) { <MudAlert Severity="Severity.Warning" role="alert">@_error</MudAlert> }
+    @if (_loading) { <MudProgressLinear Indeterminate="true" aria-label="Loading inventory" /> }
+    @if (_view == "installations" && _installations is { } installations)
+    {
+        <p data-testid="inventory-counts">@installations.Total installed entries · @installations.Devices distinct devices</p>
+        <div class="inventory-table-scroll"><table><caption>Installed software from the last complete scan</caption><thead><tr>
+            <th><button @onclick='() => SortAsync("name")'>Name</button></th><th><button @onclick='() => SortAsync("version")'>Version</button></th>
+            <th><button @onclick='() => SortAsync("publisher")'>Publisher</button></th><th><button @onclick='() => SortAsync("source")'>Source</button></th>
+            <th><button @onclick='() => SortAsync("client")'>Client</button></th><th>Last complete scan (UTC)</th>
+        </tr></thead><tbody>
+        @foreach (var row in installations.Items)
+        {
+            <tr data-testid="inventory-row"><td>@row.Package.Name<details><summary>Metadata</summary><dl>
+                <dt>Package ID</dt><dd>@row.Package.PackageId</dd><dt>Architecture / OS</dt><dd>@row.Package.Architecture / @row.Os</dd>
+                <dt>Install location</dt><dd>@row.Package.InstallLocation</dd><dt>Install date</dt><dd>@row.Package.InstallDate</dd><dt>Scope</dt><dd>@row.Package.Scope</dd>
+                <dt>Detected (UTC)</dt><dd>@Time(row.DetectedAtUtc)</dd>
+            </dl></details></td><td>@row.Package.Version</td><td>@row.Package.Publisher</td><td>@row.Package.Source</td><td>@row.Client</td><td>@Time(row.LastSuccessfulScanUtc)</td></tr>
+        }
+        </tbody></table></div>
+        @if (installations.Total == 0) { <p>No installed software matches these filters. A complete inventory may not be available yet.</p> }
+    }
+    @if (_view == "aggregate" && _aggregate is { } aggregate)
+    {
+        <p>@aggregate.Total software/version groups · @aggregate.Devices distinct devices</p>
+        <div class="inventory-table-scroll"><table><caption>Software prevalence</caption><thead><tr><th>Name</th><th>Version</th><th>Publisher</th><th>Source</th><th>Devices</th><th>Installed entries</th></tr></thead><tbody>
+            @foreach (var row in aggregate.Items) { <tr><td>@row.Name</td><td>@row.Version</td><td>@row.Publisher</td><td>@row.Source</td><td>@row.Devices</td><td>@row.Installations</td></tr> }
+        </tbody></table></div>
+    }
+    @if (_view == "changes" && _changes is { } changes)
+    {
+        <div class="inventory-table-scroll"><table><caption>Changes established by complete scans</caption><thead><tr><th>Change</th><th>Software</th><th>Previous version</th><th>Version</th><th>Client</th><th>Detected (UTC)</th></tr></thead><tbody>
+        @foreach (var row in changes.Items) { <tr><td>@row.Kind</td><td>@row.Name</td><td>@row.PreviousVersion</td><td>@row.Version</td><td>@row.AgentId</td><td>@Time(row.DetectedAtUtc)</td></tr> }
+        </tbody></table></div>
+    }
+    <div class="inventory-toolbar"><button @onclick="PreviousAsync" disabled="@(_page == 0 || _loading)">Previous</button><span>Page @(_page + 1)</span><button @onclick="NextAsync" disabled="@((_page + 1) * 50 >= Total || _loading)">Next</button></div>
+</section>
+
+@code {
+    [Parameter] public int TenantId { get; set; }
+    [Parameter] public Guid? AgentId { get; set; }
+    [Parameter] public bool AutoRefreshOnOpen { get; set; }
+    private SoftwareInventoryStatus? _status;
+    private SoftwarePage<SoftwareInstallationDto>? _installations;
+    private SoftwarePage<SoftwarePrevalenceDto>? _aggregate;
+    private SoftwarePage<SoftwareChangeDto>? _changes;
+    private CancellationTokenSource _scope = new();
+    private (int, Guid?) _active;
+    private bool _loading, _refreshing;
+    private string? _error;
+    private string _search = "", _name = "", _version = "", _publisher = "", _os = "", _source = "", _filterStatus = "", _clientId = "", _sort = "name", _view = "installations";
+    private bool _descending;
+    private int _page;
+    private static readonly string[] Sources = ["registry", "appx", "dpkg", "rpm", "pacman", "snap", "flatpak"];
+    private static readonly string[] Statuses = ["fresh", "stale", "Pending", "Collecting", "Complete", "Partial", "Error"];
+    private int Total => _view == "aggregate" ? _aggregate?.Total ?? 0 : _view == "changes" ? _changes?.Total ?? 0 : _installations?.Total ?? 0;
+    private static string Time(DateTimeOffset? time) => time?.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss 'UTC'") ?? "Not available";
+    private static string? Optional(string text) => string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+    private string ExportUrl()
+    {
+        try { return SoftwareInventoryApiService.QueryUrl(TenantId, "export.csv", Query()); }
+        catch (ArgumentException) { return "#"; }
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_active == (TenantId, AgentId)) return;
+        _scope.Cancel(); _scope.Dispose(); _scope = new();
+        _active = (TenantId, AgentId);
+        _status = null; _installations = null; _aggregate = null; _changes = null; _page = 0; _error = null;
+        _refreshing = false; _loading = false; _clientId = "";
+        var token = _scope.Token;
+        try
+        {
+            if (AgentId is { } agent)
+            {
+                var status = await Api.StatusAsync(TenantId, agent, token);
+                token.ThrowIfCancellationRequested();
+                _status = status;
+                if (AutoRefreshOnOpen && status.CanRefresh && (status.LastSuccessfulScanUtc is null || status.LastSuccessfulScanUtc <= DateTimeOffset.UtcNow.AddMinutes(-30)))
+                {
+                    var refreshed = await Api.RefreshAsync(TenantId, agent, false, token);
+                    token.ThrowIfCancellationRequested();
+                    _status = refreshed;
+                }
+            }
+            await LoadAsync(token);
+            if (AgentId.HasValue) _ = PollAsync(TenantId, AgentId.Value, token);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception error) when (error is HttpRequestException or OperationCanceledException) { if (!token.IsCancellationRequested) _error = "Software inventory is unavailable. Check your access and connection, then reopen this view."; }
+    }
+
+    private SoftwareInventoryQuery Query()
+    {
+        Guid? agent = AgentId;
+        if (!agent.HasValue && Optional(_clientId) is { } client) agent = Guid.TryParse(client, out var id) ? id : throw new ArgumentException("Enter the client UUID from Clients.");
+        return new(_page, 50, Optional(_search), Optional(_name), Optional(_version), Optional(_publisher), Optional(_os), Optional(_source), agent, Optional(_filterStatus), _sort, _descending);
+    }
+
+    private async Task LoadAsync(CancellationToken token)
+    {
+        _loading = true; _error = null;
+        try
+        {
+            var query = Query();
+            if (_view == "aggregate") { var result = await Api.AggregateAsync(TenantId, query, token); token.ThrowIfCancellationRequested(); _aggregate = result; }
+            else if (_view == "changes") { var result = await Api.ChangesAsync(TenantId, query.AgentId, _page, token); token.ThrowIfCancellationRequested(); _changes = result; }
+            else { var result = await Api.InstallationsAsync(TenantId, query, token); token.ThrowIfCancellationRequested(); _installations = result; }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception error) when (error is HttpRequestException or OperationCanceledException or ArgumentException) { if (!token.IsCancellationRequested) _error = error is ArgumentException ? error.Message : "Unable to load software inventory. Check your access and connection."; }
+        finally { if (!token.IsCancellationRequested) _loading = false; }
+    }
+    private async Task ApplyAsync() { _page = 0; await LoadAsync(_scope.Token); }
+    private async Task SortAsync(string sort) { _descending = _sort == sort && !_descending; _sort = sort; await ApplyAsync(); }
+    private async Task PreviousAsync() { _page--; await LoadAsync(_scope.Token); }
+    private async Task NextAsync() { _page++; await LoadAsync(_scope.Token); }
+    private async Task ForceRefreshAsync()
+    {
+        if (AgentId is not { } agent || _refreshing) return;
+        var token = _scope.Token;
+        _refreshing = true;
+        try { var result = await Api.RefreshAsync(TenantId, agent, true, token); token.ThrowIfCancellationRequested(); _status = result; }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception error) when (error is HttpRequestException or OperationCanceledException) { if (!token.IsCancellationRequested) _error = "The refresh request could not be confirmed. Reopen the view to check scan status."; }
+        finally { if (!token.IsCancellationRequested) _refreshing = false; }
+    }
+    private async Task PollAsync(int tenant, Guid agent, CancellationToken token)
+    {
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5), token);
+                if (_status?.LatestScan?.Status is not ("Pending" or "Collecting")) continue;
+                var status = await Api.StatusAsync(tenant, agent, token);
+                token.ThrowIfCancellationRequested();
+                await InvokeAsync(async () => { if (token.IsCancellationRequested) return; _status = status; if (status.LatestScan?.Status is not ("Pending" or "Collecting")) await LoadAsync(token); StateHasChanged(); });
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (HttpRequestException) { if (!token.IsCancellationRequested) await InvokeAsync(() => { _error = "Scan status updates paused. Reopen to reconnect; the durable request is retained."; StateHasChanged(); }); }
+    }
+    public void Dispose() { _scope.Cancel(); _scope.Dispose(); }
+}

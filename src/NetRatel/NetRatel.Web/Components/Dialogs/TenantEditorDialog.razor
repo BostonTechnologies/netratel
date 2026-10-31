@@ -1,5 +1,6 @@
 @using NetRatel.Shared.Contracts
 @using NetRatel.Shared.Contracts.Requests
+@using NetRatel.Web.Components.SoftwareInventory
 
 <MudDialog Class="tenant-editor-dialog">
     <DialogContent>
@@ -69,6 +70,8 @@
                                       Immediate="true" />
                     </MudItem>
 
+                    <MudItem xs="12"><MudTabs>
+                    <MudTabPanel Text="Auto Update"><MudGrid>
                     <MudItem xs="12">
                         <MudSwitch T="bool"
                                    @bind-Value="_model.AutoUpdate"
@@ -121,6 +124,15 @@
                             }
                         </MudPaper>
                     </MudItem>
+                    </MudGrid></MudTabPanel>
+                    <MudTabPanel Text="Software Inventory">
+                        @if (IsEditMode && Tenant is not null)
+                        {
+                            <SoftwareInventoryPolicyEditor TenantId="Tenant.TenantId" />
+                        }
+                        else { <MudText Class="pa-4">Software inventory defaults to enabled every 7 days. Create the tenant to customize its policy.</MudText> }
+                    </MudTabPanel>
+                    </MudTabs></MudItem>
                 </MudGrid>
             </MudForm>
         </MudStack>

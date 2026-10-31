@@ -97,6 +97,7 @@ builder.Services.AddScoped<TelemetryApiService>();
 builder.Services.AddScoped<GatewayTelemetryApiService>();
 builder.Services.AddScoped<GatewayTelemetryLiveStreamService>();
 builder.Services.AddScoped<IClientServicesApiService, ClientServicesApiService>();
+builder.Services.AddScoped<NetRatel.Web.Services.SoftwareInventory.ISoftwareInventoryApiService, NetRatel.Web.Services.SoftwareInventory.SoftwareInventoryApiService>();
 builder.Services.AddScoped<IMonitoringApiService, MonitoringApiService>();
 builder.Services.AddScoped<IOperationsDashboardApiService, OperationsDashboardApiService>();
 builder.Services.AddScoped<IClientServicesLiveStreamService, ClientServicesLiveStreamService>();
@@ -520,7 +521,9 @@ app.UseAuthorization();
 // header, otherwise project the authenticated Web session's token to the API.
 app.Use(async (ctx, next) =>
 {
-    if (ctx.Request.Path.StartsWithSegments("/api/v1", StringComparison.OrdinalIgnoreCase) &&
+    var softwareExport = ctx.Request.Path.StartsWithSegments("/api/v2/tenants", StringComparison.OrdinalIgnoreCase) &&
+        ctx.Request.Path.Value?.EndsWith("/software-inventory/export.csv", StringComparison.OrdinalIgnoreCase) == true;
+    if ((ctx.Request.Path.StartsWithSegments("/api/v1", StringComparison.OrdinalIgnoreCase) || softwareExport) &&
         ctx.User.Identity?.IsAuthenticated is true &&
         !ctx.Request.Headers.ContainsKey("Authorization"))
     {
