@@ -1134,7 +1134,7 @@ public sealed partial class McpOperatorPolicyMutationEndpointTests
         IMcpOperatorConfirmationService confirmations,
         bool accountRoutes = false,
         IEffectiveAccessService? effectiveAccess = null,
-        string environment = Environments.Development)
+        string environment = "Development")
     {
         var delegationOptions = new McpOperatorDelegationOptions
         {
