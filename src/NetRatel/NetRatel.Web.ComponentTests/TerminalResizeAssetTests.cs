@@ -38,20 +38,27 @@ public sealed class TerminalResizeAssetTests
     [Fact]
     public void ScriptLibrary_UsesANamedResizeCallbackAndDisposesEditorResources()
     {
-        var path = Path.GetFullPath(Path.Combine(
+        var directory = Path.GetFullPath(Path.Combine(
             AppContext.BaseDirectory,
-            "../../../../NetRatel.Web/Components/ScriptLibrary/ScriptLibraryView.razor"));
-        var component = File.ReadAllText(path);
+            "../../../../NetRatel.Web/Components/ScriptLibrary"));
+        var component = File.ReadAllText(Path.Combine(directory, "ScriptEditorPane.razor"));
+        var library = File.ReadAllText(Path.Combine(directory, "ScriptLibraryView.razor"));
+        var dialog = File.ReadAllText(Path.Combine(directory, "ScriptEditorDialog.razor"));
 
         component.Should().Contain("@implements IAsyncDisposable");
+        component.Should().Contain("[JSInvokable]");
         component.Should().Contain("nameof(OnEditorHostResize)");
         component.Should().Contain("await _editor.Layout()");
-        component.Should().Contain("await _resizeObserverModule.InvokeVoidAsync(\"unobserveResize\"");
+        component.Should().Contain("await _resizeObserver.InvokeVoidAsync(\"unobserveResize\"");
+        component.Should().Contain("await _resizeObserver.DisposeAsync()");
+        component.Should().Contain("_selfReference?.Dispose()");
         component.Should().Contain("await _editor.DisposeEditor()");
-        component.Should().Contain("data-testid=\"script-library-workspace\"");
-        component.Should().Contain("data-testid=\"script-library-tree\"");
         component.Should().Contain("data-testid=\"script-library-editor-frame\"");
         component.Should().Contain("data-testid=\"script-library-editor\"");
+        library.Should().Contain("<ScriptEditorPane");
+        library.Should().Contain("data-testid=\"script-library-workspace\"");
+        library.Should().Contain("data-testid=\"script-library-tree\"");
+        dialog.Should().Contain("<ScriptEditorPane");
     }
 
     [Fact]

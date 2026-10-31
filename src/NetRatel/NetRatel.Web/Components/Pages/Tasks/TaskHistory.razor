@@ -67,9 +67,11 @@
                       Breakpoint="Breakpoint.Md"
                       Loading="_isLoading"
                       RowsPerPage="10"
+                      OnRowClick="args => TogglePreview(args.Item)"
                       Class="task-history-table"
                       data-testid="task-history-table">
                 <HeaderContent>
+                    <MudTh style="width:44px;"></MudTh>
                     <MudTh>Status</MudTh>
                     <MudTh>Task</MudTh>
                     <MudTh Class="task-history-target-column">Target</MudTh>
@@ -78,6 +80,16 @@
                     <MudTh style="width:72px;"></MudTh>
                 </HeaderContent>
                 <RowTemplate>
+                    <MudTd>
+                        <span @onclick:stopPropagation="true">
+                            <MudIconButton Icon="@(IsExpanded(context) ? Icons.Material.Filled.ExpandLess : Icons.Material.Filled.ExpandMore)"
+                                           Size="Size.Small"
+                                           aria-label="@(IsExpanded(context) ? "Collapse task summary" : "Expand task summary")"
+                                           aria-expanded="@IsExpanded(context).ToString().ToLowerInvariant()"
+                                           aria-controls="@($"task-history-preview-{context.Id}")"
+                                           OnClick="() => TogglePreview(context)" />
+                        </span>
+                    </MudTd>
                     <MudTd>
                         <MudChip T="string" Color="@TaskStatusColor(context.Status)" Variant="Variant.Outlined" Size="Size.Small">@TaskPresentation.StatusLabel(context.Status)</MudChip>
                     </MudTd>
@@ -100,13 +112,25 @@
                     </MudTd>
                     <MudTd>@TaskPresentation.Runtime(context.StartedAt, context.CompletedAt, context.Status)</MudTd>
                     <MudTd Style="text-align: right;">
-                        <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
-                                       Color="Color.Primary"
-                                       Size="Size.Small"
-                                       aria-label="Open task details"
-                                       Href="@($"/tasks/request/{Uri.EscapeDataString(context.RequestId)}")" />
+                        <span @onclick:stopPropagation="true">
+                            <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
+                                           Color="Color.Primary"
+                                           Size="Size.Small"
+                                           aria-label="Open task details"
+                                           Href="@($"/tasks/request/{Uri.EscapeDataString(context.RequestId)}")" />
+                        </span>
                     </MudTd>
                 </RowTemplate>
+                <ChildRowContent>
+                    @if (IsExpanded(context))
+                    {
+                        <MudTr Class="task-history-preview-row">
+                            <MudTd colspan="7" Class="task-history-preview-cell">
+                                <TaskHistoryPreview @key="context.Id" Item="context" />
+                            </MudTd>
+                        </MudTr>
+                    }
+                </ChildRowContent>
                 <NoRecordsContent>
                     <MudText Typo="Typo.subtitle1" Class="pa-4">No task executions match the current filters.</MudText>
                 </NoRecordsContent>
@@ -128,6 +152,15 @@
   .task-history-target-column {
       min-width: 12rem;
       max-width: 22rem;
+  }
+
+  .task-history-table .mud-table-row:not(.task-history-preview-row) { cursor: pointer; }
+  .task-history-table .task-history-preview-cell { padding: 0 1rem 1rem; }
+  .task-history-table .task-history-preview-cell::before { display: none; }
+  .task-history-table .task-history-preview-row:hover { background-color: transparent; }
+
+  @@media (max-width: 959.98px) {
+      .task-history-table .task-history-preview-cell { display: block !important; padding: .5rem; }
   }
 
   .task-history-target-meta,
@@ -157,6 +190,7 @@
     private int _total;
     private string _search = string.Empty;
     private string _statusFilter = AllFilter;
+    private int? _expandedTaskId;
 
     protected override void OnInitialized()
     {
@@ -166,6 +200,7 @@
     private async Task<TableData<TaskHistoryItemDto>> LoadServerDataAsync(TableState state, CancellationToken ct)
     {
         var version = ++_loadVersion;
+        _expandedTaskId = null;
         _isLoading = true;
         try
         {
@@ -264,6 +299,13 @@
 
     private static string GetTaskTargetDisplay(TaskHistoryItemDto task)
         => TaskPresentation.Target(task.ClientHostName, task.ClientDisplayName, task.ClientName);
+
+    private bool IsExpanded(TaskHistoryItemDto item) => _expandedTaskId == item.Id;
+
+    private void TogglePreview(TaskHistoryItemDto? item)
+    {
+        if (item is not null) _expandedTaskId = IsExpanded(item) ? null : item.Id;
+    }
 
     public void Dispose()
     {

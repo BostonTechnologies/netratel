@@ -1,0 +1,192 @@
+@using BlazorMonaco.Editor
+@using NetRatel.Shared.Contracts.Scripts
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+@inject ILogger<ScriptEditorPane> Logger
+
+<section class="script-editor-pane" data-testid="script-editor-pane">
+    <div class="script-editor-toolbar">
+        <div class="script-editor-identity">
+            <div class="script-editor-name-row">
+                @if (CanEdit)
+                {
+                    <input class="script-editor-name" value="@Draft.Name" @oninput="NameChanged"
+                           aria-label="Script name" title="Click to rename this script"
+                           maxlength="@ScriptLibraryPlacement.MaximumNameLength" disabled="@Draft.Deleting"
+                           data-testid="script-editor-name" />
+                }
+                else
+                {
+                    <span class="script-editor-name script-editor-name-readonly" title="@Draft.Name">@Draft.Name</span>
+                }
+                <MudChip T="string" Variant="Variant.Outlined" Color="Color.Info" Size="Size.Small">@(ScriptLibraryTypes.Find(Draft.Saved.ScriptType)?.Label ?? Draft.Saved.ScriptType ?? "plaintext")</MudChip>
+                @if (Draft.IsDirty)
+                {
+                    <MudChip T="string" Variant="Variant.Outlined" Color="Color.Warning" Size="Size.Small">unsaved</MudChip>
+                }
+            </div>
+            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="script-editor-location">@Draft.Saved.FolderPath · updated @Draft.Saved.UpdatedAt.ToLocalTime().ToString("g")</MudText>
+        </div>
+        <div class="script-editor-actions">
+            @if (CanEdit)
+            {
+                <MudTooltip Text="Delete script">
+                    <MudIconButton Icon="@Icons.Material.Filled.DeleteOutline" Size="Size.Small" Color="Color.Error"
+                                   OnClick="DeleteAsync" Disabled="@Draft.Busy" aria-label="Delete selected script" />
+                </MudTooltip>
+                <MudButton Variant="Variant.Filled" Size="Size.Small" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save"
+                           Disabled="@(!Draft.IsDirty || Draft.Busy)" OnClick="SaveAsync" data-testid="script-editor-save">@(Draft.Saving ? "Saving…" : "Save")</MudButton>
+            }
+            <MudTooltip Text="@(FullScreen ? "Return to script library" : "Open full-screen editor")">
+                <MudIconButton Icon="@(FullScreen ? Icons.Material.Filled.FullscreenExit : Icons.Material.Filled.Fullscreen)"
+                               Size="Size.Small" Disabled="@Draft.Busy" OnClick="ToggleFullScreenAsync"
+                               aria-label="@(FullScreen ? "Exit full screen" : "Edit script full screen")" />
+            </MudTooltip>
+        </div>
+    </div>
+    @if (Draft.Error is not null)
+    {
+        <MudAlert Severity="Severity.Error" Dense="true" data-testid="script-editor-error">@Draft.Error</MudAlert>
+    }
+    <div @ref="_editorHost" class="script-library-editor-frame" data-testid="script-library-editor-frame">
+        <div class="script-library-editor" data-testid="script-library-editor">
+            <StandaloneCodeEditor @ref="_editor" Id="@_editorId" CssClass="script-library-monaco"
+                                  OnDidInit="OnEditorInitialized" OnDidChangeModelContent="OnEditorContentChanged"
+                                  ConstructionOptions="EditorOptions" />
+        </div>
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public ScriptEditorDraft Draft { get; set; } = default!;
+    [Parameter] public bool CanEdit { get; set; }
+    [Parameter] public bool FullScreen { get; set; }
+    [Parameter] public bool AutoFocus { get; set; }
+    [Parameter] public EventCallback SaveRequested { get; set; }
+    [Parameter] public Func<Task<bool>>? DeleteRequested { get; set; }
+    [Parameter] public EventCallback Deleted { get; set; }
+    [Parameter] public EventCallback ToggleFullScreen { get; set; }
+
+    private readonly string _editorId = "script-library-monaco-" + Guid.NewGuid().ToString("N");
+    private StandaloneCodeEditor? _editor;
+    private ElementReference _editorHost;
+    private IJSObjectReference? _resizeObserver;
+    private DotNetObjectReference<ScriptEditorPane>? _selfReference;
+    private bool _initialized;
+    private bool _focused;
+    private bool _disposed;
+    private long _readGeneration;
+    private int _layoutQueued;
+
+    private StandaloneEditorConstructionOptions EditorOptions(StandaloneCodeEditor _) => new()
+    {
+        Theme = "vs-dark", AutomaticLayout = true, ReadOnly = !CanEdit,
+        Language = ScriptLibraryTypes.Find(Draft.Saved.ScriptType)?.Language ?? "plaintext",
+        Value = Draft.Content, ScrollBeyondLastLine = false
+    };
+
+    private void NameChanged(ChangeEventArgs change)
+    {
+        if (!CanEdit || Draft.Deleting) return;
+        Draft.Name = change.Value?.ToString() ?? string.Empty;
+        Draft.Error = null;
+    }
+
+    private async Task OnEditorInitialized()
+    {
+        if (_disposed) return;
+        _initialized = true;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task OnEditorContentChanged(ModelContentChangedEvent _) => await CaptureContentAsync();
+
+    private async Task CaptureContentAsync()
+    {
+        if (!_initialized || _editor is null || _disposed) return;
+        var generation = ++_readGeneration;
+        var value = await _editor.GetValue();
+        if (_disposed || generation != _readGeneration) return;
+        Draft.Content = value;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (!CanEdit || Draft.Busy) return;
+        await CaptureContentAsync();
+        if (!_disposed) await SaveRequested.InvokeAsync();
+    }
+
+    private async Task DeleteAsync()
+    {
+        if (!CanEdit || Draft.Busy || DeleteRequested is null) return;
+        if (await DeleteRequested()) await Deleted.InvokeAsync();
+    }
+
+    private async Task ToggleFullScreenAsync()
+    {
+        if (Draft.Busy) return;
+        await CaptureContentAsync();
+        if (!_disposed) await ToggleFullScreen.InvokeAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_disposed) return;
+        if (firstRender)
+        {
+            _selfReference = DotNetObjectReference.Create(this);
+            var module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/resizeObserver.js");
+            if (_disposed)
+            {
+                await module.DisposeAsync();
+                return;
+            }
+            _resizeObserver = module;
+            await _resizeObserver.InvokeVoidAsync("observeResize", _editorHost, _selfReference, nameof(OnEditorHostResize));
+        }
+        if (_editor is not null && _initialized && !_disposed)
+        {
+            await _editor.Layout();
+            if (AutoFocus && !_focused)
+            {
+                _focused = true;
+                await _editor.Focus();
+            }
+        }
+    }
+
+    [JSInvokable]
+    public Task OnEditorHostResize()
+    {
+        if (_disposed || Interlocked.Exchange(ref _layoutQueued, 1) != 0) return Task.CompletedTask;
+        return InvokeAsync(async () =>
+        {
+            try
+            {
+                if (_editor is not null && _initialized && !_disposed) await _editor.Layout();
+            }
+            finally { Volatile.Write(ref _layoutQueued, 0); }
+        });
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        if (_resizeObserver is not null)
+        {
+            try
+            {
+                await _resizeObserver.InvokeVoidAsync("unobserveResize", _editorHost);
+                await _resizeObserver.DisposeAsync();
+            }
+            catch (JSDisconnectedException ex) { Logger.LogDebug(ex, "The browser disconnected while detaching the script editor resize observer."); }
+        }
+        if (_editor is not null)
+        {
+            try { await _editor.DisposeEditor(); }
+            catch (JSDisconnectedException ex) { Logger.LogDebug(ex, "The browser disconnected while disposing the script editor."); }
+        }
+        _selfReference?.Dispose();
+    }
+}

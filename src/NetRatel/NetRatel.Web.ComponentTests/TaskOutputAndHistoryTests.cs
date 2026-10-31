@@ -120,6 +120,132 @@ public sealed class TaskOutputAndHistoryTests : AsyncBunitContext
     }
 
     [Fact]
+    public void TaskHistory_LoadsPreviewOnlyWhenExpanded_BoundsOutput_AndKeepsFullTaskLink()
+    {
+        var task = CreateTask("Completed", "Finished", JsonSerializer.Serialize(new
+        {
+            stdout = new[] { "<script>display-as-text</script>" }.Concat(Enumerable.Range(1, 80).Select(i => $"output-line-{i}")),
+            stderr = Array.Empty<string>(), exitCode = 17
+        }));
+        var factory = new TaskHttpClientFactory((request, _) =>
+            request.RequestUri!.AbsolutePath == "/api/v2/tasks/history"
+                ? JsonResponse(History(task))
+                : JsonResponse(task));
+        Services.AddSingleton<IHttpClientFactory>(factory);
+        Services.AddSingleton<TaskApiService>();
+        var cut = Render<TaskHistory>();
+
+        cut.WaitForAssertion(() => cut.Find("[aria-label='Expand task summary']").Should().NotBeNull());
+        factory.Requests.Should().ContainSingle();
+        cut.FindAll("[data-testid='task-history-preview']").Should().BeEmpty();
+        cut.Find("[aria-label='Open task details']").GetAttribute("href").Should().Be("/tasks/request/request-101");
+
+        cut.Find("[aria-label='Expand task summary']").Click();
+        cut.WaitForAssertion(() =>
+        {
+            factory.Requests.Should().HaveCount(2);
+            factory.Requests.Last().AbsolutePath.Should().Be("/api/v2/tasks/101");
+            var output = cut.Find(".task-history-preview-console").TextContent;
+            output.Should().Contain("<script>display-as-text</script>").And.Contain("output-line-59").And.NotContain("output-line-60");
+            output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().HaveCount(60);
+            cut.Markup.Should().NotContain("<script>").And.Contain("Preview shortened");
+            cut.Find("[aria-label='Collapse task summary']").GetAttribute("aria-expanded").Should().Be("true");
+        });
+
+        cut.Find("[aria-label='Collapse task summary']").Click();
+        cut.FindAll("[data-testid='task-history-preview']").Should().BeEmpty();
+        factory.Requests.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public void TaskHistoryPreview_HoldsLargeResultsOutsideTheTable_AndRefreshesExplicitly()
+    {
+        var task = CreateTask("Completed", "Finished", new string('x', 65 * 1024));
+        var reads = 0;
+        Services.AddSingleton<IHttpClientFactory>(new TaskHttpClientFactory((_, _) =>
+        {
+            reads++;
+            return JsonResponse(reads == 1 ? task : task with { ReturnData = ResultJson });
+        }));
+        Services.AddSingleton<TaskApiService>();
+        var cut = Render<TaskHistoryPreview>(parameters => parameters.Add(x => x.Item, History(task).Items[0]));
+
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("too large for a quick preview"));
+        cut.FindAll(".task-history-preview-console").Should().BeEmpty();
+        cut.Markup.Should().NotContain(new string('x', 100));
+        cut.Find("[aria-label='Refresh task preview']").Click();
+        cut.WaitForAssertion(() =>
+        {
+            cut.Find(".task-history-preview-console").TextContent.Should().Contain("first stdout line").And.Contain("Access denied to fixture path");
+            reads.Should().Be(2);
+        });
+    }
+
+    [Theory]
+    [InlineData(false, "Task details could not be loaded")]
+    [InlineData(true, "Task details timed out")]
+    public void TaskHistoryPreview_KeepsSummaryAfterLoadFailure_AndRetriesToExplicitEmptyState(bool timeout, string errorText)
+    {
+        var task = CreateTask("Cancelled", "Cancelled by operator", null);
+        var reads = 0;
+        Services.AddSingleton<IHttpClientFactory>(new TaskHttpClientFactory((_, _) =>
+        {
+            if (++reads != 1) return JsonResponse(task);
+            if (timeout) throw new TaskCanceledException("Fixture HTTP timeout", new TimeoutException());
+            return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+        }));
+        Services.AddSingleton<TaskApiService>();
+        var cut = Render<TaskHistoryPreview>(parameters => parameters.Add(x => x.Item, History(task).Items[0]));
+
+        cut.WaitForAssertion(() =>
+        {
+            cut.Markup.Should().Contain(errorText).And.Contain("fixture-host").And.Contain("request-101");
+            cut.Find("a").GetAttribute("href").Should().Be("/tasks/request/request-101");
+        });
+        cut.Find("[aria-label='Refresh task preview']").Click();
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("No execution output was captured.").And.NotContain(errorText));
+        reads.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task TaskHistory_CollapseDisposesPendingPreview_WithoutRestoringLateOutput()
+    {
+        var task = CreateTask("Completed", "Finished", ResultJson);
+        var response = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requested = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Services.AddSingleton<IHttpClientFactory>(new TaskHttpClientFactory((request, token) =>
+        {
+            if (request.RequestUri!.AbsolutePath == "/api/v2/tasks/history") return Task.FromResult(JsonResponse(History(task)));
+            requested.TrySetResult(token);
+            return response.Task;
+        }));
+        Services.AddSingleton<TaskApiService>();
+        var cut = Render<TaskHistory>();
+        cut.WaitForAssertion(() => cut.Find("[aria-label='Expand task summary']").Should().NotBeNull());
+        var opening = cut.Find("[aria-label='Expand task summary']").ClickAsync(new());
+        try
+        {
+            var cancellation = await requested.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            cut.WaitForAssertion(() => cut.Find("[aria-label='Collapse task summary']").Should().NotBeNull());
+
+            cut.Find("[aria-label='Collapse task summary']").Click();
+            cancellation.IsCancellationRequested.Should().BeTrue();
+            response.SetResult(JsonResponse(task));
+            await opening.WaitAsync(TimeSpan.FromSeconds(5));
+            cut.WaitForAssertion(() =>
+            {
+                cut.FindAll("[data-testid='task-history-preview']").Should().BeEmpty();
+                cut.Markup.Should().NotContain("first stdout line");
+            });
+        }
+        finally
+        {
+            response.TrySetResult(JsonResponse(task));
+            await opening.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Fact]
     public void PendingLibraryTask_ShowsRecordedNameAndTenant_WithoutInventingStartOrRuntime()
     {
         ConfigureTaskApi(CreateTask("Pending", "Waiting for execution", null) with
@@ -257,6 +383,12 @@ public sealed class TaskOutputAndHistoryTests : AsyncBunitContext
 
     private static HttpResponseMessage JsonResponse<T>(T value) =>
         new(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(value, JsonOptions)) };
+
+    private static TaskHistoryPageDto History(TaskDto task) => new(
+        [new TaskHistoryItemDto(task.Id, task.RequestId, task.TenantId, task.TaskType, task.Status,
+            task.StatusMessage, task.Created, task.CompletedAt, task.ClientDisplayName, task.ClientHostName,
+            task.ClientName, task.AgentId, task.Environment, task.StartedAt, task.ExitCode,
+            task.ScriptName, task.ScriptType, task.CommandLabel, task.TenantName)], 1, 0, 10);
 
     private static TaskDto CreateTask(string status, string statusMessage, string? returnData) =>
         new(

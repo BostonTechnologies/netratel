@@ -1,7 +1,6 @@
 @rendermode InteractiveServer
 @using System.Linq
 @using System.Timers
-@using BlazorMonaco.Editor
 @using MudBlazor
 @using NetRatel.Shared.Contracts.Execution
 @using NetRatel.Shared.Contracts.Scripts
@@ -11,10 +10,8 @@
 @inject ScriptLibraryClient Api
 @inject IDialogService Dialogs
 @inject ISnackbar Snackbar
-@inject IJSRuntime JS
-@inject ILogger<ScriptLibraryView> Logger
 
-@implements IAsyncDisposable
+@implements IDisposable
 
 <div class="script-library-shell">
     <div class="script-library-toolbar" data-testid="script-library-toolbar">
@@ -65,7 +62,7 @@
                 else
                 {
                     <MudTreeView T="ScriptTreeNode" Items="@_tree"
-                                 Hover="true"
+                                 Hover="true" Dense="true"
                                  ExpandOnClick="true"
                                  SelectedValue="@_active"
                                  SelectedValueChanged="OnActivatedChanged">
@@ -78,16 +75,13 @@
                                 <BodyContent>
                                     @if (item.Value is { } value)
                                     {
-                                        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="w-100">
-                                            <MudText Typo="Typo.body2" Class="mud-truncate">@value.Name</MudText>
-                                            @if (!value.IsFolder && AllowEditing && !ReadOnly)
+                                        <button type="button" class="script-library-node" title="@value.Name" aria-label="@($"{(value.IsFolder ? "Folder" : "Select script")}: {value.Name}")">
+                                            <span class="script-library-node-name">@value.Name</span>
+                                            @if (value.IsFolder)
                                             {
-                                                <div class="script-library-row-actions" @onclick:stopPropagation="true">
-                                                    <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => BeginRename(value))" aria-label="@($"Rename {value.Name}")" />
-                                                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => DeleteScript(value))" aria-label="@($"Delete {value.Name}")" />
-                                                </div>
+                                                <span class="script-library-folder-count" title="Scripts matching the current filters, including subfolders" aria-label="@($"{value.ScriptCount} matching scripts, including subfolders")">@value.ScriptCount</span>
                                             }
-                                        </MudStack>
+                                        </button>
                                     }
                                 </BodyContent>
                             </MudTreeViewItem>
@@ -107,44 +101,11 @@
                 {
                     <MudText Typo="Typo.body2" Color="Color.Secondary">Select a script to view or edit.</MudText>
                 }
-                else
+                else if (!_fullScreenOpen && _draft is not null)
                 {
-                    <div class="script-library-editor-head">
-                        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="flex-wrap">
-                            <MudStack Spacing="1">
-                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
-                                    <MudText Typo="Typo.h6" Class="mr-2">@_current.Name</MudText>
-                                    <MudChip T="string" Variant="Variant.Outlined" Color="Color.Info" Size="Size.Small">@(ScriptLibraryTypes.Find(_current.ScriptType)?.Label ?? _current.ScriptType ?? "plaintext")</MudChip>
-                                    @if (_dirty)
-                                    {
-                                        <MudChip T="string" Variant="Variant.Outlined" Color="Color.Warning" Size="Size.Small">unsaved</MudChip>
-                                    }
-                                </MudStack>
-                                <MudText Typo="Typo.caption" Color="Color.Secondary">@NormalizeFolder(_current.FolderPath) - updated @_current.UpdatedAt.ToLocalTime().ToString("g")</MudText>
-                            </MudStack>
-                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
-                                <MudButton Variant="Variant.Filled"
-                                           Size="Size.Small" Color="Color.Primary"
-                                           StartIcon="@Icons.Material.Filled.Save"
-                                           Disabled="@(!AllowEditing || ReadOnly || !_dirty || _current is null || _saving)"
-                                           OnClick="@Save">
-                                    Save
-                                </MudButton>
-                            </MudStack>
-                        </MudStack>
-                    </div>
-
-                    <div @ref="_editorHost" class="script-library-editor-frame" data-testid="script-library-editor-frame">
-                        <div class="script-library-editor" data-testid="script-library-editor">
-                            <StandaloneCodeEditor @key="_editorKey"
-                                                  @ref="_editor"
-                                                  Id="script-library-monaco"
-                                                  CssClass="script-library-monaco"
-                                                  OnDidInit="OnEditorInitialized"
-                                                  OnDidChangeModelContent="OnEditorContentChanged"
-                                                  ConstructionOptions="@EditorOptions" />
-                        </div>
-                    </div>
+                    <ScriptEditorPane @key="_draft" Draft="_draft" CanEdit="@(AllowEditing && !ReadOnly)"
+                                      AutoFocus="_focusEditor" SaveRequested="Save" DeleteRequested="DeleteCurrentScript"
+                                      ToggleFullScreen="OpenFullScreen" />
                 }
             </div>
         </div>
@@ -168,153 +129,39 @@
     private HashSet<string> _types = new(StringComparer.OrdinalIgnoreCase);
     private ScriptTreeNode? _active;
     private ScriptDto? _current;
-    private StandaloneCodeEditor? _editor;
-    private ElementReference _editorHost;
-    private ElementReference _observedEditorHost;
-    private string? _observedEditorKey;
+    private ScriptEditorDraft? _draft;
+    private bool _fullScreenOpen;
+    private IDialogReference? _editorDialog;
+    private bool IsDirty => _draft?.IsDirty == true;
     private System.Timers.Timer? _debounce;
     private CancellationTokenSource? _listCancellation;
     private long _listGeneration;
-    private IJSObjectReference? _resizeObserverModule;
-    private DotNetObjectReference<ScriptLibraryView>? _selfReference;
     private bool _disposed;
-    private int _layoutQueued;
     private bool _loading;
     private bool _loadFailed;
-    private bool _dirty;
-    private bool _saving;
-    private bool _editorInitialized;
     private bool _focusEditor;
     private string _selectedFolder = "/";
-    private string _editorBaseline = string.Empty;
     private string? _search;
     private string? _filterType;
-    private string _editorKey = Guid.NewGuid().ToString();
 
     protected override async Task OnInitializedAsync()
     {
         _filterType = FilterByType;
         _search = InitialSearch;
         await ReloadAsync();
-        HookCtrlS();
     }
 
-    protected override async Task OnAfterRenderAsync(bool firstRender)
-    {
-        if (_disposed || _current is null)
-        {
-            return;
-        }
-
-        if (_resizeObserverModule is null)
-        {
-            _selfReference = DotNetObjectReference.Create(this);
-            _resizeObserverModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/resizeObserver.js");
-        }
-        if (_observedEditorKey != _editorKey)
-        {
-            if (_observedEditorKey is not null)
-                await _resizeObserverModule.InvokeVoidAsync("unobserveResize", _observedEditorHost);
-            await _resizeObserverModule.InvokeVoidAsync("observeResize", _editorHost, _selfReference, nameof(OnEditorHostResize));
-            _observedEditorHost = _editorHost;
-            _observedEditorKey = _editorKey;
-        }
-
-        await LayoutEditorAsync();
-        if (_focusEditor && _editorInitialized && _editor is not null)
-        {
-            _focusEditor = false;
-            await _editor.Focus();
-        }
-    }
-
-    [JSInvokable]
-    public Task OnEditorHostResize()
-    {
-        if (_disposed || Interlocked.Exchange(ref _layoutQueued, 1) != 0)
-        {
-            return Task.CompletedTask;
-        }
-
-        _ = InvokeAsync(LayoutEditorAfterResizeAsync);
-        return Task.CompletedTask;
-    }
-
-    private async Task LayoutEditorAfterResizeAsync()
-    {
-        try
-        {
-            await LayoutEditorAsync();
-        }
-        finally
-        {
-            Volatile.Write(ref _layoutQueued, 0);
-        }
-    }
-
-    private async Task LayoutEditorAsync()
-    {
-        if (_editor is null || _disposed)
-        {
-            return;
-        }
-
-        try
-        {
-            await _editor.Layout();
-        }
-        catch (JSException) when (_disposed)
-        {
-            return;
-        }
-    }
-
-    public async ValueTask DisposeAsync()
+    public void Dispose()
     {
         _disposed = true;
         _listCancellation?.Cancel();
         _listCancellation?.Dispose();
+        _editorDialog?.Close();
         if (_debounce is not null)
         {
             _debounce.Elapsed -= DebounceElapsed;
             _debounce.Dispose();
         }
-
-        if (_resizeObserverModule is not null)
-        {
-            try
-            {
-                await _resizeObserverModule.InvokeVoidAsync("unobserveResize", _observedEditorHost);
-            }
-            catch (JSDisconnectedException ex)
-            {
-                Logger.LogDebug(ex, "The browser circuit closed before the script-library resize observer detached.");
-            }
-            try
-            {
-                await _resizeObserverModule.DisposeAsync();
-            }
-            catch (JSDisconnectedException ex)
-            {
-                Logger.LogDebug(ex, "The browser circuit closed before the script-library resize module disposed.");
-            }
-            _resizeObserverModule = null;
-        }
-
-        if (_editor is not null)
-        {
-            try
-            {
-                await _editor.DisposeEditor();
-            }
-            catch (JSDisconnectedException ex)
-            {
-                Logger.LogDebug(ex, "The browser circuit closed before the script-library Monaco editor disposed.");
-            }
-        }
-
-        _selfReference?.Dispose();
-        _selfReference = null;
     }
 
     private async Task ReloadAsync()
@@ -333,18 +180,13 @@
             if (_disposed || generation != _listGeneration) return;
             _all = scripts;
             _loadFailed = false;
-            if (_current is not null && !_dirty)
+            if (_current is not null && !IsDirty && _draft?.Busy != true && !_fullScreenOpen)
             {
                 var refreshed = scripts.FirstOrDefault(script => script.Id == _current.Id);
                 if (refreshed is not null)
                 {
-                    if (_current.Content != refreshed.Content || _current.ScriptType != refreshed.ScriptType)
-                    {
-                        _editorKey = Guid.NewGuid().ToString();
-                        _editorInitialized = false;
-                    }
                     _current = refreshed;
-                    _editorBaseline = refreshed.Content ?? string.Empty;
+                    _draft = new(refreshed);
                 }
                 else SelectNone();
             }
@@ -486,12 +328,13 @@
 
     private async Task OnActivatedChanged(ScriptTreeNode? node)
     {
+        if (_disposed || _draft?.Busy == true || _fullScreenOpen) return;
         if (_current is not null && node is { IsFolder: false } && node.Id == _current.Id)
         {
             _active = node;
             return;
         }
-        if (_dirty && node?.Id != _current?.Id)
+        if (IsDirty && node?.Id != _current?.Id)
         {
             var leave = await Confirm("Unsaved changes", "Discard changes and switch file?");
             if (!leave)
@@ -514,95 +357,78 @@
         }
 
         _current = _all.FirstOrDefault(s => s.Id == node.Id);
-        _editorBaseline = _current?.Content ?? string.Empty;
-        _dirty = false;
-        _editorInitialized = false;
-        _editorKey = Guid.NewGuid().ToString();
+        _draft = _current is null ? null : new(_current);
+        _focusEditor = false;
         StateHasChanged();
-    }
-
-    private Task OnEditorContentChanged(ModelContentChangedEvent _)
-        => UpdateDirtyFlagAsync();
-
-    private Task OnEditorInitialized()
-    {
-        _editorInitialized = true;
-        return InvokeAsync(StateHasChanged);
-    }
-
-    private async Task UpdateDirtyFlagAsync()
-    {
-        if (_editor is null || !_editorInitialized)
-        {
-            return;
-        }
-
-        var editor = _editor;
-        var current = _current;
-        var value = await editor.GetValue();
-        if (!ReferenceEquals(editor, _editor) || !ReferenceEquals(current, _current) || _disposed) return;
-        var dirty = !string.Equals(value, _editorBaseline, StringComparison.Ordinal);
-        if (dirty != _dirty)
-        {
-            _dirty = dirty;
-            await InvokeAsync(StateHasChanged);
-        }
     }
 
     private async Task Save()
     {
-        if (_current is null || _editor is null || !AllowEditing || ReadOnly || _saving)
-        {
-            return;
-        }
-
-        var observed = _current;
-        _saving = true;
+        var draft = _draft;
+        if (draft is null || !AllowEditing || ReadOnly || draft.Busy || _disposed) return;
+        var observed = draft.Saved;
+        var submittedName = draft.Name;
+        var content = draft.Content;
+        draft.Saving = true;
+        draft.Error = null;
         try
         {
-            var content = await _editor.GetValue();
-            if (!ReferenceEquals(_current, observed)) return;
+            var name = ScriptLibraryPlacement.NormalizeName(submittedName);
             var sourceRevision = await Api.UpdateAsync(observed.Id, new UpdateScriptRequest(
-                Name: null,
-                FolderPath: null,
-                Description: null,
-                Content: content,
+                Name: name, FolderPath: null, Description: null, Content: content,
                 ScriptType: null, ExpectedSourceRevision: observed.SourceRevision), CancellationToken.None);
+            if (_disposed) return;
             InvalidateListReads();
-
-            var idx = _all.FindIndex(s => s.Id == observed.Id);
-            if (idx >= 0 && _all[idx].SourceRevision <= sourceRevision)
-            {
-                _all[idx] = _all[idx] with { Content = content, UpdatedAt = DateTimeOffset.UtcNow, SourceRevision = sourceRevision };
-            }
-
-            if (ReferenceEquals(_current, observed))
-            {
-                var latestContent = await _editor.GetValue();
-                if (ReferenceEquals(_current, observed))
-                {
-                    _current = observed with { Content = content, UpdatedAt = DateTimeOffset.UtcNow, SourceRevision = sourceRevision };
-                    _editorBaseline = content;
-                    _dirty = !string.Equals(latestContent, content, StringComparison.Ordinal);
-                }
-            }
+            var saved = observed with { Name = name, Content = content, UpdatedAt = DateTimeOffset.UtcNow, SourceRevision = sourceRevision };
+            var idx = _all.FindIndex(script => script.Id == observed.Id);
+            if (idx >= 0 && _all[idx].SourceRevision <= sourceRevision) _all[idx] = saved;
+            draft.AcceptSave(saved, submittedName);
+            if (ReferenceEquals(_draft, draft)) _current = saved;
+            RebuildTree();
             Snackbar.Add("Saved.", Severity.Success);
         }
         catch (Exception ex)
         {
-            Snackbar.Add($"Save failed: {ex.Message}", Severity.Error);
+            draft.Error = $"Save failed: {ex.Message}";
         }
-        finally { _saving = false; }
+        finally { draft.Saving = false; }
+    }
+
+    private async Task OpenFullScreen()
+    {
+        if (_draft is null || _draft.Busy || _fullScreenOpen || _disposed) return;
+        _fullScreenOpen = true;
+        StateHasChanged();
+        try
+        {
+            var parameters = new DialogParameters<ScriptEditorDialog>
+            {
+                { dialog => dialog.Draft, _draft },
+                { dialog => dialog.CanEdit, AllowEditing && !ReadOnly },
+                { dialog => dialog.SaveRequested, EventCallback.Factory.Create(this, Save) },
+                { dialog => dialog.DeleteRequested, new Func<Task<bool>>(DeleteCurrentScript) }
+            };
+            _editorDialog = await Dialogs.ShowAsync<ScriptEditorDialog>("Script editor", parameters,
+                new DialogOptions { FullScreen = true, NoHeader = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+            await _editorDialog.Result;
+        }
+        finally
+        {
+            _editorDialog = null;
+            _fullScreenOpen = false;
+            _focusEditor = true;
+            if (!_disposed) StateHasChanged();
+        }
     }
 
     private async Task NewScript()
     {
-        if (!AllowAdding || ReadOnly)
+        if (!AllowAdding || ReadOnly || _draft?.Busy == true || _fullScreenOpen || _disposed)
         {
             return;
         }
 
-        if (_dirty && !await Confirm("Unsaved changes", "Discard changes when the new script is created?")) return;
+        if (IsDirty && !await Confirm("Unsaved changes", "Discard changes when the new script is created?")) return;
         var model = new NewScriptDialogModel
         {
             Folder = _selectedFolder,
@@ -634,80 +460,38 @@
         _filterType = string.IsNullOrWhiteSpace(FilterByType) ? null : FilterByType;
         _current = created;
         _selectedFolder = request.FolderPath!;
-        _editorBaseline = created.Content ?? string.Empty;
-        _dirty = false;
-        _editorInitialized = false;
-        _editorKey = Guid.NewGuid().ToString();
+        _draft = new(created);
         _focusEditor = ShowViewer;
         RebuildTree(captureExpansion: false);
         Snackbar.Add("Script created.", Severity.Success);
     }
 
-    private async Task DeleteScript(ScriptTreeNode node)
+    private async Task<bool> DeleteCurrentScript()
     {
-        if (node.Id is null || !AllowEditing || ReadOnly)
-        {
-            return;
-        }
-
-        var observedRevision = _all.Single(script => script.Id == node.Id.Value).SourceRevision;
-        if (!await Confirm("Delete script", $"Delete '{node.Name}'?"))
-        {
-            return;
-        }
-
+        var draft = _draft;
+        if (draft is null || !AllowEditing || ReadOnly || draft.Busy || _disposed) return false;
+        var observed = draft.Saved;
+        draft.Deleting = true;
+        draft.Error = null;
         try
         {
-            await Api.DeleteAsync(node.Id.Value, observedRevision, CancellationToken.None);
+            if (!await Confirm("Delete script", $"Delete '{observed.Name}'?")) return false;
+            if (_disposed || !ReferenceEquals(_draft, draft)) return false;
+            await Api.DeleteAsync(observed.Id, observed.SourceRevision, CancellationToken.None);
+            if (_disposed) return true;
             InvalidateListReads();
-            if (_current?.Id == node.Id.Value)
-            {
-                SelectNone();
-            }
-
-            await ReloadAsync();
+            _all.RemoveAll(script => script.Id == observed.Id);
+            SelectNone();
+            RebuildTree();
             Snackbar.Add("Deleted.", Severity.Success);
+            return true;
         }
         catch (Exception ex)
         {
-            Snackbar.Add($"Delete failed: {ex.Message}", Severity.Error);
+            draft.Error = $"Delete failed: {ex.Message}";
+            return false;
         }
-    }
-
-    private async Task BeginRename(ScriptTreeNode node)
-    {
-        if (node.Id is null || !AllowEditing || ReadOnly)
-        {
-            return;
-        }
-
-        var observedRevision = _all.Single(script => script.Id == node.Id.Value).SourceRevision;
-        var (ok, newName) = await PromptRename(node.Name);
-        if (!ok || string.Equals(newName, node.Name, StringComparison.Ordinal))
-        {
-            return;
-        }
-
-        try
-        {
-            var revision = await Api.UpdateAsync(node.Id.Value, new UpdateScriptRequest(
-                Name: newName,
-                FolderPath: null,
-                Description: null,
-                Content: null,
-                ScriptType: null, ExpectedSourceRevision: observedRevision), CancellationToken.None);
-            InvalidateListReads();
-
-            if (_current?.Id == node.Id.Value)
-                _current = _current with { Name = newName, SourceRevision = revision };
-
-            await ReloadAsync();
-            Snackbar.Add("Renamed.", Severity.Success);
-        }
-        catch (Exception ex)
-        {
-            Snackbar.Add($"Rename failed: {ex.Message}", Severity.Error);
-        }
+        finally { draft.Deleting = false; }
     }
 
     private void OnSearchChanged(string? value)
@@ -750,52 +534,12 @@
     {
         if (clearActive) _active = null;
         _current = null;
-        _dirty = false;
-        _editorBaseline = string.Empty;
-        _editorKey = Guid.NewGuid().ToString();
+        _draft = null;
         StateHasChanged();
     }
 
-    private async Task<(bool ok, string name)> PromptRename(string current)
-    {
-        var model = new RenameScriptDialogModel { Name = current };
-        var parameters = new DialogParameters { ["Model"] = model };
-        var dialogRef = await Dialogs.ShowAsync<RenameScriptDialog>("Rename Script", parameters);
-        if (dialogRef is not { } dialog)
-        {
-            return (false, current);
-        }
-
-        var result = await dialog.Result;
-        if (result is null)
-        {
-            return (false, current);
-        }
-
-        return (!result.Canceled, model.Name?.Trim() ?? current);
-    }
-
-    private Task<bool> Confirm(string title, string message)
-        => Dialogs.ShowMessageBoxAsync(title, message, yesText: "Yes", cancelText: "Cancel")
-                  .ContinueWith(t => t.Result == true);
-
-    private StandaloneEditorConstructionOptions EditorOptions(StandaloneCodeEditor _)
-        => new()
-        {
-            Theme = "vs-dark",
-            AutomaticLayout = true,
-            ReadOnly = ReadOnly || !AllowEditing,
-            Language = LangFor(_current?.ScriptType),
-            Value = _current?.Content ?? string.Empty,
-            ScrollBeyondLastLine = false
-        };
-
-    private static string LangFor(string? type) => ScriptLibraryTypes.Find(type)?.Language ?? "plaintext";
-
-    private void HookCtrlS()
-    {
-        // Monaco already wires CMD/CTRL+S to "save" if you register it; hook via JS later if desired.
-    }
+    private async Task<bool> Confirm(string title, string message)
+        => await Dialogs.ShowMessageBoxAsync(title, message, yesText: "Yes", cancelText: "Cancel") == true;
 
     private static string NormalizeFolder(string? path)
     {
