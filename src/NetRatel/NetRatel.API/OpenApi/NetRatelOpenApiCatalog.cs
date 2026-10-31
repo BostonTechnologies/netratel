@@ -47,6 +47,7 @@ public static class NetRatelOpenApiCatalog
             ["TenantAdministrator"] = DefaultAuthenticatedSchemes,
             ["ClientManager"] = DefaultAuthenticatedSchemes,
             ["TelemetryReader"] = DefaultAuthenticatedSchemes,
+            ["SoftwareInventoryDiscovery"] = DefaultAuthenticatedSchemes,
             ["TerminalOperator"] = DefaultAuthenticatedSchemes,
             ["TerminalSessionAccess"] = DefaultAuthenticatedSchemes,
             ["RemoteSupportOperator"] = DefaultAuthenticatedSchemes,
