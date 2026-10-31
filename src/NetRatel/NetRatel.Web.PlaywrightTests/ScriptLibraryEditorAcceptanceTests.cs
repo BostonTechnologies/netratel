@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Playwright;
 
@@ -71,15 +72,50 @@ public sealed class ScriptLibraryEditorAcceptanceTests(ClientsManagementBrowserF
             var fullEditor = dialog.GetByTestId("script-library-editor");
             await Assertions.Expect(fullEditor.Locator(".view-lines")).ToContainTextAsync("inline_draft_marker");
             await Assertions.Expect(dialog.GetByRole(AriaRole.Textbox, new() { Name = "Script name", Exact = true })).ToHaveValueAsync("Inline draft.ps1");
-            Assert.True(await dialog.GetByTestId("script-library-editor-frame").EvaluateAsync<bool>("""
-                element => {
-                    const frame = element.getBoundingClientRect();
-                    const editor = element.querySelector('.monaco-editor')?.getBoundingClientRect();
-                    return frame.width >= innerWidth * .85 && frame.height >= innerHeight * .65
-                        && frame.x >= -1 && frame.y >= -1 && frame.right <= innerWidth + 1 && frame.bottom <= innerHeight + 1
-                        && editor && editor.height >= frame.height - 4 && editor.width >= frame.width - 4;
+            // Monaco can initialize before MudBlazor's scale entrance animation finishes.
+            // Measure settled geometry, without changing the editor/viewport requirements.
+            await dialog.EvaluateAsync("""
+                async element => {
+                    const finite = element.getAnimations().filter(animation =>
+                        Number.isFinite(animation.effect?.getComputedTiming().endTime));
+                    await Promise.all(finite.map(animation => animation.finished));
                 }
-                """), "Full-screen Monaco must fill the available viewport without clipping or collapsing.");
+                """);
+            var geometry = await dialog.EvaluateAsync<JsonElement>("""
+                element => {
+                    const describe = node => {
+                        if (!node) return null;
+                        const rect = node.getBoundingClientRect(), style = getComputedStyle(node);
+                        return { rect: rect.toJSON(), width: style.width, height: style.height,
+                            maxHeight: style.maxHeight, minHeight: style.minHeight, flex: style.flex,
+                            boxSizing: style.boxSizing, padding: style.padding, overflow: style.overflow,
+                            transform: style.transform };
+                    };
+                    const frameNode = element.querySelector('[data-testid="script-library-editor-frame"]');
+                    const editorNode = frameNode?.querySelector('.monaco-editor');
+                    const frame = frameNode?.getBoundingClientRect(), editor = editorNode?.getBoundingClientRect();
+                    const checks = {
+                        frameWidth: !!frame && frame.width >= innerWidth * .85,
+                        frameHeight: !!frame && frame.height >= innerHeight * .65,
+                        contained: !!frame && frame.x >= -1 && frame.y >= -1 && frame.right <= innerWidth + 1 && frame.bottom <= innerHeight + 1,
+                        editorHeight: !!editor && editor.height >= frame.height - 4,
+                        editorWidth: !!editor && editor.width >= frame.width - 4
+                    };
+                    return { fits: Object.values(checks).every(Boolean), checks,
+                        viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
+                        dialog: describe(element), content: describe(element.querySelector('.mud-dialog-content')),
+                        pane: describe(element.querySelector('[data-testid="script-editor-pane"]')),
+                        toolbar: describe(element.querySelector('.script-editor-toolbar')),
+                        frame: describe(frameNode), editor: describe(editorNode),
+                        editorContainer: describe(element.querySelector('.monaco-editor-container')),
+                        animations: element.getAnimations().map(animation => ({ name: animation.animationName,
+                            state: animation.playState, time: animation.currentTime,
+                            endTime: animation.effect?.getComputedTiming().endTime })) };
+                }
+                """);
+            await File.WriteAllTextAsync(Path.Combine(evidence, $"script-editor-geometry-{suffix}.json"), geometry.GetRawText());
+            Assert.True(geometry.GetProperty("fits").GetBoolean(),
+                $"Full-screen Monaco must fill the available viewport without clipping or collapsing. {geometry.GetRawText()}");
             foreach (var action in new[] { "Delete selected script", "Save", "Exit full screen" })
                 await Assertions.Expect(dialog.GetByRole(AriaRole.Button, new() { Name = action, Exact = true })).ToBeInViewportAsync(new() { Ratio = 1 });
             await ReplaceContentAsync(fullEditor, "# fullscreen_draft_marker");

@@ -133,6 +133,10 @@
         {
             return;
         }
+        catch (OperationCanceledException)
+        {
+            if (!_disposed) _error = "Task details timed out. Refresh the preview or open the full task view.";
+        }
         catch (HttpRequestException)
         {
             if (!_disposed) _error = "Task details could not be loaded. Refresh the preview or open the full task view.";

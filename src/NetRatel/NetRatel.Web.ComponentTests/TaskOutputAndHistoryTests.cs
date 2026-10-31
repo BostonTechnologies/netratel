@@ -181,23 +181,29 @@ public sealed class TaskOutputAndHistoryTests : AsyncBunitContext
         });
     }
 
-    [Fact]
-    public void TaskHistoryPreview_KeepsSummaryAfterLoadFailure_AndRetriesToExplicitEmptyState()
+    [Theory]
+    [InlineData(false, "Task details could not be loaded")]
+    [InlineData(true, "Task details timed out")]
+    public void TaskHistoryPreview_KeepsSummaryAfterLoadFailure_AndRetriesToExplicitEmptyState(bool timeout, string errorText)
     {
         var task = CreateTask("Cancelled", "Cancelled by operator", null);
         var reads = 0;
         Services.AddSingleton<IHttpClientFactory>(new TaskHttpClientFactory((_, _) =>
-            ++reads == 1 ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) : JsonResponse(task)));
+        {
+            if (++reads != 1) return JsonResponse(task);
+            if (timeout) throw new TaskCanceledException("Fixture HTTP timeout", new TimeoutException());
+            return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+        }));
         Services.AddSingleton<TaskApiService>();
         var cut = Render<TaskHistoryPreview>(parameters => parameters.Add(x => x.Item, History(task).Items[0]));
 
         cut.WaitForAssertion(() =>
         {
-            cut.Markup.Should().Contain("Task details could not be loaded").And.Contain("fixture-host").And.Contain("request-101");
+            cut.Markup.Should().Contain(errorText).And.Contain("fixture-host").And.Contain("request-101");
             cut.Find("a").GetAttribute("href").Should().Be("/tasks/request/request-101");
         });
         cut.Find("[aria-label='Refresh task preview']").Click();
-        cut.WaitForAssertion(() => cut.Markup.Should().Contain("No execution output was captured.").And.NotContain("Task details could not be loaded"));
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("No execution output was captured.").And.NotContain(errorText));
         reads.Should().Be(2);
     }
 

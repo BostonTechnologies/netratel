@@ -1165,6 +1165,29 @@ body {
     overflow: hidden;
 }
 
+/* MudDialog's portal is outside ScriptEditorDialog's CSS-isolation scope.
+   Full-screen editing must also override the general phone dialog margins. */
+.mud-dialog.script-editor-dialog.mud-dialog-fullscreen {
+    width: 100vw !important;
+    height: 100dvh;
+    max-width: none;
+    max-height: 100dvh;
+    margin: 0;
+    border-radius: 0;
+    overflow: hidden;
+}
+
+.mud-dialog.script-editor-dialog .script-editor-dialog-content {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    padding: 16px;
+    overflow: hidden;
+}
+
 pre,
 code,
 .monaco-editor-container,
