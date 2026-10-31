@@ -142,6 +142,8 @@ public static class ScriptTreeBuilder
         {
             SortRecursive(child);
         }
+
+        node.ScriptCount = node.Children.Sum(child => child.IsFolder ? child.ScriptCount : 1);
     }
 
     private static string IconFor(string? type) => (type ?? string.Empty).ToLowerInvariant() switch

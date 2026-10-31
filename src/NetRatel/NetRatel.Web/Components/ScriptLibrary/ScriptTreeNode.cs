@@ -10,5 +10,6 @@ public class ScriptTreeNode
     public ulong? Id { get; init; } // only for files
     public string? Icon { get; init; }
     public bool IsExpanded { get; set; }
+    public int ScriptCount { get; set; }
     public List<ScriptTreeNode> Children { get; } = new();
 }

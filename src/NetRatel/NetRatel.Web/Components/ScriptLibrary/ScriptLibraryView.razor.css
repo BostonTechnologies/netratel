@@ -7,19 +7,21 @@
 /* MudDivider's FullWidth variant grows as a flex item; only the tree should fill this column. */
 .script-library-tree-panel ::deep > .mud-divider { flex: 0 0 auto; }
 .script-library-tree-scroll { display: block; flex: 1 1 0; overflow: auto; overscroll-behavior: contain; }
-.script-library-tree-scroll ::deep .mud-treeview { display: block; flex: none; margin: 0; padding: 0; text-align: start; }
-.script-library-tree-scroll ::deep .mud-treeview-item-content { min-height: 36px; padding-top: 0; padding-bottom: 0; }
-.script-library-row-actions { display: flex; flex: none; }
-.script-library-row-actions ::deep .mud-icon-button { padding: 6px; }
-.script-library-editor-head { flex: none; margin-bottom: 8px; }
-.script-library-editor-frame { display: flex; flex: 1 1 0; overflow: hidden; border: 1px solid var(--mud-palette-divider); border-radius: var(--mud-default-borderradius); }
-.script-library-editor { display: flex; flex: 1 1 0; width: 100%; height: 100%; min-width: 0; min-height: 0; }
-.script-library-editor ::deep .monaco-editor-container, .script-library-editor ::deep .monaco-editor, .script-library-editor ::deep .overflow-guard { flex: 1 1 auto; width: 100%; height: 100%; min-width: 0; min-height: 0; }
-.script-library-editor ::deep .monaco-editor-container { height: 100% !important; border: 0; }
+.script-library-tree-scroll ::deep > .mud-treeview { display: block; flex: none; margin: 0; padding: 0; text-align: start; }
+/* Nested MudTreeView groups own the indentation; never reset every tree's margins. */
+.script-library-tree-scroll ::deep .mud-treeview-group { margin-inline-start: 18px; }
+.script-library-tree-scroll ::deep .mud-treeview-item-content { min-height: 30px; padding: 0 2px; }
+.script-library-tree-scroll ::deep .mud-treeview-item-arrow { width: 22px; margin: 0 2px; }
+.script-library-tree-scroll ::deep .mud-treeview-item-icon { width: 22px; margin-inline-end: 4px; }
+.script-library-tree-scroll ::deep .mud-treeview-item-icon .mud-icon-root { font-size: 20px; }
+.script-library-node { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1 1 0; border: 0; padding: 2px 0; background: transparent; color: inherit; font: inherit; text-align: start; cursor: pointer; }
+.script-library-node:focus-visible { outline: 2px solid var(--mud-palette-primary); outline-offset: 2px; border-radius: 3px; }
+.script-library-node-name { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: .8125rem; line-height: 1.5; }
+.script-library-folder-count { flex: 0 0 auto; min-width: 20px; padding: 0 5px; text-align: center; border-radius: 8px; color: var(--mud-palette-text-secondary); background: var(--mud-palette-action-default-hover); font-size: .6875rem; font-variant-numeric: tabular-nums; }
 @media (max-width: 760px) {
     .script-library-workspace { grid-template-columns: 1fr; height: auto; min-height: 0; }
     .script-library-tree-column { height: min(300px, 40dvh); }
     .script-library-editor-column { height: max(360px, 55dvh); }
     .script-library-workspace.script-library-picker .script-library-tree-column { height: 100%; }
 }
-@media (pointer: coarse) { .script-library-row-actions ::deep .mud-icon-button { min-width: 44px; min-height: 44px; } }
+@media (pointer: coarse) { .script-library-tree-scroll ::deep .mud-treeview-item-content { min-height: 40px; } }

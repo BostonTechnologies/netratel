@@ -182,6 +182,137 @@ public sealed class ScriptLibraryWorkspaceTests : AsyncBunitContext
         }
     }
 
+    [Fact]
+    public void Folder_counts_include_nested_scripts_and_follow_current_filters()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var scripts = new[]
+        {
+            new ScriptDto(1, "one.ps1", "/operations/", "", "", "PowerShell", now, now),
+            new ScriptDto(2, "two.ps1", "/operations/windows/nested/", "", "", "PowerShell", now, now),
+            new ScriptDto(3, "settings.json", "/operations/windows/", "", "{}", "Json", now, now)
+        };
+        var root = Assert.Single(ScriptTreeBuilder.Build(scripts, null, null));
+        Assert.Equal(3, root.ScriptCount);
+        Assert.Equal(2, root.Children.Single(node => node.IsFolder).ScriptCount);
+        Assert.Equal(2, Assert.Single(ScriptTreeBuilder.Build(scripts, "PowerShell", null)).ScriptCount);
+        Assert.Equal(1, Assert.Single(ScriptTreeBuilder.Build(scripts, null, "two.ps1")).ScriptCount);
+    }
+
+    [Fact]
+    public async Task Inline_name_is_saved_with_content_and_rename_failure_retains_the_draft()
+    {
+        var cut = Render<ScriptLibraryView>(p => p.Add(view => view.AllowEditing, true));
+        await SelectExistingAsync(cut);
+        Assert.Empty(cut.FindAll(".script-library-row-actions"));
+        Assert.Equal("button", cut.Find("[aria-label='Select script: Existing.ps1']").TagName.ToLowerInvariant());
+        Assert.True(cut.Find("[data-testid=script-editor-save]").HasAttribute("disabled"));
+        cut.Find("[data-testid=script-editor-name]").Input("  Renamed.ps1  ");
+        Assert.False(cut.Find("[data-testid=script-editor-save]").HasAttribute("disabled"));
+        transport.FailUpdate = true;
+        await cut.Find("[data-testid=script-editor-save]").ClickAsync(new());
+        Assert.Contains("already occupies", cut.Find("[data-testid=script-editor-error]").TextContent);
+        Assert.Equal("  Renamed.ps1  ", cut.Find("[data-testid=script-editor-name]").GetAttribute("value"));
+        Assert.Contains("unsaved", cut.Markup);
+        transport.FailUpdate = false;
+        await cut.Find("[data-testid=script-editor-save]").ClickAsync(new());
+        var update = transport.Updated.Last();
+        Assert.Equal("Renamed.ps1", update.Name);
+        Assert.Equal("saved content", update.Content);
+        Assert.Equal(9, update.ExpectedSourceRevision);
+        Assert.Equal("Renamed.ps1", cut.FindComponent<MudTreeView<ScriptTreeNode>>().Instance.SelectedValue!.Name);
+        Assert.True(cut.Find("[data-testid=script-editor-save]").HasAttribute("disabled"));
+    }
+
+    [Fact]
+    public async Task Full_screen_and_inline_editors_share_name_content_and_saved_revision()
+    {
+        var provider = Render<MudDialogProvider>();
+        var cut = Render<ScriptLibraryView>(p => p.Add(view => view.AllowEditing, true));
+        await SelectExistingAsync(cut);
+        var value = JSInterop.Setup<string>("blazorMonaco.editor.getValue", _ => true);
+        value.SetResult("inline draft");
+        var inline = cut.FindComponent<StandaloneCodeEditor>().Instance;
+        await cut.InvokeAsync(() => inline.OnDidInit.InvokeAsync());
+        await cut.InvokeAsync(() => inline.OnDidChangeModelContent.InvokeAsync(new ModelContentChangedEvent()));
+        cut.Find("[data-testid=script-editor-name]").Input("Inline.ps1");
+        var opening = cut.Find("[aria-label='Edit script full screen']").ClickAsync(new());
+        try
+        {
+            provider.WaitForElement("[aria-label='Exit full screen']");
+            Assert.Empty(cut.FindAll("[data-testid=script-library-editor]"));
+            var fullscreen = provider.FindComponent<StandaloneCodeEditor>().Instance;
+            Assert.Equal("inline draft", fullscreen.ConstructionOptions(fullscreen).Value);
+            Assert.Equal("Inline.ps1", provider.Find("[data-testid=script-editor-name]").GetAttribute("value"));
+            await provider.InvokeAsync(() => fullscreen.OnDidInit.InvokeAsync());
+            value.SetResult("full-screen saved content");
+            await provider.InvokeAsync(() => fullscreen.OnDidChangeModelContent.InvokeAsync(new ModelContentChangedEvent()));
+            provider.Find("[data-testid=script-editor-name]").Input("Full-screen.ps1");
+            await provider.Find("[data-testid=script-editor-save]").ClickAsync(new());
+            var saved = Assert.Single(transport.Updated);
+            Assert.Equal("Full-screen.ps1", saved.Name);
+            Assert.Equal("full-screen saved content", saved.Content);
+            Assert.Equal(9, saved.ExpectedSourceRevision);
+            provider.Find("[data-testid=script-editor-name]").Input("Later name.ps1");
+            value.SetResult("later unsaved content");
+            await provider.Find("[aria-label='Exit full screen']").ClickAsync(new());
+            await opening.WaitAsync(TimeSpan.FromSeconds(5));
+            var restored = cut.FindComponent<StandaloneCodeEditor>().Instance;
+            Assert.Equal("later unsaved content", restored.ConstructionOptions(restored).Value);
+            Assert.Equal("Later name.ps1", cut.Find("[data-testid=script-editor-name]").GetAttribute("value"));
+            Assert.Contains("unsaved", cut.Markup);
+            await cut.Find("[data-testid=script-editor-save]").ClickAsync(new());
+            Assert.Equal(10, transport.Updated.Last().ExpectedSourceRevision);
+            Assert.Equal("later unsaved content", transport.Updated.Last().Content);
+            Assert.Equal("Later name.ps1", transport.Updated.Last().Name);
+        }
+        finally
+        {
+            foreach (var dialog in provider.FindComponents<ScriptEditorDialog>())
+                await provider.InvokeAsync(() => dialog.Instance.MudDialog.Close());
+            await opening.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Fact]
+    public async Task Full_screen_delete_requires_confirmation_and_uses_selected_revision()
+    {
+        var provider = Render<MudDialogProvider>();
+        var cut = Render<ScriptLibraryView>(p => p.Add(view => view.AllowEditing, true));
+        await SelectExistingAsync(cut);
+        var opening = cut.Find("[aria-label='Edit script full screen']").ClickAsync(new());
+        Task? deleting = null;
+        try
+        {
+            provider.WaitForElement("[aria-label='Delete selected script']");
+            deleting = provider.Find("[aria-label='Delete selected script']").ClickAsync(new());
+            await provider.WaitForAssertionAsync(() => Assert.Equal("Delete 'Existing.ps1'?", provider.FindComponent<MudMessageBox>().Instance.Message));
+            Assert.Empty(transport.Deleted);
+            await provider.FindAll("button").Single(button => button.TextContent.Trim() == "Yes").ClickAsync(new());
+            await deleting.WaitAsync(TimeSpan.FromSeconds(5));
+            await opening.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal("/api/v1/script-library/7?expectedSourceRevision=9", Assert.Single(transport.Deleted));
+            Assert.Empty(cut.FindAll("[data-testid=script-library-editor]"));
+            Assert.Empty(provider.FindComponents<ScriptEditorDialog>());
+        }
+        finally
+        {
+            foreach (var box in provider.FindComponents<MudMessageBox>())
+                await box.FindAll("button").Single(button => button.TextContent.Trim() == "Cancel").ClickAsync(new());
+            foreach (var dialog in provider.FindComponents<ScriptEditorDialog>())
+                await provider.InvokeAsync(() => dialog.Instance.MudDialog.Close());
+            if (deleting is not null) await deleting.WaitAsync(TimeSpan.FromSeconds(5));
+            await opening.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    private static async Task SelectExistingAsync(IRenderedComponent<ScriptLibraryView> cut)
+    {
+        var tree = cut.FindComponent<MudTreeView<ScriptTreeNode>>();
+        var script = tree.Instance.Items!.Single(item => item.Value!.FullPath == "/operations/").Children!.Single().Value;
+        await cut.InvokeAsync(() => tree.Instance.SelectedValueChanged.InvokeAsync(script));
+    }
+
     [Theory]
     [InlineData("/", null, false, "/")]
     [InlineData("/operations/", null, false, "/operations/")]
@@ -212,6 +343,8 @@ public sealed class ScriptLibraryWorkspaceTests : AsyncBunitContext
         public List<UpdateScriptRequest> Updated { get; } = [];
         public List<string> Paths { get; } = [];
         public bool FailCreate { get; set; }
+        public bool FailUpdate { get; set; }
+        public List<string> Deleted { get; } = [];
         public TaskCompletionSource<HttpResponseMessage>? PendingList { get; set; }
         public TaskCompletionSource<HttpResponseMessage>? PendingUpdate { get; set; }
         public bool DelayedListStarted { get; private set; }
@@ -236,7 +369,13 @@ public sealed class ScriptLibraryWorkspaceTests : AsyncBunitContext
             if (request.Method == HttpMethod.Put)
             {
                 Updated.Add((await request.Content!.ReadFromJsonAsync<UpdateScriptRequest>(cancellationToken))!);
+                if (FailUpdate) return new(HttpStatusCode.Conflict) { Content = JsonContent.Create(new { remediation = "A script already occupies this library path." }) };
                 return PendingUpdate is null ? new(HttpStatusCode.OK) { Content = JsonContent.Create(new { id = 7UL, sourceRevision = 9 + Updated.Count }) } : await PendingUpdate.Task;
+            }
+            if (request.Method == HttpMethod.Delete)
+            {
+                Deleted.Add(request.RequestUri!.PathAndQuery);
+                return new(HttpStatusCode.NoContent);
             }
             throw new InvalidOperationException($"Unexpected script request {request.Method}.");
         }

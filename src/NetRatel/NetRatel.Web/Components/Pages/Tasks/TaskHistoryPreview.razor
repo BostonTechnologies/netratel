@@ -1,0 +1,161 @@
+@using NetRatel.Web.Services
+
+@inject TaskApiService TaskApi
+@implements IDisposable
+
+<section id="@($"task-history-preview-{Item.Id}")" class="task-history-preview" aria-label="Task run summary" data-testid="task-history-preview">
+    <div class="task-history-preview-toolbar">
+        <MudText Typo="Typo.subtitle2">Run summary · Task #@Item.Id</MudText>
+        <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+            <MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small" aria-label="Refresh task preview" Disabled="_loading" OnClick="LoadAsync" />
+            <MudButton Variant="Variant.Text" Size="Size.Small" EndIcon="@Icons.Material.Filled.OpenInNew" Href="@FullOutputHref">Full output</MudButton>
+        </MudStack>
+    </div>
+
+    <dl class="task-history-preview-facts">
+        <div><dt>Target</dt><dd>@TaskPresentation.Target(Item.ClientHostName, Item.ClientDisplayName, Item.ClientName)</dd></div>
+        <div><dt>Tenant / environment</dt><dd>@TaskPresentation.Tenant(Item.TenantName, Item.TenantId) · @(Item.Environment?.ToString() ?? "Not recorded")</dd></div>
+        <div><dt>Task type</dt><dd>@(Item.ScriptType ?? Item.TaskType)</dd></div>
+        <div><dt>Status</dt><dd>@TaskPresentation.StatusLabel(_task?.Status ?? Item.Status)</dd></div>
+        <div><dt>Queued</dt><dd>@FormatTimestamp(Item.Created)</dd></div>
+        <div><dt>Started</dt><dd>@FormatTimestamp(_task?.StartedAt ?? Item.StartedAt, TaskPresentation.MissingStart(_task?.Status ?? Item.Status))</dd></div>
+        <div><dt>@((_task?.Status ?? Item.Status) == "Unknown" ? "Reconciled" : "Completed")</dt><dd>@FormatTimestamp(_task?.CompletedAt ?? Item.CompletedAt, TaskPresentation.IsTerminal(_task?.Status ?? Item.Status) ? "Not recorded" : "Waiting")</dd></div>
+        <div><dt>Exit code</dt><dd>@((_task?.ExitCode ?? Item.ExitCode)?.ToString() ?? "Not recorded")</dd></div>
+        <div class="task-history-preview-request"><dt>Request ID</dt><dd>@Item.RequestId</dd></div>
+        @if (Item.AgentId is { } agentId)
+        {
+            <div class="task-history-preview-request"><dt>Agent ID</dt><dd>@agentId</dd></div>
+        }
+    </dl>
+
+    @if (!string.IsNullOrWhiteSpace(_task?.StatusMessage ?? Item.StatusMessage))
+    {
+        <p class="task-history-preview-reason">@BoundReason(_task?.StatusMessage ?? Item.StatusMessage)</p>
+    }
+
+    <div class="task-history-preview-output">
+        <MudText Typo="Typo.subtitle2">Console preview</MudText>
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="my-2" aria-label="Loading task preview" />
+        }
+        else if (_error is not null)
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true">@_error</MudAlert>
+        }
+        else if (_largeOutput)
+        {
+            <MudText Typo="Typo.body2" Color="Color.Secondary">This result is too large for a quick preview. Open Full output to inspect it.</MudText>
+        }
+        else if (!string.IsNullOrWhiteSpace(_output))
+        {
+            <pre class="task-history-preview-console" tabindex="0" aria-label="Console output preview">@_output</pre>
+            @if (_truncated)
+            {
+                <MudText Typo="Typo.caption" Color="Color.Secondary">Preview shortened. Open Full output for the remaining output.</MudText>
+            }
+        }
+        else
+        {
+            <MudText Typo="Typo.body2" Color="Color.Secondary">@(TaskPresentation.IsTerminal(_task?.Status ?? Item.Status) ? "No execution output was captured." : "No output snapshot is available yet. Open Full output for live logs.")</MudText>
+        }
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public TaskHistoryItemDto Item { get; set; } = default!;
+
+    private const int MaxResultCharacters = 64 * 1024;
+    private const int MaxPreviewCharacters = 12 * 1024;
+    private const int MaxPreviewLines = 60;
+    private readonly CancellationTokenSource _disposeCts = new();
+    private TaskDto? _task;
+    private int? _loadedId;
+    private bool _loading;
+    private bool _disposed;
+    private bool _largeOutput;
+    private bool _truncated;
+    private string? _error;
+    private string _output = string.Empty;
+    private string FullOutputHref => $"/tasks/request/{Uri.EscapeDataString(Item.RequestId)}";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedId == Item.Id) return;
+        _loadedId = Item.Id;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        if (_loading || _disposed) return;
+        _loading = true;
+        _error = null;
+        _output = string.Empty;
+        _largeOutput = false;
+        _truncated = false;
+        try
+        {
+            var task = await TaskApi.GetAsync(Item.Id, _disposeCts.Token);
+            if (_disposed) return;
+            _task = task;
+            if (task is null)
+            {
+                _error = "Task details are unavailable. Refresh the preview or open the full task view.";
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(task.ReturnData)) return;
+            _largeOutput = task.ReturnData.Length > MaxResultCharacters;
+            if (_largeOutput) return;
+
+            var plain = ExecOutputFormatter.ParseExecReturn(task.ReturnData).Plain;
+            using var reader = new StringReader(plain);
+            var preview = new System.Text.StringBuilder();
+            for (var lineNumber = 0; reader.ReadLine() is { } line; lineNumber++)
+            {
+                var remaining = MaxPreviewCharacters - preview.Length;
+                if (lineNumber == MaxPreviewLines || remaining <= 0)
+                {
+                    _truncated = true;
+                    break;
+                }
+                if (line.Length >= remaining)
+                {
+                    preview.Append(line.AsSpan(0, remaining));
+                    _truncated = line.Length > remaining || reader.Peek() >= 0;
+                    break;
+                }
+                preview.Append(line).Append('\n');
+            }
+            _output = preview.ToString();
+        }
+        catch (OperationCanceledException) when (_disposeCts.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (HttpRequestException)
+        {
+            if (!_disposed) _error = "Task details could not be loaded. Refresh the preview or open the full task view.";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            if (!_disposed) _error = "Task details could not be read. Open the full task view for more information.";
+        }
+        finally
+        {
+            if (!_disposed) _loading = false;
+        }
+    }
+
+    private static string FormatTimestamp(DateTimeOffset? timestamp, string missing = "Not recorded")
+        => timestamp?.ToLocalTime().ToString("yyyy/MM/dd HH:mm:ss") ?? missing;
+
+    private static string? BoundReason(string? reason) => reason?.Length > 2048 ? reason[..2048] + "…" : reason;
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _disposeCts.Cancel();
+        _disposeCts.Dispose();
+    }
+}
