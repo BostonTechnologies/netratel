@@ -41,7 +41,7 @@ public sealed class WindowsSoftwareInventoryCollector(IWindowsSoftwareRegistry? 
             try
             {
                 var appx = await _runner.RunAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-                    "$ErrorActionPreference='Stop'; Get-AppxPackage -AllUsers | Select-Object Name,Version,Publisher,@{n='Architecture';e={$_.Architecture.ToString()}},PackageFamilyName,InstallLocation | ConvertTo-Json -Compress"], ct).ConfigureAwait(false);
+                    "$ErrorActionPreference='Stop'; if (Get-Command Get-AppxPackage -ErrorAction SilentlyContinue) { Get-AppxPackage -AllUsers | Select-Object Name,Version,Publisher,@{n='Architecture';e={$_.Architecture.ToString()}},PackageFamilyName,InstallLocation | ConvertTo-Json -Compress }"], ct).ConfigureAwait(false);
                 if (appx.ExitCode != 0 || appx.Truncated) errors.Add("appx_scan_failed");
                 else if (!string.IsNullOrWhiteSpace(appx.Output))
                 {

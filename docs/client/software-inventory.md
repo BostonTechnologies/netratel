@@ -49,7 +49,7 @@ is still online.
 | Platform/source | Read-only collection |
 | --- | --- |
 | Windows registry | HKLM and HKCU uninstall keys, both registry views, plus loaded user SID hives. Only display name/version, publisher, install location/date and key identity are read. Unloaded user hives are not mounted. |
-| Windows AppX/MSIX | `Get-AppxPackage -AllUsers` when Windows PowerShell is available. Records family identity, architecture, publisher and install location. Access failures make the scan partial. |
+| Windows AppX/MSIX | `Get-AppxPackage -AllUsers` when Windows PowerShell and the AppX cmdlet are available. Records family identity, architecture, publisher and install location. Access failures make the scan partial. |
 | dpkg / apt | `dpkg-query` installed-state records; apt uses this database. Residual config-only packages are excluded. |
 | rpm / dnf / zypper | `rpm -qa`; dnf and zypper use this database. |
 | pacman | `pacman -Q`. |
@@ -66,7 +66,10 @@ keys. macOS reports unsupported and does not submit an authoritative empty scan.
 
 Each collection has a server-issued ID bound to its authenticated tenant and
 agent. Uploads contain gzip-compressed JSON in base64, up to 100 packages per
-chunk, 1 MiB expanded per chunk and 1,000 chunks (100,000 packages). Duplicate
+chunk, 1 MiB expanded per chunk and 1,000 chunks (up to 100,000 packages).
+Packing respects both package count and serialized byte size, including escaped
+Unicode metadata. An inventory exceeding the total chunk capacity is partial
+and cannot establish removals. Duplicate
 chunks require identical hashes and are acknowledged without applying changes
 again. Chunks can arrive out of order. A collection becomes authoritative in one
 database transaction only after all chunks arrive. A superseded collection cannot

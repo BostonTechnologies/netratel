@@ -59,6 +59,18 @@ public sealed class SoftwareInventoryCollectorTests
         Assert.Throws<ArgumentException>(() => SoftwareInventoryWire.Decode(Convert.ToBase64String(bytes.ToArray())));
     }
 
+    [Fact]
+    public void Long_unicode_metadata_is_split_by_expanded_bytes_as_well_as_package_count()
+    {
+        var packages = Enumerable.Range(0, 102).Select(index => new SoftwarePackage("Tool " + index + new string('\u754c', 500),
+            new string('\u754c', 200), new string('\u754c', 500), "x64", "package-" + index + new string('\u754c', 500), "registry",
+            new string('\u754c', 2000))).ToArray();
+        var chunks = SoftwareInventoryWire.Encode(Guid.NewGuid(), new(packages, true, "windows", []), DateTimeOffset.UtcNow);
+        chunks.Count.Should().BeGreaterThan(1);
+        chunks.SelectMany(chunk => SoftwareInventoryWire.Decode(chunk.Payload)).Should().Equal(packages);
+        chunks.Should().OnlyContain(chunk => chunk.Complete && chunk.Count == chunks.Count);
+    }
+
     private sealed class Registry(WindowsSoftwareRegistryEntry[] entries) : IWindowsSoftwareRegistry
     { public WindowsSoftwareRegistryResult Read() => new(entries, []); }
     private sealed class NoCommands : ISoftwareCommandRunner

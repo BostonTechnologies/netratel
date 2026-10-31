@@ -93,14 +93,31 @@ public static class SoftwareInventoryWire
     public static IReadOnlyList<SoftwareChunkUpload> Encode(Guid id, SoftwareCollection collection, DateTimeOffset detected)
     {
         if (collection.Packages.Count > PackagesPerChunk * MaximumChunks) throw new ArgumentException("Inventory exceeds the supported package count.");
-        var pages = collection.Packages.Chunk(PackagesPerChunk).ToArray();
-        if (pages.Length == 0) pages = [Array.Empty<SoftwarePackage>()];
+        var pages = new List<SoftwarePackage[]>();
+        var pending = new List<SoftwarePackage>();
+        var bytes = 2; // JSON array delimiters.
+        var truncated = false;
+        foreach (var package in collection.Packages)
+        {
+            var length = JsonSerializer.SerializeToUtf8Bytes(package, JsonOptions).Length;
+            if (length + 2 > MaximumChunkBytes) throw new ArgumentException("Package metadata exceeds the chunk limit.");
+            if (pending.Count == PackagesPerChunk || bytes + length + (pending.Count == 0 ? 0 : 1) > MaximumChunkBytes)
+            {
+                pages.Add(pending.ToArray()); pending.Clear(); bytes = 2;
+                if (pages.Count == MaximumChunks) { truncated = true; break; }
+            }
+            bytes += length + (pending.Count == 0 ? 0 : 1);
+            pending.Add(package);
+        }
+        if (pending.Count > 0) pages.Add(pending.ToArray());
+        if (pages.Count == 0) pages.Add([]);
+        IReadOnlyList<string> errors = truncated ? ["inventory_capacity_exceeded", .. collection.Errors.Take(31)] : collection.Errors;
         return pages.Select((page, index) =>
         {
             using var output = new MemoryStream();
             using (var gzip = new GZipStream(output, CompressionLevel.Fastest, true)) JsonSerializer.Serialize(gzip, page, JsonOptions);
-            return new SoftwareChunkUpload(id, index, pages.Length, collection.Complete, collection.Os, detected,
-                collection.Errors, Convert.ToBase64String(output.ToArray()));
+            return new SoftwareChunkUpload(id, index, pages.Count, collection.Complete && !truncated, collection.Os, detected,
+                errors, Convert.ToBase64String(output.ToArray()));
         }).ToArray();
     }
 
