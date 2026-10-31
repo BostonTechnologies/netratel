@@ -35,7 +35,12 @@ on each request; role and assignment changes are therefore reflected on the
 next operation. Existing long-running work is not retroactively elevated;
 subsequent dispatch and target/operation-policy checks use current access.
 MCP target/environment policy, confirmations, and command admission remain
-additional constraints and cannot be bypassed by a role.
+additional constraints for delegated operations and cannot be bypassed by a role.
+Interactive instance administrators manage the policies themselves through current
+application authority, not a self-granted MCP parent policy. Their policy changes
+still require exact preview/confirmation, current authority, version checks and
+immutable change audits. Scoped policy administrators retain bounded-parent
+requirements. Credentials and service tokens cannot use this account-only path.
 
 The instance-administration API is at `/api/v2/access`; its compact browser
 editor is `/admin/access`. They provide the role catalog, local-account

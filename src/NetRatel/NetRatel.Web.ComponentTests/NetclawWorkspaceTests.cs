@@ -81,6 +81,11 @@ public sealed class NetclawWorkspaceTests : AsyncBunitContext
         var cut = Render<Tools>();
         await cut.WaitForAssertionAsync(() => Assert.Contains("Existing evidence", cut.Markup));
         Assert.True(cut.Find("[data-testid=ai-new-investigation]").HasAttribute("disabled"));
+        Assert.Equal("Investigations", cut.Find(".ai-toolbar h1").TextContent);
+        Assert.NotNull(cut.Find(".ai-toolbar select"));
+        Assert.NotNull(cut.Find(".ai-toolbar [data-testid=ai-new-investigation]"));
+        Assert.Equal(3, cut.FindAll(".ai-metrics > div").Count);
+        Assert.NotNull(cut.Find(".ai-workspace .ai-conversation"));
         Assert.True(cut.Find("textarea").HasAttribute("disabled"));
         Assert.True(cut.FindAll("button").Single(x => x.TextContent == "Send").HasAttribute("disabled"));
         Assert.Empty(api.Messages);

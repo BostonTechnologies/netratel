@@ -97,7 +97,7 @@
                             <td colspan="6">
                                 <details class="monitoring-alert-details" data-testid="monitoring-alert-details">
                                     <summary>
-                                        <span class="monitoring-detail-title"><MudIcon Icon="@Icons.Material.Filled.InfoOutline" Size="Size.Small" /><strong>Alert details</strong><span class="monitoring-secondary">@RuleName(row.Series.RuleId)</span></span>
+                                        <span class="monitoring-detail-title"><MudIcon Icon="@Icons.Material.Outlined.Info" Size="Size.Small" /><strong>Alert details</strong><span class="monitoring-secondary">@RuleName(row.Series.RuleId)</span></span>
                                         <span class="monitoring-detail-chevron"><MudIcon Icon="@Icons.Material.Filled.ExpandMore" Size="Size.Small" /></span>
                                     </summary>
                                     <div class="monitoring-detail-grid">
@@ -105,7 +105,7 @@
                                             <h3><MudIcon Icon="@Icons.Material.Filled.Dns" Size="Size.Small" />Target &amp; rule</h3>
                                             <dl>
                                                 <dt>Rule</dt><dd>@RuleName(row.Series.RuleId)</dd>
-                                                <dt>Client</dt><dd>@if (MonitoringOfflinePresentation.IsSeries(row.Series)) { <span>Monitored clients · @row.OfflineAgentIds.Length offline</span> } else { <ClientIdentity Identity="@State.ClientIdentity(row.Series.AgentId)" /> }</dd>
+                                                <dt>Client</dt><dd>@if (MonitoringOfflinePresentation.IsSeries(row.Series)) { <span>Monitored clients · @(row.OfflineAgentIds.IsDefaultOrEmpty ? 0 : row.OfflineAgentIds.Length) offline</span> } else { <ClientIdentity Identity="@State.ClientIdentity(row.Series.AgentId)" /> }</dd>
                                                 <dt>Resource</dt><dd><code>@row.Series.ResourceKey</code></dd>
                                                 @if (!MonitoringOfflinePresentation.IsSeries(row.Series)) { <dt>Client ID</dt><dd><code>@row.Series.AgentId</code></dd> }
                                                 @if (row.Occurrence is { } identified) { <dt>Occurrence</dt><dd><code>@identified.OccurrenceId</code></dd> }

@@ -293,6 +293,39 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         Assert.Equal(receipt.IncidentUrl, cut.Find("[data-testid='monitoring-incident-receipt'] a").GetAttribute("href"));
         Assert.Contains("noopener", cut.Find("[data-testid='monitoring-incident-receipt'] a").GetAttribute("rel"));
         Assert.Contains(cut.FindAll("a"), link => link.GetAttribute("href") == $"/flows?tenantId=1&run={runId:D}");
+        var detailRow = cut.Find("[data-testid=monitoring-detail-row]");
+        Assert.Equal("6", detailRow.QuerySelector("td")!.GetAttribute("colspan"));
+        Assert.Equal(4, detailRow.QuerySelectorAll(".monitoring-detail-card").Length);
+        Assert.NotNull(detailRow.QuerySelector("details > summary"));
+        Assert.Contains("monitoring-detail-button", cut.Find("[data-testid=monitoring-rateldesk-ticket]").ClassName);
+        Assert.Empty(cut.Find("[data-testid=monitoring-series-row]").QuerySelectorAll(".monitoring-detail-card"));
+    }
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData("javascript:alert(1)", false)]
+    [InlineData("http://desk.example/incidents/incident-123", false)]
+    public void Incident_card_never_invents_or_renders_an_unsafe_ticket_link(string? incidentUrl, bool receiptVisible)
+    {
+        var agent = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var draft = MonitoringRuleDraft.Create(); draft.Name = "SQL CPU"; draft.Enabled = true; draft.AgentIds.Add(agent);
+        var rule = draft.Build(1) with { PublishedFlowVersionId = Guid.NewGuid(), ExecutionPrincipalId = "server-attributed-operator" };
+        var now = DateTimeOffset.UtcNow;
+        var evidence = new MonitoringEvidenceDto(new(1, 1), Guid.NewGuid(), now, now, MonitoringEvidenceQuality.Fresh, MonitoringClassification.Breach, 95, 0, null);
+        var runId = Guid.NewGuid();
+        var receipt = new MonitoringIncidentReceiptDto("incident-123", "NR-123", incidentUrl);
+        var occurrence = new MonitoringOccurrenceDto(Guid.NewGuid(), Guid.NewGuid(), now, now.AddMinutes(-1), rule, evidence,
+            MonitoringFlowDispatchDisposition.Completed, FlowOutcome: new(runId, MonitoringFlowOutcomeKind.Succeeded, now, Receipt: receipt));
+        var state = new MonitoringSeriesState(new(1, rule.RuleId, agent, "cpu"), 1, 1, MonitoringPhase.Firing, MonitoringEvidenceQuality.Fresh,
+            LatestEvidence: evidence, Occurrence: occurrence, ApplicableBypassIds: []);
+        _api.ConfigurationRead = (tenant, _) => Task.FromResult(_api.Configuration(tenant) with { Rules = [rule] });
+        _api.SeriesRead = (_, _, _) => Task.FromResult(new MonitoringSeriesPageDto([state], null));
+        var cut = Render<MonitoringPage>();
+        cut.WaitForAssertion(() => Assert.Single(cut.FindAll("[data-testid=monitoring-detail-row]")));
+        Assert.Empty(cut.FindAll("[data-testid=monitoring-rateldesk-ticket]"));
+        Assert.Equal(receiptVisible ? 1 : 0, cut.FindAll("[data-testid=monitoring-incident-receipt]").Count);
+        if (receiptVisible) Assert.Contains("no ticket link was provided", cut.Markup);
+        else Assert.Contains("No validated incident receipt", cut.Markup);
+        Assert.DoesNotContain("javascript:", cut.Markup);
     }
     [Fact]
     public void GroupOnlyCreateAndFlowOnlyEditSaveDirectlyAndReadBackExactVersion()

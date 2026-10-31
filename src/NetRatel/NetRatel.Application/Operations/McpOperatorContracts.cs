@@ -476,6 +476,10 @@ public sealed record McpOperatorDecision(
     long? SelectedPolicyVersion = null,
     bool DevelopmentEnvironmentAccess = false)
 {
+    /// <summary>Trusted account-adapter authority; never accepted from request JSON.</summary>
+    [JsonIgnore]
+    public McpOperatorAccountAuthority? AccountAuthority { get; init; }
+
     public static McpOperatorDecision Denied(
         McpOperatorAccessRequest request,
         string code,

@@ -3,8 +3,8 @@
 .ai-toolbar { flex: 0 0 auto; align-items: flex-end; }
 .ai-toolbar h1 { margin: 0 .35rem 0 0; align-self: center; font-size: 1.25rem; letter-spacing: -.025em; }
 .ai-toolbar > label { min-width: 180px; max-width: 280px; gap: .15rem; }
-.ai-toolbar select { min-height: 34px; padding: .45rem .6rem; }
-.ai-toolbar > button { min-height: 34px; padding: .45rem .7rem; }
+.ai-ops .ai-toolbar select { min-height: 34px; padding: .45rem .6rem; }
+.ai-ops .ai-toolbar > button { min-height: 34px; padding: .45rem .7rem; }
 .ai-connection-slot { margin-left: auto; align-self: center; min-width: 0; }
 .ai-ops a { color: var(--mud-palette-primary); text-decoration: underline; text-underline-offset: 3px; }
 .ai-ops label { display: flex; flex-direction: column; gap: .3rem; font-size: .78rem; color: var(--mud-palette-text-secondary); }

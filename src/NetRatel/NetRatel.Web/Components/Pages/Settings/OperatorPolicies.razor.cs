@@ -384,7 +384,10 @@ public partial class OperatorPolicies
     private static string Explain(PolicyApiException exception) => exception.Code switch
     {
         "operator_policy_self_escalation" => "A policy administrator cannot use this change to alter their own authority. Select a separate principal.",
-        "target_policy_missing" or "tenant_not_authorized" or "target_operation_not_authorized" => "The signed-in administrator needs an existing bounded parent policy for this target and lifecycle operation.",
+        "target_policy_missing" => "This account has scoped policy-administration access but no matching parent policy for this target. Use an instance-administrator account or obtain a bounded grant.",
+        "tenant_not_authorized" => "This account is not authorized to administer policies for the selected tenant.",
+        "target_operation_not_authorized" => "The current delegated policy does not permit this lifecycle operation on the selected target.",
+        "instance_account_authority_changed" => "Your instance-administrator authority changed. Refresh account access and preview this change again.",
         "operator_policy_version_conflict" or "confirmation_plan_stale" => "The policy or its authorizing target facts changed after review.",
         "confirmation_plan_expired" => "This confirmation preview expired.",
         "target_profile_missing" => "Create the target's trusted profile before changing its operator policy.",

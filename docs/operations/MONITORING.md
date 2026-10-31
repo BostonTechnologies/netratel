@@ -66,3 +66,13 @@ API validation budgets freshness for the default cadence and jitter: at least 10
 Monitoring request bodies, configuration aggregates and response pages are capped at 4 MiB. Paged durable reads use continuation cursors when their byte budget fills; full oversized responses and writes fail visibly rather than truncate. Other principal limits include 256 rules and 128 groups per tenant, 4,096 eligible target clients, 1,024 series per client, 16,384 series per tenant, 200 rows per read, 50 outbox claims, eight delivery attempts and 90-day history retention. Capacity limits can leave evidence Unknown and must never fabricate recovery.
 
 Acceptance includes TimeProvider-based evaluator tests, actual gRPC acknowledgement/failure barriers, exact tenant/resource API negatives, legacy notification disclosure/mutation guards and real PostgreSQL rollback/concurrency/restart/lease tests. CI does not enroll or manage live OS clients.
+
+## Expanded alert evidence
+
+Open **Alert details** below an alert row for a full-width view of its target and
+rule, observed/received evidence, automation outcome, and incident/acknowledgement.
+**Flow run and receipt** and **Published flow** open the tenant-qualified records.
+**Open RatelDesk ticket** appears only for a validated incident receipt containing
+a safe ticket URL. A missing link is shown as missing rather than reconstructed
+from an internal identifier. Flow success remains distinct from confirmed
+incident evidence; unconfirmed and absent results are labelled explicitly.
