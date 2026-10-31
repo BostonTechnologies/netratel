@@ -19,6 +19,8 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NetRatel.API.Endpoints.Client;
 using NetRatel.API.Middleware;
+using NetRatel.API.Security.Authorization;
+using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Application.Operations;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
@@ -27,7 +29,7 @@ using Xunit;
 
 namespace NetRatel.Tests.API;
 
-public sealed class McpOperatorPolicyMutationEndpointTests
+public sealed partial class McpOperatorPolicyMutationEndpointTests
 {
     [Theory]
     [InlineData("create")]
@@ -1130,7 +1132,9 @@ public sealed class McpOperatorPolicyMutationEndpointTests
         IMcpOperatorAuthorization authorization,
         IMcpOperatorPolicyAdministration administration,
         IMcpOperatorConfirmationService confirmations,
-        bool accountRoutes = false)
+        bool accountRoutes = false,
+        IEffectiveAccessService? effectiveAccess = null,
+        string environment = "Development")
     {
         var delegationOptions = new McpOperatorDelegationOptions
         {
@@ -1144,7 +1148,7 @@ public sealed class McpOperatorPolicyMutationEndpointTests
         var builder = Host.CreateDefaultBuilder();
         builder.ConfigureWebHost(web =>
         {
-            web.UseEnvironment(Environments.Development);
+            web.UseEnvironment(environment);
             web.UseTestServer();
             web.ConfigureServices(services =>
             {
@@ -1160,7 +1164,16 @@ public sealed class McpOperatorPolicyMutationEndpointTests
                     policy.RequireAuthenticatedUser();
                 }));
                 services.AddAuthorization(options => options.AddPolicy("McpOperatorPolicyAdmin", policy =>
-                    policy.RequireAuthenticatedUser().RequireClaim("test-policy-permission", "mcp.policy.admin")));
+                {
+                    policy.RequireAuthenticatedUser();
+                    if (effectiveAccess is null) policy.RequireClaim("test-policy-permission", "mcp.policy.admin");
+                    else policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.McpPolicyAdministration));
+                }));
+                if (effectiveAccess is not null)
+                {
+                    services.AddSingleton<IEffectiveAccessService>(effectiveAccess);
+                    services.AddSingleton<IAuthorizationHandler, EffectiveAccessHandler>();
+                }
                 services.AddSingleton(delegationOptions);
                 services.AddSingleton<McpOperatorDelegationTokenService>();
                 services.AddSingleton<IMcpOperatorAuthorization>(authorization);
@@ -1446,11 +1459,12 @@ public sealed class McpOperatorPolicyMutationEndpointTests
             var mode = Request.Headers.Authorization.ToString();
             if (mode == "M2M") return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(
                 new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "netratel-mcp-http-dev")], Scheme.Name)), Scheme.Name)));
-            if (mode is not ("Account" or "AccountReadOnly" or "AccountCredential"))
+            if (mode is not ("Account" or "AccountReadOnly" or "AccountCredential" or "AccountService"))
                 return Task.FromResult(AuthenticateResult.Fail("Missing authentication."));
             var claims = new List<Claim> { new("sub", "policy.admin@example.test"), new("netratel_principal_id", "policy-admin-principal") };
             if (mode != "AccountReadOnly") claims.Add(new("test-policy-permission", "mcp.policy.admin"));
             if (mode == "AccountCredential") claims.Add(new("netratel_integration_credential_id", "synthetic-credential"));
+            if (mode == "AccountService") claims.Add(new("token_use", "netratel_service"));
             return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(
                 new ClaimsPrincipal(new ClaimsIdentity(claims, "Account")), Scheme.Name)));
         }

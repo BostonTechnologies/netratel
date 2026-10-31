@@ -41,7 +41,8 @@ public static class McpOperatorPolicyMutationEndpoints
         var group = app.MapGroup("/api/v2/mcp-operator/policies/manage")
             .WithTags("MCP Operator Administration")
             .RequireAuthorization("McpOperatorPolicyAdmin")
-            .WithMetadata(new AccountPolicyMutation());
+            .WithMetadata(new AccountPolicyMutation())
+            .AddEndpointFilter(InstancePolicyAccountAdmission.FilterAsync);
         group.MapGet("/self", (HttpContext http, IHostEnvironment environment) =>
             TryAccountContext(http, environment, out var context)
                 ? Results.Ok(new { subject = context!.Principal.Subject, environment = context.Environment })
@@ -74,12 +75,12 @@ public static class McpOperatorPolicyMutationEndpoints
             var decision = await EvaluateAsync(context, target, payloadHash, CreateOperation, authorization, administration, cancellationToken).ConfigureAwait(false);
             if (!decision.IsAllowed)
                 return Failure(decision.FailureCode ?? "target_policy_missing", target.TenantId, target.AgentId, context.CorrelationId);
-            if (WouldEscalateCaller(request.Policy, context.Principal))
+            if (context.InstanceAccount is null && WouldEscalateCaller(request.Policy, context.Principal))
                 return Failure("operator_policy_self_escalation", target.TenantId, target.AgentId, context.CorrelationId, StatusCodes.Status409Conflict);
 
             try
             {
-                await administration.ValidateDraftAsync(request.Policy, context.Principal.Subject, cancellationToken).ConfigureAwait(false);
+                await administration.ValidateDraftAsync(request.Policy, context.Principal.Subject, cancellationToken, decision.AccountAuthority).ConfigureAwait(false);
             }
             catch (KeyNotFoundException)
             {
@@ -132,12 +133,12 @@ public static class McpOperatorPolicyMutationEndpoints
             var decision = await EvaluateAsync(context, target, payloadHash, CreateOperation, authorization, administration, cancellationToken).ConfigureAwait(false);
             if (!decision.IsAllowed)
                 return Failure(decision.FailureCode ?? "target_policy_missing", target.TenantId, target.AgentId, context.CorrelationId);
-            if (WouldEscalateCaller(request.Policy, context.Principal))
+            if (context.InstanceAccount is null && WouldEscalateCaller(request.Policy, context.Principal))
                 return Failure("operator_policy_self_escalation", target.TenantId, target.AgentId, context.CorrelationId, StatusCodes.Status409Conflict);
 
             try
             {
-                await administration.ValidateDraftAsync(request.Policy, context.Principal.Subject, cancellationToken).ConfigureAwait(false);
+                await administration.ValidateDraftAsync(request.Policy, context.Principal.Subject, cancellationToken, decision.AccountAuthority).ConfigureAwait(false);
             }
             catch (KeyNotFoundException)
             {
@@ -166,7 +167,7 @@ public static class McpOperatorPolicyMutationEndpoints
             {
                 var created = await ExecuteMutationAsync(
                     decision, context, target, payloadHash, CreateOperation, authorization, administration,
-                    mutationToken => administration.CreateAsync(request.Policy, context.Principal.Subject, mutationToken),
+                    mutationToken => administration.CreateAsync(request.Policy, context.Principal.Subject, mutationToken, decision.AccountAuthority),
                     cancellationToken).ConfigureAwait(false);
                 await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, PolicyCreateResultReference(created), CancellationToken.None).ConfigureAwait(false);
                 return Results.Created(
@@ -400,7 +401,7 @@ public static class McpOperatorPolicyMutationEndpoints
         var policy = existing.Policy!;
         var target = existing.Target!;
 
-        if (!CanReplace(policy, request.ExpectedVersion, request.Policy!, context!.Principal, out failure))
+        if (!CanReplace(policy, request.ExpectedVersion, request.Policy!, context!.Principal, out failure, context.InstanceAccount is not null))
             return Failure(failure!, target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: ReplaceOperation);
 
         var payloadHash = PayloadHash(ReplaceOperation, new PolicyReplacePayload(request.PolicyId, request.ExpectedVersion, request.Policy!));
@@ -410,7 +411,7 @@ public static class McpOperatorPolicyMutationEndpoints
 
         try
         {
-            await administration.ValidateDraftAsync(request.Policy!, context.Principal.Subject, cancellationToken).ConfigureAwait(false);
+            await administration.ValidateDraftAsync(request.Policy!, context.Principal.Subject, cancellationToken, decision.AccountAuthority).ConfigureAwait(false);
         }
         catch (KeyNotFoundException)
         {
@@ -460,7 +461,7 @@ public static class McpOperatorPolicyMutationEndpoints
         if (await TryReplayMutationAsync(confirmationRequest, confirmations, administration, target, context!, ReplaceOperation,
             request.PolicyId, request.ExpectedVersion, request.Policy!, cancellationToken).ConfigureAwait(false) is { } replay)
             return replay;
-        if (!CanReplace(policy, request.ExpectedVersion, request.Policy!, context!.Principal, out failure))
+        if (!CanReplace(policy, request.ExpectedVersion, request.Policy!, context!.Principal, out failure, context.InstanceAccount is not null))
         {
             // A concurrent confirmation may finish between the receipt lookup
             // and mutable version/state validation. Never consume a stale new plan.
@@ -471,7 +472,7 @@ public static class McpOperatorPolicyMutationEndpoints
 
         try
         {
-            await administration.ValidateDraftAsync(request.Policy!, context.Principal.Subject, cancellationToken).ConfigureAwait(false);
+            await administration.ValidateDraftAsync(request.Policy!, context.Principal.Subject, cancellationToken, decision.AccountAuthority).ConfigureAwait(false);
         }
         catch (KeyNotFoundException)
         {
@@ -499,7 +500,7 @@ public static class McpOperatorPolicyMutationEndpoints
             var replaced = await ExecuteMutationAsync(
                 decision, context, target, payloadHash, ReplaceOperation, authorization, administration,
                 mutationToken => administration.ReplaceAsync(request.PolicyId, request.ExpectedVersion,
-                    request.Policy!, context.Principal.Subject, mutationToken),
+                    request.Policy!, context.Principal.Subject, mutationToken, decision.AccountAuthority),
                 cancellationToken).ConfigureAwait(false);
             // The mutation is durable; preserve its receipt even if response delivery is cancelled.
             await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, PolicyMutationResultReference(replaced), CancellationToken.None).ConfigureAwait(false);
@@ -553,7 +554,7 @@ public static class McpOperatorPolicyMutationEndpoints
         var target = existing.Target!;
         if (!SameTarget(policy.TargetSelector, request.Target))
             return Failure("policy_target_immutable", target.TenantId, target.AgentId, context!.CorrelationId, mutationOperation: DisableOperation);
-        if (!CanDisable(policy, request.ExpectedVersion, context!.Principal, out failure))
+        if (!CanDisable(policy, request.ExpectedVersion, context!.Principal, out failure, context.InstanceAccount is not null))
             return Failure(failure!, target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: DisableOperation);
 
         var payloadHash = PayloadHash(DisableOperation, new PolicyDisablePayload(request.PolicyId, request.ExpectedVersion, request.Target));
@@ -598,7 +599,7 @@ public static class McpOperatorPolicyMutationEndpoints
         if (await TryReplayMutationAsync(confirmationRequest, confirmations, administration, target, context!, DisableOperation,
             request.PolicyId, request.ExpectedVersion, null, cancellationToken).ConfigureAwait(false) is { } replay)
             return replay;
-        if (!CanDisable(policy, request.ExpectedVersion, context!.Principal, out failure))
+        if (!CanDisable(policy, request.ExpectedVersion, context!.Principal, out failure, context.InstanceAccount is not null))
         {
             // A concurrent confirmation may finish between the receipt lookup
             // and mutable version/state validation. Never consume a stale new plan.
@@ -681,7 +682,7 @@ public static class McpOperatorPolicyMutationEndpoints
         var target = existing.Target!;
         if (!SameTarget(policy.TargetSelector, request.Target))
             return Failure("policy_target_immutable", target.TenantId, target.AgentId, context!.CorrelationId, mutationOperation: operation);
-        if (!CanRetire(policy, request.ExpectedVersion, context.Principal, operation, out failure))
+        if (!CanRetire(policy, request.ExpectedVersion, context.Principal, operation, out failure, context.InstanceAccount is not null))
             return Failure(failure!, target.TenantId, target.AgentId, context.CorrelationId, mutationOperation: operation);
 
         var payloadHash = PayloadHash(operation, new PolicyDisablePayload(request.PolicyId, request.ExpectedVersion, request.Target));
@@ -727,7 +728,7 @@ public static class McpOperatorPolicyMutationEndpoints
         if (await TryReplayMutationAsync(confirmationRequest, confirmations, administration, target, context!, operation,
             request.PolicyId, request.ExpectedVersion, null, cancellationToken).ConfigureAwait(false) is { } replay)
             return replay;
-        if (!CanRetire(policy, request.ExpectedVersion, context.Principal, operation, out failure))
+        if (!CanRetire(policy, request.ExpectedVersion, context.Principal, operation, out failure, context.InstanceAccount is not null))
         {
             // A concurrent confirmation may finish between the receipt lookup
             // and mutable version/state validation. Never consume a stale new plan.
@@ -1074,7 +1075,8 @@ public static class McpOperatorPolicyMutationEndpoints
         long expectedVersion,
         McpOperatorPolicyDraft proposed,
         McpOperatorPrincipal principal,
-        out string? failure)
+        out string? failure,
+        bool instanceAdministrator = false)
     {
         failure = null;
         if (existing.LifecycleState != McpOperatorPolicyLifecycleState.Active || existing.DisabledAtUtc is not null)
@@ -1097,7 +1099,7 @@ public static class McpOperatorPolicyMutationEndpoints
             failure = "policy_target_immutable";
             return false;
         }
-        if (SelectsCaller(existing.PrincipalSelector, principal) || WouldEscalateCaller(proposed, principal))
+        if (!instanceAdministrator && (SelectsCaller(existing.PrincipalSelector, principal) || WouldEscalateCaller(proposed, principal)))
         {
             failure = "operator_policy_self_escalation";
             return false;
@@ -1148,12 +1150,12 @@ public static class McpOperatorPolicyMutationEndpoints
     private static bool MatchesExpectedVersion(McpOperatorTargetProfile? profile, long? expectedVersion) =>
         profile is null ? expectedVersion is null : expectedVersion == profile.Version;
 
-    private static bool CanRetire(McpOperatorPolicy existing, long version, McpOperatorPrincipal principal, string operation, out string? failure)
+    private static bool CanRetire(McpOperatorPolicy existing, long version, McpOperatorPrincipal principal, string operation, out string? failure, bool instanceAdministrator = false)
     {
-        if (operation != DeleteOperation) return CanRevoke(existing, version, principal, out failure);
+        if (operation != DeleteOperation) return CanRevoke(existing, version, principal, out failure, instanceAdministrator);
         failure = existing.Version != version ? "operator_policy_version_conflict" :
             existing.LifecycleState == McpOperatorPolicyLifecycleState.Deleted ? "operator_policy_rejected" :
-            SelectsCaller(existing.PrincipalSelector, principal) ? "operator_policy_self_escalation" : null;
+            !instanceAdministrator && SelectsCaller(existing.PrincipalSelector, principal) ? "operator_policy_self_escalation" : null;
         return failure is null;
     }
 
@@ -1161,7 +1163,8 @@ public static class McpOperatorPolicyMutationEndpoints
         McpOperatorPolicy existing,
         long expectedVersion,
         McpOperatorPrincipal principal,
-        out string? failure)
+        out string? failure,
+        bool instanceAdministrator = false)
     {
         failure = null;
         if (existing.Version != expectedVersion)
@@ -1174,7 +1177,7 @@ public static class McpOperatorPolicyMutationEndpoints
             failure = "operator_policy_rejected";
             return false;
         }
-        if (SelectsCaller(existing.PrincipalSelector, principal))
+        if (!instanceAdministrator && SelectsCaller(existing.PrincipalSelector, principal))
         {
             failure = "operator_policy_self_escalation";
             return false;
@@ -1186,7 +1189,8 @@ public static class McpOperatorPolicyMutationEndpoints
         McpOperatorPolicy existing,
         long expectedVersion,
         McpOperatorPrincipal principal,
-        out string? failure)
+        out string? failure,
+        bool instanceAdministrator = false)
     {
         failure = null;
         if (existing.Version != expectedVersion)
@@ -1199,7 +1203,7 @@ public static class McpOperatorPolicyMutationEndpoints
             failure = "operator_policy_rejected";
             return false;
         }
-        if (SelectsCaller(existing.PrincipalSelector, principal))
+        if (!instanceAdministrator && SelectsCaller(existing.PrincipalSelector, principal))
         {
             failure = "operator_policy_self_escalation";
             return false;
@@ -1231,7 +1235,10 @@ public static class McpOperatorPolicyMutationEndpoints
         IMcpOperatorPolicyAdministration administration,
         CancellationToken cancellationToken)
     {
-        var tenantVisible = await authorization.HasTenantVisibilityAsync(
+        var accountAuthority = context.InstanceAccount;
+        var currentInstanceAccount = accountAuthority is not null &&
+            await accountAuthority.IsCurrentAsync(cancellationToken).ConfigureAwait(false);
+        var tenantVisible = currentInstanceAccount || await authorization.HasTenantVisibilityAsync(
             context.Environment, context.Principal, target.TenantId, cancellationToken).ConfigureAwait(false);
         // Policy selectors describe the proposed rule, not trusted facts about
         // its target. Read the exact persisted profile for both phases and bind
@@ -1264,10 +1271,17 @@ public static class McpOperatorPolicyMutationEndpoints
         {
             RequiresDevelopmentEnvironmentPolicy = target.Kind == McpOperatorTargetSelectorKind.DevelopmentEnvironment
         };
+        if (accountAuthority is not null && !currentInstanceAccount)
+            return McpOperatorDecision.Denied(access, "instance_account_authority_changed", McpOperatorAuthorizationLayer.Authentication);
         // Creating an initial profile is the reviewed bootstrap operation.
         // A policy mutation for an exact agent must already have that profile.
         if (tenantVisible && target.AgentId is not null && profile is null && mutationOperation != UpsertTargetProfileOperation)
             return McpOperatorDecision.Denied(access, "target_profile_missing", McpOperatorAuthorizationLayer.Target);
+        if (currentInstanceAccount)
+            return new McpOperatorDecision(true, null, null, [], null, access.TargetSetDigest, access)
+            {
+                AccountAuthority = new(accountAuthority!.PrincipalId)
+            };
         return await authorization.EvaluateAsync(access, cancellationToken).ConfigureAwait(false);
     }
 
@@ -1290,7 +1304,18 @@ public static class McpOperatorPolicyMutationEndpoints
 
         async Task<T> PersistAsync(CancellationToken mutationToken)
         {
-            await authorization.RecordAcceptedAsync(decision, context.ServicePrincipal, mutationToken).ConfigureAwait(false);
+            if (context.InstanceAccount is { } account)
+            {
+                if (decision.AccountAuthority?.PrincipalId != account.PrincipalId ||
+                    !await account.IsCurrentAsync(mutationToken).ConfigureAwait(false))
+                    throw new McpOperatorAdmissionRejectedException("instance_account_authority_changed");
+                // This is application administration, not admission under a delegated
+                // MCP policy. The durable plan/receipt and immutable policy-change
+                // audit retain the exact actor, target, payload and resulting version.
+                // Do not fabricate an MCP parent or a policy-backed accepted audit.
+            }
+            else
+                await authorization.RecordAcceptedAsync(decision, context.ServicePrincipal, mutationToken).ConfigureAwait(false);
             return await mutation(mutationToken).ConfigureAwait(false);
         }
 
@@ -1379,18 +1404,18 @@ public static class McpOperatorPolicyMutationEndpoints
         context = null;
         // The route's effective-access policy rechecks the current account assignment on
         // every phase. Credentials and service tokens cannot enter this account adapter.
-        if (http.User.Identity?.IsAuthenticated != true ||
-            !http.User.HasClaim(claim => claim.Type == "netratel_principal_id" && !string.IsNullOrWhiteSpace(claim.Value)) ||
-            http.User.HasClaim(claim => claim.Type == "netratel_integration_credential_id") ||
-            http.User.HasClaim("token_use", "netratel_service") || http.User.HasClaim("auth_mode", "service") ||
+        if (!InstancePolicyAccountAdmission.TryInteractivePrincipal(http.User, out _) ||
             !McpOperatorDelegationIdentityFactory.TryCreate(http.User, out var identity) || identity is null)
             return false;
         var selectedEnvironment = environment.IsDevelopment() ? McpOperatorEnvironment.Development
             : environment.IsProduction() ? McpOperatorEnvironment.Production : (McpOperatorEnvironment?)null;
         if (selectedEnvironment is null) return false;
-        // Translate the already-authorized application permission into the shared
-        // policy engine's role/scope vocabulary. Parent policies still bound all targets
-        // and operations, and their current versions are re-evaluated at confirmation.
+        // Non-instance accounts keep the existing bounded parent-policy path.
+        // A current instance account uses a distinct confirmation authority and never
+        // turns these translated role/scope names into a grant for an MCP credential.
+        var instanceAccount = InstancePolicyAccountAdmission.FromContext(http);
+        var resource = instanceAccount is null ? "netratel-web-policy-administration"
+            : new McpOperatorAccountAuthority(instanceAccount.PrincipalId).Resource;
         var roles = identity.Roles.ToHashSet(StringComparer.Ordinal);
         roles.Add(PolicyAdministratorRole);
         var scopes = identity.Scopes.ToHashSet(StringComparer.Ordinal);
@@ -1398,9 +1423,9 @@ public static class McpOperatorPolicyMutationEndpoints
         context = new McpOperatorPolicyMutationContext(selectedEnvironment.Value,
             new McpOperatorPrincipal(identity.Subject, identity.ClientId, identity.AuthorizedParty,
                 identity.Groups.ToHashSet(StringComparer.Ordinal), roles, scopes, "netratel-web"),
-            "netratel-web", "netratel-web-policy-administration",
+            "netratel-web", resource,
             selectedEnvironment == McpOperatorEnvironment.Development ? "dev" : "prod",
-            http.TraceIdentifier, Guid.NewGuid().ToString("N"), null, null) { SignedInAccount = true };
+            http.TraceIdentifier, Guid.NewGuid().ToString("N"), null, null) { SignedInAccount = true, InstanceAccount = instanceAccount };
         return true;
     }
 
@@ -1546,6 +1571,7 @@ public static class McpOperatorPolicyMutationEndpoints
     private static string Layer(string code) => code switch
     {
         "delegated_identity_required" or "delegated_identity_invalid" => "delegation",
+        "instance_account_authority_changed" => "authentication",
         "oauth_scope_missing" => "oauth_scope",
         "oauth_role_missing" => "oauth_role",
         "tenant_not_authorized" => "tenant",
@@ -1560,6 +1586,7 @@ public static class McpOperatorPolicyMutationEndpoints
     private static string SafeDetails(string code) => code switch
     {
         "delegated_identity_required" or "delegated_identity_invalid" => "A valid signed operator delegation was not available for this exact policy mutation operation and target.",
+        "instance_account_authority_changed" => "Current instance-administrator account authority is no longer available.",
         "oauth_scope_missing" => "The signed delegation does not include the required administrator scope.",
         "oauth_role_missing" => "The signed delegation does not include the PolicyAdministrator role.",
         "tenant_not_authorized" => "The caller has no active policy-administration authorization for this tenant.",
@@ -1582,6 +1609,7 @@ public static class McpOperatorPolicyMutationEndpoints
     private static string Remediation(string code) => code switch
     {
         "delegated_identity_required" or "delegated_identity_invalid" => "Invoke through the authenticated MCP service so it can issue a fresh signed delegation bound to this policy target.",
+        "instance_account_authority_changed" => "Refresh account access and create a new preview before confirming the policy change.",
         "oauth_scope_missing" => "Request the netratel.mcp.admin OAuth scope, then obtain a fresh delegation assertion.",
         "oauth_role_missing" => "Ask an identity administrator to assign the dedicated PolicyAdministrator role, then reauthorize.",
         "tenant_not_authorized" => "Ask a policy administrator to grant a reviewed PolicyAdministration policy for this tenant.",
@@ -1699,6 +1727,7 @@ internal sealed record McpOperatorPolicyMutationContext(
     Guid? DelegatedAgentId)
 {
     public bool SignedInAccount { get; init; }
+    public InstancePolicyAccountAdmission? InstanceAccount { get; init; }
 }
 
 internal readonly record struct McpOperatorPolicyMutationTarget(

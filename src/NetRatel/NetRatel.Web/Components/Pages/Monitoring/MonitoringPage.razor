@@ -31,7 +31,7 @@
             <p>@TenantName · @Label(selected.Occurrence.PinnedRule.Severity) · @(selected.Occurrence.EndedAtUtc is null ? "Active" : "Closed")</p>
             <ClientIdentity Identity="@(selected.Occurrence.ClientIdentity ?? State.ClientIdentity(selected.AgentId))" />
             <dl><dt>Resource</dt><dd>@selected.Resource</dd><dt>Raised</dt><dd>@Time(selected.Occurrence.RaisedAtUtc)</dd><dt>Ended</dt><dd>@Time(selected.Occurrence.EndedAtUtc)</dd><dt>Occurrence</dt><dd><code>@selected.Occurrence.OccurrenceId</code></dd></dl>
-            @if (selected.Occurrence.FlowOutcome?.FlowRunId is { } runId) { <a href="@($"/flows?tenantId={selected.TenantId}&run={runId:D}")">Open flow run</a> }
+            @if (selected.Occurrence.FlowOutcome?.FlowRunId is { } runId) { <a class="monitoring-detail-button" href="@($"/flows?tenantId={selected.TenantId}&run={runId:D}")">Open flow run</a> }
             <MudButton OnClick="CloseSelectedAlert">Close alert details</MudButton>
         </MudPaper>
     }
@@ -62,7 +62,7 @@
                 <div class="monitoring-table-wrap"><table class="monitoring-table"><caption class="monitoring-visually-hidden">Current alert occurrences and evidence</caption><thead><tr><th>Client / host</th><th>Rule</th><th>Severity / state</th><th>Latest reading</th><th>Since / acknowledgement</th><th>Actions</th></tr></thead><tbody>
                     @foreach (var row in ActiveRows)
                     {
-                        <tr data-testid="monitoring-series-row" data-health="@Health(row)">
+                        <tr @key="row.Series" data-testid="monitoring-series-row" data-health="@Health(row)">
                             <td data-label="Client / host">
                                 @if (MonitoringOfflinePresentation.IsSeries(row.Series))
                                 {
@@ -78,7 +78,7 @@
                                     }
                                 }
                                 else { <ClientIdentity Identity="@State.ClientIdentity(row.Series.AgentId)" /> }
-                                <details class="monitoring-details"><summary>Details</summary><dl>@if (!MonitoringOfflinePresentation.IsSeries(row.Series)) { <dt>Client ID</dt><dd><code>@row.Series.AgentId</code></dd> }<dt>Resource</dt><dd>@row.Series.ResourceKey</dd><dt>Observed</dt><dd>@Time(row.LatestEvidence?.ObservedAtUtc)</dd><dt>Received</dt><dd>@Time(row.LatestEvidence?.ReceivedAtUtc)</dd><dt>Evidence</dt><dd>@ExplainCode(row.LatestEvidence?.UnknownReason)</dd></dl>@if (row.Occurrence is { } detailOccurrence) { <div>Occurrence <code>@detailOccurrence.OccurrenceId</code></div><div>Flow: @Label(detailOccurrence.FlowDispatchDisposition)</div>@if (detailOccurrence.FlowOutcome is { } outcome) { <div>@Label(outcome.Outcome) · @ExplainCode(outcome.Code)</div>@if (outcome.ActionResults is { } actions) { <div data-testid="monitoring-action-counts">@actions.Succeeded / @actions.Total actions succeeded · @actions.Failed failed · @actions.DeliveryUnknown delivery unconfirmed</div> }@if (outcome.Outcome is (MonitoringFlowOutcomeKind.Succeeded or MonitoringFlowOutcomeKind.PartiallySucceeded) && outcome.Receipt is { } receipt && NetRatel.Application.Monitoring.MonitoringContractValidator.TryValidateIncidentReceipt(receipt, out _)) { <div data-testid="monitoring-incident-receipt">Incident @receipt.IncidentId @receipt.TrackingNumber @if (receipt.IncidentUrl is { } url) { <a href="@url" target="_blank" rel="noopener noreferrer">Open incident</a> }</div> }@if (outcome.FlowRunId is { } runId && runId != Guid.Empty) { <a href="@($"/flows?tenantId={row.Series.TenantId}&run={runId:D}")">Flow run and receipt</a> } }@if (detailOccurrence.PinnedRule.PublishedFlowVersionId is { } flow) { <div><a href="@($"/flows?tenantId={row.Series.TenantId}&version={flow:D}")">Published flow</a></div> } }@foreach (var bypass in AppliedBypasses(row)) { <div>@bypass.Reason · ends @Time(bypass.ExpiresAtUtc)</div> }</details></td>
+                            </td>
                             <td data-label="Rule"><strong>@RuleName(row.Series.RuleId)</strong><div class="monitoring-secondary">@row.Series.ResourceKey</div></td>
                             <td data-label="Severity / state"><MudChip T="string" Size="Size.Small" Color="@(row.Occurrence?.PinnedRule.Severity == MonitoringSeverity.Critical ? Color.Error : Color.Warning)" Variant="Variant.Outlined">@Label(row.Occurrence?.PinnedRule.Severity)</MudChip><div class="monitoring-health" data-state="@Health(row)">@(row.Suppressed ? "Suppressed" : Health(row) == "Unknown" ? "Unknown" : Label(row.Phase))</div></td>
                             <td data-label="Latest reading">@EvidenceValue(row)<div class="monitoring-secondary">@Time(row.LatestEvidence?.ObservedAtUtc)</div></td>
@@ -92,6 +92,69 @@
                                 }
                                 @if (!MonitoringOfflinePresentation.IsSeries(row.Series)) { <span data-testid="monitoring-services"><ClientServicesLauncher TenantId="@row.Series.TenantId" AgentId="@row.Series.AgentId" HostLabel="@($"{ClientName(row.Series.AgentId)} · {ClientContext(row.Series.AgentId)}".Trim(' ', '·'))" TenantLabel="@TenantName" /></span> }
                             </div></td>
+                        </tr>
+                        <tr @key='($"details:{row.Series}")' class="monitoring-detail-row" data-testid="monitoring-detail-row">
+                            <td colspan="6">
+                                <details class="monitoring-alert-details" data-testid="monitoring-alert-details">
+                                    <summary>
+                                        <span class="monitoring-detail-title"><MudIcon Icon="@Icons.Material.Outlined.Info" Size="Size.Small" /><strong>Alert details</strong><span class="monitoring-secondary">@RuleName(row.Series.RuleId)</span></span>
+                                        <span class="monitoring-detail-chevron"><MudIcon Icon="@Icons.Material.Filled.ExpandMore" Size="Size.Small" /></span>
+                                    </summary>
+                                    <div class="monitoring-detail-grid">
+                                        <section class="monitoring-detail-card" aria-label="Target and rule">
+                                            <h3><MudIcon Icon="@Icons.Material.Filled.Dns" Size="Size.Small" />Target &amp; rule</h3>
+                                            <dl>
+                                                <dt>Rule</dt><dd>@RuleName(row.Series.RuleId)</dd>
+                                                <dt>Client</dt><dd>@if (MonitoringOfflinePresentation.IsSeries(row.Series)) { <span>Monitored clients · @(row.OfflineAgentIds.IsDefaultOrEmpty ? 0 : row.OfflineAgentIds.Length) offline</span> } else { <ClientIdentity Identity="@State.ClientIdentity(row.Series.AgentId)" /> }</dd>
+                                                <dt>Resource</dt><dd><code>@row.Series.ResourceKey</code></dd>
+                                                @if (!MonitoringOfflinePresentation.IsSeries(row.Series)) { <dt>Client ID</dt><dd><code>@row.Series.AgentId</code></dd> }
+                                                @if (row.Occurrence is { } identified) { <dt>Occurrence</dt><dd><code>@identified.OccurrenceId</code></dd> }
+                                            </dl>
+                                        </section>
+                                        <section class="monitoring-detail-card" aria-label="Evidence and timing">
+                                            <h3><MudIcon Icon="@Icons.Material.Filled.Timeline" Size="Size.Small" />Evidence &amp; timing</h3>
+                                            <div class="monitoring-detail-value">@EvidenceValue(row)</div>
+                                            <dl>
+                                                <dt>State</dt><dd>@(row.Suppressed ? "Suppressed" : Health(row) == "Unknown" ? "Unknown" : Label(row.Phase))</dd>
+                                                <dt>Observed</dt><dd>@Time(row.LatestEvidence?.ObservedAtUtc)</dd>
+                                                <dt>Received</dt><dd>@Time(row.LatestEvidence?.ReceivedAtUtc)</dd>
+                                                <dt>Breach since</dt><dd>@Time(row.Occurrence?.BreachSinceAtUtc ?? row.WindowStartedAtUtc)</dd>
+                                                <dt>Evidence</dt><dd>@ExplainCode(row.LatestEvidence?.UnknownReason)</dd>
+                                            </dl>
+                                        </section>
+                                        <section class="monitoring-detail-card" aria-label="Automation and flow">
+                                            <h3><MudIcon Icon="@Icons.Material.Filled.AccountTree" Size="Size.Small" />Automation &amp; flow</h3>
+                                            @if (row.Occurrence is { } detailOccurrence)
+                                            {
+                                                <dl><dt>Dispatch</dt><dd>@Label(detailOccurrence.FlowDispatchDisposition)</dd>
+                                                @if (detailOccurrence.FlowOutcome is { } outcome) { <dt>Outcome</dt><dd>@Label(outcome.Outcome)</dd><dt>Evidence</dt><dd>@ExplainCode(outcome.Code)</dd> }
+                                                </dl>
+                                                @if (detailOccurrence.FlowOutcome?.ActionResults is { } actions) { <div class="monitoring-detail-note" data-testid="monitoring-action-counts">@actions.Succeeded / @actions.Total actions succeeded · @actions.Failed failed · @actions.DeliveryUnknown delivery unconfirmed</div> }
+                                                <div class="monitoring-detail-links">
+                                                    @if (detailOccurrence.FlowOutcome?.FlowRunId is { } runId && runId != Guid.Empty) { <a class="monitoring-detail-button" href="@($"/flows?tenantId={row.Series.TenantId}&run={runId:D}")"><MudIcon Icon="@Icons.Material.Filled.ReceiptLong" Size="Size.Small" />Flow run and receipt</a> }
+                                                    @if (detailOccurrence.PinnedRule.PublishedFlowVersionId is { } flow) { <a class="monitoring-detail-button" href="@($"/flows?tenantId={row.Series.TenantId}&version={flow:D}")"><MudIcon Icon="@Icons.Material.Filled.AccountTree" Size="Size.Small" />Published flow</a> }
+                                                </div>
+                                            }
+                                            else { <p class="monitoring-secondary">No alert occurrence or automation result has been recorded for this series.</p> }
+                                        </section>
+                                        <section class="monitoring-detail-card" aria-label="Incident and acknowledgement">
+                                            <h3><MudIcon Icon="@Icons.Material.Filled.ConfirmationNumber" Size="Size.Small" />Incident &amp; acknowledgement</h3>
+                                            @if (row.Occurrence?.FlowOutcome is { Outcome: MonitoringFlowOutcomeKind.Succeeded or MonitoringFlowOutcomeKind.PartiallySucceeded, Receipt: { } receipt } && NetRatel.Application.Monitoring.MonitoringContractValidator.TryValidateIncidentReceipt(receipt, out _))
+                                            {
+                                                <div data-testid="monitoring-incident-receipt">
+                                                    <div class="monitoring-detail-value">@(receipt.TrackingNumber ?? "Recorded incident")</div>
+                                                    <dl><dt>Incident ID</dt><dd><code>@receipt.IncidentId</code></dd></dl>
+                                                    @if (receipt.IncidentUrl is { } url) { <a class="monitoring-detail-button monitoring-detail-primary" href="@url" target="_blank" rel="noopener noreferrer" data-testid="monitoring-rateldesk-ticket"><MudIcon Icon="@Icons.Material.Filled.OpenInNew" Size="Size.Small" />Open RatelDesk ticket</a> }
+                                                    else { <p class="monitoring-secondary">Ticket recorded; no ticket link was provided.</p> }
+                                                </div>
+                                            }
+                                            else { <p class="monitoring-secondary" data-testid="monitoring-no-incident">No validated incident receipt is available.</p> }
+                                            <dl><dt>Acknowledgement</dt><dd>@(row.Occurrence?.AcknowledgedAtUtc is { } acknowledged ? $"Acknowledged {Time(acknowledged)}" : row.Occurrence is not null ? "Unacknowledged" : "No occurrence")</dd></dl>
+                                        </section>
+                                    </div>
+                                    @foreach (var bypass in AppliedBypasses(row)) { <div class="monitoring-detail-note monitoring-detail-bypass"><MudIcon Icon="@Icons.Material.Filled.PauseCircleOutline" Size="Size.Small" /><span>@bypass.Reason · ends @Time(bypass.ExpiresAtUtc)</span></div> }
+                                </details>
+                            </td>
                         </tr>
                     }
                 </tbody></table></div>

@@ -45,8 +45,8 @@ public sealed class McpOperatorConfirmationService(OrchestratorDbContext db) : I
             TenantId = access.TenantId,
             AgentId = access.AgentId,
             TargetSetDigest = access.TargetSetDigest!,
-            PolicyId = request.Decision.MatchingPolicyIds.Single(),
-            PolicyVersion = request.Decision.SelectedPolicyVersion!.Value,
+            PolicyId = PolicyId(request.Decision),
+            PolicyVersion = PolicyVersion(request.Decision),
             OperationFamily = access.OperationFamily,
             Operation = access.Operation,
             ConfirmationClass = access.ConfirmationClass,
@@ -113,8 +113,8 @@ public sealed class McpOperatorConfirmationService(OrchestratorDbContext db) : I
             TenantId = access.TenantId,
             AgentId = access.AgentId,
             TargetSetDigest = access.TargetSetDigest!,
-            PolicyId = request.CurrentDecision.MatchingPolicyIds.Single(),
-            PolicyVersion = request.CurrentDecision.SelectedPolicyVersion!.Value,
+            PolicyId = PolicyId(request.CurrentDecision),
+            PolicyVersion = PolicyVersion(request.CurrentDecision),
             OperationFamily = access.OperationFamily,
             Operation = access.Operation,
             IdempotencyKey = request.IdempotencyKey,
@@ -217,8 +217,8 @@ public sealed class McpOperatorConfirmationService(OrchestratorDbContext db) : I
                plan.TenantId == access.TenantId &&
                plan.AgentId == access.AgentId &&
                (allowTargetSetDigestDrift || plan.TargetSetDigest == access.TargetSetDigest) &&
-               plan.PolicyId == decision.MatchingPolicyIds.Single() &&
-               plan.PolicyVersion == decision.SelectedPolicyVersion &&
+               plan.PolicyId == PolicyId(decision) &&
+               plan.PolicyVersion == PolicyVersion(decision) &&
                plan.OperationFamily == access.OperationFamily &&
                plan.Operation == access.Operation &&
                plan.ConfirmationClass == access.ConfirmationClass &&
@@ -234,9 +234,15 @@ public sealed class McpOperatorConfirmationService(OrchestratorDbContext db) : I
 
     private static bool IsUsableDecision(McpOperatorDecision decision)
     {
-        if (!decision.IsAllowed || decision.MatchingPolicyIds.Count != 1 || decision.SelectedPolicyVersion is null)
-            return false;
+        if (!decision.IsAllowed) return false;
         var access = decision.Request;
+        if (decision.AccountAuthority is { } account)
+        {
+            if (decision.MatchingPolicyIds.Count != 0 || decision.SelectedPolicyVersion is not null || !account.Matches(access))
+                return false;
+        }
+        else if (decision.MatchingPolicyIds.Count != 1 || decision.MatchingPolicyIds[0] == Guid.Empty || decision.SelectedPolicyVersion is null or <= 0)
+            return false;
         return access.ConfirmationClass != McpOperatorConfirmationClass.None &&
                IsSha256(access.TargetSetDigest) &&
                IsSafeIdentity(access.Principal.Subject) &&
@@ -245,6 +251,15 @@ public sealed class McpOperatorConfirmationService(OrchestratorDbContext db) : I
                (!string.IsNullOrWhiteSpace(access.McpResource) ? IsSafeIdentity(access.McpResource) : true) &&
                (!string.IsNullOrWhiteSpace(access.McpInstance) ? IsSafeIdentity(access.McpInstance) : true);
     }
+
+    // The existing confirmation tables have no policy foreign key. Empty/zero
+    // explicitly means account authority, never a synthetic operator-policy row.
+    // The account-specific resource binds its principal and is matched at confirm.
+    private static Guid PolicyId(McpOperatorDecision decision) =>
+        decision.AccountAuthority is not null ? Guid.Empty : decision.MatchingPolicyIds.Single();
+
+    private static long PolicyVersion(McpOperatorDecision decision) =>
+        decision.AccountAuthority is not null ? 0 : decision.SelectedPolicyVersion!.Value;
 
     private static string ClientId(McpOperatorAccessRequest access) => access.Principal.ClientId ?? string.Empty;
 
