@@ -42,6 +42,7 @@ public partial class SoftwareInventoryPanel
     private int PageCount => Math.Max(1, (Total + EffectivePageSize - 1) / EffectivePageSize);
     private static string Time(DateTimeOffset? time) => time?.UtcDateTime.ToString("dd MMM yyyy, HH:mm:ss 'UTC'") ?? "Not yet available";
     private static string? Optional(string text) => string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+    private static string Reported(string? text) => string.IsNullOrWhiteSpace(text) ? "Not reported" : text;
     private static string ClientLabel(Guid id, string? label) => !string.IsNullOrWhiteSpace(label) && !Guid.TryParse(label, out _) ? label : "Client-" + id.ToString("N")[..8];
     private static string StatusLabel(string status) => status switch
     {
