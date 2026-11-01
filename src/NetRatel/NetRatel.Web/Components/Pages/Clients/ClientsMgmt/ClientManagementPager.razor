@@ -1,0 +1,31 @@
+<nav class="client-management-pager" aria-label="@($"{Label} pagination")" data-testid="client-management-pager">
+    <div class="client-management-page-size">
+        <MudSelect T="int" Label="Rows per page" Value="PageSize" ValueChanged="ChangeSizeAsync" Margin="Margin.Dense" Variant="Variant.Outlined" Disabled="Busy" data-testid="management-page-size">
+            <MudSelectItem T="int" Value="20">20</MudSelectItem>
+            <MudSelectItem T="int" Value="50">50</MudSelectItem>
+            <MudSelectItem T="int" Value="100">100</MudSelectItem>
+        </MudSelect>
+    </div>
+    <MudText Typo="Typo.caption" aria-live="polite">@RangeText</MudText>
+    <div class="client-management-page-actions">
+        <MudButton Size="Size.Small" Disabled="@(Busy || Page == 0)" OnClick="@(() => PageChanged.InvokeAsync(Page - 1))" StartIcon="@Icons.Material.Filled.ChevronLeft">Previous</MudButton>
+        <MudText Typo="Typo.body2">Page @(Page + 1)</MudText>
+        <MudButton Size="Size.Small" Disabled="@(Busy || !HasMore)" OnClick="@(() => PageChanged.InvokeAsync(Page + 1))" EndIcon="@Icons.Material.Filled.ChevronRight">Next</MudButton>
+    </div>
+</nav>
+
+@code {
+    [Parameter] public string Label { get; set; } = "Releases";
+    [Parameter] public int Page { get; set; }
+    [Parameter] public int PageSize { get; set; } = 20;
+    [Parameter] public int ItemCount { get; set; }
+    [Parameter] public int? Total { get; set; }
+    [Parameter] public bool HasMore { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public EventCallback<int> PageChanged { get; set; }
+    [Parameter] public EventCallback<int> PageSizeChanged { get; set; }
+    private string RangeText => ItemCount == 0 ? (Busy ? "Loading…" : "No rows on this page")
+        : $"{Page * PageSize + 1:N0}–{Page * PageSize + ItemCount:N0}" + (Total is { } total ? $" of {total:N0}" : " shown");
+    private Task ChangeSizeAsync(int size) => size is 20 or 50 or 100 && size != PageSize
+        ? PageSizeChanged.InvokeAsync(size) : Task.CompletedTask;
+}
