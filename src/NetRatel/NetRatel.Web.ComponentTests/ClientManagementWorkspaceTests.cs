@@ -73,7 +73,7 @@ public sealed class ClientManagementWorkspaceTests : AsyncBunitContext
         {
             cut.FindAll("[data-testid=local-release-imports] tbody tr").Should().ContainSingle();
             cut.Find("[data-testid=local-release-imports]").TextContent.Should().Contain("1.2.119");
-            table.Instance.GetState(item => item.CurrentPage).Should().Be(0);
+            table.Instance.CurrentPage.Should().Be(0);
         });
         _artifacts.FailImports = true;
         await cut.InvokeAsync(() => cut.FindAll("[data-testid=local-imports-panel] button").Single(button => button.TextContent.Trim() == "Refresh imports").Click());
