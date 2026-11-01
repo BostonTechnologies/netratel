@@ -2,183 +2,218 @@
 @using NetRatel.Web.Services.SoftwareInventory
 @implements IDisposable
 @inject ISoftwareInventoryApiService Api
+@inject IDialogService Dialogs
 
 <section class="software-inventory" aria-label="Software Inventory" data-testid="software-inventory">
+    @if (_summary is { } summary)
+    {
+        <div class="overview-heading"><span>Tenant overview</span><span>Last complete scan: @Time(summary.LatestScanUtc)</span></div>
+        <div class="inventory-overview" data-testid="inventory-overview">
+            <div class="metric"><span>Inventoried devices</span><strong>@summary.Inventoried <small>/ @summary.Clients</small></strong><span>Completed at least one scan</span></div>
+            <div class="metric"><span>Software products</span><strong>@summary.Products.ToString("N0")</strong><span>Distinct name, publisher and source</span></div>
+            <div class="metric"><span>Installed entries</span><strong>@summary.Installations.ToString("N0")</strong><span>Across complete snapshots</span></div>
+            <div class="metric"><span>Never scanned</span><strong>@summary.NeverScanned</strong><span>Visible in the Devices view</span></div>
+            <div class="metric"><span>Active scans</span><strong>@summary.ActiveScans</strong><span>Queued or receiving inventory</span></div>
+            <div class="metric"><span>Needs attention</span><strong>@summary.FailedScans</strong><span>Failed, incomplete or timed out</span></div>
+        </div>
+        <p class="inventory-caption">@summary.Stale inventoried devices are outside the 30-minute live-query cache. Scheduled collection still follows the tenant policy.</p>
+    }
+    @if (_summaryError is not null) { <MudAlert Severity="Severity.Warning" Dense="true">@_summaryError</MudAlert> }
     @if (_status is { } status)
     {
-        <p data-testid="inventory-freshness">Last complete scan: @Time(status.LastSuccessfulScanUtc) · Next due: @Time(status.NextDueUtc)</p>
-        <p>Tenant policy: @(status.Policy.Enabled ? $"every {status.Policy.Interval} {status.Policy.Unit}" : "scheduled scans disabled") · No client override</p>
-        @if (status.LatestScan is { } scan)
-        {
-            <p role="status" data-testid="inventory-scan-status">@scan.Status · @scan.ReceivedChunks / @scan.TotalChunks chunks
-                @if (scan.Status == "Pending") { <span> · Queued; waiting for the client to connect.</span> }
-            </p>
-            @if (scan.Status is "Collecting" or "Pending") { <MudProgressLinear Indeterminate="true" aria-label="Inventory scan in progress" /> }
-            @if (scan.Errors.Count > 0 || scan.Status is "Partial" or "Error")
+        <div class="client-scan-card">
+            <div class="scan-heading">
+                <div>
+                    <span class="inventory-eyebrow">CLIENT INVENTORY</span>
+                    <h3>@(status.LastSuccessfulScanUtc.HasValue ? "Latest complete snapshot" : "Waiting for the first inventory")</h3>
+                    <p data-testid="inventory-freshness">Last complete scan: @Time(status.LastSuccessfulScanUtc)</p>
+                </div>
+                <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Refresh"
+                           OnClick="ForceRefreshAsync" Disabled="@(_refreshing || ActiveScan || !status.CanRefresh)" data-testid="inventory-refresh">
+                    @(_refreshing ? "Requesting scan…" : ActiveScan ? "Scan in progress" : status.LatestScan?.Status is "Error" or "Partial" ? "Retry scan" : "Refresh inventory")
+                </MudButton>
+            </div>
+            <div class="scan-facts">
+                <span><strong>Schedule</strong> @(status.Policy.Enabled ? $"Every {status.Policy.Interval} {status.Policy.Unit}" : "Automatic scans disabled")</span>
+                <span><strong>Next scheduled</strong> @Time(status.NextDueUtc)</span>
+                <span><strong>Open behavior</strong> Reuse complete data for 30 minutes</span>
+            </div>
+            @if (status.LatestScan is { } scan)
             {
-                <MudAlert Severity="Severity.Warning" data-testid="inventory-scan-errors">@string.Join(", ", scan.Errors). The last complete inventory is retained; this attempt does not establish uninstallations.</MudAlert>
-            }
-        }
-        <MudButton Variant="Variant.Outlined" OnClick="ForceRefreshAsync" Disabled="@(_refreshing || !status.CanRefresh)" data-testid="inventory-refresh">Refresh inventory</MudButton>
-    }
-    <div class="inventory-toolbar">
-        <label>Search <input aria-label="Search software" @bind="_search" /></label>
-        <button type="button" @onclick="ApplyAsync" disabled="@_loading">Search</button>
-        <label>View <select aria-label="Inventory view" @bind="_view" @bind:after="ApplyAsync"><option value="installations">Installations</option><option value="aggregate">Software prevalence</option><option value="changes">Change history</option></select></label>
-        <a href="@ExportUrl()" download>Export CSV</a>
-    </div>
-    <details class="inventory-filters"><summary>Filters</summary>
-        <div class="inventory-toolbar">
-            <label>Name <input @bind="_name" /></label><label>Version <input @bind="_version" /></label><label>Publisher <input @bind="_publisher" /></label>
-            <label>OS <select @bind="_os"><option value="">All</option><option value="windows">Windows</option><option value="linux">Linux</option></select></label>
-            <label>Package source <select @bind="_source"><option value="">All</option>@foreach (var source in Sources) { <option value="@source">@source</option> }</select></label>
-            <label>Status <select @bind="_filterStatus"><option value="">All</option>@foreach (var value in Statuses) { <option value="@value">@value</option> }</select></label>
-            @if (!AgentId.HasValue) { <label>Client UUID <input @bind="_clientId" /></label> }
-            <button type="button" @onclick="ApplyAsync" disabled="@_loading">Apply filters</button>
-        </div>
-    </details>
-    @if (_error is not null) { <MudAlert Severity="Severity.Warning" role="alert">@_error</MudAlert> }
-    @if (_loading) { <MudProgressLinear Indeterminate="true" aria-label="Loading inventory" /> }
-    @if (_view == "installations" && _installations is { } installations)
-    {
-        <p data-testid="inventory-counts">@installations.Total installed entries · @installations.Devices distinct devices</p>
-        <div class="inventory-table-scroll"><table><caption>Installed software from the last complete scan</caption><thead><tr>
-            <th><button @onclick='() => SortAsync("name")'>Name</button></th><th><button @onclick='() => SortAsync("version")'>Version</button></th>
-            <th><button @onclick='() => SortAsync("publisher")'>Publisher</button></th><th><button @onclick='() => SortAsync("source")'>Source</button></th>
-            <th><button @onclick='() => SortAsync("client")'>Client</button></th><th>Last complete scan (UTC)</th>
-        </tr></thead><tbody>
-        @foreach (var row in installations.Items)
-        {
-            <tr data-testid="inventory-row"><td>@row.Package.Name<details><summary>Metadata</summary><dl>
-                <dt>Package ID</dt><dd>@row.Package.PackageId</dd><dt>Architecture / OS</dt><dd>@row.Package.Architecture / @row.Os</dd>
-                <dt>Install location</dt><dd>@row.Package.InstallLocation</dd><dt>Install date</dt><dd>@row.Package.InstallDate</dd><dt>Scope</dt><dd>@row.Package.Scope</dd>
-                <dt>Detected (UTC)</dt><dd>@Time(row.DetectedAtUtc)</dd>
-            </dl></details></td><td>@row.Package.Version</td><td>@row.Package.Publisher</td><td>@row.Package.Source</td><td>@row.Client</td><td>@Time(row.LastSuccessfulScanUtc)</td></tr>
-        }
-        </tbody></table></div>
-        @if (installations.Total == 0) { <p>No installed software matches these filters. A complete inventory may not be available yet.</p> }
-    }
-    @if (_view == "aggregate" && _aggregate is { } aggregate)
-    {
-        <p>@aggregate.Total software/version groups · @aggregate.Devices distinct devices</p>
-        <div class="inventory-table-scroll"><table><caption>Software prevalence</caption><thead><tr><th>Name</th><th>Version</th><th>Publisher</th><th>Source</th><th>Devices</th><th>Installed entries</th></tr></thead><tbody>
-            @foreach (var row in aggregate.Items) { <tr><td>@row.Name</td><td>@row.Version</td><td>@row.Publisher</td><td>@row.Source</td><td>@row.Devices</td><td>@row.Installations</td></tr> }
-        </tbody></table></div>
-    }
-    @if (_view == "changes" && _changes is { } changes)
-    {
-        <div class="inventory-table-scroll"><table><caption>Changes established by complete scans</caption><thead><tr><th>Change</th><th>Software</th><th>Previous version</th><th>Version</th><th>Client</th><th>Detected (UTC)</th></tr></thead><tbody>
-        @foreach (var row in changes.Items) { <tr><td>@row.Kind</td><td>@row.Name</td><td>@row.PreviousVersion</td><td>@row.Version</td><td>@row.AgentId</td><td>@Time(row.DetectedAtUtc)</td></tr> }
-        </tbody></table></div>
-    }
-    <div class="inventory-toolbar"><button @onclick="PreviousAsync" disabled="@(_page == 0 || _loading)">Previous</button><span>Page @(_page + 1)</span><button @onclick="NextAsync" disabled="@((_page + 1) * 50 >= Total || _loading)">Next</button></div>
-</section>
-
-@code {
-    [Parameter] public int TenantId { get; set; }
-    [Parameter] public Guid? AgentId { get; set; }
-    [Parameter] public bool AutoRefreshOnOpen { get; set; }
-    private SoftwareInventoryStatus? _status;
-    private SoftwarePage<SoftwareInstallationDto>? _installations;
-    private SoftwarePage<SoftwarePrevalenceDto>? _aggregate;
-    private SoftwarePage<SoftwareChangeDto>? _changes;
-    private CancellationTokenSource _scope = new();
-    private (int, Guid?) _active;
-    private bool _loading, _refreshing;
-    private string? _error;
-    private string _search = "", _name = "", _version = "", _publisher = "", _os = "", _source = "", _filterStatus = "", _clientId = "", _sort = "name", _view = "installations";
-    private bool _descending;
-    private int _page;
-    private static readonly string[] Sources = ["registry", "appx", "dpkg", "rpm", "pacman", "snap", "flatpak"];
-    private static readonly string[] Statuses = ["fresh", "stale", "Pending", "Collecting", "Complete", "Partial", "Error"];
-    private int Total => _view == "aggregate" ? _aggregate?.Total ?? 0 : _view == "changes" ? _changes?.Total ?? 0 : _installations?.Total ?? 0;
-    private static string Time(DateTimeOffset? time) => time?.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss 'UTC'") ?? "Not available";
-    private static string? Optional(string text) => string.IsNullOrWhiteSpace(text) ? null : text.Trim();
-    private string ExportUrl()
-    {
-        try { return SoftwareInventoryApiService.QueryUrl(TenantId, "export.csv", Query()); }
-        catch (ArgumentException) { return "#"; }
-    }
-
-    protected override async Task OnParametersSetAsync()
-    {
-        if (_active == (TenantId, AgentId)) return;
-        _scope.Cancel(); _scope.Dispose(); _scope = new();
-        _active = (TenantId, AgentId);
-        _status = null; _installations = null; _aggregate = null; _changes = null; _page = 0; _error = null;
-        _refreshing = false; _loading = false; _clientId = "";
-        var token = _scope.Token;
-        try
-        {
-            if (AgentId is { } agent)
-            {
-                var status = await Api.StatusAsync(TenantId, agent, token);
-                token.ThrowIfCancellationRequested();
-                _status = status;
-                if (AutoRefreshOnOpen && status.CanRefresh && (status.LastSuccessfulScanUtc is null || status.LastSuccessfulScanUtc <= DateTimeOffset.UtcNow.AddMinutes(-30)))
+                <div class="scan-state" role="status" aria-live="polite" data-testid="inventory-scan-status">
+                    <MudChip T="string" Size="Size.Small" Color="@StatusColor(scan.Status)" Variant="Variant.Outlined">@StatusLabel(scan.Status)</MudChip>
+                    @if (scan.Status == "Collecting")
+                    {
+                        <span>@(scan.TotalChunks > 0 ? $"Received {scan.ReceivedChunks} of {scan.TotalChunks} chunks" : "Collecting installed software on the client")</span>
+                    }
+                    @if (scan.Status == "Pending") { <span>Queued · Waiting for the client to connect and accept the request.</span> }
+                    @if (scan.StartedAtUtc is { } started && ActiveScan) { <span class="inventory-caption">Started @Time(started)</span> }
+                </div>
+                @if (scan.Status == "Collecting" && !Stalled)
                 {
-                    var refreshed = await Api.RefreshAsync(TenantId, agent, false, token);
-                    token.ThrowIfCancellationRequested();
-                    _status = refreshed;
+                    <MudProgressLinear Color="Color.Primary" Indeterminate="@(scan.TotalChunks == 0)"
+                                       Value="@(scan.TotalChunks == 0 ? 0d : 100d * scan.ReceivedChunks / scan.TotalChunks)"
+                                       aria-label="Received inventory chunks" />
                 }
+                @if (Stalled)
+                {
+                    <MudAlert Severity="Severity.Warning" Dense="true" data-testid="inventory-stalled">No new chunks have arrived for at least a minute. Check the agent connection. This attempt has a five-minute deadline; saved inventory remains available.</MudAlert>
+                }
+                @if (scan.Errors.Count > 0 || scan.Status is "Partial" or "Error")
+                {
+                    <MudAlert Severity="Severity.Warning" Dense="true" data-testid="inventory-scan-errors">@string.Join(" ", scan.Errors.Select(ErrorLabel)) The last complete snapshot is retained. Use Retry scan to try again.</MudAlert>
+                }
+                @if (ActiveScan && status.LastSuccessfulScanUtc.HasValue)
+                { <p class="inventory-caption">Showing saved data below. It will update automatically when the new scan completes.</p> }
+                <details class="scan-diagnostics"><summary>Scan details</summary><span>Collection ID: @scan.CollectionId · Requested: @Time(scan.RequestedAtUtc)</span></details>
             }
-            await LoadAsync(token);
-            if (AgentId.HasValue) _ = PollAsync(TenantId, AgentId.Value, token);
-        }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
-        catch (Exception error) when (error is HttpRequestException or OperationCanceledException) { if (!token.IsCancellationRequested) _error = "Software inventory is unavailable. Check your access and connection, then reopen this view."; }
+        </div>
     }
+    @if (_statusError is not null) { <MudAlert Severity="Severity.Warning" Dense="true" role="alert">@_statusError</MudAlert> }
 
-    private SoftwareInventoryQuery Query()
-    {
-        Guid? agent = AgentId;
-        if (!agent.HasValue && Optional(_clientId) is { } client) agent = Guid.TryParse(client, out var id) ? id : throw new ArgumentException("Enter the client UUID from Clients.");
-        return new(_page, 50, Optional(_search), Optional(_name), Optional(_version), Optional(_publisher), Optional(_os), Optional(_source), agent, Optional(_filterStatus), _sort, _descending);
-    }
-
-    private async Task LoadAsync(CancellationToken token)
-    {
-        _loading = true; _error = null;
-        try
-        {
-            var query = Query();
-            if (_view == "aggregate") { var result = await Api.AggregateAsync(TenantId, query, token); token.ThrowIfCancellationRequested(); _aggregate = result; }
-            else if (_view == "changes") { var result = await Api.ChangesAsync(TenantId, query.AgentId, _page, token); token.ThrowIfCancellationRequested(); _changes = result; }
-            else { var result = await Api.InstallationsAsync(TenantId, query, token); token.ThrowIfCancellationRequested(); _installations = result; }
-        }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
-        catch (Exception error) when (error is HttpRequestException or OperationCanceledException or ArgumentException) { if (!token.IsCancellationRequested) _error = error is ArgumentException ? error.Message : "Unable to load software inventory. Check your access and connection."; }
-        finally { if (!token.IsCancellationRequested) _loading = false; }
-    }
-    private async Task ApplyAsync() { _page = 0; await LoadAsync(_scope.Token); }
-    private async Task SortAsync(string sort) { _descending = _sort == sort && !_descending; _sort = sort; await ApplyAsync(); }
-    private async Task PreviousAsync() { _page--; await LoadAsync(_scope.Token); }
-    private async Task NextAsync() { _page++; await LoadAsync(_scope.Token); }
-    private async Task ForceRefreshAsync()
-    {
-        if (AgentId is not { } agent || _refreshing) return;
-        var token = _scope.Token;
-        _refreshing = true;
-        try { var result = await Api.RefreshAsync(TenantId, agent, true, token); token.ThrowIfCancellationRequested(); _status = result; }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
-        catch (Exception error) when (error is HttpRequestException or OperationCanceledException) { if (!token.IsCancellationRequested) _error = "The refresh request could not be confirmed. Reopen the view to check scan status."; }
-        finally { if (!token.IsCancellationRequested) _refreshing = false; }
-    }
-    private async Task PollAsync(int tenant, Guid agent, CancellationToken token)
-    {
-        try
-        {
-            while (!token.IsCancellationRequested)
+    <div class="inventory-workspace">
+        <div class="inventory-toolbar">
+            <div class="inventory-views" role="tablist" aria-label="Inventory views">
+                @if (!AgentId.HasValue)
+                { <MudButton role="tab" aria-selected="@(_view == "aggregate")" Color="Color.Primary" Variant="@(_view == "aggregate" ? Variant.Filled : Variant.Text)" OnClick='() => ChangeViewAsync("aggregate")'>Software</MudButton> }
+                <MudButton role="tab" aria-selected="@(_view == "installations")" Color="Color.Primary" Variant="@(_view == "installations" ? Variant.Filled : Variant.Text)" OnClick='() => ChangeViewAsync("installations")'>Installations</MudButton>
+                @if (!AgentId.HasValue)
+                { <MudButton role="tab" aria-selected="@(_view == "devices")" Color="Color.Primary" Variant="@(_view == "devices" ? Variant.Filled : Variant.Text)" OnClick='() => ChangeViewAsync("devices")'>Devices</MudButton> }
+                <MudButton role="tab" aria-selected="@(_view == "changes")" Color="Color.Primary" Variant="@(_view == "changes" ? Variant.Filled : Variant.Text)" OnClick='() => ChangeViewAsync("changes")'>Changes</MudButton>
+            </div>
+            <div class="inventory-actions">
+                <MudButton StartIcon="@Icons.Material.Filled.Refresh" OnClick="ReloadAsync" Disabled="_loading">Reload data</MudButton>
+                @if (SoftwareView)
+                { <MudButton Href="@ExportUrl()" StartIcon="@Icons.Material.Filled.Download" Variant="Variant.Outlined">Export installations</MudButton> }
+            </div>
+        </div>
+        <div class="inventory-searchbar">
+            @if (_view != "changes")
             {
-                await Task.Delay(TimeSpan.FromSeconds(5), token);
-                if (_status?.LatestScan?.Status is not ("Pending" or "Collecting")) continue;
-                var status = await Api.StatusAsync(tenant, agent, token);
-                token.ThrowIfCancellationRequested();
-                await InvokeAsync(async () => { if (token.IsCancellationRequested) return; _status = status; if (status.LatestScan?.Status is not ("Pending" or "Collecting")) await LoadAsync(token); StateHasChanged(); });
+                <MudTextField T="string" Value="_search" ValueChanged="SearchChangedAsync" Immediate="true" DebounceInterval="350" Clearable="true"
+                              Label="@(_view == "devices" ? "Find a device" : "Search software, version, publisher or client")"
+                              Variant="Variant.Outlined" Margin="Margin.Dense" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Class="inventory-search" />
             }
+            @if (!AgentId.HasValue && _view != "devices")
+            {
+                <MudAutocomplete T="SoftwareInventoryClientDto" Label="Client name or hostname" Value="_selectedClient" ValueChanged="SelectClientAsync"
+                                 SearchFunc="SearchClientsAsync" ToStringFunc="@(client => client?.Client ?? string.Empty)" Clearable="true"
+                                 ResetValueOnEmptyText="true" MinCharacters="0" MaxItems="25" Variant="Variant.Outlined" Margin="Margin.Dense" Class="inventory-client-picker" />
+            }
+            @if (HasFilters) { <MudButton OnClick="ResetAsync" StartIcon="@Icons.Material.Filled.FilterAltOff">Clear filters</MudButton> }
+        </div>
+        @if (SoftwareView)
+        {
+            <MudExpansionPanels Elevation="0" Class="inventory-filter-panel">
+                <MudExpansionPanel Text="Refine results">
+                    <MudGrid Spacing="2">
+                        <MudItem xs="12" sm="6" md="4"><MudTextField T="string" Label="Software name" @bind-Value="_name" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                        <MudItem xs="12" sm="6" md="4"><MudTextField T="string" Label="Exact version" @bind-Value="_version" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                        <MudItem xs="12" sm="6" md="4"><MudTextField T="string" Label="Publisher" @bind-Value="_publisher" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                        <MudItem xs="12" sm="6" md="4"><MudSelect T="string" Label="Operating system" @bind-Value="_os" Variant="Variant.Outlined" Margin="Margin.Dense"><MudSelectItem T="string" Value="@string.Empty">All operating systems</MudSelectItem><MudSelectItem T="string" Value='@("windows")'>Windows</MudSelectItem><MudSelectItem T="string" Value='@("linux")'>Linux</MudSelectItem></MudSelect></MudItem>
+                        <MudItem xs="12" sm="6" md="4"><MudSelect T="string" Label="Package source" @bind-Value="_source" Variant="Variant.Outlined" Margin="Margin.Dense"><MudSelectItem T="string" Value="@string.Empty">All sources</MudSelectItem>@foreach (var source in Sources) { <MudSelectItem T="string" Value="@source">@source</MudSelectItem> }</MudSelect></MudItem>
+                        <MudItem xs="12" sm="6" md="4"><MudSelect T="string" Label="Scan status / cache age" @bind-Value="_filterStatus" Variant="Variant.Outlined" Margin="Margin.Dense"><MudSelectItem T="string" Value="@string.Empty">All states</MudSelectItem>@foreach (var value in Statuses) { <MudSelectItem T="string" Value="@value">@(value == "fresh" ? "Scanned within 30 minutes" : value == "stale" ? "Older than 30 minutes" : StatusLabel(value))</MudSelectItem> }</MudSelect></MudItem>
+                    </MudGrid>
+                    <MudButton Color="Color.Primary" Variant="Variant.Outlined" OnClick="ApplyAsync" Class="mt-3">Apply filters</MudButton>
+                </MudExpansionPanel>
+            </MudExpansionPanels>
         }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
-        catch (HttpRequestException) { if (!token.IsCancellationRequested) await InvokeAsync(() => { _error = "Scan status updates paused. Reopen to reconnect; the durable request is retained."; StateHasChanged(); }); }
-    }
-    public void Dispose() { _scope.Cancel(); _scope.Dispose(); }
-}
+        @if (_error is not null)
+        {
+            <MudAlert Severity="Severity.Warning" role="alert">@_error <MudButton OnClick="ReloadAsync">Retry</MudButton></MudAlert>
+        }
+        @if (_loading) { <MudProgressLinear Indeterminate="true" Color="Color.Primary" aria-label="Loading saved inventory" /> }
+
+        @if (_view == "installations")
+        {
+            <div class="table-heading"><h3>Installed software</h3><span data-testid="inventory-counts">@(_installations?.Total ?? 0) installed entries · @(_installations?.Devices ?? 0) distinct devices</span></div>
+            <MudTable T="SoftwareInstallationDto" Items="@(_installations?.Items ?? Array.Empty<SoftwareInstallationDto>())" Dense="true" Hover="true" Elevation="0" Breakpoint="Breakpoint.Sm" Class="inventory-data">
+                <HeaderContent>
+                    <MudTh><MudButton Size="Size.Small" OnClick='() => SortAsync("name")'>Software @(_sort == "name" ? (_descending ? "↓" : "↑") : "")</MudButton></MudTh>
+                    <MudTh><MudButton Size="Size.Small" OnClick='() => SortAsync("version")'>Version</MudButton></MudTh>
+                    <MudTh><MudButton Size="Size.Small" OnClick='() => SortAsync("publisher")'>Publisher</MudButton></MudTh>
+                    <MudTh Class="source-cell">Source</MudTh>
+                    @if (!AgentId.HasValue) { <MudTh>Client</MudTh><MudTh>Last complete scan</MudTh> }
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="Software" data-testid="inventory-row"><strong>@context.Package.Name</strong>
+                        <details class="package-details"><summary>Package details</summary><dl>
+                            <dt>Package ID</dt><dd>@context.Package.PackageId</dd><dt>Architecture / OS</dt><dd>@context.Package.Architecture / @context.Os</dd>
+                            <dt>Install location</dt><dd>@(context.Package.InstallLocation ?? "Not reported")</dd><dt>Install date</dt><dd>@(context.Package.InstallDate ?? "Not reported")</dd>
+                            <dt>Scope</dt><dd>@context.Package.Scope</dd><dt>Detected</dt><dd>@Time(context.DetectedAtUtc)</dd><dt>Agent ID</dt><dd>@context.AgentId</dd>
+                        </dl></details>
+                    </MudTd>
+                    <MudTd DataLabel="Version"><span class="inventory-version">@context.Package.Version</span></MudTd>
+                    <MudTd DataLabel="Publisher"><span class="publisher" title="@context.Package.Publisher">@context.Package.Publisher</span></MudTd>
+                    <MudTd DataLabel="Source" Class="source-cell"><MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@context.Package.Source</MudChip></MudTd>
+                    @if (!AgentId.HasValue)
+                    {
+                        <MudTd DataLabel="Client"><MudButton Size="Size.Small" Color="Color.Primary" OnClick="@(() => OpenClientAsync(context.AgentId, context.Client))" title="@context.AgentId.ToString()">@ClientLabel(context.AgentId, context.Client)</MudButton></MudTd>
+                        <MudTd DataLabel="Last complete scan"><span class="inventory-caption">@Time(context.LastSuccessfulScanUtc)</span></MudTd>
+                    }
+                </RowTemplate>
+                <NoRecordsContent>
+                    <div class="inventory-empty" data-testid="inventory-empty">
+                        @if (_loading) { <h3>Loading saved inventory…</h3><p>A live scan does not block this view.</p> }
+                        else if (HasFilters) { <h3>No matching installations</h3><p>Try a different name, version or client, or clear the filters.</p> }
+                        else if (AgentId.HasValue && _status?.LastSuccessfulScanUtc is null)
+                        { <h3>@(ActiveScan ? "First inventory is running" : "No completed inventory yet")</h3><p>@(ActiveScan ? "Results will appear automatically as soon as the complete scan is stored." : "Use Refresh inventory to request a scan. The client must connect before collection can begin.")</p> }
+                        else { <h3>No installed software reported</h3><p>The last complete snapshots contain no supported software entries.</p> }
+                    </div>
+                </NoRecordsContent>
+            </MudTable>
+        }
+        @if (_view == "aggregate")
+        {
+            <div class="table-heading"><h3>Software across the estate</h3><span>@(_aggregate?.Total ?? 0) software/version groups · @(_aggregate?.Devices ?? 0) devices in these results</span></div>
+            <MudTable T="SoftwarePrevalenceDto" Items="@(_aggregate?.Items ?? Array.Empty<SoftwarePrevalenceDto>())" Dense="true" Hover="true" Elevation="0" Breakpoint="Breakpoint.Sm" Class="inventory-data">
+                <HeaderContent><MudTh>Software</MudTh><MudTh>Version</MudTh><MudTh>Publisher</MudTh><MudTh Class="source-cell">Source</MudTh><MudTh>Devices</MudTh><MudTh>Installed entries</MudTh><MudTh></MudTh></HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="Software"><strong>@context.Name</strong></MudTd><MudTd DataLabel="Version"><span class="inventory-version">@context.Version</span></MudTd>
+                    <MudTd DataLabel="Publisher"><span class="publisher" title="@context.Publisher">@context.Publisher</span></MudTd><MudTd DataLabel="Source" Class="source-cell"><MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@context.Source</MudChip></MudTd>
+                    <MudTd DataLabel="Devices"><strong>@context.Devices</strong></MudTd><MudTd DataLabel="Installed entries">@context.Installations</MudTd>
+                    <MudTd><MudButton Size="Size.Small" Color="Color.Primary" EndIcon="@Icons.Material.Filled.ArrowForward" OnClick="@(() => ShowInstallationsAsync(context))">View installations</MudButton></MudTd>
+                </RowTemplate>
+                <NoRecordsContent><div class="inventory-empty"><h3>@(_loading ? "Loading software catalog…" : HasFilters ? "No matching software" : "Inventory has not arrived yet")</h3><p>@(HasFilters ? "Clear or adjust the filters to broaden the results." : "Open Devices to see coverage and request an inventory from an individual client.")</p><MudButton OnClick='() => ChangeViewAsync("devices")'>View devices</MudButton></div></NoRecordsContent>
+            </MudTable>
+        }
+        @if (_view == "devices")
+        {
+            <div class="table-heading"><h3>Device coverage</h3><span>@(_clients?.Total ?? 0) devices · Includes clients without a completed scan</span></div>
+            <MudTable T="SoftwareInventoryClientDto" Items="@(_clients?.Items ?? Array.Empty<SoftwareInventoryClientDto>())" Dense="true" Hover="true" Elevation="0" Breakpoint="Breakpoint.Sm" Class="inventory-data">
+                <HeaderContent><MudTh>Client</MudTh><MudTh>Operating system</MudTh><MudTh>Inventory state</MudTh><MudTh>Installed entries</MudTh><MudTh>Last complete scan</MudTh><MudTh></MudTh></HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="Client"><strong>@ClientLabel(context.AgentId, context.Client)</strong>@if (!string.IsNullOrEmpty(context.HostName) && context.HostName != context.Client) { <div class="inventory-caption">@context.HostName</div> }</MudTd>
+                    <MudTd DataLabel="Operating system">@(context.Os ?? "Not reported")</MudTd>
+                    <MudTd DataLabel="Inventory state"><MudChip T="string" Color="@StatusColor(context.Status)" Size="Size.Small" Variant="Variant.Outlined">@StatusLabel(context.Status)</MudChip>@if (context.Status == "Collecting" && context.TotalChunks > 0) { <span class="inventory-caption">@context.ReceivedChunks / @context.TotalChunks chunks</span> }</MudTd>
+                    <MudTd DataLabel="Installed entries">@(context.LastSuccessfulScanUtc.HasValue ? context.InstalledEntries.ToString("N0") : "—")</MudTd>
+                    <MudTd DataLabel="Last complete scan"><span class="inventory-caption">@Time(context.LastSuccessfulScanUtc)</span></MudTd>
+                    <MudTd><MudButton Size="Size.Small" Color="Color.Primary" EndIcon="@Icons.Material.Filled.OpenInFull" OnClick="@(() => OpenClientAsync(context.AgentId, context.Client))">Open inventory</MudButton></MudTd>
+                </RowTemplate>
+                <NoRecordsContent><div class="inventory-empty"><h3>@(_loading ? "Loading devices…" : HasFilters ? "No matching devices" : "No devices in this tenant")</h3><p>Search by a friendly name or reported hostname.</p></div></NoRecordsContent>
+            </MudTable>
+        }
+        @if (_view == "changes")
+        {
+            <div class="table-heading"><h3>Software changes</h3><span>Established by complete scans only</span></div>
+            <MudTable T="SoftwareChangeDto" Items="@(_changes?.Items ?? Array.Empty<SoftwareChangeDto>())" Dense="true" Hover="true" Elevation="0" Breakpoint="Breakpoint.Sm" Class="inventory-data">
+                <HeaderContent><MudTh>Change</MudTh><MudTh>Software</MudTh><MudTh>Previous version</MudTh><MudTh>Version</MudTh>@if (!AgentId.HasValue) { <MudTh>Client</MudTh> }<MudTh>Detected</MudTh></HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="Change"><MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@context.Kind</MudChip></MudTd><MudTd DataLabel="Software"><strong>@context.Name</strong></MudTd>
+                    <MudTd DataLabel="Previous version">@(context.PreviousVersion ?? "—")</MudTd><MudTd DataLabel="Version">@(context.Version ?? "—")</MudTd>
+                    @if (!AgentId.HasValue) { <MudTd DataLabel="Client"><MudButton Size="Size.Small" Color="Color.Primary" OnClick="@(() => OpenClientAsync(context.AgentId, ClientLabel(context.AgentId, context.Client)))">@ClientLabel(context.AgentId, context.Client)</MudButton></MudTd> }
+                    <MudTd DataLabel="Detected"><span class="inventory-caption">@Time(context.DetectedAtUtc)</span></MudTd>
+                </RowTemplate>
+                <NoRecordsContent><div class="inventory-empty"><h3>@(_loading ? "Loading changes…" : "No changes recorded")</h3><p>Completed scans establish additions, removals and version changes. Incomplete scans do not establish removals.</p></div></NoRecordsContent>
+            </MudTable>
+        }
+        <div class="inventory-pagination">
+            <span>@(Total == 0 ? 0 : _page * EffectivePageSize + 1)–@Math.Min((_page + 1) * EffectivePageSize, Total) of @Total.ToString("N0")</span>
+            @if (_view != "changes")
+            { <MudSelect T="int" Label="Rows per page" Value="_pageSize" ValueChanged="ChangePageSizeAsync" Margin="Margin.Dense" Class="page-size"><MudSelectItem T="int" Value="25">25</MudSelectItem><MudSelectItem T="int" Value="50">50</MudSelectItem><MudSelectItem T="int" Value="100">100</MudSelectItem></MudSelect> }
+            <MudButton OnClick="PreviousAsync" Disabled="@(_page == 0 || _loading)" StartIcon="@Icons.Material.Filled.ChevronLeft">Previous</MudButton>
+            <span>Page @(_page + 1) of @PageCount</span>
+            <MudButton OnClick="NextAsync" Disabled="@(_page + 1 >= PageCount || _loading)" EndIcon="@Icons.Material.Filled.ChevronRight">Next</MudButton>
+        </div>
+    </div>
+</section>
