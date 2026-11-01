@@ -17,6 +17,9 @@ namespace NetRatel.Web.Services;
 public interface IClientArtifactsService
 {
     Task<GitHubClientReleasePageModel> GetGitHubReleasesAsync(string channel, int page, bool refresh, CancellationToken ct = default);
+    Task<GitHubClientReleasePageModel> GetGitHubReleasesAsync(string channel, int page, int pageSize, bool refresh, CancellationToken ct = default) =>
+        pageSize == 20 ? GetGitHubReleasesAsync(channel, page, refresh, ct) :
+            throw new NotSupportedException("This catalogue client does not support variable page sizes.");
     Task<ClientReleaseAutomationModel> GetReleaseAutomationAsync(CancellationToken ct = default) =>
         throw new NotSupportedException();
     Task<ClientReleaseAutomationModel> SaveReleaseAutomationAsync(ClientReleaseAutomationModel settings, CancellationToken ct = default) =>
@@ -154,6 +157,14 @@ public class ClientArtifactsService : IClientArtifactsService
     public async Task<GitHubClientReleasePageModel> GetGitHubReleasesAsync(string channel, int page, bool refresh, CancellationToken ct = default)
     {
         var uri = $"/api/v1/client-artifacts/github-releases?channel={Uri.EscapeDataString(channel)}&page={page}&refresh={refresh.ToString().ToLowerInvariant()}";
+        return await _uploads.Http.GetFromJsonAsync<GitHubClientReleasePageModel>(uri, ct)
+            ?? throw new HttpRequestException("The GitHub releases response was empty.");
+    }
+
+    public async Task<GitHubClientReleasePageModel> GetGitHubReleasesAsync(string channel, int page, int pageSize, bool refresh, CancellationToken ct = default)
+    {
+        if (pageSize is not (20 or 50 or 100)) throw new ArgumentOutOfRangeException(nameof(pageSize));
+        var uri = $"/api/v1/client-artifacts/github-releases?channel={Uri.EscapeDataString(channel)}&page={page}&pageSize={pageSize}&refresh={refresh.ToString().ToLowerInvariant()}";
         return await _uploads.Http.GetFromJsonAsync<GitHubClientReleasePageModel>(uri, ct)
             ?? throw new HttpRequestException("The GitHub releases response was empty.");
     }
