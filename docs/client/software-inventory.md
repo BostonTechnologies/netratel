@@ -16,6 +16,13 @@ available in package/scan details and API responses rather than as primary names
 Counts distinguish installed entries from distinct devices: two user scopes on
 one device count as two entries and one device.
 
+Each installation has a **Package details** disclosure below its row, spanning
+the table in both the client dialog and estate view. It uses the same card layout
+as Monitoring alert details: package identity, installation, client/platform and
+collection/freshness. Detection time and the last complete scan are shown
+separately. Missing metadata is labelled **Not reported**. Cards stack on narrow
+screens, and the disclosure can be opened with the keyboard.
+
 ## Collection and freshness
 
 An enrolled agent starts a full scan on its first authenticated connection after
