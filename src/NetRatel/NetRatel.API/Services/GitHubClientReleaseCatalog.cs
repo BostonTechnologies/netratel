@@ -36,6 +36,9 @@ public sealed record GitHubClientReleasePage(
 public interface IGitHubClientReleaseCatalog
 {
     Task<GitHubClientReleasePage> ListAsync(string channel, int page, bool refresh, CancellationToken cancellationToken);
+    Task<GitHubClientReleasePage> ListAsync(string channel, int page, int pageSize, bool refresh, CancellationToken cancellationToken) =>
+        pageSize == 20 ? ListAsync(channel, page, refresh, cancellationToken) :
+            throw new NotSupportedException("This catalogue does not support variable page sizes.");
     Task<GitHubClientRelease?> FindAsync(long releaseId, CancellationToken cancellationToken);
     Task<string> ResolveTagCommitAsync(string tag, CancellationToken cancellationToken);
 }
@@ -67,17 +70,22 @@ public sealed class GitHubClientReleaseCatalog(
     private string? _warning;
     private int _consecutiveFailures;
 
-    public async Task<GitHubClientReleasePage> ListAsync(string channel, int page, bool refresh, CancellationToken cancellationToken)
+    public Task<GitHubClientReleasePage> ListAsync(string channel, int page, bool refresh, CancellationToken cancellationToken) =>
+        ListAsync(channel, page, DisplayPageSize, refresh, cancellationToken);
+
+    public async Task<GitHubClientReleasePage> ListAsync(string channel, int page, int pageSize, bool refresh, CancellationToken cancellationToken)
     {
         if (page is < 0 or > 29)
             throw new ArgumentOutOfRangeException(nameof(page));
+        if (pageSize is not (20 or 50 or 100))
+            throw new ArgumentOutOfRangeException(nameof(pageSize), "Use 20, 50, or 100 releases per page.");
         if (channel is not ("all" or "stable" or "prerelease"))
             throw new ArgumentException("Channel must be all, stable, or prerelease.", nameof(channel));
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var desiredCount = checked((page + 1) * DisplayPageSize + 1);
+            var desiredCount = checked((page + 1) * pageSize + 1);
             var filtered = new List<GitHubClientRelease>();
             var upstreamHasNext = true;
             var scannedPages = 0;
@@ -95,8 +103,8 @@ public sealed class GitHubClientReleaseCatalog(
                 upstreamHasNext = cached.HasNext;
             }
 
-            var first = page * DisplayPageSize;
-            var items = filtered.Skip(first).Take(DisplayPageSize).ToArray();
+            var first = page * pageSize;
+            var items = filtered.Skip(first).Take(pageSize).ToArray();
             var limitReached = scannedPages == MaxUpstreamPages && upstreamHasNext && filtered.Count < desiredCount;
             var hasMore = filtered.Count > first + items.Length ||
                           upstreamHasNext && scannedPages > 0 && !limitReached;
