@@ -55,7 +55,8 @@ public sealed record SoftwarePackage(string Name, string Version, string Publish
 
 public sealed record SoftwareCollection(IReadOnlyList<SoftwarePackage> Packages, bool Complete, string Os, IReadOnlyList<string> Errors);
 public sealed record SoftwareScanDto(Guid CollectionId, string Status, DateTimeOffset RequestedAtUtc,
-    DateTimeOffset? CompletedAtUtc, int ReceivedChunks, int TotalChunks, IReadOnlyList<string> Errors);
+    DateTimeOffset? CompletedAtUtc, int ReceivedChunks, int TotalChunks, IReadOnlyList<string> Errors,
+    DateTimeOffset? StartedAtUtc = null);
 public sealed record SoftwareInventoryStatus(int TenantId, Guid AgentId, DateTimeOffset? LastSuccessfulScanUtc,
     DateTimeOffset? NextDueUtc, SoftwareScanDto? LatestScan, SoftwareInventoryPolicy Policy, bool CanRefresh = false);
 public sealed record SoftwareScanWork(SoftwareInventoryPolicy Policy, Guid? CollectionId, DateTimeOffset? NextDueUtc);
@@ -67,7 +68,11 @@ public sealed record SoftwareInstallationDto(Guid AgentId, string Client, string
     string Os, DateTimeOffset DetectedAtUtc, DateTimeOffset LastSuccessfulScanUtc);
 public sealed record SoftwarePrevalenceDto(string Name, string Version, string Publisher, string Source, int Devices, int Installations);
 public sealed record SoftwareChangeDto(Guid CollectionId, Guid AgentId, string Kind, string Name, string? PreviousVersion,
-    string? Version, DateTimeOffset DetectedAtUtc);
+    string? Version, DateTimeOffset DetectedAtUtc, string? Client = null);
+public sealed record SoftwareInventorySummary(int Clients, int Inventoried, int NeverScanned, int Stale,
+    int ActiveScans, int FailedScans, int Installations, int Products, DateTimeOffset? LatestScanUtc);
+public sealed record SoftwareInventoryClientDto(Guid AgentId, string Client, string? HostName, string? Os,
+    DateTimeOffset? LastSuccessfulScanUtc, string Status, int InstalledEntries, int ReceivedChunks, int TotalChunks);
 public sealed record SoftwarePage<T>(IReadOnlyList<T> Items, int Total, int Page, int PageSize, int Devices = 0);
 public sealed record SoftwareInventoryQuery(int Page = 0, int PageSize = 50, string? Search = null,
     string? Name = null, string? Version = null, string? Publisher = null, string? Os = null, string? Source = null,
