@@ -35,19 +35,24 @@ public sealed class ReleaseDeletionComponentTests : AsyncBunitContext
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void LocalImportsRemainVisibleWhenUpstreamDiscoveryIsEmptyOrUnavailable(bool unavailable)
+    public async Task LocalImportsRemainVisibleWhenUpstreamDiscoveryIsEmptyOrUnavailable(bool unavailable)
     {
         _artifacts.UpstreamWarning = unavailable ? "GitHub rate limit reached; retry later." : null;
         var cut = Render<ClientsMgmt>();
         cut.WaitForAssertion(() =>
         {
-            cut.Find("[data-testid=local-release-imports]").TextContent.Should().Contain(Version).And.Contain("Published");
-            cut.Find("[data-testid=local-release-imports] button").TextContent.Should().Contain("Check source");
-            DeleteButton(cut).TextContent.Should().Contain("Delete local release and files");
+            cut.FindAll("[data-testid=github-release-catalogue] [data-testid=local-release-imports]").Should().BeEmpty();
             if (unavailable)
                 cut.Markup.Should().Contain("GitHub rate limit reached").And.Contain("GitHub discovery is unavailable");
             else
                 cut.Markup.Should().Contain("No matching GitHub client releases");
+        });
+        await OpenLocalImportsAsync(cut);
+        cut.WaitForAssertion(() =>
+        {
+            cut.Find("[data-testid=local-release-imports]").TextContent.Should().Contain(Version).And.Contain("Published");
+            cut.Find("[data-testid=local-release-imports] button").TextContent.Should().Contain("Check source");
+            DeleteButton(cut).TextContent.Should().Contain("Delete local release and files");
         });
     }
 
@@ -57,6 +62,7 @@ public sealed class ReleaseDeletionComponentTests : AsyncBunitContext
         _artifacts.Blockers = ["Tenant Canary pins this release for rollback."];
         var dialogs = Render<MudDialogProvider>();
         var cut = Render<ClientsMgmt>();
+        await OpenLocalImportsAsync(cut);
         cut.WaitForAssertion(() => DeleteButton(cut).Should().NotBeNull());
         var operation = DeleteButton(cut).ClickAsync(new MouseEventArgs());
         dialogs.WaitForAssertion(() =>
@@ -83,9 +89,10 @@ public sealed class ReleaseDeletionComponentTests : AsyncBunitContext
         _artifacts.DeletionState = state;
         var dialogs = Render<MudDialogProvider>();
         var cut = Render<ClientsMgmt>();
-        cut.WaitForAssertion(() => DeleteButton(cut).Should().NotBeNull());
         var channel = cut.FindComponents<MudSelect<string>>().Single(component => component.Instance.Label == "Channel");
         await channel.InvokeAsync(() => channel.Instance.ValueChanged.InvokeAsync("prerelease"));
+        await OpenLocalImportsAsync(cut);
+        cut.WaitForAssertion(() => DeleteButton(cut).Should().NotBeNull());
         var operation = DeleteButton(cut).ClickAsync(new MouseEventArgs());
         dialogs.WaitForAssertion(() =>
         {
@@ -106,12 +113,15 @@ public sealed class ReleaseDeletionComponentTests : AsyncBunitContext
                 status.Should().Contain($"cleanup is {state.ToLowerInvariant()}").And.Contain("Required cleanup has not finished")
                     .And.NotContain("owned files were deleted");
             cut.FindComponents<MudSelect<string>>().Single(component => component.Instance.Label == "Channel")
-                .Instance.Value.Should().Be("prerelease");
-            cut.Find(".mud-tab-active").TextContent.Should().Contain("GitHub releases");
+                .Instance.GetState(select => select.Value).Should().Be("prerelease");
+            cut.Find(".mud-tab-active").TextContent.Should().Contain("Local imports");
             if (state is "Pending" or "Failed")
                 cut.FindAll("button").Should().Contain(button => button.TextContent.Trim() == "Retry cleanup");
         });
     }
+
+    private static Task OpenLocalImportsAsync(IRenderedComponent<ClientsMgmt> cut) =>
+        cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(tab => tab.TextContent.Trim() == "Local imports").Click());
 
     private static AngleSharp.Dom.IElement DeleteButton(IRenderedComponent<ClientsMgmt> cut) =>
         cut.FindAll("[data-testid=local-release-imports] button")
@@ -127,6 +137,7 @@ public sealed class ReleaseDeletionComponentTests : AsyncBunitContext
         var dialogs = Render<MudDialogProvider>();
         var host = Render<ReleaseHost>();
         var cut = host.FindComponent<ClientsMgmt>();
+        await OpenLocalImportsAsync(cut);
         cut.WaitForAssertion(() => DeleteButton(cut).Should().NotBeNull());
         var operation = DeleteButton(cut).ClickAsync(new MouseEventArgs());
         if (confirmationOpened)
