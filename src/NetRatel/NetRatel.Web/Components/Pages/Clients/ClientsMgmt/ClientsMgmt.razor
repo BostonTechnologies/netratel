@@ -16,53 +16,48 @@
     <span data-testid="clients-mgmt-interactive" hidden></span>
 }
 <NavigationLock OnBeforeInternalNavigation="GuardAutomationNavigationAsync" ConfirmExternalNavigation="@_automationDirty" />
-<MudPaper Class="client-mgmt-hero pa-3" Elevation="0">
-    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="flex-wrap" Spacing="1">
-        <MudStack Spacing="0">
-            <MudText Typo="Typo.h6">Agent Installers &amp; Updates</MudText>
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Browse releases, create tenant-scoped installers, and supervise rollout state from one catalogue.</MudText>
-        </MudStack>
-        <MudStack Row="true" Class="flex-wrap" Spacing="1">
-            <MudButton @ref="_automationOpener" Color="Color.Primary" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Tune" OnClick="OpenAutomationDrawer" data-testid="automation-settings-button">Automation @if (_automationDirty) { <MudChip T="string" Size="Size.Small" Color="Color.Warning" Class="ml-1">Unsaved</MudChip> }</MudButton>
-            <MudMenu Dense="true" Variant="Variant.Outlined" Label="Advanced" AriaLabel="Advanced: upload artifact" StartIcon="@Icons.Material.Filled.MoreHoriz" data-testid="advanced-client-actions">
-                <MudMenuItem Icon="@Icons.Material.Filled.Upload" Disabled="@(!_interactiveReady)" OnClick="OpenUpload">Upload legacy artifact</MudMenuItem>
-            </MudMenu>
-        </MudStack>
+<div class="client-mgmt-workspace" data-testid="client-management-workspace">
+<header class="client-mgmt-header" data-testid="client-management-header">
+    <div class="client-mgmt-identity">
+        <MudText Typo="Typo.h6">Agent Installers &amp; Updates</MudText>
+        <MudText Typo="Typo.caption" Color="Color.Secondary">Release catalogue, installers and rollout activity.</MudText>
+    </div>
+    <div class="client-mgmt-policy"><TenantUpdatePolicySummary Tenants="_tenants" /></div>
+    <MudStack Row="true" Class="flex-wrap client-mgmt-header-actions" Spacing="1">
+        <MudButton @ref="_automationOpener" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Tune" OnClick="OpenAutomationDrawer" data-testid="automation-settings-button">Automation @if (_automationDirty) { <MudChip T="string" Size="Size.Small" Color="Color.Warning" Class="ml-1">Unsaved</MudChip> }</MudButton>
+        <MudMenu Dense="true" Size="Size.Small" Variant="Variant.Outlined" Label="Advanced" AriaLabel="Advanced: upload artifact" StartIcon="@Icons.Material.Filled.MoreHoriz" data-testid="advanced-client-actions">
+            <MudMenuItem Icon="@Icons.Material.Filled.Upload" Disabled="@(!_interactiveReady)" OnClick="OpenUpload">Upload legacy artifact</MudMenuItem>
+        </MudMenu>
     </MudStack>
-</MudPaper>
+</header>
 
-<TenantUpdatePolicySummary Tenants="_tenants" />
-
-<MudPaper Class="mt-2 pa-2 client-mgmt-surface" Elevation="0">
+<MudPaper Class="pa-2 client-mgmt-surface" Elevation="0">
     <MudTabs Rounded="true" KeepPanelsAlive="true" LazyLoadPanels="true" MinimumTabWidth="116px" ActivePanelIndex="@_activeTab" ActivePanelIndexChanged="OnTabChanged" OnPreviewInteraction="GuardAutomationTabChangeAsync" TabPanelsClass="client-mgmt-tab-panel" data-testid="client-management-tabs">
         <MudTabPanel Text="GitHub releases">
             <MudStack Spacing="1" data-testid="github-release-catalogue">
-                <MudPaper Class="pa-2 client-mgmt-automation-summary" Elevation="0" data-testid="release-automation-settings">
-                    <MudStack Row="true" Class="flex-wrap" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Spacing="1">
-                        <MudStack Spacing="0">
-                            <MudText Typo="Typo.subtitle1">Release automation</MudText>
-                            <MudText Typo="Typo.caption" Color="Color.Secondary">Checks and downloads run here; deployment still follows each tenant’s channel policy.</MudText>
-                            <MudText Typo="Typo.caption">@AutomationStatusSummary</MudText>
-                        </MudStack>
-                        <MudText Typo="Typo.caption" Color="Color.Secondary">Edit with Automation above.</MudText>
-                    </MudStack>
-                    @if (!string.IsNullOrWhiteSpace(_automationSaved?.LastError))
-                    {
-                        <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2">Last automation error: @_automationSaved.LastError</MudAlert>
-                    }
-                    @if (!string.IsNullOrWhiteSpace(_automationError))
-                    {
-                        <MudAlert Severity="Severity.Error" Dense="true" Class="mt-2">@_automationError</MudAlert>
-                    }
-                </MudPaper>
+                <details class="client-mgmt-automation-summary" data-testid="release-automation-settings">
+                    <summary>Release automation <span class="client-mgmt-summary-status">@AutomationSummary</span>@if (!string.IsNullOrWhiteSpace(_automationSaved?.LastError) || !string.IsNullOrWhiteSpace(_automationError)) { <span class="client-mgmt-summary-error">Attention required</span> }</summary>
+                    <div class="pa-2">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Checks and downloads run here; deployment still follows each tenant’s channel policy. Edit with Automation above.</MudText>
+                        <MudText Typo="Typo.caption">@AutomationStatusSummary</MudText>
+                        @if (!string.IsNullOrWhiteSpace(_automationSaved?.LastError))
+                        {
+                            <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2">Last automation error: @_automationSaved.LastError</MudAlert>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(_automationError))
+                        {
+                            <MudAlert Severity="Severity.Error" Dense="true" Class="mt-2">@_automationError</MudAlert>
+                        }
+                    </div>
+                </details>
                 <MudStack Row="true" Class="flex-wrap" AlignItems="AlignItems.Center" Spacing="1">
                     <MudSelect T="string" Value="_githubChannel" ValueChanged="OnGitHubChannelChanged" Label="Channel" Class="client-mgmt-channel-filter" Margin="Margin.Dense">
                         <MudSelectItem Value="@("all")">Stable and prerelease</MudSelectItem>
                         <MudSelectItem Value="@("stable")">Stable</MudSelectItem>
                         <MudSelectItem Value="@("prerelease")">Prerelease</MudSelectItem>
                     </MudSelect>
-                    <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh" Disabled="_githubLoading" OnClick="@(() => LoadGitHubAsync(true))">Refresh catalogue</MudButton>
-                    <MudButton Variant="Variant.Text" Disabled="_githubLoading" OnClick="RefreshImportsAsync">Refresh imports</MudButton>
+                    <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh" Disabled="_githubLoading" OnClick="@(() => LoadGitHubAsync(true))">Refresh catalogue</MudButton>
+                    <MudButton Size="Size.Small" Variant="Variant.Text" Disabled="_importsLoading" OnClick="@(() => OnTabChanged(LocalImportsTab))" data-testid="open-local-imports">Local imports (@_githubImports.Count)</MudButton>
                     @if (_githubPage is not null && _githubPage.RefreshedAtUtc > DateTimeOffset.MinValue)
                     {
                         <MudText Typo="Typo.caption">Checked @_githubPage.RefreshedAtUtc.ToLocalTime().ToString("g")</MudText>
@@ -70,12 +65,13 @@
                 </MudStack>
                 @if (_githubLoading) { <div role="status" aria-label="Loading GitHub releases"><MudProgressLinear Indeterminate="true" /></div> }
                 @if (!string.IsNullOrWhiteSpace(_githubError)) { <MudAlert Severity="Severity.Error">@_githubError</MudAlert> }
+                @if (!string.IsNullOrWhiteSpace(_importsError)) { <MudAlert Severity="Severity.Warning">@_importsError</MudAlert> }
                 @if (!string.IsNullOrWhiteSpace(_githubPage?.Warning)) { <MudAlert Severity="Severity.Warning">@_githubPage.Warning</MudAlert> }
                 @if (_githubPage?.Items.Count == 0 && !_githubLoading && _githubPage.Warning is null && _githubError is null)
                 {
                     <MudText Typo="Typo.body2">No matching releases in the scanned range. Older releases may exist when a scan limit is shown.</MudText>
                 }
-                <MudTable T="GitHubClientReleaseModel" Items="@(_githubPage?.Items ?? [])" Dense="true" Hover="true" Breakpoint="Breakpoint.Sm" Class="client-github-table" data-testid="github-release-table">
+                <MudTable T="GitHubClientReleaseModel" Items="@(_githubPage?.Items ?? [])" RowsPerPage="_githubPageSize" Dense="true" Hover="true" Breakpoint="Breakpoint.Sm" Class="client-github-table" data-testid="github-release-table">
                     <HeaderContent><MudTh>Release</MudTh><MudTh>Channel</MudTh><MudTh>Packages</MudTh><MudTh>State</MudTh><MudTh>Actions</MudTh></HeaderContent>
                     <RowTemplate>
                         <MudTd DataLabel="Release">
@@ -123,42 +119,9 @@
                             }
                         </MudTd>
                     </RowTemplate>
-                    <NoRecordsContent><MudText Typo="Typo.body2" Color="Color.Secondary">@(_githubPage?.Warning is not null || _githubError is not null ? "GitHub discovery is unavailable. Local imports remain listed below." : "No matching GitHub client releases were found.")</MudText></NoRecordsContent>
+                    <NoRecordsContent><MudText Typo="Typo.body2" Color="Color.Secondary">@(_githubPage?.Warning is not null || _githubError is not null ? "GitHub discovery is unavailable. Downloaded releases remain available in the Local imports tab." : "No matching GitHub client releases were found.")</MudText></NoRecordsContent>
                 </MudTable>
-                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
-                    <MudButton Disabled="@(_githubLoading || _githubPageNumber == 0)" OnClick="PreviousGitHubPage">Previous</MudButton>
-                    <MudText Typo="Typo.body2">Page @(_githubPageNumber + 1)</MudText>
-                    <MudButton Disabled="@(_githubLoading || _githubPage?.HasMore != true)" OnClick="NextGitHubPage">Next</MudButton>
-                </MudStack>
-                    @if (_githubImports.Count > 0)
-                {
-                    <MudText Typo="Typo.subtitle2">Local imports</MudText>
-                    <MudTable T="ClientReleaseImportModel" Items="_githubImports.Values.OrderByDescending(x => x.CreatedAtUtc)" Dense="true" Breakpoint="Breakpoint.Sm" data-testid="local-release-imports">
-                        <HeaderContent><MudTh>Version</MudTh><MudTh>Local state</MudTh><MudTh>Source availability</MudTh><MudTh>Actions</MudTh></HeaderContent>
-                        <RowTemplate>
-                            <MudTd DataLabel="Version">@context.Version</MudTd>
-                            <MudTd DataLabel="Local state">@(context.PublishedAtUtc.HasValue ? "Published" : ImportState(context.State)) @if (!string.IsNullOrWhiteSpace(context.Error)) { <MudText Typo="Typo.caption" Color="Color.Error">@context.Error</MudText> }</MudTd>
-                            <MudTd DataLabel="Source availability">
-                                @if (_sourceStates.TryGetValue(context.Version, out var source))
-                                { <MudText Typo="Typo.caption">@source.State · @source.Message @if (source.CheckedAtUtc != default) { <span>Checked @source.CheckedAtUtc.ToLocalTime().ToString("g")</span> }</MudText> }
-                                else { <MudText Typo="Typo.caption">Unchecked; local verification is retained independently.</MudText> }
-                            </MudTd>
-                            <MudTd DataLabel="Actions">
-                                <MudButton Size="Size.Small" OnClick="@(() => CheckSourceAsync(context.Version))">Check source</MudButton>
-                                @if (context.State is 6 or 7) { <MudButton Size="Size.Small" OnClick="@(() => RetryImportAsync(context.Id))">Retry import</MudButton> }
-                                <MudButton Size="Size.Small" Color="Color.Error" Disabled="_localDeleteBusy" OnClick="@(() => DeleteLocalReleaseAsync(context.Version))">Delete local release and files</MudButton>
-                            </MudTd>
-                        </RowTemplate>
-                    </MudTable>
-                }
-                @if (!string.IsNullOrWhiteSpace(_localDeleteMessage)) { <MudAlert Dense="true" Severity="Severity.Info" data-testid="local-release-deletion-status">@_localDeleteMessage</MudAlert> }
-                @foreach (var deletion in _localDeletions)
-                {
-                    <MudStack Row="true" Spacing="1" Class="flex-wrap" AlignItems="AlignItems.Center">
-                        <MudText Typo="Typo.caption">@deletion.Version · cleanup @deletion.State · @(deletion.Suppressed ? "automatic re-import suppressed" : "deliberate re-import allowed") @deletion.Error</MudText>
-                        @if (deletion.State is "Pending" or "Failed") { <MudButton Size="Size.Small" Disabled="_localDeleteBusy" OnClick="@(() => DeleteLocalReleaseAsync(deletion.Version))">Retry cleanup</MudButton> }
-                    </MudStack>
-                }
+                <ClientManagementPager Label="GitHub releases" Page="_githubPageNumber" PageSize="_githubPageSize" ItemCount="@(_githubPage?.Items.Count ?? 0)" HasMore="@(_githubPage?.HasMore == true)" Busy="_githubLoading" PageChanged="ChangeGitHubPageAsync" PageSizeChanged="ChangeGitHubPageSizeAsync" />
             </MudStack>
         </MudTabPanel>
         <MudTabPanel Text="Packages">
@@ -168,7 +131,7 @@
                         <MudItem xs="12" sm="6" md="3"><MudSelect T="string" Value="_artifactRid" ValueChanged="OnArtifactRidChanged" Label="Runtime" Immediate="true" data-testid="artifact-rid-filter"><MudSelectItem Value="@string.Empty">All runtimes</MudSelectItem>@foreach (var runtimeId in RuntimeIds) { <MudSelectItem Value="@runtimeId">@runtimeId</MudSelectItem> }</MudSelect></MudItem>
                         <MudItem xs="12" sm="6" md="4"><MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh" OnClick="ReloadArtifactsAsync" Disabled="_artifactsLoading">Refresh</MudButton></MudItem>
                     </MudGrid>
-                    <MudTable T="ClientArtifactSummaryModel" @ref="_artifactTable" ServerData="LoadArtifactsAsync" Dense="true" Hover="true" Loading="_artifactsLoading" Breakpoint="Breakpoint.Sm" data-testid="artifact-table">
+                    <MudTable T="ClientArtifactSummaryModel" @ref="_artifactTable" RowsPerPage="20" ServerData="LoadArtifactsAsync" Dense="true" Hover="true" Loading="_artifactsLoading" Breakpoint="Breakpoint.Sm" data-testid="artifact-table">
                         <HeaderContent><MudTh>Runtime</MudTh><MudTh>Version</MudTh><MudTh>Notes</MudTh><MudTh>SHA256</MudTh><MudTh>Uploaded</MudTh><MudTh></MudTh></HeaderContent>
                         <RowTemplate>
                             <MudTd DataLabel="Runtime">@context.Rid</MudTd>
@@ -195,7 +158,7 @@
                     </MudGrid>
                     @if (_releaseLoadError is not null) { <MudAlert Dense="true" Severity="Severity.Error">@_releaseLoadError <MudButton Size="Size.Small" OnClick="@(() => _releaseTable!.ReloadServerData())">Retry</MudButton></MudAlert> }
                     @if (_localDeleteMessage is not null) { <MudAlert Dense="true" Severity="Severity.Info">@_localDeleteMessage</MudAlert> }
-                    <MudTable T="ClientUpdateReleaseModel" @ref="_releaseTable" ServerData="LoadReleasesAsync" Dense="true" Hover="true" Loading="_releasesLoading" Breakpoint="Breakpoint.Sm" data-testid="release-table">
+                    <MudTable T="ClientUpdateReleaseModel" @ref="_releaseTable" RowsPerPage="20" ServerData="LoadReleasesAsync" Dense="true" Hover="true" Loading="_releasesLoading" Breakpoint="Breakpoint.Sm" data-testid="release-table">
                         <HeaderContent><MudTh>Runtime</MudTh><MudTh>Version</MudTh><MudTh>Channel</MudTh><MudTh>SHA256</MudTh><MudTh>Published</MudTh><MudTh>Status</MudTh><MudTh></MudTh></HeaderContent>
                         <RowTemplate>
                             <MudTd DataLabel="Runtime">@context.RuntimeId</MudTd><MudTd DataLabel="Version">@context.Version</MudTd><MudTd DataLabel="Channel">@context.Channel</MudTd>
@@ -227,7 +190,7 @@
                         <MudItem xs="12" sm="6" md="3"><MudSelect T="string" Value="@_attemptGrouping" ValueChanged="OnAttemptGroupingChanged" Label="Group current page" data-testid="attempt-grouping"><MudSelectItem Value="@("None")">None</MudSelectItem><MudSelectItem Value="@("Tenant")">Tenant</MudSelectItem><MudSelectItem Value="@("Version")">Version</MudSelectItem><MudSelectItem Value="@("RID")">RID</MudSelectItem><MudSelectItem Value="@("Status")">Status</MudSelectItem></MudSelect></MudItem>
                     </MudGrid>
                     <div class="client-activity-table">
-                    <MudTable T="ClientUpdateHistoryItemModel" @ref="_attemptTable" ServerData="LoadAttemptsAsync" GroupBy="AttemptGroup" RowStyleFunc="ActivityRowStyle" Dense="true" Hover="true" Loading="_attemptsLoading" Breakpoint="Breakpoint.Sm" data-testid="attempt-table">
+                    <MudTable T="ClientUpdateHistoryItemModel" @ref="_attemptTable" RowsPerPage="20" ServerData="LoadAttemptsAsync" GroupBy="AttemptGroup" RowStyleFunc="ActivityRowStyle" Dense="true" Hover="true" Loading="_attemptsLoading" Breakpoint="Breakpoint.Sm" data-testid="attempt-table">
                         <HeaderContent><MudTh>Client</MudTh><MudTh>Release</MudTh><MudTh>Status</MudTh><MudTh>Failure</MudTh><MudTh>Updated</MudTh></HeaderContent>
                         <GroupHeaderTemplate><td colspan="5"><MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1"><MudIconButton Class="mud-table-row-expander" Size="Size.Small" Icon="@(IsActivityGroupExpanded(context.Key) ? Icons.Material.Filled.ExpandMore : Icons.Material.Filled.ChevronRight)" OnClick="@(() => ToggleActivityGroup(context.Key))" aria-label="@(IsActivityGroupExpanded(context.Key) ? "Collapse group" : "Expand group")" aria-expanded="@IsActivityGroupExpanded(context.Key).ToString().ToLowerInvariant()" /><MudText Typo="Typo.subtitle2">@context.Key <span class="text-secondary">(@context.Items.Count() on this page)</span></MudText></MudStack></td></GroupHeaderTemplate>
                         <RowTemplate>
@@ -263,7 +226,7 @@
                 <MudStack Spacing="2" data-testid="suspended-management-panel">
                     <MudText Typo="Typo.body2" Color="Color.Secondary">Resume affects only future automatic updates for the selected suspended client.</MudText>
                     <MudGrid Spacing="2"><MudItem xs="12" md="6"><MudTextField T="string" Value="_suspendedSearch" ValueChanged="OnSuspendedSearchChanged" Immediate="true" Label="Search suspended agents" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" data-testid="suspended-search" /></MudItem><MudItem xs="12" md="3"><MudSelect T="int?" Value="_suspendedTenantId" ValueChanged="OnSuspendedTenantChanged" Label="Tenant"><MudSelectItem T="int?" Value="@null">All tenants</MudSelectItem>@foreach (var tenant in _tenants) { <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name</MudSelectItem> }</MudSelect></MudItem></MudGrid>
-                    <MudTable T="AgentClientUpdateStateModel" @ref="_suspendedTable" ServerData="LoadSuspendedAsync" Dense="true" Hover="true" Loading="_suspendedLoading" Breakpoint="Breakpoint.Sm" data-testid="suspended-table">
+                    <MudTable T="AgentClientUpdateStateModel" @ref="_suspendedTable" RowsPerPage="20" ServerData="LoadSuspendedAsync" Dense="true" Hover="true" Loading="_suspendedLoading" Breakpoint="Breakpoint.Sm" data-testid="suspended-table">
                         <HeaderContent><MudTh>Client</MudTh><MudTh>Reason</MudTh><MudTh>Suspended</MudTh><MudTh></MudTh></HeaderContent>
                         <RowTemplate><MudTd DataLabel="Client"><MudTooltip Text="@context.AgentId.ToString()"><MudStack Spacing="0"><MudText Typo="Typo.body2">@StateTarget(context)</MudText><MudText Typo="Typo.caption" Color="Color.Secondary">@(context.TenantName ?? $"Tenant {context.TenantId}")@(DisplaySecondaryName(context.ClientHostName, context.ClientDisplayName))</MudText></MudStack></MudTooltip></MudTd><MudTd DataLabel="Reason"><span class="client-mgmt-clamp">@(context.SuspensionReason ?? "—")</span></MudTd><MudTd DataLabel="Suspended">@context.SuspendedAtUtc?.ToLocalTime().ToString("g")</MudTd><MudTd><MudButton Size="Size.Small" Color="Color.Primary" OnClick="@(() => Resume(context))">Resume future updates</MudButton></MudTd></RowTemplate>
                         <NoRecordsContent><MudText Typo="Typo.body2" Color="Color.Secondary">No clients have auto-update suspended.</MudText></NoRecordsContent>
@@ -271,8 +234,49 @@
                     </MudTable>
                 </MudStack>
         </MudTabPanel>
+        <MudTabPanel Text="Local imports">
+            <MudStack Spacing="1" data-testid="local-imports-panel">
+                <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="flex-wrap">
+                    <MudStack Spacing="0"><MudText Typo="Typo.subtitle1">Local imports</MudText><MudText Typo="Typo.caption" Color="Color.Secondary">Downloaded release packs and cleanup status, independent of GitHub availability.</MudText></MudStack>
+                    <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh" Disabled="_importsLoading" OnClick="RefreshImportsAsync">Refresh imports</MudButton>
+                </MudStack>
+                @if (_importsLoading) { <MudProgressLinear Indeterminate="true" aria-label="Loading local imports" /> }
+                @if (!string.IsNullOrWhiteSpace(_importsError)) { <MudAlert Severity="Severity.Warning">@_importsError</MudAlert> }
+                <MudTable T="ClientReleaseImportModel" Items="LocalImportRows" RowsPerPage="_localImportsPageSize" Dense="true" Hover="true" Breakpoint="Breakpoint.Sm" data-testid="local-release-imports">
+                    <HeaderContent><MudTh>Version</MudTh><MudTh>Local state</MudTh><MudTh>Source availability</MudTh><MudTh>Actions</MudTh></HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Version">@context.Version</MudTd>
+                        <MudTd DataLabel="Local state">@(context.PublishedAtUtc.HasValue ? "Published" : ImportState(context.State)) @if (!string.IsNullOrWhiteSpace(context.Error)) { <MudText Typo="Typo.caption" Color="Color.Error">@context.Error</MudText> } @if (!string.IsNullOrWhiteSpace(context.AutomaticPublishError)) { <MudText Typo="Typo.caption" Color="Color.Warning">Automatic publication: @context.AutomaticPublishError</MudText> }</MudTd>
+                        <MudTd DataLabel="Source availability">
+                            @if (_sourceStates.TryGetValue(context.Version, out var source))
+                            { <MudText Typo="Typo.caption">@source.State · @source.Message @if (source.CheckedAtUtc != default) { <span>Checked @source.CheckedAtUtc.ToLocalTime().ToString("g")</span> }</MudText> }
+                            else { <MudText Typo="Typo.caption">Unchecked; local verification is retained independently.</MudText> }
+                        </MudTd>
+                        <MudTd DataLabel="Actions">
+                            <MudButton Size="Size.Small" OnClick="@(() => CheckSourceAsync(context.Version))">Check source</MudButton>
+                            @if (context.State is 6 or 7) { <MudButton Size="Size.Small" Disabled="_importActionBusy" OnClick="@(() => RetryImportAsync(context.Id))">Retry import</MudButton> }
+                            else if (context.State == 5 && !context.PublishedAtUtc.HasValue) { <MudButton Size="Size.Small" Color="Color.Warning" Disabled="_importActionBusy" OnClick="@(() => PublishImportAsync(context.Id, context.Version.Split('+')[0].Contains('-')))">Approve and publish</MudButton> }
+                            else if (context.State != 5) { <MudButton Size="Size.Small" Disabled="_importActionBusy" OnClick="@(() => CancelImportAsync(context.Id))">Cancel import</MudButton> }
+                            <MudButton Size="Size.Small" Color="Color.Error" Disabled="_localDeleteBusy" OnClick="@(() => DeleteLocalReleaseAsync(context.Version))">Delete local release and files</MudButton>
+                        </MudTd>
+                    </RowTemplate>
+                    <NoRecordsContent><MudText Typo="Typo.body2" Color="Color.Secondary">@(_importsError is null ? "No local imports yet. Import a release pack from GitHub releases to get started." : "Local import status is unavailable. Use Refresh imports to retry.")</MudText></NoRecordsContent>
+                </MudTable>
+                <ClientManagementPager Label="Local imports" Page="_localImportsPageNumber" PageSize="_localImportsPageSize" ItemCount="LocalImportRows.Count" Total="_githubImports.Count" HasMore="@((_localImportsPageNumber + 1) * _localImportsPageSize < _githubImports.Count)" Busy="_importsLoading" PageChanged="ChangeLocalImportsPageAsync" PageSizeChanged="ChangeLocalImportsPageSizeAsync" />
+                @if (!string.IsNullOrWhiteSpace(_localDeleteMessage)) { <MudAlert Dense="true" Severity="Severity.Info" data-testid="local-release-deletion-status">@_localDeleteMessage</MudAlert> }
+                @if (_localDeletions.Count > 0) { <MudText Typo="Typo.subtitle2">Cleanup activity</MudText> }
+                @foreach (var deletion in _localDeletions)
+                {
+                    <MudStack Row="true" Spacing="1" Class="flex-wrap" AlignItems="AlignItems.Center">
+                        <MudText Typo="Typo.caption">@deletion.Version · cleanup @deletion.State · @(deletion.Suppressed ? "automatic re-import suppressed" : "deliberate re-import allowed") @deletion.Error</MudText>
+                        @if (deletion.State is "Pending" or "Failed") { <MudButton Size="Size.Small" Disabled="_localDeleteBusy" OnClick="@(() => DeleteLocalReleaseAsync(deletion.Version))">Retry cleanup</MudButton> }
+                    </MudStack>
+                }
+            </MudStack>
+        </MudTabPanel>
     </MudTabs>
 </MudPaper>
+</div>
 
 <MudDrawer Anchor="Anchor.Right" Variant="DrawerVariant.Temporary" Width="min(560px, 100vw)"
            Open="_automationDrawerOpen" OpenChanged="OnAutomationDrawerChanged" OverlayAutoClose="false">
@@ -447,7 +451,19 @@
 </MudDialog>
 
 @code {
-    private static readonly int[] PageSizes = [10, 20, 50, 100];
+    private static readonly int[] PageSizes = [20, 50, 100];
+    // Keep existing tab indexes stable for activity streaming and focus restoration.
+    private const int LocalImportsTab = 5;
+    private int _githubPageSize = 20;
+    private int _localImportsPageSize = 20;
+    private int _localImportsPageNumber;
+    private bool _importsLoading;
+    private string? _importsError;
+    private long _githubLoadGeneration, _importsLoadGeneration;
+    private CancellationTokenSource? _githubLoadCancellation;
+    private IReadOnlyList<ClientReleaseImportModel> LocalImportRows => _githubImports.Values
+        .OrderByDescending(item => item.CreatedAtUtc).ThenByDescending(item => item.GitHubReleaseId)
+        .Skip(_localImportsPageNumber * _localImportsPageSize).Take(_localImportsPageSize).ToArray();
     private static readonly string[] RuntimeIds = ["win-x64", "win-arm64", "linux-x64", "osx-x64", "osx-arm64"];
     private static readonly string[] UpdateStatuses = ["Claimed", "Downloading", "Staged", "Activating", "GatewayReadmitted", "Accepted", "FailedPreActivation", "RolledBack", "RollbackUnverified"];
     private readonly (string Label, int Minutes)[] _validityPresets = [("1 hour", 60), ("6 hours", 360), ("24 hours", 1440), ("3 days", 4320), ("7 days", 10080)];
@@ -635,6 +651,9 @@
             case 4 when _suspendedTable is not null:
                 await _suspendedTable.ReloadServerData();
                 return true;
+            case LocalImportsTab:
+                await RefreshImportsAsync();
+                return true;
             default:
                 return false;
         }
@@ -655,21 +674,38 @@
 
     private async Task LoadGitHubAsync(bool refresh)
     {
+        _githubLoadCancellation?.Cancel();
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_importPolling.Token);
+        _githubLoadCancellation = cancellation;
+        var generation = ++_githubLoadGeneration;
+        var channel = _githubChannel;
+        var pageNumber = _githubPageNumber;
+        var pageSize = _githubPageSize;
         _githubLoading = true;
         _githubError = null;
         try
         {
-            _githubPage = await Artifacts.GetGitHubReleasesAsync(_githubChannel, _githubPageNumber, refresh);
-            await RefreshImportsAsync();
+            var page = await ClientReleaseCataloguePaging.ReadAsync(
+                (sourcePage, force, ct) => Artifacts.GetGitHubReleasesAsync(channel, sourcePage, force, ct),
+                pageNumber, pageSize, refresh, cancellation.Token);
+            if (_automationDisposed || generation != _githubLoadGeneration || cancellation.IsCancellationRequested) return;
+            _githubPage = page;
         }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
         catch (HttpRequestException)
         {
-            _githubError = "Could not refresh GitHub releases. Try again; imported artifacts remain available.";
+            if (!_automationDisposed && generation == _githubLoadGeneration)
+                _githubError = "Could not refresh GitHub releases. Try again; imported artifacts remain available in Local imports.";
         }
         finally
         {
-            _githubLoading = false;
+            if (generation == _githubLoadGeneration)
+            {
+                _githubLoading = false;
+                _githubLoadCancellation = null;
+            }
         }
+        if (!_automationDisposed && generation == _githubLoadGeneration) await RefreshImportsAsync();
     }
 
     private async Task LoadAutomationAsync()
@@ -900,19 +936,51 @@
     private static string UtcTime(DateTimeOffset? value) =>
         value.HasValue ? value.Value.ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'") : "Never";
 
-    private async Task OnGitHubChannelChanged(string channel) { _githubChannel = channel; _githubPageNumber = 0; await LoadGitHubAsync(false); }
+    private async Task OnGitHubChannelChanged(string channel) { _githubChannel = channel; _githubPageNumber = 0; _githubPage = null; await LoadGitHubAsync(false); }
+    private async Task ChangeGitHubPageSizeAsync(int size)
+    {
+        if (!PageSizes.Contains(size) || size == _githubPageSize) return;
+        _githubPageSize = size; _githubPageNumber = 0; _githubPage = null;
+        await LoadGitHubAsync(false);
+    }
+    private async Task ChangeGitHubPageAsync(int page)
+    {
+        if (_githubLoading || page < 0 || page == _githubPageNumber || (page > _githubPageNumber && _githubPage?.HasMore != true)) return;
+        _githubPageNumber = page; _githubPage = null;
+        await LoadGitHubAsync(false);
+    }
+    private Task ChangeLocalImportsPageSizeAsync(int size)
+    {
+        if (PageSizes.Contains(size)) { _localImportsPageSize = size; _localImportsPageNumber = 0; }
+        return Task.CompletedTask;
+    }
+    private Task ChangeLocalImportsPageAsync(int page)
+    {
+        _localImportsPageNumber = Math.Clamp(page, 0, Math.Max(0, (_githubImports.Count - 1) / _localImportsPageSize));
+        return Task.CompletedTask;
+    }
 
     private async Task RefreshImportsAsync()
     {
+        var generation = ++_importsLoadGeneration;
+        _importsLoading = true;
         try
         {
-            _githubImports = (await Artifacts.GetReleaseImportsAsync()).ToDictionary(x => x.GitHubReleaseId);
-            _localDeletions = await Artifacts.GetLocalReleaseDeletionsAsync();
+            var imports = await Artifacts.GetReleaseImportsAsync(_importPolling.Token);
+            var deletions = await Artifacts.GetLocalReleaseDeletionsAsync(_importPolling.Token);
+            if (_automationDisposed || generation != _importsLoadGeneration) return;
+            _githubImports = imports.ToDictionary(x => x.GitHubReleaseId);
+            _localDeletions = deletions;
+            _localImportsPageNumber = Math.Min(_localImportsPageNumber, Math.Max(0, (_githubImports.Count - 1) / _localImportsPageSize));
+            _importsError = null;
         }
+        catch (OperationCanceledException) when (_importPolling.IsCancellationRequested) { }
         catch (HttpRequestException)
         {
-            _githubError = "Could not load local import status. Try Refresh imports.";
+            if (!_automationDisposed && generation == _importsLoadGeneration)
+                _importsError = "Could not load local import status. The previous snapshot is retained. Try Refresh imports.";
         }
+        finally { if (generation == _importsLoadGeneration) _importsLoading = false; }
     }
 
     private async Task PollImportsAsync(CancellationToken ct)
@@ -922,7 +990,8 @@
         {
             while (await timer.WaitForNextTickAsync(ct))
             {
-                if (_activeTab != 0 || !_githubImports.Values.Any(x => x.State is >= 0 and <= 4)) continue;
+                if (_activeTab is not (0 or LocalImportsTab) ||
+                    (!_githubImports.Values.Any(x => x.State is >= 0 and <= 4) && !_localDeletions.Any(x => x.State == "Pending"))) continue;
                 await InvokeAsync(async () => { await RefreshImportsAsync(); StateHasChanged(); });
             }
         }
@@ -932,26 +1001,26 @@
     private async Task QueueImportAsync(long releaseId)
     {
         _importActionBusy = true;
-        _githubError = null;
+        _importsError = null;
         try
         {
             var operation = await Artifacts.QueueReleaseImportAsync(releaseId);
             _githubImports[releaseId] = operation;
         }
-        catch (HttpRequestException) { _githubError = "Could not queue the release import. Check the release evidence and try again."; }
+        catch (HttpRequestException) { _importsError = "Could not queue the release import. Check the release evidence and try again."; }
         finally { _importActionBusy = false; }
     }
 
     private async Task CancelImportAsync(Guid id)
     {
         try { await Artifacts.CancelReleaseImportAsync(id); await RefreshImportsAsync(); }
-        catch (HttpRequestException) { _githubError = "Could not cancel the import. Refresh its status and try again."; }
+        catch (HttpRequestException) { _importsError = "Could not cancel the import. Refresh its status and try again."; }
     }
 
     private async Task RetryImportAsync(Guid id)
     {
         try { await Artifacts.RetryReleaseImportAsync(id); await RefreshImportsAsync(); }
-        catch (HttpRequestException) { _githubError = "Could not retry the import. Refresh its status and try again."; }
+        catch (HttpRequestException) { _importsError = "Could not retry the import. Refresh its status and try again."; }
     }
 
     private async Task PublishImportAsync(Guid id, bool isPrerelease)
@@ -970,7 +1039,7 @@
         }
         catch (HttpRequestException)
         {
-            _githubError = "Could not publish the client pack. Refresh its status and inspect the imported artifacts.";
+            _importsError = "Could not publish the client pack. Refresh its status and inspect the imported artifacts.";
         }
     }
 
@@ -983,6 +1052,9 @@
     public async ValueTask DisposeAsync()
     {
         _automationDisposed = true;
+        _githubLoadCancellation?.Cancel();
+        _githubLoadGeneration++;
+        _importsLoadGeneration++;
         await StopActivityAsync();
         _automationLoadGeneration++;
         _automationOperationGeneration++;
@@ -990,8 +1062,6 @@
         if (_importPollingTask is not null) await _importPollingTask;
         _importPolling.Dispose();
     }
-    private async Task PreviousGitHubPage() { if (_githubPageNumber > 0) { _githubPageNumber--; await LoadGitHubAsync(false); } }
-    private async Task NextGitHubPage() { if (_githubPage?.HasMore == true) { _githubPageNumber++; await LoadGitHubAsync(false); } }
 
     private async Task<TableData<ClientArtifactSummaryModel>> LoadArtifactsAsync(TableState state, CancellationToken ct)
     {
@@ -1266,14 +1336,22 @@
 }
 
 <style>
-    .client-mgmt-hero, .client-mgmt-surface { border: 1px solid var(--mud-palette-divider); border-radius: var(--netratel-radius-surface, 7px); min-width: 0; }
-    .client-mgmt-hero { border-left: 3px solid var(--mud-palette-primary); }
+    .client-mgmt-workspace { width: 100%; max-width: 1600px; margin: 0 auto; min-width: 0; }
+    .client-mgmt-header { display: grid; grid-template-columns: minmax(15rem, 1fr) minmax(18rem, 34rem) auto; align-items: start; gap: .75rem 1rem; padding: .25rem .25rem .75rem; }
+    .client-mgmt-identity { padding-top: .5rem; min-width: 0; }
+    .client-mgmt-policy { min-width: 0; }
+    .client-mgmt-header-actions { padding-top: .5rem; }
+    .client-mgmt-surface { border: 1px solid var(--mud-palette-divider); border-radius: var(--netratel-radius-surface, 7px); min-width: 0; }
     .client-mgmt-tab-panel { min-width: 0; }
     .client-mgmt-clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
     .client-mgmt-surface .mud-table-container { max-width: 100%; overflow-x: auto; }
     .client-mgmt-surface .mud-tabs-toolbar { min-height: 42px; }
     .client-mgmt-surface .mud-tab { min-height: 42px; padding: 0 0.75rem; }
-    .client-mgmt-automation-summary { border: 1px solid var(--mud-palette-divider); overflow-wrap: anywhere; }
+    .client-mgmt-automation-summary { border-bottom: 1px solid var(--mud-palette-divider); overflow-wrap: anywhere; font-size: .8rem; }
+    .client-mgmt-automation-summary summary { padding: .45rem .25rem; cursor: pointer; }
+    .client-mgmt-automation-summary summary:focus-visible { outline: 2px solid var(--mud-palette-primary); outline-offset: 2px; }
+    .client-mgmt-summary-status { margin-left: .6rem; color: var(--mud-palette-text-secondary); }
+    .client-mgmt-summary-error { margin-left: .6rem; color: var(--mud-palette-warning); }
     .client-mgmt-automation-group { border: 1px solid var(--mud-palette-divider); overflow-wrap: anywhere; }
     .client-mgmt-channel-filter { min-width: 190px; max-width: 240px; }
     .client-github-table { min-width: 0; width: 100%; table-layout: fixed; }
@@ -1289,8 +1367,15 @@
     .client-deployment-dialog .mud-dialog-content { min-width: 0; max-height: calc(100dvh - 160px); overflow-y: auto; overflow-wrap: anywhere; }
     .client-deployment-dialog .mud-dialog-actions { flex-wrap: wrap; }
 
+    @@media (max-width: 1100px) {
+        .client-mgmt-header { grid-template-columns: minmax(0, 1fr) auto; }
+        .client-mgmt-policy { grid-column: 1 / -1; grid-row: 2; }
+    }
     @@media (max-width: 600px) {
-        .client-mgmt-hero, .client-mgmt-surface { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }
+        .client-mgmt-header { grid-template-columns: minmax(0, 1fr); gap: .5rem; }
+        .client-mgmt-header-actions { grid-row: 2; padding-top: 0; }
+        .client-mgmt-policy { grid-row: 3; }
+        .client-mgmt-surface { padding-left: 0.5rem !important; padding-right: 0.5rem !important; }
         .client-mgmt-channel-filter { min-width: min(190px, 100%); max-width: 100%; }
         .client-github-table .mud-table-cell { padding-inline: 10px; }
         .client-github-table .mud-table-cell::before { flex: 0 0 auto; overflow-wrap: normal; white-space: nowrap; }
