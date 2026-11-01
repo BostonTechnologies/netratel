@@ -2,44 +2,69 @@
 @using NetRatel.Web.Services
 @inject IClientArtifactsService Artifacts
 
-<MudPaper Class="mt-2 pa-3" Elevation="0" data-testid="tenant-update-policy">
-    <MudStack Spacing="2">
-        <MudText Typo="Typo.subtitle1">Tenant rollout eligibility</MudText>
-        <MudText Typo="Typo.body2" Color="Color.Secondary">
-            Global release automation downloads and publishes packages. Each tenant's automatic updates, release channel, and target version pin determine which releases its clients can receive.
-        </MudText>
-        <MudSelect T="int?" @bind-Value="_selectedTenantId" Label="Tenant rollout policy" Variant="Variant.Outlined" Margin="Margin.Dense">
+<MudPaper Class="tenant-rollout-summary" Elevation="0" data-testid="tenant-update-policy">
+    <div class="tenant-rollout-heading">
+        <MudText Typo="Typo.subtitle2">Tenant rollout eligibility</MudText>
+        @if (SelectedTenant is { } editable)
+        {
+            <MudLink Typo="Typo.caption" Href="@($"/tenants?search={Uri.EscapeDataString(editable.Name)}")">Edit tenant update policy</MudLink>
+        }
+    </div>
+    <div class="tenant-rollout-controls">
+        <MudSelect T="int?" @bind-Value="_selectedTenantId" Label="Tenant rollout policy" Variant="Variant.Outlined" Margin="Margin.Dense" Dense="true" Class="tenant-rollout-select">
             @foreach (var tenant in Tenants)
             {
                 <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name</MudSelectItem>
             }
         </MudSelect>
-        @if (_loadError is not null)
-        {
-            <MudAlert Severity="Severity.Warning" Dense="true">@_loadError <MudButton Size="Size.Small" OnClick="LoadEligibilityAsync">Retry</MudButton></MudAlert>
-        }
         @if (SelectedTenant is { } selected)
         {
-            <MudText Typo="Typo.body2" data-testid="tenant-policy-current">
-                Automatic updates: @(selected.AutoUpdate ? "on" : "off") · Channel: @(AllowsPrereleases(selected) ? "Stable releases and prereleases" : "Stable releases only")
-            </MudText>
-            @if (!string.IsNullOrWhiteSpace(selected.AutoUpdateTargetVersion))
-            {
-                <MudText Typo="Typo.body2" Style="overflow-wrap: anywhere;">Target version pin: @selected.AutoUpdateTargetVersion. Only this version is eligible within the selected channel. Newer approved releases are excluded until this pin is changed or cleared.</MudText>
-            }
-            else
-            {
-                <MudText Typo="Typo.body2">No pin / follow selected channel.</MudText>
-            }
-            @if (selected.AutoUpdate && !AllowsPrereleases(selected) && _publishedPrereleases.Count > 0)
-            {
-                <MudAlert Severity="Severity.Warning" Dense="true" data-testid="tenant-prerelease-excluded">
-                    @selected.Name uses stable releases only. Enabled published prereleases (@string.Join(", ", _publishedPrereleases)) are excluded, even when global prerelease deployment is on. Excluded releases create no update attempts. A client already on a beta needs a newer eligible release before an update is offered.
-                </MudAlert>
-            }
-            <MudLink Href="@($"/tenants?search={Uri.EscapeDataString(selected.Name)}")">Edit tenant update policy</MudLink>
+            <div class="tenant-rollout-current" data-testid="tenant-policy-current">
+                <MudText Typo="Typo.caption">Automatic updates: @(selected.AutoUpdate ? "on" : "off") · @(AllowsPrereleases(selected) ? "Stable + prerelease" : "Stable only")</MudText>
+                <MudText Typo="Typo.caption" Class="tenant-rollout-pin">@(string.IsNullOrWhiteSpace(selected.AutoUpdateTargetVersion) ? "Following channel · no version pin" : $"Pinned to {selected.AutoUpdateTargetVersion}")</MudText>
+            </div>
         }
-    </MudStack>
+        else
+        {
+            <MudText Typo="Typo.caption">No tenant policies available.</MudText>
+        }
+    </div>
+    @if (_loadError is not null)
+    {
+        <MudAlert Severity="Severity.Warning" Dense="true">@_loadError <MudButton Size="Size.Small" OnClick="LoadEligibilityAsync">Retry</MudButton></MudAlert>
+    }
+    <details class="tenant-rollout-details" data-testid="tenant-policy-details">
+        <summary>
+            Policy details
+            @if (SelectedTenant is { AutoUpdate: true } current && !AllowsPrereleases(current) && _publishedPrereleases.Count > 0)
+            {
+                <span class="tenant-rollout-exclusion">Prereleases excluded</span>
+            }
+        </summary>
+        <div class="tenant-rollout-explanation">
+            <MudText Typo="Typo.caption">
+                Global release automation downloads and publishes packages. Each tenant's automatic updates, release channel, and target version pin determine which releases its clients can receive.
+            </MudText>
+            @if (SelectedTenant is { } detailed)
+            {
+                <MudText Typo="Typo.caption">Channel: @(AllowsPrereleases(detailed) ? "Stable releases and prereleases" : "Stable releases only")</MudText>
+                @if (!string.IsNullOrWhiteSpace(detailed.AutoUpdateTargetVersion))
+                {
+                    <MudText Typo="Typo.caption">Target version pin: @detailed.AutoUpdateTargetVersion. Only this version is eligible within the selected channel. Newer approved releases are excluded until this pin is changed or cleared.</MudText>
+                }
+                else
+                {
+                    <MudText Typo="Typo.caption">No pin / follow selected channel.</MudText>
+                }
+                @if (detailed.AutoUpdate && !AllowsPrereleases(detailed) && _publishedPrereleases.Count > 0)
+                {
+                    <MudAlert Severity="Severity.Warning" Dense="true" data-testid="tenant-prerelease-excluded">
+                        @detailed.Name uses stable releases only. Enabled published prereleases (@string.Join(", ", _publishedPrereleases)) are excluded, even when global prerelease deployment is on. Excluded releases create no update attempts. A client already on a beta needs a newer eligible release before an update is offered.
+                    </MudAlert>
+                }
+            }
+        </div>
+    </details>
 </MudPaper>
 
 @code {
