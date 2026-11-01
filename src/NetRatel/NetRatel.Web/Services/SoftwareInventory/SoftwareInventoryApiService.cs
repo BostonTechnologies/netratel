@@ -12,6 +12,8 @@ public interface ISoftwareInventoryApiService
     Task<SoftwarePage<SoftwareInstallationDto>> InstallationsAsync(int tenant, SoftwareInventoryQuery query, CancellationToken ct);
     Task<SoftwarePage<SoftwarePrevalenceDto>> AggregateAsync(int tenant, SoftwareInventoryQuery query, CancellationToken ct) => throw new NotSupportedException();
     Task<SoftwarePage<SoftwareChangeDto>> ChangesAsync(int tenant, Guid? agent, int page, CancellationToken ct) => throw new NotSupportedException();
+    Task<SoftwareInventorySummary> SummaryAsync(int tenant, CancellationToken ct) => throw new NotSupportedException();
+    Task<SoftwarePage<SoftwareInventoryClientDto>> ClientsAsync(int tenant, SoftwareInventoryQuery query, CancellationToken ct) => throw new NotSupportedException();
     Task<SoftwareInventoryPolicy> PolicyAsync(int tenant, CancellationToken ct) => throw new NotSupportedException();
     Task SetPolicyAsync(int tenant, SoftwareInventoryPolicy policy, CancellationToken ct) => throw new NotSupportedException();
 }
@@ -23,9 +25,11 @@ public sealed class SoftwareInventoryApiService(IHttpClientFactory factory) : IS
     public Task<SoftwareInventoryStatus> StatusAsync(int tenant, Guid agent, CancellationToken ct) => GetAsync<SoftwareInventoryStatus>($"/api/v2/agents/{tenant}/{agent:D}/software-inventory", ct);
     public async Task<SoftwareInventoryStatus> RefreshAsync(int tenant, Guid agent, bool force, CancellationToken ct)
     {
-        using var response = await _http.PostAsJsonAsync($"/api/v2/agents/{tenant}/{agent:D}/software-inventory/refresh", new SoftwareRefreshRequest(force), ct);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(15));
+        using var response = await _http.PostAsJsonAsync($"/api/v2/agents/{tenant}/{agent:D}/software-inventory/refresh", new SoftwareRefreshRequest(force), timeout.Token);
         response.EnsureSuccessStatusCode();
-        return await response.Content.ReadFromJsonAsync<SoftwareInventoryStatus>(cancellationToken: ct) ?? throw new HttpRequestException("Empty scan response.");
+        return await response.Content.ReadFromJsonAsync<SoftwareInventoryStatus>(cancellationToken: timeout.Token) ?? throw new HttpRequestException("Empty scan response.");
     }
     public Task<SoftwarePage<SoftwareInstallationDto>> InstallationsAsync(int tenant, SoftwareInventoryQuery query, CancellationToken ct) =>
         GetAsync<SoftwarePage<SoftwareInstallationDto>>(QueryUrl(tenant, "installations", query), ct);
@@ -33,6 +37,10 @@ public sealed class SoftwareInventoryApiService(IHttpClientFactory factory) : IS
         GetAsync<SoftwarePage<SoftwarePrevalenceDto>>(QueryUrl(tenant, "aggregate", query), ct);
     public Task<SoftwarePage<SoftwareChangeDto>> ChangesAsync(int tenant, Guid? agent, int page, CancellationToken ct) =>
         GetAsync<SoftwarePage<SoftwareChangeDto>>($"/api/v2/tenants/{tenant}/software-inventory/changes?page={page}&pageSize=50" + (agent.HasValue ? $"&agentId={agent:D}" : ""), ct);
+    public Task<SoftwareInventorySummary> SummaryAsync(int tenant, CancellationToken ct) =>
+        GetAsync<SoftwareInventorySummary>($"/api/v2/tenants/{tenant}/software-inventory/summary", ct);
+    public Task<SoftwarePage<SoftwareInventoryClientDto>> ClientsAsync(int tenant, SoftwareInventoryQuery query, CancellationToken ct) =>
+        GetAsync<SoftwarePage<SoftwareInventoryClientDto>>(QueryUrl(tenant, "clients", query), ct);
     public Task<SoftwareInventoryPolicy> PolicyAsync(int tenant, CancellationToken ct) => GetAsync<SoftwareInventoryPolicy>($"/api/v2/tenants/{tenant}/software-inventory/policy", ct);
     public async Task SetPolicyAsync(int tenant, SoftwareInventoryPolicy policy, CancellationToken ct)
     {
@@ -42,7 +50,7 @@ public sealed class SoftwareInventoryApiService(IHttpClientFactory factory) : IS
     private async Task<T> GetAsync<T>(string path, CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        timeout.CancelAfter(TimeSpan.FromSeconds(15));
         return await _http.GetFromJsonAsync<T>(path, timeout.Token) ?? throw new HttpRequestException("Empty software inventory response.");
     }
     public static string QueryUrl(int tenant, string resource, SoftwareInventoryQuery query) =>
