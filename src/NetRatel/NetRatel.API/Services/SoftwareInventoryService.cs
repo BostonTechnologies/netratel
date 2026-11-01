@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using NetRatel.Infrastructure.Clients;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts.SoftwareInventory;
 
@@ -13,6 +14,7 @@ namespace NetRatel.API.Services;
 public sealed class SoftwareInventoryService(OrchestratorDbContext db, TimeProvider clock)
 {
     private DateTimeOffset Now => clock.GetUtcNow();
+    private static readonly TimeSpan ScanDeadline = TimeSpan.FromMinutes(5);
 
     public async Task<SoftwareInventoryPolicy> PolicyAsync(int tenant, CancellationToken ct)
     {
@@ -92,23 +94,35 @@ public sealed class SoftwareInventoryService(OrchestratorDbContext db, TimeProvi
             (upload.Complete && (upload.Errors.Count > 0 || upload.Os == "unsupported")))
             throw new ArgumentException("Invalid collection metadata.");
         var packages = SoftwareInventoryWire.Decode(upload.Payload);
+        // Hash the unmodified wire message: old durable outboxes must still receive identical replay acknowledgements.
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(upload, SoftwareInventoryWire.JsonOptions))));
         await using var transaction = await LockAgentAsync(tenant, agent, ct);
         var state = await StateAsync(tenant, agent, ct);
         var scan = await db.Set<SoftwareInventoryScanRecord>().SingleOrDefaultAsync(row => row.TenantId == tenant && row.AgentId == agent && row.CollectionId == upload.CollectionId, ct);
         if (scan is null) return new(upload.CollectionId, upload.Index, false, "UnknownCollection");
+        if (Expired(scan))
+        {
+            await ExpireAsync(state, scan, ct);
+            await db.SaveChangesAsync(ct);
+            if (transaction is not null) await transaction.CommitAsync(ct);
+            return new(upload.CollectionId, upload.Index, false, "StaleCollection");
+        }
         var duplicate = await db.Set<SoftwareInventoryChunkRecord>().SingleOrDefaultAsync(row => row.TenantId == tenant && row.AgentId == agent && row.CollectionId == upload.CollectionId && row.Index == upload.Index, ct);
         if (duplicate is not null)
             return new(upload.CollectionId, upload.Index, duplicate.Hash == hash, duplicate.Hash == hash ? scan.Status : "ConflictingChunk");
         if (state.LatestScanId != upload.CollectionId || scan.Status is not ("Pending" or "Collecting"))
             return new(upload.CollectionId, upload.Index, false, "StaleCollection");
+        // PostgreSQL timestamps retain microseconds, not .NET's 100ns ticks. Comparing the original wire value
+        // to a fresh DbContext's persisted value rejected chunk 2 onward. Normalize both sides, not the hash.
+        var detected = DatabasePrecision(upload.DetectedAtUtc);
         if (scan.TotalChunks != 0 && (scan.TotalChunks != upload.Count || scan.Complete != upload.Complete ||
-            scan.Os != upload.Os || scan.DetectedAtUtc != upload.DetectedAtUtc || scan.ErrorsJson != JsonSerializer.Serialize(upload.Errors)))
+            scan.Os != upload.Os || scan.DetectedAtUtc is not { } previousDetected || DatabasePrecision(previousDetected) != detected ||
+            scan.ErrorsJson != JsonSerializer.Serialize(upload.Errors)))
             throw new ArgumentException("Collection metadata changed between chunks.");
         scan.TotalChunks = upload.Count;
         scan.Complete = upload.Complete;
         scan.Os = upload.Os;
-        scan.DetectedAtUtc = upload.DetectedAtUtc;
+        scan.DetectedAtUtc = detected;
         scan.ErrorsJson = JsonSerializer.Serialize(upload.Errors);
         scan.Status = "Collecting";
         scan.StartedAtUtc ??= Now;
@@ -142,6 +156,8 @@ public sealed class SoftwareInventoryService(OrchestratorDbContext db, TimeProvi
         if (transaction is not null) await transaction.CommitAsync(ct);
         return new(upload.CollectionId, upload.Index, true, scan.Status);
     }
+
+    private static DateTimeOffset DatabasePrecision(DateTimeOffset value) => new(value.UtcTicks - value.UtcTicks % 10, TimeSpan.Zero);
 
     private async Task ReconcileAsync(SoftwareInventoryStateRecord state, SoftwareInventoryScanRecord scan,
         Dictionary<string, SoftwarePackage> packages, CancellationToken ct)
@@ -180,10 +196,18 @@ public sealed class SoftwareInventoryService(OrchestratorDbContext db, TimeProvi
                    join agent in db.Agents.AsNoTracking() on new { item.TenantId, Id = item.AgentId } equals new { agent.TenantId, agent.Id }
                    join state in db.Set<SoftwareInventoryStateRecord>().AsNoTracking() on new { item.TenantId, item.AgentId } equals new { state.TenantId, state.AgentId }
                    join scan in db.Set<SoftwareInventoryScanRecord>().AsNoTracking() on new { state.TenantId, state.AgentId, Id = state.LatestScanId } equals new { scan.TenantId, scan.AgentId, Id = (Guid?)scan.CollectionId }
-                   where item.TenantId == tenant
-                   select new InstallationRow { Item = item, Client = agent.FriendlyName ?? agent.Name ?? agent.Id.ToString(), LastSuccessful = state.LastSuccessfulScanUtc!.Value, Status = scan.Status };
+                   where item.TenantId == tenant && agent.DeletedAtUtc == null
+                   select new InstallationRow { Item = item, Agent = agent, Client = agent.FriendlyName ?? agent.Name ?? "", LastSuccessful = state.LastSuccessfulScanUtc!.Value, Status = scan.Status };
         if (query.AgentId is { } id) rows = rows.Where(row => row.Item.AgentId == id);
-        if (!string.IsNullOrWhiteSpace(query.Search)) { var text = query.Search.ToLowerInvariant(); rows = rows.Where(row => row.Item.Name.ToLower().Contains(text) || row.Item.Publisher.ToLower().Contains(text) || row.Item.PackageId.ToLower().Contains(text)); }
+        if (!string.IsNullOrWhiteSpace(query.Search))
+        {
+            var text = query.Search.Trim().ToLowerInvariant();
+            rows = rows.Where(row => row.Item.Name.ToLower().Contains(text) || row.Item.Version.ToLower().Contains(text) ||
+                row.Item.Publisher.ToLower().Contains(text) || row.Item.PackageId.ToLower().Contains(text) ||
+                (row.Agent.FriendlyName != null && row.Agent.FriendlyName.ToLower().Contains(text)) ||
+                (row.Agent.Name != null && row.Agent.Name.ToLower().Contains(text)) ||
+                (row.Agent.DeviceInfoJson != null && row.Agent.DeviceInfoJson.ToLower().Contains(text)));
+        }
         if (!string.IsNullOrWhiteSpace(query.Name)) { var text = query.Name.ToLowerInvariant(); rows = rows.Where(row => row.Item.Name.ToLower().Contains(text)); }
         if (!string.IsNullOrWhiteSpace(query.Publisher)) { var text = query.Publisher.ToLowerInvariant(); rows = rows.Where(row => row.Item.Publisher.ToLower().Contains(text)); }
         if (query.Version is { Length: > 0 }) rows = rows.Where(row => row.Item.Version == query.Version);
@@ -210,19 +234,19 @@ public sealed class SoftwareInventoryService(OrchestratorDbContext db, TimeProvi
             _ => query.Descending ? rows.OrderByDescending(row => row.Item.Name) : rows.OrderBy(row => row.Item.Name)
         };
         var page = await sorted.ThenBy(row => row.Item.AgentId).ThenBy(row => row.Item.Identity).Skip(query.Page * query.PageSize).Take(query.PageSize).ToListAsync(ct);
-        return new(page.Select(row => new SoftwareInstallationDto(row.Item.AgentId, row.Client, row.Item.Identity,
-            new(row.Item.Name, row.Item.Version, row.Item.Publisher, row.Item.Architecture, row.Item.PackageId, row.Item.Source, row.Item.InstallLocation, row.Item.InstallDate, row.Item.Scope),
-            row.Item.Os, row.Item.DetectedAtUtc, row.LastSuccessful)).ToArray(), total, query.Page, query.PageSize, devices);
+        return new(page.Select(Installation).ToArray(), total, query.Page, query.PageSize, devices);
     }
+
+    private static SoftwareInstallationDto Installation(InstallationRow row) => new(row.Item.AgentId, ClientLabel(row.Agent), row.Item.Identity,
+        new(row.Item.Name, row.Item.Version, row.Item.Publisher, row.Item.Architecture, row.Item.PackageId, row.Item.Source,
+            row.Item.InstallLocation, row.Item.InstallDate, row.Item.Scope), row.Item.Os, row.Item.DetectedAtUtc, row.LastSuccessful);
 
     public async IAsyncEnumerable<SoftwareInstallationDto> ExportAsync(int tenant, SoftwareInventoryQuery query,
         [EnumeratorCancellation] CancellationToken ct)
     {
         await foreach (var row in Query(tenant, query).OrderBy(row => row.Item.AgentId).ThenBy(row => row.Item.Identity)
             .AsAsyncEnumerable().WithCancellation(ct))
-            yield return new(row.Item.AgentId, row.Client, row.Item.Identity,
-                new(row.Item.Name, row.Item.Version, row.Item.Publisher, row.Item.Architecture, row.Item.PackageId, row.Item.Source,
-                    row.Item.InstallLocation, row.Item.InstallDate, row.Item.Scope), row.Item.Os, row.Item.DetectedAtUtc, row.LastSuccessful);
+            yield return Installation(row);
     }
 
     public async Task<SoftwarePage<SoftwarePrevalenceDto>> AggregateAsync(int tenant, SoftwareInventoryQuery query, CancellationToken ct)
@@ -242,11 +266,79 @@ public sealed class SoftwareInventoryService(OrchestratorDbContext db, TimeProvi
     public async Task<SoftwarePage<SoftwareChangeDto>> ChangesAsync(int tenant, Guid? agent, int page, int size, CancellationToken ct)
     {
         new SoftwareInventoryQuery(page, size).Validate();
-        var rows = db.Set<SoftwareInventoryChangeRecord>().AsNoTracking().Where(row => row.TenantId == tenant && (!agent.HasValue || row.AgentId == agent));
+        var rows = from change in db.Set<SoftwareInventoryChangeRecord>().AsNoTracking()
+                   join client in db.Agents.AsNoTracking() on new { change.TenantId, Id = change.AgentId } equals new { client.TenantId, client.Id }
+                   where change.TenantId == tenant && (!agent.HasValue || change.AgentId == agent) && client.DeletedAtUtc == null
+                   select new { Change = change, Agent = client };
         var total = await rows.CountAsync(ct);
-        var items = await rows.OrderByDescending(row => row.Id).Skip(page * size).Take(size)
-            .Select(row => new SoftwareChangeDto(row.CollectionId, row.AgentId, row.Kind, row.Name, row.PreviousVersion, row.Version, row.DetectedAtUtc)).ToListAsync(ct);
-        return new(items, total, page, size);
+        var items = await rows.OrderByDescending(row => row.Change.Id).Skip(page * size).Take(size).ToListAsync(ct);
+        return new(items.Select(row => new SoftwareChangeDto(row.Change.CollectionId, row.Change.AgentId, row.Change.Kind,
+            row.Change.Name, row.Change.PreviousVersion, row.Change.Version, row.Change.DetectedAtUtc, ClientLabel(row.Agent))).ToArray(), total, page, size);
+    }
+
+    private IQueryable<ClientRow> ClientRows(int tenant) =>
+        from agent in db.Agents.AsNoTracking()
+        join state in db.Set<SoftwareInventoryStateRecord>().AsNoTracking()
+            on new { agent.TenantId, AgentId = agent.Id } equals new { state.TenantId, state.AgentId } into states
+        from state in states.DefaultIfEmpty()
+        join scan in db.Set<SoftwareInventoryScanRecord>().AsNoTracking()
+            on new { agent.TenantId, AgentId = agent.Id, Id = state == null ? (Guid?)null : state.LatestScanId }
+            equals new { scan.TenantId, scan.AgentId, Id = (Guid?)scan.CollectionId } into scans
+        from scan in scans.DefaultIfEmpty()
+        where agent.TenantId == tenant && agent.DeletedAtUtc == null
+        select new ClientRow { Agent = agent, State = state, Scan = scan,
+            InstalledEntries = db.Set<SoftwareInstallationRecord>().Count(item => item.TenantId == tenant && item.AgentId == agent.Id) };
+
+    public async Task<SoftwareInventorySummary> SummaryAsync(int tenant, CancellationToken ct)
+    {
+        var rows = ClientRows(tenant);
+        var freshCutoff = Now.AddMinutes(-30);
+        var expiredCutoff = Now - ScanDeadline;
+        var clients = await rows.CountAsync(ct);
+        var inventoried = await rows.CountAsync(row => row.State != null && row.State.LastSuccessfulScanUtc != null, ct);
+        var stale = await rows.CountAsync(row => row.State != null && row.State.LastSuccessfulScanUtc <= freshCutoff, ct);
+        var active = await rows.CountAsync(row => row.Scan != null && (row.Scan.Status == "Pending" ||
+            (row.Scan.Status == "Collecting" && row.Scan.StartedAtUtc >= expiredCutoff)), ct);
+        var failed = await rows.CountAsync(row => row.Scan != null && (row.Scan.Status == "Error" || row.Scan.Status == "Partial" ||
+            (row.Scan.Status == "Collecting" && row.Scan.StartedAtUtc < expiredCutoff)), ct);
+        var latest = await rows.Select(row => row.State == null ? null : row.State.LastSuccessfulScanUtc).MaxAsync(ct);
+        var installations = Query(tenant, new());
+        return new(clients, inventoried, clients - inventoried, stale, active, failed,
+            await installations.CountAsync(ct),
+            await installations.Select(row => new { row.Item.Name, row.Item.Publisher, row.Item.Source }).Distinct().CountAsync(ct), latest);
+    }
+
+    public async Task<SoftwarePage<SoftwareInventoryClientDto>> ClientsAsync(int tenant, SoftwareInventoryQuery query, CancellationToken ct)
+    {
+        query.Validate();
+        var rows = ClientRows(tenant);
+        if (query.AgentId is { } id) rows = rows.Where(row => row.Agent.Id == id);
+        if (!string.IsNullOrWhiteSpace(query.Search))
+        {
+            var text = query.Search.Trim().ToLowerInvariant();
+            rows = rows.Where(row => (row.Agent.FriendlyName != null && row.Agent.FriendlyName.ToLower().Contains(text)) ||
+                (row.Agent.Name != null && row.Agent.Name.ToLower().Contains(text)) ||
+                (row.Agent.DeviceInfoJson != null && row.Agent.DeviceInfoJson.ToLower().Contains(text)));
+        }
+        var total = await rows.CountAsync(ct);
+        var page = await rows.OrderBy(row => row.Agent.FriendlyName ?? row.Agent.Name).ThenBy(row => row.Agent.Id)
+            .Skip(query.Page * query.PageSize).Take(query.PageSize).ToListAsync(ct);
+        return new(page.Select(row =>
+        {
+            var identity = ClientDirectoryIdentity.Parse(row.Agent.DeviceInfoJson);
+            return new SoftwareInventoryClientDto(row.Agent.Id, ClientLabel(row.Agent), identity.HostName, identity.OperatingSystem,
+                row.State?.LastSuccessfulScanUtc, row.Scan is null ? "NeverScanned" : Map(row.Scan).Status,
+                row.InstalledEntries, row.Scan?.ReceivedChunks ?? 0, row.Scan?.TotalChunks ?? 0);
+        }).ToArray(), total, query.Page, query.PageSize, total);
+    }
+
+    private static string ClientLabel(Agent agent)
+    {
+        if (!string.IsNullOrWhiteSpace(agent.FriendlyName)) return agent.FriendlyName.Trim();
+        var host = ClientDirectoryIdentity.Parse(agent.DeviceInfoJson).HostName;
+        if (!string.IsNullOrWhiteSpace(host)) return host;
+        return !string.IsNullOrWhiteSpace(agent.Name) && !Guid.TryParse(agent.Name, out _)
+            ? agent.Name : "Client-" + agent.Id.ToString("N")[..8];
     }
 
     private async Task<SoftwareInventoryStateRecord> StateAsync(int tenant, Guid agent, CancellationToken ct)
@@ -267,14 +359,17 @@ public sealed class SoftwareInventoryService(OrchestratorDbContext db, TimeProvi
         return scan;
     }
 
+    private bool Expired(SoftwareInventoryScanRecord scan) =>
+        scan is { Status: "Collecting", StartedAtUtc: { } started } && started < Now - ScanDeadline;
+
     private async Task ExpireAsync(SoftwareInventoryStateRecord state, SoftwareInventoryScanRecord? scan, CancellationToken ct)
     {
-        if (scan is { Status: "Collecting", StartedAtUtc: { } started } && started < Now.AddHours(-24))
+        if (scan is not null && Expired(scan))
         {
             scan.Status = "Error";
             scan.CompletedAtUtc = Now;
             scan.ErrorsJson = "[\"scan_expired\"]";
-            state.NextDueUtc = Now.AddHours(1);
+            if (state.LatestScanId == scan.CollectionId) state.NextDueUtc = Now.AddHours(1);
             var staged = db.Set<SoftwareInventoryChunkRecord>().Where(row => row.TenantId == state.TenantId && row.AgentId == state.AgentId && row.CollectionId == scan.CollectionId);
             if (db.Database.IsNpgsql()) await staged.ExecuteUpdateAsync(update => update.SetProperty(row => row.PackagesJson, "[]"), ct);
             else foreach (var chunk in await staged.ToListAsync(ct)) chunk.PackagesJson = "[]";
@@ -301,14 +396,26 @@ public sealed class SoftwareInventoryService(OrchestratorDbContext db, TimeProvi
         return transaction;
     }
 
-    private static SoftwareScanDto Map(SoftwareInventoryScanRecord scan) => new(scan.CollectionId, scan.Status, scan.RequestedAtUtc,
-        scan.CompletedAtUtc, scan.ReceivedChunks, scan.TotalChunks, JsonSerializer.Deserialize<string[]>(scan.ErrorsJson) ?? []);
+    // Reading status must not enqueue or mutate a scan. Surface an elapsed deadline immediately; the next
+    // agent write or explicit refresh persists the terminal state under the normal agent lock.
+    private SoftwareScanDto Map(SoftwareInventoryScanRecord scan) => new(scan.CollectionId, Expired(scan) ? "Error" : scan.Status,
+        scan.RequestedAtUtc, scan.CompletedAtUtc, scan.ReceivedChunks, scan.TotalChunks,
+        Expired(scan) ? ["scan_expired"] : JsonSerializer.Deserialize<string[]>(scan.ErrorsJson) ?? [], scan.StartedAtUtc);
 
     private sealed class InstallationRow
     {
         public SoftwareInstallationRecord Item { get; set; } = default!;
+        public Agent Agent { get; set; } = default!;
         public string Client { get; set; } = "";
         public DateTimeOffset LastSuccessful { get; set; }
         public string Status { get; set; } = "";
+    }
+
+    private sealed class ClientRow
+    {
+        public Agent Agent { get; set; } = default!;
+        public SoftwareInventoryStateRecord? State { get; set; }
+        public SoftwareInventoryScanRecord? Scan { get; set; }
+        public int InstalledEntries { get; set; }
     }
 }

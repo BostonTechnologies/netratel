@@ -28,6 +28,7 @@ public sealed class SoftwareInventoryWorker(HttpClient http, string stateDirecto
         var path = Path.Combine(directory, "pending.json");
         while (!ct.IsCancellationRequested)
         {
+            var retry = false;
             try
             {
                 if (File.Exists(path))
@@ -40,29 +41,42 @@ public sealed class SoftwareInventoryWorker(HttpClient http, string stateDirecto
                     foreach (var chunk in queued.Chunks)
                     {
                         using var request = Request("/api/v2/agent/software-inventory/chunks", chunk);
-                        using var response = await http.SendAsync(request, ct).ConfigureAwait(false);
+                        using var response = await SendAsync(request).ConfigureAwait(false);
                         if (response.StatusCode == HttpStatusCode.Conflict)
                         {
                             var rejected = await response.Content.ReadFromJsonAsync<SoftwareChunkAcknowledgement>(cancellationToken: ct).ConfigureAwait(false);
-                            if (rejected is { Accepted: false, Status: "StaleCollection" or "UnknownCollection" } && rejected.CollectionId == chunk.CollectionId)
-                            { log("A superseded software scan was retired."); break; }
+                            if (rejected is { Accepted: false, Status: "StaleCollection" or "UnknownCollection" } &&
+                                rejected.CollectionId == chunk.CollectionId && rejected.Index == chunk.Index)
+                            { log("A superseded or expired software scan was retired."); break; }
                         }
+                        if (!response.IsSuccessStatusCode)
+                            log($"Software inventory upload {chunk.Index + 1}/{chunk.Count} received HTTP {(int)response.StatusCode}; the durable outbox is retained.");
                         response.EnsureSuccessStatusCode();
                         var ack = await response.Content.ReadFromJsonAsync<SoftwareChunkAcknowledgement>(cancellationToken: ct).ConfigureAwait(false);
                         if (ack is null || !ack.Accepted || ack.CollectionId != chunk.CollectionId || ack.Index != chunk.Index)
-                        { acknowledged = false; break; }
+                        { acknowledged = false; retry = true; break; }
                     }
-                    if (acknowledged) File.Delete(path);
+                    if (acknowledged) { File.Delete(path); continue; }
                 }
                 else
                 {
                     using var request = Request("/api/v2/agent/software-inventory/work", null);
-                    using var response = await http.SendAsync(request, ct).ConfigureAwait(false);
+                    using var response = await SendAsync(request).ConfigureAwait(false);
                     response.EnsureSuccessStatusCode();
                     var work = await response.Content.ReadFromJsonAsync<SoftwareScanWork>(cancellationToken: ct).ConfigureAwait(false);
                     if (work?.CollectionId is { } id)
                     {
-                        var collection = await _collector.CollectAsync(ct).ConfigureAwait(false);
+                        SoftwareCollection collection;
+                        using (var collectionTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct))
+                        {
+                            collectionTimeout.CancelAfter(TimeSpan.FromMinutes(2));
+                            try { collection = await _collector.CollectAsync(collectionTimeout.Token).ConfigureAwait(false); }
+                            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                            {
+                                collection = new([], false, OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsLinux() ? "linux" : "unsupported", ["collection_timeout"]);
+                                log("Software inventory collection reached its deadline; reporting a failed attempt without replacing the last complete snapshot.");
+                            }
+                        }
                         var queued = new PendingInventory(SoftwareInventoryWire.Encode(id, collection, DateTimeOffset.UtcNow));
                         var temporary = path + ".tmp";
                         await using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None, 8192,
@@ -80,8 +94,20 @@ public sealed class SoftwareInventoryWorker(HttpClient http, string stateDirecto
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
             catch (Exception error) when (error is HttpRequestException or IOException or JsonException or ArgumentException or OperationCanceledException)
-            { log("Software inventory delivery is pending; it will retry after reconnect or backoff (" + error.GetType().Name + ")."); }
-            await Task.Delay(pollingInterval ?? TimeSpan.FromSeconds(20 + Random.Shared.Next(10)), ct).ConfigureAwait(false);
+            {
+                retry = true;
+                log("Software inventory delivery is pending; it will retry after reconnect or backoff (" + error.GetType().Name + ").");
+            }
+            // Discovery never collects unless the server issues work. Keep healthy interactive discovery short,
+            // but back off transport/validation failures rather than retrying uploads at the interactive cadence.
+            await Task.Delay(pollingInterval ?? TimeSpan.FromSeconds(retry ? 20 + Random.Shared.Next(10) : 5 + Random.Shared.Next(3)), ct).ConfigureAwait(false);
+        }
+
+        async Task<HttpResponseMessage> SendAsync(HttpRequestMessage message)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(30));
+            return await http.SendAsync(message, HttpCompletionOption.ResponseContentRead, timeout.Token).ConfigureAwait(false);
         }
 
         HttpRequestMessage Request(string route, SoftwareChunkUpload? upload)

@@ -1,14 +1,57 @@
-.software-inventory { padding: 1rem; max-width: 100%; }
-.inventory-toolbar { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; margin: 1rem 0; }
-.inventory-toolbar label { display: flex; flex-direction: column; gap: .25rem; }
-.inventory-toolbar input, .inventory-toolbar select { border: 1px solid var(--mud-palette-lines-default); border-radius: .3rem; padding: .5rem; background: var(--mud-palette-surface); color: inherit; }
-.software-inventory button, .software-inventory a { color: var(--mud-palette-primary); padding: .4rem; }
-.software-inventory button:disabled { opacity: .45; }
-.inventory-table-scroll { overflow-x: auto; }
-table { border-collapse: collapse; width: 100%; text-align: left; }
-th, td { padding: .75rem; border-bottom: 1px solid var(--mud-palette-lines-default); vertical-align: top; overflow-wrap: anywhere; }
-caption { text-align: left; padding: .75rem; font-weight: 600; }
-dd { margin: 0 0 .5rem; overflow-wrap: anywhere; }
-dt { font-weight: 600; }
+.software-inventory { padding: 1.5rem; min-width: 0; max-width: 100%; display: grid; gap: 1rem; }
+.overview-heading, .table-heading, .scan-heading, .inventory-toolbar, .inventory-pagination { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.overview-heading { font-size: .8rem; color: var(--mud-palette-text-secondary); }
+.overview-heading > span:first-child { color: var(--mud-palette-text-primary); font-weight: 600; }
+.inventory-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .85rem; }
+.metric { display: flex; flex-direction: column; gap: .45rem; padding: 1.15rem; border: 1px solid var(--mud-palette-lines-default); border-radius: 10px; background: var(--mud-palette-surface); }
+.metric > span:first-child { font-size: .8rem; font-weight: 600; }
+.metric > strong { font-size: 1.9rem; line-height: 1.2; font-weight: 600; font-variant-numeric: tabular-nums; }
+.metric small { font-size: 1rem; color: var(--mud-palette-text-secondary); font-weight: 400; }
+.metric > span:last-child { color: var(--mud-palette-text-secondary); font-size: .72rem; line-height: 1.45; }
+.inventory-caption { color: var(--mud-palette-text-secondary); font-size: .78rem; line-height: 1.5; }
+.inventory-eyebrow { display: block; font-size: .67rem; letter-spacing: .12em; font-weight: 600; color: var(--mud-palette-text-secondary); margin-bottom: .45rem; }
+.client-scan-card { padding: 1.2rem 1.4rem; border: 1px solid var(--mud-palette-lines-default); border-radius: 10px; display: grid; gap: .8rem; background: var(--mud-palette-surface); }
+h3 { margin: 0; font-size: 1rem; font-weight: 600; line-height: 1.5; }
+.scan-heading p { margin-top: .35rem; font-size: .82rem; color: var(--mud-palette-text-secondary); }
+.scan-facts { display: flex; flex-wrap: wrap; gap: .7rem 1.8rem; font-size: .78rem; color: var(--mud-palette-text-secondary); }
+.scan-facts strong { margin-right: .4rem; color: var(--mud-palette-text-primary); font-weight: 500; }
+.scan-state { display: flex; flex-wrap: wrap; align-items: center; gap: .7rem; font-size: .83rem; }
+.scan-diagnostics { font-size: .74rem; color: var(--mud-palette-text-secondary); }
+.scan-diagnostics > span { display: block; padding-top: .4rem; overflow-wrap: anywhere; }
 summary { cursor: pointer; }
-@media (max-width: 600px) { .software-inventory { padding: .25rem; } th, td { padding: .4rem; } }
+.inventory-workspace { min-width: 0; border: 1px solid var(--mud-palette-lines-default); border-radius: 10px; background: var(--mud-palette-surface); }
+.inventory-toolbar { padding: 1rem 1.1rem .65rem; }
+.inventory-views, .inventory-actions { display: flex; align-items: center; gap: .35rem; flex-wrap: wrap; }
+.inventory-searchbar { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; padding: .3rem 1.1rem .7rem; }
+.inventory-searchbar ::deep .inventory-search { flex: 2 1 270px; }
+.inventory-searchbar ::deep .inventory-client-picker { flex: 1 1 230px; }
+.inventory-workspace ::deep .inventory-filter-panel { padding: 0 .4rem; border-top: 1px solid var(--mud-palette-lines-default); border-bottom: 1px solid var(--mud-palette-lines-default); }
+.table-heading { padding: 1.1rem; }
+.table-heading > span { color: var(--mud-palette-text-secondary); font-size: .78rem; }
+.inventory-workspace ::deep .inventory-data { background: transparent; }
+.inventory-workspace ::deep .mud-table-head { background: var(--mud-palette-background-grey); }
+.inventory-workspace ::deep .mud-table-cell { padding: .8rem 1rem; vertical-align: top; }
+.inventory-workspace ::deep .mud-table-head .mud-table-cell { font-size: .76rem; font-weight: 600; white-space: nowrap; }
+.inventory-workspace ::deep .source-cell { min-width: 6rem; white-space: nowrap; word-break: normal; }
+.inventory-version { font-family: var(--mud-typography-default-family); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.publisher { display: block; max-width: 28rem; overflow-wrap: anywhere; font-size: .83rem; }
+.package-details { font-size: .75rem; color: var(--mud-palette-text-secondary); margin-top: .35rem; }
+.package-details dl { padding: .6rem 0; max-width: 34rem; }
+.package-details dt { font-weight: 600; margin-top: .4rem; }
+.package-details dd { margin: .15rem 0; overflow-wrap: anywhere; }
+.inventory-empty { padding: 3rem 1.5rem; text-align: center; max-width: 44rem; margin: auto; }
+.inventory-empty p { margin: .6rem 0 1rem; color: var(--mud-palette-text-secondary); font-size: .86rem; }
+.inventory-pagination { justify-content: flex-end; padding: .7rem 1.1rem 1rem; border-top: 1px solid var(--mud-palette-lines-default); font-size: .8rem; }
+.inventory-pagination > span:first-child { margin-right: auto; color: var(--mud-palette-text-secondary); }
+.inventory-pagination ::deep .page-size { flex: 0 1 100px; min-width: 90px; }
+@media (max-width: 700px) {
+    .software-inventory { padding: .75rem; }
+    .inventory-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .metric { padding: .9rem; }
+    .metric > strong { font-size: 1.6rem; }
+    .client-scan-card { padding: 1rem; }
+    .inventory-toolbar, .inventory-searchbar, .table-heading { padding-left: .7rem; padding-right: .7rem; }
+    .inventory-pagination { gap: .4rem; padding: .7rem; }
+    .inventory-pagination > span:first-child { flex-basis: 100%; }
+    .publisher { max-width: none; }
+}

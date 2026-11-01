@@ -39,6 +39,47 @@ public sealed class SoftwareInventoryPanelTests : AsyncBunitContext
         cut.Find("[data-testid='inventory-counts']").TextContent.Should().Contain("1 installed entries").And.Contain("1 distinct devices");
     }
     [Fact]
+    public void Cached_inventory_is_visible_before_a_slow_refresh_post_finishes()
+    {
+        _api.Status = _api.Status with { LastSuccessfulScanUtc = DateTimeOffset.UtcNow.AddMinutes(-31) };
+        _api.PendingRefresh = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cut = Render<SoftwareInventoryPanel>(parameters => parameters.Add(panel => panel.TenantId, 7).Add(panel => panel.AgentId, Agent).Add(panel => panel.AutoRefreshOnOpen, true));
+        cut.WaitForAssertion(() =>
+        {
+            _api.Forces.Should().Equal(false);
+            _api.PendingRefresh.Task.IsCompleted.Should().BeFalse();
+            cut.FindAll("[data-testid='inventory-row']").Should().ContainSingle();
+            cut.Find("[data-testid='inventory-row']").TextContent.Should().Contain("Example Tool");
+        });
+        _api.PendingRefresh.SetResult(_api.Status with { LatestScan = new(Guid.NewGuid(), "Pending", DateTimeOffset.UtcNow, null, 0, 0, []) });
+    }
+    [Fact]
+    public void Cached_inventory_does_not_wait_for_scan_status()
+    {
+        _api.PendingStatus = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cut = Render<SoftwareInventoryPanel>(parameters => parameters.Add(panel => panel.TenantId, 7).Add(panel => panel.AgentId, Agent));
+        cut.WaitForAssertion(() =>
+        {
+            _api.PendingStatus.Task.IsCompleted.Should().BeFalse();
+            cut.FindAll("[data-testid='inventory-row']").Should().ContainSingle();
+        });
+        _api.PendingStatus.SetResult(_api.Status);
+    }
+    [Fact]
+    public void First_scan_shows_receiving_state_not_an_empty_search_result()
+    {
+        _api.Empty = true;
+        _api.Status = _api.Status with { LastSuccessfulScanUtc = null, LatestScan = new(Guid.NewGuid(), "Collecting", DateTimeOffset.UtcNow, null, 1, 4, [], DateTimeOffset.UtcNow) };
+        var cut = Render<SoftwareInventoryPanel>(parameters => parameters.Add(panel => panel.TenantId, 7).Add(panel => panel.AgentId, Agent).Add(panel => panel.AutoRefreshOnOpen, true));
+        cut.WaitForAssertion(() =>
+        {
+            cut.Find("[data-testid='inventory-empty']").TextContent.Should().Contain("First inventory is running");
+            cut.Find("[data-testid='inventory-scan-status']").TextContent.Should().Contain("Received 1 of 4 chunks");
+            cut.Find("[data-testid='inventory-refresh']").HasAttribute("disabled").Should().BeTrue();
+        });
+        _api.Forces.Should().BeEmpty();
+    }
+    [Fact]
     public async Task Tenant_change_cancels_and_fences_a_late_automatic_refresh_response()
     {
         _api.Status = _api.Status with { LastSuccessfulScanUtc = DateTimeOffset.UtcNow.AddMinutes(-31) };
@@ -59,9 +100,11 @@ public sealed class SoftwareInventoryPanelTests : AsyncBunitContext
     {
         public SoftwareInventoryStatus Status { get; set; } = new(7, Agent, DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddDays(7), null, new(), true);
         public List<bool> Forces { get; } = [];
+        public bool Empty { get; set; }
         public TaskCompletionSource<SoftwareInventoryStatus>? PendingRefresh { get; set; }
+        public TaskCompletionSource<SoftwareInventoryStatus>? PendingStatus { get; set; }
         public CancellationToken RefreshToken { get; private set; }
-        public Task<SoftwareInventoryStatus> StatusAsync(int tenant, Guid agent, CancellationToken ct) => Task.FromResult(Status with
+        public Task<SoftwareInventoryStatus> StatusAsync(int tenant, Guid agent, CancellationToken ct) => PendingStatus?.Task ?? Task.FromResult(Status with
         { TenantId = tenant, AgentId = agent, LastSuccessfulScanUtc = tenant == 7 ? Status.LastSuccessfulScanUtc : DateTimeOffset.UtcNow });
         public Task<SoftwareInventoryStatus> RefreshAsync(int tenant, Guid agent, bool force, CancellationToken ct)
         {
@@ -71,6 +114,6 @@ public sealed class SoftwareInventoryPanelTests : AsyncBunitContext
             return Task.FromResult(Status with { LatestScan = new(Guid.NewGuid(), "Pending", DateTimeOffset.UtcNow, null, 0, 0, []) });
         }
         public Task<SoftwarePage<SoftwareInstallationDto>> InstallationsAsync(int tenant, SoftwareInventoryQuery query, CancellationToken ct) => Task.FromResult(new SoftwarePage<SoftwareInstallationDto>(
-            [new(Agent, "Example client", "identity", new("Example Tool", "1", "Example", "x64", "example", "rpm"), "linux", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)], 1, 0, 50, 1));
+            Empty ? [] : [new(Agent, "Example client", "identity", new("Example Tool", "1", "Example", "x64", "example", "rpm"), "linux", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)], Empty ? 0 : 1, 0, 50, Empty ? 0 : 1));
     }
 }
