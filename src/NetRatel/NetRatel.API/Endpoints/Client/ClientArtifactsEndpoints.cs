@@ -60,13 +60,15 @@ public static class ClientArtifactsEndpoints
         group.MapGet("github-releases", async (
             [FromQuery] string? channel,
             [FromQuery] int? page,
+            [FromQuery] int? pageSize,
             [FromQuery] bool? refresh,
             [FromServices] IGitHubClientReleaseCatalog catalog,
             CancellationToken ct) =>
         {
-            if (page is < 0 or > 29 || channel is not null && channel is not ("all" or "stable" or "prerelease"))
-                return Results.BadRequest(new { message = "Use page 0-29 and channel all, stable, or prerelease." });
-            return Results.Ok(await catalog.ListAsync(channel ?? "all", page ?? 0, refresh == true, ct));
+            if (page is < 0 or > 29 || pageSize is not (null or 20 or 50 or 100) ||
+                channel is not null && channel is not ("all" or "stable" or "prerelease"))
+                return Results.BadRequest(new { message = "Use page 0-29, pageSize 20, 50, or 100, and channel all, stable, or prerelease." });
+            return Results.Ok(await catalog.ListAsync(channel ?? "all", page ?? 0, pageSize ?? 20, refresh == true, ct));
         })
         .RequireAuthorization("ClientArtifactsWrite")
         .WithName("ClientArtifacts_GitHubReleases")
