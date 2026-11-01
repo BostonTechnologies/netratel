@@ -28,7 +28,8 @@ public static class ClientReleaseCataloguePaging
         if (refresh) prefetched = await read(last, true, ct).ConfigureAwait(false);
         var items = new List<GitHubClientReleaseModel>();
         var warnings = new HashSet<string>(StringComparer.Ordinal);
-        var scanLimit = false;
+        if (!string.IsNullOrWhiteSpace(prefetched?.Warning)) warnings.Add(prefetched.Warning);
+        var scanLimit = prefetched?.ScanLimitReached == true;
         var hasMore = false;
         DateTimeOffset? refreshedAt = null;
         for (var sourcePage = first; sourcePage <= last; sourcePage++)
@@ -43,9 +44,11 @@ public static class ClientReleaseCataloguePaging
             scanLimit |= result.ScanLimitReached;
             refreshedAt = refreshedAt is null || result.RefreshedAtUtc < refreshedAt.Value ? result.RefreshedAtUtc : refreshedAt;
             items.AddRange(sourcePage == first ? result.Items.Skip(skip) : result.Items);
-            hasMore = result.HasMore;
-            // Do not jump over an incomplete source page during an upstream outage.
-            if (result.Items.Count < SourcePageSize || !result.HasMore) break;
+            // A short page with HasMore can be incomplete discovery, not an exhausted
+            // catalogue. Keep its warning and require Refresh rather than skipping
+            // unknown rows when the next display page starts at a larger offset.
+            hasMore = result.HasMore && result.Items.Count == SourcePageSize;
+            if (!hasMore) break;
         }
         var bufferedMore = items.Count > pageSize;
         return new GitHubClientReleasePageModel
