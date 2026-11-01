@@ -58,6 +58,7 @@ public sealed class ClientReleaseCataloguePagingTests
         var result = await ClientReleaseCataloguePaging.ReadAsync(Read, 0, 100, false);
         result.Items.Select(item => item.Id).Should().Equal(Enumerable.Range(0, 20).Select(index => (long)index));
         result.Warning.Should().Contain("temporarily unavailable");
+        result.HasMore.Should().BeFalse("advancing would skip the entries that failed to load");
         calls.Should().Equal(0, 1);
     }
 
