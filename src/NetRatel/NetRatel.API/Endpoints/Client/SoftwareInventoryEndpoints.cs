@@ -36,6 +36,12 @@ public static class SoftwareInventoryEndpoints
         tenants.MapGet("/aggregate", AggregateAsync).RequireAuthorization("TelemetryReader");
         tenants.MapGet("/changes", ChangesAsync).RequireAuthorization("TelemetryReader");
         tenants.MapGet("/export.csv", ExportAsync).RequireAuthorization("TelemetryReader");
+        tenants.MapGet("/summary", (int tenantId, HttpContext http, SoftwareInventoryService service, CancellationToken ct) =>
+            ExecuteAsync(tenantId, null, NetRatelPermissions.TelemetryRead, "summary.read", http,
+                async () => Results.Ok(await service.SummaryAsync(tenantId, ct)), ct)).RequireAuthorization("TelemetryReader");
+        tenants.MapGet("/clients", (int tenantId, [AsParameters] SoftwareInventoryQuery query, HttpContext http, SoftwareInventoryService service, CancellationToken ct) =>
+            ExecuteAsync(tenantId, query.AgentId, NetRatelPermissions.TelemetryRead, "clients.read", http,
+                async () => Results.Ok(await service.ClientsAsync(tenantId, query, ct)), ct)).RequireAuthorization("TelemetryReader");
         var clients = app.MapGroup("/api/v2/agents/{tenantId:int}/{agentId:guid}/software-inventory").WithTags("Software Inventory");
         clients.MapGet("", StatusAsync).RequireAuthorization("TelemetryReader");
         clients.MapGet("/scans/{collectionId:guid}", ScanAsync).RequireAuthorization("TelemetryReader");
