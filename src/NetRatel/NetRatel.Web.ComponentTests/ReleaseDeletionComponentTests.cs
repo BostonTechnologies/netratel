@@ -72,7 +72,7 @@ public sealed class ReleaseDeletionComponentTests : AsyncBunitContext
             cut.FindAll(".mud-tab").Should().HaveCount(6);
         });
         var github = cut.FindComponents<ClientManagementPager>().Single(pager => pager.Instance.Label == "GitHub releases");
-        github.FindComponent<MudSelect<int>>().Instance.PageSizeOptionsShouldNotBeUsed();
+        github.FindComponent<MudSelect<int>>().Instance.Label.Should().Be("Rows per page");
         await github.InvokeAsync(() => github.Instance.PageChanged.InvokeAsync(1));
         cut.WaitForAssertion(() => cut.FindAll("[data-testid=github-release-name]")[0].TextContent.Should().Be("Release 20"));
         await github.InvokeAsync(() => github.Instance.PageSizeChanged.InvokeAsync(50));
@@ -128,7 +128,7 @@ public sealed class ReleaseDeletionComponentTests : AsyncBunitContext
         });
         var table = cut.FindComponent<MudTable<ClientArtifactSummaryModel>>();
         table.Instance.RowsPerPage.Should().Be(20);
-        await table.InvokeAsync(() => table.Instance.SetRowsPerPageAsync(50));
+        await table.InvokeAsync(() => table.Instance.SetRowsPerPage(50));
         await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(tab => tab.TextContent.Trim() == "Packages").Click());
         cut.WaitForAssertion(() =>
         {
