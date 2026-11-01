@@ -7,7 +7,6 @@ using Microsoft.AspNetCore.Components.Web;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor;
 using MudBlazor.Services;
-using MudBlazor.State;
 using NetRatel.Shared.Client;
 using NetRatel.Shared.Contracts;
 using NetRatel.Shared.Contracts.Requests;
@@ -114,7 +113,7 @@ public sealed class ReleaseDeletionComponentTests : AsyncBunitContext
                 status.Should().Contain($"cleanup is {state.ToLowerInvariant()}").And.Contain("Required cleanup has not finished")
                     .And.NotContain("owned files were deleted");
             cut.FindComponents<MudSelect<string>>().Single(component => component.Instance.Label == "Channel")
-                .Instance.GetState(select => select.Value).Should().Be("prerelease");
+                .Instance.Value.Should().Be("prerelease");
             cut.Find(".mud-tab-active").TextContent.Should().Contain("Local imports");
             if (state is "Pending" or "Failed")
                 cut.FindAll("button").Should().Contain(button => button.TextContent.Trim() == "Retry cleanup");
@@ -159,7 +158,7 @@ public sealed class ReleaseDeletionComponentTests : AsyncBunitContext
         _artifacts.DeleteCalls.Should().Be(0);
         _artifacts.DeletedVersions.Should().BeEmpty();
         if (!confirmationOpened)
-            dialogs.Markup.Should().NotContain($"Delete local release {Version}?");
+            dialogs.Markup.Should().NotContain($"Delete local release {Version}?" );
     }
 
     private sealed class ReleaseHost : ComponentBase
