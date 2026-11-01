@@ -1,0 +1,4 @@
+.client-management-pager { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; padding: .6rem 0 .25rem; }
+.client-management-page-size { width: 8.25rem; flex: 0 0 8.25rem; }
+.client-management-page-actions { display: flex; align-items: center; gap: .65rem; margin-left: auto; }
+@media (max-width: 600px) { .client-management-page-actions { width: 100%; justify-content: flex-end; } }
