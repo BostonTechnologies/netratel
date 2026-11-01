@@ -61,6 +61,29 @@ public sealed class SoftwareInventoryEndpointTests
         host.Services.GetRequiredService<Events>().Items.Should().Contain(item => item.EventType == "SoftwareInventory.scan.request");
     }
 
+    [Fact]
+    public async Task Coverage_reads_include_never_scanned_devices_without_scheduling_and_require_the_same_tenant_access()
+    {
+        using var host = await StartAsync();
+        using var http = host.GetTestClient();
+        foreach (var resource in new[] { "summary", "clients" })
+            (await http.GetAsync("/api/v2/tenants/7/software-inventory/" + resource)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test", "reader");
+        foreach (var resource in new[] { "summary", "clients" })
+            (await http.GetAsync("/api/v2/tenants/8/software-inventory/" + resource)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        var summary = await http.GetFromJsonAsync<SoftwareInventorySummary>("/api/v2/tenants/7/software-inventory/summary");
+        summary!.Clients.Should().Be(1);
+        summary.NeverScanned.Should().Be(1);
+        summary.Inventoried.Should().Be(0);
+        var clients = await http.GetFromJsonAsync<SoftwarePage<SoftwareInventoryClientDto>>("/api/v2/tenants/7/software-inventory/clients?search=Example&pageSize=25");
+        clients!.Items.Should().ContainSingle().Which.Client.Should().Be("Example client");
+        clients.Items[0].Status.Should().Be("NeverScanned");
+        (await http.GetAsync("/api/v2/tenants/7/software-inventory/clients?pageSize=101")).StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await http.GetAsync("/api/v2/tenants/7/software-inventory/clients?agentId=" + Guid.NewGuid())).StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await http.GetFromJsonAsync<SoftwareInventoryStatus>(ClientPath))!.LatestScan.Should().BeNull();
+        host.Services.GetRequiredService<Events>().Items.Should().Contain(item => item.EventType == "SoftwareInventory.summary.read");
+    }
+
     private static async Task<IHost> StartAsync()
     {
         var database = Guid.NewGuid().ToString();
