@@ -29,6 +29,32 @@ printf '%s\n' 'bostec.service-link.incident-only.v1' 'bostec-service-link.incide
 git -C "$accepted_fixture" add README.md
 "$accepted_fixture/tools/ci/check-public-disclosure.sh" >/dev/null
 
+mkdir -p "$accepted_fixture/.agents/skills/example/references"
+printf '# Synthetic skill\n' > "$accepted_fixture/.agents/skills/example/SKILL.md"
+printf '# Synthetic reference\n' > "$accepted_fixture/.agents/skills/example/references/guide.md"
+printf '{}\n' > "$accepted_fixture/.agents/dotnet-skills.json"
+printf 'Synthetic license\n' > "$accepted_fixture/.agents/dotnet-skills.LICENSE"
+git -C "$accepted_fixture" add .agents
+"$accepted_fixture/tools/ci/check-public-disclosure.sh" >/dev/null
+
+private_agent_fixture="$(new_fixture private-agent-settings)"
+mkdir -p "$private_agent_fixture/.agents"
+printf '{}\n' > "$private_agent_fixture/.agents/settings.json"
+git -C "$private_agent_fixture" add .agents/settings.json
+if "$private_agent_fixture/tools/ci/check-public-disclosure.sh" >/dev/null 2>&1; then
+  echo "Disclosure gate accepted unclassified agent runtime settings." >&2
+  exit 1
+fi
+
+skill_secret_fixture="$(new_fixture skill-secret)"
+mkdir -p "$skill_secret_fixture/.agents/skills/example"
+printf 'AKIA%s\n' '0000000000000000' > "$skill_secret_fixture/.agents/skills/example/SKILL.md"
+git -C "$skill_secret_fixture" add .agents/skills/example/SKILL.md
+if "$skill_secret_fixture/tools/ci/check-public-disclosure.sh" >/dev/null 2>&1; then
+  echo "Disclosure gate accepted credential material in an installed skill." >&2
+  exit 1
+fi
+
 # Only reviewed product templates are public; similarly named private settings
 # remain outside the exact allowlist.
 for template in .env.mcp-http.example .env.mcp-http.outbound.example .env.mcp-http.api.example \
