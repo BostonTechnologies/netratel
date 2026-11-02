@@ -188,8 +188,8 @@ public sealed class NetclawPersistencePostgresTests(PostgreSqlPersistenceFixture
             Assert.Contains("exact message", unresolved.RecoverySummary);
             Assert.Null(unresolved.LastRecoveryAttemptAtUtc);
             Assert.Single(await check.AiInvestigationEvents.Where(x => x.InvestigationId == id && x.Type == "turn_completed").ToListAsync());
-            var saved = await new InvestigationStore(check, TimeProvider.System).LoadAsync(17, id, 0, default);
-            Assert.NotNull(saved.Recovery?.Summary); Assert.Null(saved.Recovery.LastAttemptAtUtc);
+            var loaded = await new InvestigationStore(check, TimeProvider.System).LoadAsync(17, id, 0, default);
+            Assert.NotNull(loaded.Recovery); Assert.NotNull(loaded.Recovery.Summary); Assert.Null(loaded.Recovery.LastAttemptAtUtc);
             Assert.Equal(2, daemon.Sends);
         }
         finally { await worker.StopAsync(default); }
