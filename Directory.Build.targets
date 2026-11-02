@@ -4,9 +4,13 @@
     Deliberately do not derive a revision from a private staging checkout.
   -->
   <Target Name="AddNetRatelProductBuildMetadata" BeforeTargets="GetAssemblyAttributes">
+    <PropertyGroup>
+      <PublicBuildTimestamp Condition="'$(PublicBuildTimestamp)' == ''">$([System.DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))</PublicBuildTimestamp>
+    </PropertyGroup>
     <ItemGroup>
       <AssemblyMetadata Include="ProductVersion" Value="$(Version)" />
       <AssemblyMetadata Include="SourceRevisionId" Value="$(PublicSourceRevision)" Condition="'$(PublicSourceRevision)' != ''" />
+      <AssemblyMetadata Include="BuildTimestampUtc" Value="$(PublicBuildTimestamp)" />
     </ItemGroup>
   </Target>
 </Project>

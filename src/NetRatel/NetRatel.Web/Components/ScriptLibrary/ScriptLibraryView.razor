@@ -104,7 +104,7 @@
                 else if (!_fullScreenOpen && _draft is not null)
                 {
                     <ScriptEditorPane @key="_draft" Draft="_draft" CanEdit="@(AllowEditing && !ReadOnly)"
-                                      AutoFocus="_focusEditor" SaveRequested="Save" DeleteRequested="DeleteCurrentScript"
+                                      AutoFocus="_focusEditor" SaveRequested="Save" MoveRequested="MoveScript" DeleteRequested="DeleteCurrentScript"
                                       ToggleFullScreen="OpenFullScreen" />
                 }
             </div>
@@ -406,6 +406,7 @@
                 { dialog => dialog.Draft, _draft },
                 { dialog => dialog.CanEdit, AllowEditing && !ReadOnly },
                 { dialog => dialog.SaveRequested, EventCallback.Factory.Create(this, Save) },
+                { dialog => dialog.MoveRequested, EventCallback.Factory.Create(this, MoveScript) },
                 { dialog => dialog.DeleteRequested, new Func<Task<bool>>(DeleteCurrentScript) }
             };
             _editorDialog = await Dialogs.ShowAsync<ScriptEditorDialog>("Script editor", parameters,
@@ -419,6 +420,53 @@
             _focusEditor = true;
             if (!_disposed) StateHasChanged();
         }
+    }
+
+    private async Task MoveScript()
+    {
+        var draft = _draft;
+        if (draft is null || draft.Busy || !AllowEditing || ReadOnly || _disposed) return;
+        var observed = draft.Saved;
+        var parameters = new DialogParameters<MoveScriptDialog>
+        {
+            { dialog => dialog.CurrentFolder, NormalizeFolder(observed.FolderPath) },
+            { dialog => dialog.ExistingFolders, _all.SelectMany(script => ExistingFolderChain(script.FolderPath)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray() },
+            { dialog => dialog.ReloadSaved, new Func<Task<string>>(async () =>
+                {
+                    var fresh = await Api.GetAsync(observed.Id, CancellationToken.None) ?? throw new InvalidOperationException("The saved script is no longer available. Your draft is retained.");
+                    observed = fresh;
+                    draft.AcceptPlacement(fresh);
+                    var index = _all.FindIndex(script => script.Id == fresh.Id);
+                    if (index >= 0) _all[index] = fresh;
+                    if (ReferenceEquals(_draft, draft)) _current = fresh;
+                    RebuildTree();
+                    return NormalizeFolder(fresh.FolderPath);
+                }) },
+            { dialog => dialog.MoveScript, new Func<string, Task>(async folder =>
+                {
+                    draft.Moving = true;
+                    try
+                    {
+                        var revision = await Api.UpdateAsync(observed.Id, new UpdateScriptRequest(null, folder, null, null, null, observed.SourceRevision), CancellationToken.None);
+                        if (_disposed) return;
+                        InvalidateListReads();
+                        var saved = observed with { FolderPath = folder, SourceRevision = revision, UpdatedAt = DateTimeOffset.UtcNow };
+                        var index = _all.FindIndex(script => script.Id == saved.Id);
+                        if (index >= 0) _all[index] = saved;
+                        draft.AcceptPlacement(saved);
+                        if (ReferenceEquals(_draft, draft)) _current = saved;
+                        foreach (var path in ScriptLibraryPlacement.FolderChain(folder)) _expanded.Add(path);
+                        _selectedFolder = folder;
+                        RebuildTree(captureExpansion: false);
+                        Snackbar.Add($"Moved to {folder}. Unsaved edits retained.", Severity.Success);
+                        StateHasChanged();
+                    }
+                    finally { draft.Moving = false; }
+                }) }
+        };
+        var dialog = await Dialogs.ShowAsync<MoveScriptDialog>("Move script", parameters,
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false });
+        await dialog.Result;
     }
 
     private async Task NewScript()

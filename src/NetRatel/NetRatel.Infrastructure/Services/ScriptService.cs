@@ -55,7 +55,7 @@ public sealed class ScriptService(OrchestratorDbContext db) : IScriptService
         var folder = ScriptLibraryPlacement.NormalizeFolder(command.FolderPath);
         if (string.IsNullOrWhiteSpace(command.ScriptType)) throw new ArgumentException("Choose a script type.");
         await using var transaction = await ScriptReferenceFence.BeginAsync(_db, ct);
-        await EnsurePlacementAvailableAsync(name, folder, null, ct);
+        await EnsurePlacementAvailableAsync(_db, name, folder, null, ct);
         var now = DateTimeOffset.UtcNow;
         var script = new ScriptDefinition
         {
@@ -96,7 +96,7 @@ public sealed class ScriptService(OrchestratorDbContext db) : IScriptService
         EnsureRevision(script, command.ExpectedSourceRevision);
 
         if (command.Name is not null || command.FolderPath is not null)
-            await EnsurePlacementAvailableAsync(
+            await EnsurePlacementAvailableAsync(_db,
                 ScriptLibraryPlacement.NormalizeName(command.Name ?? script.Name),
                 ScriptLibraryPlacement.NormalizeFolder(command.FolderPath ?? script.FolderPath), script.Id, ct);
 
@@ -125,25 +125,30 @@ public sealed class ScriptService(OrchestratorDbContext db) : IScriptService
             script.ScriptType = NormalizeScriptType(command.ScriptType);
         }
 
-        script.ManifestJson = ResolveManifestJson(command.ManifestRaw, script.Content);
+        if (command.Content is not null || command.ManifestRaw is not null)
+        {
+            script.ManifestJson = ResolveManifestJson(command.ManifestRaw, script.Content);
+            ReplaceParamsFromManifest(script, script.ManifestJson);
+        }
         script.UpdatedAtUtc = DateTimeOffset.UtcNow;
-        ReplaceParamsFromManifest(script, script.ManifestJson);
 
         await _db.SaveChangesAsync(ct);
         if (transaction is not null) await transaction.CommitAsync(ct);
         return MapScript(script);
     }
 
-    private async Task LockPlacementsAsync(CancellationToken ct)
+    private Task LockPlacementsAsync(CancellationToken ct) => LockPlacementsAsync(_db, ct);
+
+    internal static async Task LockPlacementsAsync(OrchestratorDbContext db, CancellationToken ct)
     {
-        if (_db.Database.IsNpgsql())
-            await _db.Database.ExecuteSqlRawAsync("LOCK TABLE \"Scripts\" IN SHARE ROW EXCLUSIVE MODE", ct);
+        if (db.Database.IsNpgsql())
+            await db.Database.ExecuteSqlRawAsync("LOCK TABLE \"Scripts\" IN SHARE ROW EXCLUSIVE MODE", ct);
     }
 
-    private async Task EnsurePlacementAvailableAsync(string name, string folder, long? excludingId, CancellationToken ct)
+    internal static async Task EnsurePlacementAvailableAsync(OrchestratorDbContext db, string name, string folder, long? excludingId, CancellationToken ct)
     {
-        await LockPlacementsAsync(ct);
-        var placements = await _db.Scripts.AsNoTracking().Where(script => script.Id != excludingId)
+        await LockPlacementsAsync(db, ct);
+        var placements = await db.Scripts.AsNoTracking().Where(script => script.Id != excludingId)
             .Select(script => new { script.Name, script.FolderPath }).ToListAsync(ct);
         var target = folder + name;
         var folders = ScriptLibraryPlacement.FolderChain(folder);

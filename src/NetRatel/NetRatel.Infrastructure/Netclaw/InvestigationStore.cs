@@ -78,10 +78,12 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
             .Where(x => x.InvestigationId == id && row.State == InvestigationState.AwaitingApproval && x.MessageId == row.ActiveMessageId && x.SelectedKey == null).Take(32).ToListAsync(ct);
         return new(Summary(row), row.LastSequence, row.ActiveMessageId,
             events.Select(x => new InvestigationEventDto(x.Sequence, x.Type, x.Text, x.Actor, x.CallId,
-                x.OptionsJson is null ? null : Options(x.OptionsJson), x.CreatedAtUtc, x.MessageId)).ToArray(),
+                x.OptionsJson is null ? null : Options(x.OptionsJson), x.CreatedAtUtc, x.MessageId,
+                x.TraceJson is null ? null : JsonSerializer.Deserialize<NetclawTraceDto>(x.TraceJson))).ToArray(),
             await ClientsAsync(tenantId, row.AgentIds, ct),
             approvals.Select(x => new InvestigationApprovalDto(x.CallId, Options(x.OptionsJson))).ToArray(),
-            Prompts: InvestigationContextComposer.Prompts(row), SentContext: await LastContextAsync(id, row.ActiveMessageId, ct));
+            Prompts: InvestigationContextComposer.Prompts(row), SentContext: await LastContextAsync(id, row.ActiveMessageId, ct),
+            Recovery: row.LastRecoveryAttemptAtUtc is null ? null : new(row.LastRecoveryAttemptAtUtc, row.RecoverySummary));
     }
 
     public async Task<bool> AcceptMessageAsync(int tenantId, Guid id, InvestigationMessageRequest request, string actor,
@@ -105,6 +107,7 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
         await ValidateContextAsync(row, ct);
         await ComposeAsync(row, request.MessageId, request.Text, row.RemoteSessionId ?? new string('s', 256), ct);
         row.State = InvestigationState.Queued; row.ActiveMessageId = request.MessageId; row.Automated = automated;
+        row.RemoteTurnCountBeforeSend = null; row.LastRecoveryAttemptAtUtc = null; row.RecoverySummary = null;
         row.ActiveCredentialId = credential; row.LastTransportActivityAtUtc = clock.GetUtcNow();
         Append(db, row, "operator", request.Text, actor, request.MessageId);
         await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); return true;
@@ -260,11 +263,11 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
     public static InvestigationSummaryDto Summary(AiInvestigationRecord row) => new(row.Id, row.TenantId, row.Title, row.State,
         row.AgentIds, row.OccurrenceId, row.FlowRunId, row.LastActivityUtc, row.CreatedBy);
     public static void Append(OrchestratorDbContext db, AiInvestigationRecord row, string type, string text,
-        string? actor = null, Guid? messageId = null, string? callId = null, string? options = null)
+        string? actor = null, Guid? messageId = null, string? callId = null, string? options = null, NetclawTraceDto? trace = null)
     {
         row.LastActivityUtc = DateTimeOffset.UtcNow;
         db.Set<AiInvestigationEventRecord>().Add(new() { InvestigationId = row.Id, Sequence = ++row.LastSequence,
             Type = type, Text = text.Length <= 128000 ? text : text[..128000], Actor = actor, MessageId = messageId,
-            CallId = callId, OptionsJson = options, CreatedAtUtc = row.LastActivityUtc });
+            CallId = callId, OptionsJson = options, TraceJson = trace is null ? null : JsonSerializer.Serialize(trace), CreatedAtUtc = row.LastActivityUtc });
     }
 }

@@ -56,4 +56,6 @@ public sealed class McpOperatorScriptVersionRecord
     public string WorkingDirectory { get; set; } = string.Empty;
     public string DeclaredSideEffectsJson { get; set; } = "[]";
     public DateTimeOffset OccurredAtUtc { get; set; }
+    public string? FolderPath { get; set; }
+    public long? SourceRevision { get; set; }
 }

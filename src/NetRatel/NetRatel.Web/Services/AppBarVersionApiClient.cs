@@ -20,7 +20,7 @@ public sealed class AppBarVersionApiClient(IHttpClientFactory httpClientFactory,
         {
             return await _http.GetFromJsonAsync<AppBarApiVersionInfo>("/api/v1/system/version", cts.Token);
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or NotSupportedException)
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or NotSupportedException or System.Text.Json.JsonException)
         {
             logger.LogWarning(ex, "Could not load NetRatel API version information for the app bar.");
             return null;
@@ -33,4 +33,6 @@ public sealed record AppBarApiVersionInfo(
     string DisplayVersion,
     string InformationalVersion,
     string AssemblyVersion,
-    string Environment);
+    string Environment,
+    string? Commit = null,
+    DateTimeOffset? BuiltAtUtc = null);

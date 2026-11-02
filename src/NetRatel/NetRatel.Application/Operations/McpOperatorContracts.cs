@@ -1020,7 +1020,9 @@ public sealed record McpOperatorScriptDraft(
     int TimeoutSeconds,
     string WorkingDirectory,
     IReadOnlyList<McpOperatorScriptSideEffect> DeclaredSideEffects,
-    string? ManifestJson = null);
+    string? ManifestJson = null,
+    string? FolderPath = null,
+    long? ExpectedSourceRevision = null);
 
 /// <summary>
 /// Caller-bound, tenant-scoped script metadata. Content is intentionally not
@@ -1048,7 +1050,9 @@ public sealed record McpOperatorScriptLease(
     bool IsDeleted,
     DateTimeOffset CreatedAtUtc,
     DateTimeOffset UpdatedAtUtc,
-    long Version);
+    long Version,
+    string? FolderPath = null,
+    long SourceRevision = 1);
 
 /// <summary>
 /// Content-free input used to persist one owner-bound script revision after a
@@ -1075,6 +1079,8 @@ public sealed record McpOperatorScriptReplaceRequest(
 /// ownership row and append-only revision evidence; it never enumerates or
 /// mutates legacy ownerless definitions.
 /// </summary>
+public sealed record McpOperatorScriptPlacement(string? FolderPath, long? SourceRevision);
+
 public interface IMcpOperatorScriptStore
 {
     /// <summary>Validates a proposed revision against its current target policy without writing any script or audit state.</summary>
@@ -1106,6 +1112,10 @@ public interface IMcpOperatorScriptStore
         string mcpResource,
         string mcpInstance,
         CancellationToken cancellationToken) => GetOwnedAsync(scriptId, tenantId, principal, mcpResource, mcpInstance, cancellationToken);
+
+    Task<McpOperatorScriptPlacement?> GetOwnedPlacementAsync(long scriptId, long version, int tenantId,
+        McpOperatorPrincipal principal, string mcpResource, string mcpInstance, CancellationToken cancellationToken)
+        => Task.FromResult<McpOperatorScriptPlacement?>(null);
 
     Task<McpOperatorScriptLease> CreateAsync(
         McpOperatorScriptCreateRequest request,

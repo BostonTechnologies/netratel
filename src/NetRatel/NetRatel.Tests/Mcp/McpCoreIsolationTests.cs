@@ -726,6 +726,14 @@ public sealed class McpCoreIsolationTests
         var create = productionAlternatives["create"].GetProperty("properties").GetProperty("request");
         create.GetProperty("required").EnumerateArray().Select(value => value.GetString()).Should().Equal(
             "tenantId", "agentId", "name", "description", "shellType", "content", "contentHash", "parameters", "timeoutSeconds", "workingDirectory", "declaredSideEffects");
+        foreach (var operation in new[] { "create", "update" })
+        {
+            var request = productionAlternatives[operation].GetProperty("properties").GetProperty("request");
+            request.GetProperty("properties").TryGetProperty("folderPath", out _).Should().BeTrue();
+            request.GetProperty("properties").GetProperty("expectedSourceRevision").GetProperty("oneOf").GetArrayLength().Should().Be(2);
+            request.GetProperty("required").EnumerateArray().Select(value => value.GetString())
+                .Should().NotContain(["folderPath", "expectedSourceRevision"], "placement fields are optional for existing non-move clients");
+        }
         create.GetProperty("properties").GetProperty("contentHash")
             .GetProperty("pattern").GetString().Should().Be("^[A-Fa-f0-9]{64}$");
         NetRatelMcpCatalog.Tools.Single(tool => tool.Name == "netratel_scripts").Safety.Should().Be(NetRatelMcpOperationSafety.OperatorMutation);

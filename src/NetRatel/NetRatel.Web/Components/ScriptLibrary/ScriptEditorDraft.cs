@@ -11,7 +11,8 @@ public sealed class ScriptEditorDraft(ScriptDto script)
     public string? Error { get; set; }
     public bool Saving { get; set; }
     public bool Deleting { get; set; }
-    public bool Busy => Saving || Deleting;
+    public bool Moving { get; set; }
+    public bool Busy => Saving || Deleting || Moving;
     public bool IsDirty => !string.Equals(Name, Saved.Name, StringComparison.Ordinal)
         || !string.Equals(Content, Saved.Content ?? string.Empty, StringComparison.Ordinal);
 
@@ -22,4 +23,6 @@ public sealed class ScriptEditorDraft(ScriptDto script)
         Saved = saved;
         Error = null;
     }
+
+    public void AcceptPlacement(ScriptDto saved) { Saved = saved; Error = null; }
 }

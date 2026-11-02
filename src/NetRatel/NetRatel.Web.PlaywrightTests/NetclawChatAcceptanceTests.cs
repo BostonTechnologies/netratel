@@ -79,6 +79,74 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
         Assert.Empty(errors);
     }
 
+    [Theory]
+    [InlineData(false, 1366, 900, "light")]
+    [InlineData(false, 390, 844, "dark")]
+    [InlineData(true, 1366, 900, "dark")]
+    [InlineData(true, 390, 844, "light")]
+    public async Task Shared_conversation_fullscreen_preserves_draft_details_and_focus_and_sends_once(bool investigation, int width, int height, string theme)
+    {
+        var api = new ChatFixture(investigation);
+        await using var host = await ClientsManagementFixtureHost.StartAsync(services => services.AddSingleton<INetclawApiService>(api));
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = width, Height = height } });
+        await context.AddInitScriptAsync($"localStorage.setItem('netratel.theme.preference', '{theme}');");
+        var page = await context.NewPageAsync();
+        var errors = new List<string>(); page.PageError += (_, error) => errors.Add(error);
+        try { await page.GotoAsync(host.BaseAddress + (investigation ? $"/ai/ops?tenantId=17&investigation={api.Id}" : $"/ai/chat?tenantId=17&chat={api.Id}")); }
+        catch (Exception ex) { throw new InvalidOperationException(string.Join("\n", host.StartupServerDiagnostics), ex); }
+        var surface = page.GetByTestId("netclaw-conversation");
+        await surface.WaitForAsync();
+        await Assertions.Expect(page.Locator($"html[data-netratel-theme='{theme}']")).ToHaveCountAsync(1);
+        if (width < 1280)
+        {
+            var scrim = page.Locator(".mud-drawer-overlay--open .mud-overlay-scrim");
+            if (await scrim.CountAsync() > 0 && await scrim.IsVisibleAsync())
+                await scrim.ClickAsync(new() { Position = new() { X = width - 10, Y = height / 2f } });
+            await Assertions.Expect(page.GetByTestId("app-navigation-drawer")).ToHaveClassAsync(new Regex("mud-drawer--closed"));
+        }
+        var composer = page.GetByTestId("chat-message");
+        await composer.FillAsync("draft survives fullscreen");
+        var trace = surface.Locator(".netclaw-trace-row").First;
+        await trace.Locator("summary").ClickAsync();
+        await Assertions.Expect(trace).ToHaveAttributeAsync("open", "");
+        await surface.EvaluateAsync("e => e.dataset.identityProbe = 'same-surface'");
+        var maximize = surface.GetByRole(AriaRole.Button, new() { Name = "Maximise conversation", Exact = true });
+        await maximize.ClickAsync();
+        await Assertions.Expect(surface).ToHaveAttributeAsync("aria-modal", "true");
+        await Assertions.Expect(surface).ToHaveAttributeAsync("data-identity-probe", "same-surface");
+        await Assertions.Expect(composer).ToHaveValueAsync("draft survives fullscreen");
+        await Assertions.Expect(trace).ToHaveAttributeAsync("open", "");
+        await Assertions.Expect(surface.GetByRole(AriaRole.Button, new() { Name = "Restore conversation", Exact = true })).ToBeInViewportAsync(new() { Ratio = 1 });
+        await Assertions.Expect(page.GetByTestId("chat-send")).ToBeInViewportAsync(new() { Ratio = 1 });
+        await surface.GetByRole(AriaRole.Button, new() { Name = "Chat display settings", Exact = true }).ClickAsync();
+        await Assertions.Expect(surface.Locator(".netclaw-display-panel")).ToBeVisibleAsync();
+        await composer.PressAsync("Escape");
+        await Assertions.Expect(surface.Locator(".netclaw-display-panel")).ToHaveCountAsync(0);
+        await Assertions.Expect(surface).ToHaveAttributeAsync("aria-modal", "true");
+        await composer.PressAsync("Escape");
+        await Assertions.Expect(surface).Not.ToHaveAttributeAsync("aria-modal", "true");
+        await Assertions.Expect(maximize).ToBeFocusedAsync();
+        await Assertions.Expect(composer).ToHaveValueAsync("draft survives fullscreen");
+        await maximize.ClickAsync();
+        await Assertions.Expect(surface).ToHaveAttributeAsync("aria-modal", "true");
+        await composer.PressAsync("Control+Enter");
+        await Assertions.Expect(composer).ToHaveValueAsync("");
+        Assert.Equal(1, api.Sends);
+        await surface.GetByRole(AriaRole.Button, new() { Name = "Restore conversation", Exact = true }).ClickAsync();
+        await AssertHealthyAsync(page); Assert.Empty(errors);
+        var artifacts = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.GetFullPath("TestResults/playwright");
+        Directory.CreateDirectory(artifacts);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(artifacts, $"shared-{(investigation ? "investigation" : "chat")}-{theme}-{width}.png"), FullPage = true });
+        var previousOverflow = await page.EvaluateAsync<string>("() => document.body.style.overflow");
+        await maximize.ClickAsync();
+        await Assertions.Expect(surface).ToHaveAttributeAsync("aria-modal", "true");
+        await page.EvaluateAsync("() => Blazor.navigateTo('/ai/chat?tenantId=18')");
+        await Assertions.Expect(page.GetByRole(AriaRole.Heading, new() { Name = "Connect with Netclaw", Exact = true })).ToBeVisibleAsync();
+        await page.WaitForFunctionAsync("previous => document.body.style.overflow === previous", previousOverflow);
+        Assert.False(await page.GetByTestId("navigation-toggle").EvaluateAsync<bool>("e => !!e.closest('[inert]')"));
+        await AssertHealthyAsync(page); Assert.Empty(errors);
+    }
+
     private static async Task AssertHealthyAsync(IPage page)
     {
         Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth + 1"));
@@ -90,6 +158,18 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
         private readonly Guid _id = Guid.NewGuid();
         private volatile InvestigationSnapshotDto? _saved;
         private int _creates, _sends;
+        public Guid Id => _id;
+        private readonly bool _investigation;
+        public ChatFixture(bool? investigation = null)
+        {
+            _investigation = investigation == true;
+            if (investigation is null) return;
+            var now = DateTimeOffset.UtcNow;
+            InvestigationEventDto[] events = [new(1, "assistant", "## Saved answer\n\n```sh\necho safe\n```", null, null, null, now),
+                new(2, "tool_call", "netclaw/example: started", null, "call-fixture", null, now,
+                    Trace: new("netclaw/example", "started", now, "fixture-session", Guid.NewGuid(), "{\"path\":\"/safe/\"}", null, null, null, false, false))];
+            _saved = new(new(_id, 17, "Saved fixture conversation", InvestigationState.Idle, _investigation ? [Guid.NewGuid()] : [], null, null, now, "operator"), 2, null, events, [], []);
+        }
         public int Creates => Volatile.Read(ref _creates);
         public int Sends => Volatile.Read(ref _sends);
         public Task<IReadOnlyList<NetclawTenantDto>> TenantsAsync(CancellationToken ct = default) =>
@@ -120,14 +200,14 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
             var now = DateTimeOffset.UtcNow;
             var completed = saved with
             {
-                LastSequence = 2,
-                Events = [new(1, "operator", request.Text, "operator", null, null, now, request.MessageId), new(2, "assistant", answer, null, null, null, now)]
+                LastSequence = saved.LastSequence + 2,
+                Events = [.. saved.Events, new(saved.LastSequence + 1, "operator", request.Text, "operator", null, null, now, request.MessageId), new(saved.LastSequence + 2, "assistant", answer, null, null, null, now)]
             };
             _saved = completed;
             return completed;
         }
-        public Task<IReadOnlyList<InvestigationClientDto>> ClientsAsync(int tenantId, CancellationToken ct = default) => throw new NotSupportedException("Chat must not request systems.");
-        public Task<IReadOnlyList<InvestigationSummaryDto>> ListAsync(int tenantId, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<IReadOnlyList<InvestigationClientDto>> ClientsAsync(int tenantId, CancellationToken ct = default) => _investigation ? Task.FromResult<IReadOnlyList<InvestigationClientDto>>([]) : throw new NotSupportedException("Chat must not request systems.");
+        public Task<IReadOnlyList<InvestigationSummaryDto>> ListAsync(int tenantId, CancellationToken ct = default) => Task.FromResult<IReadOnlyList<InvestigationSummaryDto>>(_saved is { } saved ? [saved.Investigation] : []);
         public Task<InvestigationSnapshotDto> CreateAsync(int tenantId, InvestigationCreateRequest request, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<NetclawTestResult> PairAsync(int tenantId, NetclawPairRequest request, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<NetclawTestResult> TestAsync(int tenantId, CancellationToken ct = default) => throw new NotSupportedException();

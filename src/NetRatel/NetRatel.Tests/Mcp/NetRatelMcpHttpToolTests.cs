@@ -23,6 +23,27 @@ public sealed class NetRatelMcpHttpToolTests
     private const string ReplayPlanToken = "pppppppppppppppppppppppppppppppp";
     private const string ReplayIdempotencyKey = "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii";
 
+    [Fact]
+    public async Task Production_script_schema_and_dispatch_expose_folder_moves_with_observed_source_revision()
+    {
+        var schema = NetRatelMcpToolDefinitions.CreateForHttp("prod").Single(tool => tool.ProtocolTool.Name == "netratel_scripts").ProtocolTool.InputSchema.GetRawText();
+        schema.Should().Contain("folderPath").And.Contain("expectedSourceRevision");
+        var client = new RecordingApiClient();
+        var tools = new NetRatelMcpOperationalTools(client, new NetRatelMcpHostContext(new NetRatelMcpTarget("prod", new Uri("https://api.example.test"), new Uri("https://mcp.example.test/mcp"), NetRatelMcpCatalog.Revision), NetRatelMcpTransport.StreamableHttp, "test", operatorSurfaceEnabled: true));
+        var request = new JsonObject {
+            ["tenantId"] = 42, ["agentId"] = Guid.NewGuid().ToString("D"), ["scriptId"] = "901", ["expectedVersion"] = "2", ["expectedSourceRevision"] = "3",
+            ["name"] = "disk-report", ["description"] = "Read disk space", ["shellType"] = "sh", ["content"] = "df -h", ["contentHash"] = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("df -h"))),
+            ["parameters"] = new JsonArray(), ["timeoutSeconds"] = 15, ["workingDirectory"] = "/tmp", ["declaredSideEffects"] = new JsonArray(1), ["folderPath"] = "/Linux/disk/"
+        };
+        (await tools.netratel_scripts("update", Request(request))).Success.Should().BeTrue();
+        client.Mutations.Single().Path.Should().EndWith("/preview/update");
+        client.Mutations.Single().Body!["script"]!["folderPath"]!.GetValue<string>().Should().Be("/Linux/disk/");
+        client.Mutations.Single().Body!["script"]!["expectedSourceRevision"]!.ToString().Should().Be("3");
+        request.Remove("expectedSourceRevision");
+        (await tools.netratel_scripts("update", Request(request))).Success.Should().BeFalse();
+        client.Mutations.Should().HaveCount(1);
+    }
+
     [Theory]
     [InlineData("create")]
     [InlineData("update")]
@@ -280,7 +301,7 @@ public sealed class NetRatelMcpHttpToolTests
         var dev = NetRatelMcpToolDefinitions.CreateForHttp(host).Single(tool => tool.ProtocolTool.Name == "netratel_scripts").ProtocolTool;
         dev.InputSchema.GetRawText().Should().Contain("expectedSourceRevision").And.Contain("expectedContentHash");
         var prod = NetRatelMcpToolDefinitions.CreateForHttp("prod").Single(tool => tool.ProtocolTool.Name == "netratel_scripts").ProtocolTool;
-        prod.InputSchema.GetRawText().Should().NotContain("expectedSourceRevision");
+        prod.InputSchema.GetRawText().Should().Contain("expectedSourceRevision").And.Contain("folderPath").And.NotContain("expectedContentHash");
         var client = new RecordingApiClient();
         var tools = new NetRatelMcpOperationalTools(client, host);
         var agent = Guid.NewGuid();

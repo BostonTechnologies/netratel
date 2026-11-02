@@ -16,3 +16,22 @@ HTTP MCP lets Netclaw and other MCP clients use the NetRatel API. First connect 
 - [Release installation](../../release/INSTALL.md): verified image bundle and first-run Web/API setup.
 
 [The production activation manifest](production-activation-manifest.yml) is an existing owner acceptance record template for OIDC deployments. It is not runtime configuration or evidence that production checks passed. Local mode has no OAuth metadata or OIDC authority; use the applicable mode's procedures.
+
+## Script folder placement
+
+The production `netratel_scripts/create` and `update` schemas accept optional
+`folderPath`. Omit it to retain the default `/mcp-operator/<tenantId>/` on create
+or preserve placement on update. `/` selects the logical library root; nested
+destinations such as `/Linux/disk/` use the same normalization and collision
+rules as Script Library. Placement never changes ownership or tool authority.
+
+To move an existing owned script, read its definition and parameter schema,
+retain its reviewed content/hash and metadata, then call `update` with the
+destination, `expectedVersion` and `expectedSourceRevision` from the current
+read. Preview first and confirm the unchanged request using the returned plan
+token and idempotency key. Changed destinations, stale revisions and collisions
+are rejected. Read back `folderPath` and the new versions; script ID, source
+bytes/hash and existing references are preserved. An omitted destination remains
+backward compatible. Development's admitted canonical source variant retains
+its separate source-revision/content-hash contract; discover the active schema
+before choosing a request shape.

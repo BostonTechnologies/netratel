@@ -1,0 +1,55 @@
+@using NetRatel.Shared.Contracts.Netclaw
+@inject IJSRuntime JS
+
+<details class="netclaw-trace-row" open="@Display.ExpandDetails">
+    <summary>
+        <span>@(Event.Type.StartsWith("recovery_", StringComparison.Ordinal) ? $"Recovery evidence: {Event.Trace?.Status}" : Event.Trace?.ToolName is { Length: > 0 } name && Event.Trace.Status is { Length: > 0 } ? $"{name}: {Event.Trace.Status}" : Event.Text)</span>
+        @if (Display.ShowTimestamps) { <time tabindex="0" datetime="@Time.ToString("O")" title="@TimeLabel" aria-label="@TimeLabel">@Time.UtcDateTime.ToString("HH:mm:ss'Z'")</time> }
+        @if (Display.ShowCallIds && Event.CallId is not null) { <small>@Event.CallId</small> }
+    </summary>
+    <div class="netclaw-trace-details">
+        <p>@TimeLabel · @Event.CallId</p>
+        @if (Event.Trace is not { } trace)
+        {
+            <p>Details were not recorded for this event.</p>
+        }
+        else
+        {
+            <p>Received @Event.CreatedAtUtc.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss.fff 'UTC'")</p>
+            <p>Session @trace.SessionId · message @trace.TurnMessageId</p>
+            @if (Elapsed is { } elapsed) { <p>Derived elapsed time: @elapsed.TotalMilliseconds.ToString("0") ms (matched source timestamps).</p> }
+            @if (trace.Redacted) { <p>Some content was redacted before storage.</p> }
+            @if (trace.Truncated) { <p>Content was truncated to the recorded limit.</p> }
+            @if (trace.FailureCode is not null) { <p>Failure code: @trace.FailureCode</p> }
+            @if (trace.ArgumentsJson is not null) { <strong>Arguments</strong><pre>@trace.ArgumentsJson</pre> }
+            @if (trace.Result is not null) { <strong>Result received</strong><pre>@trace.Result</pre><p>A result alone does not confirm the business operation succeeded.</p> }
+            @if (trace.DetailsJson is not null) { <strong>Recorded details</strong><pre>@trace.DetailsJson</pre> }
+            @if (trace.ArgumentsJson is null && trace.Result is null && trace.DetailsJson is null) { <p>Additional details were not provided by this daemon.</p> }
+            <button type="button" class="chat-secondary-button" @onclick="Copy">Copy recorded details</button><span role="status">@_copyStatus</span>
+        }
+    </div>
+</details>
+
+@code {
+    [Parameter, EditorRequired] public InvestigationEventDto Event { get; set; } = default!;
+    [Parameter] public IReadOnlyList<InvestigationEventDto> Events { get; set; } = [];
+    [Parameter] public ChatDisplayOptions Display { get; set; } = new();
+    private string? _copyStatus;
+    private DateTimeOffset Time => Event.Trace?.SourceTimestampUtc ?? Event.CreatedAtUtc;
+    private string TimeLabel => $"{Time.UtcDateTime:yyyy-MM-dd HH:mm:ss.fff} UTC · {(Event.Trace?.SourceTimestampUtc is null ? "received time; source time unavailable" : "daemon source time")}";
+    private TimeSpan? Elapsed
+    {
+        get
+        {
+            if (Event.Type != "tool_result" || Event.CallId is null || Event.Trace is not { SourceTimestampUtc: { } end, TurnMessageId: not null } trace) return null;
+            var matches = Events.Where(x => x.CallId == Event.CallId && x.Trace?.SessionId == trace.SessionId && x.Trace.TurnMessageId == trace.TurnMessageId).ToArray();
+            var starts = matches.Where(x => x.Type == "tool_call").ToArray();
+            return starts.Length == 1 && matches.Count(x => x.Type == "tool_result") == 1 && starts[0].Sequence < Event.Sequence && starts[0].Trace?.SourceTimestampUtc is { } start && end >= start ? end - start : null;
+        }
+    }
+    private async Task Copy()
+    {
+        try { await JS.InvokeVoidAsync("navigator.clipboard.writeText", System.Text.Json.JsonSerializer.Serialize(Event.Trace, new System.Text.Json.JsonSerializerOptions { WriteIndented = true })); _copyStatus = "Copied"; }
+        catch (JSException) { _copyStatus = "Select the recorded text and copy it manually."; }
+    }
+}

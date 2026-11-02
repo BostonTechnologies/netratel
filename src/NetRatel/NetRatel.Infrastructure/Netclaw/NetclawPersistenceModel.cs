@@ -40,6 +40,9 @@ public sealed class AiInvestigationRecord
     public bool Automated { get; set; }
     public DateTimeOffset LastActivityUtc { get; set; }
     public DateTimeOffset? LastTransportActivityAtUtc { get; set; }
+    public int? RemoteTurnCountBeforeSend { get; set; }
+    public DateTimeOffset? LastRecoveryAttemptAtUtc { get; set; }
+    public string? RecoverySummary { get; set; }
     public string CreatedBy { get; set; } = string.Empty;
 }
 
@@ -54,6 +57,7 @@ public sealed class AiInvestigationEventRecord
     public string? Actor { get; set; }
     public string? CallId { get; set; }
     public string? OptionsJson { get; set; }
+    public string? TraceJson { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; }
 }
 
@@ -88,6 +92,7 @@ public static class NetclawPersistenceModel
             entity.Property(x => x.SourceActionKey).HasMaxLength(256); entity.Property(x => x.RemoteSessionId).HasMaxLength(256);
             entity.Property(x => x.ProfileFingerprint).HasMaxLength(64); entity.Property(x => x.CreatedBy).HasMaxLength(256);
             entity.Property(x => x.ActiveCredentialId).HasMaxLength(256);
+            entity.Property(x => x.RecoverySummary).HasMaxLength(2000);
             entity.HasIndex(x => new { x.TenantId, x.RequestId }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.SourceActionKey }).IsUnique().HasFilter("\"SourceActionKey\" IS NOT NULL");
             entity.HasIndex(x => new { x.TenantId, x.LastActivityUtc });
@@ -98,6 +103,7 @@ public static class NetclawPersistenceModel
             entity.ToTable("AiInvestigationEvents"); entity.HasKey(x => x.Id);
             entity.Property(x => x.Type).HasMaxLength(64); entity.Property(x => x.Actor).HasMaxLength(256);
             entity.Property(x => x.CallId).HasMaxLength(256); entity.Property(x => x.OptionsJson).HasColumnType("jsonb");
+            entity.Property(x => x.TraceJson).HasColumnType("jsonb");
             entity.HasIndex(x => new { x.InvestigationId, x.Sequence }).IsUnique();
             entity.HasIndex(x => new { x.InvestigationId, x.MessageId }).IsUnique().HasFilter("\"MessageId\" IS NOT NULL");
             entity.HasOne<AiInvestigationRecord>().WithMany().HasForeignKey(x => x.InvestigationId).OnDelete(DeleteBehavior.Cascade);

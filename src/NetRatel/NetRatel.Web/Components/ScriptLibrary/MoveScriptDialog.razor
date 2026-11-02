@@ -1,0 +1,63 @@
+@using NetRatel.Shared.Contracts.Scripts
+
+<MudDialog>
+    <DialogContent>
+        <MudText Typo="Typo.body2">Current folder: @_currentFolder</MudText>
+        <MudSwitch T="bool" @bind-Value="_newFolder" Label="New folder / path" Disabled="_moving" />
+        @if (_newFolder)
+        {
+            <MudTextField T="string" @bind-Value="_destination" Label="Destination folder" Immediate="true"
+                MaxLength="@ScriptLibraryPlacement.MaximumFolderLength" Disabled="_moving" HelperText="Use / for root or a nested path such as /Linux/disk/." />
+        }
+        else
+        {
+            <MudAutocomplete T="string" @bind-Value="_destination" Label="Destination folder" SearchFunc="Search"
+                Strict="true" CoerceValue="false" MinCharacters="0" MaxItems="100" Disabled="_moving" />
+        }
+        <MudText Typo="Typo.caption" aria-live="polite">Destination: @Preview</MudText>
+        <MudText Typo="Typo.caption">Only placement is saved. Unsaved name and content stay in your editor.</MudText>
+        @if (_error is not null)
+        {
+            <MudAlert Severity="Severity.Error" Dense="true" role="alert">@_error</MudAlert>
+            @if (ReloadSaved is not null) { <MudButton OnClick="Reload" Disabled="_moving">Reload saved details; keep draft</MudButton> }
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel" Disabled="_moving">Cancel</MudButton>
+        <MudButton OnClick="Move" Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_moving || !CanMove)">@(_moving ? "Moving…" : "Move")</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string CurrentFolder { get; set; } = "/";
+    [Parameter] public IReadOnlyList<string> ExistingFolders { get; set; } = [];
+    [Parameter, EditorRequired] public Func<string, Task> MoveScript { get; set; } = default!;
+    [Parameter] public Func<Task<string>>? ReloadSaved { get; set; }
+    private string? _destination;
+    private string _currentFolder = "/";
+    private bool _newFolder, _moving;
+    private string? _error;
+    protected override void OnInitialized() { _currentFolder = CurrentFolder; _destination = CurrentFolder; }
+    private string Preview { get { try { return ScriptLibraryPlacement.NormalizeFolder(_destination); } catch (ArgumentException ex) { return ex.Message; } } }
+    private bool CanMove { get { try { return !string.IsNullOrWhiteSpace(_destination) && ScriptLibraryPlacement.NormalizeFolder(_destination) != _currentFolder; } catch (ArgumentException) { return false; } } }
+    private Task<IEnumerable<string>> Search(string? text, CancellationToken ct) => Task.FromResult(
+        ExistingFolders.Prepend("/").Distinct(StringComparer.OrdinalIgnoreCase).Where(x => string.IsNullOrWhiteSpace(text) || x.Contains(text, StringComparison.OrdinalIgnoreCase)));
+    private async Task Move()
+    {
+        if (_moving || !CanMove) return;
+        _moving = true; _error = null;
+        try { await MoveScript(ScriptLibraryPlacement.NormalizeFolder(_destination)); MudDialog.Close(DialogResult.Ok(true)); }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _moving = false; }
+    }
+    private void Cancel() => MudDialog.Cancel();
+    private async Task Reload()
+    {
+        if (ReloadSaved is null || _moving) return;
+        _moving = true;
+        try { _currentFolder = await ReloadSaved(); _error = null; }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _moving = false; }
+    }
+}

@@ -34,7 +34,9 @@ public sealed record McpOperatorScriptDraftV2(
     int TimeoutSeconds,
     string WorkingDirectory,
     IReadOnlyList<int> DeclaredSideEffects,
-    string? ManifestJson = null);
+    string? ManifestJson = null,
+    string? FolderPath = null,
+    long? ExpectedSourceRevision = null);
 
 /// <summary>
 /// A constrained V2 script-library mutation. The permitted field combination
@@ -214,7 +216,9 @@ public sealed class McpOperatorScriptV2Client(INetRatelMcpOutboundClient client)
             ["timeoutSeconds"] = draft.TimeoutSeconds,
             ["workingDirectory"] = workingDirectory,
             ["declaredSideEffects"] = sideEffects,
-            ["manifestJson"] = NormalizeOptionalManifest(draft.ManifestJson)
+            ["manifestJson"] = NormalizeOptionalManifest(draft.ManifestJson),
+            ["folderPath"] = draft.FolderPath,
+            ["expectedSourceRevision"] = draft.ExpectedSourceRevision
         };
     }
 

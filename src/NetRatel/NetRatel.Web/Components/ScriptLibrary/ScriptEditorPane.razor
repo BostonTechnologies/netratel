@@ -25,7 +25,14 @@
                     <MudChip T="string" Variant="Variant.Outlined" Color="Color.Warning" Size="Size.Small">unsaved</MudChip>
                 }
             </div>
-            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="script-editor-location">@Draft.Saved.FolderPath · updated @Draft.Saved.UpdatedAt.ToLocalTime().ToString("g")</MudText>
+            <div class="script-editor-location">
+                @if (CanEdit)
+                {
+                    <MudTooltip Text="Move script"><MudIconButton Icon="@Icons.Material.Filled.DriveFileMove" Size="Size.Small"
+                        OnClick="MoveAsync" Disabled="@Draft.Busy" aria-label="Move script" /></MudTooltip>
+                }
+                <span>@Draft.Saved.FolderPath · updated @Draft.Saved.UpdatedAt.ToLocalTime().ToString("g")</span>
+            </div>
         </div>
         <div class="script-editor-actions">
             @if (CanEdit)
@@ -63,6 +70,7 @@
     [Parameter] public bool FullScreen { get; set; }
     [Parameter] public bool AutoFocus { get; set; }
     [Parameter] public EventCallback SaveRequested { get; set; }
+    [Parameter] public EventCallback MoveRequested { get; set; }
     [Parameter] public Func<Task<bool>>? DeleteRequested { get; set; }
     [Parameter] public EventCallback Deleted { get; set; }
     [Parameter] public EventCallback ToggleFullScreen { get; set; }
@@ -121,6 +129,13 @@
     {
         if (!CanEdit || Draft.Busy || DeleteRequested is null) return;
         if (await DeleteRequested()) await Deleted.InvokeAsync();
+    }
+
+    private async Task MoveAsync()
+    {
+        if (!CanEdit || Draft.Busy) return;
+        await CaptureContentAsync();
+        if (!_disposed) await MoveRequested.InvokeAsync();
     }
 
     private async Task ToggleFullScreenAsync()

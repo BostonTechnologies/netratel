@@ -1,5 +1,6 @@
 using System.Net;
 using Bunit;
+using MudBlazor.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Shared.Contracts.Netclaw;
@@ -16,6 +17,7 @@ public sealed class NetclawChatTests : AsyncBunitContext
 
     public NetclawChatTests()
     {
+        Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
         Services.AddSingleton<INetclawApiService>(api);
         JSInterop.Mode = JSRuntimeMode.Loose;
         JSInterop.SetupModule("./js/netclaw-chat.js");

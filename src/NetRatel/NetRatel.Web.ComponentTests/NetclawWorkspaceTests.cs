@@ -1,5 +1,6 @@
 using System.Net;
 using Bunit;
+using MudBlazor.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Shared.Contracts.Netclaw;
@@ -13,7 +14,7 @@ namespace NetRatel.Web.ComponentTests;
 public sealed class NetclawWorkspaceTests : AsyncBunitContext
 {
     private readonly WorkspaceApi api = new();
-    public NetclawWorkspaceTests() { Services.AddSingleton<INetclawApiService>(api); }
+    public NetclawWorkspaceTests() { Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false); Services.AddSingleton<INetclawApiService>(api); JSInterop.Mode = JSRuntimeMode.Loose; }
 
     [Fact]
     public async Task Pairing_uses_expected_revision_and_clears_code_when_saved_verification_fails()
@@ -46,7 +47,7 @@ public sealed class NetclawWorkspaceTests : AsyncBunitContext
         Assert.Contains("Existing evidence", cut.Markup); Assert.True(cut.Find("textarea").HasAttribute("disabled"));
         Assert.Single(api.Messages);
         await cut.FindAll("button").Single(x => x.TextContent == "Retry same request").ClickAsync(new());
-        await cut.WaitForAssertionAsync(() => Assert.Contains("Request saved", cut.Markup));
+        await cut.WaitForAssertionAsync(() => Assert.Contains("Message saved", cut.Markup));
         Assert.Equal(2, api.Messages.Count); Assert.Equal(api.Messages[0], api.Messages[1]);
         Assert.Contains("Investigate the selected worker", cut.Markup);
         Assert.DoesNotContain("Synthetic interrupted request", cut.Markup);

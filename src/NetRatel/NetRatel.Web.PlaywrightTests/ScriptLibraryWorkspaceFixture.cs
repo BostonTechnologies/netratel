@@ -13,12 +13,25 @@ internal sealed class ScriptLibraryWorkspaceFixture : HttpMessageHandler, IHttpC
         new(12, "Settings.json", "/configuration/", "Stored configuration", "{\"enabled\":true}", "Json", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)
     ];
     public CreateScriptRequest? LastCreate { get; private set; }
+    public UpdateScriptRequest? LastUpdate { get; private set; }
     public void Register(IServiceCollection services) => services.AddSingleton(new ScriptLibraryClient(this));
     public HttpClient CreateClient(string name) => new(this, disposeHandler: false) { BaseAddress = new Uri("https://script-fixture.invalid") };
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         if (request.Method == HttpMethod.Get)
-            return new(HttpStatusCode.OK) { Content = JsonContent.Create(_scripts) };
+            return new(HttpStatusCode.OK) { Content = ulong.TryParse(request.RequestUri!.Segments.Last(), out var requestedId)
+                ? JsonContent.Create(_scripts.Single(x => x.Id == requestedId)) : JsonContent.Create(_scripts) };
+        if (request.Method == HttpMethod.Put)
+        {
+            LastUpdate = (await request.Content!.ReadFromJsonAsync<UpdateScriptRequest>(cancellationToken))!;
+            var id = ulong.Parse(request.RequestUri!.Segments.Last());
+            var index = _scripts.FindIndex(x => x.Id == id); var saved = _scripts[index];
+            if (LastUpdate.ExpectedSourceRevision != saved.SourceRevision)
+                return new(HttpStatusCode.Conflict) { Content = JsonContent.Create(new { remediation = "Reload saved details before retrying." }) };
+            _scripts[index] = saved with { FolderPath = LastUpdate.FolderPath ?? saved.FolderPath, Name = LastUpdate.Name ?? saved.Name,
+                Content = LastUpdate.Content ?? saved.Content, SourceRevision = saved.SourceRevision + 1, UpdatedAt = DateTimeOffset.UtcNow };
+            return new(HttpStatusCode.OK) { Content = JsonContent.Create(new { id, sourceRevision = _scripts[index].SourceRevision }) };
+        }
         if (request.Method == HttpMethod.Post)
         {
             LastCreate = await request.Content!.ReadFromJsonAsync<CreateScriptRequest>(cancellationToken);

@@ -21,7 +21,8 @@ public static class AppBarVersionResolver
             DisplayVersion: FormatProductVersion(value),
             FullVersion: value.Trim(),
             Source: assemblyVersion is null ? "Fallback" : "AssemblyInformationalVersion",
-            AssemblyVersion: assembly?.GetName().Version?.ToString() ?? "unknown");
+            AssemblyVersion: assembly?.GetName().Version?.ToString() ?? "unknown",
+            Provenance: NetRatel.Shared.Contracts.ReleaseProvenance.Read(assembly, value));
     }
 
     private static string? ResolveAssemblyVersion(Assembly? assembly)
@@ -62,4 +63,5 @@ public sealed record AppBarVersionDetails(
     string DisplayVersion,
     string FullVersion,
     string Source,
-    string AssemblyVersion);
+    string AssemblyVersion,
+    NetRatel.Shared.Contracts.ReleaseProvenance? Provenance = null);

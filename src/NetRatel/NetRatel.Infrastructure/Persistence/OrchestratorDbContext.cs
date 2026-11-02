@@ -603,6 +603,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entity.Property(x => x.ParametersJson).HasColumnType("jsonb").IsRequired();
             entity.Property(x => x.WorkingDirectory).HasMaxLength(4096).IsRequired();
             entity.Property(x => x.DeclaredSideEffectsJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(x => x.FolderPath).HasMaxLength(512);
             entity.HasIndex(x => new { x.ScriptRecordId, x.ScriptVersion }).IsUnique();
             entity.HasIndex(x => new { x.ScriptId, x.OccurredAtUtc });
             entity.HasOne<McpOperatorScriptRecord>()
