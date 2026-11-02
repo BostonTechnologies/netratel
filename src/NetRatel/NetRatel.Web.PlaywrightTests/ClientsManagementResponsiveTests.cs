@@ -106,6 +106,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
         await AssertHorizontallyReachableAsync(action, "runtime download action", width.ToString());
         await AssertHorizontallyReachableAsync(details.Locator(".release-details-card h3").First, "long runtime filename", width.ToString());
         await AssertHorizontallyReachableAsync(details.GetByRole(AriaRole.Link).First, "tenant blocker resolution", width.ToString());
+        Assert.True(await page.GetByTestId("github-release-table").Locator(".mud-table-container").EvaluateAsync<bool>("element => element.scrollWidth <= element.clientWidth + 1"), "Release rows must reflow without an inner horizontal scroll area.");
         await page.EvaluateAsync("() => window.scrollTo(0, 0)");
         var directory = GetPlaywrightArtifactRoot(); Directory.CreateDirectory(directory);
         await page.ScreenshotAsync(new() { Path = Path.Combine(directory, $"release-assets-{width}-{(dark ? "dark" : "light")}.png"), FullPage = true });

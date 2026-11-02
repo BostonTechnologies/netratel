@@ -1,11 +1,12 @@
 @using NetRatel.Web.Services
+<MudText Typo="Typo.caption">Runtimes: @string.Join(", ", Plan.RuntimeIds)</MudText>
 <MudText Typo="Typo.caption">All runtimes · @Plan.ReleaseIds.Length update records · @Plan.ImportIds.Length imports · @Plan.UploadStagingIds.Length staged uploads. @Plan.HistoricalAttempts historical attempts and cleanup receipts are retained.</MudText>
 @foreach (var blocker in Plan.Dependencies)
 {
     <section class="cleanup-dependency" data-testid="cleanup-dependency">
         <strong>@blocker.Message</strong>
         <span>@blocker.RuntimeId @blocker.State @blocker.VersionRole</span>
-        @if (blocker.TenantId is not null) { <span>Tenant @blocker.TenantId · Client @blocker.AgentId</span> }
+        @if (blocker.TenantId is not null) { <span>Tenant @blocker.TenantId @if (blocker.AgentId is not null) { <span>· Client @blocker.AgentId</span> }</span> }
         @if (blocker.ReferenceId is not null) { <span>Reference <code>@blocker.ReferenceId</code></span> }
         @if (blocker.EvidenceAtUtc is not null) { <span>Evidence / expiry @blocker.EvidenceAtUtc.Value.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'")</span> }
         @if (blocker.CanResolve && blocker.Code != "runtime_enabled")

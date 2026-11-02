@@ -56,3 +56,11 @@
   .client-github-table ::deep .mud-table-cell[data-label="Actions"] > .release-cell-content { flex:1 1 0; width:auto; max-width:100%; min-width:0; }
   .release-actions { justify-content:flex-start; width:100%; }
 }
+@media(max-width:600px) {
+  .client-github-table ::deep .mud-table-cell { display:grid; grid-template-columns:minmax(0,32%) minmax(0,1fr); gap:.5rem; width:100%; box-sizing:border-box; }
+  .client-github-table ::deep .mud-table-cell::before { min-width:0; padding:0; white-space:normal; overflow-wrap:anywhere; }
+  .release-cell-content { width:auto; min-width:0; }
+  .client-github-table ::deep .mud-table-cell[data-label="Actions"] > .release-cell-content { width:auto; min-width:0; }
+  .release-actions { width:auto; justify-content:flex-start; gap:.125rem; }
+  .release-actions ::deep .mud-tooltip-root, .release-actions ::deep .mud-menu { flex:0 0 auto; max-width:100%; }
+}
