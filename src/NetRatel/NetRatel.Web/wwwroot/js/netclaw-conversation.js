@@ -69,5 +69,6 @@ export function setFullscreen(surface, enabled, reference) {
     document.body.style.overflow = "hidden";
     document.addEventListener("keydown", keydown);
     document.addEventListener("focusin", focusin);
-    requestAnimationFrame(() => surface.querySelector('[data-testid="conversation-fullscreen"]')?.focus({ preventScroll: true }));
+    if (!surface.contains(document.activeElement))
+        surface.querySelector('[data-testid="conversation-fullscreen"]')?.focus({ preventScroll: true });
 }
