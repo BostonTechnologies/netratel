@@ -74,6 +74,12 @@
                 </div>
             }
         }
+        @if (Snapshot.Investigation.State == InvestigationState.Idle && Snapshot.Recovery is { Summary: { Length: > 0 } } recovered)
+        {
+            <div class="chat-notice chat-recovery" role="status"><div><strong>Recovery result</strong><p>@recovered.Summary</p>
+                @if (recovered.LastAttemptAtUtc is { } attempted) { <small>Last recovery attempt: @attempted.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss 'UTC'")</small> }
+            </div></div>
+        }
         @if (Snapshot.Investigation.State == InvestigationState.DeliveryUnknown)
         {
             <div class="chat-notice chat-recovery" role="status"><div><strong>Conversation outcome unconfirmed</strong><p>@(Snapshot.Recovery?.Summary ?? "Recover the saved session to check admission and completion evidence. A connected daemon does not establish completion of this conversation.")</p>

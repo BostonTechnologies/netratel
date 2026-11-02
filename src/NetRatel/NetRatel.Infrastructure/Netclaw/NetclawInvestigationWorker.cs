@@ -327,6 +327,9 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
                         if (owner.Draft.Length > 0) InvestigationStore.Append(db, row, "assistant", owner.Draft);
                         owner.ClearDraft(); row.State = InvestigationState.Idle;
                         var failed = Value(output, "turnOutcome") is { } outcome && !string.Equals(outcome, "completed", StringComparison.OrdinalIgnoreCase);
+                        if (row.LastRecoveryAttemptAtUtc is not null)
+                            row.RecoverySummary = failed ? "The resumed session reported a non-success terminal event. Review the recorded outcome before continuing."
+                                : "The resumed session reported completion. Review the recorded evidence for individual tool outcomes before continuing.";
                         InvestigationStore.Append(db, row, "turn_completed", failed ? "The remote turn ended with a non-success outcome." : "Investigation turn completed.",
                             trace: NetclawTraceMapper.Map(output, owner.SessionId, row.ActiveMessageId, owner.Profile.DeviceToken));
                         await InvestigationStore.StageTurnResultAsync(db, row, failed ? FlowAiResultStatus.Failed : FlowAiResultStatus.Completed, clock.GetUtcNow(), stopping,

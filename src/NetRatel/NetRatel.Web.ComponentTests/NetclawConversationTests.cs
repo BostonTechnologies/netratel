@@ -19,6 +19,18 @@ public sealed class NetclawConversationTests : AsyncBunitContext
     }
 
     [Fact]
+    public void Recovered_terminal_count_keeps_business_outcome_uncertainty_visible_when_continuation_is_ready()
+    {
+        var now = DateTimeOffset.UtcNow;
+        const string summary = "The remote turn ended. Historical success/failure is unavailable; verify side effects before continuing.";
+        var snapshot = new InvestigationSnapshotDto(new(Guid.NewGuid(), 17, "Recovered conversation", InvestigationState.Idle, [], null, null, now, "operator"),
+            0, null, [], [], [], Recovery: new(now, summary));
+        var cut = Render<NetclawConversation>(p => p.Add(x => x.Snapshot, snapshot).Add(x => x.CanEditMessage, true).Add(x => x.CanInvestigate, true));
+        Assert.Contains(summary, cut.Find(".chat-recovery").TextContent);
+        Assert.False(cut.Find("textarea").HasAttribute("disabled"));
+    }
+
+    [Fact]
     public async Task Fullscreen_stays_on_same_shared_surface_with_draft_trace_and_read_only_authority()
     {
         var id = Guid.NewGuid(); var now = DateTimeOffset.UtcNow;
