@@ -53,6 +53,19 @@ public sealed class NetclawConversationTests : AsyncBunitContext
     }
 
     [Fact]
+    public void Attachment_limitation_is_visible_without_fabricating_a_recovery_attempt()
+    {
+        var now = DateTimeOffset.UtcNow;
+        const string summary = "A terminal event alone cannot confirm this message without a turn snapshot.";
+        var snapshot = new InvestigationSnapshotDto(new(Guid.NewGuid(), 17, "Attached session", InvestigationState.Processing, [], null, null, now, "operator"),
+            0, Guid.NewGuid(), [], [], [], Recovery: new(null, summary));
+        var cut = Render<NetclawConversation>(p => p.Add(x => x.Snapshot, snapshot));
+        Assert.Contains("Session status", cut.Find(".chat-recovery").TextContent);
+        Assert.Contains(summary, cut.Find(".chat-recovery").TextContent);
+        Assert.DoesNotContain("Last recovery attempt:", cut.Find(".chat-recovery").TextContent);
+    }
+
+    [Fact]
     public async Task Fullscreen_stays_on_same_shared_surface_with_draft_trace_and_read_only_authority()
     {
         var id = Guid.NewGuid(); var now = DateTimeOffset.UtcNow;

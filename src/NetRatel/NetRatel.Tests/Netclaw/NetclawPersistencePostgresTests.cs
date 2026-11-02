@@ -178,9 +178,19 @@ public sealed class NetclawPersistencePostgresTests(PostgreSqlPersistenceFixture
             }
             Assert.DoesNotContain("New default for future sessions", later.Text);
             Assert.Equal(first.SessionId, later.SessionId);
+            await daemon.Output!(JsonSerializer.SerializeToElement(new { type = "turn_completed", sessionId = later.SessionId, turnNumber = 99, turnOutcome = "completed" }));
+            await daemon.TurnClosed.Reader.ReadAsync(deadline.Token);
             await using var check = new OrchestratorDbContext(options);
             var contexts = await check.Set<AiInvestigationContextRecord>().AsNoTracking().OrderBy(x => x.PreparedAtUtc).ToListAsync();
             Assert.Equal(2, contexts.Count); Assert.Equal(first.Text, contexts[0].Request); Assert.Equal(later.Text, contexts[1].Request);
+            var unresolved = await check.AiInvestigations.AsNoTracking().SingleAsync(x => x.Id == id);
+            Assert.Equal(InvestigationState.DeliveryUnknown, unresolved.State);
+            Assert.Contains("exact message", unresolved.RecoverySummary);
+            Assert.Null(unresolved.LastRecoveryAttemptAtUtc);
+            Assert.Single(await check.AiInvestigationEvents.Where(x => x.InvestigationId == id && x.Type == "turn_completed").ToListAsync());
+            var saved = await new InvestigationStore(check, TimeProvider.System).LoadAsync(17, id, 0, default);
+            Assert.NotNull(saved.Recovery?.Summary); Assert.Null(saved.Recovery.LastAttemptAtUtc);
+            Assert.Equal(2, daemon.Sends);
         }
         finally { await worker.StopAsync(default); }
     }
@@ -405,7 +415,7 @@ public sealed class NetclawPersistencePostgresTests(PostgreSqlPersistenceFixture
                 if (attachSnapshot) Assert.Equal(daemon.RecoveredReply, Assert.Single(snapshot.Events, item => item.Type == "assistant_recovered").Text);
                 else
                 {
-                    Assert.Empty(snapshot.Events.Where(item => item.Type is "assistant_recovered" or "turn_completed"));
+                    Assert.DoesNotContain(snapshot.Events, item => item.Type is "assistant_recovered" or "turn_completed");
                     Assert.NotEmpty(snapshot.Recovery!.Summary!);
                 }
                 Assert.NotNull(snapshot.Recovery?.LastAttemptAtUtc);

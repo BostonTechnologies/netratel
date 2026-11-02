@@ -82,7 +82,7 @@
         }
         @if (Snapshot.Investigation.State is not (InvestigationState.DeliveryUnknown or InvestigationState.Archived) && Snapshot.Recovery is { Summary: { Length: > 0 } } recovered)
         {
-            <div class="chat-notice chat-recovery" role="status"><div><strong>Recovery result</strong><p>@recovered.Summary</p>
+            <div class="chat-notice chat-recovery" role="status"><div><strong>@(recovered.LastAttemptAtUtc is null ? "Session status" : "Recovery result")</strong><p>@recovered.Summary</p>
                 @if (recovered.LastAttemptAtUtc is { } attempted) { <small>Last recovery attempt: @attempted.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss 'UTC'")</small> }
             </div></div>
         }

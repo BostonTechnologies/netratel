@@ -83,7 +83,7 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
             await ClientsAsync(tenantId, row.AgentIds, ct),
             approvals.Select(x => new InvestigationApprovalDto(x.CallId, Options(x.OptionsJson))).ToArray(),
             Prompts: InvestigationContextComposer.Prompts(row), SentContext: await LastContextAsync(id, row.ActiveMessageId, ct),
-            Recovery: row.LastRecoveryAttemptAtUtc is null ? null : new(row.LastRecoveryAttemptAtUtc, row.RecoverySummary));
+            Recovery: row.LastRecoveryAttemptAtUtc is null && row.RecoverySummary is null ? null : new(row.LastRecoveryAttemptAtUtc, row.RecoverySummary));
     }
 
     public async Task<bool> AcceptMessageAsync(int tenantId, Guid id, InvestigationMessageRequest request, string actor,

@@ -29,6 +29,9 @@ public sealed partial class NetclawInvestigationWorker
             throw new InvestigationConflictException("The investigation changed while the session attached.");
         if (row.State == InvestigationState.DeliveryUnknown)
             SetRecoverySummary(db, row, "recovery_protocol_limited", MissingSnapshotSummary);
+        else if (row.State == InvestigationState.Processing)
+            SetRecoverySummary(db, row, "attachment_protocol_limited",
+                "The session was attached without a fresh turn snapshot. A new explicit message can be sent, but a terminal event alone cannot confirm its exact outcome. Another console may have an older turn in progress. Check the daemon history if completion remains unconfirmed.");
         // EnsureSession with acknowledged admission permits a *new* explicit send.
         // It supplies neither historical admission nor a terminal outcome.
         await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);

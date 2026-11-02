@@ -32,6 +32,32 @@ namespace NetRatel.Tests.Infrastructure;
 public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixture postgres)
     : IClassFixture<PostgreSqlPersistenceFixture>
 {
+    [Theory]
+    [InlineData(null, FlowAiResultStatus.DeliveryUnknown)]
+    [InlineData("interrupted", FlowAiResultStatus.Failed)]
+    public async Task Native_terminal_without_success_evidence_never_stages_a_completed_ai_flow_result(string? outcome, FlowAiResultStatus expected)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var rig = await Rig.CreateAsync(postgres, withAi: true);
+        await rig.FireAsync();
+        Assert.True(await rig.Bridge.ProcessLeaseAsync(await rig.ClaimAsync(), deadline.Token));
+        Assert.True(await rig.Provider.GetRequiredService<FlowRunProcessor>().ProcessOneAsync(deadline.Token));
+        var worker = rig.Provider.GetRequiredService<NetclawInvestigationWorker>();
+        await worker.StartAsync(deadline.Token);
+        try
+        {
+            var sent = await rig.Daemon.Sent.Reader.ReadAsync(deadline.Token);
+            await rig.Daemon.EmitAsync(JsonSerializer.SerializeToElement(new { type = "turn_completed", sessionId = sent.SessionId, turnOutcome = outcome }));
+            await rig.Daemon.TurnClosed.Reader.ReadAsync(deadline.Token);
+            await using var scope = rig.Provider.CreateAsyncScope();
+            var result = await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().Set<AiInvestigationTurnResultRecord>().AsNoTracking().SingleAsync(deadline.Token);
+            Assert.Equal(expected, JsonSerializer.Deserialize<FlowAiResultDto>(result.ResultJson, new JsonSerializerOptions(JsonSerializerDefaults.Web))!.Status);
+            Assert.Equal(1, rig.Daemon.Sends);
+            Assert.Equal(0, rig.Dispatcher.Sends);
+        }
+        finally { await worker.StopAsync(default); }
+    }
+
     [Fact]
     public async Task Automated_ai_flow_sends_pinned_context_waits_through_approval_and_delivers_one_completed_enriched_incident()
     {

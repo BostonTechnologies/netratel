@@ -32,6 +32,7 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
         public NetclawRuntimeProfile Profile { get; } = profile;
         public Guid? MessageId { get; } = messageId;
         public string SessionId { get; set; } = string.Empty;
+        public bool Created { get; set; }
         public DateTimeOffset AuthenticatedAtUtc { get; set; }
         public Channel<SessionUpdate> Outputs { get; } = Channel.CreateBounded<SessionUpdate>(256);
         public CancellationTokenSource Lifetime { get; } = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
@@ -240,6 +241,7 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
                     throw new InvestigationConflictException("The investigation or connection changed while the session connected.");
                 binding.RemoteSessionId = joined.SessionId; binding.ProfileFingerprint = profile.ProfileFingerprint;
                 owner.SessionId = joined.SessionId;
+                owner.Created = joined.Created;
                 owner.AuthenticatedAtUtc = clock.GetUtcNow();
                 Interlocked.Exchange(ref owner.LastObservedTicks, owner.AuthenticatedAtUtc.UtcTicks);
                 await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
@@ -325,28 +327,36 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
                     case "text":
                         InvestigationStore.Append(db, row, "assistant", Value(output, "text") ?? owner.Draft); owner.ClearDraft(); break;
                     case "turn_completed":
-                        if (!(owner.SendStarted || owner.AdmissionProven && ProvesLiveRecoveryEnd(output, row.RemoteTurnCountBeforeSend)))
+                        if (!(owner.SendStarted && owner.Created ||
+                            (owner.SendStarted || owner.AdmissionProven) && ProvesLiveRecoveryEnd(output, row.RemoteTurnCountBeforeSend)))
                         {
                             owner.ClearDraft();
+                            if (owner.SendStarted && row.RemoteTurnCountBeforeSend is null)
+                            {
+                                row.State = InvestigationState.DeliveryUnknown;
+                                SetRecoverySummary(db, row, "delivery_unknown",
+                                    "The attached session reported a terminal event, but supplied no pre-send turn snapshot to associate it with this exact message. Its outcome remains unconfirmed. Check the daemon history and possible side effects before recovering or archiving. Nothing was resent.");
+                                await InvestigationStore.StageTurnResultAsync(db, row, FlowAiResultStatus.DeliveryUnknown, clock.GetUtcNow(), ct);
+                            }
                             break;
                         }
-                        // The native output contract has no local message ID. Correlation comes from this isolated first
-                        // automated session and its exact active owner/marker; unsupported remote fields add no authority.
+                        // The native output contract has no local message ID. Correlation comes from an isolated
+                        // first turn or matching snapshot/turn evidence; unsupported remote fields add no authority.
                         if (owner.Draft.Length > 0) InvestigationStore.Append(db, row, "assistant", owner.Draft);
                         owner.ClearDraft(); row.State = InvestigationState.Idle;
                         var outcome = Value(output, "turnOutcome");
                         var failed = outcome is not null && !string.Equals(outcome, "completed", StringComparison.OrdinalIgnoreCase);
-                        if (row.LastRecoveryAttemptAtUtc is not null)
+                        if (row.LastRecoveryAttemptAtUtc is not null || outcome is null)
                             row.RecoverySummary = outcome?.ToLowerInvariant() switch
                             {
                                 "completed" => "The exact resumed turn reported completion. Review the recorded evidence for individual tool outcomes before continuing.",
                                 "interrupted" => "The exact resumed turn was interrupted. Check possible side effects before starting another turn.",
-                                null => "The exact resumed turn ended, but its success/failure outcome is unavailable. Check possible side effects before continuing.",
+                                null => "The remote turn ended, but its success/failure outcome is unavailable. Check possible side effects before continuing.",
                                 _ => "The exact resumed turn reported a non-success terminal event. Review the recorded outcome before continuing."
                             };
-                        InvestigationStore.Append(db, row, "turn_completed", failed ? "The remote turn ended with a non-success outcome." : "Investigation turn completed.",
+                        InvestigationStore.Append(db, row, "turn_completed", outcome is null ? "The remote turn ended; its success/failure outcome was not provided." : failed ? "The remote turn ended with a non-success outcome." : "Investigation turn completed.",
                             trace: NetclawTraceMapper.Map(output, owner.SessionId, row.ActiveMessageId, owner.Profile.DeviceToken));
-                        await InvestigationStore.StageTurnResultAsync(db, row, owner.AdmissionProven && outcome is null ? FlowAiResultStatus.DeliveryUnknown : failed ? FlowAiResultStatus.Failed : FlowAiResultStatus.Completed, clock.GetUtcNow(), ct,
+                        await InvestigationStore.StageTurnResultAsync(db, row, outcome is null ? FlowAiResultStatus.DeliveryUnknown : failed ? FlowAiResultStatus.Failed : FlowAiResultStatus.Completed, clock.GetUtcNow(), ct,
                             Value(output, "summary"), Value(output, "evidence"), Value(output, "recommendations")); break;
                     case "tool_interaction":
                         var callId = Value(output, "callId");
@@ -394,7 +404,8 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
                             trace: NetclawTraceMapper.Map(output, owner.SessionId, row.ActiveMessageId, owner.Profile.DeviceToken)); break;
                 }
                 await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
-                if (type == "turn_completed" && row.State == InvestigationState.Idle) return;
+                if (type == "turn_completed" && (row.State == InvestigationState.Idle ||
+                    row.State == InvestigationState.DeliveryUnknown && owner.SendStarted && row.RemoteTurnCountBeforeSend is null)) return;
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { logger.LogDebug("Investigation output stopped."); owner.Retired = true; }
