@@ -24,14 +24,28 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
     private CancellationToken stopping;
     private volatile bool ready;
 
-    private sealed class SessionOwner(IAiAssistantChatClient client, NetclawRuntimeProfile profile, Guid? messageId)
+    private sealed record SessionUpdate(JsonElement? Output = null, SessionEnsureResult? Attachment = null);
+
+    private sealed class SessionOwner(IAiAssistantChatClient client, NetclawRuntimeProfile profile, Guid? messageId, CancellationToken stoppingToken)
     {
         public IAiAssistantChatClient Client { get; } = client;
         public NetclawRuntimeProfile Profile { get; } = profile;
         public Guid? MessageId { get; } = messageId;
         public string SessionId { get; set; } = string.Empty;
+        public bool Created { get; set; }
         public DateTimeOffset AuthenticatedAtUtc { get; set; }
-        public Channel<JsonElement> Outputs { get; } = Channel.CreateBounded<JsonElement>(256);
+        public Channel<SessionUpdate> Outputs { get; } = Channel.CreateBounded<SessionUpdate>(256);
+        public CancellationTokenSource Lifetime { get; } = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        private readonly object lifetimeLock = new();
+        private bool lifetimeDisposed;
+        public void Cancel()
+        {
+            lock (lifetimeLock) if (!lifetimeDisposed) Lifetime.Cancel();
+        }
+        public void DisposeLifetime()
+        {
+            lock (lifetimeLock) { Lifetime.Dispose(); lifetimeDisposed = true; }
+        }
         public Task Consumer { get; set; } = Task.CompletedTask;
         public TaskCompletionSource Joined { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public volatile bool Retired;
@@ -179,7 +193,7 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
         {
             logger.LogWarning("Netclaw message delivery unresolved for {InvestigationId}: {ExceptionType}", id, exception.GetType().Name);
             if (sendAttempted) await UnknownAsync(id, messageId, "Delivery could not be confirmed. Recover the existing session before taking another action.", ct);
-            else await NotSentAsync(id, messageId, "The message was saved but could not be sent. Check the Netclaw connection and send a new turn when ready.", ct);
+            else await NotSentAsync(id, messageId, exception is NetclawAttachmentException ? exception.Message : "The message was saved but could not be sent. Check the Netclaw connection and send a new turn when ready.", ct);
             await RetireAsync(id);
         }
     }
@@ -204,14 +218,14 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
                 await RetireAsync(id);
             }
             if (owners.Count >= 25) throw new InvestigationConflictException("The assistant is at connection capacity. Try again after another turn completes.");
-            var owner = new SessionOwner(clients.Create(profile), profile, row.ActiveMessageId);
+            var owner = new SessionOwner(clients.Create(profile), profile, row.ActiveMessageId, stopping);
             try
             {
                 var joined = await owner.Client.ConnectAsync(row.RemoteSessionId, output =>
                 {
                     if (owner.Retired) return Task.CompletedTask;
                     Interlocked.Exchange(ref owner.LastObservedTicks, clock.GetUtcNow().UtcTicks);
-                    if (!owner.Outputs.Writer.TryWrite(output.Clone())) owner.Overflowed = true;
+                    if (!owner.Outputs.Writer.TryWrite(new(Output: output.Clone()))) owner.Overflowed = true;
                     return Task.CompletedTask;
                 }, ct);
                 if (string.IsNullOrWhiteSpace(joined.SessionId) || joined.SessionId.Length > 256 || owner.Overflowed ||
@@ -227,35 +241,19 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
                     throw new InvestigationConflictException("The investigation or connection changed while the session connected.");
                 binding.RemoteSessionId = joined.SessionId; binding.ProfileFingerprint = profile.ProfileFingerprint;
                 owner.SessionId = joined.SessionId;
+                owner.Created = joined.Created;
                 owner.AuthenticatedAtUtc = clock.GetUtcNow();
                 Interlocked.Exchange(ref owner.LastObservedTicks, owner.AuthenticatedAtUtc.UtcTicks);
                 await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+                // Serialize the RPC result after any initial snapshot. This is local
+                // attachment evidence, never a fabricated daemon output or turn end.
+                if (!owner.Outputs.Writer.TryWrite(new(Attachment: joined)))
+                    throw new InvestigationConflictException("The session output exceeded its bounded buffer.");
                 owners[id] = owner; owner.Consumer = ConsumeAsync(id, owner); return owner;
             }
-            catch { owner.Retired = true; await owner.Client.DisposeAsync(); throw; }
+            catch { owner.Retired = true; owner.DisposeLifetime(); await owner.Client.DisposeAsync(); throw; }
         }
         finally { acquisition.Release(); }
-    }
-
-    public async Task ReconcileAsync(int tenantId, Guid id, string actor, CancellationToken ct)
-    {
-        await using var scope = scopes.CreateAsyncScope(); var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
-        await using (var tx = await db.Database.BeginTransactionAsync(ct))
-        {
-            var row = await db.Set<AiInvestigationRecord>().FromSqlInterpolated($"SELECT * FROM \"AiInvestigations\" WHERE \"TenantId\" = {tenantId} AND \"Id\" = {id} FOR UPDATE").SingleOrDefaultAsync(ct)
-                ?? throw new KeyNotFoundException("Investigation not found.");
-            if (row.State != InvestigationState.DeliveryUnknown || row.RemoteSessionId is null)
-                throw new InvestigationConflictException("Only an unresolved turn with a saved remote session can be recovered.");
-            if (row.LastRecoveryAttemptAtUtc is { } last && clock.GetUtcNow() - last < TimeSpan.FromSeconds(30)) return;
-            row.LastRecoveryAttemptAtUtc = clock.GetUtcNow();
-            if (row.RecoverySummary is null)
-                InvestigationStore.Append(db, row, "recovery_requested", "Operator requested session history without resending the message.", actor);
-            await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
-        }
-        await RetireAsync(id);
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(TimeSpan.FromSeconds(30));
-        var owner = await GetAsync(tenantId, id, timeout.Token);
-        await owner.Joined.Task.WaitAsync(timeout.Token);
     }
 
     public async Task RespondAsync(int tenantId, Guid id, Guid messageId, string callId, string key, string actor, string? credential, CancellationToken ct)
@@ -285,19 +283,27 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
 
     private async Task ConsumeAsync(Guid id, SessionOwner owner)
     {
+        var ct = owner.Lifetime.Token;
         try
         {
-            await foreach (var output in owner.Outputs.Reader.ReadAllAsync(stopping))
+            await foreach (var update in owner.Outputs.Reader.ReadAllAsync(ct))
             {
                 if (owner.Retired) return;
-                if (owner.Overflowed || Value(output, "type") == "transport_closed") throw new IOException("Netclaw transport interrupted.");
+                if (owner.Overflowed) throw new IOException("Netclaw output buffer overflowed.");
+                if (update.Attachment is { } attachment)
+                {
+                    await ConfirmAttachmentAsync(id, owner, attachment, ct);
+                    continue;
+                }
+                var output = update.Output!.Value;
+                if (Value(output, "type") == "transport_closed") throw new IOException("Netclaw transport interrupted.");
                 if (Value(output, "sessionId") != owner.SessionId) continue;
                 var type = Value(output, "type");
-                if (type == "text_delta") { owner.AddDraft(Value(output, "text")); continue; }
+                if (type == "text_delta") { if (owner.SendStarted || owner.AdmissionProven) owner.AddDraft(Value(output, "text")); continue; }
                 if (type is "thinking" or "thinking_delta") continue;
                 await using var scope = scopes.CreateAsyncScope(); var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
-                await using var tx = await db.Database.BeginTransactionAsync(stopping);
-                var row = await db.Set<AiInvestigationRecord>().FromSqlInterpolated($"SELECT * FROM \"AiInvestigations\" WHERE \"Id\" = {id} FOR UPDATE").SingleAsync(stopping);
+                await using var tx = await db.Database.BeginTransactionAsync(ct);
+                var row = await db.Set<AiInvestigationRecord>().FromSqlInterpolated($"SELECT * FROM \"AiInvestigations\" WHERE \"Id\" = {id} FOR UPDATE").SingleAsync(ct);
                 if (row.ActiveMessageId != owner.MessageId || row.RemoteSessionId != owner.SessionId || row.ProfileFingerprint != owner.Profile.ProfileFingerprint) continue;
                 if (row.State == InvestigationState.Archived) { owner.Joined.TrySetResult(); continue; }
                 if (type == "session_joined")
@@ -305,12 +311,12 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
                     if (row.State == InvestigationState.DeliveryUnknown)
                     {
                         owner.AdmissionProven = ProvesAdmission(output, id, row.ActiveMessageId);
-                        await ReconcileHistoryAsync(db, row, output, owner.AdmissionProven);
+                        await ReconcileHistoryAsync(db, row, output, owner.AdmissionProven, ct);
                     }
                     else if (row.State == InvestigationState.Processing && !owner.SendStarted)
                         row.RemoteTurnCountBeforeSend = TurnCount(output);
                     row.LastTransportActivityAtUtc = clock.GetUtcNow();
-                    await db.SaveChangesAsync(stopping); await tx.CommitAsync(stopping); owner.Joined.TrySetResult(); continue;
+                    await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); owner.Joined.TrySetResult(); continue;
                 }
                 if (row.State == InvestigationState.DeliveryUnknown && !owner.AdmissionProven ||
                     row.State is InvestigationState.Idle or InvestigationState.Queued) continue;
@@ -321,28 +327,47 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
                     case "text":
                         InvestigationStore.Append(db, row, "assistant", Value(output, "text") ?? owner.Draft); owner.ClearDraft(); break;
                     case "turn_completed":
-                        if (!(owner.SendStarted || owner.AdmissionProven)) break;
-                        // The native output contract has no local message ID. Correlation comes from this isolated first
-                        // automated session and its exact active owner/marker; unsupported remote fields add no authority.
+                        if (!(owner.SendStarted && owner.Created ||
+                            (owner.SendStarted || owner.AdmissionProven) && ProvesLiveRecoveryEnd(output, row.RemoteTurnCountBeforeSend)))
+                        {
+                            owner.ClearDraft();
+                            if (owner.SendStarted && row.RemoteTurnCountBeforeSend is null)
+                            {
+                                row.State = InvestigationState.DeliveryUnknown;
+                                SetRecoverySummary(db, row, "delivery_unknown",
+                                    "The attached session reported a terminal event, but supplied no pre-send turn snapshot to associate it with this exact message. Its outcome remains unconfirmed. Check the daemon history and possible side effects before recovering or archiving. Nothing was resent.");
+                                await InvestigationStore.StageTurnResultAsync(db, row, FlowAiResultStatus.DeliveryUnknown, clock.GetUtcNow(), ct);
+                            }
+                            break;
+                        }
+                        // The native output contract has no local message ID. Correlation comes from an isolated
+                        // first turn or matching snapshot/turn evidence; unsupported remote fields add no authority.
                         if (owner.Draft.Length > 0) InvestigationStore.Append(db, row, "assistant", owner.Draft);
                         owner.ClearDraft(); row.State = InvestigationState.Idle;
-                        var failed = Value(output, "turnOutcome") is { } outcome && !string.Equals(outcome, "completed", StringComparison.OrdinalIgnoreCase);
-                        if (row.LastRecoveryAttemptAtUtc is not null)
-                            row.RecoverySummary = failed ? "The resumed session reported a non-success terminal event. Review the recorded outcome before continuing."
-                                : "The resumed session reported completion. Review the recorded evidence for individual tool outcomes before continuing.";
-                        InvestigationStore.Append(db, row, "turn_completed", failed ? "The remote turn ended with a non-success outcome." : "Investigation turn completed.",
+                        var outcome = Value(output, "turnOutcome");
+                        var failed = outcome is not null && !string.Equals(outcome, "completed", StringComparison.OrdinalIgnoreCase);
+                        if (row.LastRecoveryAttemptAtUtc is not null || outcome is null)
+                            row.RecoverySummary = outcome?.ToLowerInvariant() switch
+                            {
+                                "completed" => "The exact resumed turn reported completion. Review the recorded evidence for individual tool outcomes before continuing.",
+                                "interrupted" => "The exact resumed turn was interrupted. Check possible side effects before starting another turn.",
+                                null => "The remote turn ended, but its success/failure outcome is unavailable. Check possible side effects before continuing.",
+                                _ => "The exact resumed turn reported a non-success terminal event. Review the recorded outcome before continuing."
+                            };
+                        InvestigationStore.Append(db, row, "turn_completed", outcome is null ? "The remote turn ended; its success/failure outcome was not provided." : failed ? "The remote turn ended with a non-success outcome." : "Investigation turn completed.",
                             trace: NetclawTraceMapper.Map(output, owner.SessionId, row.ActiveMessageId, owner.Profile.DeviceToken));
-                        await InvestigationStore.StageTurnResultAsync(db, row, failed ? FlowAiResultStatus.Failed : FlowAiResultStatus.Completed, clock.GetUtcNow(), stopping,
+                        await InvestigationStore.StageTurnResultAsync(db, row, outcome is null ? FlowAiResultStatus.DeliveryUnknown : failed ? FlowAiResultStatus.Failed : FlowAiResultStatus.Completed, clock.GetUtcNow(), ct,
                             Value(output, "summary"), Value(output, "evidence"), Value(output, "recommendations")); break;
                     case "tool_interaction":
                         var callId = Value(output, "callId");
                         if (string.IsNullOrWhiteSpace(callId) || callId.Length > 256) throw new InvalidDataException("Invalid approval identity.");
-                        var previous = await db.Set<AiInvestigationApprovalRecord>().SingleOrDefaultAsync(x => x.InvestigationId == id && x.CallId == callId, stopping);
+                        var previous = await db.Set<AiInvestigationApprovalRecord>().SingleOrDefaultAsync(x => x.InvestigationId == id && x.CallId == callId, ct);
                         if (previous is not null)
                         {
                             if (row.State == InvestigationState.DeliveryUnknown && owner.AdmissionProven && previous.MessageId == row.ActiveMessageId && previous.SelectedKey is null)
                             {
                                 row.State = InvestigationState.AwaitingApproval;
+                                row.RecoverySummary = "The exact resumed message is awaiting your decision on the saved approval. Review the request before responding; nothing was automatically approved.";
                                 InvestigationStore.Append(db, row, "approval_resumed", "The resumed session confirmed this pending approval.", callId: callId);
                             }
                             break;
@@ -350,10 +375,12 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
                         var options = OfferedOptions(output); if (options.Length == 0) throw new InvalidDataException("No supported approval options.");
                         var json = JsonSerializer.Serialize(options);
                         if (row.ActiveMessageId is not { } approvalMessage) throw new InvalidDataException("Approval has no active turn.");
-                        if (await db.Set<AiInvestigationApprovalRecord>().CountAsync(x => x.InvestigationId == id && x.MessageId == approvalMessage && x.SelectedKey == null, stopping) >= 32)
+                        if (await db.Set<AiInvestigationApprovalRecord>().CountAsync(x => x.InvestigationId == id && x.MessageId == approvalMessage && x.SelectedKey == null, ct) >= 32)
                             throw new InvalidDataException("Too many pending approvals.");
                         db.Add(new AiInvestigationApprovalRecord { InvestigationId = id, MessageId = approvalMessage, CallId = callId, OptionsJson = json });
                         row.State = InvestigationState.AwaitingApproval;
+                        if (row.LastRecoveryAttemptAtUtc is not null)
+                            row.RecoverySummary = "The resumed session is awaiting your decision. Review the current request before responding; nothing was automatically approved.";
                         InvestigationStore.Append(db, row, "approval_request", $"Approval requested for {SafeTool(Value(output, "toolName"))}.", callId: callId, options: json,
                             trace: NetclawTraceMapper.Map(output, owner.SessionId, row.ActiveMessageId, owner.Profile.DeviceToken)); break;
                     case "tool_call": case "tool_result":
@@ -363,27 +390,44 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
                         row.State = InvestigationState.DeliveryUnknown;
                         InvestigationStore.Append(db, row, "error", "Netclaw reported an error. Recover the session or review the daemon logs with this investigation reference.",
                             trace: NetclawTraceMapper.Map(output, owner.SessionId, row.ActiveMessageId, owner.Profile.DeviceToken));
-                        await InvestigationStore.StageTurnResultAsync(db, row, FlowAiResultStatus.DeliveryUnknown, clock.GetUtcNow(), stopping); break;
+                        await InvestigationStore.StageTurnResultAsync(db, row, FlowAiResultStatus.DeliveryUnknown, clock.GetUtcNow(), ct); break;
                     case "file":
                         InvestigationStore.Append(db, row, "artifact", "Netclaw produced an artifact. Review it through the configured tool permissions.",
                             trace: NetclawTraceMapper.Map(output, owner.SessionId, row.ActiveMessageId, owner.Profile.DeviceToken)); break;
                     case "usage": case "compaction": case "subagent": case "processing_state":
                         if (type == "processing_state" && owner.AdmissionProven && output.TryGetProperty("isProcessing", out var processing) && processing.ValueKind == JsonValueKind.True)
+                        {
                             row.State = InvestigationState.Processing;
+                            row.RecoverySummary = "The exact message was found and the resumed session reports it is running. Completion remains unconfirmed. Do not resend the message.";
+                        }
                         InvestigationStore.Append(db, row, type, $"Netclaw {type.Replace('_', ' ')}.",
                             trace: NetclawTraceMapper.Map(output, owner.SessionId, row.ActiveMessageId, owner.Profile.DeviceToken)); break;
                 }
-                await db.SaveChangesAsync(stopping); await tx.CommitAsync(stopping);
-                if (type == "turn_completed" && row.State == InvestigationState.Idle) { owners.TryRemove(new KeyValuePair<Guid, SessionOwner>(id, owner)); owner.Retired = true; owner.Outputs.Writer.TryComplete(); await owner.Client.DisposeAsync(); return; }
+                await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+                if (type == "turn_completed" && (row.State == InvestigationState.Idle ||
+                    row.State == InvestigationState.DeliveryUnknown && owner.SendStarted && row.RemoteTurnCountBeforeSend is null)) return;
             }
         }
-        catch (OperationCanceledException) when (stopping.IsCancellationRequested) { logger.LogDebug("Investigation output stopped."); owner.Retired = true; }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { logger.LogDebug("Investigation output stopped."); owner.Retired = true; }
         catch (Exception exception)
         {
-            owner.Retired = true; owner.Joined.TrySetException(new InvestigationConflictException("Remote session history could not be confirmed."));
+            owner.Retired = true; owner.Joined.TrySetException(exception is NetclawAttachmentException ? exception : new InvestigationConflictException("Remote session history could not be confirmed."));
             logger.LogWarning("Netclaw output interrupted for {InvestigationId}: {ExceptionType}", id, exception.GetType().Name);
-            try { await UnknownAsync(id, owner.MessageId, "The assistant output was interrupted. Recover the session to check its outcome.", stopping, true); }
+            try
+            {
+                if (owner.SendStarted || owner.AdmissionProven)
+                    await UnknownAsync(id, owner.MessageId, "The assistant output was interrupted. Recover the session to check its outcome.", stopping, true);
+            }
             catch (Exception failure) { logger.LogWarning("Investigation recovery deferred to restart: {ExceptionType}", failure.GetType().Name); owner.Outputs.Writer.TryComplete(failure); }
+        }
+        finally
+        {
+            owner.Retired = true;
+            owner.Outputs.Writer.TryComplete(); owner.Joined.TrySetCanceled();
+            try { await owner.Client.DisposeAsync(); }
+            catch (Exception exception) { logger.LogWarning("Netclaw session disposal failed: {ExceptionType}", exception.GetType().Name); }
+            owner.ClearDraft(); owner.DisposeLifetime();
+            owners.TryRemove(new KeyValuePair<Guid, SessionOwner>(id, owner));
         }
     }
 
@@ -402,13 +446,14 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
         await tx.CommitAsync(ct);
     }
 
-    public async Task RetireAsync(Guid id)
+    public Task RetireAsync(Guid id) => owners.TryGetValue(id, out var owner) ? RetireAsync(id, owner) : Task.CompletedTask;
+
+    private async Task RetireAsync(Guid id, SessionOwner owner)
     {
-        if (!owners.TryRemove(id, out var owner)) return;
+        if (!owners.TryRemove(new KeyValuePair<Guid, SessionOwner>(id, owner))) return;
         owner.Retired = true; owner.Outputs.Writer.TryComplete(); owner.Joined.TrySetCanceled();
-        try { await owner.Client.DisposeAsync(); }
-        catch (Exception exception) { logger.LogWarning("Netclaw session disposal failed: {ExceptionType}", exception.GetType().Name); owner.Outputs.Writer.TryComplete(exception); }
-        await owner.Consumer; owner.ClearDraft();
+        owner.Cancel();
+        await owner.Consumer;
     }
 
     private async Task ReleaseAsync()

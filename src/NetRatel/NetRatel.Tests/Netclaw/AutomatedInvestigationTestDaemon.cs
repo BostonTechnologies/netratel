@@ -2,7 +2,6 @@ using System.Text.Json;
 using System.Threading.Channels;
 using NetRatel.Application.Netclaw;
 using NetRatel.Infrastructure.Netclaw;
-using NetRatel.Infrastructure.Netclaw;
 
 namespace NetRatel.Tests.Netclaw;
 
@@ -19,7 +18,8 @@ internal sealed class AutomatedInvestigationTestDaemon : IAiAssistantChatClientF
     public IAiAssistantChatClient Create(NetclawRuntimeProfile profile) => new Client(this);
     public Task<string> ExchangeCodeAsync(NetclawPairingTarget target, string pairingCode, CancellationToken cancellationToken = default) =>
         Task.FromResult("synthetic-automated-context-device-token");
-    public Task EmitAsync(string type, string? text = null) => EmitAsync(JsonSerializer.SerializeToElement(new { type, sessionId, text }));
+    public Task EmitAsync(string type, string? text = null) => EmitAsync(JsonSerializer.SerializeToElement(new
+        { type, sessionId, text, turnOutcome = type == "turn_completed" ? "completed" : null }));
     public Task EmitAsync(JsonElement item) => output?.Invoke(item) ?? throw new InvalidOperationException("No session is connected.");
 
     private sealed class Client(AutomatedInvestigationTestDaemon daemon) : IAiAssistantChatClient

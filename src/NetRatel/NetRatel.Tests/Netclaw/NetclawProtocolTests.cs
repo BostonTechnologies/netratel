@@ -54,6 +54,7 @@ public sealed class NetclawProtocolTests
             var result = await client.ConnectAsync("persisted-session", item =>
             { if (item.GetProperty("type").GetString() == "text") output.TrySetResult(item.Clone()); return Task.CompletedTask; }, deadline.Token);
             Assert.Equal("persisted-session", result.SessionId); Assert.False(result.Created);
+            Assert.Equal(1, result.TextAdmissionVersion);
             var agentId = Guid.NewGuid();
             var system = InvestigationClientProjection.Create(new Agent { Id = agentId, TenantId = 17, Name = agentId.ToString(),
                 DeviceInfoJson = "{\"hostName\":\"real-linux-host\",\"os\":\"Linux\",\"architecture\":\"arm64\",\"reportedAddress\":\"10.20.30.40\"}",
@@ -142,7 +143,7 @@ public sealed class NetclawProtocolTests
     public sealed class ContractHub(ConcurrentQueue<HubCall> calls) : Hub
     {
         public Task<SessionEnsureResult> EnsureSession(string? sessionId, string protocol)
-        { calls.Enqueue(new("EnsureSession", Context.User!.Identity!.Name!, [sessionId ?? "", protocol])); return Task.FromResult(new SessionEnsureResult(sessionId ?? "new-session", sessionId is null)); }
+        { calls.Enqueue(new("EnsureSession", Context.User!.Identity!.Name!, [sessionId ?? "", protocol])); return Task.FromResult(new SessionEnsureResult(sessionId ?? "new-session", sessionId is null) { TextAdmissionVersion = 1 }); }
         public async Task SendMessage(string sessionId, string text)
         { calls.Enqueue(new("SendMessage", Context.User!.Identity!.Name!, [sessionId, text])); await Clients.Caller.SendAsync("ReceiveOutput", new { type = "text", sessionId, text = "Evidence ready" }); }
         public Task RespondToInteraction(string sessionId, string callId, string key)

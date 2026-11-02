@@ -45,6 +45,11 @@ public sealed class NetclawTraceRecoveryTests
         Assert.False(NetclawInvestigationWorker.ProvesHistoricalEnd(Joined(3, current, reply, new { role = "user", content = "a later message" }), id, message, 2));
         Assert.False(NetclawInvestigationWorker.ProvesHistoricalEnd(Joined(3, current, current), id, message, 2));
         Assert.False(NetclawInvestigationWorker.ProvesHistoricalEnd(ended, Guid.NewGuid(), message, 2));
+        var terminal = JsonSerializer.SerializeToElement(new { turnNumber = 3, turnOutcome = "interrupted" });
+        Assert.True(NetclawInvestigationWorker.ProvesLiveRecoveryEnd(terminal, 2));
+        Assert.False(NetclawInvestigationWorker.ProvesLiveRecoveryEnd(terminal, null));
+        Assert.False(NetclawInvestigationWorker.ProvesLiveRecoveryEnd(terminal, 1));
+        Assert.False(NetclawInvestigationWorker.ProvesLiveRecoveryEnd(ended, 2));
     }
 
     [Fact]
