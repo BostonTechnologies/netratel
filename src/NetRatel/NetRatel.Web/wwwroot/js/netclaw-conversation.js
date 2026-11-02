@@ -16,7 +16,7 @@ export function saveDisplay(value) {
 }
 
 export function setFullscreen(surface, enabled, reference) {
-    if (!surface) return;
+    if (!surface || (enabled && !surface.isConnected)) return;
     const previous = active.get(surface);
     const transcript = surface.querySelector(".netclaw-scroll-area");
     const scrollTop = transcript?.scrollTop;

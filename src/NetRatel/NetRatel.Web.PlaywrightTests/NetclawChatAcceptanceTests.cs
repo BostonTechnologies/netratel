@@ -119,6 +119,7 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
         await Assertions.Expect(surface.GetByRole(AriaRole.Button, new() { Name = "Restore conversation", Exact = true })).ToBeInViewportAsync(new() { Ratio = 1 });
         await Assertions.Expect(page.GetByTestId("chat-send")).ToBeInViewportAsync(new() { Ratio = 1 });
         await surface.GetByRole(AriaRole.Button, new() { Name = "Chat display settings", Exact = true }).ClickAsync();
+        await Assertions.Expect(surface.Locator(".netclaw-display-panel")).ToBeVisibleAsync();
         await composer.PressAsync("Escape");
         await Assertions.Expect(surface.Locator(".netclaw-display-panel")).ToHaveCountAsync(0);
         await Assertions.Expect(surface).ToHaveAttributeAsync("aria-modal", "true");
@@ -127,6 +128,7 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
         await Assertions.Expect(maximize).ToBeFocusedAsync();
         await Assertions.Expect(composer).ToHaveValueAsync("draft survives fullscreen");
         await maximize.ClickAsync();
+        await Assertions.Expect(surface).ToHaveAttributeAsync("aria-modal", "true");
         await composer.PressAsync("Control+Enter");
         await Assertions.Expect(composer).ToHaveValueAsync("");
         Assert.Equal(1, api.Sends);
@@ -137,6 +139,7 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
         await page.ScreenshotAsync(new() { Path = Path.Combine(artifacts, $"shared-{(investigation ? "investigation" : "chat")}-{theme}-{width}.png"), FullPage = true });
         var previousOverflow = await page.EvaluateAsync<string>("() => document.body.style.overflow");
         await maximize.ClickAsync();
+        await Assertions.Expect(surface).ToHaveAttributeAsync("aria-modal", "true");
         await page.EvaluateAsync("() => Blazor.navigateTo('/ai/chat?tenantId=18')");
         await Assertions.Expect(page.GetByRole(AriaRole.Heading, new() { Name = "Connect with Netclaw", Exact = true })).ToBeVisibleAsync();
         await page.WaitForFunctionAsync("previous => document.body.style.overflow === previous", previousOverflow);
