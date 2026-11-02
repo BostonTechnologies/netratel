@@ -515,6 +515,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
             await Assertions.Expect(page.GetByText(FixtureClientArtifactsService.GetGitHubCheckedText(initialRequest), new() { Exact = true }))
                 .ToBeVisibleAsync(new LocatorAssertionsToBeVisibleOptions { Timeout = 30_000 });
 
+            await VisitTabAsync(page, "Suspended", "suspended-management-panel");
             var previousRequest = fixture.Data.GitHubReleaseRequestCount;
             var reload = fixture.Data.PrepareDelayedGitHubReload();
             try
@@ -533,7 +534,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
                 reload.Release();
                 await Assertions.Expect(page.GetByText(reload.CheckedText, new() { Exact = true }))
                     .ToBeVisibleAsync(new LocatorAssertionsToBeVisibleOptions { Timeout = 30_000 });
-                await Assertions.Expect(page.GetByRole(AriaRole.Status, new() { Name = "Loading release catalogue", Exact = true }))
+                await Assertions.Expect(page.GetByRole(AriaRole.Progressbar, new() { Name = "Loading release catalogue", Exact = true }))
                     .ToBeHiddenAsync(new LocatorAssertionsToBeHiddenOptions { Timeout = 30_000 });
                 await AssertReleaseRowContentReachableAsync(page, "delayed-reload");
             }
