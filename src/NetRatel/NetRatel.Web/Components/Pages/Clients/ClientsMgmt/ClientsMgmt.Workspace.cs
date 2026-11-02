@@ -113,7 +113,7 @@ public partial class ClientsMgmt
             if (_automationDisposed) return;
             foreach (var result in _batchResults.Where(x => x.State == "Deleted")) _selectedVersions.Remove(result.Version);
             var complete = _batchResults.Count(x => x.State == "Deleted");
-            _localDeleteMessage = $"{complete} version(s) deleted; {_batchResults.Count - complete} pending, failed or blocked. " +
+            _localDeleteMessage = $"{complete} version(s) deleted; {_cleanupPreview.Count - complete} pending, failed or blocked. " +
                 "Unresolved selections are retained. Automatic re-import stays suppressed for purged versions.";
             await LoadGitHubAsync(false);
             foreach (var plan in eligible) await LoadCleanupDetailsAsync(plan.Version);

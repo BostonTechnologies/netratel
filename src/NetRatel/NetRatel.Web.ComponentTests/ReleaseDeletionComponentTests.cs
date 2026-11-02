@@ -123,6 +123,26 @@ public sealed class ReleaseDeletionComponentTests : AsyncBunitContext
     }
 
     [Fact]
+    public async Task Mixed_bulk_cleanup_submits_only_eligible_versions_and_counts_unsubmitted_blockers()
+    {
+        _artifacts.ImportCount = 2;
+        _artifacts.VersionBlockers["0.4.103"] = ["A tenant rollout pin still references this version."];
+        var dialogs = Render<MudDialogProvider>();
+        var cut = Render<ClientsMgmt>();
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid=github-release-name]").Should().HaveCount(2));
+        await cut.InvokeAsync(() => cut.FindAll("button").Single(x => x.TextContent.Trim() == "Select local versions on this page").Click());
+        await cut.InvokeAsync(() => cut.Find("button[aria-label='Preview purge of selected local versions']").Click());
+        dialogs.WaitForAssertion(() => dialogs.Markup.Should().Contain("1 eligible").And.Contain("1 blocked"));
+        await dialogs.InvokeAsync(() => dialogs.Find("[data-testid=confirm-local-purge]").Click());
+        cut.WaitForAssertion(() =>
+        {
+            _artifacts.DeletedVersions.Should().Equal(Version);
+            cut.Find("[data-testid=local-release-deletion-status]").TextContent.Should().Contain("1 version(s) deleted; 1 pending, failed or blocked");
+            cut.Find("[data-testid=release-selection-toolbar]").TextContent.Should().Contain("1 versions selected across pages");
+        });
+    }
+
+    [Fact]
     public async Task Disposed_preview_cannot_open_a_cleanup_dialog_or_delete()
     {
         _artifacts.PendingPreview = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -173,6 +193,7 @@ public sealed class ReleaseDeletionComponentTests : AsyncBunitContext
     {
         public string? UpstreamWarning { get; set; }
         public string[] Blockers { get; set; } = [];
+        public Dictionary<string, string[]> VersionBlockers { get; } = [];
         public string DeletionState { get; set; } = "Deleted";
         public int DeleteCalls { get; private set; }
         public int ImportCount { get; set; } = 1;
@@ -241,7 +262,7 @@ public sealed class ReleaseDeletionComponentTests : AsyncBunitContext
         public ClientReleaseDeletionPlanModel CreatePlan(string version) =>
             new() { Version = version, RuntimeIds = ["linux-x64", "win-x64"],
                 ReleaseIds = [Guid.Parse("62b1b92a-9703-45d5-8975-59bf93f3142a"), Guid.Parse("d3c5da1b-2b5f-4f9f-b280-ecc80c62b8ac")],
-                ImportIds = [ImportId], ReclaimableBytes = 3 * 1024 * 1024, HistoricalAttempts = 4, Blockers = Blockers };
+                ImportIds = [ImportId], ReclaimableBytes = 3 * 1024 * 1024, HistoricalAttempts = 4, Blockers = VersionBlockers.GetValueOrDefault(version) ?? Blockers };
         public Task<ClientReleaseDeletionStatusModel> DeleteLocalReleaseAsync(string version, CancellationToken ct = default)
         {
             DeleteCalls++;

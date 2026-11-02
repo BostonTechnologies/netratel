@@ -16,19 +16,19 @@ public static class ClientReleaseDeletionEndpoints
         var group = app.MapGroup("/api/v1/client-updates/local-releases")
             .RequireAuthorization("ArtifactPublisher").WithTags("Client Updates");
         app.MapGet("/api/v1/client-updates/local-releases/catalogue", async (int? page, int? pageSize, string? search, string? channel, string? runtime,
-            string? localState, bool? refresh, HttpContext http, Microsoft.AspNetCore.Authorization.IAuthorizationService authorization,
-            ClientReleaseWorkspaceService workspace, CancellationToken ct) =>
+            string? localState, bool? refresh, HttpContext http, [FromServices] IAuthorizationService authorization,
+            [FromServices] ClientReleaseWorkspaceService workspace, CancellationToken ct) =>
         {
             var canManage = (await authorization.AuthorizeAsync(http.User, null, "ArtifactPublisher")).Succeeded;
             try { return Results.Ok(await workspace.ReadAsync(page ?? 0, pageSize ?? 20, search, channel ?? "all", runtime, localState, refresh ?? false, ct, canManage)); }
             catch (ArgumentException e) { return Results.BadRequest(new { message = e.Message }); }
         }).RequireAuthorization("ClientArtifactsWrite").WithTags("Client Updates");
-        group.MapPost("/batch-preview", async (ClientReleaseBatchRequest request, ClientReleaseDeletionService deletion, CancellationToken ct) =>
+        group.MapPost("/batch-preview", async (ClientReleaseBatchRequest request, [FromServices] ClientReleaseDeletionService deletion, CancellationToken ct) =>
         {
             try { return Results.Ok(await deletion.PreviewBatchAsync(request.Versions, ct)); }
             catch (ArgumentException e) { return Results.BadRequest(new { message = e.Message }); }
         });
-        group.MapPost("/batch-delete", async (ClientReleaseBatchRequest request, HttpContext http, ClientReleaseDeletionService deletion, CancellationToken ct) =>
+        group.MapPost("/batch-delete", async (ClientReleaseBatchRequest request, HttpContext http, [FromServices] ClientReleaseDeletionService deletion, CancellationToken ct) =>
         {
             if (request.Versions is null || request.Versions.Length is < 1 or > 100)
                 return Results.BadRequest(new { message = "Select between 1 and 100 versions per reviewed cleanup batch." });
@@ -41,7 +41,7 @@ public static class ClientReleaseDeletionEndpoints
             catch (ArgumentException e) { return Results.BadRequest(new { message = e.Message }); }
         });
         group.MapPost("/{version}/attempts/{attemptId:guid}/retire", async (string version, Guid attemptId,
-            ClientReleaseRetireRequest request, HttpContext http, ClientReleaseDeletionService deletion, CancellationToken ct) =>
+            ClientReleaseRetireRequest request, HttpContext http, [FromServices] ClientReleaseDeletionService deletion, CancellationToken ct) =>
         {
             var actor = Actor(http);
             if (actor is null) return Results.Forbid();

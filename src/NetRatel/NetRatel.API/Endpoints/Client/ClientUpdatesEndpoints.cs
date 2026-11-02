@@ -263,8 +263,8 @@ public static class ClientUpdatesEndpoints
             return Results.Ok(states);
         });
 
-        admin.MapPost("/releases/{releaseId:guid}/enable", async (Guid releaseId, OrchestratorDbContext db,
-            IClientArtifactsService artifacts, ClientUpdateAuthorityService updates, CancellationToken ct) =>
+        admin.MapPost("/releases/{releaseId:guid}/enable", async (Guid releaseId, [FromServices] OrchestratorDbContext db,
+            [FromServices] IClientArtifactsService artifacts, [FromServices] ClientUpdateAuthorityService updates, CancellationToken ct) =>
         {
             var release = await db.ClientUpdateReleases.AsNoTracking().SingleOrDefaultAsync(x => x.PublicId == releaseId, ct);
             if (release is null) return Results.NotFound();

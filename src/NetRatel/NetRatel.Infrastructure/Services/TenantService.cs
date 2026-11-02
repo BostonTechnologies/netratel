@@ -146,6 +146,9 @@ public sealed class TenantService(OrchestratorDbContext db) : ITenantService
                 throw new TenantDeletionConflictException("tenant_has_connection",
                     "Disconnect this tenant's active named service connection in Integrations before deleting the tenant. Shared system pairings are retained.");
         }
+        // Deletion receipts/replays retain the reviewed public revision, while the
+        // internal retirement increments the tombstone's concurrency version.
+        var deleted = Map(tenant);
         var now = DateTimeOffset.UtcNow;
         foreach (var principal in principals)
         {
@@ -166,7 +169,7 @@ public sealed class TenantService(OrchestratorDbContext db) : ITenantService
         tenant.DeletedAtUtc = now; tenant.UpdatedAtUtc = now; tenant.Version++;
         await _db.SaveChangesAsync(ct);
         if (transaction is not null) await transaction.CommitAsync(ct);
-        return Map(tenant);
+        return deleted;
     }
 
     private static List<string> NormalizeDomains(IReadOnlyList<string> domains) =>
