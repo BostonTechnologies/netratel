@@ -8,7 +8,7 @@ namespace NetRatel.Infrastructure.Netclaw;
 /// <summary>Allowlisted, bounded wire details. Raw frames and private thinking never enter durable trace.</summary>
 public static class NetclawTraceMapper
 {
-    private static readonly Regex SensitiveKey = new("password|passwd|pwd|jwt|secret|token|credential|authorization|cookie|connection.?string|private.?key|api.?key", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+    private static readonly Regex SensitiveKey = new("password|passwd|pwd|jwt|secret|token|credential|authorization|cookie|connection.?string|private.?key|api.?key|idempotency.?key|pairing.?code|enrollment.?code|device.?code|user.?code", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
     private static readonly Regex Secrets = new("(?i)(bearer\\s+)[a-z0-9._~+/=-]+|((?:password|passwd|pwd|secret|token|api[_-]?key|authorization|cookie)\\s*[:=]\\s*)[^\\s,;]+|-----BEGIN [^-]*PRIVATE KEY-----[\\s\\S]*?-----END [^-]*PRIVATE KEY-----|(?<=://)[^\\s/@:]+:[^\\s/@]+@", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
     private static readonly string[] NumericFields = ["inputTokens", "outputTokens", "totalTokens", "cachedInputTokens", "reasoningTokens", "contextWindowTokens", "usagePercent", "promptMs", "predictedPerSecond", "messagesBefore", "messagesAfter", "preCompactionInputTokens", "keepCountUsed", "durationMs", "toolCountSub", "findingsCount", "turnNumber"];
     private static readonly string[] BoolFields = ["isProcessing", "processingStateRequired", "summarized", "toolResultsCleared", "subAgentSuccess", "interactionIsMessy", "interactionHasAdoptedContext", "interactionHasThirdPartyAdoptedContext"];
@@ -33,6 +33,8 @@ public static class NetclawTraceMapper
             }
             try
             {
+                var existing = NetRatel.Shared.Security.OperatorOutputRedactor.Redact(text);
+                redacted |= existing != text; text = existing;
                 var safe = Secrets.Replace(text, match => match.Groups[1].Success ? match.Groups[1].Value + "[redacted]" : match.Groups[2].Success ? match.Groups[2].Value + "[redacted]" : "[redacted]");
                 redacted |= safe != text; text = safe;
             }

@@ -13,7 +13,7 @@ public sealed class NetclawTraceRecoveryTests
         var frame = JsonSerializer.SerializeToElement(new {
             type = "tool_result", toolName = "netclaw/server", timestampMs = 1793600000000L, callId = "call-a",
             argumentsJson = "{\"authorization\":\"Bearer credentials\",\"nested\":{\"api_key\":\"credential-value\",\"path\":\"/safe/\"}}",
-            result = "{\"password\":\"hide-me\",\"pwd\":\"hide-short-key\",\"body\":\"Bearer abcdefghijklmnop\",\"value\":\"known-device-secret\"}",
+            result = "{\"password\":\"hide-me\",\"pwd\":\"hide-short-key\",\"idempotencyKey\":\"hide-confirmation-key\",\"enrollmentCode\":\"hide-enrollment-code\",\"body\":\"Bearer abcdefghijklmnop\",\"value\":\"known-device-secret\"}",
             toolFailureCode = "timeout", thinking = "never-retain-this", errorDetail = "never-retain-exception",
             inputTokens = 12, outputTokens = 5
         });
@@ -22,7 +22,7 @@ public sealed class NetclawTraceRecoveryTests
         var json = JsonSerializer.Serialize(trace);
         Assert.DoesNotContain("credential-value", json); Assert.DoesNotContain("hide-me", json);
         Assert.DoesNotContain("abcdefghijklmnop", json); Assert.DoesNotContain("known-device-secret", json);
-        Assert.DoesNotContain("hide-short-key", json); Assert.DoesNotContain("never-retain", json); Assert.Contains("/safe/", json);
+        Assert.DoesNotContain("hide-short-key", json); Assert.DoesNotContain("hide-confirmation-key", json); Assert.DoesNotContain("hide-enrollment-code", json); Assert.DoesNotContain("never-retain", json); Assert.Contains("/safe/", json);
         Assert.True(trace.Redacted); Assert.Equal("reported failure", trace.Status);
         Assert.Equal("timeout", trace.FailureCode); Assert.Equal(message, trace.TurnMessageId);
         Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(1793600000000L), trace.SourceTimestampUtc);
