@@ -135,6 +135,13 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
         var artifacts = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.GetFullPath("TestResults/playwright");
         Directory.CreateDirectory(artifacts);
         await page.ScreenshotAsync(new() { Path = Path.Combine(artifacts, $"shared-{(investigation ? "investigation" : "chat")}-{theme}-{width}.png"), FullPage = true });
+        var previousOverflow = await page.EvaluateAsync<string>("() => document.body.style.overflow");
+        await maximize.ClickAsync();
+        await page.EvaluateAsync("() => Blazor.navigateTo('/ai/chat?tenantId=18')");
+        await Assertions.Expect(page.GetByRole(AriaRole.Heading, new() { Name = "Connect with Netclaw", Exact = true })).ToBeVisibleAsync();
+        await page.WaitForFunctionAsync("previous => document.body.style.overflow === previous", previousOverflow);
+        Assert.False(await page.GetByTestId("navigation-toggle").EvaluateAsync<bool>("e => !!e.closest('[inert]')"));
+        await AssertHealthyAsync(page); Assert.Empty(errors);
     }
 
     private static async Task AssertHealthyAsync(IPage page)

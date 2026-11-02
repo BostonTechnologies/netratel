@@ -26,6 +26,7 @@ export function setFullscreen(surface, enabled, reference) {
         if (!previous) return;
         document.removeEventListener("keydown", previous.keydown);
         document.removeEventListener("focusin", previous.focusin);
+        previous.observer.disconnect();
         for (const [element, inert] of previous.background) element.inert = inert;
         document.body.style.overflow = previous.overflow;
         active.delete(surface);
@@ -60,7 +61,11 @@ export function setFullscreen(surface, enabled, reference) {
         }
     };
     const focusin = event => { if (!surface.contains(event.target) && !nestedOverlay()) (focusables()[0] || surface).focus(); };
-    active.set(surface, { background, keydown, focusin, trigger: surface.querySelector('[data-testid="conversation-fullscreen"]') || document.activeElement, overflow: document.body.style.overflow });
+    const observer = new MutationObserver(() => {
+        if (!surface.isConnected) setFullscreen(surface, false, reference);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    active.set(surface, { background, keydown, focusin, observer, trigger: surface.querySelector('[data-testid="conversation-fullscreen"]') || document.activeElement, overflow: document.body.style.overflow });
     document.body.style.overflow = "hidden";
     document.addEventListener("keydown", keydown);
     document.addEventListener("focusin", focusin);

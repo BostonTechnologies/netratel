@@ -46,7 +46,7 @@
                 @if (item.Type is "operator" or "assistant" or "assistant_recovered")
                 {
                     <article @key="item.Sequence" class="chat-message @(item.Type == "operator" ? "chat-message-operator" : "chat-message-assistant")">
-                        <header><strong>@(item.Type == "operator" ? "Operator" : "Netclaw")</strong><time datetime="@item.CreatedAtUtc.ToString("O")" title="@item.CreatedAtUtc.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss 'UTC'")">@item.CreatedAtUtc.UtcDateTime.ToString("HH:mm 'UTC'")</time></header>
+                        <header><strong>@(item.Type == "operator" ? "Operator" : "Netclaw")</strong><time datetime="@item.CreatedAtUtc.ToString("O")" title="@item.CreatedAtUtc.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss 'UTC'")">@FormatMessageTime(item.CreatedAtUtc)</time></header>
                         @if (item.Type == "operator") { <div class="chat-operator-text">@item.Text</div> }
                         else { @if (item.Type == "assistant_recovered") { <small>Recovered history excerpt · original timestamp and completeness unavailable</small> } <ChatMessageContent Text="@item.Text" /> }
                     </article>
@@ -102,6 +102,7 @@
     [Parameter, EditorRequired] public InvestigationSnapshotDto Snapshot { get; set; } = default!;
     [Parameter] public IReadOnlyList<InvestigationEventDto> Events { get; set; } = [];
     [Parameter] public string? TenantName { get; set; }
+    [Parameter] public Func<DateTimeOffset, string>? MessageTimeFormatter { get; set; }
     [Parameter] public string Message { get; set; } = "";
     [Parameter] public EventCallback<string> MessageChanged { get; set; }
     [Parameter] public bool Busy { get; set; }
@@ -130,6 +131,7 @@
     private long Cursor => Events.LastOrDefault()?.Sequence ?? 0;
     private bool VisibleOptional(string type) => type switch { "usage" => _display.ShowUsage, "processing_state" => _display.ShowProcessing, "compaction" => _display.ShowCompaction, "subagent" => _display.ShowSubagents, _ => false };
     private static string StateLabel(InvestigationState state) => state switch { InvestigationState.Idle => "Ready", InvestigationState.Processing => "Working", InvestigationState.AwaitingApproval => "Awaiting approval", InvestigationState.DeliveryUnknown => "Needs recovery", InvestigationState.Queued => "Queued", _ => "Archived" };
+    private string FormatMessageTime(DateTimeOffset value) => MessageTimeFormatter?.Invoke(value) ?? value.UtcDateTime.ToString("HH:mm 'UTC'");
     private Task InputMessage(ChangeEventArgs e) => MessageChanged.InvokeAsync(e.Value?.ToString() ?? "");
     private Task KeyDown(KeyboardEventArgs e) => e.Key == "Enter" && (e.CtrlKey || e.MetaKey) && CanSend ? SendMessage() : Task.CompletedTask;
     private async Task ArchiveAsync() { await Archive.InvokeAsync(_acknowledge); _archive = false; _acknowledge = false; }
