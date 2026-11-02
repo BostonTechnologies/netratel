@@ -1341,7 +1341,7 @@ public static partial class NetRatelMcpToolDefinitions
             fields.Add(Uuid("agentId", "Persisted V2 agent identifier.", true));
         }
         fields.Add(String("folderPath", "Logical library destination. Omit to preserve placement on update or use the default on create; / selects root.", 512));
-        fields.Add(PositiveLongIdentifier("expectedSourceRevision", "Observed sourceRevision from get. Required when moving an existing script."));
+        fields.Add(BoundedIdentifier("expectedSourceRevision", "Observed sourceRevision from get. Required when moving an existing script.", long.MaxValue, false, false));
         fields.Add(RequiredString("name", "Bounded script name.", 120));
         fields.Add(RequiredString("description", "Bounded reviewed script description.", 512));
         fields.Add(RequiredEnum("shellType", "Policy-allowlisted script runtime.", "sh", "bash", "powershell", "pwsh"));
