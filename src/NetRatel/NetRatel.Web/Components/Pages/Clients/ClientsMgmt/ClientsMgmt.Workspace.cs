@@ -35,7 +35,7 @@ public partial class ClientsMgmt
     {
         if (_importActionBusy) return;
         var approved = await Dialogs.ShowMessageBoxAsync("Enable runtime updates", $"Enable {release.RuntimeId} for version {release.Version} under the existing tenant channel policies? The server rechecks the approved local archive.", yesText: "Enable runtime", cancelText: "Cancel");
-        if (approved != true) return;
+        if (_automationDisposed || approved != true) return;
         _importActionBusy = true;
         try { await Artifacts.EnableReleaseAsync(release.ReleaseId, _importPolling.Token); await LoadGitHubAsync(false); }
         catch (HttpRequestException ex) { _importsError = ex.Message; }
@@ -139,7 +139,7 @@ public partial class ClientsMgmt
             return;
         }
         var approved = await Dialogs.ShowMessageBoxAsync("Resolve local cleanup dependency", blocker.Action + "?", yesText: "Confirm", cancelText: "Cancel");
-        if (approved != true) return;
+        if (_automationDisposed || approved != true) return;
         _localDeleteBusy = true;
         try
         {

@@ -952,10 +952,11 @@
         _importsError = null;
         try
         {
-            var operation = await Artifacts.QueueReleaseImportAsync(releaseId);
+            var operation = await Artifacts.QueueReleaseImportAsync(releaseId, _importPolling.Token);
             _githubImports[releaseId] = operation;
             await LoadGitHubAsync(false);
         }
+        catch (OperationCanceledException) when (_importPolling.IsCancellationRequested) { }
         catch (HttpRequestException) { _importsError = "Could not queue the release import. Check the release evidence and try again."; }
         finally { _importActionBusy = false; }
     }
@@ -964,7 +965,8 @@
     {
         if (_importActionBusy || _automationDisposed) return;
         _importActionBusy = true;
-        try { await Artifacts.CancelReleaseImportAsync(id); await RefreshImportsAsync(); }
+        try { await Artifacts.CancelReleaseImportAsync(id, _importPolling.Token); await RefreshImportsAsync(); }
+        catch (OperationCanceledException) when (_importPolling.IsCancellationRequested) { }
         catch (HttpRequestException) { _importsError = "Could not cancel the import. Refresh its status and try again."; }
         finally { _importActionBusy = false; }
     }
@@ -973,7 +975,8 @@
     {
         if (_importActionBusy || _automationDisposed) return;
         _importActionBusy = true;
-        try { await Artifacts.RetryReleaseImportAsync(id); await RefreshImportsAsync(); }
+        try { await Artifacts.RetryReleaseImportAsync(id, _importPolling.Token); await RefreshImportsAsync(); }
+        catch (OperationCanceledException) when (_importPolling.IsCancellationRequested) { }
         catch (HttpRequestException) { _importsError = "Could not retry the import. Refresh its status and try again."; }
         finally { _importActionBusy = false; }
     }
@@ -989,12 +992,13 @@
             : "Publish this stable client pack for enabled tenant update policies?";
         var approved = await Dialogs.ShowMessageBoxAsync("Approve client pack", message,
             yesText: "Publish", cancelText: "Cancel");
-        if (approved != true) return;
+        if (_automationDisposed || approved != true) return;
         try
         {
-            await Artifacts.PublishReleaseImportAsync(id, isPrerelease);
+            await Artifacts.PublishReleaseImportAsync(id, isPrerelease, _importPolling.Token);
             await RefreshImportsAsync();
         }
+        catch (OperationCanceledException) when (_importPolling.IsCancellationRequested) { }
         catch (HttpRequestException)
         {
             _importsError = "Could not publish the client pack. Refresh its status and inspect the imported artifacts.";
