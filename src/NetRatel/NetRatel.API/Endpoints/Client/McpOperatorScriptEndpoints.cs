@@ -186,11 +186,20 @@ public static class McpOperatorScriptEndpoints
         try
         {
             await scripts.ValidateAsync(context.Decision, draft, cancellationToken).ConfigureAwait(false);
+            if (action == "update" && draft.FolderPath is not null)
+            {
+                var observed = await scripts.GetOwnedAsync(request.ScriptId!.Value, tenantId, context.Request.Principal, context.Request.McpResource, context.Request.McpInstance, cancellationToken);
+                if (observed is null) return Failure("script_not_found", context);
+                if (draft.ExpectedSourceRevision is not > 0 || draft.ExpectedSourceRevision != observed.Value.Lease.SourceRevision || request.ExpectedVersion != observed.Value.Lease.Version)
+                    return Failure("script_source_revision_conflict", context);
+            }
             var plan = await confirmations.CreatePlanAsync(new McpOperatorConfirmationPlanRequest(context.Decision, MutationPayloadHash(action, request.ScriptId, request.ExpectedVersion, draft)), cancellationToken).ConfigureAwait(false);
             return Results.Ok(new McpOperatorScriptPreview(plan.PlanToken, plan.IdempotencyKey, plan.ExpiresAtUtc, plan.ConfirmationClass,
                 action, request.ScriptId, request.ExpectedVersion, draft.ContentHash.ToUpperInvariant(), RiskSummary(draft),
-                context.Decision.MatchingPolicyIds.Single(), context.Decision.SelectedPolicyVersion!.Value, context.CorrelationId));
+                context.Decision.MatchingPolicyIds.Single(), context.Decision.SelectedPolicyVersion!.Value, context.CorrelationId,
+                draft.FolderPath is null ? action == "create" ? $"/mcp-operator/{tenantId}/" : null : NetRatel.Shared.Contracts.Scripts.ScriptLibraryPlacement.NormalizeFolder(draft.FolderPath), draft.ExpectedSourceRevision));
         }
+        catch (McpOperatorScriptIntegrityException) { return Failure("script_integrity_invalid", context); }
         catch (ArgumentException) { return Failure("script_invalid", context); }
     }
 
@@ -285,12 +294,17 @@ public static class McpOperatorScriptEndpoints
             SetEtag(http, result.Version);
             return action == "delete"
                 ? Results.Ok(new McpOperatorScriptMutationResult(result.ScriptId, result.Version, true, false, context.CorrelationId))
-                : Results.Created($"/api/v2/mcp/operator/agents/{tenantId}/{agentId:D}/scripts/{result.ScriptId}", new McpOperatorScriptMutationResult(result.ScriptId, result.Version, false, false, context.CorrelationId));
+                : Results.Created($"/api/v2/mcp/operator/agents/{tenantId}/{agentId:D}/scripts/{result.ScriptId}", new McpOperatorScriptMutationResult(result.ScriptId, result.Version, false, false, context.CorrelationId, result.FolderPath, result.SourceRevision));
         }
         catch (McpOperatorAdmissionRejectedException rejection)
         {
             await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, rejection.FailureCode, CancellationToken.None).ConfigureAwait(false);
             return Failure(rejection.FailureCode, context);
+        }
+        catch (ScriptLibraryCollisionException)
+        {
+            await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, "script_path_collision", CancellationToken.None);
+            return Failure("script_path_collision", context);
         }
         catch (McpOperatorScriptConcurrencyException)
         {
@@ -527,7 +541,9 @@ public static class McpOperatorScriptEndpoints
         // Legacy id-only receipts can supply only the current owned revision.
         var version = recorded.Version ?? existing.Value.Lease.Version;
         SetEtag(http, version);
-        return Results.Ok(new McpOperatorScriptMutationResult(recorded.ScriptId, version, action == "delete", true, context.CorrelationId));
+        var placement = action == "delete" ? null : await scripts.GetOwnedPlacementAsync(recorded.ScriptId, version, tenantId,
+            context.Request.Principal, context.Request.McpResource, context.Request.McpInstance, cancellationToken);
+        return Results.Ok(new McpOperatorScriptMutationResult(recorded.ScriptId, version, action == "delete", true, context.CorrelationId, placement?.FolderPath, placement?.SourceRevision));
     }
 
     private static ScriptMutationReference? ReadMutationReference(string? reference)
@@ -591,21 +607,14 @@ public static class McpOperatorScriptEndpoints
         return parameters.Keys.All(key => schema.Any(definition => definition.Name == key));
     }
 
-    private static string MutationPayloadHash(string action, long? scriptId, long? expectedVersion, McpOperatorScriptDraft draft) => Hash(JsonSerializer.Serialize(new
+    private static string MutationPayloadHash(string action, long? scriptId, long? expectedVersion, McpOperatorScriptDraft draft)
     {
-        action,
-        scriptId,
-        expectedVersion,
-        draft.Name,
-        draft.Description,
-        draft.ShellType,
-        draft.ContentHash,
-        draft.Parameters,
-        draft.TimeoutSeconds,
-        draft.WorkingDirectory,
-        draft.DeclaredSideEffects,
-        draft.ManifestJson
-    }));
+        var legacy = new { action, scriptId, expectedVersion, draft.Name, draft.Description, draft.ShellType, draft.ContentHash,
+            draft.Parameters, draft.TimeoutSeconds, draft.WorkingDirectory, draft.DeclaredSideEffects, draft.ManifestJson };
+        // Preserve already-issued confirmation hashes when placement is omitted.
+        return draft.FolderPath is null && draft.ExpectedSourceRevision is null ? Hash(JsonSerializer.Serialize(legacy))
+            : Hash(JsonSerializer.Serialize(new { payload = legacy, draft.FolderPath, draft.ExpectedSourceRevision }));
+    }
 
     private static string RunPayloadHash(long scriptId, McpOperatorScriptRunRequest request) => Hash(JsonSerializer.Serialize(new
     {
@@ -628,7 +637,7 @@ public static class McpOperatorScriptEndpoints
 
     private static McpOperatorScriptSummary ToSummary(McpOperatorScriptLease lease) => new(
         lease.ScriptId, lease.TenantId, lease.Name, lease.Description, lease.ShellType, lease.ContentHash, lease.ManifestHash,
-        lease.TimeoutSeconds, lease.WorkingDirectory, lease.DeclaredSideEffects, lease.CreatedAtUtc, lease.UpdatedAtUtc, lease.Version);
+        lease.TimeoutSeconds, lease.WorkingDirectory, lease.DeclaredSideEffects, lease.CreatedAtUtc, lease.UpdatedAtUtc, lease.Version, lease.FolderPath, lease.SourceRevision);
 
     private static McpOperatorScriptContext MinimalContext(int tenantId, Guid agentId, string operation, string correlationId)
     {
@@ -643,7 +652,7 @@ public static class McpOperatorScriptEndpoints
             "delegated_identity_required" or "delegated_identity_invalid" => StatusCodes.Status401Unauthorized,
             "script_not_found" => StatusCodes.Status404NotFound,
             "script_invalid" or "script_version_or_parameters_invalid" => StatusCodes.Status400BadRequest,
-            "script_integrity_invalid" or "script_source_revision_conflict" or "script_source_in_use" => StatusCodes.Status409Conflict,
+            "script_integrity_invalid" or "script_source_revision_conflict" or "script_source_in_use" or "script_path_collision" => StatusCodes.Status409Conflict,
             "script_dispatch_failed" => StatusCodes.Status500InternalServerError,
             "script_etag_mismatch" or "confirmation_plan_invalid" or "confirmation_plan_stale" or "confirmation_plan_expired" or "idempotency_conflict" or "idempotency_pending" or "idempotency_replay_unavailable" => StatusCodes.Status409Conflict,
             "target_offline" or "capability_unavailable" or "agent_command_session_unavailable" => StatusCodes.Status503ServiceUnavailable,
@@ -656,7 +665,7 @@ public static class McpOperatorScriptEndpoints
             "tenant_not_authorized" => "tenant",
             "target_not_found" or "target_disabled" or "target_offline" => "target",
             "capability_unavailable" or "agent_command_session_unavailable" => "capability",
-            "script_invalid" or "script_version_or_parameters_invalid" or "script_etag_mismatch" or "script_integrity_invalid" or "script_source_revision_conflict" or "script_source_in_use" => "constraint",
+            "script_invalid" or "script_version_or_parameters_invalid" or "script_etag_mismatch" or "script_integrity_invalid" or "script_source_revision_conflict" or "script_source_in_use" or "script_path_collision" => "constraint",
             "confirmation_plan_invalid" or "confirmation_plan_stale" or "confirmation_plan_expired" => "confirmation",
             "idempotency_conflict" or "idempotency_pending" or "idempotency_replay_unavailable" => "idempotency",
             _ => "policy"
@@ -710,11 +719,11 @@ public sealed record McpOperatorScriptRunRequest(
     string? PlanToken = null,
     string? IdempotencyKey = null);
 
-public sealed record McpOperatorScriptSummary(long ScriptId, int TenantId, string Name, string Description, string ShellType, string ContentHash, string ManifestHash, int TimeoutSeconds, string WorkingDirectory, IReadOnlyList<McpOperatorScriptSideEffect> DeclaredSideEffects, DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, long Version);
+public sealed record McpOperatorScriptSummary(long ScriptId, int TenantId, string Name, string Description, string ShellType, string ContentHash, string ManifestHash, int TimeoutSeconds, string WorkingDirectory, IReadOnlyList<McpOperatorScriptSideEffect> DeclaredSideEffects, DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, long Version, string? FolderPath = null, long SourceRevision = 1);
 public sealed record McpOperatorScriptDetail(McpOperatorScriptSummary Script, string Content, string? ManifestJson);
 public sealed record McpOperatorScriptValidation(string ContentHash, int ContentBytes, string ShellType, int TimeoutSeconds, string WorkingDirectory, IReadOnlyList<McpOperatorScriptSideEffect> DeclaredSideEffects, int ParameterCount, Guid PolicyId, long PolicyVersion, string CorrelationId);
-public sealed record McpOperatorScriptPreview(string PlanToken, string IdempotencyKey, DateTimeOffset ExpiresAtUtc, McpOperatorConfirmationClass ConfirmationClass, string Action, long? ScriptId, long? ExpectedVersion, string ContentHash, string RiskSummary, Guid PolicyId, long PolicyVersion, string CorrelationId);
-public sealed record McpOperatorScriptMutationResult(long ScriptId, long Version, bool Deleted, bool Replayed, string CorrelationId);
+public sealed record McpOperatorScriptPreview(string PlanToken, string IdempotencyKey, DateTimeOffset ExpiresAtUtc, McpOperatorConfirmationClass ConfirmationClass, string Action, long? ScriptId, long? ExpectedVersion, string ContentHash, string RiskSummary, Guid PolicyId, long PolicyVersion, string CorrelationId, string? FolderPath = null, long? ExpectedSourceRevision = null);
+public sealed record McpOperatorScriptMutationResult(long ScriptId, long Version, bool Deleted, bool Replayed, string CorrelationId, string? FolderPath = null, long? SourceRevision = null);
 public sealed record McpOperatorScriptRunPreview(string PlanToken, string IdempotencyKey, DateTimeOffset ExpiresAtUtc, McpOperatorConfirmationClass ConfirmationClass, long ScriptId, long Version, string ContentHash, int TargetCount, string CorrelationId);
 public sealed record McpOperatorScriptRunResult(long ScriptId, string RequestId, bool Replayed, string CorrelationId)
 {

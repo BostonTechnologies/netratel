@@ -42,6 +42,36 @@ public sealed class McpOperatorScriptEndpointTests
     private static readonly Guid AgentId = Guid.Parse("865d8a10-b2aa-4f11-93c0-a4d2f3a400e0");
     private static string ScriptRoot => $"/api/v2/mcp/operator/agents/42/{AgentId:D}/scripts";
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Production_folder_move_binds_destination_to_confirmation_and_returns_durable_placement_without_changing_content(bool longPath)
+    {
+        await using var app = await BuildMutationAppAsync();
+        using var client = app.GetTestClient();
+        app.Services.GetRequiredService<MutationCaller>().Operation = "update";
+        var destination = longPath ? "/" + new string('x', 490) + "/" : "/Linux/disk/";
+        var draft = new McpOperatorScriptDraft("owned-script", "marker", "sh", ScriptContent, Hash(ScriptContent), [], 15, "/tmp", [McpOperatorScriptSideEffect.ReadOnly], FolderPath: destination, ExpectedSourceRevision: 1);
+        var request = new McpOperatorScriptMutationRequest(Script: draft, ScriptId: ScriptId, ExpectedVersion: 1);
+        using var previewResponse = await client.PostAsJsonAsync(ScriptRoot + "/preview/update", request);
+        previewResponse.StatusCode.Should().Be(HttpStatusCode.OK, await previewResponse.Content.ReadAsStringAsync());
+        var plan = (await previewResponse.Content.ReadFromJsonAsync<McpOperatorScriptPreview>())!;
+        request = request with { PlanToken = plan.PlanToken, IdempotencyKey = plan.IdempotencyKey };
+        using var tampered = await client.PostAsJsonAsync(ScriptRoot + "/confirm/update", request with { Script = draft with { FolderPath = "/other/" } });
+        tampered.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        using var response = await client.PostAsJsonAsync(ScriptRoot + "/confirm/update", request);
+        response.StatusCode.Should().Be(HttpStatusCode.Created, await response.Content.ReadAsStringAsync());
+        var moved = (await response.Content.ReadFromJsonAsync<McpOperatorScriptMutationResult>())!;
+        moved.ScriptId.Should().Be(ScriptId); moved.FolderPath.Should().Be(destination); moved.SourceRevision.Should().Be(2);
+        using var replay = await client.PostAsJsonAsync(ScriptRoot + "/confirm/update", request);
+        (await replay.Content.ReadFromJsonAsync<McpOperatorScriptMutationResult>()).Should().Be(moved with { Replayed = true });
+        await using var scope = app.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        var saved = await db.Scripts.SingleAsync();
+        saved.Content.Should().Be(ScriptContent); saved.FolderPath.Should().Be(destination);
+        (await db.McpOperatorScriptVersions.SingleAsync()).ContentHash.Should().Be(Hash(ScriptContent));
+    }
+
     [Fact]
     public async Task Deleted_script_replays_its_original_version_without_another_write_or_audit()
     {
@@ -293,7 +323,7 @@ public sealed class McpOperatorScriptEndpointTests
             var caller = context.RequestServices.GetRequiredService<MutationCaller>();
             context.Items[McpOperatorDelegationMiddleware.HttpContextItemKey] = new McpOperatorDelegation(
                 new McpOperatorDelegationIdentity(caller.Subject, caller.ClientId, null, [], ["ScriptOperator"], caller.Scopes),
-                "mcp-service", "netratel_scripts", "delete", "script-request", DateTimeOffset.UtcNow.AddMinutes(1),
+                "mcp-service", "netratel_scripts", caller.Operation, "script-request", DateTimeOffset.UtcNow.AddMinutes(1),
                 caller.Resource, "prod", caller.TenantId, caller.AgentId, "script-correlation");
             await next(context);
         });
@@ -340,6 +370,7 @@ public sealed class McpOperatorScriptEndpointTests
 
     private sealed class MutationCaller
     {
+        public string Operation { get; set; } = "delete";
         public string Subject { get; set; } = McpOperatorScriptEndpointTests.Subject;
         public string ClientId { get; set; } = McpOperatorScriptEndpointTests.ClientId;
         public string Resource { get; set; } = McpOperatorScriptEndpointTests.Resource;

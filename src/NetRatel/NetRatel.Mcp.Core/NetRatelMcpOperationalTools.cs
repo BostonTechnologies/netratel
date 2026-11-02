@@ -265,7 +265,7 @@ public sealed partial class NetRatelMcpOperationalTools
         };
     }
 
-    [McpServerTool(UseStructuredContent = true), Description("Manage explicitly-owned script definitions. The policy-admitted V2 profile (explicitly enabled in Development and default in Production) provides list, get, params, validate, create, update, parse_manifest, run, and delete through target policy, a content-hash preview, explicit confirmation, idempotency, ETags, and immutable revision evidence. Development retains its isolated server-generated marker-script compatibility workflow.")]
+    [McpServerTool(UseStructuredContent = true), Description("Manage explicitly-owned script definitions. The policy-admitted V2 profile (explicitly enabled in Development and default in Production) provides list, get, params, validate, create, update, parse_manifest, run, and delete through target policy, a content-hash preview, explicit confirmation, idempotency, ETags, and immutable revision evidence. Production create/update accept optional folderPath for logical placement (omission preserves the destination on update). To move an existing owned script, get its definition, retain its reviewed content/parameters, supply folderPath and expectedSourceRevision together with expectedVersion, preview, then confirm the unchanged request. Development retains its isolated server-generated marker-script compatibility workflow.")]
     public Task<NetRatelToolResponse> netratel_scripts(string operation, JsonElement? request = null, bool confirm = false, CancellationToken cancellationToken = default)
     {
         if (UsesProductionOperatorRoutes)
@@ -3267,7 +3267,7 @@ public sealed partial class NetRatelMcpOperationalTools
         agentId = default;
         draft = new JsonObject();
         if (!TryObject(request, out var payload) || payload is null ||
-            !ContainsOnly(payload, "tenantId", "agentId", "name", "description", "shellType", "content", "contentHash", "parameters", "timeoutSeconds", "workingDirectory", "declaredSideEffects", "manifestJson") ||
+            !ContainsOnly(payload, "tenantId", "agentId", "name", "description", "shellType", "content", "contentHash", "parameters", "timeoutSeconds", "workingDirectory", "declaredSideEffects", "manifestJson", "folderPath", "expectedSourceRevision") ||
             !TryRequiredInt(payload, "tenantId", 1, int.MaxValue, out tenantId) ||
             !TryRequiredGuid(payload, "agentId", out agentId) ||
             !TryRequiredString(payload, "name", 120, out _) ||
@@ -3280,16 +3280,19 @@ public sealed partial class NetRatelMcpOperationalTools
             !TryRequiredString(payload, "workingDirectory", 4096, out var workingDirectory) || workingDirectory.Any(char.IsControl) ||
             payload["parameters"] is not JsonArray parameters || parameters.Count > 32 ||
             payload["declaredSideEffects"] is not JsonArray sideEffects || sideEffects.Count is < 1 or > 5 ||
-            !TryOptionalString(payload, "manifestJson", 16 * 1024, out _))
+            !TryOptionalString(payload, "manifestJson", 16 * 1024, out _) ||
+            !TryOptionalString(payload, "folderPath", 512, out _) ||
+            !TryOptionalPositiveLong(payload, "expectedSourceRevision", out _))
         {
             return false;
         }
 
-        foreach (var name in new[] { "name", "description", "shellType", "content", "contentHash", "parameters", "timeoutSeconds", "workingDirectory", "declaredSideEffects", "manifestJson" })
+        foreach (var name in new[] { "name", "description", "shellType", "content", "contentHash", "parameters", "timeoutSeconds", "workingDirectory", "declaredSideEffects", "manifestJson", "folderPath", "expectedSourceRevision" })
         {
             if (payload.TryGetPropertyValue(name, out var value))
                 draft[name] = value?.DeepClone();
         }
+        if (payload["expectedSourceRevision"] is not null && TryPositiveLong(payload, "expectedSourceRevision", out var sourceRevision)) draft["expectedSourceRevision"] = sourceRevision;
         return true;
     }
 
@@ -3301,13 +3304,13 @@ public sealed partial class NetRatelMcpOperationalTools
         if (!TryObject(request, out var payload) || payload is null)
             return false;
 
-        if (payload.ContainsKey("source") || payload.ContainsKey("expectedSourceRevision") || payload.ContainsKey("expectedContentHash"))
+        if (payload.ContainsKey("source") || payload.ContainsKey("expectedContentHash"))
             return TryCanonicalScriptMutation(action, payload, out tenantId, out agentId, out body);
 
         var allowed = action switch
         {
-            "create" => new[] { "tenantId", "agentId", "name", "description", "shellType", "content", "contentHash", "parameters", "timeoutSeconds", "workingDirectory", "declaredSideEffects", "manifestJson", "planToken", "idempotencyKey" },
-            "update" => new[] { "tenantId", "agentId", "scriptId", "expectedVersion", "name", "description", "shellType", "content", "contentHash", "parameters", "timeoutSeconds", "workingDirectory", "declaredSideEffects", "manifestJson", "planToken", "idempotencyKey" },
+            "create" => new[] { "tenantId", "agentId", "name", "description", "shellType", "content", "contentHash", "parameters", "timeoutSeconds", "workingDirectory", "declaredSideEffects", "manifestJson", "folderPath", "expectedSourceRevision", "planToken", "idempotencyKey" },
+            "update" => new[] { "tenantId", "agentId", "scriptId", "expectedVersion", "name", "description", "shellType", "content", "contentHash", "parameters", "timeoutSeconds", "workingDirectory", "declaredSideEffects", "manifestJson", "folderPath", "expectedSourceRevision", "planToken", "idempotencyKey" },
             "parse_manifest" => new[] { "tenantId", "agentId", "scriptId", "expectedVersion", "manifestJson", "planToken", "idempotencyKey" },
             "delete" => new[] { "tenantId", "agentId", "scriptId", "expectedVersion", "planToken", "idempotencyKey" },
             _ => []
@@ -3318,6 +3321,7 @@ public sealed partial class NetRatelMcpOperationalTools
             return false;
         }
 
+        if (action == "update" && payload["folderPath"] is not null && !TryPositiveLong(payload, "expectedSourceRevision", out _)) return false;
         if (action is "create" or "update")
         {
             var draftRequest = payload.DeepClone()!.AsObject();

@@ -26,6 +26,34 @@ public sealed class ScriptLibraryWorkspaceTests : AsyncBunitContext
     }
 
     [Fact]
+    public async Task Move_saves_only_placement_and_retains_unsaved_name_and_content_through_dialog_cancel_and_success()
+    {
+        var provider = Render<MudDialogProvider>();
+        var cut = Render<ScriptLibraryView>(p => p.Add(view => view.AllowEditing, true));
+        var tree = cut.FindComponent<MudTreeView<ScriptTreeNode>>();
+        await cut.InvokeAsync(() => tree.Instance.SelectedValueChanged.InvokeAsync(tree.Instance.Items!.Single().Children!.Single().Value));
+        var pane = cut.FindComponent<ScriptEditorPane>().Instance;
+        pane.Draft.Name = "Unsaved name.ps1"; pane.Draft.Content = "unsaved bytes";
+        JSInterop.Setup<string>("blazorMonaco.editor.getValue", _ => true).SetResult("unsaved bytes");
+        var opening = cut.Find("[aria-label='Move script']").ClickAsync(new());
+        provider.WaitForElement(".mud-dialog");
+        await provider.InvokeAsync(() => provider.FindComponent<MoveScriptDialog>().Instance.MudDialog.Cancel());
+        await opening.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Empty(transport.Updated); Assert.Equal("Unsaved name.ps1", pane.Draft.Name); Assert.Equal("unsaved bytes", pane.Draft.Content);
+        opening = cut.Find("[aria-label='Move script']").ClickAsync(new());
+        provider.WaitForElement(".mud-dialog");
+        await provider.InvokeAsync(() => provider.FindComponent<MoveScriptDialog>().Instance.MoveScript("/Linux/disk/"));
+        await provider.InvokeAsync(() => provider.FindComponent<MoveScriptDialog>().Instance.MudDialog.Close());
+        await opening.WaitAsync(TimeSpan.FromSeconds(5));
+        var request = Assert.Single(transport.Updated);
+        Assert.Equal("/Linux/disk/", request.FolderPath); Assert.Equal(9, request.ExpectedSourceRevision);
+        Assert.Null(request.Name); Assert.Null(request.Content); Assert.Null(request.Description); Assert.Null(request.ScriptType);
+        Assert.Equal("Unsaved name.ps1", pane.Draft.Name); Assert.Equal("unsaved bytes", pane.Draft.Content);
+        Assert.Equal("/Linux/disk/", pane.Draft.Saved.FolderPath); Assert.Equal(10, pane.Draft.Saved.SourceRevision);
+        Assert.True(pane.Draft.IsDirty);
+    }
+
+    [Fact]
     public async Task Selected_folder_defaults_and_successful_creation_expands_selects_and_focuses_without_execution()
     {
         var provider = Render<MudDialogProvider>();

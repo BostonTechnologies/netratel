@@ -75,7 +75,7 @@ public static class NetRatelMcpCatalog
 {
     private const string PolicyAdmittedV2Availability = " The policy-admitted V2 contract is explicitly enabled on Development HTTP hosts and enabled by default on Production HTTP hosts; enabling it never changes the target environment.";
 
-    public const string Revision = "2026-10-31.1";
+    public const string Revision = "2026-11-02.1";
 
     private static IReadOnlyList<NetRatelMcpToolDescriptor> BaseTools { get; } =
     [

@@ -31,10 +31,11 @@
                 <MudDivider />
                 <div class="netratel-version-content">
                     <div class="netratel-version-section">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Web</MudText>
                         <MudText Typo="Typo.caption" Color="Color.Secondary">@Version.ServiceName</MudText>
                         <MudText Typo="Typo.body2">@Version.DisplayVersion</MudText>
-                        <MudText Typo="Typo.caption">@Version.FullVersion</MudText>
-                        <MudText Typo="Typo.caption" Color="Color.Secondary">@Version.Source · @HostEnvironment.EnvironmentName</MudText>
+                        <MudText Typo="Typo.caption" title="@Version.FullVersion">@((Version.Provenance ?? new(null, null)).Display)</MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">@HostEnvironment.EnvironmentName</MudText>
                     </div>
                     <MudDivider />
                     <div class="netratel-version-section">
@@ -51,7 +52,7 @@
                         {
                             <MudText Typo="Typo.caption" Color="Color.Secondary">@_apiVersion.ServiceName</MudText>
                             <MudText Typo="Typo.body2">@_apiVersion.DisplayVersion</MudText>
-                            <MudText Typo="Typo.caption">@_apiVersion.InformationalVersion</MudText>
+                            <MudText Typo="Typo.caption" title="@_apiVersion.InformationalVersion">@(new NetRatel.Shared.Contracts.ReleaseProvenance(_apiVersion.Commit ?? NetRatel.Shared.Contracts.ReleaseProvenance.Read(null, _apiVersion.InformationalVersion).Commit, _apiVersion.BuiltAtUtc).Display)</MudText>
                             <MudText Typo="Typo.caption" Color="Color.Secondary">@_apiVersion.Environment</MudText>
                         }
                     </div>

@@ -11,6 +11,37 @@ namespace NetRatel.Tests.Infrastructure;
 
 public sealed class McpOperatorScriptStoreTests
 {
+    [Theory]
+    [InlineData("/")]
+    [InlineData("Linux/disk")]
+    [InlineData("Windows\\Disk")]
+    public async Task Folder_move_preserves_identity_reviewed_bytes_and_parameters_and_checks_both_revisions(string destination)
+    {
+        await using var db = CreateDb();
+        var request = CreateRequest(DateTimeOffset.UtcNow);
+        request = request with { Draft = request.Draft with { Parameters = [new McpOperatorScriptParameter("scope", "string", false)] } };
+        var store = new McpOperatorScriptStore(db);
+        var created = await store.CreateAsync(request, default);
+        var script = await db.Scripts.Include(x => x.Parameters).SingleAsync();
+        var parameters = script.Parameters.Select(x => x.Id).ToArray();
+        var draft = request.Draft with { FolderPath = destination, ExpectedSourceRevision = created.SourceRevision };
+        var replacement = new McpOperatorScriptReplaceRequest(created.ScriptId, created.Version, request.Decision, request.AcceptedAudit, draft, DateTimeOffset.UtcNow);
+        var moved = (await store.ReplaceAsync(replacement, default))!;
+        moved.ScriptId.Should().Be(created.ScriptId);
+        moved.ContentHash.Should().Be(created.ContentHash);
+        moved.ManifestHash.Should().Be(created.ManifestHash);
+        moved.FolderPath.Should().Be(NetRatel.Shared.Contracts.Scripts.ScriptLibraryPlacement.NormalizeFolder(destination));
+        moved.SourceRevision.Should().Be(created.SourceRevision + 1);
+        script.Parameters.Select(x => x.Id).Should().Equal(parameters);
+        var reloaded = (await store.GetOwnedAsync(created.ScriptId, created.TenantId, request.Decision.Request.Principal, created.McpResource, created.McpInstance, default))!.Value;
+        reloaded.Content.Should().Be(request.Draft.Content);
+        reloaded.Lease.FolderPath.Should().Be(moved.FolderPath);
+        var stale = () => store.ReplaceAsync(replacement with { ExpectedVersion = moved.Version }, default);
+        await stale.Should().ThrowAsync<McpOperatorScriptConcurrencyException>();
+        var omitted = (await store.ReplaceAsync(replacement with { ExpectedVersion = moved.Version, Draft = request.Draft }, default))!;
+        omitted.FolderPath.Should().Be(moved.FolderPath);
+    }
+
     [Fact]
     public async Task Shared_source_edit_prevents_reviewed_replacement_from_silently_overwriting_it()
     {

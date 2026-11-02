@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Operations;
+using NetRatel.Shared.Contracts.Scripts;
 using NetRatel.Infrastructure.Persistence;
 
 namespace NetRatel.Infrastructure.Services;
@@ -63,7 +64,7 @@ public sealed class McpOperatorScriptStore(OrchestratorDbContext db) : IMcpOpera
             .ConfigureAwait(false);
         return records
             .Where(entry => IsStoredScriptIntegrityValid(entry.record, entry.script))
-            .Select(entry => ToLease(entry.record)).ToArray();
+            .Select(entry => ToLease(entry.record, entry.script)).ToArray();
     }
 
     public Task<(McpOperatorScriptLease Lease, string Content, string? ManifestJson)?> GetOwnedAsync(
@@ -111,7 +112,20 @@ public sealed class McpOperatorScriptStore(OrchestratorDbContext db) : IMcpOpera
             return null;
         if (!IsStoredScriptIntegrityValid(result.record, result.script))
             throw new McpOperatorScriptIntegrityException();
-        return (ToLease(result.record), result.script.Content, result.script.ManifestJson);
+        return (ToLease(result.record, result.script), result.script.Content, result.script.ManifestJson);
+    }
+
+    public async Task<McpOperatorScriptPlacement?> GetOwnedPlacementAsync(long scriptId, long version, int tenantId,
+        McpOperatorPrincipal principal, string mcpResource, string mcpInstance, CancellationToken cancellationToken)
+    {
+        if (!IsOwnershipValid(tenantId, principal, mcpResource, mcpInstance)) return null;
+        return await _db.McpOperatorScriptVersions.AsNoTracking()
+            .Join(_db.McpOperatorScripts.AsNoTracking(), revision => revision.ScriptRecordId, owner => owner.Id, (revision, owner) => new { revision, owner })
+            .Where(x => x.owner.ScriptId == scriptId && x.revision.ScriptVersion == version && x.owner.TenantId == tenantId
+                && x.owner.Subject == principal.Subject && x.owner.ClientId == ClientId(principal)
+                && x.owner.McpResource == mcpResource && x.owner.McpInstance == mcpInstance)
+            .Select(x => new McpOperatorScriptPlacement(x.revision.FolderPath, x.revision.SourceRevision))
+            .SingleOrDefaultAsync(cancellationToken);
     }
 
     public async Task<McpOperatorScriptLease> CreateAsync(
@@ -127,7 +141,7 @@ public sealed class McpOperatorScriptStore(OrchestratorDbContext db) : IMcpOpera
         var script = new ScriptDefinition
         {
             Name = prepared.Name,
-            FolderPath = $"/mcp-operator/{request.Decision.Request.TenantId}/",
+            FolderPath = request.Draft.FolderPath is null ? $"/mcp-operator/{request.Decision.Request.TenantId}/" : ScriptLibraryPlacement.NormalizeFolder(request.Draft.FolderPath),
             Description = prepared.Description,
             Content = request.Draft.Content,
             ManifestJson = prepared.ManifestJson,
@@ -135,6 +149,7 @@ public sealed class McpOperatorScriptStore(OrchestratorDbContext db) : IMcpOpera
             CreatedAtUtc = request.OccurredAtUtc,
             UpdatedAtUtc = request.OccurredAtUtc
         };
+        await ScriptService.EnsurePlacementAvailableAsync(_db, script.Name, script.FolderPath, null, cancellationToken);
         ApplyParameters(script, prepared.Parameters);
         _db.Scripts.Add(script);
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -164,11 +179,11 @@ public sealed class McpOperatorScriptStore(OrchestratorDbContext db) : IMcpOpera
             Version = 1
         };
         _db.McpOperatorScripts.Add(record);
-        _db.McpOperatorScriptVersions.Add(ToVersionRecord(record, "created", request.AcceptedAudit.AuditId, request.OccurredAtUtc));
+        _db.McpOperatorScriptVersions.Add(ToVersionRecord(record, "created", request.AcceptedAudit.AuditId, request.OccurredAtUtc, script.FolderPath, script.SourceRevision));
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         if (transaction is not null)
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return ToLease(record);
+        return ToLease(record, script);
     }
 
     public async Task<McpOperatorScriptLease?> ReplaceAsync(
@@ -177,6 +192,8 @@ public sealed class McpOperatorScriptStore(OrchestratorDbContext db) : IMcpOpera
     {
         ArgumentNullException.ThrowIfNull(request);
         var prepared = ValidateDraft(request.Decision, request.AcceptedAudit, request.Draft);
+        await using var transaction = _db.Database.IsRelational()
+            ? await _db.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken) : null;
         if (request.ScriptId <= 0 || request.ExpectedVersion <= 0)
             throw new ArgumentException("A positive script id and expected ETag version are required.", nameof(request));
 
@@ -194,13 +211,18 @@ public sealed class McpOperatorScriptStore(OrchestratorDbContext db) : IMcpOpera
         if (!IsStoredScriptIntegrityValid(record, script))
             throw new McpOperatorScriptIntegrityException();
 
+        if (request.Draft.FolderPath is not null && (request.Draft.ExpectedSourceRevision is not > 0 || request.Draft.ExpectedSourceRevision != script.SourceRevision))
+            throw new McpOperatorScriptConcurrencyException();
+        var folder = request.Draft.FolderPath is null ? script.FolderPath : ScriptLibraryPlacement.NormalizeFolder(request.Draft.FolderPath);
+        await ScriptService.EnsurePlacementAvailableAsync(_db, prepared.Name, folder, script.Id, cancellationToken);
+        script.FolderPath = folder;
         script.Name = prepared.Name;
         script.Description = prepared.Description;
         script.Content = request.Draft.Content;
         script.ManifestJson = prepared.ManifestJson;
         script.ScriptType = StoredScriptType(prepared.ShellType);
         script.UpdatedAtUtc = request.OccurredAtUtc;
-        ApplyParameters(script, prepared.Parameters);
+        if (record.ParametersJson != SerializeParameters(prepared.Parameters)) ApplyParameters(script, prepared.Parameters);
 
         record.PolicyId = request.Decision.MatchingPolicyIds.Single();
         record.PolicyVersion = request.Decision.SelectedPolicyVersion!.Value;
@@ -215,7 +237,7 @@ public sealed class McpOperatorScriptStore(OrchestratorDbContext db) : IMcpOpera
         record.DeclaredSideEffectsJson = SerializeSideEffects(prepared.DeclaredSideEffects);
         record.UpdatedAtUtc = request.OccurredAtUtc;
         record.Version++;
-        _db.McpOperatorScriptVersions.Add(ToVersionRecord(record, "updated", request.AcceptedAudit.AuditId, request.OccurredAtUtc));
+        _db.McpOperatorScriptVersions.Add(ToVersionRecord(record, "updated", request.AcceptedAudit.AuditId, request.OccurredAtUtc, script.FolderPath, SourceRevisionAfterSave(script)));
         try
         {
             await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -224,7 +246,8 @@ public sealed class McpOperatorScriptStore(OrchestratorDbContext db) : IMcpOpera
         {
             throw new McpOperatorScriptConcurrencyException();
         }
-        return ToLease(record);
+        if (transaction is not null) await transaction.CommitAsync(cancellationToken);
+        return ToLease(record, script);
     }
 
     public async Task<McpOperatorScriptLease?> DeleteAsync(
@@ -254,7 +277,7 @@ public sealed class McpOperatorScriptStore(OrchestratorDbContext db) : IMcpOpera
         record.DeletedAtUtc = occurredAtUtc;
         record.UpdatedAtUtc = occurredAtUtc;
         record.Version++;
-        _db.McpOperatorScriptVersions.Add(ToVersionRecord(record, "deleted", acceptedAudit.AuditId, occurredAtUtc));
+        _db.McpOperatorScriptVersions.Add(ToVersionRecord(record, "deleted", acceptedAudit.AuditId, occurredAtUtc, script.FolderPath, script.SourceRevision));
         try
         {
             await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -263,7 +286,7 @@ public sealed class McpOperatorScriptStore(OrchestratorDbContext db) : IMcpOpera
         {
             throw new McpOperatorScriptConcurrencyException();
         }
-        return ToLease(record);
+        return ToLease(record, script);
     }
 
     private static PreparedDraft ValidateDraft(
@@ -273,6 +296,7 @@ public sealed class McpOperatorScriptStore(OrchestratorDbContext db) : IMcpOpera
     {
         ArgumentNullException.ThrowIfNull(draft);
         ValidateDecision(decision, acceptedAudit);
+        if (draft.FolderPath is not null) ScriptLibraryPlacement.NormalizeFolder(draft.FolderPath);
         var constraints = decision.EffectiveConstraints!;
         var name = NormalizeText(draft.Name, 120, "name");
         var description = NormalizeText(draft.Description, 512, "description", allowEmpty: true);
@@ -529,7 +553,14 @@ public sealed class McpOperatorScriptStore(OrchestratorDbContext db) : IMcpOpera
         catch (JsonException) { throw new InvalidOperationException("The persisted script side-effect declaration is invalid."); }
     }
 
-    private static McpOperatorScriptVersionRecord ToVersionRecord(McpOperatorScriptRecord record, string action, Guid auditId, DateTimeOffset occurredAtUtc) => new()
+    private long SourceRevisionAfterSave(ScriptDefinition script)
+    {
+        _db.ChangeTracker.DetectChanges();
+        var entry = _db.Entry(script);
+        return entry.State == EntityState.Modified ? checked(entry.Property(x => x.SourceRevision).OriginalValue + 1) : script.SourceRevision;
+    }
+
+    private static McpOperatorScriptVersionRecord ToVersionRecord(McpOperatorScriptRecord record, string action, Guid auditId, DateTimeOffset occurredAtUtc, string? folderPath, long sourceRevision) => new()
     {
         Id = Guid.NewGuid(),
         ScriptRecordId = record.Id,
@@ -546,7 +577,9 @@ public sealed class McpOperatorScriptStore(OrchestratorDbContext db) : IMcpOpera
         TimeoutSeconds = record.TimeoutSeconds,
         WorkingDirectory = record.WorkingDirectory,
         DeclaredSideEffectsJson = record.DeclaredSideEffectsJson,
-        OccurredAtUtc = occurredAtUtc
+        OccurredAtUtc = occurredAtUtc,
+        FolderPath = folderPath,
+        SourceRevision = sourceRevision
     };
 
     public static bool IsStoredScriptIntegrityValid(McpOperatorScriptRecord record, ScriptDefinition script) =>
@@ -570,12 +603,12 @@ public sealed class McpOperatorScriptStore(OrchestratorDbContext db) : IMcpOpera
         }
     }
 
-    private static McpOperatorScriptLease ToLease(McpOperatorScriptRecord record) => new(
+    private static McpOperatorScriptLease ToLease(McpOperatorScriptRecord record, ScriptDefinition script) => new(
         record.ScriptId, record.TenantId, record.Subject, record.ClientId, record.McpResource, record.McpInstance,
         record.PolicyId, record.PolicyVersion, record.Name, record.Description, record.ShellType,
         record.ContentHash, record.ManifestHash, ReadParameters(record.ParametersJson), record.TimeoutSeconds,
         record.WorkingDirectory, ReadSideEffects(record.DeclaredSideEffectsJson), record.DeletedAtUtc is not null,
-        record.CreatedAtUtc, record.UpdatedAtUtc, record.Version);
+        record.CreatedAtUtc, record.UpdatedAtUtc, record.Version, script.FolderPath, script.SourceRevision);
 
     private sealed record PreparedDraft(
         string Name,

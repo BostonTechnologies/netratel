@@ -31,6 +31,7 @@ public static class SystemEndpoints
             var fullVersion = string.IsNullOrWhiteSpace(informationalVersion)
                 ? assembly.GetName().Version?.ToString() ?? "dev"
                 : informationalVersion;
+            var provenance = NetRatel.Shared.Contracts.ReleaseProvenance.Read(assembly, fullVersion);
 
             return Results.Ok(new
             {
@@ -38,7 +39,9 @@ public static class SystemEndpoints
                 displayVersion = FormatDisplayVersion(fullVersion),
                 informationalVersion = fullVersion,
                 assemblyVersion = assembly.GetName().Version?.ToString() ?? "unknown",
-                environment = environment.EnvironmentName
+                environment = environment.EnvironmentName,
+                commit = provenance.Commit,
+                builtAtUtc = provenance.BuiltAtUtc
             });
         }).AllowAnonymous();
 

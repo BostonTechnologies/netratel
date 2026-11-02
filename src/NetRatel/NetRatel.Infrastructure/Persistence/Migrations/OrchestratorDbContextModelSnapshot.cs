@@ -120,6 +120,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("TraceJson")
+                        .HasColumnType("jsonb");
+
                     b.Property<string>("Type")
                         .IsRequired()
                         .HasMaxLength(64)
@@ -168,6 +171,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset>("LastActivityUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateTimeOffset?>("LastRecoveryAttemptAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<long>("LastSequence")
                         .HasColumnType("bigint");
 
@@ -187,9 +193,16 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .HasColumnType("jsonb")
                         .HasDefaultValue("[]");
 
+                    b.Property<string>("RecoverySummary")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
                     b.Property<string>("RemoteSessionId")
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)");
+
+                    b.Property<int?>("RemoteTurnCountBeforeSend")
+                        .HasColumnType("integer");
 
                     b.Property<Guid>("RequestId")
                         .HasColumnType("uuid");
@@ -4819,6 +4832,10 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .HasMaxLength(512)
                         .HasColumnType("character varying(512)");
 
+                    b.Property<string>("FolderPath")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
                     b.Property<string>("ManifestHash")
                         .IsRequired()
                         .HasMaxLength(64)
@@ -4849,6 +4866,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");
+
+                    b.Property<long?>("SourceRevision")
+                        .HasColumnType("bigint");
 
                     b.Property<int>("TimeoutSeconds")
                         .HasColumnType("integer");

@@ -325,8 +325,10 @@ public sealed class NetclawPersistencePostgresTests(PostgreSqlPersistenceFixture
         await restarted.SetEnabledAsync(17, new(1, false), default); Assert.Null(await restarted.ResolveAsync(17));
     }
 
-    [Fact]
-    public async Task Restart_marks_processing_unknown_and_explicit_history_recovery_never_resends_the_operator_message()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Restart_marks_processing_unknown_and_explicit_history_recovery_never_resends_the_operator_message(bool historicalEnd)
     {
         var options = await DatabaseAsync(); var daemon = new Daemon(); var services = new ServiceCollection();
         services.AddLogging(); services.AddSingleton<TimeProvider>(TimeProvider.System);
@@ -342,10 +344,12 @@ public sealed class NetclawPersistencePostgresTests(PostgreSqlPersistenceFixture
             connection = profile.Connection;
             var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
             var row = new AiInvestigationRecord { Id = id, TenantId = 17, RequestId = Guid.NewGuid(), Title = "Recover existing turn", CreatedBy = "operator", State = InvestigationState.Processing,
-                ActiveMessageId = messageId, RemoteSessionId = "saved-session", ProfileFingerprint = NetclawProfileService.Fingerprint(17, "https://netclaw.example/hub/session"), LastActivityUtc = DateTimeOffset.UtcNow };
+                RemoteTurnCountBeforeSend = historicalEnd ? 2 : null, ActiveMessageId = messageId, RemoteSessionId = "saved-session", ProfileFingerprint = NetclawProfileService.Fingerprint(17, "https://netclaw.example/hub/session"), LastActivityUtc = DateTimeOffset.UtcNow };
             db.Add(row); InvestigationStore.Append(db, row, "operator", "Investigate", "operator", messageId); await db.SaveChangesAsync();
             Assert.True(profile.Success);
         }
+        daemon.RemoteTurnCount = historicalEnd ? 3 : null;
+        daemon.RecoveredReply = "Recovered saved report excerpt.";
         daemon.Marker = NetclawInvestigationWorker.MessageMarker(id, messageId);
         var lifecycle = new WorkerLifecycle();
         using var worker = new NetclawInvestigationWorker(provider.GetRequiredService<IServiceScopeFactory>(), daemon, TimeProvider.System, lifecycle);
@@ -374,11 +378,18 @@ public sealed class NetclawPersistencePostgresTests(PostgreSqlPersistenceFixture
             await using (var scope = provider.CreateAsyncScope())
             {
                 var snapshot = await scope.ServiceProvider.GetRequiredService<InvestigationStore>().LoadAsync(17, id, 0, default);
-                Assert.Equal(InvestigationState.DeliveryUnknown, snapshot.Investigation.State);
-                Assert.Single(snapshot.Events, item => item.Type == "recovery_admission_confirmed");
+                Assert.Equal(historicalEnd ? InvestigationState.Idle : InvestigationState.DeliveryUnknown, snapshot.Investigation.State);
+                Assert.Single(snapshot.Events, item => item.Type == (historicalEnd ? "recovery_turn_ended" : "recovery_admission_confirmed"));
+                Assert.Equal(daemon.RecoveredReply, Assert.Single(snapshot.Events, item => item.Type == "assistant_recovered").Text);
+                Assert.NotNull(snapshot.Recovery?.LastAttemptAtUtc);
             }
-            await daemon.Output!(JsonSerializer.SerializeToElement(new { type = "turn_completed", sessionId = "saved-session" }));
-            await daemon.ResumedSessionClosed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            if (!historicalEnd)
+            {
+                await worker.ReconcileAsync(17, id, "operator", default);
+                Assert.Equal(joins, daemon.Joins.Count);
+                await daemon.Output!(JsonSerializer.SerializeToElement(new { type = "turn_completed", sessionId = "saved-session" }));
+                await daemon.ResumedSessionClosed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            }
             await using var completed = new OrchestratorDbContext(options);
             Assert.Equal(InvestigationState.Idle, (await completed.AiInvestigations.AsNoTracking().SingleAsync(x => x.Id == id)).State);
             Assert.Equal(0, daemon.Sends);
@@ -412,6 +423,7 @@ public sealed class NetclawPersistencePostgresTests(PostgreSqlPersistenceFixture
     private sealed class Daemon : IAiAssistantChatClientFactory
     {
         public bool FailConnection; public int Sends; public string Marker = "";
+        public int? RemoteTurnCount; public string? RecoveredReply;
         public Channel<(string SessionId, string Text)> Sent { get; } = Channel.CreateUnbounded<(string SessionId, string Text)>();
         public Channel<bool> TurnClosed { get; } = Channel.CreateUnbounded<bool>();
         public List<string?> Joins { get; } = []; public Func<JsonElement, Task>? Output;
@@ -425,7 +437,7 @@ public sealed class NetclawPersistencePostgresTests(PostgreSqlPersistenceFixture
             {
                 if (daemon.FailConnection) throw new HttpRequestException("Synthetic probe failure.");
                 IsConnected = true; resumedSession = sessionId is not null; daemon.Joins.Add(sessionId); daemon.Output = output;
-                if (sessionId is not null) await output(JsonSerializer.SerializeToElement(new { type = "session_joined", sessionId, recentMessages = new[] { new { role = "user", content = daemon.Marker + "Investigate" } } }));
+                await output(JsonSerializer.SerializeToElement(new { type = "session_joined", sessionId = sessionId ?? "probe-session", turnCount = daemon.RemoteTurnCount, recentMessages = daemon.RecoveredReply is null ? new[] { new { role = "user", content = daemon.Marker + "Investigate" } } : new[] { new { role = "user", content = daemon.Marker + "Investigate" }, new { role = "assistant", content = daemon.RecoveredReply } } }));
                 return new(sessionId ?? "probe-session", sessionId is null);
             }
             public Task SendAsync(string sessionId, string text, CancellationToken ct) { daemon.Sends++; daemon.Sent.Writer.TryWrite((sessionId, text)); return Task.CompletedTask; }

@@ -29,8 +29,7 @@ internal sealed class AutomatedInvestigationTestDaemon : IAiAssistantChatClientF
         public async Task<SessionEnsureResult> ConnectAsync(string? sessionId, Func<JsonElement, Task> output, CancellationToken cancellationToken)
         {
             IsConnected = true; daemon.output = output; daemon.sessionId = sessionId ?? Guid.NewGuid().ToString("N");
-            if (sessionId is not null)
-                await output(JsonSerializer.SerializeToElement(new { type = "session_joined", sessionId,
+            await output(JsonSerializer.SerializeToElement(new { type = "session_joined", sessionId = daemon.sessionId,
                     recentMessages = daemon.lastRequest is null ? Array.Empty<object>() : new object[] { new { role = "user", content = daemon.lastRequest } } }));
             return new(daemon.sessionId, sessionId is null);
         }

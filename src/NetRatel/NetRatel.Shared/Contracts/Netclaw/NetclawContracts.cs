@@ -37,12 +37,16 @@ public sealed record InvestigationSummaryDto(Guid Id, int TenantId, string Title
     public bool IsGeneralChat => AgentIds.Count == 0;
 }
 public sealed record InvestigationEventDto(long Sequence, string Type, string Text, string? Actor, string? CallId,
-    IReadOnlyList<InvestigationOptionDto>? Options, DateTimeOffset CreatedAtUtc, Guid? MessageId = null);
+    IReadOnlyList<InvestigationOptionDto>? Options, DateTimeOffset CreatedAtUtc, Guid? MessageId = null, NetclawTraceDto? Trace = null);
+public sealed record NetclawTraceDto(string? ToolName, string? Status, DateTimeOffset? SourceTimestampUtc,
+    string SessionId, Guid? TurnMessageId, string? ArgumentsJson, string? Result, string? FailureCode,
+    string? DetailsJson, bool Redacted, bool Truncated);
 public sealed record InvestigationOptionDto(string Key, string Label);
 public sealed record InvestigationSnapshotDto(InvestigationSummaryDto Investigation, long LastSequence, Guid? ActiveMessageId,
     IReadOnlyList<InvestigationEventDto> Events, IReadOnlyList<InvestigationClientDto> Clients,
     IReadOnlyList<InvestigationApprovalDto> PendingApprovals, string? Draft = null, IReadOnlyList<AiPromptSnapshot>? Prompts = null,
-    InvestigationSentContextDto? SentContext = null);
+    InvestigationSentContextDto? SentContext = null, InvestigationRecoveryDto? Recovery = null);
+public sealed record InvestigationRecoveryDto(DateTimeOffset? LastAttemptAtUtc, string? Summary);
 public sealed record InvestigationSentContextDto(Guid MessageId, string Request, string MetadataJson, int PayloadBytes,
     DateTimeOffset PreparedAtUtc, DateTimeOffset? SendAttemptedAtUtc, IReadOnlyList<string> OmissionNotes);
 public sealed record InvestigationApprovalDto(string CallId, IReadOnlyList<InvestigationOptionDto> Options);

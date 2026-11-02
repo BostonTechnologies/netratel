@@ -1,0 +1,10 @@
+.netclaw-trace-row { margin: .25rem 0; font-size: .75rem; color: var(--mud-palette-text-secondary); }
+summary { cursor: pointer; padding: .35rem .25rem; overflow-wrap: anywhere; }
+summary span { color: var(--mud-palette-text-primary); }
+summary time { float: right; margin-left: .5rem; font-variant-numeric: tabular-nums; }
+summary small { display: block; padding-left: 1rem; }
+.netclaw-trace-details { margin: .25rem 0 .5rem 1rem; padding: .5rem .75rem; border-left: 2px solid var(--mud-palette-divider); overflow-wrap: anywhere; }
+.netclaw-trace-details p { margin: .25rem 0 .5rem; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; max-height: 18rem; font-size: .72rem; background: var(--mud-palette-background); padding: .5rem; }
+button { color: var(--mud-palette-text-primary); background: var(--mud-palette-surface); border: 1px solid var(--mud-palette-divider); border-radius: 6px; padding: .3rem .6rem; cursor: pointer; }
+summary:focus-visible, time:focus-visible, button:focus-visible { outline: 2px solid var(--mud-palette-primary); outline-offset: 2px; }

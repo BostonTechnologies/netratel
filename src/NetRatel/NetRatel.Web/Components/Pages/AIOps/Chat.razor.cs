@@ -25,12 +25,12 @@ public partial class Chat
     private InvestigationMessageRequest? _pendingMessage;
     private GeneralChatCreateRequest? _pendingCreate;
     private (int? Tenant, Guid? Chat)? _loadedRoute;
-    private ElementReference _transcript, _composer;
+    private ElementReference _composer;
     private string _message = "", _search = "";
     private string? _error, _liveError;
     private int _tenant, _generation;
-    private bool _initialized, _loading = true, _busy, _disposed, _showArchived, _confirmArchive, _acknowledgeRemote;
-    private bool _scrollRequested, _forceScroll, _timeLoaded;
+    private bool _initialized, _loading = true, _busy, _disposed, _showArchived, _acknowledgeRemote;
+    private bool _timeLoaded;
 
     private NetclawTenantDto? Access => _tenants.FirstOrDefault(x => x.TenantId == _tenant);
     private bool ConnectionReady => _connection is { Enabled: true, HasDeviceToken: true } && _connection.TenantId == _tenant;
@@ -81,7 +81,7 @@ public partial class Chat
         var tenant = _tenant;
         _snapshot = null; _events.Clear(); _items = []; _connection = null;
         _message = _search = ""; _pendingMessage = null; _pendingCreate = null;
-        _busy = _confirmArchive = _acknowledgeRemote = _showArchived = false;
+        _busy = _acknowledgeRemote = _showArchived = false;
         _liveError = null; _loading = true;
         if (_tenant == 0)
         {
@@ -100,7 +100,7 @@ public partial class Chat
             if (RequestedChat is { } id)
             {
                 var snapshot = await Api.GetAsync(tenant, id, ct: ct);
-                if (Current(tenant, generation)) Apply(snapshot, forceScroll: true);
+                if (Current(tenant, generation)) Apply(snapshot);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
@@ -188,7 +188,7 @@ public partial class Chat
             }
             var accepted = await Api.SendAsync(tenant, _snapshot.Investigation.Id, message, ct);
             if (!Current(tenant, generation)) return;
-            Apply(accepted, forceScroll: true);
+            Apply(accepted);
             _pendingMessage = null; _message = "";
         }
         catch (HttpRequestException exception) when (exception.StatusCode == HttpStatusCode.BadRequest)
@@ -218,7 +218,7 @@ public partial class Chat
         var snapshot = await Api.ArchiveAsync(tenant, _snapshot.Investigation.Id,
             new(_snapshot.ActiveMessageId ?? Guid.Empty, _acknowledgeRemote), ct);
         if (!Current(tenant, generation)) return;
-        Apply(snapshot); _confirmArchive = _acknowledgeRemote = false;
+        Apply(snapshot); _acknowledgeRemote = false;
     });
 
     private Task LoadMoreAsync() => ExecuteAsync(async (tenant, generation, ct) =>
@@ -228,7 +228,7 @@ public partial class Chat
         if (Current(tenant, generation)) Apply(snapshot);
     });
 
-    private void Apply(InvestigationSnapshotDto snapshot, bool forceScroll = false)
+    private void Apply(InvestigationSnapshotDto snapshot)
     {
         if (snapshot.Investigation.TenantId != _tenant || _snapshot is not null &&
             (_snapshot.Investigation.Id != snapshot.Investigation.Id || _snapshot.LastSequence > snapshot.LastSequence)) return;
@@ -237,8 +237,6 @@ public partial class Chat
             _error = "This conversation is an investigation. Open it from AI Ops → Investigations.";
             return;
         }
-        var previousCursor = Cursor;
-        var previousDraft = _snapshot?.Draft;
         foreach (var item in snapshot.Events)
             if (_events.All(x => x.Sequence != item.Sequence)) _events.Add(item);
         _events.Sort((left, right) => left.Sequence.CompareTo(right.Sequence));
@@ -248,8 +246,6 @@ public partial class Chat
             _pendingMessage = null; _message = "";
         }
         _items = _items.Where(x => x.Id != snapshot.Investigation.Id).Append(snapshot.Investigation).ToArray();
-        _scrollRequested |= forceScroll || previousCursor != Cursor || previousDraft != snapshot.Draft;
-        _forceScroll |= forceScroll;
     }
 
     private async Task PollAsync(CancellationToken ct)
@@ -307,11 +303,8 @@ public partial class Chat
                 if (!_disposed) StateHasChanged();
             }
             _scrollModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/netclaw-chat.js");
-            if (_snapshot is not null && _scrollRequested)
-                await _scrollModule.InvokeVoidAsync("followOutput", _transcript, _forceScroll);
-            if (ConnectionReady && _snapshot?.Investigation.State != InvestigationState.Archived)
+            if (ConnectionReady && _snapshot is null)
                 await _scrollModule.InvokeVoidAsync("prepareComposer", _composer);
-            _scrollRequested = _forceScroll = false;
         }
         catch (JSDisconnectedException) { return; }
     }

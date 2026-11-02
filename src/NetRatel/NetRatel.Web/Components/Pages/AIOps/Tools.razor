@@ -63,17 +63,22 @@
                     </button>
                 }
             </aside>
-            <section class="ai-conversation" aria-label="Investigation chat">
-                @if (_snapshot is null)
-                {
-                    <div class="ai-empty"><div class="ai-symbol">✦</div><h2>Start from an alert. Find the cause.</h2><p>Open an investigation to review its evidence and conversation, or choose systems for a new investigation.</p><a href="/flows">Configure an AI action in Flows</a></div>
-                }
-                else
-                {
-                    <header class="ai-chat-heading"><div><span class="ai-state">@StateLabel(_snapshot.Investigation.State)</span><h2>@_snapshot.Investigation.Title</h2><small>@_snapshot.Investigation.Id</small></div>
-                        @if (_snapshot.Investigation.State != InvestigationState.Archived && Access?.CanInvestigate == true)
-                        { <button type="button" @onclick="() => _showArchive = !_showArchive" disabled="@_busy">Archive</button> }
-                    </header>
+            @if (_snapshot is null)
+            {
+                <section class="ai-conversation"><div class="ai-empty"><h2>Start from an alert. Find the cause.</h2><p>Open an investigation to review its evidence and conversation, or choose systems for a new investigation.</p><a href="/flows">Configure an AI action in Flows</a></div></section>
+            }
+            else
+            {
+                <NetclawConversation @key="_snapshot.Investigation.Id" Snapshot="_snapshot" Events="_events" TenantName="@(Access?.TenantName)"
+                    @bind-Message="_message" Busy="_busy" CanInvestigate="@(Access?.CanInvestigate == true)"
+                    CanEditMessage="@(_pendingMessage is null && !_busy && Access?.CanInvestigate == true && _snapshot.Investigation.State == InvestigationState.Idle)"
+                    CanSend="@(!_busy && Access?.CanInvestigate == true && _snapshot.Investigation.State == InvestigationState.Idle && !string.IsNullOrWhiteSpace(_message))"
+                    SendLabel="@(_pendingMessage is null ? "Send" : "Retry same request")"
+                    Send="SendAsync" Recover="RecoverAsync" LoadMore="LoadMoreAsync"
+                    Archive="@(async (bool acknowledge) => { _acknowledgeRemote = acknowledge; await ArchiveAsync(); })"
+                    Approve="@(decision => ApproveAsync(decision.CallId, decision.Key))">
+                    <Context>
+                        <small>Investigation @_snapshot.Investigation.Id</small>
                     <div class="ai-context" aria-label="System context">
                         @foreach (var client in _snapshot.Clients) { <span title="@(ClientDetails(client) + " · " + client.AgentId)">@client.HostName · @client.PrimaryIpAddress<small>@(client.FriendlyName ?? client.DisplayName) · @client.OperatingSystem · @client.Status · @client.AgentId.ToString("N")[..8]</small></span> }
                         @if (_snapshot.Investigation.OccurrenceId is not null) { <a href="@($"/monitoring?tenantId={_tenant}")">View monitoring</a> }
@@ -93,43 +98,9 @@
                             <pre class="ai-context-preview">@context.Request</pre>
                         </details>
                     }
-                    @if (_showArchive)
-                    {
-                        <div class="ai-notice"><p>Archive this investigation and keep its transcript.</p>
-                            @if (_snapshot.Investigation.State != InvestigationState.Idle) { <label class="ai-check"><input type="checkbox" @bind="_acknowledgeRemote" />I understand that the existing remote turn may still be running.</label> }
-                            <div class="ai-actions"><button type="button" disabled="@(_busy || _snapshot.Investigation.State != InvestigationState.Idle && !_acknowledgeRemote)" @onclick="ArchiveAsync">Archive investigation</button><button type="button" @onclick="() => _showArchive = false">Keep open</button></div></div>
-                    }
-                    <div class="ai-transcript" role="log" aria-label="Saved conversation">
-                        @foreach (var item in _events)
-                        {
-                            @if (item.Type is "operator" or "assistant")
-                            {
-                                <article @key="item.Sequence" class="ai-message @(item.Type == "operator" ? "operator" : "assistant")"><header><strong>@(item.Type == "operator" ? "Operator" : "AI assistant")</strong><time>@item.CreatedAtUtc.ToLocalTime().ToString("HH:mm")</time></header><div>@item.Text</div></article>
-                            }
-                            else if (item.Type is "tool_call" or "tool_result")
-                            { <details class="ai-activity" @key="item.Sequence"><summary>@item.Text</summary><small>@item.CreatedAtUtc.ToString("u") · @item.CallId</small></details> }
-                            else if (item.Type != "approval_request")
-                            { <p class="ai-timeline" @key="item.Sequence">@item.Text</p> }
-                        }
-                        @if (_snapshot.Draft is { Length: > 0 } draft) { <article class="ai-message assistant ai-draft"><header><strong>AI assistant</strong><span>Working…</span></header><div>@draft</div></article> }
-                        @if (Cursor < _snapshot.LastSequence) { <button type="button" @onclick="LoadMoreAsync" disabled="@_busy">Load more saved messages</button> }
-                    </div>
-                    @if (_snapshot.Investigation.State == InvestigationState.AwaitingApproval)
-                    {
-                        @foreach (var approval in _snapshot.PendingApprovals)
-                        {
-                            <div class="ai-approval" role="status" @key="approval.CallId"><strong>Your decision is needed</strong><p>@(_events.LastOrDefault(x => x.CallId == approval.CallId && x.Type == "approval_request")?.Text ?? "The assistant requests approval to use a tool.")</p>
-                                <div class="ai-actions">@foreach (var option in approval.Options) { <button type="button" class="@(option.Key == "deny" ? "" : "ai-primary")" disabled="@(_busy || Access?.CanInvestigate != true)" @onclick="() => ApproveAsync(approval.CallId, option.Key)">@option.Label</button> }</div></div>
-                        }
-                    }
-                    @if (_snapshot.Investigation.State == InvestigationState.DeliveryUnknown)
-                    { <div class="ai-notice"><strong>Check the existing conversation</strong><p>The last turn has an unconfirmed outcome. Recover its saved Netclaw session to inspect admission and completion evidence.</p><button type="button" @onclick="RecoverAsync" disabled="@(_busy || Access?.CanInvestigate != true)">Recover session</button></div> }
-                    @if (_snapshot.Investigation.State is InvestigationState.Processing or InvestigationState.Queued) { <p class="ai-processing" role="status">● @(_snapshot.Investigation.State == InvestigationState.Queued ? "Request saved. Waiting for the assistant transport…" : "The assistant is investigating. You can leave this page and return to its saved conversation.")</p> }
-                    <div class="ai-composer"><label>Your question<textarea @bind="_message" placeholder="Ask the assistant to investigate, explain its findings or review a proposed change…" maxlength="16000" rows="3" disabled="@(_pendingMessage is not null || _busy || Access?.CanInvestigate != true || _snapshot.Investigation.State != InvestigationState.Idle)"></textarea></label>
-                        <div><small>Tool use follows the tenant credential permissions and approval decisions.</small><button type="button" class="ai-primary" @onclick="SendAsync" disabled="@(_busy || Access?.CanInvestigate != true || _snapshot.Investigation.State != InvestigationState.Idle || string.IsNullOrWhiteSpace(_message))">@(_pendingMessage is null ? "Send" : "Retry same request")</button></div>
-                    </div>
-                }
-            </section>
+                    </Context>
+                </NetclawConversation>
+            }
         </div>
     }
 </main>
@@ -154,7 +125,7 @@
     private string? _error;
     private string _search = "", _systemSearch = "", _filter = "all", _title = "", _message = "";
     private int _tenant, _generation;
-    private bool _loading = true, _busy, _creating, _disposed, _showArchive, _acknowledgeRemote;
+    private bool _loading = true, _busy, _creating, _disposed, _acknowledgeRemote;
     private Guid _createRequestId = Guid.NewGuid();
     private InvestigationMessageRequest? _pendingMessage;
     private CancellationTokenSource _scope = new();
@@ -194,7 +165,7 @@
         if (!int.TryParse(e.Value?.ToString(), out var tenant) || tenant == _tenant || !_tenants.Any(x => x.TenantId == tenant)) return;
         ++_generation; _tenant = tenant; _snapshot = null; _events.Clear(); _items = []; _clients = []; _selectedClients.Clear(); _connection = null;
         _knownClients.Clear(); _selectedPrompts = []; _systemSearch = ""; _clientNextOffset = null; ++_clientSearchRevision; _clientSearchScope?.Cancel();
-        _creating = false; _message = ""; _pendingMessage = null; _error = null; _showArchive = false;
+        _creating = false; _message = ""; _pendingMessage = null; _error = null;
         await CommandAsync(LoadTenantAsync);
     }
     private async Task CommandAsync(Func<Task> action)
@@ -219,7 +190,7 @@
     {
         var tenant = _tenant; var generation = _generation;
         var snapshot = await Api.GetAsync(tenant, id, 0, _scope.Token); if (!Current(tenant, generation)) return;
-        _events.Clear(); _snapshot = null; _message = ""; _pendingMessage = null; _showArchive = false; Apply(snapshot);
+        _events.Clear(); _snapshot = null; _message = ""; _pendingMessage = null; Apply(snapshot);
     }
     private void Apply(InvestigationSnapshotDto snapshot)
     {
@@ -286,7 +257,7 @@
     {
         if (_snapshot is null) return;
         Apply(await Api.ArchiveAsync(_tenant, _snapshot.Investigation.Id, new(_snapshot.ActiveMessageId ?? Guid.Empty, _acknowledgeRemote), _scope.Token));
-        _showArchive = false; _acknowledgeRemote = false;
+        _acknowledgeRemote = false;
     });
     private Task LoadMoreAsync() => CommandAsync(async () =>
     { if (_snapshot is not null) Apply(await Api.GetAsync(_tenant, _snapshot.Investigation.Id, Cursor, _scope.Token)); });
