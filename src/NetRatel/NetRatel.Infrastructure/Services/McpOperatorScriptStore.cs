@@ -197,6 +197,8 @@ public sealed class McpOperatorScriptStore(OrchestratorDbContext db) : IMcpOpera
         if (request.ScriptId <= 0 || request.ExpectedVersion <= 0)
             throw new ArgumentException("A positive script id and expected ETag version are required.", nameof(request));
 
+        // Match the Web placement fence before the first read establishes a PostgreSQL snapshot.
+        await ScriptService.LockPlacementsAsync(_db, cancellationToken);
         var record = await _db.McpOperatorScripts.SingleOrDefaultAsync(candidate => candidate.ScriptId == request.ScriptId, cancellationToken).ConfigureAwait(false);
         if (record is null || record.DeletedAtUtc is not null || !OwnedBy(record, request.Decision.Request))
             return null;

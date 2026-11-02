@@ -137,15 +137,17 @@ public sealed class ScriptService(OrchestratorDbContext db) : IScriptService
         return MapScript(script);
     }
 
-    private async Task LockPlacementsAsync(CancellationToken ct)
+    private Task LockPlacementsAsync(CancellationToken ct) => LockPlacementsAsync(_db, ct);
+
+    internal static async Task LockPlacementsAsync(OrchestratorDbContext db, CancellationToken ct)
     {
-        if (_db.Database.IsNpgsql())
-            await _db.Database.ExecuteSqlRawAsync("LOCK TABLE \"Scripts\" IN SHARE ROW EXCLUSIVE MODE", ct);
+        if (db.Database.IsNpgsql())
+            await db.Database.ExecuteSqlRawAsync("LOCK TABLE \"Scripts\" IN SHARE ROW EXCLUSIVE MODE", ct);
     }
 
     internal static async Task EnsurePlacementAvailableAsync(OrchestratorDbContext db, string name, string folder, long? excludingId, CancellationToken ct)
     {
-        if (db.Database.IsNpgsql()) await db.Database.ExecuteSqlRawAsync("LOCK TABLE \"Scripts\" IN SHARE ROW EXCLUSIVE MODE", ct);
+        await LockPlacementsAsync(db, ct);
         var placements = await db.Scripts.AsNoTracking().Where(script => script.Id != excludingId)
             .Select(script => new { script.Name, script.FolderPath }).ToListAsync(ct);
         var target = folder + name;
