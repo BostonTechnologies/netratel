@@ -51,7 +51,7 @@
                         else { @if (item.Type == "assistant_recovered") { <small>Recovered history excerpt · original timestamp and completeness unavailable</small> } <ChatMessageContent Text="@item.Text" /> }
                     </article>
                 }
-                else if (item.Type is "tool_call" or "tool_result" or "error" or "artifact" || VisibleOptional(item.Type))
+                else if (item.Type is "tool_call" or "tool_result" or "error" or "artifact" || VisibleOptional(item.Type) || item.Trace is not null && item.Type is ("turn_completed" or "recovery_turn_ended" or "recovery_admission_confirmed" or "recovery_inconclusive"))
                 { <NetclawTraceRow @key="item.Sequence" Event="item" Events="Events" Display="_display" /> }
                 else if (item.Type != "approval_request" && item.Type is not ("usage" or "processing_state" or "compaction" or "subagent"))
                 { <p @key="item.Sequence" class="chat-timeline">@item.Text</p> }

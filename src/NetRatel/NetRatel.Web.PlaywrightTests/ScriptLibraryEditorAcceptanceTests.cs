@@ -65,6 +65,14 @@ public sealed class ScriptLibraryEditorAcceptanceTests(ClientsManagementBrowserF
             await Assertions.Expect(page.GetByTestId("script-editor-save")).ToBeEnabledAsync();
             await page.GetByRole(AriaRole.Textbox, new() { Name = "Script name", Exact = true }).FillAsync("Inline draft.ps1");
             await CaptureAsync(page, evidence, $"script-editor-inline-{suffix}");
+            var moveTrigger = page.GetByRole(AriaRole.Button, new() { Name = "Move script", Exact = true });
+            await moveTrigger.ClickAsync();
+            var moveDialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Move script", Exact = true });
+            await Assertions.Expect(moveDialog).ToBeVisibleAsync();
+            await moveDialog.GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true }).ClickAsync();
+            await Assertions.Expect(moveDialog).ToHaveCountAsync(0);
+            await Assertions.Expect(page.GetByRole(AriaRole.Textbox, new() { Name = "Script name", Exact = true })).ToHaveValueAsync("Inline draft.ps1");
+            await Assertions.Expect(editor.Locator(".view-lines")).ToContainTextAsync("inline_draft_marker");
 
             await page.GetByRole(AriaRole.Button, new() { Name = "Edit script full screen", Exact = true }).ClickAsync();
             var dialog = page.Locator(".script-editor-dialog");
@@ -121,6 +129,16 @@ public sealed class ScriptLibraryEditorAcceptanceTests(ClientsManagementBrowserF
             await ReplaceContentAsync(fullEditor, "# fullscreen_draft_marker");
             await dialog.GetByRole(AriaRole.Textbox, new() { Name = "Script name", Exact = true }).FillAsync("Full screen draft.ps1");
             await CaptureAsync(page, evidence, $"script-editor-fullscreen-{suffix}");
+            await dialog.GetByRole(AriaRole.Button, new() { Name = "Move script", Exact = true }).ClickAsync();
+            await Assertions.Expect(moveDialog).ToBeVisibleAsync();
+            await moveDialog.GetByText("New folder / path", new() { Exact = true }).ClickAsync();
+            await moveDialog.GetByRole(AriaRole.Textbox, new() { Name = "Destination folder", Exact = true }).FillAsync("/Linux/disk/");
+            await moveDialog.GetByRole(AriaRole.Button, new() { Name = "Move", Exact = true }).ClickAsync();
+            await Assertions.Expect(moveDialog).ToHaveCountAsync(0);
+            await Assertions.Expect(dialog.Locator(".script-editor-location")).ToContainTextAsync("/Linux/disk/");
+            await Assertions.Expect(dialog.GetByRole(AriaRole.Textbox, new() { Name = "Script name", Exact = true })).ToHaveValueAsync("Full screen draft.ps1");
+            await Assertions.Expect(fullEditor.Locator(".view-lines")).ToContainTextAsync("fullscreen_draft_marker");
+            Assert.Equal("/Linux/disk/", scripts.LastUpdate!.FolderPath); Assert.Null(scripts.LastUpdate.Name); Assert.Null(scripts.LastUpdate.Content);
             await dialog.GetByRole(AriaRole.Button, new() { Name = "Exit full screen", Exact = true }).ClickAsync();
 
             await Assertions.Expect(dialog).ToHaveCountAsync(0);

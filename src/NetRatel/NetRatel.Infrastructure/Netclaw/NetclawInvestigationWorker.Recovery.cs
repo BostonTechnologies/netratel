@@ -49,7 +49,13 @@ public sealed partial class NetclawInvestigationWorker
             ? "The session is connected and this exact message was admitted. Recent history excerpts were restored, but this daemon does not provide a durable outcome for that message. Completion remains unconfirmed. Wait for live evidence, or archive this conversation with the acknowledgement and start a new one after checking possible side effects."
             : "The session connected, but recent history did not identify this message as the latest admitted turn. Completion remains unconfirmed. Review the daemon history, or archive with the acknowledgement and start a new conversation after checking possible side effects.";
         if (row.RecoverySummary != summary)
-            InvestigationStore.Append(db, row, row.State == InvestigationState.Idle ? "recovery_turn_ended" : admitted ? "recovery_admission_confirmed" : "recovery_inconclusive", summary);
+        {
+            var evidence = new NetclawTraceDto(null, row.State == InvestigationState.Idle ? "turn ended" : "outcome unconfirmed",
+                NetclawTraceMapper.SourceTimestamp(output), row.RemoteSessionId!, row.ActiveMessageId, null, null, null,
+                JsonSerializer.Serialize(new { admissionConfirmed = admitted, turnCountBeforeSend = row.RemoteTurnCountBeforeSend,
+                    observedTurnCount = TurnCount(output), historicalOutcomeAvailable = false }), false, false);
+            InvestigationStore.Append(db, row, row.State == InvestigationState.Idle ? "recovery_turn_ended" : admitted ? "recovery_admission_confirmed" : "recovery_inconclusive", summary, trace: evidence);
+        }
         row.RecoverySummary = summary;
     }
 }

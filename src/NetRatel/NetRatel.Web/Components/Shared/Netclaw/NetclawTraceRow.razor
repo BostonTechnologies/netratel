@@ -3,7 +3,7 @@
 
 <details class="netclaw-trace-row" open="@Display.ExpandDetails">
     <summary>
-        <span>@(Event.Trace?.ToolName is { Length: > 0 } name && Event.Trace.Status is { Length: > 0 } ? $"{name}: {Event.Trace.Status}" : Event.Text)</span>
+        <span>@(Event.Type.StartsWith("recovery_", StringComparison.Ordinal) ? $"Recovery evidence: {Event.Trace?.Status}" : Event.Trace?.ToolName is { Length: > 0 } name && Event.Trace.Status is { Length: > 0 } ? $"{name}: {Event.Trace.Status}" : Event.Text)</span>
         @if (Display.ShowTimestamps) { <time tabindex="0" datetime="@Time.ToString("O")" title="@TimeLabel" aria-label="@TimeLabel">@Time.UtcDateTime.ToString("HH:mm:ss'Z'")</time> }
         @if (Display.ShowCallIds && Event.CallId is not null) { <small>@Event.CallId</small> }
     </summary>

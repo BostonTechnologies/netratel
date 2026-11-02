@@ -96,10 +96,14 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
         catch (Exception ex) { throw new InvalidOperationException(string.Join("\n", host.StartupServerDiagnostics), ex); }
         var surface = page.GetByTestId("netclaw-conversation");
         await surface.WaitForAsync();
-        var drawer = page.GetByTestId("app-navigation-drawer");
-        if (width < 1280 && !await drawer.EvaluateAsync<bool>("e => e.classList.contains('mud-drawer--closed')"))
-            await page.GetByTestId("navigation-toggle").ClickAsync();
         await Assertions.Expect(page.Locator($"html[data-netratel-theme='{theme}']")).ToHaveCountAsync(1);
+        if (width < 1280)
+        {
+            var scrim = page.Locator(".mud-drawer-overlay--open .mud-overlay-scrim");
+            if (await scrim.CountAsync() > 0 && await scrim.IsVisibleAsync())
+                await scrim.ClickAsync(new() { Position = new() { X = width - 10, Y = height / 2f } });
+            await Assertions.Expect(page.GetByTestId("app-navigation-drawer")).ToHaveClassAsync(new Regex("mud-drawer--closed"));
+        }
         var composer = page.GetByTestId("chat-message");
         await composer.FillAsync("draft survives fullscreen");
         var trace = surface.Locator(".netclaw-trace-row").First;

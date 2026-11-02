@@ -70,7 +70,7 @@
             else
             {
                 <NetclawConversation @key="_snapshot.Investigation.Id" Snapshot="_snapshot" Events="_events" TenantName="@(Access?.TenantName)"
-                    @bind-Message="_message" Busy="_busy" CanInvestigate="@(Access?.CanInvestigate == true)"
+                    @bind-Message="_message" Busy="_busy" CanInvestigate="@(Access?.CanInvestigate == true)" ConnectionReady="@(_connection is { Enabled: true, HasDeviceToken: true })"
                     CanEditMessage="@(_pendingMessage is null && !_busy && Access?.CanInvestigate == true && _snapshot.Investigation.State == InvestigationState.Idle)"
                     CanSend="@(!_busy && Access?.CanInvestigate == true && _snapshot.Investigation.State == InvestigationState.Idle && !string.IsNullOrWhiteSpace(_message))"
                     SendLabel="@(_pendingMessage is null ? "Send" : "Retry same request")"

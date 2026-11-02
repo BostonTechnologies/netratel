@@ -8,11 +8,19 @@ namespace NetRatel.Infrastructure.Netclaw;
 /// <summary>Allowlisted, bounded wire details. Raw frames and private thinking never enter durable trace.</summary>
 public static class NetclawTraceMapper
 {
-    private static readonly Regex SensitiveKey = new("password|passwd|secret|token|credential|authorization|cookie|connection.?string|private.?key|api.?key", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+    private static readonly Regex SensitiveKey = new("password|passwd|pwd|jwt|secret|token|credential|authorization|cookie|connection.?string|private.?key|api.?key", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
     private static readonly Regex Secrets = new("(?i)(bearer\\s+)[a-z0-9._~+/=-]+|((?:password|passwd|pwd|secret|token|api[_-]?key|authorization|cookie)\\s*[:=]\\s*)[^\\s,;]+|-----BEGIN [^-]*PRIVATE KEY-----[\\s\\S]*?-----END [^-]*PRIVATE KEY-----|(?<=://)[^\\s/@:]+:[^\\s/@]+@", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
     private static readonly string[] NumericFields = ["inputTokens", "outputTokens", "totalTokens", "cachedInputTokens", "reasoningTokens", "contextWindowTokens", "usagePercent", "promptMs", "predictedPerSecond", "messagesBefore", "messagesAfter", "preCompactionInputTokens", "keepCountUsed", "durationMs", "toolCountSub", "findingsCount", "turnNumber"];
     private static readonly string[] BoolFields = ["isProcessing", "processingStateRequired", "summarized", "toolResultsCleared", "subAgentSuccess", "interactionIsMessy", "interactionHasAdoptedContext", "interactionHasThirdPartyAdoptedContext"];
     private static readonly string[] TextFields = ["agentName", "phase", "subAgentOutcome", "subAgentOutcomeReason", "fileName", "filePath", "mimeType", "errorMessage", "errorCategory", "errorCorrelationId", "interactionKind", "interactionDisplayText", "interactionNotes", "interactionCwd", "interactionLifetime", "interactionCloseKind", "turnOutcome"];
+
+    public static DateTimeOffset? SourceTimestamp(JsonElement output)
+    {
+        if (output.TryGetProperty("timestampMs", out var timestamp) && timestamp.ValueKind == JsonValueKind.Number
+            && timestamp.TryGetInt64(out var milliseconds) && milliseconds > 0)
+            try { return DateTimeOffset.FromUnixTimeMilliseconds(milliseconds); } catch (ArgumentOutOfRangeException) { /* Invalid source times remain unavailable. */ }
+        return null;
+    }
 
     public static NetclawTraceDto Map(JsonElement output, string sessionId, Guid? messageId, params string[] knownSecrets)
     {
@@ -66,9 +74,7 @@ public static class NetclawTraceMapper
             catch (JsonException) { return requireJson ? "[unavailable: malformed JSON]" : Clean(raw); }
         }
         string? String(string name, int limit = 256) => output.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? Clean(value.GetString()!, limit) : null;
-        DateTimeOffset? sourceTime = null;
-        if (output.TryGetProperty("timestampMs", out var timestamp) && timestamp.ValueKind == JsonValueKind.Number && timestamp.TryGetInt64(out var milliseconds) && milliseconds > 0)
-            try { sourceTime = DateTimeOffset.FromUnixTimeMilliseconds(milliseconds); } catch (ArgumentOutOfRangeException) { /* Invalid source timestamp stays unavailable. */ }
+        var sourceTime = SourceTimestamp(output);
         var type = String("type");
         var details = new JsonObject();
         foreach (var name in NumericFields)
