@@ -10,7 +10,12 @@ using NetRatel.Infrastructure.Netclaw;
 
 namespace NetRatel.Infrastructure.Netclaw;
 
-public sealed record SessionEnsureResult(string SessionId, bool Created);
+public sealed record SessionEnsureResult(string SessionId, bool Created)
+{
+    // NetClaw 0.28.2 advertises acknowledged text admission, but does not emit a
+    // session_joined snapshot when attaching an already initialized session.
+    public int TextAdmissionVersion { get; init; }
+}
 
 public interface IAiAssistantChatClient : IAsyncDisposable
 {

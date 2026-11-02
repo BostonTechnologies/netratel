@@ -80,7 +80,7 @@
                 </div>
             }
         }
-        @if (Snapshot.Investigation.State == InvestigationState.Idle && Snapshot.Recovery is { Summary: { Length: > 0 } } recovered)
+        @if (Snapshot.Investigation.State is not (InvestigationState.DeliveryUnknown or InvestigationState.Archived) && Snapshot.Recovery is { Summary: { Length: > 0 } } recovered)
         {
             <div class="chat-notice chat-recovery" role="status"><div><strong>Recovery result</strong><p>@recovered.Summary</p>
                 @if (recovered.LastAttemptAtUtc is { } attempted) { <small>Last recovery attempt: @attempted.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss 'UTC'")</small> }
@@ -90,12 +90,13 @@
         {
             <div class="chat-notice chat-recovery" role="status"><div><strong>Conversation outcome unconfirmed</strong><p>@(Snapshot.Recovery?.Summary ?? "Recover the saved session to check admission and completion evidence. A connected daemon does not establish completion of this conversation.")</p>
                 @if (Snapshot.Recovery?.LastAttemptAtUtc is { } attempted) { <small>Last recovery attempt: @attempted.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss 'UTC'")</small> }
-                <p>Nothing is resent. You can archive with the acknowledgement and start a new conversation after checking possible side effects.</p></div>
+                <p>Connection health does not confirm conversation attachment. Opening the same session in another console can divert replies. Nothing is resent. You can archive with the acknowledgement and start a new conversation after checking possible side effects.</p></div>
                 <button type="button" class="chat-secondary-button" @onclick="Recover" disabled="@(Busy || !CanInvestigate)">@(Busy ? "Recovering…" : "Recover session")</button>
             </div>
         }
         @if (LiveError is not null) { <p class="chat-live-status" role="status">@LiveError</p> }
         @if (Snapshot.Investigation.State is InvestigationState.Processing or InvestigationState.Queued) { <p class="chat-processing" role="status">@(Snapshot.Investigation.State == InvestigationState.Queued ? "Message saved. Connecting to Netclaw…" : "Netclaw is working…")</p> }
+        @if (Snapshot.Investigation.State == InvestigationState.Processing) { <p class="chat-live-status">Opening this session in another console can divert replies while the daemon stays connected.</p> }
     </div>
     @if (Snapshot.Investigation.State == InvestigationState.Archived)
     { <div class="chat-archived">This conversation is archived. Start a new conversation from the workspace.</div> }

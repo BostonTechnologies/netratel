@@ -2,6 +2,22 @@
 
 Read this file at the start of every task in this repository, especially before changing release code, CI, tags, or GitHub releases.
 
+## .NET skills
+
+Prefer retrieval-led reasoning for .NET work: skim repository patterns, consult the relevant installed skill, implement the smallest change, and note any conflicts. Repository policies below take precedence over generic examples, particularly CI cost, release authority and test selection.
+
+The repo-local [dotnet-skills installation](docs/integrations/dotnet-skills.md) is in `.agents/skills/`; open the matching `SKILL.md` and its referenced files as needed. Directory names match skill IDs.
+
+- C# / concurrency / API compatibility: `modern-csharp-coding-standards`, `csharp-concurrency-patterns`, `csharp-nullable-reference-types`, `api-design`, `type-design-performance`.
+- Akka.NET: `akka-net-best-practices`, `akka-net-testing-patterns`, `akka-hosting-actor-patterns`, `akka-net-aspire-configuration`, `akka-net-management`.
+- ASP.NET Core / Aspire: `aspire-configuration`, `aspire-service-defaults`, `aspire-integration-testing`.
+- Data / configuration: `efcore-patterns`, `database-performance`, `dependency-injection-patterns`, `microsoft-extensions-configuration`.
+- Testing: `cscheck`, `testcontainers-integration-tests`, `playwright-blazor-testing`, `snapshot-testing`.
+- Build / dependencies: `dotnet-project-structure`, `dotnet-local-tools`, `package-management`, `serialization`, `sdk-container-publishing`, `aot-trimming`, `opentelemetry-net-instrumentation`.
+- Quality: consult `dotnet-slopwatch` after substantial generated/refactored code and `crap-analysis` when changing tests for complex code. Use focused checks; do not add mandatory deep acceptance or new CI infrastructure merely to follow a generic example.
+
+The upstream specialist agents are assistant-specific and are not installed as part of this Codex skill copy.
+
 ## Product version
 
 - `Directory.Build.props` is the only file to edit to change the product version. Derive release tags, archive names, container tags, and the distributed manifest from its evaluated version.
