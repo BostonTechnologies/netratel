@@ -78,6 +78,43 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
     }
 
     [Theory]
+    [InlineData(1280, 800, false)]
+    [InlineData(1280, 800, true)]
+    [InlineData(390, 844, false)]
+    [InlineData(390, 844, true)]
+    public async Task Release_assets_expand_with_accessible_actions_and_wrapping_cleanup_details(int width, int height, bool dark)
+    {
+        var fixture = _fixture ?? throw new InvalidOperationException("Fixture unavailable");
+        fixture.Data.IncludeLocalAssets = true;
+        await using var context = await _browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = width, Height = height }, ColorScheme = dark ? ColorScheme.Dark : ColorScheme.Light });
+        var page = await context.NewPageAsync();
+        await page.GotoAsync(fixture.BaseAddress + "/clients/mgmt", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("clients-mgmt-interactive").WaitForAsync(new() { State = WaitForSelectorState.Attached });
+        Assert.Equal(3, await page.GetByRole(AriaRole.Tab).CountAsync());
+        var toggle = page.GetByRole(AriaRole.Button, new() { Name = "Details for 0.4.101", Exact = true });
+        await toggle.ClickAsync();
+        var details = page.GetByTestId("release-details-row");
+        await Assertions.Expect(details.GetByText("netratel-client-with-a-long-filename-and-retained-provenance-windows.zip", new() { Exact = false })).ToBeVisibleAsync();
+        await Assertions.Expect(details.GetByText("Tenant rollout pin retains this version for recovery.")).ToBeVisibleAsync();
+        var action = details.GetByRole(AriaRole.Button, new() { Name = "Download win-x64 archive", Exact = true });
+        await action.FocusAsync();
+        Assert.True(await action.EvaluateAsync<bool>("element => document.activeElement === element"));
+        Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > window.innerWidth"));
+        await AssertHorizontallyReachableAsync(page.GetByTestId("github-import-pack").First, "row import action", width.ToString());
+        foreach (var rowAction in await page.GetByTestId("github-release-actions").Nth(1).GetByRole(AriaRole.Button).AllAsync())
+            await AssertHorizontallyReachableAsync(rowAction, "local release row action", width.ToString());
+        await AssertHorizontallyReachableAsync(action, "runtime download action", width.ToString());
+        await AssertHorizontallyReachableAsync(details.Locator(".release-details-card h3").First, "long runtime filename", width.ToString());
+        await AssertHorizontallyReachableAsync(details.GetByRole(AriaRole.Link).First, "tenant blocker resolution", width.ToString());
+        await page.EvaluateAsync("() => window.scrollTo(0, 0)");
+        var directory = GetPlaywrightArtifactRoot(); Directory.CreateDirectory(directory);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(directory, $"release-assets-{width}-{(dark ? "dark" : "light")}.png"), FullPage = true });
+        await toggle.ClickAsync();
+        await Assertions.Expect(details).ToHaveCountAsync(0);
+        await Assertions.Expect(toggle).ToBeFocusedAsync();
+    }
+
+    [Theory]
     [InlineData(1600, 900, "wide", 100)]
     [InlineData(1280, 800, "desktop", 100)]
     [InlineData(1024, 600, "short", 100)]
@@ -113,7 +150,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
             var shellWait = new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 90_000 };
             await page.GetByTestId("client-management-tabs").WaitForAsync(shellWait);
             await page.GetByTestId("automation-settings-button").WaitForAsync(shellWait);
-            Assert.Equal(5, await page.GetByRole(AriaRole.Tab).CountAsync());
+            Assert.Equal(3, await page.GetByRole(AriaRole.Tab).CountAsync());
             await page.GetByTestId("github-release-catalogue").WaitForAsync();
             await page.GetByTestId("release-automation-settings").WaitForAsync();
             var initialImportPack = page.GetByTestId("github-release-name")
@@ -127,8 +164,6 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
             await Assertions.Expect(page.GetByText(FixtureClientArtifactsService.GetGitHubCheckedText(initialRequest), new() { Exact = true }))
                 .ToBeVisibleAsync(new LocatorAssertionsToBeVisibleOptions { Timeout = 30_000 });
 
-            await VisitTabAsync(page, "Packages", "artifact-management-panel");
-            await VisitTabAsync(page, "Auto-updates", "release-management-panel");
             await VisitTabAsync(page, "Activity", "attempt-management-panel");
             await VisitTabAsync(page, "Suspended", "suspended-management-panel");
             var previousGitHubRequest = fixture.Data.GitHubReleaseRequestCount;
@@ -480,7 +515,6 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
             await Assertions.Expect(page.GetByText(FixtureClientArtifactsService.GetGitHubCheckedText(initialRequest), new() { Exact = true }))
                 .ToBeVisibleAsync(new LocatorAssertionsToBeVisibleOptions { Timeout = 30_000 });
 
-            await VisitTabAsync(page, "Packages", "artifact-management-panel");
             var previousRequest = fixture.Data.GitHubReleaseRequestCount;
             var reload = fixture.Data.PrepareDelayedGitHubReload();
             try
@@ -499,7 +533,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
                 reload.Release();
                 await Assertions.Expect(page.GetByText(reload.CheckedText, new() { Exact = true }))
                     .ToBeVisibleAsync(new LocatorAssertionsToBeVisibleOptions { Timeout = 30_000 });
-                await Assertions.Expect(page.GetByRole(AriaRole.Status, new() { Name = "Loading GitHub releases", Exact = true }))
+                await Assertions.Expect(page.GetByRole(AriaRole.Status, new() { Name = "Loading release catalogue", Exact = true }))
                     .ToBeHiddenAsync(new LocatorAssertionsToBeHiddenOptions { Timeout = 30_000 });
                 await AssertReleaseRowContentReachableAsync(page, "delayed-reload");
             }
@@ -1087,9 +1121,9 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
             var actionButtons = actionCell.GetByRole(AriaRole.Button);
             Assert.Equal(1, await actionButtons.CountAsync());
             var action = actionButtons.First;
-            Assert.Equal("Import pack", (await action.InnerTextAsync()).Trim());
+            Assert.Equal("Download release pack into this instance", await action.GetAttributeAsync("aria-label"));
             Assert.Equal(expected.ImportPackEnabled, await action.IsEnabledAsync());
-            Assert.Equal(1, await row.GetByRole(AriaRole.Link, new() { Name = "Release details", Exact = true }).CountAsync());
+            Assert.Equal(1, await row.GetByRole(AriaRole.Link, new() { Name = "Upstream release", Exact = true }).CountAsync());
             await AssertHorizontallyReachableAsync(action, $"release '{expected.Name}' action", viewportName);
         }
 
@@ -1998,6 +2032,29 @@ internal sealed class FixtureClientArtifactsService : IClientArtifactsService
         return Task.FromResult(_automation);
     }
 
+    public bool IncludeLocalAssets { get; set; }
+    public async Task<ClientReleaseWorkspacePageModel> GetReleaseWorkspaceAsync(int page, int pageSize, string? search,
+        string channel, string? runtime, string? localState, bool refresh, CancellationToken ct = default)
+    {
+        var remote = await GetGitHubReleasesAsync(channel, 0, refresh, ct);
+        var rows = remote.Items.Select(x => new ClientReleaseWorkspaceRowModel
+        {
+            Version = x.Version, Name = x.Name, Channel = x.IsPrerelease ? "prerelease" : "stable", Remote = x,
+            PublishedAtUtc = x.PublishedAtUtc, SourceState = "Available"
+        }).ToList();
+        if (IncludeLocalAssets)
+        {
+            rows[1].Packages = [new() { Rid = "win-x64", Version = rows[1].Version, FileName = "netratel-client-with-a-long-filename-and-retained-provenance-windows.zip", Sha256 = new string('b', 64), Size = 40000000, UploadedAt = DateTimeOffset.UtcNow },
+                new() { Rid = "linux-x64", Version = rows[1].Version, FileName = "netratel-client-linux-with-a-long-filename.tar.gz", Sha256 = new string('c', 64), Size = 30000000, UploadedAt = DateTimeOffset.UtcNow }];
+            rows[1].Releases = [new() { RuntimeId = "win-x64", Version = rows[1].Version, Enabled = true, ReleaseId = ReleaseId, PublishedAt = DateTimeOffset.UtcNow }];
+        }
+        return new() { Items = rows, Page = page, PageSize = pageSize, Total = rows.Count, RefreshedAtUtc = remote.RefreshedAtUtc };
+    }
+    public Task<ClientReleaseDeletionPlanModel> PreviewLocalReleaseDeletionAsync(string version, CancellationToken ct = default) => Task.FromResult(new ClientReleaseDeletionPlanModel
+    {
+        Version = version, RuntimeIds = ["linux-x64", "win-x64"], ReclaimableBytes = 70000000, HistoricalAttempts = 7,
+        Blockers = ["Tenant rollout pins still reference this version."], Dependencies = [new() { Code = "tenant_pin", TenantId = 7, Message = "Tenant rollout pin retains this version for recovery.", Action = "Review the tenant's update policy in Tenants" }]
+    });
     public async Task<GitHubClientReleasePageModel> GetGitHubReleasesAsync(string channel, int page, bool refresh, CancellationToken ct = default)
     {
         int requestNumber;
@@ -2080,7 +2137,7 @@ internal sealed class FixtureClientArtifactsService : IClientArtifactsService
     }
 
     public static string GetGitHubCheckedText(int requestNumber) =>
-        $"Checked {GetGitHubRefreshedAtUtc(requestNumber).ToLocalTime().ToString("g", CultureInfo.CurrentCulture)}";
+        $"Upstream checked {GetGitHubRefreshedAtUtc(requestNumber).ToUniversalTime().ToString("g", CultureInfo.CurrentCulture)} UTC";
 
     private static DateTimeOffset GetGitHubRefreshedAtUtc(int requestNumber) =>
         new DateTimeOffset(2026, 9, 1, 12, 0, 0, TimeSpan.Zero).AddMinutes(requestNumber);

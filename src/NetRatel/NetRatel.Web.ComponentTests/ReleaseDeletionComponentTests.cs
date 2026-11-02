@@ -35,216 +35,112 @@ public sealed class ReleaseDeletionComponentTests : AsyncBunitContext
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task LocalImportsRemainVisibleWhenUpstreamDiscoveryIsEmptyOrUnavailable(bool unavailable)
+    public async Task Local_imports_remain_in_the_unified_workspace_when_upstream_is_empty_or_unavailable(bool unavailable)
     {
         _artifacts.UpstreamWarning = unavailable ? "GitHub rate limit reached; retry later." : null;
         var cut = Render<ClientsMgmt>();
         cut.WaitForAssertion(() =>
         {
-            if (unavailable)
-                cut.Markup.Should().Contain("GitHub rate limit reached").And.Contain("GitHub discovery is unavailable");
-            else
-                cut.Markup.Should().Contain("No matching GitHub client releases");
-            cut.FindAll("[data-testid=github-release-catalogue] [data-testid=local-release-imports]").Should().BeEmpty();
+            cut.FindAll(".mud-tab").Select(x => x.TextContent.Trim()).Should().Equal("GitHub releases", "Activity", "Suspended");
+            cut.Find("[data-testid=github-release-table]").TextContent.Should().Contain(Version).And.Contain("Published").And.Contain("Local only");
+            if (unavailable) cut.Markup.Should().Contain("GitHub rate limit reached");
+            _artifacts.DeleteCalls.Should().Be(0);
         });
-        await OpenLocalImportsAsync(cut);
-        cut.WaitForAssertion(() =>
-        {
-            cut.Find("[data-testid=local-release-imports]").TextContent.Should().Contain(Version).And.Contain("Published");
-            cut.Find("[data-testid=local-release-imports] button").TextContent.Should().Contain("Check source");
-            DeleteButton(cut).TextContent.Should().Contain("Delete local release and files");
-            cut.Find(".mud-tab-active").TextContent.Should().Contain("Local imports");
-        });
+        await cut.InvokeAsync(() => cut.Find("[data-testid=release-details-toggle]").Click());
+        cut.WaitForAssertion(() => cut.Find("[data-testid=release-details-row]").TextContent.Should()
+            .Contain("Local assets").And.Contain("Version-wide local cleanup").And.Contain("4 historical attempts"));
     }
 
     [Fact]
-    public async Task Compact_workspace_defaults_to_collapsed_guidance_and_pages_catalogue_and_local_imports()
+    public async Task Unified_paging_preserves_selection_and_expansion_and_offers_20_50_100()
     {
-        _artifacts.CatalogueCount = 125;
-        _artifacts.ImportCount = 121;
+        _artifacts.CatalogueCount = 125; _artifacts.ImportCount = 121;
         var cut = Render<ClientsMgmt>();
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid=github-release-name]").Should().HaveCount(20));
+        var pager = cut.FindComponent<ClientManagementPager>();
+        cut.Find("details[data-testid=release-automation-settings]").HasAttribute("open").Should().BeFalse();
+        await cut.InvokeAsync(() => cut.Find("[data-testid=release-details-toggle]").Click());
+        await cut.InvokeAsync(() => cut.FindAll("button").Single(x => x.TextContent.Trim() == "Select local versions on this page").Click());
+        await pager.InvokeAsync(() => pager.Instance.PageChanged.InvokeAsync(1));
         cut.WaitForAssertion(() =>
         {
-            cut.FindAll("[data-testid=github-release-name]").Should().HaveCount(20);
-            cut.Find("[data-testid=tenant-policy-disclosure]").HasAttribute("open").Should().BeFalse();
-            cut.Find("details[data-testid=release-automation-settings]").HasAttribute("open").Should().BeFalse();
-            cut.Find("[data-testid=client-management-header] [data-testid=tenant-update-policy]").Should().NotBeNull();
-            cut.FindAll(".mud-tab").Should().HaveCount(6);
+            cut.FindAll("[data-testid=github-release-name]")[0].TextContent.Should().Be("Release 20");
+            cut.Find("[data-testid=release-selection-toolbar]").TextContent.Should().Contain("20 versions selected across pages");
         });
-        var github = cut.FindComponents<ClientManagementPager>().Single(pager => pager.Instance.Label == "GitHub releases");
-        github.FindComponent<MudSelect<int>>().Instance.Label.Should().Be("Rows per page");
-        await github.InvokeAsync(() => github.Instance.PageChanged.InvokeAsync(1));
-        cut.WaitForAssertion(() => cut.FindAll("[data-testid=github-release-name]")[0].TextContent.Should().Be("Release 20"));
-        await github.InvokeAsync(() => github.Instance.PageSizeChanged.InvokeAsync(50));
-        cut.WaitForAssertion(() =>
+        await pager.InvokeAsync(() => pager.Instance.PageChanged.InvokeAsync(0));
+        cut.WaitForAssertion(() => cut.Find("[data-testid=release-details-row]").TextContent.Should().Contain(Version));
+        foreach (var size in new[] { 50, 100 })
         {
-            github.Instance.Page.Should().Be(0);
-            cut.FindAll("[data-testid=github-release-name]").Should().HaveCount(50);
-            cut.FindAll("[data-testid=github-release-name]")[0].TextContent.Should().Be("Release 0");
-        });
-        await github.InvokeAsync(() => github.Instance.PageChanged.InvokeAsync(1));
-        cut.WaitForAssertion(() => cut.FindAll("[data-testid=github-release-name]")[0].TextContent.Should().Be("Release 50"));
-        await github.InvokeAsync(() => github.Instance.PageSizeChanged.InvokeAsync(100));
-        cut.WaitForAssertion(() =>
-        {
-            github.Instance.Page.Should().Be(0);
-            cut.FindAll("[data-testid=github-release-name]").Should().HaveCount(100);
-        });
-        await OpenLocalImportsAsync(cut);
-        var imports = cut.FindComponents<ClientManagementPager>().Single(pager => pager.Instance.Label == "Local imports");
-        cut.WaitForAssertion(() => cut.FindAll("[data-testid=local-release-imports] tbody tr").Should().HaveCount(20));
-        await imports.InvokeAsync(() => imports.Instance.PageChanged.InvokeAsync(1));
-        cut.WaitForAssertion(() => imports.Instance.Page.Should().Be(1));
-        await imports.InvokeAsync(() => imports.Instance.PageSizeChanged.InvokeAsync(50));
-        cut.WaitForAssertion(() =>
-        {
-            imports.Instance.Page.Should().Be(0);
-            cut.FindAll("[data-testid=local-release-imports] tbody tr").Should().HaveCount(50);
-            cut.Find(".mud-tab-active").TextContent.Should().Contain("Local imports");
-        });
-        await imports.InvokeAsync(() => imports.Instance.PageSizeChanged.InvokeAsync(100));
-        cut.WaitForAssertion(() => cut.FindAll("[data-testid=local-release-imports] tbody tr").Should().HaveCount(100));
-        await imports.InvokeAsync(() => imports.Instance.PageChanged.InvokeAsync(1));
-        cut.WaitForAssertion(() =>
-        {
-            cut.FindAll("[data-testid=local-release-imports] tbody tr").Should().HaveCount(21);
-            imports.Instance.HasMore.Should().BeFalse();
-        });
-    }
-
-    [Fact]
-    public async Task Management_tables_offer_20_50_100_and_retain_selected_size_across_refresh()
-    {
-        var cut = Render<ClientsMgmt>();
-        foreach (var label in new[] { "Packages", "Auto-updates", "Activity", "Suspended" })
-        {
-            await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(tab => tab.TextContent.Trim() == label).Click());
+            await pager.InvokeAsync(() => pager.Instance.PageSizeChanged.InvokeAsync(size));
+            cut.WaitForAssertion(() => cut.FindAll("[data-testid=github-release-name]").Should().HaveCount(size));
         }
-        cut.WaitForAssertion(() =>
-        {
-            cut.FindComponents<MudTablePager>().Should().HaveCount(4);
-            foreach (var pager in cut.FindComponents<MudTablePager>())
-                pager.Instance.PageSizeOptions.Should().Equal(20, 50, 100);
-        });
-        var table = cut.FindComponent<MudTable<ClientArtifactSummaryModel>>();
-        table.Instance.RowsPerPage.Should().Be(20);
-        await table.InvokeAsync(() => table.Instance.SetRowsPerPage(50));
-        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(tab => tab.TextContent.Trim() == "Packages").Click());
-        cut.WaitForAssertion(() =>
-        {
-            _artifacts.LastArtifactPageSize.Should().Be(50);
-            table.Instance.RowsPerPage.Should().Be(50);
-        });
+        await pager.InvokeAsync(() => pager.Instance.PageChanged.InvokeAsync(1));
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid=github-release-name]").Should().HaveCount(25));
     }
 
     [Fact]
-    public async Task BlockedDeletionShowsTheExactPlanAndDoesNotCallDelete()
+    public async Task Blocked_cleanup_keeps_selection_and_displays_a_supported_resolution_without_mutation()
     {
         _artifacts.Blockers = ["Tenant Canary pins this release for rollback."];
         var dialogs = Render<MudDialogProvider>();
         var cut = Render<ClientsMgmt>();
-        await OpenLocalImportsAsync(cut);
         cut.WaitForAssertion(() => DeleteButton(cut).Should().NotBeNull());
-        var operation = DeleteButton(cut).ClickAsync(new MouseEventArgs());
+        await cut.InvokeAsync(() => DeleteButton(cut).Click());
         dialogs.WaitForAssertion(() =>
         {
-            dialogs.Markup.Should().Contain("Local deletion blocked").And.Contain(Version)
-                .And.Contain("linux-x64, win-x64").And.Contain("2 release records, 1 imports")
-                .And.Contain("3.0 MiB reclaimable").And.Contain("4 historical attempts")
-                .And.Contain("Tenant Canary pins this release for rollback");
+            dialogs.Markup.Should().Contain("Review local release cleanup").And.Contain(Version)
+                .And.Contain("3.0 MiB").And.Contain("4 historical attempts").And.Contain("Tenant Canary pins");
+            dialogs.Find("[data-testid=confirm-local-purge]").HasAttribute("disabled").Should().BeTrue();
             _artifacts.DeleteCalls.Should().Be(0);
         });
-        dialogs.FindAll("button").Single(button => button.TextContent.Trim() == "Close").Click();
-        await operation;
-        _artifacts.PreviewVersions.Should().Equal(Version);
-        _artifacts.DeleteCalls.Should().Be(0);
-        DeleteButton(cut).HasAttribute("disabled").Should().BeFalse();
+        await dialogs.InvokeAsync(() => dialogs.FindAll("button").Single(x => x.TextContent.Trim() == "Close").Click());
+        cut.WaitForAssertion(() => cut.Find("[data-testid=release-selection-toolbar]").TextContent.Should().Contain("1 versions selected"));
     }
 
     [Theory]
     [InlineData("Pending")]
     [InlineData("Failed")]
     [InlineData("Deleted")]
-    public async Task ConfirmedDeletionReportsItsActualCleanupStateAndPreservesTheCurrentChannel(string state)
+    public async Task Reviewed_cleanup_reports_each_actual_state_and_retains_unresolved_selection(string state)
     {
         _artifacts.DeletionState = state;
         var dialogs = Render<MudDialogProvider>();
         var cut = Render<ClientsMgmt>();
-        var channel = cut.FindComponents<MudSelect<string>>().Single(component => component.Instance.Label == "Channel");
-        await channel.InvokeAsync(() => channel.Instance.ValueChanged.InvokeAsync("prerelease"));
-        await OpenLocalImportsAsync(cut);
         cut.WaitForAssertion(() => DeleteButton(cut).Should().NotBeNull());
-        var operation = DeleteButton(cut).ClickAsync(new MouseEventArgs());
+        await cut.InvokeAsync(() => DeleteButton(cut).Click());
+        dialogs.WaitForAssertion(() => dialogs.Find("[data-testid=confirm-local-purge]").Should().NotBeNull());
+        _artifacts.DeleteCalls.Should().Be(0);
+        await dialogs.InvokeAsync(() => dialogs.Find("[data-testid=confirm-local-purge]").Click());
         dialogs.WaitForAssertion(() =>
-        {
-            dialogs.Markup.Should().Contain($"Delete local release {Version}?").And.Contain("3.0 MiB reclaimable")
-                .And.Contain("Upstream releases and installed clients are unaffected");
-            _artifacts.DeleteCalls.Should().Be(0, "preview and opening confirmation are read-only");
-        });
-        dialogs.FindAll("button").Single(button => button.TextContent.Trim() == "Delete local release and files").Click();
-        await operation;
-        cut.WaitForAssertion(() =>
         {
             _artifacts.DeleteCalls.Should().Be(1);
             _artifacts.DeletedVersions.Should().Equal(Version);
-            var status = cut.Find("[data-testid=local-release-deletion-status]").TextContent;
-            if (state == "Deleted")
-                status.Should().Contain("owned files were deleted").And.Contain("Automatic re-import is suppressed");
-            else
-                status.Should().Contain($"cleanup is {state.ToLowerInvariant()}").And.Contain("Required cleanup has not finished")
-                    .And.NotContain("owned files were deleted");
-            cut.FindComponents<MudSelect<string>>().Single(component => component.Instance.Label == "Channel")
-                .Instance.Value.Should().Be("prerelease");
-            cut.Find(".mud-tab-active").TextContent.Should().Contain("Local imports");
-            if (state is "Pending" or "Failed")
-                cut.FindAll("button").Should().Contain(button => button.TextContent.Trim() == "Retry cleanup");
+            dialogs.Markup.Should().Contain(state);
+            if (state == "Deleted") dialogs.Markup.Should().Contain("Owned files removed");
+            else dialogs.Markup.Should().Contain("No completed reclamation is claimed");
         });
+        if (state != "Deleted") cut.Find("[data-testid=release-selection-toolbar]").TextContent.Should().Contain("1 versions selected");
     }
 
-    private static AngleSharp.Dom.IElement DeleteButton(IRenderedComponent<ClientsMgmt> cut) =>
-        cut.FindAll("[data-testid=local-release-imports] button")
-            .Single(button => button.TextContent.Trim() == "Delete local release and files");
-
-    private static async Task OpenLocalImportsAsync(IRenderedComponent<ClientsMgmt> cut)
+    [Fact]
+    public async Task Disposed_preview_cannot_open_a_cleanup_dialog_or_delete()
     {
-        cut.WaitForAssertion(() => cut.FindAll(".mud-tab").Should().Contain(tab => tab.TextContent.Trim() == "Local imports"));
-        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(tab => tab.TextContent.Trim() == "Local imports").Click());
-        cut.WaitForAssertion(() => cut.Find(".mud-tab-active").TextContent.Should().Contain("Local imports"));
-    }
-
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task NavigationBeforePreviewOrConfirmationCompletesDoesNotDelete(bool confirmationOpened)
-    {
-        if (!confirmationOpened)
-            _artifacts.PendingPreview = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        _artifacts.PendingPreview = new(TaskCreationOptions.RunContinuationsAsynchronously);
         var dialogs = Render<MudDialogProvider>();
         var host = Render<ReleaseHost>();
         var cut = host.FindComponent<ClientsMgmt>();
-        await OpenLocalImportsAsync(cut);
         cut.WaitForAssertion(() => DeleteButton(cut).Should().NotBeNull());
-        var operation = DeleteButton(cut).ClickAsync(new MouseEventArgs());
-        if (confirmationOpened)
-            dialogs.WaitForAssertion(() => dialogs.Markup.Should().Contain($"Delete local release {Version}?"));
-        else
-            cut.WaitForAssertion(() => _artifacts.PreviewVersions.Should().Equal(Version));
-
-        // Remove the routed page through the renderer while the layout's dialog provider
-        // remains mounted. This invokes the real IAsyncDisposable component lifecycle.
+        var pending = cut.InvokeAsync(() => DeleteButton(cut).ClickAsync(new()));
+        cut.WaitForAssertion(() => _artifacts.PreviewVersions.Should().Equal(Version));
         await host.InvokeAsync(host.Instance.HideClients);
-        cut.IsDisposed.Should().BeTrue();
-        if (confirmationOpened)
-            dialogs.FindAll("button").Single(button => button.TextContent.Trim() == "Delete local release and files").Click();
-        else
-            _artifacts.PendingPreview!.SetResult(_artifacts.CreatePlan(Version));
-        await operation.WaitAsync(TimeSpan.FromSeconds(5));
-
+        _artifacts.PendingPreview.SetResult(_artifacts.CreatePlan(Version));
+        await pending;
         _artifacts.DeleteCalls.Should().Be(0);
-        _artifacts.DeletedVersions.Should().BeEmpty();
-        if (!confirmationOpened)
-            dialogs.Markup.Should().NotContain($"Delete local release {Version}?");
+        dialogs.Markup.Should().NotContain("Review local release cleanup");
     }
+
+    private static AngleSharp.Dom.IElement DeleteButton(IRenderedComponent<ClientsMgmt> cut) =>
+        cut.Find($"button[aria-label='Preview local purge for {Version}']");
 
     private sealed class ReleaseHost : ComponentBase
     {
@@ -288,6 +184,37 @@ public sealed class ReleaseDeletionComponentTests : AsyncBunitContext
         private ClientReleaseDeletionStatusModel? _receipt;
         private static readonly Guid ImportId = Guid.Parse("6c874e17-645a-492b-909c-77d88e742a7a");
 
+        public async Task<ClientReleaseWorkspacePageModel> GetReleaseWorkspaceAsync(int page, int pageSize, string? search,
+            string channel, string? runtime, string? localState, bool refresh, CancellationToken ct = default)
+        {
+            var imports = await GetReleaseImportsAsync(ct);
+            var count = Math.Max(CatalogueCount, imports.Count);
+            var rows = Enumerable.Range(0, count).Select(index => new ClientReleaseWorkspaceRowModel
+            {
+                Version = index == 0 ? Version : $"0.4.{102 + index}", Name = CatalogueCount > index ? $"Release {index}" : index == 0 ? Version : $"0.4.{102 + index}",
+                Remote = CatalogueCount > index ? new() { Id = 123 + index, Version = index == 0 ? Version : $"0.4.{102 + index}" } : null,
+                Imports = index < imports.Count ? [imports[index]] : [], Cleanup = index == 0 ? _receipt : null
+            }).ToList();
+            if (rows.Count == 0 && _receipt is not null) rows.Add(new() { Version = Version, Name = Version, Cleanup = _receipt });
+            return new() { Page = page, PageSize = pageSize, Total = rows.Count, Items = rows.Skip(page * pageSize).Take(pageSize).ToList(),
+                Warning = UpstreamWarning, SelectableVersions = rows.Where(x => x.HasLocal).Select(x => x.Version).Take(101).ToArray() };
+        }
+        public async Task<List<ClientReleaseDeletionPlanModel>> PreviewReleaseBatchAsync(string[] versions, CancellationToken ct = default)
+        {
+            var plans = new List<ClientReleaseDeletionPlanModel>();
+            foreach (var version in versions) plans.Add(await PreviewLocalReleaseDeletionAsync(version, ct));
+            return plans;
+        }
+        public async Task<List<ClientReleaseBatchResultModel>> DeleteReleaseBatchAsync(ClientReleaseDeletionPlanModel[] plans, bool disableAllRuntimes, CancellationToken ct = default)
+        {
+            var results = new List<ClientReleaseBatchResultModel>();
+            foreach (var version in plans.Select(x => x.Version))
+            {
+                var receipt = await DeleteLocalReleaseAsync(version, ct);
+                results.Add(new() { Version = version, State = receipt.State, Error = receipt.Error, Receipt = receipt });
+            }
+            return results;
+        }
         public Task<GitHubClientReleasePageModel> GetGitHubReleasesAsync(string channel, int page, bool refresh, CancellationToken ct = default) =>
             Task.FromResult(new GitHubClientReleasePageModel
             {

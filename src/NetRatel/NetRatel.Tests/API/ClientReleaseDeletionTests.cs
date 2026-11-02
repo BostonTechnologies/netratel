@@ -102,7 +102,7 @@ public sealed class ClientReleaseDeletionTests : IAsyncLifetime
             var failed = await Service(db, () => throw new IOException("fixture cleanup interruption"))
                 .DeleteAsync(Version, "fixture", default);
             Assert.Equal("Failed", failed.State);
-            Assert.Contains("fixture cleanup interruption", failed.Error);
+            Assert.Contains("Owned local files could not be removed", failed.Error);
             Assert.Single(await db.ClientUpdateReleases.ToListAsync());
             Assert.True(await ClientReleaseDeletionService.IsSuppressedAsync(db, Version, default));
         }
@@ -128,8 +128,12 @@ public sealed class ClientReleaseDeletionTests : IAsyncLifetime
         import.LeaseUntilUtc = DateTimeOffset.UtcNow.AddMinutes(1);
         var attempt = await db.ClientUpdateAttempts.SingleAsync();
         attempt.State = ClientUpdateAttemptState.RollbackUnverified;
+        attempt.FromVersion = Version; attempt.TargetVersion = "2.0.0";
         db.ClientArtifactDownloadLeases.Add(new() { Id = Guid.NewGuid(), RuntimeId = release.RuntimeId, Version = Version, ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(5) });
         await db.SaveChangesAsync();
+        var structured = await service.PreviewAsync(Version, default);
+        Assert.Equal("Rollback source version", Assert.Single(structured.Dependencies!.Where(x => x.Code == "update_attempt")).VersionRole);
+        Assert.Equal(1, structured.HistoricalAttempts);
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => service.DeleteAsync(Version, "fixture", default));
         Assert.Contains("pins", exception.Message);
         Assert.Contains("download lease", exception.Message);
@@ -239,6 +243,148 @@ public sealed class ClientReleaseDeletionTests : IAsyncLifetime
             new(id, "v1.2.3", Version, Version, DateTimeOffset.UtcNow, false, "https://example.invalid", [], 0, "verification required"));
         public Task<GitHubClientReleasePage> ListAsync(string channel, int page, bool refresh, CancellationToken ct) => throw new NotSupportedException();
         public Task<string> ResolveTagCommitAsync(string tag, CancellationToken ct) => throw new NotSupportedException();
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Reviewed_all_runtime_cleanup_removes_three_owned_runtime_directories(bool allInitiallyEnabled)
+    {
+        await using var db = new OrchestratorDbContext(_options);
+        var (linux, _) = await SeedAsync(db);
+        linux.Enabled = allInitiallyEnabled;
+        foreach (var runtime in new[] { "win-x64", "osx-arm64" })
+        {
+            db.ClientUpdateReleases.Add(new() { PublicId = Guid.NewGuid(), Revision = runtime == "win-x64" ? 2 : 3, RuntimeId = runtime, Version = Version,
+                Enabled = true, ArtifactKey = $"{runtime}/{Version}/archive.zip", Sha256 = new string('a', 64), ManifestJson = "{}" });
+            Directory.CreateDirectory(Path.Combine(_root, runtime, Version));
+            await File.WriteAllTextAsync(Path.Combine(_root, runtime, Version, "archive.zip"), "owned archive");
+        }
+        db.ClientUpdateReleases.Add(new() { PublicId = Guid.NewGuid(), Revision = 4, RuntimeId = "linux-x64", Version = "2.0.0",
+            Enabled = true, ArtifactKey = "linux-x64/2.0.0/archive.zip", Sha256 = new string('c', 64), ManifestJson = "{}" });
+        await db.SaveChangesAsync();
+        var service = Service(db);
+        var preview = await service.PreviewAsync(Version, default);
+        Assert.Equal(allInitiallyEnabled ? 3 : 2, preview.Dependencies!.Count(x => x.Code == "runtime_enabled"));
+        Assert.Equal("Deleted", (await service.DeleteAsync(Version, "fixture", default, disableAllRuntimes: true)).State);
+        foreach (var runtime in new[] { "linux-x64", "win-x64", "osx-arm64" })
+            Assert.False(Directory.Exists(Path.Combine(_root, runtime, Version)));
+        Assert.Empty(await db.ClientReleaseImportOperations.ToListAsync());
+        Assert.Equal("2.0.0", (await db.ClientUpdateReleases.SingleAsync()).Version);
+        Assert.True((await db.ClientUpdateReleases.SingleAsync()).Enabled);
+    }
+
+    [Fact]
+    public async Task Decommissioned_abandoned_attempt_retirement_preserves_unknown_outcome_and_fences_late_authority()
+    {
+        await using var db = new OrchestratorDbContext(_options);
+        var (release, _) = await SeedAsync(db, history: true);
+        var accepted = await db.ClientUpdateAttempts.SingleAsync();
+        for (var index = 0; index < 5; index++)
+            db.ClientUpdateAttempts.Add(new() { PublicId = Guid.NewGuid(), ReleaseId = release.Id, ReleaseRecordId = release.Id,
+                AgentId = accepted.AgentId, TenantId = accepted.TenantId, RuntimeId = release.RuntimeId,
+                FromVersion = "1.2.2", TargetVersion = Version, State = ClientUpdateAttemptState.Accepted,
+                AdmissionNonceHash = new string('a', 64), CreatedAtUtc = DateTimeOffset.UtcNow.AddDays(-7), UpdatedAtUtc = DateTimeOffset.UtcNow.AddDays(-7) });
+        var abandoned = new ClientUpdateAttemptRecord { PublicId = Guid.NewGuid(), ReleaseId = release.Id, ReleaseRecordId = release.Id,
+            AgentId = accepted.AgentId, TenantId = accepted.TenantId, RuntimeId = release.RuntimeId, FromVersion = "1.2.2", TargetVersion = Version,
+            State = ClientUpdateAttemptState.Activating, AdmissionNonceHash = new string('d', 64),
+            CreatedAtUtc = DateTimeOffset.UtcNow.AddDays(-6), UpdatedAtUtc = DateTimeOffset.UtcNow.AddDays(-6) };
+        db.ClientUpdateAttempts.Add(abandoned); await db.SaveChangesAsync();
+        var service = Service(db);
+        var blocker = Assert.Single((await service.PreviewAsync(Version, default)).Dependencies!.Where(x => x.Code == "update_attempt"));
+        Assert.False(blocker.CanResolve);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.RetireAttemptAsync(Version, abandoned.PublicId, "fixture", "Client deliberately decommissioned; installation outcome unknown.", default));
+        var agent = await db.Agents.SingleAsync();
+        agent.DeletedAtUtc = agent.RevokedAtUtc = DateTimeOffset.UtcNow; agent.IsEnabled = false; agent.Status = AgentStatus.Disabled;
+        await db.SaveChangesAsync();
+        Assert.True(Assert.Single((await service.PreviewAsync(Version, default)).Dependencies!.Where(x => x.Code == "update_attempt")).CanResolve);
+        await service.RetireAttemptAsync(Version, abandoned.PublicId, "fixture", "Client deliberately decommissioned; installation outcome unknown.", default);
+        Assert.Equal(ClientUpdateAttemptState.Activating, abandoned.State);
+        Assert.Null(abandoned.ConfirmationId); Assert.Null(abandoned.ReportedState);
+        Assert.Equal(new string('d', 64), abandoned.AdmissionNonceHash);
+        Assert.Equal("fixture", abandoned.RetiredBy); Assert.NotNull(abandoned.RetiredAtUtc);
+        var authority = new ClientUpdateAuthorityService(db, new UpdateCatalog(), TimeProvider.System, NullLogger<ClientUpdateAuthorityService>.Instance);
+        var identity = new AuthenticatedAgentIdentity(agent.TenantId, agent.Id);
+        Assert.Equal("attempt_retired_unknown_outcome", (await authority.ReportAsync(identity, abandoned.PublicId, ClientUpdateAttemptState.RolledBack, null, null, default)).Code);
+        Assert.False((await authority.ConfirmAsync(identity, abandoned.PublicId, Guid.NewGuid(), 1, default)).Accepted);
+        Assert.Equal("Deleted", (await service.DeleteAsync(Version, "fixture", default)).State);
+        var history = await db.ClientUpdateAttempts.AsNoTracking().ToListAsync();
+        Assert.Equal(6, history.Count(x => x.State == ClientUpdateAttemptState.Accepted));
+        Assert.Equal(ClientUpdateAttemptState.Activating, history.Single(x => x.PublicId == abandoned.PublicId).State);
+        Assert.Equal(7, history.Count);
+        Assert.False(Directory.Exists(Path.Combine(_root, "linux-x64", Version)));
+    }
+
+    [Fact]
+    public async Task Mixed_batch_returns_each_result_and_retry_uses_the_same_durable_journal()
+    {
+        await using var db = new OrchestratorDbContext(_options);
+        await SeedAsync(db);
+        db.ClientUpdateReleases.Add(new() { PublicId = Guid.NewGuid(), Revision = 4, RuntimeId = "linux-x64", Version = "2.0.0", Enabled = true,
+            ArtifactKey = "linux-x64/2.0.0/archive.zip", Sha256 = new string('b', 64), ManifestJson = "{}" });
+        db.Tenants.Add(new() { Name = "Pinned", AutoUpdateTargetVersion = "2.0.0" });
+        await db.SaveChangesAsync();
+        var failed = await Service(db, () => throw new IOException("fixture partial cleanup"))
+            .DeleteBatchAsync([Version, "2.0.0"], "fixture", true, default);
+        Assert.Equal("Failed", failed[0].State); Assert.Equal("Blocked", failed[1].State);
+        Assert.True((await db.ClientUpdateReleases.SingleAsync(x => x.Version == "2.0.0")).Enabled);
+        await using var restarted = new OrchestratorDbContext(_options);
+        var retried = await Service(restarted).DeleteBatchAsync([Version, "2.0.0"], "fixture", true, default);
+        Assert.Equal("Deleted", retried[0].State); Assert.Equal("Blocked", retried[1].State);
+        Assert.Equal(failed[0].Receipt!.Id, retried[0].Receipt!.Id);
+        Assert.Equal("Deleted", (await Service(restarted).DeleteBatchAsync([Version], "fixture", true, default))[0].State);
+        Assert.False(Directory.Exists(Path.Combine(_root, "linux-x64", Version)));
+        Assert.True(await ClientReleaseDeletionService.IsSuppressedAsync(restarted, Version, default));
+        Assert.Single(await restarted.ClientUpdateReleases.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Stale_preview_cannot_purge_newly_admitted_local_content()
+    {
+        await using var db = new OrchestratorDbContext(_options);
+        await SeedAsync(db);
+        var service = Service(db);
+        var preview = await service.PreviewAsync(Version, default);
+        db.ClientUpdateReleases.Add(new() { PublicId = Guid.NewGuid(), Revision = 2, RuntimeId = "win-x64", Version = Version,
+            Enabled = false, ArtifactKey = $"win-x64/{Version}/archive.zip", Sha256 = new string('c', 64), ManifestJson = "{}" });
+        await db.SaveChangesAsync();
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(() => service.DeleteAsync(Version, "fixture", default,
+            disableAllRuntimes: true, expectedInventoryToken: preview.InventoryToken));
+        Assert.Contains("inventory changed", failure.Message);
+        Assert.True(File.Exists(Path.Combine(_root, "linux-x64", Version, "archive.zip")));
+        Assert.Equal(2, await db.ClientUpdateReleases.CountAsync());
+        Assert.Empty(await db.ClientReleaseDeletionReceipts.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Unified_catalogue_includes_all_local_versions_across_upstream_outage_and_pagination()
+    {
+        await using var db = new OrchestratorDbContext(_options);
+        await SeedAsync(db);
+        for (var index = 0; index < 121; index++)
+            db.ClientReleaseImportOperations.Add(new() { Id = Guid.NewGuid(), GitHubReleaseId = 1000 + index,
+                Tag = $"v2.0.{index}", Version = $"2.0.{index}", State = ClientReleaseImportState.Imported,
+                RequestedBy = "fixture", CreatedAtUtc = DateTimeOffset.UtcNow, UpdatedAtUtc = DateTimeOffset.UtcNow });
+        await db.SaveChangesAsync();
+        var workspace = new ClientReleaseWorkspaceService(db, Artifacts(db), new OfflineCatalog());
+        var seen = new List<string>();
+        for (var page = 0; page < 7; page++)
+        {
+            var result = await workspace.ReadAsync(page, 20, null, "all", null, "local", false, default);
+            Assert.Equal(122, result.Total); Assert.Contains("unavailable", result.Warning);
+            seen.AddRange(result.Items.Select(x => x.Version));
+        }
+        Assert.Equal(122, seen.Count); Assert.Equal(122, seen.Distinct().Count()); Assert.Contains(Version, seen);
+        var exact = await workspace.ReadAsync(0, 20, Version, "all", null, "local", false, default);
+        Assert.Equal(Version, Assert.Single(exact.Items).Version);
+        Assert.Equal("Unknown", exact.Items[0].SourceState);
+        Assert.Single(exact.Items[0].Packages); Assert.Single(exact.Items[0].Imports);
+    }
+    private sealed class OfflineCatalog : IGitHubClientReleaseCatalog
+    {
+        public Task<GitHubClientReleasePage> ListAsync(string channel, int page, bool refresh, CancellationToken ct) => throw new HttpRequestException("fixture offline");
+        public Task<GitHubClientRelease?> FindAsync(long id, CancellationToken ct) => throw new HttpRequestException("fixture offline");
+        public Task<string> ResolveTagCommitAsync(string tag, CancellationToken ct) => throw new HttpRequestException("fixture offline");
     }
 
     private sealed class UpdateCatalog : IClientUpdateCatalog

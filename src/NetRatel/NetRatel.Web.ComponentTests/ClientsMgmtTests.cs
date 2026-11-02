@@ -105,26 +105,13 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         {
             cut.Markup.Should().Contain("GitHub releases");
             cut.Markup.Should().Contain("Release automation");
-            cut.Markup.Should().Contain("Verification required");
-            cut.Markup.Should().Contain("Packages");
-            cut.Markup.Should().Contain("Auto-updates");
-            cut.Markup.Should().Contain("Activity");
-            cut.Markup.Should().Contain("Suspended");
+            cut.FindAll(".mud-tab").Select(x => x.TextContent.Trim()).Should().Equal("GitHub releases", "Activity", "Suspended");
             cut.Find("button[aria-label='Advanced: upload artifact']").Should().NotBeNull();
             _artifacts.ArtifactPageRequests.Should().Be(0);
-            _artifacts.ReleasePageRequests.Should().Be(1, "the bounded tenant eligibility summary reads published prereleases");
         });
-
-        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Packages").Click());
-        cut.WaitForAssertion(() =>
-        {
-            cut.Markup.Should().Contain("Search artifacts");
-            _artifacts.ArtifactPageRequests.Should().BeGreaterThan(0);
-        });
-
-        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Contains("Auto-updates")).Click());
-        cut.WaitForAssertion(() => _artifacts.ReleasePageRequests.Should().BeGreaterThan(0));
-        await cut.InvokeAsync(() => cut.FindAll("button").Single(x => x.TextContent.Trim() == "Disable").Click());
+        await cut.InvokeAsync(() => cut.Find("[data-testid=release-details-toggle]").Click());
+        cut.WaitForAssertion(() => cut.Find("[data-testid=release-details-row]").TextContent.Should().Contain("win-x64"));
+        await cut.InvokeAsync(() => cut.Find("button[aria-label='Disable win-x64 updates only']").Click());
         cut.WaitForAssertion(() => _artifacts.DisabledReleaseId.Should().Be(ReleaseId));
 
         await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Contains("Activity")).Click());
@@ -417,7 +404,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
             cut.Find("[data-testid='save-automation-policy']").GetAttribute("disabled").Should().NotBeNull();
         });
 
-        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(tab => tab.TextContent.Trim() == "Packages").Click());
+        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(tab => tab.TextContent.Trim() == "Activity").Click());
         cut.WaitForAssertion(() =>
         {
             cut.Markup.Should().Contain("Save or cancel the automation draft before changing tabs.");
@@ -484,7 +471,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         _artifacts.HistoryStatus = "Accepted";
         await cut.InvokeAsync(() => _activity.SendAsync("ready"));
         await cut.WaitForAssertionAsync(() => cut.Find("button.mud-table-row-expander").GetAttribute("aria-expanded").Should().Be("true", "expansion is retained when the group leaves and reenters the filtered page"));
-        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Packages").ClickAsync(new()));
+        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "GitHub releases").ClickAsync(new()));
         _activity.Active.Should().BeFalse();
         var inactiveReads = _artifacts.AttemptPageRequests;
         await cut.InvokeAsync(() => _activity.SendAsync("invalidate"));
@@ -780,6 +767,18 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         private static TaskCompletionSource<T> NewSource<T>() => new(TaskCreationOptions.RunContinuationsAsynchronously);
         private static TaskCompletionSource<bool> NewSignal() => NewSource<bool>();
 
+        public async Task<ClientReleaseWorkspacePageModel> GetReleaseWorkspaceAsync(int page, int pageSize, string? search,
+            string channel, string? runtime, string? localState, bool refresh, CancellationToken ct = default) => new()
+        {
+            Page = page, PageSize = pageSize, Total = 1, Items = [new()
+            {
+                Version = "0.4.102", Name = "Fixture release", SourceState = "Available",
+                Remote = (await GetGitHubReleasesAsync(channel, 0, refresh, ct)).Items[0], Releases = [_release],
+                Packages = [new() { Rid = "win-x64", Version = "0.4.102", FileName = "client.zip", Sha256 = new string('a', 64), Size = 1024 }]
+            }]
+        };
+        public Task<ClientReleaseDeletionPlanModel> PreviewLocalReleaseDeletionAsync(string version, CancellationToken ct = default) =>
+            Task.FromResult(new ClientReleaseDeletionPlanModel { Version = version });
         public Task<GitHubClientReleasePageModel> GetGitHubReleasesAsync(string channel, int page, bool refresh, CancellationToken ct = default) =>
             Task.FromResult(new GitHubClientReleasePageModel { Page = page, Items = [new GitHubClientReleaseModel
             {

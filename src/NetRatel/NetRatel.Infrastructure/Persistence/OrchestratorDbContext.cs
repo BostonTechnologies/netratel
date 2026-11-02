@@ -997,11 +997,12 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
         modelBuilder.Entity<Tenant>(entity =>
         {
             entity.ToTable("Tenants");
+            entity.HasQueryFilter(x => x.DeletedAtUtc == null);
             entity.HasKey(x => x.Id);
             entity.Property(x => x.Name).IsRequired();
             entity.Property(x => x.Domains).HasColumnType(Database.IsNpgsql() ? "text[]" : "TEXT");
             entity.Property(x => x.Version).IsConcurrencyToken();
-            entity.HasIndex(x => x.Name).IsUnique();
+            entity.HasIndex(x => x.Name).IsUnique().HasFilter("\"DeletedAtUtc\" IS NULL");
             entity.HasIndex(x => x.CreatedAtUtc);
         });
 

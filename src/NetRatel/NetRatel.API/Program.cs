@@ -875,6 +875,7 @@ builder.Services.AddScoped(services => new GitHubClientAssetDownloader(
     services.GetRequiredService<IConfiguration>()));
 builder.Services.AddScoped<ClientReleaseImportService>();
 builder.Services.AddScoped<ClientReleaseDeletionService>();
+builder.Services.AddScoped<ClientReleaseWorkspaceService>();
 builder.Services.AddHostedService<ClientReleaseDeletionWorker>();
 builder.Services.AddScoped<ClientReleaseAutomationService>();
 builder.Services.AddHostedService<ClientReleaseAutomationWorker>();
@@ -1039,7 +1040,7 @@ app.UseExceptionHandler(errorApp =>
                 type = $"https://httpstatuses.com/{status}",
                 title,
                 status,
-                detail = ex?.Message,
+                detail = status >= 500 ? "The operation failed. Use the correlation reference to inspect server logs." : ex?.Message,
                 traceId = context.TraceIdentifier,
                 extensions = new { correlationId = corr }
             };

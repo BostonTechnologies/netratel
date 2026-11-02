@@ -1602,6 +1602,15 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<short?>("ReportedState")
                         .HasColumnType("smallint");
 
+                    b.Property<DateTimeOffset?>("RetiredAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RetiredBy")
+                        .HasColumnType("text");
+
+                    b.Property<string>("RetirementReason")
+                        .HasColumnType("text");
+
                     b.Property<string>("RuntimeId")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -6754,6 +6763,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateTimeOffset?>("DeletedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("Description")
                         .HasColumnType("text");
 
@@ -6780,7 +6792,8 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.HasIndex("CreatedAtUtc");
 
                     b.HasIndex("Name")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("\"DeletedAtUtc\" IS NULL");
 
                     b.ToTable("Tenants", (string)null);
                 });

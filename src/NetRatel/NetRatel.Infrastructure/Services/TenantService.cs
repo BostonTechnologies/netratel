@@ -1,4 +1,8 @@
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
+using NetRatel.Shared.SystemPairing;
+using NetRatel.Infrastructure.ServiceIdentity;
+using NetRatel.Infrastructure.SystemPairing;
 using NetRatel.Application.Tenants;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts;
@@ -116,19 +120,52 @@ public sealed class TenantService(OrchestratorDbContext db) : ITenantService
 
     private async Task<TenantInfo?> DeleteAsync(int tenantId, long? expectedVersion, CancellationToken ct)
     {
+        // A tombstone retains foreign keys and immutable audit/history. All live authority
+        // is revoked in this transaction; shared connections require deliberate resolution.
+        await using var transaction = _db.Database.IsRelational()
+            ? await _db.Database.BeginTransactionAsync(ct) : null;
+        if (_db.Database.IsNpgsql())
+            await _db.Database.ExecuteSqlRawAsync("LOCK TABLE \"Tenants\", \"Agents\", \"EnrollmentCodes\", \"ClientInstallGrants\", \"ServicePrincipalRegistrations\", \"ServicePrincipalSecrets\", \"PairingConnections\" IN SHARE ROW EXCLUSIVE MODE", ct);
         var tenant = await _db.Tenants.FirstOrDefaultAsync(x => x.Id == tenantId, ct);
-        if (tenant is null)
-        {
-            return null;
-        }
-
+        if (tenant is null) return null;
         if (expectedVersion is { } currentVersion && tenant.Version != currentVersion)
-        {
             throw new TenantConcurrencyException();
+        if (await _db.Agents.IgnoreQueryFilters().AnyAsync(x => x.TenantId == tenantId &&
+            x.DeletedAtUtc == null && x.SupersededAtUtc == null, ct))
+            throw new TenantDeletionConflictException("tenant_has_clients",
+                "Decommission this tenant's clients in Clients before deleting the tenant.");
+        var principals = await _db.Set<ServicePrincipalRegistration>().Where(x => x.TenantId == tenantId).ToListAsync(ct);
+        var principalIds = principals.Select(x => x.Id).ToArray();
+        var connections = await _db.Set<PairingConnectionRecord>().Where(x => x.Active && x.DeletedAtUtc == null).ToListAsync(ct);
+        foreach (var connection in connections)
+        {
+            PairingMapping? mapping;
+            try { mapping = JsonSerializer.Deserialize<PairingMapping>(connection.MappingJson, new JsonSerializerOptions(JsonSerializerDefaults.Web)); }
+            catch (JsonException) { throw new TenantDeletionConflictException("tenant_connection_unknown", "An active named connection has unreadable tenant authority. Inspect and repair or disconnect it in Integrations before tenant deletion."); }
+            if (connection.InboundPrincipalId is { } principalId && principalIds.Contains(principalId) || mapping?.NetRatelTenantId == tenantId.ToString(System.Globalization.CultureInfo.InvariantCulture))
+                throw new TenantDeletionConflictException("tenant_has_connection",
+                    "Disconnect this tenant's active named service connection in Integrations before deleting the tenant. Shared system pairings are retained.");
         }
-
-        _db.Tenants.Remove(tenant);
+        var now = DateTimeOffset.UtcNow;
+        foreach (var principal in principals)
+        {
+            principal.Status = "revoked"; principal.RevokedAtUtc ??= now;
+            principal.Version++; principal.Revision++; principal.UpdatedAtUtc = now;
+        }
+        foreach (var secret in await _db.Set<ServicePrincipalSecret>().Where(x => principalIds.Contains(x.ServicePrincipalId)).ToListAsync(ct))
+            secret.Status = "revoked";
+        foreach (var code in await _db.EnrollmentCodes.Where(x => x.TenantId == tenantId && x.RevokedAtUtc == null).ToListAsync(ct))
+        { code.RevokedAtUtc = now; code.RevokedBy = "tenant-deletion"; }
+        foreach (var grant in await _db.ClientInstallGrants.Where(x => x.TenantId == tenantId && x.RevokedAtUtc == null).ToListAsync(ct))
+        { grant.RevokedAtUtc = now; grant.RevokedBy = "tenant-deletion"; }
+        // Defaults are live configuration; prompts/revisions remain archived evidence.
+        _db.AiPromptDefaults.RemoveRange(await _db.AiPromptDefaults.Where(x => x.TenantId == tenantId).ToListAsync(ct));
+        foreach (var prompt in await _db.AiPrompts.Where(x => x.TenantId == tenantId).ToListAsync(ct))
+        { prompt.Archived = true; prompt.Revision++; prompt.UpdatedAtUtc = now; prompt.UpdatedBy = "tenant-deletion"; }
+        tenant.AutoUpdate = false; tenant.AutoUpdateTargetVersion = null;
+        tenant.DeletedAtUtc = now; tenant.UpdatedAtUtc = now; tenant.Version++;
         await _db.SaveChangesAsync(ct);
+        if (transaction is not null) await transaction.CommitAsync(ct);
         return Map(tenant);
     }
 

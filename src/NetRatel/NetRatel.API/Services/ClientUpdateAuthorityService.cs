@@ -311,7 +311,7 @@ public sealed class ClientUpdateAuthorityService(
             .OrderByDescending(candidate => candidate.Id).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
         if (attempt is not null)
         {
-            if (attempt.State is ClientUpdateAttemptState.Accepted or ClientUpdateAttemptState.RolledBack or ClientUpdateAttemptState.RollbackUnverified ||
+            if (attempt.RetiredAtUtc != null || attempt.State is ClientUpdateAttemptState.Accepted or ClientUpdateAttemptState.RolledBack or ClientUpdateAttemptState.RollbackUnverified ||
                 await db.ClientUpdateAttempts.AsNoTracking().AnyAsync(candidate => candidate.AgentId == identity.AgentId &&
                     candidate.TenantId == identity.TenantId && candidate.Id > attempt.Id, cancellationToken).ConfigureAwait(false))
             {
@@ -378,6 +378,7 @@ public sealed class ClientUpdateAuthorityService(
             x => x.PublicId == attemptId && x.TenantId == identity.TenantId && x.AgentId == identity.AgentId,
             cancellationToken).ConfigureAwait(false);
         if (attempt is null) return new(false, "attempt_not_found");
+        if (attempt.RetiredAtUtc != null) return new(false, "attempt_retired_unknown_outcome");
         if (await db.ClientUpdateAttempts.AsNoTracking().AnyAsync(candidate =>
                 candidate.TenantId == identity.TenantId && candidate.AgentId == identity.AgentId &&
                 candidate.Id > attempt.Id, cancellationToken).ConfigureAwait(false))
@@ -456,6 +457,7 @@ public sealed class ClientUpdateAuthorityService(
             x => x.PublicId == attemptId && x.TenantId == identity.TenantId && x.AgentId == identity.AgentId,
             cancellationToken).ConfigureAwait(false);
         if (attempt is null) return new(false, "attempt_not_found");
+        if (attempt.RetiredAtUtc != null) return new(false, "attempt_retired_unknown_outcome");
         if (await db.ClientUpdateAttempts.AsNoTracking().AnyAsync(candidate =>
                 candidate.TenantId == identity.TenantId && candidate.AgentId == identity.AgentId &&
                 candidate.Id > attempt.Id, cancellationToken).ConfigureAwait(false))
@@ -520,6 +522,7 @@ public sealed class ClientUpdateAuthorityService(
                     candidate.PublicId == attemptId && candidate.TenantId == identity.TenantId && candidate.AgentId == identity.AgentId))
             .AsNoTracking().SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
         if (attempt is null) return new(ClientUpdateReportOutcome.NotFound, "attempt_not_found");
+        if (attempt.RetiredAtUtc != null) return new(ClientUpdateReportOutcome.Conflict, "attempt_retired_unknown_outcome");
         var agentState = await db.AgentClientUpdateStates.AsNoTracking().SingleOrDefaultAsync(
             candidate => candidate.AgentId == identity.AgentId && candidate.TenantId == identity.TenantId,
             cancellationToken).ConfigureAwait(false);
@@ -629,6 +632,24 @@ public sealed class ClientUpdateAuthorityService(
             ClientUpdateTelemetry.ActivationCompleted(now - attempt.ReadmittedAtUtc.Value, "rollback");
         await RefreshCatalogSafelyAsync(cancellationToken).ConfigureAwait(false);
         return Result(ClientUpdateReportOutcome.Applied, "report_applied");
+    }
+
+    public async Task EnableReleaseAsync(Guid releaseId, string verifiedSha256, CancellationToken cancellationToken)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await ClientReleaseDeletionService.LockAdmissionsAsync(db, cancellationToken);
+        var release = await db.ClientUpdateReleases.SingleOrDefaultAsync(x => x.PublicId == releaseId, cancellationToken)
+            ?? throw new KeyNotFoundException("The approved runtime release was not found.");
+        await db.Entry(release).ReloadAsync(cancellationToken);
+        if (await ClientReleaseDeletionService.IsSuppressedAsync(db, release.Version, cancellationToken) ||
+            !string.Equals(release.Sha256, verifiedSha256, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("The approved package changed or is suppressed for cleanup. Refresh and verify it before enabling updates.");
+        release.Enabled = true; release.DisabledAtUtc = null; release.DisabledBy = null;
+        var revision = await IncrementRevisionAsync(cancellationToken);
+        await db.SaveChangesAsync(cancellationToken);
+        await NotifyAsync(revision, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        await RefreshCatalogSafelyAsync(cancellationToken);
     }
 
     public async Task DisableReleaseAsync(Guid releaseId, string? disabledBy, CancellationToken cancellationToken)

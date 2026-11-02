@@ -35,3 +35,9 @@ and that the API/gateway endpoints are reachable with the deployment's TLS
 configuration. Do not reset an identity or disable downgrade protection as a
 first response; preserve logs and recovery material for the authorized
 operator.
+
+## Deleting a disposable tenant
+
+Delete a tenant from **Tenants** after decommissioning its clients and disconnecting active named service connections. These dependencies return actionable conflicts; shared system pairings are retained. Deletion retires the tenant identity rather than removing audit foreign keys: prompts/revisions remain archived, prompt defaults are removed, enrollment/install links and service-principal credentials are revoked in the same transaction. Historical attempts, service-identity lifecycle records and unrelated tenants remain intact. A reused tenant name creates a fresh identity.
+
+If deletion fails unexpectedly, the tenant remains listed. Use the displayed correlation reference in Notifications and server logs. Failure notifications are written through a separate database context so recording them cannot retry the failed request's tracked deletion. A notification-persistence failure emits a bounded diagnostic with the same correlation and preserves the original operation error. Existing MCP active-caller-tenant approval and no-cascade constraints still apply.

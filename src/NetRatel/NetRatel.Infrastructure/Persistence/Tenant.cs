@@ -14,5 +14,7 @@ public sealed class Tenant
     public string? AutoUpdateTargetVersion { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; }
     public DateTimeOffset UpdatedAtUtc { get; set; }
+    // Retain the tenant identity for immutable history and revoked authority.
+    public DateTimeOffset? DeletedAtUtc { get; set; }
     public long Version { get; set; } = 1;
 }

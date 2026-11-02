@@ -60,6 +60,10 @@ public sealed class ClientUpdateAttemptRecord
     public string? Message { get; set; }
     // The authenticated native outcome may arrive after activation was confirmed.
     // Keep that contradictory physical evidence apart from immutable authority.
+    // Retirement fences authority without rewriting admitted or physically reported state.
+    public DateTimeOffset? RetiredAtUtc { get; set; }
+    public string? RetiredBy { get; set; }
+    public string? RetirementReason { get; set; }
     public string? ReconciliationState { get; set; }
     public ClientUpdateAttemptState? ReportedState { get; set; }
     public string? ReportedFailureCode { get; set; }

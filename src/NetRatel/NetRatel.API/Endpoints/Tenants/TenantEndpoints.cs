@@ -178,9 +178,29 @@ public static class TenantEndpoints
             ITenantService tenants,
             IEventRecorder events,
             ICorrelationContext correlation,
+            HttpContext http,
             CancellationToken ct) =>
         {
-            var existing = await tenants.DeleteAsync(id, ct);
+            TenantInfo? existing;
+            try
+            {
+                var match = http.Request.Headers.IfMatch.FirstOrDefault();
+                if (match is not null)
+                {
+                    if (!long.TryParse(match.Trim('"'), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var expected) || expected <= 0)
+                        return Results.BadRequest(new { message = "Use the current tenant revision when deleting.", correlationId = correlation.GetOrCreate() });
+                    existing = await tenants.DeleteAsync(id, expected, ct);
+                }
+                else existing = await tenants.DeleteAsync(id, ct);
+            }
+            catch (TenantDeletionConflictException conflict)
+            {
+                return Results.Conflict(new { code = conflict.Code, message = conflict.Message, correlationId = correlation.GetOrCreate() });
+            }
+            catch (Exception conflict) when (conflict is TenantConcurrencyException or DbUpdateConcurrencyException)
+            {
+                return Results.Conflict(new { code = "tenant_version_conflict", message = "The tenant changed. Refresh and review it before deleting again.", correlationId = correlation.GetOrCreate() });
+            }
             if (existing is null)
             {
                 return Results.NotFound();
@@ -195,7 +215,7 @@ public static class TenantEndpoints
                 EntityId = id.ToString(),
                 Severity = "Warning",
                 Message = $"Tenant {id} deleted.",
-                Payload = new TenantChangedPayload(id, existing.Name, Actor: null)
+                Payload = new TenantChangedPayload(id, existing.Name, Actor: Actor(http))
             }, ct);
 
             return Results.Accepted($"Tenant delete request for ID {id} received.");

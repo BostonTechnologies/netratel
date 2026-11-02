@@ -16,6 +16,11 @@ namespace NetRatel.Web.Services;
 
 public interface IClientArtifactsService
 {
+    Task<ClientReleaseWorkspacePageModel> GetReleaseWorkspaceAsync(int page, int pageSize, string? search, string channel,
+        string? runtime, string? localState, bool refresh, CancellationToken ct = default) => throw new NotSupportedException();
+    Task<List<ClientReleaseDeletionPlanModel>> PreviewReleaseBatchAsync(string[] versions, CancellationToken ct = default) => throw new NotSupportedException();
+    Task<List<ClientReleaseBatchResultModel>> DeleteReleaseBatchAsync(ClientReleaseDeletionPlanModel[] plans, bool disableAllRuntimes, CancellationToken ct = default) => throw new NotSupportedException();
+    Task RetireReleaseAttemptAsync(string version, Guid attemptId, string reason, CancellationToken ct = default) => throw new NotSupportedException();
     Task<GitHubClientReleasePageModel> GetGitHubReleasesAsync(string channel, int page, bool refresh, CancellationToken ct = default);
     Task<ClientReleaseAutomationModel> GetReleaseAutomationAsync(CancellationToken ct = default) =>
         throw new NotSupportedException();
@@ -72,6 +77,7 @@ public interface IClientArtifactsService
         string? search = null,
         int? tenantId = null,
         CancellationToken ct = default);
+    Task EnableReleaseAsync(Guid releaseId, CancellationToken ct = default) => throw new NotSupportedException();
     Task DisableReleaseAsync(Guid releaseId, CancellationToken ct = default);
     Task ResumeAgentAsync(int tenantId, Guid agentId, CancellationToken ct = default);
     Task DownloadAsync(string rid, string version, CancellationToken ct = default);
@@ -122,6 +128,47 @@ public class ClientArtifactsService : IClientArtifactsService
         _logger = logger;
         _uploads = uploads;
         _jsRuntime = jsRuntime;
+    }
+
+    public async Task<ClientReleaseWorkspacePageModel> GetReleaseWorkspaceAsync(int page, int pageSize, string? search,
+        string channel, string? runtime, string? localState, bool refresh, CancellationToken ct = default)
+    {
+        var uri = $"/api/v1/client-updates/local-releases/catalogue?page={page}&pageSize={pageSize}&channel={Uri.EscapeDataString(channel)}&refresh={refresh.ToString().ToLowerInvariant()}";
+        if (!string.IsNullOrWhiteSpace(search)) uri += "&search=" + Uri.EscapeDataString(search);
+        if (!string.IsNullOrWhiteSpace(runtime)) uri += "&runtime=" + Uri.EscapeDataString(runtime);
+        if (!string.IsNullOrWhiteSpace(localState)) uri += "&localState=" + Uri.EscapeDataString(localState);
+        return await _uploads.Http.GetFromJsonAsync<ClientReleaseWorkspacePageModel>(uri, ct)
+            ?? throw new HttpRequestException("The release workspace response was empty.");
+    }
+    public async Task<List<ClientReleaseDeletionPlanModel>> PreviewReleaseBatchAsync(string[] versions, CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.PostAsJsonAsync("/api/v1/client-updates/local-releases/batch-preview", new { versions }, ct);
+        await RequireCleanupResponseAsync(response, ct);
+        return await response.Content.ReadFromJsonAsync<List<ClientReleaseDeletionPlanModel>>(ct) ?? [];
+    }
+    public async Task<List<ClientReleaseBatchResultModel>> DeleteReleaseBatchAsync(ClientReleaseDeletionPlanModel[] plans, bool disableAllRuntimes, CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.PostAsJsonAsync("/api/v1/client-updates/local-releases/batch-delete", new { versions = plans.Select(x => x.Version).ToArray(), inventoryTokens = plans.ToDictionary(x => x.Version, x => x.InventoryToken), confirmed = true, disableAllRuntimes }, ct);
+        await RequireCleanupResponseAsync(response, ct);
+        return await response.Content.ReadFromJsonAsync<List<ClientReleaseBatchResultModel>>(ct) ?? [];
+    }
+    public async Task RetireReleaseAttemptAsync(string version, Guid attemptId, string reason, CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.PostAsJsonAsync($"/api/v1/client-updates/local-releases/{Uri.EscapeDataString(version)}/attempts/{attemptId}/retire",
+            new { reason, acknowledgeUnknownOutcome = true }, ct);
+        await RequireCleanupResponseAsync(response, ct);
+    }
+    private static async Task RequireCleanupResponseAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        if (response.IsSuccessStatusCode) return;
+        string? detail = null;
+        try
+        {
+            var problem = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>(ct);
+            if (problem.TryGetProperty("message", out var message)) detail = message.GetString();
+        }
+        catch (System.Text.Json.JsonException) { }
+        throw new HttpRequestException(detail ?? "Release management failed. Refresh authentication or connectivity and retry.", null, response.StatusCode);
     }
 
     public async Task<ClientReleaseDeletionPlanModel> PreviewLocalReleaseDeletionAsync(string version, CancellationToken ct = default) =>
@@ -400,6 +447,12 @@ public class ClientArtifactsService : IClientArtifactsService
             _snackbar.Add("Could not load suspended update agents.", Severity.Error);
             return new AgentClientUpdateStatePageModel { Page = page, PageSize = pageSize };
         }
+    }
+
+    public async Task EnableReleaseAsync(Guid releaseId, CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.PostAsync($"/api/v1/client-updates/releases/{releaseId}/enable", null, ct);
+        await RequireCleanupResponseAsync(response, ct);
     }
 
     public async Task DisableReleaseAsync(Guid releaseId, CancellationToken ct = default)
@@ -771,6 +824,9 @@ public sealed class ClientUpdateHistoryPageModel
 
 public sealed class ClientUpdateHistoryItemModel
 {
+    public DateTimeOffset? RetiredAtUtc { get; set; }
+    public string? RetiredBy { get; set; }
+    public string? RetirementReason { get; set; }
     public Guid AttemptId { get; set; }
     public int ReleaseId { get; set; }
     public string RuntimeId { get; set; } = string.Empty;

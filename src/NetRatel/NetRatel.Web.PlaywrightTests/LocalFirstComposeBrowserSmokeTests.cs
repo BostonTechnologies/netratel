@@ -506,11 +506,9 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             Assert.Fail($"Disposable artifact upload failed: {await uploadError.InnerTextAsync()}");
         await uploadDialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden });
 
-        await page.GetByRole(AriaRole.Tab, new() { Name = "Packages" }).ClickAsync();
-        var artifactRow = page.GetByTestId("artifact-table").GetByRole(AriaRole.Row).Filter(new() { HasText = version });
+        var artifactRow = page.GetByTestId("github-release-table").GetByRole(AriaRole.Row).Filter(new() { HasText = version });
         await artifactRow.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-        await artifactRow.GetByRole(AriaRole.Button).Last.ClickAsync();
-        await page.GetByRole(AriaRole.Menuitem, new() { Name = "Generate script" }).ClickAsync();
+        await artifactRow.GetByRole(AriaRole.Button, new() { Name = "Generate install script", Exact = true }).ClickAsync();
         await AssertDialogLayoutAsync(page, "deployment-script-input", captureSafeContent: true);
 
         var downloads = 0;
@@ -594,27 +592,24 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             });
         await release.WaitForAsync(new LocatorWaitForOptions { Timeout = 60_000 });
         Assert.Contains("linux-x64", await release.InnerTextAsync());
-        await release.GetByRole(AriaRole.Button, new() { Name = "Import pack", Exact = true }).ClickAsync();
+        await release.GetByRole(AriaRole.Button, new() { Name = "Download release pack into this instance", Exact = true }).ClickAsync();
         await release.Filter(new()
         {
-            Has = page.Locator("td[data-label='State']").Filter(new()
+            Has = page.Locator("td[data-label='Source / local state']").Filter(new()
             {
                 HasTextRegex = new System.Text.RegularExpressions.Regex(@"Local:\s+(Imported|Published)")
             })
         }).WaitForAsync(new LocatorWaitForOptions { Timeout = 300_000 });
 
-        await page.GetByRole(AriaRole.Tab, new() { Name = "Packages" }).ClickAsync();
-        var artifact = page.GetByTestId("artifact-table").GetByRole(AriaRole.Row)
-            .Filter(new()
-            {
-                Has = page.Locator("td[data-label='Version']").Filter(new()
-                {
-                    HasTextRegex = new System.Text.RegularExpressions.Regex(@"^\s*" + escapedVersion + @"\s*$")
-                })
-            }).Filter(new() { HasText = "linux-x64" });
-        await artifact.WaitForAsync(new LocatorWaitForOptions { Timeout = 30_000 });
-        await artifact.GetByRole(AriaRole.Button).Last.ClickAsync();
-        await page.GetByRole(AriaRole.Menuitem, new() { Name = "Generate script" }).ClickAsync();
+        // Imported packs must be approved before issuing a real installer link.
+        var approve = release.GetByRole(AriaRole.Button, new() { Name = "Approve verified import", Exact = true });
+        if (await approve.CountAsync() != 0)
+        {
+            await approve.ClickAsync();
+            await page.GetByRole(AriaRole.Button, new() { Name = "Publish", Exact = true }).ClickAsync();
+        }
+        await release.GetByRole(AriaRole.Button, new() { Name = "Choose runtime for install script", Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Menuitem, new() { Name = "linux-x64", Exact = true }).ClickAsync();
         var dialog = page.GetByLabel("Generate deployment script");
         await dialog.GetByRole(AriaRole.Checkbox, new() { Name = "Install as Service" }).UncheckAsync();
         await dialog.GetByRole(AriaRole.Button, new() { Name = "Generate link" }).ClickAsync();

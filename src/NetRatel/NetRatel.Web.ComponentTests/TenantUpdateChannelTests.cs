@@ -157,15 +157,54 @@ public sealed class TenantUpdateChannelTests : AsyncBunitContext
         created.AutoUpdateTargetVersion.Should().BeNull();
     }
 
+    [Theory]
+    [InlineData(HttpStatusCode.NoContent)]
+    [InlineData(HttpStatusCode.Conflict)]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    public async Task Tenant_delete_keeps_truthful_list_and_safe_correlated_failure(HttpStatusCode status)
+    {
+        var transport = new TenantTransport("stable") { DeleteStatus = status };
+        Services.AddSingleton<IHttpClientFactory>(transport);
+        Services.AddSingleton<ITenantApiService, TenantApiService>();
+        var popovers = Render<MudPopoverProvider>();
+        var dialogs = Render<MudDialogProvider>();
+        var snackbars = Render<MudSnackbarProvider>();
+        var page = Render<TenantsPage>();
+        page.WaitForAssertion(() => page.Find("button[aria-label='Manage Canary']").Should().NotBeNull());
+        await page.InvokeAsync(() => page.Find("button[aria-label='Manage Canary']").Click());
+        var deletion = popovers.InvokeAsync(() => popovers.FindAll("[role='menuitem']").Single(x => x.TextContent.Trim() == "Delete Tenant").ClickAsync(new()));
+        dialogs.WaitForAssertion(() => dialogs.Markup.Should().Contain("Delete Tenant"));
+        await dialogs.InvokeAsync(() => dialogs.FindAll("button").Single(x => x.TextContent.Trim() == "Delete").Click());
+        await deletion;
+        page.WaitForAssertion(() => transport.DeleteCalls.Should().Be(1));
+        if (status == HttpStatusCode.NoContent)
+            page.WaitForAssertion(() => page.FindAll("button[aria-label='Manage Canary']").Should().BeEmpty());
+        else
+        {
+            page.Find("button[aria-label='Manage Canary']").Should().NotBeNull();
+            snackbars.WaitForAssertion(() => snackbars.Markup.Should().Contain("tenant-delete-reference").And.NotContain("SQLSTATE"));
+            if (status == HttpStatusCode.Conflict) snackbars.Markup.Should().Contain("Decommission clients first");
+        }
+    }
+
     private sealed class TenantTransport(string channel, string? pin = "0.4.103-rc.1") : HttpMessageHandler, IHttpClientFactory
     {
         private string _channel = channel;
         private string? _pin = pin;
         private long _version = 4;
+        public HttpStatusCode DeleteStatus { get; set; } = HttpStatusCode.NoContent;
+        public int DeleteCalls { get; private set; }
+        private bool _deleted;
         internal UpdateTenantRequest? Updated { get; private set; }
         public HttpClient CreateClient(string name) => new(this, disposeHandler: false) { BaseAddress = new("https://netratel.test") };
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            if (request.Method == HttpMethod.Delete)
+            {
+                DeleteCalls++; _deleted = DeleteStatus == HttpStatusCode.NoContent;
+                return new(DeleteStatus) { Content = JsonContent.Create(new { message = DeleteStatus == HttpStatusCode.Conflict ? "Decommission clients first." : "SQLSTATE sensitive provider detail", extensions = new { correlationId = "tenant-delete-reference" } }) };
+            }
+            if (_deleted) return new(HttpStatusCode.OK) { Content = JsonContent.Create(Array.Empty<TenantDto>()) };
             if (request.Method == HttpMethod.Put && request.RequestUri!.AbsolutePath == "/api/v1/tenants/7")
             {
                 Updated = await request.Content!.ReadFromJsonAsync<UpdateTenantRequest>(cancellationToken);

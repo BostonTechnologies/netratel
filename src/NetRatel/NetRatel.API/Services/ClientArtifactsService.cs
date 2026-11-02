@@ -41,6 +41,16 @@ public interface IClientArtifactsService
     Task<ClientArtifactListDto> ListAsync(string? rid, int skip, int take, CancellationToken ct);
     Task<ClientArtifactListDto> ListAsync(string? rid, int skip, int take, string? search, CancellationToken ct) =>
         ListAsync(rid, skip, take, ct);
+    async Task<IReadOnlyList<ClientArtifactSummaryDto>> InventoryAsync(CancellationToken ct)
+    {
+        var items = new List<ClientArtifactSummaryDto>();
+        for (var skip = 0; ; skip += 200)
+        {
+            var page = await ListAsync(null, skip, 200, ct);
+            items.AddRange(page.Items);
+            if (skip + page.Items.Count >= page.Total || page.Items.Count == 0) return items;
+        }
+    }
     Task<ClientArtifactSummaryDto?> GetLatestAsync(string rid, CancellationToken ct);
     Task<ClientArtifactSummaryDto?> GetMetadataAsync(string rid, string version, CancellationToken ct);
     Task<ClientArtifactUploadResultDto> UploadAsync(IFormFile file, string rid, string version, string? notes, string? uploadedBy, CancellationToken ct);
@@ -143,11 +153,16 @@ public sealed class ClientArtifactsService : IClientArtifactsService
     public async Task<ClientArtifactListDto> ListAsync(string? rid, int skip, int take, CancellationToken ct)
         => await ListAsync(rid, skip, take, null, ct).ConfigureAwait(false);
 
-    public async Task<ClientArtifactListDto> ListAsync(string? rid, int skip, int take, string? search, CancellationToken ct)
+    public async Task<IReadOnlyList<ClientArtifactSummaryDto>> InventoryAsync(CancellationToken ct) =>
+        (await ReadInventoryAsync(null, 0, int.MaxValue, null, ct)).Items;
+
+    public Task<ClientArtifactListDto> ListAsync(string? rid, int skip, int take, string? search, CancellationToken ct) =>
+        ReadInventoryAsync(rid, Math.Max(0, skip), take <= 0 ? 50 : Math.Min(take, 200), search, ct);
+
+    private async Task<ClientArtifactListDto> ReadInventoryAsync(string? rid, int skip, int take, string? search, CancellationToken ct)
     {
         var storageRoot = EnsureStorageRoot();
         skip = Math.Max(0, skip);
-        take = take <= 0 ? 50 : Math.Min(take, 200);
 
         var summaries = new List<ClientArtifactSummaryDto>();
 
