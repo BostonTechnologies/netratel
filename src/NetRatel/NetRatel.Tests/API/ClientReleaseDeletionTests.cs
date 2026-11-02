@@ -10,28 +10,27 @@ using Microsoft.Extensions.Options;
 using NetRatel.API.Gateway;
 using NetRatel.API.Services;
 using NetRatel.Infrastructure.Persistence;
-using Testcontainers.PostgreSql;
+using NetRatel.Tests.Infrastructure;
 using Xunit;
 
 namespace NetRatel.Tests.API;
 
-public sealed class ClientReleaseDeletionTests : IAsyncLifetime
+public sealed class ClientReleaseDeletionTests(PostgreSqlPersistenceFixture postgres) : IAsyncLifetime, IClassFixture<PostgreSqlPersistenceFixture>
 {
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16-alpine").Build();
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"release-purge-{Guid.NewGuid():N}");
     private DbContextOptions<OrchestratorDbContext> _options = null!;
     private const string Version = "1.2.3";
     public async ValueTask InitializeAsync()
     {
-        await _postgres.StartAsync();
-        _options = new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(_postgres.GetConnectionString()).Options;
+        var connection = await postgres.CreateDatabaseAsync();
+        _options = new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(connection).Options;
         await using var db = new OrchestratorDbContext(_options);
         await db.Database.MigrateAsync();
     }
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        await _postgres.DisposeAsync();
         if (Directory.Exists(_root)) Directory.Delete(_root, true);
+        return ValueTask.CompletedTask;
     }
 
     [Fact]
