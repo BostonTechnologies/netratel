@@ -31,7 +31,7 @@
         </div>
     </header>
 
-    @if (_error is not null)
+    @if (_error is not null && _snapshot is null)
     {
         <div class="chat-notice chat-error" role="alert"><MudIcon Icon="@Icons.Material.Outlined.Info" Size="Size.Small" /><span>@_error</span></div>
     }
@@ -74,7 +74,7 @@
                 <NetclawConversation @key="_snapshot.Investigation.Id" Snapshot="_snapshot" Events="_events" TenantName="@(Access?.TenantName)"
                     @bind-Message="_message" Busy="_busy" CanInvestigate="@(Access?.CanInvestigate == true)" ConnectionReady="ConnectionReady"
                     CanEditMessage="CanEditMessage" CanSend="CanSend" SendLabel="@(_pendingMessage is null ? "Send" : "Retry message")"
-                    LiveError="@_liveError" MessageTimeFormatter="MessageTime" Send="SendAsync" Recover="RecoverAsync" LoadMore="LoadMoreAsync"
+                    Error="@_error" Refresh="ReloadAsync" LiveError="@_liveError" MessageTimeFormatter="MessageTime" Send="SendAsync" Recover="RecoverAsync" LoadMore="LoadMoreAsync"
                     Archive="@(async (bool acknowledge) => { _acknowledgeRemote = acknowledge; await ArchiveAsync(); })"
                     Approve="@(decision => ApproveAsync(decision.CallId, decision.Key))" />
             }

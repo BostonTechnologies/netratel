@@ -19,7 +19,7 @@
         <button type="button" class="ai-primary" @onclick="() => _creating = !_creating" disabled="@(Access?.CanInvestigate != true || _busy)" data-testid="ai-new-investigation">New investigation</button>
         <div class="ai-connection-slot"><NetclawConnectionStatus TenantId="_tenant" TenantName="@(Access?.TenantName)" Connection="_connection" /></div>
     </header>
-    @if (_error is not null) { <div class="ai-notice" role="alert">@_error</div> }
+    @if (_error is not null && _snapshot is null) { <div class="ai-notice" role="alert">@_error</div> }
     @if (_loading) { <p role="status">Loading your authorized investigation workspace…</p> }
     else if (_tenants.Count == 0) { <div class="ai-empty"><h2>No investigation access</h2><p>A tenant role with read telemetry permission grants access to this workspace.</p></div> }
     else
@@ -74,7 +74,7 @@
                     CanEditMessage="@(_pendingMessage is null && !_busy && Access?.CanInvestigate == true && _snapshot.Investigation.State == InvestigationState.Idle)"
                     CanSend="@(!_busy && Access?.CanInvestigate == true && _snapshot.Investigation.State == InvestigationState.Idle && !string.IsNullOrWhiteSpace(_message))"
                     SendLabel="@(_pendingMessage is null ? "Send" : "Retry same request")"
-                    Send="SendAsync" Recover="RecoverAsync" LoadMore="LoadMoreAsync"
+                    Error="@_error" Refresh="ReloadAsync" Send="SendAsync" Recover="RecoverAsync" LoadMore="LoadMoreAsync"
                     Archive="@(async (bool acknowledge) => { _acknowledgeRemote = acknowledge; await ArchiveAsync(); })"
                     Approve="@(decision => ApproveAsync(decision.CallId, decision.Key))">
                     <Context>

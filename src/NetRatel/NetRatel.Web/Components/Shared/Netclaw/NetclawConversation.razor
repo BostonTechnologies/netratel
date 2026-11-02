@@ -33,6 +33,12 @@
         </div>
     </header>
     <div class="netclaw-scroll-area" @ref="_transcript" role="log" aria-label="Saved chat messages" aria-live="polite" aria-relevant="additions text">
+        @if (Error is not null)
+        {
+            <div class="chat-notice chat-error" role="alert"><span>@Error</span>
+                @if (Refresh.HasDelegate) { <button type="button" class="chat-secondary-button" @onclick="Refresh" disabled="Busy">Refresh saved state</button> }
+            </div>
+        }
         @if (Context is not null) { <div class="netclaw-context">@Context</div> }
         @if (_archive)
         {
@@ -117,7 +123,9 @@
     [Parameter] public bool CanEditMessage { get; set; }
     [Parameter] public bool CanSend { get; set; }
     [Parameter] public string SendLabel { get; set; } = "Send";
+    [Parameter] public string? Error { get; set; }
     [Parameter] public string? LiveError { get; set; }
+    [Parameter] public EventCallback Refresh { get; set; }
     [Parameter] public RenderFragment? Context { get; set; }
     [Parameter] public EventCallback Send { get; set; }
     [Parameter] public EventCallback Recover { get; set; }

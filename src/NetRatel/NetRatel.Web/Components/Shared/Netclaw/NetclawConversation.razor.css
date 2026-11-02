@@ -76,3 +76,5 @@
 
 .chat-send-button { display: flex; align-items: center; justify-content: center; gap: .5rem; padding: .5rem .7rem; border: 1px solid var(--mud-palette-primary); border-radius: 8px; background: var(--mud-palette-primary); color: var(--mud-palette-primary-text); font-size: .75rem; font-weight: 600; flex-shrink: 0; }
 .netclaw-conversation { border: 1px solid var(--mud-palette-divider); border-radius: 8px; }
+
+.chat-error { border-color: var(--mud-palette-error); }
