@@ -1,0 +1,33 @@
+@using NetRatel.Web.Services
+<MudText Typo="Typo.caption">Runtimes: @string.Join(", ", Plan.RuntimeIds)</MudText>
+<MudText Typo="Typo.caption">All runtimes · @Plan.ReleaseIds.Length update records · @Plan.ImportIds.Length imports · @Plan.UploadStagingIds.Length staged uploads. @Plan.HistoricalAttempts historical attempts and cleanup receipts are retained.</MudText>
+@foreach (var blocker in Plan.Dependencies)
+{
+    <section class="cleanup-dependency" data-testid="cleanup-dependency">
+        <strong>@blocker.Message</strong>
+        <span>@blocker.RuntimeId @blocker.State @blocker.VersionRole</span>
+        @if (blocker.TenantId is not null) { <span>Tenant @blocker.TenantId @if (blocker.AgentId is not null) { <span>· Client @blocker.AgentId</span> }</span> }
+        @if (blocker.ReferenceId is not null) { <span>Reference <code>@blocker.ReferenceId</code></span> }
+        @if (blocker.EvidenceAtUtc is not null) { <span>Evidence / expiry @blocker.EvidenceAtUtc.Value.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'")</span> }
+        @if (blocker.CanResolve && blocker.Code != "runtime_enabled")
+        {
+            <MudButton Size="Size.Small" Variant="Variant.Outlined" Disabled="Busy" OnClick="@(() => Resolve.InvokeAsync(blocker))">@blocker.Action</MudButton>
+        }
+        else if (blocker.Code == "tenant_pin") { <MudLink Href="/tenants">@blocker.Action</MudLink> }
+        else if (blocker.Code == "update_attempt") { <MudButton Size="Size.Small" OnClick="@(() => Inspect.InvokeAsync(blocker))">Inspect this attempt in Activity</MudButton><MudLink Href="/clients">Review client decommissioning</MudLink> }
+        else { <span>@blocker.Action</span> }
+    </section>
+}
+@foreach (var blocker in Plan.Blockers.Where(text => !Plan.Dependencies.Any(d => d.Code switch
+{
+    "runtime_enabled" => text.Contains("runtime release"), "import_active" => text.Contains("imports"),
+    "transfer_active" => text.Contains("download lease"), "tenant_pin" => text.Contains("pins"),
+    "install_grant" => text.Contains("install links"), "update_attempt" => text.Contains("rollback"), _ => false
+})))
+{ <MudAlert Dense="true" Severity="Severity.Warning">@blocker</MudAlert> }
+@code {
+    [Parameter, EditorRequired] public ClientReleaseDeletionPlanModel Plan { get; set; } = new();
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public EventCallback<ClientReleaseDeletionBlockerModel> Resolve { get; set; }
+    [Parameter] public EventCallback<ClientReleaseDeletionBlockerModel> Inspect { get; set; }
+}

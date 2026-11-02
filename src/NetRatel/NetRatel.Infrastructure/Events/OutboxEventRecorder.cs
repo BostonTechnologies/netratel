@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using NetRatel.Application.Events;
 using NetRatel.Application.Observability;
 using NetRatel.Infrastructure.Persistence;
@@ -16,6 +17,12 @@ public sealed class OutboxEventRecorder(
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly OrchestratorDbContext _db = db;
     private readonly ILogger<OutboxEventRecorder> _logger = logger;
+
+    public async Task RecordIndependentAsync(DomainEvent domainEvent, CancellationToken ct = default)
+    {
+        await using var isolated = new OrchestratorDbContext((DbContextOptions<OrchestratorDbContext>)_db.GetService<IDbContextOptions>());
+        await new OutboxEventRecorder(isolated, _logger).RecordAsync(domainEvent, ct);
+    }
 
     public async Task RecordAsync(DomainEvent domainEvent, CancellationToken ct = default)
     {

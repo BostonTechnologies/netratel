@@ -44,10 +44,28 @@ public class TenantApiService : ITenantApiService
         response.EnsureSuccessStatusCode();
     }
 
-    public async Task DeleteTenantAsync(int tenantId, CancellationToken cancellationToken = default)
+    public Task DeleteTenantAsync(int tenantId, CancellationToken cancellationToken = default) => DeleteTenantCoreAsync(tenantId, null, cancellationToken);
+    public Task DeleteTenantAsync(int tenantId, long expectedVersion, CancellationToken cancellationToken = default) => DeleteTenantCoreAsync(tenantId, expectedVersion, cancellationToken);
+    private async Task DeleteTenantCoreAsync(int tenantId, long? expectedVersion, CancellationToken cancellationToken)
     {
         var client = CreateClient();
-        var response = await client.DeleteAsync($"/api/v1/tenants/{tenantId}", cancellationToken);
-        response.EnsureSuccessStatusCode();
+        using var request = new HttpRequestMessage(HttpMethod.Delete, $"/api/v1/tenants/{tenantId}");
+        if (expectedVersion is { } version) request.Headers.IfMatch.Add(new System.Net.Http.Headers.EntityTagHeaderValue($"\"{version}\""));
+        using var response = await client.SendAsync(request, cancellationToken);
+        if (response.IsSuccessStatusCode) return;
+        var detail = response.StatusCode == HttpStatusCode.Conflict
+            ? "Resolve the tenant's active dependencies before deleting it."
+            : "Tenant deletion failed. The tenant remains in the list.";
+        string? correlation = response.Headers.TryGetValues("X-Correlation-Id", out var values) ? values.FirstOrDefault() : null;
+        try
+        {
+            var problem = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>(cancellationToken);
+            if (response.StatusCode == HttpStatusCode.Conflict && problem.TryGetProperty("message", out var message)) detail = message.GetString() ?? detail;
+            if (problem.TryGetProperty("correlationId", out var reference)) correlation = reference.GetString();
+            if (problem.TryGetProperty("extensions", out var extensions) && extensions.TryGetProperty("correlationId", out var nested)) correlation = nested.GetString();
+        }
+        catch (System.Text.Json.JsonException) { }
+        throw new HttpRequestException(detail + (string.IsNullOrWhiteSpace(correlation) ? "" : $" Reference: {correlation}."), null, response.StatusCode);
+
     }
 }

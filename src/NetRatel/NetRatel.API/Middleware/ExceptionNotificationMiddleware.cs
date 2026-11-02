@@ -59,7 +59,9 @@ public sealed class ExceptionNotificationMiddleware(RequestDelegate next, ILogge
                 var innerError = ex.InnerException?.ToString();
                 if (innerError is { Length: > 4000 }) innerError = innerError[..4000];
 
-                var tenantId = context.User.FindFirstValue("tenant_id");
+                var tenantDeletion = context.Request.Method == "DELETE" && context.Request.Path.StartsWithSegments("/api/v1/tenants");
+                var tenantId = tenantDeletion && context.Request.RouteValues.TryGetValue("id", out var targetTenant)
+                    ? targetTenant?.ToString() : context.User.FindFirstValue("tenant_id");
                 var entityId = context.User.FindFirstValue("agent_id") ?? context.User.FindFirstValue("sub") ??
                     context.User.FindFirstValue(ClaimTypes.NameIdentifier);
                 var attemptId = context.Request.RouteValues.TryGetValue("attemptId", out var attempt) ? attempt?.ToString() : null;
@@ -76,34 +78,36 @@ public sealed class ExceptionNotificationMiddleware(RequestDelegate next, ILogge
                 var now = DateTimeOffset.UtcNow;
                 var traceId = Activity.Current?.TraceId.ToString() ?? context.TraceIdentifier;
 
-                await events.RecordAsync(new DomainEvent
+                using var recordingDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                await events.RecordIndependentAsync(new DomainEvent
                 {
                     OccurredUtc = now,
                     EventType = NetRatelEventTypes.System.UnhandledException,
                     Source = nameof(ExceptionNotificationMiddleware),
                     CorrelationId = correlationId,
                     TenantId = tenantId,
-                    EntityId = entityId,
+                    EntityId = tenantDeletion ? tenantId : entityId,
                     Severity = "Critical",
                     Message = $"Unhandled exception at '{context.Request.Path}' ({context.Request.Method}).",
                     Payload = new ExceptionPayload(
                         Path: context.Request.Path,
                         Method: context.Request.Method,
                         CorrelationId: correlationId,
-                        Error: ex.Message,
-                        StackTrace: stack,
+                        Error: tenantDeletion ? "Tenant deletion failed. Use the correlation reference to inspect server logs." : ex.Message,
+                        StackTrace: tenantDeletion ? null : stack,
                         ExceptionType: exceptionType,
                         AttemptId: attemptId,
                         Occurrence: attemptId is not null &&
                             context.Request.Path.StartsWithSegments("/api/v2/agent-updates/attempts")
                             ? new(errorIdentity, 1, now, now, correlationId, correlationId, traceId, traceId) : null,
                         InnerExceptionType: ex.InnerException?.GetType().FullName,
-                        InnerError: innerError)
-                }, context.RequestAborted);
+                        InnerError: tenantDeletion ? null : innerError)
+                }, recordingDeadline.Token);
             }
-            catch
+            catch (Exception recordingFailure)
             {
-                // keep pipeline stable; original exception is rethrown below
+                _logger.LogError("Failure notification could not be persisted (type={FailureType}, corr={CorrelationId})",
+                    recordingFailure.GetType().Name, correlationId);
             }
 
             throw;

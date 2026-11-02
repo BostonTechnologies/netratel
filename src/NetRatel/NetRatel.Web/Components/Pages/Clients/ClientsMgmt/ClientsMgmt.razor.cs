@@ -60,7 +60,7 @@ public partial class ClientsMgmt
     private static string ActivityTime(DateTimeOffset? at) => at is { } value
         ? value.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'") : "not recorded";
 
-    private static string InstallationSummary(ClientUpdateHistoryItemModel item) => (item.ReportedState ?? item.Status) switch
+    private static string InstallationSummary(ClientUpdateHistoryItemModel item) => item.RetiredAtUtc != null ? "Installation: unknown physical outcome; authority retired" : (item.ReportedState ?? item.Status) switch
     {
         "RolledBack" => "Installation: previous version restored",
         "RollbackUnverified" => "Installation: rollback unverified",
@@ -69,12 +69,12 @@ public partial class ClientsMgmt
         _ => "Installation: in progress"
     };
 
-    private static string ServerReportSummary(ClientUpdateHistoryItemModel item) => item.ReconciliationState is not null
+    private static string ServerReportSummary(ClientUpdateHistoryItemModel item) => item.RetiredAtUtc != null ? "Server authority: retired; outcome remains unknown" : item.ReconciliationState is not null
         ? "Server report: conflicts with accepted confirmation"
         : item.Status is "RolledBack" or "RollbackUnverified" or "FailedPreActivation" ? "Server report: received"
         : item.Status == "Accepted" ? "Server confirmation: recorded" : "Server report: awaiting terminal result";
 
-    private static string OperatorAction(ClientUpdateHistoryItemModel item) => item.ReconciliationState is not null
+    private static string OperatorAction(ClientUpdateHistoryItemModel item) => item.RetiredAtUtc != null ? "Decommissioned update authority retired; original admission and result evidence retained. Late work is fenced." : item.ReconciliationState is not null
         ? "Action: reconcile the running version and installation evidence before resuming automatic updates."
         : item.SuspendedAtUtc is not null
             ? "Action: review the installation outcome; resume affects future automatic updates only."
@@ -82,7 +82,7 @@ public partial class ClientsMgmt
 
     private async Task StartActivityAsync()
     {
-        if (_activeTab != 3 || _automationDisposed || _activityCancellation is not null) return;
+        if (_activeTab != ActivityTab || _automationDisposed || _activityCancellation is not null) return;
         var cancellation = new CancellationTokenSource();
         _activityCancellation = cancellation;
         var generation = ++_activityGeneration;
@@ -92,7 +92,7 @@ public partial class ClientsMgmt
             await ActivityStream.StartAsync(_attemptTenantId,
             notification => InvokeAsync(() =>
             {
-                if (generation != _activityGeneration || _activeTab != 3 || _automationDisposed) return;
+                if (generation != _activityGeneration || _activeTab != ActivityTab || _automationDisposed) return;
                 var previousStatus = _activityStatus;
                 _activityBackendConnected = notification.Connected;
                 if (!notification.Connected) _activityStatus = "Reconnecting";
@@ -173,11 +173,11 @@ public partial class ClientsMgmt
             {
                 await Task.Delay(200, ct);
                 ct.ThrowIfCancellationRequested();
-                if (generation != _activityGeneration || _activeTab != 3 || _automationDisposed) return;
+                if (generation != _activityGeneration || _activeTab != ActivityTab || _automationDisposed) return;
                 _activityRefreshPending = false;
                 await InvokeAsync(async () =>
                 {
-                    if (generation != _activityGeneration || _activeTab != 3 || _attemptTable is null) return;
+                    if (generation != _activityGeneration || _activeTab != ActivityTab || _attemptTable is null) return;
                     await _attemptTable.ReloadServerData();
                     StateHasChanged();
                 });
@@ -237,7 +237,7 @@ public partial class ClientsMgmt
             _activityUpdatedAt = DateTimeOffset.Now;
             _activityError = null;
             _activitySnapshotCurrent = true;
-            if (_activeTab == 3 && _activityBackendConnected && _activitySnapshotCurrent) _activityStatus = "Live";
+            if (_activeTab == ActivityTab && _activityBackendConnected && _activitySnapshotCurrent) _activityStatus = "Live";
             return ActivitySnapshot();
         }
         catch (Exception exception) when (exception is HttpRequestException or NetRatel.Web.Services.Authentication.ReauthRequiredException or System.Text.Json.JsonException ||

@@ -12,4 +12,5 @@ public interface ITenantApiService
     Task CreateTenantAsync(CreateTenantRequest request, CancellationToken cancellationToken = default);
     Task UpdateTenantAsync(int tenantId, UpdateTenantRequest request, CancellationToken cancellationToken = default);
     Task DeleteTenantAsync(int tenantId, CancellationToken cancellationToken = default);
+    Task DeleteTenantAsync(int tenantId, long expectedVersion, CancellationToken cancellationToken = default) => DeleteTenantAsync(tenantId, cancellationToken);
 }

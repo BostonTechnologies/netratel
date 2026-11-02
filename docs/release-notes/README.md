@@ -2,6 +2,7 @@
 
 These notes describe the named release and preserve historical status. [Release engineering](../deployment/RELEASES.md) describes the current publication process; the product version is controlled only by `Directory.Build.props`.
 
+- [0.1.4-beta.2 — unified release management, disk cleanup and tenant deletion](0.1.4-beta.2.md)
 - [0.1.4-beta.1 — shared conversations and script placement](0.1.4-beta.1.md)
 - [0.1.3 — software inventory and clearer operations](0.1.3.md)
 - [0.1.3-beta.4 — compact installers workspace and reliable software inventory](0.1.3-beta.4.md)

@@ -263,6 +263,23 @@ public static class ClientUpdatesEndpoints
             return Results.Ok(states);
         });
 
+        admin.MapPost("/releases/{releaseId:guid}/enable", async (Guid releaseId, [FromServices] OrchestratorDbContext db,
+            [FromServices] IClientArtifactsService artifacts, [FromServices] ClientUpdateAuthorityService updates, CancellationToken ct) =>
+        {
+            var release = await db.ClientUpdateReleases.AsNoTracking().SingleOrDefaultAsync(x => x.PublicId == releaseId, ct);
+            if (release is null) return Results.NotFound();
+            try
+            {
+                var download = await artifacts.DownloadRawAsync(release.RuntimeId, release.Version, ct);
+                await using var content = download.Content;
+                var checksum = Convert.ToHexString(await System.Security.Cryptography.SHA256.HashDataAsync(content, ct));
+                await updates.EnableReleaseAsync(releaseId, checksum, ct);
+                return Results.NoContent();
+            }
+            catch (Exception e) when (e is InvalidOperationException or IOException)
+            { return Results.Conflict(new { message = "The approved local package could not be verified. Refresh its integrity and cleanup state before enabling updates." }); }
+        });
+
         admin.MapPost("/releases/{releaseId:guid}/disable", async (Guid releaseId, HttpContext http,
             ClientUpdateAuthorityService updates, CancellationToken cancellationToken) =>
         {
@@ -453,6 +470,7 @@ public static class ClientUpdatesEndpoints
             row.Attempt.ReportedFailureCode,
             row.Attempt.ReportedMessage,
             row.Attempt.ReportedAtUtc,
+            row.Attempt.RetiredAtUtc, row.Attempt.RetiredBy, row.Attempt.RetirementReason,
             row.Owner == null || row.Owner.AcceptanceGuardAtUtc == null ? null : row.Owner.MetadataJson,
             row.Owner == null || row.Owner.AcceptanceGuardAtUtc == null ? null : row.Owner.LastReceivedAtUtc,
             row.Owner != null && row.Owner.Active,
@@ -502,7 +520,8 @@ public static class ClientUpdatesEndpoints
             row.OwnerActive && row.AcceptanceGuardAtUtc.HasValue && row.PresenceExpiresAtUtc > now && row.AuthenticationExpiresAtUtc > now,
             row.ConfirmedAtUtc, row.ConfirmationId,
             row.ReconciliationState, row.ReportedState, row.ReportedFailureCode, row.ReportedMessage, row.ReportedAtUtc,
-            row.SuspendedAtUtc, row.SuspensionReason, row.PolicyRevision, row.ResumedAtUtc, row.ResumedBy);
+            row.SuspendedAtUtc, row.SuspensionReason, row.PolicyRevision, row.ResumedAtUtc, row.ResumedBy,
+            row.RetiredAtUtc, row.RetiredBy, row.RetirementReason);
     }
 
     private static AgentClientUpdateStateDto MapState(ClientUpdateStateRow row)
@@ -578,6 +597,7 @@ public static class ClientUpdatesEndpoints
         string? ReportedFailureCode,
         string? ReportedMessage,
         DateTimeOffset? ReportedAtUtc,
+        DateTimeOffset? RetiredAtUtc, string? RetiredBy, string? RetirementReason,
         string? OwnerMetadataJson,
         DateTimeOffset? ObservedAtUtc,
         bool OwnerActive,
@@ -622,7 +642,8 @@ public sealed record ClientUpdateHistoryItemDto(Guid AttemptId, int ReleaseId, s
     string? ReconciliationState = null, string? ReportedState = null, string? ReportedFailureCode = null,
     string? ReportedMessage = null, DateTimeOffset? ReportedAtUtc = null,
     DateTimeOffset? SuspendedAtUtc = null, string? SuspensionReason = null, long PolicyRevision = 0,
-    DateTimeOffset? ResumedAtUtc = null, string? ResumedBy = null);
+    DateTimeOffset? ResumedAtUtc = null, string? ResumedBy = null,
+    DateTimeOffset? RetiredAtUtc = null, string? RetiredBy = null, string? RetirementReason = null);
 public sealed record ClientUpdateHistoryPageDto(IReadOnlyList<ClientUpdateHistoryItemDto> Items, int Total, int Page, int PageSize);
 public sealed record ClientUpdateReleasePageDto(IReadOnlyList<ClientUpdateReleaseDto> Items, int Total, int Page, int PageSize);
 public sealed record ClientUpdateAttemptDiagnosticDto(Guid AttemptId, int ReleaseId, int TenantId, Guid AgentId,

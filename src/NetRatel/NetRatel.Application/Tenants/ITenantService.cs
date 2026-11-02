@@ -34,6 +34,11 @@ public sealed class TenantConcurrencyException : InvalidOperationException
     }
 }
 
+public sealed class TenantDeletionConflictException(string code, string message) : InvalidOperationException(message)
+{
+    public string Code { get; } = code;
+}
+
 public sealed record UpdateTenantCommand(
     int TenantId,
     string Name,

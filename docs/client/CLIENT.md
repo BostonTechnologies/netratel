@@ -579,3 +579,15 @@ generate a new link. Old packages remain supported until their link expires,
 is revoked, or is exhausted; do not edit a capability URL or downloaded script.
 Keep capability URLs and generated script contents out of external reverse-proxy
 access logs.
+
+## Release workspace and local cleanup
+
+Open **Agent Installers & Updates → GitHub releases**. Search and filter the unified catalogue by channel, runtime and local state. Locally retained imports and manual uploads stay visible even if GitHub discovery is unavailable; an unobserved upstream source is **Unknown**, not proof of removal. **Check upstream source** inspects the exact imported release/tag. Local verification, approval and per-runtime update enablement are separate states.
+
+Expand a version for package checksums, provenance, archive downloads and the existing tenant-bound installer-script dialog. Generating or expanding a row does not issue credentials. The script dialog requires an explicit generation action and retains expiry, use and revocation controls. Enabling an already approved runtime rechecks its actual local archive checksum and keeps tenant rollout policies intact.
+
+**Review all-runtime cleanup** previews owned disk assets and retained history. The optional **Disable all runtime update releases** selection disables every enabled runtime for eligible versions under the admission fence, then deletes their owned files. A blocker rolls that version's disable/delete transaction back. Imports can be cancelled and their worker leases drained; install links can be explicitly revoked; live transfer leases must finish. Tenant pins link to their policy settings and are never silently changed.
+
+For abandoned attempts, inspect the referenced attempt in Activity. An active client's recovery must finish or the client must be deliberately decommissioned through Clients. Only a deleted, disabled and revoked identity qualifies for **Retire authority with unknown outcome**. Supply an audit reason and acknowledge that no successful installation or verified rollback is inferred. The admission state, nonce and result evidence remain, with separate retirement actor/time/reason; all late reports, gateway readmissions and confirmations are rejected.
+
+Select local versions on a page or all filtered local versions when there are at most 100. Selection persists across pages; larger sets must be reviewed in batches or narrowed by filters. The preview lists exact versions and deduplicated owned bytes. Delete eligible versions while blocked selections remain accessible. Pending/Failed cleanup does not claim completed reclamation; retry uses the durable receipt. Deleted versions remain suppressed from automatic re-import until an explicit import. Local purge neither removes GitHub releases nor uninstalls clients.

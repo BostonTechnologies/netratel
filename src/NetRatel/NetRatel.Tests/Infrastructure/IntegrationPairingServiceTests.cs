@@ -261,7 +261,7 @@ public sealed class IntegrationPairingServiceTests(PostgreSqlPersistenceFixture 
         await using var session = fixture.Open();
         await session.Db.Database.MigrateAsync();
         // Approval checks identifiers; delivery adds their human-readable names.
-        await session.Db.Database.ExecuteSqlRawAsync("CREATE TABLE \"Tenants\" (\"Id\" integer PRIMARY KEY, \"Name\" text NOT NULL); INSERT INTO \"Tenants\" (\"Id\", \"Name\") VALUES (7, 'Tenant A'), (8, 'Tenant B')");
+        await session.Db.Database.ExecuteSqlRawAsync("CREATE TABLE \"Tenants\" (\"Id\" integer PRIMARY KEY, \"Name\" text NOT NULL, \"DeletedAtUtc\" timestamp with time zone NULL); INSERT INTO \"Tenants\" (\"Id\", \"Name\") VALUES (7, 'Tenant A'), (8, 'Tenant B')");
         session.Db.Users.Add(new LocalUser { Id = "pairing-local", UserName = "owner", PrincipalId = "pairing-owner", IsEnabled = true });
         var role = new AccessRole { Name = "Pairing reader" };
         role.Permissions.Add(new AccessRolePermission { Permission = NetRatelPermissions.TelemetryRead });

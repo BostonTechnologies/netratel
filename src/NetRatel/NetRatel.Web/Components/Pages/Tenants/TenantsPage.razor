@@ -371,11 +371,16 @@
         }
     }
 
+    private readonly HashSet<int> _deletingTenants = [];
+
     private async Task ConfirmDeleteAsync(TenantDto tenant)
     {
+        if (!_deletingTenants.Add(tenant.TenantId)) return;
+        try
+        {
         var result = await DialogService.ShowMessageBoxAsync(
             title: "Delete Tenant",
-            markupMessage: (MarkupString)$"Delete <b>{tenant.Name}</b> and remove its tenant record?",
+            message: $"Delete {tenant.Name}? Enrollment and service credentials are revoked; archived prompts and audit history are retained. Decommission clients and disconnect active named connections first.",
             yesText: "Delete",
             cancelText: "Cancel",
             options: new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small });
@@ -387,7 +392,7 @@
 
         try
         {
-            await TenantApi.DeleteTenantAsync(tenant.TenantId);
+            await TenantApi.DeleteTenantAsync(tenant.TenantId, tenant.Version);
             Snackbar.Add("Tenant deleted.", Severity.Success);
             await LoadTenantsAsync();
         }
@@ -395,6 +400,8 @@
         {
             Snackbar.Add($"Failed to delete tenant: {ex.Message}", Severity.Error);
         }
+        }
+        finally { _deletingTenants.Remove(tenant.TenantId); }
     }
 
     private void OpenAgents(TenantDto tenant) => Nav.NavigateTo($"/tenants/{tenant.TenantId}/agents");

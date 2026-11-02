@@ -12,6 +12,7 @@
             </TitleContent>
             <ChildContent>
                 <div class="attempt-details-identity"><span>Attempt ID</span><code>@Item.AttemptId</code></div>
+                @if (Item.RetiredAtUtc is not null) { <MudAlert Dense="true" Severity="Severity.Warning">Authority retired @Time(Item.RetiredAtUtc) by @Item.RetiredBy. Physical outcome unknown. @Item.RetirementReason</MudAlert> }
                 <div class="attempt-details-grid">
                     <section class="attempt-details-card" aria-label="Installed versions">
                         <h3><MudIcon Icon="@Icons.Material.Outlined.Memory" Size="Size.Small" />Installed versions</h3>

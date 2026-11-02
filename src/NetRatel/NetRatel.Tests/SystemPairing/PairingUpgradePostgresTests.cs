@@ -29,7 +29,16 @@ public sealed class PairingUpgradePostgresTests(PostgreSqlPersistenceFixture pos
         var credentialService = new IntegrationCredentialService(identity);
         var unrelated = await credentialService.CreateAsync(PairingBusinessAuthorityFixture.Administrator, new("Unrelated API credential", IntegrationCredentialPurpose.Api, DateTimeOffset.UtcNow.AddDays(7), [new(23, NetRatelPermissions.TelemetryRead)]));
         var installation = Guid.NewGuid(); var producer = Guid.NewGuid();
-        db.Tenants.Add(new() { Id = 23, Name = "Preserved tenant", CreatedAtUtc = DateTimeOffset.UtcNow, UpdatedAtUtc = DateTimeOffset.UtcNow });
+        if (upgrade)
+        {
+            // Seed the historical schema through its actual columns before applying
+            // current migrations; the current EF model also includes retirement state.
+            await db.Database.ExecuteSqlRawAsync("""
+                INSERT INTO "Tenants" ("Id", "Name", "Domains", "AutoUpdate", "AutoUpdateChannel", "Version", "CreatedAtUtc", "UpdatedAtUtc")
+                VALUES (23, 'Preserved tenant', ARRAY[]::text[], false, 'stable', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """);
+        }
+        else db.Tenants.Add(new() { Id = 23, Name = "Preserved tenant", CreatedAtUtc = DateTimeOffset.UtcNow, UpdatedAtUtc = DateTimeOffset.UtcNow });
         db.Add(new InstallationIdentityRecord { InstanceId = installation, SourceInstanceId = producer });
         db.FlowRuntimeIdentity.Add(new() { SourceInstanceId = producer });
         db.Add(new ServiceSigningKey { Kid = "preserved-signing-key", Issuer = "https://nr.example.test/services", ProtectedPrivateKey = "preserved-protected-key", PublicModulus = "retained-n", PublicExponent = "retained-e", ActiveSlot = 1, CreatedAtUtc = DateTimeOffset.UtcNow });
