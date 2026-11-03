@@ -59,14 +59,15 @@ bash tools/ci/scan-public-image.sh --image "$candidate" --version "$version" --r
 for arm in candidate control; do
   image="$candidate"; if [[ "$arm" == control ]]; then image="$control"; fi
   docker image inspect "$image" > "$results/$arm-image.json"
-  mkdir -p "$temporary/$arm"
+  # The existing SBOM inventories the logical /out publish directory, copied to /app in the image.
+  mkdir -p "$temporary/$arm/out"
   container="$(docker create "$image")"
-  docker cp "$container:/app/." "$temporary/$arm/"
+  docker cp "$container:/app/." "$temporary/$arm/out/"
   docker rm "$container" >/dev/null; container=""
-  python3 tools/ci/verify-runtime-sbom.py --sbom "$temporary/$arm/runtime.spdx.json" --root "$temporary/$arm" \
+  cp "$temporary/$arm/out/NetRatel.Migrations.runtimeconfig.json" "$results/$arm-runtimeconfig.json"
+  cp "$temporary/$arm/out/runtime.spdx.json" "$results/$arm-runtime.spdx.json"
+  python3 tools/ci/verify-runtime-sbom.py --sbom "$temporary/$arm/out/runtime.spdx.json" --root "$temporary/$arm" \
     | tee "$results/$arm-sbom-check.log"
-  cp "$temporary/$arm/NetRatel.Migrations.runtimeconfig.json" "$results/$arm-runtimeconfig.json"
-  cp "$temporary/$arm/runtime.spdx.json" "$results/$arm-runtime.spdx.json"
   docker run --rm --entrypoint sh "$image" -ceu '
     test "$(id -u)" != 0
     test -w /var/netratel
@@ -81,8 +82,8 @@ from pathlib import Path
 temporary, results = map(Path, sys.argv[1:])
 inventories = {}
 for arm in ('candidate', 'control'):
-    directory = temporary / arm
-    inventories[arm] = {p.relative_to(directory).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+    directory = temporary / arm / 'out'
+    inventories[arm] = {p.relative_to(directory).as_posix(): {'sha256': hashlib.sha256(p.read_bytes()).hexdigest(), 'bytes': p.stat().st_size}
                         for p in sorted(directory.rglob('*')) if p.is_file()}
     (results / (arm + '-file-hashes.json')).write_text(json.dumps(inventories[arm], indent=2) + '\n')
 if inventories['candidate'] != inventories['control']:
@@ -93,6 +94,10 @@ if {item['name'] for item in frameworks} != {'Microsoft.NETCore.App'}:
     raise ValueError('Migrations requires a framework beyond Microsoft.NETCore.App')
 candidate = (results / 'candidate-runtime.txt').read_text().splitlines()
 control = (results / 'control-runtime.txt').read_text().splitlines()
+candidate_core = [line for line in candidate if line.startswith('Microsoft.NETCore.App ')]
+control_core = [line for line in control if line.startswith('Microsoft.NETCore.App ')]
+if len(candidate_core) != 1 or candidate_core != control_core:
+    raise ValueError('The controlled comparison requires identical CoreCLR patch versions')
 if candidate[0] != control[0] or candidate[0] == '0' or any('Microsoft.AspNetCore.App' in line for line in candidate):
     raise ValueError('Candidate runtime or nonroot identity differs from the expected boundary')
 print('Both application payloads are byte-identical; candidate requires CoreCLR only and retains the nonroot UID.')
