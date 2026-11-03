@@ -122,6 +122,13 @@ def run_packaged_pty_probes(metrics, evidence, state, archive, distribution_name
                       bundleExtractionBytes=sum(path.stat().st_size for path in cache.rglob("*") if path.is_file()))
         record["passed"] = (record["exitCode"] == 0 and not record.get("timedOut")
                             and final.get("stage") == "passed" and final.get("reaped") is True)
+        if expected := metrics.get("expectedNativeHelper"):
+            extracted = [{"path": path.relative_to(cache).as_posix(), "sha256": digest(path),
+                          "binary": binary_identity(path)} for path in cache.rglob(expected["name"])]
+            record["nativeHelperExtraction"] = extracted
+            record["passed"] = (record["passed"] and len(extracted) == 1
+                                and extracted[0]["sha256"] == expected["sha256"]
+                                and extracted[0]["binary"] == expected["binary"])
         print("CLIENT_PACKAGED_PTY_PROBE=" + json.dumps({"backend": backend, **record}, separators=(",", ":")), flush=True)
         print(stdout, end="", flush=True)
         print(stderr, end="", file=sys.stderr, flush=True)
@@ -163,6 +170,22 @@ def binary_identity(path):
         if header[:4] == b"\x7fELF" and len(header) >= 20 and header[5] in (1, 2):
             return {"format": "ELF", "machine": hex(int.from_bytes(header[18:20], "little" if header[5] == 1 else "big"))}
     return None
+
+
+def native_resize_helper_identity(source, runtime, inputs):
+    name = "libnetratel_terminal_pty_resize.dylib"
+    matches = [item for item in inputs if Path(item["path"]).name == name]
+    required = runtime == "osx-arm64" and (source / Path(PROJECT).parent / "Service/Terminal/native_darwin_pty_resize.c").is_file()
+    if not matches:
+        if required:
+            raise ValueError("The Darwin resize helper is missing from actual prebundle inputs")
+        return None
+    identities = {(item["sha256"], json.dumps(item["binary"], sort_keys=True)) for item in matches}
+    if (runtime != "osx-arm64" or len(identities) != 1
+            or matches[0]["binary"] != {"format": "Mach-O", "machine": "0x100000c"}
+            or any(item["excludedFromBundle"] for item in matches)):
+        raise ValueError("Published Darwin resize helper must be bundled with one osx-arm64 identity")
+    return {"name": name, "sha256": matches[0]["sha256"], "binary": matches[0]["binary"]}
 
 
 def run_packaged_version_probes(metrics, evidence, state, archive, distribution_name, runtime, version):
@@ -420,6 +443,8 @@ def main():
             inputs.append({"path": relative, "bytes": path.stat().st_size, "sha256": digest(path),
                            "excludedFromBundle": loose.lower() == "true", "binary": binary_identity(path)})
         (evidence / "publish-input-inventory.json").write_text(json.dumps(inputs, indent=2) + "\n")
+        if resize_helper := native_resize_helper_identity(source, args.runtime, inputs):
+            metrics["expectedNativeHelper"] = resize_helper
         for name in ("LICENSE", "NOTICE"):
             shutil.copy2(source / name, distribution / name)
         recovery_tool = source / "tools/ci/prepare-windows-client-repair.py"

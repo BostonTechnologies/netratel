@@ -111,6 +111,19 @@ Avoid `config set` for local credentials because command-line arguments can be
 recorded by a shell. Use environment injection or an owner-readable config
 file instead.
 
+For optional acceptance of a produced portable package, open **Optional
+integration validation** in GitHub Actions, select **Run workflow**, set
+`suite` to `cli-tool`, and set `source_ref` to the full candidate commit SHA.
+That commit must have exactly one successful **Release build** run; missing
+or ambiguous builds fail before installation. The workflow authenticates the
+original nupkg download and checksums, then tests global installation, a local
+tool manifest, update from the latest completed different-version publication,
+and reinstall on Linux, Windows and macOS with isolated feeds and caches.
+Receipts retain source/SDK identity, package metadata/legal files, installed
+file hashes and sizes, and synthetic API/config/auth/setup checks. This suite
+does not build or publish a package. Live-backend and interactive TTY testing
+remain separate owner acceptance.
+
 The release rehearsal packages and validates Linux x64 for the CLI, and Linux
 x64 plus Windows x64 for stdio MCP and its HTTP bridge. The Windows MCP archive
 includes the protected DPAPI launcher and is built and smoke-tested on Windows.

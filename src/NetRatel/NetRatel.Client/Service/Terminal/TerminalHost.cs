@@ -1129,7 +1129,9 @@ internal sealed class NativeUnixPtyTerminalHost : ITerminalHostSession
                 YPixel = 0
             };
 
-            var result = Ioctl(_masterFd, GetTiocswinsz(), ref size);
+            var result = RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
+                ? SetWindowSizeMac(_masterFd, size.Row, size.Col)
+                : Ioctl(_masterFd, GetTiocswinsz(), ref size);
             if (result != 0)
             {
                 var error = Marshal.GetLastWin32Error();
@@ -1395,6 +1397,9 @@ internal sealed class NativeUnixPtyTerminalHost : ITerminalHostSession
 
     [DllImport("libc", EntryPoint = "ioctl", SetLastError = true)]
     private static extern int Ioctl(int fd, uint request, ref WinSize size);
+
+    [DllImport("netratel_terminal_pty_resize", EntryPoint = "netratel_set_window_size", SetLastError = true)]
+    private static extern int SetWindowSizeMac(int fd, ushort rows, ushort cols);
 
     [DllImport("libc", EntryPoint = "waitpid", SetLastError = true)]
     private static extern int WaitPid(int pid, out int status, int options);

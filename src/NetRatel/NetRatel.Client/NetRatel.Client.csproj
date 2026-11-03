@@ -87,6 +87,36 @@
     <Copy SourceFiles="$(NativeUnixPtySpawnLibrary)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
   </Target>
 
+  <Target Name="BuildNativeDarwinPtyResizeHelper" BeforeTargets="GetCopyToOutputDirectoryItems;ComputeFilesToPublish;CoreCompile" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <PropertyGroup>
+      <NativeDarwinPtyDirectory>$(IntermediateOutputPath)native-darwin-pty</NativeDarwinPtyDirectory>
+      <NativeDarwinPtyLibrary>$(NativeDarwinPtyDirectory)/libnetratel_terminal_pty_resize.dylib</NativeDarwinPtyLibrary>
+      <NativeDarwinPtyCompilerFlags Condition="'$(Configuration)' == 'Debug'">-g -O0</NativeDarwinPtyCompilerFlags>
+      <NativeDarwinPtyCompilerFlags Condition="'$(Configuration)' != 'Debug'">-O2</NativeDarwinPtyCompilerFlags>
+      <NativeDarwinPtyArchitecture Condition="'$(RuntimeIdentifier)' == 'osx-arm64'">-arch arm64</NativeDarwinPtyArchitecture>
+    </PropertyGroup>
+    <MakeDir Directories="$(NativeDarwinPtyDirectory)" />
+    <Exec Command="xcrun clang -dynamiclib $(NativeDarwinPtyArchitecture) $(NativeDarwinPtyCompilerFlags) -Wall -Wextra -Werror -install_name @rpath/libnetratel_terminal_pty_resize.dylib -o &quot;$(NativeDarwinPtyLibrary)&quot; &quot;$(MSBuildProjectDirectory)/Service/Terminal/native_darwin_pty_resize.c&quot;" />
+    <ItemGroup>
+      <Content Include="$(NativeDarwinPtyLibrary)" Link="libnetratel_terminal_pty_resize.dylib" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="CopyNativeDarwinPtyResizeHelper" DependsOnTargets="BuildNativeDarwinPtyResizeHelper" BeforeTargets="CopyFilesToOutputDirectory" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <Copy SourceFiles="$(NativeDarwinPtyLibrary)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+  <!-- ComputeFilesToPublish already generates the bundle; add this native input
+       while the resolved list is still available to the linker and bundler. -->
+  <Target Name="IncludeNativeDarwinPtyResizeHelperInPublish" DependsOnTargets="BuildNativeDarwinPtyResizeHelper" AfterTargets="ComputeResolvedFilesToPublishList" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <ItemGroup>
+      <ResolvedFileToPublish Include="$(NativeDarwinPtyLibrary)">
+        <RelativePath>libnetratel_terminal_pty_resize.dylib</RelativePath>
+        <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+
   <Target Name="IncludeNativeUnixPtySpawnHelperInPublish" DependsOnTargets="BuildNativeUnixPtySpawnHelper" AfterTargets="ComputeFilesToPublish" Condition="$([MSBuild]::IsOSPlatform('Linux'))">
     <ItemGroup>
       <!-- The single-file bundle must know about the helper so it extracts beside AppContext.BaseDirectory. -->

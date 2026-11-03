@@ -33,20 +33,25 @@ COPY src/NetRatel/NetRatel.Mcp/NetRatel.Mcp.csproj src/NetRatel/NetRatel.Mcp/
 COPY src/NetRatel/NetRatel.Setup/NetRatel.Setup.csproj src/NetRatel/NetRatel.Setup/
 COPY src/NetRatel/NetRatel.ServiceDefaults/NetRatel.ServiceDefaults.csproj src/NetRatel/NetRatel.ServiceDefaults/
 COPY src/NetRatel/NetRatel.Shared/NetRatel.Shared.csproj src/NetRatel/NetRatel.Shared/
-RUN dotnet restore src/NetRatel/NetRatel.Mcp.Http/NetRatel.Mcp.Http.csproj
-RUN dotnet restore src/NetRatel/NetRatel.Cli/NetRatel.Cli.csproj && \
-    dotnet restore src/NetRatel/NetRatel.Mcp/NetRatel.Mcp.csproj
+# This Linux x64 image retains every tooling mode while selecting only its
+# runtime assets. Windows client launcher generation remains in the tooling.
+RUN dotnet restore src/NetRatel/NetRatel.Mcp.Http/NetRatel.Mcp.Http.csproj --runtime linux-x64
+RUN dotnet restore src/NetRatel/NetRatel.Cli/NetRatel.Cli.csproj --runtime linux-x64 && \
+    dotnet restore src/NetRatel/NetRatel.Mcp/NetRatel.Mcp.csproj --runtime linux-x64
 
 COPY . .
 RUN dotnet publish src/NetRatel/NetRatel.Mcp.Http/NetRatel.Mcp.Http.csproj \
       --configuration "${BUILD_CONFIGURATION}" \
+      --runtime linux-x64 --self-contained false \
       --no-restore \
       --output /out \
       /p:UseAppHost=false
 RUN dotnet publish src/NetRatel/NetRatel.Cli/NetRatel.Cli.csproj \
-      --configuration "${BUILD_CONFIGURATION}" --no-restore --output /out/tooling/cli /p:UseAppHost=false && \
+      --configuration "${BUILD_CONFIGURATION}" --runtime linux-x64 --self-contained false \
+      --no-restore --output /out/tooling/cli /p:UseAppHost=false && \
     dotnet publish src/NetRatel/NetRatel.Mcp/NetRatel.Mcp.csproj \
-      --configuration "${BUILD_CONFIGURATION}" --no-restore --output /out/tooling/stdio /p:UseAppHost=false
+      --configuration "${BUILD_CONFIGURATION}" --runtime linux-x64 --self-contained false \
+      --no-restore --output /out/tooling/stdio /p:UseAppHost=false
 
 # Operators copy this matching launcher to the Docker host and run it with bash.
 # Include it in /out before generating the runtime distribution inventory.
@@ -58,6 +63,7 @@ RUN python3 tools/ci/generate-runtime-sbom.py \
       --project-assets src/NetRatel/NetRatel.Mcp/obj/project.assets.json \
       --distribution /out --distribution /out/tooling/cli --distribution /out/tooling/stdio \
       --distribution-root /out \
+      --runtime linux-x64 \
       --name NetRatel.Mcp.Http \
       --version "$(dotnet msbuild src/NetRatel/NetRatel.Mcp.Http/NetRatel.Mcp.Http.csproj -nologo -getProperty:Version)" \
       --output /out/runtime.spdx.json

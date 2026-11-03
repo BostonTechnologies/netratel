@@ -858,26 +858,44 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertEqual(["workflow_dispatch"], re.findall(r"(?m)^  ([A-Za-z_][A-Za-z_0-9-]*):", triggers.group(1)))
         jobs = manual.split("\njobs:\n", 1)
         self.assertEqual(2, len(jobs))
-        self.assertEqual(["selected-suite", "windows-mcp", "client-measurement", "migrations-image", "api-image"],
-                         re.findall(r"(?m)^  ([A-Za-z_][A-Za-z_0-9-]*):", jobs[1]))
-        selected, measurement = jobs[1].split("\n  client-measurement:", 1)
-        measurement, migrations = measurement.split("\n  migrations-image:", 1)
-        migrations, api_image = migrations.split("\n  api-image:", 1)
+        sections = dict(re.findall(r"(?ms)^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:|\Z)", jobs[1]))
+        self.assertEqual(["selected-suite", "windows-mcp", "client-measurement", "migrations-image", "api-image", "cli-tool"], list(sections))
+        selected, measurement, portable = (sections[name] for name in ("selected-suite", "client-measurement", "cli-tool"))
+        self.assertIn("inputs.suite != 'cli-tool'", selected)
+        self.assertIn("if: inputs.suite == 'cli-tool'", portable)
+        self.assertIn("ref: ${{ github.workflow_sha }}", portable)
+        self.assertIn("ref: ${{ inputs.source_ref }}", portable)
+        self.assertIn("global-json-file: cli-tool-source/global.json", portable)
+        self.assertIn("python3 tools/ci/test-cli-tool-validation.py", portable)
+        self.assertIn("python3 tools/ci/validate-cli-tool.py --source cli-tool-source", portable)
+        for runtime in ("linux-x64", "win-x64", "osx-arm64"):
+            self.assertIn("runtime: " + runtime, portable)
+        for unwanted in ("dotnet build", "dotnet publish", "continue-on-error"):
+            self.assertNotIn(unwanted, portable)
+        migrations = sections["migrations-image"]
+        api_image = sections["api-image"]
         self.assertIn("if: inputs.suite == 'api-image'", api_image)
+        self.assertIn("inputs.suite == 'api-rid'", api_image)
+        self.assertIn("inputs.suite != 'api-rid'", selected)
         self.assertIn("inputs.suite != 'api-image'", selected)
         self.assertNotRegex(api_image, r"(?m)^\s+matrix:")
         self.assertIn("if: inputs.suite == 'migrations-image'", migrations)
         self.assertIn("inputs.suite != 'migrations-image'", selected)
         self.assertNotRegex(migrations, r"(?m)^\s+matrix:")
+        api_image = sections["api-image"]
+        self.assertIn("if: inputs.suite == 'api-image'", api_image)
+        self.assertIn("inputs.suite != 'api-image'", selected)
+        self.assertNotRegex(api_image, r"(?m)^\s+matrix:")
         self.assertNotRegex(selected, r"(?m)^\s+matrix:", "A functional suite selection must not fan out into other functional suites.")
         self.assertIn("if: inputs.suite != 'client-measurement'", selected)
         self.assertIn("if: inputs.suite == 'client-measurement'", measurement)
         self.assertIn("inputs.assessment_only && '[{\"runtime\":\"linux-x64\",\"runner\":\"ubuntu-latest\"}]'", measurement,
                       "The first trim assessment must permit a single Linux job without repeating A/B.")
-        self.assertIn("if: ${{ inputs.suite == 'client-measurement' && !inputs.assessment_only }}", measurement)
+        self.assertIn("if: ${{ (inputs.suite == 'client-measurement' && !inputs.assessment_only) || inputs.suite == 'client-pty-debug-macos' }}", measurement)
         for suite, runtime, runner in (("client-trim-windows", "win-x64", "windows-latest"),
                                        ("client-trim-macos", "osx-arm64", "macos-latest"),
-                                       ("client-control-macos", "osx-arm64", "macos-latest")):
+                                       ("client-control-macos", "osx-arm64", "macos-latest"),
+                                       ("client-pty-debug-macos", "osx-arm64", "macos-latest")):
             self.assertIn(f"inputs.suite != '{suite}'", selected)
             self.assertIn(f"inputs.suite == '{suite}' && '[{{\"runtime\":\"{runtime}\",\"runner\":\"{runner}\"}}]'", measurement,
                           "Each native assessment must select one matching hosted runner without A/B fan-out.")
@@ -2416,7 +2434,24 @@ class ClientMeasurementHelperTests(unittest.TestCase):
             self.assertEqual("runtime behavior", failed["failureKind"])
             self.assertNotIn("launch-cached", failed["stages"])
 
-    def packaged_pty_fixture(self, root, native_exit, native_final):
+    def test_darwin_helper_declaration_requires_actual_bundled_input_before_probe(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            self.assertIsNone(self.helper.native_resize_helper_identity(source, "osx-arm64", []))
+            declaration = source / "src/NetRatel/NetRatel.Client/Service/Terminal/native_darwin_pty_resize.c"
+            declaration.parent.mkdir(parents=True)
+            declaration.touch()
+            with self.assertRaisesRegex(ValueError, "missing from actual prebundle inputs"):
+                self.helper.native_resize_helper_identity(source, "osx-arm64", [])
+            item = {"path": "libnetratel_terminal_pty_resize.dylib", "sha256": "a" * 64,
+                    "binary": {"format": "Mach-O", "machine": "0x100000c"}, "excludedFromBundle": False}
+            self.assertEqual(item["sha256"], self.helper.native_resize_helper_identity(source, "osx-arm64", [item])["sha256"])
+            item["excludedFromBundle"] = True
+            with self.assertRaisesRegex(ValueError, "must be bundled"):
+                self.helper.native_resize_helper_identity(source, "osx-arm64", [item])
+            self.assertIsNone(self.helper.native_resize_helper_identity(source, "linux-x64", []))
+
+    def packaged_pty_fixture(self, root, native_exit, native_final, native_helper=None):
         distribution = root / "netratel-client-linux-x64"
         distribution.mkdir()
         executable = distribution / "NetRatel.Client"
@@ -2425,6 +2460,7 @@ class ClientMeasurementHelperTests(unittest.TestCase):
             "cache = pathlib.Path(os.environ['DOTNET_BUNDLE_EXTRACT_BASE_DIR'])\n"
             "cache.mkdir(parents=True)\n"
             "(cache / 'extracted').write_bytes(b'cache')\n"
+            + (f"(cache / 'libnetratel_terminal_pty_resize.dylib').write_bytes({native_helper!r})\n" if native_helper else "") +
             "print('ordinary client log')\n"
             f"event = {native_final!r} if sys.argv[1].endswith('native') else {{'stage': 'passed', 'reaped': True}}\n"
             "print(json.dumps(event))\n"
@@ -2438,6 +2474,27 @@ class ClientMeasurementHelperTests(unittest.TestCase):
         evidence.mkdir()
         state.mkdir()
         return archive, evidence, state
+
+    def test_packaged_native_helper_requires_exact_extracted_bytes_and_architecture(self):
+        payload = b"\xcf\xfa\xed\xfe\x0c\x00\x00\x01"
+        for correct in (True, False):
+            with self.subTest(correct=correct), tempfile.TemporaryDirectory() as temporary:
+                archive, evidence, state = self.packaged_pty_fixture(Path(temporary), 0,
+                    {"stage": "passed", "reaped": True}, native_helper=payload)
+                metrics = {"stages": {}, "expectedNativeHelper": {"name": "libnetratel_terminal_pty_resize.dylib",
+                    "sha256": hashlib.sha256(payload).hexdigest() if correct else "0" * 64,
+                    "binary": {"format": "Mach-O", "machine": "0x100000c"}}}
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    if correct:
+                        self.helper.run_packaged_pty_probes(metrics, evidence, state, archive, "netratel-client-linux-x64")
+                    else:
+                        with self.assertRaises(subprocess.CalledProcessError):
+                            self.helper.run_packaged_pty_probes(metrics, evidence, state, archive, "netratel-client-linux-x64")
+                for backend in ("native", "python"):
+                    probe = metrics["stages"]["pty-" + backend]
+                    self.assertEqual(correct, probe["passed"])
+                    self.assertEqual(hashlib.sha256(payload).hexdigest(), probe["nativeHelperExtraction"][0]["sha256"])
+                    self.assertEqual(0, probe["exitCode"], "A successful process must still fail when extracted helper bytes differ.")
 
     def test_packaged_probes_capture_exact_failure_and_still_execute_other_backend(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -3868,6 +3925,102 @@ class PublicationImageJournalTests(unittest.TestCase):
             self.promotion.publish_assets(directory, f"v{self.version}")
         self.assertEqual(uploads, [])
 
+class HttpHostFlowPermissionDenialTests(unittest.TestCase):
+    """Current typed admission contract, also exercised by McpHttpDelegationAdmission tests."""
+
+    @staticmethod
+    def denial():
+        failure = {
+            "success": False, "status": "failed", "summary": "Local HTTP MCP delegation was not admitted.",
+            "data": {"requiredPermission": "flow.read", "additionalPermissions": [], "retryAfterSeconds": None},
+            "affectedIds": None,
+            "error": {"code": "local_credential_permission_denied", "retryable": False, "upstreamStatus": 403, "allowedOperations": None},
+            "requiresConfirmation": False, "confirmation": None,
+            "failure": {"code": "local_credential_permission_denied", "layer": "application_permission", "retryable": False,
+                        "requiredScopes": ["netratel.mcp.observe"], "requiredOperation": "netratel_flows/list",
+                        "target": None, "safeDetails": "No upstream response content is exposed.", "remediation": "Review application permission."},
+            "correlationId": "fixture-permission-denial"
+        }
+        return {"jsonrpc": "2.0", "id": 4, "result": {"isError": True, "structuredContent": failure,
+                "content": [{"type": "text", "text": json.dumps(failure)}]}}
+
+    @staticmethod
+    def synchronize_content(payload):
+        payload["result"]["content"][0]["text"] = json.dumps(payload["result"]["structuredContent"])
+
+    def accepted(self, payload):
+        result = subprocess.run(["jq", "-e", "-f", str(ROOT / "tools/ci/http-host-flow-permission-denial.jq")],
+                                input=json.dumps(payload), text=True, capture_output=True)
+        return result.returncode == 0
+
+    def test_accepts_the_current_permission_denial_without_matching_human_text(self):
+        payload = self.denial()
+        payload["result"]["structuredContent"]["summary"] = "Permission was denied."
+        self.synchronize_content(payload)
+        self.assertTrue(self.accepted(payload))
+
+    def test_rejects_credential_protocol_dependency_and_other_authorization_failures(self):
+        for code, layer, status in [
+            ("local_credential_invalid", "credential", 401), ("local_credential_expired", "credential", 401),
+            ("local_credential_revoked", "credential", 403), ("delegated_identity_invalid", "delegation", 401),
+            ("local_credential_exchange_protocol_error", "dependency", 502),
+            ("local_credential_exchange_timed_out", "dependency", 504), ("local_credential_throttled", "dependency", 429),
+            ("target_policy_denied", "policy", 403), ("local_delegation_binding_mismatch", "target", 403)
+        ]:
+            with self.subTest(code=code):
+                payload = self.denial()
+                payload["result"]["structuredContent"]["error"].update(code=code, upstreamStatus=status)
+                payload["result"]["structuredContent"]["failure"].update(code=code, layer=layer)
+                self.synchronize_content(payload)
+                self.assertFalse(self.accepted(payload))
+
+    def test_rejects_wrong_request_operation_permission_and_status(self):
+        for change in ["request", "operation", "permission", "status"]:
+            with self.subTest(change=change):
+                payload = self.denial()
+                failure = payload["result"]["structuredContent"]
+                if change == "request": payload["id"] = 5
+                if change == "operation": failure["failure"]["requiredOperation"] = "netratel_jobs/get"
+                if change == "permission": failure["data"]["requiredPermission"] = "flow.edit"
+                if change == "status": failure["error"]["upstreamStatus"] = 401
+                self.synchronize_content(payload)
+                self.assertFalse(self.accepted(payload))
+
+    def test_rejects_fake_success_and_data_bearing_results(self):
+        for change in ["success", "not_error", "flow_data", "extra_data", "root_data", "affected_ids", "confirmation"]:
+            with self.subTest(change=change):
+                payload = self.denial()
+                failure = payload["result"]["structuredContent"]
+                if change == "success": failure["success"] = True
+                if change == "not_error": payload["result"]["isError"] = False
+                if change == "flow_data": failure["data"] = [{"id": "other-tenant-flow"}]
+                if change == "extra_data": failure["data"]["flows"] = [{"id": "other-tenant-flow"}]
+                if change == "root_data": failure["flows"] = [{"id": "other-tenant-flow"}]
+                if change == "affected_ids": failure["affectedIds"] = ["other-tenant-flow"]
+                if change == "confirmation": failure["requiresConfirmation"] = True
+                self.synchronize_content(payload)
+                self.assertFalse(self.accepted(payload))
+
+    def test_rejects_contradictory_or_additional_content(self):
+        payload = self.denial()
+        payload["result"]["content"][0]["text"] = json.dumps({"success": True, "data": [{"id": "other-tenant-flow"}]})
+        self.assertFalse(self.accepted(payload))
+        payload = self.denial()
+        payload["result"]["content"].append({"type": "text", "text": "unexpected data"})
+        self.assertFalse(self.accepted(payload))
+        payload = self.denial()
+        payload["error"] = {"code": -32603, "message": "conflicting protocol error"}
+        self.assertFalse(self.accepted(payload))
+        payload = self.denial()
+        payload["result"]["structuredContent"]["failure"]["code"] = "local_credential_expired"
+        self.synchronize_content(payload)
+        self.assertFalse(self.accepted(payload))
+
+    def test_legacy_phrase_alone_is_not_permission_denial_evidence(self):
+        self.assertFalse(self.accepted({"jsonrpc": "2.0", "id": 4,
+                                      "error": {"code": -32603, "message": "not authorized for this operation"}}))
+
+
 class HttpHostLauncherTests(unittest.TestCase):
     """Execute the real host launcher against a metadata-only Docker fixture."""
 
@@ -4865,6 +5018,11 @@ elif args[0] == "cp":
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("environment_alias_conflict:" if len(records) == 2 else "ambiguous image settings", result.stderr)
                 self.assertFalse(any("--name" in call for call in self.commands()))
+
+
+def load_tests(loader, tests, pattern):
+    tests.addTests(loader.loadTestsFromModule(module("test-api-rid-payload")))
+    return tests
 
 
 if __name__ == "__main__":
