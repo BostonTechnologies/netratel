@@ -2808,7 +2808,7 @@ class WindowsMcpArchiveTests(unittest.TestCase):
 
 
 class PublicImageSourceIdentityTests(unittest.TestCase):
-    def invoke(self, revision):
+    def invoke(self, revision, extra=()):
         with tempfile.TemporaryDirectory(prefix="netratel-image-identity-") as temporary:
             root = Path(temporary); command_log = root / "docker.jsonl"
             docker = root / "docker"
@@ -2818,7 +2818,7 @@ class PublicImageSourceIdentityTests(unittest.TestCase):
             docker.chmod(0o755)
             result = subprocess.run([
                 "bash", str(ROOT / "tools/ci/build-public-image.sh"), "--dockerfile", str(ROOT / "docker/mcp-http/Dockerfile"),
-                "--image", "synthetic.invalid/mcp:regression", "--version", "9.8.7-regression", "--revision", revision],
+                "--image", "synthetic.invalid/mcp:regression", "--version", "9.8.7-regression", "--revision", revision, *extra],
                 cwd=ROOT, env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ.get("PATH", ""),
                                   NETRATEL_IMAGE_BUILD_CALLS=str(command_log)), capture_output=True, text=True, timeout=10)
             calls = [json.loads(line) for line in command_log.read_text().splitlines()] if command_log.exists() else []
@@ -2842,6 +2842,19 @@ class PublicImageSourceIdentityTests(unittest.TestCase):
                 result, calls = self.invoke(revision)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(calls, [])
+
+    def test_mode_arguments_cannot_override_authoritative_source_revision(self):
+        revision = "ab" * 20
+        result, calls = self.invoke(revision, ("--build-arg", "CLIENT_SELF_CONTAINED=false"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("CLIENT_SELF_CONTAINED=false", calls[0])
+        self.assertIn(f"PublicSourceRevision={revision}", calls[0])
+        for override in ("PublicSourceRevision", "PublicSourceRevision=" + "c" * 40):
+            with self.subTest(override=override):
+                result, calls = self.invoke(revision, ("--build-arg", override))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual([], calls)
+                self.assertIn("controlled by --revision", result.stderr)
 
 
 class WindowsMcpReleaseContractTests(unittest.TestCase):
