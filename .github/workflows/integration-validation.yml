@@ -27,7 +27,7 @@ on:
         description: Disposable profile for the deployment suite only
         type: choice
         default: oidc
-        options: [oidc, http-host-setup, client-runtime]
+        options: [oidc, http-host-setup, client-runtime, client-archive]
         required: false
       release_tag:
         description: Existing completed public release tag, required for published-image and upgrade suites
@@ -48,7 +48,7 @@ on:
         type: boolean
         default: false
       measurement_verify_run:
-        description: Existing client-measurement run to verify original Windows archive bytes without rebuilding
+        description: Existing client-measurement run for Windows verification or deployment/client-archive Linux acceptance without rebuilding
         default: ''
         required: false
 
@@ -69,6 +69,7 @@ jobs:
       NETRATEL_PAIRING_EVIDENCE_DIRECTORY: ${{ github.workspace }}/TestResults/pairing
       RATELDESK_PAIRING_REF: ${{ inputs.companion_ref }}
       BROWSER_CLASSES: ${{ inputs.browser_classes }}
+      MEASUREMENT_VERIFY_RUN: ${{ inputs.measurement_verify_run }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -221,6 +222,18 @@ jobs:
       - name: Install OIDC browser trust tools
         if: inputs.suite == 'deployment' || inputs.suite == 'release-images' || inputs.suite == 'upgrade-oidc'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libnss3-tools
+      - name: Verify original trimmed archive and prepare its isolated client wrapper
+        if: inputs.suite == 'deployment' && inputs.deployment_profile == 'client-archive'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$MEASUREMENT_VERIFY_RUN" =~ ^[1-9][0-9]*$ ]]
+          python3 tools/ci/prepare-client-archive-acceptance.py --source . --run-id "$MEASUREMENT_VERIFY_RUN" \
+            --work "$RUNNER_TEMP/client-archive-acceptance" --evidence TestResults/client-archive \
+            --image netratel-client:archive-acceptance
       - name: Build source deployment inputs once
         if: inputs.suite == 'deployment' && inputs.deployment_profile != 'http-host-setup'
         env:
@@ -237,16 +250,19 @@ jobs:
             --runtime linux-x64 --self-contained false --output "$RUNNER_TEMP/manual-tools/mcp/netratel-mcp-linux-x64"
           tar -C "$RUNNER_TEMP/manual-tools/cli" -czf "$RUNNER_TEMP/manual-tools/cli.tar.gz" netratel-cli-linux-x64
           tar -C "$RUNNER_TEMP/manual-tools/mcp" -czf "$RUNNER_TEMP/manual-tools/mcp.tar.gz" netratel-mcp-linux-x64
-          if [[ "$DEPLOYMENT_PROFILE" == oidc ]]; then
-            python3 tools/ci/record-stack-image-comparison.py prepare --results TestResults/oidc-compose/stack-images
-          else
-            tools/ci/build-public-image.sh --dockerfile docker/client/Dockerfile.public \
-              --image netratel-client:manual-deployment --version "$VERSION" --revision "$SOURCE_SHA"
+          if [[ '${{ inputs.deployment_profile }}' != client-archive ]]; then
+            if [[ "$DEPLOYMENT_PROFILE" == oidc ]]; then
+              python3 tools/ci/record-stack-image-comparison.py prepare --results TestResults/oidc-compose/stack-images
+            else
+              tools/ci/build-public-image.sh --dockerfile docker/client/Dockerfile.public \
+                --image netratel-client:manual-deployment --version "$VERSION" --revision "$SOURCE_SHA"
+            fi
+            tools/ci/scan-public-image.sh --image netratel-client:manual-deployment --version "$VERSION" --revision "$SOURCE_SHA"
+            docker image inspect netratel-client:manual-deployment --format '{{.Id}}' > TestResults/source-client-image-id.txt
+            printf 'NETRATEL_CLIENT_SMOKE_IMAGE=netratel-client:manual-deployment\n' >> "$GITHUB_ENV"
           fi
-          tools/ci/scan-public-image.sh --image netratel-client:manual-deployment --version "$VERSION" --revision "$SOURCE_SHA"
-          docker image inspect netratel-client:manual-deployment --format '{{.Id}}' > TestResults/source-client-image-id.txt
           (cd "$RUNNER_TEMP/manual-tools" && sha256sum cli.tar.gz mcp.tar.gz) > TestResults/deployment-tool-SHA256SUMS
-          printf 'NETRATEL_CLIENT_SMOKE_IMAGE=netratel-client:manual-deployment\nNETRATEL_COMPOSE_SMOKE_MODE=source\nNETRATEL_CLI_SMOKE_ARCHIVE=%s/manual-tools/cli.tar.gz\nNETRATEL_MCP_STDIO_SMOKE_ARCHIVE=%s/manual-tools/mcp.tar.gz\n' \
+          printf 'NETRATEL_COMPOSE_SMOKE_MODE=source\nNETRATEL_CLI_SMOKE_ARCHIVE=%s/manual-tools/cli.tar.gz\nNETRATEL_MCP_STDIO_SMOKE_ARCHIVE=%s/manual-tools/mcp.tar.gz\n' \
             "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Compare the unbundled shared-runtime Client and select it for deployment acceptance
         if: inputs.suite == 'deployment' && inputs.deployment_profile == 'client-runtime'
@@ -438,6 +454,9 @@ jobs:
               for filename in ("native-client-SHA256SUMS", "deployment-tool-SHA256SUMS", "source-client-image-id.txt"):
                   artifact = Path("TestResults") / filename
                   if artifact.is_file(): summary.write(f"\n{filename}:\n\n```text\n{artifact.read_text()}```\n")
+              for filename in ("archive-acceptance.json", "deployment.json"):
+                  artifact = Path("TestResults/client-archive") / filename
+                  if artifact.is_file(): summary.write(f"\nArchived client {filename}:\n\n```json\n{artifact.read_text()}```\n")
               prior = Path("TestResults/selected-prior-release.json")
               if prior.is_file(): summary.write("\nSelected prior completed release:\n\n```json\n" + prior.read_text() + "```\n")
               stack = Path("TestResults/oidc-compose/stack-images/comparison.json")

@@ -2425,6 +2425,109 @@ class ClientMeasurementHelperTests(unittest.TestCase):
             self.assertEqual(preserved, original_path.read_bytes())
 
 
+class ClientArchiveAcceptanceTests(unittest.TestCase):
+    def setUp(self):
+        self.helper = module("prepare-client-archive-acceptance")
+
+    def original_fixture(self, root):
+        original = root / "original"
+        packages = original / "artifacts"
+        packages.mkdir(parents=True)
+        archive = packages / "netratel-client-1.0.0-linux-x64.tar.gz"
+        archive.write_bytes(b"exact archived bytes")
+        sbom = packages / "netratel-client-1.0.0-linux-x64.spdx.json"
+        sbom.write_text('{"fixture":true}')
+        digest = self.helper.measurement.digest
+        (packages / "SHA256SUMS").write_text("".join(f"{digest(path)}  {path.name}\n" for path in (archive, sbom)))
+        metrics = {"sourceSha": "a" * 40, "runtime": "linux-x64", "mode": "trimmed", "productVersion": "1.0.0",
+                   "dotnetSdkVersion": "10.0.403", "exitCode": 0, "runner": {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2"},
+                   "archiveName": archive.name, "archiveBytes": archive.stat().st_size, "archiveSha256": digest(archive),
+                   "stages": {stage: {"exitCode": 0} for stage in ("publish", "package", "verify", "verify-content", "launch-fresh", "launch-cached")}}
+        for backend in ("native", "python"):
+            metrics["stages"]["pty-" + backend] = {"exitCode": 0, "passed": True, "finalStage": "passed", "archiveSha256": digest(archive)}
+        (original / "metrics.json").write_text(json.dumps(metrics))
+        (original / "evaluated-project.json").write_text(json.dumps({"Properties": {
+            "RuntimeIdentifier": "linux-x64", "SelfContained": "true", "PublishSingleFile": "true",
+            "PublishTrimmed": "true", "PublishAot": "false", "TrimMode": "full"}}))
+        return original, metrics, archive
+
+    def test_original_identity_and_exact_bytes_are_required_without_rebuilding(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            original, metrics, archive = self.original_fixture(Path(temporary))
+            arguments = (original, {"id": 123, "run_attempt": 2}, "a" * 40, "1.0.0", "10.0.403")
+            before = (original / "metrics.json").read_bytes()
+            with patch.object(self.helper.subprocess, "run") as run:
+                self.assertEqual(archive, self.helper.verify_original(*arguments)[1])
+                with self.assertRaisesRegex(ValueError, "identity"):
+                    self.helper.verify_original(original, arguments[1], "b" * 40, "1.0.0", "10.0.403")
+                with self.assertRaisesRegex(ValueError, "identity"):
+                    self.helper.verify_original(original, arguments[1], "a" * 40, "1.0.0", "10.0.404")
+                metrics["stages"]["pty-python"]["passed"] = False
+                (original / "metrics.json").write_text(json.dumps(metrics))
+                with self.assertRaisesRegex(ValueError, "PTY"):
+                    self.helper.verify_original(*arguments)
+                (original / "metrics.json").write_bytes(before)
+                archive.write_bytes(archive.read_bytes() + b"tampered")
+                with self.assertRaisesRegex(ValueError, "measured bytes"):
+                    self.helper.verify_original(*arguments)
+                run.assert_not_called()
+            self.assertEqual(before, (original / "metrics.json").read_bytes())
+
+    def test_actions_artifact_digest_failure_stops_before_extraction(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            evidence, work = root / "evidence", root / "work"
+            evidence.mkdir()
+            work.mkdir()
+            run = {"id": 123, "status": "completed", "conclusion": "success", "event": "workflow_dispatch",
+                   "path": ".github/workflows/integration-validation.yml", "repository": {"full_name": "owner/repo"},
+                   "head_repository": {"full_name": "owner/repo"}}
+            listing = {"total_count": 1, "artifacts": [{"id": 456, "name": "client-measurement-evidence-linux-x64",
+                       "expired": False, "size_in_bytes": 7, "digest": "sha256:" + "0" * 64}]}
+            with patch.object(self.helper.subprocess, "check_output", side_effect=[json.dumps(run), json.dumps(listing)]), \
+                 patch.object(self.helper.subprocess, "run", side_effect=lambda command, stdout, **kwargs: stdout.write(b"corrupt")):
+                with self.assertRaisesRegex(ValueError, "authenticated receipt"):
+                    self.helper.download_original("owner/repo", "123", evidence, work)
+            self.assertEqual([], list((evidence / "original").iterdir()))
+            self.assertTrue((evidence / "original-run.json").is_file())
+
+    def test_native_archive_rejects_links_and_files_outside_the_distribution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for index, name in enumerate(("../fallback.dll", "other/NetRatel.Client", "netratel-client-linux-x64/link")):
+                archive = root / f"{index}.tar.gz"
+                with tarfile.open(archive, "w:gz") as bundle:
+                    entry = tarfile.TarInfo(name)
+                    if index == 2:
+                        entry.type, entry.linkname = tarfile.SYMTYPE, "/untrimmed/NetRatel.Client"
+                    bundle.addfile(entry)
+                with self.assertRaisesRegex(ValueError, "Unsafe"):
+                    self.helper.extract_distribution(archive, root / f"out{index}")
+
+    def test_wrapper_probe_retains_exact_failure_and_executes_both_backends(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence = Path(temporary)
+            receipt = {"stages": {}}
+            executions = []
+
+            def execute(command, **kwargs):
+                if command[1] == "rm":
+                    return subprocess.CompletedProcess(command, 0)
+                executions.append(command[-1])
+                backend = "native" if command[-1].endswith("native") else "python"
+                return subprocess.CompletedProcess(command, 23 if backend == "native" else 0,
+                    json.dumps({"stage": "failed" if backend == "native" else "passed", "reaped": True}) + "\n", "probe-stderr")
+
+            with patch.dict(os.environ, {"GITHUB_RUN_ID": "789"}), patch.object(self.helper.subprocess, "run", side_effect=execute):
+                with self.assertRaisesRegex(ValueError, "pty-native"):
+                    self.helper.probe_wrapper(receipt, evidence, "fixture-image")
+            self.assertEqual(["--terminal-pty-self-test-native", "--terminal-pty-self-test-python"], executions)
+            self.assertEqual(23, receipt["stages"]["pty-native"]["exitCode"])
+            self.assertTrue(receipt["stages"]["pty-python"]["passed"])
+            self.assertEqual(["pty-native"], receipt["failureStages"])
+            self.assertEqual("probe-stderr", (evidence / "pty-native.stderr.log").read_text())
+
+
 class ClientRuntimeContentTests(unittest.TestCase):
     def setUp(self):
         self.content = module("verify-client-runtime-content")
@@ -2469,6 +2572,45 @@ class ClientRuntimeContentTests(unittest.TestCase):
 
 
 class StackImageReceiptTests(unittest.TestCase):
+    def test_source_input_profiles_keep_archive_wrapper_without_client_build_or_fallback(self):
+        workflow = (ROOT / '.github/workflows/integration-validation.yml').read_text()
+        step = workflow.split('      - name: Build source deployment inputs once\n', 1)[1].split('\n      - name:', 1)[0]
+        program = '\n'.join(line[10:] for line in step.split('        run: |\n', 1)[1].splitlines())
+        with tempfile.TemporaryDirectory() as temporary:
+            for profile in ('oidc', 'client-runtime', 'client-archive'):
+                with self.subTest(profile=profile):
+                    root = Path(temporary) / profile
+                    (root / 'bin').mkdir(parents=True); (root / 'tools/ci').mkdir(parents=True); (root / 'TestResults').mkdir()
+                    logger = ('#!/usr/bin/env python3\nimport json,os,sys\nfrom pathlib import Path\n'
+                        'name=Path(sys.argv[0]).name; args=sys.argv[1:]\n'
+                        'with open(os.environ["TEST_COMMANDS"],"a") as output: output.write(json.dumps([name,*args])+"\\n")\n'
+                        'if name=="tar": Path(args[args.index("-czf")+1]).write_bytes(b"synthetic archive")\n'
+                        'if name=="docker": print("sha256:"+"d"*64)\n'
+                        'if name=="record-stack-image-comparison.py":\n'
+                        ' with open(os.environ["GITHUB_ENV"],"a") as output: output.write("NETRATEL_SOURCE_STACK_IMAGES=synthetic-prepared-images\\n")\n')
+                    for path in [root / 'bin' / name for name in ('dotnet', 'tar', 'docker')] + [
+                            root / 'tools/ci' / name for name in ('build-public-image.sh', 'scan-public-image.sh', 'record-stack-image-comparison.py')]:
+                        path.write_text(logger); path.chmod(0o755)
+                    environment = root / 'environment'
+                    environment.write_text('NETRATEL_CLIENT_SMOKE_IMAGE=netratel-client:archive-acceptance\n' if profile == 'client-archive' else '')
+                    calls = root / 'calls.jsonl'
+                    result = subprocess.run(['bash', '-c', program.replace('${{ inputs.deployment_profile }}', profile)], cwd=root,
+                        env={**os.environ, 'PATH': str(root / 'bin') + os.pathsep + os.environ['PATH'],
+                             'RUNNER_TEMP': str(root / 'temp'), 'GITHUB_ENV': str(environment), 'TEST_COMMANDS': str(calls),
+                             'DEPLOYMENT_PROFILE': profile, 'VERSION': '1.2.3', 'SOURCE_SHA': 'a' * 40}, capture_output=True, text=True)
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    commands = [json.loads(line) for line in calls.read_text().splitlines()]
+                    prepared = [call for call in commands if call[0] == 'record-stack-image-comparison.py']
+                    client_builds = [call for call in commands if call[0] == 'build-public-image.sh']
+                    self.assertEqual(int(profile == 'oidc'), len(prepared))
+                    self.assertEqual(int(profile == 'client-runtime'), len(client_builds))
+                    self.assertFalse(any('NetRatel.Client.csproj' in argument for call in commands if call[0] == 'dotnet' for argument in call))
+                    if profile == 'client-archive':
+                        self.assertFalse(any(call[0] in ('scan-public-image.sh', 'docker') for call in commands))
+                        self.assertNotIn('manual-deployment', environment.read_text())
+                        self.assertNotIn('NETRATEL_SOURCE_STACK_IMAGES', environment.read_text())
+                        self.assertIn('NETRATEL_CLIENT_SMOKE_IMAGE=netratel-client:archive-acceptance', environment.read_text())
+
     def test_source_compose_allows_cold_fixture_pulls_and_protects_prepared_image_identity(self):
         source = (ROOT / 'tools/ci/smoke-oidc-compose.sh').read_text()
         program = re.search(r'''(?ms)  python3 - "\$NETRATEL_SOURCE_STACK_IMAGES" "\$source_images_override_path" <<'PY'\n(.*?)\nPY''', source).group(1)
