@@ -168,7 +168,7 @@ public sealed partial class IntegrationPairingService
                 decision?.MatchingPolicyIds ?? [])
             { PolicyAdmissionStatus = requiresPolicy ? "evaluated" : "not_required_by_route", OwnerPermissionGranted = ownerGranted,
                 AuthorizationAdmitted = state == "active" && configured && ownerGranted && visible && (decision is null || decision.IsAllowed),
-                FailureLayer = state != "active" ? "Credential" : !configured ? "ApplicationGrant" : !ownerGranted ? "OwnerPermission" : decision?.FailureLayer?.ToString(), TargetReadiness = !enabled ? "disabled" : "not_checked" });
+                FailureLayer = state != "active" ? "Credential" : !configured ? "ApplicationGrant" : !ownerGranted ? "OwnerPermission" : decision?.FailureLayer?.ToString(), TargetReadiness = state == "active" && configured && ownerGranted && visible && !enabled ? "disabled" : "not_checked" });
         }
         return admissions;
     }
