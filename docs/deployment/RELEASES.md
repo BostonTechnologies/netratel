@@ -193,6 +193,35 @@ gh workflow run integration-validation.yml --ref main -f suite=migrations-image 
 gh workflow run integration-validation.yml --ref main -f suite=api-image -f source_ref='<exact-public-commit>'
 ```
 
+The ordinary source `deployment` suite with `deployment_profile=oidc` builds all
+five default production images once from an immutable selected commit, using
+the protected public revision/version image helper. Its source Compose run uses
+those exact prepared API/Web/migrations images; the existing client acceptance
+uses the prepared client. HTTP MCP is built and measured without asserting its
+runtime acceptance. Other deployment profiles retain their existing build paths.
+
+After successful OIDC acceptance, before cleanup removes local images, the run
+retains pristine image `/app` file hashes/bytes, verified SPDX and dependency
+graphs, OCI source/version/platform/config identities and resolved source build
+bases under `TestResults/oidc-compose/stack-images`. The latest completed release
+is selected generically and its publication/source/image digests authenticated.
+Its original build-base provenance is explicitly unknown when not attested by
+the publication record; current floating base tags are never substituted.
+Normalized standalone gzip layers and each complete five-image unique-layer
+union compare the current production images with that published release. This
+separate-run comparison does not isolate an individual change, and registry
+transfer bytes remain unknown. Earlier fixed-companion results must not be summed.
+
+The same run retains five raw PID 1 `/proc/1/status` samples over at least ten
+seconds after the client workload for API/Web/client, with process name/PID,
+timestamps and RSS min/median/max. These describe process RSS only. MCP is
+unstarted and migrations are one-shot; their runtime memory remains unmeasured.
+Client enrollment-start through the existing authenticated API and authoritative
+gateway-presence assertions is timed with a monotonic clock. It includes the
+intervening ordered smoke stages and is an upper bound on readiness, with no
+baseline/performance-improvement claim. API/Web initialized-service durations
+remain unknown. The optional capture adds no required job, matrix or publication.
+
 The optional `migrations-image` suite compares the actual same-source migrations
 payload on matching ASP.NET and CoreCLR images without publishing either image.
 It checks the final runtime configuration, SBOM/file hashes, nonroot identity and

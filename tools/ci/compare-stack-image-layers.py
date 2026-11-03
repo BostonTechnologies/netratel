@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare normalized layer exports for two images and four fixed companions."""
+"""Compare normalized layers with fixed companions or two complete image sets."""
 import argparse
 import gzip
 import hashlib
@@ -11,16 +11,21 @@ import subprocess
 import tempfile
 
 
-def compare(root, candidate_name, control_name, companion_names):
+ROLES = {'api', 'web', 'migrations', 'mcp-http', 'client'}
+FORMAT = 'Docker-save layers normalized to gzip level 6, mtime 0, no filename; excludes image config/manifests; not registry pull bytes'
+
+
+def inventory(root):
     root = root.resolve(strict=True)
     spec = importlib.util.spec_from_file_location('scanner', Path(__file__).with_name('scan-saved-image.py'))
     scanner = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(scanner)
-    layers, images, verified = {}, {}, {}
+    layers, images, configs, verified = {}, {}, {}, {}
     for image in json.loads((root / 'manifest.json').read_text()):
-        config = json.loads(scanner.contained(root, image['Config']).read_text())
+        content = scanner.contained(root, image['Config']).read_bytes()
+        config = json.loads(content)
         identities = config['rootfs']['diff_ids']
-        if len(identities) != len(image['Layers']):
+        if not identities or len(identities) != len(image['Layers']):
             raise ValueError('Image layer/config inventory differs')
         for identity, reference in zip(identities, image['Layers']):
             path = scanner.contained(root, reference)
@@ -42,25 +47,51 @@ def compare(root, candidate_name, control_name, companion_names):
                     raise ValueError('Saved layer does not match its uncompressed image identity')
                 verified[path] = identity
                 layers.setdefault(identity, {'gzipBytes': exported.tell(), 'tarBytes': expanded})
-        for name in image['RepoTags'] or []:
+        for name in image.get('RepoTags') or []:
             images[name] = identities
+        configs['sha256:' + hashlib.sha256(content).hexdigest()] = identities
+    return layers, images, configs
+
+
+def total(layers, identities):
+    return sum(layers[identity]['gzipBytes'] for identity in set(identities))
+
+
+def compare(root, candidate_name, control_name, companion_names):
+    layers, images, _ = inventory(root)
     if len(set(companion_names)) != 4 or set(companion_names) & {candidate_name, control_name}:
         raise ValueError('Exactly four distinct fixed companion images are required')
     candidate, control = images[candidate_name], images[control_name]
     other = set().union(*(set(images[name]) for name in companion_names))
 
-    def total(identities):
-        return sum(layers[identity]['gzipBytes'] for identity in set(identities))
-
     return {
-        'format': 'Docker-save layers normalized to gzip level 6, mtime 0, no filename; excludes image config/manifests; not registry pull bytes',
-        'controlStandaloneLayerGzipBytes': total(control),
-        'candidateStandaloneLayerGzipBytes': total(candidate),
-        'controlFiveImageUniqueLayerGzipBytes': total(other | set(control)),
-        'candidateFiveImageUniqueLayerGzipBytes': total(other | set(candidate)),
+        'format': FORMAT,
+        'controlStandaloneLayerGzipBytes': total(layers, control),
+        'candidateStandaloneLayerGzipBytes': total(layers, candidate),
+        'controlFiveImageUniqueLayerGzipBytes': total(layers, other | set(control)),
+        'candidateFiveImageUniqueLayerGzipBytes': total(layers, other | set(candidate)),
         'layers': layers,
         'images': images,
     }
+
+
+def compare_stacks(root, candidate, control):
+    """Compare complete role maps of inspected image/config IDs, without retagging."""
+    for images in (candidate, control):
+        if set(images) != ROLES or len(set(images.values())) != 5:
+            raise ValueError('Exactly five distinct role-keyed images are required per stack')
+    layers, _, configs = inventory(root)
+    result = {'format': FORMAT, 'registryTransferBytes': None, 'layers': layers}
+    for side, images in (('candidate', candidate), ('control', control)):
+        if any(image not in configs for image in images.values()):
+            raise ValueError('An inspected image/config identity is missing from the export')
+        selected = {role: configs[image] for role, image in images.items()}
+        result[side] = {
+            'images': images,
+            'standaloneLayerGzipBytes': {role: total(layers, ids) for role, ids in selected.items()},
+            'fiveImageUniqueLayerGzipBytes': total(layers, set().union(*map(set, selected.values()))),
+        }
+    return result
 
 
 if __name__ == '__main__':

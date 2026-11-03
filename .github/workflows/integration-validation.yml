@@ -223,6 +223,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libnss3-tools
       - name: Build source deployment inputs once
         if: inputs.suite == 'deployment' && inputs.deployment_profile != 'http-host-setup'
+        env:
+          DEPLOYMENT_PROFILE: ${{ inputs.deployment_profile }}
         shell: bash
         run: |
           set -euo pipefail
@@ -235,8 +237,12 @@ jobs:
             --runtime linux-x64 --self-contained false --output "$RUNNER_TEMP/manual-tools/mcp/netratel-mcp-linux-x64"
           tar -C "$RUNNER_TEMP/manual-tools/cli" -czf "$RUNNER_TEMP/manual-tools/cli.tar.gz" netratel-cli-linux-x64
           tar -C "$RUNNER_TEMP/manual-tools/mcp" -czf "$RUNNER_TEMP/manual-tools/mcp.tar.gz" netratel-mcp-linux-x64
-          tools/ci/build-public-image.sh --dockerfile docker/client/Dockerfile.public \
-            --image netratel-client:manual-deployment --version "$VERSION" --revision "$SOURCE_SHA"
+          if [[ "$DEPLOYMENT_PROFILE" == oidc ]]; then
+            python3 tools/ci/record-stack-image-comparison.py prepare --results TestResults/oidc-compose/stack-images
+          else
+            tools/ci/build-public-image.sh --dockerfile docker/client/Dockerfile.public \
+              --image netratel-client:manual-deployment --version "$VERSION" --revision "$SOURCE_SHA"
+          fi
           tools/ci/scan-public-image.sh --image netratel-client:manual-deployment --version "$VERSION" --revision "$SOURCE_SHA"
           docker image inspect netratel-client:manual-deployment --format '{{.Id}}' > TestResults/source-client-image-id.txt
           (cd "$RUNNER_TEMP/manual-tools" && sha256sum cli.tar.gz mcp.tar.gz) > TestResults/deployment-tool-SHA256SUMS
@@ -364,6 +370,7 @@ jobs:
         if: (inputs.suite == 'deployment' && inputs.deployment_profile != 'http-host-setup') || inputs.suite == 'release-images'
         env:
           NETRATEL_SMOKE_AUTH_ENVIRONMENT: Production
+          GH_TOKEN: ${{ inputs.suite == 'deployment' && inputs.deployment_profile == 'oidc' && github.token || '' }}
         run: bash tools/ci/smoke-oidc-compose.sh
       - name: Run disposable URL-first host deployment and resume acceptance
         if: inputs.suite == 'deployment' && inputs.deployment_profile == 'http-host-setup'
@@ -433,6 +440,11 @@ jobs:
                   if artifact.is_file(): summary.write(f"\n{filename}:\n\n```text\n{artifact.read_text()}```\n")
               prior = Path("TestResults/selected-prior-release.json")
               if prior.is_file(): summary.write("\nSelected prior completed release:\n\n```json\n" + prior.read_text() + "```\n")
+              stack = Path("TestResults/oidc-compose/stack-images/comparison.json")
+              if stack.is_file():
+                  record = json.loads(stack.read_text())
+                  summary.write("\nComplete production-image comparison and bounded process measurements:\n\n```json\n" + json.dumps(
+                      {key: value for key, value in record.items() if key != "layers"}, indent=2) + "\n```\n")
               summary.write("\nOther manual suites were not run. This workflow is not an automatic merge or publication dependency.\n")
           PY
       - name: Retain selected TRX, screenshots and sanitized receipts

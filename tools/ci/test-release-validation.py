@@ -2468,6 +2468,125 @@ class ClientRuntimeContentTests(unittest.TestCase):
                 self.sbom.packages_from_assets(assets, "linux-x64", distribution, root / "missing.deps.json")
 
 
+class StackImageReceiptTests(unittest.TestCase):
+    def test_publication_bytes_tag_original_source_and_complete_image_set_must_agree(self):
+        helper = module('record-stack-image-comparison')
+        selected = {'tag': 'v1.2.3', 'images': {role: f'ghcr.io/bostontechnologies/netratel-{role}@sha256:' + str(index) * 64
+                     for index, role in enumerate(helper.PROJECTS, 1)}}
+        original = {'publicCommit': 'a' * 40, 'productVersion': '1.2.3', 'images': selected['images'],
+                    'verification': {'state': 'complete'}, 'inputReceipt': {'headSha': 'a' * 40}}
+        for fault in (None, 'asset', 'tag', 'source', 'images'):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary); document = copy.deepcopy(original)
+                if fault == 'source': document['inputReceipt']['headSha'] = 'b' * 40
+                if fault == 'images': document['images']['api'] += '0'
+                content = json.dumps(document).encode()
+                metadata = {'tag_name': 'v1.2.3', 'draft': False, 'published_at': '2026-01-01T00:00:00Z',
+                            'assets': [{'name': 'publication.json', 'state': 'uploaded', 'size': len(content),
+                                        'digest': 'sha256:' + (('0' * 64) if fault == 'asset' else hashlib.sha256(content).hexdigest())}]}
+                def download(args, **kwargs):
+                    (Path(args[args.index('--dir') + 1]) / 'publication.json').write_bytes(content)
+                with patch.object(helper, 'module', return_value=SimpleNamespace(select=lambda _: selected)), \
+                        patch.object(helper, 'command', side_effect=[json.dumps(metadata), ('b' if fault == 'tag' else 'a') * 40]), \
+                        patch.object(helper.subprocess, 'run', side_effect=download):
+                    if fault:
+                        with self.assertRaises(ValueError): helper.published(root)
+                    else:
+                        self.assertEqual(original, helper.published(root))
+                        self.assertEqual(content, (root / 'publication.json').read_bytes())
+
+    def test_docker_export_stream_rejects_traversal_links_and_duplicates(self):
+        helper = module('record-stack-image-comparison')
+        for fault in (None, 'traversal', 'symlink', 'duplicate'):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temporary:
+                data = io.BytesIO()
+                with tarfile.open(fileobj=data, mode='w') as archive:
+                    entry = tarfile.TarInfo('../escape' if fault == 'traversal' else 'blob')
+                    entry.size = 3
+                    if fault == 'symlink': entry.type = tarfile.SYMTYPE; entry.linkname = '../escape'
+                    archive.addfile(entry, io.BytesIO(b'abc'))
+                    if fault == 'duplicate': archive.addfile(entry, io.BytesIO(b'abc'))
+                process = SimpleNamespace(stdout=io.BytesIO(data.getvalue()), wait=lambda: 0, poll=lambda: 0)
+                with patch.object(helper.subprocess, 'Popen', return_value=process):
+                    if fault:
+                        with self.assertRaisesRegex(ValueError, 'Docker-save member'):
+                            helper.save_images(['sha256:' + 'a' * 64], Path(temporary))
+                    else:
+                        helper.save_images(['sha256:' + 'a' * 64], Path(temporary))
+                        self.assertEqual(b'abc', (Path(temporary) / 'blob').read_bytes())
+
+    def test_image_receipts_bind_source_version_platform_and_published_digest(self):
+        helper = module('record-stack-image-comparison')
+        source, digest = 'a' * 40, 'ghcr.io/bostontechnologies/netratel-api@sha256:' + 'b' * 64
+        info = {'Id': 'sha256:' + 'c' * 64, 'Os': 'linux', 'Architecture': 'amd64', 'Size': 100,
+                'RootFS': {'Layers': ['sha256:' + 'd' * 64]}, 'RepoDigests': [digest], 'Config': {'Labels': {
+                    'org.opencontainers.image.title': 'NetRatel',
+                    'org.opencontainers.image.source': 'https://github.com/BostonTechnologies/netratel',
+                    'org.opencontainers.image.version': '1.2.3', 'org.opencontainers.image.revision': source}}}
+        self.assertEqual(info['Id'], helper.identity(info, source, '1.2.3', digest)['Id'])
+        for key, value in [('Architecture', 'arm64'), ('Os', 'windows'), ('RepoDigests', []), ('Id', 'not-a-digest')]:
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                helper.identity({**info, key: value}, source, '1.2.3', digest)
+        for revision, version in [('e' * 40, '1.2.3'), (source, '1.2.4')]:
+            with self.assertRaisesRegex(ValueError, 'source/version/config'):
+                helper.identity(info, revision, version, digest)
+
+    def test_actual_app_inventory_counts_regular_bytes_and_requires_role_and_legal_files(self):
+        helper = module('record-stack-image-comparison')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            names = ['NetRatel.API.dll', 'licenses/LICENSE', 'licenses/NOTICE', 'THIRD-PARTY-NOTICES.txt', 'runtime.spdx.json']
+            for name in names:
+                path = root / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(b'content')
+            (root / 'linked').symlink_to('NetRatel.API.dll')
+            result = helper.app_inventory(root, 'api')
+            self.assertEqual(35, result['applicationBytes'])
+            self.assertEqual(set(names), set(result['files']))
+            with self.assertRaisesRegex(ValueError, 'NetRatel.Web.dll'):
+                helper.app_inventory(root, 'web')
+            (root / 'licenses/NOTICE').unlink()
+            (root / 'licenses/NOTICE').symlink_to('../NetRatel.API.dll')
+            with self.assertRaisesRegex(ValueError, 'licenses/NOTICE'):
+                helper.app_inventory(root, 'api')
+
+    def test_process_rss_retains_raw_samples_statistics_and_rejects_unavailable_or_restarted_process(self):
+        helper = module('record-stack-image-comparison')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            roles = {role: {'Id': 'sha256:' + str(index) * 64} for index, role in enumerate(('api', 'web', 'client'), 1)}
+            (root / 'source-images.json').write_text(json.dumps({'sourceSha': 'a' * 40, 'productVersion': '1.2.3', 'roles': roles}))
+            def inspected(*args):
+                role = args[-1]
+                return json.dumps([{'Id': role, 'Image': roles[role]['Id'], 'State': {'Running': True, 'Pid': 123}}])
+            counts = dict.fromkeys(roles, 0)
+            def status(args, **kwargs):
+                role = args[2]; value = 100 + counts[role]; counts[role] += 1
+                return f'Name:\t{role}\nPid:\t1\nVmRSS:\t{value} kB\n'
+            with patch.object(helper, 'command', side_effect=inspected), patch.object(helper.subprocess, 'check_output', side_effect=status), \
+                    patch.object(helper.time, 'sleep') as sleep, patch.object(helper.time, 'monotonic', side_effect=range(30)):
+                helper.memory(root, {role: role for role in roles})
+            record = json.loads((root / 'process-rss.json').read_text())
+            self.assertEqual(4, sleep.call_count)
+            for role, samples in record['roles'].items():
+                self.assertEqual(5, len(samples['samples']))
+                self.assertEqual((102400, 104448, 106496), (samples['minRssBytes'], samples['medianRssBytes'], samples['maxRssBytes']))
+                self.assertIn(f'Name:\t{role}\n', samples['samples'][0]['rawProcStatus'])
+            self.assertFalse(record['mcp-http']['measured'])
+            for raw in ('Name:\tdotnet\nPid:\t1\n', 'Name:\tdotnet\nPid:\t2\nVmRSS:\t100 kB\n'):
+                with self.assertRaisesRegex(ValueError, 'unavailable or malformed'):
+                    helper.parse_status(raw)
+            calls = 0
+            def restarted(*args):
+                nonlocal calls
+                calls += 1
+                value = json.loads(inspected(*args))
+                if calls > 3: value[0]['State']['Pid'] = 999
+                return json.dumps(value)
+            with patch.object(helper, 'command', side_effect=restarted), patch.object(helper.subprocess, 'check_output', side_effect=status), \
+                    patch.object(helper.time, 'sleep'), self.assertRaisesRegex(ValueError, 'exited or restarted'):
+                helper.memory(root, {role: role for role in roles})
+
+
 class SavedImageCredentialScanTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="netratel-saved-image-")
@@ -2574,6 +2693,36 @@ class SavedImageCredentialScanTests(unittest.TestCase):
         (self.root / "manifest.json").write_text(json.dumps(manifests))
         with self.assertRaisesRegex(ValueError, "uncompressed image identity"):
             comparator.compare(self.root, "candidate:test", "control:test", companions)
+
+    def test_complete_role_keyed_stacks_use_independent_unions_and_actual_config_ids(self):
+        comparator = module('compare-stack-image-layers')
+        base = self.layer('legacy', b'old runtime\n' * 1000)
+        new_base = self.layer('legacy', b'new runtime\n' * 500)
+        maps, manifests = {}, []
+        for side, shared in [('control', base), ('candidate', new_base)]:
+            maps[side] = {}
+            for role in sorted(comparator.ROLES):
+                app = self.layer('legacy', (side + '/' + role).encode() * 10)
+                ids = ['sha256:' + hashlib.sha256((self.root / path).read_bytes()).hexdigest() for path in (shared, app)]
+                content = json.dumps({'rootfs': {'diff_ids': ids}}).encode()
+                config = side + '-' + role + '.json'; (self.root / config).write_bytes(content)
+                maps[side][role] = 'sha256:' + hashlib.sha256(content).hexdigest()
+                manifests.append({'Config': config, 'RepoTags': None, 'Layers': [shared, app]})
+        (self.root / 'manifest.json').write_text(json.dumps(manifests))
+        result = comparator.compare_stacks(self.root, maps['candidate'], maps['control'])
+        for side in maps:
+            selected = manifests[:5] if side == 'control' else manifests[5:]
+            unique = {identity for image in selected for identity in json.loads((self.root / image['Config']).read_text())['rootfs']['diff_ids']}
+            expected = sum(result['layers'][identity]['gzipBytes'] for identity in unique)
+            self.assertEqual(expected, result[side]['fiveImageUniqueLayerGzipBytes'])
+            self.assertLess(expected, sum(result[side]['standaloneLayerGzipBytes'].values()))
+        self.assertIsNone(result['registryTransferBytes'])
+        for invalid in ({'api': maps['candidate']['api']}, dict.fromkeys(comparator.ROLES, maps['candidate']['api'])):
+            with self.assertRaisesRegex(ValueError, 'five distinct role-keyed'):
+                comparator.compare_stacks(self.root, invalid, maps['control'])
+        changed = dict(maps['candidate']); changed['api'] = 'sha256:' + '0' * 64
+        with self.assertRaisesRegex(ValueError, 'identity is missing'):
+            comparator.compare_stacks(self.root, changed, maps['control'])
 
     def test_html_payload_comparison_rejects_unrelated_file_and_package_changes(self):
         comparator = module("compare-migrations-html-payload")
