@@ -7,7 +7,7 @@ on:
         description: Run only this optional suite (client measurements use matching hosted OS runners)
         type: choice
         required: true
-        options: [pairing, gateway, mcp-campaign, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement, client-trim-windows, client-trim-macos, client-control-macos, client-pty-debug-macos, windows-mcp, migrations-image, api-image]
+        options: [pairing, gateway, mcp-campaign, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement, client-trim-windows, client-trim-macos, client-control-macos, client-pty-debug-macos, windows-mcp, migrations-image, api-image, api-rid]
       source_ref:
         description: Source ref to test (published-image and upgrade suites use release_tag)
         default: main
@@ -16,7 +16,7 @@ on:
         description: Comparison for migrations-image only (control is diagnostic, never published)
         type: choice
         default: base
-        options: [base, html-ownership]
+        options: [base, html-ownership, schema-ownership]
         required: false
       browser_classes:
         description: Optional space-separated fully qualified browser test classes; blank runs the full browser suite
@@ -59,7 +59,7 @@ permissions:
 jobs:
   selected-suite:
     name: Manual ${{ inputs.suite }} (Linux)
-    if: inputs.suite != 'client-measurement' && inputs.suite != 'client-trim-windows' && inputs.suite != 'client-trim-macos' && inputs.suite != 'client-control-macos' && inputs.suite != 'client-pty-debug-macos' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image' && inputs.suite != 'api-image'
+    if: inputs.suite != 'client-measurement' && inputs.suite != 'client-trim-windows' && inputs.suite != 'client-trim-macos' && inputs.suite != 'client-control-macos' && inputs.suite != 'client-pty-debug-macos' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image' && inputs.suite != 'api-image' && inputs.suite != 'api-rid'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ (inputs.suite == 'native-client' || inputs.suite == 'deployment' || inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc') && 45 || inputs.suite == 'release-images' && 60 || 40 }}
     env:
@@ -367,11 +367,13 @@ jobs:
         run: bash tools/ci/smoke-oidc-compose.sh
       - name: Run disposable URL-first host deployment and resume acceptance
         if: inputs.suite == 'deployment' && inputs.deployment_profile == 'http-host-setup'
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          bash tools/ci/build-public-image.sh --dockerfile docker/mcp-http/Dockerfile \
-            --image netratel-mcp-http:manual-setup --version "$VERSION" --revision "$SOURCE_SHA"
+          python3 tools/ci/test-mcp-http-publish.py
+          bash tools/ci/test-mcp-http-image.sh
           NETRATEL_HTTP_HOST_SETUP_SMOKE_IMAGE=netratel-mcp-http:manual-setup \
             bash tools/ci/smoke-http-host-setup.sh
       - name: Run selected published HTTP MCP image smoke
@@ -691,13 +693,14 @@ jobs:
           retention-days: 14
 
   api-image:
-    name: Manual API chiseled image investigation
-    if: inputs.suite == 'api-image'
+    name: Manual API image comparison
+    if: inputs.suite == 'api-image' || inputs.suite == 'api-rid'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
       GH_TOKEN: ${{ github.token }}
       NETRATEL_API_IMAGE_RESULTS: ${{ github.workspace }}/TestResults/api-image
+      NETRATEL_API_IMAGE_COMPARISON: ${{ inputs.suite == 'api-rid' && 'linux-rid' || 'base' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -717,8 +720,8 @@ jobs:
           from pathlib import Path
           root = Path('TestResults/api-image')
           with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as summary:
-              summary.write('API base-image investigation; default production target remains unchanged.\n\n')
-              for name in ('source-sha.txt', 'publish-properties.json', 'layer-export-comparison.json', 'selected-release.json', 'api-shutdown.json'):
+              summary.write('API image comparison: ' + os.environ['NETRATEL_API_IMAGE_COMPARISON'] + '.\n\n')
+              for name in ('source-sha.txt', 'publish-properties.json', 'controlled-build.json', 'payload-comparison.json', 'layer-export-comparison.json', 'selected-release.json', 'api-shutdown.json'):
                   path = root / name
                   if path.is_file():
                       summary.write(f'{name}:\n\n```text\n{path.read_text()}```\n\n')

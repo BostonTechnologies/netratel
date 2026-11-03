@@ -189,6 +189,7 @@ gh workflow run integration-validation.yml --ref main -f suite=upgrade-local -f 
 gh workflow run integration-validation.yml --ref main -f suite=deployment -f deployment_profile=http-host-setup -f source_ref='<commit-or-tag>'
 gh workflow run integration-validation.yml --ref main -f suite=migrations-image -f source_ref='<commit-or-tag>'
 gh workflow run integration-validation.yml --ref main -f suite=migrations-image -f migrations_comparison=html-ownership -f source_ref='<exact-public-commit>'
+gh workflow run integration-validation.yml --ref main -f suite=migrations-image -f migrations_comparison=schema-ownership -f source_ref='<exact-public-commit>'
 gh workflow run integration-validation.yml --ref main -f suite=api-image -f source_ref='<exact-public-commit>'
 ```
 
@@ -217,7 +218,29 @@ remain their real generation times and namespaces bind each actual file inventor
 both differences are retained in the receipt. This mode reuses the full native,
 PostgreSQL, role-preserving rerun and latest-release upgrade checks above.
 
-The optional `deployment_profile=http-host-setup` reuses source Compose and public HTTPS fixtures for a fresh local-account stack. It generates into the supplied persistent setup volume, approves that exact generation through the administrator protocol, executes the generated apply action, obtains a separate temporary personal MCP credential, and requires authenticated catalog plus a delegated read-only API status result. It also runs bare `dotnet NetRatel.Mcp.Http.dll setup` inside the serving container, saves the personal default to its separate client-data volume, then reloads and verifies that profile after recreation. It recreates tooling/runtime containers and repeats host verification with the equivalent `/mcp` input and unchanged generation fingerprint. The redacted receipts under `TestResults/http-host-setup` distinguish this headless generation/protocol/deployment smoke from the focused interactive terminal fixtures and later owner testing. The default deployment profile remains the existing `oidc` suite; neither profile enters required PR/main CI.
+`schema-ownership` uses the same controlled comparison for the unchanged schema
+utility and its NJsonSchema reference. Its fixed removal allowlist is NJsonSchema,
+NJsonSchema.Annotations, Namotion.Reflection and Newtonsoft.Json in the migrations
+payload; API and MCP retain their active dependencies. One additional API publish
+stage supplies the actual API dependency set for before/after utility calls in
+isolated load contexts. The original control Infrastructure assembly and new API
+assembly must accept the valid vector and reject the missing-required vector with
+identical errors and dependency bytes. Package identities, notice hash and the
+incremental API build/probe durations are retained. The defining utility assembly
+changes from Infrastructure to API; namespace/signature preservation is not a
+claim of compatibility for an external binary bound to its old assembly identity.
+
+The optional `deployment_profile=http-host-setup` first compares the Linux x64
+HTTP MCP image with a same-source RID-neutral control. It checks final host,
+CLI and stdio inventories, runtime graphs, SPDX digests, retained launchers and
+symbols, nonroot writable state, and actual entrypoint/catalog identities.
+Content-hash duplicate measurements are evidence only; the image retains its
+separate supported tooling layouts. Normalized layer exports hold four
+companion images at one completed publication and report standalone and
+five-image shared-layer totals, separately from registry transfer sizes.
+These receipts are under `TestResults/mcp-http-image`.
+
+The profile then reuses source Compose and public HTTPS fixtures for a fresh local-account stack. It generates into the supplied persistent setup volume, approves that exact generation through the administrator protocol, executes the generated apply action, obtains a separate temporary personal MCP credential, and requires authenticated catalog plus a delegated read-only API status result. It also runs bare `dotnet NetRatel.Mcp.Http.dll setup` inside the serving container, saves the personal default to its separate client-data volume, then reloads and verifies that profile after recreation. It recreates tooling/runtime containers and repeats host verification with the equivalent `/mcp` input and unchanged generation fingerprint. The redacted receipts under `TestResults/http-host-setup` distinguish this headless generation/protocol/deployment smoke from the focused interactive terminal fixtures and later owner testing. The default deployment profile remains the existing `oidc` suite; neither profile enters required PR/main CI.
 
 The optional `api-image` diagnostic compares the unchanged default noble API image with the `chiseled-candidate` target on one linux/amd64 hosted runner. The candidate uses Microsoft's [noble-chiseled-extra base](https://github.com/dotnet/dotnet-docker/tree/main/src/aspnet/10.0/noble-chiseled-extra) and Canonical's [GSSAPI library slice](https://github.com/canonical/chisel-releases/blob/ubuntu-24.04/slices/libgssapi-krb5-2.yaml), including its dependency and copyright closure. Both arms must retain identical application/SBOM bytes and runtime patches. The selected probes cover actual GSSAPI application loading, nonroot ownership/writes, trust/globalization/timezone support, and disposable PostgreSQL/local upgrade with owner-only keys and graceful API shutdown. Published latest-completed Web/migrations/CLI inputs stay fixed; candidate images stay on the runner.
 
