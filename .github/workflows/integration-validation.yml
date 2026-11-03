@@ -12,6 +12,12 @@ on:
         description: Source ref to test (published-image and upgrade suites use release_tag)
         default: main
         required: true
+      migrations_comparison:
+        description: Comparison for migrations-image only (control is diagnostic, never published)
+        type: choice
+        default: base
+        options: [base, html-ownership]
+        required: false
       browser_classes:
         description: Optional space-separated fully qualified browser test classes; blank runs the full browser suite
         default: ''
@@ -605,6 +611,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       NETRATEL_MIGRATIONS_RESULTS: ${{ github.workspace }}/TestResults/migrations-image
+      NETRATEL_MIGRATIONS_COMPARISON: ${{ inputs.migrations_comparison }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -626,7 +633,7 @@ jobs:
           with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as summary:
               summary.write('Candidate and control stay local to this runner; no registry or release publication.\n\n')
               summary.write('Upgrade holds latest completed release API/Web/CLI fixed and substitutes candidate migrations.\n\n')
-              for name in ('selected-release.json', 'layer-export-comparison.json'):
+              for name in ('comparison-identity.json', 'payload-comparison.json', 'selected-release.json', 'layer-export-comparison.json'):
                   path = Path('TestResults/migrations-image') / name
                   if path.is_file():
                       summary.write('```json\n' + path.read_text() + '```\n')
