@@ -567,6 +567,93 @@ class FastTestContainerPreparationTests(unittest.TestCase):
                 self.assertNotIn("continue-on-error", workflow[prepare:workflow.index("- name: Retain fast regression receipts")])
 
 
+class CorePartitionCoverageTests(unittest.TestCase):
+    def setUp(self):
+        self.helper = module("verify-core-partitions")
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.infra = ("NetRatel.Tests.Infrastructure.Outer+Nested", "Run", "infrastructure case")
+        self.other = ("BindingsSmokeTests", "Run", "global namespace case")
+
+    def discovery(self, *cases):
+        return [{"ID": str(index), "Class": case[0], "Method": case[1], "DisplayName": case[2], "Explicit": False}
+                for index, case in enumerate(cases)]
+
+    def report(self, name, cases, failed=False):
+        run = ET.Element("TestRun")
+        definitions = ET.SubElement(run, "TestDefinitions")
+        results = ET.SubElement(run, "Results")
+        for index, (class_name, method_name, display) in enumerate(cases):
+            identifier = f"{name}-{index}"
+            unit = ET.SubElement(definitions, "UnitTest", {"id": identifier, "name": display})
+            ET.SubElement(unit, "TestMethod", {"className": class_name, "name": method_name})
+            ET.SubElement(results, "UnitTestResult", {"testId": identifier, "executionId": identifier,
+                "testName": display, "outcome": "Passed"})
+        summary = ET.SubElement(run, "ResultSummary", {"outcome": "Completed"})
+        counters = {field: "0" for field in module("verify-mtp-trx").COUNTER_NAMES}
+        counters.update(total=str(len(cases)), executed=str(len(cases)), passed=str(len(cases)), completed=str(len(cases)))
+        if failed:
+            counters.update(failed="1", passed=str(len(cases) - 1))
+        ET.SubElement(summary, "Counters", counters)
+        path = self.root / (name + ".trx")
+        ET.ElementTree(run).write(path)
+        return path
+
+    def test_exact_disjoint_union_retains_root_nested_and_global_namespace_cases(self):
+        sub = ("NetRatel.Tests.Infrastructure.Sub.MoreTests", "Run", "subnamespace case")
+        reports = {"infrastructure": self.report("infrastructure", [self.infra, sub]),
+                   "remaining": self.report("remaining", [self.other])}
+        result = self.helper.validate(self.discovery(self.infra, sub, self.other), reports)
+        self.assertEqual(3, result["discoveredLogicalCases"])
+        self.assertEqual(3, result["executedRows"])
+        self.assertEqual({"infrastructure": 2, "remaining": 1}, result["partitionExecutedRows"])
+
+    def test_missing_duplicate_undiscovered_and_wrong_partition_results_fail(self):
+        for change in ("missing", "duplicate", "undiscovered", "wrong"):
+            with self.subTest(change=change):
+                remaining = [self.other]
+                if change == "missing": remaining = []
+                if change == "duplicate": remaining += [self.other]
+                if change == "undiscovered": remaining += [("OtherTests", "Run", "unseen")]
+                if change == "wrong": remaining += [self.infra]
+                reports = {"infrastructure": self.report("infrastructure", [self.infra]),
+                           "remaining": self.report("remaining", remaining)}
+                with self.assertRaises(ValueError):
+                    self.helper.validate(self.discovery(self.infra, self.other), reports)
+
+    def test_failure_counters_and_incomplete_receipts_cannot_pass_union_validation(self):
+        bad = self.report("infrastructure", [self.infra], failed=True)
+        other = self.report("remaining", [self.other])
+        with self.assertRaises(ValueError):
+            self.helper.validate(self.discovery(self.infra, self.other), {"infrastructure": bad, "remaining": other})
+        bad = self.report("infrastructure", [self.infra])
+        tree = ET.parse(bad)
+        next(tree.getroot().iter("UnitTestResult")).set("outcome", "NotExecuted")
+        tree.write(bad)
+        with self.assertRaisesRegex(ValueError, "non-passing"):
+            self.helper.validate(self.discovery(self.infra, self.other), {"infrastructure": bad, "remaining": other})
+        bad.write_text("<TestRun>")
+        with self.assertRaises(ET.ParseError):
+            self.helper.validate(self.discovery(self.infra, self.other), {"infrastructure": bad, "remaining": other})
+
+    def test_deferred_theory_rows_keep_one_discovered_owner_and_record_expansion(self):
+        deferred = ("NetRatel.Tests.Client.TheoryTests", "Run", "NetRatel.Tests.Client.TheoryTests.Run")
+        rows = [(deferred[0], deferred[1], deferred[2] + f"(value: {index})") for index in range(3)]
+        reports = {"infrastructure": self.report("infrastructure", [self.infra]),
+                   "remaining": self.report("remaining", rows)}
+        result = self.helper.validate(self.discovery(self.infra, deferred), reports)
+        self.assertEqual(2, result["discoveredLogicalCases"])
+        self.assertEqual(4, result["executedRows"])
+        self.assertEqual(3, result["deferredTheoryExpansions"][0]["runtimeRows"])
+
+    def test_opt_in_discovery_cases_are_rejected(self):
+        cases = self.discovery(self.infra)
+        cases[0]["Traits"] = {"category": ["hosted"]}
+        with self.assertRaisesRegex(ValueError, "excluded"):
+            self.helper.validate(cases, {"infrastructure": self.report("infrastructure", [self.infra])})
+
+
 class MtpCiRunnerSelectionTests(unittest.TestCase):
     def test_independent_contracts_are_required_before_pr_success_and_release_packaging(self):
         for relative, gate in ((".github/workflows/public-pr-validation.yml", "pr-validation"),
@@ -606,7 +693,7 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertEqual(required_assemblies, tuple(assemblies.group(1).split()))
         self.assertIn("--configuration Release --no-build --max-parallel-test-modules 1", source)
         self.assertIn("--filter-not-trait category=compose category=hosted category=manual-integration", source)
-        self.assertIn('--report-trx-filename "fast-$assembly.trx"', source)
+        self.assertIn('--report-trx-filename "fast-$group.trx"', source)
         self.assertIn('python3 tools/ci/verify-mtp-trx.py "$report"', source)
         self.assertNotIn("--expected-executed", source, "New default regressions must remain discoverable.")
         self.assertNotRegex(source, r"--filter(?:\s|=)", "VSTest filter syntax is invalid under the selected MTP runner.")
@@ -614,6 +701,11 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertNotIn("--filter-class", source)
         self.assertNotIn("NetRatel.Web.PlaywrightTests", source)
         self.assertNotIn("setsid", source)
+        self.assertIn("--filter-namespace NetRatel.Tests.Infrastructure 'NetRatel.Tests.Infrastructure.*'", source)
+        self.assertIn("--filter-not-namespace NetRatel.Tests.Infrastructure 'NetRatel.Tests.Infrastructure.*'", source)
+        self.assertIn("-list full/json -preEnumerateTheories", source)
+        self.assertIn("-trait- category=compose -trait- category=hosted -trait- category=manual-integration", source)
+        self.assertIn("python3 tools/ci/verify-core-partitions.py", source)
 
         for relative in (".github/workflows/public-pr-validation.yml", ".github/workflows/release-build.yml"):
             workflow = (ROOT / relative).read_text(encoding="utf-8")
@@ -627,6 +719,10 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
                     "playwright.ps1 install", "playwright-browser-evidence",
                 ):
                     self.assertNotIn(manual_command, workflow)
+        public = (ROOT / ".github/workflows/public-pr-validation.yml").read_text()
+        self.assertIn("types: [opened, synchronize, reopened]", public)
+        self.assertNotIn("converted_to_draft", public)
+        self.assertNotIn("ready_for_review", public)
 
         manual = (ROOT / ".github/workflows/integration-validation.yml").read_text(encoding="utf-8")
         triggers = re.search(r"(?ms)^on:\n(.*?)(?=^[A-Za-z_][A-Za-z_0-9-]*:)", manual)
@@ -650,8 +746,17 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertIn("if: inputs.suite == 'client-measurement'", measurement)
         self.assertIn("inputs.assessment_only && '[{\"runtime\":\"linux-x64\",\"runner\":\"ubuntu-latest\"}]'", measurement,
                       "The first trim assessment must permit a single Linux job without repeating A/B.")
-        self.assertIn("if: ${{ !inputs.assessment_only }}", measurement)
-        self.assertIn("!cancelled() && !inputs.assessment_only", measurement)
+        self.assertIn("if: ${{ inputs.suite == 'client-measurement' && !inputs.assessment_only }}", measurement)
+        for suite, runtime, runner in (("client-trim-windows", "win-x64", "windows-latest"),
+                                       ("client-trim-macos", "osx-arm64", "macos-latest"),
+                                       ("client-control-macos", "osx-arm64", "macos-latest")):
+            self.assertIn(f"inputs.suite != '{suite}'", selected)
+            self.assertIn(f"inputs.suite == '{suite}' && '[{{\"runtime\":\"{runtime}\",\"runner\":\"{runner}\"}}]'", measurement,
+                          "Each native assessment must select one matching hosted runner without A/B fan-out.")
+        self.assertIn("--runtime '${{ matrix.runtime }}'", measurement)
+        self.assertIn("TestResults/client-measurement/trimmed/${{ matrix.runtime }}", measurement)
+        self.assertIn("((inputs.suite == 'client-measurement' && !inputs.assessment_only) || inputs.suite == 'client-control-macos')", measurement)
+        self.assertIn("startsWith(inputs.suite, 'client-trim-')", measurement)
         self.assertIn("--source client-baseline", measurement)
         self.assertIn("--source .", measurement)
         self.assertNotIn("dotnet build", measurement)
@@ -708,44 +813,67 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertIn("selected zero test cases", (ROOT / "tools/ci/verify-mtp-trx.py").read_text())
 
     def test_generic_test_modules_are_serialized_and_browser_failure_evidence_is_collected(self):
-        # Preserve this existing test ID. Each process still serializes MTP modules;
-        # independent assemblies overlap, and every command/receipt must succeed.
+        # Preserve this existing test ID. A failed process, empty receipt or
+        # incomplete coverage must fail even after all other groups complete.
         helper = ROOT / "tools/ci/run-fast-regressions.sh"
         verifier = module("verify-mtp-trx")
+        groups = ("NetRatel.Web.ComponentTests", "NetRatel.Tests.Infrastructure",
+                  "NetRatel.Tests.Remaining", "NetRatel.API.IntegrationTests")
         expected_projects = [
             f"src/NetRatel/{assembly}/{assembly}.csproj"
-            for assembly in ("NetRatel.Tests", "NetRatel.API.IntegrationTests", "NetRatel.Web.ComponentTests")
+            for assembly in ("NetRatel.Web.ComponentTests", "NetRatel.Tests", "NetRatel.Tests",
+                             "NetRatel.API.IntegrationTests")
         ]
-        for failure in ("none", "command", "zero", "summary"):
+        fake_source = r'''#!/usr/bin/env python3
+import json, os, pathlib, sys, xml.etree.ElementTree as ET
+args = sys.argv[1:]
+with open(os.environ['NETRATEL_FAST_TEST_COMMAND_LOG'], 'a') as log:
+    log.write(json.dumps(args) + '\n')
+infra = ('NetRatel.Tests.Infrastructure.SampleTests', 'Run', 'infrastructure case')
+remaining = ('NetRatel.Tests.API.SampleTests', 'Run', 'remaining case')
+if args[0] != 'test':
+    print(json.dumps([dict(ID=str(index), Class=row[0], Method=row[1], DisplayName=row[2])
+                      for index, row in enumerate((infra, remaining))]))
+    sys.exit(0)
+filename = args[args.index('--report-trx-filename') + 1]
+group = filename.removeprefix('fast-').removesuffix('.trx')
+failure = os.environ['NETRATEL_FAST_TEST_FAILURE']
+if failure in ('command', 'summary') and group == 'NetRatel.Tests.Remaining':
+    sys.exit(7)
+cases = [infra] if group.endswith('.Infrastructure') else [remaining]
+if failure == 'zero' and group == 'NetRatel.Tests.Remaining':
+    cases = []
+if failure == 'coverage' and group == 'NetRatel.Tests.Remaining':
+    cases = [('NetRatel.Tests.API.SampleTests', 'Other', 'undiscovered case')]
+run = ET.Element('TestRun')
+definitions = ET.SubElement(run, 'TestDefinitions')
+results = ET.SubElement(run, 'Results')
+for index, (class_name, method_name, display) in enumerate(cases):
+    identifier = f'{group}-{index}'
+    unit = ET.SubElement(definitions, 'UnitTest', id=identifier)
+    ET.SubElement(unit, 'TestMethod', className=class_name, name=method_name)
+    ET.SubElement(results, 'UnitTestResult', testId=identifier, executionId=identifier,
+                  testName=display, outcome='Passed')
+summary = ET.SubElement(run, 'ResultSummary', outcome='Completed')
+counters = dict.fromkeys(COUNTER_NAMES, 0)
+counters.update(total=len(cases), executed=len(cases), passed=len(cases), completed=len(cases))
+ET.SubElement(summary, 'Counters', {key: str(value) for key, value in counters.items()})
+report = pathlib.Path(args[args.index('--results-directory') + 1]) / filename
+ET.ElementTree(run).write(report)
+'''.replace("COUNTER_NAMES", repr(verifier.COUNTER_NAMES))
+        for failure in ("none", "command", "zero", "summary", "coverage"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
                 directory = Path(temporary)
                 fake_bin = directory / "bin"
                 fake_bin.mkdir()
                 command_log = directory / "commands.jsonl"
                 fake_dotnet = fake_bin / "dotnet"
-                fake_dotnet.write_text(
-                    "#!/usr/bin/env python3\n"
-                    "import json, os, pathlib, sys\n"
-                    "args = sys.argv[1:]\n"
-                    "with open(os.environ['NETRATEL_FAST_TEST_COMMAND_LOG'], 'a') as log:\n"
-                    "    log.write(json.dumps(args) + '\\n')\n"
-                    "failure = os.environ['NETRATEL_FAST_TEST_FAILURE']\n"
-                    "if failure in ('command', 'summary'):\n"
-                    "    sys.exit(7)\n"
-                    "count = 0 if failure == 'zero' else 2\n"
-                    f"counters = dict.fromkeys({verifier.COUNTER_NAMES!r}, 0)\n"
-                    "counters.update(total=count, executed=count, passed=count)\n"
-                    "attributes = ' '.join(f'{name}=\"{value}\"' for name, value in counters.items())\n"
-                    "report = pathlib.Path(args[args.index('--results-directory') + 1]) / args[args.index('--report-trx-filename') + 1]\n"
-                    "report.write_text('<TestRun><ResultSummary outcome=\"Completed\"><Counters ' + attributes + '/></ResultSummary></TestRun>')\n",
-                    encoding="utf-8",
-                )
+                fake_dotnet.write_text(fake_source, encoding="utf-8")
                 fake_dotnet.chmod(0o755)
                 results = directory / "results"
-                # A stale successful report must not rescue a failed command.
                 results.mkdir()
-                stale_report = results / "fast-NetRatel.Tests.trx"
-                stale_report.write_text("stale report", encoding="utf-8")
+                for group in groups:
+                    (results / f"fast-{group}.trx").write_text("stale report", encoding="utf-8")
                 environment = {
                     **os.environ,
                     "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
@@ -758,27 +886,41 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
                     env=environment, check=False, capture_output=True, text=True,
                 )
                 commands = [json.loads(line) for line in command_log.read_text().splitlines()]
-                expected_count = 3
-                self.assertEqual(expected_count, len(commands), completed.stdout + completed.stderr)
-                self.assertCountEqual(expected_projects, [args[args.index("--project") + 1] for args in commands])
-                for args in commands:
-                    self.assertEqual("test", args[0])
+                discovery = [args for args in commands if args[0] != "test"]
+                execution = [args for args in commands if args[0] == "test"]
+                self.assertEqual(1, len(discovery), completed.stdout + completed.stderr)
+                self.assertIn("-noColor", discovery[0], "Native CI color resets would corrupt discovery JSON.")
+                self.assertEqual(4, len(execution), completed.stdout + completed.stderr)
+                self.assertCountEqual(expected_projects, [args[args.index("--project") + 1] for args in execution])
+                for args in execution:
                     self.assertIn("--no-build", args)
+                    self.assertEqual("1", args[args.index("--max-parallel-test-modules") + 1])
                     self.assertEqual("Release", args[args.index("--configuration") + 1])
+                    if args[args.index("--project") + 1].endswith("NetRatel.Tests.csproj"):
+                        self.assertEqual("0.5x", args[args.index("--max-threads") + 1])
+                    else:
+                        self.assertNotIn("--max-threads", args)
                     filter_start = args.index("--filter-not-trait") + 1
                     self.assertEqual(["category=compose", "category=hosted", "category=manual-integration"], args[filter_start:filter_start + 3])
                 if failure == "none":
                     self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
-                    for assembly in ("NetRatel.Tests", "NetRatel.API.IntegrationTests", "NetRatel.Web.ComponentTests"):
-                        self.assertEqual(2, verifier.validate_success_report(results / f"fast-{assembly}.trx")["executed"])
+                    coverage = json.loads((results / "core-partition-coverage.json").read_text())
+                    self.assertEqual(2, coverage["executedRows"])
+                    for group in groups:
+                        self.assertEqual(1, verifier.validate_success_report(results / f"fast-{group}.trx")["executed"])
                 elif failure in ("command", "summary"):
                     self.assertEqual(7, completed.returncode)
-                    self.assertFalse(stale_report.exists())
+                    self.assertFalse((results / "fast-NetRatel.Tests.Remaining.trx").exists())
                 else:
                     self.assertNotEqual(0, completed.returncode)
-                    self.assertIn("selected zero test cases", completed.stdout + completed.stderr)
+                    expected = "selected zero test cases" if failure == "zero" else "missing or duplicated"
+                    self.assertIn(expected, completed.stdout + completed.stderr)
+                for group in groups:
+                    self.assertTrue((results / f"fast-{group}.log").exists())
                 if failure != "summary":
-                    self.assertIn("NetRatel.Tests:", (directory / "summary.md").read_text())
+                    summary = (directory / "summary.md").read_text()
+                    for group in groups:
+                        self.assertIn(group + ":", summary)
                 else:
                     self.assertIn("failed(7)", completed.stdout)
 
@@ -2057,6 +2199,95 @@ class ClientMeasurementHelperTests(unittest.TestCase):
     def setUp(self):
         self.helper = module("measure-client-publish")
 
+    def test_native_host_rejects_other_operating_systems_and_translated_architectures(self):
+        cases = (("win-x64", "Windows", "AMD64", "Windows", "X64"),
+                 ("linux-x64", "Linux", "x86_64", "Linux", "X64"),
+                 ("osx-arm64", "Darwin", "arm64", "macOS", "ARM64"))
+        for runtime, system, machine, runner_os, runner_arch in cases:
+            with self.subTest(runtime=runtime), \
+                 patch.object(self.helper.platform, "system", return_value=system), \
+                 patch.object(self.helper.platform, "machine", return_value=machine), \
+                 patch.dict(os.environ, RUNNER_OS=runner_os, RUNNER_ARCH=runner_arch):
+                self.assertEqual(machine, self.helper.validate_runtime_host(runtime)["machine"])
+                with patch.object(self.helper.platform, "machine", return_value="x86"), \
+                     self.assertRaisesRegex(ValueError, "does not match"):
+                    self.helper.validate_runtime_host(runtime)
+                with patch.object(self.helper.platform, "system", return_value="other"), \
+                     self.assertRaisesRegex(ValueError, "does not match"):
+                    self.helper.validate_runtime_host(runtime)
+                with patch.dict(os.environ, RUNNER_ARCH="other"), \
+                     self.assertRaisesRegex(ValueError, "does not match"):
+                    self.helper.validate_runtime_host(runtime)
+
+    def test_binary_headers_distinguish_windows_x64_and_macos_arm64_from_wrong_assets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary) / "executable"
+            pe = bytearray(64)
+            pe[:2], pe[60:64] = b"MZ", (64).to_bytes(4, "little")
+            binary.write_bytes(pe + b"PE\0\0\x64\x86")
+            self.assertEqual({"format": "PE", "machine": "0x8664"}, self.helper.binary_identity(binary))
+            for machine in (0x100000c, 0x1000007):
+                binary.write_bytes(b"\xcf\xfa\xed\xfe" + machine.to_bytes(4, "little"))
+                self.assertEqual({"format": "Mach-O", "machine": hex(machine)}, self.helper.binary_identity(binary))
+            binary.write_bytes(b"not a native executable")
+            self.assertIsNone(self.helper.binary_identity(binary))
+
+    def test_version_executes_exact_archive_bytes_with_fresh_and_cached_extraction(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            distribution = root / "netratel-client-osx-arm64"
+            distribution.mkdir()
+            executable = distribution / "NetRatel.Client"
+            executable.write_text("#!/usr/bin/env python3\nimport os, pathlib\n"
+                "cache = pathlib.Path(os.environ['DOTNET_BUNDLE_EXTRACT_BASE_DIR'])\n"
+                "cache.mkdir(exist_ok=True)\n(cache / 'native').write_bytes(b'fixture')\n"
+                f"print('1.2.3+{'a' * 40}')\n")
+            executable.chmod(0o755)
+            evidence, state = root / "evidence", root / "state"
+            evidence.mkdir()
+            state.mkdir()
+            (evidence / "distribution-inventory.json").write_text(json.dumps(self.helper.inventory(distribution)))
+            archive = root / "client.tar.gz"
+            with tarfile.open(archive, "w:gz") as bundle:
+                bundle.add(distribution, arcname=distribution.name)
+            original = archive.read_bytes()
+            executable.write_text("original distribution must not execute")
+            metrics = {"stages": {}, "sourceSha": "a" * 40}
+            # The executable fixture runs locally; the separate header test checks
+            # the arm64 binary guard used by the actual native hosted launch.
+            with patch.object(self.helper, "binary_identity", return_value={"format": "Mach-O", "machine": "0x100000c"}), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.helper.run_packaged_version_probes(metrics, evidence, state, archive, distribution.name, "osx-arm64", "1.2.3")
+            for label in ("fresh", "cached"):
+                stage = metrics["stages"]["launch-" + label]
+                self.assertEqual("1.2.3+" + "a" * 40, stage["outputVersion"])
+                self.assertEqual(7, stage["bundleExtractionBytes"])
+                self.assertTrue(Path(stage["command"][0]).is_relative_to(state / "packaged-version"))
+            self.assertEqual(original, archive.read_bytes())
+            self.assertEqual(self.helper.digest(archive), metrics["packagedExecutable"]["archiveSha256"])
+            (root / "wrong-arch").mkdir()
+            with patch.object(self.helper, "binary_identity", return_value={"format": "Mach-O", "machine": "0x1000007"}), \
+                 patch.object(self.helper, "run_stage") as launch, self.assertRaisesRegex(ValueError, "architecture differs"):
+                self.helper.run_packaged_version_probes({"stages": {}}, evidence, root / "wrong-arch", archive,
+                                                       distribution.name, "osx-arm64", "1.2.3")
+            launch.assert_not_called()
+            (root / "wrong-version").mkdir()
+            failed = {"stages": {}, "sourceSha": "a" * 40}
+            with patch.object(self.helper, "binary_identity", return_value={"format": "Mach-O", "machine": "0x100000c"}), \
+                 contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, "--version output differs"):
+                self.helper.run_packaged_version_probes(failed, evidence, root / "wrong-version", archive,
+                                                       distribution.name, "osx-arm64", "9.9.9")
+            self.assertEqual("runtime behavior", failed["failureKind"])
+            self.assertNotIn("launch-cached", failed["stages"])
+            (root / "wrong-source").mkdir()
+            failed = {"stages": {}, "sourceSha": "b" * 40}
+            with patch.object(self.helper, "binary_identity", return_value={"format": "Mach-O", "machine": "0x100000c"}), \
+                 contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, "--version output differs"):
+                self.helper.run_packaged_version_probes(failed, evidence, root / "wrong-source", archive,
+                                                       distribution.name, "osx-arm64", "1.2.3")
+            self.assertEqual("runtime behavior", failed["failureKind"])
+            self.assertNotIn("launch-cached", failed["stages"])
+
     def packaged_pty_fixture(self, root, native_exit, native_final):
         distribution = root / "netratel-client-linux-x64"
         distribution.mkdir()
@@ -2444,6 +2675,68 @@ class SavedImageCredentialScanTests(unittest.TestCase):
         (self.root / "manifest.json").write_text(json.dumps(manifests))
         with self.assertRaisesRegex(ValueError, "uncompressed image identity"):
             comparator.compare(self.root, "candidate:test", "control:test", companions)
+
+    def test_html_payload_comparison_rejects_unrelated_file_and_package_changes(self):
+        comparator = module("compare-migrations-html-payload")
+        for comparison, removed_files, removed_packages in (
+                ("html-ownership", comparator.REMOVED_FILES, comparator.REMOVED_PACKAGES),
+                ("schema-ownership", comparator.SCHEMA_FILES, comparator.SCHEMA_PACKAGES)):
+            compare = lambda: comparator.compare(self.root, comparison)
+            common = {"NetRatel.Infrastructure.dll": {"sha256": "a" * 64, "bytes": 100},
+                      "NetRatel.Shared.dll": {"sha256": "b" * 64, "bytes": 50}}
+            control = {**common, **{name: {"sha256": "c" * 64, "bytes": 10} for name in removed_files}}
+            candidate = copy.deepcopy(common)
+            candidate["NetRatel.Infrastructure.dll"] = {"sha256": "d" * 64, "bytes": 90}
+            for arm, inventory in (("candidate", candidate), ("control", control)):
+                (self.root / f"{arm}-file-hashes.json").write_text(json.dumps(inventory))
+                (self.root / f"{arm}-runtimeconfig.json").write_text("{}")
+                (self.root / f"{arm}-runtime.txt").write_text("same runtime/UID/native packages\n")
+                files = [{"SPDXID": "File-" + name, "fileName": "./out/" + name,
+                          "checksums": [{"algorithm": "SHA256", "checksumValue": inventory[name]["sha256"]}]} for name in sorted(inventory)]
+                packages = [{"SPDXID": "Package-root", "name": "NetRatel.Migrations", "versionInfo": "1.0.0"}]
+                if arm == "control":
+                    packages += [{"SPDXID": "Package-" + name, "name": name, "versionInfo": "1.0.0"}
+                                 for name in sorted(removed_packages)]
+                relations = [{"spdxElementId": "Package-root", "relationshipType": "CONTAINS", "relatedSpdxElement": item["SPDXID"]} for item in files]
+                relations += [{"spdxElementId": "Package-root", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": item["SPDXID"]} for item in packages[1:]]
+                document = {"files": files, "packages": packages, "relationships": relations,
+                            "documentNamespace": "https://example.test/" + hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest(),
+                            "creationInfo": {"created": "2026-01-01T00:00:00Z"}}
+                (self.root / f"{arm}-runtime.spdx.json").write_text(json.dumps(document))
+            result = compare()
+            self.assertEqual(4, len(result["removedFiles"]))
+            self.assertEqual(4, len(result["removedPackages"]))
+            self.assertEqual(1, result["byteIdenticalRetainedFiles"])
+            candidate["NetRatel.Shared.dll"]["sha256"] = "e" * 64
+            (self.root / "candidate-file-hashes.json").write_text(json.dumps(candidate))
+            with self.assertRaisesRegex(ValueError, "unexpected retained payload"):
+                compare()
+            candidate["NetRatel.Shared.dll"] = common["NetRatel.Shared.dll"]
+            (self.root / "candidate-file-hashes.json").write_text(json.dumps(candidate))
+            document = json.loads((self.root / "candidate-runtime.spdx.json").read_text())
+            valid_document = copy.deepcopy(document)
+            document["packages"][0]["versionInfo"] = "2.0.0"
+            (self.root / "candidate-runtime.spdx.json").write_text(json.dumps(document))
+            with self.assertRaisesRegex(ValueError, "retained package"):
+                compare()
+            def change_file_metadata(value):
+                next(item for item in value["files"] if item["fileName"].endswith("NetRatel.Shared.dll"))["licenseConcluded"] = "changed"
+                value["documentNamespace"] = value["documentNamespace"].rsplit('/', 1)[0] + '/' + hashlib.sha256(json.dumps(value["files"], sort_keys=True).encode()).hexdigest()
+            mutations = [
+                (lambda value: value.update(name="changed"), "document metadata"),
+                (lambda value: value["creationInfo"].update(creators=["changed"]), "creation metadata"),
+                (lambda value: value.update(documentNamespace="https://changed.test/" + value["documentNamespace"].rsplit('/', 1)[-1]), "namespace prefix"),
+                (change_file_metadata, "retained SPDX file entry"),
+            ]
+            for mutate, message in mutations:
+                with self.subTest(message=message):
+                    changed_document = copy.deepcopy(valid_document)
+                    mutate(changed_document)
+                    (self.root / "candidate-runtime.spdx.json").write_text(json.dumps(changed_document))
+                    with self.assertRaisesRegex(ValueError, message): compare()
+            valid_document["creationInfo"]["created"] = "2026-01-01T01:00:00Z"
+            (self.root / "candidate-runtime.spdx.json").write_text(json.dumps(valid_document))
+            self.assertEqual(4, len(compare()["removedPackages"]))
 
     def test_empty_missing_corrupt_and_unreviewed_matches_fail(self):
         cases = [([], "no layers"),
@@ -3010,7 +3303,7 @@ class WindowsMcpArchiveTests(unittest.TestCase):
 
 
 class PublicImageSourceIdentityTests(unittest.TestCase):
-    def invoke(self, revision):
+    def invoke(self, revision, extra=()):
         with tempfile.TemporaryDirectory(prefix="netratel-image-identity-") as temporary:
             root = Path(temporary); command_log = root / "docker.jsonl"
             docker = root / "docker"
@@ -3020,7 +3313,7 @@ class PublicImageSourceIdentityTests(unittest.TestCase):
             docker.chmod(0o755)
             result = subprocess.run([
                 "bash", str(ROOT / "tools/ci/build-public-image.sh"), "--dockerfile", str(ROOT / "docker/mcp-http/Dockerfile"),
-                "--image", "synthetic.invalid/mcp:regression", "--version", "9.8.7-regression", "--revision", revision],
+                "--image", "synthetic.invalid/mcp:regression", "--version", "9.8.7-regression", "--revision", revision, *extra],
                 cwd=ROOT, env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ.get("PATH", ""),
                                   NETRATEL_IMAGE_BUILD_CALLS=str(command_log)), capture_output=True, text=True, timeout=10)
             calls = [json.loads(line) for line in command_log.read_text().splitlines()] if command_log.exists() else []
@@ -3044,6 +3337,19 @@ class PublicImageSourceIdentityTests(unittest.TestCase):
                 result, calls = self.invoke(revision)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(calls, [])
+
+    def test_mode_arguments_cannot_override_authoritative_source_revision(self):
+        revision = "ab" * 20
+        result, calls = self.invoke(revision, ("--build-arg", "CLIENT_SELF_CONTAINED=false"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("CLIENT_SELF_CONTAINED=false", calls[0])
+        self.assertIn(f"PublicSourceRevision={revision}", calls[0])
+        for override in ("PublicSourceRevision", "PublicSourceRevision=" + "c" * 40):
+            with self.subTest(override=override):
+                result, calls = self.invoke(revision, ("--build-arg", override))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual([], calls)
+                self.assertIn("controlled by --revision", result.stderr)
 
 
 class WindowsMcpReleaseContractTests(unittest.TestCase):

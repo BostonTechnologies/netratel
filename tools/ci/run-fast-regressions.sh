@@ -29,32 +29,41 @@ record_stage() {
 }
 
 # Each independent process still runs one MTP module at a time. Components
-# run alone before overlapping the independent Core and API backend suites.
+# run alone before overlapping the two disjoint Core groups and API suite.
 run_assembly() {
-  local assembly="$1" project report stage_start status
+  local assembly="$1" group="$2" project report stage_start status
+  shift 2
   project="src/NetRatel/$assembly/$assembly.csproj"
-  report="$results_directory/fast-$assembly.trx"
+  report="$results_directory/fast-$group.trx"
   rm -f "$report"
   stage_start="$SECONDS"
-  if dotnet test --project "$project" "${test_arguments[@]}" \
-      --report-trx-filename "fast-$assembly.trx"; then
+  if dotnet test --project "$project" "${test_arguments[@]}" "$@" \
+      --report-trx-filename "fast-$group.trx"; then
     if python3 tools/ci/verify-mtp-trx.py "$report"; then
-      record_stage "$assembly" "$((SECONDS - stage_start))" passed
+      record_stage "$group" "$((SECONDS - stage_start))" passed
     else
       status="$?"
-      record_stage "$assembly" "$((SECONDS - stage_start))" "receipt-failed($status)"
+      record_stage "$group" "$((SECONDS - stage_start))" "receipt-failed($status)"
       return "$status"
     fi
   else
     status="$?"
-    record_stage "$assembly" "$((SECONDS - stage_start))" "failed($status)"
+    record_stage "$group" "$((SECONDS - stage_start))" "failed($status)"
     return "$status"
   fi
 }
 
+# Native xUnit discovery uses the same prebuilt binary and the same category
+# exclusions as MTP execution. It runs no cases and supplies a growing coverage
+# manifest, including theories, rather than a fixed expected pass count.
+dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
+  -noColor -list full/json -preEnumerateTheories \
+  -trait- category=compose -trait- category=hosted -trait- category=manual-integration \
+  > "$results_directory/core-discovery.json"
+
 # UI polling has short deadlines. Keep this group free of backend CPU/DB load.
 component_assembly="NetRatel.Web.ComponentTests"
-run_assembly "$component_assembly" > "$results_directory/fast-$component_assembly.log" 2>&1 &
+run_assembly "$component_assembly" "$component_assembly" > "$results_directory/fast-$component_assembly.log" 2>&1 &
 component_pid="$!"
 result=0
 if wait "$component_pid"; then
@@ -64,29 +73,45 @@ else
   cat "$results_directory/fast-$component_assembly.log"
 fi
 
-pids=()
-parallel_assemblies=()
-for assembly in "${assemblies[@]}"; do
-  if [[ "$assembly" == "$component_assembly" ]]; then
-    continue
-  fi
-  run_assembly "$assembly" > "$results_directory/fast-$assembly.log" 2>&1 &
+pids=(); groups=()
+launch() {
+  local assembly="$1" group="$2"
+  shift 2
+  run_assembly "$assembly" "$group" "$@" > "$results_directory/fast-$group.log" 2>&1 &
   pids+=("$!")
-  parallel_assemblies+=("$assembly")
-done
+  groups+=("$group")
+}
+# Each process owns a separate randomized PostgreSQL server and isolated test
+# databases. Splitting the shared collection removes its cross-namespace serial
+# queue while preserving every existing case and category exclusion. Divide
+# the original Core collection-thread allowance across the two processes;
+# retaining the full allowance in each doubled concurrent migration load.
+launch NetRatel.Tests NetRatel.Tests.Infrastructure \
+  --max-threads 0.5x \
+  --filter-namespace NetRatel.Tests.Infrastructure 'NetRatel.Tests.Infrastructure.*'
+launch NetRatel.Tests NetRatel.Tests.Remaining \
+  --max-threads 0.5x \
+  --filter-not-namespace NetRatel.Tests.Infrastructure 'NetRatel.Tests.Infrastructure.*'
+launch NetRatel.API.IntegrationTests NetRatel.API.IntegrationTests
 
 # Wait for every group and keep each command/receipt failure. Separate logs keep
 # concurrent test output readable and retain diagnostics with the TRX artifacts.
-for index in "${!parallel_assemblies[@]}"; do
-  assembly="${parallel_assemblies[$index]}"
+for index in "${!groups[@]}"; do
+  group="${groups[$index]}"
   if wait "${pids[$index]}"; then
-    cat "$results_directory/fast-$assembly.log"
+    cat "$results_directory/fast-$group.log"
   else
     status="$?"
-    cat "$results_directory/fast-$assembly.log"
+    cat "$results_directory/fast-$group.log"
     if [[ "$result" -eq 0 ]]; then
       result="$status"
     fi
   fi
 done
+if (( result == 0 )); then
+  python3 tools/ci/verify-core-partitions.py --discovery "$results_directory/core-discovery.json" \
+    --infrastructure "$results_directory/fast-NetRatel.Tests.Infrastructure.trx" \
+    --remaining "$results_directory/fast-NetRatel.Tests.Remaining.trx" \
+    --output "$results_directory/core-partition-coverage.json" || result="$?"
+fi
 exit "$result"

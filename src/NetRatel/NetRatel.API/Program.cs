@@ -68,6 +68,7 @@ using NetRatel.Infrastructure.Persistence;
 using NetRatel.API.OpenApi;
 using NetRatel.API.Endpoints.SystemPairing;
 using NetRatel.Infrastructure.SystemPairing;
+using Npgsql;
 
 if (args is ["--gssapi-application-smoke"])
 {
@@ -100,7 +101,6 @@ if (args is ["--gssapi-application-smoke"])
 }
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddScoped<NetRatel.API.Services.SoftwareInventoryService>();
 // Public install URLs are bearer capabilities; framework request-start logs include raw paths.
 builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
 NetRatelDatabaseConfigurationResolver.ValidateProvider(builder.Configuration);
@@ -182,6 +182,7 @@ if (bootstrapDescriptor.State != BootstrapState.Ready)
 var aiAgentOpsLogBuffer = new AiAgentOpsLogBuffer();
 
 builder.AddServiceDefaults();
+builder.Services.AddOpenTelemetry().WithTracing(tracing => tracing.AddNpgsql());
 builder.Services.AddNetRatelAkkaRuntime(builder.Configuration);
 builder.Services.AddSingleton<AgentGatewayRenewalAuthenticator>();
 builder.Services.AddSingleton<AgentGatewayAuthenticationLeaseRegistry>();
@@ -913,6 +914,7 @@ builder.Services.AddHostedService<NetRatel.Infrastructure.Flows.FlowRunWorker>()
 builder.Services.AddHostedService<GlobalSearchQueryWarmupService>();
 builder.Services.AddNetRatelApplication();
 builder.Services.AddNetRatelInfrastructure(builder.Configuration);
+builder.Services.AddScoped<NetRatel.API.Services.SoftwareInventoryService>();
 builder.Services.AddMonitoringFlowBridge();
 builder.Services.AddNetRatelServiceIdentityApi(builder.Configuration);
 builder.Services.AddSystemPairing(builder.Configuration);

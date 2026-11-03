@@ -4,7 +4,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.ServiceDiscovery;
-using Npgsql;
 using OpenTelemetry;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
@@ -135,8 +134,7 @@ public static class Extensions
                     //.AddGrpcClientInstrumentation()
                     .AddHttpClientInstrumentation(options => options.FilterHttpRequestMessage = request =>
                         request.RequestUri is null ||
-                        !request.RequestUri.AbsolutePath.StartsWith("/clients/install/", StringComparison.OrdinalIgnoreCase))
-                    .AddNpgsql();
+                        !request.RequestUri.AbsolutePath.StartsWith("/clients/install/", StringComparison.OrdinalIgnoreCase));
 
                 if (useOtlpExporter)
                 {

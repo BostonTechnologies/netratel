@@ -7,6 +7,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using System.Threading;
 using System.Threading.Tasks;
 using NetRatel.Application.ClientAuth;
@@ -14,11 +15,10 @@ using NetRatel.Application.ClientAuth;
 namespace NetRatel.Client.Service.Updates;
 
 /// <summary>Delivery metadata accompanies the native result; it never changes the installation outcome.</summary>
-internal sealed class ClientUpdateResultDelivery(
+internal sealed partial class ClientUpdateResultDelivery(
     string stateDirectory, string resultPath, string requestPath, string readyPath, string suspensionPath,
     IAgentTokenService tokens, HttpClient api, TimeProvider clock, object gate, Action<string> log)
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private readonly string _deliveryPath = Path.Combine(stateDirectory, "result-delivery.json");
     private long _failedAt;
     private TimeSpan _retryDelay;
@@ -122,8 +122,8 @@ internal sealed class ClientUpdateResultDelivery(
                 using var request = new HttpRequestMessage(HttpMethod.Post,
                     $"/api/v2/agent-updates/attempts/{delivery.AttemptId:D}/result")
                 {
-                    Content = JsonContent.Create(new { state = delivery.InstallationState,
-                        delivery.FailureCode, delivery.Message, delivery.AdmissionNonce })
+                    Content = JsonContent.Create(new ResultReport(delivery.InstallationState,
+                        delivery.FailureCode, delivery.Message, delivery.AdmissionNonce), ResultReportJsonContext.Default.ResultReport)
                 };
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);
                 using var response = await api.SendAsync(request, HttpCompletionOption.ResponseHeadersRead,
@@ -262,10 +262,10 @@ internal sealed class ClientUpdateResultDelivery(
         // bytes, while JSON parsing consumes the document after that prefix.
         var jsonOffset = bytes.Length >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf ? 3 : 0;
         using var document = JsonDocument.Parse(bytes.AsMemory(jsonOffset));
-        var result = document.RootElement.Deserialize<NativeResult>(JsonOptions);
+        var result = document.RootElement.Deserialize(ResultDeliveryJsonContext.Default.NativeResult);
         if (result is null || result.Schema != "netratel.update.result.v2" ||
             result.AttemptId == Guid.Empty || result.ReleaseId == Guid.Empty || string.IsNullOrWhiteSpace(result.State)) return null;
-        var request = ProtectedUpdateState.IsProtectedFile(requestPath) ? Read<RequestContext>(requestPath) : null;
+        var request = ProtectedUpdateState.IsProtectedFile(requestPath) ? Read(requestPath, ResultDeliveryJsonContext.Default.RequestContext) : null;
         var delivery = new DeliveryRecord("netratel.update.result-delivery.v1", result.AttemptId, result.ReleaseId,
             hash, result.State, result.FailureCode, result.Message,
             request is not null && request.AttemptId == result.AttemptId && request.ReleaseId == result.ReleaseId ? request.AdmissionNonce : null,
@@ -274,17 +274,17 @@ internal sealed class ClientUpdateResultDelivery(
         // Suspension is a one-time installation effect. Replays and retries never recreate it.
         var policy = ReadResumeFence();
         if (result.State is "RolledBack" or "RollbackUnverified" && policy?.ResumeAttemptId != result.AttemptId)
-            ProtectedUpdateState.AtomicWriteJson(suspensionPath, new { result.AttemptId, result.ReleaseId,
-                reason = result.FailureCode, suspendedAtUtc = clock.GetUtcNow() });
+            ProtectedUpdateState.AtomicWriteJson(suspensionPath, new SuspensionRecord(result.AttemptId, result.ReleaseId,
+                result.FailureCode, clock.GetUtcNow()), ResultDeliveryJsonContext.Default.SuspensionRecord);
         if (result.State == "Accepted") return ResolveAccepted(delivery);
         return delivery;
     }
 
     private DeliveryRecord ResolveAccepted(DeliveryRecord delivery)
     {
-        var result = delivery.OriginalResult.Deserialize<NativeResult>(JsonOptions)!;
-        var request = ProtectedUpdateState.IsProtectedFile(requestPath) ? Read<RequestContext>(requestPath) : null;
-        var ready = ProtectedUpdateState.IsProtectedFile(readyPath) ? Read<ReadyContext>(readyPath) : null;
+        var result = delivery.OriginalResult.Deserialize(ResultDeliveryJsonContext.Default.NativeResult)!;
+        var request = ProtectedUpdateState.IsProtectedFile(requestPath) ? Read(requestPath, ResultDeliveryJsonContext.Default.RequestContext) : null;
+        var ready = ProtectedUpdateState.IsProtectedFile(readyPath) ? Read(readyPath, ResultDeliveryJsonContext.Default.ReadyContext) : null;
         var confirmed = ready is { Schema: "netratel.update.ready.v2" } && ready.AttemptId == result.AttemptId &&
             ready.ReleaseId == result.ReleaseId && ready.ConfirmationId != Guid.Empty &&
             !string.IsNullOrWhiteSpace(result.ToVersion) && ready.Version == result.ToVersion && request is not null && request.ToVersion == result.ToVersion &&
@@ -343,20 +343,20 @@ internal sealed class ClientUpdateResultDelivery(
             buffer.Write(bytes, 0, read);
         }
         if (buffer.Length == 0) return (null, true);
-        try { return (JsonSerializer.Deserialize<ResultReply>(buffer.ToArray(), JsonOptions), false); }
+        try { return (JsonSerializer.Deserialize(buffer.ToArray(), ResultDeliveryJsonContext.Default.ResultReply), false); }
         catch (JsonException) { return (null, false); }
     }
 
     private void RemoveMatchingSuspension(Guid attemptId)
     {
-        var suspension = Read<RequestContext>(suspensionPath);
+        var suspension = Read(suspensionPath, ResultDeliveryJsonContext.Default.RequestContext);
         if (suspension?.AttemptId == attemptId) File.Delete(suspensionPath);
     }
 
     private ResumeFence? ReadResumeFence()
     {
         var policyPath = Path.Combine(stateDirectory, "policy.json");
-        return ProtectedUpdateState.IsProtectedFile(policyPath) ? Read<ResumeFence>(policyPath) : null;
+        return ProtectedUpdateState.IsProtectedFile(policyPath) ? Read(policyPath, ResultDeliveryJsonContext.Default.ResumeFence) : null;
     }
 
     private bool IsResumed(DeliveryRecord delivery)
@@ -420,15 +420,11 @@ internal sealed class ClientUpdateResultDelivery(
             return false;
         }
 
-        var original = JsonSerializer.SerializeToUtf8Bytes(delivery.OriginalResult, JsonOptions);
+        var original = JsonSerializer.SerializeToUtf8Bytes(delivery.OriginalResult, ResultDeliveryJsonContext.Default.JsonElement);
         PreserveBytes(RecoveryArchive(delivery, "embedded-original", original), original);
-        var receipt = JsonSerializer.SerializeToUtf8Bytes(new
-        {
-            schema = "netratel.update.identity-recovery.v1", originalDelivery = delivery,
-            replacementSha256 = conflict.ResultHash, resumeAttemptId = fence.ResumeAttemptId,
-            resumeRevision = revision, resumedAtUtc = resumedAt,
-            reconciliationState = "required"
-        }, JsonOptions);
+        var receipt = JsonSerializer.SerializeToUtf8Bytes(new IdentityRecoveryReceipt(
+            "netratel.update.identity-recovery.v1", delivery, conflict.ResultHash, fence.ResumeAttemptId,
+            revision, resumedAt, "required"), ResultDeliveryJsonContext.Default.IdentityRecoveryReceipt);
         PreserveBytes(RecoveryArchive(delivery, "recovery", receipt), receipt);
         PreserveRecoveryState(delivery, requestPath, "request");
         PreserveRecoveryState(delivery, readyPath, "ready");
@@ -501,7 +497,7 @@ internal sealed class ClientUpdateResultDelivery(
     private void ArchiveResult(DeliveryRecord delivery, bool unresolved = false)
     {
         var receipt = Path.Combine(stateDirectory, $"result-{delivery.AttemptId:D}-{delivery.ResultHash[..12]}.delivery.json");
-        if (!File.Exists(receipt)) ProtectedUpdateState.AtomicWriteJson(receipt, delivery);
+        if (!File.Exists(receipt)) ProtectedUpdateState.AtomicWriteJson(receipt, delivery, ResultDeliveryJsonContext.Default.DeliveryRecord);
         if (!File.Exists(resultPath)) return;
         if (Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(resultPath))).ToLowerInvariant() != delivery.ResultHash) return;
         var destination = Path.Combine(stateDirectory,
@@ -517,7 +513,7 @@ internal sealed class ClientUpdateResultDelivery(
     private DeliveryRecord? ReadDelivery()
     {
         if (!ProtectedUpdateState.IsProtectedFile(_deliveryPath) || new FileInfo(_deliveryPath).Length > 128 * 1024) return null;
-        var delivery = Read<DeliveryRecord>(_deliveryPath);
+        var delivery = Read(_deliveryPath, ResultDeliveryJsonContext.Default.DeliveryRecord);
         if (delivery is null || delivery.Schema != "netratel.update.result-delivery.v1" ||
             delivery.AttemptId == Guid.Empty || delivery.ReleaseId == Guid.Empty ||
             delivery.ResultHash is not { Length: 64 } ||
@@ -536,7 +532,7 @@ internal sealed class ClientUpdateResultDelivery(
              archivedBy.ResumedAtUtc <= archivedConflict.DetectedAtUtc || delivery.ReconciliationState != "required")) return null;
         try
         {
-            var original = delivery.OriginalResult.Deserialize<NativeResult>(JsonOptions);
+            var original = delivery.OriginalResult.Deserialize(ResultDeliveryJsonContext.Default.NativeResult);
             return original is { Schema: "netratel.update.result.v2" } && original.AttemptId == delivery.AttemptId &&
                 original.ReleaseId == delivery.ReleaseId && original.State == delivery.InstallationState &&
                 original.FailureCode == delivery.FailureCode && original.Message == delivery.Message ? delivery : null;
@@ -551,18 +547,22 @@ internal sealed class ClientUpdateResultDelivery(
         _localFaultReported = true;
         log($"[UpdateManagement] stage=result-delivery/local-state delivery=local_state_unreadable reconciliation=required code={exception.GetType().Name}");
     }
-    private static T? Read<T>(string path)
+    private static T? Read<T>(string path, JsonTypeInfo<T> jsonTypeInfo)
     {
-        try { return File.Exists(path) ? JsonSerializer.Deserialize<T>(File.ReadAllText(path), JsonOptions) : default; }
+        try { return File.Exists(path) ? JsonSerializer.Deserialize(File.ReadAllText(path), jsonTypeInfo) : default; }
         catch (JsonException) { return default; }
     }
-    private void Write(DeliveryRecord delivery) => ProtectedUpdateState.AtomicWriteJson(_deliveryPath, delivery);
+    private void Write(DeliveryRecord delivery) => ProtectedUpdateState.AtomicWriteJson(_deliveryPath, delivery, ResultDeliveryJsonContext.Default.DeliveryRecord);
     private void Diagnostic(DeliveryRecord delivery, string operation) => log(
         $"[UpdateManagement] release={delivery.ReleaseId} attempt={delivery.AttemptId} stage={operation} " +
         $"endpoint=/api/v2/agent-updates/attempts/{{attemptId}}/result installation={delivery.InstallationState} " +
         $"delivery={delivery.DeliveryState} reconciliation={delivery.ReconciliationState} code={delivery.LastCode ?? "pending"} " +
         $"retry={(delivery.DeliveryState == "retry_wait" ? "deferred" : "stopped")} nextDelaySeconds={_retryDelay.TotalSeconds:0}");
 
+    private sealed record ResultReport(string State, string? FailureCode, string? Message, string? AdmissionNonce);
+    private sealed record SuspensionRecord(Guid AttemptId, Guid ReleaseId, string? Reason, DateTimeOffset SuspendedAtUtc);
+    private sealed record IdentityRecoveryReceipt(string Schema, DeliveryRecord OriginalDelivery, string ReplacementSha256,
+        Guid? ResumeAttemptId, long ResumeRevision, DateTimeOffset ResumedAtUtc, string ReconciliationState);
     private sealed record NativeResult(string Schema, Guid AttemptId, Guid ReleaseId, string State, string? FailureCode, string? Message,
         string? ToVersion = null);
     private sealed record ResumeFence(long Revision, Guid? ResumeAttemptId, long? ResumeRevision, DateTimeOffset? ResumedAtUtc = null);
