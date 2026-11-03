@@ -81,6 +81,7 @@ else:
     adapter = api / 'Services/SchemaValidator.cs'
     old_adapter = infrastructure / 'Tooling/SchemaValidator.cs'
     packages = {'NJsonSchema'}
+(control / old_adapter).parent.mkdir(parents=True, exist_ok=True)
 (control / adapter).rename(control / old_adapter)
 api_project = control / api / 'NetRatel.API.csproj'
 infrastructure_project = control / infrastructure / 'NetRatel.Infrastructure.csproj'
