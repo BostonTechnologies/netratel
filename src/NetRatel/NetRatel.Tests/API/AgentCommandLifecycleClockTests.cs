@@ -196,14 +196,39 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
             case "frame_sequence": frame.Sequence = 1; break;
             case "timestamp_shape": frame.Lifecycle.StatusTimestamp.Nanos = -1; break;
         }
-        await call.RequestStream.WriteAsync(frame);
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        var error = await Assert.ThrowsAsync<RpcException>(() => call.ResponseStream.MoveNext(timeout.Token));
-        error.StatusCode.Should().Be(expected);
+        await AssertLifecycleRejectionAsync(call.RequestStream, call.ResponseStream, frame, expected,
+            TestContext.Current.CancellationToken);
         fixture.ProjectionCount.Should().Be(3);
         var state = await fixture.StateAsync();
         state.CurrentStatus.Should().Be(CommandLifecycleStatus.Accepted);
         state.History.Should().HaveCount(3);
+    }
+
+    private static async Task AssertLifecycleRejectionAsync(IClientStreamWriter<AgentCommandFrame> request,
+        IAsyncStreamReader<GatewayCommandFrame> response, AgentCommandFrame frame, StatusCode expected,
+        CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(5));
+        timeout.Token.ThrowIfCancellationRequested();
+        var writeFailure = await Record.ExceptionAsync(() => request.WriteAsync(frame, timeout.Token));
+        timeout.Token.ThrowIfCancellationRequested();
+        if (writeFailure is not null)
+        {
+            var rpc = Assert.IsType<RpcException>(writeFailure);
+            if (rpc.StatusCode != expected)
+            {
+                // TestServer can close the rejected request pipe before its flush completes.
+                rpc.StatusCode.Should().Be(StatusCode.Cancelled);
+                rpc.Status.DebugException.Should().BeAssignableTo<OperationCanceledException>();
+            }
+        }
+        var responseFailure = await Record.ExceptionAsync(async () =>
+        {
+            while (await response.MoveNext(timeout.Token)) { }
+        });
+        timeout.Token.ThrowIfCancellationRequested();
+        Assert.IsType<RpcException>(responseFailure).StatusCode.Should().Be(expected);
     }
 
     private sealed record ClockProjection(string Store, DateTimeOffset? Timestamp);
