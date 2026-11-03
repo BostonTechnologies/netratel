@@ -11,7 +11,7 @@ using NetRatel.Application.ClientAuth;
 
 namespace NetRatel.Client.Service.Auth;
 
-public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKeyStore, IAgentRefreshExchangeStore
+public sealed partial class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKeyStore, IAgentRefreshExchangeStore
 {
     private const string CredentialMachineIdentityEnvironmentVariable = "NetRatel_CREDENTIAL_MACHINE_ID";
     private const string CredentialMachineIdentityFileName = ".netratel-credential-machine-id";
@@ -286,7 +286,7 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
         try
         {
             var bytes = await File.ReadAllBytesAsync(ExchangePath, ct).ConfigureAwait(false);
-            var journal = JsonSerializer.Deserialize<ExchangeJournal>(Unprotect(bytes, ExchangeProtection));
+            var journal = JsonSerializer.Deserialize(Unprotect(bytes, ExchangeProtection), CredentialStoreJsonContext.Default.ExchangeJournal);
             if (journal?.Version != 1 || journal.Exchange is null || journal.Exchange.Version != 1 || journal.Exchange.ExchangeId == Guid.Empty ||
                 string.IsNullOrWhiteSpace(journal.Exchange.AgentId) || string.IsNullOrWhiteSpace(journal.Exchange.ParentRefreshToken) ||
                 string.IsNullOrWhiteSpace(journal.Exchange.DeviceKeyHash) || journal.Exchange.RequestedScopes is null)
@@ -300,7 +300,7 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
     }
 
     private Task WriteExchangeJournalAsync(ExchangeJournal journal, CancellationToken ct) =>
-        WriteProtectedFileAsync(ExchangePath, JsonSerializer.SerializeToUtf8Bytes(journal), ExchangeProtection, ct);
+        WriteProtectedFileAsync(ExchangePath, JsonSerializer.SerializeToUtf8Bytes(journal, CredentialStoreJsonContext.Default.ExchangeJournal), ExchangeProtection, ct);
 
     private static bool SameExchange(PendingAgentRefreshExchange left, PendingAgentRefreshExchange right) =>
         left.Version == right.Version && left.ExchangeId == right.ExchangeId && left.AgentId == right.AgentId &&
@@ -688,7 +688,7 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
         try
         {
             var json = Unprotect(encrypted, protection);
-            var payload = JsonSerializer.Deserialize<CredentialPayload>(json);
+            var payload = JsonSerializer.Deserialize(json, CredentialStoreJsonContext.Default.CredentialPayload);
             return HasRecognizedPayload(payload) ? payload : null;
         }
         catch (CryptographicException)
@@ -716,7 +716,7 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
     }
 
     private Task WritePayloadAsync(CredentialPayload payload, CancellationToken ct) =>
-        WriteProtectedFileAsync(_path, JsonSerializer.SerializeToUtf8Bytes(payload), CurrentProtection, ct);
+        WriteProtectedFileAsync(_path, JsonSerializer.SerializeToUtf8Bytes(payload, CredentialStoreJsonContext.Default.CredentialPayload), CurrentProtection, ct);
 
     private async Task WriteProtectedFileAsync(string path, byte[] plaintext, CredentialProtectionProfile protection, CancellationToken ct)
     {
