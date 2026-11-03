@@ -14,13 +14,14 @@ import subprocess
 import sys
 import tarfile
 import time
+import traceback
 
 TOOLS = Path(__file__).resolve().parent
 PROJECT = "src/NetRatel/NetRatel.Mcp/NetRatel.Mcp.csproj"
 
 
-def load(name):
-    spec = importlib.util.spec_from_file_location(name, TOOLS / (name + ".py"))
+def load(name, directory=TOOLS):
+    spec = importlib.util.spec_from_file_location(name, directory / (name + ".py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -53,6 +54,28 @@ def properties(mode, sha):
     if trimmed:
         result.update(TrimMode="full", EnableTrimAnalyzer="true", EnableAotAnalyzer="false", TrimmerSingleWarn="false")
     return result
+
+
+def prepare_documentation(record, directory, source, distribution, sha):
+    """The existing API takes an explicit repository; its CLI requires .git."""
+    started = time.monotonic()
+    entry = record["stages"]["documentation"] = {
+        "api": "prepare-bundle-documentation.prepare_bundle", "repository": str(source),
+        "bundle": str(distribution), "sourceRevision": sha, "exitCode": None}
+    with (directory / "documentation.log").open("w") as log:
+        log.write(json.dumps(entry) + "\n")
+        try:
+            count = load("prepare-bundle-documentation", source / "tools/ci").prepare_bundle(
+                source, distribution, sha, {"CLI_AND_MCP.md": "docs/integrations/CLI_AND_MCP.md"})
+            log.write(f"Packaged documentation links passed; adapted {count} guides for {sha}.\n")
+            entry["exitCode"] = 0
+        except (ValueError, OSError):
+            entry["exitCode"] = 1
+            record["failureStage"] = "documentation"
+            log.write(traceback.format_exc())
+            raise
+        finally:
+            entry["seconds"] = round(time.monotonic() - started, 3)
 
 
 def run(record, directory, stage, command, source):
@@ -117,8 +140,7 @@ def publish_mode(mode, source, state, evidence, sha, version, fixture):
         for name in ("LICENSE", "NOTICE"):
             shutil.copyfile(source / name, distribution / name)
         shutil.copyfile(source / "docs/integrations/CLI_AND_MCP.md", distribution / "CLI_AND_MCP.md")
-        run(record, directory, "documentation", [sys.executable, source / "tools/ci/prepare-bundle-documentation.py", "--bundle",
-            distribution, "--commit", sha, "--document", "CLI_AND_MCP.md=docs/integrations/CLI_AND_MCP.md"], source)
+        prepare_documentation(record, directory, source, distribution, sha)
         graph = distribution / "NetRatel.Mcp.deps.json"
         shutil.copyfile(graph, directory / "publish.deps.json")
         shutil.copyfile(distribution / "NetRatel.Mcp.runtimeconfig.json", directory / "publish.runtimeconfig.json")
@@ -148,6 +170,7 @@ def publish_mode(mode, source, state, evidence, sha, version, fixture):
         for item in inventory:
             if digest(archived / item["path"]) != item["sha256"]:
                 raise ValueError("Actual archive inventory differs: " + item["path"])
+        record["archiveIntegrityVerified"] = True
         runtime_graph = json.loads(graph.read_text())
         runtime_files = set()
         for name, entry in runtime_graph["targets"][runtime_graph["runtimeTarget"]["name"]].items():
@@ -171,8 +194,9 @@ def publish_mode(mode, source, state, evidence, sha, version, fixture):
         record["emittedDiagnosticCount"] = len(emitted)
         record["diagnosticCountScope"] = "Primary compiler/linker emission lines; MSBuild summary echoes excluded, distinct emissions retained"
         (directory / "metrics.json").write_text(json.dumps(record, indent=2) + "\n")
-        # The archives retain original bytes; avoid uploading extracted duplicates.
-        if distribution.exists():
+        # Remove a duplicate only after the archive has preserved and verified
+        # every byte. A failure before packaging retains its original output.
+        if distribution.exists() and record.get("archiveIntegrityVerified"):
             shutil.rmtree(distribution)
     return record
 

@@ -655,6 +655,58 @@ class CorePartitionCoverageTests(unittest.TestCase):
 
 
 class StdioAssessmentTests(unittest.TestCase):
+    def test_documentation_api_packages_an_actual_gitless_source_snapshot(self):
+        helper = module("measure-stdio-publish")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, bundle, evidence = root / "source", root / "bundle", root / "evidence"
+            (source / "tools/ci").mkdir(parents=True)
+            (source / "docs/integrations").mkdir(parents=True)
+            bundle.mkdir(); evidence.mkdir()
+            for name in ("prepare-bundle-documentation.py", "check-documentation.py"):
+                shutil.copyfile(ROOT / "tools/ci" / name, source / "tools/ci" / name)
+            (source / "README.md").write_text("# Source guide\n")
+            guide = source / "docs/integrations/CLI_AND_MCP.md"
+            guide.write_text("# Tool guide\n\n[Source guide](../../README.md)\n")
+            shutil.copyfile(guide, bundle / guide.name)
+            old_cli = subprocess.run([sys.executable, str(source / "tools/ci/prepare-bundle-documentation.py"),
+                "--bundle", str(bundle), "--commit", "a" * 40, "--document", "CLI_AND_MCP.md=docs/integrations/CLI_AND_MCP.md"],
+                cwd=source, capture_output=True, text=True)
+            self.assertNotEqual(0, old_cli.returncode)
+            self.assertIn("not a git repository", old_cli.stderr)
+            record = {"stages": {}}
+            helper.prepare_documentation(record, evidence, source, bundle, "a" * 40)
+            self.assertEqual(0, record["stages"]["documentation"]["exitCode"])
+            self.assertEqual(str(source), record["stages"]["documentation"]["repository"])
+            self.assertIn("/blob/" + "a" * 40 + "/README.md", (bundle / guide.name).read_text())
+            self.assertFalse((source / ".git").exists())
+
+    def test_failed_packaging_keeps_unarchived_publish_outputs(self):
+        helper = module("measure-stdio-publish")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, state, evidence = root / "source", root / "state", root / "evidence"
+            (source / "docs/integrations").mkdir(parents=True)
+            state.mkdir(); evidence.mkdir()
+            for name in ("LICENSE", "NOTICE", "docs/integrations/CLI_AND_MCP.md"):
+                (source / name).write_text("synthetic source fixture\n")
+
+            def stage(record, directory, name, command, cwd):
+                record["stages"][name] = {"exitCode": 0}
+                if name == "publish":
+                    output = directory / "artifacts/netratel-mcp-linux-x64"
+                    output.mkdir()
+                    (output / "NetRatel.Mcp.dll").write_bytes(b"synthetic unpublished output")
+
+            evaluated = {"Properties": {**helper.properties("fdd", "a" * 40), "ProjectAssetsFile": str(root / "unused.json")}}
+            with patch.object(helper, "run", side_effect=stage), \
+                 patch.object(helper.subprocess, "check_output", return_value=json.dumps(evaluated)), \
+                 patch.object(helper, "prepare_documentation", side_effect=ValueError("synthetic packaging failure")):
+                result = helper.publish_mode("fdd", source, state, evidence, "a" * 40, "1.2.3", None)
+            self.assertFalse(result["passed"])
+            self.assertIn("synthetic packaging failure", result["error"])
+            self.assertEqual(b"synthetic unpublished output", (evidence / "fdd/artifacts/netratel-mcp-linux-x64/NetRatel.Mcp.dll").read_bytes())
+
     def test_diagnostic_counts_retain_distinct_emissions_without_msbuild_summary_echoes(self):
         helper = module("measure-stdio-publish")
         primary = "source.cs(12,2): warning IL2026: Unsafe boundary. [project.csproj]\n"
