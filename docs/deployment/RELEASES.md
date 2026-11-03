@@ -145,7 +145,14 @@ The 7 October 2026 owner policy requires PR/main validation to succeed in
 strictly less than 20 minutes, targeting 10–15 minutes. It keeps disclosure,
 version, PostgreSQL-only and release-script checks, one solution Release
 restore/build, and three prebuilt fast assemblies with separate nonzero
-all-passing TRX receipts. `tools/ci/run-fast-regressions.sh` excludes
+all-passing TRX receipts. Components run first; Core's Infrastructure namespace
+and its exact complement then overlap with the separate API suite. Each Core
+process owns its PostgreSQL collection server and isolated databases. A
+same-binary discovery manifest verifies that both completed receipts cover the
+full selected Core population without overlap, including theory rows. Each
+group reports its duration. Source-changing PR events retain required checks;
+draft/readiness changes alone do not restart them.
+`tools/ci/run-fast-regressions.sh` excludes
 `category=compose`, `category=hosted` and `category=manual-integration`.
 Restore, build and test outcomes remain independently visible. The same fast
 selection applies to tag-build validation, with real CLI/stdio/native packaging
