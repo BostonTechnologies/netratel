@@ -123,7 +123,7 @@ public sealed class ClientAgentTokenService : IAgentTokenService
         if (!response.IsSuccessStatusCode)
             throw await BuildExceptionAsync(response, AgentAuthEndpointRole.Token, ct).ConfigureAwait(false);
         TokenResponse? dto;
-        try { dto = await response.Content.ReadFromJsonAsync<TokenResponse>(cancellationToken: ct).ConfigureAwait(false); }
+        try { dto = await response.Content.ReadFromJsonAsync(ClientAgentTokenJsonContext.Default.TokenResponse, ct).ConfigureAwait(false); }
         catch (JsonException ex) { throw ProtocolFailure("Token response was invalid.", ex); }
         if (dto is null || string.IsNullOrWhiteSpace(dto.AccessToken) || dto.ExpiresIn <= 0 ||
             (pending is not null && (dto.ExchangeId != pending.ExchangeId || string.IsNullOrWhiteSpace(dto.RefreshToken))))
@@ -147,7 +147,7 @@ public sealed class ClientAgentTokenService : IAgentTokenService
             throw await BuildExceptionAsync(response, AgentAuthEndpointRole.Capabilities, ct).ConfigureAwait(false);
         try
         {
-            var dto = await response.Content.ReadFromJsonAsync<TokenCapabilities>(cancellationToken: ct).ConfigureAwait(false);
+            var dto = await response.Content.ReadFromJsonAsync(ClientAgentTokenJsonContext.Default.TokenCapabilities, ct).ConfigureAwait(false);
             if (dto is null || dto.RefreshExchangeVersion is not (0 or 1))
                 throw ProtocolFailure("Native token capabilities are unsupported.", endpointRole: AgentAuthEndpointRole.Capabilities);
             // Negative negotiation is rechecked before a later legacy acquisition:
@@ -304,9 +304,11 @@ public sealed class ClientAgentTokenService : IAgentTokenService
     private HttpRequestMessage BuildRequestMessage(Guid agentId, string refreshToken, string[] scopes,
         AgentDeviceKeyMaterial key, PendingAgentRefreshExchange? pending)
     {
-        object dto = pending is null
-            ? new { agentId, refreshToken, requestedScopes = scopes }
-            : new { agentId, refreshToken, requestedScopes = scopes, exchangeVersion = pending.Version, exchangeId = pending.ExchangeId };
+        var json = pending is null
+            ? JsonSerializer.Serialize(new LegacyTokenRequest(agentId, refreshToken, scopes),
+                ClientAgentTokenJsonContext.Default.LegacyTokenRequest)
+            : JsonSerializer.Serialize(new RefreshExchangeTokenRequest(agentId, refreshToken, scopes, pending.Version, pending.ExchangeId),
+                ClientAgentTokenJsonContext.Default.RefreshExchangeTokenRequest);
         var bodyHash = pending is null
             ? PopSignatureService.ComputeTokenBodyHash(agentId, refreshToken, scopes)
             : PopSignatureService.ComputeTokenBodyHash(agentId, refreshToken, scopes, pending.Version, pending.ExchangeId);
@@ -316,7 +318,7 @@ public sealed class ClientAgentTokenService : IAgentTokenService
         var signature = PopSignatureService.Sign(key.Algorithm, key.PrivateKey, message);
         var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/agents/token")
         {
-            Content = new StringContent(JsonSerializer.Serialize(dto), Encoding.UTF8, "application/json")
+            Content = new StringContent(json, Encoding.UTF8, "application/json")
         };
         // The device signature is sufficient. An optional cached PoP JWT can be
         // expired or invalidated and must never poison refresh acquisition.
@@ -327,8 +329,11 @@ public sealed class ClientAgentTokenService : IAgentTokenService
     }
 
     private sealed record CacheState(string? Token, DateTimeOffset ExpiresAtUtc);
-    private sealed record TokenResponse(string AccessToken, int ExpiresIn, string? RefreshToken, Guid? ExchangeId);
-    private sealed record TokenCapabilities([property: JsonRequired] int RefreshExchangeVersion,
+    internal sealed record LegacyTokenRequest(Guid AgentId, string RefreshToken, string[]? RequestedScopes);
+    internal sealed record RefreshExchangeTokenRequest(Guid AgentId, string RefreshToken, string[]? RequestedScopes,
+        int ExchangeVersion, Guid ExchangeId);
+    internal sealed record TokenResponse(string AccessToken, int ExpiresIn, string? RefreshToken, Guid? ExchangeId);
+    internal sealed record TokenCapabilities([property: JsonRequired] int RefreshExchangeVersion,
         [property: JsonRequired] bool RotationEnabled);
     private sealed record ProblemPayload(string? Title, string? Detail, string? Code, string? CorrelationId);
     private static string? SafeDiagnosticToken(string? value) =>

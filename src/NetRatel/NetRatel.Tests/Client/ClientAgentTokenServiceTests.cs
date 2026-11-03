@@ -7,6 +7,7 @@ using NetRatel.API.Gateway;
 using NetRatel.Application.ClientAuth;
 using NetRatel.Client;
 using NetRatel.Client.Service.Auth;
+using NetRatel.Shared.Security;
 using NetRatel.Tests.API;
 using Xunit;
 
@@ -14,6 +15,43 @@ namespace NetRatel.Tests.Client;
 
 public sealed class ClientAgentTokenServiceTests
 {
+    [Fact]
+    public async Task ActualLegacyRequest_PreservesCapturedUtf8AndSignedProofWithEscapedRefreshText()
+    {
+        var agentId = Guid.Parse("01234567-89ab-cdef-0123-456789abcdef");
+        var credentials = new FakeCredentialStore(agentId.ToString(), " a:<&\"é\n/token \u2028> ");
+        var key = await credentials.GetOrCreateAsync(CancellationToken.None);
+        using var http = new HttpClient(new DelegateHandler(async (request, ct) =>
+        {
+            const string expected = """{"agentId":"01234567-89ab-cdef-0123-456789abcdef","refreshToken":" a:\u003C\u0026\u0022\u00E9\n/token \u2028\u003E ","requestedScopes":["netratel:connect"]}""";
+            (await request.Content!.ReadAsByteArrayAsync(ct)).Should().Equal(Encoding.UTF8.GetBytes(expected));
+            request.Content.Headers.ContentType!.ToString().Should().Be("application/json; charset=utf-8");
+            var timestamp = DateTimeOffset.Parse(request.Headers.GetValues("X-NetRatel-Timestamp").Single());
+            var nonce = request.Headers.GetValues("X-NetRatel-Nonce").Single();
+            PopSignatureService.VerifySignature(key.Algorithm, key.PublicKey, request.Headers.GetValues("X-NetRatel-Signature").Single(),
+                PopSignatureService.BuildSigningMessage("POST", "/api/v1/agents/token", timestamp, nonce,
+                    "4P6FBvsvbeqoKgGRmpqaDwdctVW1Dkx0LORd3N5z7Ho=")).Should().BeTrue();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"accessToken":"authorized","expiresIn":120,"refreshToken":null}""", Encoding.UTF8, "application/json")
+            };
+        })) { BaseAddress = new Uri("https://api.example") };
+        (await new ClientAgentTokenService(http, credentials, credentials).GetAccessTokenAsync(CancellationToken.None)).AccessToken.Should().Be("authorized");
+    }
+
+    [Theory]
+    [InlineData("{\"ACCESSTOKEN\":\"opaque\",\"EXPIRESIN\":\"120\"}")]
+    [InlineData("{\"accessToken\":\"opaque\",\"expiresIn\":120,\"refreshToken\":null,\"exchangeId\":null,\"future\":true}")]
+    public async Task TokenResponse_KeepsWebReadingAndOptionalNullBehavior(string response)
+    {
+        var clock = new RenewalManualTimeProvider();
+        var credentials = new FakeCredentialStore(Guid.NewGuid().ToString(), "original-refresh");
+        using var http = new HttpClient(new StaticResponseHandler(HttpStatusCode.OK, response)) { BaseAddress = new Uri("https://api.example") };
+        var token = await new ClientAgentTokenService(http, credentials, credentials, clock).GetAccessTokenAsync(CancellationToken.None);
+        token.Should().Be(("opaque", clock.GetUtcNow().AddSeconds(120)));
+        (await credentials.LoadAsync())!.Value.RefreshToken.Should().Be("original-refresh");
+    }
+
     [Fact]
     public async Task WholeSecondJwtExpiry_RefreshesAtItsMarginBeforeTheMillisecondResponseHint()
     {

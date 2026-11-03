@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -14,15 +15,10 @@ internal static class TerminalPtySelfTest
     public static async Task<int> RunAsync(bool forceNative, bool forcePython, CancellationToken ct)
     {
         var availability = UnixPtyHelperTerminalHost.GetAvailability();
-        Write(new
-        {
-            stage = "availability",
-            availability.AppBaseDirectory,
-            availability.ProcessPath,
-            availability.PythonPath,
-            availability.HelperPath,
-            availability.IsAvailable
-        });
+        Write(new TerminalAvailabilityDiagnostic(
+            "availability", availability.AppBaseDirectory, availability.ProcessPath,
+            availability.PythonPath, availability.HelperPath, availability.IsAvailable),
+            TerminalJsonContext.Default.TerminalAvailabilityDiagnostic);
 
         var factory = new TerminalHostFactory(new TerminalHostOptions
         {
@@ -35,15 +31,9 @@ internal static class TerminalPtySelfTest
             Cols = 90,
             Rows = 24
         });
-        Write(new
-        {
-            stage = "candidates",
-            values = candidates.Select(candidate => new
-            {
-                candidate.Backend,
-                type = candidate.GetType().Name
-            })
-        });
+        Write(new TerminalCandidatesDiagnostic("candidates", candidates.Select(candidate =>
+            new TerminalCandidateDiagnostic(candidate.Backend, candidate.GetType().Name)).ToArray()),
+            TerminalJsonContext.Default.TerminalCandidatesDiagnostic);
 
         var host = forceNative
             ? NativeUnixPtyTerminalHost.TryCreate(new TerminalHostContext(
@@ -63,7 +53,8 @@ internal static class TerminalPtySelfTest
             {
                 candidate.Dispose();
             }
-            Write(new { stage = "failed", forceNative, forcePython, error = "no requested Unix PTY backend was selected" });
+            Write(new TerminalSelectionFailureDiagnostic("failed", forceNative, forcePython, "no requested Unix PTY backend was selected"),
+                TerminalJsonContext.Default.TerminalSelectionFailureDiagnostic);
             return 2;
         }
 
@@ -74,7 +65,8 @@ internal static class TerminalPtySelfTest
             {
                 candidate.Dispose();
             }
-            Write(new { stage = "failed", forceNative, forcePython, expectedBackend, actualBackend = host.Backend });
+            Write(new TerminalBackendFailureDiagnostic("failed", forceNative, forcePython, expectedBackend, host.Backend),
+                TerminalJsonContext.Default.TerminalBackendFailureDiagnostic);
             return 2;
         }
 
@@ -92,24 +84,17 @@ internal static class TerminalPtySelfTest
                 }
                 return Task.CompletedTask;
             }, ct).ConfigureAwait(false);
-            Write(new { stage = "started", host.Backend, forceNative, forcePython, native = string.Equals(host.Backend, "unix-pty-native", StringComparison.OrdinalIgnoreCase) });
+            Write(new TerminalStartedDiagnostic("started", host.Backend, forceNative, forcePython, string.Equals(host.Backend, "unix-pty-native", StringComparison.OrdinalIgnoreCase)),
+                TerminalJsonContext.Default.TerminalStartedDiagnostic);
 
             await host.WriteInputAsync("printf 'NetRatel_PTY_SELF_TEST\\n'; stty size\n", ct).ConfigureAwait(false);
             await WaitForOutputAsync("NetRatel_PTY_SELF_TEST", output, outputLock, ct).ConfigureAwait(false);
             await WaitForOutputAsync("24 90", output, outputLock, ct).ConfigureAwait(false);
-            Write(new { stage = "input-output", result = "passed" });
+            Write(new TerminalStageDiagnostic("input-output", "passed"), TerminalJsonContext.Default.TerminalStageDiagnostic);
 
             var resize = await host.ResizeAsync(77, 17, ct).ConfigureAwait(false);
-            Write(new
-            {
-                stage = "resize",
-                resize.Result,
-                resize.RequestedCols,
-                resize.RequestedRows,
-                resize.AppliedCols,
-                resize.AppliedRows,
-                resize.Error
-            });
+            Write(new TerminalResizeDiagnostic("resize", resize.Result, resize.RequestedCols, resize.RequestedRows,
+                resize.AppliedCols, resize.AppliedRows, resize.Error), TerminalJsonContext.Default.TerminalResizeDiagnostic);
             if (!string.Equals(resize.Result, "applied", StringComparison.OrdinalIgnoreCase))
             {
                 return 3;
@@ -129,17 +114,13 @@ internal static class TerminalPtySelfTest
             {
                 throw new InvalidOperationException("The PTY child was not reaped after shell exit.");
             }
-            Write(new { stage = "passed", reaped = true, output = Snapshot(output, outputLock) });
+            Write(new TerminalPassedDiagnostic("passed", true, Snapshot(output, outputLock)), TerminalJsonContext.Default.TerminalPassedDiagnostic);
             return 0;
         }
         catch (Exception ex)
         {
-            Write(new
-            {
-                stage = "failed",
-                error = ex.ToString(),
-                output = Snapshot(output, outputLock)
-            });
+            Write(new TerminalFailureDiagnostic("failed", ex.ToString(), Snapshot(output, outputLock)),
+                TerminalJsonContext.Default.TerminalFailureDiagnostic);
             return 1;
         }
         finally
@@ -185,6 +166,6 @@ internal static class TerminalPtySelfTest
         }
     }
 
-    private static void Write(object value) =>
-        Console.WriteLine(JsonSerializer.Serialize(value, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    private static void Write<T>(T value, JsonTypeInfo<T> typeInfo) =>
+        Console.WriteLine(JsonSerializer.Serialize(value, typeInfo));
 }

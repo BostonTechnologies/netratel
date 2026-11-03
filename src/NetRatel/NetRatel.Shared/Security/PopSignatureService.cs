@@ -24,14 +24,9 @@ public static class PopSignatureService
         {
             // Fixed field order and UTF-8 JSON escaping are part of native exchange v1.
             // Preserve null, order, and spelling of requested scopes: retries bind the exact request.
-            return ComputeBodyHash(JsonSerializer.Serialize(new
-            {
-                version = exchangeVersion,
-                agentId = agentId.ToString("N"),
-                refreshToken = refreshToken.Trim(),
-                requestedScopes,
-                exchangeId = exchangeId?.ToString("N")
-            }));
+            return ComputeBodyHash(JsonSerializer.Serialize(new TokenBodyHashPayload(
+                exchangeVersion, agentId.ToString("N"), refreshToken.Trim(), requestedScopes, exchangeId?.ToString("N")),
+                PopSignatureJsonContext.Default.TokenBodyHashPayload));
         }
 
         var scopeFragment = requestedScopes is null ? string.Empty : string.Join(' ', requestedScopes);

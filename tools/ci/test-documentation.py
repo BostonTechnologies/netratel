@@ -39,6 +39,34 @@ class DocumentationIntegrityTests(unittest.TestCase):
             self.assertTrue(any("case-sensitive" in error for error in errors))
             self.assertTrue(any("missing Markdown anchor" in error for error in errors))
 
+    def test_html_images_validate_local_files_and_case_but_ignore_code_and_remote_sources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, _ = self.fixture(temporary)
+            image = root / "docs" / "assets" / "mark&icon.png"
+            image.write_bytes(b'fixture')
+            (root / "README.md").write_text('''# Images
+<img src="docs/assets/mark&amp;icon.png" alt="a > b" />
+<IMG\n SRC='docs/assets/mark.png?size=1&amp;theme=light'>
+<img data-src="missing.png" src=docs/assets/mark.png>
+<img alt="Example src='not-an-attribute.png'" src="docs/assets/mark.png" />
+<img
+    src="docs/assets/mark.png"
+    alt="Indented attributes are HTML, not code">
+<img src="https://example.test/remote.png">
+<img src="data:image/png;base64,AA==">
+<!-- <img src="comment.png"> -->
+`<img src="inline.png">`
+```html
+<img src="example.png">
+```
+''')
+            self.assertEqual([], checker.check_repository(root, packaged=True))
+            (root / "README.md").write_text('<img src="docs/assets/Mark.png">\n<img\n    src="missing.png">\n<img src="docs">\n')
+            errors = checker.check_repository(root, packaged=True)
+            self.assertEqual(3, len(errors), errors)
+            self.assertEqual(2, sum("case-sensitive" in error for error in errors))
+            self.assertTrue(any("HTML image target must be a file" in error for error in errors))
+
     def fixture(self, temporary: str):
         root = Path(temporary) / "repository"
         bundle = Path(temporary) / "bundle"
@@ -70,6 +98,43 @@ class DocumentationIntegrityTests(unittest.TestCase):
             self.assertIn(f'/blob/{SHA}/source.cs', guide)
             self.assertIn('[example](missing.md)', guide)
             self.assertEqual([], checker.check_repository(bundle, packaged=True))
+
+    def test_curated_compose_keeps_offline_guides_media_and_notices_without_history(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, bundle = self.fixture(temporary)
+            for category in ("deployment", "client", "mcp-http", "integrations", "operations", "contracts", "adr"):
+                directory = root / "docs" / category
+                directory.mkdir()
+                (directory / "README.md").write_text('# Operations\n[History](../evidence/history.md#history)\n')
+            (root / "docs" / "evidence").mkdir()
+            (root / "docs" / "evidence" / "history.md").write_text('# History\n')
+            (root / "docs" / "evidence" / "screenshot.png").write_bytes(b'historical screenshot')
+            hero = root / "docs" / "assets" / "netratel" / "netratel-readme-hero.webp"
+            hero.parent.mkdir()
+            hero.write_bytes(b'required README hero')
+            (root / "README.md").write_text('<img src="docs/assets/netratel/netratel-readme-hero.webp">\n[Deploy](docs/deployment/README.md)\n')
+            (root / "docs" / "THIRD-PARTY-NOTICES.txt").write_bytes(b'upstream attribution\n')
+            for name in ("README.md", "NOTICE"):
+                shutil.copy2(root / name, bundle / name)
+            shutil.copy2(root / "release" / "INSTALL.md", bundle / "INSTALL.md")
+            runtime = bundle / "compose.images.yaml"
+            runtime.write_bytes(b'unchanged deployment bytes\n')
+            packager.copy_compose_documentation(root, bundle)
+            packager.prepare_bundle(root, bundle, SHA)
+            self.assertEqual([], checker.check_repository(bundle, packaged=True))
+            for category in ("deployment", "client", "mcp-http", "integrations", "operations", "contracts", "adr"):
+                guide = (bundle / "docs" / category / "README.md").read_text()
+                self.assertIn(f'/blob/{SHA}/docs/evidence/history.md#history', guide)
+            self.assertIn('[Deploy](docs/deployment/README.md)', (bundle / "README.md").read_text())
+            self.assertEqual(hero.read_bytes(), (bundle / hero.relative_to(root)).read_bytes())
+            self.assertEqual(b'upstream attribution\n', (bundle / "docs" / "THIRD-PARTY-NOTICES.txt").read_bytes())
+            self.assertEqual(b'Legal notice\n', (bundle / "NOTICE").read_bytes())
+            self.assertEqual(b'unchanged deployment bytes\n', runtime.read_bytes())
+            self.assertFalse((bundle / "docs" / "evidence").exists())
+            self.assertFalse((bundle / "docs" / "guides").exists())
+            self.assertTrue((root / "docs" / "evidence" / "screenshot.png").is_file())
+            with self.assertRaisesRegex(ValueError, "clean bundle docs/"):
+                packager.copy_compose_documentation(root, bundle)
 
     def test_standalone_tool_guide_adapts_self_and_retains_bundled_notice(self):
         with tempfile.TemporaryDirectory() as temporary:
