@@ -131,7 +131,10 @@ for arm in ('candidate', 'control'):
         'User', 'Entrypoint', 'Cmd', 'WorkingDir', 'Env', 'Healthcheck', 'ExposedPorts', 'Labels', 'Volumes', 'StopSignal', 'Shell')}
     for name in ('cli', 'bridge'):
         value = (root / (arm + '-' + name + '-version.txt')).read_text().strip()
-        if value != version + '+' + revision:
+        # Docker's immutable git archive has no .git directory. The product
+        # informational version may be bare; source identity is separate
+        # AssemblyMetadata, verified by the actual MCP status call below.
+        if value not in (version, version + '+' + revision):
             raise ValueError('Bundled tooling release identity differs: ' + arm + '/' + name)
     responses = [json.loads(line) for line in (root / (arm + '-stdio.jsonl')).read_text().splitlines()]
     if [item.get('id') for item in responses] != list(range(1, 7)):

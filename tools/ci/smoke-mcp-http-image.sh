@@ -149,8 +149,12 @@ mcp_response_json() {
 
 stage="requesting the operator access token"
 operator_access_token="$(request_operator_access_token netratel-mcp-smoke-client netratel.mcp.read)"
-invalid_token="${operator_access_token%?}x"
-[[ "$invalid_token" != "$operator_access_token" ]] || invalid_token="${operator_access_token%?}y"
+# Mutate significant signature bits; the last base64url character can contain
+# unused padding bits and need not change the decoded signature bytes.
+signature="${operator_access_token##*.}"
+invalid_signature="A${signature:1}"
+[[ "$invalid_signature" != "$signature" ]] || invalid_signature="B${signature:1}"
+invalid_token="${operator_access_token%.*}.${invalid_signature}"
 stage="checking invalid bearer-token rejection"
 invalid_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
   "${mcp_public_request_headers[@]}" \
