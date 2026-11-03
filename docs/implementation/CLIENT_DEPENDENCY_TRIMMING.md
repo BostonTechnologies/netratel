@@ -104,6 +104,17 @@ requires each backend's extracted helper SHA/arm64 header to match its actual
 prebundle input. Native failures remain failures; no fallback is forced and full
 macOS owner acceptance remains independent.
 
+The helper's deployment floor comes from the restored target SDK apphost (or
+single-file host), read with `xcrun vtool`, and is passed explicitly to clang.
+The runner OS is never the deployment target. Packaged validation independently
+parses Mach-O load commands and rejects a helper minimum OS newer than the actual
+archived apphost; prebundle and extracted helper deployment metadata must agree.
+The initial helper declared macOS 26 while its .NET apphost declared 12, so its
+passing macOS 26 probes did not establish older-host compatibility. Those
+receipts remain historical. Matching load-command floors avoids raising the
+existing binary requirement; it does not expand .NET's supported OS policy or
+substitute for owner testing on supported older systems.
+
 ## Implementation
 
 All PowerShell tasks now use `ExternalShellRunner`. New API requests using the
