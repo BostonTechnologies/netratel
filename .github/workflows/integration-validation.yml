@@ -351,11 +351,13 @@ jobs:
         run: bash tools/ci/smoke-oidc-compose.sh
       - name: Run disposable URL-first host deployment and resume acceptance
         if: inputs.suite == 'deployment' && inputs.deployment_profile == 'http-host-setup'
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          bash tools/ci/build-public-image.sh --dockerfile docker/mcp-http/Dockerfile \
-            --image netratel-mcp-http:manual-setup --version "$VERSION" --revision "$SOURCE_SHA"
+          python3 tools/ci/test-mcp-http-publish.py
+          bash tools/ci/test-mcp-http-image.sh
           NETRATEL_HTTP_HOST_SETUP_SMOKE_IMAGE=netratel-mcp-http:manual-setup \
             bash tools/ci/smoke-http-host-setup.sh
       - name: Run selected published HTTP MCP image smoke

@@ -213,4 +213,35 @@ jq -e '
   exit 1
 }
 
+results="${NETRATEL_MCP_HTTP_SMOKE_RESULTS:-TestResults/mcp-http-protocol}"
+mkdir -p "$results"
+printf '%s\n' "$initialize_json" > "$results/initialize.json"
+request_id=6
+for method in tools resources prompts; do
+  stage="reading the authenticated HTTP MCP ${method} catalog"
+  request="$(jq -nc --arg method "$method/list" --argjson id "$request_id" \
+    '{jsonrpc:"2.0",id:$id,method:$method,params:{}}')"
+  response="$(curl --fail --silent --show-error "${mcp_public_request_headers[@]}" \
+    --header "Authorization: Bearer ${operator_access_token}" --header 'Content-Type: application/json' \
+    --data "$request" "$base_url/mcp")"
+  mcp_response_json "$response" > "$results/$method.json"
+  jq -e --arg method "$method" --argjson id "$request_id" \
+    '.id == $id and (.result[$method] | type == "array" and length > 0)' "$results/$method.json" >/dev/null
+  request_id=$((request_id + 1))
+done
+stage="checking HTTP MCP source identity and catalog digest"
+response="$(curl --fail --silent --show-error "${mcp_public_request_headers[@]}" \
+  --header "Authorization: Bearer ${operator_access_token}" --header 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"netratel_capabilities","arguments":{"operation":"status"}}}' \
+  "$base_url/mcp")"
+mcp_response_json "$response" > "$results/status.json"
+jq -e --arg version "${VERSION:-}" --arg source "${SOURCE_SHA:-}" '
+  .id == 9 and .result.structuredContent.success == true
+  and (.result.structuredContent.data | .identityScope == "mcp_host" and .sourceIdentityAvailable == true
+    and .hostRelease.serviceName == "NetRatel.Mcp.Http"
+    and ($version == "" or .hostRelease.productVersion == $version)
+    and ($source == "" or .hostRelease.sourceRevision == $source)
+    and (.catalog.digest | test("^[0-9a-f]{64}$")))
+' "$results/status.json" >/dev/null
+
 echo "HTTP MCP image smoke test passed."

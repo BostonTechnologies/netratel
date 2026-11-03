@@ -193,7 +193,17 @@ standalone and five-image shared-layer totals; these measurements are distinct
 from registry transfer bytes. Remaining migrations dependency/registration work
 and other application acceptance stay separate.
 
-The optional `deployment_profile=http-host-setup` reuses source Compose and public HTTPS fixtures for a fresh local-account stack. It generates into the supplied persistent setup volume, approves that exact generation through the administrator protocol, executes the generated apply action, obtains a separate temporary personal MCP credential, and requires authenticated catalog plus a delegated read-only API status result. It also runs bare `dotnet NetRatel.Mcp.Http.dll setup` inside the serving container, saves the personal default to its separate client-data volume, then reloads and verifies that profile after recreation. It recreates tooling/runtime containers and repeats host verification with the equivalent `/mcp` input and unchanged generation fingerprint. The redacted receipts under `TestResults/http-host-setup` distinguish this headless generation/protocol/deployment smoke from the focused interactive terminal fixtures and later owner testing. The default deployment profile remains the existing `oidc` suite; neither profile enters required PR/main CI.
+The optional `deployment_profile=http-host-setup` first compares the Linux x64
+HTTP MCP image with a same-source RID-neutral control. It checks final host,
+CLI and stdio inventories, runtime graphs, SPDX digests, retained launchers and
+symbols, nonroot writable state, and actual entrypoint/catalog identities.
+Content-hash duplicate measurements are evidence only; the image retains its
+separate supported tooling layouts. Normalized layer exports hold four
+companion images at one completed publication and report standalone and
+five-image shared-layer totals, separately from registry transfer sizes.
+These receipts are under `TestResults/mcp-http-image`.
+
+The profile then reuses source Compose and public HTTPS fixtures for a fresh local-account stack. It generates into the supplied persistent setup volume, approves that exact generation through the administrator protocol, executes the generated apply action, obtains a separate temporary personal MCP credential, and requires authenticated catalog plus a delegated read-only API status result. It also runs bare `dotnet NetRatel.Mcp.Http.dll setup` inside the serving container, saves the personal default to its separate client-data volume, then reloads and verifies that profile after recreation. It recreates tooling/runtime containers and repeats host verification with the equivalent `/mcp` input and unchanged generation fingerprint. The redacted receipts under `TestResults/http-host-setup` distinguish this headless generation/protocol/deployment smoke from the focused interactive terminal fixtures and later owner testing. The default deployment profile remains the existing `oidc` suite; neither profile enters required PR/main CI.
 
 Other explicit choices are `pairing`, `gateway`, `deployment`,
 `release-images`, `native-client` and `upgrade-oidc`.
