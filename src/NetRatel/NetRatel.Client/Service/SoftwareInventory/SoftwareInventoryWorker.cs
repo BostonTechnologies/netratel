@@ -19,6 +19,8 @@ public sealed class SoftwareInventoryWorker(HttpClient http, string stateDirecto
 {
     private readonly ISoftwareInventoryCollector _collector = collector ?? (OperatingSystem.IsWindows()
         ? new WindowsSoftwareInventoryCollector() : OperatingSystem.IsLinux() ? new LinuxSoftwareInventoryCollector() : new UnsupportedSoftwareInventoryCollector());
+    private static readonly Lazy<SoftwareInventoryJsonContext> OutboxMetadata = new(
+        () => new(new JsonSerializerOptions(SoftwareInventoryWire.JsonOptions)));
 
     public async Task RunAsync(GatewayPresenceSession session, string accessToken, CancellationToken ct)
     {
@@ -35,7 +37,7 @@ public sealed class SoftwareInventoryWorker(HttpClient http, string stateDirecto
                 {
                     var info = new FileInfo(path);
                     if (info.Length > 128 * 1024 * 1024) throw new InvalidDataException("Inventory outbox exceeds its limit.");
-                    var queued = JsonSerializer.Deserialize<PendingInventory>(await File.ReadAllTextAsync(path, ct).ConfigureAwait(false), SoftwareInventoryWire.JsonOptions)
+                    var queued = JsonSerializer.Deserialize(await File.ReadAllTextAsync(path, ct).ConfigureAwait(false), OutboxMetadata.Value.PendingInventory)
                         ?? throw new InvalidDataException("Invalid inventory outbox.");
                     var acknowledged = true;
                     foreach (var chunk in queued.Chunks)
@@ -44,7 +46,7 @@ public sealed class SoftwareInventoryWorker(HttpClient http, string stateDirecto
                         using var response = await SendAsync(request).ConfigureAwait(false);
                         if (response.StatusCode == HttpStatusCode.Conflict)
                         {
-                            var rejected = await response.Content.ReadFromJsonAsync<SoftwareChunkAcknowledgement>(cancellationToken: ct).ConfigureAwait(false);
+                            var rejected = await response.Content.ReadFromJsonAsync(SoftwareInventoryJsonContext.Default.SoftwareChunkAcknowledgement, cancellationToken: ct).ConfigureAwait(false);
                             if (rejected is { Accepted: false, Status: "StaleCollection" or "UnknownCollection" } &&
                                 rejected.CollectionId == chunk.CollectionId && rejected.Index == chunk.Index)
                             { log("A superseded or expired software scan was retired."); break; }
@@ -52,7 +54,7 @@ public sealed class SoftwareInventoryWorker(HttpClient http, string stateDirecto
                         if (!response.IsSuccessStatusCode)
                             log($"Software inventory upload {chunk.Index + 1}/{chunk.Count} received HTTP {(int)response.StatusCode}; the durable outbox is retained.");
                         response.EnsureSuccessStatusCode();
-                        var ack = await response.Content.ReadFromJsonAsync<SoftwareChunkAcknowledgement>(cancellationToken: ct).ConfigureAwait(false);
+                        var ack = await response.Content.ReadFromJsonAsync(SoftwareInventoryJsonContext.Default.SoftwareChunkAcknowledgement, cancellationToken: ct).ConfigureAwait(false);
                         if (ack is null || !ack.Accepted || ack.CollectionId != chunk.CollectionId || ack.Index != chunk.Index)
                         { acknowledged = false; retry = true; break; }
                     }
@@ -63,7 +65,7 @@ public sealed class SoftwareInventoryWorker(HttpClient http, string stateDirecto
                     using var request = Request("/api/v2/agent/software-inventory/work", null);
                     using var response = await SendAsync(request).ConfigureAwait(false);
                     response.EnsureSuccessStatusCode();
-                    var work = await response.Content.ReadFromJsonAsync<SoftwareScanWork>(cancellationToken: ct).ConfigureAwait(false);
+                    var work = await response.Content.ReadFromJsonAsync(SoftwareInventoryJsonContext.Default.SoftwareScanWork, cancellationToken: ct).ConfigureAwait(false);
                     if (work?.CollectionId is { } id)
                     {
                         SoftwareCollection collection;
@@ -83,7 +85,7 @@ public sealed class SoftwareInventoryWorker(HttpClient http, string stateDirecto
                             FileOptions.Asynchronous | FileOptions.WriteThrough))
                         {
                             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-                            await JsonSerializer.SerializeAsync(stream, queued, SoftwareInventoryWire.JsonOptions, ct).ConfigureAwait(false);
+                            await JsonSerializer.SerializeAsync(stream, queued, OutboxMetadata.Value.PendingInventory, ct).ConfigureAwait(false);
                             await stream.FlushAsync(ct).ConfigureAwait(false);
                             stream.Flush(true);
                         }
@@ -114,7 +116,7 @@ public sealed class SoftwareInventoryWorker(HttpClient http, string stateDirecto
         {
             var message = new HttpRequestMessage(HttpMethod.Post, route);
             message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", session.GetAccessToken(accessToken));
-            if (upload is not null) message.Content = JsonContent.Create(upload);
+            if (upload is not null) message.Content = JsonContent.Create(upload, SoftwareInventoryJsonContext.Default.SoftwareChunkUpload);
             return message;
         }
     }

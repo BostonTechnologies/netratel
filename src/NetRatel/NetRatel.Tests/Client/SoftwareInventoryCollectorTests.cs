@@ -7,6 +7,32 @@ namespace NetRatel.Tests.Client;
 
 public sealed class SoftwareInventoryCollectorTests
 {
+    [Fact]
+    public void Canonical_identity_and_package_JSON_preserve_legacy_bytes()
+    {
+        // Captured from the original reflective producer, including NFKC,
+        // fallback package identity, nullable fields and escaped Unicode.
+        var packages = new[]
+        {
+            new SoftwarePackage(" App<&\"é> 😀 ", " 1.0 ", " Públisher& ", " X64 ", " ＡＰＰ ", " DPKG "),
+            new SoftwarePackage(" App\u0301<&> ", "2", "Pub\u212b", "AMD64", "", "rpm", Scope: "user:synthetic"),
+            new SoftwarePackage("Optional", "3", "Vendor", "x64", "optional", "registry", "/synthetic/<&\"é>😀", "20261103")
+        }.Select(package => package.Normalize()).ToArray();
+        packages.Select(package => package.Identity).Should().Equal(
+            "D2858F6107E7A1077216E86EEBFE358B254873DE7F354859AA502A31D819FE7E",
+            "76B2BA5FE269CC41A273E7F51A646870FE030DAF46842FE3A56FB04873AF4CCF",
+            "4C4AEACFCE15D4CDAAF61D704A94E917EFBAEF1BC54BBD5157BC1AB5920405F6");
+        var chunk = SoftwareInventoryWire.Encode(Guid.Parse("12345678-90ab-cdef-8123-456789abcdef"),
+            new(packages, true, "linux", []), new DateTimeOffset(2026, 11, 3, 12, 34, 56, TimeSpan.Zero)).Single();
+        using var gzip = new System.IO.Compression.GZipStream(new MemoryStream(Convert.FromBase64String(chunk.Payload)),
+            System.IO.Compression.CompressionMode.Decompress);
+        using var bytes = new MemoryStream();
+        gzip.CopyTo(bytes);
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes.ToArray())).Should().Be(
+            "22764148F12739183FE613B000CE9F914F69FEA14C7EB8D06F5032BE2FA16F34");
+        SoftwareInventoryWire.Decode(chunk.Payload).Should().Equal(packages);
+    }
+
     [Theory]
     [InlineData("dpkg", "tool:amd64\t1.2\tExample Maintainer\tamd64\tinstalled\nremoved\t1\tExample\tx64\tconfig-files\n", "tool:amd64", "1.2")]
     [InlineData("rpm", "tool\t1.2-3\tExample Vendor\tx86_64\n", "tool", "1.2-3")]
