@@ -45,13 +45,6 @@ public sealed class IntegrationCredential
     public List<IntegrationCredentialInstanceGrant> InstanceGrants { get; set; } = [];
 }
 
-/// <summary>Credential trust boundaries are intentionally purpose-separated.</summary>
-public enum IntegrationCredentialPurpose
-{
-    Api = 0,
-    HttpMcp = 1
-}
-
 /// <summary>A tenant and permission are one grant tuple, never independent sets.</summary>
 public sealed class IntegrationCredentialGrant
 {

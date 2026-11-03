@@ -179,6 +179,7 @@ gh workflow run integration-validation.yml --ref main -f suite=browser -f source
 gh workflow run integration-validation.yml --ref main -f suite=upgrade-local -f release_tag='<completed-release-tag>'
 gh workflow run integration-validation.yml --ref main -f suite=deployment -f deployment_profile=http-host-setup -f source_ref='<commit-or-tag>'
 gh workflow run integration-validation.yml --ref main -f suite=migrations-image -f source_ref='<commit-or-tag>'
+gh workflow run integration-validation.yml --ref main -f suite=migrations-image -f migrations_comparison=html-ownership -f source_ref='<exact-public-commit>'
 gh workflow run integration-validation.yml --ref main -f suite=api-image -f source_ref='<exact-public-commit>'
 ```
 
@@ -193,6 +194,19 @@ the candidate migrations image. Its deterministic gzip layer exports report
 standalone and five-image shared-layer totals; these measurements are distinct
 from registry transfer bytes. Remaining migrations dependency/registration work
 and other application acceptance stay separate.
+
+The default `migrations_comparison=base` retains that base comparison. Selecting
+`html-ownership` instead compares two CoreCLR images from the same source, with
+identical resolved SDK/runtime digests and diagnostic assembly build timestamp.
+The control reconstructs the earlier HTML ownership by moving the unchanged
+adapter and its two package references back into Infrastructure; it is explicitly
+a diagnostic control, not original published bytes. Only the four HTML libraries
+and their package records may disappear. Retained package metadata/relationships
+and other payload bytes must match, except the affected first-party assemblies,
+dependency graph, legal notices and verified SPDX metadata. SPDX creation times
+remain their real generation times and namespaces bind each actual file inventory;
+both differences are retained in the receipt. This mode reuses the full native,
+PostgreSQL, role-preserving rerun and latest-release upgrade checks above.
 
 The optional `deployment_profile=http-host-setup` first compares the Linux x64
 HTTP MCP image with a same-source RID-neutral control. It checks final host,
