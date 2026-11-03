@@ -336,6 +336,7 @@ public sealed class OidcComposeBrowserSmokeTests
             await SetThemeAndReloadAsync(page, theme);
             foreach (var (width, height, name) in new[] { (1440, 900, "desktop"), (768, 900, "tablet"), (390, 844, "mobile") })
             {
+                var previousWidth = page.ViewportSize?.Width ?? width;
                 await page.SetViewportSizeAsync(width, height);
                 if (view == "login" || !expectCurrentShell)
                 {
@@ -372,7 +373,12 @@ public sealed class OidcComposeBrowserSmokeTests
                     await Assertions.Expect(search).ToHaveAttributeAsync("aria-label", $"Search {applicationName}", new() { Timeout = 15_000 });
                     await Assertions.Expect(search.Locator("span")).ToHaveTextAsync($"Search {applicationName}", new() { Timeout = 15_000 });
                     var navigation = page.GetByRole(AriaRole.Navigation, new() { Name = "Primary navigation", Exact = true });
-                    var drawerClosed = await page.Locator("#nav-drawer").EvaluateAsync<bool>("drawer => drawer.classList.contains('mud-drawer--closed')");
+                    var drawer = page.Locator("#nav-drawer");
+                    // MainLayout's Lg breakpoint closes the drawer through an asynchronous resize callback.
+                    // Observe that close before requesting it open in the compact viewport.
+                    if (previousWidth >= 1280 && width < 1280)
+                        await Assertions.Expect(drawer).ToHaveClassAsync(new Regex(@"(^|\s)mud-drawer--closed(\s|$)"), new() { Timeout = 15_000 });
+                    var drawerClosed = await drawer.EvaluateAsync<bool>("drawer => drawer.classList.contains('mud-drawer--closed')");
                     if (drawerClosed || !await navigation.IsVisibleAsync())
                         await page.GetByTestId("navigation-toggle").ClickAsync();
                     await Assertions.Expect(navigation).ToBeVisibleAsync(new() { Timeout = 15_000 });
