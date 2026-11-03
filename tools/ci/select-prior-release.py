@@ -13,7 +13,7 @@ COMPONENTS = ("api", "web", "migrations", "mcp-http", "client")
 
 
 def gh(*args):
-    return subprocess.run(("gh", *args), check=True, text=True, capture_output=True).stdout
+    return subprocess.run(("gh", *args), check=True, text=True, encoding="utf-8", capture_output=True).stdout
 
 
 def pages(value):

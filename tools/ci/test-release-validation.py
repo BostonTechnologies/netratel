@@ -6,6 +6,7 @@ import copy
 from datetime import datetime, timezone
 import runpy
 import stat
+import struct
 from types import SimpleNamespace
 import importlib.util
 import io
@@ -654,6 +655,146 @@ class CorePartitionCoverageTests(unittest.TestCase):
             self.helper.validate(cases, {"infrastructure": self.report("infrastructure", [self.infra])})
 
 
+class StdioAssessmentTests(unittest.TestCase):
+    def test_documentation_api_packages_an_actual_gitless_source_snapshot(self):
+        helper = module("measure-stdio-publish")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, bundle, evidence = root / "source", root / "bundle", root / "evidence"
+            (source / "tools/ci").mkdir(parents=True)
+            (source / "docs/integrations").mkdir(parents=True)
+            bundle.mkdir(); evidence.mkdir()
+            for name in ("prepare-bundle-documentation.py", "check-documentation.py"):
+                shutil.copyfile(ROOT / "tools/ci" / name, source / "tools/ci" / name)
+            (source / "README.md").write_text("# Source guide\n")
+            guide = source / "docs/integrations/CLI_AND_MCP.md"
+            guide.write_text("# Tool guide\n\n[Source guide](../../README.md)\n")
+            shutil.copyfile(guide, bundle / guide.name)
+            old_cli = subprocess.run([sys.executable, str(source / "tools/ci/prepare-bundle-documentation.py"),
+                "--bundle", str(bundle), "--commit", "a" * 40, "--document", "CLI_AND_MCP.md=docs/integrations/CLI_AND_MCP.md"],
+                cwd=source, capture_output=True, text=True)
+            self.assertNotEqual(0, old_cli.returncode)
+            self.assertIn("not a git repository", old_cli.stderr)
+            record = {"stages": {}}
+            helper.prepare_documentation(record, evidence, source, bundle, "a" * 40)
+            self.assertEqual(0, record["stages"]["documentation"]["exitCode"])
+            self.assertEqual(str(source), record["stages"]["documentation"]["repository"])
+            self.assertIn("/blob/" + "a" * 40 + "/README.md", (bundle / guide.name).read_text())
+            self.assertFalse((source / ".git").exists())
+
+    def test_failed_packaging_keeps_unarchived_publish_outputs(self):
+        helper = module("measure-stdio-publish")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, state, evidence = root / "source", root / "state", root / "evidence"
+            (source / "docs/integrations").mkdir(parents=True)
+            state.mkdir(); evidence.mkdir()
+            for name in ("LICENSE", "NOTICE", "docs/integrations/CLI_AND_MCP.md"):
+                (source / name).write_text("synthetic source fixture\n")
+
+            def stage(record, directory, name, command, cwd):
+                record["stages"][name] = {"exitCode": 0}
+                if name == "publish":
+                    output = directory / "artifacts/netratel-mcp-linux-x64"
+                    output.mkdir()
+                    (output / "NetRatel.Mcp.dll").write_bytes(b"synthetic unpublished output")
+
+            evaluated = {"Properties": {**helper.properties("fdd", "a" * 40), "ProjectAssetsFile": str(root / "unused.json")}}
+            with patch.object(helper, "run", side_effect=stage), \
+                 patch.object(helper.subprocess, "check_output", return_value=json.dumps(evaluated)), \
+                 patch.object(helper, "prepare_documentation", side_effect=ValueError("synthetic packaging failure")):
+                result = helper.publish_mode("fdd", source, state, evidence, "a" * 40, "1.2.3", None)
+            self.assertFalse(result["passed"])
+            self.assertIn("synthetic packaging failure", result["error"])
+            self.assertEqual(b"synthetic unpublished output", (evidence / "fdd/artifacts/netratel-mcp-linux-x64/NetRatel.Mcp.dll").read_bytes())
+
+    def test_diagnostic_counts_retain_distinct_emissions_without_msbuild_summary_echoes(self):
+        helper = module("measure-stdio-publish")
+        primary = "source.cs(12,2): warning IL2026: Unsafe boundary. [project.csproj]\n"
+        linker = "\x1b[33msource.cs(13,2): Trim analysis warning IL2070: Unknown type. [project.csproj]\x1b[0m\n"
+        records = helper.diagnostics(primary + primary + linker + "Build succeeded.\n" + primary + linker)
+        self.assertEqual(["IL2026", "IL2026", "IL2070"], [row["code"] for row in records])
+        self.assertEqual([1, 2, 3], [row["line"] for row in records])
+
+    def test_fdd_and_trimmed_jit_modes_keep_distinct_runtime_populations_and_no_aot(self):
+        helper = module("measure-stdio-publish")
+        control = helper.properties("fdd", "a" * 40)
+        trimmed = helper.properties("trimmed-jit", "a" * 40)
+        self.assertEqual(("false", "false"), (control["SelfContained"], control["PublishTrimmed"]))
+        self.assertEqual(("true", "true", "full"), (trimmed["SelfContained"], trimmed["PublishTrimmed"], trimmed["TrimMode"]))
+        for settings in (control, trimmed):
+            self.assertEqual("false", settings["PublishAot"])
+            self.assertEqual("false", settings["PublishSingleFile"])
+            self.assertEqual("a" * 40, settings["PublicSourceRevision"])
+            self.assertNotIn("NoWarn", settings)
+        self.assertEqual("false", trimmed["EnableAotAnalyzer"])
+
+    def test_actual_process_probe_rejects_startup_failure_nonprotocol_stdout_and_empty_catalog(self):
+        helper = module("probe-stdio-assessment")
+        for mode in ("startup", "nonprotocol", "empty", "help-timeout"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                entrypoint = root / "fixture"
+                entrypoint.write_text("#!/usr/bin/env python3\n" + "mode = " + repr(mode) + "\n" + r'''
+import json, sys
+if len(sys.argv) > 1:
+    print('fixture help')
+    sys.exit(0)
+if mode == 'startup':
+    print('fixed startup failure', file=sys.stderr)
+    sys.exit(2)
+if mode == 'nonprotocol':
+    print('not a protocol frame', flush=True)
+    sys.exit(0)
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request:
+        continue
+    if request['method'] == 'initialize':
+        result = {'serverInfo': {'name': 'NetRatel.Mcp', 'version': '1.2.3'}}
+    else:
+        result = {request['method'].split('/')[0]: []}
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+''')
+                entrypoint.chmod(0o755)
+                fixture = SimpleNamespace(credential="synthetic-private-fixture", agent="unused", requests=[],
+                                          server=SimpleNamespace(server_port=1), certificate=root / "unused.crt")
+                if mode == "help-timeout":
+                    timeout = subprocess.TimeoutExpired([str(entrypoint), "setup", "--help"], 20,
+                        output=b"partial help stdout\n", stderr=b"partial help stderr\n")
+                    with patch.object(helper.subprocess, "run", side_effect=timeout):
+                        result = helper.probe(entrypoint, root / "evidence", root / "state", "1.2.3", "a" * 40, fixture)
+                else:
+                    result = helper.probe(entrypoint, root / "evidence", root / "state", "1.2.3", "a" * 40, fixture)
+                self.assertFalse(result["passed"])
+                self.assertEqual(result, json.loads((root / "evidence/probes.json").read_text()))
+                if mode == "startup":
+                    self.assertEqual(2, result["exitCode"])
+                    self.assertIn("fixed startup failure", (root / "evidence/protocol.stderr.log").read_text())
+                elif mode == "nonprotocol":
+                    self.assertIn("JSONDecodeError", result["error"])
+                elif mode == "empty":
+                    self.assertIn("Empty catalog", result["error"])
+                else:
+                    self.assertEqual({"stage": "setup-help", "exitCode": None, "timedOut": True}, result["stages"][0])
+                    self.assertNotIn("setup-help", result["notReachedStages"])
+                    self.assertIn("bridge-help", result["notReachedStages"])
+                    self.assertEqual("partial help stdout\n", (root / "evidence/setup-help.stdout.log").read_text())
+                    self.assertEqual("partial help stderr\n", (root / "evidence/setup-help.stderr.log").read_text())
+
+    def test_assessment_is_explicitly_selected_without_new_required_execution(self):
+        workflow = (ROOT / ".github/workflows/integration-validation.yml").read_text()
+        self.assertIn("mcp-campaign, stdio-assessment, browser", workflow)
+        step = re.search(r"(?ms)^      - name: Assess same-source Linux stdio.*?(?=^      - )", workflow)
+        self.assertIsNotNone(step)
+        self.assertIn("if: inputs.suite == 'stdio-assessment'", step.group(0))
+        self.assertNotIn("continue-on-error", step.group(0))
+        for path in ("public-pr-validation.yml", "release-build.yml"):
+            required = (ROOT / ".github/workflows" / path).read_text()
+            self.assertNotIn("measure-stdio-publish.py", required)
+            self.assertNotIn("stdio-assessment", required)
+
+
 class MtpCiRunnerSelectionTests(unittest.TestCase):
     def test_independent_contracts_are_required_before_pr_success_and_release_packaging(self):
         for relative, gate in ((".github/workflows/public-pr-validation.yml", "pr-validation"),
@@ -730,11 +871,22 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertEqual(["workflow_dispatch"], re.findall(r"(?m)^  ([A-Za-z_][A-Za-z_0-9-]*):", triggers.group(1)))
         jobs = manual.split("\njobs:\n", 1)
         self.assertEqual(2, len(jobs))
-        self.assertEqual(["selected-suite", "windows-mcp", "client-measurement", "migrations-image", "api-image"],
-                         re.findall(r"(?m)^  ([A-Za-z_][A-Za-z_0-9-]*):", jobs[1]))
-        selected, measurement = jobs[1].split("\n  client-measurement:", 1)
-        measurement, migrations = measurement.split("\n  migrations-image:", 1)
-        migrations, api_image = migrations.split("\n  api-image:", 1)
+        sections = dict(re.findall(r"(?ms)^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:|\Z)", jobs[1]))
+        self.assertEqual(["selected-suite", "windows-mcp", "client-measurement", "migrations-image", "api-image", "cli-tool"], list(sections))
+        selected, measurement, portable = (sections[name] for name in ("selected-suite", "client-measurement", "cli-tool"))
+        self.assertIn("inputs.suite != 'cli-tool'", selected)
+        self.assertIn("if: inputs.suite == 'cli-tool'", portable)
+        self.assertIn("ref: ${{ github.workflow_sha }}", portable)
+        self.assertIn("ref: ${{ inputs.source_ref }}", portable)
+        self.assertIn("global-json-file: cli-tool-source/global.json", portable)
+        self.assertIn("python3 tools/ci/test-cli-tool-validation.py", portable)
+        self.assertIn("python3 tools/ci/validate-cli-tool.py --source cli-tool-source", portable)
+        for runtime in ("linux-x64", "win-x64", "osx-arm64"):
+            self.assertIn("runtime: " + runtime, portable)
+        for unwanted in ("dotnet build", "dotnet publish", "continue-on-error"):
+            self.assertNotIn(unwanted, portable)
+        migrations = sections["migrations-image"]
+        api_image = sections["api-image"]
         self.assertIn("if: inputs.suite == 'api-image'", api_image)
         self.assertIn("inputs.suite == 'api-rid'", api_image)
         self.assertIn("inputs.suite != 'api-rid'", selected)
@@ -743,15 +895,20 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertIn("if: inputs.suite == 'migrations-image'", migrations)
         self.assertIn("inputs.suite != 'migrations-image'", selected)
         self.assertNotRegex(migrations, r"(?m)^\s+matrix:")
+        api_image = sections["api-image"]
+        self.assertIn("if: inputs.suite == 'api-image'", api_image)
+        self.assertIn("inputs.suite != 'api-image'", selected)
+        self.assertNotRegex(api_image, r"(?m)^\s+matrix:")
         self.assertNotRegex(selected, r"(?m)^\s+matrix:", "A functional suite selection must not fan out into other functional suites.")
         self.assertIn("if: inputs.suite != 'client-measurement'", selected)
         self.assertIn("if: inputs.suite == 'client-measurement'", measurement)
         self.assertIn("inputs.assessment_only && '[{\"runtime\":\"linux-x64\",\"runner\":\"ubuntu-latest\"}]'", measurement,
                       "The first trim assessment must permit a single Linux job without repeating A/B.")
-        self.assertIn("if: ${{ inputs.suite == 'client-measurement' && !inputs.assessment_only }}", measurement)
+        self.assertIn("if: ${{ (inputs.suite == 'client-measurement' && !inputs.assessment_only) || inputs.suite == 'client-pty-debug-macos' }}", measurement)
         for suite, runtime, runner in (("client-trim-windows", "win-x64", "windows-latest"),
                                        ("client-trim-macos", "osx-arm64", "macos-latest"),
-                                       ("client-control-macos", "osx-arm64", "macos-latest")):
+                                       ("client-control-macos", "osx-arm64", "macos-latest"),
+                                       ("client-pty-debug-macos", "osx-arm64", "macos-latest")):
             self.assertIn(f"inputs.suite != '{suite}'", selected)
             self.assertIn(f"inputs.suite == '{suite}' && '[{{\"runtime\":\"{runtime}\",\"runner\":\"{runner}\"}}]'", measurement,
                           "Each native assessment must select one matching hosted runner without A/B fan-out.")
@@ -2290,7 +2447,53 @@ class ClientMeasurementHelperTests(unittest.TestCase):
             self.assertEqual("runtime behavior", failed["failureKind"])
             self.assertNotIn("launch-cached", failed["stages"])
 
-    def packaged_pty_fixture(self, root, native_exit, native_final):
+    @staticmethod
+    def macho_fixture(minimum=12 << 16, sdk=(26 << 16) | (5 << 8), commands=None):
+        commands = commands or struct.pack("<6I", 0x32, 24, 1, minimum, sdk, 0)
+        count = 2 if len(commands) == 48 else 1
+        return struct.pack("<8I", 0xfeedfacf, 0x100000c, 0, 6, count, len(commands), 0, 0) + commands
+
+    def test_darwin_deployment_floor_rejects_runner_26_helper_against_apphost_12(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary) / "native"
+            binary.write_bytes(self.macho_fixture())
+            apphost = self.helper.macho_deployment(binary)
+            self.assertEqual("12.0.0", apphost["minimumOS"])
+            self.helper.validate_darwin_deployment(apphost, apphost)
+            binary.write_bytes(self.macho_fixture(minimum=26 << 16))
+            newer_helper = self.helper.macho_deployment(binary)
+            with self.assertRaisesRegex(ValueError, "minimum OS exceeds"):
+                self.helper.validate_darwin_deployment(apphost, newer_helper)
+
+    def test_darwin_deployment_rejects_truncated_and_ambiguous_load_commands(self):
+        command = struct.pack("<6I", 0x32, 24, 1, 12 << 16, 26 << 16, 0)
+        for payload in (self.macho_fixture()[:-1], self.macho_fixture(commands=command + command),
+                        self.macho_fixture(commands=struct.pack("<2I", 0x32, 4))):
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as temporary:
+                binary = Path(temporary) / "native"
+                binary.write_bytes(payload)
+                with self.assertRaises(ValueError):
+                    self.helper.macho_deployment(binary)
+
+    def test_darwin_helper_declaration_requires_actual_bundled_input_before_probe(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            self.assertIsNone(self.helper.native_resize_helper_identity(source, "osx-arm64", []))
+            declaration = source / "src/NetRatel/NetRatel.Client/Service/Terminal/native_darwin_pty_resize.c"
+            declaration.parent.mkdir(parents=True)
+            declaration.touch()
+            with self.assertRaisesRegex(ValueError, "missing from actual prebundle inputs"):
+                self.helper.native_resize_helper_identity(source, "osx-arm64", [])
+            item = {"path": "libnetratel_terminal_pty_resize.dylib", "sha256": "a" * 64,
+                    "binary": {"format": "Mach-O", "machine": "0x100000c"}, "excludedFromBundle": False,
+                    "machoDeployment": {"platform": 1, "minimumOS": "12.0.0", "sdk": "26.5.0"}}
+            self.assertEqual(item["sha256"], self.helper.native_resize_helper_identity(source, "osx-arm64", [item])["sha256"])
+            item["excludedFromBundle"] = True
+            with self.assertRaisesRegex(ValueError, "must be bundled"):
+                self.helper.native_resize_helper_identity(source, "osx-arm64", [item])
+            self.assertIsNone(self.helper.native_resize_helper_identity(source, "linux-x64", []))
+
+    def packaged_pty_fixture(self, root, native_exit, native_final, native_helper=None):
         distribution = root / "netratel-client-linux-x64"
         distribution.mkdir()
         executable = distribution / "NetRatel.Client"
@@ -2299,6 +2502,7 @@ class ClientMeasurementHelperTests(unittest.TestCase):
             "cache = pathlib.Path(os.environ['DOTNET_BUNDLE_EXTRACT_BASE_DIR'])\n"
             "cache.mkdir(parents=True)\n"
             "(cache / 'extracted').write_bytes(b'cache')\n"
+            + (f"(cache / 'libnetratel_terminal_pty_resize.dylib').write_bytes({native_helper!r})\n" if native_helper else "") +
             "print('ordinary client log')\n"
             f"event = {native_final!r} if sys.argv[1].endswith('native') else {{'stage': 'passed', 'reaped': True}}\n"
             "print(json.dumps(event))\n"
@@ -2312,6 +2516,28 @@ class ClientMeasurementHelperTests(unittest.TestCase):
         evidence.mkdir()
         state.mkdir()
         return archive, evidence, state
+
+    def test_packaged_native_helper_requires_exact_extracted_bytes_and_architecture(self):
+        payload = self.macho_fixture()
+        for correct in (True, False):
+            with self.subTest(correct=correct), tempfile.TemporaryDirectory() as temporary:
+                archive, evidence, state = self.packaged_pty_fixture(Path(temporary), 0,
+                    {"stage": "passed", "reaped": True}, native_helper=payload)
+                metrics = {"stages": {}, "expectedNativeHelper": {"name": "libnetratel_terminal_pty_resize.dylib",
+                    "sha256": hashlib.sha256(payload).hexdigest() if correct else "0" * 64,
+                    "binary": {"format": "Mach-O", "machine": "0x100000c"},
+                    "deployment": {"platform": 1, "minimumOS": "12.0.0", "sdk": "26.5.0"}}}
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    if correct:
+                        self.helper.run_packaged_pty_probes(metrics, evidence, state, archive, "netratel-client-linux-x64")
+                    else:
+                        with self.assertRaises(subprocess.CalledProcessError):
+                            self.helper.run_packaged_pty_probes(metrics, evidence, state, archive, "netratel-client-linux-x64")
+                for backend in ("native", "python"):
+                    probe = metrics["stages"]["pty-" + backend]
+                    self.assertEqual(correct, probe["passed"])
+                    self.assertEqual(hashlib.sha256(payload).hexdigest(), probe["nativeHelperExtraction"][0]["sha256"])
+                    self.assertEqual(0, probe["exitCode"], "A successful process must still fail when extracted helper bytes differ.")
 
     def test_packaged_probes_capture_exact_failure_and_still_execute_other_backend(self):
         with tempfile.TemporaryDirectory() as temporary:

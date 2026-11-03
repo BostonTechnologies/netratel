@@ -103,6 +103,49 @@ and compare SDK and runner image identities before attributing a difference to
 trimming. This control skips baseline checkout and trimming; it does not fan out
 into other platforms or repeat A/B measurements.
 
+## macOS native PTY resize
+
+[#520](https://github.com/BostonTechnologies/netratel/issues/520) records the same
+native resize failure in matching untrimmed and trimmed macOS arm64 archives.
+Darwin's `ioctl` is variadic; its ARM64 ABI places that pointer argument on the
+stack. A small native fixed-arity helper constructs `winsize` and calls `ioctl`
+with the native compiler's ABI. Managed code retains its existing clamping,
+locking, errno handling and resize result; Linux interop and the self-tests are
+unchanged. The self-authored helper follows the existing project license and
+native build/content path; hosted diagnostics require its actual arm64 export
+and matching extracted bytes.
+
+The optional `client-pty-debug-macos` suite compares actual client Debug builds
+at explicit baseline/candidate SHAs on one native arm64 runner. It requires the
+specific baseline native resize failure while Python passes, then requires the
+candidate native and Python input/output, `17 77` resize, interrupt, burst, exit
+and reaping assertions to pass. Baseline failure stays recorded separately from
+the comparison's exit status. The helper export's invalid-fd call must preserve
+`EBADF`. No Release publish occurs in this suite; internal Debug archives reuse
+the existing version and PTY runners.
+
+```sh
+gh workflow run integration-validation.yml --ref main \
+  -f suite=client-pty-debug-macos -f source_ref=FULL_CANDIDATE_SHA \
+  -f baseline_ref=FULL_BASELINE_SHA
+```
+
+After Debug proof, `client-trim-macos` verifies the produced native archive and
+requires each backend's extracted helper SHA/arm64 header to match its actual
+prebundle input. Native failures remain failures; no fallback is forced and full
+macOS owner acceptance remains independent.
+
+The helper's deployment floor comes from the restored target SDK apphost (or
+single-file host), read with `xcrun vtool`, and is passed explicitly to clang.
+The runner OS is never the deployment target. Packaged validation independently
+parses Mach-O load commands and rejects a helper minimum OS newer than the actual
+archived apphost; prebundle and extracted helper deployment metadata must agree.
+The initial helper declared macOS 26 while its .NET apphost declared 12, so its
+passing macOS 26 probes did not establish older-host compatibility. Those
+receipts remain historical. Matching load-command floors avoids raising the
+existing binary requirement; it does not expand .NET's supported OS policy or
+substitute for owner testing on supported older systems.
+
 ## Implementation
 
 All PowerShell tasks now use `ExternalShellRunner`. New API requests using the

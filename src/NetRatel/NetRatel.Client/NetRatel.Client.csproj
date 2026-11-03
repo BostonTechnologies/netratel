@@ -87,6 +87,44 @@
     <Copy SourceFiles="$(NativeUnixPtySpawnLibrary)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
   </Target>
 
+  <Target Name="BuildNativeDarwinPtyResizeHelper" DependsOnTargets="_GetAppHostPaths" BeforeTargets="GetCopyToOutputDirectoryItems;ComputeFilesToPublish;CoreCompile" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <PropertyGroup>
+      <NativeDarwinPtyDirectory>$(IntermediateOutputPath)native-darwin-pty</NativeDarwinPtyDirectory>
+      <NativeDarwinPtyLibrary>$(NativeDarwinPtyDirectory)/libnetratel_terminal_pty_resize.dylib</NativeDarwinPtyLibrary>
+      <NativeDarwinPtyCompilerFlags Condition="'$(Configuration)' == 'Debug'">-g -O0</NativeDarwinPtyCompilerFlags>
+      <NativeDarwinPtyCompilerFlags Condition="'$(Configuration)' != 'Debug'">-O2</NativeDarwinPtyCompilerFlags>
+      <NativeDarwinPtyArchitecture Condition="'$(RuntimeIdentifier)' == 'osx-arm64'">-arch arm64</NativeDarwinPtyArchitecture>
+      <NativeDarwinPtyAppHost>$(AppHostSourcePath)</NativeDarwinPtyAppHost>
+      <NativeDarwinPtyAppHost Condition="'$(PublishSingleFile)' == 'true' and '$(SelfContained)' == 'true' and '$(SingleFileHostSourcePath)' != ''">$(SingleFileHostSourcePath)</NativeDarwinPtyAppHost>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(NativeDarwinPtyAppHost)')" Text="The Darwin resize helper requires the restored target apphost to derive its deployment floor." />
+    <Exec Command="xcrun vtool -show-build &quot;$(NativeDarwinPtyAppHost)&quot; | sed -n -E 's/^[[:space:]]*minos[[:space:]]+([0-9]+(\.[0-9]+)*).*$/\1/p'" ConsoleToMSBuild="true" StandardOutputImportance="Low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="NativeDarwinPtyMinimumOS" />
+    </Exec>
+    <Error Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(NativeDarwinPtyMinimumOS)', '^[0-9]+\.[0-9]+(\.[0-9]+)?$'))" Text="The target apphost has no unambiguous macOS deployment floor." />
+    <Message Importance="High" Text="Darwin resize helper deployment floor $(NativeDarwinPtyMinimumOS) from target apphost $(NativeDarwinPtyAppHost)." />
+    <MakeDir Directories="$(NativeDarwinPtyDirectory)" />
+    <Exec Command="xcrun clang -dynamiclib $(NativeDarwinPtyArchitecture) -mmacosx-version-min=$(NativeDarwinPtyMinimumOS) $(NativeDarwinPtyCompilerFlags) -Wall -Wextra -Werror -install_name @rpath/libnetratel_terminal_pty_resize.dylib -o &quot;$(NativeDarwinPtyLibrary)&quot; &quot;$(MSBuildProjectDirectory)/Service/Terminal/native_darwin_pty_resize.c&quot;" />
+    <ItemGroup>
+      <Content Include="$(NativeDarwinPtyLibrary)" Link="libnetratel_terminal_pty_resize.dylib" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="CopyNativeDarwinPtyResizeHelper" DependsOnTargets="BuildNativeDarwinPtyResizeHelper" BeforeTargets="CopyFilesToOutputDirectory" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <Copy SourceFiles="$(NativeDarwinPtyLibrary)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+  <!-- ComputeFilesToPublish already generates the bundle; add this native input
+       while the resolved list is still available to the linker and bundler. -->
+  <Target Name="IncludeNativeDarwinPtyResizeHelperInPublish" DependsOnTargets="BuildNativeDarwinPtyResizeHelper" AfterTargets="ComputeResolvedFilesToPublishList" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <ItemGroup>
+      <ResolvedFileToPublish Include="$(NativeDarwinPtyLibrary)">
+        <RelativePath>libnetratel_terminal_pty_resize.dylib</RelativePath>
+        <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+
   <Target Name="IncludeNativeUnixPtySpawnHelperInPublish" DependsOnTargets="BuildNativeUnixPtySpawnHelper" AfterTargets="ComputeFilesToPublish" Condition="$([MSBuild]::IsOSPlatform('Linux'))">
     <ItemGroup>
       <!-- The single-file bundle must know about the helper so it extracts beside AppContext.BaseDirectory. -->

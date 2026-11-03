@@ -11,6 +11,7 @@ import platform
 import re
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import tarfile
@@ -122,6 +123,15 @@ def run_packaged_pty_probes(metrics, evidence, state, archive, distribution_name
                       bundleExtractionBytes=sum(path.stat().st_size for path in cache.rglob("*") if path.is_file()))
         record["passed"] = (record["exitCode"] == 0 and not record.get("timedOut")
                             and final.get("stage") == "passed" and final.get("reaped") is True)
+        if expected := metrics.get("expectedNativeHelper"):
+            extracted = [{"path": path.relative_to(cache).as_posix(), "sha256": digest(path),
+                          "binary": binary_identity(path), "deployment": macho_deployment(path)}
+                         for path in cache.rglob(expected["name"])]
+            record["nativeHelperExtraction"] = extracted
+            record["passed"] = (record["passed"] and len(extracted) == 1
+                                and extracted[0]["sha256"] == expected["sha256"]
+                                and extracted[0]["binary"] == expected["binary"]
+                                and extracted[0]["deployment"] == expected["deployment"])
         print("CLIENT_PACKAGED_PTY_PROBE=" + json.dumps({"backend": backend, **record}, separators=(",", ":")), flush=True)
         print(stdout, end="", flush=True)
         print(stderr, end="", file=sys.stderr, flush=True)
@@ -165,6 +175,64 @@ def binary_identity(path):
     return None
 
 
+def macho_deployment(path):
+    """Read actual thin Mach-O load commands independently of the native toolchain."""
+    with path.open("rb") as stream:
+        header = stream.read(32)
+        if len(header) != 32 or header[:4] not in (b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf"):
+            return None
+        order = "<" if header[0] == 0xcf else ">"
+        _, _, _, _, count, size, _, _ = struct.unpack(order + "8I", header)
+        if size > 1024 * 1024:
+            raise ValueError("Mach-O load-command table exceeds the native metadata limit")
+        commands = stream.read(size)
+    position, deployments = 0, []
+    def version(value):
+        return ".".join(str(item) for item in (value >> 16, (value >> 8) & 255, value & 255))
+    for _ in range(count):
+        if position + 8 > len(commands):
+            raise ValueError("Truncated Mach-O load-command table")
+        command, length = struct.unpack_from(order + "2I", commands, position)
+        if length < 8 or position + length > len(commands):
+            raise ValueError("Invalid Mach-O load-command size")
+        if command == 0x32 and length >= 24:  # LC_BUILD_VERSION
+            platform, minimum, sdk, _ = struct.unpack_from(order + "4I", commands, position + 8)
+            deployments.append({"platform": platform, "minimumOS": version(minimum), "sdk": version(sdk)})
+        elif command == 0x24 and length >= 16:  # LC_VERSION_MIN_MACOSX
+            minimum, sdk = struct.unpack_from(order + "2I", commands, position + 8)
+            deployments.append({"platform": 1, "minimumOS": version(minimum), "sdk": version(sdk)})
+        position += length
+    if len(deployments) != 1:
+        raise ValueError("Mach-O must declare exactly one deployment platform/version")
+    return deployments[0]
+
+
+def validate_darwin_deployment(apphost, helper):
+    if not apphost or not helper or apphost["platform"] != 1 or helper["platform"] != 1:
+        raise ValueError("Darwin apphost/helper must declare the macOS deployment platform")
+    if tuple(map(int, helper["minimumOS"].split("."))) > tuple(map(int, apphost["minimumOS"].split("."))):
+        raise ValueError("Darwin resize helper minimum OS exceeds the packaged apphost deployment floor")
+
+
+def native_resize_helper_identity(source, runtime, inputs):
+    name = "libnetratel_terminal_pty_resize.dylib"
+    matches = [item for item in inputs if Path(item["path"]).name == name]
+    required = runtime == "osx-arm64" and (source / Path(PROJECT).parent / "Service/Terminal/native_darwin_pty_resize.c").is_file()
+    if not matches:
+        if required:
+            raise ValueError("The Darwin resize helper is missing from actual prebundle inputs")
+        return None
+    identities = {(item["sha256"], json.dumps(item["binary"], sort_keys=True)) for item in matches}
+    if (runtime != "osx-arm64" or len(identities) != 1
+            or matches[0]["binary"] != {"format": "Mach-O", "machine": "0x100000c"}
+            or any(item["excludedFromBundle"] for item in matches)):
+        raise ValueError("Published Darwin resize helper must be bundled with one osx-arm64 identity")
+    deployment = matches[0].get("machoDeployment")
+    if not deployment or deployment["platform"] != 1:
+        raise ValueError("Darwin resize helper has no macOS deployment load command")
+    return {"name": name, "sha256": matches[0]["sha256"], "binary": matches[0]["binary"], "deployment": deployment}
+
+
 def run_packaged_version_probes(metrics, evidence, state, archive, distribution_name, runtime, version):
     extraction = state / "packaged-version"
     extraction.mkdir()
@@ -191,6 +259,11 @@ def run_packaged_version_probes(metrics, evidence, state, archive, distribution_
     if identity != expected:
         metrics.update(failureStage="packaged-architecture", failureKind="artifact content")
         raise ValueError(f"Packaged executable architecture differs from {runtime}: {identity}")
+    if runtime == "osx-arm64":
+        deployment = macho_deployment(executable)
+        metrics["packagedExecutable"]["deployment"] = deployment
+        if helper := metrics.get("expectedNativeHelper"):
+            validate_darwin_deployment(deployment, helper["deployment"])
     launch_env = os.environ.copy()
     cache = state / "fresh-extraction"
     launch_env["DOTNET_BUNDLE_EXTRACT_BASE_DIR"] = str(cache)
@@ -418,8 +491,11 @@ def main():
             path, relative, loose = line.split("|")
             path = Path(path)
             inputs.append({"path": relative, "bytes": path.stat().st_size, "sha256": digest(path),
-                           "excludedFromBundle": loose.lower() == "true", "binary": binary_identity(path)})
+                           "excludedFromBundle": loose.lower() == "true", "binary": binary_identity(path),
+                           "machoDeployment": macho_deployment(path)})
         (evidence / "publish-input-inventory.json").write_text(json.dumps(inputs, indent=2) + "\n")
+        if resize_helper := native_resize_helper_identity(source, args.runtime, inputs):
+            metrics["expectedNativeHelper"] = resize_helper
         for name in ("LICENSE", "NOTICE"):
             shutil.copy2(source / name, distribution / name)
         recovery_tool = source / "tools/ci/prepare-windows-client-repair.py"
