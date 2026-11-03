@@ -6,6 +6,7 @@ import copy
 from datetime import datetime, timezone
 import runpy
 import stat
+import struct
 from types import SimpleNamespace
 import importlib.util
 import io
@@ -2306,6 +2307,34 @@ class ClientMeasurementHelperTests(unittest.TestCase):
             self.assertEqual("runtime behavior", failed["failureKind"])
             self.assertNotIn("launch-cached", failed["stages"])
 
+    @staticmethod
+    def macho_fixture(minimum=12 << 16, sdk=(26 << 16) | (5 << 8), commands=None):
+        commands = commands or struct.pack("<6I", 0x32, 24, 1, minimum, sdk, 0)
+        count = 2 if len(commands) == 48 else 1
+        return struct.pack("<8I", 0xfeedfacf, 0x100000c, 0, 6, count, len(commands), 0, 0) + commands
+
+    def test_darwin_deployment_floor_rejects_runner_26_helper_against_apphost_12(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary) / "native"
+            binary.write_bytes(self.macho_fixture())
+            apphost = self.helper.macho_deployment(binary)
+            self.assertEqual("12.0.0", apphost["minimumOS"])
+            self.helper.validate_darwin_deployment(apphost, apphost)
+            binary.write_bytes(self.macho_fixture(minimum=26 << 16))
+            newer_helper = self.helper.macho_deployment(binary)
+            with self.assertRaisesRegex(ValueError, "minimum OS exceeds"):
+                self.helper.validate_darwin_deployment(apphost, newer_helper)
+
+    def test_darwin_deployment_rejects_truncated_and_ambiguous_load_commands(self):
+        command = struct.pack("<6I", 0x32, 24, 1, 12 << 16, 26 << 16, 0)
+        for payload in (self.macho_fixture()[:-1], self.macho_fixture(commands=command + command),
+                        self.macho_fixture(commands=struct.pack("<2I", 0x32, 4))):
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as temporary:
+                binary = Path(temporary) / "native"
+                binary.write_bytes(payload)
+                with self.assertRaises(ValueError):
+                    self.helper.macho_deployment(binary)
+
     def test_darwin_helper_declaration_requires_actual_bundled_input_before_probe(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary)
@@ -2316,7 +2345,8 @@ class ClientMeasurementHelperTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing from actual prebundle inputs"):
                 self.helper.native_resize_helper_identity(source, "osx-arm64", [])
             item = {"path": "libnetratel_terminal_pty_resize.dylib", "sha256": "a" * 64,
-                    "binary": {"format": "Mach-O", "machine": "0x100000c"}, "excludedFromBundle": False}
+                    "binary": {"format": "Mach-O", "machine": "0x100000c"}, "excludedFromBundle": False,
+                    "machoDeployment": {"platform": 1, "minimumOS": "12.0.0", "sdk": "26.5.0"}}
             self.assertEqual(item["sha256"], self.helper.native_resize_helper_identity(source, "osx-arm64", [item])["sha256"])
             item["excludedFromBundle"] = True
             with self.assertRaisesRegex(ValueError, "must be bundled"):
@@ -2348,14 +2378,15 @@ class ClientMeasurementHelperTests(unittest.TestCase):
         return archive, evidence, state
 
     def test_packaged_native_helper_requires_exact_extracted_bytes_and_architecture(self):
-        payload = b"\xcf\xfa\xed\xfe\x0c\x00\x00\x01"
+        payload = self.macho_fixture()
         for correct in (True, False):
             with self.subTest(correct=correct), tempfile.TemporaryDirectory() as temporary:
                 archive, evidence, state = self.packaged_pty_fixture(Path(temporary), 0,
                     {"stage": "passed", "reaped": True}, native_helper=payload)
                 metrics = {"stages": {}, "expectedNativeHelper": {"name": "libnetratel_terminal_pty_resize.dylib",
                     "sha256": hashlib.sha256(payload).hexdigest() if correct else "0" * 64,
-                    "binary": {"format": "Mach-O", "machine": "0x100000c"}}}
+                    "binary": {"format": "Mach-O", "machine": "0x100000c"},
+                    "deployment": {"platform": 1, "minimumOS": "12.0.0", "sdk": "26.5.0"}}}
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     if correct:
                         self.helper.run_packaged_pty_probes(metrics, evidence, state, archive, "netratel-client-linux-x64")
