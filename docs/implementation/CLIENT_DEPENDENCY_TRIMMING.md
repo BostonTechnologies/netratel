@@ -59,6 +59,12 @@ boundary. It does not establish acceptance of the blank state-directory default
 tracked by [#542](https://github.com/BostonTechnologies/netratel/issues/542), and it
 does not change installed state paths or production permissions.
 
+The optional ordinary source-stack comparison reuses these same single-scan
+checks with an `image-packaged-default` receipt. That path passes no state-directory
+environment override and verifies the running image's packaged default and UID
+before collecting. It retains its inventory evidence beside the source-stack
+measurements; the archive profile keeps its separate configured-boundary receipt.
+
 ```bash
 source_sha="$(git rev-parse HEAD)"
 gh workflow run integration-validation.yml --ref HARNESS_BRANCH \

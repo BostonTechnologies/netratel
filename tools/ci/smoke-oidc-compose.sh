@@ -62,6 +62,12 @@ client_volume="${project}-client-state"
 gateway_client="${project}-gateway-client"
 inventory_state_directory=/var/lib/netratel/state
 software_inventory_collection_id=
+inventory_evidence_directory="${NETRATEL_CLIENT_ARCHIVE_EVIDENCE:-}"
+inventory_state_boundary="documented fixture override in existing persisted volume"
+if [[ -z "$inventory_evidence_directory" && "$mode" == source && -n "${NETRATEL_SOURCE_STACK_IMAGES:-}" ]]; then
+  inventory_evidence_directory="$(dirname "$NETRATEL_SOURCE_STACK_IMAGES")/software-inventory"
+  inventory_state_boundary=image-packaged-default
+fi
 stage="initializing Compose OIDC smoke"
 record_client_acceptance() {
   if [[ -n "${NETRATEL_CLIENT_ARCHIVE_EVIDENCE:-}" ]]; then
@@ -457,7 +463,8 @@ inventory_snapshot_complete() {
 }
 
 prepare_software_inventory_acceptance() {
-  local token="$1" evidence="$NETRATEL_CLIENT_ARCHIVE_EVIDENCE" policy
+  local token="$1" evidence="$2" boundary="$3" policy
+  mkdir -p "$evidence"
   stage="configuring one disposable software inventory collection"
   policy="$api_url/api/v2/tenants/$tenant_id/software-inventory/policy"
   curl --silent --show-error --fail --header "Authorization: Bearer $token" "$policy" > "$evidence/software-original-policy.json"
@@ -465,12 +472,18 @@ prepare_software_inventory_acceptance() {
   curl --silent --show-error --fail --request PUT --header "Authorization: Bearer $token" --header 'Content-Type: application/json' \
     --data-binary "@$evidence/software-policy-request.json" "$policy" > "$evidence/software-configured-policy.json"
   jq -e '.enabled == false' "$evidence/software-configured-policy.json" >/dev/null
-  jq -n --arg directory "$inventory_state_directory" '{stateDirectory:$directory,stateDirectoryBoundary:"documented fixture override in existing persisted volume",automaticCadenceEnabled:false}' \
+  jq -n --arg directory "$inventory_state_directory" --arg boundary "$boundary" '{stateDirectory:$directory,stateDirectoryBoundary:$boundary,automaticCadenceEnabled:false}' \
     > "$evidence/software-configuration.json"
 }
 
 verify_software_inventory_acceptance() {
-  local token="$1" evidence="$NETRATEL_CLIENT_ARCHIVE_EVIDENCE" route status directory deadline
+  local token="$1" evidence="$2" boundary="$3" route status directory deadline
+  if [[ "$boundary" == image-packaged-default ]]; then
+    stage="validating the normal Client image packaged state default"
+    docker exec "$gateway_client" python3 -c 'import json,os; print(json.dumps({"uid":os.getuid(),"packagedStateDirectory":json.load(open("/app/appsettings.json"))["Client"]["AutoUpdate"]["StateDirectory"],"stateEnvironmentOverridePresent":"NetRatelCLIENT__Client__AutoUpdate__StateDirectory" in os.environ}))' > "$evidence/software-image-default.json"
+    jq -e --arg directory "$inventory_state_directory" \
+      '.uid == 10001 and .packagedStateDirectory == $directory and .stateEnvironmentOverridePresent == false' "$evidence/software-image-default.json" >/dev/null
+  fi
   route="$api_url/api/v2/agents/$tenant_id/$agent_id/software-inventory"
   status="$evidence/software-status.json"
   stage="requesting one authorized software inventory collection"
@@ -514,7 +527,7 @@ verify_software_inventory_acceptance() {
 }
 
 verify_software_inventory_after_restart() {
-  local token="$1" evidence="$NETRATEL_CLIENT_ARCHIVE_EVIDENCE"
+  local token="$1" evidence="$2"
   stage="checking the same software inventory collection after recreation"
   curl --silent --show-error --fail --header "Authorization: Bearer $token" \
     "$api_url/api/v2/agents/$tenant_id/$agent_id/software-inventory" > "$evidence/software-after-restart.json"
@@ -1097,9 +1110,9 @@ agent_id="$(sed -nE 's/.*[Aa]gent[Ii]d=([0-9A-Fa-f-]{36}).*/\1/ip' <<<"$auth_che
 echo "Disposable Client authenticated as agent ${agent_id}."
 record_client_acceptance persisted-authentication
 
-if [[ -n "${NETRATEL_CLIENT_ARCHIVE_EVIDENCE:-}" ]]; then
+if [[ -n "$inventory_evidence_directory" ]]; then
   operator_access_token="$(request_oidc_access_token netratel-test-operator compose-smoke-api)"
-  prepare_software_inventory_acceptance "$operator_access_token"
+  prepare_software_inventory_acceptance "$operator_access_token" "$inventory_evidence_directory" "$inventory_state_boundary"
 fi
 stage="establishing Client gateway sessions"
 start_gateway_client
@@ -1122,8 +1135,8 @@ record_client_acceptance telemetry
 stage="checking current Client gateway presence"
 wait_for_current_gateway_presence "$operator_access_token"
 record_client_acceptance initial-authoritative-presence
-if [[ -n "${NETRATEL_CLIENT_ARCHIVE_EVIDENCE:-}" ]]; then
-  verify_software_inventory_acceptance "$operator_access_token"
+if [[ -n "$inventory_evidence_directory" ]]; then
+  verify_software_inventory_acceptance "$operator_access_token" "$inventory_evidence_directory" "$inventory_state_boundary"
 fi
 # The public Linux client image deliberately includes Bash, and the gateway
 # command contract accepts an explicit executor. Do not rely on the image's
@@ -1172,10 +1185,10 @@ fi
 stage="reestablishing Client gateway sessions after restart"
 start_gateway_client
 wait_for_gateway_sessions
-if [[ -n "${NETRATEL_CLIENT_ARCHIVE_EVIDENCE:-}" ]]; then
+if [[ -n "$inventory_evidence_directory" ]]; then
   wait_for_current_gateway_presence "$operator_access_token"
   record_client_acceptance restarted-authoritative-presence
-  verify_software_inventory_after_restart "$operator_access_token"
+  verify_software_inventory_after_restart "$operator_access_token" "$inventory_evidence_directory"
 fi
 retain_gateway_summary after-restart
 docker rm -f "$gateway_client" >/dev/null
