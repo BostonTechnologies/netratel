@@ -52,6 +52,7 @@ class PortableToolInputTests(unittest.TestCase):
         archive = self.root / "trusted.zip"
         with zipfile.ZipFile(archive, "w") as output:
             output.writestr(name, payload)
+            output.writestr("cli/" + name, b"raw pack output must not select the distributable")
             output.writestr("SHA256SUMS", ("0" * 64 if wrong_checksum else hashlib.sha256(payload).hexdigest()) + "  " + name + "\n")
         artifact = {"id": 200, "name": "netratel-1.2.3-linux-x64", "expired": False,
                     "digest": "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest(),
@@ -106,7 +107,7 @@ class PortableToolInputTests(unittest.TestCase):
         source = tool.ET.parse(config).getroot()
         self.assertIsNotNone(source.find("packageSources/clear"))
         self.assertIsNotNone(source.find("fallbackPackageFolders/clear"))
-        self.assertEqual(str(self.root / "verified-feed"), source.find("packageSources/add").get("value"))
+        self.assertEqual(str((self.root / "verified-feed").resolve()), source.find("packageSources/add").get("value"))
 
 
 if __name__ == "__main__":

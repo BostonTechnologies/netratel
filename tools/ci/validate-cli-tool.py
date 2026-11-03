@@ -76,9 +76,10 @@ def candidate_package(root, version, revision):
     extracted = root / "candidate-artifact"
     promotion.extract_artifact(archive, extracted)
     expected_name = f"NetRatel.Cli.{version}.nupkg"
-    packages = list(extracted.rglob(expected_name))
-    fixture.require(len(packages) == 1, "Authenticated artifact has a missing or ambiguous CLI package")
-    package = packages[0]
+    # The release job uploads raw publish directories alongside the staged
+    # distributables. Select the root package bound by the root checksum index.
+    package = extracted / expected_name
+    fixture.require(package.is_file(), "Authenticated artifact lacks the staged root CLI package")
     checksum = package.parent / "SHA256SUMS"
     hashes = [line.split(maxsplit=1)[0] for line in checksum.read_text().splitlines()
               if len(line.split(maxsplit=1)) == 2 and line.split(maxsplit=1)[1].lstrip("*") == expected_name]
