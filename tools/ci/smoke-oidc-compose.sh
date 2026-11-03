@@ -61,6 +61,19 @@ command_response_path="$(mktemp)"
 client_volume="${project}-client-state"
 gateway_client="${project}-gateway-client"
 stage="initializing Compose OIDC smoke"
+record_client_acceptance() {
+  if [[ -n "${NETRATEL_CLIENT_ARCHIVE_EVIDENCE:-}" ]]; then
+    jq -nc --arg stage "$1" '{stage:$stage,passed:true}' >> "$NETRATEL_CLIENT_ARCHIVE_EVIDENCE/deployment-stages.jsonl"
+  fi
+}
+
+retain_gateway_summary() {
+  if [[ -n "${NETRATEL_CLIENT_ARCHIVE_EVIDENCE:-}" ]]; then
+    docker logs "$gateway_client" 2>&1 |
+      python3 "$root/tools/ci/summarize-gateway-log.py" --metrics > "$NETRATEL_CLIENT_ARCHIVE_EVIDENCE/gateway-$1.json" || true
+  fi
+}
+
 wait_for_migrations() {
   local container_id state exit_code
   container_id="$(docker compose --project-name "$project" "${compose_args[@]}" ps -a -q migrations)"
@@ -154,6 +167,12 @@ cleanup() {
   local status=$?
   if (( status != 0 )); then
     echo "::error title=${mode} Compose OIDC smoke failed::${stage}" >&2
+  fi
+  if [[ -n "${NETRATEL_CLIENT_ARCHIVE_EVIDENCE:-}" ]]; then
+    retain_gateway_summary final
+    jq -n --arg stage "$stage" --argjson exitCode "$status" \
+      '{exitCode:$exitCode,lastStage:$stage,passed:($exitCode == 0),scope:"Source OIDC deployment with exact archived client; broader feature/recovery acceptance remains pending"}' \
+      > "$NETRATEL_CLIENT_ARCHIVE_EVIDENCE/deployment.json"
   fi
   docker rm -f "$gateway_client" >/dev/null 2>&1 || true
   docker compose --project-name "$project" "${compose_args[@]}" down --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
@@ -781,7 +800,7 @@ import sys
 import tarfile
 
 container = sys.argv[1]
-files, dependencies = [], None
+files, dependencies, static_endpoints = [], None, None
 with subprocess.Popen(["docker", "cp", container + ":/app/.", "-"], stdout=subprocess.PIPE) as copied:
     with tarfile.open(fileobj=copied.stdout, mode="r|") as archive:
         for entry in archive:
@@ -791,10 +810,24 @@ with subprocess.Popen(["docker", "cp", container + ":/app/.", "-"], stdout=subpr
             files.append({"path": entry.name, "bytes": entry.size, "sha256": hashlib.sha256(content).hexdigest()})
             if Path(entry.name).name == "NetRatel.Web.deps.json":
                 dependencies = json.loads(content)
+            if Path(entry.name).name == "NetRatel.Web.staticwebassets.endpoints.json":
+                static_endpoints = json.loads(content)["Endpoints"]
     if copied.wait() != 0:
         raise SystemExit("Unable to inventory the actual Web application files.")
-if not files or dependencies is None:
-    raise SystemExit("Web distribution inventory or runtime dependency graph is missing.")
+if not files or dependencies is None or not static_endpoints:
+    raise SystemExit("Web distribution inventory, runtime dependencies or static endpoint manifest is missing.")
+paths = {Path(entry["path"]).as_posix() for entry in files}
+missing_static_targets = sorted({endpoint["AssetFile"] for endpoint in static_endpoints
+    if Path(endpoint["AssetFile"]).is_absolute() or ".." in Path(endpoint["AssetFile"]).parts
+    or "wwwroot/" + endpoint["AssetFile"] not in paths})
+monaco_prefix = "wwwroot/_content/BlazorMonaco/"
+monaco_files = [entry for entry in files if Path(entry["path"]).as_posix().startswith(monaco_prefix)]
+nls_prefix = monaco_prefix + "lib/monaco-editor/min/vs/nls.messages."
+alternate_nls = [entry["path"] for entry in monaco_files
+    if Path(entry["path"]).as_posix().startswith(nls_prefix)
+    and Path(entry["path"]).name != "nls.messages.js.js"]
+required_nls = {monaco_prefix + "lib/monaco-editor/min/vs/" + name
+    for name in ["nls.messages-loader.js", "nls.messages.js.js"]}
 libraries = sorted(dependencies["libraries"])
 unexpected = [name for name in libraries if name.split("/")[0] == "NetRatel.Infrastructure"
               or name.startswith(("Microsoft.EntityFrameworkCore", "Npgsql"))]
@@ -803,6 +836,9 @@ image_bytes = int(subprocess.check_output(["docker", "image", "inspect", "--form
 receipt = {"sourceCommit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
            "imageId": image, "uncompressedImageBytes": image_bytes,
            "applicationBytes": sum(entry["bytes"] for entry in files), "libraries": libraries,
+           "staticAssetEndpoints": len(static_endpoints), "missingStaticAssetTargets": missing_static_targets,
+           "monacoFiles": len(monaco_files), "monacoBytes": sum(entry["bytes"] for entry in monaco_files),
+           "alternateMonacoNlsFiles": alternate_nls,
            "unexpectedDatabaseDependencies": unexpected, "files": sorted(files, key=lambda entry: entry["path"])}
 output = Path("TestResults/oidc-compose/web-distribution.json")
 output.parent.mkdir(parents=True, exist_ok=True)
@@ -810,6 +846,10 @@ output.write_text(json.dumps(receipt, indent=2) + "\n")
 print(f"Actual Web image: {receipt['applicationBytes']} application bytes across {len(files)} files; {len(libraries)} runtime libraries.")
 if unexpected:
     raise SystemExit("Web image still contains database dependencies: " + ", ".join(unexpected))
+if missing_static_targets:
+    raise SystemExit("Web static endpoints target missing application files: " + ", ".join(missing_static_targets))
+if alternate_nls or not required_nls.issubset(paths):
+    raise SystemExit("Web image must retain the English NLS bundle and loader without alternate locale bundles.")
 PY
 fi
 stage="waiting for migrations"
@@ -933,16 +973,20 @@ docker run --rm --user 0:0 --volume "${client_volume}:/var/lib/netratel" \
 stage="enrolling the disposable Client"
 docker run --rm --network "${project}_default" --volume "${client_volume}:/var/lib/netratel" \
   "$client_image" --api http://api:9222 --enroll "$enrollment_code"
+record_client_acceptance enrollment
 stage="validating disposable Client authentication"
 set +e
 auth_check_output="$(docker run --rm --network "${project}_default" --volume "${client_volume}:/var/lib/netratel" \
   "$client_image" --api http://api:9222 --auth-check 2>&1)"
 auth_check_status=$?
 set -e
+if [[ -n "${NETRATEL_CLIENT_ARCHIVE_EVIDENCE:-}" ]]; then
+  jq -n --argjson exitCode "$auth_check_status" '{exitCode:$exitCode}' > "$NETRATEL_CLIENT_ARCHIVE_EVIDENCE/initial-auth.json"
+fi
 printf '%s\n' "$auth_check_output"
 if (( auth_check_status != 0 )); then
   stage="Client auth check exited ${auth_check_status}: $(grep -E '^.*\[Auth(Check)?\]' <<<"$auth_check_output" | tail -n 1)"
-  return 1
+  exit "$auth_check_status"
 fi
 agent_id="$(sed -nE 's/.*[Aa]gent[Ii]d=([0-9A-Fa-f-]{36}).*/\1/ip' <<<"$auth_check_output" | head -n 1)"
 [[ "$agent_id" =~ ^[0-9A-Fa-f-]{36}$ ]] || {
@@ -950,10 +994,12 @@ agent_id="$(sed -nE 's/.*[Aa]gent[Ii]d=([0-9A-Fa-f-]{36}).*/\1/ip' <<<"$auth_che
   exit 1
 }
 echo "Disposable Client authenticated as agent ${agent_id}."
+record_client_acceptance persisted-authentication
 
 stage="establishing Client gateway sessions"
 start_gateway_client
 wait_for_gateway_sessions
+record_client_acceptance initial-gateway-sessions
 
 stage="requesting direct operator token"
 operator_access_token="$(request_oidc_access_token netratel-test-operator compose-smoke-api)"
@@ -965,8 +1011,10 @@ stage="running browser OIDC rehearsal"
 run_browser_oidc_smoke
 stage="waiting for Client telemetry"
 wait_for_telemetry "$operator_access_token"
+record_client_acceptance telemetry
 stage="checking current Client gateway presence"
 wait_for_current_gateway_presence "$operator_access_token"
+record_client_acceptance initial-authoritative-presence
 # The public Linux client image deliberately includes Bash, and the gateway
 # command contract accepts an explicit executor. Do not rely on the image's
 # default /bin/sh implementation for this end-to-end execution assertion.
@@ -979,6 +1027,7 @@ command_id="$(jq -r '.commandId // empty' <<<"$command_response")"
   exit 1
 }
 wait_for_command_status "$operator_access_token" "$command_id" 4
+record_client_acceptance command-completed
 
 cancel_payload='{"command":"sleep 20","timeoutSeconds":30}'
 stage="waiting for disposable command cancellation"
@@ -993,12 +1042,34 @@ curl --silent --show-error --fail --output /dev/null \
   --header 'Content-Type: application/json' --data '{"reason":"compose_smoke_cancel"}' \
   "${api_url}/api/v2/agents/${tenant_id}/${agent_id}/commands/${cancel_command_id}/cancel"
 wait_for_command_status "$operator_access_token" "$cancel_command_id" 6
+record_client_acceptance command-cancelled
 
+retain_gateway_summary before-restart
 docker rm -f "$gateway_client" >/dev/null
+if [[ -n "${NETRATEL_CLIENT_ARCHIVE_EVIDENCE:-}" ]]; then
+  stage="validating persisted Client identity after restart"
+  set +e
+  restart_auth_output="$(docker run --rm --network "${project}_default" --volume "${client_volume}:/var/lib/netratel" \
+    "$client_image" --api http://api:9222 --auth-check 2>&1)"
+  restart_auth_status=$?
+  set -e
+  jq -n --argjson exitCode "$restart_auth_status" '{exitCode:$exitCode}' > "$NETRATEL_CLIENT_ARCHIVE_EVIDENCE/restart-auth.json"
+  (( restart_auth_status == 0 )) || { echo "Persisted Client auth check failed after restart (exit ${restart_auth_status})." >&2; exit "$restart_auth_status"; }
+  restarted_agent_id="$(sed -nE 's/.*[Aa]gent[Ii]d=([0-9A-Fa-f-]{36}).*/\1/ip' <<<"$restart_auth_output" | head -n 1)"
+  [[ "${restarted_agent_id,,}" == "${agent_id,,}" ]] || { echo 'Client identity changed after restart.' >&2; exit 1; }
+  record_client_acceptance restart-persisted-identity
+fi
+stage="reestablishing Client gateway sessions after restart"
 start_gateway_client
 wait_for_gateway_sessions
+if [[ -n "${NETRATEL_CLIENT_ARCHIVE_EVIDENCE:-}" ]]; then
+  wait_for_current_gateway_presence "$operator_access_token"
+  record_client_acceptance restarted-authoritative-presence
+fi
+retain_gateway_summary after-restart
 docker rm -f "$gateway_client" >/dev/null
 
+stage="validating Web logout"
 logout_headers="$(curl --silent --show-error --dump-header - --output /dev/null \
   "${web_curl_args[@]}" --cookie "$cookie_jar" --cookie-jar "$cookie_jar" "${web_public_url}/auth/logout")"
 grep -qi '^set-cookie:.*\.AspNetCore\.Cookies=;' <<<"$logout_headers" || {
@@ -1006,4 +1077,5 @@ grep -qi '^set-cookie:.*\.AspNetCore\.Cookies=;' <<<"$logout_headers" || {
   exit 1
 }
 
+record_client_acceptance source-oidc-deployment-completed
 echo "${mode} Compose generic OIDC smoke test passed."

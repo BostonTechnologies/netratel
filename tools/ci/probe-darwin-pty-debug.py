@@ -74,6 +74,7 @@ def compare_variant(label, source, state, evidence, expected_sdk):
                 raise ValueError("Debug native resize helper must be Mach-O arm64")
             run("native-exports", ["xcrun", "nm", "-gU", library])
             run("native-libraries", ["xcrun", "otool", "-L", library])
+            run("native-deployment", ["xcrun", "vtool", "-show-build", library])
             if "_netratel_set_window_size" not in (evidence / "native-exports.log").read_text():
                 raise ValueError("Debug native resize helper export is missing")
             native = ctypes.CDLL(str(library), use_errno=True)
@@ -83,7 +84,10 @@ def compare_variant(label, source, state, evidence, expected_sdk):
             result = resize(-1, 17, 77)
             error = ctypes.get_errno()
             metrics["nativeHelper"] = {"sha256": MEASURE["digest"](library), "binary": identity,
-                                       "invalidFdResult": result, "invalidFdErrno": error}
+                                       "invalidFdResult": result, "invalidFdErrno": error,
+                                       "deployment": MEASURE["macho_deployment"](library)}
+            MEASURE["validate_darwin_deployment"](MEASURE["macho_deployment"](output / "NetRatel.Client"),
+                                                   metrics["nativeHelper"]["deployment"])
             if result != -1 or error != errno.EBADF:
                 raise ValueError("The native resize shim did not preserve ioctl errno")
         (evidence / "distribution-inventory.json").write_text(json.dumps(MEASURE["inventory"](output), indent=2) + "\n")

@@ -26,6 +26,37 @@ Baseline and head use separate state roots, so a same-source comparison does
 not collide. These probes remain outside required PR/main CI; full agent
 initialization, auth, other features and platform acceptance remain independent.
 
+The optional `deployment` suite also accepts `deployment_profile=client-archive`
+with `measurement_verify_run` identifying a successful Linux trim assessment.
+Select the same exact `source_ref` for both runs. The profile authenticates the
+original Actions artifact ZIP digests, then verifies the recorded source, SDK,
+publish mode, archive hash, manifest, SBOM/checksums and complete file inventory.
+It does not restore or publish the client again. The shared source CLI/stdio
+preparation and all OIDC deployment assertions remain enabled.
+
+The verified archive is copied into an empty `/app` in a disposable runtime-deps
+wrapper with the normal UID 10001, state directories, Bash, Python and CA support.
+The final image's `/app` inventory must equal the archived inventory exactly.
+Both native and Python PTY probes run under that normal account before the
+existing isolated source deployment exercises enrollment, persisted auth,
+authenticated HTTPS gateway presence, telemetry, command completion,
+cancellation, restart, unchanged identity and current presence. This wrapper is
+an execution environment; its image footprint is not an optimized distribution.
+Original receipts, each PTY's stdout/stderr/status, deployment stages and bounded
+gateway summaries remain in the optional run's evidence, including on failure.
+
+```bash
+gh workflow run integration-validation.yml --ref HARNESS_SHA \
+  -f suite=deployment -f deployment_profile=client-archive \
+  -f source_ref=HARNESS_SHA -f measurement_verify_run=MEASUREMENT_RUN_ID
+```
+
+The source OIDC branding fixture repair tracked by
+[#508](https://github.com/BostonTechnologies/netratel/issues/508) is required before
+claiming the full deployed flow passes. These bounded checks do not establish
+lost-response recovery, update/rollback, all client capabilities or other-platform
+acceptance. Normal production publish settings remain unchanged.
+
 ## Native trim diagnostics
 
 The optional `client-trim-windows` and `client-trim-macos` suites each select one
@@ -103,6 +134,17 @@ After Debug proof, `client-trim-macos` verifies the produced native archive and
 requires each backend's extracted helper SHA/arm64 header to match its actual
 prebundle input. Native failures remain failures; no fallback is forced and full
 macOS owner acceptance remains independent.
+
+The helper's deployment floor comes from the restored target SDK apphost (or
+single-file host), read with `xcrun vtool`, and is passed explicitly to clang.
+The runner OS is never the deployment target. Packaged validation independently
+parses Mach-O load commands and rejects a helper minimum OS newer than the actual
+archived apphost; prebundle and extracted helper deployment metadata must agree.
+The initial helper declared macOS 26 while its .NET apphost declared 12, so its
+passing macOS 26 probes did not establish older-host compatibility. Those
+receipts remain historical. Matching load-command floors avoids raising the
+existing binary requirement; it does not expand .NET's supported OS policy or
+substitute for owner testing on supported older systems.
 
 ## Implementation
 

@@ -6,6 +6,7 @@ import copy
 from datetime import datetime, timezone
 import runpy
 import stat
+import struct
 from types import SimpleNamespace
 import importlib.util
 import io
@@ -2446,6 +2447,34 @@ class ClientMeasurementHelperTests(unittest.TestCase):
             self.assertEqual("runtime behavior", failed["failureKind"])
             self.assertNotIn("launch-cached", failed["stages"])
 
+    @staticmethod
+    def macho_fixture(minimum=12 << 16, sdk=(26 << 16) | (5 << 8), commands=None):
+        commands = commands or struct.pack("<6I", 0x32, 24, 1, minimum, sdk, 0)
+        count = 2 if len(commands) == 48 else 1
+        return struct.pack("<8I", 0xfeedfacf, 0x100000c, 0, 6, count, len(commands), 0, 0) + commands
+
+    def test_darwin_deployment_floor_rejects_runner_26_helper_against_apphost_12(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary) / "native"
+            binary.write_bytes(self.macho_fixture())
+            apphost = self.helper.macho_deployment(binary)
+            self.assertEqual("12.0.0", apphost["minimumOS"])
+            self.helper.validate_darwin_deployment(apphost, apphost)
+            binary.write_bytes(self.macho_fixture(minimum=26 << 16))
+            newer_helper = self.helper.macho_deployment(binary)
+            with self.assertRaisesRegex(ValueError, "minimum OS exceeds"):
+                self.helper.validate_darwin_deployment(apphost, newer_helper)
+
+    def test_darwin_deployment_rejects_truncated_and_ambiguous_load_commands(self):
+        command = struct.pack("<6I", 0x32, 24, 1, 12 << 16, 26 << 16, 0)
+        for payload in (self.macho_fixture()[:-1], self.macho_fixture(commands=command + command),
+                        self.macho_fixture(commands=struct.pack("<2I", 0x32, 4))):
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as temporary:
+                binary = Path(temporary) / "native"
+                binary.write_bytes(payload)
+                with self.assertRaises(ValueError):
+                    self.helper.macho_deployment(binary)
+
     def test_darwin_helper_declaration_requires_actual_bundled_input_before_probe(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary)
@@ -2456,7 +2485,8 @@ class ClientMeasurementHelperTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing from actual prebundle inputs"):
                 self.helper.native_resize_helper_identity(source, "osx-arm64", [])
             item = {"path": "libnetratel_terminal_pty_resize.dylib", "sha256": "a" * 64,
-                    "binary": {"format": "Mach-O", "machine": "0x100000c"}, "excludedFromBundle": False}
+                    "binary": {"format": "Mach-O", "machine": "0x100000c"}, "excludedFromBundle": False,
+                    "machoDeployment": {"platform": 1, "minimumOS": "12.0.0", "sdk": "26.5.0"}}
             self.assertEqual(item["sha256"], self.helper.native_resize_helper_identity(source, "osx-arm64", [item])["sha256"])
             item["excludedFromBundle"] = True
             with self.assertRaisesRegex(ValueError, "must be bundled"):
@@ -2488,14 +2518,15 @@ class ClientMeasurementHelperTests(unittest.TestCase):
         return archive, evidence, state
 
     def test_packaged_native_helper_requires_exact_extracted_bytes_and_architecture(self):
-        payload = b"\xcf\xfa\xed\xfe\x0c\x00\x00\x01"
+        payload = self.macho_fixture()
         for correct in (True, False):
             with self.subTest(correct=correct), tempfile.TemporaryDirectory() as temporary:
                 archive, evidence, state = self.packaged_pty_fixture(Path(temporary), 0,
                     {"stage": "passed", "reaped": True}, native_helper=payload)
                 metrics = {"stages": {}, "expectedNativeHelper": {"name": "libnetratel_terminal_pty_resize.dylib",
                     "sha256": hashlib.sha256(payload).hexdigest() if correct else "0" * 64,
-                    "binary": {"format": "Mach-O", "machine": "0x100000c"}}}
+                    "binary": {"format": "Mach-O", "machine": "0x100000c"},
+                    "deployment": {"platform": 1, "minimumOS": "12.0.0", "sdk": "26.5.0"}}}
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     if correct:
                         self.helper.run_packaged_pty_probes(metrics, evidence, state, archive, "netratel-client-linux-x64")
@@ -2618,6 +2649,109 @@ class ClientMeasurementHelperTests(unittest.TestCase):
             self.assertEqual(1, result)
             verifier.assert_not_called()
             self.assertEqual(preserved, original_path.read_bytes())
+
+
+class ClientArchiveAcceptanceTests(unittest.TestCase):
+    def setUp(self):
+        self.helper = module("prepare-client-archive-acceptance")
+
+    def original_fixture(self, root):
+        original = root / "original"
+        packages = original / "artifacts"
+        packages.mkdir(parents=True)
+        archive = packages / "netratel-client-1.0.0-linux-x64.tar.gz"
+        archive.write_bytes(b"exact archived bytes")
+        sbom = packages / "netratel-client-1.0.0-linux-x64.spdx.json"
+        sbom.write_text('{"fixture":true}')
+        digest = self.helper.measurement.digest
+        (packages / "SHA256SUMS").write_text("".join(f"{digest(path)}  {path.name}\n" for path in (archive, sbom)))
+        metrics = {"sourceSha": "a" * 40, "runtime": "linux-x64", "mode": "trimmed", "productVersion": "1.0.0",
+                   "dotnetSdkVersion": "10.0.403", "exitCode": 0, "runner": {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2"},
+                   "archiveName": archive.name, "archiveBytes": archive.stat().st_size, "archiveSha256": digest(archive),
+                   "stages": {stage: {"exitCode": 0} for stage in ("publish", "package", "verify", "verify-content", "launch-fresh", "launch-cached")}}
+        for backend in ("native", "python"):
+            metrics["stages"]["pty-" + backend] = {"exitCode": 0, "passed": True, "finalStage": "passed", "archiveSha256": digest(archive)}
+        (original / "metrics.json").write_text(json.dumps(metrics))
+        (original / "evaluated-project.json").write_text(json.dumps({"Properties": {
+            "RuntimeIdentifier": "linux-x64", "SelfContained": "true", "PublishSingleFile": "true",
+            "PublishTrimmed": "true", "PublishAot": "false", "TrimMode": "full"}}))
+        return original, metrics, archive
+
+    def test_original_identity_and_exact_bytes_are_required_without_rebuilding(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            original, metrics, archive = self.original_fixture(Path(temporary))
+            arguments = (original, {"id": 123, "run_attempt": 2}, "a" * 40, "1.0.0", "10.0.403")
+            before = (original / "metrics.json").read_bytes()
+            with patch.object(self.helper.subprocess, "run") as run:
+                self.assertEqual(archive, self.helper.verify_original(*arguments)[1])
+                with self.assertRaisesRegex(ValueError, "identity"):
+                    self.helper.verify_original(original, arguments[1], "b" * 40, "1.0.0", "10.0.403")
+                with self.assertRaisesRegex(ValueError, "identity"):
+                    self.helper.verify_original(original, arguments[1], "a" * 40, "1.0.0", "10.0.404")
+                metrics["stages"]["pty-python"]["passed"] = False
+                (original / "metrics.json").write_text(json.dumps(metrics))
+                with self.assertRaisesRegex(ValueError, "PTY"):
+                    self.helper.verify_original(*arguments)
+                (original / "metrics.json").write_bytes(before)
+                archive.write_bytes(archive.read_bytes() + b"tampered")
+                with self.assertRaisesRegex(ValueError, "measured bytes"):
+                    self.helper.verify_original(*arguments)
+                run.assert_not_called()
+            self.assertEqual(before, (original / "metrics.json").read_bytes())
+
+    def test_actions_artifact_digest_failure_stops_before_extraction(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            evidence, work = root / "evidence", root / "work"
+            evidence.mkdir()
+            work.mkdir()
+            run = {"id": 123, "status": "completed", "conclusion": "success", "event": "workflow_dispatch",
+                   "path": ".github/workflows/integration-validation.yml", "repository": {"full_name": "owner/repo"},
+                   "head_repository": {"full_name": "owner/repo"}}
+            listing = {"total_count": 1, "artifacts": [{"id": 456, "name": "client-measurement-evidence-linux-x64",
+                       "expired": False, "size_in_bytes": 7, "digest": "sha256:" + "0" * 64}]}
+            with patch.object(self.helper.subprocess, "check_output", side_effect=[json.dumps(run), json.dumps(listing)]), \
+                 patch.object(self.helper.subprocess, "run", side_effect=lambda command, stdout, **kwargs: stdout.write(b"corrupt")):
+                with self.assertRaisesRegex(ValueError, "authenticated receipt"):
+                    self.helper.download_original("owner/repo", "123", evidence, work)
+            self.assertEqual([], list((evidence / "original").iterdir()))
+            self.assertTrue((evidence / "original-run.json").is_file())
+
+    def test_native_archive_rejects_links_and_files_outside_the_distribution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for index, name in enumerate(("../fallback.dll", "other/NetRatel.Client", "netratel-client-linux-x64/link")):
+                archive = root / f"{index}.tar.gz"
+                with tarfile.open(archive, "w:gz") as bundle:
+                    entry = tarfile.TarInfo(name)
+                    if index == 2:
+                        entry.type, entry.linkname = tarfile.SYMTYPE, "/untrimmed/NetRatel.Client"
+                    bundle.addfile(entry)
+                with self.assertRaisesRegex(ValueError, "Unsafe"):
+                    self.helper.extract_distribution(archive, root / f"out{index}")
+
+    def test_wrapper_probe_retains_exact_failure_and_executes_both_backends(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence = Path(temporary)
+            receipt = {"stages": {}}
+            executions = []
+
+            def execute(command, **kwargs):
+                if command[1] == "rm":
+                    return subprocess.CompletedProcess(command, 0)
+                executions.append(command[-1])
+                backend = "native" if command[-1].endswith("native") else "python"
+                return subprocess.CompletedProcess(command, 23 if backend == "native" else 0,
+                    json.dumps({"stage": "failed" if backend == "native" else "passed", "reaped": True}) + "\n", "probe-stderr")
+
+            with patch.dict(os.environ, {"GITHUB_RUN_ID": "789"}), patch.object(self.helper.subprocess, "run", side_effect=execute):
+                with self.assertRaisesRegex(ValueError, "pty-native"):
+                    self.helper.probe_wrapper(receipt, evidence, "fixture-image")
+            self.assertEqual(["--terminal-pty-self-test-native", "--terminal-pty-self-test-python"], executions)
+            self.assertEqual(23, receipt["stages"]["pty-native"]["exitCode"])
+            self.assertTrue(receipt["stages"]["pty-python"]["passed"])
+            self.assertEqual(["pty-native"], receipt["failureStages"])
+            self.assertEqual("probe-stderr", (evidence / "pty-native.stderr.log").read_text())
 
 
 class ClientRuntimeContentTests(unittest.TestCase):
