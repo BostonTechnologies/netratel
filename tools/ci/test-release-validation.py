@@ -654,6 +654,82 @@ class CorePartitionCoverageTests(unittest.TestCase):
             self.helper.validate(cases, {"infrastructure": self.report("infrastructure", [self.infra])})
 
 
+class StdioAssessmentTests(unittest.TestCase):
+    def test_diagnostic_counts_retain_distinct_emissions_without_msbuild_summary_echoes(self):
+        helper = module("measure-stdio-publish")
+        primary = "source.cs(12,2): warning IL2026: Unsafe boundary. [project.csproj]\n"
+        linker = "\x1b[33msource.cs(13,2): Trim analysis warning IL2070: Unknown type. [project.csproj]\x1b[0m\n"
+        records = helper.diagnostics(primary + primary + linker + "Build succeeded.\n" + primary + linker)
+        self.assertEqual(["IL2026", "IL2026", "IL2070"], [row["code"] for row in records])
+        self.assertEqual([1, 2, 3], [row["line"] for row in records])
+
+    def test_fdd_and_trimmed_jit_modes_keep_distinct_runtime_populations_and_no_aot(self):
+        helper = module("measure-stdio-publish")
+        control = helper.properties("fdd", "a" * 40)
+        trimmed = helper.properties("trimmed-jit", "a" * 40)
+        self.assertEqual(("false", "false"), (control["SelfContained"], control["PublishTrimmed"]))
+        self.assertEqual(("true", "true", "full"), (trimmed["SelfContained"], trimmed["PublishTrimmed"], trimmed["TrimMode"]))
+        for settings in (control, trimmed):
+            self.assertEqual("false", settings["PublishAot"])
+            self.assertEqual("false", settings["PublishSingleFile"])
+            self.assertEqual("a" * 40, settings["PublicSourceRevision"])
+            self.assertNotIn("NoWarn", settings)
+        self.assertEqual("false", trimmed["EnableAotAnalyzer"])
+
+    def test_actual_process_probe_rejects_startup_failure_nonprotocol_stdout_and_empty_catalog(self):
+        helper = module("probe-stdio-assessment")
+        for mode in ("startup", "nonprotocol", "empty"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                entrypoint = root / "fixture"
+                entrypoint.write_text("#!/usr/bin/env python3\n" + "mode = " + repr(mode) + "\n" + r'''
+import json, sys
+if len(sys.argv) > 1:
+    print('fixture help')
+    sys.exit(0)
+if mode == 'startup':
+    print('fixed startup failure', file=sys.stderr)
+    sys.exit(2)
+if mode == 'nonprotocol':
+    print('not a protocol frame', flush=True)
+    sys.exit(0)
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request:
+        continue
+    if request['method'] == 'initialize':
+        result = {'serverInfo': {'name': 'NetRatel.Mcp', 'version': '1.2.3'}}
+    else:
+        result = {request['method'].split('/')[0]: []}
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+''')
+                entrypoint.chmod(0o755)
+                fixture = SimpleNamespace(credential="synthetic-private-fixture", agent="unused", requests=[],
+                                          server=SimpleNamespace(server_port=1), certificate=root / "unused.crt")
+                result = helper.probe(entrypoint, root / "evidence", root / "state", "1.2.3", "a" * 40, fixture)
+                self.assertFalse(result["passed"])
+                self.assertEqual(result, json.loads((root / "evidence/probes.json").read_text()))
+                if mode == "startup":
+                    self.assertEqual(2, result["exitCode"])
+                    self.assertIn("fixed startup failure", (root / "evidence/protocol.stderr.log").read_text())
+                elif mode == "nonprotocol":
+                    self.assertIn("JSONDecodeError", result["error"])
+                else:
+                    self.assertIn("Empty catalog", result["error"])
+
+    def test_assessment_is_explicitly_selected_without_new_required_execution(self):
+        workflow = (ROOT / ".github/workflows/integration-validation.yml").read_text()
+        self.assertIn("mcp-campaign, stdio-assessment, browser", workflow)
+        step = re.search(r"(?ms)^      - name: Assess same-source Linux stdio.*?(?=^      - )", workflow)
+        self.assertIsNotNone(step)
+        self.assertIn("if: inputs.suite == 'stdio-assessment'", step.group(0))
+        self.assertNotIn("continue-on-error", step.group(0))
+        for path in ("public-pr-validation.yml", "release-build.yml"):
+            required = (ROOT / ".github/workflows" / path).read_text()
+            self.assertNotIn("measure-stdio-publish.py", required)
+            self.assertNotIn("stdio-assessment", required)
+
+
 class MtpCiRunnerSelectionTests(unittest.TestCase):
     def test_independent_contracts_are_required_before_pr_success_and_release_packaging(self):
         for relative, gate in ((".github/workflows/public-pr-validation.yml", "pr-validation"),
