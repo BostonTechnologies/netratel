@@ -10,6 +10,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
@@ -313,11 +314,8 @@ internal sealed class UnixPtyHelperTerminalHost : ITerminalHostSession
             return Task.CompletedTask;
         }
 
-        return SendControlAsync(new
-        {
-            type = "input",
-            data = Convert.ToBase64String(Encoding.UTF8.GetBytes(data))
-        }, ct);
+        return SendControlAsync(new UnixPtyInputMessage("input", Convert.ToBase64String(Encoding.UTF8.GetBytes(data))),
+            TerminalJsonContext.Default.UnixPtyInputMessage, ct);
     }
 
     public async Task<TerminalResizeResult> ResizeAsync(int cols, int rows, CancellationToken ct)
@@ -332,13 +330,8 @@ internal sealed class UnixPtyHelperTerminalHost : ITerminalHostSession
             }
 
             var requestId = Interlocked.Increment(ref _resizeRequestId);
-            await SendControlAsync(new
-            {
-                type = "resize",
-                id = requestId,
-                cols = requestedCols,
-                rows = requestedRows
-            }, ct).ConfigureAwait(false);
+            await SendControlAsync(new UnixPtyResizeMessage("resize", requestId, requestedCols, requestedRows),
+                TerminalJsonContext.Default.UnixPtyResizeMessage, ct).ConfigureAwait(false);
 
             using var resizeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             resizeCts.CancelAfter(ResizeTimeout);
@@ -392,7 +385,7 @@ internal sealed class UnixPtyHelperTerminalHost : ITerminalHostSession
         {
             if (!HasExited)
             {
-                await SendControlAsync(new { type = "close", reason }, ct).ConfigureAwait(false);
+                await SendControlAsync(new UnixPtyCloseMessage("close", reason), TerminalJsonContext.Default.UnixPtyCloseMessage, ct).ConfigureAwait(false);
                 if (_process is not null)
                 {
                     await _process.WaitForExitAsync(ct)
@@ -460,7 +453,7 @@ internal sealed class UnixPtyHelperTerminalHost : ITerminalHostSession
         return $"exec {command}";
     }
 
-    private async Task SendControlAsync(object message, CancellationToken ct)
+    private async Task SendControlAsync<T>(T message, JsonTypeInfo<T> typeInfo, CancellationToken ct)
     {
         await _controlLock.WaitAsync(ct).ConfigureAwait(false);
         try
@@ -470,7 +463,7 @@ internal sealed class UnixPtyHelperTerminalHost : ITerminalHostSession
                 throw new InvalidOperationException("Unix PTY helper control stream is unavailable.");
             }
 
-            var json = JsonSerializer.Serialize(message);
+            var json = JsonSerializer.Serialize(message, typeInfo);
             await _controlWriter.WriteLineAsync(json.AsMemory(), ct).ConfigureAwait(false);
             await _controlWriter.FlushAsync(ct).ConfigureAwait(false);
         }
@@ -563,7 +556,7 @@ internal sealed class UnixPtyHelperTerminalHost : ITerminalHostSession
         }
     }
 
-    private static bool TryParseStatus(string? line, out HelperStatus? status)
+    internal static bool TryParseStatus(string? line, out UnixPtyHelperStatus? status)
     {
         status = null;
         if (string.IsNullOrWhiteSpace(line))
@@ -573,7 +566,7 @@ internal sealed class UnixPtyHelperTerminalHost : ITerminalHostSession
 
         try
         {
-            status = JsonSerializer.Deserialize<HelperStatus>(line, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            status = JsonSerializer.Deserialize(line, TerminalJsonContext.Default.UnixPtyHelperStatus);
             return status is not null && !string.IsNullOrWhiteSpace(status.Type);
         }
         catch
@@ -615,17 +608,6 @@ internal sealed class UnixPtyHelperTerminalHost : ITerminalHostSession
         _controlLock.Dispose();
         _resizeLock.Dispose();
         _lifetimeCts.Dispose();
-    }
-
-    private sealed class HelperStatus
-    {
-        public string? Type { get; set; }
-        public long? Id { get; set; }
-        public string? Result { get; set; }
-        public string? Error { get; set; }
-        public int? Pid { get; set; }
-        public int? Cols { get; set; }
-        public int? Rows { get; set; }
     }
 
     internal sealed record UnixPtyHelperAvailability(

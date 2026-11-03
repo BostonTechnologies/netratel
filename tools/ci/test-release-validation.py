@@ -2048,6 +2048,59 @@ class ClientMeasurementHelperTests(unittest.TestCase):
     def setUp(self):
         self.helper = module("measure-client-publish")
 
+    def packaged_pty_fixture(self, root, native_exit, native_final):
+        distribution = root / "netratel-client-linux-x64"
+        distribution.mkdir()
+        executable = distribution / "NetRatel.Client"
+        executable.write_text("#!/usr/bin/env python3\n"
+            "import json, os, pathlib, sys\n"
+            "cache = pathlib.Path(os.environ['DOTNET_BUNDLE_EXTRACT_BASE_DIR'])\n"
+            "cache.mkdir(parents=True)\n"
+            "(cache / 'extracted').write_bytes(b'cache')\n"
+            "print('ordinary client log')\n"
+            f"event = {native_final!r} if sys.argv[1].endswith('native') else {{'stage': 'passed', 'reaped': True}}\n"
+            "print(json.dumps(event))\n"
+            "print(sys.argv[1], file=sys.stderr)\n"
+            f"sys.exit({native_exit} if sys.argv[1].endswith('native') else 0)\n")
+        executable.chmod(0o755)
+        archive = root / "client.tar.gz"
+        with tarfile.open(archive, "w:gz") as bundle:
+            bundle.add(distribution, arcname=distribution.name)
+        evidence, state = root / "evidence", root / "state"
+        evidence.mkdir()
+        state.mkdir()
+        return archive, evidence, state
+
+    def test_packaged_probes_capture_exact_failure_and_still_execute_other_backend(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive, evidence, state = self.packaged_pty_fixture(Path(temporary), 23, {"stage": "failed", "error": "probe failure"})
+            original = archive.read_bytes()
+            metrics = {"stages": {}, "archiveBytes": len(original)}
+            with self.assertRaises(subprocess.CalledProcessError) as failure, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.helper.run_packaged_pty_probes(metrics, evidence, state, archive, "netratel-client-linux-x64")
+            self.assertEqual(23, failure.exception.returncode)
+            self.assertEqual(23, metrics["stages"]["pty-native"]["exitCode"])
+            self.assertTrue(metrics["stages"]["pty-python"]["passed"])
+            self.assertEqual(["pty-native"], metrics["failureStages"])
+            self.assertIn('"stage": "failed"', (evidence / "pty-native.stdout.log").read_text())
+            self.assertIn("--terminal-pty-self-test-native", (evidence / "pty-native.stderr.log").read_text())
+            for backend in ("native", "python"):
+                self.assertEqual(5, metrics["stages"]["pty-" + backend]["bundleExtractionBytes"])
+                self.assertTrue((state / ("pty-" + backend) / "archive/netratel-client-linux-x64/NetRatel.Client").is_file())
+            self.assertEqual(original, archive.read_bytes())
+            self.assertEqual(len(original), metrics["archiveBytes"])
+
+    def test_zero_exit_without_successful_final_stage_is_a_failed_probe(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive, evidence, state = self.packaged_pty_fixture(Path(temporary), 0, {"stage": "availability"})
+            metrics = {"stages": {}}
+            with self.assertRaises(subprocess.CalledProcessError), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.helper.run_packaged_pty_probes(metrics, evidence, state, archive, "netratel-client-linux-x64")
+            self.assertEqual(0, metrics["stages"]["pty-native"]["exitCode"])
+            self.assertFalse(metrics["stages"]["pty-native"]["passed"])
+            self.assertEqual("availability", metrics["stages"]["pty-native"]["finalStage"])
+            self.assertTrue(metrics["stages"]["pty-python"]["passed"])
+
     def test_windows_uses_git_installation_bash_and_passes_paths_as_literal_posix_arguments(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
