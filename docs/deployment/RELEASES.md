@@ -179,6 +179,7 @@ gh workflow run integration-validation.yml --ref main -f suite=browser -f source
 gh workflow run integration-validation.yml --ref main -f suite=upgrade-local -f release_tag='<completed-release-tag>'
 gh workflow run integration-validation.yml --ref main -f suite=deployment -f deployment_profile=http-host-setup -f source_ref='<commit-or-tag>'
 gh workflow run integration-validation.yml --ref main -f suite=migrations-image -f source_ref='<commit-or-tag>'
+gh workflow run integration-validation.yml --ref main -f suite=api-image -f source_ref='<exact-public-commit>'
 ```
 
 The optional `migrations-image` suite compares the actual same-source migrations
@@ -204,6 +205,10 @@ five-image shared-layer totals, separately from registry transfer sizes.
 These receipts are under `TestResults/mcp-http-image`.
 
 The profile then reuses source Compose and public HTTPS fixtures for a fresh local-account stack. It generates into the supplied persistent setup volume, approves that exact generation through the administrator protocol, executes the generated apply action, obtains a separate temporary personal MCP credential, and requires authenticated catalog plus a delegated read-only API status result. It also runs bare `dotnet NetRatel.Mcp.Http.dll setup` inside the serving container, saves the personal default to its separate client-data volume, then reloads and verifies that profile after recreation. It recreates tooling/runtime containers and repeats host verification with the equivalent `/mcp` input and unchanged generation fingerprint. The redacted receipts under `TestResults/http-host-setup` distinguish this headless generation/protocol/deployment smoke from the focused interactive terminal fixtures and later owner testing. The default deployment profile remains the existing `oidc` suite; neither profile enters required PR/main CI.
+
+The optional `api-image` diagnostic compares the unchanged default noble API image with the `chiseled-candidate` target on one linux/amd64 hosted runner. The candidate uses Microsoft's [noble-chiseled-extra base](https://github.com/dotnet/dotnet-docker/tree/main/src/aspnet/10.0/noble-chiseled-extra) and Canonical's [GSSAPI library slice](https://github.com/canonical/chisel-releases/blob/ubuntu-24.04/slices/libgssapi-krb5-2.yaml), including its dependency and copyright closure. Both arms must retain identical application/SBOM bytes and runtime patches. The selected probes cover actual GSSAPI application loading, nonroot ownership/writes, trust/globalization/timezone support, and disposable PostgreSQL/local upgrade with owner-only keys and graceful API shutdown. Published latest-completed Web/migrations/CLI inputs stay fixed; candidate images stay on the runner.
+
+The diagnostic records standalone and five-image unique-layer exports normalized to gzip level 6 with zero mtime and no filename. These exclude config/manifests and are not registry transfer bytes. A smaller standalone image can increase the shared-stack union when companion images retain the original base. The default production target, framework-dependent untrimmed mode and release publication remain unchanged; OIDC/Hybrid, gateway/client recovery, OTEL and broader functional acceptance remain separate gates before adoption.
 
 Other explicit choices are `pairing`, `gateway`, `deployment`,
 `release-images`, `native-client` and `upgrade-oidc`.

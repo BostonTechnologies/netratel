@@ -236,65 +236,19 @@ bash tools/ci/smoke-postgresql-local-upgrade.sh 2>&1 | tee "$results/latest-rele
 # Compare complete images and the five-image stack without any registry writes.
 # A fixed gzip encoding makes local layer exports comparable; these are not registry pull bytes.
 stack_images=()
+comparison_args=()
 for component in api web mcp-http client; do
   published="$(jq -r --arg component "$component" '.images[$component]' "$results/selected-release.json")"
   docker pull "$published"
   alias="netratel-stack-${component}:measurement"
   docker tag "$published" "$alias"
   stack_images+=("$alias")
+  comparison_args+=(--companion "$alias")
 done
 mkdir -p "$temporary/layers"
 docker image save "$candidate" "$control" "${stack_images[@]}" -o "$temporary/images.tar"
 tar -xf "$temporary/images.tar" -C "$temporary/layers"
-python3 - "$temporary/layers" "$results/layer-export-comparison.json" "$revision" <<'PY'
-import gzip, hashlib, importlib.util, json, os, subprocess, sys, tempfile
-from pathlib import Path
-root, output, revision = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
-spec = importlib.util.spec_from_file_location('scanner', 'tools/ci/scan-saved-image.py')
-scanner = importlib.util.module_from_spec(spec); spec.loader.exec_module(scanner)
-layers, images = {}, {}
-for image in json.loads((root / 'manifest.json').read_text()):
-    config = json.loads(scanner.contained(root, image['Config']).read_text())
-    identities = config['rootfs']['diff_ids']
-    if len(identities) != len(image['Layers']):
-        raise ValueError('Image layer/config inventory differs')
-    for identity, reference in zip(identities, image['Layers']):
-        if identity in layers:
-            continue
-        path = scanner.contained(root, reference)
-        with path.open('rb') as source:
-            compressed = source.read(2) == b'\x1f\x8b'
-        with (gzip.open(path, 'rb') if compressed else path.open('rb')) as source, tempfile.TemporaryFile() as exported:
-            digest = hashlib.sha256()
-            expanded = 0
-            with gzip.GzipFile(filename='', mode='wb', fileobj=exported, compresslevel=6, mtime=0) as destination:
-                while chunk := source.read(1024 * 1024):
-                    digest.update(chunk); expanded += len(chunk); destination.write(chunk)
-            if 'sha256:' + digest.hexdigest() != identity:
-                raise ValueError('Saved layer does not match its uncompressed image identity')
-            layers[identity] = {'gzipBytes': exported.tell(), 'tarBytes': expanded}
-    for name in image['RepoTags'] or []:
-        images[name] = identities
-candidate = images['netratel-migrations:runtime-candidate']
-control = images['netratel-migrations:aspnet-control']
-other = set().union(*(set(ids) for name, ids in images.items() if name.startswith('netratel-stack-')))
-if len([name for name in images if name.startswith('netratel-stack-')]) != 4:
-    raise ValueError('A complete four-image companion stack is required')
-def total(identities):
-    return sum(layers[identity]['gzipBytes'] for identity in set(identities))
-record = {
-    'sourceSha': revision,
-    'sdk': subprocess.check_output(['dotnet', '--version'], text=True).strip(),
-    'runner': {key: os.environ.get(key) for key in ('RUNNER_OS', 'RUNNER_ARCH', 'ImageOS', 'ImageVersion')},
-    'format': 'Docker-save layers normalized to gzip level 6, mtime 0, no filename; excludes image config/manifests; not registry pull bytes',
-    'controlStandaloneLayerGzipBytes': total(control),
-    'candidateStandaloneLayerGzipBytes': total(candidate),
-    'controlFiveImageUniqueLayerGzipBytes': total(other | set(control)),
-    'candidateFiveImageUniqueLayerGzipBytes': total(other | set(candidate)),
-    'layers': layers,
-    'images': images,
-}
-output.write_text(json.dumps(record, indent=2) + '\n')
-print(json.dumps({key: value for key, value in record.items() if key not in ('layers', 'images')}, indent=2))
-PY
+python3 tools/ci/compare-stack-image-layers.py --directory "$temporary/layers" \
+  --output "$results/layer-export-comparison.json" --source-sha "$revision" \
+  --candidate "$candidate" --control "$control" "${comparison_args[@]}"
 echo 'Migrations image acceptance passed; candidate images remain local to this runner.'
