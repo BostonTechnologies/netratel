@@ -5,7 +5,7 @@ using NetRatel.Shared.Contracts.Tasks;
 namespace NetRatel.Shared.Security;
 
 /// <summary>Value-based masking before native output leaves the execution boundary.</summary>
-public sealed class TaskOutputRedactor
+public sealed partial class TaskOutputRedactor
 {
     public const string Mask = "[REDACTED]";
     public const string ReceiptProperty = "outputProtectionBinding";
@@ -113,7 +113,7 @@ public sealed class TaskOutputRedactor
 
     private string Scrub(string value, int depth)
     {
-        if (depth >= 16) return JsonSerializer.Serialize(Mask);
+        if (depth >= 16) return JsonSerializer.Serialize(Mask, RedactionJsonContext.Default.String);
         try
         {
             var node = JsonNode.Parse(value);
@@ -123,9 +123,9 @@ public sealed class TaskOutputRedactor
                 if (scalar.TryGetValue<string>(out var text))
                 {
                     var safe = ScrubText(text, depth + 1);
-                    return safe == text ? value : JsonSerializer.Serialize(safe);
+                    return safe == text ? value : JsonSerializer.Serialize(safe, RedactionJsonContext.Default.String);
                 }
-                return IsSecretScalar(scalar) ? JsonSerializer.Serialize(Mask) : value;
+                return IsSecretScalar(scalar) ? JsonSerializer.Serialize(Mask, RedactionJsonContext.Default.String) : value;
             }
             var changed = false;
             Visit(node);
