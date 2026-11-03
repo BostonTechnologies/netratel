@@ -633,9 +633,13 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertEqual(["workflow_dispatch"], re.findall(r"(?m)^  ([A-Za-z_][A-Za-z_0-9-]*):", triggers.group(1)))
         jobs = manual.split("\njobs:\n", 1)
         self.assertEqual(2, len(jobs))
-        self.assertEqual(["selected-suite", "windows-mcp", "client-measurement"],
+        self.assertEqual(["selected-suite", "windows-mcp", "client-measurement", "migrations-image"],
                          re.findall(r"(?m)^  ([A-Za-z_][A-Za-z_0-9-]*):", jobs[1]))
         selected, measurement = jobs[1].split("\n  client-measurement:", 1)
+        measurement, migrations = measurement.split("\n  migrations-image:", 1)
+        self.assertIn("if: inputs.suite == 'migrations-image'", migrations)
+        self.assertIn("inputs.suite != 'migrations-image'", selected)
+        self.assertNotRegex(migrations, r"(?m)^\s+matrix:")
         self.assertNotRegex(selected, r"(?m)^\s+matrix:", "A functional suite selection must not fan out into other functional suites.")
         self.assertIn("if: inputs.suite != 'client-measurement'", selected)
         self.assertIn("if: inputs.suite == 'client-measurement'", measurement)
