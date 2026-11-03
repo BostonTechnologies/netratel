@@ -32,6 +32,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Both Docker builds must see the same immutable source; captured logs and
+# evaluated host intermediates must not invalidate their shared publish stage.
+mkdir -p "$temporary/source"
+git archive HEAD | tar -x -C "$temporary/source"
 python3 - "$temporary/control.Dockerfile" <<'PY'
 from pathlib import Path
 import sys
@@ -41,10 +45,14 @@ if source.count(base) != 1:
     raise ValueError('Expected the reviewed CoreCLR migrations base')
 Path(sys.argv[1]).write_text(source.replace(base, base.replace('/runtime:', '/aspnet:')))
 PY
-bash tools/ci/build-public-image.sh --dockerfile docker/migrations/Dockerfile \
-  --image "$candidate" --version "$version" --revision "$revision" 2>&1 | tee "$results/candidate-build.log"
-bash tools/ci/build-public-image.sh --dockerfile "$temporary/control.Dockerfile" \
-  --image "$control" --version "$version" --revision "$revision" 2>&1 | tee "$results/control-build.log"
+(cd "$temporary/source"
+  bash tools/ci/build-public-image.sh --dockerfile docker/migrations/Dockerfile \
+    --image "$candidate" --version "$version" --revision "$revision"
+) 2>&1 | tee "$results/candidate-build.log"
+(cd "$temporary/source"
+  bash tools/ci/build-public-image.sh --dockerfile "$temporary/control.Dockerfile" \
+    --image "$control" --version "$version" --revision "$revision"
+) 2>&1 | tee "$results/control-build.log"
 bash tools/ci/scan-public-image.sh --image "$candidate" --version "$version" --revision "$revision" \
   2>&1 | tee "$results/candidate-scan.log"
 
