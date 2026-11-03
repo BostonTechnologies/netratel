@@ -22,8 +22,9 @@ class ApiRidPayloadTests(unittest.TestCase):
         self.control = {path: {"bytes": 100, "sha256": hashlib.sha256(path.encode()).hexdigest()} for path in (
             "NetRatel.API.dll", "NetRatel.API.pdb", "NetRatel.API.deps.json", "runtime.spdx.json",
             "THIRD-PARTY-NOTICES.txt", "System.Drawing.Common.dll", *payload.MOVES.values(),
-            "runtimes/win-x64/native/lmdb.dll")}
-        self.candidate = {key: value.copy() for key, value in self.control.items() if not key.startswith("runtimes/")}
+            "runtimes/win-x64/native/lmdb.dll", "web.config")}
+        self.candidate = {key: value.copy() for key, value in self.control.items()
+                          if not key.startswith("runtimes/") and key not in payload.LINUX_OMISSIONS}
         for destination, source in payload.MOVES.items():
             self.candidate[destination] = self.control[source].copy()
         self.documents = {}
@@ -62,6 +63,7 @@ class ApiRidPayloadTests(unittest.TestCase):
         result = self.compare()
         self.assertIn("runtimes/win-x64/native/lmdb.dll", result["removedRuntimePaths"])
         self.assertEqual(["NetRatel.API.pdb"], result["retainedPdbPaths"])
+        self.assertEqual(["web.config"], result["omittedWindowsHostingFiles"])
 
     def test_missing_or_changed_linux_library_fails(self):
         for value in (None, {"bytes": 100, "sha256": "a" * 64}):

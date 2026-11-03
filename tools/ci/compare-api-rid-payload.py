@@ -12,6 +12,7 @@ MOVES = {
     "System.Drawing.Common.dll": "runtimes/unix/lib/net6.0/System.Drawing.Common.dll",
 }
 METADATA = {"NetRatel.API.deps.json", "runtime.spdx.json"}
+LINUX_OMISSIONS = {"web.config"}
 
 
 def compare(control, candidate, control_root, candidate_root):
@@ -26,7 +27,7 @@ def compare(control, candidate, control_root, candidate_root):
         if path not in MOVES or value != control.get(MOVES[path]):
             raise ValueError("Unexpected API payload change: " + path)
     removed = sorted(control.keys() - candidate.keys())
-    if any(not path.startswith("runtimes/") for path in removed):
+    if any(not path.startswith("runtimes/") and path not in LINUX_OMISSIONS for path in removed):
         raise ValueError("RID selection removed a non-runtime file or symbol")
     for path in MOVES.values():
         if path not in control:
@@ -87,7 +88,10 @@ def compare(control, candidate, control_root, candidate_root):
         "format": "Actual uncompressed app files; controlled source/metadata/base comparison, not registry bytes",
         "controlAppBytes": sum(item["bytes"] for item in control.values()),
         "candidateAppBytes": sum(item["bytes"] for item in candidate.values()),
-        "removedRuntimePaths": removed, "runtimeAssetMoves": MOVES,
+        "removedPaths": removed,
+        "removedRuntimePaths": [path for path in removed if path.startswith("runtimes/")],
+        "runtimeAssetMoves": MOVES,
+        "omittedWindowsHostingFiles": sorted(set(removed) & LINUX_OMISSIONS),
         "retainedPdbPaths": sorted(path for path in control if path.endswith(".pdb")),
         "packages": len(new["packages"]),
         "changedPaths": sorted(path for path in candidate if candidate[path] != control.get(path)),

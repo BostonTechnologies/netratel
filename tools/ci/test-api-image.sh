@@ -18,9 +18,14 @@ case "$comparison" in
 esac
 printf '%s\n' "$revision" > "$results/source-sha.txt"
 dotnet --info > "$results/sdk.txt"
+compiler_properties=()
+if [[ "$comparison" == linux-rid ]]; then
+  compiler_properties=(-p:AppendRuntimeIdentifierToOutputPath=false -p:PlatformTarget=x64)
+fi
 dotnet msbuild src/NetRatel/NetRatel.API/NetRatel.API.csproj -nologo \
   -p:Configuration=Release -p:UseAppHost=false -p:RuntimeIdentifier=linux-x64 -p:SelfContained=false \
-  -getProperty:TargetFramework,RuntimeIdentifier,SelfContained,PublishTrimmed,PublishAot,UseAppHost \
+  "${compiler_properties[@]}" \
+  -getProperty:TargetFramework,RuntimeIdentifier,SelfContained,PublishTrimmed,PublishAot,UseAppHost,PlatformTarget,AppendRuntimeIdentifierToOutputPath,IntermediateOutputPath \
   > "$results/publish-properties.json"
 temporary="$(mktemp -d)"
 container=""
@@ -54,6 +59,14 @@ for reference in ('mcr.microsoft.com/dotnet/aspnet:10.0-noble', 'mcr.microsoft.c
     digest = next(item for item in image['RepoDigests'] if item.startswith(reference.split(':')[0] + '@sha256:'))
     bases[reference] = digest
     text = text.replace('FROM ' + reference + ' AS ', 'FROM ' + digest + ' AS ')
+# RID defaults change compiler architecture and generated-source paths, including
+# OpenAPI file-local type names. Align these diagnostic compilation inputs in
+# both arms; runtime asset selection is still the only varied publish setting.
+commands = ('RUN dotnet build ', 'RUN dotnet publish ')
+if sum(line.startswith(commands) for line in text.splitlines()) != 2:
+    raise ValueError('Expected exactly the API build and publish commands')
+text = '\n'.join(line + ' -p:AppendRuntimeIdentifierToOutputPath=false -p:PlatformTarget=x64'
+                 if line.startswith(commands) else line for line in text.splitlines()) + '\n'
 path.write_text(text)
 timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 metadata = root / 'Directory.Build.targets'
@@ -66,7 +79,9 @@ if control == text or text.count(' --runtime linux-x64') != 4:
 (root / 'docker/api/control.Dockerfile').write_text(control)
 (results / 'controlled-build.json').write_text(json.dumps({
     'comparison': 'Same source with former RID-neutral selection reconstructed; both diagnostic trees share the pinned timestamp and base digests',
-    'bases': bases, 'buildTimestampUtc': timestamp}, indent=2) + '\n')
+    'bases': bases, 'buildTimestampUtc': timestamp,
+    'diagnosticCompilerProperties': {'AppendRuntimeIdentifierToOutputPath': False, 'PlatformTarget': 'x64'}},
+    indent=2) + '\n')
 PY
 fi
 for arm in candidate control; do
