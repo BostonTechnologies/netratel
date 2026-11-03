@@ -7,11 +7,17 @@ on:
         description: Run only this optional suite (client measurements use matching hosted OS runners)
         type: choice
         required: true
-        options: [pairing, gateway, mcp-campaign, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement, windows-mcp, migrations-image, api-image, cli-tool]
+        options: [pairing, gateway, mcp-campaign, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement, client-trim-windows, client-trim-macos, client-control-macos, windows-mcp, migrations-image, api-image, api-rid, cli-tool]
       source_ref:
         description: Source ref to test (published-image and upgrade suites use release_tag)
         default: main
         required: true
+      migrations_comparison:
+        description: Comparison for migrations-image only (control is diagnostic, never published)
+        type: choice
+        default: base
+        options: [base, html-ownership, schema-ownership]
+        required: false
       browser_classes:
         description: Optional space-separated fully qualified browser test classes; blank runs the full browser suite
         default: ''
@@ -21,7 +27,7 @@ on:
         description: Disposable profile for the deployment suite only
         type: choice
         default: oidc
-        options: [oidc, http-host-setup]
+        options: [oidc, http-host-setup, client-runtime]
         required: false
       release_tag:
         description: Existing completed public release tag, required for published-image and upgrade suites
@@ -53,7 +59,7 @@ permissions:
 jobs:
   selected-suite:
     name: Manual ${{ inputs.suite }} (Linux)
-    if: inputs.suite != 'client-measurement' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image' && inputs.suite != 'api-image' && inputs.suite != 'cli-tool'
+    if: inputs.suite != 'client-measurement' && inputs.suite != 'client-trim-windows' && inputs.suite != 'client-trim-macos' && inputs.suite != 'client-control-macos' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image' && inputs.suite != 'api-image' && inputs.suite != 'api-rid' && inputs.suite != 'cli-tool'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ (inputs.suite == 'native-client' || inputs.suite == 'deployment' || inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc') && 45 || inputs.suite == 'release-images' && 60 || 40 }}
     env:
@@ -236,6 +242,16 @@ jobs:
           (cd "$RUNNER_TEMP/manual-tools" && sha256sum cli.tar.gz mcp.tar.gz) > TestResults/deployment-tool-SHA256SUMS
           printf 'NETRATEL_CLIENT_SMOKE_IMAGE=netratel-client:manual-deployment\nNETRATEL_COMPOSE_SMOKE_MODE=source\nNETRATEL_CLI_SMOKE_ARCHIVE=%s/manual-tools/cli.tar.gz\nNETRATEL_MCP_STDIO_SMOKE_ARCHIVE=%s/manual-tools/mcp.tar.gz\n' \
             "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Compare the unbundled shared-runtime Client and select it for deployment acceptance
+        if: inputs.suite == 'deployment' && inputs.deployment_profile == 'client-runtime'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/ci/compare-client-container.py --control netratel-client:manual-deployment \
+            --candidate netratel-client:shared-runtime-diagnostic --results TestResults/client-container
+          printf 'NETRATEL_CLIENT_SMOKE_IMAGE=netratel-client:shared-runtime-diagnostic\n' >> "$GITHUB_ENV"
       - name: Download and validate the selected completed public release
         if: inputs.suite == 'release-images' || inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc'
         env:
@@ -467,8 +483,8 @@ jobs:
           retention-days: 14
 
   client-measurement:
-    name: Client ${{ inputs.measurement_verify_run != '' && 'archive verification' || inputs.assessment_only && 'trim assessment' || 'A/B measurement' }} (${{ matrix.runtime }})
-    if: inputs.suite == 'client-measurement'
+    name: Client ${{ inputs.suite == 'client-control-macos' && 'untrimmed control' || inputs.suite != 'client-measurement' && 'trim assessment' || inputs.measurement_verify_run != '' && 'archive verification' || inputs.assessment_only && 'trim assessment' || 'A/B measurement' }} (${{ matrix.runtime }})
+    if: inputs.suite == 'client-measurement' || inputs.suite == 'client-trim-windows' || inputs.suite == 'client-trim-macos' || inputs.suite == 'client-control-macos'
     permissions:
       contents: read
       actions: read
@@ -477,13 +493,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.measurement_verify_run != '' && '[{"runtime":"win-x64","runner":"windows-latest"}]' || inputs.assessment_only && '[{"runtime":"linux-x64","runner":"ubuntu-latest"}]' || '[{"runtime":"linux-x64","runner":"ubuntu-latest"},{"runtime":"win-x64","runner":"windows-latest"},{"runtime":"osx-arm64","runner":"macos-latest"}]') }}
+        include: ${{ fromJSON(inputs.suite == 'client-trim-windows' && '[{"runtime":"win-x64","runner":"windows-latest"}]' || inputs.suite == 'client-trim-macos' && '[{"runtime":"osx-arm64","runner":"macos-latest"}]' || inputs.suite == 'client-control-macos' && '[{"runtime":"osx-arm64","runner":"macos-latest"}]' || inputs.measurement_verify_run != '' && '[{"runtime":"win-x64","runner":"windows-latest"}]' || inputs.assessment_only && '[{"runtime":"linux-x64","runner":"ubuntu-latest"}]' || '[{"runtime":"linux-x64","runner":"ubuntu-latest"},{"runtime":"win-x64","runner":"windows-latest"},{"runtime":"osx-arm64","runner":"macos-latest"}]') }}
     steps:
+      - name: Require a single native assessment without archive-verification reuse
+        if: inputs.suite != 'client-measurement'
+        shell: bash
+        env:
+          MEASUREMENT_VERIFY_RUN: ${{ inputs.measurement_verify_run }}
+        run: |
+          if [[ -n "$MEASUREMENT_VERIFY_RUN" ]]; then
+            echo 'Native trim suites publish one candidate; archive reuse belongs to client-measurement.' >&2
+            exit 2
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_ref }}
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: ${{ !inputs.assessment_only }}
+        if: ${{ inputs.suite == 'client-measurement' && !inputs.assessment_only }}
         with:
           ref: ${{ inputs.baseline_ref || 'main' }}
           path: client-baseline
@@ -497,26 +523,26 @@ jobs:
         with:
           global-json-file: global.json
       - name: A - baseline production client only
-        if: ${{ !inputs.assessment_only && inputs.measurement_verify_run == '' }}
+        if: ${{ inputs.suite == 'client-measurement' && !inputs.assessment_only && inputs.measurement_verify_run == '' }}
         shell: bash
         run: |
           python3 tools/ci/measure-client-publish.py --source client-baseline --runtime '${{ matrix.runtime }}' \
             --mode untrimmed --state-root "$RUNNER_TEMP/client-measurement/baseline" \
             --evidence 'TestResults/client-measurement/baseline/${{ matrix.runtime }}'
       - name: B - cleanup production client only
-        if: ${{ !cancelled() && !inputs.assessment_only && inputs.measurement_verify_run == '' }}
+        if: ${{ !cancelled() && inputs.measurement_verify_run == '' && ((inputs.suite == 'client-measurement' && !inputs.assessment_only) || inputs.suite == 'client-control-macos') }}
         shell: bash
         run: |
           python3 tools/ci/measure-client-publish.py --source . --runtime '${{ matrix.runtime }}' \
             --mode untrimmed --state-root "$RUNNER_TEMP/client-measurement/head" --verify-content \
             --evidence 'TestResults/client-measurement/head/${{ matrix.runtime }}'
       - name: C - bounded cleanup trimmed JIT assessment
-        if: ${{ !cancelled() && inputs.measurement_verify_run == '' && matrix.runtime == 'linux-x64' && (inputs.client_trim_diagnostic || inputs.assessment_only) }}
+        if: ${{ !cancelled() && inputs.measurement_verify_run == '' && (startsWith(inputs.suite, 'client-trim-') || (inputs.suite == 'client-measurement' && matrix.runtime == 'linux-x64' && (inputs.client_trim_diagnostic || inputs.assessment_only))) }}
         shell: bash
         run: |
-          python3 tools/ci/measure-client-publish.py --source . --runtime linux-x64 \
+          python3 tools/ci/measure-client-publish.py --source . --runtime '${{ matrix.runtime }}' \
             --mode trimmed --state-root "$RUNNER_TEMP/client-measurement/trimmed" --verify-content \
-            --evidence TestResults/client-measurement/trimmed/linux-x64
+            --evidence 'TestResults/client-measurement/trimmed/${{ matrix.runtime }}'
       - name: Download original measurement evidence
         if: inputs.measurement_verify_run != ''
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -571,6 +597,9 @@ jobs:
                   values += [result['stages'].get(stage, {}).get('seconds', 'not run') for stage in ('restore', 'publish')]
                   summary.write('| ' + ' | '.join(map(str, values)) + ' |\n')
                   if result.get('failureKind'): summary.write('\nFailure: ' + result['failureKind'] + ' (' + result.get('failureStage', '') + ').\n')
+                  summary.write('\nNative host: ' + json.dumps(result.get('nativeHost')) + '; packaged executable: ' + json.dumps(result.get('packagedExecutable')) + '\n')
+                  if result.get('unexecutedPlatformChecks'):
+                      summary.write('\nUnexecuted platform acceptance: ' + '; '.join(result['unexecutedPlatformChecks']) + '.\n')
                   for backend in ('native', 'python'):
                       probe = result['stages'].get('pty-' + backend)
                       if probe:
@@ -605,6 +634,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       NETRATEL_MIGRATIONS_RESULTS: ${{ github.workspace }}/TestResults/migrations-image
+      NETRATEL_MIGRATIONS_COMPARISON: ${{ inputs.migrations_comparison }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -626,7 +656,7 @@ jobs:
           with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as summary:
               summary.write('Candidate and control stay local to this runner; no registry or release publication.\n\n')
               summary.write('Upgrade holds latest completed release API/Web/CLI fixed and substitutes candidate migrations.\n\n')
-              for name in ('selected-release.json', 'layer-export-comparison.json'):
+              for name in ('comparison-identity.json', 'payload-comparison.json', 'selected-release.json', 'layer-export-comparison.json'):
                   path = Path('TestResults/migrations-image') / name
                   if path.is_file():
                       summary.write('```json\n' + path.read_text() + '```\n')
@@ -641,13 +671,14 @@ jobs:
           retention-days: 14
 
   api-image:
-    name: Manual API chiseled image investigation
-    if: inputs.suite == 'api-image'
+    name: Manual API image comparison
+    if: inputs.suite == 'api-image' || inputs.suite == 'api-rid'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
       GH_TOKEN: ${{ github.token }}
       NETRATEL_API_IMAGE_RESULTS: ${{ github.workspace }}/TestResults/api-image
+      NETRATEL_API_IMAGE_COMPARISON: ${{ inputs.suite == 'api-rid' && 'linux-rid' || 'base' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -667,8 +698,8 @@ jobs:
           from pathlib import Path
           root = Path('TestResults/api-image')
           with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as summary:
-              summary.write('API base-image investigation; default production target remains unchanged.\n\n')
-              for name in ('source-sha.txt', 'publish-properties.json', 'layer-export-comparison.json', 'selected-release.json', 'api-shutdown.json'):
+              summary.write('API image comparison: ' + os.environ['NETRATEL_API_IMAGE_COMPARISON'] + '.\n\n')
+              for name in ('source-sha.txt', 'publish-properties.json', 'controlled-build.json', 'payload-comparison.json', 'layer-export-comparison.json', 'selected-release.json', 'api-shutdown.json'):
                   path = root / name
                   if path.is_file():
                       summary.write(f'{name}:\n\n```text\n{path.read_text()}```\n\n')

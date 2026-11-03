@@ -768,6 +768,50 @@ if ! docker compose --project-name "$project" "${compose_args[@]}" up "${compose
     logs --no-color --tail 200 migrations >&2 || true
   exit 1
 fi
+if [[ "$mode" == source ]]; then
+  stage="recording the actual Web publish dependency boundary"
+  web_container="$(docker compose --project-name "$project" "${compose_args[@]}" ps -a -q web)"
+  [[ -n "$web_container" ]] || { echo "Web container was not created." >&2; exit 1; }
+  python3 - "$web_container" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tarfile
+
+container = sys.argv[1]
+files, dependencies = [], None
+with subprocess.Popen(["docker", "cp", container + ":/app/.", "-"], stdout=subprocess.PIPE) as copied:
+    with tarfile.open(fileobj=copied.stdout, mode="r|") as archive:
+        for entry in archive:
+            if not entry.isfile():
+                continue
+            content = archive.extractfile(entry).read()
+            files.append({"path": entry.name, "bytes": entry.size, "sha256": hashlib.sha256(content).hexdigest()})
+            if Path(entry.name).name == "NetRatel.Web.deps.json":
+                dependencies = json.loads(content)
+    if copied.wait() != 0:
+        raise SystemExit("Unable to inventory the actual Web application files.")
+if not files or dependencies is None:
+    raise SystemExit("Web distribution inventory or runtime dependency graph is missing.")
+libraries = sorted(dependencies["libraries"])
+unexpected = [name for name in libraries if name.split("/")[0] == "NetRatel.Infrastructure"
+              or name.startswith(("Microsoft.EntityFrameworkCore", "Npgsql"))]
+image = subprocess.check_output(["docker", "inspect", "--format", "{{.Image}}", container], text=True).strip()
+image_bytes = int(subprocess.check_output(["docker", "image", "inspect", "--format", "{{.Size}}", image], text=True))
+receipt = {"sourceCommit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+           "imageId": image, "uncompressedImageBytes": image_bytes,
+           "applicationBytes": sum(entry["bytes"] for entry in files), "libraries": libraries,
+           "unexpectedDatabaseDependencies": unexpected, "files": sorted(files, key=lambda entry: entry["path"])}
+output = Path("TestResults/oidc-compose/web-distribution.json")
+output.parent.mkdir(parents=True, exist_ok=True)
+output.write_text(json.dumps(receipt, indent=2) + "\n")
+print(f"Actual Web image: {receipt['applicationBytes']} application bytes across {len(files)} files; {len(libraries)} runtime libraries.")
+if unexpected:
+    raise SystemExit("Web image still contains database dependencies: " + ", ".join(unexpected))
+PY
+fi
 stage="waiting for migrations"
 wait_for_migrations
 

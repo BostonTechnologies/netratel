@@ -38,16 +38,16 @@ COPY ["src/NetRatel/NetRatel.ServiceDefaults/NetRatel.ServiceDefaults.csproj", "
 COPY ["src/NetRatel/NetRatel.Shared/NetRatel.Shared.csproj", "src/NetRatel/NetRatel.Shared/"]
 COPY ["src/NetRatel/NetRatel.AgentGateway.Contracts/NetRatel.AgentGateway.Contracts.csproj", "src/NetRatel/NetRatel.AgentGateway.Contracts/"]
 COPY ["src/NetRatel/NetRatel.Akka/NetRatel.Akka.csproj", "src/NetRatel/NetRatel.Akka/"]
-RUN dotnet restore "./src/NetRatel/NetRatel.API/NetRatel.API.csproj"
+RUN dotnet restore "./src/NetRatel/NetRatel.API/NetRatel.API.csproj" --runtime linux-x64
 COPY . .
 WORKDIR "/src/src/NetRatel/NetRatel.API"
-RUN dotnet build "./NetRatel.API.csproj" -c $BUILD_CONFIGURATION -o /app/build
+RUN dotnet build "./NetRatel.API.csproj" -c $BUILD_CONFIGURATION --no-restore --runtime linux-x64 --self-contained false -o /app/build
 
 FROM build AS publish
 ARG BUILD_CONFIGURATION=Release
-RUN dotnet publish "./NetRatel.API.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
+RUN dotnet publish "./NetRatel.API.csproj" -c $BUILD_CONFIGURATION --no-restore --runtime linux-x64 --self-contained false -o /app/publish /p:UseAppHost=false
 RUN apt-get update && apt-get install -y --no-install-recommends python3
-RUN python3 /src/tools/ci/generate-runtime-sbom.py --project-assets obj/project.assets.json --distribution /app/publish --name NetRatel.API --version "$(dotnet msbuild NetRatel.API.csproj -nologo -getProperty:Version)" --output /app/publish/runtime.spdx.json
+RUN python3 /src/tools/ci/generate-runtime-sbom.py --project-assets obj/project.assets.json --distribution /app/publish --runtime linux-x64 --name NetRatel.API --version "$(dotnet msbuild NetRatel.API.csproj -nologo -getProperty:Version)" --output /app/publish/runtime.spdx.json
 
 # Optional linux/amd64 diagnostic target. The production final target remains
 # the last stage and uses the existing noble base until acceptance is complete.

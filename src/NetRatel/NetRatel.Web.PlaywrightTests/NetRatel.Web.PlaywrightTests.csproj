@@ -34,6 +34,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\NetRatel.Web\NetRatel.Web.csproj" />
+    <ProjectReference Include="..\NetRatel.Infrastructure\NetRatel.Infrastructure.csproj" />
   </ItemGroup>
 
   <!-- Resolve the asset from the package NuGet selected, including fallback package folders. -->

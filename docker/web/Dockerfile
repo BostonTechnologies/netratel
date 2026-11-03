@@ -29,6 +29,7 @@ ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
 COPY ["global.json", "Directory.Build.props", "Directory.Build.targets", "./"]
 COPY ["src/NetRatel/NetRatel.Web/NetRatel.Web.csproj", "src/NetRatel/NetRatel.Web/"]
+COPY ["src/NetRatel/NetRatel.Application/NetRatel.Application.csproj", "src/NetRatel/NetRatel.Application/"]
 COPY ["src/NetRatel/NetRatel.ServiceDefaults/NetRatel.ServiceDefaults.csproj", "src/NetRatel/NetRatel.ServiceDefaults/"]
 COPY ["src/NetRatel/NetRatel.Shared/NetRatel.Shared.csproj", "src/NetRatel/NetRatel.Shared/"]
 RUN dotnet restore "./src/NetRatel/NetRatel.Web/NetRatel.Web.csproj"
