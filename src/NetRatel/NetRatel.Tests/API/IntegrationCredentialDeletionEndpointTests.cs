@@ -77,7 +77,7 @@ public sealed class IntegrationCredentialDeletionEndpointTests
         admission.EffectiveAdmission.Should().HaveCount(3);
         admission.EffectiveAdmission.Where(x => x.Target.TenantId > 0).Should().HaveCount(2)
             .And.OnlyContain(x => x.ApplicationGrantConfigured && !x.AuthorizationAdmitted && x.FailureCode == "tenant_not_authorized");
-        var server = admission.EffectiveAdmission.Should().ContainSingle(x => x.Target.TenantId == 0).Subject;
+        var server = admission.EffectiveAdmission.Should().ContainSingle(x => x.Target.TenantId == 0).Which;
         server.Target.Tool.Should().Be("netratel_health"); server.Target.Operation.Should().Be("get");
         server.AuthorizationAdmitted.Should().BeTrue(); server.PolicyAllowed.Should().BeNull();
         server.PolicyAdmissionStatus.Should().Be("not_required_by_route");
