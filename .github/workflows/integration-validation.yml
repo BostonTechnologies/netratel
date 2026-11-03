@@ -7,7 +7,7 @@ on:
         description: Run only this optional suite (client measurements use matching hosted OS runners)
         type: choice
         required: true
-        options: [pairing, gateway, mcp-campaign, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement, client-trim-windows, client-trim-macos, client-control-macos, client-pty-debug-macos, windows-mcp, migrations-image, api-image, api-rid]
+        options: [pairing, gateway, mcp-campaign, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement, client-trim-windows, client-trim-macos, client-control-macos, client-pty-debug-macos, windows-mcp, migrations-image, api-image, api-rid, cli-tool]
       source_ref:
         description: Source ref to test (published-image and upgrade suites use release_tag)
         default: main
@@ -59,7 +59,7 @@ permissions:
 jobs:
   selected-suite:
     name: Manual ${{ inputs.suite }} (Linux)
-    if: inputs.suite != 'client-measurement' && inputs.suite != 'client-trim-windows' && inputs.suite != 'client-trim-macos' && inputs.suite != 'client-control-macos' && inputs.suite != 'client-pty-debug-macos' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image' && inputs.suite != 'api-image' && inputs.suite != 'api-rid'
+    if: inputs.suite != 'client-measurement' && inputs.suite != 'client-trim-windows' && inputs.suite != 'client-trim-macos' && inputs.suite != 'client-control-macos' && inputs.suite != 'client-pty-debug-macos' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image' && inputs.suite != 'api-image' && inputs.suite != 'api-rid' && inputs.suite != 'cli-tool'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ (inputs.suite == 'native-client' || inputs.suite == 'deployment' || inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc') && 45 || inputs.suite == 'release-images' && 60 || 40 }}
     env:
@@ -753,5 +753,69 @@ jobs:
         with:
           name: api-image-evidence
           path: TestResults/api-image
+          if-no-files-found: error
+          retention-days: 14
+
+  cli-tool:
+    name: Portable CLI tool (${{ matrix.runtime }})
+    if: inputs.suite == 'cli-tool'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: linux-x64
+            runner: ubuntu-latest
+          - runtime: win-x64
+            runner: windows-latest
+          - runtime: osx-arm64
+            runner: macos-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out the selected validation tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+      - name: Resolve the requested artifact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: cli-tool-source
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: cli-tool-source/global.json
+      - name: Check artifact provenance failure cases
+        shell: bash
+        run: python3 tools/ci/test-cli-tool-validation.py
+      - name: Exercise the exact hosted portable package
+        shell: bash
+        run: |
+          python3 tools/ci/validate-cli-tool.py --source cli-tool-source \
+            --work-root "$RUNNER_TEMP/cli-tool" --evidence 'TestResults/cli-tool/${{ matrix.runtime }}'
+      - name: Summarize selected package and installation results
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as summary:
+              for name in ('candidate-input', 'prior-input', 'result'):
+                  path = Path('TestResults/cli-tool/${{ matrix.runtime }}') / (name + '.json')
+                  if path.is_file():
+                      summary.write('\n```json\n' + path.read_text(encoding='utf-8') + '```\n')
+              summary.write('\nThis suite requires original hosted nupkg bytes; receipts report which stages executed. The job does not build, publish or modify product versions. Fixtures use synthetic loopback API data. Live-backend and interactive TTY acceptance remain pending.\n')
+          PY
+      - name: Retain sanitized package and installation receipts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cli-tool-evidence-${{ matrix.runtime }}
+          path: TestResults/cli-tool/${{ matrix.runtime }}
           if-no-files-found: error
           retention-days: 14

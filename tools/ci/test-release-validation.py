@@ -731,11 +731,22 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertEqual(["workflow_dispatch"], re.findall(r"(?m)^  ([A-Za-z_][A-Za-z_0-9-]*):", triggers.group(1)))
         jobs = manual.split("\njobs:\n", 1)
         self.assertEqual(2, len(jobs))
-        self.assertEqual(["selected-suite", "windows-mcp", "client-measurement", "migrations-image", "api-image"],
-                         re.findall(r"(?m)^  ([A-Za-z_][A-Za-z_0-9-]*):", jobs[1]))
-        selected, measurement = jobs[1].split("\n  client-measurement:", 1)
-        measurement, migrations = measurement.split("\n  migrations-image:", 1)
-        migrations, api_image = migrations.split("\n  api-image:", 1)
+        sections = dict(re.findall(r"(?ms)^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:|\Z)", jobs[1]))
+        self.assertEqual(["selected-suite", "windows-mcp", "client-measurement", "migrations-image", "api-image", "cli-tool"], list(sections))
+        selected, measurement, portable = (sections[name] for name in ("selected-suite", "client-measurement", "cli-tool"))
+        self.assertIn("inputs.suite != 'cli-tool'", selected)
+        self.assertIn("if: inputs.suite == 'cli-tool'", portable)
+        self.assertIn("ref: ${{ github.workflow_sha }}", portable)
+        self.assertIn("ref: ${{ inputs.source_ref }}", portable)
+        self.assertIn("global-json-file: cli-tool-source/global.json", portable)
+        self.assertIn("python3 tools/ci/test-cli-tool-validation.py", portable)
+        self.assertIn("python3 tools/ci/validate-cli-tool.py --source cli-tool-source", portable)
+        for runtime in ("linux-x64", "win-x64", "osx-arm64"):
+            self.assertIn("runtime: " + runtime, portable)
+        for unwanted in ("dotnet build", "dotnet publish", "continue-on-error"):
+            self.assertNotIn(unwanted, portable)
+        migrations = sections["migrations-image"]
+        api_image = sections["api-image"]
         self.assertIn("if: inputs.suite == 'api-image'", api_image)
         self.assertIn("inputs.suite == 'api-rid'", api_image)
         self.assertIn("inputs.suite != 'api-rid'", selected)
@@ -744,6 +755,10 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertIn("if: inputs.suite == 'migrations-image'", migrations)
         self.assertIn("inputs.suite != 'migrations-image'", selected)
         self.assertNotRegex(migrations, r"(?m)^\s+matrix:")
+        api_image = sections["api-image"]
+        self.assertIn("if: inputs.suite == 'api-image'", api_image)
+        self.assertIn("inputs.suite != 'api-image'", selected)
+        self.assertNotRegex(api_image, r"(?m)^\s+matrix:")
         self.assertNotRegex(selected, r"(?m)^\s+matrix:", "A functional suite selection must not fan out into other functional suites.")
         self.assertIn("if: inputs.suite != 'client-measurement'", selected)
         self.assertIn("if: inputs.suite == 'client-measurement'", measurement)
