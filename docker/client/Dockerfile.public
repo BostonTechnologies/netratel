@@ -2,10 +2,13 @@
 # supplied by a separately reviewed deployment overlay.
 # This file intentionally has no source, credential, or tooling dependency on
 # private repositories.
+ARG CLIENT_RUNTIME_IMAGE=mcr.microsoft.com/dotnet/runtime-deps:10.0-noble
 FROM mcr.microsoft.com/dotnet/sdk:10.0.403-noble AS build
 ARG PublicSourceRevision
 ARG BUILD_CONFIGURATION=Release
 ARG TARGETARCH
+ARG CLIENT_SELF_CONTAINED=true
+ARG CLIENT_SINGLE_FILE=true
 WORKDIR /src
 
 RUN set -eux; \
@@ -22,20 +25,23 @@ COPY ["src/NetRatel/NetRatel.Client/NetRatel.Client.csproj", "src/NetRatel/NetRa
 COPY ["src/NetRatel/NetRatel.Application/NetRatel.Application.csproj", "src/NetRatel/NetRatel.Application/"]
 COPY ["src/NetRatel/NetRatel.Shared/NetRatel.Shared.csproj", "src/NetRatel/NetRatel.Shared/"]
 COPY ["src/NetRatel/NetRatel.AgentGateway.Contracts/NetRatel.AgentGateway.Contracts.csproj", "src/NetRatel/NetRatel.AgentGateway.Contracts/"]
-RUN dotnet restore "src/NetRatel/NetRatel.Client/NetRatel.Client.csproj" --runtime linux-x64
+RUN dotnet restore "src/NetRatel/NetRatel.Client/NetRatel.Client.csproj" --runtime linux-x64 \
+      -p:SelfContained="${CLIENT_SELF_CONTAINED}" -p:PublishSingleFile="${CLIENT_SINGLE_FILE}"
 
 COPY . .
 RUN dotnet publish "src/NetRatel/NetRatel.Client/NetRatel.Client.csproj" \
       --configuration "${BUILD_CONFIGURATION}" \
       --runtime linux-x64 \
-      --self-contained true \
+      --self-contained "${CLIENT_SELF_CONTAINED}" \
+      -p:PublishSingleFile="${CLIENT_SINGLE_FILE}" \
+      -p:EnableCompressionInSingleFile="${CLIENT_SINGLE_FILE}" \
       --no-restore \
       --output /out
 
 RUN apt-get update && apt-get install -y --no-install-recommends python3
 RUN python3 tools/ci/generate-runtime-sbom.py --project-assets src/NetRatel/NetRatel.Client/obj/project.assets.json --distribution /out --runtime linux-x64 --name NetRatel.Client --version "$(dotnet msbuild src/NetRatel/NetRatel.Client/NetRatel.Client.csproj -nologo -getProperty:Version)" --output /out/runtime.spdx.json
 
-FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-noble AS runtime
+FROM ${CLIENT_RUNTIME_IMAGE} AS runtime
 ARG APP_USER=netratel
 ARG APP_UID=10001
 ARG APP_GID=10001

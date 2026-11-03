@@ -12,6 +12,12 @@ on:
         description: Source ref to test (published-image and upgrade suites use release_tag)
         default: main
         required: true
+      migrations_comparison:
+        description: Comparison for migrations-image only (control is diagnostic, never published)
+        type: choice
+        default: base
+        options: [base, html-ownership]
+        required: false
       browser_classes:
         description: Optional space-separated fully qualified browser test classes; blank runs the full browser suite
         default: ''
@@ -21,7 +27,7 @@ on:
         description: Disposable profile for the deployment suite only
         type: choice
         default: oidc
-        options: [oidc, http-host-setup]
+        options: [oidc, http-host-setup, client-runtime]
         required: false
       release_tag:
         description: Existing completed public release tag, required for published-image and upgrade suites
@@ -236,6 +242,16 @@ jobs:
           (cd "$RUNNER_TEMP/manual-tools" && sha256sum cli.tar.gz mcp.tar.gz) > TestResults/deployment-tool-SHA256SUMS
           printf 'NETRATEL_CLIENT_SMOKE_IMAGE=netratel-client:manual-deployment\nNETRATEL_COMPOSE_SMOKE_MODE=source\nNETRATEL_CLI_SMOKE_ARCHIVE=%s/manual-tools/cli.tar.gz\nNETRATEL_MCP_STDIO_SMOKE_ARCHIVE=%s/manual-tools/mcp.tar.gz\n' \
             "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Compare the unbundled shared-runtime Client and select it for deployment acceptance
+        if: inputs.suite == 'deployment' && inputs.deployment_profile == 'client-runtime'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/ci/compare-client-container.py --control netratel-client:manual-deployment \
+            --candidate netratel-client:shared-runtime-diagnostic --results TestResults/client-container
+          printf 'NETRATEL_CLIENT_SMOKE_IMAGE=netratel-client:shared-runtime-diagnostic\n' >> "$GITHUB_ENV"
       - name: Download and validate the selected completed public release
         if: inputs.suite == 'release-images' || inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc'
         env:
@@ -618,6 +634,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       NETRATEL_MIGRATIONS_RESULTS: ${{ github.workspace }}/TestResults/migrations-image
+      NETRATEL_MIGRATIONS_COMPARISON: ${{ inputs.migrations_comparison }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -639,7 +656,7 @@ jobs:
           with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as summary:
               summary.write('Candidate and control stay local to this runner; no registry or release publication.\n\n')
               summary.write('Upgrade holds latest completed release API/Web/CLI fixed and substitutes candidate migrations.\n\n')
-              for name in ('selected-release.json', 'layer-export-comparison.json'):
+              for name in ('comparison-identity.json', 'payload-comparison.json', 'selected-release.json', 'layer-export-comparison.json'):
                   path = Path('TestResults/migrations-image') / name
                   if path.is_file():
                       summary.write('```json\n' + path.read_text() + '```\n')
