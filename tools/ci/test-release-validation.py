@@ -633,10 +633,14 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertEqual(["workflow_dispatch"], re.findall(r"(?m)^  ([A-Za-z_][A-Za-z_0-9-]*):", triggers.group(1)))
         jobs = manual.split("\njobs:\n", 1)
         self.assertEqual(2, len(jobs))
-        self.assertEqual(["selected-suite", "windows-mcp", "client-measurement", "migrations-image"],
+        self.assertEqual(["selected-suite", "windows-mcp", "client-measurement", "migrations-image", "api-image"],
                          re.findall(r"(?m)^  ([A-Za-z_][A-Za-z_0-9-]*):", jobs[1]))
         selected, measurement = jobs[1].split("\n  client-measurement:", 1)
         measurement, migrations = measurement.split("\n  migrations-image:", 1)
+        migrations, api_image = migrations.split("\n  api-image:", 1)
+        self.assertIn("if: inputs.suite == 'api-image'", api_image)
+        self.assertIn("inputs.suite != 'api-image'", selected)
+        self.assertNotRegex(api_image, r"(?m)^\s+matrix:")
         self.assertIn("if: inputs.suite == 'migrations-image'", migrations)
         self.assertIn("inputs.suite != 'migrations-image'", selected)
         self.assertNotRegex(migrations, r"(?m)^\s+matrix:")
@@ -2283,7 +2287,7 @@ class SavedImageCredentialScanTests(unittest.TestCase):
         bin_directory = self.root / "bin"
         bin_directory.mkdir()
         docker = bin_directory / "docker"
-        docker.write_text("#!/usr/bin/env python3\nimport json,os,sys\n"
+        docker.write_text("#!/usr/bin/env python3\nimport json,os,sys\nfrom pathlib import Path\n"
             "args=sys.argv[1:]\n"
             "if args[:2]==['image','inspect']:\n"
             " print(json.dumps([{'Config':{'Labels':{'org.opencontainers.image.title':'NetRatel',"
@@ -2291,14 +2295,43 @@ class SavedImageCredentialScanTests(unittest.TestCase):
             "'org.opencontainers.image.version':'1.2.3','org.opencontainers.image.revision':'a'*40}}}]))\n"
             "elif args[:2]==['image','save']:\n"
             " sys.stdout.buffer.write(open(os.environ['TEST_SAVED_IMAGE'],'rb').read())\n"
-            "elif args[0]!='run': sys.exit(2)\n")
+            "elif args[0]=='create': print('synthetic-container')\n"
+            "elif args[0]=='cp':\n"
+            " path=Path(args[2]); path.write_text('public legal fixture\\n'); path.chmod(0o644)\n"
+            "elif args[0] not in ('run','rm'): sys.exit(2)\n")
         docker.chmod(0o755)
-        result = subprocess.run(["bash", str(ROOT / "tools/ci/scan-public-image.sh"),
-            "--image", "synthetic", "--version", "1.2.3", "--revision", "a" * 40],
-            env={**os.environ, "PATH": str(bin_directory) + os.pathsep + os.environ["PATH"],
-                 "TEST_SAVED_IMAGE": str(saved)}, capture_output=True, text=True)
-        self.assertNotEqual(0, result.returncode, result.stdout)
-        self.assertIn("potential credential", result.stderr)
+        for options in ([], ["--shell-free"]):
+            with self.subTest(options=options):
+                result = subprocess.run(["bash", str(ROOT / "tools/ci/scan-public-image.sh"),
+                    "--image", "synthetic", "--version", "1.2.3", "--revision", "a" * 40, *options],
+                    env={**os.environ, "PATH": str(bin_directory) + os.pathsep + os.environ["PATH"],
+                         "TEST_SAVED_IMAGE": str(saved)}, capture_output=True, text=True)
+                self.assertNotEqual(0, result.returncode, result.stdout)
+                self.assertIn("potential credential", result.stderr)
+
+    def test_smaller_standalone_export_can_increase_shared_stack_and_rejects_false_layer_identity(self):
+        comparator = module("compare-stack-image-layers")
+        common = self.layer("legacy", b"common runtime\n" * 1000)
+        larger = self.layer("legacy", b"retained shared runtime\n" * 2000)
+        smaller = self.layer("legacy", b"new small runtime\n")
+        companions = [f"companion-{index}:test" for index in range(4)]
+        inventory = {"candidate:test": [common, smaller], "control:test": [common, larger],
+                     **{name: [common, larger] for name in companions}}
+        manifests = []
+        for index, (name, references) in enumerate(inventory.items()):
+            config = f"config-{index}.json"
+            identities = ["sha256:" + hashlib.sha256((self.root / reference).read_bytes()).hexdigest()
+                          for reference in references]
+            (self.root / config).write_text(json.dumps({"rootfs": {"diff_ids": identities}}))
+            manifests.append({"Config": config, "Layers": references, "RepoTags": [name]})
+        (self.root / "manifest.json").write_text(json.dumps(manifests))
+        result = comparator.compare(self.root, "candidate:test", "control:test", companions)
+        self.assertLess(result["candidateStandaloneLayerGzipBytes"], result["controlStandaloneLayerGzipBytes"])
+        self.assertGreater(result["candidateFiveImageUniqueLayerGzipBytes"], result["controlFiveImageUniqueLayerGzipBytes"])
+        self.assertEqual(3, len(result["layers"]))
+        (self.root / "config-0.json").write_text(json.dumps({"rootfs": {"diff_ids": ["sha256:" + "0" * 64] * 2}}))
+        with self.assertRaisesRegex(ValueError, "uncompressed image identity"):
+            comparator.compare(self.root, "candidate:test", "control:test", companions)
 
     def test_empty_missing_corrupt_and_unreviewed_matches_fail(self):
         cases = [([], "no layers"),

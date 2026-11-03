@@ -7,7 +7,7 @@ on:
         description: Run only this optional suite (client measurements use matching hosted OS runners)
         type: choice
         required: true
-        options: [pairing, gateway, mcp-campaign, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement, windows-mcp, migrations-image]
+        options: [pairing, gateway, mcp-campaign, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement, windows-mcp, migrations-image, api-image]
       source_ref:
         description: Source ref to test (published-image and upgrade suites use release_tag)
         default: main
@@ -53,7 +53,7 @@ permissions:
 jobs:
   selected-suite:
     name: Manual ${{ inputs.suite }} (Linux)
-    if: inputs.suite != 'client-measurement' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image'
+    if: inputs.suite != 'client-measurement' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image' && inputs.suite != 'api-image'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ (inputs.suite == 'native-client' || inputs.suite == 'deployment' || inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc') && 45 || inputs.suite == 'release-images' && 60 || 40 }}
     env:
@@ -637,5 +637,49 @@ jobs:
         with:
           name: migrations-image-evidence
           path: TestResults/migrations-image
+          if-no-files-found: error
+          retention-days: 14
+
+  api-image:
+    name: Manual API chiseled image investigation
+    if: inputs.suite == 'api-image'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ github.token }}
+      NETRATEL_API_IMAGE_RESULTS: ${{ github.workspace }}/TestResults/api-image
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - name: Compare actual image exports and run selected native/local upgrade probes
+        run: bash tools/ci/test-api-image.sh
+      - name: Summarize diagnostic identity and boundaries
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path('TestResults/api-image')
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as summary:
+              summary.write('API base-image investigation; default production target remains unchanged.\n\n')
+              for name in ('source-sha.txt', 'publish-properties.json', 'layer-export-comparison.json', 'selected-release.json', 'api-shutdown.json'):
+                  path = root / name
+                  if path.is_file():
+                      summary.write(f'{name}:\n\n```text\n{path.read_text()}```\n\n')
+              summary.write('Upgrade holds latest completed release Web/migrations/CLI fixed and substitutes only candidate API.\n\n')
+              summary.write('Exported normalized gzip layers are not registry transfer bytes. OIDC/Hybrid, gateway/client recovery and OTEL acceptance remain pending; no production adoption or publication is implied.\n')
+          PY
+      - name: Retain selected API image diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: api-image-evidence
+          path: TestResults/api-image
           if-no-files-found: error
           retention-days: 14

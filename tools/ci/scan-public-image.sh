@@ -2,18 +2,20 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 --image <tag> --version <semver> --revision <public-sha>" >&2
+  echo "Usage: $0 --image <tag> --version <semver> --revision <public-sha> [--shell-free]" >&2
   exit 2
 }
 
 image=""
 version=""
 revision=""
+shell_free=false
 while (( $# > 0 )); do
   case "$1" in
     --image) image="${2:-}"; shift 2 ;;
     --version) version="${2:-}"; shift 2 ;;
     --revision) revision="${2:-}"; shift 2 ;;
+    --shell-free) shell_free=true; shift ;;
     *) usage ;;
   esac
 done
@@ -37,7 +39,36 @@ jq -e --arg version "$version" --arg revision "$revision" '
   exit 1
 }
 
-docker run --rm --entrypoint /bin/sh "$image" -c '
+scan_dir="$(mktemp -d)"
+container=""
+cleanup() {
+  if [[ -n "$container" ]]; then docker rm -f "$container" >/dev/null 2>&1 || true; fi
+  find "$scan_dir" -depth -delete 2>/dev/null || true
+}
+trap cleanup EXIT
+
+if [[ "$shell_free" == true ]]; then
+  # Chiseled images have no shell. Copy required regular legal/SBOM files from
+  # the merged container filesystem; the all-layer credential scan stays identical.
+  container="$(docker create "$image")"
+  mkdir "$scan_dir/legal"
+  for required in licenses/LICENSE licenses/NOTICE THIRD-PARTY-NOTICES.txt runtime.spdx.json; do
+    docker cp "$container:/app/$required" "$scan_dir/legal/$(basename "$required")"
+  done
+  python3 - "$scan_dir/legal" <<'PY'
+from pathlib import Path
+import stat, sys
+root = Path(sys.argv[1])
+for name in ('LICENSE', 'NOTICE', 'THIRD-PARTY-NOTICES.txt', 'runtime.spdx.json'):
+    path = root / name
+    if path.is_symlink() or not path.is_file() or not path.stat().st_size or not path.stat().st_mode & stat.S_IROTH:
+        raise SystemExit('Image legal/SBOM files must be nonempty, regular and readable by its unprivileged user.')
+PY
+  docker rm "$container" >/dev/null
+  container=""
+  rm -rf "$scan_dir/legal"
+else
+  docker run --rm --entrypoint /bin/sh "$image" -c '
   test -r /app/licenses/LICENSE
   test -r /app/licenses/NOTICE
   test -s /app/THIRD-PARTY-NOTICES.txt
@@ -45,11 +76,8 @@ docker run --rm --entrypoint /bin/sh "$image" -c '
 ' || {
   echo "Image is missing its required LICENSE or NOTICE file." >&2
   exit 1
-}
-
-scan_dir="$(mktemp -d)"
-cleanup() { find "$scan_dir" -depth -delete 2>/dev/null || true; }
-trap cleanup EXIT
+  }
+fi
 
 docker image save "$image" | tar -xf - -C "$scan_dir"
 # Resolve manifest references rather than searching for a legacy basename. The

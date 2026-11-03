@@ -177,5 +177,13 @@ check_cli_credential
 ready_status="$("${compose[@]}" exec -T api dotnet NetRatel.API.dll --setup-status)"
 grep -Fq 'Installation: Ready' <<<"$ready_status"
 grep -Fq 'Setup code: Completed' <<<"$ready_status"
+if [[ -n "${NETRATEL_UPGRADE_API_SHUTDOWN_EVIDENCE:-}" ]]; then
+  stage="checking candidate API SIGTERM shutdown"
+  api_container="$("${compose[@]}" ps -q api)"
+  docker stop --time 30 "$api_container" >/dev/null
+  docker inspect --format '{{json .State}}' "$api_container" > "$NETRATEL_UPGRADE_API_SHUTDOWN_EVIDENCE"
+  jq -e '.Status == "exited" and .ExitCode == 0 and .OOMKilled == false and .Error == ""' \
+    "$NETRATEL_UPGRADE_API_SHUTDOWN_EVIDENCE" >/dev/null
+fi
 unset credential_secret admin_password
 echo "Published ${prior_version} PostgreSQL/local upgrade continuity passed."
