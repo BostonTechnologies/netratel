@@ -683,10 +683,7 @@ verify_customer_connections() {
       else
         # A real permission rejection is required. Connectivity, protocol and
         # token failures are not evidence of a cross-customer authorization deny.
-        jq -e '.id == 4 and (
-          ((.error.message? // "") | contains("not authorized for this operation")) or
-          (.result.isError == true and any(.result.content[]?;
-            (.text // "") | contains("not authorized for this operation"))))' <<<"$response" >/dev/null
+        jq -e -f "$root/tools/ci/http-host-flow-permission-denial.jq" <<<"$response" >/dev/null
       fi
     done
   done
