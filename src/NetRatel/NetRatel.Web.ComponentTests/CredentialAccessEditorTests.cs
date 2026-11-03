@@ -46,7 +46,7 @@ public sealed class CredentialAccessEditorTests : AsyncBunitContext
     }
 
     [Fact]
-    public void Adding_a_tenant_preserves_existing_access_and_exact_expiry_and_requires_explicit_apply()
+    public async Task Adding_a_tenant_preserves_existing_access_and_exact_expiry_and_requires_explicit_apply()
     {
         using var transport = Configure();
         ReviewedMcpAccessReceipt? applied = null;
@@ -55,7 +55,7 @@ public sealed class CredentialAccessEditorTests : AsyncBunitContext
             .Add(component => component.Applied, receipt => applied = receipt));
         editor.WaitForAssertion(() => editor.Find("[data-testid='access-add-tenant-select']").TextContent.Should().Contain("Customer B"));
 
-        AddSecondTenant(editor);
+        await AddSecondTenantAsync(editor);
         editor.Find("[data-testid='permission-scope']").Change("server");
         editor.Find("[data-testid='access-edit-instance-permission-mcp.discovery.read']").HasAttribute("checked").Should().BeTrue();
         editor.Find("[data-testid='permission-scope']").Change("17");
@@ -117,7 +117,7 @@ public sealed class CredentialAccessEditorTests : AsyncBunitContext
         transport.ReviewStatus = HttpStatusCode.Forbidden;
         var editor = RenderEditor();
         editor.WaitForAssertion(() => editor.FindAll("[data-testid='access-review']").Should().ContainSingle());
-        AddSecondTenant(editor);
+        await AddSecondTenantAsync(editor);
         editor.Find("[data-testid='access-review']").Click();
         editor.WaitForAssertion(() => editor.Find("[data-testid='access-edit-error']").TextContent.Should().Contain("cannot approve or delegate"));
         editor.Find("[data-testid='access-edit-permission-18-flow.read']").HasAttribute("checked").Should().BeTrue();
@@ -227,7 +227,7 @@ public sealed class CredentialAccessEditorTests : AsyncBunitContext
     }
 
     [Fact]
-    public void Retrying_an_interrupted_review_recovers_an_applied_receipt_without_resubmitting_a_new_draft()
+    public async Task Retrying_an_interrupted_review_recovers_an_applied_receipt_without_resubmitting_a_new_draft()
     {
         using var transport = Configure();
         transport.InterruptReviewResponse = true;
@@ -236,7 +236,7 @@ public sealed class CredentialAccessEditorTests : AsyncBunitContext
             .Add(component => component.CredentialId, AccessTransport.CredentialId)
             .Add(component => component.Applied, receipt => applied = receipt));
         editor.WaitForAssertion(() => editor.FindAll("[data-testid='access-review']").Should().ContainSingle());
-        AddSecondTenant(editor);
+        await AddSecondTenantAsync(editor);
         editor.Find("[data-testid='access-review']").Click();
         editor.WaitForAssertion(() => editor.Find("[data-testid='access-edit-error']").TextContent.Should().Contain("submitted draft is retained"));
         editor.Find("[data-testid='permission-scope']").HasAttribute("disabled").Should().BeTrue();
@@ -251,12 +251,12 @@ public sealed class CredentialAccessEditorTests : AsyncBunitContext
     }
 
     [Fact]
-    public void Review_shows_removals_from_the_current_server_grants_when_another_edit_precedes_submission()
+    public async Task Review_shows_removals_from_the_current_server_grants_when_another_edit_precedes_submission()
     {
         using var transport = Configure();
         var editor = RenderEditor();
         editor.WaitForAssertion(() => editor.FindAll("[data-testid='access-review']").Should().ContainSingle());
-        AddSecondTenant(editor);
+        await AddSecondTenantAsync(editor);
         transport.Credential = transport.Credential with
         {
             Grants = [new(17, "flow.read"), new(19, "telemetry.read")],
@@ -283,12 +283,12 @@ public sealed class CredentialAccessEditorTests : AsyncBunitContext
     private IRenderedComponent<CredentialAccessEditor> RenderEditor() => Render<CredentialAccessEditor>(parameters =>
         parameters.Add(component => component.CredentialId, AccessTransport.CredentialId));
 
-    private static void AddSecondTenant(IRenderedComponent<CredentialAccessEditor> editor)
+    private static async Task AddSecondTenantAsync(IRenderedComponent<CredentialAccessEditor> editor)
     {
-        editor.Find("[data-testid='access-add-tenant-select']").Change("18");
-        editor.Find("[data-testid='access-add-tenant']").Click();
-        editor.Find("[data-testid='permission-scope']").Change("18");
-        editor.Find("[data-testid='access-edit-permission-18-flow.read']").Change(true);
+        await editor.Find("[data-testid='access-add-tenant-select']").ChangeAsync("18");
+        await editor.Find("[data-testid='access-add-tenant']").ClickAsync(new());
+        await editor.Find("[data-testid='permission-scope']").ChangeAsync("18");
+        await editor.Find("[data-testid='access-edit-permission-18-flow.read']").ChangeAsync(true);
     }
 
     private sealed record Draft(string RequestId, IReadOnlyList<IntegrationPairingGrant> Grants, IReadOnlyList<string> InstancePermissions);
