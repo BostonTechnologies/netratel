@@ -200,9 +200,10 @@ def run_packaged_version_probes(metrics, evidence, state, archive, distribution_
         output = "\n".join((evidence / (stage + ".log")).read_text().splitlines()[1:]).strip()
         metrics["stages"][stage].update(outputVersion=output,
             bundleExtractionBytes=sum(path.stat().st_size for path in cache.rglob("*") if path.is_file()))
-        if output.split("+", 1)[0] != version:
+        expected_version = version + "+" + metrics["sourceSha"]
+        if output != expected_version:
             metrics.update(failureStage=stage, failureKind="runtime behavior")
-            raise ValueError(f"Packaged --version output differs from {version}: {output!r}")
+            raise ValueError(f"Packaged --version output differs from {expected_version}: {output!r}")
     metrics["launchTimingMeaning"] = "Actual archived bytes; --version only before normal initialization, fresh then cached bundle extraction; not agent/gateway startup."
 
 
@@ -421,6 +422,11 @@ def main():
         (evidence / "publish-input-inventory.json").write_text(json.dumps(inputs, indent=2) + "\n")
         for name in ("LICENSE", "NOTICE"):
             shutil.copy2(source / name, distribution / name)
+        recovery_tool = source / "tools/ci/prepare-windows-client-repair.py"
+        if args.runtime == "win-x64" and recovery_tool.is_file():
+            # Match the production archive's existing offline recovery entry point.
+            # Older A/B source checkouts may predate this tool and its contract.
+            run("prepare-recovery", [sys.executable, recovery_tool, "--distribution", distribution])
         sbom = packages / f"netratel-client-{version}-{args.runtime}.spdx.json"
         run("sbom", [sys.executable, TOOLS / "generate-runtime-sbom.py", "--project-assets", assets,
                      "--runtime-graph", graph, "--distribution", distribution, "--runtime", args.runtime,

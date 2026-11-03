@@ -48,6 +48,9 @@ retains the exact SDK, source, evaluated publish properties, final runtime graph
 prebundle input hashes and binary headers, original archive/SBOM/checksums,
 diagnostics and failed stages. Fresh and cached `--version` launches execute
 the extracted archive's bytes after inventory and executable architecture checks.
+The returned version must include the exact measured source SHA. Windows
+measurements generate the same manifest-bound repair entry point as the existing
+release workflow before producing the SBOM and ZIP.
 These timings do not measure agent readiness or RSS. Windows verification reuse
 continues preserving original ZIP, SBOM, metrics and CRLF checksum bytes, using
 only a separate normalized validation copy.

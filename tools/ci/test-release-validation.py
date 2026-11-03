@@ -2105,7 +2105,7 @@ class ClientMeasurementHelperTests(unittest.TestCase):
             executable.write_text("#!/usr/bin/env python3\nimport os, pathlib\n"
                 "cache = pathlib.Path(os.environ['DOTNET_BUNDLE_EXTRACT_BASE_DIR'])\n"
                 "cache.mkdir(exist_ok=True)\n(cache / 'native').write_bytes(b'fixture')\n"
-                "print('1.2.3+synthetic-source')\n")
+                f"print('1.2.3+{'a' * 40}')\n")
             executable.chmod(0o755)
             evidence, state = root / "evidence", root / "state"
             evidence.mkdir()
@@ -2116,7 +2116,7 @@ class ClientMeasurementHelperTests(unittest.TestCase):
                 bundle.add(distribution, arcname=distribution.name)
             original = archive.read_bytes()
             executable.write_text("original distribution must not execute")
-            metrics = {"stages": {}}
+            metrics = {"stages": {}, "sourceSha": "a" * 40}
             # The executable fixture runs locally; the separate header test checks
             # the arm64 binary guard used by the actual native hosted launch.
             with patch.object(self.helper, "binary_identity", return_value={"format": "Mach-O", "machine": "0x100000c"}), \
@@ -2124,7 +2124,7 @@ class ClientMeasurementHelperTests(unittest.TestCase):
                 self.helper.run_packaged_version_probes(metrics, evidence, state, archive, distribution.name, "osx-arm64", "1.2.3")
             for label in ("fresh", "cached"):
                 stage = metrics["stages"]["launch-" + label]
-                self.assertEqual("1.2.3+synthetic-source", stage["outputVersion"])
+                self.assertEqual("1.2.3+" + "a" * 40, stage["outputVersion"])
                 self.assertEqual(7, stage["bundleExtractionBytes"])
                 self.assertTrue(Path(stage["command"][0]).is_relative_to(state / "packaged-version"))
             self.assertEqual(original, archive.read_bytes())
@@ -2136,11 +2136,19 @@ class ClientMeasurementHelperTests(unittest.TestCase):
                                                        distribution.name, "osx-arm64", "1.2.3")
             launch.assert_not_called()
             (root / "wrong-version").mkdir()
-            failed = {"stages": {}}
+            failed = {"stages": {}, "sourceSha": "a" * 40}
             with patch.object(self.helper, "binary_identity", return_value={"format": "Mach-O", "machine": "0x100000c"}), \
                  contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, "--version output differs"):
                 self.helper.run_packaged_version_probes(failed, evidence, root / "wrong-version", archive,
                                                        distribution.name, "osx-arm64", "9.9.9")
+            self.assertEqual("runtime behavior", failed["failureKind"])
+            self.assertNotIn("launch-cached", failed["stages"])
+            (root / "wrong-source").mkdir()
+            failed = {"stages": {}, "sourceSha": "b" * 40}
+            with patch.object(self.helper, "binary_identity", return_value={"format": "Mach-O", "machine": "0x100000c"}), \
+                 contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, "--version output differs"):
+                self.helper.run_packaged_version_probes(failed, evidence, root / "wrong-source", archive,
+                                                       distribution.name, "osx-arm64", "1.2.3")
             self.assertEqual("runtime behavior", failed["failureKind"])
             self.assertNotIn("launch-cached", failed["stages"])
 
