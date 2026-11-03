@@ -763,10 +763,11 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertIn("if: inputs.suite == 'client-measurement'", measurement)
         self.assertIn("inputs.assessment_only && '[{\"runtime\":\"linux-x64\",\"runner\":\"ubuntu-latest\"}]'", measurement,
                       "The first trim assessment must permit a single Linux job without repeating A/B.")
-        self.assertIn("if: ${{ inputs.suite == 'client-measurement' && !inputs.assessment_only }}", measurement)
+        self.assertIn("if: ${{ (inputs.suite == 'client-measurement' && !inputs.assessment_only) || inputs.suite == 'client-pty-debug-macos' }}", measurement)
         for suite, runtime, runner in (("client-trim-windows", "win-x64", "windows-latest"),
                                        ("client-trim-macos", "osx-arm64", "macos-latest"),
-                                       ("client-control-macos", "osx-arm64", "macos-latest")):
+                                       ("client-control-macos", "osx-arm64", "macos-latest"),
+                                       ("client-pty-debug-macos", "osx-arm64", "macos-latest")):
             self.assertIn(f"inputs.suite != '{suite}'", selected)
             self.assertIn(f"inputs.suite == '{suite}' && '[{{\"runtime\":\"{runtime}\",\"runner\":\"{runner}\"}}]'", measurement,
                           "Each native assessment must select one matching hosted runner without A/B fan-out.")
@@ -2305,7 +2306,24 @@ class ClientMeasurementHelperTests(unittest.TestCase):
             self.assertEqual("runtime behavior", failed["failureKind"])
             self.assertNotIn("launch-cached", failed["stages"])
 
-    def packaged_pty_fixture(self, root, native_exit, native_final):
+    def test_darwin_helper_declaration_requires_actual_bundled_input_before_probe(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            self.assertIsNone(self.helper.native_resize_helper_identity(source, "osx-arm64", []))
+            declaration = source / "src/NetRatel/NetRatel.Client/Service/Terminal/native_darwin_pty_resize.c"
+            declaration.parent.mkdir(parents=True)
+            declaration.touch()
+            with self.assertRaisesRegex(ValueError, "missing from actual prebundle inputs"):
+                self.helper.native_resize_helper_identity(source, "osx-arm64", [])
+            item = {"path": "libnetratel_terminal_pty_resize.dylib", "sha256": "a" * 64,
+                    "binary": {"format": "Mach-O", "machine": "0x100000c"}, "excludedFromBundle": False}
+            self.assertEqual(item["sha256"], self.helper.native_resize_helper_identity(source, "osx-arm64", [item])["sha256"])
+            item["excludedFromBundle"] = True
+            with self.assertRaisesRegex(ValueError, "must be bundled"):
+                self.helper.native_resize_helper_identity(source, "osx-arm64", [item])
+            self.assertIsNone(self.helper.native_resize_helper_identity(source, "linux-x64", []))
+
+    def packaged_pty_fixture(self, root, native_exit, native_final, native_helper=None):
         distribution = root / "netratel-client-linux-x64"
         distribution.mkdir()
         executable = distribution / "NetRatel.Client"
@@ -2314,6 +2332,7 @@ class ClientMeasurementHelperTests(unittest.TestCase):
             "cache = pathlib.Path(os.environ['DOTNET_BUNDLE_EXTRACT_BASE_DIR'])\n"
             "cache.mkdir(parents=True)\n"
             "(cache / 'extracted').write_bytes(b'cache')\n"
+            + (f"(cache / 'libnetratel_terminal_pty_resize.dylib').write_bytes({native_helper!r})\n" if native_helper else "") +
             "print('ordinary client log')\n"
             f"event = {native_final!r} if sys.argv[1].endswith('native') else {{'stage': 'passed', 'reaped': True}}\n"
             "print(json.dumps(event))\n"
@@ -2327,6 +2346,27 @@ class ClientMeasurementHelperTests(unittest.TestCase):
         evidence.mkdir()
         state.mkdir()
         return archive, evidence, state
+
+    def test_packaged_native_helper_requires_exact_extracted_bytes_and_architecture(self):
+        payload = b"\xcf\xfa\xed\xfe\x0c\x00\x00\x01"
+        for correct in (True, False):
+            with self.subTest(correct=correct), tempfile.TemporaryDirectory() as temporary:
+                archive, evidence, state = self.packaged_pty_fixture(Path(temporary), 0,
+                    {"stage": "passed", "reaped": True}, native_helper=payload)
+                metrics = {"stages": {}, "expectedNativeHelper": {"name": "libnetratel_terminal_pty_resize.dylib",
+                    "sha256": hashlib.sha256(payload).hexdigest() if correct else "0" * 64,
+                    "binary": {"format": "Mach-O", "machine": "0x100000c"}}}
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    if correct:
+                        self.helper.run_packaged_pty_probes(metrics, evidence, state, archive, "netratel-client-linux-x64")
+                    else:
+                        with self.assertRaises(subprocess.CalledProcessError):
+                            self.helper.run_packaged_pty_probes(metrics, evidence, state, archive, "netratel-client-linux-x64")
+                for backend in ("native", "python"):
+                    probe = metrics["stages"]["pty-" + backend]
+                    self.assertEqual(correct, probe["passed"])
+                    self.assertEqual(hashlib.sha256(payload).hexdigest(), probe["nativeHelperExtraction"][0]["sha256"])
+                    self.assertEqual(0, probe["exitCode"], "A successful process must still fail when extracted helper bytes differ.")
 
     def test_packaged_probes_capture_exact_failure_and_still_execute_other_backend(self):
         with tempfile.TemporaryDirectory() as temporary:

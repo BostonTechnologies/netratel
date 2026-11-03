@@ -7,7 +7,7 @@ on:
         description: Run only this optional suite (client measurements use matching hosted OS runners)
         type: choice
         required: true
-        options: [pairing, gateway, mcp-campaign, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement, client-trim-windows, client-trim-macos, client-control-macos, windows-mcp, migrations-image, api-image, api-rid, cli-tool]
+        options: [pairing, gateway, mcp-campaign, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement, client-trim-windows, client-trim-macos, client-control-macos, client-pty-debug-macos, windows-mcp, migrations-image, api-image, api-rid, cli-tool]
       source_ref:
         description: Source ref to test (published-image and upgrade suites use release_tag)
         default: main
@@ -36,7 +36,7 @@ on:
         description: Explicit RatelDesk source ref for the pairing suite (both candidates are built from source)
         required: false
       baseline_ref:
-        description: Baseline commit/ref for client-measurement only; resolved and recorded once per checkout
+        description: Client measurement baseline ref; macOS PTY Debug comparison requires an exact baseline SHA
         default: main
         required: false
       client_trim_diagnostic:
@@ -59,7 +59,7 @@ permissions:
 jobs:
   selected-suite:
     name: Manual ${{ inputs.suite }} (Linux)
-    if: inputs.suite != 'client-measurement' && inputs.suite != 'client-trim-windows' && inputs.suite != 'client-trim-macos' && inputs.suite != 'client-control-macos' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image' && inputs.suite != 'api-image' && inputs.suite != 'api-rid' && inputs.suite != 'cli-tool'
+    if: inputs.suite != 'client-measurement' && inputs.suite != 'client-trim-windows' && inputs.suite != 'client-trim-macos' && inputs.suite != 'client-control-macos' && inputs.suite != 'client-pty-debug-macos' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image' && inputs.suite != 'api-image' && inputs.suite != 'api-rid' && inputs.suite != 'cli-tool'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ (inputs.suite == 'native-client' || inputs.suite == 'deployment' || inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc') && 45 || inputs.suite == 'release-images' && 60 || 40 }}
     env:
@@ -367,11 +367,13 @@ jobs:
         run: bash tools/ci/smoke-oidc-compose.sh
       - name: Run disposable URL-first host deployment and resume acceptance
         if: inputs.suite == 'deployment' && inputs.deployment_profile == 'http-host-setup'
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          bash tools/ci/build-public-image.sh --dockerfile docker/mcp-http/Dockerfile \
-            --image netratel-mcp-http:manual-setup --version "$VERSION" --revision "$SOURCE_SHA"
+          python3 tools/ci/test-mcp-http-publish.py
+          bash tools/ci/test-mcp-http-image.sh
           NETRATEL_HTTP_HOST_SETUP_SMOKE_IMAGE=netratel-mcp-http:manual-setup \
             bash tools/ci/smoke-http-host-setup.sh
       - name: Run selected published HTTP MCP image smoke
@@ -483,8 +485,8 @@ jobs:
           retention-days: 14
 
   client-measurement:
-    name: Client ${{ inputs.suite == 'client-control-macos' && 'untrimmed control' || inputs.suite != 'client-measurement' && 'trim assessment' || inputs.measurement_verify_run != '' && 'archive verification' || inputs.assessment_only && 'trim assessment' || 'A/B measurement' }} (${{ matrix.runtime }})
-    if: inputs.suite == 'client-measurement' || inputs.suite == 'client-trim-windows' || inputs.suite == 'client-trim-macos' || inputs.suite == 'client-control-macos'
+    name: Client ${{ inputs.suite == 'client-pty-debug-macos' && 'native PTY Debug comparison' || inputs.suite == 'client-control-macos' && 'untrimmed control' || inputs.suite != 'client-measurement' && 'trim assessment' || inputs.measurement_verify_run != '' && 'archive verification' || inputs.assessment_only && 'trim assessment' || 'A/B measurement' }} (${{ matrix.runtime }})
+    if: inputs.suite == 'client-measurement' || inputs.suite == 'client-trim-windows' || inputs.suite == 'client-trim-macos' || inputs.suite == 'client-control-macos' || inputs.suite == 'client-pty-debug-macos'
     permissions:
       contents: read
       actions: read
@@ -493,7 +495,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.suite == 'client-trim-windows' && '[{"runtime":"win-x64","runner":"windows-latest"}]' || inputs.suite == 'client-trim-macos' && '[{"runtime":"osx-arm64","runner":"macos-latest"}]' || inputs.suite == 'client-control-macos' && '[{"runtime":"osx-arm64","runner":"macos-latest"}]' || inputs.measurement_verify_run != '' && '[{"runtime":"win-x64","runner":"windows-latest"}]' || inputs.assessment_only && '[{"runtime":"linux-x64","runner":"ubuntu-latest"}]' || '[{"runtime":"linux-x64","runner":"ubuntu-latest"},{"runtime":"win-x64","runner":"windows-latest"},{"runtime":"osx-arm64","runner":"macos-latest"}]') }}
+        include: ${{ fromJSON(inputs.suite == 'client-trim-windows' && '[{"runtime":"win-x64","runner":"windows-latest"}]' || inputs.suite == 'client-trim-macos' && '[{"runtime":"osx-arm64","runner":"macos-latest"}]' || inputs.suite == 'client-control-macos' && '[{"runtime":"osx-arm64","runner":"macos-latest"}]' || inputs.suite == 'client-pty-debug-macos' && '[{"runtime":"osx-arm64","runner":"macos-latest"}]' || inputs.measurement_verify_run != '' && '[{"runtime":"win-x64","runner":"windows-latest"}]' || inputs.assessment_only && '[{"runtime":"linux-x64","runner":"ubuntu-latest"}]' || '[{"runtime":"linux-x64","runner":"ubuntu-latest"},{"runtime":"win-x64","runner":"windows-latest"},{"runtime":"osx-arm64","runner":"macos-latest"}]') }}
     steps:
       - name: Require a single native assessment without archive-verification reuse
         if: inputs.suite != 'client-measurement'
@@ -505,11 +507,18 @@ jobs:
             echo 'Native trim suites publish one candidate; archive reuse belongs to client-measurement.' >&2
             exit 2
           fi
+      - name: Require an exact native Debug baseline
+        if: inputs.suite == 'client-pty-debug-macos'
+        shell: bash
+        env:
+          BASELINE_REF: ${{ inputs.baseline_ref }}
+        run: |
+          [[ "$BASELINE_REF" =~ ^[a-f0-9]{40}$ ]] || { echo 'Native Debug comparison requires an exact baseline SHA.' >&2; exit 2; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_ref }}
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: ${{ inputs.suite == 'client-measurement' && !inputs.assessment_only }}
+        if: ${{ (inputs.suite == 'client-measurement' && !inputs.assessment_only) || inputs.suite == 'client-pty-debug-macos' }}
         with:
           ref: ${{ inputs.baseline_ref || 'main' }}
           path: client-baseline
@@ -522,6 +531,13 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
+      - name: Compare actual native PTY Debug baseline and candidate
+        if: inputs.suite == 'client-pty-debug-macos'
+        shell: bash
+        run: |
+          python3 tools/ci/probe-darwin-pty-debug.py --source . --baseline client-baseline \
+            --state-root "$RUNNER_TEMP/client-pty-debug" \
+            --evidence TestResults/client-measurement/debug/osx-arm64
       - name: A - baseline production client only
         if: ${{ inputs.suite == 'client-measurement' && !inputs.assessment_only && inputs.measurement_verify_run == '' }}
         shell: bash
@@ -578,6 +594,7 @@ jobs:
         shell: bash
         env:
           MEASUREMENT_VERIFY_RUN: ${{ inputs.measurement_verify_run }}
+          MEASUREMENT_SUITE: ${{ inputs.suite }}
         run: |
           python3 - <<'PY'
           import json, os
@@ -596,6 +613,8 @@ jobs:
                   values += [result.get(key, 'not produced') for key in ('executableBytes', 'extractedBytes', 'archiveBytes')]
                   values += [result['stages'].get(stage, {}).get('seconds', 'not run') for stage in ('restore', 'publish')]
                   summary.write('| ' + ' | '.join(map(str, values)) + ' |\n')
+                  if result.get('debugComparison'):
+                      summary.write('\nNative Debug comparison (baseline failure is required; candidate probes must pass):\n```json\n' + json.dumps(result['debugComparison'], indent=2) + '\n```\n')
                   if result.get('failureKind'): summary.write('\nFailure: ' + result['failureKind'] + ' (' + result.get('failureStage', '') + ').\n')
                   summary.write('\nNative host: ' + json.dumps(result.get('nativeHost')) + '; packaged executable: ' + json.dumps(result.get('packagedExecutable')) + '\n')
                   if result.get('unexecutedPlatformChecks'):
@@ -604,7 +623,10 @@ jobs:
                       probe = result['stages'].get('pty-' + backend)
                       if probe:
                           summary.write('\nPackaged PTY ' + backend + ': ' + json.dumps(probe, sort_keys=True) + '\n')
-              summary.write('\nOnly the client reference closure was restored/published. Fresh per-source/mode/RID intermediates retain per-project paths; NuGet cache is shared sequentially on this runner. Full commands, logs, final prebundle inputs/runtime graph, package inventories, archives, SBOMs and checksums are retained.\n')
+              if os.environ['MEASUREMENT_SUITE'] == 'client-pty-debug-macos':
+                  summary.write('\nOnly actual client Debug closures were restored/built. Internal Debug archives reuse the existing version/PTY assertions; no Release publish or distributed archive was created. Exact source/SDK/mode, evaluated paths, output inventories and both native/Python streams are retained.\n')
+              else:
+                  summary.write('\nOnly the client reference closure was restored/published. Fresh per-source/mode/RID intermediates retain per-project paths; NuGet cache is shared sequentially on this runner. Full commands, logs, final prebundle inputs/runtime graph, package inventories, archives, SBOMs and checksums are retained.\n')
               summary.write('\nThe --version timings cover a fresh and cached single-file launch only. Agent initialization, gateway readiness and RSS were not measured; owner functional acceptance remains pending. Normal distributed publish remains untrimmed.\n')
           PY
       - name: Retain measurement logs and inventories
@@ -618,7 +640,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Retain native archives, SBOMs and checksums
-        if: ${{ always() && inputs.measurement_verify_run == '' }}
+        if: ${{ always() && inputs.measurement_verify_run == '' && inputs.suite != 'client-pty-debug-macos' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: client-measurement-archives-${{ matrix.runtime }}
