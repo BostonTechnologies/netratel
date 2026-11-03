@@ -87,12 +87,21 @@ def probe(entrypoint, directory, state, version, revision, fixture):
     readers = []
     try:
         for name, arguments in (("setup-help", ["setup", "--help"]), ("bridge-help", ["http-bridge", "--help"])):
-            result = subprocess.run([str(entrypoint), *arguments], env=environment, text=True,
-                                    capture_output=True, timeout=20)
+            stage = {"stage": name, "exitCode": None}
+            record["stages"].append(stage)
+            try:
+                result = subprocess.run([str(entrypoint), *arguments], env=environment, text=True,
+                                        capture_output=True, timeout=20)
+            except subprocess.TimeoutExpired as error:
+                stage["timedOut"] = True
+                for stream, output in (("stdout", error.stdout), ("stderr", error.stderr)):
+                    text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else (output or "")
+                    (directory / (name + "." + stream + ".log")).write_text(text)
+                raise
+            stage["exitCode"] = result.returncode
             (directory / (name + ".stdout.log")).write_text(result.stdout)
             (directory / (name + ".stderr.log")).write_text(result.stderr)
             require(fixture.credential not in result.stdout + result.stderr, "Credential disclosed by an entrypoint")
-            record["stages"].append({"stage": name, "exitCode": result.returncode})
             require(result.returncode == 0 and result.stdout.strip(), name + " failed")
 
         process = subprocess.Popen([str(entrypoint)], env=environment, text=True, encoding="utf-8",

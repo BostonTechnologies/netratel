@@ -730,7 +730,7 @@ class StdioAssessmentTests(unittest.TestCase):
 
     def test_actual_process_probe_rejects_startup_failure_nonprotocol_stdout_and_empty_catalog(self):
         helper = module("probe-stdio-assessment")
-        for mode in ("startup", "nonprotocol", "empty"):
+        for mode in ("startup", "nonprotocol", "empty", "help-timeout"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 entrypoint = root / "fixture"
@@ -758,7 +758,13 @@ for line in sys.stdin:
                 entrypoint.chmod(0o755)
                 fixture = SimpleNamespace(credential="synthetic-private-fixture", agent="unused", requests=[],
                                           server=SimpleNamespace(server_port=1), certificate=root / "unused.crt")
-                result = helper.probe(entrypoint, root / "evidence", root / "state", "1.2.3", "a" * 40, fixture)
+                if mode == "help-timeout":
+                    timeout = subprocess.TimeoutExpired([str(entrypoint), "setup", "--help"], 20,
+                        output=b"partial help stdout\n", stderr=b"partial help stderr\n")
+                    with patch.object(helper.subprocess, "run", side_effect=timeout):
+                        result = helper.probe(entrypoint, root / "evidence", root / "state", "1.2.3", "a" * 40, fixture)
+                else:
+                    result = helper.probe(entrypoint, root / "evidence", root / "state", "1.2.3", "a" * 40, fixture)
                 self.assertFalse(result["passed"])
                 self.assertEqual(result, json.loads((root / "evidence/probes.json").read_text()))
                 if mode == "startup":
@@ -766,8 +772,14 @@ for line in sys.stdin:
                     self.assertIn("fixed startup failure", (root / "evidence/protocol.stderr.log").read_text())
                 elif mode == "nonprotocol":
                     self.assertIn("JSONDecodeError", result["error"])
-                else:
+                elif mode == "empty":
                     self.assertIn("Empty catalog", result["error"])
+                else:
+                    self.assertEqual({"stage": "setup-help", "exitCode": None, "timedOut": True}, result["stages"][0])
+                    self.assertNotIn("setup-help", result["notReachedStages"])
+                    self.assertIn("bridge-help", result["notReachedStages"])
+                    self.assertEqual("partial help stdout\n", (root / "evidence/setup-help.stdout.log").read_text())
+                    self.assertEqual("partial help stderr\n", (root / "evidence/setup-help.stderr.log").read_text())
 
     def test_assessment_is_explicitly_selected_without_new_required_execution(self):
         workflow = (ROOT / ".github/workflows/integration-validation.yml").read_text()
