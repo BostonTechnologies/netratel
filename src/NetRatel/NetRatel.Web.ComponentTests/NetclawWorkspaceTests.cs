@@ -41,7 +41,7 @@ public sealed class NetclawWorkspaceTests : AsyncBunitContext
         var cut = Render<Tools>();
         await cut.WaitForAssertionAsync(() => Assert.Contains("Existing evidence", cut.Markup));
         Assert.Empty(cut.FindAll("script"));
-        cut.Find("textarea").Change("Investigate the selected worker");
+        cut.Find("textarea").Input("Investigate the selected worker");
         await cut.FindAll("button").Single(x => x.TextContent == "Send").ClickAsync(new());
         await cut.WaitForAssertionAsync(() => Assert.Contains("Synthetic interrupted request", cut.Markup));
         Assert.Contains("Existing evidence", cut.Markup); Assert.True(cut.Find("textarea").HasAttribute("disabled"));
@@ -61,7 +61,7 @@ public sealed class NetclawWorkspaceTests : AsyncBunitContext
         var cut = Render<Tools>();
         await cut.WaitForAssertionAsync(() => Assert.Contains("Existing evidence", cut.Markup));
         const string question = "Keep this question while reducing its size";
-        cut.Find("textarea").Change(question);
+        cut.Find("textarea").Input(question);
         await cut.FindAll("button").Single(x => x.TextContent == "Send").ClickAsync(new());
         await cut.WaitForAssertionAsync(() => Assert.Contains("28,000 byte context limit", cut.Markup));
         Assert.Equal(question, cut.Find("textarea").GetAttribute("value"));
@@ -70,7 +70,7 @@ public sealed class NetclawWorkspaceTests : AsyncBunitContext
         await cut.FindAll("button").Single(x => x.TextContent == "Send").ClickAsync(new());
         Assert.Equal(question, api.Messages[1].Text);
         Assert.NotEqual(api.Messages[0].MessageId, api.Messages[1].MessageId);
-        cut.Find("textarea").Change("A shorter question");
+        cut.Find("textarea").Input("A shorter question");
         Assert.Equal(2, api.Messages.Count);
     }
 

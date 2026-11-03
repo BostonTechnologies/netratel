@@ -20,8 +20,9 @@ export function setFullscreen(surface, enabled, reference) {
     const previous = active.get(surface);
     const transcript = surface.querySelector(".netclaw-scroll-area");
     const scrollTop = transcript?.scrollTop;
+    const following = transcript && transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 96;
     surface.classList.toggle("netclaw-fullscreen", enabled);
-    if (transcript) requestAnimationFrame(() => { transcript.scrollTop = scrollTop; });
+    if (transcript) requestAnimationFrame(() => { transcript.scrollTop = following ? transcript.scrollHeight : scrollTop; });
     if (!enabled) {
         if (!previous) return;
         document.removeEventListener("keydown", previous.keydown);

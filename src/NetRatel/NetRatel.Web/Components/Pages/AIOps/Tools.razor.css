@@ -1,4 +1,4 @@
-.ai-ops { box-sizing: border-box; padding: .75rem 1rem; max-width: 1600px; margin: 0 auto; color: var(--mud-palette-text-primary); font-size: .9rem; display: flex; flex-direction: column; gap: .65rem; height: calc(100dvh - var(--mud-appbar-height, 64px) - 48px); min-height: 0; }
+.ai-ops { box-sizing: border-box; padding: .75rem 1rem; max-width: 1600px; margin: 0 auto; color: var(--mud-palette-text-primary); font-size: .9rem; display: flex; flex-direction: column; gap: .65rem; height: calc(100dvh - var(--netratel-appbar-height, 56px) - var(--netratel-content-gutter, 28px)); min-height: 0; }
 .ai-toolbar, .ai-chat-heading, .ai-actions { display: flex; align-items: center; gap: .65rem; flex-wrap: wrap; }
 .ai-toolbar { flex: 0 0 auto; align-items: flex-end; }
 .ai-toolbar h1 { margin: 0 .35rem 0 0; align-self: center; font-size: 1.25rem; letter-spacing: -.025em; }
@@ -17,7 +17,7 @@
 .ai-metrics > div { display: inline-flex; align-items: center; gap: .55rem; padding: .3rem .65rem; border: 1px solid var(--mud-palette-divider); border-radius: 6px; background: var(--mud-palette-surface); }
 .ai-metrics span { font-size: .72rem; color: var(--mud-palette-text-secondary); }
 .ai-metrics strong { font-size: .95rem; font-weight: 600; font-variant-numeric: tabular-nums; }
-.ai-workspace { display: grid; grid-template-columns: minmax(220px, 280px) minmax(0, 1fr); gap: .8rem; flex: 1 1 auto; min-height: 0; }
+.ai-workspace { display: grid; grid-template-columns: minmax(220px, 280px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: .8rem; flex: 1 1 auto; min-height: 0; }
 .ai-investigation-list, .ai-conversation { border: 1px solid var(--mud-palette-divider); border-radius: 8px; background: var(--mud-palette-surface); min-width: 0; min-height: 0; overflow: auto; }
 .ai-investigation-list { padding: .8rem; display: flex; flex-direction: column; gap: .65rem; }
 .ai-investigation-list > * { flex-shrink: 0; }
@@ -67,19 +67,19 @@
 .ai-system-picker > label, .ai-check { display: flex!important; flex-direction: row!important; align-items: center; gap: .5rem; padding: .55rem; border: 1px solid var(--mud-palette-divider); border-radius: 6px; }
 .ai-system-picker span { display: flex; flex-direction: column; overflow-wrap: anywhere; }
 .ai-system-picker input, .ai-check input { accent-color: var(--mud-palette-primary); }
-/* Creation and short/mobile viewports use document scrolling rather than clipping controls. */
+/* Creation forms can grow; conversation workspaces keep their own scroll regions. */
 .ai-ops.is-creating { height: auto; }
 .ai-ops.is-creating .ai-transcript { max-height: 55dvh; }
 @media (max-width: 800px), (max-height: 650px) {
-    .ai-ops { height: auto; padding: .75rem; }
-    .ai-investigation-list { max-height: 300px; }
+    .ai-ops { padding: .75rem; }
+    .ai-investigation-list { max-height: 160px; }
     .ai-transcript { max-height: 60dvh; }
     .ai-toolbar { gap: .5rem; }
     .ai-toolbar > label { flex: 1; }
     .ai-connection-slot { margin-left: 0; }
 }
 @media (max-width: 800px) {
-    .ai-workspace { grid-template-columns: 1fr; }
+    .ai-workspace { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
     .ai-toolbar h1 { width: 100%; }
     .ai-chat-heading { align-items: start; }
     .ai-message.operator { margin-left: 3%; }

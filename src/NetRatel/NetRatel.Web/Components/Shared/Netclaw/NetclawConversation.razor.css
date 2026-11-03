@@ -35,7 +35,9 @@
 .chat-notice-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
 .chat-approval { margin: .5rem 1.5rem .75rem; padding: 1rem; border: 1px solid var(--mud-palette-primary); border-radius: 10px; font-size: .78rem; line-height: 1.6; background: var(--mud-palette-background); }
 .chat-approval > p { margin: .5rem 0 .8rem; white-space: pre-wrap; overflow-wrap: anywhere; }
-.chat-recovery { align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.chat-recovery { flex-direction: column; align-items: stretch; gap: .4rem; }
+.chat-recovery > div { min-height: 0; overflow: auto; }
+.chat-recovery > button { flex: 0 0 auto; align-self: flex-start; }
 .chat-processing, .chat-live-status { display: flex; align-items: center; gap: .5rem; margin: 0; padding: .35rem 1.75rem .6rem; color: var(--mud-palette-text-secondary); font-size: .73rem; }
 .chat-processing { color: var(--mud-palette-primary); }
 .chat-archived { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: .8rem; padding: 1rem 1.5rem; border-top: 1px solid var(--mud-palette-divider); color: var(--mud-palette-text-secondary); font-size: .77rem; }
@@ -46,7 +48,7 @@
 .netclaw-conversation button:disabled { opacity: .5; cursor: default; }
 .netclaw-conversation :is(button, input, textarea, summary, a):focus-visible { outline: 2px solid var(--mud-palette-primary); outline-offset: 2px; }
 .netclaw-conversation > header, .chat-composer-area, .chat-archived { flex: 0 0 auto; }
-.netclaw-scroll-area { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.netclaw-scroll-area { flex: 1 1 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .chat-transcript { overflow: visible; flex: none; }
 .netclaw-header-actions { display: flex; align-items: center; gap: .15rem; }
 .netclaw-display-settings { position: relative; }
@@ -61,7 +63,7 @@
 .netclaw-context ::deep details { margin-top: .4rem; }
 .netclaw-conversation.netclaw-fullscreen { position: fixed; z-index: 1350; inset: 0; width: 100vw; height: 100dvh; max-height: 100dvh; min-height: 0; border: 0; border-radius: 0; }
 @media (max-width: 760px), (max-height: 650px) {
-    .netclaw-conversation { min-height: min(520px, 85dvh); height: 75dvh; }
+    .netclaw-conversation { min-height: 0; height: 100%; }
     .netclaw-conversation.netclaw-fullscreen { min-height: 0; height: 100dvh; }
     .chat-conversation-heading { padding: .5rem .75rem; gap: .25rem; }
     .chat-assistant-identity { gap: .4rem; min-width: 0; }
@@ -78,3 +80,10 @@
 .netclaw-conversation { border: 1px solid var(--mud-palette-divider); border-radius: 8px; }
 
 .chat-error { border-color: var(--mud-palette-error); }
+
+/* Action results remain beside the header, independently of transcript scroll. */
+.netclaw-conversation > .chat-notice { flex: 0 1 auto; min-height: 0; max-height: 28dvh; overflow: auto; margin: .5rem 1rem; }
+.chat-action-feedback { margin: .25rem 0; font-size: .75rem; color: var(--mud-palette-text-secondary); }
+
+.netclaw-conversation > .chat-recovery { min-height: 90px; }
+.netclaw-conversation:has(.chat-composer-area) > .chat-recovery { min-height: 0; }

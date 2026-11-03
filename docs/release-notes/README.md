@@ -1,5 +1,6 @@
 # Release history
 
+- [0.1.4-beta.6](0.1.4-beta.6.md) — visible chat controls, Enter sending, archive dialogs and recovery feedback.
 - [0.1.4-beta.5](0.1.4-beta.5.md) — native nullable turn identities, saved AI answers and explicit missing-output recovery.
 - [0.1.4-beta.4](0.1.4-beta.4.md) — unrestricted HTTP MCP client access and late AI results.
 
