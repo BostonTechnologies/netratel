@@ -736,6 +736,8 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         measurement, migrations = measurement.split("\n  migrations-image:", 1)
         migrations, api_image = migrations.split("\n  api-image:", 1)
         self.assertIn("if: inputs.suite == 'api-image'", api_image)
+        self.assertIn("inputs.suite == 'api-rid'", api_image)
+        self.assertIn("inputs.suite != 'api-rid'", selected)
         self.assertIn("inputs.suite != 'api-image'", selected)
         self.assertNotRegex(api_image, r"(?m)^\s+matrix:")
         self.assertIn("if: inputs.suite == 'migrations-image'", migrations)
@@ -3740,6 +3742,102 @@ class PublicationImageJournalTests(unittest.TestCase):
             self.promotion.publish_assets(directory, f"v{self.version}")
         self.assertEqual(uploads, [])
 
+class HttpHostFlowPermissionDenialTests(unittest.TestCase):
+    """Current typed admission contract, also exercised by McpHttpDelegationAdmission tests."""
+
+    @staticmethod
+    def denial():
+        failure = {
+            "success": False, "status": "failed", "summary": "Local HTTP MCP delegation was not admitted.",
+            "data": {"requiredPermission": "flow.read", "additionalPermissions": [], "retryAfterSeconds": None},
+            "affectedIds": None,
+            "error": {"code": "local_credential_permission_denied", "retryable": False, "upstreamStatus": 403, "allowedOperations": None},
+            "requiresConfirmation": False, "confirmation": None,
+            "failure": {"code": "local_credential_permission_denied", "layer": "application_permission", "retryable": False,
+                        "requiredScopes": ["netratel.mcp.observe"], "requiredOperation": "netratel_flows/list",
+                        "target": None, "safeDetails": "No upstream response content is exposed.", "remediation": "Review application permission."},
+            "correlationId": "fixture-permission-denial"
+        }
+        return {"jsonrpc": "2.0", "id": 4, "result": {"isError": True, "structuredContent": failure,
+                "content": [{"type": "text", "text": json.dumps(failure)}]}}
+
+    @staticmethod
+    def synchronize_content(payload):
+        payload["result"]["content"][0]["text"] = json.dumps(payload["result"]["structuredContent"])
+
+    def accepted(self, payload):
+        result = subprocess.run(["jq", "-e", "-f", str(ROOT / "tools/ci/http-host-flow-permission-denial.jq")],
+                                input=json.dumps(payload), text=True, capture_output=True)
+        return result.returncode == 0
+
+    def test_accepts_the_current_permission_denial_without_matching_human_text(self):
+        payload = self.denial()
+        payload["result"]["structuredContent"]["summary"] = "Permission was denied."
+        self.synchronize_content(payload)
+        self.assertTrue(self.accepted(payload))
+
+    def test_rejects_credential_protocol_dependency_and_other_authorization_failures(self):
+        for code, layer, status in [
+            ("local_credential_invalid", "credential", 401), ("local_credential_expired", "credential", 401),
+            ("local_credential_revoked", "credential", 403), ("delegated_identity_invalid", "delegation", 401),
+            ("local_credential_exchange_protocol_error", "dependency", 502),
+            ("local_credential_exchange_timed_out", "dependency", 504), ("local_credential_throttled", "dependency", 429),
+            ("target_policy_denied", "policy", 403), ("local_delegation_binding_mismatch", "target", 403)
+        ]:
+            with self.subTest(code=code):
+                payload = self.denial()
+                payload["result"]["structuredContent"]["error"].update(code=code, upstreamStatus=status)
+                payload["result"]["structuredContent"]["failure"].update(code=code, layer=layer)
+                self.synchronize_content(payload)
+                self.assertFalse(self.accepted(payload))
+
+    def test_rejects_wrong_request_operation_permission_and_status(self):
+        for change in ["request", "operation", "permission", "status"]:
+            with self.subTest(change=change):
+                payload = self.denial()
+                failure = payload["result"]["structuredContent"]
+                if change == "request": payload["id"] = 5
+                if change == "operation": failure["failure"]["requiredOperation"] = "netratel_jobs/get"
+                if change == "permission": failure["data"]["requiredPermission"] = "flow.edit"
+                if change == "status": failure["error"]["upstreamStatus"] = 401
+                self.synchronize_content(payload)
+                self.assertFalse(self.accepted(payload))
+
+    def test_rejects_fake_success_and_data_bearing_results(self):
+        for change in ["success", "not_error", "flow_data", "extra_data", "root_data", "affected_ids", "confirmation"]:
+            with self.subTest(change=change):
+                payload = self.denial()
+                failure = payload["result"]["structuredContent"]
+                if change == "success": failure["success"] = True
+                if change == "not_error": payload["result"]["isError"] = False
+                if change == "flow_data": failure["data"] = [{"id": "other-tenant-flow"}]
+                if change == "extra_data": failure["data"]["flows"] = [{"id": "other-tenant-flow"}]
+                if change == "root_data": failure["flows"] = [{"id": "other-tenant-flow"}]
+                if change == "affected_ids": failure["affectedIds"] = ["other-tenant-flow"]
+                if change == "confirmation": failure["requiresConfirmation"] = True
+                self.synchronize_content(payload)
+                self.assertFalse(self.accepted(payload))
+
+    def test_rejects_contradictory_or_additional_content(self):
+        payload = self.denial()
+        payload["result"]["content"][0]["text"] = json.dumps({"success": True, "data": [{"id": "other-tenant-flow"}]})
+        self.assertFalse(self.accepted(payload))
+        payload = self.denial()
+        payload["result"]["content"].append({"type": "text", "text": "unexpected data"})
+        self.assertFalse(self.accepted(payload))
+        payload = self.denial()
+        payload["error"] = {"code": -32603, "message": "conflicting protocol error"}
+        self.assertFalse(self.accepted(payload))
+        payload = self.denial()
+        payload["result"]["structuredContent"]["failure"]["code"] = "local_credential_expired"
+        self.synchronize_content(payload)
+        self.assertFalse(self.accepted(payload))
+
+    def test_legacy_phrase_alone_is_not_permission_denial_evidence(self):
+        self.assertFalse(self.accepted({"jsonrpc": "2.0", "id": 4,
+                                      "error": {"code": -32603, "message": "not authorized for this operation"}}))
+
+
 class HttpHostLauncherTests(unittest.TestCase):
     """Execute the real host launcher against a metadata-only Docker fixture."""
 
@@ -4737,6 +4835,11 @@ elif args[0] == "cp":
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("environment_alias_conflict:" if len(records) == 2 else "ambiguous image settings", result.stderr)
                 self.assertFalse(any("--name" in call for call in self.commands()))
+
+
+def load_tests(loader, tests, pattern):
+    tests.addTests(loader.loadTestsFromModule(module("test-api-rid-payload")))
+    return tests
 
 
 if __name__ == "__main__":
