@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Verify the bounded HTML package-ownership delta in actual migrations payloads."""
 import argparse
+from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
@@ -32,6 +33,17 @@ def compare(results):
 
     documents = {arm: json.loads((results / (arm + '-runtime.spdx.json')).read_text())
                  for arm in ('candidate', 'control')}
+    generated = {'packages', 'files', 'relationships', 'documentNamespace', 'creationInfo'}
+    if ({key: value for key, value in documents['candidate'].items() if key not in generated}
+            != {key: value for key, value in documents['control'].items() if key not in generated}):
+        raise ValueError('HTML comparison changed unrelated SPDX document metadata')
+    if documents['candidate']['documentNamespace'].rsplit('/', 1)[0] != documents['control']['documentNamespace'].rsplit('/', 1)[0]:
+        raise ValueError('HTML comparison changed the SPDX namespace prefix')
+    if ({key: value for key, value in documents['candidate']['creationInfo'].items() if key != 'created'}
+            != {key: value for key, value in documents['control']['creationInfo'].items() if key != 'created'}):
+        raise ValueError('HTML comparison changed SPDX creation metadata')
+    for document in documents.values():
+        datetime.strptime(document['creationInfo']['created'], '%Y-%m-%dT%H:%M:%SZ')
     package_maps = {arm: {item['SPDXID']: item for item in document['packages']}
                     for arm, document in documents.items()}
     candidate_packages, control_packages = package_maps['candidate'], package_maps['control']
@@ -41,13 +53,29 @@ def compare(results):
             or candidate_packages.keys() - control_packages.keys()
             or any(item != control_packages[key] for key, item in candidate_packages.items())):
         raise ValueError('HTML comparison changed a retained package or removed an unexpected package')
-    removed_file_ids = {item['SPDXID'] for item in documents['control']['files']
-                        if item['fileName'].removeprefix('./out/') in REMOVED_FILES}
+    file_maps = {arm: {item['fileName']: item for item in document['files']}
+                 for arm, document in documents.items()}
+    if any(len(file_maps[arm]) != len(document['files']) for arm, document in documents.items()):
+        raise ValueError('Duplicate SPDX file inventory paths')
+    removed_names = {'./out/' + name for name in REMOVED_FILES}
+    if file_maps['candidate'].keys() != file_maps['control'].keys() - removed_names:
+        raise ValueError('HTML comparison changed an unrelated SPDX file inventory path')
+    for arm, files in file_maps.items():
+        for name, item in files.items():
+            payload_name = name.removeprefix('./out/')
+            if item['checksums'] != [{'algorithm': 'SHA256', 'checksumValue': inventories[arm][payload_name]['sha256']}]:
+                raise ValueError('SPDX file checksum does not bind the payload inventory')
+            if arm == 'candidate':
+                previous = file_maps['control'][name]
+                excluded = {'checksums'} if payload_name in changed else set()
+                if {key: value for key, value in item.items() if key not in excluded} != {key: value for key, value in previous.items() if key not in excluded}:
+                    raise ValueError('HTML comparison changed a retained SPDX file entry')
+    removed_file_ids = {file_maps['control'][name]['SPDXID'] for name in removed_names}
     removed_ids = removed_package_ids | removed_file_ids
 
     def relationships(document):
-        return {tuple(sorted(item.items())) for item in document['relationships']
-                if item['spdxElementId'] not in removed_ids and item['relatedSpdxElement'] not in removed_ids}
+        return sorted(tuple(sorted(item.items())) for item in document['relationships']
+                      if item['spdxElementId'] not in removed_ids and item['relatedSpdxElement'] not in removed_ids)
 
     if relationships(documents['candidate']) != relationships(documents['control']):
         raise ValueError('HTML comparison changed an unrelated SPDX relationship')

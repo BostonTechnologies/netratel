@@ -2352,7 +2352,8 @@ class SavedImageCredentialScanTests(unittest.TestCase):
             (self.root / f"{arm}-file-hashes.json").write_text(json.dumps(inventory))
             (self.root / f"{arm}-runtimeconfig.json").write_text("{}")
             (self.root / f"{arm}-runtime.txt").write_text("same runtime/UID/native packages\n")
-            files = [{"SPDXID": "File-" + name, "fileName": "./out/" + name} for name in sorted(inventory)]
+            files = [{"SPDXID": "File-" + name, "fileName": "./out/" + name,
+                      "checksums": [{"algorithm": "SHA256", "checksumValue": inventory[name]["sha256"]}]} for name in sorted(inventory)]
             packages = [{"SPDXID": "Package-root", "name": "NetRatel.Migrations", "versionInfo": "1.0.0"}]
             if arm == "control":
                 packages += [{"SPDXID": "Package-" + name, "name": name, "versionInfo": "1.0.0"}
@@ -2374,10 +2375,29 @@ class SavedImageCredentialScanTests(unittest.TestCase):
         candidate["NetRatel.Shared.dll"] = common["NetRatel.Shared.dll"]
         (self.root / "candidate-file-hashes.json").write_text(json.dumps(candidate))
         document = json.loads((self.root / "candidate-runtime.spdx.json").read_text())
+        valid_document = copy.deepcopy(document)
         document["packages"][0]["versionInfo"] = "2.0.0"
         (self.root / "candidate-runtime.spdx.json").write_text(json.dumps(document))
         with self.assertRaisesRegex(ValueError, "retained package"):
             comparator.compare(self.root)
+        def change_file_metadata(value):
+            next(item for item in value["files"] if item["fileName"].endswith("NetRatel.Shared.dll"))["licenseConcluded"] = "changed"
+            value["documentNamespace"] = value["documentNamespace"].rsplit('/', 1)[0] + '/' + hashlib.sha256(json.dumps(value["files"], sort_keys=True).encode()).hexdigest()
+        mutations = [
+            (lambda value: value.update(name="changed"), "document metadata"),
+            (lambda value: value["creationInfo"].update(creators=["changed"]), "creation metadata"),
+            (lambda value: value.update(documentNamespace="https://changed.test/" + value["documentNamespace"].rsplit('/', 1)[-1]), "namespace prefix"),
+            (change_file_metadata, "retained SPDX file entry"),
+        ]
+        for mutate, message in mutations:
+            with self.subTest(message=message):
+                changed_document = copy.deepcopy(valid_document)
+                mutate(changed_document)
+                (self.root / "candidate-runtime.spdx.json").write_text(json.dumps(changed_document))
+                with self.assertRaisesRegex(ValueError, message): comparator.compare(self.root)
+        valid_document["creationInfo"]["created"] = "2026-01-01T01:00:00Z"
+        (self.root / "candidate-runtime.spdx.json").write_text(json.dumps(valid_document))
+        self.assertEqual(4, len(comparator.compare(self.root)["removedPackages"]))
 
     def test_empty_missing_corrupt_and_unreviewed_matches_fail(self):
         cases = [([], "no layers"),
