@@ -8,7 +8,6 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using NetRatel.Application.ClientAuth;
-using NetRatel.Application.Agents;
 using NetRatel.Shared.Security;
 
 namespace NetRatel.Client.Service.Auth;
@@ -32,26 +31,19 @@ public sealed class AgentEnrollmentService : IAgentEnrollmentService
         }
 
         var key = await _deviceKeyStore.GetOrCreateAsync(ct).ConfigureAwait(false);
-        var deviceInfo = new
-        {
-            os = Environment.OSVersion.Platform.ToString(),
-            osVersion = Environment.OSVersion.VersionString,
-            hostName = Environment.MachineName,
-            reportedAddress = AgentDeviceIdentity.GetReportedAddress(),
-            architecture = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
-            framework = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription
-        };
+        var deviceInfo = new EnrollmentDeviceInfo(
+            Environment.OSVersion.Platform.ToString(),
+            Environment.OSVersion.VersionString,
+            Environment.MachineName,
+            AgentDeviceIdentity.GetReportedAddress(),
+            System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
+            System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription);
 
         var requestedScopes = new[] { "netratel:connect" };
-        var deviceInfoJson = JsonSerializer.Serialize(deviceInfo);
-        var body = JsonSerializer.Serialize(new
-        {
-            enrollmentCode = enrollmentCode.Trim(),
-            publicKey = key.PublicKey,
-            keyAlgorithm = key.Algorithm,
-            requestedScopes,
-            deviceInfoJson
-        }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var deviceInfoJson = JsonSerializer.Serialize(deviceInfo, AgentEnrollmentJsonContext.Default.EnrollmentDeviceInfo);
+        var body = JsonSerializer.Serialize(new EnrollmentRequest(
+            enrollmentCode.Trim(), key.PublicKey, key.Algorithm, requestedScopes, deviceInfoJson),
+            AgentEnrollmentJsonContext.Default.EnrollmentRequest);
         var nonce = Guid.NewGuid().ToString("N");
         var timestamp = DateTimeOffset.UtcNow;
         var bodyHash = PopSignatureService.ComputeEnrollmentBodyHash(
@@ -77,7 +69,7 @@ public sealed class AgentEnrollmentService : IAgentEnrollmentService
             throw new AgentClientAuthException(detail, (int)response.StatusCode);
         }
 
-        var dto = await response.Content.ReadFromJsonAsync<EnrollResponse>(cancellationToken: ct).ConfigureAwait(false);
+        var dto = await response.Content.ReadFromJsonAsync(AgentEnrollmentJsonContext.Default.EnrollmentResponse, ct).ConfigureAwait(false);
         if (dto is null || dto.AgentId == Guid.Empty || string.IsNullOrWhiteSpace(dto.RefreshToken))
         {
             throw new AgentClientAuthException("Enrollment response was invalid.");
@@ -119,8 +111,6 @@ public sealed class AgentEnrollmentService : IAgentEnrollmentService
             return $"status={(int)response.StatusCode} {response.ReasonPhrase}; detail={(response.StatusCode == HttpStatusCode.Unauthorized ? "Unauthorized." : "Enrollment failed.")}";
         }
     }
-
-    private sealed record EnrollResponse(Guid AgentId, string RefreshToken, int ExpiresInDays);
 
     private static string? SafeDiagnosticToken(string? value) =>
         !string.IsNullOrWhiteSpace(value) && value.Length <= 64 && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-')
