@@ -76,7 +76,7 @@ def run(record, directory, stage, command, source):
 
 def external_runtime():
     lines = subprocess.check_output(["dotnet", "--list-runtimes"], text=True).splitlines()
-    choices = [line.split() for line in lines if line.startswith("Microsoft.NETCore.App 10.")]
+    choices = [line.split() for line in lines if line.startswith("Microsoft.NETCore.App 10.0.")]
     if not choices:
         raise ValueError("FDD control requires an installed .NET 10 runtime")
     selected = max(choices, key=lambda row: tuple(map(int, row[1].split("-", 1)[0].split("."))))
@@ -210,6 +210,7 @@ def main():
                "startedUtc": datetime.now(timezone.utc).isoformat(), "runner": {key: os.environ.get(key) for key in
                ("RUNNER_OS", "RUNNER_ARCH", "ImageOS", "ImageVersion", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")},
                "comparison": "Same source and SDK, fresh per-mode intermediates, FDD then self-contained trimmed JIT; no cross-mode savings claim",
+               "cacheConditions": "Fresh source snapshot and per-mode SDK artifacts; shared hosted NuGet cache; FDD runs first",
                "externalRuntime": external_runtime(), "modes": [], "passed": False}
     fixture = load("probe-stdio-assessment").Fixture(state / "fixture")
     try:
