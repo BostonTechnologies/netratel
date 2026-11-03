@@ -567,6 +567,93 @@ class FastTestContainerPreparationTests(unittest.TestCase):
                 self.assertNotIn("continue-on-error", workflow[prepare:workflow.index("- name: Retain fast regression receipts")])
 
 
+class CorePartitionCoverageTests(unittest.TestCase):
+    def setUp(self):
+        self.helper = module("verify-core-partitions")
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.infra = ("NetRatel.Tests.Infrastructure.Outer+Nested", "Run", "infrastructure case")
+        self.other = ("BindingsSmokeTests", "Run", "global namespace case")
+
+    def discovery(self, *cases):
+        return [{"ID": str(index), "Class": case[0], "Method": case[1], "DisplayName": case[2], "Explicit": False}
+                for index, case in enumerate(cases)]
+
+    def report(self, name, cases, failed=False):
+        run = ET.Element("TestRun")
+        definitions = ET.SubElement(run, "TestDefinitions")
+        results = ET.SubElement(run, "Results")
+        for index, (class_name, method_name, display) in enumerate(cases):
+            identifier = f"{name}-{index}"
+            unit = ET.SubElement(definitions, "UnitTest", {"id": identifier, "name": display})
+            ET.SubElement(unit, "TestMethod", {"className": class_name, "name": method_name})
+            ET.SubElement(results, "UnitTestResult", {"testId": identifier, "executionId": identifier,
+                "testName": display, "outcome": "Passed"})
+        summary = ET.SubElement(run, "ResultSummary", {"outcome": "Completed"})
+        counters = {field: "0" for field in module("verify-mtp-trx").COUNTER_NAMES}
+        counters.update(total=str(len(cases)), executed=str(len(cases)), passed=str(len(cases)), completed=str(len(cases)))
+        if failed:
+            counters.update(failed="1", passed=str(len(cases) - 1))
+        ET.SubElement(summary, "Counters", counters)
+        path = self.root / (name + ".trx")
+        ET.ElementTree(run).write(path)
+        return path
+
+    def test_exact_disjoint_union_retains_root_nested_and_global_namespace_cases(self):
+        sub = ("NetRatel.Tests.Infrastructure.Sub.MoreTests", "Run", "subnamespace case")
+        reports = {"infrastructure": self.report("infrastructure", [self.infra, sub]),
+                   "remaining": self.report("remaining", [self.other])}
+        result = self.helper.validate(self.discovery(self.infra, sub, self.other), reports)
+        self.assertEqual(3, result["discoveredLogicalCases"])
+        self.assertEqual(3, result["executedRows"])
+        self.assertEqual({"infrastructure": 2, "remaining": 1}, result["partitionExecutedRows"])
+
+    def test_missing_duplicate_undiscovered_and_wrong_partition_results_fail(self):
+        for change in ("missing", "duplicate", "undiscovered", "wrong"):
+            with self.subTest(change=change):
+                remaining = [self.other]
+                if change == "missing": remaining = []
+                if change == "duplicate": remaining += [self.other]
+                if change == "undiscovered": remaining += [("OtherTests", "Run", "unseen")]
+                if change == "wrong": remaining += [self.infra]
+                reports = {"infrastructure": self.report("infrastructure", [self.infra]),
+                           "remaining": self.report("remaining", remaining)}
+                with self.assertRaises(ValueError):
+                    self.helper.validate(self.discovery(self.infra, self.other), reports)
+
+    def test_failure_counters_and_incomplete_receipts_cannot_pass_union_validation(self):
+        bad = self.report("infrastructure", [self.infra], failed=True)
+        other = self.report("remaining", [self.other])
+        with self.assertRaises(ValueError):
+            self.helper.validate(self.discovery(self.infra, self.other), {"infrastructure": bad, "remaining": other})
+        bad = self.report("infrastructure", [self.infra])
+        tree = ET.parse(bad)
+        next(tree.getroot().iter("UnitTestResult")).set("outcome", "NotExecuted")
+        tree.write(bad)
+        with self.assertRaisesRegex(ValueError, "non-passing"):
+            self.helper.validate(self.discovery(self.infra, self.other), {"infrastructure": bad, "remaining": other})
+        bad.write_text("<TestRun>")
+        with self.assertRaises(ET.ParseError):
+            self.helper.validate(self.discovery(self.infra, self.other), {"infrastructure": bad, "remaining": other})
+
+    def test_deferred_theory_rows_keep_one_discovered_owner_and_record_expansion(self):
+        deferred = ("NetRatel.Tests.Client.TheoryTests", "Run", "NetRatel.Tests.Client.TheoryTests.Run")
+        rows = [(deferred[0], deferred[1], deferred[2] + f"(value: {index})") for index in range(3)]
+        reports = {"infrastructure": self.report("infrastructure", [self.infra]),
+                   "remaining": self.report("remaining", rows)}
+        result = self.helper.validate(self.discovery(self.infra, deferred), reports)
+        self.assertEqual(2, result["discoveredLogicalCases"])
+        self.assertEqual(4, result["executedRows"])
+        self.assertEqual(3, result["deferredTheoryExpansions"][0]["runtimeRows"])
+
+    def test_opt_in_discovery_cases_are_rejected(self):
+        cases = self.discovery(self.infra)
+        cases[0]["Traits"] = {"category": ["hosted"]}
+        with self.assertRaisesRegex(ValueError, "excluded"):
+            self.helper.validate(cases, {"infrastructure": self.report("infrastructure", [self.infra])})
+
+
 class MtpCiRunnerSelectionTests(unittest.TestCase):
     def test_independent_contracts_are_required_before_pr_success_and_release_packaging(self):
         for relative, gate in ((".github/workflows/public-pr-validation.yml", "pr-validation"),
@@ -606,7 +693,7 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertEqual(required_assemblies, tuple(assemblies.group(1).split()))
         self.assertIn("--configuration Release --no-build --max-parallel-test-modules 1", source)
         self.assertIn("--filter-not-trait category=compose category=hosted category=manual-integration", source)
-        self.assertIn('--report-trx-filename "fast-$assembly.trx"', source)
+        self.assertIn('--report-trx-filename "fast-$group.trx"', source)
         self.assertIn('python3 tools/ci/verify-mtp-trx.py "$report"', source)
         self.assertNotIn("--expected-executed", source, "New default regressions must remain discoverable.")
         self.assertNotRegex(source, r"--filter(?:\s|=)", "VSTest filter syntax is invalid under the selected MTP runner.")
@@ -614,6 +701,11 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertNotIn("--filter-class", source)
         self.assertNotIn("NetRatel.Web.PlaywrightTests", source)
         self.assertNotIn("setsid", source)
+        self.assertIn("--filter-namespace NetRatel.Tests.Infrastructure 'NetRatel.Tests.Infrastructure.*'", source)
+        self.assertIn("--filter-not-namespace NetRatel.Tests.Infrastructure 'NetRatel.Tests.Infrastructure.*'", source)
+        self.assertIn("-list full/json -preEnumerateTheories", source)
+        self.assertIn("-trait- category=compose -trait- category=hosted -trait- category=manual-integration", source)
+        self.assertIn("python3 tools/ci/verify-core-partitions.py", source)
 
         for relative in (".github/workflows/public-pr-validation.yml", ".github/workflows/release-build.yml"):
             workflow = (ROOT / relative).read_text(encoding="utf-8")
@@ -627,6 +719,10 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
                     "playwright.ps1 install", "playwright-browser-evidence",
                 ):
                     self.assertNotIn(manual_command, workflow)
+        public = (ROOT / ".github/workflows/public-pr-validation.yml").read_text()
+        self.assertIn("types: [opened, synchronize, reopened]", public)
+        self.assertNotIn("converted_to_draft", public)
+        self.assertNotIn("ready_for_review", public)
 
         manual = (ROOT / ".github/workflows/integration-validation.yml").read_text(encoding="utf-8")
         triggers = re.search(r"(?ms)^on:\n(.*?)(?=^[A-Za-z_][A-Za-z_0-9-]*:)", manual)
@@ -708,44 +804,67 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertIn("selected zero test cases", (ROOT / "tools/ci/verify-mtp-trx.py").read_text())
 
     def test_generic_test_modules_are_serialized_and_browser_failure_evidence_is_collected(self):
-        # Preserve this existing test ID. Each process still serializes MTP modules;
-        # independent assemblies overlap, and every command/receipt must succeed.
+        # Preserve this existing test ID. A failed process, empty receipt or
+        # incomplete coverage must fail even after all other groups complete.
         helper = ROOT / "tools/ci/run-fast-regressions.sh"
         verifier = module("verify-mtp-trx")
+        groups = ("NetRatel.Web.ComponentTests", "NetRatel.Tests.Infrastructure",
+                  "NetRatel.Tests.Remaining", "NetRatel.API.IntegrationTests")
         expected_projects = [
             f"src/NetRatel/{assembly}/{assembly}.csproj"
-            for assembly in ("NetRatel.Tests", "NetRatel.API.IntegrationTests", "NetRatel.Web.ComponentTests")
+            for assembly in ("NetRatel.Web.ComponentTests", "NetRatel.Tests", "NetRatel.Tests",
+                             "NetRatel.API.IntegrationTests")
         ]
-        for failure in ("none", "command", "zero", "summary"):
+        fake_source = r'''#!/usr/bin/env python3
+import json, os, pathlib, sys, xml.etree.ElementTree as ET
+args = sys.argv[1:]
+with open(os.environ['NETRATEL_FAST_TEST_COMMAND_LOG'], 'a') as log:
+    log.write(json.dumps(args) + '\n')
+infra = ('NetRatel.Tests.Infrastructure.SampleTests', 'Run', 'infrastructure case')
+remaining = ('NetRatel.Tests.API.SampleTests', 'Run', 'remaining case')
+if args[0] != 'test':
+    print(json.dumps([dict(ID=str(index), Class=row[0], Method=row[1], DisplayName=row[2])
+                      for index, row in enumerate((infra, remaining))]))
+    sys.exit(0)
+filename = args[args.index('--report-trx-filename') + 1]
+group = filename.removeprefix('fast-').removesuffix('.trx')
+failure = os.environ['NETRATEL_FAST_TEST_FAILURE']
+if failure in ('command', 'summary') and group == 'NetRatel.Tests.Remaining':
+    sys.exit(7)
+cases = [infra] if group.endswith('.Infrastructure') else [remaining]
+if failure == 'zero' and group == 'NetRatel.Tests.Remaining':
+    cases = []
+if failure == 'coverage' and group == 'NetRatel.Tests.Remaining':
+    cases = [('NetRatel.Tests.API.SampleTests', 'Other', 'undiscovered case')]
+run = ET.Element('TestRun')
+definitions = ET.SubElement(run, 'TestDefinitions')
+results = ET.SubElement(run, 'Results')
+for index, (class_name, method_name, display) in enumerate(cases):
+    identifier = f'{group}-{index}'
+    unit = ET.SubElement(definitions, 'UnitTest', id=identifier)
+    ET.SubElement(unit, 'TestMethod', className=class_name, name=method_name)
+    ET.SubElement(results, 'UnitTestResult', testId=identifier, executionId=identifier,
+                  testName=display, outcome='Passed')
+summary = ET.SubElement(run, 'ResultSummary', outcome='Completed')
+counters = dict.fromkeys(COUNTER_NAMES, 0)
+counters.update(total=len(cases), executed=len(cases), passed=len(cases), completed=len(cases))
+ET.SubElement(summary, 'Counters', {key: str(value) for key, value in counters.items()})
+report = pathlib.Path(args[args.index('--results-directory') + 1]) / filename
+ET.ElementTree(run).write(report)
+'''.replace("COUNTER_NAMES", repr(verifier.COUNTER_NAMES))
+        for failure in ("none", "command", "zero", "summary", "coverage"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
                 directory = Path(temporary)
                 fake_bin = directory / "bin"
                 fake_bin.mkdir()
                 command_log = directory / "commands.jsonl"
                 fake_dotnet = fake_bin / "dotnet"
-                fake_dotnet.write_text(
-                    "#!/usr/bin/env python3\n"
-                    "import json, os, pathlib, sys\n"
-                    "args = sys.argv[1:]\n"
-                    "with open(os.environ['NETRATEL_FAST_TEST_COMMAND_LOG'], 'a') as log:\n"
-                    "    log.write(json.dumps(args) + '\\n')\n"
-                    "failure = os.environ['NETRATEL_FAST_TEST_FAILURE']\n"
-                    "if failure in ('command', 'summary'):\n"
-                    "    sys.exit(7)\n"
-                    "count = 0 if failure == 'zero' else 2\n"
-                    f"counters = dict.fromkeys({verifier.COUNTER_NAMES!r}, 0)\n"
-                    "counters.update(total=count, executed=count, passed=count)\n"
-                    "attributes = ' '.join(f'{name}=\"{value}\"' for name, value in counters.items())\n"
-                    "report = pathlib.Path(args[args.index('--results-directory') + 1]) / args[args.index('--report-trx-filename') + 1]\n"
-                    "report.write_text('<TestRun><ResultSummary outcome=\"Completed\"><Counters ' + attributes + '/></ResultSummary></TestRun>')\n",
-                    encoding="utf-8",
-                )
+                fake_dotnet.write_text(fake_source, encoding="utf-8")
                 fake_dotnet.chmod(0o755)
                 results = directory / "results"
-                # A stale successful report must not rescue a failed command.
                 results.mkdir()
-                stale_report = results / "fast-NetRatel.Tests.trx"
-                stale_report.write_text("stale report", encoding="utf-8")
+                for group in groups:
+                    (results / f"fast-{group}.trx").write_text("stale report", encoding="utf-8")
                 environment = {
                     **os.environ,
                     "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
@@ -758,27 +877,41 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
                     env=environment, check=False, capture_output=True, text=True,
                 )
                 commands = [json.loads(line) for line in command_log.read_text().splitlines()]
-                expected_count = 3
-                self.assertEqual(expected_count, len(commands), completed.stdout + completed.stderr)
-                self.assertCountEqual(expected_projects, [args[args.index("--project") + 1] for args in commands])
-                for args in commands:
-                    self.assertEqual("test", args[0])
+                discovery = [args for args in commands if args[0] != "test"]
+                execution = [args for args in commands if args[0] == "test"]
+                self.assertEqual(1, len(discovery), completed.stdout + completed.stderr)
+                self.assertIn("-noColor", discovery[0], "Native CI color resets would corrupt discovery JSON.")
+                self.assertEqual(4, len(execution), completed.stdout + completed.stderr)
+                self.assertCountEqual(expected_projects, [args[args.index("--project") + 1] for args in execution])
+                for args in execution:
                     self.assertIn("--no-build", args)
+                    self.assertEqual("1", args[args.index("--max-parallel-test-modules") + 1])
                     self.assertEqual("Release", args[args.index("--configuration") + 1])
+                    if args[args.index("--project") + 1].endswith("NetRatel.Tests.csproj"):
+                        self.assertEqual("0.5x", args[args.index("--max-threads") + 1])
+                    else:
+                        self.assertNotIn("--max-threads", args)
                     filter_start = args.index("--filter-not-trait") + 1
                     self.assertEqual(["category=compose", "category=hosted", "category=manual-integration"], args[filter_start:filter_start + 3])
                 if failure == "none":
                     self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
-                    for assembly in ("NetRatel.Tests", "NetRatel.API.IntegrationTests", "NetRatel.Web.ComponentTests"):
-                        self.assertEqual(2, verifier.validate_success_report(results / f"fast-{assembly}.trx")["executed"])
+                    coverage = json.loads((results / "core-partition-coverage.json").read_text())
+                    self.assertEqual(2, coverage["executedRows"])
+                    for group in groups:
+                        self.assertEqual(1, verifier.validate_success_report(results / f"fast-{group}.trx")["executed"])
                 elif failure in ("command", "summary"):
                     self.assertEqual(7, completed.returncode)
-                    self.assertFalse(stale_report.exists())
+                    self.assertFalse((results / "fast-NetRatel.Tests.Remaining.trx").exists())
                 else:
                     self.assertNotEqual(0, completed.returncode)
-                    self.assertIn("selected zero test cases", completed.stdout + completed.stderr)
+                    expected = "selected zero test cases" if failure == "zero" else "missing or duplicated"
+                    self.assertIn(expected, completed.stdout + completed.stderr)
+                for group in groups:
+                    self.assertTrue((results / f"fast-{group}.log").exists())
                 if failure != "summary":
-                    self.assertIn("NetRatel.Tests:", (directory / "summary.md").read_text())
+                    summary = (directory / "summary.md").read_text()
+                    for group in groups:
+                        self.assertIn(group + ":", summary)
                 else:
                     self.assertIn("failed(7)", completed.stdout)
 
