@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 
 namespace NetRatel.Client.Service.Updates;
 
@@ -12,14 +13,19 @@ internal static class ProtectedUpdateState
     private const string TrustedInstallerSid = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
     private static readonly Lazy<string?> WindowsServiceSid = new(ResolveWindowsServiceSid);
 
-    internal static void AtomicWriteJson<T>(string path, T value)
+    internal static void AtomicWriteJson<T>(string path, T value) => AtomicWriteJson(path, () =>
+        JsonSerializer.Serialize(value, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
+
+    internal static void AtomicWriteJson<T>(string path, T value, JsonTypeInfo<T> jsonTypeInfo) =>
+        AtomicWriteJson(path, () => JsonSerializer.Serialize(value, jsonTypeInfo));
+
+    private static void AtomicWriteJson(string path, Func<string> serialize)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
         var temporary = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
         try
         {
-            File.WriteAllText(temporary, JsonSerializer.Serialize(value,
-                new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
+            File.WriteAllText(temporary, serialize());
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             File.Move(temporary, path, true);
         }
