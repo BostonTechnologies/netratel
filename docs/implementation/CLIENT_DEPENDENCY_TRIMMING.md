@@ -45,11 +45,35 @@ an execution environment; its image footprint is not an optimized distribution.
 Original receipts, each PTY's stdout/stderr/status, deployment stages and bounded
 gateway summaries remain in the optional run's evidence, including on failure.
 
+The archived-client profile also requests one real Linux software inventory scan.
+It disables automatic scans only for the disposable tenant before starting the
+gateway, then uses the normal operator's authorized refresh endpoint once. A pass
+requires that collection's complete status, all chunks, actual Linux/dpkg Bash
+package data for the enrolled agent, matching-acknowledgement outbox removal as
+UID 10001, and the same collection after the existing client recreation. The
+status, scan, package and configuration receipts are retained on failure too.
+
+This fixture explicitly configures `Client:AutoUpdate:StateDirectory` inside the
+existing writable `/var/lib/netratel` volume. Its receipt records that configured
+boundary. It does not establish acceptance of the blank state-directory default
+tracked by [#542](https://github.com/BostonTechnologies/netratel/issues/542), and it
+does not change installed state paths or production permissions.
+
+The optional ordinary source-stack comparison reuses these same single-scan
+checks with an `image-packaged-default` receipt. That path passes no state-directory
+environment override and verifies the running image's packaged default and UID
+before collecting. It retains its inventory evidence beside the source-stack
+measurements; the archive profile keeps its separate configured-boundary receipt.
+
 ```bash
-gh workflow run integration-validation.yml --ref HARNESS_SHA \
+source_sha="$(git rev-parse HEAD)"
+gh workflow run integration-validation.yml --ref HARNESS_BRANCH \
   -f suite=deployment -f deployment_profile=client-archive \
-  -f source_ref=HARNESS_SHA -f measurement_verify_run=MEASUREMENT_RUN_ID
+  -f source_ref="$source_sha" -f measurement_verify_run=MEASUREMENT_RUN_ID
 ```
+
+The workflow ref selects the unchanged harness branch; `source_ref` binds the
+full commit from that checkout for both assessment and deployment.
 
 The source OIDC branding fixture repair tracked by
 [#508](https://github.com/BostonTechnologies/netratel/issues/508) is required before
