@@ -60,6 +60,8 @@ gateway_presence_response_path="$(mktemp)"
 command_response_path="$(mktemp)"
 client_volume="${project}-client-state"
 gateway_client="${project}-gateway-client"
+inventory_state_directory=/var/lib/netratel/state
+software_inventory_collection_id=
 stage="initializing Compose OIDC smoke"
 record_client_acceptance() {
   if [[ -n "${NETRATEL_CLIENT_ARCHIVE_EVIDENCE:-}" ]]; then
@@ -353,6 +355,10 @@ api_port="${NETRATEL_API_TEST_PORT:-9222}"
 api_url="http://127.0.0.1:${api_port}"
 
 start_gateway_client() {
+  local inventory_configuration=()
+  if [[ -n "${NETRATEL_CLIENT_ARCHIVE_EVIDENCE:-}" ]]; then
+    inventory_configuration=(--env "NetRatelCLIENT__Client__AutoUpdate__StateDirectory=$inventory_state_directory")
+  fi
   docker rm -f "$gateway_client" >/dev/null 2>&1 || true
   docker run --detach --name "$gateway_client" --network "${project}_default" \
     --volume "${client_volume}:/var/lib/netratel" \
@@ -361,6 +367,7 @@ start_gateway_client() {
     --env NetRatel_CLIENT_LOG_DIR=/var/lib/netratel/logs \
     --env NetRatelCLIENT__Client__ApiBaseUrl=http://api:9222 \
     --env NetRatelCLIENT__Gateway__Endpoint=https://gateway:443 \
+    "${inventory_configuration[@]}" \
     "$client_image" \
     --Gateway:TelemetryFastIntervalSeconds=1 >/dev/null
 }
@@ -421,6 +428,100 @@ wait_for_current_gateway_presence() {
   echo "Disposable Client did not have current API gateway presence (HTTP ${http_status:-unavailable}, state=${state:-unavailable})." >&2
   printf 'Disposable Client container state: %s\n' "$(gateway_client_container_state)" >&2
   return 1
+}
+
+inventory_status_complete() {
+  jq -e --argjson tenant "$2" --arg agent "$3" --arg collection "$4" '
+    def positive_integer: if type == "number" then . > 0 and floor == . else false end;
+    .tenantId == $tenant and (.agentId | ascii_downcase) == ($agent | ascii_downcase) and
+    .latestScan.collectionId == $collection and .latestScan.status == "Complete" and
+    .latestScan.errors == [] and (.latestScan.receivedChunks | positive_integer) and (.latestScan.totalChunks | positive_integer) and
+    .latestScan.receivedChunks == .latestScan.totalChunks and
+    (.lastSuccessfulScanUtc | strings | length) > 0 and (.latestScan.completedAtUtc | strings | length) > 0' "$1" >/dev/null
+}
+
+inventory_scan_complete() {
+  jq -e --arg collection "$2" '
+    def positive_integer: if type == "number" then . > 0 and floor == . else false end;
+    .collectionId == $collection and .status == "Complete" and .errors == [] and
+    (.receivedChunks | positive_integer) and (.totalChunks | positive_integer) and .receivedChunks == .totalChunks and
+    (.completedAtUtc | strings | length) > 0' "$1" >/dev/null
+}
+
+inventory_snapshot_complete() {
+  jq -e --arg agent "$2" '
+    def positive_integer: if type == "number" then . > 0 and floor == . else false end;
+    (.total | positive_integer) and (.items | type) == "array" and (.items | length) > 0 and
+    all(.items[]; (.agentId | ascii_downcase) == ($agent | ascii_downcase) and .os == "linux" and .package.source == "dpkg") and
+    any(.items[]; .package.name == "bash" and (.package.version | type) == "string" and (.package.version | length) > 0)' "$1" >/dev/null
+}
+
+prepare_software_inventory_acceptance() {
+  local token="$1" evidence="$NETRATEL_CLIENT_ARCHIVE_EVIDENCE" policy
+  stage="configuring one disposable software inventory collection"
+  policy="$api_url/api/v2/tenants/$tenant_id/software-inventory/policy"
+  curl --silent --show-error --fail --header "Authorization: Bearer $token" "$policy" > "$evidence/software-original-policy.json"
+  jq '.enabled = false' "$evidence/software-original-policy.json" > "$evidence/software-policy-request.json"
+  curl --silent --show-error --fail --request PUT --header "Authorization: Bearer $token" --header 'Content-Type: application/json' \
+    --data-binary "@$evidence/software-policy-request.json" "$policy" > "$evidence/software-configured-policy.json"
+  jq -e '.enabled == false' "$evidence/software-configured-policy.json" >/dev/null
+  jq -n --arg directory "$inventory_state_directory" '{stateDirectory:$directory,stateDirectoryBoundary:"documented fixture override in existing persisted volume",automaticCadenceEnabled:false}' \
+    > "$evidence/software-configuration.json"
+}
+
+verify_software_inventory_acceptance() {
+  local token="$1" evidence="$NETRATEL_CLIENT_ARCHIVE_EVIDENCE" route status directory deadline
+  route="$api_url/api/v2/agents/$tenant_id/$agent_id/software-inventory"
+  status="$evidence/software-status.json"
+  stage="requesting one authorized software inventory collection"
+  curl --silent --show-error --fail --header "Authorization: Bearer $token" "$route" > "$evidence/software-before-refresh.json"
+  jq -e '.latestScan == null and .canRefresh == true and .policy.enabled == false' "$evidence/software-before-refresh.json" >/dev/null
+  # This is the sole refresh request. Subsequent polls and restart checks are read-only.
+  curl --silent --show-error --fail --request POST --header "Authorization: Bearer $token" --header 'Content-Type: application/json' \
+    --data '{"force":true}' "$route/refresh" > "$evidence/software-refresh.json"
+  software_inventory_collection_id="$(jq -er '.latestScan.collectionId' "$evidence/software-refresh.json")"
+  [[ "$software_inventory_collection_id" =~ ^[0-9a-fA-F-]{36}$ ]]
+  jq -e --argjson tenant "$tenant_id" --arg agent "$agent_id" \
+    '.tenantId == $tenant and (.agentId | ascii_downcase) == ($agent | ascii_downcase) and .canRefresh == true' "$evidence/software-refresh.json" >/dev/null
+  directory="$inventory_state_directory/software-inventory/$tenant_id-${agent_id//-/}"
+  directory="${directory,,}"
+  stage="waiting for real software inventory collection and matching acknowledgement"
+  deadline=$((SECONDS + 180))
+  while (( SECONDS < deadline )); do
+    curl --silent --show-error --fail --max-time 5 --header "Authorization: Bearer $token" "$route" > "$status"
+    if jq -e '.latestScan.status == "Error" or .latestScan.status == "Partial"' "$status" >/dev/null; then
+      echo 'The software inventory collection reported an incomplete or failed result.' >&2
+      return 1
+    fi
+    if inventory_status_complete "$status" "$tenant_id" "$agent_id" "$software_inventory_collection_id" &&
+      docker exec "$gateway_client" test -d "$directory" && docker exec "$gateway_client" test ! -e "$directory/pending.json"; then
+      break
+    fi
+    sleep 1
+  done
+  inventory_status_complete "$status" "$tenant_id" "$agent_id" "$software_inventory_collection_id"
+  [[ "$(docker exec "$gateway_client" id -u)" == 10001 ]]
+  docker exec "$gateway_client" test -d "$directory"
+  docker exec "$gateway_client" test ! -e "$directory/pending.json"
+  curl --silent --show-error --fail --header "Authorization: Bearer $token" "$route/scans/$software_inventory_collection_id" > "$evidence/software-scan.json"
+  inventory_scan_complete "$evidence/software-scan.json" "$software_inventory_collection_id"
+  curl --silent --show-error --fail --header "Authorization: Bearer $token" "$route/snapshot?pageSize=100&source=dpkg&os=linux&search=bash" > "$evidence/software-snapshot.json"
+  inventory_snapshot_complete "$evidence/software-snapshot.json" "$agent_id"
+  jq -n --arg collection "$software_inventory_collection_id" --arg directory "$directory" \
+    --slurpfile status "$status" --slurpfile snapshot "$evidence/software-snapshot.json" \
+    '{passed:true,collectionId:$collection,refreshRequests:1,normalUid:10001,matchingAcknowledgementConsumed:true,outboxDirectory:$directory,status:$status[0],snapshot:$snapshot[0]}' > "$evidence/software-inventory.json"
+  record_client_acceptance software-inventory-complete-and-acknowledged
+}
+
+verify_software_inventory_after_restart() {
+  local token="$1" evidence="$NETRATEL_CLIENT_ARCHIVE_EVIDENCE"
+  stage="checking the same software inventory collection after recreation"
+  curl --silent --show-error --fail --header "Authorization: Bearer $token" \
+    "$api_url/api/v2/agents/$tenant_id/$agent_id/software-inventory" > "$evidence/software-after-restart.json"
+  inventory_status_complete "$evidence/software-after-restart.json" "$tenant_id" "$agent_id" "$software_inventory_collection_id"
+  jq -e --slurpfile before "$evidence/software-status.json" \
+    '.lastSuccessfulScanUtc == $before[0].lastSuccessfulScanUtc' "$evidence/software-after-restart.json" >/dev/null
+  record_client_acceptance software-inventory-preserved-after-restart
 }
 
 request_oidc_access_token() (
@@ -996,13 +1097,19 @@ agent_id="$(sed -nE 's/.*[Aa]gent[Ii]d=([0-9A-Fa-f-]{36}).*/\1/ip' <<<"$auth_che
 echo "Disposable Client authenticated as agent ${agent_id}."
 record_client_acceptance persisted-authentication
 
+if [[ -n "${NETRATEL_CLIENT_ARCHIVE_EVIDENCE:-}" ]]; then
+  operator_access_token="$(request_oidc_access_token netratel-test-operator compose-smoke-api)"
+  prepare_software_inventory_acceptance "$operator_access_token"
+fi
 stage="establishing Client gateway sessions"
 start_gateway_client
 wait_for_gateway_sessions
 record_client_acceptance initial-gateway-sessions
 
 stage="requesting direct operator token"
-operator_access_token="$(request_oidc_access_token netratel-test-operator compose-smoke-api)"
+if [[ -z "${operator_access_token:-}" ]]; then
+  operator_access_token="$(request_oidc_access_token netratel-test-operator compose-smoke-api)"
+fi
 if [[ "$auth_environment" == Production ]]; then
   stage="provisioning scoped OIDC directory identities"
   prepare_oidc_directory_authorization_fixtures "$operator_access_token"
@@ -1015,6 +1122,9 @@ record_client_acceptance telemetry
 stage="checking current Client gateway presence"
 wait_for_current_gateway_presence "$operator_access_token"
 record_client_acceptance initial-authoritative-presence
+if [[ -n "${NETRATEL_CLIENT_ARCHIVE_EVIDENCE:-}" ]]; then
+  verify_software_inventory_acceptance "$operator_access_token"
+fi
 # The public Linux client image deliberately includes Bash, and the gateway
 # command contract accepts an explicit executor. Do not rely on the image's
 # default /bin/sh implementation for this end-to-end execution assertion.
@@ -1065,6 +1175,7 @@ wait_for_gateway_sessions
 if [[ -n "${NETRATEL_CLIENT_ARCHIVE_EVIDENCE:-}" ]]; then
   wait_for_current_gateway_presence "$operator_access_token"
   record_client_acceptance restarted-authoritative-presence
+  verify_software_inventory_after_restart "$operator_access_token"
 fi
 retain_gateway_summary after-restart
 docker rm -f "$gateway_client" >/dev/null
