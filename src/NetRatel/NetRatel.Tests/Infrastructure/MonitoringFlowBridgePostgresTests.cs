@@ -34,6 +34,7 @@ public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixtu
 {
     [Theory]
     [InlineData(null, FlowAiResultStatus.DeliveryUnknown)]
+    [InlineData("completed", FlowAiResultStatus.DeliveryUnknown)]
     [InlineData("interrupted", FlowAiResultStatus.Failed)]
     public async Task Native_terminal_without_success_evidence_never_stages_a_completed_ai_flow_result(string? outcome, FlowAiResultStatus expected)
     {
@@ -48,10 +49,26 @@ public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixtu
         {
             var sent = await rig.Daemon.Sent.Reader.ReadAsync(deadline.Token);
             await rig.Daemon.EmitAsync(JsonSerializer.SerializeToElement(new { type = "turn_completed", sessionId = sent.SessionId, turnOutcome = outcome }));
-            await rig.Daemon.TurnClosed.Reader.ReadAsync(deadline.Token);
             await using var scope = rig.Provider.CreateAsyncScope();
-            var result = await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().Set<AiInvestigationTurnResultRecord>().AsNoTracking().SingleAsync(deadline.Token);
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            // Missing output keeps its healthy receiver attached. Synchronize on the
+            // committed business disposition rather than requiring transport closure.
+            using var resultPoll = new PeriodicTimer(TimeSpan.FromMilliseconds(20));
+            while (!await db.Set<AiInvestigationTurnResultRecord>().AnyAsync(deadline.Token))
+                Assert.True(await resultPoll.WaitForNextTickAsync(deadline.Token));
+            var result = await db.Set<AiInvestigationTurnResultRecord>().AsNoTracking().SingleAsync(deadline.Token);
             Assert.Equal(expected, JsonSerializer.Deserialize<FlowAiResultDto>(result.ResultJson, new JsonSerializerOptions(JsonSerializerDefaults.Web))!.Status);
+            if (expected == FlowAiResultStatus.DeliveryUnknown)
+            {
+                Assert.Equal(InvestigationState.DeliveryUnknown, (await db.AiInvestigations.AsNoTracking().SingleAsync(deadline.Token)).State);
+                Assert.Single(await db.AiInvestigationEvents.Where(x => x.Type == "missing_output").ToListAsync(deadline.Token));
+                Assert.False(rig.Daemon.TurnClosed.Reader.TryRead(out _));
+                await rig.Daemon.EmitAsync("text", "Delayed synthetic evidence; no system changes.");
+                await rig.Daemon.TurnClosed.Reader.ReadAsync(deadline.Token);
+                var retained = await db.Set<AiInvestigationTurnResultRecord>().AsNoTracking().SingleAsync(deadline.Token);
+                Assert.Equal(result.ResultJson, retained.ResultJson);
+                Assert.Equal(InvestigationState.Idle, (await db.AiInvestigations.AsNoTracking().SingleAsync(deadline.Token)).State);
+            }
             Assert.Equal(1, rig.Daemon.Sends);
             Assert.Equal(0, rig.Dispatcher.Sends);
         }

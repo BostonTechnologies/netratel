@@ -106,11 +106,27 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
         if (row.LastSequence >= 10000) throw new InvestigationConflictException("This transcript is full. Start a new investigation.");
         await ValidateContextAsync(row, ct);
         await ComposeAsync(row, request.MessageId, request.Text, row.RemoteSessionId ?? new string('s', 256), ct);
+        // A previously verified live terminal supplies a durable baseline for the next
+        // explicit turn when 0.28.2 attaches without another joined snapshot.
+        var baseline = await ContinuationTurnCountAsync(row, ct);
         row.State = InvestigationState.Queued; row.ActiveMessageId = request.MessageId; row.Automated = automated;
-        row.RemoteTurnCountBeforeSend = null; row.LastRecoveryAttemptAtUtc = null; row.RecoverySummary = null;
+        row.RemoteTurnCountBeforeSend = baseline; row.LastRecoveryAttemptAtUtc = null; row.RecoverySummary = null;
         row.ActiveCredentialId = credential; row.LastTransportActivityAtUtc = clock.GetUtcNow();
         Append(db, row, "operator", request.Text, actor, request.MessageId);
         await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); return true;
+    }
+
+    private async Task<int?> ContinuationTurnCountAsync(AiInvestigationRecord row, CancellationToken ct)
+    {
+        if (row.RemoteSessionId is null || row.ActiveMessageId is null) return null;
+        var json = await db.Set<AiInvestigationEventRecord>().Where(x => x.InvestigationId == row.Id && x.Type == "turn_completed")
+            .OrderByDescending(x => x.Sequence).Select(x => x.TraceJson).FirstOrDefaultAsync(ct);
+        if (json is null) return null;
+        var trace = JsonSerializer.Deserialize<NetclawTraceDto>(json);
+        if (trace?.SessionId != row.RemoteSessionId || trace.TurnMessageId != row.ActiveMessageId || trace.DetailsJson is null) return null;
+        using var details = JsonDocument.Parse(trace.DetailsJson);
+        return details.RootElement.TryGetProperty("turnNumber", out var number) && number.ValueKind == JsonValueKind.Number && number.TryGetInt32(out var turn) && turn is > 0 and < int.MaxValue
+            ? turn : null;
     }
 
     public async Task<Guid> AcceptApprovalAsync(int tenantId, Guid id, string callId, string selectedKey, string actor, CancellationToken ct)

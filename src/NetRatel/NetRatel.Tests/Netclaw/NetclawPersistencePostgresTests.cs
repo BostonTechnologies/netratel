@@ -153,7 +153,8 @@ public sealed partial class NetclawPersistencePostgresTests(PostgreSqlPersistenc
                     Assert.Contains("Original tenant guidance", first.Text);
                 }
             }
-            await daemon.Output!(JsonSerializer.SerializeToElement(new { type = "turn_completed", sessionId = first.SessionId }));
+            await daemon.Output!(JsonSerializer.SerializeToElement(new { type = "text", sessionId = first.SessionId, turnNumber = (int?)null, text = "First answer" }));
+            await daemon.Output!(JsonSerializer.SerializeToElement(new { type = "turn_completed", sessionId = first.SessionId, turnNumber = 1, turnOutcome = "completed" }));
             await daemon.TurnClosed.Reader.ReadAsync(deadline.Token);
             // An initialized 0.28.2 session returns acknowledged admission without another joined event.
             daemon.AttachSnapshot = false; daemon.TextAdmissionVersion = 1;
@@ -179,17 +180,19 @@ public sealed partial class NetclawPersistencePostgresTests(PostgreSqlPersistenc
             Assert.DoesNotContain("New default for future sessions", later.Text);
             Assert.Equal(first.SessionId, later.SessionId);
             await daemon.Output!(JsonSerializer.SerializeToElement(new { type = "turn_completed", sessionId = later.SessionId, turnNumber = 99, turnOutcome = "completed" }));
+            await daemon.Output!(JsonSerializer.SerializeToElement(new { type = "text", sessionId = later.SessionId, turnNumber = 1, text = "Stale previous turn" }));
+            await daemon.Output!(JsonSerializer.SerializeToElement(new { type = "text", sessionId = later.SessionId, turnNumber = (int?)null, text = "Second answer" }));
+            await daemon.Output!(JsonSerializer.SerializeToElement(new { type = "turn_completed", sessionId = later.SessionId, turnNumber = 2, turnOutcome = "completed" }));
             await daemon.TurnClosed.Reader.ReadAsync(deadline.Token);
             await using var check = new OrchestratorDbContext(options);
             var contexts = await check.Set<AiInvestigationContextRecord>().AsNoTracking().OrderBy(x => x.PreparedAtUtc).ToListAsync();
             Assert.Equal(2, contexts.Count); Assert.Equal(first.Text, contexts[0].Request); Assert.Equal(later.Text, contexts[1].Request);
-            var unresolved = await check.AiInvestigations.AsNoTracking().SingleAsync(x => x.Id == id);
-            Assert.Equal(InvestigationState.DeliveryUnknown, unresolved.State);
-            Assert.Contains("exact message", unresolved.RecoverySummary);
-            Assert.Null(unresolved.LastRecoveryAttemptAtUtc);
-            Assert.Single(await check.AiInvestigationEvents.Where(x => x.InvestigationId == id && x.Type == "turn_completed").ToListAsync());
-            var loaded = await new InvestigationStore(check, TimeProvider.System).LoadAsync(17, id, 0, default);
-            Assert.NotNull(loaded.Recovery); Assert.NotNull(loaded.Recovery.Summary); Assert.Null(loaded.Recovery.LastAttemptAtUtc);
+            var completed = await check.AiInvestigations.AsNoTracking().SingleAsync(x => x.Id == id);
+            Assert.Equal(InvestigationState.Idle, completed.State);
+            Assert.Equal(1, completed.RemoteTurnCountBeforeSend);
+            Assert.Equal(2, await check.AiInvestigationEvents.CountAsync(x => x.InvestigationId == id && x.Type == "turn_completed"));
+            Assert.Equal(new[] { "First answer", "Second answer" }, await check.AiInvestigationEvents
+                .Where(x => x.InvestigationId == id && x.Type == "assistant").OrderBy(x => x.Sequence).Select(x => x.Text).ToArrayAsync());
             Assert.Equal(2, daemon.Sends);
         }
         finally { await worker.StopAsync(default); }
@@ -472,11 +475,13 @@ public sealed partial class NetclawPersistencePostgresTests(PostgreSqlPersistenc
     private sealed class WorkerLifecycle : ILogger<NetclawInvestigationWorker>
     {
         public TaskCompletionSource Ready { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource MissingOutput { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
             if (eventId.Name == "TransportOwnershipAcquired") Ready.TrySetResult();
+            else if (eventId.Name == "NetclawOutput" && formatter(state, exception).Contains("reason DeliveryUnknown", StringComparison.Ordinal)) MissingOutput.TrySetResult();
             else if (logLevel >= LogLevel.Warning) Ready.TrySetException(new InvalidOperationException(formatter(state, exception)));
         }
     }
