@@ -117,7 +117,7 @@
                             <textarea id="netclaw-chat-message" @ref="_composer" @bind="_message" @bind:event="oninput" @onkeydown="ComposerKeyDownAsync" placeholder="Message Netclaw…" maxlength="16000" rows="3" disabled="@(!CanEditMessage)" data-testid="chat-message"></textarea>
                             <div class="chat-composer-toolbar"><span class="chat-composer-tenant"><MudIcon Icon="@Icons.Material.Outlined.AutoAwesome" Size="Size.Small" />Netclaw<span>· @Access?.TenantName</span></span><button type="button" class="chat-send-button" @onclick="SendAsync" disabled="@(!CanSend)" data-testid="chat-send"><span>@(_pendingMessage is null ? "Send" : "Retry message")</span><MudIcon Icon="@Icons.Material.Outlined.ArrowUpward" Size="Size.Small" /></button></div>
                         </div>
-                        <p class="chat-composer-hint">@(Access?.CanInvestigate == true ? "Ctrl / ⌘ + Enter to send · Enter for a new line" : "Your current access allows you to read saved conversations.")</p>
+                        <p class="chat-composer-hint">@(Access?.CanInvestigate == true ? "Enter to send · Shift + Enter for a new line" : "Your current access allows you to read saved conversations.")</p>
                     </div>
                     }
                 </section>

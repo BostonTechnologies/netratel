@@ -46,7 +46,7 @@ public sealed record InvestigationSnapshotDto(InvestigationSummaryDto Investigat
     IReadOnlyList<InvestigationEventDto> Events, IReadOnlyList<InvestigationClientDto> Clients,
     IReadOnlyList<InvestigationApprovalDto> PendingApprovals, string? Draft = null, IReadOnlyList<AiPromptSnapshot>? Prompts = null,
     InvestigationSentContextDto? SentContext = null, InvestigationRecoveryDto? Recovery = null);
-public sealed record InvestigationRecoveryDto(DateTimeOffset? LastAttemptAtUtc, string? Summary);
+public sealed record InvestigationRecoveryDto(DateTimeOffset? LastAttemptAtUtc, string? Summary, string? FailureCode = null);
 public sealed record InvestigationSentContextDto(Guid MessageId, string Request, string MetadataJson, int PayloadBytes,
     DateTimeOffset PreparedAtUtc, DateTimeOffset? SendAttemptedAtUtc, IReadOnlyList<string> OmissionNotes);
 public sealed record InvestigationApprovalDto(string CallId, IReadOnlyList<InvestigationOptionDto> Options);

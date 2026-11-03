@@ -43,7 +43,8 @@ public sealed class NetclawConversationTests : AsyncBunitContext
         var cut = Render<NetclawConversation>(p => p.Add(x => x.Snapshot, snapshot).Add(x => x.Busy, true).Add(x => x.CanInvestigate, true));
         Assert.Contains(summary, cut.Find(".chat-recovery").TextContent);
         Assert.Contains("Last recovery attempt:", cut.Find(".chat-recovery").TextContent);
-        Assert.True(cut.Find("textarea").HasAttribute("disabled"));
+        if (state != InvestigationState.DeliveryUnknown) Assert.True(cut.Find("textarea").HasAttribute("disabled"));
+        else Assert.Contains("before sending another message", cut.Find(".chat-archived").TextContent);
         if (state == InvestigationState.DeliveryUnknown)
         {
             Assert.Contains("connection", cut.Find(".chat-recovery").TextContent, StringComparison.OrdinalIgnoreCase);
@@ -63,6 +64,21 @@ public sealed class NetclawConversationTests : AsyncBunitContext
         Assert.Contains("Session status", cut.Find(".chat-recovery").TextContent);
         Assert.Contains(summary, cut.Find(".chat-recovery").TextContent);
         Assert.DoesNotContain("Last recovery attempt:", cut.Find(".chat-recovery").TextContent);
+    }
+
+    [Theory]
+    [InlineData(InvestigationState.Idle)]
+    [InlineData(InvestigationState.DeliveryUnknown)]
+    public void Rejected_history_has_an_actionable_status_instead_of_an_ineffective_recover_button(InvestigationState state)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var snapshot = new InvestigationSnapshotDto(new(Guid.NewGuid(), 17, "Failed conversation", state, [], null, null, now, "operator"),
+            0, Guid.NewGuid(), [], [], [], Recovery: new(null, "Archive this conversation and start a new chat. Nothing was resent.", "provider_history_invalid_name"));
+        var cut = Render<NetclawConversation>(p => p.Add(x => x.Snapshot, snapshot).Add(x => x.CanInvestigate, true));
+        Assert.Contains("History rejected", cut.Find(".chat-assistant-identity").TextContent);
+        Assert.Contains("Archive this conversation", cut.Find(".chat-recovery").TextContent);
+        Assert.Empty(cut.FindAll(".chat-recovery button"));
+        Assert.NotEmpty(cut.FindAll("[aria-label='Archive chat']"));
     }
 
     [Fact]

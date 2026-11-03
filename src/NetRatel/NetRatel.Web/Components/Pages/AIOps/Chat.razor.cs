@@ -139,7 +139,7 @@ public partial class Chat
     }
 
     private Task ComposerKeyDownAsync(KeyboardEventArgs args) =>
-        args.Key == "Enter" && (args.CtrlKey || args.MetaKey) && CanSend ? SendAsync() : Task.CompletedTask;
+        args.Key == "Enter" && !args.ShiftKey && !args.AltKey && CanSend ? SendAsync() : Task.CompletedTask;
 
     private async Task ExecuteAsync(Func<int, int, CancellationToken, Task> action)
     {

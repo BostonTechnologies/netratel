@@ -319,6 +319,48 @@ public sealed partial class NetclawPersistencePostgresTests(PostgreSqlPersistenc
     }
 
     [Fact]
+    public async Task Legacy_unresolved_chat_without_message_id_can_archive_only_with_explicit_acknowledgement()
+    {
+        var options = await DatabaseAsync();
+        await using var db = new OrchestratorDbContext(options);
+        var store = new InvestigationStore(db, TimeProvider.System);
+        var row = await store.CreateChatAsync(17, new(Guid.NewGuid(), "Legacy unresolved chat"), "operator", default);
+        row.State = InvestigationState.DeliveryUnknown; await db.SaveChangesAsync();
+        await Assert.ThrowsAsync<InvestigationConflictException>(() => store.ArchiveAsync(17, row.Id, new(Guid.Empty), "operator", default));
+        await Assert.ThrowsAsync<InvestigationConflictException>(() => store.ArchiveAsync(17, row.Id, new(Guid.NewGuid(), true), "operator", default));
+        await store.ArchiveAsync(17, row.Id, new(Guid.Empty, true), "operator", default);
+        await store.ArchiveAsync(17, row.Id, new(Guid.Empty, true), "operator", default);
+        var saved = await store.LoadAsync(17, row.Id, 0, default);
+        Assert.Equal(InvestigationState.Archived, saved.Investigation.State);
+        Assert.Single(saved.Events, e => e.Type == "archived"); Assert.Empty(saved.Events.Where(e => e.Type == "operator"));
+    }
+
+    [Fact]
+    public async Task Provider_history_name_rejection_is_visible_beyond_transcript_page_and_only_for_its_current_turn_and_session()
+    {
+        var options = await DatabaseAsync();
+        await using var db = new OrchestratorDbContext(options);
+        var store = new InvestigationStore(db, TimeProvider.System);
+        var row = await store.CreateChatAsync(17, new(Guid.NewGuid(), "Saved provider failure"), "operator", default);
+        var message = Guid.NewGuid(); row.ActiveMessageId = message; row.RemoteSessionId = "synthetic-session";
+        for (var i = 0; i < 205; i++) InvestigationStore.Append(db, row, "assistant", $"Previous answer {i}");
+        var frame = JsonSerializer.SerializeToElement(new { type = "error", errorCategory = "ProviderFailure",
+            errorMessage = "HTTP 400 (invalid_request_error: invalid_value) Parameter: input[16].name: string does not match pattern" });
+        InvestigationStore.Append(db, row, "error", "Provider rejected saved history", trace: NetclawTraceMapper.Map(frame, row.RemoteSessionId, message));
+        await db.SaveChangesAsync(); var sequence = row.LastSequence;
+        var saved = await store.LoadAsync(17, row.Id, 0, default);
+        Assert.Equal(200, saved.Events.Count); Assert.DoesNotContain(saved.Events, e => e.Type == "error");
+        Assert.Equal("provider_history_invalid_name", saved.Recovery?.FailureCode);
+        Assert.Contains("Reconnecting cannot rewrite", saved.Recovery?.Summary); Assert.Null(saved.Recovery?.LastAttemptAtUtc);
+        Assert.Equal(sequence, saved.LastSequence);
+        row.RemoteSessionId = "another-session"; await db.SaveChangesAsync();
+        Assert.Null((await store.LoadAsync(17, row.Id, 200, default)).Recovery);
+        row.RemoteSessionId = "synthetic-session"; row.ActiveMessageId = Guid.NewGuid(); await db.SaveChangesAsync();
+        Assert.Null((await store.LoadAsync(17, row.Id, 0, default)).Recovery);
+        Assert.Equal(sequence, await db.AiInvestigationEvents.Where(e => e.InvestigationId == row.Id).MaxAsync(e => e.Sequence));
+    }
+
+    [Fact]
     public async Task Pair_commits_protected_device_token_before_a_failed_probe_and_stale_pair_does_not_consume_another_code()
     {
         var options = await DatabaseAsync(); var protection = new EphemeralDataProtectionProvider(); var pairing = new Pairing(); var daemon = new Daemon { FailConnection = true };

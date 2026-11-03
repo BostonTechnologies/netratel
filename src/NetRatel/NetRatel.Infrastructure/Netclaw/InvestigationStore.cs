@@ -83,7 +83,7 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
             await ClientsAsync(tenantId, row.AgentIds, ct),
             approvals.Select(x => new InvestigationApprovalDto(x.CallId, Options(x.OptionsJson))).ToArray(),
             Prompts: InvestigationContextComposer.Prompts(row), SentContext: await LastContextAsync(id, row.ActiveMessageId, ct),
-            Recovery: row.LastRecoveryAttemptAtUtc is null && row.RecoverySummary is null ? null : new(row.LastRecoveryAttemptAtUtc, row.RecoverySummary));
+            Recovery: await RecoveryStatusAsync(row, ct));
     }
 
     public async Task<bool> AcceptMessageAsync(int tenantId, Guid id, InvestigationMessageRequest request, string actor,
@@ -156,7 +156,7 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         var row = await LockAsync(tenantId, id, ct);
         if (row.State == InvestigationState.Archived) return;
-        if (row.State != InvestigationState.Idle && (!request.AcknowledgePossibleDelivery || request.ExpectedMessageId != row.ActiveMessageId))
+        if (row.State != InvestigationState.Idle && (!request.AcknowledgePossibleDelivery || request.ExpectedMessageId != (row.ActiveMessageId ?? Guid.Empty)))
             throw new InvestigationConflictException("Acknowledge possible remote activity for the current turn before archiving it.");
         await StageTurnResultAsync(db, row, Shared.Contracts.Flows.FlowAiResultStatus.Cancelled, clock.GetUtcNow(), ct);
         row.State = InvestigationState.Archived;

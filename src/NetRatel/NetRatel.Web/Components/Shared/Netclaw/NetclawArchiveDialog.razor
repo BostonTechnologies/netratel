@@ -1,0 +1,24 @@
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">Archive this conversation?</MudText></TitleContent>
+    <DialogContent>
+        <MudText Class="mb-3">@Title</MudText>
+        <MudText>The saved transcript and previous actions are preserved.</MudText>
+        @if (RequiresAcknowledgement)
+        {
+            <MudCheckBox T="bool" @bind-Value="_acknowledge" Label="I understand that remote actions may still be running or have unconfirmed side effects." data-testid="archive-acknowledge" />
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Keep open</MudButton>
+        <MudButton OnClick="Confirm" Disabled="@(RequiresAcknowledgement && !_acknowledge)" Color="Color.Primary" Variant="Variant.Filled" data-testid="archive-confirm">Archive chat</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public string Title { get; set; } = "";
+    [Parameter] public bool RequiresAcknowledgement { get; set; }
+    private bool _acknowledge;
+    private void Cancel() => Dialog.Cancel();
+    private void Confirm() { if (!RequiresAcknowledgement || _acknowledge) Dialog.Close(DialogResult.Ok(_acknowledge)); }
+}
