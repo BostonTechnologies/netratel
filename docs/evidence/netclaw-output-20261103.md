@@ -24,12 +24,14 @@ Local validation commands (from the repository root, with the SDK from `global.j
 
 ```sh
 dotnet restore NetRatel.sln
-dotnet build src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj --configuration Debug --no-restore
+dotnet build src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj --configuration Debug --no-restore --maxcpucount:1
 dotnet test --project src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj --configuration Debug --no-build --filter-class 'NetRatel.Tests.Netclaw.*' --results-directory work/netclaw-tests --report-trx
 tools/ci/validate-layout.sh
 ```
 
 Release builds, full fast regression receipts and artifact integrity checks run on GitHub-hosted Actions through the existing generic workflows. Distribution integrity and deployed functional acceptance are separate states.
+
+Observed local results: **73 passed, 0 failed, 0 skipped** in **55.811 seconds**, with a nonempty TRX receipt. The final Debug build passed in **116.73 seconds** with existing repository warnings. An earlier multiprocess verification rebuild exited with MSBuild child-node errors; rebuilding with one worker completed successfully. Product version metadata passed for all 22 projects; documentation layout/local links, public disclosure, diff whitespace and focused changed-source Slopwatch checks passed.
 
 ## Pending owner acceptance
 
