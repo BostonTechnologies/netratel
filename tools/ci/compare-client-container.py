@@ -2,12 +2,14 @@
 """Opt-in hosted comparison of the current Client image and an unbundled shared-runtime candidate."""
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import subprocess
 import shutil
 import tempfile
+import tarfile
 import time
 import uuid
 
@@ -77,6 +79,43 @@ for path in paths + [root]:
     return record
 
 
+def compare_layers(record, args, results):
+    spec = importlib.util.spec_from_file_location("prior", ROOT / "tools/ci/select-prior-release.py")
+    prior = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(prior)
+    selected = prior.select(None)
+    (results / "selected-companion-release.json").write_text(json.dumps(selected, indent=2) + "\n")
+    companions = []
+    record["companions"] = {}
+    for component in ("api", "web", "migrations", "mcp-http"):
+        reference = selected["images"][component]
+        alias = "netratel-client-stack-" + component + ":comparison"
+        logged(["docker", "pull", reference], results / (component + "-pull.log"))
+        subprocess.run(["docker", "tag", reference, alias], cwd=ROOT, check=True)
+        info = json.loads(command("docker", "image", "inspect", alias))[0]
+        record["companions"][component] = {
+            "release": selected["tag"], "reference": reference, "imageId": info["Id"],
+            "sourceSha": info["Config"]["Labels"]["org.opencontainers.image.revision"],
+            "productVersion": info["Config"]["Labels"]["org.opencontainers.image.version"]}
+        companions.append(alias)
+    with tempfile.TemporaryDirectory(prefix="netratel-client-layers-") as temporary:
+        directory = Path(temporary)
+        archive = directory / "images.tar"
+        subprocess.run(["docker", "image", "save", args.control, args.candidate, *companions,
+                        "--output", str(archive)], cwd=ROOT, check=True)
+        layers = directory / "layers"
+        layers.mkdir()
+        with tarfile.open(archive) as exported:
+            exported.extractall(layers, filter="data")
+        comparison = ["python3", "tools/ci/compare-stack-image-layers.py",
+                      "--directory", str(layers), "--output", str(results / "layer-comparison.json"),
+                      "--source-sha", record["sourceSha"], "--candidate", args.candidate, "--control", args.control]
+        for companion in companions:
+            comparison.extend(("--companion", companion))
+        logged(comparison, results / "layer-comparison.log")
+    record["layerComparison"] = json.loads((results / "layer-comparison.json").read_text())
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--control", required=True)
@@ -92,7 +131,7 @@ def main():
     record = {"sourceSha": revision, "productVersion": version, "dotnetSdkVersion": command("dotnet", "--version"),
               "runtime": "linux-x64",
               "runner": {key: os.environ.get(key) for key in ("RUNNER_OS", "RUNNER_ARCH", "ImageOS", "ImageVersion")},
-              "measurement": "Docker image Size and app files are uncompressed; cache is separate. No registry-transfer or shared-layer-union byte claim.",
+              "measurement": "Image Size/app/cache bytes are distinct. Layer comparison uses normalized gzip exports with four fixed published companions; not registry-transfer bytes.",
               "arms": {}, "exitCode": 1}
     try:
         subprocess.run(["git", "diff", "--exit-code"], cwd=ROOT, check=True)
@@ -155,6 +194,7 @@ def main():
             raise ValueError("An actual-image PTY probe failed; both backends' evidence is retained.")
         if any(probe["bundleExtractionBytes"] for probe in record["arms"]["candidate"]["probes"].values()):
             raise ValueError("The unbundled candidate unexpectedly created a single-file extraction cache.")
+        compare_layers(record, args, results)
         record["exitCode"] = 0
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         record["error"] = str(error)

@@ -35,5 +35,9 @@ Its normal Client image is the control. The candidate image runs both native and
 Python PTY self-tests, then the existing isolated OIDC deployment uses it for
 enrollment, authentication, gateway presence, command execution/cancellation and
 recreation with persistent state. The retained comparison distinguishes actual
-uncompressed image/application bytes from extraction-cache bytes; registry
-transfer and all-five-image unique-layer costs still need separate measurement.
+uncompressed image/application bytes from extraction-cache bytes. It also
+compares normalized gzip layer exports for each arm alone and with the four
+fixed companion images selected from the latest completed published release.
+These layer totals exclude image config/manifests and do not measure registry
+transfer bytes. The selected release, immutable image references and layer
+identities remain in the retained results.

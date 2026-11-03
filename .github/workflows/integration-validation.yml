@@ -238,6 +238,8 @@ jobs:
             "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Compare the unbundled shared-runtime Client and select it for deployment acceptance
         if: inputs.suite == 'deployment' && inputs.deployment_profile == 'client-runtime'
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
