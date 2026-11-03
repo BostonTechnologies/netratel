@@ -24,6 +24,21 @@ namespace NetRatel.Tests.Netclaw;
 public sealed class NetclawProtocolTests
 {
     [Theory]
+    [InlineData("{}", true)]
+    [InlineData("{\"turnNumber\":null}", true)]
+    [InlineData("{\"turnNumber\":3}", true)]
+    [InlineData("{\"turnNumber\":2}", false)]
+    [InlineData("{\"turnNumber\":4}", false)]
+    [InlineData("{\"turnNumber\":\"3\"}", false)]
+    [InlineData("{\"turnNumber\":false}", false)]
+    [InlineData("{\"turnNumber\":-1}", false)]
+    public void Optional_turn_identity_accepts_native_null_but_rejects_stale_or_malformed_numbers(string json, bool accepted)
+    {
+        using var output = JsonDocument.Parse(json);
+        Assert.Equal(accepted, NetclawInvestigationWorker.MatchesOptionalTurn(output.RootElement, 2));
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Native_client_authenticates_negotiate_and_transport_then_uses_exact_session_message_and_approval_contract(bool rejectWebSockets)
