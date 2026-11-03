@@ -101,7 +101,6 @@ if (args is ["--gssapi-application-smoke"])
 }
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddScoped<NetRatel.API.Services.SoftwareInventoryService>();
 // Public install URLs are bearer capabilities; framework request-start logs include raw paths.
 builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
 NetRatelDatabaseConfigurationResolver.ValidateProvider(builder.Configuration);
@@ -915,6 +914,7 @@ builder.Services.AddHostedService<NetRatel.Infrastructure.Flows.FlowRunWorker>()
 builder.Services.AddHostedService<GlobalSearchQueryWarmupService>();
 builder.Services.AddNetRatelApplication();
 builder.Services.AddNetRatelInfrastructure(builder.Configuration);
+builder.Services.AddScoped<NetRatel.API.Services.SoftwareInventoryService>();
 builder.Services.AddMonitoringFlowBridge();
 builder.Services.AddNetRatelServiceIdentityApi(builder.Configuration);
 builder.Services.AddSystemPairing(builder.Configuration);
