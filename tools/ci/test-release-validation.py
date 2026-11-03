@@ -2575,61 +2575,65 @@ class SavedImageCredentialScanTests(unittest.TestCase):
 
     def test_html_payload_comparison_rejects_unrelated_file_and_package_changes(self):
         comparator = module("compare-migrations-html-payload")
-        common = {"NetRatel.Infrastructure.dll": {"sha256": "a" * 64, "bytes": 100},
-                  "NetRatel.Shared.dll": {"sha256": "b" * 64, "bytes": 50}}
-        control = {**common, **{name: {"sha256": "c" * 64, "bytes": 10} for name in comparator.REMOVED_FILES}}
-        candidate = copy.deepcopy(common)
-        candidate["NetRatel.Infrastructure.dll"] = {"sha256": "d" * 64, "bytes": 90}
-        for arm, inventory in (("candidate", candidate), ("control", control)):
-            (self.root / f"{arm}-file-hashes.json").write_text(json.dumps(inventory))
-            (self.root / f"{arm}-runtimeconfig.json").write_text("{}")
-            (self.root / f"{arm}-runtime.txt").write_text("same runtime/UID/native packages\n")
-            files = [{"SPDXID": "File-" + name, "fileName": "./out/" + name,
-                      "checksums": [{"algorithm": "SHA256", "checksumValue": inventory[name]["sha256"]}]} for name in sorted(inventory)]
-            packages = [{"SPDXID": "Package-root", "name": "NetRatel.Migrations", "versionInfo": "1.0.0"}]
-            if arm == "control":
-                packages += [{"SPDXID": "Package-" + name, "name": name, "versionInfo": "1.0.0"}
-                             for name in sorted(comparator.REMOVED_PACKAGES)]
-            relations = [{"spdxElementId": "Package-root", "relationshipType": "CONTAINS", "relatedSpdxElement": item["SPDXID"]} for item in files]
-            relations += [{"spdxElementId": "Package-root", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": item["SPDXID"]} for item in packages[1:]]
-            document = {"files": files, "packages": packages, "relationships": relations,
-                        "documentNamespace": "https://example.test/" + hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest(),
-                        "creationInfo": {"created": "2026-01-01T00:00:00Z"}}
-            (self.root / f"{arm}-runtime.spdx.json").write_text(json.dumps(document))
-        result = comparator.compare(self.root)
-        self.assertEqual(4, len(result["removedFiles"]))
-        self.assertEqual(4, len(result["removedPackages"]))
-        self.assertEqual(1, result["byteIdenticalRetainedFiles"])
-        candidate["NetRatel.Shared.dll"]["sha256"] = "e" * 64
-        (self.root / "candidate-file-hashes.json").write_text(json.dumps(candidate))
-        with self.assertRaisesRegex(ValueError, "unexpected retained payload"):
-            comparator.compare(self.root)
-        candidate["NetRatel.Shared.dll"] = common["NetRatel.Shared.dll"]
-        (self.root / "candidate-file-hashes.json").write_text(json.dumps(candidate))
-        document = json.loads((self.root / "candidate-runtime.spdx.json").read_text())
-        valid_document = copy.deepcopy(document)
-        document["packages"][0]["versionInfo"] = "2.0.0"
-        (self.root / "candidate-runtime.spdx.json").write_text(json.dumps(document))
-        with self.assertRaisesRegex(ValueError, "retained package"):
-            comparator.compare(self.root)
-        def change_file_metadata(value):
-            next(item for item in value["files"] if item["fileName"].endswith("NetRatel.Shared.dll"))["licenseConcluded"] = "changed"
-            value["documentNamespace"] = value["documentNamespace"].rsplit('/', 1)[0] + '/' + hashlib.sha256(json.dumps(value["files"], sort_keys=True).encode()).hexdigest()
-        mutations = [
-            (lambda value: value.update(name="changed"), "document metadata"),
-            (lambda value: value["creationInfo"].update(creators=["changed"]), "creation metadata"),
-            (lambda value: value.update(documentNamespace="https://changed.test/" + value["documentNamespace"].rsplit('/', 1)[-1]), "namespace prefix"),
-            (change_file_metadata, "retained SPDX file entry"),
-        ]
-        for mutate, message in mutations:
-            with self.subTest(message=message):
-                changed_document = copy.deepcopy(valid_document)
-                mutate(changed_document)
-                (self.root / "candidate-runtime.spdx.json").write_text(json.dumps(changed_document))
-                with self.assertRaisesRegex(ValueError, message): comparator.compare(self.root)
-        valid_document["creationInfo"]["created"] = "2026-01-01T01:00:00Z"
-        (self.root / "candidate-runtime.spdx.json").write_text(json.dumps(valid_document))
-        self.assertEqual(4, len(comparator.compare(self.root)["removedPackages"]))
+        for comparison, removed_files, removed_packages in (
+                ("html-ownership", comparator.REMOVED_FILES, comparator.REMOVED_PACKAGES),
+                ("schema-ownership", comparator.SCHEMA_FILES, comparator.SCHEMA_PACKAGES)):
+            compare = lambda: comparator.compare(self.root, comparison)
+            common = {"NetRatel.Infrastructure.dll": {"sha256": "a" * 64, "bytes": 100},
+                      "NetRatel.Shared.dll": {"sha256": "b" * 64, "bytes": 50}}
+            control = {**common, **{name: {"sha256": "c" * 64, "bytes": 10} for name in removed_files}}
+            candidate = copy.deepcopy(common)
+            candidate["NetRatel.Infrastructure.dll"] = {"sha256": "d" * 64, "bytes": 90}
+            for arm, inventory in (("candidate", candidate), ("control", control)):
+                (self.root / f"{arm}-file-hashes.json").write_text(json.dumps(inventory))
+                (self.root / f"{arm}-runtimeconfig.json").write_text("{}")
+                (self.root / f"{arm}-runtime.txt").write_text("same runtime/UID/native packages\n")
+                files = [{"SPDXID": "File-" + name, "fileName": "./out/" + name,
+                          "checksums": [{"algorithm": "SHA256", "checksumValue": inventory[name]["sha256"]}]} for name in sorted(inventory)]
+                packages = [{"SPDXID": "Package-root", "name": "NetRatel.Migrations", "versionInfo": "1.0.0"}]
+                if arm == "control":
+                    packages += [{"SPDXID": "Package-" + name, "name": name, "versionInfo": "1.0.0"}
+                                 for name in sorted(removed_packages)]
+                relations = [{"spdxElementId": "Package-root", "relationshipType": "CONTAINS", "relatedSpdxElement": item["SPDXID"]} for item in files]
+                relations += [{"spdxElementId": "Package-root", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": item["SPDXID"]} for item in packages[1:]]
+                document = {"files": files, "packages": packages, "relationships": relations,
+                            "documentNamespace": "https://example.test/" + hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest(),
+                            "creationInfo": {"created": "2026-01-01T00:00:00Z"}}
+                (self.root / f"{arm}-runtime.spdx.json").write_text(json.dumps(document))
+            result = compare()
+            self.assertEqual(4, len(result["removedFiles"]))
+            self.assertEqual(4, len(result["removedPackages"]))
+            self.assertEqual(1, result["byteIdenticalRetainedFiles"])
+            candidate["NetRatel.Shared.dll"]["sha256"] = "e" * 64
+            (self.root / "candidate-file-hashes.json").write_text(json.dumps(candidate))
+            with self.assertRaisesRegex(ValueError, "unexpected retained payload"):
+                compare()
+            candidate["NetRatel.Shared.dll"] = common["NetRatel.Shared.dll"]
+            (self.root / "candidate-file-hashes.json").write_text(json.dumps(candidate))
+            document = json.loads((self.root / "candidate-runtime.spdx.json").read_text())
+            valid_document = copy.deepcopy(document)
+            document["packages"][0]["versionInfo"] = "2.0.0"
+            (self.root / "candidate-runtime.spdx.json").write_text(json.dumps(document))
+            with self.assertRaisesRegex(ValueError, "retained package"):
+                compare()
+            def change_file_metadata(value):
+                next(item for item in value["files"] if item["fileName"].endswith("NetRatel.Shared.dll"))["licenseConcluded"] = "changed"
+                value["documentNamespace"] = value["documentNamespace"].rsplit('/', 1)[0] + '/' + hashlib.sha256(json.dumps(value["files"], sort_keys=True).encode()).hexdigest()
+            mutations = [
+                (lambda value: value.update(name="changed"), "document metadata"),
+                (lambda value: value["creationInfo"].update(creators=["changed"]), "creation metadata"),
+                (lambda value: value.update(documentNamespace="https://changed.test/" + value["documentNamespace"].rsplit('/', 1)[-1]), "namespace prefix"),
+                (change_file_metadata, "retained SPDX file entry"),
+            ]
+            for mutate, message in mutations:
+                with self.subTest(message=message):
+                    changed_document = copy.deepcopy(valid_document)
+                    mutate(changed_document)
+                    (self.root / "candidate-runtime.spdx.json").write_text(json.dumps(changed_document))
+                    with self.assertRaisesRegex(ValueError, message): compare()
+            valid_document["creationInfo"]["created"] = "2026-01-01T01:00:00Z"
+            (self.root / "candidate-runtime.spdx.json").write_text(json.dumps(valid_document))
+            self.assertEqual(4, len(compare()["removedPackages"]))
 
     def test_empty_missing_corrupt_and_unreviewed_matches_fail(self):
         cases = [([], "no layers"),

@@ -16,7 +16,7 @@ on:
         description: Comparison for migrations-image only (control is diagnostic, never published)
         type: choice
         default: base
-        options: [base, html-ownership]
+        options: [base, html-ownership, schema-ownership]
         required: false
       browser_classes:
         description: Optional space-separated fully qualified browser test classes; blank runs the full browser suite
