@@ -26,6 +26,52 @@ Baseline and head use separate state roots, so a same-source comparison does
 not collide. These probes remain outside required PR/main CI; full agent
 initialization, auth, other features and platform acceptance remain independent.
 
+## Native trim diagnostics
+
+The optional `client-trim-windows` and `client-trim-macos` suites each select one
+matching hosted runner and publish only one client candidate: `win-x64` or
+`osx-arm64`, respectively. These are trimmed JIT assessments with
+`PublishAot=false`, separate from the existing untrimmed A/B measurement and
+normal production archives. They add no dispatch inputs or required CI jobs.
+
+```sh
+gh workflow run integration-validation.yml --ref main \
+  -f suite=client-trim-windows -f source_ref=FULL_SOURCE_SHA
+
+gh workflow run integration-validation.yml --ref main \
+  -f suite=client-trim-macos -f source_ref=FULL_SOURCE_SHA
+```
+
+Use a full source SHA containing the diagnostic helper. The measurement rejects
+a host OS/process/runner architecture that differs from the selected RID. It
+retains the exact SDK, source, evaluated publish properties, final runtime graph,
+prebundle input hashes and binary headers, original archive/SBOM/checksums,
+diagnostics and failed stages. Fresh and cached `--version` launches execute
+the extracted archive's bytes after inventory and executable architecture checks.
+The returned version must include the exact measured source SHA. Windows
+measurements generate the same manifest-bound repair entry point as the existing
+release workflow before producing the SBOM and ZIP.
+These timings do not measure agent readiness or RSS. Windows verification reuse
+continues preserving original ZIP, SBOM, metrics and CRLF checksum bytes, using
+only a separate normalized validation copy.
+
+On macOS, the existing native Unix self-test exercises the platform `libutil`
+`forkpty` path; it does not use or establish the Linux-only spawn helper. The
+existing Python PTY self-test runs separately even if the native diagnostic
+fails. Both retain actual exit status, final diagnostics and output. Windows
+has no existing packaged ConPTY self-test, so this measurement records ConPTY
+as unexecuted. A successful version/PTY probe leaves service, authentication,
+protected credentials, media, interactive helpers, permissions and install/update
+acceptance pending in [#493](https://github.com/BostonTechnologies/netratel/issues/493)
+and [#494](https://github.com/BostonTechnologies/netratel/issues/494).
+
+If a macOS runtime probe fails, `client-control-macos` publishes only one
+untrimmed archive on the same native runner selection and executes the same
+packaged probes. Set `source_ref` to the failed diagnostic's exact source SHA
+and compare SDK and runner image identities before attributing a difference to
+trimming. This control skips baseline checkout and trimming; it does not fan out
+into other platforms or repeat A/B measurements.
+
 ## Implementation
 
 All PowerShell tasks now use `ExternalShellRunner`. New API requests using the
