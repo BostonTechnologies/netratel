@@ -145,7 +145,16 @@ The 7 October 2026 owner policy requires PR/main validation to succeed in
 strictly less than 20 minutes, targeting 10–15 minutes. It keeps disclosure,
 version, PostgreSQL-only and release-script checks, one solution Release
 restore/build, and three prebuilt fast assemblies with separate nonzero
-all-passing TRX receipts. `tools/ci/run-fast-regressions.sh` excludes
+all-passing TRX receipts. Components run first; Core's Infrastructure namespace
+and its exact complement then overlap with the separate API suite. Each Core
+process owns its PostgreSQL collection server and isolated databases. Each
+uses half the default collection-thread allowance, preserving Core's aggregate
+concurrency budget across the two processes. A
+same-binary discovery manifest verifies that both completed receipts cover the
+full selected Core population without overlap, including theory rows. Each
+group reports its duration. Source-changing PR events retain required checks;
+draft/readiness changes alone do not restart them.
+`tools/ci/run-fast-regressions.sh` excludes
 `category=compose`, `category=hosted` and `category=manual-integration`.
 Restore, build and test outcomes remain independently visible. The same fast
 selection applies to tag-build validation, with real CLI/stdio/native packaging
@@ -180,6 +189,7 @@ gh workflow run integration-validation.yml --ref main -f suite=upgrade-local -f 
 gh workflow run integration-validation.yml --ref main -f suite=deployment -f deployment_profile=http-host-setup -f source_ref='<commit-or-tag>'
 gh workflow run integration-validation.yml --ref main -f suite=migrations-image -f source_ref='<commit-or-tag>'
 gh workflow run integration-validation.yml --ref main -f suite=migrations-image -f migrations_comparison=html-ownership -f source_ref='<exact-public-commit>'
+gh workflow run integration-validation.yml --ref main -f suite=migrations-image -f migrations_comparison=schema-ownership -f source_ref='<exact-public-commit>'
 gh workflow run integration-validation.yml --ref main -f suite=api-image -f source_ref='<exact-public-commit>'
 ```
 
@@ -207,6 +217,18 @@ dependency graph, legal notices and verified SPDX metadata. SPDX creation times
 remain their real generation times and namespaces bind each actual file inventory;
 both differences are retained in the receipt. This mode reuses the full native,
 PostgreSQL, role-preserving rerun and latest-release upgrade checks above.
+
+`schema-ownership` uses the same controlled comparison for the unchanged schema
+utility and its NJsonSchema reference. Its fixed removal allowlist is NJsonSchema,
+NJsonSchema.Annotations, Namotion.Reflection and Newtonsoft.Json in the migrations
+payload; API and MCP retain their active dependencies. One additional API publish
+stage supplies the actual API dependency set for before/after utility calls in
+isolated load contexts. The original control Infrastructure assembly and new API
+assembly must accept the valid vector and reject the missing-required vector with
+identical errors and dependency bytes. Package identities, notice hash and the
+incremental API build/probe durations are retained. The defining utility assembly
+changes from Infrastructure to API; namespace/signature preservation is not a
+claim of compatibility for an external binary bound to its old assembly identity.
 
 The optional `deployment_profile=http-host-setup` reuses source Compose and public HTTPS fixtures for a fresh local-account stack. It generates into the supplied persistent setup volume, approves that exact generation through the administrator protocol, executes the generated apply action, obtains a separate temporary personal MCP credential, and requires authenticated catalog plus a delegated read-only API status result. It also runs bare `dotnet NetRatel.Mcp.Http.dll setup` inside the serving container, saves the personal default to its separate client-data volume, then reloads and verifies that profile after recreation. It recreates tooling/runtime containers and repeats host verification with the equivalent `/mcp` input and unchanged generation fingerprint. The redacted receipts under `TestResults/http-host-setup` distinguish this headless generation/protocol/deployment smoke from the focused interactive terminal fixtures and later owner testing. The default deployment profile remains the existing `oidc` suite; neither profile enters required PR/main CI.
 

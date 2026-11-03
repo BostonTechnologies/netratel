@@ -120,6 +120,10 @@ public sealed class RuntimeInventoryHostIntegrationTests
             bootstrap!.State.Should().Be(BootstrapState.Ready, "each sibling uses the real completed Local bootstrap state");
             bootstrap.IsReady.Should().BeTrue();
 
+            using (var scope = host.Services.CreateScope())
+                scope.ServiceProvider.GetRequiredService<NetRatel.API.Services.SoftwareInventoryService>()
+                    .Should().NotBeNull("software inventory remains available in the ready operational host");
+
             var runtimeOptions = host.Services.GetRequiredService<IOptions<NetRatelAkkaOptions>>().Value;
             runtimeOptions.ActorSystemName.Should().Be($"NetRatelRuntimeInventory{index}");
             runtimeOptions.GatewayGrpcPort.Should().Be(19320);
