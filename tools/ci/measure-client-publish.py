@@ -122,6 +122,13 @@ def run_packaged_pty_probes(metrics, evidence, state, archive, distribution_name
                       bundleExtractionBytes=sum(path.stat().st_size for path in cache.rglob("*") if path.is_file()))
         record["passed"] = (record["exitCode"] == 0 and not record.get("timedOut")
                             and final.get("stage") == "passed" and final.get("reaped") is True)
+        if expected := metrics.get("expectedNativeHelper"):
+            extracted = [{"path": path.relative_to(cache).as_posix(), "sha256": digest(path),
+                          "binary": binary_identity(path)} for path in cache.rglob(expected["name"])]
+            record["nativeHelperExtraction"] = extracted
+            record["passed"] = (record["passed"] and len(extracted) == 1
+                                and extracted[0]["sha256"] == expected["sha256"]
+                                and extracted[0]["binary"] == expected["binary"])
         print("CLIENT_PACKAGED_PTY_PROBE=" + json.dumps({"backend": backend, **record}, separators=(",", ":")), flush=True)
         print(stdout, end="", flush=True)
         print(stderr, end="", file=sys.stderr, flush=True)
@@ -420,6 +427,13 @@ def main():
             inputs.append({"path": relative, "bytes": path.stat().st_size, "sha256": digest(path),
                            "excludedFromBundle": loose.lower() == "true", "binary": binary_identity(path)})
         (evidence / "publish-input-inventory.json").write_text(json.dumps(inputs, indent=2) + "\n")
+        resize_inputs = [item for item in inputs if Path(item["path"]).name == "libnetratel_terminal_pty_resize.dylib"]
+        if resize_inputs:
+            identities = {(item["sha256"], json.dumps(item["binary"], sort_keys=True)) for item in resize_inputs}
+            if len(identities) != 1 or resize_inputs[0]["binary"] != {"format": "Mach-O", "machine": "0x100000c"}:
+                raise ValueError("Published Darwin resize helper identity differs from osx-arm64")
+            metrics["expectedNativeHelper"] = {"name": "libnetratel_terminal_pty_resize.dylib",
+                                               "sha256": resize_inputs[0]["sha256"], "binary": resize_inputs[0]["binary"]}
         for name in ("LICENSE", "NOTICE"):
             shutil.copy2(source / name, distribution / name)
         recovery_tool = source / "tools/ci/prepare-windows-client-repair.py"
