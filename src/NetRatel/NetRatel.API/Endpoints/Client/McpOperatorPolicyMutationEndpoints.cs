@@ -1269,14 +1269,15 @@ public static class McpOperatorPolicyMutationEndpoints
             TargetOnline: true,
             CapabilityAvailable: true)
         {
-            RequiresDevelopmentEnvironmentPolicy = target.Kind == McpOperatorTargetSelectorKind.DevelopmentEnvironment
+            RequiresDevelopmentEnvironmentPolicy = target.Kind == McpOperatorTargetSelectorKind.DevelopmentEnvironment,
+            TargetProfileInvalid = profile?.InvalidFactsDigest is not null
         };
         if (accountAuthority is not null && !currentInstanceAccount)
             return McpOperatorDecision.Denied(access, "instance_account_authority_changed", McpOperatorAuthorizationLayer.Authentication);
-        // Creating an initial profile is the reviewed bootstrap operation.
-        // A policy mutation for an exact agent must already have that profile.
-        if (tenantVisible && target.AgentId is not null && profile is null && mutationOperation != UpsertTargetProfileOperation)
-            return McpOperatorDecision.Denied(access, "target_profile_missing", McpOperatorAuthorizationLayer.Target);
+        // Invalid persisted facts cannot authorize a policy mutation. An independently
+        // authorized interactive instance administrator can still repair that profile.
+        if (access.TargetProfileInvalid && !(currentInstanceAccount && mutationOperation == UpsertTargetProfileOperation))
+            return McpOperatorDecision.Denied(access, "target_profile_invalid", McpOperatorAuthorizationLayer.Target);
         if (currentInstanceAccount)
             return new McpOperatorDecision(true, null, null, [], null, access.TargetSetDigest, access)
             {
@@ -1562,6 +1563,7 @@ public static class McpOperatorPolicyMutationEndpoints
             classification = profile?.Classification,
             tags = profile?.Tags.Order(StringComparer.Ordinal).ToArray()
         });
+        if (profile?.InvalidFactsDigest is { } invalidDigest) source += ":invalid:" + invalidDigest;
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(source)));
     }
 
@@ -1575,7 +1577,7 @@ public static class McpOperatorPolicyMutationEndpoints
         "oauth_scope_missing" => "oauth_scope",
         "oauth_role_missing" => "oauth_role",
         "tenant_not_authorized" => "tenant",
-        "target_not_found" or "target_profile_missing" => "target",
+        "target_not_found" or "target_profile_missing" or "target_profile_invalid" => "target",
         "operator_policy_not_found" => "policy",
         "validation_error" or "environment_mismatch" => "input",
         "confirmation_plan_invalid" or "confirmation_plan_stale" or "confirmation_plan_expired" => "confirmation",
@@ -1591,6 +1593,8 @@ public static class McpOperatorPolicyMutationEndpoints
         "oauth_role_missing" => "The signed delegation does not include the PolicyAdministrator role.",
         "tenant_not_authorized" => "The caller has no active policy-administration authorization for this tenant.",
         "target_not_found" => "No persisted exact target matched the requested policy selector.",
+        "target_profile_required" => "An applicable policy depends on unknown classification or tags.",
+        "target_profile_invalid" => "The persisted target profile failed validation.",
         "target_profile_missing" => "The exact agent has no persisted operator target profile for policy administration.",
         "operator_policy_not_found" => "No current policy record matched the supplied policy identifier.",
         "validation_error" => "The policy draft did not meet the published bounded contract.",
@@ -1614,6 +1618,8 @@ public static class McpOperatorPolicyMutationEndpoints
         "oauth_role_missing" => "Ask an identity administrator to assign the dedicated PolicyAdministrator role, then reauthorize.",
         "tenant_not_authorized" => "Ask a policy administrator to grant a reviewed PolicyAdministration policy for this tenant.",
         "target_not_found" => "Verify the persisted V2 target when using an exact-agent policy selector.",
+        "target_profile_required" => "Review the matching policy restrictions and target facts in Admin → MCP Policies.",
+        "target_profile_invalid" => "An independently authorized instance administrator can repair the profile in Admin → MCP Policies.",
         "target_profile_missing" => "Have an independently authorized administrator create the exact agent's reviewed target profile, then create a fresh policy preview.",
         "operator_policy_not_found" => "Refresh the bounded policy list and use a current policy identifier.",
         "validation_error" or "environment_mismatch" => "Use the documented bounded policy draft shape and selected environment.",

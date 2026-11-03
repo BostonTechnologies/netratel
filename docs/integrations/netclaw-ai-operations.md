@@ -73,6 +73,14 @@ The conversation keeps operator messages, completed assistant text, tool activit
 
 Messages have stable caller-generated UUIDs. Repeating the same message ID and identical body returns the original admission; reusing it for different content is rejected. The browser keeps the original request while an HTTP result is uncertain and offers **Retry same request**. It does not silently turn a retry into a new remote message.
 
+### Long model calls
+
+A healthy connected receiver remains attached while the model is quiet, including calls longer than five minutes and pending approvals. Application-event silence is not transport failure. Connection/profile changes, disconnected transport, stopped receivers and buffer overflow still produce an explicit unresolved outcome and bounded cleanup. The worker retains its connection, transcript and buffer capacity limits.
+
+Late output is accepted only for the saved tenant, daemon fingerprint, session and active message, using supported live-send admission or exact history evidence. Native turn numbers, when present, must match the saved pre-send baseline. The exact final answer and terminal event are persisted once, including after an error left delivery unknown. A completed assistant turn can report a denied monitoring operation; read the answer and tool evidence to determine whether the operational check succeeded. Nothing is automatically resent or approved.
+
+The previously saved unresolved conversation remains preserved. Use **Recover session** only with valid evidence; missing historical correlation can still prevent reconciliation. Long provider calls and malformed `load_tool` arguments remain separately tracked in [#475](https://github.com/BostonTechnologies/netratel/issues/475); the authorization and receiver fixes do not establish their cause or resolution.
+
 ### Recovery and approvals
 
 **Recover session** checks the saved remote session without resending the operator message or an approval. When the daemon supplies a `session_joined` history snapshot, admission is confirmed only by exactly one daemon-supplied user message beginning with the exact investigation/message marker. A quoted marker in assistant text, a marker from another turn, or duplicate user markers cannot prove admission.

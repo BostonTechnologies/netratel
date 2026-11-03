@@ -8,7 +8,7 @@ using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
 
-public sealed class McpOperatorAuthorizationTests
+public sealed partial class McpOperatorAuthorizationTests
 {
     private static readonly CancellationToken Ct = CancellationToken.None;
 

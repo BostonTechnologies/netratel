@@ -86,6 +86,9 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
         if (!request.TargetEnabled && !AllowsDisabledClientAdministration(request))
             return McpOperatorDecision.Denied(request, "target_disabled", McpOperatorAuthorizationLayer.Target);
 
+        if (request.TargetProfileInvalid)
+            return McpOperatorDecision.Denied(request, "target_profile_invalid", McpOperatorAuthorizationLayer.Target);
+
         return null;
     }
 
@@ -117,49 +120,40 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
             (policy.TenantId == request.TenantId || IsDevelopmentPolicy(policy)) && policy.LifecycleState == McpOperatorPolicyLifecycleState.Active &&
             policy.DisabledAtUtc == null && (!policy.IsContainer || policy.Effect == McpOperatorPolicyEffect.Deny) &&
             (policy.Resource is null || policy.Resource == request.McpResource) &&
-            ParentAdmits(policy, request, snapshot, now));
+            ParentAdmits(policy, request, snapshot, now, allowUnknown: true));
 
         var principalMatches = candidates
             .Where(policy => PrincipalMatches(policy, request.Principal))
             .ToArray();
+        var possibleTargets = principalMatches.Where(policy => TargetSelectorMatches(policy, request, allowUnknown: true) &&
+            ClassificationMatches(policy, request, allowUnknown: true)).ToArray();
         var targetSelectorMatches = principalMatches
-            .Where(policy => TargetSelectorMatches(policy, request))
+            .Where(policy => TargetSelectorMatches(policy, request) && ParentAdmits(policy, request, snapshot, now))
             .ToArray();
-        var targetMatches = targetSelectorMatches
-            .Where(policy => ClassificationMatches(policy, request))
-            .ToArray();
-        var matching = targetMatches
-            .Where(policy => OperationMatches(policy, request))
-            .ToList();
+        var targetMatches = targetSelectorMatches.Where(policy => ClassificationMatches(policy, request)).ToArray();
+        // Use the same operation matching for unknown and known profile facts, including
+        // canonical policy mutations backed by a complete legacy preview/confirm review.
+        var possible = MatchingOperations(possibleTargets, request, now);
+        var matching = MatchingOperations(targetMatches, request, now);
+        var definiteDenies = matching.Where(policy => policy.Effect == McpOperatorPolicyEffect.Deny &&
+            (policy.ExpiresAtUtc is null || policy.ExpiresAtUtc > now) && ConstraintClassificationMatches(policy, request)).ToArray();
+        if (definiteDenies.Length > 0)
+            return McpOperatorDecision.Denied(request,
+                definiteDenies.Any(policy => policy.TargetClassification is not null) ? "target_classification_denied" : "target_policy_denied",
+                McpOperatorAuthorizationLayer.Policy, definiteDenies.Select(policy => policy.Id).ToArray());
+        var possibleDenies = possible.Where(policy => policy.Effect == McpOperatorPolicyEffect.Deny &&
+            (policy.ExpiresAtUtc is null || policy.ExpiresAtUtc > now) && ConstraintClassificationMatches(policy, request, allowUnknown: true)).ToArray();
+        if (possibleDenies.Length > 0)
+            return McpOperatorDecision.Denied(request, "target_profile_required", McpOperatorAuthorizationLayer.Policy,
+                possibleDenies.Select(policy => policy.Id).ToArray());
 
-        // The policy mutation API binds preview and confirmation to one stable
-        // canonical decision. Reviews made before canonical policy attachment
-        // issued separate phase policies. Honor those only as a complete,
-        // unexpired pair from the same review so neither phase is a shortcut.
-        if (CanonicalPolicyMutationPhases(request.Operation) is { } phases)
-        {
-            var reviewed = targetMatches.Where(policy => policy.ExpiresAtUtc is null || policy.ExpiresAtUtc > now).ToArray();
-            foreach (var preview in reviewed.Where(policy => policy.Operation == phases.Preview &&
-                         (policy.OperationFamily & request.OperationFamily) == request.OperationFamily))
-            {
-                var reviewId = PairingReviewId(preview.AuditReference);
-                if (reviewId is null) continue;
-                var confirm = reviewed.FirstOrDefault(policy => policy.Operation == phases.Confirm &&
-                    (policy.OperationFamily & request.OperationFamily) == request.OperationFamily &&
-                    PairingReviewId(policy.AuditReference) == reviewId &&
-                    policy.PrincipalSelectorKind == preview.PrincipalSelectorKind &&
-                    policy.PrincipalSelectorValue == preview.PrincipalSelectorValue &&
-                    policy.TargetSelectorKind == preview.TargetSelectorKind &&
-                    policy.TenantId == preview.TenantId && policy.AgentId == preview.AgentId &&
-                    policy.TargetClassification == preview.TargetClassification);
-                if (confirm is null) continue;
-                matching.Add(preview);
-                matching.Add(confirm);
-            }
-        }
-
+        matching.RemoveAll(policy => policy.Effect == McpOperatorPolicyEffect.Deny && !ConstraintClassificationMatches(policy, request));
         if (matching.Count == 0)
         {
+            var unresolved = possible.Where(policy => policy.ExpiresAtUtc is null || policy.ExpiresAtUtc > now).ToArray();
+            if (unresolved.Length > 0)
+                return McpOperatorDecision.Denied(request, "target_profile_required", McpOperatorAuthorizationLayer.Policy,
+                    unresolved.Select(policy => policy.Id).ToArray());
             if (targetSelectorMatches.Length > 0 && targetMatches.Length == 0)
                 return McpOperatorDecision.Denied(request, "target_classification_denied", McpOperatorAuthorizationLayer.Policy);
             if (targetMatches.Length > 0)
@@ -181,19 +175,6 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
 
         if (active.Length == 0)
             return McpOperatorDecision.Denied(request, "target_policy_missing", McpOperatorAuthorizationLayer.Policy);
-
-        var denies = active.Where(policy => policy.Effect == McpOperatorPolicyEffect.Deny).ToArray();
-        if (denies.Length > 0)
-        {
-            var code = denies.Any(policy => policy.TargetClassification is not null)
-                ? "target_classification_denied"
-                : "target_policy_denied";
-            return McpOperatorDecision.Denied(
-                request,
-                code,
-                McpOperatorAuthorizationLayer.Policy,
-                denies.Select(policy => policy.Id).ToArray());
-        }
 
         var selected = active
             .Where(policy => policy.Effect == McpOperatorPolicyEffect.Allow)
@@ -222,7 +203,7 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
         {
             return McpOperatorDecision.Denied(
                 request,
-                "target_classification_denied",
+                request.TargetClassification is null ? "target_profile_required" : "target_classification_denied",
                 McpOperatorAuthorizationLayer.Constraint,
                 [selected.Id]);
         }
@@ -254,6 +235,32 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
             return McpOperatorDecision.Denied(request, "target_offline", McpOperatorAuthorizationLayer.Target, [selected.Id]);
 
         return new McpOperatorDecision(true, null, null, [selected.Id], constraints, request.TargetSetDigest, request, selected.Version, IsDevelopmentPolicy(selected));
+    }
+
+    private static List<McpOperatorPolicyRecord> MatchingOperations(IEnumerable<McpOperatorPolicyRecord> targets,
+        McpOperatorAccessRequest request, DateTimeOffset now)
+    {
+        var candidates = targets.ToArray();
+        var matching = candidates.Where(policy => OperationMatches(policy, request)).ToList();
+        // Old reviewed grants named the two transport phases. Only a complete,
+        // unexpired pair from the same review can authorize the canonical mutation.
+        if (CanonicalPolicyMutationPhases(request.Operation) is not { } phases) return matching;
+        var reviewed = candidates.Where(policy => policy.ExpiresAtUtc is null || policy.ExpiresAtUtc > now).ToArray();
+        foreach (var preview in reviewed.Where(policy => policy.Operation == phases.Preview &&
+                     (policy.OperationFamily & request.OperationFamily) == request.OperationFamily))
+        {
+            var reviewId = PairingReviewId(preview.AuditReference);
+            if (reviewId is null) continue;
+            var confirm = reviewed.FirstOrDefault(policy => policy.Operation == phases.Confirm &&
+                (policy.OperationFamily & request.OperationFamily) == request.OperationFamily &&
+                PairingReviewId(policy.AuditReference) == reviewId &&
+                policy.PrincipalSelectorKind == preview.PrincipalSelectorKind && policy.PrincipalSelectorValue == preview.PrincipalSelectorValue &&
+                policy.TargetSelectorKind == preview.TargetSelectorKind && policy.TenantId == preview.TenantId && policy.AgentId == preview.AgentId &&
+                policy.TargetClassification == preview.TargetClassification);
+            if (confirm is null) continue;
+            matching.Add(preview); matching.Add(confirm);
+        }
+        return matching;
     }
 
     private static bool AllowsOfflineManagedOperation(McpOperatorAccessRequest request)
@@ -334,14 +341,14 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
         _ => false
     };
 
-    private static bool TargetSelectorMatches(McpOperatorPolicyRecord policy, McpOperatorAccessRequest request) =>
+    private static bool TargetSelectorMatches(McpOperatorPolicyRecord policy, McpOperatorAccessRequest request, bool allowUnknown = false) =>
         (policy.AgentIds is null || request.AgentId is { } selectedAgent && policy.AgentIds.Contains(selectedAgent)) &&
-        (policy.ClientTags is null || policy.ClientTags.Any(tag => request.TargetTags?.Contains(tag) == true)) &&
+        (policy.ClientTags is null || allowUnknown && request.TargetTags is null || policy.ClientTags.Any(tag => request.TargetTags?.Contains(tag) == true)) &&
         (policy.Effect == McpOperatorPolicyEffect.Deny || !request.RequiresDevelopmentEnvironmentPolicy || IsDevelopmentPolicy(policy)) && policy.TargetSelectorKind switch
     {
         McpOperatorTargetSelectorKind.ExactAgent => policy.AgentId is { } agentId && request.AgentId == agentId,
         McpOperatorTargetSelectorKind.Tenant => true,
-        McpOperatorTargetSelectorKind.ClientTag => policy.ClientTag is { Length: > 0 } tag && request.TargetTags?.Contains(tag) == true,
+        McpOperatorTargetSelectorKind.ClientTag => policy.ClientTag is { Length: > 0 } tag && (allowUnknown && request.TargetTags is null || request.TargetTags?.Contains(tag) == true),
         McpOperatorTargetSelectorKind.ControlPlane => request.TenantId == 0 && request.AgentId is null,
         McpOperatorTargetSelectorKind.DevelopmentEnvironment => IsDevelopmentPolicy(policy) && request.Environment == McpOperatorEnvironment.Development,
         _ => false
@@ -353,8 +360,13 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
         policy.TenantId == 0 && policy.AgentId is null && policy.ClientTag is null &&
         policy.TargetClassification is null;
 
-    private static bool ClassificationMatches(McpOperatorPolicyRecord policy, McpOperatorAccessRequest request) =>
-        policy.TargetClassification is null || policy.TargetClassification == request.TargetClassification;
+    private static bool ClassificationMatches(McpOperatorPolicyRecord policy, McpOperatorAccessRequest request, bool allowUnknown = false) =>
+        policy.TargetClassification is null || allowUnknown && request.TargetClassification is null || policy.TargetClassification == request.TargetClassification;
+
+    private static bool ConstraintClassificationMatches(McpOperatorPolicyRecord policy, McpOperatorAccessRequest request, bool allowUnknown = false) =>
+        ReadConstraints(policy.ConstraintsJson)?.AllowedTargetClassifications is not { Count: > 0 } allowed ||
+        request.TargetClassification is { } classification && allowed.Contains(classification) ||
+        allowUnknown && request.TargetClassification is null;
 
     private static bool OperationMatches(McpOperatorPolicyRecord policy, McpOperatorAccessRequest request) =>
         (policy.OperationFamily & request.OperationFamily) == request.OperationFamily &&
@@ -362,7 +374,7 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
         (policy.Operation is null || string.Equals(policy.Operation, request.Operation, StringComparison.Ordinal));
 
     private static bool ParentAdmits(McpOperatorPolicyRecord policy, McpOperatorAccessRequest request,
-        IReadOnlyDictionary<Guid, McpOperatorPolicyRecord> snapshot, DateTimeOffset now)
+        IReadOnlyDictionary<Guid, McpOperatorPolicyRecord> snapshot, DateTimeOffset now, bool allowUnknown = false)
     {
         if (policy.ParentPolicyId is not { } id) return true;
         return snapshot.TryGetValue(id, out var parent) && parent.ParentPolicyId is null &&
@@ -371,8 +383,8 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
             parent.IntegrationCredentialId == policy.IntegrationCredentialId && parent.Resource == policy.Resource &&
             parent.LifecycleState == McpOperatorPolicyLifecycleState.Active && parent.DisabledAtUtc is null &&
             (parent.ExpiresAtUtc is null || parent.ExpiresAtUtc > now) &&
-            PrincipalMatches(parent, request.Principal) && TargetSelectorMatches(parent, request) && ClassificationMatches(parent, request) &&
-            OperationMatches(parent, request) && (parent.Resource is null || parent.Resource == request.McpResource);
+            PrincipalMatches(parent, request.Principal) && TargetSelectorMatches(parent, request, allowUnknown) && ClassificationMatches(parent, request, allowUnknown) &&
+            ConstraintClassificationMatches(parent, request, allowUnknown) && OperationMatches(parent, request) && (parent.Resource is null || parent.Resource == request.McpResource);
     }
 
     private static (string Preview, string Confirm)? CanonicalPolicyMutationPhases(string operation) => operation switch

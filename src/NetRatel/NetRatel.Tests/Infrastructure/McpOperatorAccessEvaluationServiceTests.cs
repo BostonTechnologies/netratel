@@ -13,6 +13,25 @@ public sealed class McpOperatorAccessEvaluationServiceTests
     private static readonly CancellationToken Ct = CancellationToken.None;
 
     [Fact]
+    public async Task Unprofiled_target_inspection_keeps_ordinary_policy_and_unknown_facts_visible()
+    {
+        await using var db = CreateDb(); var agent = Guid.NewGuid(); await SeedAsync(db, agent);
+        var profile = await db.McpOperatorTargetProfiles.SingleAsync(); db.McpOperatorTargetProfiles.Remove(profile);
+        var policy = await db.McpOperatorPolicies.SingleAsync(); policy.TargetClassification = null;
+        await db.SaveChangesAsync();
+        var service = new McpOperatorAccessEvaluationService(db, new McpOperatorAuthorization(db));
+        var effective = await service.EffectiveAsync(McpOperatorEnvironment.Development, Principal(), 42, agent, Ct);
+        effective!.Target.ProfileConfigured.Should().BeFalse();
+        effective.MatchingPolicies.Should().ContainSingle();
+        effective.MissingPrerequisites.Should().BeEmpty();
+        var exact = await service.EvaluateAsync(McpOperatorEnvironment.Development, Principal(), 42, agent, "netratel_terminal", "availability", "inspect", "inspect", Ct);
+        exact!.Allowed.Should().BeTrue(); exact.CapabilityReadiness.Should().Be("not_checked");
+        db.McpOperatorTargetProfiles.Add(profile); profile.TagsJson = "{corrupt"; await db.SaveChangesAsync();
+        var invalid = await service.EvaluateAsync(McpOperatorEnvironment.Development, Principal(), 42, agent, "netratel_terminal", "availability", "inspect", "inspect", Ct);
+        invalid!.Allowed.Should().BeFalse(); invalid.FailureCode.Should().Be("target_profile_invalid");
+    }
+
+    [Fact]
     public async Task EffectiveAndExactEvaluation_ReturnServerResolvedPolicyFactsWithoutDispatching()
     {
         await using var db = CreateDb();

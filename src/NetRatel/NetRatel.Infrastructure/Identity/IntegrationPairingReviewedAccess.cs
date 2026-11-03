@@ -330,9 +330,9 @@ public sealed partial class IntegrationPairingService
             if (operation is null || permission is null || model is null ||
                 target.TenantId < 0 || model == McpOperationTargetModel.NoBusinessTarget && !clientSearchCandidate && (target.TenantId != 0 || target.AgentId is not null) ||
                 model == McpOperationTargetModel.Tenant && (target.TenantId <= 0 || target.AgentId is not null) ||
-                (model is McpOperationTargetModel.Agent or McpOperationTargetModel.ObjectDerived) && (target.TenantId <= 0 || target.AgentId is null || target.ProfileRevision is null) ||
+                (model is McpOperationTargetModel.Agent or McpOperationTargetModel.ObjectDerived) && (target.TenantId <= 0 || target.AgentId is null) ||
                 model == McpOperationTargetModel.OptionalTenant && target.AgentId is not null ||
-                target.AgentId is not null && (target.TenantId <= 0 || target.ProfileRevision is null) || target.AgentId is null && target.ProfileRevision is not null)
+                target.AgentId is not null && target.TenantId <= 0 || target.AgentId is null && target.ProfileRevision is not null)
                 throw new IntegrationCredentialGrantValidationException("targets");
             foreach (var required in new[] { permission }.Concat(McpLocalOperationAuthorizationCatalog.AdditionalPermissions(target.Tool, target.Operation)))
                 if (target.TenantId == 0 ? !proposal.InstancePermissions.Contains(required, StringComparer.Ordinal) : !proposal.Grants.Any(x => x.TenantId == target.TenantId && x.Permission == required))
@@ -340,7 +340,7 @@ public sealed partial class IntegrationPairingService
             if (target.AgentId is { } agent)
             {
                 var profile = await policyAdministration!.GetTargetProfileAsync(target.TenantId, agent, ct).ConfigureAwait(false);
-                if (profile is null || profile.Version != target.ProfileRevision) throw new IntegrationCredentialGrantValidationException("reviewedRevision");
+                if (profile?.Version != target.ProfileRevision) throw new IntegrationCredentialGrantValidationException("reviewedRevision");
             }
         }
     }

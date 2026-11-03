@@ -48,8 +48,8 @@ public record NetRatelToolFailure(
         "oauth_scope_missing" => "oauth_scope",
         "oauth_role_missing" => "oauth_role",
         "tenant_not_authorized" => "tenant",
-        "target_not_found" or "target_disabled" or "target_offline" => "target",
-        "target_policy_missing" or "target_policy_denied" or "target_operation_not_authorized" or "target_classification_denied" or "target_policy_expired" => "policy",
+        "target_not_found" or "target_disabled" or "target_offline" or "target_profile_invalid" => "target",
+        "target_profile_required" or "target_policy_missing" or "target_policy_denied" or "target_operation_not_authorized" or "target_classification_denied" or "target_policy_expired" => "policy",
         "path_not_authorized" or "shell_not_authorized" or "fanout_limit_exceeded" => "constraint",
         "confirmation_required" or "confirmation_plan_expired" or "confirmation_plan_stale" => "confirmation",
         "idempotency_conflict" => "idempotency",
@@ -69,6 +69,8 @@ public record NetRatelToolFailure(
         "confirmation_required" => "The operation has not been dispatched; it requires explicit confirmation.",
         "oauth_scope_missing" => "The caller does not have the catalogued OAuth scope for this operation.",
         "tenant_not_authorized" => "The caller does not have visibility of the requested tenant.",
+        "target_profile_invalid" => "The persisted target profile failed validation.",
+        "target_profile_required" => "A potentially applicable policy depends on unknown target classification or tags.",
         "target_policy_missing" or "target_policy_denied" or "target_operation_not_authorized" or "target_classification_denied" or "target_policy_expired" => "The requested target operation did not satisfy the current operator policy.",
         _ => "The operation did not complete. No upstream response content is exposed."
     };
@@ -82,6 +84,7 @@ public record NetRatelToolFailure(
         "confirmation_required" => "Review the preview, then repeat the exact operation with the required confirmation input.",
         "oauth_scope_missing" => "Request the required OAuth scope, then obtain a fresh authorization result.",
         "tenant_not_authorized" => "Ask a policy administrator to grant reviewed tenant visibility.",
+        "target_profile_required" or "target_profile_invalid" => "Inspect the exact operation and matching policies in credential Details. A policy administrator can review policies and target profiles in Admin → MCP Policies.",
         "target_policy_missing" or "target_policy_denied" or "target_operation_not_authorized" or "target_classification_denied" or "target_policy_expired" => "Use netratel_access to inspect the target policy and ask a policy administrator for a reviewed change.",
         "delegated_identity_invalid" or "delegated_identity_required" => "Invoke through the authenticated MCP host to obtain a fresh signed delegation assertion.",
         "idempotency_conflict" => "Reuse the original request payload for this idempotency key or start a new preview.",

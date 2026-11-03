@@ -118,9 +118,9 @@
                     <MudText Typo="Typo.caption">Policy @selected.PolicyId · created by @selected.CreatedBy at @selected.CreatedAtUtc.ToUniversalTime().ToString("u")</MudText>
                     <PolicyDefinitionView Draft="@ToDraft(selected)" TenantName="@TenantName(selected.TargetSelector.TenantId)" PrincipalName="@PrincipalName(selected.PrincipalSelector)" ClientNames="@ClientsLabel(selected.TargetSelector)" />
                     @if (_targetProfile is { } target)
-                    { <MudAlert Severity="Severity.Info" Class="mt-2" data-testid="policy-target-profile">Persisted target: @target.Classification · profile @($"v{target.Version}") · tags @string.Join(", ", target.Tags). Updated by @target.UpdatedBy at @target.UpdatedAtUtc.ToUniversalTime().ToString("u").</MudAlert> }
+                    { <MudAlert Severity="@(target.InvalidFactsDigest is null ? Severity.Info : Severity.Error)" Class="mt-2" data-testid="policy-target-profile">@(target.InvalidFactsDigest is null ? "Persisted target:" : "Invalid persisted profile; review and repair these facts:") @target.Classification · profile @($"v{target.Version}") · tags @string.Join(", ", target.Tags). Updated by @target.UpdatedBy at @target.UpdatedAtUtc.ToUniversalTime().ToString("u").</MudAlert> }
                     else if (selected.TargetSelector.Kind == McpOperatorTargetSelectorKind.ExactAgent)
-                    { <MudAlert Severity="Severity.Warning">This exact target has no policy profile. Set its trusted classification before previewing a change.</MudAlert> }
+                    { <MudAlert Severity="Severity.Warning">This exact target has no profile. Unrestricted policies can authorize it; classification or tag restrictions require reviewed facts.</MudAlert> }
                     @if (selected.Environment == _authority?.Environment && selected.TargetSelector.Kind is McpOperatorTargetSelectorKind.ExactAgent or McpOperatorTargetSelectorKind.Tenant or McpOperatorTargetSelectorKind.ControlPlane)
                     {
                         <details class="policy-detail-section"><summary>Check credential admission</summary>

@@ -108,6 +108,42 @@ public sealed class IntegrationSetupTransactionTests(PostgreSqlPersistenceFixtur
         Assert.Contains(rows, p => p.Id == denied.PolicyId && p.Effect == McpOperatorPolicyEffect.Deny && p.ParentPolicyId is not null);
         Assert.Equal(unrelated.Version, (await admin.GetAsync(unrelated.PolicyId, default))!.Version);
     }
+    [Fact]
+    public async Task Full_wizard_setup_admits_unprofiled_clients_in_both_tenants_and_selected_server_operations()
+    {
+        var connection = await InitializeAsync(); var protection = new EphemeralDataProtectionProvider();
+        var permissions = NetRatelPermissions.All.Where(p => p != NetRatelPermissions.IntegrationManagement).ToArray();
+        var request = new IntegrationCredentialCreateRequest("All access connection", IntegrationCredentialPurpose.HttpMcp, ExactExpiry(),
+            new[] { 701, 702 }.SelectMany(t => permissions.Select(p => new IntegrationCredentialGrantRequest(t, p))).ToArray(), Resource, permissions);
+        await using var session = Open(connection, protection);
+        var credential = await session.Setup.CreateAsync(Principal(), Guid.NewGuid().ToString("N"), request, Plan(request), McpOperatorEnvironment.Production, default);
+        var authority = new McpOperatorAuthorization(session.App);
+        var routes = new McpOperatorRouteAdmissionService(session.App, authority);
+        var principal = new McpOperatorPrincipal(Owner, credential.CredentialId, null, new HashSet<string>(), new HashSet<string>(["Operator", "PolicyAdministrator"]),
+            new HashSet<string>(["netratel.mcp.observe", "netratel.mcp.admin", "netratel.mcp.read"]));
+        foreach (var tenant in new[] { 701, 702 })
+        {
+            var agent = Guid.NewGuid();
+            session.App.Agents.Add(new Agent { Id = agent, TenantId = tenant, IsEnabled = true, Status = AgentStatus.Active });
+            await session.App.SaveChangesAsync();
+            var read = await routes.EvaluateAsync(new(McpOperatorEnvironment.Production, principal, "netratel-local-http-mcp", Resource, "prod",
+                "netratel_monitoring", "client_series", tenant, agent, new HashSet<string>(["netratel.mcp.observe"]), "setup-test", "monitoring-test", false, true), default);
+            Assert.True(read.Decision.IsAllowed); Assert.Null(read.Decision.Request.TargetClassification);
+            Assert.Null(read.Decision.Request.TargetTags);
+        }
+        foreach (var operation in new[] { ("netratel_health", "get"), ("netratel_policy", "policies"), ("netratel_policy", "create") })
+        {
+            var descriptor = McpOperatorOperationCatalog.Find(operation.Item1, operation.Item2 == "create" ? "confirm_create" : operation.Item2)!;
+            var scope = NetRatel.Shared.Operations.McpOperationAccessScopeNames.Canonical(descriptor.RequiredScope);
+            var result = await authority.EvaluateAsync(new(McpOperatorEnvironment.Production, principal, 0, null, null, descriptor.OperationFamily,
+                operation.Item1 + "/" + operation.Item2, new HashSet<string>([scope]), descriptor.ConfirmationClass, "setup-test", "server-test",
+                McpResource: Resource, Tool: operation.Item1), default);
+            Assert.True(result.IsAllowed, result.FailureCode);
+        }
+        Assert.Empty(await session.App.McpOperatorTargetProfiles.ToArrayAsync());
+        Assert.Equal(3, await session.App.McpOperatorPolicies.CountAsync(p => p.IntegrationCredentialId == credential.CredentialId));
+    }
+
     private static McpIntegrationPolicy[] Plan(IntegrationCredentialCreateRequest request) => request.Grants.Select(g => g.TenantId).Concat(request.InstancePermissions!.Count > 0 ? [0] : []).Distinct().Select(id => new McpIntegrationPolicy(id, $"Connection · Scope {id} · All access", McpOperatorPolicyEffect.Allow,
         McpIntegrationPolicyCatalog.Supported(id, id == 0 ? request.InstancePermissions : request.Grants.Where(g => g.TenantId == id).Select(g => g.Permission)).Aggregate(McpOperatorOperationFamily.None, (f, op) => f | op.OperationFamily), McpIntegrationPolicyCatalog.AllAccessLimits, request.ExpiresAtUtc)).ToArray();
     private static ClaimsPrincipal Principal() => new(new ClaimsIdentity([new Claim("netratel_principal_id", Owner)], "local"));

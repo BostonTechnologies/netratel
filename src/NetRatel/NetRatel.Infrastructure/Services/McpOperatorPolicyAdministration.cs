@@ -337,7 +337,7 @@ public sealed partial class McpOperatorPolicyAdministration(OrchestratorDbContex
     private static bool ProfilesMatch(McpOperatorTargetProfile? current, McpOperatorTargetProfile? expected) =>
         current is null ? expected is null : expected is not null &&
         current.TenantId == expected.TenantId && current.AgentId == expected.AgentId &&
-        current.Version == expected.Version && current.Classification == expected.Classification &&
+        current.InvalidFactsDigest == expected.InvalidFactsDigest && current.Version == expected.Version && current.Classification == expected.Classification &&
         current.Tags.Order(StringComparer.Ordinal).SequenceEqual(expected.Tags.Order(StringComparer.Ordinal), StringComparer.Ordinal);
 
     private async Task EnsureExactTargetExistsAsync(McpOperatorTargetSelector target, CancellationToken cancellationToken)
@@ -408,14 +408,13 @@ public sealed partial class McpOperatorPolicyAdministration(OrchestratorDbContex
         Operations = record.Operations, IsContainer = record.IsContainer
     };
 
-    private static McpOperatorTargetProfile ToProfile(McpOperatorTargetProfileRecord record) => new(
-        record.AgentId,
-        record.TenantId,
-        record.Classification,
-        DeserializeValues(record.TagsJson),
-        record.UpdatedAtUtc,
-        record.UpdatedBy,
-        record.Version);
+    private static McpOperatorTargetProfile ToProfile(McpOperatorTargetProfileRecord record)
+    {
+        var facts = McpOperatorTargetFacts.Read(record.TenantId, record.AgentId, record);
+        return new(record.AgentId, record.TenantId, record.Classification,
+            facts.Tags?.Order(StringComparer.Ordinal).ToArray() ?? [], record.UpdatedAtUtc, record.UpdatedBy, record.Version)
+        { InvalidFactsDigest = facts.Invalid ? facts.Digest : null };
+    }
 
     private static McpOperatorPolicyChangeAudit ToChangeAudit(McpOperatorPolicyChangeAuditRecord record) => new(
         record.Id,

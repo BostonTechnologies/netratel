@@ -1,6 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
-using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Operations;
 using NetRatel.Infrastructure.Persistence;
@@ -79,34 +76,11 @@ public sealed class McpOperatorRouteAdmissionService(
         var profile = await _db.McpOperatorTargetProfiles.AsNoTracking().SingleOrDefaultAsync(
             candidate => candidate.TenantId == request.TenantId && candidate.AgentId == request.AgentId,
             cancellationToken).ConfigureAwait(false);
-        if (profile is null || !TryReadTags(profile.TagsJson, out var tags))
-        {
-            var unclassified = BuildAccessRequest(request, principal, descriptor, null, null, tenantVisible: true, targetResolved: true, targetEnabled: agent.IsEnabled && agent.Status != AgentStatus.Disabled);
-            // A persisted full-Dev grant explicitly includes newly enrolled clients.
-            // Other policies still require the authoritative target profile.
-            unclassified = unclassified with
-            {
-                TargetSetDigest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
-                    $"{request.TenantId}:{request.AgentId:D}:unprofiled")))
-            };
-            var development = await _authorization.EvaluateAsync(unclassified, cancellationToken).ConfigureAwait(false);
-            return new McpOperatorRouteAdmission(
-                development.DevelopmentEnvironmentAccess || development.FailureLayer == McpOperatorAuthorizationLayer.Target
-                    ? development
-                    : McpOperatorDecision.Denied(unclassified, "target_policy_missing", McpOperatorAuthorizationLayer.Policy),
-                descriptor);
-        }
-
-        var access = BuildAccessRequest(
-            request,
-            principal,
-            descriptor,
-            profile.Classification,
-            tags,
-            tenantVisible: true,
-            targetResolved: true,
+        var facts = McpOperatorTargetFacts.Read(request.TenantId, request.AgentId, profile);
+        var access = BuildAccessRequest(request, principal, descriptor, facts.Classification, facts.Tags,
+            tenantVisible: true, targetResolved: true,
             targetEnabled: agent.IsEnabled && agent.Status != AgentStatus.Disabled,
-            TargetSetDigest(request.TenantId, request.AgentId, profile));
+            facts.Digest) with { TargetProfileInvalid = facts.Invalid };
         var decision = await _authorization.EvaluateAsync(access, cancellationToken).ConfigureAwait(false);
         return new McpOperatorRouteAdmission(decision, descriptor);
     }
@@ -159,30 +133,4 @@ public sealed class McpOperatorRouteAdmissionService(
             request.TargetOnline,
             request.CapabilityAvailable);
 
-    private static bool TryReadTags(string json, out IReadOnlySet<string> tags)
-    {
-        try
-        {
-            var values = JsonSerializer.Deserialize(json, McpOperatorJsonContext.Default.StringArray);
-            if (values is null || values.Any(string.IsNullOrWhiteSpace))
-            {
-                tags = new HashSet<string>(StringComparer.Ordinal);
-                return false;
-            }
-
-            tags = values.ToHashSet(StringComparer.Ordinal);
-            return true;
-        }
-        catch (JsonException)
-        {
-            tags = new HashSet<string>(StringComparer.Ordinal);
-            return false;
-        }
-    }
-
-    private static string TargetSetDigest(int tenantId, Guid agentId, McpOperatorTargetProfileRecord profile)
-    {
-        var source = $"{tenantId}:{agentId:D}:{profile.Version}:{(short)profile.Classification}:{profile.TagsJson}";
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(source)));
-    }
 }

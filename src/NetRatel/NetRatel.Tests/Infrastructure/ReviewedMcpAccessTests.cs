@@ -296,8 +296,10 @@ public sealed class ReviewedMcpAccessTests
         var proposal = fixture.Proposal("reconcile", fixture.Credential.CredentialId);
         var configured = await fixture.Pairing.InspectCredentialAdmissionAsync("requester", fixture.Credential.CredentialId, McpOperatorEnvironment.Production);
         Assert.Equal("current_credential_valid", configured!.AuthenticationStatus);
-        Assert.Equal(new[] { 17, 29 }, configured.EffectiveAdmission.Select(x => x.Target.TenantId));
-        Assert.All(configured.EffectiveAdmission, x => { Assert.True(x.ApplicationGrantConfigured); Assert.True(x.OwnerPermissionGranted); Assert.Equal("tenant_not_authorized", x.FailureCode); });
+        Assert.Equal(new[] { 17, 29 }, configured.EffectiveAdmission.Where(x => x.Target.TenantId > 0).Select(x => x.Target.TenantId));
+        Assert.All(configured.EffectiveAdmission.Where(x => x.Target.TenantId > 0), x => { Assert.True(x.ApplicationGrantConfigured); Assert.True(x.OwnerPermissionGranted); Assert.Equal("tenant_not_authorized", x.FailureCode); });
+        Assert.Null(Assert.Single(configured.EffectiveAdmission, x => x.Target.TenantId == 0).FailureCode);
+        Assert.Equal("not_required_by_route", Assert.Single(configured.EffectiveAdmission, x => x.Target.TenantId == 0).PolicyAdmissionStatus);
         Assert.Contains(configured.RemainingPrerequisites, x => x.Contains("Matching Production operator policies"));
         Assert.Empty(await fixture.App.McpOperatorPolicies.ToArrayAsync());
         Assert.Empty(await fixture.Identity.IntegrationPairingRequests.ToArrayAsync());
@@ -324,7 +326,8 @@ public sealed class ReviewedMcpAccessTests
         Assert.Equal(proposal.ExpiresAtUtc, refreshed!.CredentialExpiresAtUtc);
         Assert.Equal(Fixture.Resource, refreshed.Resource);
         Assert.Equal("prod", refreshed.Instance);
-        Assert.All(refreshed.EffectiveAdmission, x => Assert.True(x.AuthorizationAdmitted));
+        Assert.All(refreshed.EffectiveAdmission.Where(x => x.Target.TenantId > 0), x => Assert.True(x.AuthorizationAdmitted));
+        Assert.True(Assert.Single(refreshed.EffectiveAdmission, x => x.Target.TenantId == 0).AuthorizationAdmitted);
         Assert.Equal(2, refreshed.MatchingPolicies.Count);
         Assert.All(refreshed.MatchingPolicies, x => { Assert.Equal("Production", x.Environment); Assert.Equal(proposal.ExpiresAtUtc, x.ExpiresAtUtc); });
         Assert.DoesNotContain(fixture.Credential.Secret, JsonSerializer.Serialize(refreshed));
@@ -531,8 +534,9 @@ public sealed class ReviewedMcpAccessTests
         await fixture.Identity.SaveChangesAsync();
         var admission = await fixture.Pairing.InspectCredentialAdmissionAsync("requester", row.Id, McpOperatorEnvironment.Production);
         Assert.Equal(3, admission!.ConfiguredGrants.Count);
-        Assert.All(admission.EffectiveAdmission, x => { Assert.Equal("netratel_flows", x.Target.Tool); Assert.Equal("list", x.Target.Operation); });
-        Assert.Equal(2, admission.EffectiveAdmission.Count);
+        Assert.All(admission.EffectiveAdmission.Where(x => x.Target.TenantId > 0), x => { Assert.Equal("netratel_flows", x.Target.Tool); Assert.Equal("list", x.Target.Operation); });
+        Assert.Equal("netratel_health", Assert.Single(admission.EffectiveAdmission, x => x.Target.TenantId == 0).Target.Tool);
+        Assert.Equal(3, admission.EffectiveAdmission.Count);
         Assert.False(admission.TargetsTruncated);
         Assert.Empty(await fixture.App.McpOperatorPolicies.ToArrayAsync());
         var apiCredential = await fixture.Credentials.CreateAsync("requester", new("API only", IntegrationCredentialPurpose.Api,
@@ -664,11 +668,13 @@ public sealed class ReviewedMcpAccessTests
         var current = await fixture.Pairing.InspectCredentialAdmissionAsync("requester", fixture.Credential.CredentialId,
             McpOperatorEnvironment.Production, proposal.Targets);
         var currentAgent = Assert.Single(current!.EffectiveAdmission);
-        Assert.Equal("conditional_runtime_unverified", currentAgent.PolicyAdmissionStatus);
-        Assert.False(currentAgent.AuthorizationAdmitted);
-        Assert.Null(admission.PolicyAllowed); Assert.False(admission.AuthorizationAdmitted);
-        Assert.Equal("conditional_runtime_unverified", admission.PolicyAdmissionStatus);
-        Assert.Equal("target_runtime_not_checked", admission.FailureCode);
+        Assert.Equal("evaluated", currentAgent.PolicyAdmissionStatus);
+        Assert.Equal("not_checked", currentAgent.TargetReadiness);
+        Assert.True(currentAgent.AuthorizationAdmitted);
+        Assert.True(admission.PolicyAllowed); Assert.True(admission.AuthorizationAdmitted);
+        Assert.Equal("evaluated", admission.PolicyAdmissionStatus);
+        Assert.Null(admission.FailureCode);
+        Assert.Equal("not_checked", admission.TargetReadiness);
         Assert.Equal("not_checked", admission.CapabilityAvailability);
         var descriptor = McpOperatorOperationCatalog.Find("netratel_clients", "telemetry")!;
         var offline = await fixture.Authorization.EvaluateAsync(new(McpOperatorEnvironment.Production,

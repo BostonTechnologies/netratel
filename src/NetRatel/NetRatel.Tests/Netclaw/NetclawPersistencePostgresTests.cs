@@ -21,7 +21,7 @@ using Xunit;
 namespace NetRatel.Tests.Netclaw;
 
 [Collection(PostgreSqlPersistenceCollection.Name)]
-public sealed class NetclawPersistencePostgresTests(PostgreSqlPersistenceFixture fixture)
+public sealed partial class NetclawPersistencePostgresTests(PostgreSqlPersistenceFixture fixture)
 {
     [Fact]
     public async Task General_chat_requires_a_saved_connection_and_preserves_identity_without_systems_or_prompt_context()

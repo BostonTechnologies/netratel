@@ -47,6 +47,8 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         review.Instance.Name.Should().Be("Synthetic HTTP connection");
         review.Instance.Scopes.Select(scope => scope.Name).Should().Contain(["Tenant choice 17", "Tenant choice 18", "Server / instance"]);
         review.Instance.Policies.Should().HaveCount(3);
+        review.Markup.Should().Contain("newly enrolled clients").And.Contain("no profile is required")
+            .And.Contain("/tmp").And.Contain("Active tenant deletion: Disabled");
         var steps = dialogs.Find(".mud-stepper-nav").TextContent;
         steps.IndexOf("Policies", StringComparison.Ordinal).Should().BeLessThan(steps.IndexOf("Review & create", StringComparison.Ordinal));
         review.FindAll("details").Should().BeEmpty();
@@ -370,6 +372,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         configured.EffectiveAdmission.Should().OnlyContain(x => x.ApplicationGrantConfigured && !x.AuthorizationAdmitted);
         var view = Render<CredentialAdmissionView>(p => p.Add(x => x.Admission, configured));
         view.Markup.Should().Contain("Matching Production operator policies").And.Contain("Current durable owner permission")
+            .And.Contain("sample coverage").And.Contain("Runtime readiness and capabilities remain unchecked")
             .And.Contain("2030-04-01T10:11:12.000000Z").And.NotContain("synthetic-one-time-secret");
         Call(page.Instance, "CloseCreate");
         var credential = ((System.Collections.IEnumerable)Field<object>(page.Instance, "_credentials")).Cast<object>().Single();
@@ -380,7 +383,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         var refreshedView = Render<CredentialAdmissionView>(p => p.Add(x => x.Admission, refreshed));
         refreshedView.Markup.Should().Contain("dispatch readiness not checked").And.NotContain("synthetic-one-time-secret");
         transport.Admission = Admission(false) with { CredentialState = "revoked", AuthenticationStatus = "delegated_identity_revoked" };
-        await (Task)page.Instance.GetType().GetMethod("RefreshAdmissionAsync", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(page.Instance, ["one", false])!;
+        await (Task)page.Instance.GetType().GetMethod("RefreshAdmissionAsync", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(page.Instance, ["one", false, null])!;
         Field<CredentialMcpAdmission>(page.Instance, "_detailAdmission").CredentialState.Should().Be("revoked");
     }
 

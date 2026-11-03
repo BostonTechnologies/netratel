@@ -74,7 +74,14 @@ public sealed class IntegrationCredentialDeletionEndpointTests
         response.Headers.CacheControl!.NoStore.Should().BeTrue();
         var admission = await response.Content.ReadFromJsonAsync<CredentialMcpAdmission>();
         admission!.ConfiguredGrants.Should().HaveCount(2);
-        admission.EffectiveAdmission.Should().OnlyContain(x => x.ApplicationGrantConfigured && !x.AuthorizationAdmitted && x.FailureCode == "tenant_not_authorized");
+        admission.EffectiveAdmission.Should().HaveCount(3);
+        admission.EffectiveAdmission.Where(x => x.Target.TenantId > 0).Should().HaveCount(2)
+            .And.OnlyContain(x => x.ApplicationGrantConfigured && !x.AuthorizationAdmitted && x.FailureCode == "tenant_not_authorized");
+        var server = admission.EffectiveAdmission.Should().ContainSingle(x => x.Target.TenantId == 0).Which;
+        server.Target.Tool.Should().Be("netratel_health"); server.Target.Operation.Should().Be("get");
+        server.AuthorizationAdmitted.Should().BeTrue(); server.PolicyAllowed.Should().BeNull();
+        server.PolicyAdmissionStatus.Should().Be("not_required_by_route");
+        server.TargetReadiness.Should().Be("not_checked"); server.CapabilityAvailability.Should().Be("not_checked");
         (await response.Content.ReadAsStringAsync()).Should().NotContain(fixture.Credential.Secret).And.NotContain("DeviceCapability");
         (await fixture.App.McpOperatorPolicies.CountAsync()).Should().Be(0);
         using var invalid = await client.PostAsJsonAsync(path, new { targets = new object?[] { null } });

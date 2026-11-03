@@ -8,7 +8,7 @@ using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
 
-public sealed class McpOperatorRouteAdmissionServiceTests
+public sealed partial class McpOperatorRouteAdmissionServiceTests
 {
     private static readonly CancellationToken Ct = CancellationToken.None;
 
@@ -85,7 +85,7 @@ public sealed class McpOperatorRouteAdmissionServiceTests
         var admission = await service.EvaluateAsync(Request(agentId), Ct);
 
         admission.Decision.IsAllowed.Should().BeFalse();
-        admission.Decision.FailureCode.Should().Be("target_policy_missing");
+        admission.Decision.FailureCode.Should().Be("target_profile_required");
         admission.Decision.FailureLayer.Should().Be(McpOperatorAuthorizationLayer.Policy);
     }
 

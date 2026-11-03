@@ -195,3 +195,11 @@ native agent is required for the new validation behavior.
 
 Use only a registered inert service for Start/Stop acceptance and read its actual
 state afterward. The MCP bridge's product version is not the native agent version.
+
+## Unprofiled client denied despite All access
+
+Upgrade all serving components to the same corrected release, preserving the existing credential and exact expiry. In credential **Details**, check `netratel_monitoring/client_series` against the actual tenant and Agent ID, then invoke that same read through the protected HTTP MCP client. An unrestricted tenant Allow requires no classification/tag setup. Stored monitoring reads can work while the client is offline.
+
+`target_profile_required` means a potentially applicable policy actually needs unknown classification or tags. Inspect its policy IDs and review the restriction under **Admin → MCP Policies**; do not broaden grants automatically. `target_profile_invalid` means persisted facts failed validation and need repair in that browser workspace. Matching Denies, missing operation grants, disabled targets, revoked/expired credentials, wrong resources, unavailable capabilities and unselected tenants retain their own diagnostics. A scope denial under `whoami` or policy inspection assesses that assertion only; it does not establish the scope of the separate monitoring delegation.
+
+Retest the actual reads in every selected tenant, current and newly enrolled clients, and server reads. On authorized disposable clients, separately review and execute bounded command/file/job actions within the displayed directories and limits, plus policy administration with explicit confirmation. Record unsupported capabilities and pending runtime checks. Tool discovery and sample admission rows alone are insufficient functional acceptance.

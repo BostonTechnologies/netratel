@@ -50,7 +50,9 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
         public TaskCompletionSource Joined { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public volatile bool Retired;
         public volatile bool Overflowed;
-        public bool AdmissionProven;
+        public volatile bool AdmissionProven;
+        public int TextAdmissionVersion;
+        public int? TurnCountBeforeSend;
         public bool SendStarted;
         public long LastObservedTicks = DateTimeOffset.UtcNow.UtcTicks;
         private readonly StringBuilder draft = new();
@@ -129,9 +131,10 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
         foreach (var (id, owner) in owners.ToArray())
         {
             var profile = await profiles.ResolveAsync(owner.Profile.TenantId, ct);
-            var inactive = clock.GetUtcNow().UtcTicks - Interlocked.Read(ref owner.LastObservedTicks) > TimeSpan.FromMinutes(5).Ticks;
-            if (profile?.Revision == owner.Profile.Revision && owner.Client.IsConnected && !owner.Consumer.IsCompleted && !owner.Overflowed && !inactive) continue;
-            await UnknownAsync(id, owner.MessageId, "The assistant connection changed or stopped reporting activity. Recover this session to check its outcome.", ct, true);
+            // Model calls and pending approvals can be silent for many minutes. Application
+            // event silence is not a transport failure; the client owns transport liveness.
+            if (profile?.Revision == owner.Profile.Revision && owner.Client.IsConnected && !owner.Consumer.IsCompleted && !owner.Overflowed) continue;
+            await UnknownAsync(id, owner.MessageId, "The assistant connection changed or its output receiver stopped. Recover this session to check its outcome.", ct, true);
             await RetireAsync(id);
         }
     }
@@ -187,6 +190,10 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
             await store.RecordContextAsync(id, context with { SendAttemptedAtUtc = clock.GetUtcNow() }, ct);
             sendAttempted = true; owner.SendStarted = true;
             await owner.Client.SendAsync(owner.SessionId, request, timeout.Token);
+            // A successful RPC with negotiated admission v1 proves this exact explicit send.
+            // It does not supply a missing pre-send turn baseline or prove terminal completion.
+            if (owner.Created || owner.TextAdmissionVersion == 1 && owner.TurnCountBeforeSend is not null)
+                owner.AdmissionProven = true;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception exception)
@@ -242,6 +249,8 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
                 binding.RemoteSessionId = joined.SessionId; binding.ProfileFingerprint = profile.ProfileFingerprint;
                 owner.SessionId = joined.SessionId;
                 owner.Created = joined.Created;
+                owner.TextAdmissionVersion = joined.TextAdmissionVersion;
+                owner.TurnCountBeforeSend = binding.RemoteTurnCountBeforeSend;
                 owner.AuthenticatedAtUtc = clock.GetUtcNow();
                 Interlocked.Exchange(ref owner.LastObservedTicks, owner.AuthenticatedAtUtc.UtcTicks);
                 await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
@@ -299,7 +308,13 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
                 if (Value(output, "type") == "transport_closed") throw new IOException("Netclaw transport interrupted.");
                 if (Value(output, "sessionId") != owner.SessionId) continue;
                 var type = Value(output, "type");
-                if (type == "text_delta") { if (owner.SendStarted || owner.AdmissionProven) owner.AddDraft(Value(output, "text")); continue; }
+                if (type == "text_delta")
+                {
+                    if ((owner.SendStarted || owner.AdmissionProven) &&
+                        (!output.TryGetProperty("turnNumber", out _) || owner.TurnCountBeforeSend is null || ProvesLiveRecoveryEnd(output, owner.TurnCountBeforeSend)))
+                        owner.AddDraft(Value(output, "text"));
+                    continue;
+                }
                 if (type is "thinking" or "thinking_delta") continue;
                 await using var scope = scopes.CreateAsyncScope(); var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
                 await using var tx = await db.Database.BeginTransactionAsync(ct);
@@ -314,12 +329,14 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
                         await ReconcileHistoryAsync(db, row, output, owner.AdmissionProven, ct);
                     }
                     else if (row.State == InvestigationState.Processing && !owner.SendStarted)
-                        row.RemoteTurnCountBeforeSend = TurnCount(output);
+                        owner.TurnCountBeforeSend = row.RemoteTurnCountBeforeSend = TurnCount(output);
                     row.LastTransportActivityAtUtc = clock.GetUtcNow();
                     await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); owner.Joined.TrySetResult(); continue;
                 }
-                if (row.State == InvestigationState.DeliveryUnknown && !owner.AdmissionProven ||
+                if (row.State == InvestigationState.DeliveryUnknown && !owner.AdmissionProven && !(owner.SendStarted && owner.Created) ||
                     row.State is InvestigationState.Idle or InvestigationState.Queued) continue;
+                if (output.TryGetProperty("turnNumber", out _) && row.RemoteTurnCountBeforeSend is not null &&
+                    !ProvesLiveRecoveryEnd(output, row.RemoteTurnCountBeforeSend)) continue;
                 if (row.LastSequence >= 10000 && type != "turn_completed") throw new InvalidDataException("Investigation transcript capacity reached.");
                 row.LastTransportActivityAtUtc = clock.GetUtcNow();
                 switch (type)
