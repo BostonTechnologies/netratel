@@ -649,8 +649,15 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertIn("if: inputs.suite == 'client-measurement'", measurement)
         self.assertIn("inputs.assessment_only && '[{\"runtime\":\"linux-x64\",\"runner\":\"ubuntu-latest\"}]'", measurement,
                       "The first trim assessment must permit a single Linux job without repeating A/B.")
-        self.assertIn("if: ${{ !inputs.assessment_only }}", measurement)
+        self.assertIn("if: ${{ inputs.suite == 'client-measurement' && !inputs.assessment_only }}", measurement)
         self.assertIn("!cancelled() && !inputs.assessment_only", measurement)
+        for suite, runtime, runner in (("client-trim-windows", "win-x64", "windows-latest"),
+                                       ("client-trim-macos", "osx-arm64", "macos-latest")):
+            self.assertIn(f"inputs.suite != '{suite}'", selected)
+            self.assertIn(f"inputs.suite == '{suite}' && '[{{\"runtime\":\"{runtime}\",\"runner\":\"{runner}\"}}]'", measurement,
+                          "Each native assessment must select one matching hosted runner without A/B fan-out.")
+        self.assertIn("--runtime '${{ matrix.runtime }}'", measurement)
+        self.assertIn("TestResults/client-measurement/trimmed/${{ matrix.runtime }}", measurement)
         self.assertIn("--source client-baseline", measurement)
         self.assertIn("--source .", measurement)
         self.assertNotIn("dotnet build", measurement)
@@ -2055,6 +2062,87 @@ class ReleasePublishMetadataTests(unittest.TestCase):
 class ClientMeasurementHelperTests(unittest.TestCase):
     def setUp(self):
         self.helper = module("measure-client-publish")
+
+    def test_native_host_rejects_other_operating_systems_and_translated_architectures(self):
+        cases = (("win-x64", "Windows", "AMD64", "Windows", "X64"),
+                 ("linux-x64", "Linux", "x86_64", "Linux", "X64"),
+                 ("osx-arm64", "Darwin", "arm64", "macOS", "ARM64"))
+        for runtime, system, machine, runner_os, runner_arch in cases:
+            with self.subTest(runtime=runtime), \
+                 patch.object(self.helper.platform, "system", return_value=system), \
+                 patch.object(self.helper.platform, "machine", return_value=machine), \
+                 patch.dict(os.environ, RUNNER_OS=runner_os, RUNNER_ARCH=runner_arch):
+                self.assertEqual(machine, self.helper.validate_runtime_host(runtime)["machine"])
+                with patch.object(self.helper.platform, "machine", return_value="x86"), \
+                     self.assertRaisesRegex(ValueError, "does not match"):
+                    self.helper.validate_runtime_host(runtime)
+                with patch.object(self.helper.platform, "system", return_value="other"), \
+                     self.assertRaisesRegex(ValueError, "does not match"):
+                    self.helper.validate_runtime_host(runtime)
+                with patch.dict(os.environ, RUNNER_ARCH="other"), \
+                     self.assertRaisesRegex(ValueError, "does not match"):
+                    self.helper.validate_runtime_host(runtime)
+
+    def test_binary_headers_distinguish_windows_x64_and_macos_arm64_from_wrong_assets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary) / "executable"
+            pe = bytearray(64)
+            pe[:2], pe[60:64] = b"MZ", (64).to_bytes(4, "little")
+            binary.write_bytes(pe + b"PE\0\0\x64\x86")
+            self.assertEqual({"format": "PE", "machine": "0x8664"}, self.helper.binary_identity(binary))
+            for machine in (0x100000c, 0x1000007):
+                binary.write_bytes(b"\xcf\xfa\xed\xfe" + machine.to_bytes(4, "little"))
+                self.assertEqual({"format": "Mach-O", "machine": hex(machine)}, self.helper.binary_identity(binary))
+            binary.write_bytes(b"not a native executable")
+            self.assertIsNone(self.helper.binary_identity(binary))
+
+    def test_version_executes_exact_archive_bytes_with_fresh_and_cached_extraction(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            distribution = root / "netratel-client-osx-arm64"
+            distribution.mkdir()
+            executable = distribution / "NetRatel.Client"
+            executable.write_text("#!/usr/bin/env python3\nimport os, pathlib\n"
+                "cache = pathlib.Path(os.environ['DOTNET_BUNDLE_EXTRACT_BASE_DIR'])\n"
+                "cache.mkdir(exist_ok=True)\n(cache / 'native').write_bytes(b'fixture')\n"
+                "print('1.2.3+synthetic-source')\n")
+            executable.chmod(0o755)
+            evidence, state = root / "evidence", root / "state"
+            evidence.mkdir()
+            state.mkdir()
+            (evidence / "distribution-inventory.json").write_text(json.dumps(self.helper.inventory(distribution)))
+            archive = root / "client.tar.gz"
+            with tarfile.open(archive, "w:gz") as bundle:
+                bundle.add(distribution, arcname=distribution.name)
+            original = archive.read_bytes()
+            executable.write_text("original distribution must not execute")
+            metrics = {"stages": {}}
+            # The executable fixture runs locally; the separate header test checks
+            # the arm64 binary guard used by the actual native hosted launch.
+            with patch.object(self.helper, "binary_identity", return_value={"format": "Mach-O", "machine": "0x100000c"}), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.helper.run_packaged_version_probes(metrics, evidence, state, archive, distribution.name, "osx-arm64", "1.2.3")
+            for label in ("fresh", "cached"):
+                stage = metrics["stages"]["launch-" + label]
+                self.assertEqual("1.2.3+synthetic-source", stage["outputVersion"])
+                self.assertEqual(7, stage["bundleExtractionBytes"])
+                self.assertTrue(Path(stage["command"][0]).is_relative_to(state / "packaged-version"))
+            self.assertEqual(original, archive.read_bytes())
+            self.assertEqual(self.helper.digest(archive), metrics["packagedExecutable"]["archiveSha256"])
+            (root / "wrong-arch").mkdir()
+            with patch.object(self.helper, "binary_identity", return_value={"format": "Mach-O", "machine": "0x1000007"}), \
+                 patch.object(self.helper, "run_stage") as launch, self.assertRaisesRegex(ValueError, "architecture differs"):
+                self.helper.run_packaged_version_probes({"stages": {}}, evidence, root / "wrong-arch", archive,
+                                                       distribution.name, "osx-arm64", "1.2.3")
+            launch.assert_not_called()
+            (root / "wrong-version").mkdir()
+            failed = {"stages": {}}
+            with patch.object(self.helper, "binary_identity", return_value={"format": "Mach-O", "machine": "0x100000c"}), \
+                 contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, "--version output differs"):
+                self.helper.run_packaged_version_probes(failed, evidence, root / "wrong-version", archive,
+                                                       distribution.name, "osx-arm64", "9.9.9")
+            self.assertEqual("runtime behavior", failed["failureKind"])
+            self.assertNotIn("launch-cached", failed["stages"])
 
     def packaged_pty_fixture(self, root, native_exit, native_final):
         distribution = root / "netratel-client-linux-x64"

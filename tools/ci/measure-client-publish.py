@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import shutil
 import signal
@@ -58,12 +59,12 @@ def run_stage(metrics, evidence, stage, command, cwd, env=None):
     with (evidence / f"{stage}.log").open("w", encoding="utf-8") as log:
         log.write(json.dumps({"command": command, "cwd": str(cwd)}) + "\n")
         log.flush()
-        process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                   text=True, encoding="utf-8", errors="replace", env=env)
-        for line in process.stdout:
-            log.write(line)
-            print(line, end="", flush=True)
-        result = process.wait()
+        with subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              text=True, encoding="utf-8", errors="replace", env=env) as process:
+            for line in process.stdout:
+                log.write(line)
+                print(line, end="", flush=True)
+            result = process.wait()
     record.update(exitCode=result, seconds=round(time.perf_counter() - started, 3))
     if result:
         metrics["failureStage"] = stage
@@ -72,7 +73,7 @@ def run_stage(metrics, evidence, stage, command, cwd, env=None):
 
 
 def run_packaged_pty_probes(metrics, evidence, state, archive, distribution_name):
-    """Run both Linux backends from separately extracted, exact packaged bytes."""
+    """Run the existing Unix backends from separately extracted packaged bytes."""
     failures = []
     for backend in ("native", "python"):
         stage = "pty-" + backend
@@ -131,6 +132,78 @@ def run_packaged_pty_probes(metrics, evidence, state, archive, distribution_name
         result = metrics["stages"][failures[0]]["exitCode"]
         raise subprocess.CalledProcessError(result if result and result > 0 else 1,
                                             metrics["stages"][failures[0]]["command"])
+
+
+def validate_runtime_host(runtime):
+    host = {"system": platform.system(), "machine": platform.machine(),
+            "runnerOS": os.environ.get("RUNNER_OS"), "runnerArch": os.environ.get("RUNNER_ARCH")}
+    system, machines, runner_os, runner_arch = {
+        "win-x64": ("Windows", ("amd64", "x86_64"), "Windows", "X64"),
+        "linux-x64": ("Linux", ("amd64", "x86_64"), "Linux", "X64"),
+        "osx-arm64": ("Darwin", ("arm64", "aarch64"), "macOS", "ARM64"),
+    }[runtime]
+    if (host["system"] != system or host["machine"].lower() not in machines
+            or host["runnerOS"] != runner_os or host["runnerArch"] != runner_arch):
+        raise ValueError(f"Native measurement host does not match {runtime}: {host}")
+    return host
+
+
+def binary_identity(path):
+    """Record native header identities; managed PE inputs may be architecture neutral."""
+    with path.open("rb") as stream:
+        header = stream.read(64)
+        if header[:2] == b"MZ" and len(header) == 64:
+            stream.seek(int.from_bytes(header[60:64], "little"))
+            pe = stream.read(6)
+            if pe[:4] == b"PE\0\0" and len(pe) == 6:
+                return {"format": "PE", "machine": hex(int.from_bytes(pe[4:6], "little"))}
+        if header[:4] in (b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf") and len(header) >= 8:
+            order = "little" if header[0] == 0xcf else "big"
+            return {"format": "Mach-O", "machine": hex(int.from_bytes(header[4:8], order))}
+        if header[:4] == b"\x7fELF" and len(header) >= 20 and header[5] in (1, 2):
+            return {"format": "ELF", "machine": hex(int.from_bytes(header[18:20], "little" if header[5] == 1 else "big"))}
+    return None
+
+
+def run_packaged_version_probes(metrics, evidence, state, archive, distribution_name, runtime, version):
+    extraction = state / "packaged-version"
+    extraction.mkdir()
+    if runtime == "win-x64":
+        with zipfile.ZipFile(archive) as bundle:
+            for entry in bundle.infolist():
+                if not (extraction / entry.filename).resolve().is_relative_to(extraction.resolve()):
+                    raise ValueError("Unsafe packaged archive entry")
+            bundle.extractall(extraction)
+    else:
+        with tarfile.open(archive) as bundle:
+            bundle.extractall(extraction, filter="data")
+    distribution = extraction / distribution_name
+    if inventory(distribution) != json.loads((evidence / "distribution-inventory.json").read_text()):
+        metrics.update(failureStage="packaged-inventory", failureKind="artifact integrity")
+        raise ValueError("Packaged contents differ from the measured distribution inventory")
+    executable = distribution / ("NetRatel.Client.exe" if runtime == "win-x64" else "NetRatel.Client")
+    expected = {"win-x64": {"format": "PE", "machine": "0x8664"},
+                "linux-x64": {"format": "ELF", "machine": "0x3e"},
+                "osx-arm64": {"format": "Mach-O", "machine": "0x100000c"}}[runtime]
+    identity = binary_identity(executable)
+    metrics["packagedExecutable"] = {"path": str(executable), "sha256": digest(executable),
+                                     "binary": identity, "archiveSha256": digest(archive)}
+    if identity != expected:
+        metrics.update(failureStage="packaged-architecture", failureKind="artifact content")
+        raise ValueError(f"Packaged executable architecture differs from {runtime}: {identity}")
+    launch_env = os.environ.copy()
+    cache = state / "fresh-extraction"
+    launch_env["DOTNET_BUNDLE_EXTRACT_BASE_DIR"] = str(cache)
+    for label in ("fresh", "cached"):
+        stage = "launch-" + label
+        run_stage(metrics, evidence, stage, [executable, "--version"], distribution, launch_env)
+        output = "\n".join((evidence / (stage + ".log")).read_text().splitlines()[1:]).strip()
+        metrics["stages"][stage].update(outputVersion=output,
+            bundleExtractionBytes=sum(path.stat().st_size for path in cache.rglob("*") if path.is_file()))
+        if output.split("+", 1)[0] != version:
+            metrics.update(failureStage=stage, failureKind="runtime behavior")
+            raise ValueError(f"Packaged --version output differs from {version}: {output!r}")
+    metrics["launchTimingMeaning"] = "Actual archived bytes; --version only before normal initialization, fresh then cached bundle extraction; not agent/gateway startup."
 
 
 def verify_existing(args, source, sha, state, evidence):
@@ -259,8 +332,6 @@ def main():
     args = parser.parse_args()
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted":
         parser.error("Release-style measurements must run on a GitHub-hosted Actions runner (AGENTS.md).")
-    if args.mode == "trimmed" and args.runtime != "linux-x64":
-        parser.error("The initial bounded trimming assessment is linux-x64 only.")
     if args.verify_existing and (args.runtime != "win-x64" or args.mode != "untrimmed"):
         parser.error("Verification reuse is limited to the original win-x64 untrimmed archives.")
     source, evidence = args.source.resolve(), args.evidence.resolve()
@@ -291,6 +362,14 @@ def main():
 
     exit_code = 0
     try:
+        metrics["nativeHost"] = validate_runtime_host(args.runtime)
+        metrics["unexecutedPlatformChecks"] = {
+            "win-x64": ["ConPTY (no existing packaged self-test)", "SCM/service recovery", "DPAPI/enrollment/refresh recovery",
+                        "PowerShell task execution", "COM/interactive helper", "remote support/media/CUA", "install/update/rollback"],
+            "osx-arm64": ["service/launch path", "enrollment/refresh recovery", "shell/pwsh tasks", "inventory",
+                          "remote support/CUA/permissions", "media library loading", "install/update"],
+            "linux-x64": [],
+        }[args.runtime]
         sdk = subprocess.check_output(["dotnet", "--version"], cwd=source, text=True).strip()
         required_sdk = json.loads((source / "global.json").read_text())["sdk"]["version"]
         metrics["dotnetSdkVersion"] = sdk
@@ -338,7 +417,7 @@ def main():
             path, relative, loose = line.split("|")
             path = Path(path)
             inputs.append({"path": relative, "bytes": path.stat().st_size, "sha256": digest(path),
-                           "excludedFromBundle": loose.lower() == "true"})
+                           "excludedFromBundle": loose.lower() == "true", "binary": binary_identity(path)})
         (evidence / "publish-input-inventory.json").write_text(json.dumps(inputs, indent=2) + "\n")
         for name in ("LICENSE", "NOTICE"):
             shutil.copy2(source / name, distribution / name)
@@ -382,15 +461,11 @@ def main():
             run("verify-content", [sys.executable, TOOLS / "verify-client-runtime-content.py", "--sbom", sbom,
                                    "--runtime-graph", graph, "--publish-inputs", evidence / "publish-inputs.txt",
                                    "--distribution", distribution])
-        launch_env = os.environ.copy()
-        launch_env["DOTNET_BUNDLE_EXTRACT_BASE_DIR"] = str(state / "fresh-extraction")
-        for label in ("fresh", "cached"):
-            run("launch-" + label, [distribution / executable_name, "--version"], env=launch_env)
-        metrics["launchTimingMeaning"] = "--version only, before normal initialization; fresh then cached single-file extraction, not agent/gateway startup."
+        run_packaged_version_probes(metrics, evidence, state, archive, distribution.name, args.runtime, version)
         # The native archive already retains these bytes; avoid duplicating the
         # extracted distribution in the Actions upload/storage bill on probe failure.
         shutil.rmtree(distribution)
-        if args.runtime == "linux-x64":
+        if args.runtime in ("linux-x64", "osx-arm64"):
             run_packaged_pty_probes(metrics, evidence, state, archive, distribution.name)
     except subprocess.CalledProcessError as error:
         exit_code = error.returncode if error.returncode > 0 else 1
