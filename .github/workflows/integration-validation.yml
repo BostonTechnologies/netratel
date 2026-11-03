@@ -501,21 +501,21 @@ jobs:
         shell: bash
         run: |
           python3 tools/ci/measure-client-publish.py --source client-baseline --runtime '${{ matrix.runtime }}' \
-            --mode untrimmed --state-root "$RUNNER_TEMP/client-measurement" \
+            --mode untrimmed --state-root "$RUNNER_TEMP/client-measurement/baseline" \
             --evidence 'TestResults/client-measurement/baseline/${{ matrix.runtime }}'
       - name: B - cleanup production client only
         if: ${{ !cancelled() && !inputs.assessment_only && inputs.measurement_verify_run == '' }}
         shell: bash
         run: |
           python3 tools/ci/measure-client-publish.py --source . --runtime '${{ matrix.runtime }}' \
-            --mode untrimmed --state-root "$RUNNER_TEMP/client-measurement" --verify-content \
+            --mode untrimmed --state-root "$RUNNER_TEMP/client-measurement/head" --verify-content \
             --evidence 'TestResults/client-measurement/head/${{ matrix.runtime }}'
       - name: C - bounded cleanup trimmed JIT assessment
         if: ${{ !cancelled() && inputs.measurement_verify_run == '' && matrix.runtime == 'linux-x64' && (inputs.client_trim_diagnostic || inputs.assessment_only) }}
         shell: bash
         run: |
           python3 tools/ci/measure-client-publish.py --source . --runtime linux-x64 \
-            --mode trimmed --state-root "$RUNNER_TEMP/client-measurement" --verify-content \
+            --mode trimmed --state-root "$RUNNER_TEMP/client-measurement/trimmed" --verify-content \
             --evidence TestResults/client-measurement/trimmed/linux-x64
       - name: Download original measurement evidence
         if: inputs.measurement_verify_run != ''
@@ -540,11 +540,11 @@ jobs:
           GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           python3 client-measurement-tooling/tools/ci/measure-client-publish.py --source client-baseline \
-            --runtime win-x64 --mode untrimmed --state-root "$RUNNER_TEMP/client-archive-verification" \
+            --runtime win-x64 --mode untrimmed --state-root "$RUNNER_TEMP/client-archive-verification/baseline" \
             --verify-existing downloaded-client-measurement/baseline/win-x64 \
             --evidence TestResults/client-measurement/verification-baseline/win-x64
           python3 client-measurement-tooling/tools/ci/measure-client-publish.py --source . \
-            --runtime win-x64 --mode untrimmed --state-root "$RUNNER_TEMP/client-archive-verification" --verify-content \
+            --runtime win-x64 --mode untrimmed --state-root "$RUNNER_TEMP/client-archive-verification/head" --verify-content \
             --verify-existing downloaded-client-measurement/head/win-x64 \
             --evidence TestResults/client-measurement/verification-head/win-x64
       - name: Summarize measured inputs and outcomes
@@ -571,6 +571,10 @@ jobs:
                   values += [result['stages'].get(stage, {}).get('seconds', 'not run') for stage in ('restore', 'publish')]
                   summary.write('| ' + ' | '.join(map(str, values)) + ' |\n')
                   if result.get('failureKind'): summary.write('\nFailure: ' + result['failureKind'] + ' (' + result.get('failureStage', '') + ').\n')
+                  for backend in ('native', 'python'):
+                      probe = result['stages'].get('pty-' + backend)
+                      if probe:
+                          summary.write('\nPackaged PTY ' + backend + ': ' + json.dumps(probe, sort_keys=True) + '\n')
               summary.write('\nOnly the client reference closure was restored/published. Fresh per-source/mode/RID intermediates retain per-project paths; NuGet cache is shared sequentially on this runner. Full commands, logs, final prebundle inputs/runtime graph, package inventories, archives, SBOMs and checksums are retained.\n')
               summary.write('\nThe --version timings cover a fresh and cached single-file launch only. Agent initialization, gateway readiness and RSS were not measured; owner functional acceptance remains pending. Normal distributed publish remains untrimmed.\n')
           PY
