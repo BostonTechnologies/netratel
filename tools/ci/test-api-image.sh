@@ -103,8 +103,8 @@ foreach (var directory in new[] { "/app", "/var/netratel", "/var/netratel/keys" 
 Console.WriteLine("UID/GID 1654, app/keys writes, legal files, GSSAPI/OpenSSL, ICU, timezone and trust roots passed.");
 static partial class Native
 {
-    [LibraryImport("libc")] internal static partial uint getuid();
-    [LibraryImport("libc")] internal static partial uint getgid();
+    [LibraryImport("libc.so.6")] internal static partial uint getuid();
+    [LibraryImport("libc.so.6")] internal static partial uint getgid();
 }
 CS
 dotnet publish "$temporary/probe/RuntimeProbe.csproj" --configuration Release --output "$temporary/probe-output" -p:AllowUnsafeBlocks=true
