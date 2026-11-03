@@ -1,3 +1,5 @@
+// Preserve the public namespace while keeping client configuration independent
+// of the MCP server and schema-generation packages.
 namespace NetRatel.Mcp.Core;
 
 /// <summary>
