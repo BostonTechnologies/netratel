@@ -21,7 +21,7 @@ on:
         description: Disposable profile for the deployment suite only
         type: choice
         default: oidc
-        options: [oidc, http-host-setup]
+        options: [oidc, http-host-setup, client-runtime]
         required: false
       release_tag:
         description: Existing completed public release tag, required for published-image and upgrade suites
@@ -236,6 +236,16 @@ jobs:
           (cd "$RUNNER_TEMP/manual-tools" && sha256sum cli.tar.gz mcp.tar.gz) > TestResults/deployment-tool-SHA256SUMS
           printf 'NETRATEL_CLIENT_SMOKE_IMAGE=netratel-client:manual-deployment\nNETRATEL_COMPOSE_SMOKE_MODE=source\nNETRATEL_CLI_SMOKE_ARCHIVE=%s/manual-tools/cli.tar.gz\nNETRATEL_MCP_STDIO_SMOKE_ARCHIVE=%s/manual-tools/mcp.tar.gz\n' \
             "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Compare the unbundled shared-runtime Client and select it for deployment acceptance
+        if: inputs.suite == 'deployment' && inputs.deployment_profile == 'client-runtime'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/ci/compare-client-container.py --control netratel-client:manual-deployment \
+            --candidate netratel-client:shared-runtime-diagnostic --results TestResults/client-container
+          printf 'NETRATEL_CLIENT_SMOKE_IMAGE=netratel-client:shared-runtime-diagnostic\n' >> "$GITHUB_ENV"
       - name: Download and validate the selected completed public release
         if: inputs.suite == 'release-images' || inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc'
         env:
