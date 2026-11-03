@@ -2526,29 +2526,48 @@ class StackImageReceiptTests(unittest.TestCase):
 
     def test_publication_bytes_tag_original_source_and_complete_image_set_must_agree(self):
         helper = module('record-stack-image-comparison')
+        promotion = module('promote-release')
         selected = {'tag': 'v1.2.3', 'images': {role: f'ghcr.io/bostontechnologies/netratel-{role}@sha256:' + str(index) * 64
                      for index, role in enumerate(helper.PROJECTS, 1)}}
+        files = {name: {'artifact': 'synthetic-artifact', 'artifactId': index, 'artifactDigest': 'sha256:' + 'b' * 64,
+                        'path': name, 'sha256': 'c' * 64} for index, name in enumerate(promotion.required_artifacts('1.2.3'), 1)}
+        receipt = {'repository': helper.REPOSITORY, 'workflow': '.github/workflows/release-build.yml',
+                   'productVersion': '1.2.3', 'headSha': 'a' * 40, 'runId': 123, 'attempt': 2, 'files': files}
         original = {'publicCommit': 'a' * 40, 'productVersion': '1.2.3', 'images': selected['images'],
-                    'verification': {'state': 'complete'}, 'inputReceipt': {'headSha': 'a' * 40}}
-        for fault in (None, 'asset', 'tag', 'source', 'images'):
+                    'verification': {'state': 'complete'}, 'inputReceipt': receipt,
+                    'artifacts': {name: ('d' if name.startswith('netratel-compose-') else 'c') * 64 for name in files}}
+        # Promotion legitimately transforms the Compose bundle; its public hash differs from the original input.
+        build = {'id': 123, 'run_attempt': 2, 'status': 'completed', 'conclusion': 'success', 'head_sha': 'a' * 40,
+                 'path': '.github/workflows/release-build.yml', 'repository': {'full_name': helper.REPOSITORY},
+                 'head_repository': {'full_name': helper.REPOSITORY}}
+        for fault in (None, 'asset', 'tag', 'source', 'images', 'malformed-receipt', 'wrong-run', 'wrong-attempt',
+                      'wrong-status', 'wrong-conclusion', 'wrong-repository', 'wrong-workflow'):
             with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary); document = copy.deepcopy(original)
+                root = Path(temporary); document = copy.deepcopy(original); run = copy.deepcopy(build)
                 if fault == 'source': document['inputReceipt']['headSha'] = 'b' * 40
                 if fault == 'images': document['images']['api'] += '0'
+                if fault == 'malformed-receipt': document['inputReceipt']['files'].pop(next(iter(files)))
+                if fault == 'wrong-run': run['id'] = 124
+                if fault == 'wrong-attempt': run['run_attempt'] = 3
+                if fault == 'wrong-status': run['status'] = 'in_progress'
+                if fault == 'wrong-conclusion': run['conclusion'] = 'failure'
+                if fault == 'wrong-repository': run['repository']['full_name'] = 'synthetic/other'
+                if fault == 'wrong-workflow': run['path'] = '.github/workflows/integration-validation.yml'
                 content = json.dumps(document).encode()
                 metadata = {'tag_name': 'v1.2.3', 'draft': False, 'published_at': '2026-01-01T00:00:00Z',
                             'assets': [{'name': 'publication.json', 'state': 'uploaded', 'size': len(content),
                                         'digest': 'sha256:' + (('0' * 64) if fault == 'asset' else hashlib.sha256(content).hexdigest())}]}
                 def download(args, **kwargs):
                     (Path(args[args.index('--dir') + 1]) / 'publication.json').write_bytes(content)
-                with patch.object(helper, 'module', return_value=SimpleNamespace(select=lambda _: selected)), \
-                        patch.object(helper, 'command', side_effect=[json.dumps(metadata), ('b' if fault == 'tag' else 'a') * 40]), \
+                with patch.object(helper, 'module', side_effect=lambda name: promotion if name == 'promote-release' else SimpleNamespace(select=lambda _: selected)), \
+                        patch.object(helper, 'command', side_effect=[json.dumps(metadata), ('b' if fault == 'tag' else 'a') * 40, json.dumps(run)]), \
                         patch.object(helper.subprocess, 'run', side_effect=download):
                     if fault:
                         with self.assertRaises(ValueError): helper.published(root)
                     else:
                         self.assertEqual(original, helper.published(root))
                         self.assertEqual(content, (root / 'publication.json').read_bytes())
+                        self.assertEqual(build, json.loads((root / 'selected-release-build.json').read_text()))
 
     def test_docker_export_stream_rejects_traversal_links_and_duplicates(self):
         helper = module('record-stack-image-comparison')

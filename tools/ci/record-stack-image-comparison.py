@@ -143,10 +143,20 @@ def published(results):
     if (publication['productVersion'], publication['images'], publication['verification']['state']) != (
             selected['tag'][1:], selected['images'], 'complete'):
         raise ValueError('Publication differs from the selected completed release')
-    if publication['inputReceipt']['headSha'] != source or command('gh', 'api', f'repos/{REPOSITORY}/commits/{selected["tag"]}', '--jq', '.sha') != source:
+    if command('gh', 'api', f'repos/{REPOSITORY}/commits/{selected["tag"]}', '--jq', '.sha') != source:
         raise ValueError('Published source, original input receipt and release tag differ')
+    receipt = publication['inputReceipt']
+    module('promote-release').validate_input_receipt_identity(receipt, publication['productVersion'], source)
+    build = json.loads(command('gh', 'api', f'repos/{REPOSITORY}/actions/runs/{receipt["runId"]}/attempts/{receipt["attempt"]}'))
+    if (build.get('id'), build.get('run_attempt'), build.get('status'), build.get('conclusion'),
+            build.get('head_sha'), build.get('path'), build.get('repository', {}).get('full_name'),
+            build.get('head_repository', {}).get('full_name')) != (
+            receipt['runId'], receipt['attempt'], 'completed', 'success', source,
+            '.github/workflows/release-build.yml', REPOSITORY, REPOSITORY):
+        raise ValueError('Publication receipt does not identify the successful exact-source release-build attempt')
     write(results / 'selected-release.json', selected)
     write(results / 'selected-release-metadata.json', metadata)
+    write(results / 'selected-release-build.json', build)
     (results / 'publication.json').write_bytes(content)
     return publication
 
@@ -293,9 +303,10 @@ def capture(results, source, version):
         raise ValueError('Runtime measurement identity or completion differs')
     report = {'sourceSha': source, 'productVersion': version, 'baselineSourceSha': publication['publicCommit'],
               'baselineVersion': publication['productVersion'], 'comparison': 'Separate-run current production images versus completed published release; not isolated change attribution.',
+              'baselineBuildRunId': publication['inputReceipt']['runId'], 'baselineBuildAttempt': publication['inputReceipt']['attempt'],
               'functionalScope': 'Source OIDC deployment passed; MCP HTTP is build/inventory measurement only.',
               'runner': {key: os.environ.get(key) for key in ('RUNNER_OS', 'RUNNER_ARCH', 'ImageOS', 'ImageVersion')},
-              'sdk': command('dotnet', '--version'), 'captureSeconds': round(time.monotonic() - started, 3),
+              'runnerSdkVersion': command('dotnet', '--version'), 'captureSeconds': round(time.monotonic() - started, 3),
               'prepareSeconds': current['prepareSeconds'],
               'applicationBytes': {side: {role: record['applicationBytes'] for role, record in values.items()} for side, values in records.items()},
               'processRssReceipt': 'process-rss.json', 'clientReadinessReceipt': 'client-readiness.json',

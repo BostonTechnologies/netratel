@@ -204,7 +204,9 @@ After successful OIDC acceptance, before cleanup removes local images, the run
 retains pristine image `/app` file hashes/bytes, verified SPDX and dependency
 graphs, OCI source/version/platform/config identities and resolved source build
 bases under `TestResults/oidc-compose/stack-images`. The latest completed release
-is selected generically and its publication/source/image digests authenticated.
+is selected generically and its publication/source/image digests authenticated,
+including the original input receipt and successful exact-source release-build
+run/attempt. The runner SDK version is labeled separately from resolved image bases.
 Its original build-base provenance is explicitly unknown when not attested by
 the publication record; current floating base tags are never substituted.
 Normalized standalone gzip layers and each complete five-image unique-layer
