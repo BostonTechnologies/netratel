@@ -2469,6 +2469,61 @@ class ClientRuntimeContentTests(unittest.TestCase):
 
 
 class StackImageReceiptTests(unittest.TestCase):
+    def test_source_compose_allows_cold_fixture_pulls_and_protects_prepared_image_identity(self):
+        source = (ROOT / 'tools/ci/smoke-oidc-compose.sh').read_text()
+        program = re.search(r'''(?ms)  python3 - "\$NETRATEL_SOURCE_STACK_IMAGES" "\$source_images_override_path" <<'PY'\n(.*?)\nPY''', source).group(1)
+        up_args = shlex.split(re.search(r'compose_up_args=\((--no-build.*?)\)', source).group(1))
+        self.assertIn('--no-build', up_args)
+        self.assertFalse(any(value.startswith('--pull') for value in up_args), 'A global pull restriction overrides fixture policies.')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            roles = {role: {'reference': f'netratel-{role}:manual-deployment', 'Id': 'sha256:' + str(index) * 64}
+                     for index, role in enumerate(('api', 'web', 'migrations'), 1)}
+            record = {'sourceSha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
+                      'productVersion': subprocess.check_output([sys.executable, 'tools/ci/product-version.py'], cwd=ROOT, text=True).strip(),
+                      'roles': roles}
+            images = root / 'images.json'; images.write_text(json.dumps(record))
+            overlay = root / 'images.yaml'
+            subprocess.run([sys.executable, '-', str(images), str(overlay)], input=program, text=True, cwd=ROOT, check=True)
+            environment = {**os.environ, 'POSTGRES_PASSWORD': 'synthetic-compose-password',
+                           'NETRATEL_GATEWAY_PROXY_CONFIG_PATH': str(root / 'gateway.conf'),
+                           'NETRATEL_PUBLIC_NGINX_CONFIG_PATH': str(ROOT / 'release/nginx.public-https.conf'),
+                           'DOCKER_HOST': 'unix://' + str(root / 'unavailable.sock')}
+            # Native Compose parses/merges the real recipes without a daemon or image pulls.
+            result = subprocess.run(['docker', 'compose', '--env-file', '/dev/null', '--project-name', 'netratel-stack-fixture',
+                '-f', str(ROOT / 'compose.yaml'), '-f', str(ROOT / 'tests/compose/oidc-smoke.compose.yaml'),
+                '-f', str(overlay), 'config', '--format', 'json'], env=environment, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            services = json.loads(result.stdout)['services']
+            for role, image in roles.items():
+                self.assertEqual(image['reference'], services[role]['image'])
+                self.assertEqual('never', services[role]['pull_policy'])
+            for role in ('postgres', 'volume-init', 'oidc', 'gateway', 'web-proxy'):
+                self.assertIn('image', services[role])
+                self.assertIn(services[role].get('pull_policy'), (None, 'missing', 'if_not_present'))
+
+            # Execute the real post-up guard with inspected Docker protocol fixtures.
+            guard = re.search(r'(?ms)^  for role in api web migrations; do\n.*?^  done$', source).group(0)
+            binary = root / 'bin'; binary.mkdir()
+            docker = binary / 'docker'
+            docker.write_text('#!/usr/bin/env python3\nimport json,os,sys\n'
+                'args=sys.argv[1:]\n'
+                'if args[0]=="compose": print(args[-1])\n'
+                'elif args[0]=="inspect":\n'
+                ' role=args[-1]; record=json.load(open(os.environ["NETRATEL_SOURCE_STACK_IMAGES"]))\n'
+                ' print("sha256:"+"0"*64 if os.environ.get("TEST_SWAP_ROLE")==role else record["roles"][role]["Id"])\n'
+                'else: sys.exit(2)\n')
+            docker.chmod(0o755)
+            for swap in ('', 'api'):
+                result = subprocess.run(['bash', '-c', 'set -euo pipefail\nproject=netratel-stack-fixture\ncompose_args=()\n' + guard],
+                    env={**os.environ, 'PATH': str(binary) + os.pathsep + os.environ['PATH'],
+                         'NETRATEL_SOURCE_STACK_IMAGES': str(images), 'TEST_SWAP_ROLE': swap}, capture_output=True, text=True)
+                if swap:
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn('does not use its prepared production image', result.stderr)
+                else:
+                    self.assertEqual(0, result.returncode, result.stderr)
+
     def test_publication_bytes_tag_original_source_and_complete_image_set_must_agree(self):
         helper = module('record-stack-image-comparison')
         selected = {'tag': 'v1.2.3', 'images': {role: f'ghcr.io/bostontechnologies/netratel-{role}@sha256:' + str(index) * 64

@@ -778,11 +778,11 @@ for role in ('api', 'web', 'migrations'):
     image = record['roles'][role]
     if image['reference'] != f'netratel-{role}:manual-deployment' or not re.fullmatch('sha256:[a-f0-9]{64}', image['Id']):
         raise ValueError('Invalid prepared source image role')
-    lines += [f'  {role}:', f'    image: {image["reference"]}']
+    lines += [f'  {role}:', f'    image: {image["reference"]}', '    pull_policy: never']
 Path(sys.argv[2]).write_text('\n'.join(lines) + '\n')
 PY
   compose_args+=(-f "$source_images_override_path")
-  compose_up_args=(--no-build --pull never --detach)
+  compose_up_args=(--no-build --detach)
 fi
 
 stage="starting disposable Compose services"
