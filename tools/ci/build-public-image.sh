@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 --dockerfile <path> --image <tag> --version <semver> --revision <public-sha> [--build-arg <name=value>]" >&2
+  echo "Usage: $0 --dockerfile <path> --image <tag> --version <semver> --revision <public-sha> [--target <stage>] [--build-arg <name=value>]" >&2
   exit 2
 }
 
@@ -11,6 +11,7 @@ image=""
 version=""
 revision=""
 build_args=()
+target=""
 while (( $# > 0 )); do
   case "$1" in
     --dockerfile) dockerfile="${2:-}"; shift 2 ;;
@@ -18,6 +19,7 @@ while (( $# > 0 )); do
     --version) version="${2:-}"; shift 2 ;;
     --revision) revision="${2:-}"; shift 2 ;;
     --build-arg) build_args+=(--build-arg "${2:-}"); shift 2 ;;
+    --target) target="${2:-}"; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -31,8 +33,11 @@ for (( index=1; index < ${#build_args[@]}; index+=2 )); do
     exit 1
   }
 done
+target_args=()
+if [[ -n "$target" ]]; then target_args=(--target "$target"); fi
 
 docker build \
+  "${target_args[@]}" \
   --build-arg "PublicSourceRevision=$revision" \
   --file "$dockerfile" \
   --tag "$image" \

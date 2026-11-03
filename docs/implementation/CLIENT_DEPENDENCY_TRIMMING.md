@@ -7,6 +7,25 @@ single-file and untrimmed. Docker retains its existing publish mode. The product
 version authority, gateway protocol, manifest, native media/PTY helpers and
 updater contracts are unchanged.
 
+## Packaged terminal probes
+
+The bounded terminal slice of [#492](https://github.com/BostonTechnologies/netratel/issues/492)
+uses explicit, generated JSON metadata for PTY diagnostics and the Python helper's
+input/resize/close/status protocol. Diagnostic fields, explicit nulls, UTF-8/base64
+input, newline framing and resize correlation retain their existing contracts.
+This does not establish authenticated enrollment/state readiness under
+[#486](https://github.com/BostonTechnologies/netratel/issues/486).
+
+The optional `client-measurement` workflow runs both Linux PTY self-tests from
+separate extractions of the actual produced archive, each with its own bundle
+cache. Each backend retains stdout, stderr, exact process exit status and final
+diagnostic stage in the measurement evidence. A pass requires exit zero and the
+final `passed`/`reaped` result; both backends execute even if one fails. Runtime
+failure fails the job while preserving archive/SBOM/checksum and size evidence.
+Baseline and head use separate state roots, so a same-source comparison does
+not collide. These probes remain outside required PR/main CI; full agent
+initialization, auth, other features and platform acceptance remain independent.
+
 ## Implementation
 
 All PowerShell tasks now use `ExternalShellRunner`. New API requests using the

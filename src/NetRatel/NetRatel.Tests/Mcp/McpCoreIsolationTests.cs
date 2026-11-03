@@ -20,6 +20,17 @@ namespace NetRatel.Tests.Mcp;
 public sealed class McpCoreIsolationTests
 {
     [Fact]
+    public void Client_target_does_not_require_MCP_hosting_and_preserves_its_original_assembly_identity()
+    {
+        typeof(NetRatelMcpOutboundOptions).Assembly.GetReferencedAssemblies()
+            .Should().NotContain(assembly => assembly.Name == "NetRatel.Mcp.Core");
+        typeof(NetRatelMcpHostContext).Assembly.GetForwardedTypes()
+            .Should().Contain(typeof(NetRatelMcpTarget));
+        Type.GetType("NetRatel.Mcp.Core.NetRatelMcpTarget, NetRatel.Mcp.Core", throwOnError: true)
+            .Should().Be(typeof(NetRatelMcpTarget));
+    }
+
+    [Fact]
     public void Target_normalizes_its_base_uri_and_rejects_a_query_or_fragment()
     {
         var target = new NetRatelMcpTarget(

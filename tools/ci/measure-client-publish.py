@@ -9,8 +9,10 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import tarfile
 import time
 import zipfile
 
@@ -67,6 +69,68 @@ def run_stage(metrics, evidence, stage, command, cwd, env=None):
         metrics["failureStage"] = stage
         metrics["failureKind"] = failure_kind(stage, (evidence / f"{stage}.log").read_text())
         raise subprocess.CalledProcessError(result, command)
+
+
+def run_packaged_pty_probes(metrics, evidence, state, archive, distribution_name):
+    """Run both Linux backends from separately extracted, exact packaged bytes."""
+    failures = []
+    for backend in ("native", "python"):
+        stage = "pty-" + backend
+        probe = state / stage
+        extraction, cache = probe / "archive", probe / "bundle-cache"
+        extraction.mkdir(parents=True)
+        with tarfile.open(archive) as bundle:
+            bundle.extractall(extraction, filter="data")
+        distribution = extraction / distribution_name
+        command = [str(distribution / "NetRatel.Client"), "--terminal-pty-self-test-" + backend]
+        record = metrics["stages"][stage] = {
+            "command": command, "cwd": str(distribution), "archiveSha256": digest(archive),
+            "stdoutFile": stage + ".stdout.log", "stderrFile": stage + ".stderr.log"}
+        env = os.environ.copy()
+        env["DOTNET_BUNDLE_EXTRACT_BASE_DIR"] = str(cache)
+        started = time.perf_counter()
+        stdout, stderr = "", ""
+        try:
+            process = subprocess.Popen(command, cwd=distribution, env=env, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+                                       start_new_session=True)
+            try:
+                stdout, stderr = process.communicate(timeout=90)
+            except subprocess.TimeoutExpired:
+                record["timedOut"] = True
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass  # The process group exited between timeout and cleanup.
+                stdout, stderr = process.communicate()
+            record["exitCode"] = process.returncode
+        except OSError as error:
+            record.update(exitCode=None, error=str(error))
+        (evidence / record["stdoutFile"]).write_text(stdout, encoding="utf-8")
+        (evidence / record["stderrFile"]).write_text(stderr, encoding="utf-8")
+        events = []
+        for line in stdout.splitlines():
+            try:
+                event = json.loads(line)
+                if isinstance(event, dict) and "stage" in event:
+                    events.append(event)
+            except json.JSONDecodeError:
+                pass  # Client logging can accompany the JSON diagnostic stream.
+        final = events[-1] if events else {}
+        record.update(seconds=round(time.perf_counter() - started, 3), finalStage=final.get("stage"),
+                      bundleExtractionBytes=sum(path.stat().st_size for path in cache.rglob("*") if path.is_file()))
+        record["passed"] = (record["exitCode"] == 0 and not record.get("timedOut")
+                            and final.get("stage") == "passed" and final.get("reaped") is True)
+        print("CLIENT_PACKAGED_PTY_PROBE=" + json.dumps({"backend": backend, **record}, separators=(",", ":")), flush=True)
+        print(stdout, end="", flush=True)
+        print(stderr, end="", file=sys.stderr, flush=True)
+        if not record["passed"]:
+            failures.append(stage)
+    if failures:
+        metrics.update(failureStage=failures[0], failureStages=failures, failureKind="runtime behavior")
+        result = metrics["stages"][failures[0]]["exitCode"]
+        raise subprocess.CalledProcessError(result if result and result > 0 else 1,
+                                            metrics["stages"][failures[0]]["command"])
 
 
 def verify_existing(args, source, sha, state, evidence):
@@ -324,8 +388,10 @@ def main():
             run("launch-" + label, [distribution / executable_name, "--version"], env=launch_env)
         metrics["launchTimingMeaning"] = "--version only, before normal initialization; fresh then cached single-file extraction, not agent/gateway startup."
         # The native archive already retains these bytes; avoid duplicating the
-        # extracted distribution in the Actions upload/storage bill.
+        # extracted distribution in the Actions upload/storage bill on probe failure.
         shutil.rmtree(distribution)
+        if args.runtime == "linux-x64":
+            run_packaged_pty_probes(metrics, evidence, state, archive, distribution.name)
     except subprocess.CalledProcessError as error:
         exit_code = error.returncode if error.returncode > 0 else 1
         metrics["error"] = str(error)

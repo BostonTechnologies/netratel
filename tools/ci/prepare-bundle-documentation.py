@@ -7,6 +7,7 @@ import importlib.util
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 from urllib.parse import quote, unquote, urlsplit
 
@@ -15,6 +16,33 @@ CHECKER_PATH = Path(__file__).with_name("check-documentation.py")
 _spec = importlib.util.spec_from_file_location("documentation_checker", CHECKER_PATH)
 checker = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(checker)
+
+
+COMPOSE_DOCUMENTATION = (
+    "docs/README.md",
+    "docs/THIRD-PARTY-NOTICES.txt",
+    "docs/deployment",
+    "docs/client",
+    "docs/mcp-http",
+    "docs/integrations",
+    "docs/operations",
+    "docs/contracts",
+    "docs/adr",
+    "docs/assets/netratel/netratel-readme-hero.webp",
+)
+
+
+def copy_compose_documentation(repository: Path, bundle: Path) -> None:
+    """Stage offline operational guides and required media, leaving history in source."""
+    if (bundle / "docs").exists():
+        raise ValueError("Compose documentation requires a clean bundle docs/ directory.")
+    for relative in COMPOSE_DOCUMENTATION:
+        source, installed = repository / relative, bundle / relative
+        installed.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            shutil.copytree(source, installed)
+        else:
+            shutil.copy2(source, installed)
 
 
 def prepare_bundle(repository: Path, bundle: Path, commit: str, documents: dict[str, str] | None = None) -> int:
@@ -91,6 +119,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--commit", required=True)
+    parser.add_argument("--compose-docs", action="store_true", help="Stage the operational Compose documentation selection before adapting links")
     parser.add_argument("--document", action="append", default=[], metavar="INSTALLED=SOURCE", help="Canonical repository source for a relocated standalone guide")
     args = parser.parse_args()
     mappings: dict[str, str] = {}
@@ -103,6 +132,8 @@ def main() -> int:
         mappings[installed] = source
     repository = Path(subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip())
     try:
+        if args.compose_docs:
+            copy_compose_documentation(repository, args.bundle)
         count = prepare_bundle(repository, args.bundle, args.commit, mappings)
     except ValueError as error:
         parser.error(str(error))

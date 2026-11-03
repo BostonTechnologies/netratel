@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using AwesomeAssertions;
 using NetRatel.Application.ClientAuth;
@@ -33,12 +34,17 @@ public sealed class NativeRefreshClientTests
                 if (request.Method == HttpMethod.Get)
                 {
                     capabilities++;
-                    return Ok(new { refreshExchangeVersion = 1, rotationEnabled = true });
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""{"REFRESHEXCHANGEVERSION":"1","ROTATIONENABLED":true}""", Encoding.UTF8, "application/json")
+                    };
                 }
-                using var json = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
+                var requestJson = await request.Content!.ReadAsStringAsync(ct);
+                using var json = JsonDocument.Parse(requestJson);
                 var root = json.RootElement;
                 root.GetProperty("refreshToken").GetString().Should().Be("original-parent-secret");
                 var id = root.GetProperty("exchangeId").GetGuid();
+                requestJson.Should().Be($$"""{"agentId":"{{agentId:D}}","refreshToken":"original-parent-secret","requestedScopes":["netratel:connect"],"exchangeVersion":1,"exchangeId":"{{id:D}}"}""");
                 ids.Add(id);
                 var timestamp = DateTimeOffset.Parse(request.Headers.GetValues("X-NetRatel-Timestamp").Single());
                 var nonce = request.Headers.GetValues("X-NetRatel-Nonce").Single();
@@ -176,6 +182,36 @@ public sealed class NativeRefreshClientTests
             var error = await Assert.ThrowsAsync<AgentClientAuthException>(() => new ClientAgentTokenService(http, store, store).GetAccessTokenAsync(CancellationToken.None));
             error.EndpointRole.Should().Be(AgentAuthEndpointRole.Capabilities);
             error.IsRecoverable.Should().BeTrue();
+            File.Exists(path + ".native-refresh").Should().BeFalse();
+            (await store.LoadAsync())!.Value.RefreshToken.Should().Be("parent");
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"refreshExchangeVersion\":1}")]
+    [InlineData("{\"rotationEnabled\":true}")]
+    [InlineData("{\"refreshExchangeVersion\":2,\"rotationEnabled\":true}")]
+    public async Task InvalidCapabilitiesRemainAProtocolFailureWithoutMutationOrLegacyDowngrade(string response)
+    {
+        var directory = NewDirectory();
+        try
+        {
+            var path = Path.Combine(directory, "agent.dat");
+            var store = new AgentCredentialStore(path);
+            await store.SaveAsync(Guid.NewGuid().ToString(), "parent");
+            using var http = NewHttp((request, _) =>
+            {
+                request.Method.Should().Be(HttpMethod.Get);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(response, Encoding.UTF8, "application/json")
+                });
+            });
+            var error = await Assert.ThrowsAsync<AgentClientAuthException>(() => new ClientAgentTokenService(http, store, store).GetAccessTokenAsync(CancellationToken.None));
+            error.EndpointRole.Should().Be(AgentAuthEndpointRole.Capabilities);
+            error.FailureKind.Should().Be(AgentAuthFailureKind.Protocol);
             File.Exists(path + ".native-refresh").Should().BeFalse();
             (await store.LoadAsync())!.Value.RefreshToken.Should().Be("parent");
         }
