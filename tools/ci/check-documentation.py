@@ -113,8 +113,14 @@ def local_destinations(prose: str):
             yield match.start(), target
 
 
-def html_image_destinations(prose: str):
+def html_image_destinations(markdown: str):
     """Yield img src attributes, including multiline and unquoted HTML attributes."""
+    prose = prose_only(markdown)
+    # Markdown permits indented attribute lines inside a real HTML tag. Restore
+    # those tag bodies only when the opener survived code/comment masking.
+    for tag in re.finditer(r"<img\b(?:[^>\"']|\"[^\"]*\"|'[^']*')*>", markdown, re.IGNORECASE):
+        if prose[tag.start():tag.start() + 4].lower() == "<img":
+            prose = prose[:tag.start()] + tag[0] + prose[tag.end():]
     line_starts = [0] + [match.end() for match in re.finditer(r"\n", prose)]
     destinations: list[tuple[int, str]] = []
 
@@ -211,8 +217,11 @@ def check_repository(root: Path, *, packaged: bool = False, require_docs: bool =
         source = root / relative
         if not source.is_file():
             continue  # A tracked file may have been moved/deleted in the worktree.
-        prose = prose_only(source.read_text(encoding="utf-8"))
-        for offset, raw_target in chain(local_destinations(prose), html_image_destinations(prose)):
+        markdown = source.read_text(encoding="utf-8")
+        prose = prose_only(markdown)
+        destinations = chain(((offset, target, False) for offset, target in local_destinations(prose)),
+                             ((offset, target, True) for offset, target in html_image_destinations(markdown)))
+        for offset, raw_target, image in destinations:
             target = re.sub(r"\\([\\`*{}\[\]()#+.!_<> -])", r"\1", raw_target)
             # These are documented examples, not resolvable repository paths.
             if not target or re.search(r"[{}<>$]", target):
@@ -228,6 +237,9 @@ def check_repository(root: Path, *, packaged: bool = False, require_docs: bool =
             if not exact_path_exists(candidate):
                 line = prose.count("\n", 0, offset) + 1
                 errors.append(f"{relative}:{line}: missing local link target {raw_target!r} (paths are case-sensitive)")
+            elif image and not candidate.is_file():
+                line = prose.count("\n", 0, offset) + 1
+                errors.append(f"{relative}:{line}: HTML image target must be a file: {raw_target!r}")
             elif parsed.fragment and candidate.suffix.lower() == ".md":
                 candidate = candidate.resolve()
                 if candidate not in anchor_cache:

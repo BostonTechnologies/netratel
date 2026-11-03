@@ -49,6 +49,9 @@ class DocumentationIntegrityTests(unittest.TestCase):
 <IMG\n SRC='docs/assets/mark.png?size=1&amp;theme=light'>
 <img data-src="missing.png" src=docs/assets/mark.png>
 <img alt="Example src='not-an-attribute.png'" src="docs/assets/mark.png" />
+<img
+    src="docs/assets/mark.png"
+    alt="Indented attributes are HTML, not code">
 <img src="https://example.test/remote.png">
 <img src="data:image/png;base64,AA==">
 <!-- <img src="comment.png"> -->
@@ -58,10 +61,11 @@ class DocumentationIntegrityTests(unittest.TestCase):
 ```
 ''')
             self.assertEqual([], checker.check_repository(root, packaged=True))
-            (root / "README.md").write_text('<img src="docs/assets/Mark.png">\n<img src="missing.png">\n')
+            (root / "README.md").write_text('<img src="docs/assets/Mark.png">\n<img\n    src="missing.png">\n<img src="docs">\n')
             errors = checker.check_repository(root, packaged=True)
-            self.assertEqual(2, len(errors), errors)
-            self.assertTrue(all("case-sensitive" in error for error in errors))
+            self.assertEqual(3, len(errors), errors)
+            self.assertEqual(2, sum("case-sensitive" in error for error in errors))
+            self.assertTrue(any("HTML image target must be a file" in error for error in errors))
 
     def fixture(self, temporary: str):
         root = Path(temporary) / "repository"
