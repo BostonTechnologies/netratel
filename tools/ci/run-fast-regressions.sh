@@ -57,7 +57,7 @@ run_assembly() {
 # exclusions as MTP execution. It runs no cases and supplies a growing coverage
 # manifest, including theories, rather than a fixed expected pass count.
 dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
-  -list full/json -preEnumerateTheories \
+  -noColor -list full/json -preEnumerateTheories \
   -trait- category=compose -trait- category=hosted -trait- category=manual-integration \
   > "$results_directory/core-discovery.json"
 
@@ -83,10 +83,14 @@ launch() {
 }
 # Each process owns a separate randomized PostgreSQL server and isolated test
 # databases. Splitting the shared collection removes its cross-namespace serial
-# queue while preserving every existing case and category exclusion.
+# queue while preserving every existing case and category exclusion. Divide
+# the original Core collection-thread allowance across the two processes;
+# retaining the full allowance in each doubled concurrent migration load.
 launch NetRatel.Tests NetRatel.Tests.Infrastructure \
+  --max-threads 0.5x \
   --filter-namespace NetRatel.Tests.Infrastructure 'NetRatel.Tests.Infrastructure.*'
 launch NetRatel.Tests NetRatel.Tests.Remaining \
+  --max-threads 0.5x \
   --filter-not-namespace NetRatel.Tests.Infrastructure 'NetRatel.Tests.Infrastructure.*'
 launch NetRatel.API.IntegrationTests NetRatel.API.IntegrationTests
 

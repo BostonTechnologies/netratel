@@ -880,12 +880,17 @@ ET.ElementTree(run).write(report)
                 discovery = [args for args in commands if args[0] != "test"]
                 execution = [args for args in commands if args[0] == "test"]
                 self.assertEqual(1, len(discovery), completed.stdout + completed.stderr)
+                self.assertIn("-noColor", discovery[0], "Native CI color resets would corrupt discovery JSON.")
                 self.assertEqual(4, len(execution), completed.stdout + completed.stderr)
                 self.assertCountEqual(expected_projects, [args[args.index("--project") + 1] for args in execution])
                 for args in execution:
                     self.assertIn("--no-build", args)
                     self.assertEqual("1", args[args.index("--max-parallel-test-modules") + 1])
                     self.assertEqual("Release", args[args.index("--configuration") + 1])
+                    if args[args.index("--project") + 1].endswith("NetRatel.Tests.csproj"):
+                        self.assertEqual("0.5x", args[args.index("--max-threads") + 1])
+                    else:
+                        self.assertNotIn("--max-threads", args)
                     filter_start = args.index("--filter-not-trait") + 1
                     self.assertEqual(["category=compose", "category=hosted", "category=manual-integration"], args[filter_start:filter_start + 3])
                 if failure == "none":

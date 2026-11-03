@@ -147,7 +147,9 @@ version, PostgreSQL-only and release-script checks, one solution Release
 restore/build, and three prebuilt fast assemblies with separate nonzero
 all-passing TRX receipts. Components run first; Core's Infrastructure namespace
 and its exact complement then overlap with the separate API suite. Each Core
-process owns its PostgreSQL collection server and isolated databases. A
+process owns its PostgreSQL collection server and isolated databases. Each
+uses half the default collection-thread allowance, preserving Core's aggregate
+concurrency budget across the two processes. A
 same-binary discovery manifest verifies that both completed receipts cover the
 full selected Core population without overlap, including theory rows. Each
 group reports its duration. Source-changing PR events retain required checks;
