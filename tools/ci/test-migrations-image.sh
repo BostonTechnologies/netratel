@@ -9,8 +9,11 @@ mkdir -p "$results"
 results="$(cd "$results" && pwd)"
 revision="$(git rev-parse HEAD)"
 version="$(python3 tools/ci/product-version.py)"
+comparison="${NETRATEL_MIGRATIONS_COMPARISON:-base}"
+case "$comparison" in base|html-ownership) ;; *) echo 'Unknown migrations comparison' >&2; exit 2 ;; esac
 candidate=netratel-migrations:runtime-candidate
 control=netratel-migrations:aspnet-control
+if [[ "$comparison" == html-ownership ]]; then control=netratel-migrations:html-control; fi
 git rev-parse HEAD > "$results/source-sha.txt"
 dotnet --info > "$results/sdk.txt"
 dotnet msbuild src/NetRatel/NetRatel.Migrations/NetRatel.Migrations.csproj -nologo \
@@ -36,6 +39,74 @@ trap cleanup EXIT
 # evaluated host intermediates must not invalidate their shared publish stage.
 mkdir -p "$temporary/source"
 git archive HEAD | tar -x -C "$temporary/source"
+control_source="$temporary/source"
+control_dockerfile="$temporary/control.Dockerfile"
+if [[ "$comparison" == html-ownership ]]; then
+  sdk_reference="$(sed -n 's/^FROM \([^ ]*\) AS build$/\1/p' docker/migrations/Dockerfile)"
+  runtime_reference="$(sed -n 's/^FROM \([^ ]*\) AS final$/\1/p' docker/migrations/Dockerfile)"
+  docker pull "$sdk_reference" 2>&1 | tee "$results/sdk-base-pull.log"
+  docker pull "$runtime_reference" 2>&1 | tee "$results/runtime-base-pull.log"
+  sdk_digest="$(docker image inspect "$sdk_reference" | jq -r '.[0].RepoDigests[] | select(startswith("mcr.microsoft.com/dotnet/sdk@sha256:"))')"
+  runtime_digest="$(docker image inspect "$runtime_reference" | jq -r '.[0].RepoDigests[] | select(startswith("mcr.microsoft.com/dotnet/runtime@sha256:"))')"
+  [[ "$sdk_digest" =~ ^mcr.microsoft.com/dotnet/sdk@sha256:[0-9a-f]{64}$ ]]
+  [[ "$runtime_digest" =~ ^mcr.microsoft.com/dotnet/runtime@sha256:[0-9a-f]{64}$ ]]
+  build_time="$(git show -s --format=%cI HEAD)"
+  python3 - "$temporary/source" "$temporary/control-source" "$sdk_digest" "$runtime_digest" "$build_time" "$revision" "$results" <<'PY'
+from copy import deepcopy
+from datetime import datetime, timezone
+import hashlib, json, shutil, sys
+from pathlib import Path
+import re
+import xml.etree.ElementTree as ET
+source, control = map(Path, sys.argv[1:3])
+sdk, runtime, timestamp, revision, output = sys.argv[3:]
+timestamp = datetime.fromisoformat(timestamp).astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+dockerfile = source / 'docker/migrations/Dockerfile'
+text = dockerfile.read_text()
+for stage, image in (('build', sdk), ('final', runtime)):
+    text, count = re.subn(r'^FROM \S+ AS ' + stage + '$', 'FROM ' + image + ' AS ' + stage, text, flags=re.M)
+    if count != 1: raise ValueError('Expected one migrations ' + stage + ' stage')
+if text.count('/p:UseAppHost=false') != 1: raise ValueError('Expected the existing publish command')
+text = text.replace('/p:UseAppHost=false', '/p:UseAppHost=false /p:PublicBuildTimestamp=' + timestamp)
+dockerfile.write_text(text)
+shutil.copytree(source, control)
+api = Path('src/NetRatel/NetRatel.API')
+infrastructure = Path('src/NetRatel/NetRatel.Infrastructure')
+adapter = api / 'Bootstrap/RatelDeskReceiverFingerprint.cs'
+old_adapter = infrastructure / 'RatelDesk/RatelDeskReceiverFingerprint.cs'
+(control / adapter).rename(control / old_adapter)
+api_project = control / api / 'NetRatel.API.csproj'
+infrastructure_project = control / infrastructure / 'NetRatel.Infrastructure.csproj'
+api_xml, infrastructure_xml = ET.parse(api_project), ET.parse(infrastructure_project)
+packages = {'HtmlSanitizer', 'HtmlAgilityPack'}
+destination = next(group for group in infrastructure_xml.getroot().findall('ItemGroup') if group.find('PackageReference') is not None)
+if any(item.get('Include') in packages for item in infrastructure_xml.getroot().iter('PackageReference')):
+    raise ValueError('Candidate Infrastructure still owns an HTML package')
+for package in sorted(packages):
+    matches = [(group, item) for group in api_xml.getroot().findall('ItemGroup') for item in group.findall('PackageReference') if item.get('Include') == package]
+    if len(matches) != 1: raise ValueError('Expected one API reference for ' + package)
+    group, item = matches[0]
+    destination.append(deepcopy(item)); group.remove(item)
+for path, tree in ((api_project, api_xml), (infrastructure_project, infrastructure_xml)):
+    ET.indent(tree, space='  '); tree.write(path, encoding='unicode')
+def inventory(root):
+    return {path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest() for path in root.rglob('*') if path.is_file()}
+candidate_files, control_files = inventory(source), inventory(control)
+changed = {name for name in candidate_files.keys() & control_files.keys() if candidate_files[name] != control_files[name]}
+expected = {(api / 'NetRatel.API.csproj').as_posix(), (infrastructure / 'NetRatel.Infrastructure.csproj').as_posix()}
+if changed != expected or candidate_files.keys() - control_files.keys() != {adapter.as_posix()} or control_files.keys() - candidate_files.keys() != {old_adapter.as_posix()}:
+    raise ValueError('Diagnostic control changed source beyond HTML ownership')
+if candidate_files[adapter.as_posix()] != control_files[old_adapter.as_posix()]: raise ValueError('Adapter bytes changed')
+identity = {'comparison': 'html-ownership', 'sourceSha': revision, 'sdkImage': sdk, 'runtimeImage': runtime,
+            'buildTimestampUtc': timestamp, 'adapterSha256': candidate_files[adapter.as_posix()],
+            'control': 'Diagnostic same-source reconstruction of pre-change HTML ownership; not original published bytes',
+            'changedSourceFiles': {name: {'candidate': candidate_files[name], 'control': control_files[name]} for name in sorted(changed)}}
+Path(output, 'comparison-identity.json').write_text(json.dumps(identity, indent=2) + '\n')
+Path(output, 'diagnostic.Dockerfile').write_text(text)
+PY
+  control_source="$temporary/control-source"
+  control_dockerfile=docker/migrations/Dockerfile
+else
 python3 - "$temporary/control.Dockerfile" <<'PY'
 from pathlib import Path
 import sys
@@ -45,12 +116,13 @@ if source.count(base) != 1:
     raise ValueError('Expected the reviewed CoreCLR migrations base')
 Path(sys.argv[1]).write_text(source.replace(base, base.replace('/runtime:', '/aspnet:')))
 PY
+fi
 (cd "$temporary/source"
   bash tools/ci/build-public-image.sh --dockerfile docker/migrations/Dockerfile \
     --image "$candidate" --version "$version" --revision "$revision"
 ) 2>&1 | tee "$results/candidate-build.log"
-(cd "$temporary/source"
-  bash tools/ci/build-public-image.sh --dockerfile "$temporary/control.Dockerfile" \
+(cd "$control_source"
+  bash tools/ci/build-public-image.sh --dockerfile "$control_dockerfile" \
     --image "$control" --version "$version" --revision "$revision"
 ) 2>&1 | tee "$results/control-build.log"
 bash tools/ci/scan-public-image.sh --image "$candidate" --version "$version" --revision "$revision" \
@@ -76,17 +148,18 @@ for arm in candidate control; do
     dpkg-query -W ca-certificates libicu74 tzdata libgssapi-krb5-2
   ' > "$results/$arm-runtime.txt"
 done
-python3 - "$temporary" "$results" <<'PY'
+python3 - "$temporary" "$results" "$comparison" <<'PY'
 import hashlib, json, sys
 from pathlib import Path
-temporary, results = map(Path, sys.argv[1:])
+temporary, results = map(Path, sys.argv[1:3])
+comparison = sys.argv[3]
 inventories = {}
 for arm in ('candidate', 'control'):
     directory = temporary / arm / 'out'
     inventories[arm] = {p.relative_to(directory).as_posix(): {'sha256': hashlib.sha256(p.read_bytes()).hexdigest(), 'bytes': p.stat().st_size}
                         for p in sorted(directory.rglob('*')) if p.is_file()}
     (results / (arm + '-file-hashes.json')).write_text(json.dumps(inventories[arm], indent=2) + '\n')
-if inventories['candidate'] != inventories['control']:
+if comparison == 'base' and inventories['candidate'] != inventories['control']:
     raise ValueError('The base-only comparison changed the application payload')
 config = json.loads((results / 'candidate-runtimeconfig.json').read_text())['runtimeOptions']
 frameworks = config.get('frameworks', [config['framework']] if 'framework' in config else [])
@@ -100,8 +173,12 @@ if len(candidate_core) != 1 or candidate_core != control_core:
     raise ValueError('The controlled comparison requires identical CoreCLR patch versions')
 if candidate[0] != control[0] or candidate[0] == '0' or any('Microsoft.AspNetCore.App' in line for line in candidate):
     raise ValueError('Candidate runtime or nonroot identity differs from the expected boundary')
-print('Both application payloads are byte-identical; candidate requires CoreCLR only and retains the nonroot UID.')
+print('Candidate requires CoreCLR only and retains the matching runtime patch and nonroot UID.')
+if comparison == 'base': print('Both application payloads are byte-identical.')
 PY
+if [[ "$comparison" == html-ownership ]]; then
+  python3 tools/ci/compare-migrations-html-payload.py --results "$results"
+fi
 
 # Execute managed globalization/timezone/trust and native loading on the candidate runtime.
 dotnet new console --framework net10.0 --name RuntimeProbe --output "$temporary/probe" --no-restore

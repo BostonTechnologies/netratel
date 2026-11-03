@@ -68,6 +68,7 @@ using NetRatel.Infrastructure.Persistence;
 using NetRatel.API.OpenApi;
 using NetRatel.API.Endpoints.SystemPairing;
 using NetRatel.Infrastructure.SystemPairing;
+using Npgsql;
 
 if (args is ["--gssapi-application-smoke"])
 {
@@ -182,6 +183,7 @@ if (bootstrapDescriptor.State != BootstrapState.Ready)
 var aiAgentOpsLogBuffer = new AiAgentOpsLogBuffer();
 
 builder.AddServiceDefaults();
+builder.Services.AddOpenTelemetry().WithTracing(tracing => tracing.AddNpgsql());
 builder.Services.AddNetRatelAkkaRuntime(builder.Configuration);
 builder.Services.AddSingleton<AgentGatewayRenewalAuthenticator>();
 builder.Services.AddSingleton<AgentGatewayAuthenticationLeaseRegistry>();
