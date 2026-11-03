@@ -49,7 +49,34 @@ RUN dotnet publish "./NetRatel.API.csproj" -c $BUILD_CONFIGURATION -o /app/publi
 RUN apt-get update && apt-get install -y --no-install-recommends python3
 RUN python3 /src/tools/ci/generate-runtime-sbom.py --project-assets obj/project.assets.json --distribution /app/publish --name NetRatel.API --version "$(dotnet msbuild NetRatel.API.csproj -nologo -getProperty:Version)" --output /app/publish/runtime.spdx.json
 
-# --- Final
+# Optional linux/amd64 diagnostic target. The production final target remains
+# the last stage and uses the existing noble base until acceptance is complete.
+# Follow the tool/checksum used by Microsoft's noble-chiseled-extra image;
+# Canonical's slice supplies the GSSAPI dependency and copyright closure.
+FROM mcr.microsoft.com/dotnet/sdk:10.0.403-noble AS chisel
+ARG TARGETARCH
+RUN test "$TARGETARCH" = amd64 \
+ && curl --fail --show-error --location --output /tmp/chisel.tar.gz \
+      https://github.com/canonical/chisel/releases/download/v1.5.0/chisel_v1.5.0_linux_amd64.tar.gz \
+ && echo 'f8ba3f3d04165b50d91aae7eb3bcaca2a714f1877d2af005989617937cf2e375ab30d4a50b1308263e61a61ecb79de5c  /tmp/chisel.tar.gz' | sha384sum -c - \
+ && tar -xzf /tmp/chisel.tar.gz -C /usr/bin \
+ && mkdir -p /rootfs \
+ && chisel cut --release ubuntu-24.04 --root /rootfs base-files_chisel libgssapi-krb5-2_libs \
+ && install -d -m 0755 -o 1654 -g 1654 /rootfs/app /rootfs/var/netratel /rootfs/var/netratel/keys
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled-extra AS chiseled-candidate
+ENV NetRatel_KEYS_DIR=/var/netratel/keys \
+    NetRatel_HTTP_PORT=9222
+COPY --from=chisel /rootfs /
+WORKDIR /app
+COPY --chown=1654:1654 --from=publish /app/publish .
+COPY --chown=1654:1654 --chmod=755 docker/api/docker-entrypoint.sh /app/docker-entrypoint.sh
+COPY --chown=1654:1654 LICENSE NOTICE /app/licenses/
+EXPOSE 9222 9223
+USER 1654:1654
+ENTRYPOINT ["dotnet", "NetRatel.API.dll"]
+
+# --- Final (default production target)
 FROM base AS final
 WORKDIR /app
 # If your Docker supports it, keep --chown; otherwise chown after COPY
