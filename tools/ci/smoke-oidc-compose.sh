@@ -800,7 +800,7 @@ import sys
 import tarfile
 
 container = sys.argv[1]
-files, dependencies = [], None
+files, dependencies, static_endpoints = [], None, None
 with subprocess.Popen(["docker", "cp", container + ":/app/.", "-"], stdout=subprocess.PIPE) as copied:
     with tarfile.open(fileobj=copied.stdout, mode="r|") as archive:
         for entry in archive:
@@ -810,10 +810,24 @@ with subprocess.Popen(["docker", "cp", container + ":/app/.", "-"], stdout=subpr
             files.append({"path": entry.name, "bytes": entry.size, "sha256": hashlib.sha256(content).hexdigest()})
             if Path(entry.name).name == "NetRatel.Web.deps.json":
                 dependencies = json.loads(content)
+            if Path(entry.name).name == "NetRatel.Web.staticwebassets.endpoints.json":
+                static_endpoints = json.loads(content)["Endpoints"]
     if copied.wait() != 0:
         raise SystemExit("Unable to inventory the actual Web application files.")
-if not files or dependencies is None:
-    raise SystemExit("Web distribution inventory or runtime dependency graph is missing.")
+if not files or dependencies is None or not static_endpoints:
+    raise SystemExit("Web distribution inventory, runtime dependencies or static endpoint manifest is missing.")
+paths = {Path(entry["path"]).as_posix() for entry in files}
+missing_static_targets = sorted({endpoint["AssetFile"] for endpoint in static_endpoints
+    if Path(endpoint["AssetFile"]).is_absolute() or ".." in Path(endpoint["AssetFile"]).parts
+    or "wwwroot/" + endpoint["AssetFile"] not in paths})
+monaco_prefix = "wwwroot/_content/BlazorMonaco/"
+monaco_files = [entry for entry in files if Path(entry["path"]).as_posix().startswith(monaco_prefix)]
+nls_prefix = monaco_prefix + "lib/monaco-editor/min/vs/nls.messages."
+alternate_nls = [entry["path"] for entry in monaco_files
+    if Path(entry["path"]).as_posix().startswith(nls_prefix)
+    and Path(entry["path"]).name != "nls.messages.js.js"]
+required_nls = {monaco_prefix + "lib/monaco-editor/min/vs/" + name
+    for name in ["nls.messages-loader.js", "nls.messages.js.js"]}
 libraries = sorted(dependencies["libraries"])
 unexpected = [name for name in libraries if name.split("/")[0] == "NetRatel.Infrastructure"
               or name.startswith(("Microsoft.EntityFrameworkCore", "Npgsql"))]
@@ -822,6 +836,9 @@ image_bytes = int(subprocess.check_output(["docker", "image", "inspect", "--form
 receipt = {"sourceCommit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
            "imageId": image, "uncompressedImageBytes": image_bytes,
            "applicationBytes": sum(entry["bytes"] for entry in files), "libraries": libraries,
+           "staticAssetEndpoints": len(static_endpoints), "missingStaticAssetTargets": missing_static_targets,
+           "monacoFiles": len(monaco_files), "monacoBytes": sum(entry["bytes"] for entry in monaco_files),
+           "alternateMonacoNlsFiles": alternate_nls,
            "unexpectedDatabaseDependencies": unexpected, "files": sorted(files, key=lambda entry: entry["path"])}
 output = Path("TestResults/oidc-compose/web-distribution.json")
 output.parent.mkdir(parents=True, exist_ok=True)
@@ -829,6 +846,10 @@ output.write_text(json.dumps(receipt, indent=2) + "\n")
 print(f"Actual Web image: {receipt['applicationBytes']} application bytes across {len(files)} files; {len(libraries)} runtime libraries.")
 if unexpected:
     raise SystemExit("Web image still contains database dependencies: " + ", ".join(unexpected))
+if missing_static_targets:
+    raise SystemExit("Web static endpoints target missing application files: " + ", ".join(missing_static_targets))
+if alternate_nls or not required_nls.issubset(paths):
+    raise SystemExit("Web image must retain the English NLS bundle and loader without alternate locale bundles.")
 PY
 fi
 stage="waiting for migrations"
