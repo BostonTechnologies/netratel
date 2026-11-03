@@ -25,4 +25,3 @@ public sealed record IntegrationCredentialSummary(
 {
     public IReadOnlyList<string> InstancePermissions { get; init; } = [];
 }
-
