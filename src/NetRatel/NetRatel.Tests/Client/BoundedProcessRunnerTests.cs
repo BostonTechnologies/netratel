@@ -266,6 +266,12 @@ public sealed class BoundedProcessRunnerTests
             {
                 return false;
             }
+            catch (IOException error) when (error.HResult == 3)
+            {
+                // Linux returns ESRCH when the process exits after procfs opens
+                // its stat file but before the read. Other I/O errors still fail.
+                return false;
+            }
         }
 
         try
