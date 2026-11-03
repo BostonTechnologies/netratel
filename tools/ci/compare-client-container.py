@@ -145,8 +145,10 @@ def main():
                 "rootfsDiffIds": info["RootFS"]["Layers"], "appFileBytes": sum(item["bytes"] for item in files),
                 "manifest": manifest, "probes": {}}
             logged(["docker", "run", "--rm", image, "--version"], directory / "version.log")
-            if (directory / "version.log").read_text().strip() != version:
-                raise ValueError("Actual Client version differs from Directory.Build.props.")
+            reported_version = (directory / "version.log").read_text().strip()
+            if reported_version not in (version, version + "+" + revision):
+                raise ValueError("Actual Client product version/source differs from the selected comparison.")
+            arm_record["reportedVersion"] = reported_version
             for backend in ("native", "python"):
                 arm_record["probes"][backend] = probe(image, backend, directory)
         if not all(probe["passed"] for arm in record["arms"].values() for probe in arm["probes"].values()):
