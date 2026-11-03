@@ -79,10 +79,14 @@ public sealed partial class NetclawInvestigationWorker
     {
         // Cap each receiver's diagnostics, and never log content, tokens, raw IDs supplied
         // by a foreign event, or unbounded event discriminators.
-        if (owner.DiagnosticCount++ >= 128) return;
+        var type = Value(output, "type");
+        if (type == "text_delta" && owner.DeltaDiagnosticCount++ >= 16 || owner.DiagnosticCount++ >= 128) return;
+        var safeType = type is "text" or "text_delta" or "session_joined" or "turn_completed" or "buffer_flush" or
+            "tool_call" or "tool_result" or "tool_interaction" or "error" or "file" or "usage" or "compaction" or
+            "subagent" or "processing_state" ? type : "unknown";
         logger.LogInformation(new EventId(2, "NetclawOutput"),
             "Netclaw output {Disposition}: investigation {InvestigationId}, tenant {TenantId}, session {SessionId}, message {MessageId}, type {OutputType}, turn {TurnNumber}, text length {TextLength}, reason {Reason}",
-            disposition, id, owner.Profile.TenantId, owner.SessionId, owner.MessageId, SafeTool(Value(output, "type")),
+            disposition, id, owner.Profile.TenantId, owner.SessionId, owner.MessageId, safeType,
             output.TryGetProperty("turnNumber", out var number) && number.ValueKind == JsonValueKind.Number && number.TryGetInt32(out var turn) ? turn : (int?)null,
             Value(output, "text")?.Length ?? 0, reason);
     }

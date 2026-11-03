@@ -57,6 +57,7 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
         public JsonElement? PendingCompletion;
         public string? LastAssistantText;
         public int DiagnosticCount;
+        public int DeltaDiagnosticCount;
         public long LastObservedTicks = DateTimeOffset.UtcNow.UtcTicks;
         private readonly StringBuilder draft = new();
         private readonly object draftLock = new();
