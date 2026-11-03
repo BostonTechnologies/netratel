@@ -188,11 +188,13 @@ def installed_inventory(search_root, version, inventory):
                   any(part.casefold() == version.casefold() for part in path.parts)]
     fixture.require(len(assemblies) == 1, "Installed entry assembly is missing or ambiguous")
     package_root = assemblies[0].parents[3]
-    for relative, digest in inventory["files"].items():
+    expected = inventory["files"] | inventory.get("legalFiles", {})
+    for relative, digest in expected.items():
         path = package_root / relative
         fixture.require(path.is_file() and promotion.sha256(path) == digest,
                         "Installed file differs from the authenticated package: " + relative)
-    return {"matchedPackageFiles": len(inventory["files"]),
+    return {"matchedPackageFiles": len(expected), "matchedToolFiles": len(inventory["files"]),
+            "matchedLegalFiles": len(inventory.get("legalFiles", {})),
             "entryAssemblySha256": promotion.sha256(assemblies[0]),
             "installedToolPayloadBytes": inventory["toolPayloadBytes"],
             "installedBytes": sum(path.stat().st_size for path in package_root.rglob("*") if path.is_file())}
