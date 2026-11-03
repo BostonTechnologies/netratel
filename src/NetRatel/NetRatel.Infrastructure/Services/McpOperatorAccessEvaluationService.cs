@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Operations;
 using NetRatel.Infrastructure.Persistence;
@@ -86,18 +85,13 @@ public sealed class McpOperatorAccessEvaluationService(
         var profile = await _db.McpOperatorTargetProfiles.AsNoTracking().SingleOrDefaultAsync(
             candidate => candidate.TenantId == tenantId && candidate.AgentId == agentId,
             cancellationToken).ConfigureAwait(false);
-        IReadOnlyList<string>? tags = null;
-        var profileConfigured = profile is not null && TryReadTags(profile.TagsJson, out tags);
-        var target = new McpOperatorAccessTarget(
-            tenantId,
-            agentId,
-            profileConfigured ? profile!.Classification : null,
-            profileConfigured ? tags!.Order(StringComparer.Ordinal).ToArray() : [],
+        var facts = McpOperatorTargetFacts.Read(tenantId, agentId, profile);
+        var target = new McpOperatorAccessTarget(tenantId, agentId, facts.Classification,
+            facts.Tags?.Order(StringComparer.Ordinal).ToArray() ?? [],
             agent.IsEnabled && agent.Status != AgentStatus.Disabled,
-            profileConfigured,
-            profileConfigured ? profile!.Version : null);
+            profile is not null && !facts.Invalid, profile?.Version) { ProfileInvalid = facts.Invalid };
         var relevant = await RelevantPoliciesAsync(environment, principal, target, cancellationToken).ConfigureAwait(false);
-        var policies = Summaries(profileConfigured ? relevant : relevant.Where(McpOperatorAuthorization.IsDevelopmentPolicy));
+        var policies = Summaries(relevant);
         return new McpOperatorAccessTargetResolution(true, target, policies);
     }
 
@@ -115,16 +109,15 @@ public sealed class McpOperatorAccessEvaluationService(
             return null;
         }
 
-        var missing = MissingPrerequisites(resolved.Target, !caller.DevelopmentEnvironmentAccess);
+        var missing = MissingPrerequisites(resolved.Target);
         return new McpOperatorEffectiveAccess(
             caller,
             resolved.Target,
             resolved.RelevantPolicies,
             AllowedFamilies(resolved.RelevantPolicies),
             missing,
-            (resolved.Target.ProfileConfigured || caller.DevelopmentEnvironmentAccess)
-                ? "Use netratel_access evaluate with one exact catalogued tool and operation before attempting a target action."
-                : "Ask a policy administrator to create a reviewed target profile before evaluating an operation.");
+            "Evaluate one exact catalogued operation. Unrestricted tenant policies cover current and newly enrolled clients. " +
+            "If a policy requires classification or tags, review its dependency in Admin → MCP Policies → Target profiles.");
     }
 
     public async Task<McpOperatorExactAccessEvaluation?> EvaluateAsync(
@@ -224,12 +217,14 @@ public sealed class McpOperatorAccessEvaluationService(
             descriptor.ConfirmationClass,
             correlationId,
             requestId,
-            TargetTags: target.Tags.ToHashSet(StringComparer.Ordinal),
+            TargetTags: target.ProfileConfigured ? target.Tags.ToHashSet(StringComparer.Ordinal) : null,
             TargetEnabled: target.Enabled,
             TargetOnline: true,
-            CapabilityAvailable: true);
+            CapabilityAvailable: true) { TargetProfileInvalid = target.ProfileInvalid };
         var decision = await _authorization.EvaluateAsync(request, cancellationToken).ConfigureAwait(false);
-        var missing = MissingPrerequisites(target, !caller.DevelopmentEnvironmentAccess).ToList();
+        var missing = MissingPrerequisites(target).ToList();
+        if (decision.FailureCode == "target_profile_required")
+            missing.Add("A potentially applicable policy requires classification or tags. Review its matching policy in Admin → MCP Policies and its target profile.");
         missing.Add("Target online state and the operation-specific capability are rechecked by the dispatch route.");
         return new McpOperatorExactAccessEvaluation(
             caller,
@@ -285,7 +280,7 @@ public sealed class McpOperatorAccessEvaluationService(
         return policies
             .Where(policy => policy.TenantId == target.TenantId || McpOperatorAuthorization.IsDevelopmentPolicy(policy))
             .Where(policy => TargetMatches(policy, target))
-            .Where(policy => policy.TargetClassification is null || policy.TargetClassification == target.Classification)
+            .Where(policy => policy.TargetClassification is null || !target.ProfileConfigured || policy.TargetClassification == target.Classification)
             .OrderByDescending(policy => policy.Priority)
             .ThenBy(policy => policy.Id)
             .ToArray();
@@ -331,11 +326,11 @@ public sealed class McpOperatorAccessEvaluationService(
             .ToArray();
     }
 
-    private static IReadOnlyList<string> MissingPrerequisites(McpOperatorAccessTarget target, bool requireProfile = true)
+    private static IReadOnlyList<string> MissingPrerequisites(McpOperatorAccessTarget target)
     {
         var missing = new List<string>();
-        if (requireProfile && !target.ProfileConfigured)
-            missing.Add("The target has no valid persisted operator profile.");
+        if (target.ProfileInvalid)
+            missing.Add("The persisted target profile is invalid. Repair it in Admin → MCP Policies → Target profiles.");
         if (!target.Enabled)
             missing.Add("The target is disabled.");
         return missing;
@@ -356,30 +351,9 @@ public sealed class McpOperatorAccessEvaluationService(
         McpOperatorTargetSelectorKind.ExactAgent => policy.AgentId == target.AgentId,
         McpOperatorTargetSelectorKind.Tenant => true,
         McpOperatorTargetSelectorKind.DevelopmentEnvironment => McpOperatorAuthorization.IsDevelopmentPolicy(policy),
-        McpOperatorTargetSelectorKind.ClientTag => policy.ClientTag is { Length: > 0 } tag && target.Tags.Contains(tag, StringComparer.Ordinal),
+        McpOperatorTargetSelectorKind.ClientTag => policy.ClientTag is { Length: > 0 } tag && (!target.ProfileConfigured || target.Tags.Contains(tag, StringComparer.Ordinal)),
         _ => false
     };
-
-    private static bool TryReadTags(string json, out IReadOnlyList<string>? tags)
-    {
-        try
-        {
-            var parsed = JsonSerializer.Deserialize(json, McpOperatorJsonContext.Default.StringArray);
-            if (parsed is null || parsed.Any(string.IsNullOrWhiteSpace))
-            {
-                tags = null;
-                return false;
-            }
-
-            tags = parsed.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
-            return true;
-        }
-        catch (JsonException)
-        {
-            tags = null;
-            return false;
-        }
-    }
 
     private static bool IsActive(McpOperatorPolicyRecord policy, DateTimeOffset now) =>
         policy.LifecycleState == McpOperatorPolicyLifecycleState.Active &&

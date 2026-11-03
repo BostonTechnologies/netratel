@@ -1,5 +1,7 @@
 # Release history
 
+- [0.1.4-beta.4](0.1.4-beta.4.md) — unrestricted HTTP MCP client access and late AI results.
+
 These notes describe the named release and preserve historical status. [Release engineering](../deployment/RELEASES.md) describes the current publication process; the product version is controlled only by `Directory.Build.props`.
 
 - [0.1.4-beta.3 — session reattachment, truthful recovery and .NET skills](0.1.4-beta.3.md)

@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 
 namespace NetRatel.Shared.Connectivity;
 
-/// <summary>One exact reviewed business operation. Agent targets require the persisted profile revision.</summary>
+/// <summary>One exact reviewed business operation. A null profile revision binds an absent profile; a configured profile requires its current revision.</summary>
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record ReviewedMcpAccessTarget(int TenantId, string Tool, string Operation, [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? AgentId = null, [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? ProfileRevision = null);
 
@@ -47,6 +47,7 @@ public sealed record ReviewedMcpAccessAdmission(ReviewedMcpAccessTarget Target, 
     public bool AuthorizationAdmitted { get; init; }
     public string TargetReadiness { get; init; } = "not_checked";
     public string CapabilityAvailability { get; init; } = "not_checked";
+    public string? FailureLayer { get; init; }
     public string AdmissionKind { get; init; } = "authorization_only_dispatch_rechecks_runtime";
 }
 

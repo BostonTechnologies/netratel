@@ -582,7 +582,7 @@ public sealed partial class McpOperatorPolicyMutationEndpointTests
     [InlineData("version", "confirmation_plan_stale")]
     [InlineData("tags", "confirmation_plan_stale")]
     [InlineData("classification", "target_classification_denied")]
-    [InlineData("missing", "target_profile_missing")]
+    [InlineData("missing", "target_profile_required")]
     public async Task Profile_changes_after_preview_cannot_reuse_policy_confirmation(string change, string failureCode)
     {
         var draft = ExactAgentDraft();

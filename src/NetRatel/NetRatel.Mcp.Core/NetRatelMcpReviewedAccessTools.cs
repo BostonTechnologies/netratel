@@ -46,7 +46,7 @@ public static partial class NetRatelMcpToolDefinitions
             RequiredInteger("tenantId", "Exact tenant; zero only for a catalogued control-plane operation.", 0, int.MaxValue),
             RequiredString("tool", "Exact catalogued tool.", 128), RequiredString("operation", "Exact catalogued operation.", 128),
             Uuid("agentId", "Exact persisted agent when the operation targets an agent.", false),
-            ("profileRevision", new JsonObject { ["type"] = "integer", ["minimum"] = 1, ["maximum"] = 9007199254740991L, ["description"] = "Required current target-profile revision for an agent target." }, false)
+            ("profileRevision", new JsonObject { ["type"] = "integer", ["minimum"] = 1, ["maximum"] = 9007199254740991L, ["description"] = "Current revision when the agent has a profile; omit to review an absent profile." }, false)
         ]).Schema }, true)
     ]);
 }

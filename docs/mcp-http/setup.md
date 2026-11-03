@@ -94,6 +94,16 @@ See [CLI/stdio commands](../integrations/CLI_AND_MCP.md), [host/storage recovery
 
 For a consumer that supports only stdio launch commands, obtain the versioned `NetRatel.Mcp` archive and configure `http-bridge --profile NAME` using [the supported client transport and migration guide](../integrations/http-mcp-bridge.md). Run its acquisition and client setup commands on the consumer machine; a container profile does not migrate that machine's installed adapter. Native HTTP connections remain available through the consumer's maintained transport.
 
+### All access and current clients
+
+The five-step HTTP MCP wizard saves the credential and its reviewed server/tenant base policies atomically. **All access** covers the catalogued operations supported by the selected application grants and operation families. An unrestricted tenant policy covers eligible existing clients and clients enrolled later in that tenant. It does not require creating a target profile. An existing unrestricted credential gains the corrected behavior after upgrading; retain its secret, grants and exact expiry.
+
+Review & create lists selected tenant names, server scope, permitted operations, exclusions and execution limits. The preset restricts working directories to `/tmp` and `C:\Windows\Temp`, permits the displayed shells and file roots, and disables active-tenant deletion. Review these settings in **Policies → Paths, shells and limits**; **Edit access** provides the same browser correction for an existing credential. Operation previews, confirmations, durable owner permissions and actual agent capabilities still apply.
+
+After creation, or under credential **Details**, expand **Check an exact operation and target**. Select the scope and catalogued operation; enter the Agent ID from **Clients** for a client operation. The server resolves current profile facts. This read-only check uses the dispatch policy evaluator and the selected operation's own scope and roles. It checks no business operation and never executes a command, file mutation, job or policy change. Runtime readiness and capabilities remain explicitly unchecked.
+
+Default rows are labelled samples: discovery candidates and monitoring for one eligible client in each selected tenant, configured flow reads, and selected server reads. A tenant with no eligible client cannot supply a client sample. Samples do not establish complete functional acceptance. Check an additional exact operation to inspect another client or tenant, then invoke the actual permitted read through the protected MCP client.
+
 ### Choose tenant and server access yourself
 
 **An authorized operator can select both tenant grants and server-level grants. An AI agent is optional.** These are separate scopes on the same client credential:

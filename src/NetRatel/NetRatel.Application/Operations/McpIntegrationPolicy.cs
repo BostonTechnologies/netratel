@@ -23,7 +23,7 @@ public static class McpIntegrationPolicyCatalog
             var required = McpLocalOperationAuthorizationCatalog.RequiredPermission(operation.ToolName, operation.OperationName);
             return model is not null && required is not null && grants.Contains(required) &&
                 McpLocalOperationAuthorizationCatalog.AdditionalPermissions(operation.ToolName, operation.OperationName).All(grants.Contains) &&
-                (tenantId == 0 ? model is McpOperationTargetModel.NoBusinessTarget or McpOperationTargetModel.OptionalTenant
+                (tenantId == 0 ? model is McpOperationTargetModel.NoBusinessTarget or McpOperationTargetModel.OptionalTenant or McpOperationTargetModel.PolicySelector or McpOperationTargetModel.PolicyReference
                     : model != McpOperationTargetModel.NoBusinessTarget || operation.ToolName == "netratel_search" && operation.OperationName == "clients");
         }).ToArray();
     }

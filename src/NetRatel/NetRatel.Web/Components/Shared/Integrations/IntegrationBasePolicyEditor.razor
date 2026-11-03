@@ -20,10 +20,10 @@
     @if (_expiryError is not null) { <MudAlert Severity="Severity.Error">@_expiryError</MudAlert> }
     <MudExpansionPanels Elevation="0" Class="mt-3" MultiExpansion="true">
         <MudExpansionPanel Text="Inspect supported operations">
-            <MudStack Row="true" Wrap="Wrap.Wrap">@foreach(var operation in Supported.Where(op => Value.Families.HasFlag(op.OperationFamily))) { <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@operation.ToolName/@operation.OperationName</MudChip> }</MudStack>
+            <MudStack Row="true" Wrap="Wrap.Wrap">@foreach(var operation in Supported.Where(op => Value.Families.HasFlag(op.OperationFamily) && (Value.Operations is null || Value.Operations.Contains(op.ToolName + "/" + op.OperationName)))) { <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@operation.ToolName/@operation.OperationName</MudChip> }</MudStack>
         </MudExpansionPanel>
         <MudExpansionPanel Text="Paths, shells and limits">
-            <MudAlert Severity="Severity.Info" Class="mb-3">All access includes the displayed file roots and execution limits. Change these bounds to match the work you approve. Runtime capability and operation confirmations still apply.</MudAlert>
+            <MudAlert Severity="Severity.Info" Class="mb-3">All access includes the displayed file roots and execution limits. Change these bounds to match the work you approve. The default working directories are /tmp and C:\Windows\Temp; active tenant deletion is disabled. Runtime capability and operation confirmations still apply.</MudAlert>
             <MudGrid Spacing="2">
                 <MudItem xs="12" md="6"><MudTextField T="string" Label="Read roots (one per line)" Lines="2" Value="Lines(Value.Constraints.ReadRoots)" ValueChanged="@((string text) => ChangeLimits(Value.Constraints with { ReadRoots = Values(text) }))" Disabled="Disabled" /></MudItem>
                 <MudItem xs="12" md="6"><MudTextField T="string" Label="Write roots (one per line)" Lines="2" Value="Lines(Value.Constraints.WriteRoots)" ValueChanged="@((string text) => ChangeLimits(Value.Constraints with { WriteRoots = Values(text) }))" Disabled="Disabled" /></MudItem>

@@ -231,7 +231,11 @@ public sealed record McpOperatorTargetProfile(
     IReadOnlyList<string> Tags,
     DateTimeOffset UpdatedAtUtc,
     string UpdatedBy,
-    long Version);
+    long Version)
+{
+    /// <summary>Non-null only when persisted profile facts are invalid; retains their exact revision binding for repair.</summary>
+    public string? InvalidFactsDigest { get; init; }
+}
 
 /// <summary>Input for a policy create or replace operation.</summary>
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
@@ -484,6 +488,9 @@ public sealed record McpOperatorAccessRequest(
     /// narrower control-plane target and must not widen that parent's authority.
     /// </summary>
     public bool RequiresDevelopmentEnvironmentPolicy { get; init; }
+
+    /// <summary>A persisted profile failed validation; absence is represented by unknown classification and tags.</summary>
+    public bool TargetProfileInvalid { get; init; }
 }
 
 /// <summary>Safe, deterministic result of one authorization evaluation.</summary>
@@ -1568,7 +1575,10 @@ public sealed record McpOperatorAccessTarget(
     IReadOnlyList<string> Tags,
     bool Enabled,
     bool ProfileConfigured,
-    long? ProfileVersion);
+    long? ProfileVersion)
+{
+    public bool ProfileInvalid { get; init; }
+}
 
 /// <summary>Relevant persisted policy metadata without any selector secrets or request content.</summary>
 public sealed record McpOperatorAccessPolicySummary(

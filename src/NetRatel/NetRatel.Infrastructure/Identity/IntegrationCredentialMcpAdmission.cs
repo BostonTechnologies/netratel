@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Operations;
 using NetRatel.Infrastructure.Identity.Authorization;
+using NetRatel.Infrastructure.Services;
+using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Connectivity;
 using NetRatel.Shared.Operations;
 
@@ -16,9 +18,30 @@ public sealed partial class IntegrationPairingService
         if (credential is null) return null;
         if (applicationDb is null || effectiveAccess is null || policyAdministration is null || operatorAuthorization is null)
             throw new IntegrationPairingUnavailableException();
-        var candidates = selectedTargets ?? DefaultAdmissionTargets(credential);
+        var candidates = selectedTargets ?? await DefaultAdmissionTargetsAsync(credential, ct).ConfigureAwait(false);
         var truncated = selectedTargets is null && candidates.Count > 32;
         var targets = truncated ? candidates.Take(32).ToArray() : candidates;
+        if (truncated && !targets.Any(x => x.Tool == "netratel_search" && x.AgentId is not null))
+            targets = targets.Where(x => x.Tool != "netratel_search" || x.Operation != "clients").ToArray();
+        if (targets.Count > 32 || targets.Any(x => x is null || string.IsNullOrWhiteSpace(x.Tool) || x.Tool.Length > 128 ||
+                string.IsNullOrWhiteSpace(x.Operation) || x.Operation.Length > 128))
+            throw new IntegrationCredentialGrantValidationException("targets");
+        if (selectedTargets is not null)
+        {
+            var currentTargets = new List<ReviewedMcpAccessTarget>();
+            foreach (var target in targets)
+            {
+                if (target?.AgentId is { } agent && target.ProfileRevision is null)
+                {
+                    var revision = await applicationDb.McpOperatorTargetProfiles.AsNoTracking()
+                        .Where(x => x.TenantId == target.TenantId && x.AgentId == agent)
+                        .Select(x => (long?)x.Version).SingleOrDefaultAsync(ct).ConfigureAwait(false);
+                    currentTargets.Add(target with { ProfileRevision = revision });
+                }
+                else currentTargets.Add(target!);
+            }
+            targets = currentTargets;
+        }
         if (targets.Count > 32 || targets.Distinct().Count() != targets.Count ||
             targets.Any(x => x is null || string.IsNullOrWhiteSpace(x.Tool) || x.Tool.Length > 128 ||
                 string.IsNullOrWhiteSpace(x.Operation) || x.Operation.Length > 128))
@@ -49,7 +72,7 @@ public sealed partial class IntegrationPairingService
             missing.Add("Matching Production operator policies are a separate prerequisite; configured application grants do not install them.");
         else if (admissions.Any(x => !x.TenantVisible || x.PolicyAllowed == false))
             missing.Add("One or more selected operations is not admitted; inspect its exact failure code and current prerequisites.");
-        if (admissions.Any(x => x.PolicyAdmissionStatus == "conditional_runtime_unverified")) missing.Add("Agent runtime readiness and operation capability remain unverified.");
+        if (admissions.Any(x => x.Target.AgentId is not null)) missing.Add("Agent runtime readiness and operation capability remain unverified.");
         if (targets.Count == 0) missing.Add("No catalogued read sample was selected; inspect an exact operation and target through the reviewed access flow.");
         if (truncated) missing.Add("Only the first 32 named read samples are shown. Select exact targets to inspect additional admission.");
         var matchingIds = admissions.SelectMany(x => x.MatchingPolicies).Distinct().ToArray();
@@ -59,7 +82,7 @@ public sealed partial class IntegrationPairingService
         return new CredentialMcpAdmission(credential.Id, clock.GetUtcNow(), state, authentication, credential.Resource!, instance, environment.ToString(),
             credential.ExpiresAtUtc, credential.Grants.Select(x => new IntegrationPairingGrant(x.TenantId, x.Permission)).ToArray(),
             credential.InstancePermissions, admissions, missing,
-            "Maintain credential grants in Details → Configured access → Edit access, then review and apply the changes in the browser. Matching operator policies remain separate and must name explicitly reviewed operations and targets. The reviewed MCP request/approve/resume flow remains an alternative; retain the credential's existing grants and exact UTC expiry unless the reviewed proposal intentionally changes them.")
+            "Use Details → Configured access → Edit access to review grants and base policies. Use Admin → MCP Policies for exceptions or required profile facts. Unrestricted tenant policies cover current and newly enrolled clients without profiles. Retain existing grants and exact expiry unless intentionally changing them.")
         {
             TargetsTruncated = truncated,
             MatchingPolicies = policies.Select(x => new CredentialMcpPolicy(x.Id, x.Environment.ToString(), x.TenantId, x.AgentId,
@@ -67,17 +90,45 @@ public sealed partial class IntegrationPairingService
         };
     }
 
-    private static IReadOnlyList<ReviewedMcpAccessTarget> DefaultAdmissionTargets(IntegrationCredentialSummary credential)
+    private async Task<IReadOnlyList<ReviewedMcpAccessTarget>> DefaultAdmissionTargetsAsync(IntegrationCredentialSummary credential, CancellationToken ct)
     {
-        // These are explicitly named samples, never a claim that a grant admits every operation.
+        // Representative read coverage only; the browser can select any exact operation.
         var targets = new List<ReviewedMcpAccessTarget>();
+        bool Granted(int tenant, string tool, string operation) =>
+            new[] { McpLocalOperationAuthorizationCatalog.RequiredPermission(tool, operation)! }
+                .Concat(McpLocalOperationAuthorizationCatalog.AdditionalPermissions(tool, operation))
+                .All(permission => tenant == 0 ? credential.InstancePermissions.Contains(permission) :
+                    credential.Grants.Any(grant => grant.TenantId == tenant && grant.Permission == permission));
+        if (Granted(0, "netratel_search", "clients")) targets.Add(new(0, "netratel_search", "clients"));
         foreach (var tenant in credential.Grants.Select(x => x.TenantId).Distinct().Order())
         {
-            if (credential.Grants.Any(x => x.TenantId == tenant && x.Permission == NetRatelPermissions.FlowRead))
-                targets.Add(new(tenant, "netratel_flows", "list"));
+            if (Granted(tenant, "netratel_flows", "list")) targets.Add(new(tenant, "netratel_flows", "list"));
+            var agent = await applicationDb!.Agents.AsNoTracking().Where(x => x.TenantId == tenant && x.IsEnabled && x.Status != AgentStatus.Disabled)
+                .OrderBy(x => x.Id).Select(x => (Guid?)x.Id).FirstOrDefaultAsync(ct).ConfigureAwait(false);
+            if (agent is { } id)
+            {
+                var revision = await applicationDb.McpOperatorTargetProfiles.AsNoTracking().Where(x => x.TenantId == tenant && x.AgentId == id)
+                    .Select(x => (long?)x.Version).SingleOrDefaultAsync(ct).ConfigureAwait(false);
+                if (Granted(0, "netratel_search", "clients") && Granted(tenant, "netratel_search", "clients")) targets.Add(new(tenant, "netratel_search", "clients", id, revision));
+                if (Granted(tenant, "netratel_monitoring", "client_series")) targets.Add(new(tenant, "netratel_monitoring", "client_series", id, revision));
+            }
         }
+        // Search needs both its control-plane boundary and at least one exact candidate.
+        if (!targets.Any(x => x.Tool == "netratel_search" && x.AgentId is not null)) targets.RemoveAll(x => x.Tool == "netratel_search");
+        foreach (var (tool, operation) in new[] { ("netratel_health", "get"), ("netratel_policy", "policies"), ("netratel_connectivity", "settings") })
+            if (Granted(0, tool, operation)) targets.Add(new(0, tool, operation));
         return targets;
     }
+
+    // These diagnostic routes authorize the operation's credential/owner/delegation boundary
+    // directly. Claiming a missing target policy for them would disagree with actual dispatch.
+    private static bool RequiresOperatorPolicy(ReviewedMcpAccessTarget target) => target.Tool switch
+    {
+        "netratel_auth" or "netratel_capabilities" or "netratel_health" or "netratel_system" or "netratel_access" => false,
+        "netratel_policy" when target.Operation is "policies" or "policy" or "change_audits" or "accepted_audits" or "target" or "matches" or "evaluate" => false,
+        "netratel_search" when target.Operation == "clients" && target.AgentId is null => false,
+        _ => true
+    };
 
     private async Task<List<ReviewedMcpAccessAdmission>> EvaluateCredentialAdmissionAsync(string owner,
         IntegrationCredentialSummary? credential, string state, string resource, string instance, McpOperatorEnvironment environment,
@@ -94,21 +145,30 @@ public sealed partial class IntegrationPairingService
             var configured = credential is not null && new[] { permission }.Concat(McpLocalOperationAuthorizationCatalog.AdditionalPermissions(target.Tool, target.Operation))
                 .All(p => target.TenantId == 0 ? credential!.InstancePermissions.Contains(p) : credential!.Grants.Any(x => x.TenantId == target.TenantId && x.Permission == p));
             var principal = new McpOperatorPrincipal(owner, credentialId, "netratel-local-http-mcp", new HashSet<string>(), roles.ToHashSet(StringComparer.Ordinal), new HashSet<string>([scope]));
-            var visible = credentialId is not null && (target.TenantId == 0 || await operatorAuthorization!.HasTenantVisibilityAsync(environment, principal, target.TenantId, ct).ConfigureAwait(false));
-            var profile = target.AgentId is { } agent ? await policyAdministration!.GetTargetProfileAsync(target.TenantId, agent, ct).ConfigureAwait(false) : null;
+            var requiresPolicy = RequiresOperatorPolicy(target);
+            var visible = credentialId is not null && (!requiresPolicy || target.TenantId == 0 || await operatorAuthorization!.HasTenantVisibilityAsync(environment, principal, target.TenantId, ct).ConfigureAwait(false));
+            var agentRecord = target.AgentId is { } agent ? await applicationDb!.Agents.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.Id == agent && x.TenantId == target.TenantId, ct).ConfigureAwait(false) : null;
+            var profile = target.AgentId is { } profileAgent ? await applicationDb!.McpOperatorTargetProfiles.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.AgentId == profileAgent && x.TenantId == target.TenantId, ct).ConfigureAwait(false) : null;
+            var facts = McpOperatorTargetFacts.Read(target.TenantId, target.AgentId ?? Guid.Empty, profile);
             var descriptor = McpOperatorOperationCatalog.Find(target.Tool, target.Operation)!;
-            var enabled = target.AgentId is null || await applicationDb!.Agents.AsNoTracking().AnyAsync(x => x.Id == target.AgentId && x.TenantId == target.TenantId && x.IsEnabled && x.Status != NetRatel.Infrastructure.Persistence.AgentStatus.Disabled, ct).ConfigureAwait(false);
-            var decision = await operatorAuthorization!.EvaluateAsync(new(environment, principal, target.TenantId, target.AgentId,
-                profile?.Classification, descriptor.OperationFamily, target.Tool + "/" + target.Operation, new HashSet<string>([scope]), descriptor.ConfirmationClass,
-                correlationId, correlationId, TargetTags: profile?.Tags.ToHashSet(StringComparer.Ordinal), McpResource: resource, McpInstance: instance, Tool: target.Tool, TenantVisible: visible, TargetResolved: target.AgentId is null || profile is not null, TargetEnabled: enabled, TargetOnline: target.AgentId is null, CapabilityAvailable: target.AgentId is null), ct).ConfigureAwait(false);
+            var enabled = target.AgentId is null || agentRecord is { IsEnabled: true, Status: not AgentStatus.Disabled };
+            // This inspection evaluates authorization only. Live readiness and capabilities remain unchecked.
+            var decision = requiresPolicy ? await operatorAuthorization!.EvaluateAsync(new(environment, principal, target.TenantId, target.AgentId,
+                facts.Classification, descriptor.OperationFamily, target.Tool + "/" + target.Operation, new HashSet<string>([scope]), descriptor.ConfirmationClass,
+                correlationId, correlationId, facts.Digest, facts.Tags, resource, instance, target.Tool,
+                TenantVisible: visible, TargetResolved: target.AgentId is null || agentRecord is not null, TargetEnabled: enabled)
+                { TargetProfileInvalid = facts.Invalid }, ct).ConfigureAwait(false) : null;
             var ownerGranted = true;
             foreach (var required in new[] { permission }.Concat(McpLocalOperationAuthorizationCatalog.AdditionalPermissions(target.Tool, target.Operation)))
                 ownerGranted &= await effectiveAccess!.AuthorizeAsync(DurablePrincipal(owner), required, target.TenantId == 0 ? null : target.TenantId, ct).ConfigureAwait(false);
-            var runtimeUnverified = target.AgentId is not null && decision.FailureCode is "capability_unavailable" or "target_offline";
-            admissions.Add(new(target, scope, roles, configured, visible, runtimeUnverified ? null : decision.IsAllowed,
-                state != "active" ? "credential_" + state : !configured ? "application_grant_missing" : !ownerGranted ? "owner_permission_missing" : !visible ? "tenant_not_authorized" : runtimeUnverified ? "target_runtime_not_checked" : decision.FailureCode,
-                decision.MatchingPolicyIds)
-            { PolicyAdmissionStatus = runtimeUnverified ? "conditional_runtime_unverified" : "evaluated", OwnerPermissionGranted = ownerGranted, AuthorizationAdmitted = state == "active" && configured && ownerGranted && visible && decision.IsAllowed && !runtimeUnverified });
+            admissions.Add(new(target, scope, roles, configured, visible, decision?.IsAllowed,
+                state != "active" ? "credential_" + state : !configured ? "application_grant_missing" : !ownerGranted ? "owner_permission_missing" : !visible ? "tenant_not_authorized" : decision?.FailureCode,
+                decision?.MatchingPolicyIds ?? [])
+            { PolicyAdmissionStatus = requiresPolicy ? "evaluated" : "not_required_by_route", OwnerPermissionGranted = ownerGranted,
+                AuthorizationAdmitted = state == "active" && configured && ownerGranted && visible && (decision is null || decision.IsAllowed),
+                FailureLayer = state != "active" ? "Credential" : !configured ? "ApplicationGrant" : !ownerGranted ? "OwnerPermission" : decision?.FailureLayer?.ToString(), TargetReadiness = !enabled ? "disabled" : "not_checked" });
         }
         return admissions;
     }

@@ -120,5 +120,28 @@ public sealed class McpOperatorOperationCatalogTests
         McpOperationRoleRequirements.IsSatisfied(McpOperationAccessScope.Admin, Set("AutomationOperator")).Should().BeFalse();
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(17)]
+    public void All_access_contains_every_supported_operation_and_canonical_policy_administration(int tenant)
+    {
+        var permissions = McpOperationAccessCatalog.Operations.SelectMany(op =>
+            new[] { McpLocalOperationAuthorizationCatalog.RequiredPermission(op.ToolName, op.OperationName) }
+                .Concat(McpLocalOperationAuthorizationCatalog.AdditionalPermissions(op.ToolName, op.OperationName)))
+            .OfType<string>().Distinct().ToArray();
+        var supported = McpIntegrationPolicyCatalog.Supported(tenant, permissions);
+        var operations = McpIntegrationPolicyCatalog.WithCanonicalPolicyOperations(supported.Select(op => op.ToolName + "/" + op.OperationName));
+        foreach (var access in McpOperationAccessCatalog.Operations)
+        {
+            var model = McpOperationTargetCatalog.Find(access.ToolName, access.OperationName)?.Model;
+            if (model is null || McpLocalOperationAuthorizationCatalog.RequiredPermission(access.ToolName, access.OperationName) is null) continue;
+            var included = tenant == 0
+                ? model is McpOperationTargetModel.NoBusinessTarget or McpOperationTargetModel.OptionalTenant or McpOperationTargetModel.PolicySelector or McpOperationTargetModel.PolicyReference
+                : model != McpOperationTargetModel.NoBusinessTarget || access.ToolName == "netratel_search" && access.OperationName == "clients";
+            operations.Contains(access.ToolName + "/" + access.OperationName).Should().Be(included, access.ToolName + "/" + access.OperationName);
+        }
+        operations.Should().Contain("netratel_policy/create").And.Contain("netratel_policy/replace").And.Contain("netratel_policy/revoke");
+    }
+
     private static IReadOnlySet<string> Set(params string[] values) => new HashSet<string>(values, StringComparer.Ordinal);
 }

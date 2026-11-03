@@ -57,17 +57,22 @@ public static class McpOperatorClientSearchEndpoints
             .Skip(start).Take(MaximumCandidates + 1).ToListAsync(cancellationToken).ConfigureAwait(false);
         var hasMoreCandidates = candidates.Count > MaximumCandidates;
         var window = candidates.Take(MaximumCandidates).ToArray();
-        var requests = window.Select(candidate => new McpOperatorAccessRequest(
-            operatorEnvironment, principal, candidate.Agent.TenantId, candidate.Agent.AgentId,
-            candidate.Classification, McpOperatorOperationFamily.Observability, $"{Tool}/{Operation}",
-            new HashSet<string>([ReadScope], StringComparer.Ordinal), McpOperatorConfirmationClass.None,
-            correlation, delegation.RequestId, TargetTags: ReadTags(candidate.TagsJson),
-            McpResource: delegation.Resource, McpInstance: instance, Tool: Tool,
-            TargetEnabled: candidate.Enabled, TargetOnline: true, CapabilityAvailable: true)).ToArray();
+        var requests = window.Select(candidate =>
+        {
+            var invalid = candidate.Classification is not null &&
+                (!Enum.IsDefined(candidate.Classification.Value) || ReadTags(candidate.TagsJson) is null);
+            return new McpOperatorAccessRequest(
+                operatorEnvironment, principal, candidate.Agent.TenantId, candidate.Agent.AgentId,
+                candidate.Classification, McpOperatorOperationFamily.Observability, $"{Tool}/{Operation}",
+                new HashSet<string>([ReadScope], StringComparer.Ordinal), McpOperatorConfirmationClass.None,
+                correlation, delegation.RequestId, TargetTags: ReadTags(candidate.TagsJson),
+                McpResource: delegation.Resource, McpInstance: instance, Tool: Tool,
+                TargetEnabled: candidate.Enabled, TargetOnline: true, CapabilityAvailable: true)
+                { TargetProfileInvalid = invalid };
+        }).ToArray();
         var decisions = await authorization.EvaluateAsync(requests, cancellationToken).ConfigureAwait(false);
         var items = window.Zip(decisions).Select((pair, index) => new { pair.First, pair.Second, Index = index })
-            .Where(pair => pair.Second.IsAllowed && (pair.Second.DevelopmentEnvironmentAccess ||
-                (pair.First.Classification is not null && ReadTags(pair.First.TagsJson) is not null)))
+            .Where(pair => pair.Second.IsAllowed)
             .Select(pair => new { Item = GlobalSearchEndpoints.MapAgent(pair.First.Agent), pair.Index }).ToArray();
         if (start == 0 && !hasMoreCandidates && candidates.Count > 0 && items.Length == 0)
             return Failure("target_operation_not_authorized", correlation);

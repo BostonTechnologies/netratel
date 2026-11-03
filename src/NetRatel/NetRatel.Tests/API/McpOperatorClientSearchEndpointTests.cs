@@ -78,6 +78,34 @@ public sealed class McpOperatorClientSearchEndpointTests(McpClientSearchPostgres
         (await db.McpOperatorAcceptedAudits.CountAsync(audit => audit.Tool == "netratel_search" && audit.Operation == "netratel_search/clients")).Should().Be(0);
     }
 
+    [Fact]
+    public async Task Unrestricted_tenant_policy_discovers_unprofiled_clients_without_synthesizing_facts()
+    {
+        using var app = await BuildAppAsync();
+        using var client = Client(app); Delegate(client, subject: "unrestricted-operator");
+        await using (var scope = app.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            db.McpOperatorPolicies.Add(new McpOperatorPolicyRecord
+            {
+                Id = Guid.NewGuid(), Name = "Unrestricted discovery", Environment = McpOperatorEnvironment.Development,
+                Effect = McpOperatorPolicyEffect.Allow, PrincipalSelectorKind = McpOperatorPrincipalSelectorKind.OAuthSubject,
+                PrincipalSelectorValue = "unrestricted-operator", TargetSelectorKind = McpOperatorTargetSelectorKind.Tenant,
+                TenantId = 41, OperationFamily = McpOperatorOperationFamily.Observability, Operation = "netratel_search/clients",
+                ConstraintsJson = "{}", CreatedBy = "reviewer", Version = 1
+            });
+            await db.SaveChangesAsync();
+        }
+        var response = await client.GetAsync(Path + "?q=unclassified");
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        body.RootElement.GetProperty("items").GetArrayLength().Should().Be(1);
+        await using var checkScope = app.Services.CreateAsyncScope();
+        var check = checkScope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        var agent = await check.Agents.SingleAsync(x => x.Name == "unclassified");
+        (await check.McpOperatorTargetProfiles.AnyAsync(x => x.AgentId == agent.Id)).Should().BeFalse();
+    }
+
     [Theory]
     [InlineData("missing", "delegated_identity_required")]
     [InlineData("tampered", "delegated_identity_invalid")]

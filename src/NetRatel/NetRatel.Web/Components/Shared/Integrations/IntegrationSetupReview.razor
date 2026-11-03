@@ -25,9 +25,20 @@
                             <MudExpansionPanel Text="Selected permissions">@foreach(var permission in scope.Permissions) { <MudText Typo="Typo.body2" Class="mb-1">@permission.Label</MudText> }</MudExpansionPanel>
                             @if(policy is not null) {
                                 <MudExpansionPanel Expanded="true" Text="@policy.Name">
+                                    <MudText Typo="Typo.body2">@(scope.TenantId is null ? "Selected server scope" : "All eligible current and newly enrolled clients in this tenant; no profile is required for unrestricted policies.")</MudText>
                                     <MudText Typo="Typo.body2">@policy.Families</MudText><MudText Typo="Typo.caption">Expires @IntegrationCredentialExpiry.Format(policy.ExpiresAtUtc)</MudText>
                                     <MudText Typo="Typo.body2" Class="mt-2">Read: @string.Join(", ", policy.Constraints.ReadRoots ?? []) · Write: @string.Join(", ", policy.Constraints.WriteRoots ?? [])</MudText>
                                     <MudText Typo="Typo.body2">Command: @policy.Constraints.MaxCommandDurationSeconds s · Onboarding: @policy.Constraints.MaxOnboardingCodeUses uses / @policy.Constraints.MaxOnboardingCodeLifetimeSeconds s</MudText>
+                                    <MudText Typo="Typo.body2">Working directories: @string.Join(", ", policy.Constraints.WorkingDirectories ?? []) · Shells: @string.Join(", ", policy.Constraints.AllowedShells ?? [])</MudText>
+                                    <MudText Typo="Typo.body2">Active tenant deletion: @(policy.Constraints.AllowActiveTenantDeletion == true ? "Allowed after confirmation" : "Disabled") · Destructive operations: @(policy.Constraints.DestructiveOperationsAllowed == true ? "Allowed after confirmation" : "Disabled")</MudText>
+                                    <MudText Typo="Typo.body2">Terminal: @policy.Constraints.MaxConcurrentTerminalSessions sessions, @policy.Constraints.MaxTerminalIdleSeconds s idle / @policy.Constraints.MaxTerminalLifetimeSeconds s lifetime · Commands: @policy.Constraints.MaxConcurrentCommands concurrent</MudText>
+                                    <MudText Typo="Typo.body2">Output: @policy.Constraints.MaxOutputBytes bytes · Files: @policy.Constraints.MaxArtifactBytes bytes · Scripts: @policy.Constraints.MaxScriptBytes bytes · Job/task targets: @policy.Constraints.MaxJobTargetCount / @policy.Constraints.MaxTaskTargetCount · Fan out: @policy.Constraints.MaxFanOut</MudText>
+                                    <MudText Typo="Typo.body2">Target classifications: @(policy.Constraints.AllowedTargetClassifications is { Count: > 0 } classifications ? string.Join(", ", classifications) : "Unrestricted; no profile required")</MudText>
+                                    <MudText Typo="Typo.body2">Confirmation: @(policy.Constraints.RequiredConfirmationClass?.ToString() ?? "Each operation's required review and confirmation")</MudText>
+                                    <MudExpansionPanels Elevation="0"><MudExpansionPanel Text="Permitted operations and exclusions">
+                                        @foreach (var operation in SelectedOperations(scope, policy)) { <MudText Typo="Typo.body2">@operation</MudText> }
+                                        <MudText Typo="Typo.caption">Excluded: @string.Join(", ", ExcludedOperations(scope, policy))</MudText>
+                                    </MudExpansionPanel></MudExpansionPanels>
                                     <MudButton OnClick="@(() => Edit.InvokeAsync(3))" Size="Size.Small">Inspect or edit policy</MudButton>
                                 </MudExpansionPanel>
                             }
@@ -41,6 +52,13 @@
 </MudStack>
 
 @code {
+    private static IReadOnlyList<string> SelectedOperations(IntegrationPermissionScope scope, McpIntegrationPolicy policy) =>
+        policy.Operations ?? McpIntegrationPolicyCatalog.WithCanonicalPolicyOperations(McpIntegrationPolicyCatalog.Supported(policy.TenantId, scope.Permissions.Select(p => p.Id))
+            .Where(op => policy.Families.HasFlag(op.OperationFamily)).Select(op => op.ToolName + "/" + op.OperationName));
+    private static IEnumerable<string> ExcludedOperations(IntegrationPermissionScope scope, McpIntegrationPolicy policy) =>
+        McpIntegrationPolicyCatalog.WithCanonicalPolicyOperations(McpIntegrationPolicyCatalog.Supported(policy.TenantId, scope.Permissions.Select(p => p.Id))
+            .Select(op => op.ToolName + "/" + op.OperationName)).Except(SelectedOperations(scope, policy)).DefaultIfEmpty("None within the selected grants; runtime capabilities still apply");
+
     [Parameter] public string Name { get; set; } = "";
     [Parameter] public bool HttpMcp { get; set; }
     [Parameter] public string? Resource { get; set; }

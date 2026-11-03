@@ -86,6 +86,9 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
         if (!request.TargetEnabled && !AllowsDisabledClientAdministration(request))
             return McpOperatorDecision.Denied(request, "target_disabled", McpOperatorAuthorizationLayer.Target);
 
+        if (request.TargetProfileInvalid)
+            return McpOperatorDecision.Denied(request, "target_profile_invalid", McpOperatorAuthorizationLayer.Target);
+
         return null;
     }
 
@@ -117,13 +120,29 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
             (policy.TenantId == request.TenantId || IsDevelopmentPolicy(policy)) && policy.LifecycleState == McpOperatorPolicyLifecycleState.Active &&
             policy.DisabledAtUtc == null && (!policy.IsContainer || policy.Effect == McpOperatorPolicyEffect.Deny) &&
             (policy.Resource is null || policy.Resource == request.McpResource) &&
-            ParentAdmits(policy, request, snapshot, now));
+            ParentAdmits(policy, request, snapshot, now, allowUnknown: true));
 
         var principalMatches = candidates
             .Where(policy => PrincipalMatches(policy, request.Principal))
             .ToArray();
+        // Check every non-profile restriction before considering unknown facts. An unrelated
+        // Deny cannot acquire authority merely because this client has no profile.
+        var possibleDenies = principalMatches.Where(policy => policy.Effect == McpOperatorPolicyEffect.Deny &&
+            (policy.ExpiresAtUtc is null || policy.ExpiresAtUtc > now) && OperationMatches(policy, request) &&
+            TargetSelectorMatches(policy, request, allowUnknown: true) && ClassificationMatches(policy, request, allowUnknown: true) &&
+            ConstraintClassificationMatches(policy, request, allowUnknown: true)).ToArray();
+        var definiteDenies = possibleDenies.Where(policy => TargetSelectorMatches(policy, request) && ClassificationMatches(policy, request) &&
+            ConstraintClassificationMatches(policy, request) && ParentAdmits(policy, request, snapshot, now)).ToArray();
+        if (definiteDenies.Length > 0)
+            return McpOperatorDecision.Denied(request,
+                definiteDenies.Any(policy => policy.TargetClassification is not null) ? "target_classification_denied" : "target_policy_denied",
+                McpOperatorAuthorizationLayer.Policy, definiteDenies.Select(policy => policy.Id).ToArray());
+        if (possibleDenies.Length > 0)
+            return McpOperatorDecision.Denied(request, "target_profile_required", McpOperatorAuthorizationLayer.Policy,
+                possibleDenies.Select(policy => policy.Id).ToArray());
+
         var targetSelectorMatches = principalMatches
-            .Where(policy => TargetSelectorMatches(policy, request))
+            .Where(policy => TargetSelectorMatches(policy, request) && ParentAdmits(policy, request, snapshot, now))
             .ToArray();
         var targetMatches = targetSelectorMatches
             .Where(policy => ClassificationMatches(policy, request))
@@ -160,6 +179,12 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
 
         if (matching.Count == 0)
         {
+            var unresolved = principalMatches.Where(policy => (policy.ExpiresAtUtc is null || policy.ExpiresAtUtc > now) &&
+                OperationMatches(policy, request) && TargetSelectorMatches(policy, request, allowUnknown: true) &&
+                ClassificationMatches(policy, request, allowUnknown: true)).ToArray();
+            if (unresolved.Length > 0)
+                return McpOperatorDecision.Denied(request, "target_profile_required", McpOperatorAuthorizationLayer.Policy,
+                    unresolved.Select(policy => policy.Id).ToArray());
             if (targetSelectorMatches.Length > 0 && targetMatches.Length == 0)
                 return McpOperatorDecision.Denied(request, "target_classification_denied", McpOperatorAuthorizationLayer.Policy);
             if (targetMatches.Length > 0)
@@ -222,7 +247,7 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
         {
             return McpOperatorDecision.Denied(
                 request,
-                "target_classification_denied",
+                request.TargetClassification is null ? "target_profile_required" : "target_classification_denied",
                 McpOperatorAuthorizationLayer.Constraint,
                 [selected.Id]);
         }
@@ -334,14 +359,14 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
         _ => false
     };
 
-    private static bool TargetSelectorMatches(McpOperatorPolicyRecord policy, McpOperatorAccessRequest request) =>
+    private static bool TargetSelectorMatches(McpOperatorPolicyRecord policy, McpOperatorAccessRequest request, bool allowUnknown = false) =>
         (policy.AgentIds is null || request.AgentId is { } selectedAgent && policy.AgentIds.Contains(selectedAgent)) &&
-        (policy.ClientTags is null || policy.ClientTags.Any(tag => request.TargetTags?.Contains(tag) == true)) &&
+        (policy.ClientTags is null || allowUnknown && request.TargetTags is null || policy.ClientTags.Any(tag => request.TargetTags?.Contains(tag) == true)) &&
         (policy.Effect == McpOperatorPolicyEffect.Deny || !request.RequiresDevelopmentEnvironmentPolicy || IsDevelopmentPolicy(policy)) && policy.TargetSelectorKind switch
     {
         McpOperatorTargetSelectorKind.ExactAgent => policy.AgentId is { } agentId && request.AgentId == agentId,
         McpOperatorTargetSelectorKind.Tenant => true,
-        McpOperatorTargetSelectorKind.ClientTag => policy.ClientTag is { Length: > 0 } tag && request.TargetTags?.Contains(tag) == true,
+        McpOperatorTargetSelectorKind.ClientTag => policy.ClientTag is { Length: > 0 } tag && (allowUnknown && request.TargetTags is null || request.TargetTags?.Contains(tag) == true),
         McpOperatorTargetSelectorKind.ControlPlane => request.TenantId == 0 && request.AgentId is null,
         McpOperatorTargetSelectorKind.DevelopmentEnvironment => IsDevelopmentPolicy(policy) && request.Environment == McpOperatorEnvironment.Development,
         _ => false
@@ -353,8 +378,13 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
         policy.TenantId == 0 && policy.AgentId is null && policy.ClientTag is null &&
         policy.TargetClassification is null;
 
-    private static bool ClassificationMatches(McpOperatorPolicyRecord policy, McpOperatorAccessRequest request) =>
-        policy.TargetClassification is null || policy.TargetClassification == request.TargetClassification;
+    private static bool ClassificationMatches(McpOperatorPolicyRecord policy, McpOperatorAccessRequest request, bool allowUnknown = false) =>
+        policy.TargetClassification is null || allowUnknown && request.TargetClassification is null || policy.TargetClassification == request.TargetClassification;
+
+    private static bool ConstraintClassificationMatches(McpOperatorPolicyRecord policy, McpOperatorAccessRequest request, bool allowUnknown = false) =>
+        ReadConstraints(policy.ConstraintsJson)?.AllowedTargetClassifications is not { Count: > 0 } allowed ||
+        request.TargetClassification is { } classification && allowed.Contains(classification) ||
+        allowUnknown && request.TargetClassification is null;
 
     private static bool OperationMatches(McpOperatorPolicyRecord policy, McpOperatorAccessRequest request) =>
         (policy.OperationFamily & request.OperationFamily) == request.OperationFamily &&
@@ -362,7 +392,7 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
         (policy.Operation is null || string.Equals(policy.Operation, request.Operation, StringComparison.Ordinal));
 
     private static bool ParentAdmits(McpOperatorPolicyRecord policy, McpOperatorAccessRequest request,
-        IReadOnlyDictionary<Guid, McpOperatorPolicyRecord> snapshot, DateTimeOffset now)
+        IReadOnlyDictionary<Guid, McpOperatorPolicyRecord> snapshot, DateTimeOffset now, bool allowUnknown = false)
     {
         if (policy.ParentPolicyId is not { } id) return true;
         return snapshot.TryGetValue(id, out var parent) && parent.ParentPolicyId is null &&
@@ -371,8 +401,8 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
             parent.IntegrationCredentialId == policy.IntegrationCredentialId && parent.Resource == policy.Resource &&
             parent.LifecycleState == McpOperatorPolicyLifecycleState.Active && parent.DisabledAtUtc is null &&
             (parent.ExpiresAtUtc is null || parent.ExpiresAtUtc > now) &&
-            PrincipalMatches(parent, request.Principal) && TargetSelectorMatches(parent, request) && ClassificationMatches(parent, request) &&
-            OperationMatches(parent, request) && (parent.Resource is null || parent.Resource == request.McpResource);
+            PrincipalMatches(parent, request.Principal) && TargetSelectorMatches(parent, request, allowUnknown) && ClassificationMatches(parent, request, allowUnknown) &&
+            ConstraintClassificationMatches(parent, request, allowUnknown) && OperationMatches(parent, request) && (parent.Resource is null || parent.Resource == request.McpResource);
     }
 
     private static (string Preview, string Confirm)? CanonicalPolicyMutationPhases(string operation) => operation switch

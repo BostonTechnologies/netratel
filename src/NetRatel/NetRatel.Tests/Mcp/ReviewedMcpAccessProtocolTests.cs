@@ -37,7 +37,7 @@ using Xunit;
 
 namespace NetRatel.Tests.Mcp;
 
-public sealed class ReviewedMcpAccessProtocolTests
+public sealed partial class ReviewedMcpAccessProtocolTests
 {
     [Theory]
     [InlineData("Development", "dev")]
@@ -279,7 +279,7 @@ public sealed class ReviewedMcpAccessProtocolTests
                     using var failure = JsonDocument.Parse(errorBody);
                     if (failure.RootElement.ValueKind == JsonValueKind.Object &&
                         failure.RootElement.TryGetProperty("code", out var codeValue) && codeValue.ValueKind == JsonValueKind.String &&
-                        (IntegrationPairingFailure.IsKnownCode(codeValue.GetString()) || codeValue.GetString() == "tenant_not_authorized"))
+                        (IntegrationPairingFailure.IsKnownCode(codeValue.GetString()) || codeValue.GetString() is "tenant_not_authorized" or "target_policy_missing" or "target_profile_required" or "target_profile_invalid"))
                     {
                         code = codeValue.GetString();
                         if (failure.RootElement.TryGetProperty("correlationId", out var correlationValue) && correlationValue.ValueKind == JsonValueKind.String)
