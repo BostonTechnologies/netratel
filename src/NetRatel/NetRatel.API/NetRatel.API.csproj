@@ -25,6 +25,7 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
     <PackageReference Include="NuGet.Versioning" Version="7.9.0" />
+    <PackageReference Include="Npgsql.OpenTelemetry" Version="10.0.3" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\NetRatel.Application\NetRatel.Application.csproj" />

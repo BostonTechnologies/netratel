@@ -6,8 +6,6 @@ using NetRatel.Shared.Connectivity;
 
 namespace NetRatel.Infrastructure.Identity;
 
-public sealed record IntegrationCredentialGrantRequest(int TenantId, string Permission);
-
 public sealed record IntegrationCredentialCreateRequest(
     string Name,
     IntegrationCredentialPurpose Purpose,
@@ -24,22 +22,6 @@ public sealed record IntegrationCredentialSecret(
     DateTimeOffset ExpiresAtUtc)
 {
     public override string ToString() => $"Integration credential {CredentialId} (secret redacted)";
-}
-
-public sealed record IntegrationCredentialSummary(
-    string Id,
-    string PublicId,
-    string TokenPrefix,
-    string Name,
-    IntegrationCredentialPurpose Purpose,
-    string? Resource,
-    DateTimeOffset CreatedAtUtc,
-    DateTimeOffset ExpiresAtUtc,
-    DateTimeOffset? RevokedAtUtc,
-    DateTimeOffset? LastUsedAtUtc,
-    IReadOnlyList<IntegrationCredentialGrantRequest> Grants)
-{
-    public IReadOnlyList<string> InstancePermissions { get; init; } = [];
 }
 
 public sealed record VerifiedIntegrationCredential(

@@ -2,6 +2,7 @@ using Microsoft.Playwright;
 using System.Collections;
 using System.Diagnostics;
 using System.Reflection;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using NetRatel.Web.Components.Layout;
 
@@ -73,7 +74,7 @@ public sealed class OidcComposeBrowserSmokeTests
             Assert.InRange((await response.BodyAsync()).Length, 1, maximumBytes);
         }
         await page.GotoAsync(new Uri(webUrl, "login").ToString());
-        await CaptureBrandingAsync(page, "login");
+        await CaptureBrandingAsync(page, "login", useProxy);
 
         await page.GotoAsync(new Uri(webUrl, "login?ReturnUrl=%2Ftenants").ToString());
         var signInAction = page.Locator(".netratel-login-primary-action");
@@ -95,7 +96,7 @@ public sealed class OidcComposeBrowserSmokeTests
 
         var authenticatedStatus = await page.EvaluateAsync<int>("async () => (await fetch('/api/v1/tenants')).status");
         Assert.Equal(200, authenticatedStatus);
-        await CaptureBrandingAsync(page, "navbar");
+        await CaptureBrandingAsync(page, "navbar", useProxy);
         await AssertProductVersionBadgesAsync(page);
         if (expectCurrentShell)
         {
@@ -310,11 +311,22 @@ public sealed class OidcComposeBrowserSmokeTests
             $"The authenticated {identityDescription} directory should render either registered clients or its successful empty state.");
     }
 
-    private static async Task CaptureBrandingAsync(IPage page, string view)
+    private static async Task CaptureBrandingAsync(IPage page, string view, bool useProxy)
     {
         var expectCurrentShell = Environment.GetEnvironmentVariable("NETRATEL_BROWSER_SMOKE_EXPECT_CURRENT_SHELL") != "false";
-        var directory = Path.Combine("TestResults", "branding");
+        var artifactRoot = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT")
+            ?? Path.GetFullPath("TestResults/playwright");
+        var directory = Path.Combine(artifactRoot, "oidc-compose", useProxy ? "proxy" : "direct", "branding");
         Directory.CreateDirectory(directory);
+        string? applicationName = null;
+        if (view == "navbar" && expectCurrentShell)
+        {
+            var response = await page.Context.APIRequest.GetAsync(new Uri(new Uri(page.Url), "/api/v2/branding").ToString());
+            Assert.True(response.Ok, $"Public branding returned HTTP {response.Status}.");
+            using var branding = JsonDocument.Parse(await response.TextAsync());
+            applicationName = branding.RootElement.GetProperty("applicationName").GetProperty("value").GetString();
+            Assert.False(string.IsNullOrWhiteSpace(applicationName));
+        }
         await SetThemeAndReloadAsync(page, "system");
         Assert.Contains(await page.EvaluateAsync<string>("() => document.documentElement.dataset.netratelTheme"), new[] { "light", "dark" });
         if (view == "login" && expectCurrentShell) await AssertOidcActionAsync(page);
@@ -324,9 +336,13 @@ public sealed class OidcComposeBrowserSmokeTests
             await SetThemeAndReloadAsync(page, theme);
             foreach (var (width, height, name) in new[] { (1440, 900, "desktop"), (768, 900, "tablet"), (390, 844, "mobile") })
             {
+                var previousWidth = page.ViewportSize?.Width ?? width;
                 await page.SetViewportSizeAsync(width, height);
-                await page.Locator("img[src*='brand/']").First.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
-                await page.WaitForFunctionAsync("() => Array.from(document.querySelectorAll('img[src*=\"brand/\"]')).every(image => image.complete && image.naturalWidth > 0)");
+                if (view == "login" || !expectCurrentShell)
+                {
+                    await page.Locator("img[src*='brand/']").First.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
+                    await page.WaitForFunctionAsync("() => Array.from(document.querySelectorAll('img[src*=\"brand/\"]')).every(image => image.complete && image.naturalWidth > 0)");
+                }
                 Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth"),
                     $"{view} overflows the {name} viewport.");
 
@@ -350,23 +366,45 @@ public sealed class OidcComposeBrowserSmokeTests
                         Assert.True(await page.EvaluateAsync<bool>("() => { const bounds = document.querySelector('.netratel-login-panel').getBoundingClientRect(); return Math.abs((bounds.left + bounds.right) / 2 - innerWidth / 2) <= 12 && Math.abs((bounds.top + bounds.bottom) / 2 - innerHeight / 2) <= 16; }"),
                             $"The login panel is not centered in the {name} viewport.");
                 }
+                else if (expectCurrentShell)
+                {
+                    var search = page.GetByTestId("global-search");
+                    await Assertions.Expect(search).ToBeVisibleAsync(new() { Timeout = 15_000 });
+                    await Assertions.Expect(search).ToHaveAttributeAsync("aria-label", $"Search {applicationName}", new() { Timeout = 15_000 });
+                    await Assertions.Expect(search.Locator("span")).ToHaveTextAsync($"Search {applicationName}", new() { Timeout = 15_000 });
+                    var navigation = page.GetByRole(AriaRole.Navigation, new() { Name = "Primary navigation", Exact = true });
+                    var drawer = page.Locator("#nav-drawer");
+                    // MainLayout's Lg breakpoint closes the drawer through an asynchronous resize callback.
+                    // Observe that close before requesting it open in the compact viewport.
+                    if (previousWidth >= 1280 && width < 1280)
+                        await Assertions.Expect(drawer).ToHaveClassAsync(new Regex(@"(^|\s)mud-drawer--closed(\s|$)"), new() { Timeout = 15_000 });
+                    var drawerClosed = await drawer.EvaluateAsync<bool>("drawer => drawer.classList.contains('mud-drawer--closed')");
+                    if (drawerClosed || !await navigation.IsVisibleAsync())
+                        await page.GetByTestId("navigation-toggle").ClickAsync();
+                    await Assertions.Expect(navigation).ToBeVisibleAsync(new() { Timeout = 15_000 });
+                    var dashboard = navigation.GetByRole(AriaRole.Link, new() { Name = "Dashboard", Exact = true });
+                    await Assertions.Expect(dashboard).ToBeVisibleAsync(new() { Timeout = 15_000 });
+                    await Assertions.Expect(dashboard).ToBeInViewportAsync(new() { Ratio = 0.9f, Timeout = 15_000 });
+                    await Assertions.Expect(dashboard).ToHaveAttributeAsync("href", "/", new() { Timeout = 15_000 });
+                    await dashboard.FocusAsync();
+                    await Assertions.Expect(dashboard).ToBeFocusedAsync(new() { Timeout = 15_000 });
+                    Assert.Equal(0, await page.Locator(".netratel-appbar-brand").CountAsync());
+                    if (width >= 800)
+                    {
+                        foreach (var heading in new[] { "Command", "Estate", "Signals" })
+                            Assert.True(await page.Locator(".nav-section-heading", new PageLocatorOptions { HasText = heading }).IsVisibleAsync());
+                    }
+                }
                 else if (width < 800)
                 {
                     var compactBrand = page.Locator(".netratel-nav-brand");
                     if (!await compactBrand.IsVisibleAsync())
                         await page.GetByTestId("navigation-toggle").ClickAsync();
                     await compactBrand.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-                    if (expectCurrentShell) Assert.Equal(0, await page.Locator(".netratel-appbar-brand").CountAsync());
                 }
                 else
                 {
                     Assert.True(await page.Locator(".netratel-nav-brand img").IsVisibleAsync());
-                    if (expectCurrentShell) Assert.Equal(0, await page.Locator(".netratel-appbar-brand").CountAsync());
-                    if (expectCurrentShell)
-                    {
-                        foreach (var heading in new[] { "Command", "Estate", "Signals" })
-                            Assert.True(await page.Locator(".nav-section-heading", new PageLocatorOptions { HasText = heading }).IsVisibleAsync());
-                    }
                 }
 
                 await page.ScreenshotAsync(new PageScreenshotOptions
