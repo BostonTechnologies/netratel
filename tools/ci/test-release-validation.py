@@ -2429,6 +2429,43 @@ class ClientArchiveAcceptanceTests(unittest.TestCase):
     def setUp(self):
         self.helper = module("prepare-client-archive-acceptance")
 
+    def test_inventory_status_and_real_package_checks_reject_incomplete_or_unrelated_receipts(self):
+        source = (ROOT / "tools/ci/smoke-oidc-compose.sh").read_text()
+        agent, collection = "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"
+        status = {"tenantId": 7, "agentId": agent, "lastSuccessfulScanUtc": "2030-01-01T00:00:00Z", "latestScan": {
+            "collectionId": collection, "status": "Complete", "errors": [], "receivedChunks": 1, "totalChunks": 1,
+            "completedAtUtc": "2030-01-01T00:00:00Z"}}
+        snapshot = {"total": 1, "items": [{"agentId": agent, "os": "linux", "package": {"name": "bash", "version": "1", "source": "dpkg"}}]}
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary) / "response.json"
+
+            def check(name, value, *arguments):
+                body = re.search(r"^" + name + r"\(\) \{\n.*?^\}", source, re.MULTILINE | re.DOTALL).group(0)
+                fixture.write_text(json.dumps(value))
+                return subprocess.run(["bash", "-c", body + '\n' + name + ' "$@"', "fixture", str(fixture), *arguments],
+                                      capture_output=True, text=True).returncode
+
+            self.assertEqual(0, check("inventory_status_complete", status, "7", agent, collection))
+            for key, value in (("status", "Partial"), ("status", "Error"), ("errors", ["dpkg_scan_failed"]),
+                               ("receivedChunks", 0), ("totalChunks", 2), ("collectionId", agent), ("completedAtUtc", None)):
+                changed = copy.deepcopy(status)
+                changed["latestScan"][key] = value
+                self.assertNotEqual(0, check("inventory_status_complete", changed, "7", agent, collection))
+            for key, value in (("tenantId", 8), ("agentId", collection), ("lastSuccessfulScanUtc", None)):
+                changed = copy.deepcopy(status)
+                changed[key] = value
+                self.assertNotEqual(0, check("inventory_status_complete", changed, "7", agent, collection))
+            self.assertEqual(0, check("inventory_snapshot_complete", snapshot, agent))
+            for field, value in (("agentId", collection), ("os", "windows")):
+                changed = copy.deepcopy(snapshot)
+                changed["items"][0][field] = value
+                self.assertNotEqual(0, check("inventory_snapshot_complete", changed, agent))
+            for field, value in (("source", "rpm"), ("name", "other"), ("version", "")):
+                changed = copy.deepcopy(snapshot)
+                changed["items"][0]["package"][field] = value
+                self.assertNotEqual(0, check("inventory_snapshot_complete", changed, agent))
+            self.assertNotEqual(0, check("inventory_snapshot_complete", {"total": 0, "items": []}, agent))
+
     def original_fixture(self, root):
         original = root / "original"
         packages = original / "artifacts"
