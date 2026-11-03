@@ -627,6 +627,12 @@ class CorePartitionCoverageTests(unittest.TestCase):
         other = self.report("remaining", [self.other])
         with self.assertRaises(ValueError):
             self.helper.validate(self.discovery(self.infra, self.other), {"infrastructure": bad, "remaining": other})
+        bad = self.report("infrastructure", [self.infra])
+        tree = ET.parse(bad)
+        next(tree.getroot().iter("UnitTestResult")).set("outcome", "NotExecuted")
+        tree.write(bad)
+        with self.assertRaisesRegex(ValueError, "non-passing"):
+            self.helper.validate(self.discovery(self.infra, self.other), {"infrastructure": bad, "remaining": other})
         bad.write_text("<TestRun>")
         with self.assertRaises(ET.ParseError):
             self.helper.validate(self.discovery(self.infra, self.other), {"infrastructure": bad, "remaining": other})
