@@ -125,63 +125,32 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
         var principalMatches = candidates
             .Where(policy => PrincipalMatches(policy, request.Principal))
             .ToArray();
-        // Check every non-profile restriction before considering unknown facts. An unrelated
-        // Deny cannot acquire authority merely because this client has no profile.
-        var possibleDenies = principalMatches.Where(policy => policy.Effect == McpOperatorPolicyEffect.Deny &&
-            (policy.ExpiresAtUtc is null || policy.ExpiresAtUtc > now) && OperationMatches(policy, request) &&
-            TargetSelectorMatches(policy, request, allowUnknown: true) && ClassificationMatches(policy, request, allowUnknown: true) &&
-            ConstraintClassificationMatches(policy, request, allowUnknown: true)).ToArray();
-        var definiteDenies = possibleDenies.Where(policy => TargetSelectorMatches(policy, request) && ClassificationMatches(policy, request) &&
-            ConstraintClassificationMatches(policy, request) && ParentAdmits(policy, request, snapshot, now)).ToArray();
+        var possibleTargets = principalMatches.Where(policy => TargetSelectorMatches(policy, request, allowUnknown: true) &&
+            ClassificationMatches(policy, request, allowUnknown: true)).ToArray();
+        var targetSelectorMatches = principalMatches
+            .Where(policy => TargetSelectorMatches(policy, request) && ParentAdmits(policy, request, snapshot, now))
+            .ToArray();
+        var targetMatches = targetSelectorMatches.Where(policy => ClassificationMatches(policy, request)).ToArray();
+        // Use the same operation matching for unknown and known profile facts, including
+        // canonical policy mutations backed by a complete legacy preview/confirm review.
+        var possible = MatchingOperations(possibleTargets, request, now);
+        var matching = MatchingOperations(targetMatches, request, now);
+        var definiteDenies = matching.Where(policy => policy.Effect == McpOperatorPolicyEffect.Deny &&
+            (policy.ExpiresAtUtc is null || policy.ExpiresAtUtc > now) && ConstraintClassificationMatches(policy, request)).ToArray();
         if (definiteDenies.Length > 0)
             return McpOperatorDecision.Denied(request,
                 definiteDenies.Any(policy => policy.TargetClassification is not null) ? "target_classification_denied" : "target_policy_denied",
                 McpOperatorAuthorizationLayer.Policy, definiteDenies.Select(policy => policy.Id).ToArray());
+        var possibleDenies = possible.Where(policy => policy.Effect == McpOperatorPolicyEffect.Deny &&
+            (policy.ExpiresAtUtc is null || policy.ExpiresAtUtc > now) && ConstraintClassificationMatches(policy, request, allowUnknown: true)).ToArray();
         if (possibleDenies.Length > 0)
             return McpOperatorDecision.Denied(request, "target_profile_required", McpOperatorAuthorizationLayer.Policy,
                 possibleDenies.Select(policy => policy.Id).ToArray());
 
-        var targetSelectorMatches = principalMatches
-            .Where(policy => TargetSelectorMatches(policy, request) && ParentAdmits(policy, request, snapshot, now))
-            .ToArray();
-        var targetMatches = targetSelectorMatches
-            .Where(policy => ClassificationMatches(policy, request))
-            .ToArray();
-        var matching = targetMatches
-            .Where(policy => OperationMatches(policy, request))
-            .ToList();
-
-        // The policy mutation API binds preview and confirmation to one stable
-        // canonical decision. Reviews made before canonical policy attachment
-        // issued separate phase policies. Honor those only as a complete,
-        // unexpired pair from the same review so neither phase is a shortcut.
-        if (CanonicalPolicyMutationPhases(request.Operation) is { } phases)
-        {
-            var reviewed = targetMatches.Where(policy => policy.ExpiresAtUtc is null || policy.ExpiresAtUtc > now).ToArray();
-            foreach (var preview in reviewed.Where(policy => policy.Operation == phases.Preview &&
-                         (policy.OperationFamily & request.OperationFamily) == request.OperationFamily))
-            {
-                var reviewId = PairingReviewId(preview.AuditReference);
-                if (reviewId is null) continue;
-                var confirm = reviewed.FirstOrDefault(policy => policy.Operation == phases.Confirm &&
-                    (policy.OperationFamily & request.OperationFamily) == request.OperationFamily &&
-                    PairingReviewId(policy.AuditReference) == reviewId &&
-                    policy.PrincipalSelectorKind == preview.PrincipalSelectorKind &&
-                    policy.PrincipalSelectorValue == preview.PrincipalSelectorValue &&
-                    policy.TargetSelectorKind == preview.TargetSelectorKind &&
-                    policy.TenantId == preview.TenantId && policy.AgentId == preview.AgentId &&
-                    policy.TargetClassification == preview.TargetClassification);
-                if (confirm is null) continue;
-                matching.Add(preview);
-                matching.Add(confirm);
-            }
-        }
-
+        matching.RemoveAll(policy => policy.Effect == McpOperatorPolicyEffect.Deny && !ConstraintClassificationMatches(policy, request));
         if (matching.Count == 0)
         {
-            var unresolved = principalMatches.Where(policy => (policy.ExpiresAtUtc is null || policy.ExpiresAtUtc > now) &&
-                OperationMatches(policy, request) && TargetSelectorMatches(policy, request, allowUnknown: true) &&
-                ClassificationMatches(policy, request, allowUnknown: true)).ToArray();
+            var unresolved = possible.Where(policy => policy.ExpiresAtUtc is null || policy.ExpiresAtUtc > now).ToArray();
             if (unresolved.Length > 0)
                 return McpOperatorDecision.Denied(request, "target_profile_required", McpOperatorAuthorizationLayer.Policy,
                     unresolved.Select(policy => policy.Id).ToArray());
@@ -206,19 +175,6 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
 
         if (active.Length == 0)
             return McpOperatorDecision.Denied(request, "target_policy_missing", McpOperatorAuthorizationLayer.Policy);
-
-        var denies = active.Where(policy => policy.Effect == McpOperatorPolicyEffect.Deny).ToArray();
-        if (denies.Length > 0)
-        {
-            var code = denies.Any(policy => policy.TargetClassification is not null)
-                ? "target_classification_denied"
-                : "target_policy_denied";
-            return McpOperatorDecision.Denied(
-                request,
-                code,
-                McpOperatorAuthorizationLayer.Policy,
-                denies.Select(policy => policy.Id).ToArray());
-        }
 
         var selected = active
             .Where(policy => policy.Effect == McpOperatorPolicyEffect.Allow)
@@ -279,6 +235,32 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
             return McpOperatorDecision.Denied(request, "target_offline", McpOperatorAuthorizationLayer.Target, [selected.Id]);
 
         return new McpOperatorDecision(true, null, null, [selected.Id], constraints, request.TargetSetDigest, request, selected.Version, IsDevelopmentPolicy(selected));
+    }
+
+    private static List<McpOperatorPolicyRecord> MatchingOperations(IEnumerable<McpOperatorPolicyRecord> targets,
+        McpOperatorAccessRequest request, DateTimeOffset now)
+    {
+        var candidates = targets.ToArray();
+        var matching = candidates.Where(policy => OperationMatches(policy, request)).ToList();
+        // Old reviewed grants named the two transport phases. Only a complete,
+        // unexpired pair from the same review can authorize the canonical mutation.
+        if (CanonicalPolicyMutationPhases(request.Operation) is not { } phases) return matching;
+        var reviewed = candidates.Where(policy => policy.ExpiresAtUtc is null || policy.ExpiresAtUtc > now).ToArray();
+        foreach (var preview in reviewed.Where(policy => policy.Operation == phases.Preview &&
+                     (policy.OperationFamily & request.OperationFamily) == request.OperationFamily))
+        {
+            var reviewId = PairingReviewId(preview.AuditReference);
+            if (reviewId is null) continue;
+            var confirm = reviewed.FirstOrDefault(policy => policy.Operation == phases.Confirm &&
+                (policy.OperationFamily & request.OperationFamily) == request.OperationFamily &&
+                PairingReviewId(policy.AuditReference) == reviewId &&
+                policy.PrincipalSelectorKind == preview.PrincipalSelectorKind && policy.PrincipalSelectorValue == preview.PrincipalSelectorValue &&
+                policy.TargetSelectorKind == preview.TargetSelectorKind && policy.TenantId == preview.TenantId && policy.AgentId == preview.AgentId &&
+                policy.TargetClassification == preview.TargetClassification);
+            if (confirm is null) continue;
+            matching.Add(preview); matching.Add(confirm);
+        }
+        return matching;
     }
 
     private static bool AllowsOfflineManagedOperation(McpOperatorAccessRequest request)
