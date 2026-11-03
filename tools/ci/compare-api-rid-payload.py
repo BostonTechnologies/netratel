@@ -34,7 +34,9 @@ def compare(control, candidate, control_root, candidate_root):
             raise ValueError("Missing known portable runtime input: " + path)
     old_deps = json.loads((control_root / "NetRatel.API.deps.json").read_text())
     new_deps = json.loads((candidate_root / "NetRatel.API.deps.json").read_text())
-    if (not new_deps["runtimeTarget"]["name"].endswith("/linux-x64") or
+    expected_target = dict(old_deps["runtimeTarget"])
+    expected_target["name"] += "/linux-x64"
+    if ("/" in old_deps["runtimeTarget"]["name"] or new_deps["runtimeTarget"] != expected_target or
             old_deps["libraries"] != new_deps["libraries"]):
         raise ValueError("RID selection changed the runtime dependency/package identities")
     old = json.loads((control_root / "runtime.spdx.json").read_text())

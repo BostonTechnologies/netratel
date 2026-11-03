@@ -77,6 +77,14 @@ class ApiRidPayloadTests(unittest.TestCase):
                     self.compare()
                 self.candidate = candidate
 
+    def test_control_must_retain_the_portable_runtime_target(self):
+        path = self.root / "control/NetRatel.API.deps.json"
+        document = json.loads(path.read_text())
+        document["runtimeTarget"]["name"] += "/linux-x64"
+        path.write_text(json.dumps(document))
+        with self.assertRaisesRegex(ValueError, "runtime dependency"):
+            self.compare()
+
     def test_generic_drawing_stub_cannot_substitute_for_selected_unix_asset(self):
         self.candidate["System.Drawing.Common.dll"] = self.control["System.Drawing.Common.dll"].copy()
         for item in self.documents["candidate"]["files"]:
