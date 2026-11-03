@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check documentation placement and local Markdown destinations without dependencies.
+"""Check documentation placement, local Markdown destinations and HTML images without dependencies.
 
 Local Markdown fragments use rendered heading/HTML anchors. Fenced/indented code, inline code, comments,
 external URLs, and variable/template destinations are excluded from link checks.
@@ -13,6 +13,8 @@ import subprocess
 import sys
 import html
 import unicodedata
+from html.parser import HTMLParser
+from itertools import chain
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -111,6 +113,25 @@ def local_destinations(prose: str):
             yield match.start(), target
 
 
+def html_image_destinations(prose: str):
+    """Yield img src attributes, including multiline and unquoted HTML attributes."""
+    line_starts = [0] + [match.end() for match in re.finditer(r"\n", prose)]
+    destinations: list[tuple[int, str]] = []
+
+    class ImageParser(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            if tag == "img":
+                for name, value in attrs:
+                    if name == "src" and value is not None:
+                        line, column = self.getpos()
+                        destinations.append((line_starts[line - 1] + column, value))
+                        break
+
+    parser = ImageParser()
+    parser.feed(prose)
+    yield from destinations
+
+
 def exact_path_exists(path: Path) -> bool:
     """Do not let a case-insensitive workstation hide broken Linux links."""
     current = Path(path.anchor)
@@ -191,7 +212,7 @@ def check_repository(root: Path, *, packaged: bool = False, require_docs: bool =
         if not source.is_file():
             continue  # A tracked file may have been moved/deleted in the worktree.
         prose = prose_only(source.read_text(encoding="utf-8"))
-        for offset, raw_target in local_destinations(prose):
+        for offset, raw_target in chain(local_destinations(prose), html_image_destinations(prose)):
             target = re.sub(r"\\([\\`*{}\[\]()#+.!_<> -])", r"\1", raw_target)
             # These are documented examples, not resolvable repository paths.
             if not target or re.search(r"[{}<>$]", target):
@@ -228,7 +249,7 @@ def main() -> int:
         print(f"documentation validation: {error}", file=sys.stderr)
     if errors:
         return 1
-    print("documentation placement and local Markdown links passed")
+    print("documentation placement, local Markdown links and HTML images passed")
     return 0
 
 
