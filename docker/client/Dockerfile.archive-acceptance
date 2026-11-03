@@ -1,0 +1,15 @@
+# Disposable acceptance wrapper: /app contains only the verified native archive.
+# This image is not a client distribution or a container-size optimization.
+FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-noble
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends bash ca-certificates python3; \
+    rm -rf /var/lib/apt/lists/*; \
+    groupadd --system --gid 10001 netratel; \
+    useradd --system --uid 10001 --gid 10001 --home-dir /var/lib/netratel --create-home --shell /usr/sbin/nologin netratel; \
+    mkdir -p /etc/netratel /var/lib/netratel /app; \
+    chown -R netratel:netratel /etc/netratel /var/lib/netratel
+WORKDIR /app
+COPY --chown=netratel:netratel app/ ./
+USER netratel
+ENTRYPOINT ["/app/NetRatel.Client"]
