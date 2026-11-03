@@ -18,3 +18,14 @@ image digests. `release/compose.mcp-http.yaml` is an explicit optional overlay
 for the HTTP MCP image and requires separate resource-server configuration.
 The public Client image is a standalone agent image; operational tooling and
 site-specific overlays remain outside this repository.
+
+The API image selects framework-dependent Linux x64 assets during restore,
+publish and runtime-SBOM generation. The optional integration workflow's
+`suite=api-rid` compares that payload with the former portable selection on
+the same source, pinned SDK/runtime image digests and diagnostic build timestamp.
+It retains symbols, checks the selected Linux LMDB library with a committed
+write/read round trip, and reuses the native/GSSAPI, local-upgrade, identity and
+shutdown checks. Retained results distinguish application bytes from standalone
+and five-image unique normalized gzip layer exports; these exports exclude
+image configs/manifests and do not measure registry transfer. Existing
+`suite=api-image` continues the separate Noble/Chiseled base comparison.

@@ -639,6 +639,8 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         measurement, migrations = measurement.split("\n  migrations-image:", 1)
         migrations, api_image = migrations.split("\n  api-image:", 1)
         self.assertIn("if: inputs.suite == 'api-image'", api_image)
+        self.assertIn("inputs.suite == 'api-rid'", api_image)
+        self.assertIn("inputs.suite != 'api-rid'", selected)
         self.assertIn("inputs.suite != 'api-image'", selected)
         self.assertNotRegex(api_image, r"(?m)^\s+matrix:")
         self.assertIn("if: inputs.suite == 'migrations-image'", migrations)
@@ -4430,6 +4432,11 @@ elif args[0] == "cp":
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("environment_alias_conflict:" if len(records) == 2 else "ambiguous image settings", result.stderr)
                 self.assertFalse(any("--name" in call for call in self.commands()))
+
+
+def load_tests(loader, tests, pattern):
+    tests.addTests(loader.loadTestsFromModule(module("test-api-rid-payload")))
+    return tests
 
 
 if __name__ == "__main__":

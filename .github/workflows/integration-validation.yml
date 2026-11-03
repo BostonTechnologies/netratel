@@ -7,7 +7,7 @@ on:
         description: Run only this optional suite (client measurements use matching hosted OS runners)
         type: choice
         required: true
-        options: [pairing, gateway, mcp-campaign, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement, windows-mcp, migrations-image, api-image]
+        options: [pairing, gateway, mcp-campaign, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement, windows-mcp, migrations-image, api-image, api-rid]
       source_ref:
         description: Source ref to test (published-image and upgrade suites use release_tag)
         default: main
@@ -53,7 +53,7 @@ permissions:
 jobs:
   selected-suite:
     name: Manual ${{ inputs.suite }} (Linux)
-    if: inputs.suite != 'client-measurement' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image' && inputs.suite != 'api-image'
+    if: inputs.suite != 'client-measurement' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image' && inputs.suite != 'api-image' && inputs.suite != 'api-rid'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ (inputs.suite == 'native-client' || inputs.suite == 'deployment' || inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc') && 45 || inputs.suite == 'release-images' && 60 || 40 }}
     env:
@@ -641,13 +641,14 @@ jobs:
           retention-days: 14
 
   api-image:
-    name: Manual API chiseled image investigation
-    if: inputs.suite == 'api-image'
+    name: Manual API image comparison
+    if: inputs.suite == 'api-image' || inputs.suite == 'api-rid'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
       GH_TOKEN: ${{ github.token }}
       NETRATEL_API_IMAGE_RESULTS: ${{ github.workspace }}/TestResults/api-image
+      NETRATEL_API_IMAGE_COMPARISON: ${{ inputs.suite == 'api-rid' && 'linux-rid' || 'base' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -667,8 +668,8 @@ jobs:
           from pathlib import Path
           root = Path('TestResults/api-image')
           with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as summary:
-              summary.write('API base-image investigation; default production target remains unchanged.\n\n')
-              for name in ('source-sha.txt', 'publish-properties.json', 'layer-export-comparison.json', 'selected-release.json', 'api-shutdown.json'):
+              summary.write('API image comparison: ' + os.environ['NETRATEL_API_IMAGE_COMPARISON'] + '.\n\n')
+              for name in ('source-sha.txt', 'publish-properties.json', 'controlled-build.json', 'payload-comparison.json', 'layer-export-comparison.json', 'selected-release.json', 'api-shutdown.json'):
                   path = root / name
                   if path.is_file():
                       summary.write(f'{name}:\n\n```text\n{path.read_text()}```\n\n')
