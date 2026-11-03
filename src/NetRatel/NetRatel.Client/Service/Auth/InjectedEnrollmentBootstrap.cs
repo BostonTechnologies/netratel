@@ -63,10 +63,7 @@ public sealed class InjectedEnrollmentBootstrap : IInjectedEnrollmentBootstrap
             InjectedEnrollmentPayload? payload;
             try
             {
-                payload = document.RootElement.Deserialize<InjectedEnrollmentPayload>(new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true
-                });
+                payload = document.RootElement.Deserialize(InjectedEnrollmentJsonContext.Default.InjectedEnrollmentPayload);
             }
             catch (JsonException ex)
             {

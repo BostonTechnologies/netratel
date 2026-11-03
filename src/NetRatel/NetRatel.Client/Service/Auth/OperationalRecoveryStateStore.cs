@@ -12,7 +12,6 @@ internal sealed record OperationalRecoveryState(int Version, DateTimeOffset Reco
 public sealed class OperationalRecoveryStateStore(string path, Action<string>? log = null)
 {
     private const int MaximumBytes = 4096;
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private bool _reportedFailure;
 
     internal static OperationalRecoveryStateStore ForInstallation(string? stateDirectory, Action<string>? log = null)
@@ -30,7 +29,7 @@ public sealed class OperationalRecoveryStateStore(string path, Action<string>? l
             if (!File.Exists(path)) return null;
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
             if (stream.Length is <= 0 or > MaximumBytes) return Invalid();
-            var state = JsonSerializer.Deserialize<OperationalRecoveryState>(stream, JsonOptions);
+            var state = JsonSerializer.Deserialize(stream, OperationalRecoveryJsonContext.Default.OperationalRecoveryState);
             if (state is null || state.Version != 1 || !double.IsFinite(state.OutageElapsedSeconds) ||
                 state.OutageElapsedSeconds is < 0 or > 604800 || state.FailureCount is < 0 or > 5 ||
                 state.AttemptCount < 0 ||
@@ -51,7 +50,7 @@ public sealed class OperationalRecoveryStateStore(string path, Action<string>? l
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-            var bytes = JsonSerializer.SerializeToUtf8Bytes(state, JsonOptions);
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(state, OperationalRecoveryJsonContext.Default.OperationalRecoveryState);
             if (bytes.Length > MaximumBytes) return false;
             temporary = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
             using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))

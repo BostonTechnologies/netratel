@@ -12,6 +12,52 @@ public sealed class InjectedEnrollmentBootstrapTests
     private const string DiagnosticCanary = "synthetic-diagnostic-value-canary";
 
     [Fact]
+    public async Task TryEnrollAsync_KeepsCaseInsensitiveLegacyFieldsMissingCreatedAtAndTrimmedDecodedCode()
+    {
+        var fs = new FakeFileSystem();
+        var baseDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(baseDir, "netratel.enroll.json");
+        fs.Files[path] = """{"SCHEMA":"netratel.enroll.v1","TENANTID":42,"ENROLLMENTCODE":"  ENR-SYNTH-<&\"\u00E9>  ","ISSUER":"https://netratel.example.invalid/api/","VALIDTOUTC":"2099-02-27T00:00:00Z","future":true}""";
+        var enrollment = new FakeEnrollmentService();
+        var store = new FakeCredentialStore();
+        var diagnostics = new List<string>();
+        var result = await new InjectedEnrollmentBootstrap(fs, () => baseDir, diagnostics.Add).TryEnrollAsync(
+            new ClientOptions { ApiBaseUrl = "https://netratel.example.invalid" }, enrollment, store, CancellationToken.None);
+        result.Should().NotBeNull();
+        enrollment.LastEnrollmentCode.Should().Be("ENR-SYNTH-<&\"é>");
+        store.Saved.Should().Be(("agent-1", "refresh-1"));
+        fs.Deleted.Should().Equal(path);
+        diagnostics.Should().BeEmpty();
+    }
+
+    [Fact]
+    public Task TryEnrollAsync_WithNullPayload_RetainsFileAndReportsEmptyPayload() =>
+        AssertRejected("null", "payload is empty");
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TryEnrollAsync_PersistenceOrDeleteFailureRetainsGrantAndKeepsDiagnosticsRedacted(bool failDelete)
+    {
+        var fs = new FakeFileSystem { DeleteFailure = failDelete ? new IOException(DiagnosticCanary) : null };
+        var baseDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(baseDir, "netratel.enroll.json");
+        fs.Files[path] = """{"schema":"netratel.enroll.v1","tenantId":42,"enrollmentCode":"ENR-SYNTH","issuer":"https://netratel.example.invalid","validToUtc":"2099-02-27T00:00:00Z"}""";
+        var enrollment = new FakeEnrollmentService();
+        var store = new FakeCredentialStore { SaveFailure = failDelete ? null : new IOException(DiagnosticCanary) };
+        var diagnostics = new List<string>();
+        var result = await new InjectedEnrollmentBootstrap(fs, () => baseDir, diagnostics.Add).TryEnrollAsync(
+            new ClientOptions { ApiBaseUrl = "https://netratel.example.invalid" }, enrollment, store, CancellationToken.None);
+        result.Should().BeNull();
+        enrollment.LastEnrollmentCode.Should().Be("ENR-SYNTH");
+        store.Saved.Should().Be(failDelete ? ("agent-1", "refresh-1") : null);
+        fs.Files.Should().ContainKey(path);
+        fs.Deleted.Should().BeEmpty();
+        diagnostics.Should().Equal("[Auth] Ignoring netratel.enroll.json: unable to read enrollment file (I/O failure).");
+        string.Join("\n", diagnostics).Should().NotContain(DiagnosticCanary);
+    }
+
+    [Fact]
     public async Task TryEnrollAsync_WithValidFile_EnrollsAndDeletesFile()
     {
         var fs = new FakeFileSystem();
@@ -323,9 +369,11 @@ public sealed class InjectedEnrollmentBootstrapTests
     private sealed class FakeCredentialStore : IAgentCredentialStore
     {
         public (string AgentId, string RefreshToken)? Saved { get; private set; }
+        public IOException? SaveFailure { get; init; }
 
         public Task SaveAsync(string agentId, string refreshToken)
         {
+            if (SaveFailure is not null) return Task.FromException(SaveFailure);
             Saved = (agentId, refreshToken);
             return Task.CompletedTask;
         }
@@ -345,6 +393,7 @@ public sealed class InjectedEnrollmentBootstrapTests
         public Dictionary<string, string> Files { get; } = new(StringComparer.OrdinalIgnoreCase);
         public List<string> Deleted { get; } = new();
         public IOException? ReadFailure { get; init; }
+        public IOException? DeleteFailure { get; init; }
 
         public bool Exists(string path) => Files.ContainsKey(path);
 
@@ -353,6 +402,7 @@ public sealed class InjectedEnrollmentBootstrapTests
 
         public void Delete(string path)
         {
+            if (DeleteFailure is not null) throw DeleteFailure;
             Deleted.Add(path);
             Files.Remove(path);
         }
