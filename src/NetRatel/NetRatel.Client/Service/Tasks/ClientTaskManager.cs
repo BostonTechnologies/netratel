@@ -557,28 +557,12 @@ public sealed class ClientTaskManager : IDisposable
         var stderr = BoundOutput(res.Error.Select(line => task.Output.Redact(line)!).ToArray(), ref remainingBytes, out var stderrTruncated);
         _ = sink;
 
-        var payload = JsonSerializer.Serialize(new
-        {
-            exitCode = res.ExitCode,
-            stdout,
-            stderr,
-            outputTruncated = res.OutputTruncated || stdoutTruncated || stderrTruncated,
-            outputStreamed = true,
-            processStarted = res.ProcessStarted,
-            cancelled = res.Cancelled,
-            timedOut = res.TimedOut,
-            outcomeUnknown = res.OutcomeUnknown,
-            diagnostics = new
-            {
-                shellPath = res.ShellPath,
-                // Raw arguments can contain private command or parameter values.
-                arguments = (string?)null,
-                workingDirectory = res.WorkingDirectory,
-                durationMs = res.DurationMs,
-                cancelled = res.Cancelled,
-                timedOut = res.TimedOut
-            }
-        });
+        var payload = JsonSerializer.Serialize(new ShellResultEnvelope(res.ExitCode, stdout, stderr,
+            res.OutputTruncated || stdoutTruncated || stderrTruncated, true, res.ProcessStarted,
+            res.Cancelled, res.TimedOut, res.OutcomeUnknown,
+            // Raw arguments can contain private command or parameter values.
+            new ShellExecutionDiagnostics(res.ShellPath, null, res.WorkingDirectory, res.DurationMs, res.Cancelled, res.TimedOut)),
+            ClientShellJsonContext.Default.ShellResultEnvelope);
         await SafeStatusAsync(task, res.Cancelled ? TaskStatuses.Cancelled : res.Success ? TaskStatuses.Completed : TaskStatuses.Failed, res.TimedOut ? "Timed out" : res.Cancelled ? "Cancelled" : res.Success ? "OK" : "Failed", payload, res.ExitCode).ConfigureAwait(false);
     }
 
@@ -589,14 +573,10 @@ public sealed class ClientTaskManager : IDisposable
             () => SafeStatusAsync(task, TaskStatuses.Processing, "Executing…"),
             async (stream, line) =>
             {
-                var payload = JsonSerializer.Serialize(new
-                {
-                    stdout = stream == "stdout" ? new[] { task.Output.Redact(line) } : Array.Empty<string>(),
-                    stderr = stream == "stderr" ? new[] { task.Output.Redact(line) } : Array.Empty<string>(),
-                    outputSequence = ++sequence,
-                    outputTruncated = false,
-                    outputProtectionBinding = task.Output.Binding
-                });
+                var payload = JsonSerializer.Serialize(new ShellProgressEnvelope(
+                    stream == "stdout" ? new[] { task.Output.Redact(line) } : Array.Empty<string>(),
+                    stream == "stderr" ? new[] { task.Output.Redact(line) } : Array.Empty<string>(),
+                    ++sequence, false, task.Output.Binding), ClientShellJsonContext.Default.ShellProgressEnvelope);
                 try { await _gatewayStatusPublisher(task.RequestId, "progress", payload, null).ConfigureAwait(false); }
                 catch (Exception ex) { _logError($"Output update failed for command {task.RequestId}: {ex.GetType().Name}"); }
             }, line => task.Output.Redact(line)!);
@@ -610,7 +590,7 @@ public sealed class ClientTaskManager : IDisposable
         {
             var redacted = OperatorOutputRedactor.Redact(line);
             // Account for JSON escaping and separators, not only the raw text.
-            var bytes = Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(redacted)) + 1;
+            var bytes = Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(redacted, ClientShellJsonContext.Default.String)) + 1;
             if (bytes <= remainingBytes)
             {
                 bounded.Add(redacted);
@@ -626,7 +606,7 @@ public sealed class ClientTaskManager : IDisposable
                 while (low < high)
                 {
                     var middle = (low + high + 1) / 2;
-                    if (Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(redacted[..middle])) + 1 <= remainingBytes)
+                    if (Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(redacted[..middle], ClientShellJsonContext.Default.String)) + 1 <= remainingBytes)
                         low = middle;
                     else high = middle - 1;
                 }
@@ -651,18 +631,9 @@ public sealed class ClientTaskManager : IDisposable
             _logError($"Failed to append failure log for command {task.RequestId}: {ex.GetType().Name}");
         }
 
-        var returnData = JsonSerializer.Serialize(new
-        {
-            exitCode = exitCode,
-            stdout = Array.Empty<string>(),
-            stderr = new[] { errorText },
-            diagnostics = new
-            {
-                taskType = task.TaskType,
-                payload = ExecLibraryScriptPayloadDiagnostics.Sanitize(task.TaskType, payload),
-                failureMessage = message
-            }
-        });
+        var returnData = JsonSerializer.Serialize(new ShellFailureEnvelope(exitCode, Array.Empty<string>(), new[] { errorText },
+            new ShellFailureDiagnostics(task.TaskType, ExecLibraryScriptPayloadDiagnostics.Sanitize(task.TaskType, payload), message)),
+            ClientShellJsonContext.Default.ShellFailureEnvelope);
 
         await SafeStatusAsync(task, TaskStatuses.Failed, message, returnData, exitCode).ConfigureAwait(false);
     }
@@ -681,17 +652,8 @@ public sealed class ClientTaskManager : IDisposable
             _logError($"Failed to append cancellation log for command {task.RequestId}: {ex}");
         }
 
-        var returnData = JsonSerializer.Serialize(new
-        {
-            exitCode = (int?)null,
-            stdout = Array.Empty<string>(),
-            stderr = new[] { reason },
-            diagnostics = new
-            {
-                taskType = task.TaskType,
-                cancelled = true
-            }
-        });
+        var returnData = JsonSerializer.Serialize(new ShellCancelledEnvelope(null, Array.Empty<string>(), new[] { reason },
+            new ShellCancellationDiagnostics(task.TaskType, true)), ClientShellJsonContext.Default.ShellCancelledEnvelope);
 
         await SafeStatusAsync(task, TaskStatuses.Cancelled, reason, returnData, null).ConfigureAwait(false);
     }
