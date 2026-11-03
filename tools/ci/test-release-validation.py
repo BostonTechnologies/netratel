@@ -488,7 +488,8 @@ class FastTestContainerPreparationTests(unittest.TestCase):
                         def still_running():
                             try:
                                 return process_stat.read_text().rsplit(")", 1)[1].split()[0] != "Z"
-                            except FileNotFoundError:
+                            except (FileNotFoundError, ProcessLookupError):
+                                # The task can disappear after procfs opens stat.
                                 return False
                         while still_running() and time.monotonic() < observation_deadline:
                             time.sleep(0.01)
