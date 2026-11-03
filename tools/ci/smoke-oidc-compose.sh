@@ -432,18 +432,28 @@ wait_for_current_gateway_presence() {
 
 inventory_status_complete() {
   jq -e --argjson tenant "$2" --arg agent "$3" --arg collection "$4" '
+    def positive_integer: if type == "number" then . > 0 and floor == . else false end;
     .tenantId == $tenant and (.agentId | ascii_downcase) == ($agent | ascii_downcase) and
     .latestScan.collectionId == $collection and .latestScan.status == "Complete" and
-    .latestScan.errors == [] and .latestScan.receivedChunks > 0 and
+    .latestScan.errors == [] and (.latestScan.receivedChunks | positive_integer) and (.latestScan.totalChunks | positive_integer) and
     .latestScan.receivedChunks == .latestScan.totalChunks and
     (.lastSuccessfulScanUtc | strings | length) > 0 and (.latestScan.completedAtUtc | strings | length) > 0' "$1" >/dev/null
 }
 
+inventory_scan_complete() {
+  jq -e --arg collection "$2" '
+    def positive_integer: if type == "number" then . > 0 and floor == . else false end;
+    .collectionId == $collection and .status == "Complete" and .errors == [] and
+    (.receivedChunks | positive_integer) and (.totalChunks | positive_integer) and .receivedChunks == .totalChunks and
+    (.completedAtUtc | strings | length) > 0' "$1" >/dev/null
+}
+
 inventory_snapshot_complete() {
   jq -e --arg agent "$2" '
-    .total > 0 and (.items | length) > 0 and
+    def positive_integer: if type == "number" then . > 0 and floor == . else false end;
+    (.total | positive_integer) and (.items | type) == "array" and (.items | length) > 0 and
     all(.items[]; (.agentId | ascii_downcase) == ($agent | ascii_downcase) and .os == "linux" and .package.source == "dpkg") and
-    any(.items[]; .package.name == "bash" and (.package.version | length) > 0)' "$1" >/dev/null
+    any(.items[]; .package.name == "bash" and (.package.version | type) == "string" and (.package.version | length) > 0)' "$1" >/dev/null
 }
 
 prepare_software_inventory_acceptance() {
@@ -494,8 +504,7 @@ verify_software_inventory_acceptance() {
   docker exec "$gateway_client" test -d "$directory"
   docker exec "$gateway_client" test ! -e "$directory/pending.json"
   curl --silent --show-error --fail --header "Authorization: Bearer $token" "$route/scans/$software_inventory_collection_id" > "$evidence/software-scan.json"
-  jq -e --arg collection "$software_inventory_collection_id" \
-    '.collectionId == $collection and .status == "Complete" and .errors == [] and .receivedChunks > 0 and .receivedChunks == .totalChunks' "$evidence/software-scan.json" >/dev/null
+  inventory_scan_complete "$evidence/software-scan.json" "$software_inventory_collection_id"
   curl --silent --show-error --fail --header "Authorization: Bearer $token" "$route/snapshot?pageSize=100&source=dpkg&os=linux&search=bash" > "$evidence/software-snapshot.json"
   inventory_snapshot_complete "$evidence/software-snapshot.json" "$agent_id"
   jq -n --arg collection "$software_inventory_collection_id" --arg directory "$directory" \

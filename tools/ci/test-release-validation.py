@@ -2446,11 +2446,18 @@ class ClientArchiveAcceptanceTests(unittest.TestCase):
                                       capture_output=True, text=True).returncode
 
             self.assertEqual(0, check("inventory_status_complete", status, "7", agent, collection))
+            self.assertEqual(0, check("inventory_scan_complete", status["latestScan"], collection))
             for key, value in (("status", "Partial"), ("status", "Error"), ("errors", ["dpkg_scan_failed"]),
-                               ("receivedChunks", 0), ("totalChunks", 2), ("collectionId", agent), ("completedAtUtc", None)):
+                               ("receivedChunks", 0), ("totalChunks", 2), ("collectionId", agent), ("completedAtUtc", None),
+                               ("receivedChunks", "1"), ("totalChunks", "1"), ("receivedChunks", 0.5), ("totalChunks", True)):
                 changed = copy.deepcopy(status)
                 changed["latestScan"][key] = value
                 self.assertNotEqual(0, check("inventory_status_complete", changed, "7", agent, collection))
+                self.assertNotEqual(0, check("inventory_scan_complete", changed["latestScan"], collection))
+            changed = copy.deepcopy(status)
+            changed["latestScan"].update(receivedChunks="1", totalChunks="1")
+            self.assertNotEqual(0, check("inventory_status_complete", changed, "7", agent, collection))
+            self.assertNotEqual(0, check("inventory_scan_complete", changed["latestScan"], collection))
             for key, value in (("tenantId", 8), ("agentId", collection), ("lastSuccessfulScanUtc", None)):
                 changed = copy.deepcopy(status)
                 changed[key] = value
@@ -2460,11 +2467,15 @@ class ClientArchiveAcceptanceTests(unittest.TestCase):
                 changed = copy.deepcopy(snapshot)
                 changed["items"][0][field] = value
                 self.assertNotEqual(0, check("inventory_snapshot_complete", changed, agent))
-            for field, value in (("source", "rpm"), ("name", "other"), ("version", "")):
+            for field, value in (("source", "rpm"), ("name", "other"), ("version", ""), ("version", ["1"]), ("version", 1)):
                 changed = copy.deepcopy(snapshot)
                 changed["items"][0]["package"][field] = value
                 self.assertNotEqual(0, check("inventory_snapshot_complete", changed, agent))
             self.assertNotEqual(0, check("inventory_snapshot_complete", {"total": 0, "items": []}, agent))
+            for field, value in (("total", "1"), ("total", 0.5), ("total", True), ("items", {}), ("items", "items"), ("items", None)):
+                changed = copy.deepcopy(snapshot)
+                changed[field] = value
+                self.assertNotEqual(0, check("inventory_snapshot_complete", changed, agent))
 
     def original_fixture(self, root):
         original = root / "original"
