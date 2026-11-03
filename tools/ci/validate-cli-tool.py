@@ -35,7 +35,7 @@ def api(path, field=None):
     arguments = ["gh", "api", f"repos/{REPOSITORY}/{path}"]
     if field:
         arguments += ["--paginate", "--jq", "." + field]
-    output = subprocess.check_output(arguments, text=True)
+    output = subprocess.check_output(arguments, text=True, encoding="utf-8")
     return [item for page in promotion.json_pages(output) for item in page] if field else json.loads(output)
 
 
@@ -81,7 +81,7 @@ def candidate_package(root, version, revision):
     package = extracted / expected_name
     fixture.require(package.is_file(), "Authenticated artifact lacks the staged root CLI package")
     checksum = package.parent / "SHA256SUMS"
-    hashes = [line.split(maxsplit=1)[0] for line in checksum.read_text().splitlines()
+    hashes = [line.split(maxsplit=1)[0] for line in checksum.read_text(encoding="utf-8").splitlines()
               if len(line.split(maxsplit=1)) == 2 and line.split(maxsplit=1)[1].lstrip("*") == expected_name]
     fixture.require(hashes == [promotion.sha256(package)], "Candidate package differs from its hosted SHA256SUMS")
     feed = root / "candidate-feed"
@@ -107,7 +107,7 @@ def prior_package(root, current_version):
     publication_path = feed / "publication.json"
     fixture.require("sha256:" + promotion.sha256(publication_path) == publication_assets[0].get("digest"),
                     "Prior publication record differs from its public asset digest")
-    record = json.loads(publication_path.read_text())
+    record = json.loads(publication_path.read_text(encoding="utf-8"))
     version = record["productVersion"]
     fixture.require(record.get("verification", {}).get("state") == "complete" and
                     selected["tag"] == "v" + version and version != current_version and
@@ -237,7 +237,7 @@ def exercise(root, evidence, package, identity, prior, prior_identity, inventory
         manifest.parent.mkdir()
         manifest.write_text(json.dumps({"version": 1, "isRoot": True, "tools": {}}), encoding="utf-8")
         install("install", environment, case, package.parent, version, local=True)
-        saved = json.loads(manifest.read_text())
+        saved = json.loads(manifest.read_text(encoding="utf-8"))
         fixture.require(saved["isRoot"] is True and saved["tools"]["netratel.cli"]["version"] == version and
                         saved["tools"]["netratel.cli"]["commands"] == ["netratel"],
                         "Local tool manifest does not pin the produced package/command")

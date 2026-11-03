@@ -8,6 +8,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+import sys
 import zipfile
 
 spec = importlib.util.spec_from_file_location("cli_tool_validation", Path(__file__).with_name("validate-cli-tool.py"))
@@ -108,6 +109,17 @@ class PortableToolInputTests(unittest.TestCase):
         self.assertIsNotNone(source.find("packageSources/clear"))
         self.assertIsNotNone(source.find("fallbackPackageFolders/clear"))
         self.assertEqual(str((self.root / "verified-feed").resolve()), source.find("packageSources/add").get("value"))
+
+    def test_prior_release_json_uses_utf8_instead_of_the_windows_console_encoding(self):
+        original = tool.prior_releases.subprocess.run
+
+        def emit_utf8(arguments, **options):
+            self.assertEqual("gh", arguments[0])
+            self.assertEqual("utf-8", options.get("encoding"))
+            return original([sys.executable, "-c", "import sys; sys.stdout.buffer.write('release \\u201d'.encode('utf-8'))"], **options)
+
+        with patch.object(tool.prior_releases.subprocess, "run", side_effect=emit_utf8):
+            self.assertEqual("release \u201d", tool.prior_releases.gh("api", "synthetic-release-json"))
 
 
 if __name__ == "__main__":
