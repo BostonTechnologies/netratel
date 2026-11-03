@@ -104,7 +104,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
     [Theory]
     [InlineData(1)]
     [InlineData(30)]
-    public void Details_opens_access_for_the_selected_credential_and_restores_all_scopes(int count)
+    public async Task Details_opens_access_for_the_selected_credential_and_restores_all_scopes(int count)
     {
         JSInterop.Mode = JSRuntimeMode.Loose;
         Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
@@ -119,21 +119,21 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         SetRendererInfo(new RendererInfo("Server", true));
         var dialogs = Render<MudDialogProvider>();
         var page = Render<IntegrationCredentials>();
-        page.WaitForAssertion(() => page.FindAll("[data-testid='credential-row']").Should().ContainSingle());
-        page.Find(".credential-actions button").Click();
-        dialogs.WaitForAssertion(() => dialogs.FindAll("[data-testid='edit-credential-access']").Should().ContainSingle());
-        dialogs.Find("[data-testid='edit-credential-access']").Click();
+        await page.WaitForAssertionAsync(() => page.FindAll("[data-testid='credential-row']").Should().ContainSingle());
+        await page.Find(".credential-actions button").ClickAsync(new());
+        await dialogs.WaitForAssertionAsync(() => dialogs.FindAll("[data-testid='edit-credential-access']").Should().ContainSingle());
+        await dialogs.Find("[data-testid='edit-credential-access']").ClickAsync(new());
 
-        dialogs.WaitForAssertion(() => transport.AccessLookups.Should().Equal($"/api/v2/account/integration-credentials/{transport.HttpCredentialId}/access-requests"));
+        await dialogs.WaitForAssertionAsync(() => transport.AccessLookups.Should().Equal($"/api/v2/account/integration-credentials/{transport.HttpCredentialId}/access-requests"));
         dialogs.FindAll("[data-testid='access-edit-error']").Should().BeEmpty();
         dialogs.FindAll("[data-testid^='access-remove-tenant-']").Should().HaveCount(count);
         dialogs.Find("[data-testid='access-add-tenant-select']").TextContent.Should().Contain("Tenant choice 48");
-        dialogs.Find("[data-testid='permission-scope']").Change("server");
+        await dialogs.Find("[data-testid='permission-scope']").ChangeAsync("server");
         foreach (var permission in transport.HttpInstancePermissions)
             dialogs.Find($"[data-testid='access-edit-instance-permission-{permission}']").HasAttribute("checked").Should().BeTrue();
-        dialogs.Find("[data-testid='access-close']").Click();
-        dialogs.Find("[data-testid='edit-credential-access']").Click();
-        dialogs.WaitForAssertion(() => transport.AccessLookups.Should().HaveCount(2));
+        await dialogs.Find("[data-testid='access-close']").ClickAsync(new());
+        await dialogs.Find("[data-testid='edit-credential-access']").ClickAsync(new());
+        await dialogs.WaitForAssertionAsync(() => transport.AccessLookups.Should().HaveCount(2));
         dialogs.FindAll("[data-testid='access-edit-error']").Should().BeEmpty();
         transport.AccessLookups.Should().OnlyContain(path => path.Contains(transport.HttpCredentialId));
     }
