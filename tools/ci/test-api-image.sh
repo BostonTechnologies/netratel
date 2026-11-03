@@ -48,6 +48,7 @@ for arm in candidate control; do
   if [[ "$arm" == candidate ]]; then docker cp "$container:/var/lib/chisel" "$results/candidate-extra-native-manifest"; fi
   docker rm "$container" >/dev/null; container=""
   cp "$temporary/$arm/publish/NetRatel.API.runtimeconfig.json" "$results/$arm-runtimeconfig.json"
+  cp "$temporary/$arm/publish/NetRatel.API.deps.json" "$results/$arm-deps.json"
   cp "$temporary/$arm/publish/runtime.spdx.json" "$results/$arm-runtime.spdx.json"
   python3 tools/ci/verify-runtime-sbom.py --sbom "$temporary/$arm/publish/runtime.spdx.json" --root "$temporary/$arm" \
     | tee "$results/$arm-sbom-check.log"

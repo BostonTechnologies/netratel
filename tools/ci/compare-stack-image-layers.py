@@ -16,16 +16,18 @@ def compare(root, candidate_name, control_name, companion_names):
     spec = importlib.util.spec_from_file_location('scanner', Path(__file__).with_name('scan-saved-image.py'))
     scanner = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(scanner)
-    layers, images = {}, {}
+    layers, images, verified = {}, {}, {}
     for image in json.loads((root / 'manifest.json').read_text()):
         config = json.loads(scanner.contained(root, image['Config']).read_text())
         identities = config['rootfs']['diff_ids']
         if len(identities) != len(image['Layers']):
             raise ValueError('Image layer/config inventory differs')
         for identity, reference in zip(identities, image['Layers']):
-            if identity in layers:
-                continue
             path = scanner.contained(root, reference)
+            if path in verified:
+                if verified[path] != identity:
+                    raise ValueError('Saved layer does not match its uncompressed image identity')
+                continue
             with path.open('rb') as source:
                 compressed = source.read(2) == b'\x1f\x8b'
             with (gzip.open(path, 'rb') if compressed else path.open('rb')) as source, tempfile.TemporaryFile() as exported:
@@ -38,7 +40,8 @@ def compare(root, candidate_name, control_name, companion_names):
                         destination.write(chunk)
                 if 'sha256:' + digest.hexdigest() != identity:
                     raise ValueError('Saved layer does not match its uncompressed image identity')
-                layers[identity] = {'gzipBytes': exported.tell(), 'tarBytes': expanded}
+                verified[path] = identity
+                layers.setdefault(identity, {'gzipBytes': exported.tell(), 'tarBytes': expanded})
         for name in image['RepoTags'] or []:
             images[name] = identities
     if len(set(companion_names)) != 4 or set(companion_names) & {candidate_name, control_name}:

@@ -2329,7 +2329,15 @@ class SavedImageCredentialScanTests(unittest.TestCase):
         self.assertLess(result["candidateStandaloneLayerGzipBytes"], result["controlStandaloneLayerGzipBytes"])
         self.assertGreater(result["candidateFiveImageUniqueLayerGzipBytes"], result["controlFiveImageUniqueLayerGzipBytes"])
         self.assertEqual(3, len(result["layers"]))
+        candidate_config = (self.root / "config-0.json").read_text()
         (self.root / "config-0.json").write_text(json.dumps({"rootfs": {"diff_ids": ["sha256:" + "0" * 64] * 2}}))
+        with self.assertRaisesRegex(ValueError, "uncompressed image identity"):
+            comparator.compare(self.root, "candidate:test", "control:test", companions)
+        (self.root / "config-0.json").write_text(candidate_config)
+        # A later physical reference cannot reuse an already verified diff ID
+        # unless its own bytes match that identity too.
+        manifests[1]["Layers"][0] = self.layer("legacy", b"different physical bytes claiming the common identity\n")
+        (self.root / "manifest.json").write_text(json.dumps(manifests))
         with self.assertRaisesRegex(ValueError, "uncompressed image identity"):
             comparator.compare(self.root, "candidate:test", "control:test", companions)
 
