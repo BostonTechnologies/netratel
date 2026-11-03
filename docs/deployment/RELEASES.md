@@ -189,6 +189,7 @@ gh workflow run integration-validation.yml --ref main -f suite=upgrade-local -f 
 gh workflow run integration-validation.yml --ref main -f suite=deployment -f deployment_profile=http-host-setup -f source_ref='<commit-or-tag>'
 gh workflow run integration-validation.yml --ref main -f suite=migrations-image -f source_ref='<commit-or-tag>'
 gh workflow run integration-validation.yml --ref main -f suite=migrations-image -f migrations_comparison=html-ownership -f source_ref='<exact-public-commit>'
+gh workflow run integration-validation.yml --ref main -f suite=migrations-image -f migrations_comparison=schema-ownership -f source_ref='<exact-public-commit>'
 gh workflow run integration-validation.yml --ref main -f suite=api-image -f source_ref='<exact-public-commit>'
 ```
 
@@ -216,6 +217,18 @@ dependency graph, legal notices and verified SPDX metadata. SPDX creation times
 remain their real generation times and namespaces bind each actual file inventory;
 both differences are retained in the receipt. This mode reuses the full native,
 PostgreSQL, role-preserving rerun and latest-release upgrade checks above.
+
+`schema-ownership` uses the same controlled comparison for the unchanged schema
+utility and its NJsonSchema reference. Its fixed removal allowlist is NJsonSchema,
+NJsonSchema.Annotations, Namotion.Reflection and Newtonsoft.Json in the migrations
+payload; API and MCP retain their active dependencies. One additional API publish
+stage supplies the actual API dependency set for before/after utility calls in
+isolated load contexts. The original control Infrastructure assembly and new API
+assembly must accept the valid vector and reject the missing-required vector with
+identical errors and dependency bytes. Package identities, notice hash and the
+incremental API build/probe durations are retained. The defining utility assembly
+changes from Infrastructure to API; namespace/signature preservation is not a
+claim of compatibility for an external binary bound to its old assembly identity.
 
 The optional `deployment_profile=http-host-setup` first compares the Linux x64
 HTTP MCP image with a same-source RID-neutral control. It checks final host,
