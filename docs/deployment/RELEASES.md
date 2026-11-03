@@ -67,6 +67,18 @@ remain explicit controlled actions.
 Use `release/compose.images.yaml` only with approved immutable release-image
 digests. It is intentionally a deployment bundle, not a source-build recipe.
 
+The Compose archive retains the documentation index, third-party notices, and
+the deployment, client, HTTP MCP, integration, operations and contract guides,
+plus architecture decisions for offline use.
+`tools/ci/prepare-bundle-documentation.py` maintains this selection and includes
+the README hero image. Implementation history, evidence, release notes and other
+branding collateral stay in the repository. Links to omitted content identify the exact build source commit;
+links to shipped guides remain local. Packaging validates Markdown destinations
+and anchors, HTML image references and filename case in the staged archive.
+Deployment/configuration files, setup launcher, manifest and legal notices follow
+the existing release packaging and digest-insertion path. A packaging pass does
+not establish deployment acceptance.
+
 ## Owner-operated promotion
 
 Edit `Directory.Build.props` to set the product version, merge the reviewed
