@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Timestamp = Google.Protobuf.WellKnownTypes.Timestamp;
 using NetRatel.AgentGateway.Contracts.V1;
@@ -439,6 +440,70 @@ public sealed class ClientAutoUpdateRetryTests
 
 public sealed class ClientUpdateResultDeliveryTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FrozenReportBytesPreserveNullsEscapingAndCompactOrder(bool populated)
+    {
+        await using var rig = new DeliveryRig();
+        rig.ExpectedState = "FailedPreActivation";
+        ProtectedUpdateState.AtomicWriteJson(rig.ResultPath, new { schema = "netratel.update.result.v2",
+            rig.AttemptId, rig.ReleaseId, state = rig.ExpectedState,
+            failureCode = populated ? "synthetic_<&\"é>" : null, message = populated ? "line\n<&\"é>\u2028" : null });
+        ProtectedUpdateState.AtomicWriteJson(Path.Combine(rig.Root, "request.json"), new
+        {
+            attemptId = populated ? rig.AttemptId : Guid.Empty, rig.ReleaseId, admissionNonce = "nonce_<&\"é>\n"
+        });
+        var original = File.ReadAllBytes(rig.ResultPath);
+        rig.Response = () => new(HttpStatusCode.Accepted) { Content = new StringContent(
+            """{"OUTCOME":"duplicate","CODE":"report_duplicate","STATE":"FailedPreActivation","CONFIRMATIONID":null,"SUSPENSIONACTIVE":false,"POLICYREVISION":"4294967297","future":true}""") };
+
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+
+        // Frozen from the original reflective serializer, before metadata was introduced.
+        var expected = populated
+            ? """{"state":"FailedPreActivation","failureCode":"synthetic_\u003C\u0026\u0022\u00E9\u003E","message":"line\n\u003C\u0026\u0022\u00E9\u003E\u2028","admissionNonce":"nonce_\u003C\u0026\u0022\u00E9\u003E\n"}"""
+            : """{"state":"FailedPreActivation","failureCode":null,"message":null,"admissionNonce":null}""";
+        Assert.Equal(System.Text.Encoding.UTF8.GetBytes(expected), Assert.Single(rig.RequestBodies));
+        Assert.Equal(original, File.ReadAllBytes(Assert.Single(Directory.GetFiles(rig.Root, "*.consumed.json"))));
+        var metadataPath = Path.Combine(rig.Root, "result-delivery.json");
+        Assert.StartsWith("{\n  \"schema\":", File.ReadAllText(metadataPath));
+        using var metadata = JsonDocument.Parse(File.ReadAllText(metadataPath));
+        Assert.Equal(4294967297, metadata.RootElement.GetProperty("policyRevision").GetInt64());
+        Assert.Equal(JsonValueKind.Null, metadata.RootElement.GetProperty("identityConflict").ValueKind);
+        Assert.Equal(JsonValueKind.Null, metadata.RootElement.GetProperty("archivedBy").ValueKind);
+        if (!OperatingSystem.IsWindows())
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(metadataPath));
+        Assert.Equal("acknowledged", rig.Status("deliveryState"));
+    }
+
+    [Fact]
+    public async Task PriorDeliveryMetadataWithoutOptionalRecoveryFieldsResumesWithWebReadDefaults()
+    {
+        await using var rig = new DeliveryRig();
+        rig.Response = () => new(HttpStatusCode.NotFound) { Content = new StringContent("route unavailable") };
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+        var original = File.ReadAllBytes(rig.ResultPath);
+        var path = Path.Combine(rig.Root, "result-delivery.json");
+        var prior = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+        prior.Remove("identityConflict");
+        prior.Remove("archivedBy");
+        prior.Remove("retryCount");
+        prior["RETRYCOUNT"] = "1";
+        prior["policyRevision"] = "4294967297";
+        File.WriteAllText(path, prior.ToJsonString());
+        rig.Worker = rig.CreateWorker();
+        rig.Clock.Advance(TimeSpan.FromMinutes(5));
+        rig.Response = () => rig.Reply(HttpStatusCode.Accepted, "duplicate", "report_duplicate", "RolledBack");
+
+        await rig.Worker.DeliverPendingAsync(CancellationToken.None);
+
+        Assert.Equal(2, rig.Requests);
+        Assert.Equal("acknowledged", rig.Status("deliveryState"));
+        Assert.Equal(original, File.ReadAllBytes(Assert.Single(Directory.GetFiles(rig.Root, "*.consumed.json"))));
+        Assert.False(rig.Worker.HasUnresolvedResult);
+    }
+
     [Fact]
     public async Task OversizedNativeResultIsRetainedAndReportedOnceWithoutAFalseDeliveryReceipt()
     {
@@ -946,6 +1011,7 @@ public sealed class ClientUpdateResultDeliveryTests
         internal readonly Guid AttemptId = Guid.NewGuid(), ReleaseId = Guid.NewGuid();
         internal readonly GatewayPresenceTestClock Clock = new();
         internal readonly ConcurrentQueue<string?> RequestNonces = new();
+        internal readonly ConcurrentQueue<byte[]> RequestBodies = new();
         internal string ResultPath => Path.Combine(Root, "result.json");
         internal string SuspensionPath => Path.Combine(Root, "suspension.json");
         internal ClientUpdateResultDelivery Worker;
@@ -983,7 +1049,9 @@ public sealed class ClientUpdateResultDeliveryTests
         {
             Interlocked.Increment(ref Requests);
             Assert.EndsWith($"/attempts/{ExpectedAttemptId:D}/result", request.RequestUri!.AbsolutePath);
-            using var document = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
+            var bytes = await request.Content!.ReadAsByteArrayAsync(cancellationToken);
+            RequestBodies.Enqueue(bytes);
+            using var document = JsonDocument.Parse(bytes);
             Assert.Equal(ExpectedState, document.RootElement.GetProperty("state").GetString());
             RequestNonces.Enqueue(document.RootElement.GetProperty("admissionNonce").GetString());
             return AsyncResponse is { } asyncResponse ? await asyncResponse() : Response();

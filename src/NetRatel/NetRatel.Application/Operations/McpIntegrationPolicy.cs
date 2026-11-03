@@ -14,6 +14,18 @@ public sealed record McpIntegrationPolicy(int TenantId, string Name, McpOperator
 
 public static class McpIntegrationPolicyCatalog
 {
+    public static void ValidateUsableLimits(McpIntegrationPolicy policy)
+    {
+        if (policy.Effect != McpOperatorPolicyEffect.Allow) return;
+        var f = policy.Families; var c = policy.Constraints;
+        if (f.HasFlag(McpOperatorOperationFamily.FileRead) && c.ReadRoots is not { Count: > 0 } ||
+            f.HasFlag(McpOperatorOperationFamily.FileWrite) && c.WriteRoots is not { Count: > 0 } ||
+            (f.HasFlag(McpOperatorOperationFamily.TerminalExecute) || f.HasFlag(McpOperatorOperationFamily.TaskExecution)) &&
+                (c.AllowedShells is not { Count: > 0 } || c.WorkingDirectories is not { Count: > 0 } || c.MaxCommandDurationSeconds is not > 0 || c.MaxOutputBytes is not > 0) ||
+            f.HasFlag(McpOperatorOperationFamily.Onboarding) && (c.MaxOnboardingCodeLifetimeSeconds is not > 0 || c.MaxOnboardingCodeUses is not > 0))
+            throw new ArgumentException("Selected operation families require explicit path, execution or onboarding limits.");
+    }
+
     public static IReadOnlyList<McpOperatorOperationDescriptor> Supported(int tenantId, IEnumerable<string> permissions)
     {
         var grants = permissions.ToHashSet(StringComparer.Ordinal);

@@ -111,7 +111,7 @@ public sealed class CredentialAccessEditorTests : AsyncBunitContext
     }
 
     [Fact]
-    public void Rejected_review_keeps_editable_selections_and_failed_save_keeps_review_until_cancelled()
+    public async Task Rejected_review_keeps_editable_selections_and_failed_save_keeps_review_until_cancelled()
     {
         using var transport = Configure();
         transport.ReviewStatus = HttpStatusCode.Forbidden;
@@ -138,11 +138,11 @@ public sealed class CredentialAccessEditorTests : AsyncBunitContext
         editor.Find("[data-testid='access-back-to-edit']").Click();
         editor.WaitForAssertion(() => editor.FindAll("[data-testid='access-review']").Should().ContainSingle());
         transport.CancelCalls.Should().Be(1);
-        editor.Find("[data-testid='permission-scope']").Change("18");
+        await editor.Find("[data-testid='permission-scope']").ChangeAsync("18");
         editor.Find("[data-testid='access-edit-permission-18-flow.read']").HasAttribute("checked").Should().BeTrue();
-        editor.Find("[data-testid='permission-scope']").Change("17");
+        await editor.Find("[data-testid='permission-scope']").ChangeAsync("17");
         editor.Find("[data-testid='access-edit-permission-17-flow.read']").HasAttribute("checked").Should().BeTrue();
-        editor.Find("[data-testid='permission-scope']").Change("server");
+        await editor.Find("[data-testid='permission-scope']").ChangeAsync("server");
         editor.Find("[data-testid='access-edit-instance-permission-mcp.discovery.read']").HasAttribute("checked").Should().BeTrue();
     }
 
