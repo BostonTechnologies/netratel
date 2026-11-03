@@ -172,6 +172,22 @@ def binary_identity(path):
     return None
 
 
+def native_resize_helper_identity(source, runtime, inputs):
+    name = "libnetratel_terminal_pty_resize.dylib"
+    matches = [item for item in inputs if Path(item["path"]).name == name]
+    required = runtime == "osx-arm64" and (source / Path(PROJECT).parent / "Service/Terminal/native_darwin_pty_resize.c").is_file()
+    if not matches:
+        if required:
+            raise ValueError("The Darwin resize helper is missing from actual prebundle inputs")
+        return None
+    identities = {(item["sha256"], json.dumps(item["binary"], sort_keys=True)) for item in matches}
+    if (runtime != "osx-arm64" or len(identities) != 1
+            or matches[0]["binary"] != {"format": "Mach-O", "machine": "0x100000c"}
+            or any(item["excludedFromBundle"] for item in matches)):
+        raise ValueError("Published Darwin resize helper must be bundled with one osx-arm64 identity")
+    return {"name": name, "sha256": matches[0]["sha256"], "binary": matches[0]["binary"]}
+
+
 def run_packaged_version_probes(metrics, evidence, state, archive, distribution_name, runtime, version):
     extraction = state / "packaged-version"
     extraction.mkdir()
@@ -427,13 +443,8 @@ def main():
             inputs.append({"path": relative, "bytes": path.stat().st_size, "sha256": digest(path),
                            "excludedFromBundle": loose.lower() == "true", "binary": binary_identity(path)})
         (evidence / "publish-input-inventory.json").write_text(json.dumps(inputs, indent=2) + "\n")
-        resize_inputs = [item for item in inputs if Path(item["path"]).name == "libnetratel_terminal_pty_resize.dylib"]
-        if resize_inputs:
-            identities = {(item["sha256"], json.dumps(item["binary"], sort_keys=True)) for item in resize_inputs}
-            if len(identities) != 1 or resize_inputs[0]["binary"] != {"format": "Mach-O", "machine": "0x100000c"}:
-                raise ValueError("Published Darwin resize helper identity differs from osx-arm64")
-            metrics["expectedNativeHelper"] = {"name": "libnetratel_terminal_pty_resize.dylib",
-                                               "sha256": resize_inputs[0]["sha256"], "binary": resize_inputs[0]["binary"]}
+        if resize_helper := native_resize_helper_identity(source, args.runtime, inputs):
+            metrics["expectedNativeHelper"] = resize_helper
         for name in ("LICENSE", "NOTICE"):
             shutil.copy2(source / name, distribution / name)
         recovery_tool = source / "tools/ci/prepare-windows-client-repair.py"

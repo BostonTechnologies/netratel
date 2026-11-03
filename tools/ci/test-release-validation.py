@@ -2289,6 +2289,23 @@ class ClientMeasurementHelperTests(unittest.TestCase):
             self.assertEqual("runtime behavior", failed["failureKind"])
             self.assertNotIn("launch-cached", failed["stages"])
 
+    def test_darwin_helper_declaration_requires_actual_bundled_input_before_probe(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            self.assertIsNone(self.helper.native_resize_helper_identity(source, "osx-arm64", []))
+            declaration = source / "src/NetRatel/NetRatel.Client/Service/Terminal/native_darwin_pty_resize.c"
+            declaration.parent.mkdir(parents=True)
+            declaration.touch()
+            with self.assertRaisesRegex(ValueError, "missing from actual prebundle inputs"):
+                self.helper.native_resize_helper_identity(source, "osx-arm64", [])
+            item = {"path": "libnetratel_terminal_pty_resize.dylib", "sha256": "a" * 64,
+                    "binary": {"format": "Mach-O", "machine": "0x100000c"}, "excludedFromBundle": False}
+            self.assertEqual(item["sha256"], self.helper.native_resize_helper_identity(source, "osx-arm64", [item])["sha256"])
+            item["excludedFromBundle"] = True
+            with self.assertRaisesRegex(ValueError, "must be bundled"):
+                self.helper.native_resize_helper_identity(source, "osx-arm64", [item])
+            self.assertIsNone(self.helper.native_resize_helper_identity(source, "linux-x64", []))
+
     def packaged_pty_fixture(self, root, native_exit, native_final, native_helper=None):
         distribution = root / "netratel-client-linux-x64"
         distribution.mkdir()

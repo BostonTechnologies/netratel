@@ -106,7 +106,9 @@
     <Copy SourceFiles="$(NativeDarwinPtyLibrary)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
   </Target>
 
-  <Target Name="IncludeNativeDarwinPtyResizeHelperInPublish" DependsOnTargets="BuildNativeDarwinPtyResizeHelper" AfterTargets="ComputeFilesToPublish" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+  <!-- ComputeFilesToPublish already generates the bundle; add this native input
+       while the resolved list is still available to the linker and bundler. -->
+  <Target Name="IncludeNativeDarwinPtyResizeHelperInPublish" DependsOnTargets="BuildNativeDarwinPtyResizeHelper" AfterTargets="ComputeResolvedFilesToPublishList" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
     <ItemGroup>
       <ResolvedFileToPublish Include="$(NativeDarwinPtyLibrary)">
         <RelativePath>libnetratel_terminal_pty_resize.dylib</RelativePath>
