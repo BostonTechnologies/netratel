@@ -7,7 +7,7 @@ on:
         description: Run only this optional suite (client measurements use matching hosted OS runners)
         type: choice
         required: true
-        options: [pairing, gateway, mcp-campaign, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement, client-trim-windows, client-trim-macos, windows-mcp, migrations-image, api-image]
+        options: [pairing, gateway, mcp-campaign, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement, client-trim-windows, client-trim-macos, client-control-macos, windows-mcp, migrations-image, api-image]
       source_ref:
         description: Source ref to test (published-image and upgrade suites use release_tag)
         default: main
@@ -53,7 +53,7 @@ permissions:
 jobs:
   selected-suite:
     name: Manual ${{ inputs.suite }} (Linux)
-    if: inputs.suite != 'client-measurement' && inputs.suite != 'client-trim-windows' && inputs.suite != 'client-trim-macos' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image' && inputs.suite != 'api-image'
+    if: inputs.suite != 'client-measurement' && inputs.suite != 'client-trim-windows' && inputs.suite != 'client-trim-macos' && inputs.suite != 'client-control-macos' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image' && inputs.suite != 'api-image'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ (inputs.suite == 'native-client' || inputs.suite == 'deployment' || inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc') && 45 || inputs.suite == 'release-images' && 60 || 40 }}
     env:
@@ -467,8 +467,8 @@ jobs:
           retention-days: 14
 
   client-measurement:
-    name: Client ${{ inputs.suite != 'client-measurement' && 'trim assessment' || inputs.measurement_verify_run != '' && 'archive verification' || inputs.assessment_only && 'trim assessment' || 'A/B measurement' }} (${{ matrix.runtime }})
-    if: inputs.suite == 'client-measurement' || inputs.suite == 'client-trim-windows' || inputs.suite == 'client-trim-macos'
+    name: Client ${{ inputs.suite == 'client-control-macos' && 'untrimmed control' || inputs.suite != 'client-measurement' && 'trim assessment' || inputs.measurement_verify_run != '' && 'archive verification' || inputs.assessment_only && 'trim assessment' || 'A/B measurement' }} (${{ matrix.runtime }})
+    if: inputs.suite == 'client-measurement' || inputs.suite == 'client-trim-windows' || inputs.suite == 'client-trim-macos' || inputs.suite == 'client-control-macos'
     permissions:
       contents: read
       actions: read
@@ -477,7 +477,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.suite == 'client-trim-windows' && '[{"runtime":"win-x64","runner":"windows-latest"}]' || inputs.suite == 'client-trim-macos' && '[{"runtime":"osx-arm64","runner":"macos-latest"}]' || inputs.measurement_verify_run != '' && '[{"runtime":"win-x64","runner":"windows-latest"}]' || inputs.assessment_only && '[{"runtime":"linux-x64","runner":"ubuntu-latest"}]' || '[{"runtime":"linux-x64","runner":"ubuntu-latest"},{"runtime":"win-x64","runner":"windows-latest"},{"runtime":"osx-arm64","runner":"macos-latest"}]') }}
+        include: ${{ fromJSON(inputs.suite == 'client-trim-windows' && '[{"runtime":"win-x64","runner":"windows-latest"}]' || inputs.suite == 'client-trim-macos' && '[{"runtime":"osx-arm64","runner":"macos-latest"}]' || inputs.suite == 'client-control-macos' && '[{"runtime":"osx-arm64","runner":"macos-latest"}]' || inputs.measurement_verify_run != '' && '[{"runtime":"win-x64","runner":"windows-latest"}]' || inputs.assessment_only && '[{"runtime":"linux-x64","runner":"ubuntu-latest"}]' || '[{"runtime":"linux-x64","runner":"ubuntu-latest"},{"runtime":"win-x64","runner":"windows-latest"},{"runtime":"osx-arm64","runner":"macos-latest"}]') }}
     steps:
       - name: Require a single native assessment without archive-verification reuse
         if: inputs.suite != 'client-measurement'
@@ -514,14 +514,14 @@ jobs:
             --mode untrimmed --state-root "$RUNNER_TEMP/client-measurement/baseline" \
             --evidence 'TestResults/client-measurement/baseline/${{ matrix.runtime }}'
       - name: B - cleanup production client only
-        if: ${{ !cancelled() && !inputs.assessment_only && inputs.suite == 'client-measurement' && inputs.measurement_verify_run == '' }}
+        if: ${{ !cancelled() && inputs.measurement_verify_run == '' && ((inputs.suite == 'client-measurement' && !inputs.assessment_only) || inputs.suite == 'client-control-macos') }}
         shell: bash
         run: |
           python3 tools/ci/measure-client-publish.py --source . --runtime '${{ matrix.runtime }}' \
             --mode untrimmed --state-root "$RUNNER_TEMP/client-measurement/head" --verify-content \
             --evidence 'TestResults/client-measurement/head/${{ matrix.runtime }}'
       - name: C - bounded cleanup trimmed JIT assessment
-        if: ${{ !cancelled() && inputs.measurement_verify_run == '' && (inputs.suite != 'client-measurement' || (matrix.runtime == 'linux-x64' && (inputs.client_trim_diagnostic || inputs.assessment_only))) }}
+        if: ${{ !cancelled() && inputs.measurement_verify_run == '' && (startsWith(inputs.suite, 'client-trim-') || (inputs.suite == 'client-measurement' && matrix.runtime == 'linux-x64' && (inputs.client_trim_diagnostic || inputs.assessment_only))) }}
         shell: bash
         run: |
           python3 tools/ci/measure-client-publish.py --source . --runtime '${{ matrix.runtime }}' \

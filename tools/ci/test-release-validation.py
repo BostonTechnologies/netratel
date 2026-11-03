@@ -650,14 +650,16 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertIn("inputs.assessment_only && '[{\"runtime\":\"linux-x64\",\"runner\":\"ubuntu-latest\"}]'", measurement,
                       "The first trim assessment must permit a single Linux job without repeating A/B.")
         self.assertIn("if: ${{ inputs.suite == 'client-measurement' && !inputs.assessment_only }}", measurement)
-        self.assertIn("!cancelled() && !inputs.assessment_only", measurement)
         for suite, runtime, runner in (("client-trim-windows", "win-x64", "windows-latest"),
-                                       ("client-trim-macos", "osx-arm64", "macos-latest")):
+                                       ("client-trim-macos", "osx-arm64", "macos-latest"),
+                                       ("client-control-macos", "osx-arm64", "macos-latest")):
             self.assertIn(f"inputs.suite != '{suite}'", selected)
             self.assertIn(f"inputs.suite == '{suite}' && '[{{\"runtime\":\"{runtime}\",\"runner\":\"{runner}\"}}]'", measurement,
                           "Each native assessment must select one matching hosted runner without A/B fan-out.")
         self.assertIn("--runtime '${{ matrix.runtime }}'", measurement)
         self.assertIn("TestResults/client-measurement/trimmed/${{ matrix.runtime }}", measurement)
+        self.assertIn("((inputs.suite == 'client-measurement' && !inputs.assessment_only) || inputs.suite == 'client-control-macos')", measurement)
+        self.assertIn("startsWith(inputs.suite, 'client-trim-')", measurement)
         self.assertIn("--source client-baseline", measurement)
         self.assertIn("--source .", measurement)
         self.assertNotIn("dotnet build", measurement)

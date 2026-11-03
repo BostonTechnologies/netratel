@@ -65,6 +65,13 @@ protected credentials, media, interactive helpers, permissions and install/updat
 acceptance pending in [#493](https://github.com/BostonTechnologies/netratel/issues/493)
 and [#494](https://github.com/BostonTechnologies/netratel/issues/494).
 
+If a macOS runtime probe fails, `client-control-macos` publishes only one
+untrimmed archive on the same native runner selection and executes the same
+packaged probes. Set `source_ref` to the failed diagnostic's exact source SHA
+and compare SDK and runner image identities before attributing a difference to
+trimming. This control skips baseline checkout and trimming; it does not fan out
+into other platforms or repeat A/B measurements.
+
 ## Implementation
 
 All PowerShell tasks now use `ExternalShellRunner`. New API requests using the
