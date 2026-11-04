@@ -21,6 +21,7 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 import hashlib
@@ -2019,6 +2020,244 @@ class RuntimeSelectorRetirementTests(unittest.TestCase):
         )
         existing = [relative for relative in retired_paths if (ROOT / relative).exists()]
         self.assertEqual([], existing, "Known retired runtime implementation paths must remain deleted.")
+
+
+@unittest.skipUnless(sys.platform == "linux", "Native service acceptance is Linux-only")
+class NativeUpgradeAcceptanceTests(unittest.TestCase):
+    def setUp(self):
+        self.prepare = module("prepare-native-upgrade-acceptance")
+        self.service = module("verify-native-upgrade-service")
+        temporary = tempfile.TemporaryDirectory(prefix="netratel-native-upgrade-contract-")
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        self.source = "a" * 40
+        self.run = {"id": 123, "status": "completed", "conclusion": "success", "head_sha": self.source,
+            "path": ".github/workflows/release-build.yml", "event": "workflow_dispatch", "run_attempt": 1,
+            "repository": {"full_name": "BostonTechnologies/netratel"}, "head_repository": {"full_name": "BostonTechnologies/netratel"},
+            "run_started_at": "2026-11-04T12:00:00Z", "updated_at": "2026-11-04T12:05:00Z"}
+        self.artifact = {"id": 456, "name": "candidate", "expired": False, "digest": "sha256:" + "b" * 64,
+            "size_in_bytes": 100, "created_at": "2026-11-04T12:04:00Z", "workflow_run": {"id": 123, "head_sha": self.source}}
+
+    def test_candidate_run_and_artifact_reject_wrong_source_forks_failures_and_old_uploads(self):
+        self.prepare.validate_run(self.run, 123, self.source)
+        for changes in ({"head_sha": "b" * 40}, {"conclusion": "failure"}, {"status": "in_progress"},
+                {"path": ".github/workflows/public-pr-validation.yml"}, {"head_repository": {"full_name": "other/repo"}},
+                {"event": "pull_request"}, {"run_attempt": 0}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.prepare.validate_run({**self.run, **changes}, 123, self.source)
+        listing = {"total_count": 1, "artifacts": [self.artifact]}
+        self.assertEqual(self.artifact, self.prepare.select_artifact(listing, "candidate", self.run))
+        for changes in ({"expired": True}, {"digest": "missing"}, {"created_at": "2026-11-03T12:04:00Z"},
+                {"workflow_run": {"id": 123, "head_sha": "b" * 40}}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.prepare.select_artifact({"total_count": 1, "artifacts": [{**self.artifact, **changes}]}, "candidate", self.run)
+        for bad in ({"total_count": 2, "artifacts": [self.artifact]}, {"total_count": 2, "artifacts": [self.artifact, self.artifact]}):
+            with self.assertRaises(ValueError):
+                self.prepare.select_artifact(bad, "candidate", self.run)
+
+    def test_original_checksum_inventory_rejects_changed_bytes_duplicates_and_extra_paths(self):
+        data = self.directory / "archive.tar.gz"
+        data.write_bytes(b"original synthetic archive")
+        sums = self.directory / "SHA256SUMS"
+        line = hashlib.sha256(data.read_bytes()).hexdigest() + "  " + data.name + "\n"
+        sums.write_text(line)
+        self.assertEqual({data.name: hashlib.sha256(data.read_bytes()).hexdigest()}, self.prepare.verify_checksums(self.directory, [data.name]))
+        for body in (line + line, line.replace(data.name, "../archive.tar.gz"), line.replace(data.name, "missing")):
+            sums.write_text(body)
+            with self.assertRaises(ValueError):
+                self.prepare.verify_checksums(self.directory, [data.name])
+        sums.write_text(line)
+        data.write_bytes(b"changed")
+        with self.assertRaises(ValueError):
+            self.prepare.verify_checksums(self.directory, [data.name])
+
+    def client_archive(self, path, source=None, machine=62):
+        manifest = {"schema": "netratel.client.manifest.v1", "product": "NetRatel.Client", "version": "1.2.3",
+            "runtimeId": "linux-x64", "commitSha": source or self.source, "executable": "NetRatel.Client", "selfContained": True, "singleFile": True}
+        header = bytearray(64); header[:6] = b"\x7fELF\x02\x01"; header[18:20] = machine.to_bytes(2, "little")
+        with tarfile.open(path, "w:gz") as archive:
+            for name, data in (("netratel-client-manifest.json", json.dumps(manifest).encode()), ("NetRatel.Client", bytes(header))):
+                entry = tarfile.TarInfo("netratel-client-linux-x64/" + name); entry.size = len(data)
+                archive.addfile(entry, io.BytesIO(data))
+
+    def test_actual_client_header_and_same_version_wrong_source_are_rejected(self):
+        archive = self.directory / "client.tar.gz"
+        self.client_archive(archive)
+        self.assertEqual(self.source, self.prepare.inspect_client(archive, "1.2.3", self.source)["manifest"]["commitSha"])
+        for source, machine in (("b" * 40, 62), (self.source, 183)):
+            self.client_archive(archive, source, machine)
+            with self.assertRaises(ValueError):
+                self.prepare.inspect_client(archive, "1.2.3", self.source)
+
+    def test_preparation_uses_original_two_zip_digests_and_product_checkout_verifiers(self):
+        product = self.directory / "product"; product.mkdir(); (product / "release").mkdir()
+        template = {"schemaVersion": 1, "product": "NetRatel", "components": []}
+        (product / "release/release-manifest.json").write_text(json.dumps(template))
+        archives, metadata = {}, []
+        for index, (kind, artifact_name) in enumerate((("client", "netratel-client-1.2.3-linux-x64"), ("package", "netratel-1.2.3-linux-x64"))):
+            contents = self.directory / kind; contents.mkdir()
+            if kind == "client":
+                self.client_archive(contents / "netratel-client-1.2.3-linux-x64.tar.gz")
+                (contents / "netratel-client-1.2.3-linux-x64.spdx.json").write_text("{}")
+            else:
+                for name in ("netratel-cli-1.2.3-linux-x64.tar.gz", "NetRatel.Cli.1.2.3.nupkg", "netratel-mcp-stdio-1.2.3-linux-x64.tar.gz", "netratel-1.2.3.spdx.json"):
+                    (contents / name).write_bytes(b"synthetic contract input")
+                with tarfile.open(contents / "netratel-compose-1.2.3.tar.gz", "w:gz") as bundle:
+                    data = json.dumps({**template, "version": "1.2.3", "prerelease": False}).encode()
+                    entry = tarfile.TarInfo("./release-manifest.json"); entry.size = len(data); bundle.addfile(entry, io.BytesIO(data))
+            (contents / "SHA256SUMS").write_text("".join(hashlib.sha256(p.read_bytes()).hexdigest() + "  " + p.name + "\n" for p in contents.iterdir()))
+            archive = self.directory / (kind + ".zip")
+            with zipfile.ZipFile(archive, "w") as zipped:
+                for path in contents.iterdir(): zipped.write(path, path.name)
+            artifact_id = 456 + index
+            archives[artifact_id] = archive
+            metadata.append({**self.artifact, "id": artifact_id, "name": artifact_name, "size_in_bytes": archive.stat().st_size,
+                "digest": "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()})
+        def api(endpoint):
+            return {"total_count": 2, "artifacts": metadata} if endpoint.endswith("artifacts?per_page=100") else self.run
+        properties = {"Properties": {"PublishTrimmed": "false", "PublishAot": "false", "PublishSingleFile": "true", "SelfContained": "true", "RuntimeIdentifier": "linux-x64"}}
+        def download(artifact_id, path): shutil.copyfile(archives[artifact_id], path)
+        for corrupt in (False, True):
+            work = self.directory / ("bad" if corrupt else "good"); work.mkdir()
+            evidence = work / "evidence"; evidence.mkdir()
+            if corrupt: metadata[0]["digest"] = "sha256:" + "0" * 64
+            with patch.object(self.prepare, "api", side_effect=api), patch.object(self.prepare.promotion, "download_artifact", side_effect=download), \
+                    patch.object(self.prepare.subprocess, "run") as run, patch.object(self.prepare, "command", return_value=json.dumps(properties)):
+                if corrupt:
+                    with self.assertRaisesRegex(ValueError, "ZIP size or digest"):
+                        self.prepare.prepare_candidate(product, "123", work, evidence, "1.2.3", self.source)
+                else:
+                    receipt = self.prepare.prepare_candidate(product, "123", work, evidence, "1.2.3", self.source)
+                    self.assertEqual("unpublished Actions candidate", receipt["publicationState"])
+                    self.assertEqual(2, len(receipt["artifacts"]))
+                    self.assertEqual(2, run.call_count)
+                    self.assertEqual(str(product / "tools/ci/verify-client-release-artifact.sh"), run.call_args_list[0].args[0][1])
+                    self.assertIn("--integrity-only", run.call_args_list[0].args[0])
+
+    def test_prior_keeps_completed_publication_tag_build_and_public_asset_digest_gates(self):
+        version = "1.2.2"
+        images = {name: self.prepare.promotion.IMAGE_REPOSITORIES[name] + "@sha256:" + "c" * 64 for name in self.prepare.promotion.COMPONENTS}
+        selected = {"tag": "v" + version, "images": images}
+        names = self.prepare.promotion.required_artifacts(version)
+        files = {name: {"artifact": "shipping", "artifactId": 456, "artifactDigest": "sha256:" + "d" * 64,
+            "path": name, "sha256": "a" * 64} for name in names}
+        files[f"netratel-compose-{version}.tar.gz"]["sha256"] = "e" * 64
+        record = {"productVersion": version, "publicCommit": self.source, "images": images, "verification": {"state": "complete"},
+            "artifacts": {name: "a" * 64 for name in names}, "inputReceipt": {"repository": "BostonTechnologies/netratel", "workflow": ".github/workflows/release-build.yml",
+                "runId": 123, "attempt": 1, "headSha": self.source, "productVersion": version, "files": files},
+            "derivedBundle": {"sourceSha256": "e" * 64, "finalSha256": "a" * 64, "transformation": "Inserted verified immutable image digests into .env.images.example."}}
+        for case in ("valid", "incomplete", "tag", "asset", "input", "derived-source", "derived-final", "derived-transform"):
+            body = copy.deepcopy(record)
+            if case == "incomplete": body["verification"]["state"] = "candidate"
+            if case == "input": body["inputReceipt"]["files"][names[0]]["sha256"] = "f" * 64
+            if case == "derived-source": body["derivedBundle"]["sourceSha256"] = "f" * 64
+            if case == "derived-final": body["derivedBundle"]["finalSha256"] = "f" * 64
+            if case == "derived-transform": body["derivedBundle"]["transformation"] = "An unchecked change"
+            publication = json.dumps(body).encode()
+            sums = ("".join("a" * 64 + "  " + name + "\n" for name in names) + hashlib.sha256(publication).hexdigest() + "  publication.json\n").encode()
+            downloads = {"publication.json": publication, "SHA256SUMS": sums}
+            metadata = {"draft": False, "published_at": "2026-11-04T11:00:00Z", "tag_name": selected["tag"],
+                "assets": [{"name": name, "state": "uploaded", "digest": "sha256:" + "a" * 64, "size": 123} for name in names] +
+                    [{"name": name, "state": "uploaded", "digest": "sha256:" + hashlib.sha256(data).hexdigest(), "size": len(data)} for name, data in downloads.items()]}
+            if case == "asset": metadata["assets"][0]["digest"] = "sha256:" + "b" * 64
+            def api(endpoint):
+                if endpoint.startswith("releases/"): return metadata
+                if endpoint.startswith("commits/"): return {"sha": "b" * 40 if case == "tag" else self.source}
+                return {**self.run, "event": "push", "head_branch": selected["tag"]}
+            def download(tag, name, asset, directory):
+                (directory / name).write_bytes(downloads[name])
+            def loaded(name):
+                return SimpleNamespace(select=lambda current: selected) if name == "select-prior-release" else SimpleNamespace(checked_download=download)
+            work = self.directory / ("prior-" + case); work.mkdir(); evidence = work / "evidence"; evidence.mkdir()
+            with patch.object(self.prepare, "api", side_effect=api), patch.object(self.prepare, "module", side_effect=loaded):
+                if case == "valid": self.assertEqual(selected, self.prepare.prepare_prior("1.2.3", work, evidence))
+                else:
+                    with self.subTest(case=case), self.assertRaises(ValueError): self.prepare.prepare_prior("1.2.3", work, evidence)
+
+    def service_fixture(self):
+        properties = {"ActiveState": "active", "SubState": "running", "FragmentPath": "/etc/systemd/system/netratel-client.service",
+            "Restart": "always", "RestartUSec": "30s", "RestartPreventExitStatus": "78", "StartLimitIntervalUSec": "0", "MainPID": "42", "InvocationID": "c" * 32}
+        process = {"pid": 42, "uid": 10001, "invocationId": "c" * 32, "executable": "/synthetic/client", "arguments": ["--service"], "mode": "Service", "container": False}
+        return properties, process
+
+    def test_service_requires_actual_mainpid_invocation_owner_executable_and_normal_enablement(self):
+        properties, process = self.service_fixture()
+        self.service.validate_service(properties, process, "/synthetic/client", 10001)
+        for changes in ({"pid": 41}, {"uid": 0}, {"invocationId": "d" * 32}, {"executable": "/another/client"},
+                {"arguments": ["--service", "--api", "http://example.test"]}, {"container": True}, {"mode": "Disabled"}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.service.validate_service(properties, {**process, **changes}, "/synthetic/client", 10001)
+
+    def test_existing_systemctl_wrapper_allows_only_the_exact_owned_service_readback(self):
+        source = (ROOT / "tools/ci/smoke-postgresql-oidc-upgrade.sh").read_text()
+        wrapper = source.split('  cat > "$native_directory/bin/systemctl" <<\'SH\'\n', 1)[1].split('\nSH\n', 1)[0]
+        native = self.directory / "native-systemctl"
+        native.write_text("#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n"); native.chmod(0o755)
+        executable = self.directory / "systemctl"
+        executable.write_text(wrapper.replace("/usr/bin/systemctl", shlex.quote(str(native)))); executable.chmod(0o755)
+        properties = "--property=MainPID,FragmentPath,DropInPaths,ExecStart,Restart,RestartUSec,StartLimitIntervalUSec,RestartPreventExitStatus"
+        allowed = subprocess.run([str(executable), "show", "netratel-client.service", properties], capture_output=True, text=True)
+        self.assertEqual(0, allowed.returncode, allowed.stderr)
+        self.assertEqual(["show", "netratel-client.service", properties], json.loads(allowed.stdout))
+        for arguments in (("show", "another.service", properties), ("show", "netratel-client.service", "--property=Environment"), ("stop", "netratel-client.service")):
+            denied = subprocess.run([str(executable), *arguments], capture_output=True, text=True)
+            self.assertNotEqual(0, denied.returncode)
+            self.assertEqual("", denied.stdout)
+
+    def activation_fixture(self):
+        attempt, release, confirmation = "11111111-2222-4333-8444-555555555555", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "99999999-8888-4777-8666-555555555555"
+        nonce = "1" * 64; now = "2026-11-04T12:04:00Z"
+        server = {"attemptId": attempt, "releasePublicId": release, "confirmationId": confirmation, "state": "Accepted", "targetVersion": "1.2.3", "runtimeId": "linux-x64",
+            "readmittedAtUtc": now, "confirmedAtUtc": now, "admissionNonceHash": hashlib.sha256(nonce.encode()).hexdigest(), "gatewayConnectionId": "bbbbbbbb-2222-4333-8444-555555555555", "gatewayConnectionEpoch": 2, "tenantId": 1, "agentId": "cccccccc-2222-4333-8444-555555555555"}
+        request = {"schema": "netratel.update.request.v2", "attemptId": attempt, "releaseId": release, "toVersion": "1.2.3", "runtimeId": "linux-x64", "admissionNonce": nonce}
+        ready = {"schema": "netratel.update.ready.v2", "attemptId": attempt, "releaseId": release, "version": "1.2.3", "confirmationId": confirmation}
+        activation = {"schema": "netratel.update.activation.v1", "attemptId": attempt, "releaseId": release, "targetVersion": "1.2.3", "currentVersion": "1.2.3", "runtimeId": "linux-x64", "processId": 42, "connectionEpoch": 2}
+        activation.update({name: now for name in ("requestLoadedAtUtc", "activationContextAttachedAtUtc", "connectAcceptedAtUtc", "firstHeartbeatSentAtUtc", "heartbeatAcceptedAtUtc", "confirmationReceivedAtUtc", "readyMarkerWrittenAtUtc")})
+        return request, ready, activation, server
+
+    def test_version_only_telemetry_wrong_nonce_confirmation_or_process_cannot_pass_activation(self):
+        request, ready, activation, server = self.activation_fixture()
+        result = self.service.validate_activation(request, ready, activation, server, "1.2.3", 42)
+        self.assertNotIn("admissionNonce", result)
+        for changed in ({"admissionNonce": "2" * 64}, {"attemptId": "22222222-2222-4333-8444-555555555555"}):
+            with self.assertRaises(ValueError): self.service.validate_activation({**request, **changed}, ready, activation, server, "1.2.3", 42)
+        for changed in ({"processId": 41}, {"connectionEpoch": 1}, {"activationContextAttachedAtUtc": None}, {"confirmationReceivedAtUtc": None}):
+            with self.assertRaises(ValueError): self.service.validate_activation(request, ready, {**activation, **changed}, server, "1.2.3", 42)
+        with self.assertRaises(ValueError): self.service.validate_activation(request, ready, activation, {**server, "gatewayConnectionEpoch": 0}, "1.2.3", 42)
+        with self.assertRaises(ValueError): self.service.validate_activation(request, {**ready, "confirmationId": str(uuid.UUID(int=0))}, activation, server, "1.2.3", 42)
+
+    def test_restart_requires_new_process_ack_admission_and_retained_identity_bytes(self):
+        request, ready, activation, server = self.activation_fixture()
+        proof = self.service.validate_activation(request, ready, activation, server, "1.2.3", 42)
+        old = {"pid": 42, "invocationId": "c" * 32, "acknowledgedAtUtc": "2026-11-04T12:04:00Z", "activation": proof,
+            "executableSha256": "a" * 64, "files": {"request.json": {"sha256": "b" * 64}}, "policyRevision": 9}
+        new = {**copy.deepcopy(old), "pid": 43, "invocationId": "d" * 32, "acknowledgedAtUtc": "2026-11-04T12:05:00Z"}
+        new["activation"].update(gatewayConnectionEpoch=3, gatewayConnectionId="fresh")
+        self.service.validate_restart(old, new)
+        for changes in ({"pid": 42}, {"invocationId": "c" * 32}, {"acknowledgedAtUtc": old["acknowledgedAtUtc"]}, {"policyRevision": 8}, {"executableSha256": "c" * 64}):
+            with self.assertRaises(ValueError): self.service.validate_restart(old, {**new, **changes})
+        changed = copy.deepcopy(new); changed["activation"]["tenantId"] = 2
+        with self.assertRaises(ValueError): self.service.validate_restart(old, changed)
+
+    def test_late_old_process_ack_after_old_snapshot_cannot_pass_post_restart_return_boundary(self):
+        old_capture = "2026-11-04T12:04:00.100000Z"
+        late_old_ack = "2026-11-04T12:04:00.900000Z"
+        after_restart_return = "2026-11-04T12:04:01.000001Z"
+        self.assertGreater(self.service.utc(late_old_ack), self.service.utc(old_capture))
+        with self.assertRaises(ValueError):
+            self.service.validate_acknowledgement({"version": "1.2.3", "acknowledgedAtUtc": late_old_ack}, "1.2.3", after_restart_return)
+        self.service.validate_acknowledgement({"version": "1.2.3", "acknowledgedAtUtc": "2026-11-04T12:04:01.000002Z"}, "1.2.3", after_restart_return)
+
+    def test_durable_state_protection_rejects_symlinks_wrong_modes_and_writable_ancestors(self):
+        state = self.directory / "state"; state.mkdir(mode=0o700)
+        path = state / "presence.json"; path.write_text("{}"); path.chmod(0o600)
+        self.assertEqual("0600", self.service.protected_file(path, os.getuid())["mode"])
+        path.chmod(0o640)
+        with self.assertRaises(ValueError): self.service.protected_file(path, os.getuid())
+        path.chmod(0o600); alias = state / "alias.json"; alias.symlink_to(path)
+        with self.assertRaises(ValueError): self.service.protected_file(alias, os.getuid())
+        state.chmod(0o777)
+        with self.assertRaises(ValueError): self.service.protected_file(path, os.getuid())
 
 
 class OidcUpgradeChannelTests(unittest.TestCase):
