@@ -82,6 +82,65 @@ public sealed class NativeServiceRecoveryPolicyTests
         finally { Directory.Delete(directory, true); }
     }
 
+    [Fact]
+    public async Task GatewayActivationCallbacks_RecordTheirOwnTimestamps_AndRetainRequestAndHelloTimes()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "netratel-activation-callbacks-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(directory, "request.json"), """
+                {"schema":"netratel.update.request.v2","attemptId":"11111111-2222-4333-8444-555555555555","releaseId":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","admissionNonce":"fixture-only","toVersion":"1.2.3","runtimeId":"linux-x64"}
+                """);
+            using var http = new HttpClient { BaseAddress = new Uri("https://api.example") };
+            var token = new UnusedUpdateToken();
+            await using var coordinator = new AkkaClientAutoUpdateCoordinator(new ClientOptions
+            {
+                ApiBaseUrl = "https://api.example", AutoUpdate = new() { StateDirectory = directory, RuntimeId = "linux-x64" }
+            }, "1.2.3+fixture", token, http, TimeProvider.System,
+                () => throw new InvalidOperationException("No updater may launch during diagnostic callbacks."), true, _ => { });
+            JsonElement ReadActivation()
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(directory, "activation.json")));
+                return document.RootElement.Clone();
+            }
+            static DateTimeOffset? Timestamp(JsonElement record, string name) =>
+                record.GetProperty(name).ValueKind == JsonValueKind.Null ? null : record.GetProperty(name).GetDateTimeOffset();
+            var hello = new ConnectHello(); coordinator.PopulateHello(hello);
+            var initial = ReadActivation();
+            var requestAt = Timestamp(initial, "requestLoadedAtUtc");
+            var attachedAt = Timestamp(initial, "activationContextAttachedAtUtc");
+            Assert.NotNull(requestAt); Assert.NotNull(attachedAt);
+            var snapshots = new List<(string Field, DateTimeOffset Before, DateTimeOffset After, JsonElement Record)>();
+            foreach (var (field, callback) in new (string, Action)[]
+            {
+                ("connectAcceptedAtUtc", () => coordinator.OnPresenceConnected(42)),
+                ("firstHeartbeatSentAtUtc", () => coordinator.OnActivationHeartbeatSent(42)),
+                ("heartbeatAcceptedAtUtc", () => coordinator.OnActivationHeartbeatAccepted(42))
+            })
+            {
+                var before = DateTimeOffset.UtcNow;
+                callback();
+                snapshots.Add((field, before, DateTimeOffset.UtcNow, ReadActivation()));
+            }
+            var observed = string.Join(Environment.NewLine, snapshots.Select(snapshot => snapshot.Field + ": " + snapshot.Record.GetRawText()));
+            foreach (var snapshot in snapshots)
+            {
+                var timestamp = Timestamp(snapshot.Record, snapshot.Field);
+                Assert.True(timestamp is { } actual && actual >= snapshot.Before && actual <= snapshot.After, observed);
+                Timestamp(snapshot.Record, "requestLoadedAtUtc").Should().Be(requestAt);
+                Timestamp(snapshot.Record, "activationContextAttachedAtUtc").Should().Be(attachedAt);
+                snapshot.Record.GetProperty("attemptId").GetGuid().Should().Be(Guid.Parse(hello.UpdateActivation.AttemptId));
+                snapshot.Record.GetProperty("releaseId").GetGuid().Should().Be(Guid.Parse(hello.UpdateActivation.ReleaseId));
+                snapshot.Record.GetProperty("processId").GetInt32().Should().Be(Environment.ProcessId);
+                snapshot.Record.GetProperty("connectionEpoch").GetInt64().Should().Be(42);
+                Timestamp(snapshots[^1].Record, snapshot.Field).Should().Be(timestamp);
+            }
+            token.Calls.Should().Be(0);
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
     private sealed class UnusedUpdateToken : IAgentTokenService
     {
         public int Calls { get; private set; }
