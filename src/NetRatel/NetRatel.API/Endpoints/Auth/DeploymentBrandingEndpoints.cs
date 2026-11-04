@@ -27,6 +27,15 @@ public static class DeploymentBrandingEndpoints
         var group = app.MapGroup("/api/v2/branding")
             .WithTags("Setup and instance configuration")
             .RequireAuthorization("InstanceAdministrator");
+        group.AddEndpointFilter(async (context, next) =>
+        {
+            // Local cookies are ambient credentials. Use the same non-simple
+            // account marker as the other API-owned account mutations.
+            if (context.HttpContext.User.HasClaim("auth_mode", "local") &&
+                !string.Equals(context.HttpContext.Request.Headers["X-NetRatel-Account-Request"], "1", StringComparison.Ordinal))
+                return Results.Forbid();
+            return await next(context).ConfigureAwait(false);
+        });
 
         group.MapPut("", async (
             [FromBody] UpdateDeploymentBrandingRequest request,
@@ -48,6 +57,10 @@ public static class DeploymentBrandingEndpoints
             }
         });
 
+        // Local uploads require the non-simple account marker above. The API's
+        // noncredentialed CORS policy prevents credentialed cross-origin callers;
+        // bearer callers supply explicit credentials rather than ambient cookies.
+        // Replace only this multipart endpoint's implicit form-token metadata.
         group.MapPost("/assets", async (
             [FromForm] string slot,
             [FromForm] IFormFile file,
@@ -79,7 +92,7 @@ public static class DeploymentBrandingEndpoints
             {
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["asset"] = [exception.Message] });
             }
-        });
+        }).DisableAntiforgery();
 
         return app;
     }
