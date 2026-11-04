@@ -311,6 +311,12 @@ the ordinary untrimmed Linux Client archive and Compose bundle by run, attempt,
 source, digest, checksum, manifest and SBOM. Current API/Web/migrations images
 are built from that product source through the existing hosted builder; the
 prior release keeps its completed-publication and immutable-image checks.
+Its authenticated public source selects one of the two existing browser shell
+contracts, with MainLayout/NavMenu blob identities retained in
+`prior-browser-shell.json`. Unknown, ambiguous or missing source fails
+preparation. Browser report names retain their previous/upgraded phase even
+when both sources use the public-name search shell; the candidate still uses
+the strict current-shell assertions.
 
 From a terminal with authenticated GitHub CLI access to the repository:
 
