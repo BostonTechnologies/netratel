@@ -1685,6 +1685,11 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
         application.UseAuthentication();
         application.UseAuthorization();
         application.UseAntiforgery();
+        // Isolated vendor document keeps asset load order independent of the
+        // application fixture's Monaco AMD loader, under the same origin.
+        application.MapGet("/__fixtures/terminal-assets", () => Results.Content(
+            "<!doctype html><html><head><title>Terminal assets</title></head><body></body></html>", "text/html"))
+            .RequireAuthorization();
         application.MapRazorComponents<ClientsManagementFixtureApp>().AddInteractiveServerRenderMode();
         await application.StartAsync().ConfigureAwait(false);
         var address = application.Urls.Single(url => url.StartsWith("http://127.0.0.1:", StringComparison.Ordinal));
