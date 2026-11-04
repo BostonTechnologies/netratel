@@ -2660,7 +2660,8 @@ class ClientArchiveAcceptanceTests(unittest.TestCase):
         descriptor = {"sourceId": "netratel-runtime", "kind": "runtime", "platform": "linux", "available": True,
                       "unavailableReason": None, "supportsLive": True, "supportsHistory": True, "supportsPaging": True}
         record = {"sourceId": "netratel-runtime", "category": "Gateway", "prefix": "Gateway", "sequence": 1,
-                  "cursor": "1", "timestampUtc": "2030-01-01T00:00:00Z", "message": "Presence admitted.", "truncated": False}
+                  "cursor": "1", "timestampUtc": "2030-01-01T00:00:00Z",
+                  "message": "Presence admitted. connectionEpoch=41, heartbeatInterval=15s.", "truncated": False}
         page = {"records": [record], "errorCode": None, "resyncRequired": False, "hasMore": False, "droppedRecordCount": 0}
         with tempfile.TemporaryDirectory() as temporary:
             fixture = Path(temporary) / "response.json"
@@ -2668,6 +2669,8 @@ class ClientArchiveAcceptanceTests(unittest.TestCase):
             def check(name, value, *arguments):
                 body = re.search(r"^" + name + r"\(\) \{\n.*?^\}", source, re.MULTILINE | re.DOTALL).group(0)
                 fixture.write_text(json.dumps(value))
+                if name == "runtime_log_history_valid":
+                    arguments = (*arguments, "41")
                 return subprocess.run(["bash", "-c", body + '\n' + name + ' "$@"', "fixture", str(fixture), *arguments],
                                       capture_output=True, text=True).returncode
 
@@ -2683,7 +2686,8 @@ class ClientArchiveAcceptanceTests(unittest.TestCase):
             self.assertNotEqual(0, check("runtime_log_history_valid", {**page, "records": []}, "1"))
             for key, value in (("sourceId", "other"), ("category", "Other"), ("prefix", "Other"), ("sequence", "1"),
                                ("sequence", 0), ("sequence", 0.5), ("sequence", True), ("cursor", ""), ("timestampUtc", None),
-                               ("message", "unrelated"), ("message", None), ("truncated", True)):
+                               ("message", "unrelated"), ("message", "Presence admitted. connectionEpoch=40, heartbeatInterval=15s."),
+                               ("message", None), ("truncated", True)):
                 self.assertNotEqual(0, check("runtime_log_history_valid", {**page, "records": [{**record, key: value}]}, "1"))
             for key, value in (("records", {}), ("records", None), ("records", [record] * 101), ("errorCode", "source_unavailable"),
                                ("resyncRequired", True), ("hasMore", "false"), ("droppedRecordCount", -1),
@@ -2697,7 +2701,8 @@ class ClientArchiveAcceptanceTests(unittest.TestCase):
         descriptor = {"sourceId": "netratel-runtime", "kind": "runtime", "platform": "linux", "available": True,
                       "unavailableReason": None, "supportsLive": True, "supportsHistory": True, "supportsPaging": True}
         record = {"sourceId": "netratel-runtime", "category": "Gateway", "prefix": "Gateway", "sequence": 1,
-                  "cursor": "1", "timestampUtc": "2030-01-01T00:00:00Z", "message": "Presence admitted.", "truncated": False}
+                  "cursor": "1", "timestampUtc": "2030-01-01T00:00:00Z",
+                  "message": "Presence admitted. connectionEpoch=41, heartbeatInterval=15s.", "truncated": False}
         page = {"records": [record], "errorCode": None, "resyncRequired": False, "hasMore": False, "droppedRecordCount": 0}
         mocks = r'''
 curl() {
@@ -2717,12 +2722,18 @@ curl() {
   fi
 }
 sleep() { :; }
+docker() {
+  [[ "$FIXTURE_CASE" != container-read ]] || return 42
+  printf '%s\n' '[Gateway] Presence admitted. connectionEpoch=41, heartbeatInterval=15s.'
+}
 record_client_acceptance() { printf '%s\n' "$1" >> "$FIXTURE_DIR/stages"; }
 '''
         agent = "11111111-1111-1111-1111-111111111111"
         for case, status, expected in (("success", "200", 0), ("admission-wait", "200", 0), ("unauthorized", "401", 1),
                                        ("forbidden", "403", 1), ("not-ready", "404", 1), ("transport", "200", 7),
-                                       ("history-http", "200", 22), ("empty", "200", 1), ("malformed", "200", 1)):
+                                       ("history-http", "200", 22), ("empty", "200", 1), ("malformed", "200", 1),
+                                       ("restarted-success", "200", 0), ("restarted-stale", "200", 1),
+                                       ("restarted-duplicate", "200", 1), ("restarted-missing-initial", "200", 1), ("container-read", "200", 42)):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 (root / "sources.json").write_text(json.dumps([descriptor]))
@@ -2731,26 +2742,35 @@ record_client_acceptance() { printf '%s\n' "$1" >> "$FIXTURE_DIR/stages"; }
                     history["records"] = []
                 elif case == "malformed":
                     history["records"][0]["sequence"] = "1"
+                elif case == "restarted-stale":
+                    history["records"][0]["message"] = "Presence admitted. connectionEpoch=40, heartbeatInterval=15s."
+                phase = "restarted" if case.startswith("restarted-") else "initial"
+                if phase == "restarted":
+                    (root / "evidence").mkdir()
+                    previous_epoch = None if case == "restarted-missing-initial" else "41" if case == "restarted-duplicate" else "40"
+                    (root / "evidence/runtime-logs-initial.json").write_text(json.dumps({"connectionEpoch": previous_epoch}))
                 (root / "history.json").write_text(json.dumps(history))
                 result = subprocess.run(["bash", "-c", 'set -euo pipefail\n' + functions + mocks +
-                    '\nverify_runtime_log_acceptance synthetic-token "$FIXTURE_DIR/evidence" initial'],
+                    '\nverify_runtime_log_acceptance synthetic-token "$FIXTURE_DIR/evidence" "$PHASE"'],
                     env={**os.environ, "FIXTURE_DIR": str(root), "FIXTURE_CASE": case, "SOURCE_STATUS": status,
-                         "api_url": "http://127.0.0.1:9222", "tenant_id": "7", "agent_id": agent}, capture_output=True, text=True)
+                         "PHASE": phase, "gateway_client": "synthetic-client", "api_url": "http://127.0.0.1:9222", "tenant_id": "7", "agent_id": agent}, capture_output=True, text=True)
                 self.assertEqual(expected, result.returncode, result.stderr)
-                receipt = root / "evidence/runtime-logs-initial.json"
-                calls = (root / "calls").read_text().splitlines()
+                receipt = root / f"evidence/runtime-logs-{phase}.json"
+                calls = (root / "calls").read_text().splitlines() if (root / "calls").exists() else []
                 self.assertTrue(all(url.startswith(f"http://127.0.0.1:9222/api/v2/agents/7/{agent}/logs/") for url in calls))
                 if expected == 0:
                     evidence = json.loads(receipt.read_text())
                     self.assertEqual((7, agent, 1, True, False), (evidence["tenantId"], evidence["agentId"],
                         evidence["historyRecordCount"], evidence["liveAdvertised"], evidence["liveDeliveryExecuted"]))
-                    self.assertEqual("initial-runtime-log-source-and-history\n", (root / "stages").read_text())
+                    self.assertEqual("41", evidence["connectionEpoch"])
+                    self.assertEqual(f"{phase}-runtime-log-source-and-history\n", (root / "stages").read_text())
                     self.assertEqual(3 if case == "admission-wait" else 2, len(calls))
                 else:
                     self.assertFalse(receipt.exists())
                     self.assertFalse((root / "stages").exists())
                     self.assertEqual(60 if case == "empty" else 30 if case == "not-ready" else
-                                     2 if case in ("history-http", "malformed") else 1, len(calls))
+                                     2 if case in ("history-http", "malformed", "restarted-stale") else
+                                     0 if case in ("restarted-duplicate", "restarted-missing-initial", "container-read") else 1, len(calls))
 
     def test_inventory_status_and_real_package_checks_reject_incomplete_or_unrelated_receipts(self):
         source = (ROOT / "tools/ci/smoke-oidc-compose.sh").read_text()

@@ -451,7 +451,7 @@ runtime_log_source_available() {
 }
 
 runtime_log_history_valid() {
-  jq -e --argjson minimum "$2" '
+  jq -e --argjson minimum "$2" --arg epoch "$3" '
     def nonempty_string: if type == "string" then length > 0 else false end;
     def integer: if type == "number" then floor == . else false end;
     if type != "object" or (.records | type) != "array" then false else
@@ -459,17 +459,26 @@ runtime_log_history_valid() {
       (.droppedRecordCount | integer and . >= 0) and (.records | length) >= $minimum and (.records | length) <= 100 and
       all(.records[]; .sourceId == "netratel-runtime" and .category == "Gateway" and .prefix == "Gateway" and
         (.sequence | integer and . > 0) and (.cursor | nonempty_string) and (.timestampUtc | nonempty_string) and
-        (.message | type) == "string" and (.message | contains("Presence admitted.")) and .truncated == false)
+        (.message | type) == "string" and (.message | contains("Presence admitted.")) and
+        (.message | contains("connectionEpoch=\($epoch), heartbeatInterval=")) and .truncated == false)
     end' "$1" >/dev/null
 }
 
 verify_runtime_log_acceptance() {
-  local token="$1" evidence="$2" phase="$3" route sources history http_status ready=false
+  local token="$1" evidence="$2" phase="$3" route sources history http_status connection_epoch ready=false
   mkdir -p "$evidence"
   route="$api_url/api/v2/agents/$tenant_id/$agent_id/logs"
   sources="$evidence/log-sources-$phase.json"
   history="$evidence/log-history-$phase.json"
   stage="checking authorized runtime log source and history ($phase)"
+  connection_epoch="$(docker logs "$gateway_client" 2>&1 |
+    sed -nE 's/.*\[Gateway\] Presence admitted\..*connectionEpoch=([1-9][0-9]*), heartbeatInterval=.*/\1/p' | tail -n 1)" || return $?
+  [[ "$connection_epoch" =~ ^[1-9][0-9]*$ ]] || { echo 'The current Client container has no valid admitted epoch.' >&2; return 1; }
+  if [[ "$phase" == restarted ]]; then
+    jq -e --arg epoch "$connection_epoch" \
+      '.connectionEpoch | if type == "string" then test("^[1-9][0-9]*$") and . != $epoch else false end' \
+      "$evidence/runtime-logs-initial.json" >/dev/null || return 1
+  fi
   for _ in $(seq 1 30); do
     http_status="$(curl --silent --show-error --connect-timeout 2 --max-time 5 --output "$sources" --write-out '%{http_code}' \
       --header "Authorization: Bearer $token" "$route/sources")" || return $?
@@ -478,10 +487,10 @@ verify_runtime_log_acceptance() {
         runtime_log_source_available "$sources" || return 1
         curl --silent --show-error --fail --connect-timeout 2 --max-time 5 --get --header "Authorization: Bearer $token" \
           --data-urlencode sourceId=netratel-runtime --data-urlencode pageSize=100 \
-          --data-urlencode prefix=Gateway --data-urlencode 'text=Presence admitted.' "$route/history" > "$history" || return $?
+          --data-urlencode prefix=Gateway --data-urlencode "text=connectionEpoch=$connection_epoch, heartbeatInterval=" "$route/history" > "$history" || return $?
         # Admission can precede the initial runtime snapshot; only a valid empty page may wait.
-        runtime_log_history_valid "$history" 0 || return 1
-        if runtime_log_history_valid "$history" 1; then ready=true; break; fi
+        runtime_log_history_valid "$history" 0 "$connection_epoch" || return 1
+        if runtime_log_history_valid "$history" 1 "$connection_epoch"; then ready=true; break; fi
         ;;
       404) ;; # The admitted log stream has not registered yet.
       *) echo "Runtime log sources failed (HTTP $http_status)." >&2; return 1 ;;
@@ -490,13 +499,13 @@ verify_runtime_log_acceptance() {
   done
   [[ "$ready" == true ]] || { echo 'Runtime log source/history did not become available.' >&2; return 1; }
   runtime_log_source_available "$sources"
-  runtime_log_history_valid "$history" 1
-  jq -n --argjson tenant "$tenant_id" --arg agent "$agent_id" --arg phase "$phase" \
+  runtime_log_history_valid "$history" 1 "$connection_epoch"
+  jq -n --argjson tenant "$tenant_id" --arg agent "$agent_id" --arg phase "$phase" --arg epoch "$connection_epoch" \
     --slurpfile sources "$sources" --slurpfile history "$history" '
-    {passed:true,tenantId:$tenant,agentId:$agent,phase:$phase,sourceId:"netratel-runtime",
+    {passed:true,tenantId:$tenant,agentId:$agent,phase:$phase,connectionEpoch:$epoch,sourceId:"netratel-runtime",
       historyRecordCount:($history[0].records | length),droppedRecordCount:$history[0].droppedRecordCount,
       liveAdvertised:([$sources[0][] | select(.sourceId == "netratel-runtime")][0].supportsLive),liveDeliveryExecuted:false,
-      historyFilter:{prefix:"Gateway",text:"Presence admitted.",pageSize:100}}' > "$evidence/runtime-logs-$phase.json"
+      historyFilter:{prefix:"Gateway",text:("connectionEpoch=" + $epoch + ", heartbeatInterval="),pageSize:100}}' > "$evidence/runtime-logs-$phase.json"
   record_client_acceptance "$phase-runtime-log-source-and-history"
 }
 
