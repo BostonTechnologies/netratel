@@ -386,7 +386,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         Assert.Equal(0, process.ExitCode);
     }
 
-    private static Task WaitForApiReadyAsync(string apiContainer) => RunDockerAsync(
+    private static Task WaitForApiReadyAsync(string apiContainer, int httpPort = 9222, int attempts = 25) => RunDockerAsync(
         "run",
         "--rm",
         "--network",
@@ -394,10 +394,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         "alpine:3.22",
         "sh",
         "-ceu",
-        """
+        $"""
         attempt=0
-        while [ "$attempt" -lt 25 ]; do
-          status="$(wget -q -T 1 -O - http://127.0.0.1:9222/api/v2/setup/status 2>/dev/null)" || status=""
+        while [ "$attempt" -lt {attempts} ]; do
+          status="$(wget -q -T 1 -O - http://127.0.0.1:{httpPort}/api/v2/setup/status 2>/dev/null)" || status=""
           if printf '%s' "$status" | grep -Eq '"isReady"[[:space:]]*:[[:space:]]*true'; then
             exit 0
           fi
@@ -438,28 +438,30 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                 if (!string.IsNullOrWhiteSpace(ingressContainer)) await RunDockerAsync("start", ingressContainer);
             }
         }
-        await page.WaitForFunctionAsync("""
-            async () => {
-                try {
-                    const response = await fetch('/api/v2/setup/status');
-                    return response.ok && (await response.json()).isReady === true;
-                } catch { return false; }
-            }
-            """, null, new PageWaitForFunctionOptions { Timeout = 60_000 });
+        // An async waitForFunction predicate can resolve false without polling.
+        // Observe the real Web listener through the existing bounded startup probe.
+        await WaitForApiReadyAsync(webContainer, httpPort: 9111, attempts: 60);
 
         await using var restoredContext = await browser.NewContextAsync(new BrowserNewContextOptions { IgnoreHTTPSErrors = IgnoreSyntheticHttpsErrors });
-        var anonymous = await restoredContext.APIRequest.GetAsync(new Uri(webUrl, "api/v2/local-auth/me").ToString());
-        Assert.Equal(401, anonymous.Status);
+        var restoredPage = await restoredContext.NewPageAsync();
+        restoredPage.SetDefaultTimeout(20_000);
+        await restoredPage.GotoAsync(new Uri(webUrl, "login").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        var anonymousStatus = await restoredPage.EvaluateAsync<int>(
+            "async () => (await fetch('/api/v2/local-auth/me', { credentials: 'same-origin', cache: 'no-store' })).status");
+        Assert.Equal(401, anonymousStatus);
         await restoredContext.AddCookiesAsync(cookies.Select(cookie => new Cookie
         {
             Name = cookie.Name, Value = cookie.Value, Domain = cookie.Domain, Path = cookie.Path,
             Expires = cookie.Expires, HttpOnly = cookie.HttpOnly, Secure = cookie.Secure, SameSite = cookie.SameSite
         }));
-        var after = await restoredContext.APIRequest.GetAsync(new Uri(webUrl, "api/v2/local-auth/me").ToString());
-        Assert.Equal(200, after.Status);
-        using var afterIdentity = JsonDocument.Parse(await after.TextAsync());
-        Assert.Equal(principalId, afterIdentity.RootElement.GetProperty("principalId").GetString());
-        var restoredPage = await restoredContext.NewPageAsync();
+        var after = await restoredPage.EvaluateAsync<JsonElement>("""
+            async () => {
+                const response = await fetch('/api/v2/local-auth/me', { credentials: 'same-origin', cache: 'no-store' });
+                return { status: response.status, identity: response.ok ? await response.json() : null };
+            }
+            """);
+        Assert.Equal(200, after.GetProperty("status").GetInt32());
+        Assert.Equal(principalId, after.GetProperty("identity").GetProperty("principalId").GetString());
         await restoredPage.GotoAsync(webUrl.ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await Assertions.Expect(restoredPage.Locator(".netratel-app-bar")).ToBeVisibleAsync(new() { Timeout = 20_000 });
         await AssertLocalTenantScopeAsync(restoredPage, webUrl, "Browser smoke tenant");
