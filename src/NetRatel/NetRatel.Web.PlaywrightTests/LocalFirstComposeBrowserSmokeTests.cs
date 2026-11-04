@@ -417,7 +417,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             .Where(cookie => cookie.Name == "NetRatel.Local" || cookie.Name.StartsWith("NetRatel.LocalC", StringComparison.Ordinal))
             .ToArray();
         Assert.True(cookies.Any(cookie => cookie.Name == "NetRatel.Local"), "Local sign-in must issue its protected session cookie.");
-        var before = await page.Context.APIRequest.GetAsync(new Uri(webUrl, "api/v2/access/self").ToString());
+        var before = await page.Context.APIRequest.GetAsync(new Uri(webUrl, "api/v2/local-auth/me").ToString());
         Assert.Equal(200, before.Status);
         using var beforeIdentity = JsonDocument.Parse(await before.TextAsync());
         var principalId = beforeIdentity.RootElement.GetProperty("principalId").GetString();
@@ -448,14 +448,14 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             """, null, new PageWaitForFunctionOptions { Timeout = 60_000 });
 
         await using var restoredContext = await browser.NewContextAsync(new BrowserNewContextOptions { IgnoreHTTPSErrors = IgnoreSyntheticHttpsErrors });
-        var anonymous = await restoredContext.APIRequest.GetAsync(new Uri(webUrl, "api/v2/access/self").ToString());
+        var anonymous = await restoredContext.APIRequest.GetAsync(new Uri(webUrl, "api/v2/local-auth/me").ToString());
         Assert.Equal(401, anonymous.Status);
         await restoredContext.AddCookiesAsync(cookies.Select(cookie => new Cookie
         {
             Name = cookie.Name, Value = cookie.Value, Domain = cookie.Domain, Path = cookie.Path,
             Expires = cookie.Expires, HttpOnly = cookie.HttpOnly, Secure = cookie.Secure, SameSite = cookie.SameSite
         }));
-        var after = await restoredContext.APIRequest.GetAsync(new Uri(webUrl, "api/v2/access/self").ToString());
+        var after = await restoredContext.APIRequest.GetAsync(new Uri(webUrl, "api/v2/local-auth/me").ToString());
         Assert.Equal(200, after.Status);
         using var afterIdentity = JsonDocument.Parse(await after.TextAsync());
         Assert.Equal(principalId, afterIdentity.RootElement.GetProperty("principalId").GetString());
