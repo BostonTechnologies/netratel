@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+harness_tools="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+root="${NETRATEL_UPGRADE_SOURCE_ROOT:-$(cd "$harness_tools/../.." && pwd)}"
 cd "$root"
 source "$root/tools/ci/chromium-nss-trust.sh"
 source "$root/tools/ci/oidc-smoke-claims.sh"
@@ -41,6 +42,21 @@ upgrade_machine_identity=""
 client_unit="netratel-client.service"
 updater_unit="netratel-update.service"
 native_services_installed=false
+native_acceptance_evidence="${NETRATEL_NATIVE_UPGRADE_EVIDENCE:-}"
+
+if [[ -n "$native_acceptance_evidence" ]]; then
+  python3 - "${NETRATEL_NATIVE_UPGRADE_INPUTS:?set NETRATEL_NATIVE_UPGRADE_INPUTS}" "$harness_tools" <<'PY'
+import json, os, subprocess, sys
+from pathlib import Path
+candidate = json.loads(Path(sys.argv[1]).read_text())
+source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+tooling = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=sys.argv[2], text=True).strip()
+if candidate['sourceSha'] != source or tooling != os.environ['NETRATEL_NATIVE_UPGRADE_TOOLING_SHA']:
+    raise ValueError('Native upgrade product or separately pinned tooling source differs')
+if candidate['publicationState'] != 'unpublished Actions candidate':
+    raise ValueError('Native upgrade candidate must retain its actual Actions provenance')
+PY
+fi
 
 [[ -s "$bundle" ]] || { echo "NETRATEL_UPGRADE_COMPOSE_BUNDLE is missing: $bundle" >&2; exit 1; }
 [[ -s "$candidate_client_archive" ]] || { echo "The candidate Linux Client archive is missing." >&2; exit 1; }
@@ -53,6 +69,11 @@ current_compose=(docker compose --project-name "$project" -f "$bundle_extract_di
 
 cleanup() {
   local status=$?
+  if [[ -n "$native_acceptance_evidence" && "$native_services_installed" == true ]]; then
+    systemctl show "$client_unit" "$updater_unit" \
+      --property=Id,ActiveState,SubState,Result,ExecMainStatus,MainPID,InvocationID,NRestarts --no-pager \
+      > "$native_acceptance_evidence/final-service-status.txt" 2>/dev/null || true
+  fi
   if [[ "$native_services_installed" == true ]]; then
     sudo systemctl stop "$client_unit" "$updater_unit" >/dev/null 2>&1 || true
     sudo unlink "/etc/systemd/system/$client_unit" >/dev/null 2>&1 || true
@@ -93,6 +114,65 @@ configure_images() {
   export NETRATEL_API_IMAGE="$1"
   export NETRATEL_MIGRATIONS_IMAGE="$2"
   export NETRATEL_WEB_IMAGE="$3"
+}
+
+verify_current_source_images() {
+  [[ -n "$native_acceptance_evidence" ]] || return 0
+  local role container expected actual
+  for role in api web migrations; do
+    container="$("${active_compose[@]}" ps -a -q "$role")"
+    expected="$(jq -r --arg role "$role" '.[$role].id' "$native_acceptance_evidence/source-images.json")"
+    actual="$(docker inspect --format '{{.Image}}' "$container")"
+    [[ -n "$container" && "$actual" == "$expected" ]] || {
+      echo "Actual native-upgrade ${role} container differs from its prepared exact-source image." >&2
+      return 1
+    }
+    jq -nc --arg role "$role" --arg container "$container" --arg image "$actual" \
+      '{role:$role,containerId:$container,imageId:$image}' >> "$native_acceptance_evidence/source-containers.jsonl"
+  done
+}
+
+record_native_service_proof() {
+  [[ -n "$native_acceptance_evidence" ]] || return 0
+  local phase="$1" expected_version="$2" since="$3" server=()
+  if [[ "$phase" != prior ]]; then server=(--server "$native_acceptance_evidence/server-$phase.json"); fi
+  sudo python3 "$harness_tools/verify-native-upgrade-service.py" --stage "$phase" \
+    --root "$client_root" --state /var/lib/netratel/update --logs "$native_directory/logs" \
+    --evidence "$native_acceptance_evidence" --inputs "$NETRATEL_NATIVE_UPGRADE_INPUTS" \
+    --version "$expected_version" --since "$since" "${server[@]}"
+}
+
+retain_native_server_proof() {
+  [[ -n "$native_acceptance_evidence" ]] || return 0
+  local phase="$1" detail="$2" nonce_hash
+  nonce_hash="$("${active_compose[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -U netratel -d netratel \
+    -v attempt="$attempt_id" -Atq <<'SQL'
+SELECT "AdmissionNonceHash" FROM "ClientUpdateAttempts" WHERE "PublicId" = :'attempt'::uuid;
+SQL
+)"
+  [[ "$nonce_hash" =~ ^[a-f0-9]{64}$ ]] || { echo 'The approved native update has no valid stored nonce hash.' >&2; return 1; }
+  jq -n --argjson attempt "$detail" --argjson catalog "$release_response" --arg nonce "$nonce_hash" \
+    '$attempt as $a | ($catalog | map(select(.id == $a.releaseId))) as $releases |
+     if ($releases | length) != 1 then error("Ambiguous approved native release") else
+     {attemptId:$a.attemptId,releasePublicId:$releases[0].publicId,releaseId:$a.releaseId,
+      tenantId:$a.tenantId,agentId:$a.agentId,targetVersion:$a.targetVersion,runtimeId:$a.runtimeId,
+      state:$a.state,gatewayConnectionId:$a.gatewayConnectionId,gatewayConnectionEpoch:$a.gatewayConnectionEpoch,
+      readmittedAtUtc:$a.readmittedAtUtc,confirmedAtUtc:$a.confirmedAtUtc,confirmationId:$a.confirmationId,
+      admissionNonceHash:$nonce} end' > "$native_acceptance_evidence/server-$phase.json"
+}
+
+retain_native_gateway_presence() {
+  local phase="$1" presence
+  presence="$(curl --silent --show-error --fail --max-time 10 \
+    --header "Authorization: Bearer ${access_token}" \
+    "${api_url}/api/v2/client-presence/?tenantId=${upgrade_tenant_id}&online=true&search=${prior_agent_id}&limit=100")"
+  jq -e --argjson tenant "$upgrade_tenant_id" --arg agent "$prior_agent_id" \
+    'any(.items[]?; .tenantId == $tenant and ((.agentId | ascii_downcase) == ($agent | ascii_downcase)) and
+      .online == true and .source == "gateway" and .authority == "akka" and .isAuthoritative == true)' <<<"$presence" >/dev/null
+  jq --argjson tenant "$upgrade_tenant_id" --arg agent "$prior_agent_id" \
+    '{items:[.items[] | select(.tenantId == $tenant and ((.agentId | ascii_downcase) == ($agent | ascii_downcase))) |
+      {tenantId,agentId,online,source,authority,isAuthoritative,presenceId,revision,lastReceivedAtUtc,agentVersion}]}' \
+    <<<"$presence" > "$native_acceptance_evidence/presence-$phase.json"
 }
 
 wait_for_migrations() {
@@ -358,6 +438,7 @@ PY
 exercise_server_offered_client_update() {
   local version update_channel access_token agents prior_agent_id tenant_response update_request release_response
   local client_root updater_path candidate_zip attempt_response attempt_id attempt_state attempt_detail
+  local service_started_at restart_started_at activated_epoch restarted=false activation_ready=false
   version="$(python3 tools/ci/product-version.py)"
   update_channel=stable
   if [[ "$version" == *-* ]]; then update_channel=prerelease; fi
@@ -448,6 +529,9 @@ fi
 if [ "$#" -eq 3 ] && [ "$1" = show ] && [ "$2" = --property=ActiveState,Job ] && [ "$3" = netratel-update.service ]; then
   exec /usr/bin/systemctl show --property=ActiveState,Job netratel-update.service
 fi
+if [ "$#" -eq 3 ] && [ "$1" = show ] && [ "$2" = netratel-client.service ] && [ "$3" = --property=MainPID,FragmentPath,DropInPaths,ExecStart,Restart,RestartUSec,StartLimitIntervalUSec,RestartPreventExitStatus ]; then
+  exec /usr/bin/systemctl "$@"
+fi
 exit 1
 SH
   chmod 0755 "$native_directory/bin/systemctl"
@@ -461,14 +545,16 @@ SUDOERS
 [Unit]
 Description=Disposable NetRatel published Client upgrade smoke
 After=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 User=netratel
 WorkingDirectory=$client_root/current
-ExecStart=$client_root/current/NetRatel.Client --service --api $api_url
+ExecStart=$client_root/current/NetRatel.Client --service
 Restart=always
-RestartSec=2
+RestartSec=30s
+RestartPreventExitStatus=78
 Environment=HOME=/var/lib/netratel
 Environment=PATH=$native_directory/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=DOTNET_ENVIRONMENT=Production
@@ -498,6 +584,7 @@ Environment=NetRatel_UPDATE_STATE=/var/lib/netratel/update
 Environment=NetRatel_CLIENT_SERVICE=$client_unit
 UNIT
   sudo systemctl daemon-reload
+  service_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   sudo systemctl start "$client_unit"
   for _ in $(seq 1 60); do
     if sudo test -s /var/lib/netratel/update/presence.json; then break; fi
@@ -562,6 +649,7 @@ PY
     fi
     return 1
   fi
+  record_native_service_proof prior "${legacy_version#v}" "$service_started_at"
 
   upload_response="$(curl --silent --show-error --fail-with-body --max-time 300 \
     --header "Authorization: Bearer ${access_token}" \
@@ -603,7 +691,22 @@ PY
     attempt_state="$(jq -r --arg version "$version" --argjson tenant "$upgrade_tenant_id" \
       '[.[] | select(.version == $version and .tenantId == $tenant)] | first | .status // empty' \
       <<<"$attempt_response")"
-    if [[ "$attempt_state" == Accepted ]]; then break; fi
+    if [[ "$attempt_state" == Accepted ]]; then
+      if [[ -z "$native_acceptance_evidence" ]] || sudo python3 - "$attempt_id" "$version" <<'PY'
+import json, sys
+from pathlib import Path
+try:
+    state = Path('/var/lib/netratel/update')
+    ready = json.loads((state / 'ready.json').read_text(encoding='utf-8-sig'))
+    activation = json.loads((state / 'activation.json').read_text(encoding='utf-8-sig'))
+    valid = (ready.get('schema'), ready.get('attemptId'), ready.get('version')) == ('netratel.update.ready.v2', sys.argv[1], sys.argv[2])
+    valid = valid and activation.get('attemptId') == sys.argv[1] and bool(activation.get('readyMarkerWrittenAtUtc'))
+    raise SystemExit(0 if valid else 1)
+except (OSError, ValueError):
+    raise SystemExit(1)
+PY
+      then activation_ready=true; break; fi
+    fi
     if [[ "$attempt_state" == FailedPreActivation || "$attempt_state" == RolledBack ||
           "$attempt_state" == RollbackUnverified ]]; then
       echo "The published Client update attempt ended in $attempt_state." >&2
@@ -614,7 +717,7 @@ PY
     fi
     sleep 2
   done
-  [[ "$attempt_state" == Accepted && -n "$attempt_id" ]] || {
+  [[ "$attempt_state" == Accepted && -n "$attempt_id" && ( -z "$native_acceptance_evidence" || "$activation_ready" == true ) ]] || {
     echo "The published Client did not accept the server-offered candidate within eight minutes." >&2
     echo "Last observed server attempt state: ${attempt_state:-none}." >&2
     if sudo test -s /var/lib/netratel/update/presence.json; then
@@ -697,6 +800,46 @@ PY
     echo "The accepted update changed the enrolled agent identity or tenant scope." >&2
     return 1
   }
+  if [[ -n "$native_acceptance_evidence" ]]; then
+    retain_native_server_proof activated "$attempt_detail"
+    record_native_service_proof activated "$version" "$service_started_at"
+    retain_native_gateway_presence activated
+    activated_epoch="$(jq -r '.gatewayConnectionEpoch' "$native_acceptance_evidence/server-activated.json")"
+    restart_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    sudo systemctl restart "$client_unit"
+    for _ in $(seq 1 60); do
+      attempt_detail="$(curl --silent --show-error --fail --max-time 5 \
+        --header "Authorization: Bearer ${access_token}" \
+        "${api_url}/api/v1/client-updates/attempts/${attempt_id}")"
+      if jq -e --argjson epoch "$activated_epoch" '.state == "Accepted" and .gatewayConnectionEpoch > $epoch' \
+          <<<"$attempt_detail" >/dev/null && sudo python3 - "$version" "$restart_started_at" <<'PY'
+from datetime import datetime
+import json, sys
+from pathlib import Path
+try:
+    presence = json.loads(Path('/var/lib/netratel/update/presence.json').read_text(encoding='utf-8-sig'))
+    timestamp = lambda value: datetime.fromisoformat(value.replace('Z', '+00:00'))
+    raise SystemExit(0 if presence.get('version') == sys.argv[1] and timestamp(presence['acknowledgedAtUtc']) >= timestamp(sys.argv[2]) else 1)
+except (OSError, ValueError, KeyError):
+    raise SystemExit(1)
+PY
+      then restarted=true; break; fi
+      sleep 1
+    done
+    [[ "$restarted" == true ]] || { echo 'Native candidate did not acknowledge a fresh service invocation and gateway admission after restart.' >&2; return 1; }
+    retain_native_server_proof restarted "$attempt_detail"
+    record_native_service_proof restarted "$version" "$restart_started_at"
+    retain_native_gateway_presence restarted
+    agents="$(curl --silent --show-error --fail --header "Authorization: Bearer ${access_token}" \
+      "${api_url}/api/v1/tenants/${upgrade_tenant_id}/agents")"
+    jq -e --arg agent "$prior_agent_id" '.total == 1 and .items[0].agentId == $agent' <<<"$agents" >/dev/null
+    jq -n --arg source "$(git rev-parse HEAD)" --arg tooling "$NETRATEL_NATIVE_UPGRADE_TOOLING_SHA" \
+      --arg agent "$prior_agent_id" --argjson tenant "$upgrade_tenant_id" --arg attempt "$attempt_id" \
+      '{sourceSha:$source,toolingSha:$tooling,tenantId:$tenant,agentId:$agent,attemptId:$attempt,
+        ordinaryUntrimmedCandidate:true,serverActivationConfirmed:true,ownedServiceRestartPassed:true,
+        pendingCooldownConsumption:"conditional observation only; no synthetic recovery state or outage injected"}' \
+      > "$native_acceptance_evidence/native-upgrade-acceptance.json"
+  fi
   echo "Published ${legacy_version} Client accepted the server-offered ${version} update with its original tenant and agent identity."
 }
 
@@ -772,6 +915,7 @@ stage="upgrading the published PostgreSQL/OIDC state with extracted candidate im
 configure_images "$current_api_image" "$current_migrations_image" "$current_web_image"
 active_compose=("${current_compose[@]}")
 "${active_compose[@]}" up --detach
+verify_current_source_images
 wait_for_migrations
 curl --retry 20 --retry-connrefused --fail --silent --show-error "http://127.0.0.1:${NETRATEL_OIDC_TEST_PORT}/isalive" >/dev/null
 wait_for_web

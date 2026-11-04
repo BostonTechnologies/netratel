@@ -301,6 +301,34 @@ An upgrade selects and records the latest other completed published release
 through the existing prior-release selector, reusing verified public archives
 and immutable image digests.
 
+For `native-client`, a nonblank `measurement_verify_run` selects a successful
+**Release build** run instead of publishing another Client. Use the exact product
+source from that run as `source_ref`; the workflow's separately pinned tooling
+checkout supplies the acceptance helpers. The two original Actions ZIPs bind
+the ordinary untrimmed Linux Client archive and Compose bundle by run, attempt,
+source, digest, checksum, manifest and SBOM. Current API/Web/migrations images
+are built from that product source through the existing hosted builder; the
+prior release keeps its completed-publication and immutable-image checks.
+
+From a terminal with authenticated GitHub CLI access to the repository:
+
+```bash
+gh workflow run integration-validation.yml --ref HARNESS_BRANCH \
+  -f suite=native-client -f source_ref=FULL_PRODUCT_SOURCE_SHA \
+  -f measurement_verify_run=SUCCESSFUL_RELEASE_BUILD_RUN_ID
+```
+
+This reuses the existing PostgreSQL/OIDC upgrade fixture, including its database
+and browser journeys. Its real host service must retain protected state, admit
+the server-approved update nonce, write confirmation/readiness, and reconnect
+with the same agent after an actual service restart. Receipts distinguish the
+product and tooling sources, original installed file bytes, service PID and
+invocation, fresh acknowledgement and gateway admission. Pending cooldown
+consumption is reported only when its existing log occurs naturally; a healthy
+update does not establish that recovery-only path. A blank run ID retains the
+existing native archive publish/integrity/PTY diagnostic. These optional checks
+do not change shipping modes or establish another platform's acceptance.
+
 When explicitly requested, each Compose smoke
 verifies an anonymous protected API request is rejected, performs an
 authorization-code browser session, verifies the authenticated API request,
