@@ -3936,10 +3936,11 @@ class WindowsStdioCertificateTests(unittest.TestCase):
             CertAddEncodedCertificateToStore=Mock(side_effect=add),
             CertDeleteCertificateFromStore=Mock(return_value=True), CertCloseStore=Mock(return_value=True))
 
-    def test_protocol_failure_removes_owned_current_user_certificate_and_closes_store(self):
+    def test_protocol_failure_removes_owned_machine_certificate_and_closes_store(self):
         helper = module("probe-windows-stdio-archive")
         api = self.certificate_api()
-        with patch.object(helper, "crypt32", return_value=api), \
+        with patch.object(helper, "require_disposable_windows"), \
+             patch.object(helper, "crypt32", return_value=api), \
              patch.object(helper.ssl, "PEM_cert_to_DER_cert", return_value=b"synthetic-certificate"), \
              tempfile.TemporaryDirectory() as temporary:
             certificate = Path(temporary) / "fixture.crt"
@@ -3950,7 +3951,7 @@ class WindowsStdioCertificateTests(unittest.TestCase):
                     self.assertFalse(record["removed"])
                     raise ValueError("protocol failure")
             self.assertTrue(record["removed"])
-            self.assertEqual(0x10000 | 0x4000, api.CertOpenStore.call_args.args[3])
+            self.assertEqual(0x20000 | 0x4000, api.CertOpenStore.call_args.args[3])
             self.assertEqual(1, api.CertAddEncodedCertificateToStore.call_args.args[4])
             self.assertEqual(202, api.CertDeleteCertificateFromStore.call_args.args[0].value)
             api.CertDeleteCertificateFromStore.assert_called_once()
@@ -3961,7 +3962,8 @@ class WindowsStdioCertificateTests(unittest.TestCase):
         api = self.certificate_api()
         api.CertAddEncodedCertificateToStore.side_effect = None
         api.CertAddEncodedCertificateToStore.return_value = False
-        with patch.object(helper, "crypt32", return_value=api), \
+        with patch.object(helper, "require_disposable_windows"), \
+             patch.object(helper, "crypt32", return_value=api), \
              patch.object(helper, "windows_error", return_value=OSError("existing certificate")), \
              patch.object(helper.ssl, "PEM_cert_to_DER_cert", return_value=b"synthetic-certificate"), \
              tempfile.TemporaryDirectory() as temporary:
@@ -3977,7 +3979,8 @@ class WindowsStdioCertificateTests(unittest.TestCase):
         helper = module("probe-windows-stdio-archive")
         api = self.certificate_api()
         api.CertDeleteCertificateFromStore.return_value = False
-        with patch.object(helper, "crypt32", return_value=api), \
+        with patch.object(helper, "require_disposable_windows"), \
+             patch.object(helper, "crypt32", return_value=api), \
              patch.object(helper, "windows_error", return_value=OSError("remove failed")), \
              patch.object(helper.ssl, "PEM_cert_to_DER_cert", return_value=b"synthetic-certificate"), \
              tempfile.TemporaryDirectory() as temporary:
@@ -3989,6 +3992,17 @@ class WindowsStdioCertificateTests(unittest.TestCase):
             self.assertTrue(record["added"])
             self.assertFalse(record["removed"])
             api.CertCloseStore.assert_called_once_with(101, 0)
+
+    def test_machine_trust_is_unavailable_on_non_disposable_hosts(self):
+        helper = module("probe-windows-stdio-archive")
+        for environment in ({}, {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "self-hosted"}):
+            with self.subTest(environment=environment), \
+                 patch.object(helper, "os", SimpleNamespace(name="nt", environ=environment)), \
+                 patch.object(helper, "crypt32") as native_api:
+                with self.assertRaisesRegex(ValueError, "disposable GitHub-hosted Windows"):
+                    with helper.trusted_certificate(Path("unopened-fixture.crt")):
+                        self.fail("Non-disposable hosts cannot modify certificate trust")
+                native_api.assert_not_called()
 
 
 class WindowsMcpReleaseContractTests(unittest.TestCase):

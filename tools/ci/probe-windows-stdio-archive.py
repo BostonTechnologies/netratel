@@ -45,22 +45,32 @@ def windows_error(operation):
     return OSError(f"Synthetic Windows certificate {operation} failed: Win32 {ctypes.get_last_error()}")
 
 
+def require_disposable_windows():
+    if (os.name != "nt" or os.environ.get("GITHUB_ACTIONS") != "true" or
+            os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted"):
+        raise ValueError("Machine-root fixture trust requires a disposable GitHub-hosted Windows runner")
+
+
 @contextmanager
 def trusted_certificate(certificate):
-    """Trust only this fresh fixture CA in CurrentUser/Root, then remove it."""
+    """Trust this fresh CA on the disposable runner, then remove only our context."""
+    require_disposable_windows()
     encoded = ssl.PEM_cert_to_DER_cert(certificate.read_text(encoding="ascii"))
-    record = {"store": "CurrentUser/Root", "sha256": hashlib.sha256(encoded).hexdigest(),
+    record = {"store": "LocalMachine/Root", "sha256": hashlib.sha256(encoded).hexdigest(),
               "added": False, "removed": False}
     api = crypt32()
     name = ctypes.create_unicode_buffer("ROOT")
-    # CERT_STORE_PROV_SYSTEM_W; CURRENT_USER | OPEN_EXISTING. No machine store.
-    store = api.CertOpenStore(10, 0, None, 0x10000 | 0x4000, ctypes.cast(name, ctypes.c_void_p))
+    # The user Root provider can require an interactive security prompt. The
+    # ephemeral hosted runner permits the normal machine-store administrator API.
+    print("WINDOWS_STDIO_CERT_OPERATION=open-machine-store", flush=True)
+    store = api.CertOpenStore(10, 0, None, 0x20000 | 0x4000, ctypes.cast(name, ctypes.c_void_p))
     if not store:
         raise windows_error("store open")
     context = ctypes.c_void_p()
     try:
         data = ctypes.create_string_buffer(encoded)
         # CERT_STORE_ADD_NEW refuses an existing certificate: never own/delete it.
+        print("WINDOWS_STDIO_CERT_OPERATION=add-new", flush=True)
         if not api.CertAddEncodedCertificateToStore(store, 0x10001, data, len(encoded), 1, ctypes.byref(context)):
             raise windows_error("add")
         record["added"] = True
@@ -69,6 +79,7 @@ def trusted_certificate(certificate):
         errors = []
         if record["added"]:
             # This API also frees the returned context, including on failure.
+            print("WINDOWS_STDIO_CERT_OPERATION=remove-owned", flush=True)
             if api.CertDeleteCertificateFromStore(context):
                 record["removed"] = True
             else:
@@ -80,8 +91,7 @@ def trusted_certificate(certificate):
 
 
 def run(artifacts, source, work, evidence, version, revision):
-    if os.name != "nt":
-        raise ValueError("Windows archive execution requires a matching Windows host")
+    require_disposable_windows()
     if not re.fullmatch(r"[a-f0-9]{40}", revision):
         raise ValueError("A full selected source revision is required")
     actual_revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
