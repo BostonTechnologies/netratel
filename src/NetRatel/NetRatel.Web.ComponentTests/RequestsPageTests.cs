@@ -46,6 +46,7 @@ public class RequestsPageTests : AsyncBunitContext
         RenderRequestsWith(SampleRequestsJson());
 
         var cut = RenderRequestsPage();
+        cut.WaitForElement(".mud-expand-panel-header").Click();
 
         cut.WaitForAssertion(() =>
         {
@@ -60,18 +61,56 @@ public class RequestsPageTests : AsyncBunitContext
     }
 
     [Fact]
-    public void RequestsPage_RendersPayloadActionsOnlyWhenPayloadsExist()
+    public void RequestsPage_RendersInlinePayloadsAndReadableRoutingWhenExpanded()
     {
         RenderRequestsWith(SampleRequestsJson());
 
         var cut = RenderRequestsPage();
+        cut.WaitForElement(".mud-expand-panel-header").Click();
 
         cut.WaitForAssertion(() =>
         {
-            cut.FindAll("button[aria-label='View Inputs']").Should().ContainSingle();
-            cut.FindAll("button[aria-label='View Output']").Should().ContainSingle();
-            cut.Markup.Should().NotContain("No payloads");
+            cut.Find("[aria-label='Inputs payload preview']").TextContent.Should().Contain("meta");
+            cut.Find("[aria-label='Output payload preview']").TextContent.Should().Contain("netratelRunId");
+            cut.FindAll("button[aria-label='Expand Inputs']").Should().ContainSingle();
+            cut.FindAll("button[aria-label='Expand Output']").Should().ContainSingle();
+            var routing = cut.Find("section[aria-label='Routing']");
+            routing.QuerySelector("dd")!.TextContent.Should().Contain("#9").And.Contain("Linux System Snapshot");
+            routing.QuerySelector("a")!.GetAttribute("href").Should().Be("/jobs/9/runs/19");
+            routing.TextContent.Should().Contain("Created (UTC)").And.Contain("2026-05-13 13:21:47");
         });
+    }
+
+    [Fact]
+    public async Task RequestJsonPanel_ExpandOpensFullPayloadDialog()
+    {
+        var cut = Render(builder =>
+        {
+            builder.OpenComponent<MudDialogProvider>(0);
+            builder.CloseComponent();
+            builder.OpenComponent<RequestJsonPanel>(1);
+            builder.AddAttribute(2, "Title", "Output");
+            builder.AddAttribute(3, "Json", "{\"completed\":true}");
+            builder.CloseComponent();
+        });
+
+        await cut.Find("button[aria-label='Expand Output']").ClickAsync();
+
+        cut.WaitForAssertion(() =>
+        {
+            cut.Find(".mud-dialog .request-json-payload.is-dialog").TextContent.Should().Contain("completed");
+        });
+        await cut.Find(".mud-dialog-actions button").ClickAsync();
+        cut.WaitForAssertion(() => cut.FindAll(".mud-dialog").Should().BeEmpty());
+    }
+
+    [Fact]
+    public void RequestJsonPanel_ShowsMissingPayloadWithoutExpandAction()
+    {
+        var cut = Render<RequestJsonPanel>(parameters => parameters.Add(x => x.Title, "Output"));
+
+        cut.Find("section[aria-label='Output']").TextContent.Should().Contain("No output captured.");
+        cut.FindAll("button").Should().BeEmpty();
     }
 
     [Fact]
@@ -122,6 +161,31 @@ public class RequestsPageTests : AsyncBunitContext
     }
 
     [Fact]
+    public async Task RequestsPage_KeepsTheSameRequestExpandedWhenLiveUpdatesReorderRows()
+    {
+        var stream = RenderRequestsWith(JsonSerializer.Serialize(new[]
+        {
+            SampleRequest(21, "Processing", "First request", "2026-05-13T13:30:00Z"),
+            SampleRequest(22, "Processing", "Second request", "2026-05-13T13:29:00Z")
+        }));
+        var cut = RenderRequestsPage();
+        cut.WaitForElement(".mud-expand-panel-header").Click();
+        var updated = JsonSerializer.Deserialize<RequestDto>(
+            SampleRequestJson(22, "Success", "Second request", "2026-05-13T13:31:00Z"),
+            new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+
+        await cut.InvokeAsync(() => stream.UpsertAsync(updated));
+
+        cut.WaitForAssertion(() =>
+        {
+            var rows = cut.FindAll(".request-row");
+            rows[0].TextContent.Should().Contain("Second request");
+            rows[0].QuerySelector(".request-details").Should().BeNull();
+            rows[1].QuerySelector(".request-details-heading")!.TextContent.Should().Contain("#21");
+        });
+    }
+
+    [Fact]
     public void RequestJsonPayloadView_FallsBackForInvalidJson()
     {
         var cut = Render<RequestJsonPayloadView>(parameters => parameters
@@ -132,10 +196,12 @@ public class RequestsPageTests : AsyncBunitContext
         cut.Markup.Should().Contain("{not valid json");
     }
 
-    private void RenderRequestsWith(string json, string? stream = null)
+    private StubRequestStreamService RenderRequestsWith(string json, string? stream = null)
     {
         Services.AddSingleton<IHttpClientFactory>(new StubHttpClientFactory(json, stream ?? ": connected\n\n"));
-        Services.AddSingleton<IRequestStreamService>(new StubRequestStreamService(stream));
+        var service = new StubRequestStreamService(stream);
+        Services.AddSingleton<IRequestStreamService>(service);
+        return service;
     }
 
     private IRenderedComponent<IComponent> RenderRequestsPage()
@@ -155,8 +221,8 @@ public class RequestsPageTests : AsyncBunitContext
                 id = 17,
                 sourceSystem = "external-service.api",
                 targetClientIdentity = "C200B586ABCB73D63D632306A6FB59F510D6DD5340A8BB023F2BAF60F282B3DB",
-                rundeckJobDefinitionId = "9",
-                rundeckExecutionId = (string?)null,
+                jobDefinitionId = "9",
+                executionId = (string?)null,
                 status = "Success",
                 resultMessage = "Callback status 'succeeded' for JobRun 19.",
                 resultData = "{\"netratelRequestId\":\"17\",\"netratelRunId\":\"19\"}",
@@ -181,8 +247,8 @@ public class RequestsPageTests : AsyncBunitContext
             id,
             sourceSystem = "external-service.api",
             targetClientIdentity = "C200B586ABCB73D63D632306A6FB59F510D6DD5340A8BB023F2BAF60F282B3DB",
-            rundeckJobDefinitionId = "9",
-            rundeckExecutionId = (string?)null,
+            jobDefinitionId = "9",
+            executionId = (string?)null,
             status,
             resultMessage = status == "Success" ? "Completed." : null,
             resultData = status == "Success" ? "{\"ok\":true}" : null,
@@ -232,12 +298,14 @@ public class RequestsPageTests : AsyncBunitContext
     private sealed class StubRequestStreamService(string? streamResponse) : IRequestStreamService
     {
         private readonly List<string> _events = ParseStreamEvents(streamResponse);
+        private Func<RequestDto, Task>? _handler;
 
         public bool IsConnected { get; private set; }
         public event Action<bool>? ConnectionChanged;
 
         public async Task StartAsync(Func<RequestDto, Task> handler, CancellationToken ct = default)
         {
+            _handler = handler;
             IsConnected = true;
             ConnectionChanged?.Invoke(true);
 
@@ -250,6 +318,9 @@ public class RequestsPageTests : AsyncBunitContext
                 }
             }
         }
+
+        public Task UpsertAsync(RequestDto request)
+            => _handler?.Invoke(request) ?? throw new InvalidOperationException("Stream has not started.");
 
         public Task StopAsync()
         {
