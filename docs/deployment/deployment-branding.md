@@ -68,3 +68,12 @@ It contains no
 administrator identity, deployment secrets, configuration source content, or
 credential data. The `InstanceAdministrator` authorization boundary protects
 all changes and uploads; tenant-scoped roles cannot edit global branding.
+
+Local-account API mutations also require the exact header
+`X-NetRatel-Account-Request: 1`. The Web application adds it to its authenticated
+server-to-server requests. This non-simple header protects ambient Local
+cookies: a browser form cannot supply it, and the API does not grant
+credentialed cross-origin CORS requests. Multipart uploads use this account
+boundary rather than an API form-token exchange. Explicit bearer callers must
+still pass the same instance-administrator policy. Web form anti-forgery
+protection remains enabled.

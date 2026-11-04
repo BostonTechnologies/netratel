@@ -29,10 +29,23 @@ public sealed class DeploymentBrandingApiService(IHttpClientFactory clients) : I
 
     public async Task<BrandingAssetUploadResult> UploadAsync(string slot, IBrowserFile file, CancellationToken cancellationToken = default)
     {
-        if (file.Size is 0 or > 256 * 1024)
+        if (file.Size is <= 0 or > 256 * 1024)
             throw new InvalidOperationException("Branding assets must be between 1 and 262144 bytes.");
         await using var stream = file.OpenReadStream(256 * 1024, cancellationToken);
-        using var content = new StreamContent(stream);
+        var bytes = new byte[checked((int)file.Size)];
+        try
+        {
+            var read = await stream.ReadAtLeastAsync(bytes, bytes.Length, throwOnEndOfStream: false, cancellationToken).ConfigureAwait(false);
+            if (read != bytes.Length || await stream.ReadAsync(new byte[1], cancellationToken).ConfigureAwait(false) != 0)
+                throw new InvalidOperationException("The branding asset length changed while reading the file.");
+        }
+        catch (IOException exception)
+        {
+            throw new InvalidOperationException("The branding asset could not be read.", exception);
+        }
+        // IBrowserFile streams cannot seek; a bounded byte array can be safely
+        // serialized again by the existing HTTP resilience handler.
+        using var content = new ByteArrayContent(bytes);
         content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(file.ContentType);
         using var form = new MultipartFormDataContent
         {
