@@ -44,7 +44,8 @@ public sealed record SoftwarePackage(string Name, string Version, string Publish
 
     public string Identity => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(
         new[] { Source, string.IsNullOrWhiteSpace(PackageId) ? Name + "\u001f" + Publisher : PackageId, Architecture, Scope }
-            .Select(value => value.Normalize(NormalizationForm.FormKC).Trim().ToLowerInvariant())))));
+            .Select(value => value.Normalize(NormalizationForm.FormKC).Trim().ToLowerInvariant()),
+        SoftwareIdentityJsonContext.Default.IdentityFields))));
 
     private static string Clean(string value, int limit)
     {
@@ -94,6 +95,11 @@ public static class SoftwareInventoryWire
     public const int MaximumChunks = 1000;
     public const int MaximumChunkBytes = 1024 * 1024;
     public static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    // Keep the public options instance available to existing API consumers.
+    // Snapshot its configured wire settings when serialization first needs them;
+    // the generated resolver belongs only to this private metadata instance.
+    private static readonly Lazy<SoftwareInventoryWireJsonContext> Metadata = new(
+        () => new(new JsonSerializerOptions(JsonOptions)));
 
     public static IReadOnlyList<SoftwareChunkUpload> Encode(Guid id, SoftwareCollection collection, DateTimeOffset detected)
     {
@@ -104,7 +110,7 @@ public static class SoftwareInventoryWire
         var truncated = false;
         foreach (var package in collection.Packages)
         {
-            var length = JsonSerializer.SerializeToUtf8Bytes(package, JsonOptions).Length;
+            var length = JsonSerializer.SerializeToUtf8Bytes(package, Metadata.Value.SoftwarePackage).Length;
             if (length + 2 > MaximumChunkBytes) throw new ArgumentException("Package metadata exceeds the chunk limit.");
             if (pending.Count == PackagesPerChunk || bytes + length + (pending.Count == 0 ? 0 : 1) > MaximumChunkBytes)
             {
@@ -120,7 +126,7 @@ public static class SoftwareInventoryWire
         return pages.Select((page, index) =>
         {
             using var output = new MemoryStream();
-            using (var gzip = new GZipStream(output, CompressionLevel.Fastest, true)) JsonSerializer.Serialize(gzip, page, JsonOptions);
+            using (var gzip = new GZipStream(output, CompressionLevel.Fastest, true)) JsonSerializer.Serialize(gzip, page, Metadata.Value.SoftwarePackageArray);
             return new SoftwareChunkUpload(id, index, pages.Count, collection.Complete && !truncated, collection.Os, detected,
                 errors, Convert.ToBase64String(output.ToArray()));
         }).ToArray();
@@ -139,7 +145,7 @@ public static class SoftwareInventoryWire
             if (output.Length + read > MaximumChunkBytes) throw new ArgumentException("Expanded inventory chunk is too large.");
             output.Write(buffer, 0, read);
         }
-        var packages = JsonSerializer.Deserialize<SoftwarePackage[]>(output.ToArray(), JsonOptions) ?? throw new ArgumentException("Missing packages.");
+        var packages = JsonSerializer.Deserialize(output.ToArray(), Metadata.Value.SoftwarePackageArray) ?? throw new ArgumentException("Missing packages.");
         if (packages.Length > PackagesPerChunk || packages.Any(package => package is null)) throw new ArgumentException("Too many packages in a chunk.");
         return packages.Select(package => package.Normalize()).Select(package =>
             string.IsNullOrEmpty(package.Name) || string.IsNullOrEmpty(package.Source) ? throw new ArgumentException("Package name and source are required.") : package).ToArray();
