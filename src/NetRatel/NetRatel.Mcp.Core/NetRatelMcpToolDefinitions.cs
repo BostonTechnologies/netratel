@@ -126,13 +126,14 @@ public static partial class NetRatelMcpToolDefinitions
             Idempotent = descriptor.Name is "netratel_notifications" || operations.All(operation => operation.Safety == NetRatelMcpOperationSafety.Read),
             OpenWorld = string.Equals(descriptor.Name, "netratel_search", StringComparison.Ordinal),
             UseStructuredContent = true,
-            OutputSchema = JsonSerializer.SerializeToElement(ResponseSchema())
+            OutputSchema = JsonSerializer.SerializeToElement(ResponseSchema(), NetRatelMcpSchemaJsonContext.Default.JsonObject)
         };
         var tool = McpServerTool.Create(
             method,
             context => CreateHandler(context.Services, method.DeclaringType!),
             options);
-        tool.ProtocolTool.InputSchema = JsonSerializer.SerializeToElement(InputSchema(descriptor.Name, operations, instance, operatorSurfaceEnabled));
+        tool.ProtocolTool.InputSchema = JsonSerializer.SerializeToElement(
+            InputSchema(descriptor.Name, operations, instance, operatorSurfaceEnabled), NetRatelMcpSchemaJsonContext.Default.JsonObject);
         return tool;
     }
 
