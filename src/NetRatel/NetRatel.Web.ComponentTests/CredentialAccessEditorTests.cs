@@ -56,9 +56,9 @@ public sealed class CredentialAccessEditorTests : AsyncBunitContext
         editor.WaitForAssertion(() => editor.Find("[data-testid='access-add-tenant-select']").TextContent.Should().Contain("Customer B"));
 
         await AddSecondTenantAsync(editor);
-        editor.Find("[data-testid='permission-scope']").Change("server");
+        await editor.Find("[data-testid='permission-scope']").ChangeAsync("server");
         editor.Find("[data-testid='access-edit-instance-permission-mcp.discovery.read']").HasAttribute("checked").Should().BeTrue();
-        editor.Find("[data-testid='permission-scope']").Change("17");
+        await editor.Find("[data-testid='permission-scope']").ChangeAsync("17");
         editor.Find("[data-testid='access-edit-permission-17-flow.read']").HasAttribute("checked").Should().BeTrue();
         editor.Find("[data-testid='access-review']").Click();
 

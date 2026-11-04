@@ -481,7 +481,7 @@ public sealed class NetRatelHttpHostingSetupService
                 if (source == legacyConfiguration.ApiM2MClientSecretFile) exported = exported with { ApiM2MClientSecretFile = target };
                 if (source == legacyConfiguration.OidcAppPasswordFile) exported = exported with { OidcAppPasswordFile = target };
             }
-            runtimeContent[Path.Combine(runtime, "mcp-outbound.json")] = JsonSerializer.Serialize(exported, AgentClientConfiguration.JsonOptions) + "\n";
+            runtimeContent[Path.Combine(runtime, "mcp-outbound.json")] = JsonSerializer.Serialize(exported, AgentClientConfiguration.JsonTypeInfo) + "\n";
         }
         if (useVolume)
         {
