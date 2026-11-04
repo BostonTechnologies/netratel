@@ -267,7 +267,7 @@ public sealed class NetRatelConfigurationService
                 values[secretName + "File"] = secretPath;
             }
             ConfigurationFileStorage.WriteAtomic(path,
-                JsonSerializer.Serialize(FromValues(values), AgentClientConfiguration.JsonOptions) + Environment.NewLine, replace, expectedHash);
+                JsonSerializer.Serialize(FromValues(values), AgentClientConfiguration.JsonTypeInfo) + Environment.NewLine, replace, expectedHash);
         }
         catch
         {
@@ -291,7 +291,7 @@ public sealed class NetRatelConfigurationService
                 if (!allowed.Contains(property.Name)) throw new AgentClientValidationException("Configuration contains an unsupported key; check the documented schema.");
                 if (property.Value.ValueKind is not (JsonValueKind.String or JsonValueKind.Null)) throw new JsonException();
             }
-            return JsonSerializer.Deserialize<AgentClientConfiguration>(json, AgentClientConfiguration.JsonOptions) ?? AgentClientConfiguration.Empty;
+            return JsonSerializer.Deserialize(json, AgentClientConfiguration.JsonTypeInfo) ?? AgentClientConfiguration.Empty;
         }
         catch (JsonException)
         {

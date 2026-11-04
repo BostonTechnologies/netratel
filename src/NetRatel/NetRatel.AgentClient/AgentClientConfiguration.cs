@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 
 namespace NetRatel.AgentClient;
 
@@ -55,11 +56,16 @@ public sealed record AgentClientConfiguration(
     public const string OidcScopeEnvironmentVariable = "NETRATEL_AGENT_CLIENT_OIDC_SCOPE";
     public const string IntegrationCredentialEnvironmentVariable = "NETRATEL_AGENT_CLIENT_INTEGRATION_TOKEN";
     public static AgentClientConfiguration Empty { get; } = new(null, null, null, null, null, null);
+    /// <summary>Configuration JSON settings. Owned configuration I/O snapshots these settings at first use.</summary>
     public static JsonSerializerOptions JsonOptions { get; } = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
+
+    private static readonly Lazy<JsonTypeInfo<AgentClientConfiguration>> JsonMetadata = new(() =>
+        new AgentClientConfigurationJsonContext(new JsonSerializerOptions(JsonOptions)).AgentClientConfiguration);
+    internal static JsonTypeInfo<AgentClientConfiguration> JsonTypeInfo => JsonMetadata.Value;
 
     public static AgentClientConfiguration FromEnvironment(Func<string, string?> getEnvironmentVariable)
     {
@@ -168,7 +174,7 @@ public sealed class AgentClientConfigurationStore
         if ((!string.IsNullOrWhiteSpace(previous.OidcAppPassword) || !string.IsNullOrWhiteSpace(previous.OidcAppPasswordFile)) &&
             !NetRatelConfigurationService.Equivalent(previous.OidcTokenUrl, configuration.OidcTokenUrl))
             throw new AgentClientValidationException("Changing a credential's token endpoint requires explicit reauthorization/rebind through setup.");
-        ConfigurationFileStorage.WriteAtomic(Path, JsonSerializer.Serialize(configuration, AgentClientConfiguration.JsonOptions) + Environment.NewLine,
+        ConfigurationFileStorage.WriteAtomic(Path, JsonSerializer.Serialize(configuration, AgentClientConfiguration.JsonTypeInfo) + Environment.NewLine,
             replace: existed, expectedHash: before);
     }
 
