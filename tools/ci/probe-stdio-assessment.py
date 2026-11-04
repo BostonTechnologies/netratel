@@ -10,6 +10,9 @@ import threading
 import time
 
 
+HANDSHAKE_TIMEOUT_SECONDS = 5
+
+
 def require(condition, message):
     if not condition:
         raise ValueError(message)
@@ -54,10 +57,20 @@ class Fixture:
             def log_message(self, *values):
                 pass  # Keep the fixture's structured method/path/authentication inventory.
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(self.certificate, key)
-        self.server.socket = context.wrap_socket(self.server.socket, server_side=True)
+
+        class Server(ThreadingHTTPServer):
+            def get_request(self):
+                connection, address = self.socket.accept()
+                connection.settimeout(HANDSHAKE_TIMEOUT_SECONDS)
+                try:
+                    return context.wrap_socket(connection, server_side=True), address
+                except BaseException:
+                    connection.close()
+                    raise
+
+        self.server = Server(("127.0.0.1", 0), Handler)
         self.worker = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.worker.start()
 
@@ -89,6 +102,7 @@ def probe(entrypoint, directory, state, version, revision, fixture):
         for name, arguments in (("setup-help", ["setup", "--help"]), ("bridge-help", ["http-bridge", "--help"])):
             stage = {"stage": name, "exitCode": None}
             record["stages"].append(stage)
+            print("STDIO_PROBE_STAGE=" + name, flush=True)
             try:
                 result = subprocess.run([str(entrypoint), *arguments], env=environment, text=True,
                                         capture_output=True, timeout=20)
@@ -128,6 +142,7 @@ def probe(entrypoint, directory, state, version, revision, fixture):
         def request(name, method, params):
             identifier = len(record["stages"]) + 1
             record["stages"].append({"stage": name, "method": method, "responseReceived": False})
+            print("STDIO_PROBE_STAGE=" + name, flush=True)
             process.stdin.write(json.dumps({"jsonrpc": "2.0", "id": identifier, "method": method, "params": params}) + "\n")
             process.stdin.flush()
             deadline = time.monotonic() + 20
@@ -186,6 +201,7 @@ def probe(entrypoint, directory, state, version, revision, fixture):
                 [item["method"] for item in observed] == ["GET", "GET", "POST"], "Unexpected outbound requests")
         (directory / "catalog.json").write_text(json.dumps(catalog, indent=2) + "\n")
         record["stages"].append({"stage": "eof-shutdown", "exitCode": None})
+        print("STDIO_PROBE_STAGE=eof-shutdown", flush=True)
         process.stdin.close()
         record["stages"][-1]["exitCode"] = process.wait(timeout=10)
         require(record["stages"][-1]["exitCode"] == 0, "EOF/shutdown failed")

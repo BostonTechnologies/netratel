@@ -516,6 +516,7 @@ jobs:
         run: |
           ./tools/ci/test-windows-mcp-archive.ps1 -ArchivePath "artifacts/netratel-mcp-stdio-$env:VERSION-win-x64.zip" -Version $env:VERSION -SourceRevision $env:PublicSourceRevision -ReceiptPath TestResults/windows-mcp-smoke.json
       - name: Exercise the original Windows archive protocol and operations
+        timeout-minutes: 5
         shell: bash
         run: |
           python3 tools/ci/probe-windows-stdio-archive.py --artifacts artifacts --source . \

@@ -94,9 +94,16 @@ def run(artifacts, source, work, evidence, version, revision):
     record = {"runtime": "win-x64", "sourceSha": revision, "productVersion": version, "passed": False,
               "catalogParity": "not_compared",
               "scope": "actual Windows FDD archive and shared synthetic HTTPS protocol probes; no live policy claim"}
+
+    def checkpoint(stage):
+        record["stage"] = stage
+        print("WINDOWS_STDIO_STAGE=" + stage, flush=True)
+        (evidence / "result.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+
     fixture = None
     trust = None
     try:
+        checkpoint("verify-archive")
         verifier = module("verify-windows-mcp-archive")
         record["integrity"] = verifier.verify(artifacts, version, source)
         archive = work / "original.zip"
@@ -108,18 +115,28 @@ def run(artifacts, source, work, evidence, version, revision):
             # The copied ZIP has the exact verified digest and safe inventory.
             bundle.extractall(extracted)
         probes = module("probe-stdio-assessment")
+        checkpoint("start-https-fixture")
         fixture = probes.Fixture(work / "https-fixture")
+        checkpoint("trust-certificate")
         with trusted_certificate(fixture.certificate) as trust:
+            record["certificateTrust"] = trust
+            checkpoint("protocol-probes")
             record["probes"] = probes.probe(extracted / verifier.DISTRIBUTION / "NetRatel.Mcp.exe",
                 evidence / "probes", work / "profile", version, revision, fixture)
-        record["passed"] = record["probes"]["passed"] and trust["added"] and trust["removed"]
+        checkpoint("certificate-removed")
     except (ValueError, OSError, KeyError, subprocess.CalledProcessError, zipfile.BadZipFile) as error:
         record["error"] = type(error).__name__ + ": " + str(error)
     finally:
         if fixture is not None:
-            fixture.close()
+            checkpoint("close-https-fixture")
+            try:
+                fixture.close()
+            except (OSError, RuntimeError) as error:
+                record["error"] = type(error).__name__ + ": " + str(error)
         record["certificateTrust"] = trust
-        (evidence / "result.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        record["passed"] = ("error" not in record and record.get("probes", {}).get("passed", False)
+                            and trust is not None and trust["added"] and trust["removed"])
+        checkpoint("complete")
     return record
 
 

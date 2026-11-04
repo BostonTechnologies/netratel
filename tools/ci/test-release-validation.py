@@ -3891,6 +3891,35 @@ class PublicImageSourceIdentityTests(unittest.TestCase):
 
 
 class WindowsStdioCertificateTests(unittest.TestCase):
+    def test_incomplete_tls_handshake_cannot_hold_fixture_shutdown_open(self):
+        import socket
+        import threading
+
+        helper = module("probe-stdio-assessment")
+        started = threading.Event()
+        original = helper.ssl.SSLContext.wrap_socket
+
+        def handshake(context, *arguments, **options):
+            started.set()
+            return original(context, *arguments, **options)
+
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.object(helper, "HANDSHAKE_TIMEOUT_SECONDS", 0.1), \
+             patch.object(helper.ssl.SSLContext, "wrap_socket", new=handshake):
+            fixture = helper.Fixture(Path(temporary) / "fixture")
+            connection = socket.create_connection(("127.0.0.1", fixture.server.server_port), timeout=2)
+            worker = threading.Thread(target=fixture.close)
+            try:
+                self.assertTrue(started.wait(timeout=2), "The control must enter an incomplete TLS handshake")
+                worker.start()
+                worker.join(timeout=2)
+                self.assertFalse(worker.is_alive(), "A silent TCP client must not block fixture cleanup")
+            finally:
+                connection.close()
+                if worker.ident is None:
+                    worker.start()
+                worker.join(timeout=2)
+
     def certificate_api(self):
         import ctypes
 
