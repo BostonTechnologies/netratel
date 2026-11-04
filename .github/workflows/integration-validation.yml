@@ -18,6 +18,12 @@ on:
         default: base
         options: [base, html-ownership, schema-ownership]
         required: false
+      api_comparison:
+        description: Comparison for api-image only (control is diagnostic, never published)
+        type: choice
+        default: base
+        options: [base, identity-web]
+        required: false
       browser_classes:
         description: Optional space-separated fully qualified browser test classes; blank runs the full browser suite
         default: ''
@@ -740,7 +746,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       NETRATEL_API_IMAGE_RESULTS: ${{ github.workspace }}/TestResults/api-image
-      NETRATEL_API_IMAGE_COMPARISON: ${{ inputs.suite == 'api-rid' && 'linux-rid' || 'base' }}
+      NETRATEL_API_IMAGE_COMPARISON: ${{ inputs.suite == 'api-rid' && 'linux-rid' || inputs.api_comparison || 'base' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

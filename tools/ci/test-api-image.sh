@@ -14,6 +14,7 @@ comparison="${NETRATEL_API_IMAGE_COMPARISON:-base}"
 case "$comparison" in
   base) ;;
   linux-rid) candidate=netratel-api:linux-rid-candidate; control=netratel-api:rid-neutral-control ;;
+  identity-web) candidate=netratel-api:identity-web-candidate; control=netratel-api:identity-web-control ;;
   *) echo 'Unknown API comparison.' >&2; exit 2 ;;
 esac
 printf '%s\n' "$revision" > "$results/source-sha.txt"
@@ -40,16 +41,17 @@ trap cleanup EXIT
 # Logs and host obj files must not invalidate the common publish/SBOM build stage.
 mkdir "$temporary/source"
 git archive HEAD | tar -x -C "$temporary/source"
-if [[ "$comparison" == linux-rid ]]; then
-  # Control reconstructs only the former RID-neutral publish selection. Pin
+if [[ "$comparison" != base ]]; then
+  # Reconstruct only the selected former dependency/asset inputs. Pin
   # both source trees to identical base digests and build metadata so unrelated
   # compiler timestamps cannot masquerade as payload changes.
-  python3 - "$temporary/source" "$results" <<'PY'
+  python3 - "$temporary/source" "$results" "$comparison" <<'PY'
 from datetime import datetime, timezone
-import json, subprocess, sys
+import hashlib, json, shutil, subprocess, sys
 from pathlib import Path
 import xml.etree.ElementTree as ET
-root, results = map(Path, sys.argv[1:])
+root, results = map(Path, sys.argv[1:3])
+comparison = sys.argv[3]
 path = root / 'docker/api/Dockerfile'
 text = path.read_text()
 bases = {}
@@ -59,29 +61,54 @@ for reference in ('mcr.microsoft.com/dotnet/aspnet:10.0-noble', 'mcr.microsoft.c
     digest = next(item for item in image['RepoDigests'] if item.startswith(reference.split(':')[0] + '@sha256:'))
     bases[reference] = digest
     text = text.replace('FROM ' + reference + ' AS ', 'FROM ' + digest + ' AS ')
-# RID defaults change compiler architecture and generated-source paths, including
-# OpenAPI file-local type names. Align these diagnostic compilation inputs in
-# both arms; runtime asset selection is still the only varied publish setting.
-commands = ('RUN dotnet build ', 'RUN dotnet publish ')
-if sum(line.startswith(commands) for line in text.splitlines()) != 2:
-    raise ValueError('Expected exactly the API build and publish commands')
-text = '\n'.join(line + ' -p:AppendRuntimeIdentifierToOutputPath=false -p:PlatformTarget=x64'
-                 if line.startswith(commands) else line for line in text.splitlines()) + '\n'
+if comparison == 'linux-rid':
+    # RID defaults change compiler architecture and generated-source paths,
+    # including OpenAPI file-local type names. Align only this diagnostic pair.
+    commands = ('RUN dotnet build ', 'RUN dotnet publish ')
+    if sum(line.startswith(commands) for line in text.splitlines()) != 2:
+        raise ValueError('Expected exactly the API build and publish commands')
+    text = '\n'.join(line + ' -p:AppendRuntimeIdentifierToOutputPath=false -p:PlatformTarget=x64'
+                     if line.startswith(commands) else line for line in text.splitlines()) + '\n'
 path.write_text(text)
 timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 metadata = root / 'Directory.Build.targets'
 tree = ET.parse(metadata)
 tree.getroot().find('.//PublicBuildTimestamp').text = timestamp
 tree.write(metadata, encoding='unicode')
-control = text.replace(' --runtime linux-x64', '')
-if control == text or text.count(' --runtime linux-x64') != 4:
-    raise ValueError('Expected only the four API restore/build/publish/SBOM RID selections')
-(root / 'docker/api/control.Dockerfile').write_text(control)
-(results / 'controlled-build.json').write_text(json.dumps({
-    'comparison': 'Same source with former RID-neutral selection reconstructed; both diagnostic trees share the pinned timestamp and base digests',
-    'bases': bases, 'buildTimestampUtc': timestamp,
-    'diagnosticCompilerProperties': {'AppendRuntimeIdentifierToOutputPath': False, 'PlatformTarget': 'x64'}},
-    indent=2) + '\n')
+record = {'comparison': comparison,
+          'controlReconstruction': 'Diagnostic former inputs, not original published bytes; same source identity, timestamp and base digests in both arms',
+          'bases': bases, 'buildTimestampUtc': timestamp}
+if comparison == 'linux-rid':
+    control = text.replace(' --runtime linux-x64', '')
+    if control == text or text.count(' --runtime linux-x64') != 4:
+        raise ValueError('Expected only the four API restore/build/publish/SBOM RID selections')
+    (root / 'docker/api/control.Dockerfile').write_text(control)
+    record['diagnosticCompilerProperties'] = {'AppendRuntimeIdentifierToOutputPath': False, 'PlatformTarget': 'x64'}
+else:
+    control_root = root.parent / 'control-source'
+    shutil.copytree(root, control_root)
+    project = Path('src/NetRatel/NetRatel.API/NetRatel.API.csproj')
+    program = project.parent / 'Program.cs'
+    references = ('    <PackageReference Include="Microsoft.Identity.Web" Version="4.16.1" />\n'
+                  '    <PackageReference Include="Microsoft.Identity.Web.DownstreamApi" Version="4.16.1" />\n')
+    imports = 'using Microsoft.Identity.Abstractions;\nusing Microsoft.Identity.Web;\nusing Microsoft.Identity.Web.Resource;\n'
+    project_text = (root / project).read_text()
+    anchors = [line for line in project_text.splitlines(keepends=True) if line.startswith('    <PackageReference Include="NJsonSchema" ')]
+    program_text = (root / program).read_text()
+    anchor = 'using Microsoft.Extensions.Options;\n'
+    if (len(anchors) != 1 or 'Include="Microsoft.Identity.Web' in project_text or
+            program_text.count(anchor) != 1 or any(line in program_text for line in imports.splitlines())):
+        raise ValueError('Unexpected API Identity.Web reconstruction inputs')
+    (control_root / project).write_text(project_text.replace(anchors[0], references + anchors[0]))
+    (control_root / program).write_text(program_text.replace(anchor, anchor + imports))
+    record['reconstructedPackageRoots'] = {'Microsoft.Identity.Web': '4.16.1', 'Microsoft.Identity.Web.DownstreamApi': '4.16.1'}
+    record['reconstructedUnusedUsings'] = imports.splitlines()
+    record['sourceInputSha256'] = {arm: {str(path): hashlib.sha256((directory / path).read_bytes()).hexdigest()
+                                       for path in (project, program)}
+                                  for arm, directory in (('candidate', root), ('control', control_root))}
+    for arm, directory in (('candidate', root), ('control', control_root)):
+        shutil.copyfile(directory / project, results / (arm + '-API.csproj'))
+(results / 'controlled-build.json').write_text(json.dumps(record, indent=2) + '\n')
 PY
 fi
 for arm in candidate control; do
@@ -92,7 +119,12 @@ for arm in candidate control; do
     target=final
     if [[ "$arm" == control ]]; then dockerfile=docker/api/control.Dockerfile; fi
   fi
-  (cd "$temporary/source"
+  context="$temporary/source"
+  if [[ "$comparison" == identity-web ]]; then
+    target=final
+    if [[ "$arm" == control ]]; then context="$temporary/control-source"; fi
+  fi
+  (cd "$context"
     bash tools/ci/build-public-image.sh --dockerfile "$dockerfile" \
       --image "$image" --version "$version" --revision "$revision" --target "$target"
   ) 2>&1 | tee "$results/$arm-build.log"
@@ -127,12 +159,19 @@ for arm in ('candidate', 'control'):
 if sys.argv[3] == 'base':
     if inventories['candidate'] != inventories['control']:
         raise ValueError('Base-only comparison changed the application payload')
-else:
+elif sys.argv[3] == 'linux-rid':
     spec = importlib.util.spec_from_file_location('payload', 'tools/ci/compare-api-rid-payload.py')
     payload = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(payload)
     report = payload.compare(inventories['control'], inventories['candidate'],
                              temporary / 'control/publish', temporary / 'candidate/publish')
+    (results / 'payload-comparison.json').write_text(json.dumps(report, indent=2) + '\n')
+else:
+    spec = importlib.util.spec_from_file_location('payload', 'tools/ci/compare-api-rid-payload.py')
+    payload = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(payload)
+    report = payload.compare_identity_web(inventories['control'], inventories['candidate'],
+                                          temporary / 'control/publish', temporary / 'candidate/publish')
     (results / 'payload-comparison.json').write_text(json.dumps(report, indent=2) + '\n')
 candidate = (results / 'candidate-runtimes.txt').read_text().splitlines()
 control = (results / 'control-runtimes.txt').read_text().splitlines()
@@ -142,6 +181,12 @@ for arm in ('candidate', 'control'):
     config = json.loads((results / (arm + '-image.json')).read_text())[0]
     if config['Architecture'] != 'amd64' or config['Os'] != 'linux' or config['Config']['User'] not in ('app', '1654', '1654:1654'):
         raise ValueError('Comparison requires the linux/amd64 nonroot application identity')
+if sys.argv[3] == 'identity-web':
+    if (results / 'candidate-base-native-packages.txt').read_bytes() != (results / 'control-base-native-packages.txt').read_bytes():
+        raise ValueError('Dependency-only comparison changed base native packages')
+    images = {arm: json.loads((results / (arm + '-image.json')).read_text())[0] for arm in ('candidate', 'control')}
+    if images['candidate']['Config'] != images['control']['Config']:
+        raise ValueError('Dependency-only comparison changed image runtime configuration')
 print('Application payload selection verified; CoreCLR/ASP.NET patches and nonroot identity match.')
 PY
 
