@@ -30,31 +30,32 @@ using NetRatel.Infrastructure.Identity.Branding;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Client;
-using Testcontainers.PostgreSql;
+using NetRatel.Tests.Infrastructure;
 using System.Threading.RateLimiting;
 using Xunit;
 
 namespace NetRatel.Tests.API;
 
-public sealed class ClientInstallLinkTests : IAsyncLifetime
+public sealed class ClientInstallLinkTests(PostgreSqlPersistenceFixture postgres)
+    : IAsyncLifetime, IClassFixture<PostgreSqlPersistenceFixture>
 {
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16-alpine").Build();
+    private string _connectionString = null!;
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"client-install-link-{Guid.NewGuid():N}");
     private string Keys => Path.Combine(_root, "keys");
 
     public async ValueTask InitializeAsync()
     {
         Directory.CreateDirectory(Keys);
-        await _postgres.StartAsync();
+        _connectionString = await postgres.CreateDatabaseAsync();
         await using var services = BuildServices(Keys);
         await using var scope = services.CreateAsyncScope();
         await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().Database.MigrateAsync();
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        await _postgres.DisposeAsync();
         if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
+        return ValueTask.CompletedTask;
     }
 
     [Fact]
@@ -330,7 +331,7 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
         {
             ["DataProtection:KeysDirectory"] = Keys
         });
-        builder.Services.AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()));
+        builder.Services.AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_connectionString));
         builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
         builder.Services.AddSingleton<ITenantLookupService>(new FixtureTenantLookup());
         builder.Services.AddSingleton<IClientArtifactsService>(new FixtureArtifacts(MakeArchive()));
@@ -456,7 +457,7 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
         var services = new ServiceCollection()
             .AddLogging()
             .AddOptions()
-            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_connectionString))
             .AddSingleton<IConfiguration>(configuration)
             .AddSingleton<TimeProvider>(TimeProvider.System)
             .AddSingleton<ITenantLookupService>(new FixtureTenantLookup())

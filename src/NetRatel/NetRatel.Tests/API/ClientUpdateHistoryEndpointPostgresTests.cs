@@ -17,27 +17,28 @@ using NetRatel.API.Endpoints.Client;
 using NetRatel.API.Services;
 using NetRatel.Application.Presence;
 using NetRatel.Infrastructure.Persistence;
-using Testcontainers.PostgreSql;
+using NetRatel.Tests.Infrastructure;
 using Xunit;
 
 namespace NetRatel.Tests.API;
 
-public sealed class ClientUpdateHistoryEndpointPostgresTests : IAsyncLifetime
+public sealed class ClientUpdateHistoryEndpointPostgresTests(PostgreSqlPersistenceFixture postgres)
+    : IAsyncLifetime, IClassFixture<PostgreSqlPersistenceFixture>
 {
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16-alpine").Build();
+    private string _connectionString = null!;
     private DbContextOptions<OrchestratorDbContext> _options = null!;
 
     public async ValueTask InitializeAsync()
     {
-        await _postgres.StartAsync();
+        _connectionString = await postgres.CreateDatabaseAsync();
         _options = new DbContextOptionsBuilder<OrchestratorDbContext>()
-            .UseNpgsql(_postgres.GetConnectionString())
+            .UseNpgsql(_connectionString)
             .Options;
         await using var db = new OrchestratorDbContext(_options);
         await db.Database.MigrateAsync();
     }
 
-    public ValueTask DisposeAsync() => _postgres.DisposeAsync();
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     [Fact]
     public async Task History_UsesPostgresPaginationFiltersAndHostnamePresentation()
@@ -68,7 +69,7 @@ public sealed class ClientUpdateHistoryEndpointPostgresTests : IAsyncLifetime
         // Produce committed owner metadata through the real writer and commit guard.
         // A target release alone must never become an observed running version.
         await using var ownerServices = new ServiceCollection()
-            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_connectionString))
             .BuildServiceProvider();
         var owners = new ClientConnectionEpochStore(ownerServices.GetRequiredService<IServiceScopeFactory>(),
             TimeProvider.System, new OwnershipPolicy(TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(5), TimeSpan.FromSeconds(10)));
@@ -249,7 +250,7 @@ public sealed class ClientUpdateHistoryEndpointPostgresTests : IAsyncLifetime
                     options.AddPolicy("Operator", policy => policy.RequireAuthenticatedUser());
                     options.AddPolicy("ArtifactPublisher", policy => policy.RequireAuthenticatedUser());
                 });
-                services.AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()));
+                services.AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_connectionString));
                 services.AddSingleton<IClientArtifactsService>(_ => throw new NotSupportedException());
                 services.AddSingleton<IClientUpdatePublisher>(_ => throw new NotSupportedException());
                 services.AddScoped<ClientUpdateAuthorityService>();
