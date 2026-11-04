@@ -134,7 +134,10 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
     {
         var api = new ChatFixture(investigation);
         await using var host = await ClientsManagementFixtureHost.StartAsync(services => services.AddSingleton<INetclawApiService>(api));
-        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = width, Height = height } });
+        await using var context = await browserFixture.Browser.NewContextAsync(new()
+        {
+            ViewportSize = new() { Width = width, Height = height }, Permissions = ["clipboard-read", "clipboard-write"]
+        });
         await context.AddInitScriptAsync($"localStorage.setItem('netratel.theme.preference', '{theme}');");
         var page = await context.NewPageAsync();
         var errors = new List<string>(); page.PageError += (_, error) => errors.Add(error);
@@ -150,6 +153,24 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
                 await scrim.ClickAsync(new() { Position = new() { X = width - 10, Y = height / 2f } });
             await Assertions.Expect(page.GetByTestId("app-navigation-drawer")).ToHaveClassAsync(new Regex("mud-drawer--closed"));
         }
+        var table = surface.GetByRole(AriaRole.Table);
+        await Assertions.Expect(table.GetByRole(AriaRole.Columnheader)).ToHaveTextAsync(["Host", "Total", "Used", "Free", "Used %", "Sample time (UTC)"]);
+        await Assertions.Expect(table.Locator("td strong")).ToHaveTextAsync("17.8 GiB");
+        var textColor = await surface.Locator(".chat-message-content").First.EvaluateAsync<string>("e => getComputedStyle(e).color");
+        await Assertions.Expect(table.Locator("th").First).ToHaveCSSAsync("color", textColor);
+        await Assertions.Expect(table.Locator("td").First).ToHaveCSSAsync("color", textColor);
+        var tableScroll = surface.GetByRole(AriaRole.Region, new() { Name = "Markdown table", Exact = true });
+        if (width < 760) Assert.True(await tableScroll.EvaluateAsync<bool>("e => e.scrollWidth > e.clientWidth"));
+        var copyTable = surface.GetByRole(AriaRole.Button, new() { Name = "Copy table", Exact = true });
+        await copyTable.FocusAsync();
+        await copyTable.PressAsync("Enter");
+        await Assertions.Expect(surface.Locator(".chat-table-toolbar [role=status]")).ToHaveTextAsync("Table copied as Markdown.");
+        Assert.Equal(ChatFixture.DiskTable, await page.EvaluateAsync<string>("() => navigator.clipboard.readText()"));
+        await AssertHealthyAsync(page);
+        var artifacts = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.GetFullPath("TestResults/playwright");
+        Directory.CreateDirectory(artifacts);
+        await tableScroll.ScrollIntoViewIfNeededAsync();
+        await surface.Locator(".chat-table-block").ScreenshotAsync(new() { Path = Path.Combine(artifacts, $"shared-table-{(investigation ? "investigation" : "chat")}-{theme}-{width}.png") });
         var composer = page.GetByTestId("chat-message");
         await composer.FillAsync("draft survives fullscreen");
         var trace = surface.Locator(".netclaw-trace-row").First;
@@ -180,8 +201,6 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
         Assert.Equal(1, api.Sends);
         await surface.GetByRole(AriaRole.Button, new() { Name = "Restore conversation", Exact = true }).ClickAsync();
         await AssertHealthyAsync(page); Assert.Empty(errors);
-        var artifacts = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.GetFullPath("TestResults/playwright");
-        Directory.CreateDirectory(artifacts);
         await page.ScreenshotAsync(new() { Path = Path.Combine(artifacts, $"shared-{(investigation ? "investigation" : "chat")}-{theme}-{width}.png"), FullPage = true });
         var previousOverflow = await page.EvaluateAsync<string>("() => document.body.style.overflow");
         await maximize.ClickAsync();
@@ -333,6 +352,7 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
     {
         public const string FirstDraft = "First fragment.";
         public const string SecondDraft = "First fragment. The next fragment arrives.";
+        public const string DiskTable = "| Host | Total | Used | Free | Used % | Sample time (UTC) |\n| :--- | ---: | ---: | ---: | ---: | :---: |\n| node-01 | 39.2 GiB | 21.4 GiB | **17.8 GiB** | 54.7% | `16:40:36` |";
         private readonly Guid _id = Guid.NewGuid();
         private volatile InvestigationSnapshotDto? _saved;
         private int _creates, _sends, _recoveries;
@@ -348,7 +368,7 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
             _investigation = investigation == true; _dense = dense; _incremental = incremental;
             if (investigation is null) return;
             var now = DateTimeOffset.UtcNow;
-            InvestigationEventDto[] events = [new(1, "assistant", "## Saved answer\n\n```sh\necho safe\n```", null, null, null, now),
+            InvestigationEventDto[] events = [new(1, "assistant", "## Saved answer\n\n" + DiskTable + "\n\n```sh\necho safe\n```", null, null, null, now),
                 new(2, "tool_call", "netclaw/example: started", null, "call-fixture", null, now,
                     Trace: new("netclaw/example", "started", now, "fixture-session", Guid.NewGuid(), "{\"path\":\"/safe/\"}", null, null, null, false, false))];
             if (dense) events = [.. events, .. Enumerable.Range(3, 118).Select(i => new InvestigationEventDto(i, i % 2 == 0 ? "assistant" : "operator", $"Saved message {i}. This is a long conversation used to check independent scrolling and visible controls.", null, null, null, now))];

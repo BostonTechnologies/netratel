@@ -8,6 +8,33 @@
         {
             <div class="chat-code-block"><header><span>@(string.IsNullOrWhiteSpace(block.Language) ? "Code" : block.Language)</span><button type="button" @onclick="() => CopyAsync(block.Text)" aria-label="Copy code">Copy code</button></header><pre><code>@block.Text</code></pre></div>
         }
+        else if (block.Table is { } table)
+        {
+            <div class="chat-table-block">
+                <div class="chat-table-toolbar"><span>Table</span><span role="status">@(block == _copiedTable ? _copyStatus : null)</span><button type="button" @onclick="() => CopyAsync(block.Text, block)" title="Copy table as Markdown">Copy table</button></div>
+                <div class="chat-table-scroll" role="region" aria-label="Markdown table" tabindex="0">
+                    <table>
+                        <thead><tr>
+                            @for (var column = 0; column < table.Headers.Length; column++)
+                            {
+                                <th scope="col" style="text-align: @table.Alignments[column]">@Inline(table.Headers[column])</th>
+                            }
+                        </tr></thead>
+                        <tbody>
+                            @foreach (var row in table.Rows)
+                            {
+                                <tr>
+                                    @for (var column = 0; column < table.Headers.Length; column++)
+                                    {
+                                        <td style="text-align: @table.Alignments[column]">@Inline(column < row.Length ? row[column] : "")</td>
+                                    }
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        }
         else if (block.Kind == BlockKind.Heading)
         {
             <h3>@Inline(block.Text)</h3>
@@ -27,7 +54,7 @@
     }
     @if (!IsStreaming && !string.IsNullOrWhiteSpace(Text))
     {
-        <div class="chat-response-actions"><button type="button" @onclick="() => CopyAsync(Text)">Copy response</button><span role="status">@_copyStatus</span></div>
+        <div class="chat-response-actions"><button type="button" @onclick="() => CopyAsync(Text)">Copy response</button><span role="status">@(_copiedTable is null ? _copyStatus : null)</span></div>
     }
 </div>
 
@@ -35,13 +62,14 @@
     [Parameter] public string Text { get; set; } = "";
     [Parameter] public bool IsStreaming { get; set; }
     private string? _parsedText, _copyStatus;
+    private TextBlock? _copiedTable;
     private IReadOnlyList<TextBlock> _blocks = [];
     private static readonly Regex InlineTokens = new(@"(`[^`\n]+`|\*\*[^*\n]+\*\*)", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
 
     protected override void OnParametersSet()
     {
         if (_parsedText == Text) return;
-        _parsedText = Text; _copyStatus = null; _blocks = Parse(Text);
+        _parsedText = Text; _copyStatus = null; _copiedTable = null; _blocks = Parse(Text);
     }
 
     private static IReadOnlyList<TextBlock> Parse(string text)
@@ -80,11 +108,66 @@
                 while (index < lines.Length && lines[index].TrimStart().StartsWith("> ", StringComparison.Ordinal)) quote.Add(lines[index++].TrimStart()[2..]);
                 result.Add(new(BlockKind.Quote, string.Join('\n', quote))); continue;
             }
+            if (TryTableHeader(lines, index, out var headers, out var alignments))
+            {
+                var start = index;
+                var rows = new List<string[]>();
+                index += 2;
+                while (index < lines.Length && !Special(lines[index].TrimStart()) && TryTableRow(lines[index], out var cells))
+                {
+                    rows.Add(cells);
+                    index++;
+                }
+                result.Add(new(BlockKind.Table, string.Join('\n', lines[start..index]), Table: new(headers, alignments, rows)));
+                continue;
+            }
             var paragraph = new List<string> { line }; index++;
-            while (index < lines.Length && !string.IsNullOrWhiteSpace(lines[index]) && !Special(lines[index].TrimStart())) paragraph.Add(lines[index++]);
+            while (index < lines.Length && !string.IsNullOrWhiteSpace(lines[index]) && !Special(lines[index].TrimStart()) &&
+                !TryTableHeader(lines, index, out _, out _)) paragraph.Add(lines[index++]);
             result.Add(new(BlockKind.Paragraph, string.Join('\n', paragraph)));
         }
         return result;
+    }
+
+    private static bool TryTableHeader(string[] lines, int index, out string[] headers, out string[] alignments)
+    {
+        headers = []; alignments = [];
+        if (index + 1 >= lines.Length || !TryTableRow(lines[index], out headers) ||
+            !TryTableRow(lines[index + 1], out var delimiters) || headers.Length != delimiters.Length) return false;
+        alignments = new string[headers.Length];
+        for (var column = 0; column < delimiters.Length; column++)
+        {
+            var delimiter = delimiters[column].AsSpan();
+            var left = delimiter.StartsWith(":", StringComparison.Ordinal);
+            var right = delimiter.EndsWith(":", StringComparison.Ordinal);
+            if (left) delimiter = delimiter[1..];
+            if (right && !delimiter.IsEmpty) delimiter = delimiter[..^1];
+            if (delimiter.IsEmpty || delimiter.IndexOfAnyExcept('-') >= 0) return false;
+            alignments[column] = right ? left ? "center" : "right" : "left";
+        }
+        return true;
+    }
+
+    private static bool TryTableRow(string line, out string[] cells)
+    {
+        var text = line.Trim();
+        var values = new List<string>();
+        var start = text.StartsWith('|') ? 1 : 0;
+        var hasPipe = start == 1;
+        var escaped = false;
+        for (var index = start; index < text.Length; index++)
+        {
+            if (text[index] == '|' && !escaped)
+            {
+                values.Add(text[start..index].Trim().Replace("\\|", "|", StringComparison.Ordinal));
+                start = index + 1;
+                hasPipe = true;
+            }
+            escaped = text[index] == '\\' && !escaped;
+        }
+        if (start < text.Length) values.Add(text[start..].Trim().Replace("\\|", "|", StringComparison.Ordinal));
+        cells = values.ToArray();
+        return hasPipe && cells.Length > 0;
     }
 
     private static bool Heading(string text)
@@ -115,12 +198,14 @@
         builder.AddContent(3, text[position..]);
     };
 
-    private async Task CopyAsync(string value)
+    private async Task CopyAsync(string value, TextBlock? table = null)
     {
-        try { await JS.InvokeVoidAsync("navigator.clipboard.writeText", value); _copyStatus = "Copied"; }
+        _copiedTable = table;
+        try { await JS.InvokeVoidAsync("navigator.clipboard.writeText", value); _copyStatus = table is null ? "Copied" : "Table copied as Markdown."; }
         catch (JSException) { _copyStatus = "Select the text and copy it manually."; }
     }
 
-    private enum BlockKind { Paragraph, Heading, List, Quote, Code }
-    private sealed record TextBlock(BlockKind Kind, string Text, string? Language = null);
+    private enum BlockKind { Paragraph, Heading, List, Quote, Code, Table }
+    private sealed record TextBlock(BlockKind Kind, string Text, string? Language = null, TableData? Table = null);
+    private sealed record TableData(string[] Headers, string[] Alignments, IReadOnlyList<string[]> Rows);
 }
