@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -27,6 +28,8 @@ fixture = module("cli-tool-fixture")
 promotion = module("promote-release")
 versions = module("product-version")
 prior_releases = module("select-prior-release")
+setup_fixture = module("cli-setup-fixture")
+runtime_sbom = module("verify-runtime-sbom")
 REPOSITORY = promotion.REPOSITORY
 WORKFLOW = ".github/workflows/release-build.yml"
 
@@ -166,6 +169,10 @@ def package_inventory(package, version):
 
 def isolated_environment(root):
     root.mkdir()
+    return environment_for_case(root)
+
+
+def environment_for_case(root):
     return dict(os.environ, DOTNET_CLI_HOME=str(root / "cli-home"), DOTNET_NOLOGO="1",
                 DOTNET_CLI_TELEMETRY_OPTOUT="1", DOTNET_SKIP_FIRST_TIME_EXPERIENCE="1",
                 DOTNET_ADD_GLOBAL_TOOLS_TO_PATH="0", NUGET_PACKAGES=str(root / "packages"),
@@ -275,6 +282,119 @@ def exercise(root, evidence, package, identity, prior, prior_identity, inventory
     return receipt
 
 
+def safe_tar_extract(archive_path, destination):
+    with tarfile.open(archive_path) as archive:
+        seen = set()
+        for member in archive.getmembers():
+            relative = Path(member.name)
+            fixture.require(not relative.is_absolute() and ".." not in relative.parts and
+                            "\\" not in member.name and (member.isfile() or member.isdir()) and
+                            relative.as_posix() not in seen, "Tool archive contains unsafe, duplicate or special entries")
+            seen.add(relative.as_posix())
+        archive.extractall(destination, filter="data")
+
+
+def linux_archive(root, evidence, identity, environment):
+    version = identity["productVersion"]
+    original = root / "candidate-artifact"
+    names = [f"netratel-cli-{version}-linux-x64.tar.gz", f"netratel-mcp-stdio-{version}-linux-x64.tar.gz",
+             f"netratel-{version}.spdx.json"]
+    indexed = {}
+    for line in (original / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
+        parts = line.split(maxsplit=1)
+        fixture.require(len(parts) == 2, "Malformed hosted tooling checksum index")
+        digest, name = parts[0], parts[1].lstrip("*")
+        fixture.require(Path(name).name == name and name not in indexed and re.fullmatch("[a-f0-9]{64}", digest),
+                        "Unsafe or duplicate hosted tooling checksum entry")
+        indexed[name] = digest
+    for name in names:
+        fixture.require(indexed.get(name) == promotion.sha256(original / name), "Tool archive/SPDX differs from hosted SHA256SUMS")
+    expanded = root / "linux-archive"
+    expanded.mkdir()
+    for name in names[:2]:
+        safe_tar_extract(original / name, expanded)
+    document = json.loads((original / names[2]).read_text(encoding="utf-8"))
+    fixture.require(document.get("name") == "NetRatel-runtime-tools" and any(
+        item.get("name") == document["name"] and item.get("versionInfo") == version for item in document.get("packages", [])),
+        "Global SPDX does not identify the selected tooling version")
+    runtime_sbom.verify(document, expanded)
+    actual_files = {path.relative_to(expanded).as_posix() for path in expanded.rglob("*") if path.is_file()}
+    fixture.require({Path(item["fileName"]).as_posix() for item in document["files"]} == actual_files,
+                    "Global SPDX must inventory exactly both actual tooling archives")
+    cli = expanded / "netratel-cli-linux-x64"
+    executable = cli / "netratel"
+    fixture.require(executable.is_file() and os.access(executable, os.X_OK), "Actual Linux CLI executable is missing or not executable")
+    for name in ("LICENSE", "NOTICE", "THIRD-PARTY-NOTICES.txt"):
+        fixture.require((cli / name).stat().st_size > 0, "Actual CLI archive lacks " + name)
+    record = {**identity, "scope": "same authenticated build artifact; actual Linux FDD CLI tar and global SPDX",
+              "archive": names[0], "archiveSha256": indexed[names[0]], "compressedBytes": (original / names[0]).stat().st_size,
+              "sbomSha256": indexed[names[2]],
+              "globalSpdxFiles": len(document["files"]), "globalSpdxPackages": len(document["packages"]),
+              "expandedFileBytes": sum(path.stat().st_size for path in cli.rglob("*") if path.is_file()),
+              "regularFileCount": sum(path.is_file() for path in cli.rglob("*")), "passed": False}
+    try:
+        case = root / "linux-archive-process"
+        case.mkdir()
+        record["processProbeStages"] = fixture.probe([str(executable)], environment, case, version,
+                                                     identity["sourceSha"], evidence / "linux-archive-process.json")
+        record["passed"] = True
+    finally:
+        (evidence / "linux-archive.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    return record
+
+
+def selected_runtime_paths(trace):
+    def only(pattern, description):
+        values = set(re.findall(pattern, trace, re.MULTILINE))
+        fixture.require(len(values) == 1, "Runtime trace has missing/ambiguous " + description)
+        return values.pop()
+    return {"root": only(r"^Using dotnet root path \[([^\r\n]+)\]", "dotnet root"),
+            "hostfxr": only(r"^Resolved fxr \[([^\r\n]+)\]", "hostfxr"),
+            "framework": only(r"^Chose FX version \[([^\r\n]*Microsoft[.]NETCore[.]App[^\r\n]*)\]", "required shared framework")}
+
+
+def file_population(directory):
+    paths = {path.resolve() for path in directory.rglob("*") if path.is_file()}
+    fixture.require(bool(paths), "Observed runtime directory is empty")
+    return {"path": str(directory), "regularResolvedFileCount": len(paths),
+            "fileBytes": sum(path.stat().st_size for path in paths)}, paths
+
+
+def observe_runtime(entrypoint, environment, directory, evidence, identity, installed_bytes):
+    directory.mkdir()
+    trace_path = directory / "host.trace"
+    record = {"passed": False, "stages": [], "scope": "observed selected external .NET framework, hostfxr and dotnet host files; SDK/installer/OS dependencies excluded"}
+    try:
+        output = fixture.command([*entrypoint, "--version"], dict(environment, DOTNET_HOST_TRACE="1",
+                                  DOTNET_HOST_TRACEFILE=str(trace_path)), directory, record["stages"])
+        fixture.require(output == identity["productVersion"] + "+" + identity["sourceSha"], "Runtime observation used a different installed candidate")
+        trace = trace_path.read_text(encoding="utf-8")
+        selected = selected_runtime_paths(trace)
+        dotnet_root, fxr, framework = Path(selected["root"]).resolve(), Path(selected["hostfxr"]).resolve(), Path(selected["framework"]).resolve()
+        fixture.require(fxr.is_file() and framework.parent.name == "Microsoft.NETCore.App" and
+                        framework.is_relative_to(dotnet_root / "shared") and fxr.is_relative_to(dotnet_root / "host" / "fxr"),
+                        "Selected runtime trace paths do not identify the expected installed populations")
+        host = dotnet_root / ("dotnet.exe" if os.name == "nt" else "dotnet")
+        fixture.require(host.is_file(), "Selected dotnet host file is missing")
+        shared, shared_paths = file_population(framework)
+        hostfxr, fxr_paths = file_population(fxr.parent)
+        fixture.require(not shared_paths.intersection(fxr_paths) and host.resolve() not in shared_paths | fxr_paths,
+                        "External runtime populations overlap")
+        host_record = {"path": str(host), "fileBytes": host.stat().st_size, "sha256": promotion.sha256(host)}
+        external = shared["fileBytes"] + hostfxr["fileBytes"] + host_record["fileBytes"]
+        record.update(selectedSharedFramework=shared, selectedHostfxr=hostfxr, dotnetHost=host_record,
+                      hostfxrLibrarySha256=promotion.sha256(fxr), selectedFrameworkVersion=framework.name,
+                      selectedHostfxrVersion=fxr.parent.name, externalObservedFileBytes=external,
+                      candidateInstalledPackageRootBytes=installed_bytes,
+                      candidatePackageRootPlusObservedExternalFileBytes=installed_bytes + external,
+                      traceSha256=promotion.sha256(trace_path),
+                      selectedTraceLines=[line for line in trace.splitlines() if line.startswith(("Resolved fxr [", "Using dotnet root path [", "Chose FX version ["))],
+                      excludes=["SDK", "runtime installer/download", "OS libraries/dependencies", "unselected installed frameworks", "other package caches"], passed=True)
+    finally:
+        (evidence / "runtime-population.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    return record
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
@@ -285,7 +405,7 @@ def main():
     evidence = args.evidence.resolve()
     evidence.mkdir(parents=True, exist_ok=True)
     receipt = {"passed": False, "os": platform.system(), "machine": platform.machine(),
-               "scope": "portable nupkg distribution acceptance; synthetic API; live backend and interactive TTY pending"}
+               "scope": "portable FDD package and selected external runtime; Linux additionally tests actual tar and protected TTY/noninteractive setup"}
     try:
         receipt["toolingSha"] = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[2], text=True).strip()
@@ -309,6 +429,15 @@ def main():
             (evidence / (name + ".json")).write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
         receipt["acceptance"] = exercise(root, evidence, candidate, candidate_identity, prior, prior_identity,
                                           inventory, old_inventory)["installations"]
+        case = root / "global-install"
+        environment = environment_for_case(case)
+        shim = case / "cli-home" / ".dotnet" / "tools" / ("netratel.exe" if os.name == "nt" else "netratel")
+        receipt["runtimePopulation"] = observe_runtime([str(shim)], environment, root / "runtime-observation", evidence,
+            candidate_identity, receipt["acceptance"]["global-install"]["installedBytes"])
+        if platform.system() == "Linux":
+            receipt["linuxArchive"] = linux_archive(root, evidence, candidate_identity, environment)
+            installed_inventory(shim.parent, version, inventory)
+            receipt["linuxSetup"] = setup_fixture.probe([str(shim)], environment, root / "setup-fixture", evidence)
         receipt["passed"] = True
     finally:
         (evidence / "result.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
