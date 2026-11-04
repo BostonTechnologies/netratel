@@ -12,6 +12,51 @@ namespace NetRatel.Web.PlaywrightTests;
 public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture browserFixture)
     : IClassFixture<ClientsManagementBrowserFixture>
 {
+    [Fact]
+    public async Task Incremental_snapshot_drafts_become_one_saved_completion_without_resending()
+    {
+        var api = new ChatFixture(incremental: true);
+        await using var host = await ClientsManagementFixtureHost.StartAsync(services => services.AddSingleton<INetclawApiService>(api));
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1366, Height = 900 } });
+        var page = await context.NewPageAsync();
+        var errors = new List<string>();
+        page.PageError += (_, error) => errors.Add(error);
+        await page.GotoAsync(host.BaseAddress + "/ai/chat?tenantId=17");
+        await page.GetByTestId("chat-message").FillAsync("Explain the streamed answer.");
+        await page.GetByTestId("chat-send").ClickAsync();
+
+        var draft = page.Locator(".chat-draft");
+        await Assertions.Expect(draft.Locator(".chat-message-content")).ToHaveTextAsync(ChatFixture.FirstDraft);
+        await Assertions.Expect(draft.GetByRole(AriaRole.Button, new() { Name = "Copy response", Exact = true })).ToHaveCountAsync(0);
+        await Assertions.Expect(page.Locator(".chat-message-operator")).ToHaveCountAsync(1);
+        await Assertions.Expect(page.GetByTestId("chat-send")).ToBeDisabledAsync();
+
+        // Only the service snapshot changes. The real two-second chat poll must
+        // render the new draft even though its event cursor has not advanced.
+        api.AdvanceDraft();
+        await Assertions.Expect(draft.Locator(".chat-message-content")).ToHaveTextAsync(ChatFixture.SecondDraft);
+        await Assertions.Expect(page.Locator(".chat-message-assistant:not(.chat-draft)")).ToHaveCountAsync(0);
+        var artifacts = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.GetFullPath("TestResults/playwright");
+        Directory.CreateDirectory(artifacts);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(artifacts, "chat-incremental-draft.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+
+        api.CompleteDraft();
+        await Assertions.Expect(draft).ToHaveCountAsync(0);
+        await Assertions.Expect(page.Locator(".chat-message-assistant")).ToHaveCountAsync(1);
+        await Assertions.Expect(page.Locator(".chat-code-block pre code")).ToHaveTextAsync("echo complete");
+        await Assertions.Expect(page.GetByRole(AriaRole.Button, new() { Name = "Copy response", Exact = true })).ToBeVisibleAsync();
+        await page.ReloadAsync(new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await Assertions.Expect(page.Locator(".chat-message-operator")).ToHaveCountAsync(1);
+        await Assertions.Expect(page.Locator(".chat-message-assistant")).ToHaveCountAsync(1);
+        await Assertions.Expect(draft).ToHaveCountAsync(0);
+        await Assertions.Expect(page.Locator(".chat-code-block pre code")).ToHaveTextAsync("echo complete");
+        Assert.Equal(1, api.Creates);
+        Assert.Equal(1, api.Sends);
+        await AssertHealthyAsync(page);
+        Assert.Empty(errors);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(artifacts, "chat-incremental-saved-completion.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+    }
+
     [Theory]
     [InlineData(1366, 900, "light")]
     [InlineData(390, 844, "dark")]
@@ -286,18 +331,21 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
 
     private sealed class ChatFixture : INetclawApiService
     {
+        public const string FirstDraft = "First fragment.";
+        public const string SecondDraft = "First fragment. The next fragment arrives.";
         private readonly Guid _id = Guid.NewGuid();
         private volatile InvestigationSnapshotDto? _saved;
         private int _creates, _sends, _recoveries;
         private readonly bool _dense;
+        private readonly bool _incremental;
         public bool FailNextArchive { get; set; }
         public InvestigationArchiveRequest? LastArchive { get; private set; }
         public int Recoveries => Volatile.Read(ref _recoveries);
         public Guid Id => _id;
         private readonly bool _investigation;
-        public ChatFixture(bool? investigation = null, bool dense = false, InvestigationState state = InvestigationState.Idle, InvestigationRecoveryDto? recovery = null)
+        public ChatFixture(bool? investigation = null, bool dense = false, InvestigationState state = InvestigationState.Idle, InvestigationRecoveryDto? recovery = null, bool incremental = false)
         {
-            _investigation = investigation == true; _dense = dense;
+            _investigation = investigation == true; _dense = dense; _incremental = incremental;
             if (investigation is null) return;
             var now = DateTimeOffset.UtcNow;
             InvestigationEventDto[] events = [new(1, "assistant", "## Saved answer\n\n```sh\necho safe\n```", null, null, null, now),
@@ -334,6 +382,18 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
         {
             var saved = await GetAsync(tenantId, id, ct: ct);
             Interlocked.Increment(ref _sends);
+            if (_incremental)
+            {
+                var processing = saved with
+                {
+                    Investigation = saved.Investigation with { State = InvestigationState.Processing },
+                    LastSequence = saved.LastSequence + 1, ActiveMessageId = request.MessageId,
+                    Events = [.. saved.Events, new(saved.LastSequence + 1, "operator", request.Text, "operator", null, null, DateTimeOffset.UtcNow, request.MessageId)],
+                    Draft = FirstDraft
+                };
+                _saved = processing;
+                return processing;
+            }
             const string answer = "## Script draft\n\nThis **read-only** PowerShell draft lists service names and their current state.\n\n```powershell\nGet-Service | Select-Object Name, Status\n```\n\nReview the draft before choosing a target system.";
             var now = DateTimeOffset.UtcNow;
             var completed = saved with
@@ -344,6 +404,23 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
             _saved = completed;
             return completed;
         }
+        public void AdvanceDraft()
+        {
+            var saved = ProcessingSnapshot();
+            _saved = saved with { Draft = SecondDraft };
+        }
+        public void CompleteDraft()
+        {
+            var saved = ProcessingSnapshot();
+            _saved = saved with
+            {
+                Investigation = saved.Investigation with { State = InvestigationState.Idle },
+                LastSequence = saved.LastSequence + 1, Draft = null,
+                Events = [.. saved.Events, new(saved.LastSequence + 1, "assistant", SecondDraft + "\n\n```sh\necho complete\n```", null, null, null, DateTimeOffset.UtcNow)]
+            };
+        }
+        private InvestigationSnapshotDto ProcessingSnapshot() => _saved is { Investigation.State: InvestigationState.Processing } saved
+            ? saved : throw new InvalidOperationException("The fixture has no admitted streaming response.");
         public Task<IReadOnlyList<InvestigationClientDto>> ClientsAsync(int tenantId, CancellationToken ct = default) => _investigation ? Task.FromResult<IReadOnlyList<InvestigationClientDto>>([]) : throw new NotSupportedException("Chat must not request systems.");
         public Task<IReadOnlyList<InvestigationSummaryDto>> ListAsync(int tenantId, CancellationToken ct = default) => Task.FromResult<IReadOnlyList<InvestigationSummaryDto>>(History());
         public Task<InvestigationSnapshotDto> CreateAsync(int tenantId, InvestigationCreateRequest request, CancellationToken ct = default) => throw new NotSupportedException();
