@@ -2174,6 +2174,31 @@ class NativeUpgradeAcceptanceTests(unittest.TestCase):
                 else:
                     with self.subTest(case=case), self.assertRaises(ValueError): self.prepare.prepare_prior("1.2.3", work, evidence)
 
+    def test_source_image_commands_use_real_dockerfiles_from_the_pinned_git_archive_without_building(self):
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        dockerfiles = module("record-stack-image-comparison").DOCKERFILES
+        actual_run = subprocess.run
+        built = []
+        def run(arguments, **kwargs):
+            if arguments[0] == "tar":
+                return actual_run(arguments, **kwargs)
+            self.assertEqual(["bash", "tools/ci/build-public-image.sh"], arguments[:2])
+            role = ("api", "web", "migrations")[len(built)]
+            dockerfile = arguments[arguments.index("--dockerfile") + 1]
+            staged = Path(kwargs["cwd"]) / dockerfile
+            self.assertTrue(staged.is_file(), "Builder must receive an existing Dockerfile in the actual staged source")
+            self.assertEqual(dockerfiles[role], dockerfile)
+            self.assertEqual(actual_run(["git", "show", revision + ":" + dockerfile], cwd=ROOT, check=True, stdout=subprocess.PIPE).stdout, staged.read_bytes())
+            self.assertEqual(revision, arguments[arguments.index("--revision") + 1])
+            built.append(role)
+            return subprocess.CompletedProcess(arguments, 0)
+        image = [{"Id": "sha256:" + "a" * 64, "Config": {"Labels": {
+            "org.opencontainers.image.revision": revision, "org.opencontainers.image.version": "1.2.3"}}}]
+        with patch.object(self.prepare.subprocess, "run", side_effect=run), patch.object(self.prepare, "command", return_value=json.dumps(image)):
+            roles = self.prepare.build_source_images(ROOT, revision, "1.2.3", self.directory)
+        self.assertEqual(["api", "web", "migrations"], built)
+        self.assertEqual(set(built), set(roles))
+
     def service_fixture(self):
         properties = {"ActiveState": "active", "SubState": "running", "FragmentPath": "/etc/systemd/system/netratel-client.service",
             "Restart": "always", "RestartUSec": "30s", "RestartPreventExitStatus": "78", "StartLimitIntervalUSec": "0", "MainPID": "42", "InvocationID": "c" * 32}

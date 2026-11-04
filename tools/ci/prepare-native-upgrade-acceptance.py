@@ -241,7 +241,7 @@ def build_source_images(source, revision, version, evidence):
         for role in ("api", "web", "migrations"):
             reference = f"netratel-{role}:native-upgrade-candidate"
             with (evidence / (role + "-build.log")).open("wb") as log:
-                subprocess.run(["bash", "tools/ci/build-public-image.sh", "--dockerfile", f"docker/{role}/Dockerfile.public",
+                subprocess.run(["bash", "tools/ci/build-public-image.sh", "--dockerfile", f"docker/{role}/Dockerfile",
                     "--image", reference, "--version", version, "--revision", revision], cwd=context,
                     stdout=log, stderr=subprocess.STDOUT, check=True)
             image = json.loads(command("docker", "image", "inspect", reference))[0]
