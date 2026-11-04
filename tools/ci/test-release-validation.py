@@ -2349,6 +2349,25 @@ class NativeUpgradeAcceptanceTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.service.validate_activation(request, ready, activation, {**server, "gatewayConnectionEpoch": 0}, "1.2.3", 42)
         with self.assertRaises(ValueError): self.service.validate_activation(request, {**ready, "confirmationId": str(uuid.UUID(int=0))}, activation, server, "1.2.3", 42)
 
+    def test_failed_activation_observation_keeps_timestamp_presence_without_protected_secrets(self):
+        request, ready, activation, server = self.activation_fixture()
+        activation.update(stage="ready_marker_written", admissionNonce="SECRET-NONCE", accessToken="SECRET-TOKEN",
+            requestJson={"admissionNonce": "SECRET-REQUEST"}, executablePath="SECRET-PATH")
+        activation["firstHeartbeatSentAtUtc"] = None
+        activation.pop("heartbeatAcceptedAtUtc")
+        observed = self.service.observe_activation(activation)
+        self.assertEqual({"stage", "targetVersion", "currentVersion", "processId", "connectionEpoch", "timestamps"}, set(observed))
+        self.assertEqual({"requestLoadedAtUtc", "activationContextAttachedAtUtc", "connectAcceptedAtUtc", "firstHeartbeatSentAtUtc",
+            "heartbeatAcceptedAtUtc", "confirmationReceivedAtUtc", "readyMarkerWrittenAtUtc"}, set(observed["timestamps"]))
+        self.assertEqual({"present": True, "value": None}, observed["timestamps"]["firstHeartbeatSentAtUtc"])
+        self.assertEqual({"present": False, "value": None}, observed["timestamps"]["heartbeatAcceptedAtUtc"])
+        self.assertEqual(activation["requestLoadedAtUtc"], observed["timestamps"]["requestLoadedAtUtc"]["value"])
+        self.assertEqual(42, observed["processId"])
+        self.assertEqual(2, observed["connectionEpoch"])
+        self.assertNotIn("SECRET", json.dumps(observed))
+        with self.assertRaisesRegex(ValueError, "actual Hello/heartbeat/confirmation/ready transition"):
+            self.service.validate_activation(request, ready, activation, server, "1.2.3", 42)
+
     def test_restart_requires_new_process_ack_admission_and_retained_identity_bytes(self):
         request, ready, activation, server = self.activation_fixture()
         proof = self.service.validate_activation(request, ready, activation, server, "1.2.3", 42)
