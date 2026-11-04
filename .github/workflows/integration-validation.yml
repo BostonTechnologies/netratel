@@ -48,7 +48,7 @@ on:
         type: boolean
         default: false
       measurement_verify_run:
-        description: Existing client-measurement run for Windows verification or deployment/client-archive Linux acceptance without rebuilding
+        description: Existing client-measurement run for archive acceptance, or successful release-build ID for native-client service upgrade
         default: ''
         required: false
 
@@ -226,7 +226,7 @@ jobs:
             --results-directory TestResults/browser --report-trx --report-trx-filename browser.trx
           python3 tools/ci/verify-mtp-trx.py TestResults/browser/browser.trx
       - name: Install OIDC browser trust tools
-        if: inputs.suite == 'deployment' || inputs.suite == 'release-images' || inputs.suite == 'upgrade-oidc'
+        if: inputs.suite == 'deployment' || inputs.suite == 'release-images' || inputs.suite == 'upgrade-oidc' || (inputs.suite == 'native-client' && inputs.measurement_verify_run != '')
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libnss3-tools
       - name: Verify original trimmed archive and prepare its isolated client wrapper
         if: inputs.suite == 'deployment' && inputs.deployment_profile == 'client-archive'
@@ -408,8 +408,31 @@ jobs:
       - name: Run selected published HTTP MCP image smoke
         if: inputs.suite == 'release-images'
         run: bash tools/ci/smoke-mcp-http-image.sh
+      - name: Check out separately pinned native service acceptance tooling
+        if: inputs.suite == 'native-client' && inputs.measurement_verify_run != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: native-upgrade-tooling
+          fetch-depth: 0
+      - name: Verify ordinary Actions candidate and prepare exact-source upgrade images
+        if: inputs.suite == 'native-client' && inputs.measurement_verify_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        shell: bash
+        run: |
+          python3 native-upgrade-tooling/tools/ci/prepare-native-upgrade-acceptance.py \
+            --source "$GITHUB_WORKSPACE" --run-id "$MEASUREMENT_VERIFY_RUN" \
+            --work "$RUNNER_TEMP/native-upgrade" --evidence TestResults/native-upgrade
+      - name: Run owned native service upgrade with original ordinary archive bytes
+        if: inputs.suite == 'native-client' && inputs.measurement_verify_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: bash native-upgrade-tooling/tools/ci/smoke-postgresql-oidc-upgrade.sh
       - name: Build and execute the selected Linux native client archive
-        if: inputs.suite == 'native-client'
+        if: inputs.suite == 'native-client' && inputs.measurement_verify_run == ''
         shell: bash
         run: |
           set -euo pipefail
@@ -470,6 +493,11 @@ jobs:
                   record = json.loads(stack.read_text())
                   summary.write("\nComplete production-image comparison and bounded process measurements:\n\n```json\n" + json.dumps(
                       {key: value for key, value in record.items() if key != "layers"}, indent=2) + "\n```\n")
+              native = Path("TestResults/native-upgrade/preparation.json")
+              if native.is_file():
+                  summary.write("\nNative service upgrade reuses the original ordinary untrimmed Actions candidate. Product source and separately pinned tooling source are distinct; the existing historical DB/browser journeys also execute.\n\n```json\n" + native.read_text() + "```\n")
+              accepted = Path("TestResults/native-upgrade/native-upgrade-acceptance.json")
+              if accepted.is_file(): summary.write("\n```json\n" + accepted.read_text() + "```\n")
               stdio = Path("TestResults/stdio-assessment/assessment.json")
               if stdio.is_file():
                   summary.write("\nLinux stdio diagnostic: FDD archives exclude the separately observed external shared runtime; self-contained trimmed JIT includes its bundled runtime. These are different footprint populations, with no cross-mode savings claim. Live policy and Windows acceptance remain pending.\n\n```json\n" + stdio.read_text() + "```\n")
