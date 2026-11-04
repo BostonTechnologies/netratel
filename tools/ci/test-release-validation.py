@@ -2295,6 +2295,49 @@ class NativeUpgradeAcceptanceTests(unittest.TestCase):
         activation.update({name: now for name in ("requestLoadedAtUtc", "activationContextAttachedAtUtc", "connectAcceptedAtUtc", "firstHeartbeatSentAtUtc", "heartbeatAcceptedAtUtc", "confirmationReceivedAtUtc", "readyMarkerWrittenAtUtc")})
         return request, ready, activation, server
 
+    def test_actual_catalog_dto_release_uuid_survives_shell_projection_and_strict_activation_binding(self):
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        endpoint = subprocess.check_output(["git", "show", revision + ":src/NetRatel/NetRatel.API/Endpoints/Client/ClientUpdatesEndpoints.cs"], cwd=ROOT, text=True)
+        parameters = re.search(r"record ClientUpdateReleaseDto\((.*?)\);", endpoint, re.DOTALL).group(1).split(",")
+        fields = [parameter.strip().rsplit(" ", 1) for parameter in parameters]
+        self.assertIn(["int", "Id"], fields)
+        self.assertIn(["Guid", "ReleaseId"], fields)
+        self.assertNotIn("PublicId", [name for _, name in fields])
+        projection = endpoint.split(".Select(x => new ClientUpdateReleaseDto(", 1)[1].split("))", 1)[0].split(",")
+        self.assertEqual("x.PublicId", projection[[name for _, name in fields].index("ReleaseId")].strip())
+        request, ready, activation, server = self.activation_fixture()
+        values = {"Id": 1, "ReleaseId": server["releasePublicId"], "RuntimeId": "linux-x64", "Version": "1.2.3", "Enabled": True}
+        catalog = {name[0].lower() + name[1:]: values.get(name) for _, name in fields}
+        detail = {key: value for key, value in server.items() if key not in ("releasePublicId", "admissionNonceHash")}
+        detail["releaseId"] = 1
+        source = (ROOT / "tools/ci/smoke-postgresql-oidc-upgrade.sh").read_text()
+        function = "retain_native_server_proof() {\n" + source.split("retain_native_server_proof() {\n", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+        postgres = self.directory / "postgres-proof.py"
+        postgres.write_text("import os,sys\nassert 'attempt='+os.environ['attempt_id'] in sys.argv\nassert 'SELECT \\\"AdmissionNonceHash\\\" FROM \\\"ClientUpdateAttempts\\\"' in sys.stdin.read()\nprint(os.environ['PROOF_NONCE_HASH'])\n")
+        script = "set -euo pipefail\n" + function + "active_compose=(python3 \"$PROOF_POSTGRES\")\nretain_native_server_proof activated \"$PROOF_DETAIL\"\n"
+        for case in ("valid", "missing", "wrong-integer", "wrong-uuid", "duplicate"):
+            rows = [copy.deepcopy(catalog)]
+            if case == "missing": rows[0].pop("releaseId")
+            if case == "wrong-integer": rows[0]["id"] = 2
+            if case == "wrong-uuid": rows[0]["releaseId"] = "dddddddd-2222-4333-8444-555555555555"
+            if case == "duplicate": rows *= 2
+            evidence = self.directory / ("server-proof-" + case); evidence.mkdir()
+            result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env={**os.environ,
+                "native_acceptance_evidence": str(evidence), "attempt_id": server["attemptId"], "release_response": json.dumps(rows),
+                "PROOF_DETAIL": json.dumps(detail), "PROOF_NONCE_HASH": server["admissionNonceHash"], "PROOF_POSTGRES": str(postgres)})
+            with self.subTest(case=case):
+                if case in ("missing", "wrong-integer", "duplicate"):
+                    self.assertNotEqual(0, result.returncode)
+                    continue
+                self.assertEqual(0, result.returncode, result.stderr)
+                actual = json.loads((evidence / "server-activated.json").read_text())
+                self.assertEqual(rows[0]["releaseId"], actual["releasePublicId"])
+                if case == "wrong-uuid":
+                    with self.assertRaisesRegex(ValueError, "Protected request differs"):
+                        self.service.validate_activation(request, ready, activation, actual, "1.2.3", 42)
+                else:
+                    self.assertEqual(server["releasePublicId"], self.service.validate_activation(request, ready, activation, actual, "1.2.3", 42)["releasePublicId"])
+
     def test_version_only_telemetry_wrong_nonce_confirmation_or_process_cannot_pass_activation(self):
         request, ready, activation, server = self.activation_fixture()
         result = self.service.validate_activation(request, ready, activation, server, "1.2.3", 42)

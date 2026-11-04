@@ -162,7 +162,7 @@ SQL
   jq -n --argjson attempt "$detail" --argjson catalog "$release_response" --arg nonce "$nonce_hash" \
     '$attempt as $a | ($catalog | map(select(.id == $a.releaseId))) as $releases |
      if ($releases | length) != 1 then error("Ambiguous approved native release") else
-     {attemptId:$a.attemptId,releasePublicId:$releases[0].publicId,releaseId:$a.releaseId,
+     {attemptId:$a.attemptId,releasePublicId:($releases[0].releaseId // error("Missing approved native release UUID")),releaseId:$a.releaseId,
       tenantId:$a.tenantId,agentId:$a.agentId,targetVersion:$a.targetVersion,runtimeId:$a.runtimeId,
       state:$a.state,gatewayConnectionId:$a.gatewayConnectionId,gatewayConnectionEpoch:$a.gatewayConnectionEpoch,
       readmittedAtUtc:$a.readmittedAtUtc,confirmedAtUtc:$a.confirmedAtUtc,confirmationId:$a.confirmationId,
