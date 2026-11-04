@@ -19,10 +19,15 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         var setupProof = RequireValue("NETRATEL_LOCAL_FIRST_SETUP_PROOF");
         var email = RequireValue("NETRATEL_LOCAL_FIRST_ADMIN_EMAIL");
         var password = RequireValue("NETRATEL_LOCAL_FIRST_ADMIN_PASSWORD");
+        var hybrid = Environment.GetEnvironmentVariable("NETRATEL_AUTHENTICATION_MODE") == "Hybrid";
         var pageErrors = new List<string>();
 
         using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true });
+        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+        {
+            Headless = true,
+            Args = hybrid ? ["--host-resolver-rules=MAP host.docker.internal 127.0.0.1"] : []
+        });
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
             ViewportSize = new ViewportSize { Width = 390, Height = 844 },
@@ -273,6 +278,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             Assert.Contains(await context.CookiesAsync(), cookie => cookie.Name == "NetRatel.Local" && cookie.Secure);
         }
 
+        await VerifyLocalSessionAfterHostRestartAsync(browser, page, webUrl, apiContainer, webContainer, ingressContainer);
+
         await AssertFirstPaintAsync(
             browser,
             webUrl,
@@ -320,6 +327,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         // Require the conservative form to retire within the existing timeout.
         await page.GetByTestId("setup-proof").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Detached });
         Assert.Equal(0, await page.GetByTestId("setup-proof").CountAsync());
+        if (hybrid) await VerifyHybridOidcSignInAsync(browser, webUrl);
         Assert.Empty(pageErrors);
     }
 
@@ -399,6 +407,99 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         echo "API did not report isReady=true through /api/v2/setup/status within the bounded restart probe." >&2
         exit 1
         """);
+
+    private static async Task VerifyLocalSessionAfterHostRestartAsync(
+        IBrowser browser, IPage page, Uri webUrl, string apiContainer, string webContainer, string? ingressContainer)
+    {
+        // Reuse only the real pre-restart Local ticket in a fresh browser context.
+        // Neither an existing circuit nor another sign-in can satisfy this check.
+        var cookies = (await page.Context.CookiesAsync(webUrl.ToString()))
+            .Where(cookie => cookie.Name == "NetRatel.Local" || cookie.Name.StartsWith("NetRatel.LocalC", StringComparison.Ordinal))
+            .ToArray();
+        Assert.True(cookies.Any(cookie => cookie.Name == "NetRatel.Local"), "Local sign-in must issue its protected session cookie.");
+        var before = await page.Context.APIRequest.GetAsync(new Uri(webUrl, "api/v2/access/self").ToString());
+        Assert.Equal(200, before.Status);
+        using var beforeIdentity = JsonDocument.Parse(await before.TextAsync());
+        var principalId = beforeIdentity.RootElement.GetProperty("principalId").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(principalId));
+
+        if (!string.IsNullOrWhiteSpace(ingressContainer)) await RunDockerAsync("stop", ingressContainer);
+        await RunDockerAsync("stop", apiContainer, webContainer);
+        try
+        {
+            await RunDockerAsync("start", apiContainer);
+            await WaitForApiReadyAsync(apiContainer);
+        }
+        finally
+        {
+            try { await RunDockerAsync("start", webContainer); }
+            finally
+            {
+                if (!string.IsNullOrWhiteSpace(ingressContainer)) await RunDockerAsync("start", ingressContainer);
+            }
+        }
+        await page.WaitForFunctionAsync("""
+            async () => {
+                try {
+                    const response = await fetch('/api/v2/setup/status');
+                    return response.ok && (await response.json()).isReady === true;
+                } catch { return false; }
+            }
+            """, null, new PageWaitForFunctionOptions { Timeout = 60_000 });
+
+        await using var restoredContext = await browser.NewContextAsync(new BrowserNewContextOptions { IgnoreHTTPSErrors = IgnoreSyntheticHttpsErrors });
+        await restoredContext.AddCookiesAsync(cookies.Select(cookie => new Cookie
+        {
+            Name = cookie.Name, Value = cookie.Value, Domain = cookie.Domain, Path = cookie.Path,
+            Expires = cookie.Expires, HttpOnly = cookie.HttpOnly, Secure = cookie.Secure, SameSite = cookie.SameSite
+        }));
+        var after = await restoredContext.APIRequest.GetAsync(new Uri(webUrl, "api/v2/access/self").ToString());
+        Assert.Equal(200, after.Status);
+        using var afterIdentity = JsonDocument.Parse(await after.TextAsync());
+        Assert.Equal(principalId, afterIdentity.RootElement.GetProperty("principalId").GetString());
+        var restoredPage = await restoredContext.NewPageAsync();
+        await restoredPage.GotoAsync(webUrl.ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await Assertions.Expect(restoredPage.Locator(".netratel-app-bar")).ToBeVisibleAsync(new() { Timeout = 20_000 });
+        await AssertLocalTenantScopeAsync(restoredPage, webUrl, "Browser smoke tenant");
+        Assert.False(await restoredPage.GetByTestId("local-login-submit").IsVisibleAsync());
+        await page.ReloadAsync(new PageReloadOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+    }
+
+    private static async Task VerifyHybridOidcSignInAsync(IBrowser browser, Uri webUrl)
+    {
+        // A separate context cannot authenticate using the Local ticket created
+        // by the preceding setup, account-security and authorization journey.
+        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions { IgnoreHTTPSErrors = IgnoreSyntheticHttpsErrors });
+        var page = await context.NewPageAsync();
+        page.SetDefaultTimeout(20_000);
+        var errors = new List<string>();
+        page.PageError += (_, error) => errors.Add(error);
+        await page.GotoAsync(new Uri(webUrl, "login?ReturnUrl=%2Ftenants").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await WaitForLocalLoginClientAsync(page);
+        await Assertions.Expect(page.GetByTestId("local-login-submit")).ToBeVisibleAsync(new() { Timeout = 20_000 });
+        var oidcAction = page.Locator(".netratel-login-primary-action");
+        await Assertions.Expect(oidcAction).ToHaveTextAsync("Sign in with your identity provider", new() { Timeout = 20_000 });
+        await oidcAction.ClickAsync();
+        await page.Locator("input[name='username']").FillAsync("netratel-test-operator", new() { Timeout = 60_000 });
+        var callback = page.WaitForResponseAsync(response =>
+            Uri.TryCreate(response.Url, UriKind.Absolute, out var uri) &&
+            uri.GetLeftPart(UriPartial.Path) == new Uri(webUrl, "signin-oidc").ToString());
+        await page.Locator("form").EvaluateAsync("form => form.submit()");
+        Assert.Equal(302, (await callback).Status);
+        await page.WaitForURLAsync(new Uri(webUrl, "tenants").ToString(), new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        var cookies = await context.CookiesAsync();
+        Assert.True(cookies.Any(cookie => cookie.Name.StartsWith(".AspNetCore.Cookies", StringComparison.Ordinal)), "Hybrid SSO must issue its browser session cookie.");
+        var hasLocalCookie = cookies.Any(cookie => cookie.Name == "NetRatel.Local");
+        Assert.False(hasLocalCookie, "Hybrid SSO must authenticate without a Local session ticket.");
+        Assert.Equal(200, await page.EvaluateAsync<int>("async () => (await fetch('/api/v1/tenants')).status"));
+        await page.GotoAsync(new Uri(webUrl, "account/security").ToString(), new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await Assertions.Expect(page.GetByTestId("account-security-managed")).ToBeVisibleAsync(new() { Timeout = 20_000 });
+        Assert.Equal(0, await page.GetByTestId("open-password-dialog").CountAsync());
+        await CaptureReviewScreenshotAsync(page, "hybrid-oidc-account");
+        await page.GotoAsync(new Uri(webUrl, "auth/logout").ToString(), new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        Assert.Equal(401, await page.EvaluateAsync<int>("async () => (await fetch('/api/v1/tenants')).status"));
+        Assert.Empty(errors);
+    }
 
     private static bool IgnoreSyntheticHttpsErrors => Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_IGNORE_HTTPS_ERRORS") == "true";
 
@@ -932,7 +1033,38 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByText("Branding saved.", new PageGetByTextOptions { Exact = false })
             .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
 
-        var directory = Path.Combine("TestResults", "branding");
+        var png = Convert.FromBase64String(await page.EvaluateAsync<string>("""
+            () => {
+                const canvas = document.createElement('canvas');
+                canvas.width = canvas.height = 16;
+                const context = canvas.getContext('2d');
+                context.fillStyle = '#167c80';
+                context.fillRect(0, 0, 16, 16);
+                return canvas.toDataURL('image/png').split(',')[1];
+            }
+            """));
+        var lightLogo = page.GetByRole(AriaRole.Img, new() { Name = "Light logo", Exact = true });
+        var originalLogoUrl = await lightLogo.GetAttributeAsync("src");
+        await lightLogo.Locator("..").Locator("input[type=file]").SetInputFilesAsync(new FilePayload
+        {
+            Name = "browser-branding.png", MimeType = "image/png", Buffer = png
+        });
+        await page.GetByText("Asset uploaded and versioned for browser cache invalidation.", new() { Exact = true })
+            .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await Assertions.Expect(lightLogo).ToHaveAttributeAsync("src",
+            new System.Text.RegularExpressions.Regex(@"^/api/v2/branding/assets/[a-f0-9]{32}\?v=\d+$"), new() { Timeout = 20_000 });
+        var uploadedLogoUrl = await lightLogo.GetAttributeAsync("src");
+        Assert.NotEqual(originalLogoUrl, uploadedLogoUrl);
+        var assetResponse = await page.Context.APIRequest.GetAsync(new Uri(webUrl, uploadedLogoUrl!).ToString());
+        Assert.Equal(200, assetResponse.Status);
+        Assert.StartsWith("image/png", assetResponse.Headers["content-type"]);
+        var servedAsset = await assetResponse.BodyAsync();
+        Assert.True(png.SequenceEqual(servedAsset), "The published branding asset must retain the uploaded PNG bytes.");
+
+        var directory = Path.Combine(
+            Environment.GetEnvironmentVariable("NETRATEL_REVIEW_SCREENSHOT_DIR")
+                ?? Path.GetFullPath("TestResults/local-first/screenshots"),
+            "branding");
         Directory.CreateDirectory(directory);
         foreach (var (theme, width, height, name) in new[]
                  {
@@ -947,6 +1079,13 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             var preview = page.GetByTestId("branding-preview");
             await preview.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
             Assert.Contains("Browser branding example", await preview.InnerTextAsync());
+            await Assertions.Expect(preview.Locator("img")).ToHaveAttributeAsync("src", uploadedLogoUrl!, new() { Timeout = 20_000 });
+            await page.WaitForFunctionAsync("""
+                () => {
+                    const image = document.querySelector('[data-testid="branding-preview"] img');
+                    return image?.complete && image.naturalWidth === 16 && image.naturalHeight === 16;
+                }
+                """);
             Assert.Equal(InstallLinkPublicOrigin(), await page.GetByLabel("Site URL").InputValueAsync());
             Assert.Equal(InstallLinkPublicOrigin(), await page.GetByLabel("Gateway URL").InputValueAsync());
             await page.ScreenshotAsync(new PageScreenshotOptions
@@ -958,13 +1097,42 @@ public sealed class LocalFirstComposeBrowserSmokeTests
 
         await page.SetViewportSizeAsync(1440, 900);
         await page.GotoAsync(webUrl.ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
-        var applicationBrand = page.Locator(".netratel-nav-brand img");
-        await applicationBrand.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-        await page.WaitForFunctionAsync("() => document.querySelector('.netratel-nav-brand img')?.getAttribute('alt') === 'Browser branding example'");
-        // Let any overlapping prerender/interactive branding read complete. A
-        // stale response must not revert the accepted persisted presentation.
-        await page.WaitForTimeoutAsync(500);
-        Assert.Equal("Browser branding example", await applicationBrand.GetAttributeAsync("alt"));
+        if (Environment.GetEnvironmentVariable("NETRATEL_BROWSER_SMOKE_EXPECT_CURRENT_SHELL") != "false")
+        {
+            var response = await page.Context.APIRequest.GetAsync(new Uri(webUrl, "api/v2/branding").ToString());
+            Assert.True(response.Ok, $"Public branding returned HTTP {response.Status}.");
+            using var branding = JsonDocument.Parse(await response.TextAsync());
+            Assert.Equal("Browser branding example", branding.RootElement.GetProperty("applicationName").GetProperty("value").GetString());
+            foreach (var (width, height) in new[] { (1440, 900), (390, 844) })
+            {
+                var previousWidth = page.ViewportSize?.Width ?? width;
+                await page.SetViewportSizeAsync(width, height);
+                var search = page.GetByTestId("global-search");
+                await Assertions.Expect(search).ToBeVisibleAsync(new() { Timeout = 20_000 });
+                await Assertions.Expect(search).ToHaveAttributeAsync("aria-label", "Search Browser branding example", new() { Timeout = 20_000 });
+                await Assertions.Expect(search.Locator("span")).ToHaveTextAsync("Search Browser branding example", new() { Timeout = 20_000 });
+                var drawer = page.Locator("#nav-drawer");
+                if (previousWidth >= 1280 && width < 1280)
+                    await Assertions.Expect(drawer).ToHaveClassAsync(new System.Text.RegularExpressions.Regex(@"(^|\s)mud-drawer--closed(\s|$)"), new() { Timeout = 20_000 });
+                var navigation = page.GetByRole(AriaRole.Navigation, new() { Name = "Primary navigation", Exact = true });
+                if (await drawer.EvaluateAsync<bool>("element => element.classList.contains('mud-drawer--closed')") || !await navigation.IsVisibleAsync())
+                    await page.GetByTestId("navigation-toggle").ClickAsync();
+                var dashboard = navigation.GetByRole(AriaRole.Link, new() { Name = "Dashboard", Exact = true });
+                await Assertions.Expect(dashboard).ToBeVisibleAsync(new() { Timeout = 20_000 });
+                await Assertions.Expect(dashboard).ToBeInViewportAsync(new() { Ratio = 0.9f, Timeout = 20_000 });
+                await Assertions.Expect(dashboard).ToHaveAttributeAsync("href", "/", new() { Timeout = 20_000 });
+                await dashboard.FocusAsync();
+                await Assertions.Expect(dashboard).ToBeFocusedAsync(new() { Timeout = 20_000 });
+                Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth"));
+                await CaptureReviewScreenshotAsync(page, $"branding-navbar-{width}x{height}");
+            }
+        }
+        else
+        {
+            var applicationBrand = page.Locator(".netratel-nav-brand img");
+            await applicationBrand.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+            await Assertions.Expect(applicationBrand).ToHaveAttributeAsync("alt", "Browser branding example", new() { Timeout = 20_000 });
+        }
         Assert.Equal(0, await page.Locator(".netratel-appbar-brand").CountAsync());
     }
 

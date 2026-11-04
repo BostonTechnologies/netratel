@@ -186,6 +186,8 @@ upgrade against a completed public release:
 ```sh
 gh workflow run integration-validation.yml --ref main -f suite=browser -f source_ref='<commit-or-tag>'
 gh workflow run integration-validation.yml --ref main -f suite=upgrade-local -f release_tag='<completed-release-tag>'
+gh workflow run integration-validation.yml --ref main -f suite=deployment -f deployment_profile=local -f source_ref='<exact-public-commit>'
+gh workflow run integration-validation.yml --ref main -f suite=deployment -f deployment_profile=hybrid -f source_ref='<exact-public-commit>'
 gh workflow run integration-validation.yml --ref main -f suite=deployment -f deployment_profile=http-host-setup -f source_ref='<commit-or-tag>'
 gh workflow run integration-validation.yml --ref main -f suite=migrations-image -f source_ref='<commit-or-tag>'
 gh workflow run integration-validation.yml --ref main -f suite=migrations-image -f migrations_comparison=html-ownership -f source_ref='<exact-public-commit>'
@@ -200,6 +202,17 @@ the protected public revision/version image helper. Its source Compose run uses
 those exact prepared API/Web/migrations images; the existing client acceptance
 uses the prepared client. HTTP MCP is built and measured without asserting its
 runtime acceptance. Other deployment profiles retain their existing build paths.
+
+The `local` and `hybrid` deployment profiles reuse the fresh local-first Compose
+journey against the selected source. They exercise proof-gated setup, Local
+sign-in, the original protected cookie after API/Web process restarts, tenant
+authorization, branding edits and a real PNG upload, account security and the
+credential wizard. Hybrid adds the existing pinned disposable OIDC issuer and
+requires SSO in a separate browser context without a Local cookie. These two
+profiles use loopback HTTP; Hybrid explicitly uses Development metadata settings.
+The `oidc` profile retains its separate Production TLS acceptance. Local/Hybrid
+do not build the unrelated Client, CLI or MCP deployment inputs or collect a new
+five-image comparison. The browser TRX and screenshots remain under `TestResults`.
 
 After successful OIDC acceptance, before cleanup removes local images, the run
 retains pristine image `/app` file hashes/bytes, verified SPDX and dependency

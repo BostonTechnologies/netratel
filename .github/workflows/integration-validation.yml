@@ -27,7 +27,7 @@ on:
         description: Disposable profile for the deployment suite only
         type: choice
         default: oidc
-        options: [oidc, http-host-setup, client-runtime, client-archive]
+        options: [oidc, local, hybrid, http-host-setup, client-runtime, client-archive]
         required: false
       release_tag:
         description: Existing completed public release tag, required for published-image and upgrade suites
@@ -226,7 +226,7 @@ jobs:
             --results-directory TestResults/browser --report-trx --report-trx-filename browser.trx
           python3 tools/ci/verify-mtp-trx.py TestResults/browser/browser.trx
       - name: Install OIDC browser trust tools
-        if: inputs.suite == 'deployment' || inputs.suite == 'release-images' || inputs.suite == 'upgrade-oidc'
+        if: (inputs.suite == 'deployment' && inputs.deployment_profile != 'local' && inputs.deployment_profile != 'hybrid') || inputs.suite == 'release-images' || inputs.suite == 'upgrade-oidc'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libnss3-tools
       - name: Verify original trimmed archive and prepare its isolated client wrapper
         if: inputs.suite == 'deployment' && inputs.deployment_profile == 'client-archive'
@@ -241,7 +241,7 @@ jobs:
             --work "$RUNNER_TEMP/client-archive-acceptance" --evidence TestResults/client-archive \
             --image netratel-client:archive-acceptance
       - name: Build source deployment inputs once
-        if: inputs.suite == 'deployment' && inputs.deployment_profile != 'http-host-setup'
+        if: inputs.suite == 'deployment' && inputs.deployment_profile != 'http-host-setup' && inputs.deployment_profile != 'local' && inputs.deployment_profile != 'hybrid'
         env:
           DEPLOYMENT_PROFILE: ${{ inputs.deployment_profile }}
         shell: bash
@@ -389,11 +389,18 @@ jobs:
             upgrade-oidc) bash tools/ci/smoke-postgresql-oidc-upgrade.sh ;;
           esac
       - name: Run selected source or release-image OIDC deployment
-        if: (inputs.suite == 'deployment' && inputs.deployment_profile != 'http-host-setup') || inputs.suite == 'release-images'
+        if: (inputs.suite == 'deployment' && inputs.deployment_profile != 'http-host-setup' && inputs.deployment_profile != 'local' && inputs.deployment_profile != 'hybrid') || inputs.suite == 'release-images'
         env:
           NETRATEL_SMOKE_AUTH_ENVIRONMENT: Production
           GH_TOKEN: ${{ inputs.suite == 'deployment' && inputs.deployment_profile == 'oidc' && github.token || '' }}
         run: bash tools/ci/smoke-oidc-compose.sh
+      - name: Run current-source Local or Hybrid browser deployment
+        if: inputs.suite == 'deployment' && (inputs.deployment_profile == 'local' || inputs.deployment_profile == 'hybrid')
+        env:
+          NETRATEL_AUTHENTICATION_MODE: ${{ inputs.deployment_profile == 'hybrid' && 'Hybrid' || 'Local' }}
+          NETRATEL_LOCAL_FIRST_GITHUB_TOKEN: ${{ github.token }}
+          POSTGRES_PASSWORD: disposable-local-first-only
+        run: bash tools/ci/smoke-local-first-compose.sh
       - name: Run disposable URL-first host deployment and resume acceptance
         if: inputs.suite == 'deployment' && inputs.deployment_profile == 'http-host-setup'
         env:

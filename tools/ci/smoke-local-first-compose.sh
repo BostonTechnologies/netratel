@@ -35,6 +35,9 @@ if [[ -n "$bundle" ]]; then
 fi
 
 compose_files=(-f "$compose_file")
+if [[ "${NETRATEL_AUTHENTICATION_MODE:-}" == Hybrid ]]; then
+  compose_files+=(-f "$root/tests/compose/local-first-hybrid.compose.yaml")
+fi
 if [[ -n "${NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS:-}" ]]; then
   IFS=':' read -r -a acceptance_overlays <<<"$NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS"
   for acceptance_overlay in "${acceptance_overlays[@]}"; do
@@ -102,6 +105,7 @@ cleanup() {
     echo "::error title=Local-first Compose smoke failed::${stage}" >&2
     "${compose[@]}" ps --all >&2 || true
     local log_services=("$database_service" migrations api web)
+    if [[ "${NETRATEL_AUTHENTICATION_MODE:-}" == Hybrid ]]; then log_services+=(oidc); fi
     if [[ "$web_url" == https://* ]]; then log_services+=(ingress); fi
     if [[ -n "$mcp_http_image" ]]; then log_services+=(mcp-http); fi
     "${compose[@]}" logs --no-color --tail 250 "${log_services[@]}" >&2 || true
