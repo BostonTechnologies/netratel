@@ -288,7 +288,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             ".netratel-app-bar",
             await context.CookiesAsync(),
             requireApplicationSurfaces: true,
-            requireInput: false);
+            requireInput: Environment.GetEnvironmentVariable("NETRATEL_BROWSER_SMOKE_EXPECT_CURRENT_SHELL") != "false");
 
         // The account created by the real setup flow is the persisted bootstrap
         // instance administrator. Exercise initial, interactive, and periodic
@@ -911,6 +911,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
 
         var serializedPreference = System.Text.Json.JsonSerializer.Serialize(themeCase.Preference);
         var serializedSurfaceSelector = System.Text.Json.JsonSerializer.Serialize(surfaceSelector);
+        var requireDashboardInput = requireApplicationSurfaces && requireInput;
+        var serializedDashboardInput = System.Text.Json.JsonSerializer.Serialize(requireDashboardInput);
         await firstPaintContext.AddInitScriptAsync($$"""
             (() => {
                 const preference = {{serializedPreference}};
@@ -924,7 +926,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                     const appbar = document.querySelector('.netratel-app-bar');
                     const drawer = document.querySelector('.netratel-app-drawer');
                     const textSurface = document.querySelector('h1, .netratel-app-bar, .netratel-login-panel');
-                    const input = document.querySelector('input');
+                    const input = {{serializedDashboardInput}}
+                        ? Array.from(document.querySelectorAll('.dashboard-tenant [role="combobox"]'))
+                            .find(element => element.getClientRects().length > 0 && getComputedStyle(element).visibility !== 'hidden')
+                        : document.querySelector('input');
                     if (body && surface && surface.getBoundingClientRect().height > 0) {
                         samples.push({
                             theme: document.documentElement.dataset.netratelTheme,
@@ -940,7 +945,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                     }
                     if (observing) requestAnimationFrame(capture);
                 };
-                window.__netratelThemeFirstPaint = { samples, stop: () => { observing = false; } };
+                window.__netratelThemeFirstPaint = { samples, requireDashboardInput: {{serializedDashboardInput}}, stop: () => { observing = false; } };
                 requestAnimationFrame(capture);
             })();
             """);
@@ -958,7 +963,16 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         {
             await page.GotoAsync(new Uri(webUrl, path).ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.Commit });
             await page.Locator(surfaceSelector).WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-            await page.WaitForFunctionAsync("() => window.__netratelThemeFirstPaint.samples.length > 0");
+            if (requireDashboardInput)
+                await Assertions.Expect(page.Locator(".dashboard-tenant").GetByRole(AriaRole.Combobox, new() { Name = "Tenant", Exact = true }))
+                    .ToBeVisibleAsync(new() { Timeout = 20_000 });
+            await page.WaitForFunctionAsync("""
+                () => {
+                    const state = window.__netratelThemeFirstPaint;
+                    const sample = state.samples.at(-1);
+                    return sample && (!state.requireDashboardInput || sample.input !== '');
+                }
+                """);
             var expectedVisibleSurface = requireApplicationSurfaces ? themeCase.Appbar : themeCase.VisibleSurface;
 
             var firstPaint = await page.EvaluateAsync<string[]>("""
@@ -975,7 +989,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             Assert.Equal(expectedVisibleSurface, firstPaint[5]);
             if (requireInput)
             {
-                Assert.Equal(themeCase.Input, firstPaint[8]);
+                Assert.Equal(requireDashboardInput ? themeCase.Text : themeCase.Input, firstPaint[8]);
             }
             else
             {
