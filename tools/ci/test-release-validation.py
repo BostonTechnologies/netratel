@@ -2655,6 +2655,103 @@ class ClientArchiveAcceptanceTests(unittest.TestCase):
     def setUp(self):
         self.helper = module("prepare-client-archive-acceptance")
 
+    def test_runtime_log_guards_require_an_available_source_and_bounded_real_history(self):
+        source = (ROOT / "tools/ci/smoke-oidc-compose.sh").read_text()
+        descriptor = {"sourceId": "netratel-runtime", "kind": "runtime", "platform": "linux", "available": True,
+                      "unavailableReason": None, "supportsLive": True, "supportsHistory": True, "supportsPaging": True}
+        record = {"sourceId": "netratel-runtime", "category": "Gateway", "prefix": "Gateway", "sequence": 1,
+                  "cursor": "1", "timestampUtc": "2030-01-01T00:00:00Z", "message": "Presence admitted.", "truncated": False}
+        page = {"records": [record], "errorCode": None, "resyncRequired": False, "hasMore": False, "droppedRecordCount": 0}
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary) / "response.json"
+
+            def check(name, value, *arguments):
+                body = re.search(r"^" + name + r"\(\) \{\n.*?^\}", source, re.MULTILINE | re.DOTALL).group(0)
+                fixture.write_text(json.dumps(value))
+                return subprocess.run(["bash", "-c", body + '\n' + name + ' "$@"', "fixture", str(fixture), *arguments],
+                                      capture_output=True, text=True).returncode
+
+            self.assertEqual(0, check("runtime_log_source_available", [descriptor]))
+            for value in ([], {}, [descriptor, descriptor], ["netratel-runtime"]):
+                self.assertNotEqual(0, check("runtime_log_source_available", value))
+            for key, value in (("sourceId", "other"), ("kind", "journal"), ("platform", "windows"), ("available", False),
+                               ("available", "true"), ("unavailableReason", "denied"), ("supportsHistory", False),
+                               ("supportsPaging", False), ("supportsLive", False), ("supportsLive", "true")):
+                self.assertNotEqual(0, check("runtime_log_source_available", [{**descriptor, key: value}]))
+            self.assertEqual(0, check("runtime_log_history_valid", page, "1"))
+            self.assertEqual(0, check("runtime_log_history_valid", {**page, "records": []}, "0"))
+            self.assertNotEqual(0, check("runtime_log_history_valid", {**page, "records": []}, "1"))
+            for key, value in (("sourceId", "other"), ("category", "Other"), ("prefix", "Other"), ("sequence", "1"),
+                               ("sequence", 0), ("sequence", 0.5), ("sequence", True), ("cursor", ""), ("timestampUtc", None),
+                               ("message", "unrelated"), ("message", None), ("truncated", True)):
+                self.assertNotEqual(0, check("runtime_log_history_valid", {**page, "records": [{**record, key: value}]}, "1"))
+            for key, value in (("records", {}), ("records", None), ("records", [record] * 101), ("errorCode", "source_unavailable"),
+                               ("resyncRequired", True), ("hasMore", "false"), ("droppedRecordCount", -1),
+                               ("droppedRecordCount", "0"), ("droppedRecordCount", 0.5), ("droppedRecordCount", True)):
+                self.assertNotEqual(0, check("runtime_log_history_valid", {**page, key: value}, "0"))
+
+    def test_runtime_log_probe_preserves_http_transport_empty_page_and_malformed_failures(self):
+        source = (ROOT / "tools/ci/smoke-oidc-compose.sh").read_text()
+        functions = '\n'.join(re.search(r"^" + name + r"\(\) \{\n.*?^\}", source, re.MULTILINE | re.DOTALL).group(0)
+                              for name in ("runtime_log_source_available", "runtime_log_history_valid", "verify_runtime_log_acceptance"))
+        descriptor = {"sourceId": "netratel-runtime", "kind": "runtime", "platform": "linux", "available": True,
+                      "unavailableReason": None, "supportsLive": True, "supportsHistory": True, "supportsPaging": True}
+        record = {"sourceId": "netratel-runtime", "category": "Gateway", "prefix": "Gateway", "sequence": 1,
+                  "cursor": "1", "timestampUtc": "2030-01-01T00:00:00Z", "message": "Presence admitted.", "truncated": False}
+        page = {"records": [record], "errorCode": None, "resyncRequired": False, "hasMore": False, "droppedRecordCount": 0}
+        mocks = r'''
+curl() {
+  local url="${@: -1}" output=
+  printf '%s\n' "$url" >> "$FIXTURE_DIR/calls"
+  if [[ "$url" == */sources ]]; then
+    while (( $# )); do
+      if [[ "$1" == --output ]]; then output="$2"; fi
+      shift
+    done
+    cat "$FIXTURE_DIR/sources.json" > "$output"
+    [[ "$FIXTURE_CASE" != transport ]] || return 7
+    if [[ "$FIXTURE_CASE" == admission-wait && "$(wc -l < "$FIXTURE_DIR/calls")" == 1 ]]; then printf 404; else printf '%s' "$SOURCE_STATUS"; fi
+  else
+    [[ "$FIXTURE_CASE" != history-http ]] || return 22
+    cat "$FIXTURE_DIR/history.json"
+  fi
+}
+sleep() { :; }
+record_client_acceptance() { printf '%s\n' "$1" >> "$FIXTURE_DIR/stages"; }
+'''
+        agent = "11111111-1111-1111-1111-111111111111"
+        for case, status, expected in (("success", "200", 0), ("admission-wait", "200", 0), ("unauthorized", "401", 1),
+                                       ("forbidden", "403", 1), ("not-ready", "404", 1), ("transport", "200", 7),
+                                       ("history-http", "200", 22), ("empty", "200", 1), ("malformed", "200", 1)):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                (root / "sources.json").write_text(json.dumps([descriptor]))
+                history = copy.deepcopy(page)
+                if case == "empty":
+                    history["records"] = []
+                elif case == "malformed":
+                    history["records"][0]["sequence"] = "1"
+                (root / "history.json").write_text(json.dumps(history))
+                result = subprocess.run(["bash", "-c", 'set -euo pipefail\n' + functions + mocks +
+                    '\nverify_runtime_log_acceptance synthetic-token "$FIXTURE_DIR/evidence" initial'],
+                    env={**os.environ, "FIXTURE_DIR": str(root), "FIXTURE_CASE": case, "SOURCE_STATUS": status,
+                         "api_url": "http://127.0.0.1:9222", "tenant_id": "7", "agent_id": agent}, capture_output=True, text=True)
+                self.assertEqual(expected, result.returncode, result.stderr)
+                receipt = root / "evidence/runtime-logs-initial.json"
+                calls = (root / "calls").read_text().splitlines()
+                self.assertTrue(all(url.startswith(f"http://127.0.0.1:9222/api/v2/agents/7/{agent}/logs/") for url in calls))
+                if expected == 0:
+                    evidence = json.loads(receipt.read_text())
+                    self.assertEqual((7, agent, 1, True, False), (evidence["tenantId"], evidence["agentId"],
+                        evidence["historyRecordCount"], evidence["liveAdvertised"], evidence["liveDeliveryExecuted"]))
+                    self.assertEqual("initial-runtime-log-source-and-history\n", (root / "stages").read_text())
+                    self.assertEqual(3 if case == "admission-wait" else 2, len(calls))
+                else:
+                    self.assertFalse(receipt.exists())
+                    self.assertFalse((root / "stages").exists())
+                    self.assertEqual(60 if case == "empty" else 30 if case == "not-ready" else
+                                     2 if case in ("history-http", "malformed") else 1, len(calls))
+
     def test_inventory_status_and_real_package_checks_reject_incomplete_or_unrelated_receipts(self):
         source = (ROOT / "tools/ci/smoke-oidc-compose.sh").read_text()
         agent, collection = "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"
