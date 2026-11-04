@@ -3900,7 +3900,12 @@ class WindowsStdioCertificateTests(unittest.TestCase):
         original = helper.ssl.SSLContext.wrap_socket
 
         def handshake(context, *arguments, **options):
-            started.set()
+            try:
+                arguments[0].getpeername()
+            except OSError:
+                pass  # Wrapping a listening socket does not enter a handshake.
+            else:
+                started.set()
             return original(context, *arguments, **options)
 
         with tempfile.TemporaryDirectory() as temporary, \
