@@ -448,6 +448,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             """, null, new PageWaitForFunctionOptions { Timeout = 60_000 });
 
         await using var restoredContext = await browser.NewContextAsync(new BrowserNewContextOptions { IgnoreHTTPSErrors = IgnoreSyntheticHttpsErrors });
+        var anonymous = await restoredContext.APIRequest.GetAsync(new Uri(webUrl, "api/v2/access/self").ToString());
+        Assert.Equal(401, anonymous.Status);
         await restoredContext.AddCookiesAsync(cookies.Select(cookie => new Cookie
         {
             Name = cookie.Name, Value = cookie.Value, Domain = cookie.Domain, Path = cookie.Path,
@@ -470,6 +472,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         // A separate context cannot authenticate using the Local ticket created
         // by the preceding setup, account-security and authorization journey.
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions { IgnoreHTTPSErrors = IgnoreSyntheticHttpsErrors });
+        var anonymous = await context.APIRequest.GetAsync(new Uri(webUrl, "api/v1/tenants").ToString());
+        Assert.Equal(401, anonymous.Status);
         var page = await context.NewPageAsync();
         page.SetDefaultTimeout(20_000);
         var errors = new List<string>();
