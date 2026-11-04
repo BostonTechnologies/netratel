@@ -13,6 +13,9 @@ import stat
 import subprocess
 import uuid
 
+ACTIVATION_TIMESTAMPS = ("requestLoadedAtUtc", "activationContextAttachedAtUtc", "connectAcceptedAtUtc",
+    "firstHeartbeatSentAtUtc", "heartbeatAcceptedAtUtc", "confirmationReceivedAtUtc", "readyMarkerWrittenAtUtc")
+
 
 def read_json(path):
     return json.loads(path.read_text(encoding="utf-8-sig"))
@@ -63,6 +66,11 @@ def validate_service(properties, process, expected_executable, expected_uid):
         raise ValueError("Native updater must use its real non-container service enablement")
 
 
+def observe_activation(activation):
+    return {**{name: activation.get(name) for name in ("stage", "targetVersion", "currentVersion", "processId", "connectionEpoch")},
+        "timestamps": {name: {"present": name in activation, "value": activation.get(name)} for name in ACTIVATION_TIMESTAMPS}}
+
+
 def validate_activation(request, ready, activation, server, version, pid):
     attempt, release, confirmation = (str(uuid.UUID(server[name])) for name in ("attemptId", "releasePublicId", "confirmationId"))
     if any(value == str(uuid.UUID(int=0)) for value in (attempt, release, confirmation)):
@@ -87,8 +95,7 @@ def validate_activation(request, ready, activation, server, version, pid):
             activation.get("currentVersion"), activation.get("runtimeId"), activation.get("processId"), activation.get("connectionEpoch")) != (
             "netratel.update.activation.v1", attempt, release, version, version, "linux-x64", pid, server.get("gatewayConnectionEpoch")):
         raise ValueError("Actual candidate activation is not bound to the admitted process/connection")
-    times = {name: activation.get(name) for name in ("requestLoadedAtUtc", "activationContextAttachedAtUtc", "connectAcceptedAtUtc",
-        "firstHeartbeatSentAtUtc", "heartbeatAcceptedAtUtc", "confirmationReceivedAtUtc", "readyMarkerWrittenAtUtc")}
+    times = {name: activation.get(name) for name in ACTIVATION_TIMESTAMPS}
     if not all(times.values()):
         raise ValueError("Native candidate did not complete its actual Hello/heartbeat/confirmation/ready transition")
     for value in times.values():
@@ -167,8 +174,10 @@ def collect(args, receipt):
         for name in ("request.json", "state.json", "ready.json", "activation.json"):
             receipt["files"][name] = protected_file(args.state / name, service_uid)
         server = read_json(args.server)
+        activation = read_json(args.state / "activation.json")
+        receipt["activationObserved"] = observe_activation(activation)
         receipt["activation"] = validate_activation(read_json(args.state / "request.json"), read_json(args.state / "ready.json"),
-            read_json(args.state / "activation.json"), server, args.version, pid)
+            activation, server, args.version, pid)
         marker = "Recovery consumed the matching pending update attempt " + receipt["activation"]["attemptId"] + "; outage history is retained."
         receipt["pendingCooldownConsumptionObserved"] = marker in logs
         receipt["pendingReaderLimit"] = "Healthy activation proves request/confirmation reads; cooldown-only pending-reader consumption is unproven unless naturally logged."
