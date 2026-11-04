@@ -92,6 +92,7 @@ def run(artifacts, source, work, evidence, version, revision):
     work.mkdir(parents=True)
     evidence.mkdir(parents=True)
     record = {"runtime": "win-x64", "sourceSha": revision, "productVersion": version, "passed": False,
+              "catalogParity": "not_compared",
               "scope": "actual Windows FDD archive and shared synthetic HTTPS protocol probes; no live policy claim"}
     fixture = None
     trust = None
