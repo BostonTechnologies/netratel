@@ -853,8 +853,10 @@ public sealed partial class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdat
     {
         var request = ReadJson(_requestPath, CoordinatorStateJsonContext.Default.UpdateRequest);
         if (request is not null && string.Equals(request.ToVersion, _currentVersion, StringComparison.OrdinalIgnoreCase))
-            RecordActivation(request, stage, connectionEpoch, errorCode, exception, connectAcceptedAtUtc,
-                firstHeartbeatSentAtUtc, heartbeatAcceptedAtUtc);
+            RecordActivation(request, stage, connectionEpoch, errorCode, exception,
+                connectAcceptedAtUtc: connectAcceptedAtUtc,
+                firstHeartbeatSentAtUtc: firstHeartbeatSentAtUtc,
+                heartbeatAcceptedAtUtc: heartbeatAcceptedAtUtc);
     }
 
     private void RecordActivation(
