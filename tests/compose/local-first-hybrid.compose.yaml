@@ -1,0 +1,48 @@
+# Disposable HTTP-loopback Hybrid acceptance. Production TLS OIDC is exercised
+# separately by the existing oidc deployment profile.
+services:
+  oidc:
+    image: ghcr.io/navikt/mock-oauth2-server@sha256:ae36f65ca23e07e8786b288e53145e7ffb191c9dccfa9868ed433e7bbacad5db
+    hostname: host.docker.internal
+    ports:
+      # Linux containers use host-gateway to reach the same issuer as Chromium.
+      - "0.0.0.0:${NETRATEL_LOCAL_FIRST_OIDC_PORT:-18083}:8080"
+    environment:
+      JSON_CONFIG: '{"interactiveLogin":true,"loginPagePath":"/run/netratel-smoke/oidc-login.html"}'
+    configs:
+      - source: local_first_oidc_login_page
+        target: /run/netratel-smoke/oidc-login.html
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/isalive"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+  api:
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      Authentication__Mode: Hybrid
+      Authentication__Oidc__Authority: http://host.docker.internal:${NETRATEL_LOCAL_FIRST_OIDC_PORT:-18083}/default
+      Authentication__Oidc__Audience: netratel.api
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      oidc:
+        condition: service_healthy
+  web:
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      Authentication__Mode: Hybrid
+      Authentication__Oidc__Authority: http://host.docker.internal:${NETRATEL_LOCAL_FIRST_OIDC_PORT:-18083}/default
+      Authentication__Oidc__ClientId: netratel-smoke-client
+      Authentication__Oidc__ApiScope: netratel.api
+      Authentication__Oidc__TokenEndpoint: http://host.docker.internal:${NETRATEL_LOCAL_FIRST_OIDC_PORT:-18083}/default/token
+      Authentication__Oidc__RequireHttpsMetadata: "false"
+      OIDC_CLIENT_SECRET: synthetic-compose-only-secret
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      oidc:
+        condition: service_healthy
+configs:
+  local_first_oidc_login_page:
+    file: ${PWD}/tests/compose/oidc-smoke-login.html

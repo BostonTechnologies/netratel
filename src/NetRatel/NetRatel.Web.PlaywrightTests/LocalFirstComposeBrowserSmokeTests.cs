@@ -19,10 +19,15 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         var setupProof = RequireValue("NETRATEL_LOCAL_FIRST_SETUP_PROOF");
         var email = RequireValue("NETRATEL_LOCAL_FIRST_ADMIN_EMAIL");
         var password = RequireValue("NETRATEL_LOCAL_FIRST_ADMIN_PASSWORD");
+        var hybrid = Environment.GetEnvironmentVariable("NETRATEL_AUTHENTICATION_MODE") == "Hybrid";
         var pageErrors = new List<string>();
 
         using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true });
+        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+        {
+            Headless = true,
+            Args = hybrid ? ["--host-resolver-rules=MAP host.docker.internal 127.0.0.1"] : []
+        });
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
             ViewportSize = new ViewportSize { Width = 390, Height = 844 },
@@ -273,6 +278,11 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             Assert.Contains(await context.CookiesAsync(), cookie => cookie.Name == "NetRatel.Local" && cookie.Secure);
         }
 
+        page = await VerifyLocalSessionAfterHostRestartAsync(browser, page, webUrl, apiContainer, webContainer, ingressContainer);
+        page.SetDefaultTimeout(20_000);
+        page.PageError += (_, error) => pageErrors.Add(error);
+        await page.GotoAsync(webUrl.ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+
         await AssertFirstPaintAsync(
             browser,
             webUrl,
@@ -281,7 +291,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             ".netratel-app-bar",
             await context.CookiesAsync(),
             requireApplicationSurfaces: true,
-            requireInput: false);
+            requireInput: Environment.GetEnvironmentVariable("NETRATEL_BROWSER_SMOKE_EXPECT_CURRENT_SHELL") != "false");
 
         // The account created by the real setup flow is the persisted bootstrap
         // instance administrator. Exercise initial, interactive, and periodic
@@ -320,6 +330,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         // Require the conservative form to retire within the existing timeout.
         await page.GetByTestId("setup-proof").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Detached });
         Assert.Equal(0, await page.GetByTestId("setup-proof").CountAsync());
+        if (hybrid) await VerifyHybridOidcSignInAsync(browser, webUrl);
         Assert.Empty(pageErrors);
     }
 
@@ -378,7 +389,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         Assert.Equal(0, process.ExitCode);
     }
 
-    private static Task WaitForApiReadyAsync(string apiContainer) => RunDockerAsync(
+    private static Task WaitForApiReadyAsync(string apiContainer, int httpPort = 9222, int attempts = 25) => RunDockerAsync(
         "run",
         "--rm",
         "--network",
@@ -386,10 +397,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         "alpine:3.22",
         "sh",
         "-ceu",
-        """
+        $"""
         attempt=0
-        while [ "$attempt" -lt 25 ]; do
-          status="$(wget -q -T 1 -O - http://127.0.0.1:9222/api/v2/setup/status 2>/dev/null)" || status=""
+        while [ "$attempt" -lt {attempts} ]; do
+          status="$(wget -q -T 1 -O - http://127.0.0.1:{httpPort}/api/v2/setup/status 2>/dev/null)" || status=""
           if printf '%s' "$status" | grep -Eq '"isReady"[[:space:]]*:[[:space:]]*true'; then
             exit 0
           fi
@@ -399,6 +410,111 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         echo "API did not report isReady=true through /api/v2/setup/status within the bounded restart probe." >&2
         exit 1
         """);
+
+    private static async Task<IPage> VerifyLocalSessionAfterHostRestartAsync(
+        IBrowser browser, IPage page, Uri webUrl, string apiContainer, string webContainer, string? ingressContainer)
+    {
+        // Reuse only the real pre-restart Local ticket in a fresh browser context.
+        // Neither an existing circuit nor another sign-in can satisfy this check.
+        var cookies = (await page.Context.CookiesAsync(webUrl.ToString()))
+            .Where(cookie => cookie.Name == "NetRatel.Local" || cookie.Name.StartsWith("NetRatel.LocalC", StringComparison.Ordinal))
+            .ToArray();
+        Assert.True(cookies.Any(cookie => cookie.Name == "NetRatel.Local"), "Local sign-in must issue its protected session cookie.");
+        var before = await page.Context.APIRequest.GetAsync(new Uri(webUrl, "api/v2/local-auth/me").ToString());
+        Assert.Equal(200, before.Status);
+        using var beforeIdentity = JsonDocument.Parse(await before.TextAsync());
+        var principalId = beforeIdentity.RootElement.GetProperty("principalId").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(principalId));
+        var originalContext = page.Context;
+        // Retire the old circuit before stopping its server. Its reconnect
+        // navigation must not compete with the journey's next document load.
+        await page.CloseAsync();
+
+        if (!string.IsNullOrWhiteSpace(ingressContainer)) await RunDockerAsync("stop", ingressContainer);
+        await RunDockerAsync("stop", apiContainer, webContainer);
+        try
+        {
+            await RunDockerAsync("start", apiContainer);
+            await WaitForApiReadyAsync(apiContainer);
+        }
+        finally
+        {
+            try { await RunDockerAsync("start", webContainer); }
+            finally
+            {
+                if (!string.IsNullOrWhiteSpace(ingressContainer)) await RunDockerAsync("start", ingressContainer);
+            }
+        }
+        // An async waitForFunction predicate can resolve false without polling.
+        // Observe the real Web listener through the existing bounded startup probe.
+        await WaitForApiReadyAsync(webContainer, httpPort: 9111, attempts: 60);
+
+        await using var restoredContext = await browser.NewContextAsync(new BrowserNewContextOptions { IgnoreHTTPSErrors = IgnoreSyntheticHttpsErrors });
+        var restoredPage = await restoredContext.NewPageAsync();
+        restoredPage.SetDefaultTimeout(20_000);
+        await restoredPage.GotoAsync(new Uri(webUrl, "login").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        var anonymousStatus = await restoredPage.EvaluateAsync<int>(
+            "async () => (await fetch('/api/v2/local-auth/me', { credentials: 'same-origin', cache: 'no-store' })).status");
+        Assert.Equal(401, anonymousStatus);
+        await restoredContext.AddCookiesAsync(cookies.Select(cookie => new Cookie
+        {
+            Name = cookie.Name, Value = cookie.Value, Domain = cookie.Domain, Path = cookie.Path,
+            Expires = cookie.Expires, HttpOnly = cookie.HttpOnly, Secure = cookie.Secure, SameSite = cookie.SameSite
+        }));
+        var after = await restoredPage.EvaluateAsync<JsonElement>("""
+            async () => {
+                const response = await fetch('/api/v2/local-auth/me', { credentials: 'same-origin', cache: 'no-store' });
+                return { status: response.status, identity: response.ok ? await response.json() : null };
+            }
+            """);
+        Assert.Equal(200, after.GetProperty("status").GetInt32());
+        Assert.Equal(principalId, after.GetProperty("identity").GetProperty("principalId").GetString());
+        await restoredPage.GotoAsync(webUrl.ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await Assertions.Expect(restoredPage.Locator(".netratel-app-bar")).ToBeVisibleAsync(new() { Timeout = 20_000 });
+        await AssertLocalTenantScopeAsync(restoredPage, webUrl, "Browser smoke tenant");
+        Assert.False(await restoredPage.GetByTestId("local-login-submit").IsVisibleAsync());
+        // Continue with the unchanged pre-restart cookie jar, without another
+        // sign-in or an old circuit's automatic navigation.
+        return await originalContext.NewPageAsync();
+    }
+
+    private static async Task VerifyHybridOidcSignInAsync(IBrowser browser, Uri webUrl)
+    {
+        // A separate context cannot authenticate using the Local ticket created
+        // by the preceding setup, account-security and authorization journey.
+        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions { IgnoreHTTPSErrors = IgnoreSyntheticHttpsErrors });
+        var anonymous = await context.APIRequest.GetAsync(new Uri(webUrl, "api/v1/tenants").ToString());
+        Assert.Equal(401, anonymous.Status);
+        var page = await context.NewPageAsync();
+        page.SetDefaultTimeout(20_000);
+        var errors = new List<string>();
+        page.PageError += (_, error) => errors.Add(error);
+        await page.GotoAsync(new Uri(webUrl, "login?ReturnUrl=%2Ftenants").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await WaitForLocalLoginClientAsync(page);
+        await Assertions.Expect(page.GetByTestId("local-login-submit")).ToBeVisibleAsync(new() { Timeout = 20_000 });
+        var oidcAction = page.Locator(".netratel-login-primary-action");
+        await Assertions.Expect(oidcAction).ToHaveTextAsync("Sign in with your identity provider", new() { Timeout = 20_000 });
+        await oidcAction.ClickAsync();
+        await page.Locator("input[name='username']").FillAsync("netratel-test-operator", new() { Timeout = 60_000 });
+        var callback = page.WaitForResponseAsync(response =>
+            Uri.TryCreate(response.Url, UriKind.Absolute, out var uri) &&
+            uri.GetLeftPart(UriPartial.Path) == new Uri(webUrl, "signin-oidc").ToString());
+        await page.Locator("form").EvaluateAsync("form => form.submit()");
+        Assert.Equal(302, (await callback).Status);
+        await page.WaitForURLAsync(new Uri(webUrl, "tenants").ToString(), new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        var cookies = await context.CookiesAsync();
+        Assert.True(cookies.Any(cookie => cookie.Name.StartsWith(".AspNetCore.Cookies", StringComparison.Ordinal)), "Hybrid SSO must issue its browser session cookie.");
+        var hasLocalCookie = cookies.Any(cookie => cookie.Name == "NetRatel.Local");
+        Assert.False(hasLocalCookie, "Hybrid SSO must authenticate without a Local session ticket.");
+        Assert.Equal(200, await page.EvaluateAsync<int>("async () => (await fetch('/api/v1/tenants')).status"));
+        await page.GotoAsync(new Uri(webUrl, "account/security").ToString(), new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await Assertions.Expect(page.GetByTestId("account-security-managed")).ToBeVisibleAsync(new() { Timeout = 20_000 });
+        Assert.Equal(0, await page.GetByTestId("open-password-dialog").CountAsync());
+        await CaptureReviewScreenshotAsync(page, "hybrid-oidc-account");
+        await page.GotoAsync(new Uri(webUrl, "auth/logout").ToString(), new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        Assert.Equal(401, await page.EvaluateAsync<int>("async () => (await fetch('/api/v1/tenants')).status"));
+        Assert.Empty(errors);
+    }
 
     private static bool IgnoreSyntheticHttpsErrors => Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_IGNORE_HTTPS_ERRORS") == "true";
 
@@ -804,6 +920,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
 
         var serializedPreference = System.Text.Json.JsonSerializer.Serialize(themeCase.Preference);
         var serializedSurfaceSelector = System.Text.Json.JsonSerializer.Serialize(surfaceSelector);
+        var requireDashboardInput = requireApplicationSurfaces && requireInput;
+        var serializedDashboardInput = System.Text.Json.JsonSerializer.Serialize(requireDashboardInput);
         await firstPaintContext.AddInitScriptAsync($$"""
             (() => {
                 const preference = {{serializedPreference}};
@@ -817,7 +935,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                     const appbar = document.querySelector('.netratel-app-bar');
                     const drawer = document.querySelector('.netratel-app-drawer');
                     const textSurface = document.querySelector('h1, .netratel-app-bar, .netratel-login-panel');
-                    const input = document.querySelector('input');
+                    const input = {{serializedDashboardInput}}
+                        ? Array.from(document.querySelectorAll('.dashboard-tenant [role="combobox"]'))
+                            .find(element => element.getClientRects().length > 0 && getComputedStyle(element).visibility !== 'hidden')
+                        : document.querySelector('input');
                     if (body && surface && surface.getBoundingClientRect().height > 0) {
                         samples.push({
                             theme: document.documentElement.dataset.netratelTheme,
@@ -833,7 +954,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                     }
                     if (observing) requestAnimationFrame(capture);
                 };
-                window.__netratelThemeFirstPaint = { samples, stop: () => { observing = false; } };
+                window.__netratelThemeFirstPaint = { samples, requireDashboardInput: {{serializedDashboardInput}}, stop: () => { observing = false; } };
                 requestAnimationFrame(capture);
             })();
             """);
@@ -851,7 +972,16 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         {
             await page.GotoAsync(new Uri(webUrl, path).ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.Commit });
             await page.Locator(surfaceSelector).WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-            await page.WaitForFunctionAsync("() => window.__netratelThemeFirstPaint.samples.length > 0");
+            if (requireDashboardInput)
+                await Assertions.Expect(page.Locator(".dashboard-tenant").GetByRole(AriaRole.Combobox, new() { Name = "Tenant", Exact = true }))
+                    .ToBeVisibleAsync(new() { Timeout = 20_000 });
+            await page.WaitForFunctionAsync("""
+                () => {
+                    const state = window.__netratelThemeFirstPaint;
+                    const sample = state.samples.at(-1);
+                    return sample && (!state.requireDashboardInput || sample.input !== '');
+                }
+                """);
             var expectedVisibleSurface = requireApplicationSurfaces ? themeCase.Appbar : themeCase.VisibleSurface;
 
             var firstPaint = await page.EvaluateAsync<string[]>("""
@@ -868,7 +998,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             Assert.Equal(expectedVisibleSurface, firstPaint[5]);
             if (requireInput)
             {
-                Assert.Equal(themeCase.Input, firstPaint[8]);
+                Assert.Equal(requireDashboardInput ? themeCase.Text : themeCase.Input, firstPaint[8]);
             }
             else
             {
@@ -932,7 +1062,38 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByText("Branding saved.", new PageGetByTextOptions { Exact = false })
             .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
 
-        var directory = Path.Combine("TestResults", "branding");
+        var png = Convert.FromBase64String(await page.EvaluateAsync<string>("""
+            () => {
+                const canvas = document.createElement('canvas');
+                canvas.width = canvas.height = 16;
+                const context = canvas.getContext('2d');
+                context.fillStyle = '#167c80';
+                context.fillRect(0, 0, 16, 16);
+                return canvas.toDataURL('image/png').split(',')[1];
+            }
+            """));
+        var lightLogo = page.GetByRole(AriaRole.Img, new() { Name = "Light logo", Exact = true });
+        var originalLogoUrl = await lightLogo.GetAttributeAsync("src");
+        await lightLogo.Locator("..").Locator("input[type=file]").SetInputFilesAsync(new FilePayload
+        {
+            Name = "browser-branding.png", MimeType = "image/png", Buffer = png
+        });
+        await page.GetByText("Asset uploaded and versioned for browser cache invalidation.", new() { Exact = true })
+            .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await Assertions.Expect(lightLogo).ToHaveAttributeAsync("src",
+            new System.Text.RegularExpressions.Regex(@"^/api/v2/branding/assets/[a-f0-9]{32}\?v=\d+$"), new() { Timeout = 20_000 });
+        var uploadedLogoUrl = await lightLogo.GetAttributeAsync("src");
+        Assert.NotEqual(originalLogoUrl, uploadedLogoUrl);
+        var assetResponse = await page.Context.APIRequest.GetAsync(new Uri(webUrl, uploadedLogoUrl!).ToString());
+        Assert.Equal(200, assetResponse.Status);
+        Assert.StartsWith("image/png", assetResponse.Headers["content-type"]);
+        var servedAsset = await assetResponse.BodyAsync();
+        Assert.True(png.SequenceEqual(servedAsset), "The published branding asset must retain the uploaded PNG bytes.");
+
+        var directory = Path.Combine(
+            Environment.GetEnvironmentVariable("NETRATEL_REVIEW_SCREENSHOT_DIR")
+                ?? Path.GetFullPath("TestResults/local-first/screenshots"),
+            "branding");
         Directory.CreateDirectory(directory);
         foreach (var (theme, width, height, name) in new[]
                  {
@@ -947,6 +1108,13 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             var preview = page.GetByTestId("branding-preview");
             await preview.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
             Assert.Contains("Browser branding example", await preview.InnerTextAsync());
+            await Assertions.Expect(preview.Locator("img")).ToHaveAttributeAsync("src", uploadedLogoUrl!, new() { Timeout = 20_000 });
+            await page.WaitForFunctionAsync("""
+                () => {
+                    const image = document.querySelector('[data-testid="branding-preview"] img');
+                    return image?.complete && image.naturalWidth === 16 && image.naturalHeight === 16;
+                }
+                """);
             Assert.Equal(InstallLinkPublicOrigin(), await page.GetByLabel("Site URL").InputValueAsync());
             Assert.Equal(InstallLinkPublicOrigin(), await page.GetByLabel("Gateway URL").InputValueAsync());
             await page.ScreenshotAsync(new PageScreenshotOptions
@@ -958,13 +1126,46 @@ public sealed class LocalFirstComposeBrowserSmokeTests
 
         await page.SetViewportSizeAsync(1440, 900);
         await page.GotoAsync(webUrl.ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
-        var applicationBrand = page.Locator(".netratel-nav-brand img");
-        await applicationBrand.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-        await page.WaitForFunctionAsync("() => document.querySelector('.netratel-nav-brand img')?.getAttribute('alt') === 'Browser branding example'");
-        // Let any overlapping prerender/interactive branding read complete. A
-        // stale response must not revert the accepted persisted presentation.
-        await page.WaitForTimeoutAsync(500);
-        Assert.Equal("Browser branding example", await applicationBrand.GetAttributeAsync("alt"));
+        if (Environment.GetEnvironmentVariable("NETRATEL_BROWSER_SMOKE_EXPECT_CURRENT_SHELL") != "false")
+        {
+            var response = await page.Context.APIRequest.GetAsync(new Uri(webUrl, "api/v2/branding").ToString());
+            Assert.True(response.Ok, $"Public branding returned HTTP {response.Status}.");
+            using var branding = JsonDocument.Parse(await response.TextAsync());
+            Assert.Equal("Browser branding example", branding.RootElement.GetProperty("applicationName").GetProperty("value").GetString());
+            foreach (var (width, height) in new[] { (1440, 900), (390, 844) })
+            {
+                var previousWidth = page.ViewportSize?.Width ?? width;
+                await page.SetViewportSizeAsync(width, height);
+                var search = page.GetByTestId("global-search");
+                await Assertions.Expect(search).ToBeVisibleAsync(new() { Timeout = 20_000 });
+                await Assertions.Expect(search).ToHaveAttributeAsync("aria-label", "Search Browser branding example", new() { Timeout = 20_000 });
+                await Assertions.Expect(search.Locator("span")).ToHaveTextAsync("Search Browser branding example", new() { Timeout = 20_000 });
+                var drawer = page.Locator("#nav-drawer");
+                if (previousWidth >= 1280 && width < 1280)
+                    await Assertions.Expect(drawer).ToHaveClassAsync(new System.Text.RegularExpressions.Regex(@"(^|\s)mud-drawer--closed(\s|$)"), new() { Timeout = 20_000 });
+                var navigation = page.GetByRole(AriaRole.Navigation, new() { Name = "Primary navigation", Exact = true });
+                if (await drawer.EvaluateAsync<bool>("element => element.classList.contains('mud-drawer--closed')") || !await navigation.IsVisibleAsync())
+                    await page.GetByTestId("navigation-toggle").ClickAsync();
+                var dashboard = navigation.GetByRole(AriaRole.Link, new() { Name = "Dashboard", Exact = true });
+                await Assertions.Expect(dashboard).ToBeVisibleAsync(new() { Timeout = 20_000 });
+                await Assertions.Expect(dashboard).ToBeInViewportAsync(new() { Ratio = 0.9f, Timeout = 20_000 });
+                await Assertions.Expect(dashboard).ToHaveAttributeAsync("href", "/", new() { Timeout = 20_000 });
+                await dashboard.FocusAsync();
+                await Assertions.Expect(dashboard).ToBeFocusedAsync(new() { Timeout = 20_000 });
+                Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth"));
+                await CaptureReviewScreenshotAsync(page, $"branding-navbar-{width}x{height}");
+            }
+        }
+        else
+        {
+            var applicationBrand = page.Locator(".netratel-nav-brand img");
+            await applicationBrand.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+            await Assertions.Expect(applicationBrand).ToHaveAttributeAsync("alt", "Browser branding example", new() { Timeout = 20_000 });
+            // Let any overlapping prerender/interactive branding read complete. A
+            // stale response must not revert the accepted persisted presentation.
+            await page.WaitForTimeoutAsync(500);
+            Assert.Equal("Browser branding example", await applicationBrand.GetAttributeAsync("alt"));
+        }
         Assert.Equal(0, await page.Locator(".netratel-appbar-brand").CountAsync());
     }
 
@@ -977,9 +1178,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         string? resource = null,
         string? instancePermission = null)
     {
-        await page.GotoAsync(new Uri(webUrl, "account/integration-credentials").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GotoAsync(new Uri(webUrl, "account/integration-credentials?tab=credentials").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByTestId("integration-credentials-page").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByTestId("integration-credentials-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
+        var existingCredentials = await ReadCredentialCountAsync(page);
         await page.GetByTestId("open-create-integration").ClickAsync();
         if (name == "CI telemetry read") await AssertDialogLayoutAsync(page, "integration-connection", captureSafeContent: true);
         await page.GetByTestId("credential-name").FillAsync(name);
@@ -990,25 +1192,31 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = purpose, Exact = true }).ClickAsync();
             await page.GetByTestId("credential-resource").FillAsync(resource ?? throw new InvalidOperationException("An HTTP MCP resource is required."));
         }
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
+        await NextCredentialStepAsync(page, "Server access");
+        if (!string.IsNullOrWhiteSpace(instancePermission))
+            await page.GetByTestId($"credential-instance-permission-{instancePermission}").CheckAsync();
+        await NextCredentialStepAsync(page, "Tenant access");
         var bootstrapTenantId = await SelectBootstrapTenantGrantAsync(page);
         if (name == "CI telemetry read") await AssertDialogLayoutAsync(page, "integration-access", captureSafeContent: true);
         if (name == "CI telemetry read")
         {
             await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Back" }).ClickAsync();
+            await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Back" }).ClickAsync();
             Assert.Equal(name, await page.GetByTestId("credential-name").InputValueAsync());
-            await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
+            await NextCredentialStepAsync(page, "Server access");
+            await NextCredentialStepAsync(page, "Tenant access");
         }
-        await page.GetByTestId($"credential-permission-{bootstrapTenantId}-{permission}").ClickAsync();
+        await page.GetByTestId($"credential-permission-{bootstrapTenantId}-{permission}").CheckAsync();
         if (name == "CI telemetry read") await CaptureReviewScreenshotAsync(page, "integration-access-mobile");
-        if (!string.IsNullOrWhiteSpace(instancePermission))
+        if (purpose == "HTTP MCP gateway")
         {
-            await page.GetByText("Server-level access (advanced)").ClickAsync();
-            await page.GetByTestId($"credential-instance-permission-{instancePermission}").ClickAsync();
+            await NextCredentialStepAsync(page, "Policies");
+            await Assertions.Expect(page.GetByTestId("integration-base-policy"))
+                .ToHaveCountAsync(string.IsNullOrWhiteSpace(instancePermission) ? 1 : 2);
         }
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
+        await NextCredentialStepAsync(page, "Review & create");
         if (name == "CI telemetry read") await AssertDialogLayoutAsync(page, "integration-review", captureSafeContent: true);
-        await page.GetByTestId("create-credential").ClickAsync();
+        await ConfirmCredentialCreationAsync(page, existingCredentials);
         var reveal = page.GetByTestId("credential-one-time-secret");
         try
         {
@@ -1025,15 +1233,41 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         var secret = await page.GetByLabel("One-time secret").InputValueAsync();
         Assert.StartsWith("nrt_ic_", secret);
         await page.GetByText("I stored the secret", new PageGetByTextOptions { Exact = true }).ClickAsync();
+        await page.GetByTestId("credential-one-time-secret").WaitForAsync(new() { State = WaitForSelectorState.Detached });
         return secret;
+    }
+
+    private static async Task NextCredentialStepAsync(IPage page, string step)
+    {
+        await page.GetByRole(AriaRole.Button, new() { Name = "Next", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.GetByTestId("credential-step")).ToContainTextAsync($"· {step}");
+    }
+
+    private static Task<int> ReadCredentialCountAsync(IPage page) => page.EvaluateAsync<int>("""
+        async () => {
+            const response = await fetch('/api/v2/account/integration-credentials', { cache: 'no-store' });
+            if (response.status !== 200) throw new Error(`Credential list returned HTTP ${response.status}`);
+            const credentials = await response.json();
+            if (!Array.isArray(credentials)) throw new Error('Credential list is not an array.');
+            return credentials.length;
+        }
+        """);
+
+    private static async Task ConfirmCredentialCreationAsync(IPage page, int existingCredentials)
+    {
+        var create = page.GetByTestId("create-credential");
+        await Assertions.Expect(create).ToBeDisabledAsync();
+        Assert.Equal(existingCredentials, await ReadCredentialCountAsync(page));
+        await page.GetByTestId("credential-review-confirm").CheckAsync();
+        await Assertions.Expect(create).ToBeEnabledAsync();
+        await create.ClickAsync();
     }
 
     private static async Task<int> SelectBootstrapTenantGrantAsync(IPage page)
     {
-        // The real authority list is ordered by tenant name, so another journey
-        // can change the automatic first selection. Choose the exact bootstrap
-        // tenant through the rendered wizard and resolve its actual permission ID.
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Remove", Exact = true }).ClickAsync();
+        // An unscoped credential starts without tenant grants. Choose the exact
+        // bootstrap tenant rather than relying on authority-list ordering.
+        await Assertions.Expect(page.GetByTestId("permission-scope").Locator("option")).ToHaveCountAsync(0);
         await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Add tenant", Exact = true }).ClickAsync();
         await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = "Browser smoke tenant", Exact = true }).ClickAsync();
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Add tenant", Exact = true }).ClickAsync();
@@ -1054,17 +1288,19 @@ public sealed class LocalFirstComposeBrowserSmokeTests
 
     private static async Task VerifyMultiGrantWizardAsync(IPage page, Uri webUrl)
     {
-        await page.GotoAsync(new Uri(webUrl, "account/integration-credentials").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GotoAsync(new Uri(webUrl, "account/integration-credentials?tab=credentials").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByTestId("integration-credentials-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
+        var existingCredentials = await ReadCredentialCountAsync(page);
         await page.GetByTestId("open-create-integration").ClickAsync();
         await page.GetByTestId("credential-name").FillAsync("CI multi-grant");
         await page.GetByTestId("credential-name").PressAsync("Tab");
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
+        await NextCredentialStepAsync(page, "Server access");
+        await NextCredentialStepAsync(page, "Tenant access");
         var bootstrapTenantId = await SelectBootstrapTenantGrantAsync(page);
         await AssertDialogLayoutAsync(page, "integration-multi-grant-access", captureSafeContent: true);
         foreach (var permission in new[] { "telemetry.read", "file.read", "file.write" })
-            await page.GetByTestId($"credential-permission-{bootstrapTenantId}-{permission}").ClickAsync();
-        var search = page.GetByRole(AriaRole.Textbox, new PageGetByRoleOptions { Name = "Search permissions" });
+            await page.GetByTestId($"credential-permission-{bootstrapTenantId}-{permission}").CheckAsync();
+        var search = page.GetByTestId("permission-search");
         await search.FillAsync("scripts");
         await page.GetByTestId($"credential-permission-{bootstrapTenantId}-telemetry.read").WaitForAsync(
             new LocatorWaitForOptions { State = WaitForSelectorState.Detached });
@@ -1073,26 +1309,32 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         foreach (var permission in new[] { "telemetry.read", "file.read", "file.write" })
             Assert.True(await page.GetByTestId($"credential-permission-{bootstrapTenantId}-{permission}").IsCheckedAsync());
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
-        await page.GetByTestId("create-credential").ClickAsync();
+        await NextCredentialStepAsync(page, "Review & create");
+        await ConfirmCredentialCreationAsync(page, existingCredentials);
         await page.GetByTestId("credential-one-time-secret").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         var multiSecret = await page.GetByLabel("One-time secret").InputValueAsync();
         await page.GetByText("I stored the secret", new PageGetByTextOptions { Exact = true }).ClickAsync();
-        await page.GetByText("3 tenant permissions, 0 server-level permissions").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.GetByTestId("credential-one-time-secret").WaitForAsync(new() { State = WaitForSelectorState.Detached });
+        await Assertions.Expect(page.GetByTestId("credential-row").Filter(new() { HasText = "CI multi-grant" }))
+            .ToContainTextAsync("3 tenant grants · 0 server grants");
         Assert.Equal(0, await page.GetByText(multiSecret, new PageGetByTextOptions { Exact = true }).CountAsync());
+        existingCredentials++;
 
         await page.GetByTestId("open-create-integration").ClickAsync();
         await page.GetByTestId("credential-name").FillAsync("CI instance-only");
         await page.GetByTestId("credential-name").PressAsync("Tab");
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Remove" }).ClickAsync();
-        await page.GetByText("Server-level access (advanced)").ClickAsync();
-        await page.GetByTestId("credential-instance-permission-mcp.discovery.read").ClickAsync();
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
-        await page.GetByTestId("create-credential").ClickAsync();
+        await NextCredentialStepAsync(page, "Server access");
+        await page.GetByTestId("credential-instance-permission-mcp.discovery.read").CheckAsync();
+        await NextCredentialStepAsync(page, "Tenant access");
+        await Assertions.Expect(page.GetByTestId("permission-scope").Locator("option")).ToHaveCountAsync(0);
+        await NextCredentialStepAsync(page, "Review & create");
+        await ConfirmCredentialCreationAsync(page, existingCredentials);
         await page.GetByTestId("credential-one-time-secret").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByText("I stored the secret", new PageGetByTextOptions { Exact = true }).ClickAsync();
-        await page.GetByText("0 tenant permissions, 1 server-level permission").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.GetByTestId("credential-one-time-secret").WaitForAsync(new() { State = WaitForSelectorState.Detached });
+        await Assertions.Expect(page.GetByTestId("credential-row").Filter(new() { HasText = "CI instance-only" }))
+            .ToContainTextAsync("0 tenant grants · 1 server grants");
+        existingCredentials++;
 
         var secondTenantId = await page.EvaluateAsync<int>("""
             async () => {
@@ -1109,23 +1351,37 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("open-create-integration").ClickAsync();
         await page.GetByTestId("credential-name").FillAsync("CI two-tenant draft");
         await page.GetByTestId("credential-name").PressAsync("Tab");
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
-        await page.Locator("[data-testid^='credential-permission-']").First.WaitForAsync(
-            new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await NextCredentialStepAsync(page, "Server access");
+        await NextCredentialStepAsync(page, "Tenant access");
         Assert.NotEqual(bootstrapTenantId, secondTenantId);
         Assert.Equal(bootstrapTenantId, await SelectBootstrapTenantGrantAsync(page));
-        await page.GetByTestId($"credential-permission-{bootstrapTenantId}-telemetry.read").ClickAsync();
+        await page.GetByTestId($"credential-permission-{bootstrapTenantId}-telemetry.read").CheckAsync();
         await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Add tenant", Exact = true }).ClickAsync();
         await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = "Browser second tenant", Exact = true }).ClickAsync();
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Add tenant", Exact = true }).ClickAsync();
-        await page.GetByTestId($"credential-permission-{secondTenantId}-file.write").ClickAsync();
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
-        await page.GetByText("Browser smoke tenant · Read telemetry").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-        await page.GetByText("Browser second tenant · Write files").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-        await page.GetByTestId("create-credential").ClickAsync();
+        await page.GetByTestId("permission-scope").SelectOptionAsync(secondTenantId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        await page.GetByTestId($"credential-permission-{secondTenantId}-file.write").CheckAsync();
+        await NextCredentialStepAsync(page, "Review & create");
+        var review = page.GetByTestId("integration-setup-review");
+        foreach (var (tenant, selected, absent) in new[]
+                 {
+                     ("Browser smoke tenant", "Read telemetry", "Write files"),
+                     ("Browser second tenant", "Write files", "Read telemetry")
+                 })
+        {
+            var scope = review.Locator(".mud-card").Filter(new() { Has = page.GetByText(tenant, new() { Exact = true }) });
+            await Assertions.Expect(scope).ToHaveCountAsync(1);
+            await scope.GetByText("Selected permissions", new() { Exact = true }).ClickAsync();
+            await Assertions.Expect(scope.GetByText(selected, new() { Exact = true })).ToBeVisibleAsync();
+            await Assertions.Expect(scope.GetByText(absent, new() { Exact = true })).ToHaveCountAsync(0);
+        }
+        await ConfirmCredentialCreationAsync(page, existingCredentials);
         await page.GetByTestId("credential-one-time-secret").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByText("I stored the secret", new PageGetByTextOptions { Exact = true }).ClickAsync();
-        await page.GetByText("2 tenant permissions, 0 server-level permissions").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.GetByTestId("credential-one-time-secret").WaitForAsync(new() { State = WaitForSelectorState.Detached });
+        await Assertions.Expect(page.GetByTestId("credential-row").Filter(new() { HasText = "CI two-tenant draft" }))
+            .ToContainTextAsync("2 tenant grants · 0 server grants");
+        existingCredentials++;
 
         await page.GetByTestId("open-create-integration").ClickAsync();
         await page.GetByTestId("credential-name").FillAsync("CI invalid endpoint");
@@ -1136,6 +1392,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("credential-resource").PressAsync("Tab");
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
         await page.GetByTestId("credential-error").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        Assert.Equal(existingCredentials, await ReadCredentialCountAsync(page));
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Cancel" }).ClickAsync();
         await page.GetByTestId("open-create-integration").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.WaitForFunctionAsync(
