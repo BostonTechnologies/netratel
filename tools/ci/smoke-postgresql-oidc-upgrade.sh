@@ -805,8 +805,8 @@ PY
     record_native_service_proof activated "$version" "$service_started_at"
     retain_native_gateway_presence activated
     activated_epoch="$(jq -r '.gatewayConnectionEpoch' "$native_acceptance_evidence/server-activated.json")"
-    restart_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     sudo systemctl restart "$client_unit"
+    restart_started_at="$(python3 -c 'from datetime import datetime,timezone; print(datetime.now(timezone.utc).isoformat(timespec="microseconds"))')"
     for _ in $(seq 1 60); do
       attempt_detail="$(curl --silent --show-error --fail --max-time 5 \
         --header "Authorization: Bearer ${access_token}" \

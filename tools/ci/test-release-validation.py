@@ -2141,12 +2141,18 @@ class NativeUpgradeAcceptanceTests(unittest.TestCase):
         names = self.prepare.promotion.required_artifacts(version)
         files = {name: {"artifact": "shipping", "artifactId": 456, "artifactDigest": "sha256:" + "d" * 64,
             "path": name, "sha256": "a" * 64} for name in names}
+        files[f"netratel-compose-{version}.tar.gz"]["sha256"] = "e" * 64
         record = {"productVersion": version, "publicCommit": self.source, "images": images, "verification": {"state": "complete"},
             "artifacts": {name: "a" * 64 for name in names}, "inputReceipt": {"repository": "BostonTechnologies/netratel", "workflow": ".github/workflows/release-build.yml",
-                "runId": 123, "attempt": 1, "headSha": self.source, "productVersion": version, "files": files}}
-        for case in ("valid", "incomplete", "tag", "asset"):
+                "runId": 123, "attempt": 1, "headSha": self.source, "productVersion": version, "files": files},
+            "derivedBundle": {"sourceSha256": "e" * 64, "finalSha256": "a" * 64, "transformation": "Inserted verified immutable image digests into .env.images.example."}}
+        for case in ("valid", "incomplete", "tag", "asset", "input", "derived-source", "derived-final", "derived-transform"):
             body = copy.deepcopy(record)
             if case == "incomplete": body["verification"]["state"] = "candidate"
+            if case == "input": body["inputReceipt"]["files"][names[0]]["sha256"] = "f" * 64
+            if case == "derived-source": body["derivedBundle"]["sourceSha256"] = "f" * 64
+            if case == "derived-final": body["derivedBundle"]["finalSha256"] = "f" * 64
+            if case == "derived-transform": body["derivedBundle"]["transformation"] = "An unchecked change"
             publication = json.dumps(body).encode()
             sums = ("".join("a" * 64 + "  " + name + "\n" for name in names) + hashlib.sha256(publication).hexdigest() + "  publication.json\n").encode()
             downloads = {"publication.json": publication, "SHA256SUMS": sums}
@@ -2232,6 +2238,15 @@ class NativeUpgradeAcceptanceTests(unittest.TestCase):
             with self.assertRaises(ValueError): self.service.validate_restart(old, {**new, **changes})
         changed = copy.deepcopy(new); changed["activation"]["tenantId"] = 2
         with self.assertRaises(ValueError): self.service.validate_restart(old, changed)
+
+    def test_late_old_process_ack_after_old_snapshot_cannot_pass_post_restart_return_boundary(self):
+        old_capture = "2026-11-04T12:04:00.100000Z"
+        late_old_ack = "2026-11-04T12:04:00.900000Z"
+        after_restart_return = "2026-11-04T12:04:01.000001Z"
+        self.assertGreater(self.service.utc(late_old_ack), self.service.utc(old_capture))
+        with self.assertRaises(ValueError):
+            self.service.validate_acknowledgement({"version": "1.2.3", "acknowledgedAtUtc": late_old_ack}, "1.2.3", after_restart_return)
+        self.service.validate_acknowledgement({"version": "1.2.3", "acknowledgedAtUtc": "2026-11-04T12:04:01.000002Z"}, "1.2.3", after_restart_return)
 
     def test_durable_state_protection_rejects_symlinks_wrong_modes_and_writable_ancestors(self):
         state = self.directory / "state"; state.mkdir(mode=0o700)

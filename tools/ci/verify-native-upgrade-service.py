@@ -116,6 +116,11 @@ def validate_restart(previous, current):
         raise ValueError("Native restart lost its persisted policy revision")
 
 
+def validate_acknowledgement(presence, version, boundary):
+    if presence.get("version") != version or utc(presence["acknowledgedAtUtc"]) < utc(boundary):
+        raise ValueError("Native service has no fresh acknowledgement after the recorded invocation boundary")
+
+
 def collect(args, receipt):
     properties = dict(line.split("=", 1) for line in subprocess.check_output(["systemctl", "show", "netratel-client.service",
         "--property=ActiveState,SubState,MainPID,FragmentPath,InvocationID,Restart,RestartUSec,RestartPreventExitStatus,StartLimitIntervalUSec"], text=True).splitlines())
@@ -134,9 +139,9 @@ def collect(args, receipt):
     presence_path = args.state / "presence.json"
     receipt["files"]["presence.json"] = protected_file(presence_path, service_uid)
     presence = read_json(presence_path)
-    if presence.get("version") != args.version or utc(presence["acknowledgedAtUtc"]) < utc(args.since):
-        raise ValueError("Native service has no fresh acknowledgement for the actual running version")
+    validate_acknowledgement(presence, args.version, args.since)
     receipt["acknowledgedAtUtc"] = presence["acknowledgedAtUtc"]
+    receipt["acknowledgementBoundaryUtc"] = args.since
     policy_path = args.state / "policy.json"
     receipt["policyRevision"] = None
     if policy_path.exists():

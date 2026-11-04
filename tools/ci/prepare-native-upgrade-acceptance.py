@@ -209,6 +209,14 @@ def prepare_prior(version, work, evidence):
     for name, digest in record["artifacts"].items():
         if by_name[name].get("digest") != "sha256:" + digest or sums[name] != digest:
             raise ValueError("Prior published asset identity differs: " + name)
+        input_digest = receipt["files"][name]["sha256"]
+        if name == f"netratel-compose-{prior_version}.tar.gz":
+            derived = record.get("derivedBundle", {})
+            if (derived.get("sourceSha256"), derived.get("finalSha256"), derived.get("transformation")) != (
+                    input_digest, digest, "Inserted verified immutable image digests into .env.images.example."):
+                raise ValueError("Prior Compose bundle is not bound to its existing verified source-to-final transformation")
+        elif input_digest != digest:
+            raise ValueError("Prior unchanged asset differs from its successful build receipt: " + name)
     for role, image in record["images"].items():
         if not image.startswith(promotion.IMAGE_REPOSITORIES[role] + "@sha256:"):
             raise ValueError("Prior published image repository differs")
