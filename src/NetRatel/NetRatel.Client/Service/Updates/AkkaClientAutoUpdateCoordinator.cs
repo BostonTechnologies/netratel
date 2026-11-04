@@ -10,6 +10,7 @@ using System.Net.Http.Json;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
@@ -33,7 +34,7 @@ public interface IAgentGatewayUpdateHandler
 
 public sealed record PendingUpdateActivation(Guid AttemptId, Guid ReleaseId, string TargetVersion);
 
-public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler, IAsyncDisposable
+public sealed partial class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler, IAsyncDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private readonly ClientOptions _options;
@@ -130,8 +131,8 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
             foreach (var path in new[] { requestPath, statePath, resultPath, readyPath })
                 if (File.Exists(path) && new FileInfo(path).Length > 64 * 1024) return null;
             if (!ProtectedUpdateState.IsProtectedFile(requestPath) || !ProtectedUpdateState.IsProtectedFile(statePath)) return null;
-            var request = ReadJson<UpdateRequest>(requestPath);
-            var state = ReadJson<PendingState>(statePath);
+            var request = ReadJson(requestPath, CoordinatorStateJsonContext.Default.UpdateRequest);
+            var state = ReadJson(statePath, CoordinatorStateJsonContext.Default.PendingState);
             if (request is null || state is null || request.Schema != "netratel.update.request.v2" ||
                 request.AttemptId == Guid.Empty || request.ReleaseId == Guid.Empty || string.IsNullOrWhiteSpace(request.AdmissionNonce) ||
                 request.ToVersion != currentVersion || request.RuntimeId != runtimeId || state.Version != currentVersion ||
@@ -142,13 +143,13 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
             if (File.Exists(resultPath))
             {
                 if (!ProtectedUpdateState.IsProtectedFile(resultPath)) return null;
-                var result = ReadJson<UpdateResult>(resultPath);
+                var result = ReadJson(resultPath, CoordinatorStateJsonContext.Default.UpdateResult);
                 if (result is null || result.Schema != "netratel.update.result.v2" || result.AttemptId == request.AttemptId) return null;
             }
             if (File.Exists(readyPath))
             {
                 if (!ProtectedUpdateState.IsProtectedFile(readyPath)) return null;
-                var ready = ReadJson<PendingReady>(readyPath);
+                var ready = ReadJson(readyPath, CoordinatorStateJsonContext.Default.PendingReady);
                 if (ready is null || ready.Schema != "netratel.update.ready.v2") return null;
                 if (ready.AttemptId == request.AttemptId &&
                     ready.ReleaseId == request.ReleaseId && ready.Version == currentVersion && ready.ConfirmationId != Guid.Empty) return null;
@@ -170,7 +171,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
             ? "prerelease" : "stable";
         hello.UpdatePolicyRevision = _policyRevision;
 
-        var request = ReadJson<UpdateRequest>(_requestPath);
+        var request = ReadJson(_requestPath, CoordinatorStateJsonContext.Default.UpdateRequest);
         if (request is null)
         {
             return;
@@ -211,7 +212,8 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
         lock (_offerGate) { if (_disposed) return; }
         try
         {
-            AtomicWriteJson(_presencePath, new { version = _currentVersion, acknowledgedAtUtc = DateTimeOffset.UtcNow });
+            AtomicWriteJson(_presencePath, new PresenceReceipt(_currentVersion, DateTimeOffset.UtcNow),
+                CoordinatorStateJsonContext.Default.PresenceReceipt);
             lock (_offerGate) ApplyPolicy(policy);
             ApplyConfirmation(confirmation);
         }
@@ -443,7 +445,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
                     AtomicWriteJson(_requestPath, new UpdateRequest("netratel.update.request.v2", claimContext.AttemptId,
                         claimContext.ReleaseId, claimContext.AdmissionNonce, _runtimeId, _currentVersion, offer.Version,
                         PackagePath(attempt), offer.Sha256, _readyPath, _presencePath, _resultPath, LogManager.LogFilePath,
-                        _timeProvider.GetUtcNow()));
+                        _timeProvider.GetUtcNow()), CoordinatorStateJsonContext.Default.UpdateRequest);
                     attempt.Phase = UpdatePhase.ActivatingReport;
                     break;
                 case UpdatePhase.ActivatingReport:
@@ -667,44 +669,38 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
         if (confirmation is null || !Guid.TryParse(confirmation.AttemptId, out var attemptId) ||
             !Guid.TryParse(confirmation.ReleaseId, out var releaseId) ||
             !Guid.TryParse(confirmation.ConfirmationId, out var confirmationId)) return;
-        var request = ReadJson<UpdateRequest>(_requestPath);
+        var request = ReadJson(_requestPath, CoordinatorStateJsonContext.Default.UpdateRequest);
         if (request is null || request.AttemptId != attemptId || request.ReleaseId != releaseId ||
             !string.Equals(request.ToVersion, _currentVersion, StringComparison.OrdinalIgnoreCase))
         {
             RecordActivationForRequest("confirmation_rejected", errorCode: "confirmation_mismatch");
             return;
         }
-        var existingReady = ReadJson<PendingReady>(_readyPath);
+        var existingReady = ReadJson(_readyPath, CoordinatorStateJsonContext.Default.PendingReady);
         if (existingReady is { Schema: "netratel.update.ready.v2" } && existingReady.AttemptId == attemptId &&
             existingReady.ReleaseId == releaseId && existingReady.Version == _currentVersion &&
             existingReady.ConfirmationId == confirmationId && ProtectedUpdateState.IsProtectedFile(_readyPath)) return;
         RecordActivation(request, "confirmation_received", confirmationReceivedAtUtc: DateTimeOffset.UtcNow);
-        AtomicWriteJson(_readyPath, new
-        {
-            schema = "netratel.update.ready.v2",
-            attemptId,
-            releaseId,
-            version = _currentVersion,
-            confirmationId,
-            readyAtUtc = DateTimeOffset.UtcNow
-        });
+        AtomicWriteJson(_readyPath, new ReadyReceipt("netratel.update.ready.v2", attemptId,
+            releaseId, _currentVersion, confirmationId, DateTimeOffset.UtcNow),
+            CoordinatorStateJsonContext.Default.ReadyReceipt);
         RecordActivation(request, "ready_marker_written", readyMarkerWrittenAtUtc: DateTimeOffset.UtcNow);
     }
 
     private void ApplyPolicy(ClientUpdatePolicy? policy)
     {
         if (policy is null || policy.Revision <= _policyRevision) return;
-        var previous = ReadJson<PolicyState>(_policyPath);
+        var previous = ReadJson(_policyPath, CoordinatorStateJsonContext.Default.PolicyState);
         var resumed = policy.ResumeRequested && !policy.Suspended;
         var resumedAt = policy.ResumedAtUtc?.ToDateTimeOffset();
         var resumeAttemptId = resumed
-            ? _resultDelivery.GetResumeAttemptId() ?? ReadJson<UpdateResult>(_resultPath)?.AttemptId ??
-                ReadJson<UpdateResult>(_suspensionPath)?.AttemptId ?? previous?.ResumeAttemptId
+            ? _resultDelivery.GetResumeAttemptId() ?? ReadJson(_resultPath, CoordinatorStateJsonContext.Default.UpdateResult)?.AttemptId ??
+                ReadJson(_suspensionPath, CoordinatorStateJsonContext.Default.UpdateResult)?.AttemptId ?? previous?.ResumeAttemptId
             : previous?.ResumeAttemptId;
         var clearSuspension = resumed && _resultDelivery.CanClearSuspension(policy.Revision, resumedAt);
         AtomicWriteJson(_policyPath, new PolicyState(policy.Revision, resumeAttemptId,
             resumed ? resumedAt : previous?.ResumedAtUtc,
-            resumed ? policy.Revision : previous?.ResumeRevision));
+            resumed ? policy.Revision : previous?.ResumeRevision), CoordinatorStateJsonContext.Default.PolicyState);
         _policyRevision = policy.Revision;
         if (clearSuspension && File.Exists(_suspensionPath)) File.Delete(_suspensionPath);
     }
@@ -740,7 +736,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
                 ?? throw new InvalidOperationException("The verified Windows updater process could not be started.");
             return;
         }
-        var attemptId = ReadJson<UpdateRequest>(_requestPath)?.AttemptId
+        var attemptId = ReadJson(_requestPath, CoordinatorStateJsonContext.Default.UpdateRequest)?.AttemptId
             ?? throw new InvalidOperationException("The Linux updater request is unavailable.");
         await LinuxUpdaterServiceLauncher.StartAsync(_options.AutoUpdate.LinuxServiceName, _stateDirectory, attemptId,
             cancellationToken).ConfigureAwait(false);
@@ -835,15 +831,16 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
 
     private static string NormalizeVersion(string version) => ClientUpdateVersioning.NormalizePublishedVersion(version);
 
-    private long ReadPolicyRevision() => ReadJson<PolicyState>(_policyPath)?.Revision ?? 0;
+    private long ReadPolicyRevision() => ReadJson(_policyPath, CoordinatorStateJsonContext.Default.PolicyState)?.Revision ?? 0;
 
-    private static T? ReadJson<T>(string path)
+    private static T? ReadJson<T>(string path, JsonTypeInfo<T> jsonTypeInfo)
     {
-        try { return File.Exists(path) ? JsonSerializer.Deserialize<T>(File.ReadAllText(path), JsonOptions) : default; }
+        try { return File.Exists(path) ? JsonSerializer.Deserialize(File.ReadAllText(path), jsonTypeInfo) : default; }
         catch { return default; }
     }
 
-    private static void AtomicWriteJson<T>(string path, T value) => ProtectedUpdateState.AtomicWriteJson(path, value);
+    private static void AtomicWriteJson<T>(string path, T value, JsonTypeInfo<T> jsonTypeInfo) =>
+        ProtectedUpdateState.AtomicWriteJson(path, value, jsonTypeInfo);
 
     private void RecordActivationForRequest(
         string stage,
@@ -854,7 +851,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
         DateTimeOffset? firstHeartbeatSentAtUtc = null,
         DateTimeOffset? heartbeatAcceptedAtUtc = null)
     {
-        var request = ReadJson<UpdateRequest>(_requestPath);
+        var request = ReadJson(_requestPath, CoordinatorStateJsonContext.Default.UpdateRequest);
         if (request is not null && string.Equals(request.ToVersion, _currentVersion, StringComparison.OrdinalIgnoreCase))
             RecordActivation(request, stage, connectionEpoch, errorCode, exception, connectAcceptedAtUtc,
                 firstHeartbeatSentAtUtc, heartbeatAcceptedAtUtc);
@@ -876,7 +873,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
     {
         try
         {
-            var existing = ReadJson<ActivationDiagnostic>(_activationPath);
+            var existing = ReadJson(_activationPath, CoordinatorStateJsonContext.Default.ActivationDiagnostic);
             if (existing?.AttemptId != request.AttemptId)
                 existing = null;
             var now = DateTimeOffset.UtcNow;
@@ -895,7 +892,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
                 errorCode ?? existing?.LastErrorCode,
                 exception?.GetType().Name ?? existing?.LastErrorType,
                 now);
-            AtomicWriteJson(_activationPath, diagnostic);
+            AtomicWriteJson(_activationPath, diagnostic, CoordinatorStateJsonContext.Default.ActivationDiagnostic);
         }
         catch (Exception writeException)
         {
@@ -922,6 +919,9 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
         internal TimeSpan RetryDelay { get; set; }
     }
 
+    private sealed record PresenceReceipt(string Version, DateTimeOffset AcknowledgedAtUtc);
+    private sealed record ReadyReceipt(string Schema, Guid AttemptId, Guid ReleaseId, string Version,
+        Guid ConfirmationId, DateTimeOffset ReadyAtUtc);
     private sealed record ClaimResponse(Guid AttemptId, Guid ReleaseId, string AdmissionNonce, string TargetVersion);
     private sealed record PolicyState(long Revision, Guid? ResumeAttemptId = null,
         DateTimeOffset? ResumedAtUtc = null, long? ResumeRevision = null);
