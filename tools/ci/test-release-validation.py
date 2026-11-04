@@ -1468,8 +1468,8 @@ fi
         production_overlay = (ROOT / "tests/compose/oidc-smoke.production.compose.yaml").read_text()
         self.assertIn('Authentication__Oidc__RequireHttpsMetadata: "true"', production_overlay)
         upgrade_smoke = (ROOT / "tools/ci/smoke-postgresql-oidc-upgrade.sh").read_text()
-        self.assertIn('run_browser_oidc_smoke "$legacy_version" false', upgrade_smoke)
-        self.assertIn('run_browser_oidc_smoke "v$(python3 tools/ci/product-version.py)" true', upgrade_smoke)
+        self.assertIn('run_browser_oidc_smoke "$legacy_version" "$prior_expect_current_shell" previous-release-browser.trx', upgrade_smoke)
+        self.assertIn('run_browser_oidc_smoke "v$(python3 tools/ci/product-version.py)" true upgraded-browser.trx', upgrade_smoke)
 
         manual_workflow = ROOT / ".github/workflows/integration-validation.yml"
         self.assertIn("libnss3-tools", manual_workflow.read_text())
@@ -2038,6 +2038,55 @@ class NativeUpgradeAcceptanceTests(unittest.TestCase):
         self.artifact = {"id": 456, "name": "candidate", "expired": False, "digest": "sha256:" + "b" * 64,
             "size_in_bytes": 100, "created_at": "2026-11-04T12:04:00Z", "workflow_run": {"id": 123, "head_sha": self.source}}
 
+    def browser_source(self, main, navigation):
+        source = self.directory / "browser-source"
+        source.mkdir(exist_ok=True)
+        if not (source / ".git").exists():
+            subprocess.run(["git", "init", "-q", str(source)], check=True)
+        for relative, data in zip(self.prepare.BROWSER_SHELL_FILES, (main, navigation)):
+            path = source / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if data is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(data)
+        subprocess.run(["git", "add", "-A"], cwd=source, check=True)
+        subprocess.run(["git", "-c", "user.name=Contract", "-c", "user.email=contract@example.test",
+            "commit", "--allow-empty", "-qm", "Synthetic browser source contract"], cwd=source, check=True)
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+        return source, revision
+
+    def test_prior_browser_shell_classifies_both_source_layouts_and_records_exact_blobs(self):
+        modern = [(ROOT / relative).read_bytes() for relative in self.prepare.BROWSER_SHELL_FILES]
+        legacy_navigation = b'<MudNavMenu Class="netratel-nav"><a class="netratel-nav-brand" href="/">\n<img src="@CompactLogoUrl" alt="@ApplicationName" /></a></MudNavMenu>'
+        for main, navigation, expected in ((*modern, True), (modern[0], legacy_navigation, False)):
+            source, revision = self.browser_source(main, navigation)
+            receipt = self.prepare.classify_prior_browser_shell(source, revision)
+            self.assertIs(expected, receipt["expectCurrentShell"])
+            self.assertEqual(revision, receipt["sourceSha"])
+            for relative, data in zip(self.prepare.BROWSER_SHELL_FILES, (main, navigation)):
+                blob = subprocess.check_output(["git", "rev-parse", revision + ":" + relative], cwd=source, text=True).strip()
+                self.assertEqual({"gitBlobSha": blob, "sha256": hashlib.sha256(data).hexdigest()}, receipt["files"][relative])
+
+    def test_prior_browser_shell_rejects_unknown_ambiguous_and_missing_source_without_fallback(self):
+        main, navigation = [(ROOT / relative).read_bytes() for relative in self.prepare.BROWSER_SHELL_FILES]
+        for content in (b"<nav>Unknown shell</nav>", navigation + b'<a class="netratel-nav-brand"><img src="@CompactLogoUrl" alt="@ApplicationName" /></a>', None):
+            source, revision = self.browser_source(main, content)
+            with self.subTest(content=content), self.assertRaisesRegex(ValueError, "browser shell"):
+                self.prepare.classify_prior_browser_shell(source, revision)
+        for revision in ("not-a-source", "f" * 40):
+            with self.subTest(revision=revision), self.assertRaisesRegex(ValueError, "browser shell"):
+                self.prepare.classify_prior_browser_shell(source, revision)
+
+    def test_modern_prior_keeps_previous_report_phase_and_current_source_stays_strict(self):
+        script = (ROOT / "tools/ci/smoke-postgresql-oidc-upgrade.sh").read_text()
+        function = script.split("run_browser_oidc_smoke() {\n", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn('local report_name="$3"', function)
+        self.assertNotIn('if [[ "$expect_current_shell"', function)
+        self.assertIn('run_browser_oidc_smoke "$legacy_version" "$prior_expect_current_shell" previous-release-browser.trx', script)
+        self.assertIn('run_browser_oidc_smoke "v$(python3 tools/ci/product-version.py)" true upgraded-browser.trx', script)
+        self.assertIn('NETRATEL_UPGRADE_PRIOR_EXPECT_CURRENT_SHELL:?set NETRATEL_UPGRADE_PRIOR_EXPECT_CURRENT_SHELL', script)
+
     def test_candidate_run_and_artifact_reject_wrong_source_forks_failures_and_old_uploads(self):
         self.prepare.validate_run(self.run, 123, self.source)
         for changes in ({"head_sha": "b" * 40}, {"conclusion": "failure"}, {"status": "in_progress"},
@@ -2169,10 +2218,16 @@ class NativeUpgradeAcceptanceTests(unittest.TestCase):
             def loaded(name):
                 return SimpleNamespace(select=lambda current: selected) if name == "select-prior-release" else SimpleNamespace(checked_download=download)
             work = self.directory / ("prior-" + case); work.mkdir(); evidence = work / "evidence"; evidence.mkdir()
-            with patch.object(self.prepare, "api", side_effect=api), patch.object(self.prepare, "module", side_effect=loaded):
-                if case == "valid": self.assertEqual(selected, self.prepare.prepare_prior("1.2.3", work, evidence))
+            shell = {"sourceSha": self.source, "layout": "public-name-search", "expectCurrentShell": True, "files": {}}
+            with patch.object(self.prepare, "api", side_effect=api), patch.object(self.prepare, "module", side_effect=loaded), \
+                    patch.object(self.prepare, "classify_prior_browser_shell", return_value=shell) as classify:
+                if case == "valid":
+                    self.assertEqual({**selected, "browserShell": shell}, self.prepare.prepare_prior(ROOT, "1.2.3", work, evidence))
+                    classify.assert_called_once_with(ROOT, self.source)
+                    self.assertEqual(shell, json.loads((evidence / "prior-browser-shell.json").read_text()))
                 else:
-                    with self.subTest(case=case), self.assertRaises(ValueError): self.prepare.prepare_prior("1.2.3", work, evidence)
+                    with self.subTest(case=case), self.assertRaises(ValueError): self.prepare.prepare_prior(ROOT, "1.2.3", work, evidence)
+                    classify.assert_not_called()
 
     def test_source_image_commands_use_real_dockerfiles_from_the_pinned_git_archive_without_building(self):
         revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
@@ -2239,6 +2294,49 @@ class NativeUpgradeAcceptanceTests(unittest.TestCase):
         activation = {"schema": "netratel.update.activation.v1", "attemptId": attempt, "releaseId": release, "targetVersion": "1.2.3", "currentVersion": "1.2.3", "runtimeId": "linux-x64", "processId": 42, "connectionEpoch": 2}
         activation.update({name: now for name in ("requestLoadedAtUtc", "activationContextAttachedAtUtc", "connectAcceptedAtUtc", "firstHeartbeatSentAtUtc", "heartbeatAcceptedAtUtc", "confirmationReceivedAtUtc", "readyMarkerWrittenAtUtc")})
         return request, ready, activation, server
+
+    def test_actual_catalog_dto_release_uuid_survives_shell_projection_and_strict_activation_binding(self):
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        endpoint = subprocess.check_output(["git", "show", revision + ":src/NetRatel/NetRatel.API/Endpoints/Client/ClientUpdatesEndpoints.cs"], cwd=ROOT, text=True)
+        parameters = re.search(r"record ClientUpdateReleaseDto\((.*?)\);", endpoint, re.DOTALL).group(1).split(",")
+        fields = [parameter.strip().rsplit(" ", 1) for parameter in parameters]
+        self.assertIn(["int", "Id"], fields)
+        self.assertIn(["Guid", "ReleaseId"], fields)
+        self.assertNotIn("PublicId", [name for _, name in fields])
+        projection = endpoint.split(".Select(x => new ClientUpdateReleaseDto(", 1)[1].split("))", 1)[0].split(",")
+        self.assertEqual("x.PublicId", projection[[name for _, name in fields].index("ReleaseId")].strip())
+        request, ready, activation, server = self.activation_fixture()
+        values = {"Id": 1, "ReleaseId": server["releasePublicId"], "RuntimeId": "linux-x64", "Version": "1.2.3", "Enabled": True}
+        catalog = {name[0].lower() + name[1:]: values.get(name) for _, name in fields}
+        detail = {key: value for key, value in server.items() if key not in ("releasePublicId", "admissionNonceHash")}
+        detail["releaseId"] = 1
+        source = (ROOT / "tools/ci/smoke-postgresql-oidc-upgrade.sh").read_text()
+        function = "retain_native_server_proof() {\n" + source.split("retain_native_server_proof() {\n", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+        postgres = self.directory / "postgres-proof.py"
+        postgres.write_text("import os,sys\nassert 'attempt='+os.environ['attempt_id'] in sys.argv\nassert 'SELECT \\\"AdmissionNonceHash\\\" FROM \\\"ClientUpdateAttempts\\\"' in sys.stdin.read()\nprint(os.environ['PROOF_NONCE_HASH'])\n")
+        script = "set -euo pipefail\n" + function + "active_compose=(python3 \"$PROOF_POSTGRES\")\nretain_native_server_proof activated \"$PROOF_DETAIL\"\n"
+        for case in ("valid", "missing", "wrong-integer", "wrong-uuid", "duplicate"):
+            rows = [copy.deepcopy(catalog)]
+            if case == "missing": rows[0].pop("releaseId")
+            if case == "wrong-integer": rows[0]["id"] = 2
+            if case == "wrong-uuid": rows[0]["releaseId"] = "dddddddd-2222-4333-8444-555555555555"
+            if case == "duplicate": rows *= 2
+            evidence = self.directory / ("server-proof-" + case); evidence.mkdir()
+            result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env={**os.environ,
+                "native_acceptance_evidence": str(evidence), "attempt_id": server["attemptId"], "release_response": json.dumps(rows),
+                "PROOF_DETAIL": json.dumps(detail), "PROOF_NONCE_HASH": server["admissionNonceHash"], "PROOF_POSTGRES": str(postgres)})
+            with self.subTest(case=case):
+                if case in ("missing", "wrong-integer", "duplicate"):
+                    self.assertNotEqual(0, result.returncode)
+                    continue
+                self.assertEqual(0, result.returncode, result.stderr)
+                actual = json.loads((evidence / "server-activated.json").read_text())
+                self.assertEqual(rows[0]["releaseId"], actual["releasePublicId"])
+                if case == "wrong-uuid":
+                    with self.assertRaisesRegex(ValueError, "Protected request differs"):
+                        self.service.validate_activation(request, ready, activation, actual, "1.2.3", 42)
+                else:
+                    self.assertEqual(server["releasePublicId"], self.service.validate_activation(request, ready, activation, actual, "1.2.3", 42)["releasePublicId"])
 
     def test_version_only_telemetry_wrong_nonce_confirmation_or_process_cannot_pass_activation(self):
         request, ready, activation, server = self.activation_fixture()
