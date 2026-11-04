@@ -16,7 +16,7 @@
 .chat-table-toolbar > span:first-child { margin-right: auto; }
 .chat-table-scroll { max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
 .chat-table-scroll:focus-visible { outline: 2px solid var(--mud-palette-primary); outline-offset: -2px; }
-.chat-table-block table { width: 100%; border-collapse: collapse; font-size: .82rem; line-height: 1.6; overflow-wrap: normal; }
+.chat-table-block table { width: 100%; border-collapse: collapse; color: var(--mud-palette-text-primary); font-size: .82rem; line-height: 1.6; overflow-wrap: normal; }
 .chat-table-block th, .chat-table-block td { padding: .6rem .85rem; border-right: 1px solid var(--mud-palette-divider); border-bottom: 1px solid var(--mud-palette-divider); white-space: nowrap; vertical-align: top; }
 .chat-table-block th { font-weight: 650; background: var(--mud-palette-background); }
 .chat-table-block th:last-child, .chat-table-block td:last-child { border-right: 0; }

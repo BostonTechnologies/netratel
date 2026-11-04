@@ -156,6 +156,9 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
         var table = surface.GetByRole(AriaRole.Table);
         await Assertions.Expect(table.GetByRole(AriaRole.Columnheader)).ToHaveTextAsync(["Host", "Total", "Used", "Free", "Used %", "Sample time (UTC)"]);
         await Assertions.Expect(table.Locator("td strong")).ToHaveTextAsync("17.8 GiB");
+        var textColor = await surface.Locator(".chat-message-content").First.EvaluateAsync<string>("e => getComputedStyle(e).color");
+        await Assertions.Expect(table.Locator("th").First).ToHaveCSSAsync("color", textColor);
+        await Assertions.Expect(table.Locator("td").First).ToHaveCSSAsync("color", textColor);
         var tableScroll = surface.GetByRole(AriaRole.Region, new() { Name = "Markdown table", Exact = true });
         if (width < 760) Assert.True(await tableScroll.EvaluateAsync<bool>("e => e.scrollWidth > e.clientWidth"));
         var copyTable = surface.GetByRole(AriaRole.Button, new() { Name = "Copy table", Exact = true });
@@ -166,6 +169,7 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
         await AssertHealthyAsync(page);
         var artifacts = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.GetFullPath("TestResults/playwright");
         Directory.CreateDirectory(artifacts);
+        await tableScroll.ScrollIntoViewIfNeededAsync();
         await surface.Locator(".chat-table-block").ScreenshotAsync(new() { Path = Path.Combine(artifacts, $"shared-table-{(investigation ? "investigation" : "chat")}-{theme}-{width}.png") });
         var composer = page.GetByTestId("chat-message");
         await composer.FillAsync("draft survives fullscreen");
