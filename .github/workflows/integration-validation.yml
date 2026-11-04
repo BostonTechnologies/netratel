@@ -7,7 +7,7 @@ on:
         description: Run only this optional suite (client measurements use matching hosted OS runners)
         type: choice
         required: true
-        options: [pairing, gateway, mcp-campaign, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement, client-trim-windows, client-trim-macos, client-control-macos, client-pty-debug-macos, windows-mcp, migrations-image, api-image, api-rid, cli-tool]
+        options: [pairing, gateway, mcp-campaign, stdio-assessment, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement, client-trim-windows, client-trim-macos, client-control-macos, client-pty-debug-macos, windows-mcp, migrations-image, api-image, api-rid, cli-tool]
       source_ref:
         description: Source ref to test (published-image and upgrade suites use release_tag)
         default: main
@@ -101,7 +101,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          case "$SUITE" in pairing|gateway|mcp-campaign|browser|deployment|release-images|native-client|upgrade-local|upgrade-oidc) ;; *) exit 2 ;; esac
+          case "$SUITE" in pairing|gateway|mcp-campaign|stdio-assessment|browser|deployment|release-images|native-client|upgrade-local|upgrade-oidc) ;; *) exit 2 ;; esac
           source_sha="$(git rev-parse HEAD)"
           version="$(python3 tools/ci/product-version.py)"
           export NETRATEL_DOTNET_SDK_VERSION="$(dotnet --version)"
@@ -124,6 +124,12 @@ jobs:
                       "workflowEventSha": os.environ["GITHUB_SHA"]}
           Path("TestResults/selected-source.json").write_text(json.dumps(identity, indent=2) + "\n")
           PY
+      - name: Assess same-source Linux stdio FDD and trimmed JIT archives
+        if: inputs.suite == 'stdio-assessment'
+        shell: bash
+        run: |
+          python3 tools/ci/measure-stdio-publish.py --source . \
+            --state-root "$RUNNER_TEMP/stdio-assessment" --evidence TestResults/stdio-assessment
       - name: Restore and build selected test assembly
         if: inputs.suite == 'pairing' || inputs.suite == 'gateway' || inputs.suite == 'mcp-campaign' || inputs.suite == 'browser' || inputs.suite == 'upgrade-oidc'
         shell: bash
@@ -452,6 +458,9 @@ jobs:
                   if artifact.is_file(): summary.write(f"\nArchived client {filename}:\n\n```json\n{artifact.read_text()}```\n")
               prior = Path("TestResults/selected-prior-release.json")
               if prior.is_file(): summary.write("\nSelected prior completed release:\n\n```json\n" + prior.read_text() + "```\n")
+              stdio = Path("TestResults/stdio-assessment/assessment.json")
+              if stdio.is_file():
+                  summary.write("\nLinux stdio diagnostic: FDD archives exclude the separately observed external shared runtime; self-contained trimmed JIT includes its bundled runtime. These are different footprint populations, with no cross-mode savings claim. Live policy and Windows acceptance remain pending.\n\n```json\n" + stdio.read_text() + "```\n")
               summary.write("\nOther manual suites were not run. This workflow is not an automatic merge or publication dependency.\n")
           PY
       - name: Retain selected TRX, screenshots and sanitized receipts

@@ -191,7 +191,20 @@ gh workflow run integration-validation.yml --ref main -f suite=migrations-image 
 gh workflow run integration-validation.yml --ref main -f suite=migrations-image -f migrations_comparison=html-ownership -f source_ref='<exact-public-commit>'
 gh workflow run integration-validation.yml --ref main -f suite=migrations-image -f migrations_comparison=schema-ownership -f source_ref='<exact-public-commit>'
 gh workflow run integration-validation.yml --ref main -f suite=api-image -f source_ref='<exact-public-commit>'
+gh workflow run integration-validation.yml --ref main -f suite=stdio-assessment -f source_ref='<full-commit-sha>'
 ```
+
+The optional Linux-only `stdio-assessment` runs an ordinary framework-dependent
+stdio control and a self-contained trimmed JIT diagnostic at the same source and
+SDK. It preserves full publish diagnostics without counting MSBuild summary
+echoes, packages both modes with notices, SPDX and checksums, and probes their
+original archive bytes for identity, catalogs/schemas, handlers and bounded
+synthetic HTTPS read/denial/preview behavior. Failures retain stdout/stderr and
+stage receipts. FDD download/payload bytes and the separately observed existing
+shared runtime are reported separately from the self-contained runtime payload;
+these different populations do not establish cross-mode savings. This assessment
+changes no shipping mode and performs no Native AOT attempt. Live-backend policy,
+Windows protected launch and unresolved diagnostic acceptance remain separate.
 
 The optional `migrations-image` suite compares the actual same-source migrations
 payload on matching ASP.NET and CoreCLR images without publishing either image.
