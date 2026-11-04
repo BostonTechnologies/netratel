@@ -163,7 +163,14 @@ def validate_preservation(before, after, requests, output, credential):
         "Setup used unexpected requests, authentication fallback or a mutation")
 
 
-def terminal_journey(arguments, environment, directory, evidence, record, deadline=45):
+def checked_terminal_screen(raw, credential):
+    require(credential.encode() not in raw, "Setup disclosed the complete synthetic credential")
+    current = screen(raw)
+    require(credential not in current, "Setup rendered the complete synthetic credential")
+    return current
+
+
+def terminal_journey(arguments, environment, directory, evidence, record, credential, deadline=45):
     import errno
     import fcntl
     import pty
@@ -199,7 +206,7 @@ def terminal_journey(arguments, environment, directory, evidence, record, deadli
                 while raw.count(b"\x1b[6n") > dsrs:
                     os.write(master, b"\x1b[1;1R")
                     dsrs += 1
-                current = screen(raw)
+                current = checked_terminal_screen(raw, credential)
                 if phase < len(planned) and planned[phase][1] in current:
                     snapshot = "setup-tty-" + planned[phase][0].lower() + ".txt"
                     (evidence / snapshot).write_text(current, encoding="utf-8")
@@ -264,7 +271,7 @@ def probe(entrypoint, environment, directory, evidence):
                 combined = (stages[0]["stdout"] + stages[0]["stderr"]).encode()
                 flow["checks"] = data["checks"]
             else:
-                combined = terminal_journey(arguments, fixture.environment(environment), case, evidence, flow)
+                combined = terminal_journey(arguments, fixture.environment(environment), case, evidence, flow, fixture.credential)
             after = protected_inventory(case)
             requests = fixture.requests[initial:]
             flow.update(protectedAfter=after, requests=requests)

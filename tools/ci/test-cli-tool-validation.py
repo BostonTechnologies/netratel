@@ -124,6 +124,15 @@ class PortableToolInputTests(unittest.TestCase):
 
 
 class ArtifactSetupInputTests(unittest.TestCase):
+    def test_terminal_guard_rejects_visibly_complete_credentials_split_by_ANSI_or_cursor_moves(self):
+        credential = "synthetic-private"
+        for raw in (b"synthetic-\x1b[0mprivate", b"\x1b[1;1Hsynthetic-\x1b[1;11Hprivate"):
+            with self.subTest(raw=raw):
+                self.assertNotIn(credential.encode(), raw)
+                self.assertIn(credential, tool.setup_fixture.screen(raw))
+                with self.assertRaisesRegex(ValueError, "rendered"):
+                    tool.setup_fixture.checked_terminal_screen(raw, credential)
+
     def test_terminal_cursor_diffs_restore_spaces_and_replace_stale_prompts(self):
         text = "Use existing authentication"
         raw = b"\x1b[2J" + b"".join(f"\x1b[2;{column}H{letter}".encode()
