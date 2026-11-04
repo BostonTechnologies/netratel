@@ -1136,6 +1136,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             var applicationBrand = page.Locator(".netratel-nav-brand img");
             await applicationBrand.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
             await Assertions.Expect(applicationBrand).ToHaveAttributeAsync("alt", "Browser branding example", new() { Timeout = 20_000 });
+            // Let any overlapping prerender/interactive branding read complete. A
+            // stale response must not revert the accepted persisted presentation.
+            await page.WaitForTimeoutAsync(500);
+            Assert.Equal("Browser branding example", await applicationBrand.GetAttributeAsync("alt"));
         }
         Assert.Equal(0, await page.Locator(".netratel-appbar-brand").CountAsync());
     }
