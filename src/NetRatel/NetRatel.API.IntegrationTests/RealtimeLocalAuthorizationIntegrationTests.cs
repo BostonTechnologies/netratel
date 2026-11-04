@@ -21,6 +21,7 @@ public sealed class RealtimeLocalAuthorizationIntegrationTests(ApiFactory factor
         {
             ["NetRatelAkka:ActorSystemName"] = $"RealtimeLocalAuthorization{Guid.NewGuid():N}"
         });
+        _ = host.Server;
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         var cookie = await LoginAndReadLocalCookieAsync(host, timeout.Token);
@@ -91,6 +92,7 @@ public sealed class RealtimeLocalAuthorizationIntegrationTests(ApiFactory factor
         {
             ["NetRatelAkka:ActorSystemName"] = $"RealtimeLocalLogAuthorization{Guid.NewGuid():N}"
         });
+        _ = host.Server;
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var tenantId = await ReadOpenApiTenantIdAsync(host, timeout.Token);
         var agentId = Guid.NewGuid();

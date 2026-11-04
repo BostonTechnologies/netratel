@@ -9,27 +9,28 @@ using Microsoft.Extensions.Logging.Abstractions;
 using NetRatel.API.Models;
 using NetRatel.API.Services;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Tests.Infrastructure;
 using NuGet.Versioning;
-using Testcontainers.PostgreSql;
 using Xunit;
 
 namespace NetRatel.Tests.API;
 
-public sealed class ClientReleaseAutomationTests : IAsyncLifetime
+public sealed class ClientReleaseAutomationTests(PostgreSqlPersistenceFixture postgres)
+    : IAsyncLifetime, IClassFixture<PostgreSqlPersistenceFixture>
 {
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16-alpine").Build();
+    private string _connectionString = null!;
     private DbContextOptions<OrchestratorDbContext> _options = null!;
 
     public async ValueTask InitializeAsync()
     {
-        await _postgres.StartAsync();
+        _connectionString = await postgres.CreateDatabaseAsync();
         _options = new DbContextOptionsBuilder<OrchestratorDbContext>()
-            .UseNpgsql(_postgres.GetConnectionString()).Options;
+            .UseNpgsql(_connectionString).Options;
         await using var db = new OrchestratorDbContext(_options);
         await db.Database.MigrateAsync();
     }
 
-    public ValueTask DisposeAsync() => _postgres.DisposeAsync();
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     [Fact]
     public async Task PolicyIsOffUntilSavedAndSchedulesFromUtcWithARevisionGuard()
@@ -131,7 +132,7 @@ public sealed class ClientReleaseAutomationTests : IAsyncLifetime
         }
         var catalog = new FailingCatalog();
         await using var services = new ServiceCollection()
-            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_connectionString))
             .AddSingleton<IGitHubClientReleaseCatalog>(catalog)
             .BuildServiceProvider();
         var scopes = services.GetRequiredService<IServiceScopeFactory>();
@@ -186,7 +187,7 @@ public sealed class ClientReleaseAutomationTests : IAsyncLifetime
         }
 
         await using var services = new ServiceCollection()
-            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_connectionString))
             .BuildServiceProvider();
         await using var scope = services.CreateAsyncScope();
         var dbForPublish = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
@@ -237,7 +238,7 @@ public sealed class ClientReleaseAutomationTests : IAsyncLifetime
 
         await using var services = new ServiceCollection()
             .AddLogging()
-            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_connectionString))
             .AddSingleton(clock)
             .AddSingleton<TimeProvider>(clock)
             .AddSingleton<ClientUpdateCatalog>()
@@ -278,7 +279,7 @@ public sealed class ClientReleaseAutomationTests : IAsyncLifetime
 
         await using var services = new ServiceCollection()
             .AddLogging()
-            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_connectionString))
             .AddSingleton<TimeProvider>(clock)
             .AddSingleton<ClientUpdateCatalog>()
             .AddSingleton<IClientUpdateCatalog>(provider => provider.GetRequiredService<ClientUpdateCatalog>())
@@ -460,7 +461,7 @@ public sealed class ClientReleaseAutomationTests : IAsyncLifetime
     private ClientUpdateAuthorityService CreateAuthority(OrchestratorDbContext db, TimeProvider clock)
     {
         var catalog = new ClientUpdateCatalog(
-            new ServiceCollection().AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
+            new ServiceCollection().AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_connectionString))
                 .BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(), clock);
         return new ClientUpdateAuthorityService(db, catalog, clock, NullLogger<ClientUpdateAuthorityService>.Instance);
     }
