@@ -278,7 +278,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             Assert.Contains(await context.CookiesAsync(), cookie => cookie.Name == "NetRatel.Local" && cookie.Secure);
         }
 
-        await VerifyLocalSessionAfterHostRestartAsync(browser, page, webUrl, apiContainer, webContainer, ingressContainer);
+        page = await VerifyLocalSessionAfterHostRestartAsync(browser, page, webUrl, apiContainer, webContainer, ingressContainer);
+        page.SetDefaultTimeout(20_000);
+        page.PageError += (_, error) => pageErrors.Add(error);
+        await page.GotoAsync(webUrl.ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
 
         await AssertFirstPaintAsync(
             browser,
@@ -408,7 +411,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         exit 1
         """);
 
-    private static async Task VerifyLocalSessionAfterHostRestartAsync(
+    private static async Task<IPage> VerifyLocalSessionAfterHostRestartAsync(
         IBrowser browser, IPage page, Uri webUrl, string apiContainer, string webContainer, string? ingressContainer)
     {
         // Reuse only the real pre-restart Local ticket in a fresh browser context.
@@ -422,6 +425,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         using var beforeIdentity = JsonDocument.Parse(await before.TextAsync());
         var principalId = beforeIdentity.RootElement.GetProperty("principalId").GetString();
         Assert.False(string.IsNullOrWhiteSpace(principalId));
+        var originalContext = page.Context;
+        // Retire the old circuit before stopping its server. Its reconnect
+        // navigation must not compete with the journey's next document load.
+        await page.CloseAsync();
 
         if (!string.IsNullOrWhiteSpace(ingressContainer)) await RunDockerAsync("stop", ingressContainer);
         await RunDockerAsync("stop", apiContainer, webContainer);
@@ -466,7 +473,9 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await Assertions.Expect(restoredPage.Locator(".netratel-app-bar")).ToBeVisibleAsync(new() { Timeout = 20_000 });
         await AssertLocalTenantScopeAsync(restoredPage, webUrl, "Browser smoke tenant");
         Assert.False(await restoredPage.GetByTestId("local-login-submit").IsVisibleAsync());
-        await page.ReloadAsync(new PageReloadOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        // Continue with the unchanged pre-restart cookie jar, without another
+        // sign-in or an old circuit's automatic navigation.
+        return await originalContext.NewPageAsync();
     }
 
     private static async Task VerifyHybridOidcSignInAsync(IBrowser browser, Uri webUrl)
@@ -1169,9 +1178,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         string? resource = null,
         string? instancePermission = null)
     {
-        await page.GotoAsync(new Uri(webUrl, "account/integration-credentials").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GotoAsync(new Uri(webUrl, "account/integration-credentials?tab=credentials").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByTestId("integration-credentials-page").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByTestId("integration-credentials-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
+        var existingCredentials = await ReadCredentialCountAsync(page);
         await page.GetByTestId("open-create-integration").ClickAsync();
         if (name == "CI telemetry read") await AssertDialogLayoutAsync(page, "integration-connection", captureSafeContent: true);
         await page.GetByTestId("credential-name").FillAsync(name);
@@ -1182,25 +1192,31 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = purpose, Exact = true }).ClickAsync();
             await page.GetByTestId("credential-resource").FillAsync(resource ?? throw new InvalidOperationException("An HTTP MCP resource is required."));
         }
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
+        await NextCredentialStepAsync(page, "Server access");
+        if (!string.IsNullOrWhiteSpace(instancePermission))
+            await page.GetByTestId($"credential-instance-permission-{instancePermission}").CheckAsync();
+        await NextCredentialStepAsync(page, "Tenant access");
         var bootstrapTenantId = await SelectBootstrapTenantGrantAsync(page);
         if (name == "CI telemetry read") await AssertDialogLayoutAsync(page, "integration-access", captureSafeContent: true);
         if (name == "CI telemetry read")
         {
             await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Back" }).ClickAsync();
+            await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Back" }).ClickAsync();
             Assert.Equal(name, await page.GetByTestId("credential-name").InputValueAsync());
-            await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
+            await NextCredentialStepAsync(page, "Server access");
+            await NextCredentialStepAsync(page, "Tenant access");
         }
-        await page.GetByTestId($"credential-permission-{bootstrapTenantId}-{permission}").ClickAsync();
+        await page.GetByTestId($"credential-permission-{bootstrapTenantId}-{permission}").CheckAsync();
         if (name == "CI telemetry read") await CaptureReviewScreenshotAsync(page, "integration-access-mobile");
-        if (!string.IsNullOrWhiteSpace(instancePermission))
+        if (purpose == "HTTP MCP gateway")
         {
-            await page.GetByText("Server-level access (advanced)").ClickAsync();
-            await page.GetByTestId($"credential-instance-permission-{instancePermission}").ClickAsync();
+            await NextCredentialStepAsync(page, "Policies");
+            await Assertions.Expect(page.GetByTestId("integration-base-policy"))
+                .ToHaveCountAsync(string.IsNullOrWhiteSpace(instancePermission) ? 1 : 2);
         }
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
+        await NextCredentialStepAsync(page, "Review & create");
         if (name == "CI telemetry read") await AssertDialogLayoutAsync(page, "integration-review", captureSafeContent: true);
-        await page.GetByTestId("create-credential").ClickAsync();
+        await ConfirmCredentialCreationAsync(page, existingCredentials);
         var reveal = page.GetByTestId("credential-one-time-secret");
         try
         {
@@ -1217,15 +1233,41 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         var secret = await page.GetByLabel("One-time secret").InputValueAsync();
         Assert.StartsWith("nrt_ic_", secret);
         await page.GetByText("I stored the secret", new PageGetByTextOptions { Exact = true }).ClickAsync();
+        await page.GetByTestId("credential-one-time-secret").WaitForAsync(new() { State = WaitForSelectorState.Detached });
         return secret;
+    }
+
+    private static async Task NextCredentialStepAsync(IPage page, string step)
+    {
+        await page.GetByRole(AriaRole.Button, new() { Name = "Next", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.GetByTestId("credential-step")).ToContainTextAsync($"· {step}");
+    }
+
+    private static Task<int> ReadCredentialCountAsync(IPage page) => page.EvaluateAsync<int>("""
+        async () => {
+            const response = await fetch('/api/v2/account/integration-credentials', { cache: 'no-store' });
+            if (response.status !== 200) throw new Error(`Credential list returned HTTP ${response.status}`);
+            const credentials = await response.json();
+            if (!Array.isArray(credentials)) throw new Error('Credential list is not an array.');
+            return credentials.length;
+        }
+        """);
+
+    private static async Task ConfirmCredentialCreationAsync(IPage page, int existingCredentials)
+    {
+        var create = page.GetByTestId("create-credential");
+        await Assertions.Expect(create).ToBeDisabledAsync();
+        Assert.Equal(existingCredentials, await ReadCredentialCountAsync(page));
+        await page.GetByTestId("credential-review-confirm").CheckAsync();
+        await Assertions.Expect(create).ToBeEnabledAsync();
+        await create.ClickAsync();
     }
 
     private static async Task<int> SelectBootstrapTenantGrantAsync(IPage page)
     {
-        // The real authority list is ordered by tenant name, so another journey
-        // can change the automatic first selection. Choose the exact bootstrap
-        // tenant through the rendered wizard and resolve its actual permission ID.
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Remove", Exact = true }).ClickAsync();
+        // An unscoped credential starts without tenant grants. Choose the exact
+        // bootstrap tenant rather than relying on authority-list ordering.
+        await Assertions.Expect(page.GetByTestId("permission-scope").Locator("option")).ToHaveCountAsync(0);
         await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Add tenant", Exact = true }).ClickAsync();
         await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = "Browser smoke tenant", Exact = true }).ClickAsync();
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Add tenant", Exact = true }).ClickAsync();
@@ -1246,17 +1288,19 @@ public sealed class LocalFirstComposeBrowserSmokeTests
 
     private static async Task VerifyMultiGrantWizardAsync(IPage page, Uri webUrl)
     {
-        await page.GotoAsync(new Uri(webUrl, "account/integration-credentials").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GotoAsync(new Uri(webUrl, "account/integration-credentials?tab=credentials").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByTestId("integration-credentials-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
+        var existingCredentials = await ReadCredentialCountAsync(page);
         await page.GetByTestId("open-create-integration").ClickAsync();
         await page.GetByTestId("credential-name").FillAsync("CI multi-grant");
         await page.GetByTestId("credential-name").PressAsync("Tab");
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
+        await NextCredentialStepAsync(page, "Server access");
+        await NextCredentialStepAsync(page, "Tenant access");
         var bootstrapTenantId = await SelectBootstrapTenantGrantAsync(page);
         await AssertDialogLayoutAsync(page, "integration-multi-grant-access", captureSafeContent: true);
         foreach (var permission in new[] { "telemetry.read", "file.read", "file.write" })
-            await page.GetByTestId($"credential-permission-{bootstrapTenantId}-{permission}").ClickAsync();
-        var search = page.GetByRole(AriaRole.Textbox, new PageGetByRoleOptions { Name = "Search permissions" });
+            await page.GetByTestId($"credential-permission-{bootstrapTenantId}-{permission}").CheckAsync();
+        var search = page.GetByTestId("permission-search");
         await search.FillAsync("scripts");
         await page.GetByTestId($"credential-permission-{bootstrapTenantId}-telemetry.read").WaitForAsync(
             new LocatorWaitForOptions { State = WaitForSelectorState.Detached });
@@ -1265,26 +1309,32 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         foreach (var permission in new[] { "telemetry.read", "file.read", "file.write" })
             Assert.True(await page.GetByTestId($"credential-permission-{bootstrapTenantId}-{permission}").IsCheckedAsync());
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
-        await page.GetByTestId("create-credential").ClickAsync();
+        await NextCredentialStepAsync(page, "Review & create");
+        await ConfirmCredentialCreationAsync(page, existingCredentials);
         await page.GetByTestId("credential-one-time-secret").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         var multiSecret = await page.GetByLabel("One-time secret").InputValueAsync();
         await page.GetByText("I stored the secret", new PageGetByTextOptions { Exact = true }).ClickAsync();
-        await page.GetByText("3 tenant permissions, 0 server-level permissions").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.GetByTestId("credential-one-time-secret").WaitForAsync(new() { State = WaitForSelectorState.Detached });
+        await Assertions.Expect(page.GetByTestId("credential-row").Filter(new() { HasText = "CI multi-grant" }))
+            .ToContainTextAsync("3 tenant grants · 0 server grants");
         Assert.Equal(0, await page.GetByText(multiSecret, new PageGetByTextOptions { Exact = true }).CountAsync());
+        existingCredentials++;
 
         await page.GetByTestId("open-create-integration").ClickAsync();
         await page.GetByTestId("credential-name").FillAsync("CI instance-only");
         await page.GetByTestId("credential-name").PressAsync("Tab");
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Remove" }).ClickAsync();
-        await page.GetByText("Server-level access (advanced)").ClickAsync();
-        await page.GetByTestId("credential-instance-permission-mcp.discovery.read").ClickAsync();
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
-        await page.GetByTestId("create-credential").ClickAsync();
+        await NextCredentialStepAsync(page, "Server access");
+        await page.GetByTestId("credential-instance-permission-mcp.discovery.read").CheckAsync();
+        await NextCredentialStepAsync(page, "Tenant access");
+        await Assertions.Expect(page.GetByTestId("permission-scope").Locator("option")).ToHaveCountAsync(0);
+        await NextCredentialStepAsync(page, "Review & create");
+        await ConfirmCredentialCreationAsync(page, existingCredentials);
         await page.GetByTestId("credential-one-time-secret").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByText("I stored the secret", new PageGetByTextOptions { Exact = true }).ClickAsync();
-        await page.GetByText("0 tenant permissions, 1 server-level permission").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.GetByTestId("credential-one-time-secret").WaitForAsync(new() { State = WaitForSelectorState.Detached });
+        await Assertions.Expect(page.GetByTestId("credential-row").Filter(new() { HasText = "CI instance-only" }))
+            .ToContainTextAsync("0 tenant grants · 1 server grants");
+        existingCredentials++;
 
         var secondTenantId = await page.EvaluateAsync<int>("""
             async () => {
@@ -1301,23 +1351,37 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("open-create-integration").ClickAsync();
         await page.GetByTestId("credential-name").FillAsync("CI two-tenant draft");
         await page.GetByTestId("credential-name").PressAsync("Tab");
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
-        await page.Locator("[data-testid^='credential-permission-']").First.WaitForAsync(
-            new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await NextCredentialStepAsync(page, "Server access");
+        await NextCredentialStepAsync(page, "Tenant access");
         Assert.NotEqual(bootstrapTenantId, secondTenantId);
         Assert.Equal(bootstrapTenantId, await SelectBootstrapTenantGrantAsync(page));
-        await page.GetByTestId($"credential-permission-{bootstrapTenantId}-telemetry.read").ClickAsync();
+        await page.GetByTestId($"credential-permission-{bootstrapTenantId}-telemetry.read").CheckAsync();
         await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Add tenant", Exact = true }).ClickAsync();
         await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = "Browser second tenant", Exact = true }).ClickAsync();
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Add tenant", Exact = true }).ClickAsync();
-        await page.GetByTestId($"credential-permission-{secondTenantId}-file.write").ClickAsync();
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
-        await page.GetByText("Browser smoke tenant · Read telemetry").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-        await page.GetByText("Browser second tenant · Write files").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-        await page.GetByTestId("create-credential").ClickAsync();
+        await page.GetByTestId("permission-scope").SelectOptionAsync(secondTenantId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        await page.GetByTestId($"credential-permission-{secondTenantId}-file.write").CheckAsync();
+        await NextCredentialStepAsync(page, "Review & create");
+        var review = page.GetByTestId("integration-setup-review");
+        foreach (var (tenant, selected, absent) in new[]
+                 {
+                     ("Browser smoke tenant", "Read telemetry", "Write files"),
+                     ("Browser second tenant", "Write files", "Read telemetry")
+                 })
+        {
+            var scope = review.Locator(".mud-card").Filter(new() { Has = page.GetByText(tenant, new() { Exact = true }) });
+            await Assertions.Expect(scope).ToHaveCountAsync(1);
+            await scope.GetByText("Selected permissions", new() { Exact = true }).ClickAsync();
+            await Assertions.Expect(scope.GetByText(selected, new() { Exact = true })).ToBeVisibleAsync();
+            await Assertions.Expect(scope.GetByText(absent, new() { Exact = true })).ToHaveCountAsync(0);
+        }
+        await ConfirmCredentialCreationAsync(page, existingCredentials);
         await page.GetByTestId("credential-one-time-secret").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByText("I stored the secret", new PageGetByTextOptions { Exact = true }).ClickAsync();
-        await page.GetByText("2 tenant permissions, 0 server-level permissions").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.GetByTestId("credential-one-time-secret").WaitForAsync(new() { State = WaitForSelectorState.Detached });
+        await Assertions.Expect(page.GetByTestId("credential-row").Filter(new() { HasText = "CI two-tenant draft" }))
+            .ToContainTextAsync("2 tenant grants · 0 server grants");
+        existingCredentials++;
 
         await page.GetByTestId("open-create-integration").ClickAsync();
         await page.GetByTestId("credential-name").FillAsync("CI invalid endpoint");
@@ -1328,6 +1392,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("credential-resource").PressAsync("Tab");
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
         await page.GetByTestId("credential-error").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        Assert.Equal(existingCredentials, await ReadCredentialCountAsync(page));
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Cancel" }).ClickAsync();
         await page.GetByTestId("open-create-integration").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.WaitForFunctionAsync(
