@@ -2845,6 +2845,238 @@ class ClientRuntimeContentTests(unittest.TestCase):
                 self.sbom.packages_from_assets(assets, "linux-x64", distribution, root / "missing.deps.json")
 
 
+class StackImageReceiptTests(unittest.TestCase):
+    def test_source_input_profiles_keep_archive_wrapper_without_client_build_or_fallback(self):
+        workflow = (ROOT / '.github/workflows/integration-validation.yml').read_text()
+        step = workflow.split('      - name: Build source deployment inputs once\n', 1)[1].split('\n      - name:', 1)[0]
+        program = '\n'.join(line[10:] for line in step.split('        run: |\n', 1)[1].splitlines())
+        with tempfile.TemporaryDirectory() as temporary:
+            for profile in ('oidc', 'client-runtime', 'client-archive'):
+                with self.subTest(profile=profile):
+                    root = Path(temporary) / profile
+                    (root / 'bin').mkdir(parents=True); (root / 'tools/ci').mkdir(parents=True); (root / 'TestResults').mkdir()
+                    logger = ('#!/usr/bin/env python3\nimport json,os,sys\nfrom pathlib import Path\n'
+                        'name=Path(sys.argv[0]).name; args=sys.argv[1:]\n'
+                        'with open(os.environ["TEST_COMMANDS"],"a") as output: output.write(json.dumps([name,*args])+"\\n")\n'
+                        'if name=="tar": Path(args[args.index("-czf")+1]).write_bytes(b"synthetic archive")\n'
+                        'if name=="docker": print("sha256:"+"d"*64)\n'
+                        'if name=="record-stack-image-comparison.py":\n'
+                        ' with open(os.environ["GITHUB_ENV"],"a") as output: output.write("NETRATEL_SOURCE_STACK_IMAGES=synthetic-prepared-images\\n")\n')
+                    for path in [root / 'bin' / name for name in ('dotnet', 'tar', 'docker')] + [
+                            root / 'tools/ci' / name for name in ('build-public-image.sh', 'scan-public-image.sh', 'record-stack-image-comparison.py')]:
+                        path.write_text(logger); path.chmod(0o755)
+                    environment = root / 'environment'
+                    environment.write_text('NETRATEL_CLIENT_SMOKE_IMAGE=netratel-client:archive-acceptance\n' if profile == 'client-archive' else '')
+                    calls = root / 'calls.jsonl'
+                    result = subprocess.run(['bash', '-c', program.replace('${{ inputs.deployment_profile }}', profile)], cwd=root,
+                        env={**os.environ, 'PATH': str(root / 'bin') + os.pathsep + os.environ['PATH'],
+                             'RUNNER_TEMP': str(root / 'temp'), 'GITHUB_ENV': str(environment), 'TEST_COMMANDS': str(calls),
+                             'DEPLOYMENT_PROFILE': profile, 'VERSION': '1.2.3', 'SOURCE_SHA': 'a' * 40}, capture_output=True, text=True)
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    commands = [json.loads(line) for line in calls.read_text().splitlines()]
+                    prepared = [call for call in commands if call[0] == 'record-stack-image-comparison.py']
+                    client_builds = [call for call in commands if call[0] == 'build-public-image.sh']
+                    self.assertEqual(int(profile == 'oidc'), len(prepared))
+                    self.assertEqual(int(profile == 'client-runtime'), len(client_builds))
+                    self.assertFalse(any('NetRatel.Client.csproj' in argument for call in commands if call[0] == 'dotnet' for argument in call))
+                    if profile == 'client-archive':
+                        self.assertFalse(any(call[0] in ('scan-public-image.sh', 'docker') for call in commands))
+                        self.assertNotIn('manual-deployment', environment.read_text())
+                        self.assertNotIn('NETRATEL_SOURCE_STACK_IMAGES', environment.read_text())
+                        self.assertIn('NETRATEL_CLIENT_SMOKE_IMAGE=netratel-client:archive-acceptance', environment.read_text())
+
+    def test_source_compose_allows_cold_fixture_pulls_and_protects_prepared_image_identity(self):
+        source = (ROOT / 'tools/ci/smoke-oidc-compose.sh').read_text()
+        program = re.search(r'''(?ms)  python3 - "\$NETRATEL_SOURCE_STACK_IMAGES" "\$source_images_override_path" <<'PY'\n(.*?)\nPY''', source).group(1)
+        up_args = shlex.split(re.search(r'compose_up_args=\((--no-build.*?)\)', source).group(1))
+        self.assertIn('--no-build', up_args)
+        self.assertFalse(any(value.startswith('--pull') for value in up_args), 'A global pull restriction overrides fixture policies.')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            roles = {role: {'reference': f'netratel-{role}:manual-deployment', 'Id': 'sha256:' + str(index) * 64}
+                     for index, role in enumerate(('api', 'web', 'migrations'), 1)}
+            record = {'sourceSha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
+                      'productVersion': subprocess.check_output([sys.executable, 'tools/ci/product-version.py'], cwd=ROOT, text=True).strip(),
+                      'roles': roles}
+            images = root / 'images.json'; images.write_text(json.dumps(record))
+            overlay = root / 'images.yaml'
+            subprocess.run([sys.executable, '-', str(images), str(overlay)], input=program, text=True, cwd=ROOT, check=True)
+            environment = {**os.environ, 'POSTGRES_PASSWORD': 'synthetic-compose-password',
+                           'NETRATEL_GATEWAY_PROXY_CONFIG_PATH': str(root / 'gateway.conf'),
+                           'NETRATEL_PUBLIC_NGINX_CONFIG_PATH': str(ROOT / 'release/nginx.public-https.conf'),
+                           'DOCKER_HOST': 'unix://' + str(root / 'unavailable.sock')}
+            # Native Compose parses/merges the real recipes without a daemon or image pulls.
+            result = subprocess.run(['docker', 'compose', '--env-file', '/dev/null', '--project-name', 'netratel-stack-fixture',
+                '-f', str(ROOT / 'compose.yaml'), '-f', str(ROOT / 'tests/compose/oidc-smoke.compose.yaml'),
+                '-f', str(overlay), 'config', '--format', 'json'], env=environment, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            services = json.loads(result.stdout)['services']
+            for role, image in roles.items():
+                self.assertEqual(image['reference'], services[role]['image'])
+                self.assertEqual('never', services[role]['pull_policy'])
+            for role in ('postgres', 'volume-init', 'oidc', 'gateway', 'web-proxy'):
+                self.assertIn('image', services[role])
+                self.assertIn(services[role].get('pull_policy'), (None, 'missing', 'if_not_present'))
+
+            # Execute the real post-up guard with inspected Docker protocol fixtures.
+            guard = re.search(r'(?ms)^  for role in api web migrations; do\n.*?^  done$', source).group(0)
+            binary = root / 'bin'; binary.mkdir()
+            docker = binary / 'docker'
+            docker.write_text('#!/usr/bin/env python3\nimport json,os,sys\n'
+                'args=sys.argv[1:]\n'
+                'if args[0]=="compose": print(args[-1])\n'
+                'elif args[0]=="inspect":\n'
+                ' role=args[-1]; record=json.load(open(os.environ["NETRATEL_SOURCE_STACK_IMAGES"]))\n'
+                ' print("sha256:"+"0"*64 if os.environ.get("TEST_SWAP_ROLE")==role else record["roles"][role]["Id"])\n'
+                'else: sys.exit(2)\n')
+            docker.chmod(0o755)
+            for swap in ('', 'api'):
+                result = subprocess.run(['bash', '-c', 'set -euo pipefail\nproject=netratel-stack-fixture\ncompose_args=()\n' + guard],
+                    env={**os.environ, 'PATH': str(binary) + os.pathsep + os.environ['PATH'],
+                         'NETRATEL_SOURCE_STACK_IMAGES': str(images), 'TEST_SWAP_ROLE': swap}, capture_output=True, text=True)
+                if swap:
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn('does not use its prepared production image', result.stderr)
+                else:
+                    self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_publication_bytes_tag_original_source_and_complete_image_set_must_agree(self):
+        helper = module('record-stack-image-comparison')
+        promotion = module('promote-release')
+        selected = {'tag': 'v1.2.3', 'images': {role: f'ghcr.io/bostontechnologies/netratel-{role}@sha256:' + str(index) * 64
+                     for index, role in enumerate(helper.PROJECTS, 1)}}
+        files = {name: {'artifact': 'synthetic-artifact', 'artifactId': index, 'artifactDigest': 'sha256:' + 'b' * 64,
+                        'path': name, 'sha256': 'c' * 64} for index, name in enumerate(promotion.required_artifacts('1.2.3'), 1)}
+        receipt = {'repository': helper.REPOSITORY, 'workflow': '.github/workflows/release-build.yml',
+                   'productVersion': '1.2.3', 'headSha': 'a' * 40, 'runId': 123, 'attempt': 2, 'files': files}
+        original = {'publicCommit': 'a' * 40, 'productVersion': '1.2.3', 'images': selected['images'],
+                    'verification': {'state': 'complete'}, 'inputReceipt': receipt,
+                    'artifacts': {name: ('d' if name.startswith('netratel-compose-') else 'c') * 64 for name in files}}
+        # Promotion legitimately transforms the Compose bundle; its public hash differs from the original input.
+        build = {'id': 123, 'run_attempt': 2, 'status': 'completed', 'conclusion': 'success', 'head_sha': 'a' * 40,
+                 'path': '.github/workflows/release-build.yml', 'repository': {'full_name': helper.REPOSITORY},
+                 'head_repository': {'full_name': helper.REPOSITORY}}
+        for fault in (None, 'asset', 'tag', 'source', 'images', 'malformed-receipt', 'wrong-run', 'wrong-attempt',
+                      'wrong-status', 'wrong-conclusion', 'wrong-repository', 'wrong-workflow'):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary); document = copy.deepcopy(original); run = copy.deepcopy(build)
+                if fault == 'source': document['inputReceipt']['headSha'] = 'b' * 40
+                if fault == 'images': document['images']['api'] += '0'
+                if fault == 'malformed-receipt': document['inputReceipt']['files'].pop(next(iter(files)))
+                if fault == 'wrong-run': run['id'] = 124
+                if fault == 'wrong-attempt': run['run_attempt'] = 3
+                if fault == 'wrong-status': run['status'] = 'in_progress'
+                if fault == 'wrong-conclusion': run['conclusion'] = 'failure'
+                if fault == 'wrong-repository': run['repository']['full_name'] = 'synthetic/other'
+                if fault == 'wrong-workflow': run['path'] = '.github/workflows/integration-validation.yml'
+                content = json.dumps(document).encode()
+                metadata = {'tag_name': 'v1.2.3', 'draft': False, 'published_at': '2026-01-01T00:00:00Z',
+                            'assets': [{'name': 'publication.json', 'state': 'uploaded', 'size': len(content),
+                                        'digest': 'sha256:' + (('0' * 64) if fault == 'asset' else hashlib.sha256(content).hexdigest())}]}
+                def download(args, **kwargs):
+                    (Path(args[args.index('--dir') + 1]) / 'publication.json').write_bytes(content)
+                with patch.object(helper, 'module', side_effect=lambda name: promotion if name == 'promote-release' else SimpleNamespace(select=lambda _: selected)), \
+                        patch.object(helper, 'command', side_effect=[json.dumps(metadata), ('b' if fault == 'tag' else 'a') * 40, json.dumps(run)]), \
+                        patch.object(helper.subprocess, 'run', side_effect=download):
+                    if fault:
+                        with self.assertRaises(ValueError): helper.published(root)
+                    else:
+                        self.assertEqual(original, helper.published(root))
+                        self.assertEqual(content, (root / 'publication.json').read_bytes())
+                        self.assertEqual(build, json.loads((root / 'selected-release-build.json').read_text()))
+
+    def test_docker_export_stream_rejects_traversal_links_and_duplicates(self):
+        helper = module('record-stack-image-comparison')
+        for fault in (None, 'traversal', 'symlink', 'duplicate'):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temporary:
+                data = io.BytesIO()
+                with tarfile.open(fileobj=data, mode='w') as archive:
+                    entry = tarfile.TarInfo('../escape' if fault == 'traversal' else 'blob')
+                    entry.size = 3
+                    if fault == 'symlink': entry.type = tarfile.SYMTYPE; entry.linkname = '../escape'
+                    archive.addfile(entry, io.BytesIO(b'abc'))
+                    if fault == 'duplicate': archive.addfile(entry, io.BytesIO(b'abc'))
+                process = SimpleNamespace(stdout=io.BytesIO(data.getvalue()), wait=lambda: 0, poll=lambda: 0)
+                with patch.object(helper.subprocess, 'Popen', return_value=process):
+                    if fault:
+                        with self.assertRaisesRegex(ValueError, 'Docker-save member'):
+                            helper.save_images(['sha256:' + 'a' * 64], Path(temporary))
+                    else:
+                        helper.save_images(['sha256:' + 'a' * 64], Path(temporary))
+                        self.assertEqual(b'abc', (Path(temporary) / 'blob').read_bytes())
+
+    def test_image_receipts_bind_source_version_platform_and_published_digest(self):
+        helper = module('record-stack-image-comparison')
+        source, digest = 'a' * 40, 'ghcr.io/bostontechnologies/netratel-api@sha256:' + 'b' * 64
+        info = {'Id': 'sha256:' + 'c' * 64, 'Os': 'linux', 'Architecture': 'amd64', 'Size': 100,
+                'RootFS': {'Layers': ['sha256:' + 'd' * 64]}, 'RepoDigests': [digest], 'Config': {'Labels': {
+                    'org.opencontainers.image.title': 'NetRatel',
+                    'org.opencontainers.image.source': 'https://github.com/BostonTechnologies/netratel',
+                    'org.opencontainers.image.version': '1.2.3', 'org.opencontainers.image.revision': source}}}
+        self.assertEqual(info['Id'], helper.identity(info, source, '1.2.3', digest)['Id'])
+        for key, value in [('Architecture', 'arm64'), ('Os', 'windows'), ('RepoDigests', []), ('Id', 'not-a-digest')]:
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                helper.identity({**info, key: value}, source, '1.2.3', digest)
+        for revision, version in [('e' * 40, '1.2.3'), (source, '1.2.4')]:
+            with self.assertRaisesRegex(ValueError, 'source/version/config'):
+                helper.identity(info, revision, version, digest)
+
+    def test_actual_app_inventory_counts_regular_bytes_and_requires_role_and_legal_files(self):
+        helper = module('record-stack-image-comparison')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            names = ['NetRatel.API.dll', 'licenses/LICENSE', 'licenses/NOTICE', 'THIRD-PARTY-NOTICES.txt', 'runtime.spdx.json']
+            for name in names:
+                path = root / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(b'content')
+            (root / 'linked').symlink_to('NetRatel.API.dll')
+            result = helper.app_inventory(root, 'api')
+            self.assertEqual(35, result['applicationBytes'])
+            self.assertEqual(set(names), set(result['files']))
+            with self.assertRaisesRegex(ValueError, 'NetRatel.Web.dll'):
+                helper.app_inventory(root, 'web')
+            (root / 'licenses/NOTICE').unlink()
+            (root / 'licenses/NOTICE').symlink_to('../NetRatel.API.dll')
+            with self.assertRaisesRegex(ValueError, 'licenses/NOTICE'):
+                helper.app_inventory(root, 'api')
+
+    def test_process_rss_retains_raw_samples_statistics_and_rejects_unavailable_or_restarted_process(self):
+        helper = module('record-stack-image-comparison')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            roles = {role: {'Id': 'sha256:' + str(index) * 64} for index, role in enumerate(('api', 'web', 'client'), 1)}
+            (root / 'source-images.json').write_text(json.dumps({'sourceSha': 'a' * 40, 'productVersion': '1.2.3', 'roles': roles}))
+            def inspected(*args):
+                role = args[-1]
+                return json.dumps([{'Id': role, 'Image': roles[role]['Id'], 'State': {'Running': True, 'Pid': 123}}])
+            counts = dict.fromkeys(roles, 0)
+            def status(args, **kwargs):
+                role = args[2]; value = 100 + counts[role]; counts[role] += 1
+                return f'Name:\t{role}\nPid:\t1\nVmRSS:\t{value} kB\n'
+            with patch.object(helper, 'command', side_effect=inspected), patch.object(helper.subprocess, 'check_output', side_effect=status), \
+                    patch.object(helper.time, 'sleep') as sleep, patch.object(helper.time, 'monotonic', side_effect=range(30)):
+                helper.memory(root, {role: role for role in roles})
+            record = json.loads((root / 'process-rss.json').read_text())
+            self.assertEqual(4, sleep.call_count)
+            for role, samples in record['roles'].items():
+                self.assertEqual(5, len(samples['samples']))
+                self.assertEqual((102400, 104448, 106496), (samples['minRssBytes'], samples['medianRssBytes'], samples['maxRssBytes']))
+                self.assertIn(f'Name:\t{role}\n', samples['samples'][0]['rawProcStatus'])
+            self.assertFalse(record['mcp-http']['measured'])
+            for raw in ('Name:\tdotnet\nPid:\t1\n', 'Name:\tdotnet\nPid:\t2\nVmRSS:\t100 kB\n'):
+                with self.assertRaisesRegex(ValueError, 'unavailable or malformed'):
+                    helper.parse_status(raw)
+            calls = 0
+            def restarted(*args):
+                nonlocal calls
+                calls += 1
+                value = json.loads(inspected(*args))
+                if calls > 3: value[0]['State']['Pid'] = 999
+                return json.dumps(value)
+            with patch.object(helper, 'command', side_effect=restarted), patch.object(helper.subprocess, 'check_output', side_effect=status), \
+                    patch.object(helper.time, 'sleep'), self.assertRaisesRegex(ValueError, 'exited or restarted'):
+                helper.memory(root, {role: role for role in roles})
+
+
 class SavedImageCredentialScanTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="netratel-saved-image-")
@@ -2951,6 +3183,36 @@ class SavedImageCredentialScanTests(unittest.TestCase):
         (self.root / "manifest.json").write_text(json.dumps(manifests))
         with self.assertRaisesRegex(ValueError, "uncompressed image identity"):
             comparator.compare(self.root, "candidate:test", "control:test", companions)
+
+    def test_complete_role_keyed_stacks_use_independent_unions_and_actual_config_ids(self):
+        comparator = module('compare-stack-image-layers')
+        base = self.layer('legacy', b'old runtime\n' * 1000)
+        new_base = self.layer('legacy', b'new runtime\n' * 500)
+        maps, manifests = {}, []
+        for side, shared in [('control', base), ('candidate', new_base)]:
+            maps[side] = {}
+            for role in sorted(comparator.ROLES):
+                app = self.layer('legacy', (side + '/' + role).encode() * 10)
+                ids = ['sha256:' + hashlib.sha256((self.root / path).read_bytes()).hexdigest() for path in (shared, app)]
+                content = json.dumps({'rootfs': {'diff_ids': ids}}).encode()
+                config = side + '-' + role + '.json'; (self.root / config).write_bytes(content)
+                maps[side][role] = 'sha256:' + hashlib.sha256(content).hexdigest()
+                manifests.append({'Config': config, 'RepoTags': None, 'Layers': [shared, app]})
+        (self.root / 'manifest.json').write_text(json.dumps(manifests))
+        result = comparator.compare_stacks(self.root, maps['candidate'], maps['control'])
+        for side in maps:
+            selected = manifests[:5] if side == 'control' else manifests[5:]
+            unique = {identity for image in selected for identity in json.loads((self.root / image['Config']).read_text())['rootfs']['diff_ids']}
+            expected = sum(result['layers'][identity]['gzipBytes'] for identity in unique)
+            self.assertEqual(expected, result[side]['fiveImageUniqueLayerGzipBytes'])
+            self.assertLess(expected, sum(result[side]['standaloneLayerGzipBytes'].values()))
+        self.assertIsNone(result['registryTransferBytes'])
+        for invalid in ({'api': maps['candidate']['api']}, dict.fromkeys(comparator.ROLES, maps['candidate']['api'])):
+            with self.assertRaisesRegex(ValueError, 'five distinct role-keyed'):
+                comparator.compare_stacks(self.root, invalid, maps['control'])
+        changed = dict(maps['candidate']); changed['api'] = 'sha256:' + '0' * 64
+        with self.assertRaisesRegex(ValueError, 'identity is missing'):
+            comparator.compare_stacks(self.root, changed, maps['control'])
 
     def test_html_payload_comparison_rejects_unrelated_file_and_package_changes(self):
         comparator = module("compare-migrations-html-payload")

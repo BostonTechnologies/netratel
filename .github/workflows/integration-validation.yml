@@ -242,6 +242,8 @@ jobs:
             --image netratel-client:archive-acceptance
       - name: Build source deployment inputs once
         if: inputs.suite == 'deployment' && inputs.deployment_profile != 'http-host-setup'
+        env:
+          DEPLOYMENT_PROFILE: ${{ inputs.deployment_profile }}
         shell: bash
         run: |
           set -euo pipefail
@@ -255,8 +257,12 @@ jobs:
           tar -C "$RUNNER_TEMP/manual-tools/cli" -czf "$RUNNER_TEMP/manual-tools/cli.tar.gz" netratel-cli-linux-x64
           tar -C "$RUNNER_TEMP/manual-tools/mcp" -czf "$RUNNER_TEMP/manual-tools/mcp.tar.gz" netratel-mcp-linux-x64
           if [[ '${{ inputs.deployment_profile }}' != client-archive ]]; then
-            tools/ci/build-public-image.sh --dockerfile docker/client/Dockerfile.public \
-              --image netratel-client:manual-deployment --version "$VERSION" --revision "$SOURCE_SHA"
+            if [[ "$DEPLOYMENT_PROFILE" == oidc ]]; then
+              python3 tools/ci/record-stack-image-comparison.py prepare --results TestResults/oidc-compose/stack-images
+            else
+              tools/ci/build-public-image.sh --dockerfile docker/client/Dockerfile.public \
+                --image netratel-client:manual-deployment --version "$VERSION" --revision "$SOURCE_SHA"
+            fi
             tools/ci/scan-public-image.sh --image netratel-client:manual-deployment --version "$VERSION" --revision "$SOURCE_SHA"
             docker image inspect netratel-client:manual-deployment --format '{{.Id}}' > TestResults/source-client-image-id.txt
             printf 'NETRATEL_CLIENT_SMOKE_IMAGE=netratel-client:manual-deployment\n' >> "$GITHUB_ENV"
@@ -386,6 +392,7 @@ jobs:
         if: (inputs.suite == 'deployment' && inputs.deployment_profile != 'http-host-setup') || inputs.suite == 'release-images'
         env:
           NETRATEL_SMOKE_AUTH_ENVIRONMENT: Production
+          GH_TOKEN: ${{ inputs.suite == 'deployment' && inputs.deployment_profile == 'oidc' && github.token || '' }}
         run: bash tools/ci/smoke-oidc-compose.sh
       - name: Run disposable URL-first host deployment and resume acceptance
         if: inputs.suite == 'deployment' && inputs.deployment_profile == 'http-host-setup'
@@ -458,6 +465,11 @@ jobs:
                   if artifact.is_file(): summary.write(f"\nArchived client {filename}:\n\n```json\n{artifact.read_text()}```\n")
               prior = Path("TestResults/selected-prior-release.json")
               if prior.is_file(): summary.write("\nSelected prior completed release:\n\n```json\n" + prior.read_text() + "```\n")
+              stack = Path("TestResults/oidc-compose/stack-images/comparison.json")
+              if stack.is_file():
+                  record = json.loads(stack.read_text())
+                  summary.write("\nComplete production-image comparison and bounded process measurements:\n\n```json\n" + json.dumps(
+                      {key: value for key, value in record.items() if key != "layers"}, indent=2) + "\n```\n")
               stdio = Path("TestResults/stdio-assessment/assessment.json")
               if stdio.is_file():
                   summary.write("\nLinux stdio diagnostic: FDD archives exclude the separately observed external shared runtime; self-contained trimmed JIT includes its bundled runtime. These are different footprint populations, with no cross-mode savings claim. Live policy and Windows acceptance remain pending.\n\n```json\n" + stdio.read_text() + "```\n")

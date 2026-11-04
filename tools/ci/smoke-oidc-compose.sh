@@ -58,6 +58,7 @@ mcp_stdio_error_path="$(mktemp)"
 bundle_extract_dir=""
 gateway_presence_response_path="$(mktemp)"
 command_response_path="$(mktemp)"
+source_images_override_path=""
 client_volume="${project}-client-state"
 gateway_client="${project}-gateway-client"
 inventory_state_directory=/var/lib/netratel/state
@@ -221,6 +222,7 @@ cleanup() {
   unlink "$mcp_stdio_error_path" 2>/dev/null || true
   unlink "$gateway_presence_response_path" 2>/dev/null || true
   unlink "$command_response_path" 2>/dev/null || true
+  if [[ -n "$source_images_override_path" ]]; then unlink "$source_images_override_path"; fi
   if [[ -n "$bundle_extract_dir" ]]; then
     find "$bundle_extract_dir" -depth -delete 2>/dev/null || true
   fi
@@ -894,12 +896,43 @@ PY
   }
 }
 
+if [[ "$mode" == source && -n "${NETRATEL_SOURCE_STACK_IMAGES:-}" ]]; then
+  source_images_override_path="$(mktemp --suffix=.yaml)"
+  python3 - "$NETRATEL_SOURCE_STACK_IMAGES" "$source_images_override_path" <<'PY'
+import json, re, subprocess, sys
+from pathlib import Path
+record = json.loads(Path(sys.argv[1]).read_text())
+if (record['sourceSha'], record['productVersion']) != (
+        subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+        subprocess.check_output(['python3', 'tools/ci/product-version.py'], text=True).strip()):
+    raise ValueError('Prepared source images differ from the selected deployment')
+lines = ['services:']
+for role in ('api', 'web', 'migrations'):
+    image = record['roles'][role]
+    if image['reference'] != f'netratel-{role}:manual-deployment' or not re.fullmatch('sha256:[a-f0-9]{64}', image['Id']):
+        raise ValueError('Invalid prepared source image role')
+    lines += [f'  {role}:', f'    image: {image["reference"]}', '    pull_policy: never']
+Path(sys.argv[2]).write_text('\n'.join(lines) + '\n')
+PY
+  compose_args+=(-f "$source_images_override_path")
+  compose_up_args=(--no-build --detach)
+fi
+
 stage="starting disposable Compose services"
 if ! docker compose --project-name "$project" "${compose_args[@]}" up "${compose_up_args[@]}"; then
   docker compose --project-name "$project" "${compose_args[@]}" ps --all >&2 || true
   docker compose --project-name "$project" "${compose_args[@]}" \
     logs --no-color --tail 200 migrations >&2 || true
   exit 1
+fi
+if [[ "$mode" == source && -n "${NETRATEL_SOURCE_STACK_IMAGES:-}" ]]; then
+  for role in api web migrations; do
+    actual_container="$(docker compose --project-name "$project" "${compose_args[@]}" ps -a -q "$role")"
+    expected_image="$(jq -r --arg role "$role" '.roles[$role].Id' "$NETRATEL_SOURCE_STACK_IMAGES")"
+    [[ -n "$actual_container" && "$(docker inspect --format '{{.Image}}' "$actual_container")" == "$expected_image" ]] || {
+      echo "The actual ${role} container does not use its prepared production image." >&2; exit 1;
+    }
+  done
 fi
 if [[ "$mode" == source ]]; then
   stage="recording the actual Web publish dependency boundary"
@@ -1085,6 +1118,9 @@ docker volume create "$client_volume" >/dev/null
 docker run --rm --user 0:0 --volume "${client_volume}:/var/lib/netratel" \
   --entrypoint /bin/sh "$client_image" -c 'chown -R netratel:netratel /var/lib/netratel'
 stage="enrolling the disposable Client"
+if [[ "$mode" == source && -n "${NETRATEL_SOURCE_STACK_IMAGES:-}" ]]; then
+  python3 tools/ci/record-stack-image-comparison.py readiness-start --results "$(dirname "$NETRATEL_SOURCE_STACK_IMAGES")"
+fi
 docker run --rm --network "${project}_default" --volume "${client_volume}:/var/lib/netratel" \
   "$client_image" --api http://api:9222 --enroll "$enrollment_code"
 record_client_acceptance enrollment
@@ -1134,6 +1170,9 @@ wait_for_telemetry "$operator_access_token"
 record_client_acceptance telemetry
 stage="checking current Client gateway presence"
 wait_for_current_gateway_presence "$operator_access_token"
+if [[ "$mode" == source && -n "${NETRATEL_SOURCE_STACK_IMAGES:-}" ]]; then
+  python3 tools/ci/record-stack-image-comparison.py readiness-end --results "$(dirname "$NETRATEL_SOURCE_STACK_IMAGES")"
+fi
 record_client_acceptance initial-authoritative-presence
 if [[ -n "$inventory_evidence_directory" ]]; then
   verify_software_inventory_acceptance "$operator_access_token" "$inventory_evidence_directory" "$inventory_state_boundary"
@@ -1191,6 +1230,14 @@ if [[ -n "$inventory_evidence_directory" ]]; then
   verify_software_inventory_after_restart "$operator_access_token" "$inventory_evidence_directory"
 fi
 retain_gateway_summary after-restart
+if [[ "$mode" == source && -n "${NETRATEL_SOURCE_STACK_IMAGES:-}" ]]; then
+  stage="sampling post-workload process RSS"
+  python3 tools/ci/record-stack-image-comparison.py memory \
+    --results "$(dirname "$NETRATEL_SOURCE_STACK_IMAGES")" \
+    --api-container "$(docker compose --project-name "$project" "${compose_args[@]}" ps -a -q api)" \
+    --web-container "$(docker compose --project-name "$project" "${compose_args[@]}" ps -a -q web)" \
+    --client-container "$gateway_client"
+fi
 docker rm -f "$gateway_client" >/dev/null
 
 stage="validating Web logout"
@@ -1202,4 +1249,8 @@ grep -qi '^set-cookie:.*\.AspNetCore\.Cookies=;' <<<"$logout_headers" || {
 }
 
 record_client_acceptance source-oidc-deployment-completed
+if [[ "$mode" == source && -n "${NETRATEL_SOURCE_STACK_IMAGES:-}" ]]; then
+  stage="recording complete source and published production image sets"
+  python3 tools/ci/record-stack-image-comparison.py capture --results "$(dirname "$NETRATEL_SOURCE_STACK_IMAGES")"
+fi
 echo "${mode} Compose generic OIDC smoke test passed."
