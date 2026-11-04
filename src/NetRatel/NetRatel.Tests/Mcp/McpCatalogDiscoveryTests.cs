@@ -13,6 +13,39 @@ namespace NetRatel.Tests.Mcp;
 public sealed class McpCatalogDiscoveryTests
 {
     [Theory]
+    [InlineData(NetRatelMcpTransport.StreamableHttp, "dev", 27, "41fa8825a2bd287d98098bc479c072d098cd9e70b88df18ec7e0524f33e9cbbf")]
+    [InlineData(NetRatelMcpTransport.Stdio, "prod", 33, "5edfdefc01ad1abbef874530ba44981a157f87d9c7cb13eac4a89daba9639474")]
+    public void Factory_preserves_frozen_schema_bytes_for_selected_surfaces(
+        NetRatelMcpTransport transport, string instance, int count, string expectedDigest)
+    {
+        var tools = transport == NetRatelMcpTransport.StreamableHttp
+            ? NetRatelMcpToolDefinitions.CreateForHttp(instance)
+            : NetRatelMcpToolDefinitions.CreateForStdio(new Dictionary<string, Type>(StringComparer.Ordinal)
+            {
+                ["netratel_config"] = typeof(ReadOnlyTools),
+                ["netratel_remote_support_v2"] = typeof(MutationTools)
+            }, instance);
+        using var bytes = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(bytes))
+        {
+            writer.WriteStartArray();
+            foreach (var tool in tools)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("name", tool.ProtocolTool.Name);
+                writer.WritePropertyName("inputSchema");
+                tool.ProtocolTool.InputSchema.WriteTo(writer);
+                writer.WritePropertyName("outputSchema");
+                tool.ProtocolTool.OutputSchema!.Value.WriteTo(writer);
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+        }
+        Assert.Equal(count, tools.Count);
+        Assert.Equal(expectedDigest, Convert.ToHexStringLower(SHA256.HashData(bytes.ToArray())));
+    }
+
+    [Theory]
     [InlineData(NetRatelMcpTransport.StreamableHttp, "dev", false)]
     [InlineData(NetRatelMcpTransport.StreamableHttp, "dev", true)]
     [InlineData(NetRatelMcpTransport.StreamableHttp, "prod", true)]
