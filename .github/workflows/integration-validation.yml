@@ -18,6 +18,12 @@ on:
         default: base
         options: [base, html-ownership, schema-ownership]
         required: false
+      api_comparison:
+        description: Comparison for api-image only (control is diagnostic, never published)
+        type: choice
+        default: base
+        options: [base, identity-web]
+        required: false
       browser_classes:
         description: Optional space-separated fully qualified browser test classes; blank runs the full browser suite
         default: ''
@@ -516,7 +522,7 @@ jobs:
 
   windows-mcp:
     name: Manual Windows MCP archive and protected launcher
-    if: inputs.suite == 'windows-mcp' || inputs.suite == 'mcp-campaign'
+    if: inputs.suite == 'windows-mcp' || inputs.suite == 'mcp-campaign' || inputs.suite == 'stdio-assessment'
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
@@ -543,12 +549,21 @@ jobs:
         shell: pwsh
         run: |
           ./tools/ci/test-windows-mcp-archive.ps1 -ArchivePath "artifacts/netratel-mcp-stdio-$env:VERSION-win-x64.zip" -Version $env:VERSION -SourceRevision $env:PublicSourceRevision -ReceiptPath TestResults/windows-mcp-smoke.json
+      - name: Exercise the original Windows archive protocol and operations
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          python3 tools/ci/probe-windows-stdio-archive.py --artifacts artifacts --source . \
+            --work-root "$RUNNER_TEMP/windows-stdio-protocol" --evidence TestResults/windows-mcp-protocol \
+            --version "$VERSION" --source-revision "$PublicSourceRevision"
       - name: Retain sanitized Windows branch receipt
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-mcp-branch-smoke
-          path: TestResults/windows-mcp-smoke.json
+          path: |
+            TestResults/windows-mcp-smoke.json
+            TestResults/windows-mcp-protocol
           if-no-files-found: warn
           retention-days: 14
 
@@ -768,7 +783,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       NETRATEL_API_IMAGE_RESULTS: ${{ github.workspace }}/TestResults/api-image
-      NETRATEL_API_IMAGE_COMPARISON: ${{ inputs.suite == 'api-rid' && 'linux-rid' || 'base' }}
+      NETRATEL_API_IMAGE_COMPARISON: ${{ inputs.suite == 'api-rid' && 'linux-rid' || inputs.api_comparison || 'base' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
