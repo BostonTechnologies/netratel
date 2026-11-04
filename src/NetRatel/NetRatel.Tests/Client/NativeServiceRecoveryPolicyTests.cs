@@ -1,6 +1,9 @@
 using AwesomeAssertions;
 using NetRatel.Client.Service;
 using NetRatel.Client.Service.Updates;
+using NetRatel.Client;
+using NetRatel.Application.ClientAuth;
+using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Shared.Client;
 using System.Text.Json;
 using Xunit;
@@ -9,6 +12,86 @@ namespace NetRatel.Tests.Client;
 
 public sealed class NativeServiceRecoveryPolicyTests
 {
+    [Fact]
+    public void LegacyProtectedHandover_ReadsWebDefaults_AndMatchingReadinessEndsIt()
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("Unix file-protection fixture requires Linux.");
+        var directory = Path.Combine(Path.GetTempPath(), "netratel-activation-json-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        if (OperatingSystem.IsLinux())
+            File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        try
+        {
+            var request = Path.Combine(directory, "request.json");
+            var state = Path.Combine(directory, "state.json");
+            var ready = Path.Combine(directory, "ready.json");
+            void Write(string path, string json)
+            {
+                File.WriteAllText(path, json);
+                if (OperatingSystem.IsLinux()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+            Write(request, """
+                {"SCHEMA":"netratel.update.request.v2","ATTEMPTID":"11111111-2222-4333-8444-555555555555","RELEASEID":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","ADMISSIONNONCE":"fixture-only","TOVERSION":"1.2.3","RUNTIMEID":"linux-x64","REQUESTEDATUTC":"2026-11-04T12:34:56+00:00","future":true}
+                """);
+            // Native legacy state can omit the optional attempt identity.
+            Write(state, """
+                {"STATE":"verifying","VERSION":"1.2.3","UPDATEDATUTC":"2026-11-04T12:34:56+00:00","future":null}
+                """);
+            PendingUpdateActivation? Read() => AkkaClientAutoUpdateCoordinator.ReadPendingActivationCore(request, state,
+                Path.Combine(directory, "result.json"), ready, "1.2.3", "linux-x64", DateTimeOffset.Parse("2026-11-04T12:34:56Z"));
+            Read()!.AttemptId.Should().Be(Guid.Parse("11111111-2222-4333-8444-555555555555"));
+            Write(ready, """
+                {"SCHEMA":"netratel.update.ready.v2","ATTEMPTID":"11111111-2222-4333-8444-555555555555","RELEASEID":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","VERSION":"1.2.3","CONFIRMATIONID":"12345678-90ab-4cde-8123-456789abcdef","readyAtUtc":"2026-11-04T12:34:56Z"}
+                """);
+            Read().Should().BeNull("matching protected readiness ends this handover");
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task NoOfferAcknowledgement_WritesPresence_AndPreservesLegacyPolicyRevision()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "netratel-update-json-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(directory, "policy.json"), """
+                {"REVISION":"9","futureField":true}
+                """);
+            using var http = new HttpClient { BaseAddress = new Uri("https://api.example") };
+            var token = new UnusedUpdateToken();
+            await using var coordinator = new AkkaClientAutoUpdateCoordinator(new ClientOptions
+            {
+                ApiBaseUrl = "https://api.example", AutoUpdate = new() { StateDirectory = directory, RuntimeId = "linux-x64" }
+            }, "1.2.3+fixture", token, http, TimeProvider.System,
+                () => throw new InvalidOperationException("No updater may launch without an offer."), true, _ => { });
+            var before = new ConnectHello(); coordinator.PopulateHello(before);
+            before.UpdatePolicyRevision.Should().Be(9);
+            coordinator.OnAcknowledgement(null, new ClientUpdatePolicy { Revision = 10, AutoUpdateEnabled = false }, null);
+            var after = new ConnectHello(); coordinator.PopulateHello(after);
+            after.UpdatePolicyRevision.Should().Be(10);
+            using var policy = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(directory, "policy.json")));
+            policy.RootElement.EnumerateObject().Select(p => p.Name).Should().Equal("revision", "resumeAttemptId", "resumedAtUtc", "resumeRevision");
+            policy.RootElement.GetProperty("resumeAttemptId").ValueKind.Should().Be(JsonValueKind.Null);
+            using var presence = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(directory, "presence.json")));
+            presence.RootElement.EnumerateObject().Select(p => p.Name).Should().Equal("version", "acknowledgedAtUtc");
+            presence.RootElement.GetProperty("version").GetString().Should().Be("1.2.3");
+            token.Calls.Should().Be(0);
+            File.Exists(Path.Combine(directory, "request.json")).Should().BeFalse();
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    private sealed class UnusedUpdateToken : IAgentTokenService
+    {
+        public int Calls { get; private set; }
+        public Task<(string AccessToken, DateTimeOffset ExpiresAtUtc)> GetAccessTokenAsync(CancellationToken ct)
+        {
+            Calls++;
+            throw new InvalidOperationException("No token request may run without an offer.");
+        }
+    }
+
     [Fact]
     public async Task OwnedMigration_IsIdempotent_AndRequiresEffectiveReadback()
     {

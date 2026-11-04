@@ -21,7 +21,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 import hashlib
 import tarfile
@@ -2655,6 +2655,123 @@ class ClientArchiveAcceptanceTests(unittest.TestCase):
     def setUp(self):
         self.helper = module("prepare-client-archive-acceptance")
 
+    def test_runtime_log_guards_require_an_available_source_and_bounded_real_history(self):
+        source = (ROOT / "tools/ci/smoke-oidc-compose.sh").read_text()
+        descriptor = {"sourceId": "netratel-runtime", "kind": "runtime", "platform": "linux", "available": True,
+                      "unavailableReason": None, "supportsLive": True, "supportsHistory": True, "supportsPaging": True}
+        record = {"sourceId": "netratel-runtime", "category": "Gateway", "prefix": "Gateway", "sequence": 1,
+                  "cursor": "1", "timestampUtc": "2030-01-01T00:00:00Z",
+                  "message": "Presence admitted. connectionEpoch=41, heartbeatInterval=15s.", "truncated": False}
+        page = {"records": [record], "errorCode": None, "resyncRequired": False, "hasMore": False, "droppedRecordCount": 0}
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary) / "response.json"
+
+            def check(name, value, *arguments):
+                body = re.search(r"^" + name + r"\(\) \{\n.*?^\}", source, re.MULTILINE | re.DOTALL).group(0)
+                fixture.write_text(json.dumps(value))
+                if name == "runtime_log_history_valid":
+                    arguments = (*arguments, "41")
+                return subprocess.run(["bash", "-c", body + '\n' + name + ' "$@"', "fixture", str(fixture), *arguments],
+                                      capture_output=True, text=True).returncode
+
+            self.assertEqual(0, check("runtime_log_source_available", [descriptor]))
+            for value in ([], {}, [descriptor, descriptor], ["netratel-runtime"]):
+                self.assertNotEqual(0, check("runtime_log_source_available", value))
+            for key, value in (("sourceId", "other"), ("kind", "journal"), ("platform", "windows"), ("available", False),
+                               ("available", "true"), ("unavailableReason", "denied"), ("supportsHistory", False),
+                               ("supportsPaging", False), ("supportsLive", False), ("supportsLive", "true")):
+                self.assertNotEqual(0, check("runtime_log_source_available", [{**descriptor, key: value}]))
+            self.assertEqual(0, check("runtime_log_history_valid", page, "1"))
+            self.assertEqual(0, check("runtime_log_history_valid", {**page, "records": []}, "0"))
+            self.assertNotEqual(0, check("runtime_log_history_valid", {**page, "records": []}, "1"))
+            for key, value in (("sourceId", "other"), ("category", "Other"), ("prefix", "Other"), ("sequence", "1"),
+                               ("sequence", 0), ("sequence", 0.5), ("sequence", True), ("cursor", ""), ("timestampUtc", None),
+                               ("message", "unrelated"), ("message", "Presence admitted. connectionEpoch=40, heartbeatInterval=15s."),
+                               ("message", None), ("truncated", True)):
+                self.assertNotEqual(0, check("runtime_log_history_valid", {**page, "records": [{**record, key: value}]}, "1"))
+            for key, value in (("records", {}), ("records", None), ("records", [record] * 101), ("errorCode", "source_unavailable"),
+                               ("resyncRequired", True), ("hasMore", "false"), ("droppedRecordCount", -1),
+                               ("droppedRecordCount", "0"), ("droppedRecordCount", 0.5), ("droppedRecordCount", True)):
+                self.assertNotEqual(0, check("runtime_log_history_valid", {**page, key: value}, "0"))
+
+    def test_runtime_log_probe_preserves_http_transport_empty_page_and_malformed_failures(self):
+        source = (ROOT / "tools/ci/smoke-oidc-compose.sh").read_text()
+        functions = '\n'.join(re.search(r"^" + name + r"\(\) \{\n.*?^\}", source, re.MULTILINE | re.DOTALL).group(0)
+                              for name in ("runtime_log_source_available", "runtime_log_history_valid", "verify_runtime_log_acceptance"))
+        descriptor = {"sourceId": "netratel-runtime", "kind": "runtime", "platform": "linux", "available": True,
+                      "unavailableReason": None, "supportsLive": True, "supportsHistory": True, "supportsPaging": True}
+        record = {"sourceId": "netratel-runtime", "category": "Gateway", "prefix": "Gateway", "sequence": 1,
+                  "cursor": "1", "timestampUtc": "2030-01-01T00:00:00Z",
+                  "message": "Presence admitted. connectionEpoch=41, heartbeatInterval=15s.", "truncated": False}
+        page = {"records": [record], "errorCode": None, "resyncRequired": False, "hasMore": False, "droppedRecordCount": 0}
+        mocks = r'''
+curl() {
+  local url="${@: -1}" output=
+  printf '%s\n' "$url" >> "$FIXTURE_DIR/calls"
+  if [[ "$url" == */sources ]]; then
+    while (( $# )); do
+      if [[ "$1" == --output ]]; then output="$2"; fi
+      shift
+    done
+    cat "$FIXTURE_DIR/sources.json" > "$output"
+    [[ "$FIXTURE_CASE" != transport ]] || return 7
+    if [[ "$FIXTURE_CASE" == admission-wait && "$(wc -l < "$FIXTURE_DIR/calls")" == 1 ]]; then printf 404; else printf '%s' "$SOURCE_STATUS"; fi
+  else
+    [[ "$FIXTURE_CASE" != history-http ]] || return 22
+    cat "$FIXTURE_DIR/history.json"
+  fi
+}
+sleep() { :; }
+docker() {
+  [[ "$FIXTURE_CASE" != container-read ]] || return 42
+  printf '%s\n' '[Gateway] Presence admitted. connectionEpoch=41, heartbeatInterval=15s.'
+}
+record_client_acceptance() { printf '%s\n' "$1" >> "$FIXTURE_DIR/stages"; }
+'''
+        agent = "11111111-1111-1111-1111-111111111111"
+        for case, status, expected in (("success", "200", 0), ("admission-wait", "200", 0), ("unauthorized", "401", 1),
+                                       ("forbidden", "403", 1), ("not-ready", "404", 1), ("transport", "200", 7),
+                                       ("history-http", "200", 22), ("empty", "200", 1), ("malformed", "200", 1),
+                                       ("restarted-success", "200", 0), ("restarted-stale", "200", 1),
+                                       ("restarted-duplicate", "200", 1), ("restarted-missing-initial", "200", 1), ("container-read", "200", 42)):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                (root / "sources.json").write_text(json.dumps([descriptor]))
+                history = copy.deepcopy(page)
+                if case == "empty":
+                    history["records"] = []
+                elif case == "malformed":
+                    history["records"][0]["sequence"] = "1"
+                elif case == "restarted-stale":
+                    history["records"][0]["message"] = "Presence admitted. connectionEpoch=40, heartbeatInterval=15s."
+                phase = "restarted" if case.startswith("restarted-") else "initial"
+                if phase == "restarted":
+                    (root / "evidence").mkdir()
+                    previous_epoch = None if case == "restarted-missing-initial" else "41" if case == "restarted-duplicate" else "40"
+                    (root / "evidence/runtime-logs-initial.json").write_text(json.dumps({"connectionEpoch": previous_epoch}))
+                (root / "history.json").write_text(json.dumps(history))
+                result = subprocess.run(["bash", "-c", 'set -euo pipefail\n' + functions + mocks +
+                    '\nverify_runtime_log_acceptance synthetic-token "$FIXTURE_DIR/evidence" "$PHASE"'],
+                    env={**os.environ, "FIXTURE_DIR": str(root), "FIXTURE_CASE": case, "SOURCE_STATUS": status,
+                         "PHASE": phase, "gateway_client": "synthetic-client", "api_url": "http://127.0.0.1:9222", "tenant_id": "7", "agent_id": agent}, capture_output=True, text=True)
+                self.assertEqual(expected, result.returncode, result.stderr)
+                receipt = root / f"evidence/runtime-logs-{phase}.json"
+                calls = (root / "calls").read_text().splitlines() if (root / "calls").exists() else []
+                self.assertTrue(all(url.startswith(f"http://127.0.0.1:9222/api/v2/agents/7/{agent}/logs/") for url in calls))
+                if expected == 0:
+                    evidence = json.loads(receipt.read_text())
+                    self.assertEqual((7, agent, 1, True, False), (evidence["tenantId"], evidence["agentId"],
+                        evidence["historyRecordCount"], evidence["liveAdvertised"], evidence["liveDeliveryExecuted"]))
+                    self.assertEqual("41", evidence["connectionEpoch"])
+                    self.assertEqual(f"{phase}-runtime-log-source-and-history\n", (root / "stages").read_text())
+                    self.assertEqual(3 if case == "admission-wait" else 2, len(calls))
+                else:
+                    self.assertFalse(receipt.exists())
+                    self.assertFalse((root / "stages").exists())
+                    self.assertEqual(60 if case == "empty" else 30 if case == "not-ready" else
+                                     2 if case in ("history-http", "malformed", "restarted-stale") else
+                                     0 if case in ("restarted-duplicate", "restarted-missing-initial", "container-read") else 1, len(calls))
+
     def test_inventory_status_and_real_package_checks_reject_incomplete_or_unrelated_receipts(self):
         source = (ROOT / "tools/ci/smoke-oidc-compose.sh").read_text()
         agent, collection = "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"
@@ -3890,6 +4007,121 @@ class PublicImageSourceIdentityTests(unittest.TestCase):
                 self.assertIn("controlled by --revision", result.stderr)
 
 
+class WindowsStdioCertificateTests(unittest.TestCase):
+    def test_incomplete_tls_handshake_cannot_hold_fixture_shutdown_open(self):
+        import socket
+        import threading
+
+        helper = module("probe-stdio-assessment")
+        started = threading.Event()
+        original = helper.ssl.SSLContext.wrap_socket
+
+        def handshake(context, *arguments, **options):
+            try:
+                arguments[0].getpeername()
+            except OSError:
+                pass  # Wrapping a listening socket does not enter a handshake.
+            else:
+                started.set()
+            return original(context, *arguments, **options)
+
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.object(helper, "HANDSHAKE_TIMEOUT_SECONDS", 0.1), \
+             patch.object(helper.ssl.SSLContext, "wrap_socket", new=handshake):
+            fixture = helper.Fixture(Path(temporary) / "fixture")
+            connection = socket.create_connection(("127.0.0.1", fixture.server.server_port), timeout=2)
+            worker = threading.Thread(target=fixture.close)
+            try:
+                self.assertTrue(started.wait(timeout=2), "The control must enter an incomplete TLS handshake")
+                worker.start()
+                worker.join(timeout=2)
+                self.assertFalse(worker.is_alive(), "A silent TCP client must not block fixture cleanup")
+            finally:
+                connection.close()
+                if worker.ident is None:
+                    worker.start()
+                worker.join(timeout=2)
+
+    def certificate_api(self):
+        import ctypes
+
+        def add(store, encoding, data, size, disposition, context):
+            ctypes.cast(context, ctypes.POINTER(ctypes.c_void_p))[0] = 202
+            return True
+
+        return SimpleNamespace(CertOpenStore=Mock(return_value=101),
+            CertAddEncodedCertificateToStore=Mock(side_effect=add),
+            CertDeleteCertificateFromStore=Mock(return_value=True), CertCloseStore=Mock(return_value=True))
+
+    def test_protocol_failure_removes_owned_machine_certificate_and_closes_store(self):
+        helper = module("probe-windows-stdio-archive")
+        api = self.certificate_api()
+        with patch.object(helper, "require_disposable_windows"), \
+             patch.object(helper, "crypt32", return_value=api), \
+             patch.object(helper.ssl, "PEM_cert_to_DER_cert", return_value=b"synthetic-certificate"), \
+             tempfile.TemporaryDirectory() as temporary:
+            certificate = Path(temporary) / "fixture.crt"
+            certificate.write_text("synthetic fixture certificate")
+            with self.assertRaisesRegex(ValueError, "protocol failure"):
+                with helper.trusted_certificate(certificate) as record:
+                    self.assertTrue(record["added"])
+                    self.assertFalse(record["removed"])
+                    raise ValueError("protocol failure")
+            self.assertTrue(record["removed"])
+            self.assertEqual(0x20000 | 0x4000, api.CertOpenStore.call_args.args[3])
+            self.assertEqual(1, api.CertAddEncodedCertificateToStore.call_args.args[4])
+            self.assertEqual(202, api.CertDeleteCertificateFromStore.call_args.args[0].value)
+            api.CertDeleteCertificateFromStore.assert_called_once()
+            api.CertCloseStore.assert_called_once_with(101, 0)
+
+    def test_failed_add_never_deletes_an_existing_certificate(self):
+        helper = module("probe-windows-stdio-archive")
+        api = self.certificate_api()
+        api.CertAddEncodedCertificateToStore.side_effect = None
+        api.CertAddEncodedCertificateToStore.return_value = False
+        with patch.object(helper, "require_disposable_windows"), \
+             patch.object(helper, "crypt32", return_value=api), \
+             patch.object(helper, "windows_error", return_value=OSError("existing certificate")), \
+             patch.object(helper.ssl, "PEM_cert_to_DER_cert", return_value=b"synthetic-certificate"), \
+             tempfile.TemporaryDirectory() as temporary:
+            certificate = Path(temporary) / "fixture.crt"
+            certificate.write_text("synthetic fixture certificate")
+            with self.assertRaisesRegex(OSError, "existing certificate"):
+                with helper.trusted_certificate(certificate):
+                    self.fail("An existing certificate cannot become owned fixture state")
+            api.CertDeleteCertificateFromStore.assert_not_called()
+            api.CertCloseStore.assert_called_once_with(101, 0)
+
+    def test_certificate_cleanup_failure_cannot_be_counted_as_a_pass(self):
+        helper = module("probe-windows-stdio-archive")
+        api = self.certificate_api()
+        api.CertDeleteCertificateFromStore.return_value = False
+        with patch.object(helper, "require_disposable_windows"), \
+             patch.object(helper, "crypt32", return_value=api), \
+             patch.object(helper, "windows_error", return_value=OSError("remove failed")), \
+             patch.object(helper.ssl, "PEM_cert_to_DER_cert", return_value=b"synthetic-certificate"), \
+             tempfile.TemporaryDirectory() as temporary:
+            certificate = Path(temporary) / "fixture.crt"
+            certificate.write_text("synthetic fixture certificate")
+            with self.assertRaisesRegex(OSError, "remove failed"):
+                with helper.trusted_certificate(certificate) as record:
+                    pass
+            self.assertTrue(record["added"])
+            self.assertFalse(record["removed"])
+            api.CertCloseStore.assert_called_once_with(101, 0)
+
+    def test_machine_trust_is_unavailable_on_non_disposable_hosts(self):
+        helper = module("probe-windows-stdio-archive")
+        for environment in ({}, {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "self-hosted"}):
+            with self.subTest(environment=environment), \
+                 patch.object(helper, "os", SimpleNamespace(name="nt", environ=environment)), \
+                 patch.object(helper, "crypt32") as native_api:
+                with self.assertRaisesRegex(ValueError, "disposable GitHub-hosted Windows"):
+                    with helper.trusted_certificate(Path("unopened-fixture.crt")):
+                        self.fail("Non-disposable hosts cannot modify certificate trust")
+                native_api.assert_not_called()
+
+
 class WindowsMcpReleaseContractTests(unittest.TestCase):
     def test_release_requires_original_windows_archive_smoke_and_attestation(self):
         workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
@@ -3917,6 +4149,9 @@ class WindowsMcpReleaseContractTests(unittest.TestCase):
         self.assertIn("ref: ${{ inputs.source_ref }}", windows)
         self.assertIn("runs-on: windows-latest", windows)
         self.assertIn("-SourceRevision $env:PublicSourceRevision", windows)
+        self.assertIn("|| inputs.suite == 'stdio-assessment'", windows)
+        self.assertIn("tools/ci/probe-windows-stdio-archive.py --artifacts artifacts --source .", windows)
+        self.assertIn("TestResults/windows-mcp-protocol", windows)
         self.assertNotIn("continue-on-error", windows)
         self.assertNotIn("test-windows-mcp-archive", (ROOT / ".github/workflows/public-pr-validation.yml").read_text())
         smoke = (ROOT / "tools/ci/test-windows-mcp-archive.ps1").read_text()
