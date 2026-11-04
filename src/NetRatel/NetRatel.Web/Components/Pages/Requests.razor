@@ -14,7 +14,8 @@
 
 <PageTitle>Requests</PageTitle>
 
-<MudContainer MaxWidth="MaxWidth.False" Class="requests-workbench py-4">
+<div class="requests-workbench">
+<MudContainer MaxWidth="MaxWidth.False" Class="py-4">
     <MudStack Spacing="3">
         <MudPaper Class="requests-hero pa-4" Elevation="0">
             <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="requests-hero-content">
@@ -117,7 +118,10 @@
                     <MudExpansionPanels MultiExpansion="true" Elevation="0" Class="request-list">
                         @foreach (var request in FilteredRequests)
                         {
-                            <MudExpansionPanel Class="@($"request-row {StatusClass(request.Status)}")">
+                            <MudExpansionPanel @key="request.Id"
+                                               Class="@($"request-row {StatusClass(request.Status)}")"
+                                               Expanded="_expandedRequests.Contains(request.Id)"
+                                               ExpandedChanged="@(expanded => SetExpanded(request.Id, expanded))">
                                 <TitleContent>
                                     <MudGrid Spacing="2" Class="request-row-title">
                                         <MudItem xs="12" md="4">
@@ -163,73 +167,83 @@
                                     </MudGrid>
                                 </TitleContent>
                                 <ChildContent>
-                                    <MudGrid Spacing="2" Class="request-details">
-                                        <MudItem xs="12" lg="6" Class="request-details-left">
-                                            <MudPaper Class="request-detail-card request-detail-panel pa-3" Elevation="0">
-                                                <MudText Typo="Typo.subtitle2" Class="detail-heading">Event stream</MudText>
-                                                @if (request.Logs.Count == 0)
-                                                {
-                                                    <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">No request log entries recorded.</MudAlert>
-                                                }
-                                                else
-                                                {
-                                                    <div class="request-log-timeline">
-                                                        @foreach (var entry in ParseLogs(request))
-                                                        {
-                                                            <div class="request-log-entry">
-                                                                <span class="request-log-dot"></span>
-                                                                <div class="request-log-line">
-                                                                    <span class="request-log-time">@entry.Timestamp</span>
-                                                                    <span class="request-log-message">@entry.Message</span>
-                                                                </div>
-                                                            </div>
-                                                        }
-                                                    </div>
-                                                }
-                                            </MudPaper>
-                                        </MudItem>
-                                        <MudItem xs="12" lg="6" Class="request-details-right">
-                                            <MudPaper Class="request-detail-card request-detail-panel request-inspector pa-3" Elevation="0">
-                                                <MudStack Spacing="2">
-                                                    <div>
-                                                        <MudText Typo="Typo.subtitle2" Class="detail-heading">Routing</MudText>
-                                                        <div class="request-routing-grid">
-                                                            <span>Job definition</span>
-                                                            <strong>@request.JobDefinitionId</strong>
-                                                            <span>Run</span>
-                                                            <strong>@DisplayExecution(request)</strong>
-                                                            <span>Created</span>
-                                                            <strong>@FormatDateTime(request.Created)</strong>
-                                                        </div>
-                                                    </div>
-                                                    <div class="request-payload-actions">
-                                                        <MudText Typo="Typo.subtitle2" Class="detail-heading">Payloads</MudText>
-                                                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Class="request-payload-buttons">
-                                                            <RequestJsonAction Title="Inputs"
-                                                                               Json="@request.JobInputs"
-                                                                               Icon="@Icons.Material.Filled.Input"
-                                                                               Color="Color.Info" />
-                                                            <RequestJsonAction Title="Output"
-                                                                               Json="@request.ResultData"
-                                                                               Icon="@Icons.Material.Filled.Output"
-                                                                               Color="Color.Success" />
-                                                            @if (string.IsNullOrWhiteSpace(request.JobInputs) && string.IsNullOrWhiteSpace(request.ResultData))
+                                    @if (_expandedRequests.Contains(request.Id))
+                                    {
+                                        <div class="request-details">
+                                            <div class="request-details-heading">
+                                                <MudIcon Icon="@Icons.Material.Outlined.ReceiptLong" Color="Color.Primary" Size="Size.Small" />
+                                                <h2>Request details</h2>
+                                                <span>#@request.Id</span>
+                                            </div>
+                                            <div class="request-details-grid">
+                                                <section class="request-detail-card" aria-label="Event stream">
+                                                    <h3><MudIcon Icon="@Icons.Material.Outlined.Timeline" Size="Size.Small" />Event stream <span class="request-event-count">@request.Logs.Count events</span></h3>
+                                                    @if (request.Logs.Count == 0)
+                                                    {
+                                                        <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">No request log entries recorded.</MudAlert>
+                                                    }
+                                                    else
+                                                    {
+                                                        <ol class="request-log-timeline" tabindex="0" aria-label="Request events">
+                                                            @foreach (var entry in ParseLogs(request))
                                                             {
-                                                                <MudChip T="string" Size="Size.Small" Variant="Variant.Text" Color="Color.Default">No payloads</MudChip>
+                                                                <li class="request-log-entry">
+                                                                    <span class="request-log-dot" aria-hidden="true"></span>
+                                                                    <div class="request-log-line">
+                                                                        <span class="request-log-time">@entry.Timestamp</span>
+                                                                        <span class="request-log-message">@entry.Message</span>
+                                                                    </div>
+                                                                </li>
                                                             }
-                                                        </MudStack>
-                                                    </div>
-                                                </MudStack>
-                                            </MudPaper>
+                                                        </ol>
+                                                    }
+                                                </section>
+                                                <section class="request-detail-card" aria-label="Routing">
+                                                    <h3><MudIcon Icon="@Icons.Material.Outlined.Route" Size="Size.Small" />Routing</h3>
+                                                    <dl class="request-routing-grid">
+                                                        <div>
+                                                            <dt>Job definition</dt>
+                                                            <dd>
+                                                                <code>@(string.IsNullOrWhiteSpace(request.JobDefinitionId) ? "Not recorded" : $"#{request.JobDefinitionId}")</code>
+                                                                @if (!string.IsNullOrWhiteSpace(request.JobName))
+                                                                {
+                                                                    <span class="request-job-name">@request.JobName</span>
+                                                                }
+                                                            </dd>
+                                                        </div>
+                                                        <div>
+                                                            <dt>Run</dt>
+                                                            <dd>
+                                                                @if (HasRunLink(request))
+                                                                {
+                                                                    <a href="@BuildRunHref(request)" aria-label="@($"Open {DisplayExecution(request)}")">@DisplayExecution(request)</a>
+                                                                }
+                                                                else
+                                                                {
+                                                                    <span>@DisplayExecution(request)</span>
+                                                                }
+                                                            </dd>
+                                                        </div>
+                                                        <div><dt>Source</dt><dd>@request.SourceSystem</dd></div>
+                                                        <div><dt>Target client</dt><dd>@(string.IsNullOrWhiteSpace(request.TargetClientIdentity) ? "No client target" : request.TargetClientIdentity)</dd></div>
+                                                        <div><dt>Created (UTC)</dt><dd><time datetime="@request.Created.ToString("O")">@FormatDateTime(request.Created)</time></dd></div>
+                                                        <div><dt>Updated (UTC)</dt><dd><time datetime="@request.Updated.ToString("O")">@FormatDateTime(request.Updated)</time></dd></div>
+                                                    </dl>
+                                                </section>
+                                            </div>
+                                            <div class="request-payload-grid">
+                                                <RequestJsonPanel Title="Inputs" Json="@request.JobInputs" Icon="@Icons.Material.Outlined.Input" />
+                                                <RequestJsonPanel Title="Output" Json="@request.ResultData" Icon="@Icons.Material.Outlined.Output" />
+                                            </div>
                                             @if (!string.IsNullOrWhiteSpace(request.ResultMessage))
                                             {
-                                                <MudPaper Class="request-detail-card request-detail-panel pa-3" Elevation="0">
-                                                    <MudText Typo="Typo.subtitle2" Class="detail-heading">Result</MudText>
-                                                    <MudText Typo="Typo.body2" Class="request-result-message">@request.ResultMessage</MudText>
-                                                </MudPaper>
+                                                <div class="request-result">
+                                                    <MudIcon Icon="@Icons.Material.Outlined.Info" Size="Size.Small" />
+                                                    <div><h3>Result</h3><p>@request.ResultMessage</p></div>
+                                                </div>
                                             }
-                                        </MudItem>
-                                    </MudGrid>
+                                        </div>
+                                    }
                                 </ChildContent>
                             </MudExpansionPanel>
                         }
@@ -239,6 +253,7 @@
         </MudPaper>
     </MudStack>
 </MudContainer>
+</div>
 
 @code {
     [SupplyParameterFromQuery(Name = "search")]
@@ -249,6 +264,7 @@
     private static readonly TimeSpan ReconcileInterval = TimeSpan.FromSeconds(5);
 
     private List<RequestDto> _requests = new();
+    private readonly HashSet<int> _expandedRequests = [];
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private CancellationTokenSource? _reconcileCts;
     private Task? _reconcileTask;
@@ -266,6 +282,18 @@
     private int RunningCount => _requests.Count(x => IsLive(x.Status));
     private int SuccessCount => _requests.Count(x => IsSuccess(x.Status));
     private int FailedCount => _requests.Count(x => IsFailed(x.Status));
+
+    private void SetExpanded(int requestId, bool expanded)
+    {
+        if (expanded)
+        {
+            _expandedRequests.Add(requestId);
+        }
+        else
+        {
+            _expandedRequests.Remove(requestId);
+        }
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -427,7 +455,7 @@
     private static string BuildRunHref(RequestDto request) => $"/jobs/{request.JobId}/runs/{request.JobRunId}";
 
     private static string DisplayJob(RequestDto request)
-        => !string.IsNullOrWhiteSpace(request.JobName) ? request.JobName! : request.JobDefinitionId;
+        => !string.IsNullOrWhiteSpace(request.JobName) ? request.JobName! : request.JobDefinitionId ?? "No job assigned";
 
     private static string DisplayClient(RequestDto request)
         => string.IsNullOrWhiteSpace(request.TargetClientIdentity) ? "No client target" : Shorten(request.TargetClientIdentity!, 28);
@@ -475,7 +503,7 @@
             : timestamp;
 
     private static string FormatDateTime(DateTimeOffset value)
-        => value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.CurrentCulture);
+        => value.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.CurrentCulture);
 
     private static string FormatWhen(DateTimeOffset value)
     {

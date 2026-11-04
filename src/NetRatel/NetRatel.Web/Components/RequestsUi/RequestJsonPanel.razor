@@ -1,0 +1,41 @@
+@inject IDialogService DialogService
+
+<section class="request-payload-card" aria-label="@Title">
+    <div class="request-payload-heading">
+        <h3><MudIcon Icon="@Icon" Size="Size.Small" />@Title</h3>
+        @if (!string.IsNullOrWhiteSpace(Json))
+        {
+            <MudButton Variant="Variant.Text" Size="Size.Small" Color="Color.Primary"
+                       EndIcon="@Icons.Material.Filled.OpenInFull"
+                       OnClick="OpenDialogAsync" aria-label="@($"Expand {Title}")">
+                Expand
+            </MudButton>
+        }
+    </div>
+    @if (string.IsNullOrWhiteSpace(Json))
+    {
+        <p class="request-payload-empty">No @Title.ToLowerInvariant() captured.</p>
+    }
+    else
+    {
+        <RequestJsonPayloadView Json="@Json" Preview="true" Label="@($"{Title} payload preview")" />
+    }
+</section>
+
+@code {
+    [Parameter] public string Title { get; set; } = "Payload";
+    [Parameter] public string? Json { get; set; }
+    [Parameter] public string Icon { get; set; } = Icons.Material.Filled.DataObject;
+
+    private async Task OpenDialogAsync()
+    {
+        var parameters = new DialogParameters<RequestJsonDialog>
+        {
+            { x => x.Title, Title },
+            { x => x.Json, Json },
+            { x => x.Icon, Icon }
+        };
+        var options = new DialogOptions { CloseButton = true, MaxWidth = MaxWidth.Large, FullWidth = true };
+        await DialogService.ShowAsync<RequestJsonDialog>(Title, parameters, options);
+    }
+}
