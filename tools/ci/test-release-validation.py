@@ -21,7 +21,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 import hashlib
 import tarfile
@@ -3890,6 +3890,73 @@ class PublicImageSourceIdentityTests(unittest.TestCase):
                 self.assertIn("controlled by --revision", result.stderr)
 
 
+class WindowsStdioCertificateTests(unittest.TestCase):
+    def certificate_api(self):
+        import ctypes
+
+        def add(store, encoding, data, size, disposition, context):
+            ctypes.cast(context, ctypes.POINTER(ctypes.c_void_p))[0] = 202
+            return True
+
+        return SimpleNamespace(CertOpenStore=Mock(return_value=101),
+            CertAddEncodedCertificateToStore=Mock(side_effect=add),
+            CertDeleteCertificateFromStore=Mock(return_value=True), CertCloseStore=Mock(return_value=True))
+
+    def test_protocol_failure_removes_owned_current_user_certificate_and_closes_store(self):
+        helper = module("probe-windows-stdio-archive")
+        api = self.certificate_api()
+        with patch.object(helper, "crypt32", return_value=api), \
+             patch.object(helper.ssl, "PEM_cert_to_DER_cert", return_value=b"synthetic-certificate"), \
+             tempfile.TemporaryDirectory() as temporary:
+            certificate = Path(temporary) / "fixture.crt"
+            certificate.write_text("synthetic fixture certificate")
+            with self.assertRaisesRegex(ValueError, "protocol failure"):
+                with helper.trusted_certificate(certificate) as record:
+                    self.assertTrue(record["added"])
+                    self.assertFalse(record["removed"])
+                    raise ValueError("protocol failure")
+            self.assertTrue(record["removed"])
+            self.assertEqual(0x10000 | 0x4000, api.CertOpenStore.call_args.args[3])
+            self.assertEqual(1, api.CertAddEncodedCertificateToStore.call_args.args[4])
+            self.assertEqual(202, api.CertDeleteCertificateFromStore.call_args.args[0].value)
+            api.CertDeleteCertificateFromStore.assert_called_once()
+            api.CertCloseStore.assert_called_once_with(101, 0)
+
+    def test_failed_add_never_deletes_an_existing_certificate(self):
+        helper = module("probe-windows-stdio-archive")
+        api = self.certificate_api()
+        api.CertAddEncodedCertificateToStore.side_effect = None
+        api.CertAddEncodedCertificateToStore.return_value = False
+        with patch.object(helper, "crypt32", return_value=api), \
+             patch.object(helper, "windows_error", return_value=OSError("existing certificate")), \
+             patch.object(helper.ssl, "PEM_cert_to_DER_cert", return_value=b"synthetic-certificate"), \
+             tempfile.TemporaryDirectory() as temporary:
+            certificate = Path(temporary) / "fixture.crt"
+            certificate.write_text("synthetic fixture certificate")
+            with self.assertRaisesRegex(OSError, "existing certificate"):
+                with helper.trusted_certificate(certificate):
+                    self.fail("An existing certificate cannot become owned fixture state")
+            api.CertDeleteCertificateFromStore.assert_not_called()
+            api.CertCloseStore.assert_called_once_with(101, 0)
+
+    def test_certificate_cleanup_failure_cannot_be_counted_as_a_pass(self):
+        helper = module("probe-windows-stdio-archive")
+        api = self.certificate_api()
+        api.CertDeleteCertificateFromStore.return_value = False
+        with patch.object(helper, "crypt32", return_value=api), \
+             patch.object(helper, "windows_error", return_value=OSError("remove failed")), \
+             patch.object(helper.ssl, "PEM_cert_to_DER_cert", return_value=b"synthetic-certificate"), \
+             tempfile.TemporaryDirectory() as temporary:
+            certificate = Path(temporary) / "fixture.crt"
+            certificate.write_text("synthetic fixture certificate")
+            with self.assertRaisesRegex(OSError, "remove failed"):
+                with helper.trusted_certificate(certificate) as record:
+                    pass
+            self.assertTrue(record["added"])
+            self.assertFalse(record["removed"])
+            api.CertCloseStore.assert_called_once_with(101, 0)
+
+
 class WindowsMcpReleaseContractTests(unittest.TestCase):
     def test_release_requires_original_windows_archive_smoke_and_attestation(self):
         workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
@@ -3917,6 +3984,9 @@ class WindowsMcpReleaseContractTests(unittest.TestCase):
         self.assertIn("ref: ${{ inputs.source_ref }}", windows)
         self.assertIn("runs-on: windows-latest", windows)
         self.assertIn("-SourceRevision $env:PublicSourceRevision", windows)
+        self.assertIn("|| inputs.suite == 'stdio-assessment'", windows)
+        self.assertIn("tools/ci/probe-windows-stdio-archive.py --artifacts artifacts --source .", windows)
+        self.assertIn("TestResults/windows-mcp-protocol", windows)
         self.assertNotIn("continue-on-error", windows)
         self.assertNotIn("test-windows-mcp-archive", (ROOT / ".github/workflows/public-pr-validation.yml").read_text())
         smoke = (ROOT / "tools/ci/test-windows-mcp-archive.ps1").read_text()

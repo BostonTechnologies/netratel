@@ -488,7 +488,7 @@ jobs:
 
   windows-mcp:
     name: Manual Windows MCP archive and protected launcher
-    if: inputs.suite == 'windows-mcp' || inputs.suite == 'mcp-campaign'
+    if: inputs.suite == 'windows-mcp' || inputs.suite == 'mcp-campaign' || inputs.suite == 'stdio-assessment'
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
@@ -515,12 +515,20 @@ jobs:
         shell: pwsh
         run: |
           ./tools/ci/test-windows-mcp-archive.ps1 -ArchivePath "artifacts/netratel-mcp-stdio-$env:VERSION-win-x64.zip" -Version $env:VERSION -SourceRevision $env:PublicSourceRevision -ReceiptPath TestResults/windows-mcp-smoke.json
+      - name: Exercise the original Windows archive protocol and operations
+        shell: bash
+        run: |
+          python3 tools/ci/probe-windows-stdio-archive.py --artifacts artifacts --source . \
+            --work-root "$RUNNER_TEMP/windows-stdio-protocol" --evidence TestResults/windows-mcp-protocol \
+            --version "$VERSION" --source-revision "$PublicSourceRevision"
       - name: Retain sanitized Windows branch receipt
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-mcp-branch-smoke
-          path: TestResults/windows-mcp-smoke.json
+          path: |
+            TestResults/windows-mcp-smoke.json
+            TestResults/windows-mcp-protocol
           if-no-files-found: warn
           retention-days: 14
 
