@@ -93,15 +93,20 @@ else:
                   '    <PackageReference Include="Microsoft.Identity.Web.DownstreamApi" Version="4.16.1" />\n')
     imports = 'using Microsoft.Identity.Abstractions;\nusing Microsoft.Identity.Web;\nusing Microsoft.Identity.Web.Resource;\n'
     project_text = (root / project).read_text()
+    preservation = [item for item in ET.fromstring(project_text).iter('PackageReference')
+                    if item.get('Include') == 'Microsoft.IdentityModel.Protocols.OpenIdConnect']
     anchors = [line for line in project_text.splitlines(keepends=True) if line.startswith('    <PackageReference Include="NJsonSchema" ')]
     program_text = (root / program).read_text()
     anchor = 'using Microsoft.Extensions.Options;\n'
-    if (len(anchors) != 1 or 'Include="Microsoft.Identity.Web' in project_text or
+    if (len(anchors) != 1 or len(preservation) != 1 or preservation[0].get('Version') != '8.23.0' or
+            'Include="Microsoft.Identity.Web' in project_text or
             program_text.count(anchor) != 1 or any(line in program_text for line in imports.splitlines())):
         raise ValueError('Unexpected API Identity.Web reconstruction inputs')
     (control_root / project).write_text(project_text.replace(anchors[0], references + anchors[0]))
     (control_root / program).write_text(program_text.replace(anchor, anchor + imports))
     record['reconstructedPackageRoots'] = {'Microsoft.Identity.Web': '4.16.1', 'Microsoft.Identity.Web.DownstreamApi': '4.16.1'}
+    record['sharedPreservationPin'] = {'Microsoft.IdentityModel.Protocols.OpenIdConnect': '8.23.0'}
+    record['controlReconstruction'] += '; both arms share the new OIDC protocol preservation pin, so the control project is not the original project bytes'
     record['reconstructedUnusedUsings'] = imports.splitlines()
     record['sourceInputSha256'] = {arm: {str(path): hashlib.sha256((directory / path).read_bytes()).hexdigest()
                                        for path in (project, program)}

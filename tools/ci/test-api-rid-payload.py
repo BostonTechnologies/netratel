@@ -145,11 +145,16 @@ class ApiIdentityWebPayloadTests(unittest.TestCase):
         packages = {name: "4.16.1" if name in payload.IDENTITY_ROOTS else "1.2.3" for name in payload.IDENTITY_PACKAGES}
         packages["Duende.IdentityModel"] = "8.1.0"
         packages["Microsoft.IdentityModel.Tokens"] = "8.23.0"
+        packages["Microsoft.IdentityModel.Protocols.OpenIdConnect"] = "8.23.0"
+        packages["Microsoft.IdentityModel.Protocols"] = "8.23.0"
         target = {name + "/9.8.7": {"runtime": {name + ".dll": {}}} for name in projects}
         for name, version in packages.items():
             target[name + "/" + version] = {"runtime": {name + ".dll": {}}}
         target["NetRatel.API/9.8.7"]["dependencies"] = dict.fromkeys(payload.IDENTITY_ROOTS, "4.16.1") | {
-            "Duende.IdentityModel": "8.1.0", "Microsoft.IdentityModel.Tokens": "8.23.0"}
+            "Duende.IdentityModel": "8.1.0", "Microsoft.IdentityModel.Tokens": "8.23.0",
+            "Microsoft.IdentityModel.Protocols.OpenIdConnect": "8.23.0"}
+        target["Microsoft.IdentityModel.Protocols.OpenIdConnect/8.23.0"]["dependencies"] = {
+            "Microsoft.IdentityModel.Protocols": "8.23.0", "Microsoft.IdentityModel.Tokens": "8.23.0"}
         target["Microsoft.Identity.Web/4.16.1"]["dependencies"] = {
             name: version for name, version in packages.items() if name in payload.IDENTITY_PACKAGES - payload.IDENTITY_ROOTS}
         libraries = {key: {"type": "project" if key.startswith("NetRatel.") else "package", "sha512": "synthetic"} for key in target}
@@ -226,7 +231,7 @@ class ApiIdentityWebPayloadTests(unittest.TestCase):
         self.assertEqual(19, len(result["removedFiles"]))
         self.assertEqual(19, len(result["removedPackages"]))
         self.assertEqual(7, len(result["retainedPdbPaths"]))
-        self.assertEqual(2, result["retainedNoticeSectionsIdentical"])
+        self.assertEqual(4, result["retainedNoticeSectionsIdentical"])
 
     def test_missing_symbol_unrelated_dll_change_or_extra_file_fails(self):
         original = copy.deepcopy(self.inventories["candidate"])
@@ -246,12 +251,21 @@ class ApiIdentityWebPayloadTests(unittest.TestCase):
 
     def test_retained_dependency_version_edge_or_runtime_asset_change_fails(self):
         original = copy.deepcopy(self.deps["candidate"])
-        for operation in ("library", "edge", "asset"):
+        for operation in ("library", "version", "edge", "asset"):
             with self.subTest(operation=operation):
                 self.deps["candidate"] = copy.deepcopy(original)
                 target = self.deps["candidate"]["targets"][self.deps["candidate"]["runtimeTarget"]["name"]]
                 if operation == "library":
                     self.deps["candidate"]["libraries"]["Duende.IdentityModel/8.1.0"]["sha512"] = "changed"
+                elif operation == "version":
+                    # Real first-attempt regression: the obsolete package had
+                    # also supplied the higher active OIDC protocol version.
+                    for name in ("Microsoft.IdentityModel.Protocols.OpenIdConnect", "Microsoft.IdentityModel.Protocols"):
+                        libraries = self.deps["candidate"]["libraries"]
+                        libraries[name + "/8.19.2"] = libraries.pop(name + "/8.23.0")
+                        target[name + "/8.19.2"] = target.pop(name + "/8.23.0")
+                    target["NetRatel.API/9.8.7"]["dependencies"]["Microsoft.IdentityModel.Protocols.OpenIdConnect"] = "8.19.2"
+                    target["Microsoft.IdentityModel.Protocols.OpenIdConnect/8.19.2"]["dependencies"]["Microsoft.IdentityModel.Protocols"] = "8.19.2"
                 elif operation == "edge":
                     del target["NetRatel.API/9.8.7"]["dependencies"]["Duende.IdentityModel"]
                 else:
@@ -344,6 +358,7 @@ class ApiIdentityWebPayloadTests(unittest.TestCase):
         receipt = json.loads((results / "controlled-build.json").read_text())
         self.assertEqual("identity-web", receipt["comparison"])
         self.assertNotIn("diagnosticCompilerProperties", receipt)
+        self.assertEqual({"Microsoft.IdentityModel.Protocols.OpenIdConnect": "8.23.0"}, receipt["sharedPreservationPin"])
         for arm, directory in (("candidate", source), ("control", control)):
             for path in (project, program):
                 self.assertEqual(hashlib.sha256((directory / path).read_bytes()).hexdigest(), receipt["sourceInputSha256"][arm][str(path)])
