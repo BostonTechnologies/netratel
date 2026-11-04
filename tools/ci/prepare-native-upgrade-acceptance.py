@@ -14,6 +14,7 @@ import tarfile
 import tempfile
 
 TOOLS = Path(__file__).resolve().parent
+BROWSER_SHELL_FILES = tuple("src/NetRatel/NetRatel.Web/Components/Layout/" + name for name in ("MainLayout.razor", "NavMenu.razor"))
 
 
 def module(name):
@@ -166,7 +167,33 @@ def prepare_candidate(source, run_id, work, evidence, version, revision):
     return result
 
 
-def prepare_prior(version, work, evidence):
+def classify_prior_browser_shell(source, revision):
+    if not isinstance(revision, str) or not re.fullmatch(r"[a-f0-9]{40}", revision):
+        raise ValueError("Prior browser shell requires an exact authenticated public source")
+    contents, files = [], {}
+    for relative in BROWSER_SHELL_FILES:
+        try:
+            blob = subprocess.check_output(["git", "rev-parse", revision + ":" + relative], cwd=source,
+                text=True, stderr=subprocess.PIPE).strip()
+            data = subprocess.check_output(["git", "cat-file", "blob", blob], cwd=source, stderr=subprocess.PIPE)
+            contents.append(data.decode("utf-8-sig"))
+        except (subprocess.CalledProcessError, UnicodeDecodeError) as error:
+            raise ValueError("Prior browser shell source is missing or unreadable: " + relative) from error
+        files[relative] = {"gitBlobSha": blob, "sha256": hashlib.sha256(data).hexdigest()}
+    main, navigation = contents
+    modern_navigation = '<nav class="netratel-nav" aria-label="Primary navigation">' in navigation
+    modern = all(marker in main for marker in ('data-testid="navigation-toggle"', 'data-testid="global-search"',
+        'aria-label="@($"Search {ApplicationName}")"', '<span>Search @ApplicationName</span>', '_branding?.ApplicationName.Value')) and \
+        modern_navigation
+    legacy = all(marker in navigation for marker in ('class="netratel-nav-brand"', '<img src="@CompactLogoUrl"', 'alt="@ApplicationName"')) and \
+        'data-testid="navigation-toggle"' in main
+    if modern == legacy or (modern and any("netratel-nav-brand" in content for content in contents)) or (legacy and modern_navigation):
+        raise ValueError("Prior browser shell source is unknown or ambiguous; no layout fallback is permitted")
+    return {"sourceSha": revision, "layout": "public-name-search" if modern else "legacy-brand-image",
+        "expectCurrentShell": modern, "files": files}
+
+
+def prepare_prior(source, version, work, evidence):
     selected = module("select-prior-release").select(version)
     write_json(evidence / "selected-prior-release.json", selected)
     metadata = api("releases/tags/" + selected["tag"])
@@ -222,7 +249,9 @@ def prepare_prior(version, work, evidence):
             raise ValueError("Prior published image repository differs")
     write_json(evidence / "prior-publication.json", record)
     write_json(evidence / "prior-release-build.json", prior_run)
-    return selected
+    shell = classify_prior_browser_shell(source, revision)
+    write_json(evidence / "prior-browser-shell.json", shell)
+    return {**selected, "browserShell": shell}
 
 
 def build_source_images(source, revision, version, evidence):
@@ -277,11 +306,12 @@ def main():
     if sdk != json.loads((source / "global.json").read_text())["sdk"]["version"]:
         raise ValueError("Hosted SDK differs from the exact candidate source pin")
     candidate = prepare_candidate(source, args.run_id, work, evidence, version, revision)
-    prior = prepare_prior(version, work, evidence)
+    prior = prepare_prior(source, version, work, evidence)
     images = build_source_images(source, revision, version, evidence)
     values = {"NETRATEL_UPGRADE_CURRENT_CLIENT_ARCHIVE": candidate["clientArchive"], "NETRATEL_UPGRADE_COMPOSE_BUNDLE": candidate["composeBundle"],
         "NETRATEL_UPGRADE_PRIOR_VERSION": prior["tag"], "NETRATEL_NATIVE_UPGRADE_EVIDENCE": str(evidence),
         "NETRATEL_NATIVE_UPGRADE_INPUTS": str(evidence / "candidate-inputs.json"),
+        "NETRATEL_UPGRADE_PRIOR_EXPECT_CURRENT_SHELL": "true" if prior["browserShell"]["expectCurrentShell"] else "false",
         "NETRATEL_UPGRADE_SOURCE_ROOT": str(source), "NETRATEL_NATIVE_UPGRADE_TOOLING_SHA": tooling_revision}
     for role in ("api", "web", "migrations"):
         values["NETRATEL_UPGRADE_CURRENT_" + role.upper() + "_IMAGE"] = images[role]["reference"]
@@ -293,7 +323,7 @@ def main():
                 raise ValueError("Native acceptance environment value contains a newline")
             environment.write(key + "=" + value + "\n")
     write_json(evidence / "preparation.json", {"sourceSha": revision, "toolingSha": tooling_revision, "productVersion": version, "dotnetSdkVersion": sdk,
-        "candidateRunId": int(args.run_id), "candidateAttempt": candidate["attempt"], "priorTag": prior["tag"],
+        "candidateRunId": int(args.run_id), "candidateAttempt": candidate["attempt"], "priorTag": prior["tag"], "priorBrowserShell": prior["browserShell"],
         "shippingMode": "self-contained, single-file, untrimmed JIT", "candidatePublication": "not published", "sourceImages": images})
 
 

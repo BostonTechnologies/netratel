@@ -43,8 +43,10 @@ client_unit="netratel-client.service"
 updater_unit="netratel-update.service"
 native_services_installed=false
 native_acceptance_evidence="${NETRATEL_NATIVE_UPGRADE_EVIDENCE:-}"
+prior_expect_current_shell=false
 
 if [[ -n "$native_acceptance_evidence" ]]; then
+  prior_expect_current_shell="${NETRATEL_UPGRADE_PRIOR_EXPECT_CURRENT_SHELL:?set NETRATEL_UPGRADE_PRIOR_EXPECT_CURRENT_SHELL}"
   python3 - "${NETRATEL_NATIVE_UPGRADE_INPUTS:?set NETRATEL_NATIVE_UPGRADE_INPUTS}" "$harness_tools" <<'PY'
 import json, os, subprocess, sys
 from pathlib import Path
@@ -55,6 +57,12 @@ if candidate['sourceSha'] != source or tooling != os.environ['NETRATEL_NATIVE_UP
     raise ValueError('Native upgrade product or separately pinned tooling source differs')
 if candidate['publicationState'] != 'unpublished Actions candidate':
     raise ValueError('Native upgrade candidate must retain its actual Actions provenance')
+evidence = Path(os.environ['NETRATEL_NATIVE_UPGRADE_EVIDENCE'])
+shell = json.loads((evidence / 'prior-browser-shell.json').read_text())
+publication = json.loads((evidence / 'prior-publication.json').read_text())
+if (shell['sourceSha'] != publication['publicCommit'] or type(shell['expectCurrentShell']) is not bool or
+        str(shell['expectCurrentShell']).lower() != os.environ['NETRATEL_UPGRADE_PRIOR_EXPECT_CURRENT_SHELL']):
+    raise ValueError('Prior browser shell differs from its authenticated source classification')
 PY
 fi
 
@@ -154,7 +162,7 @@ SQL
   jq -n --argjson attempt "$detail" --argjson catalog "$release_response" --arg nonce "$nonce_hash" \
     '$attempt as $a | ($catalog | map(select(.id == $a.releaseId))) as $releases |
      if ($releases | length) != 1 then error("Ambiguous approved native release") else
-     {attemptId:$a.attemptId,releasePublicId:$releases[0].publicId,releaseId:$a.releaseId,
+     {attemptId:$a.attemptId,releasePublicId:($releases[0].releaseId // error("Missing approved native release UUID")),releaseId:$a.releaseId,
       tenantId:$a.tenantId,agentId:$a.agentId,targetVersion:$a.targetVersion,runtimeId:$a.runtimeId,
       state:$a.state,gatewayConnectionId:$a.gatewayConnectionId,gatewayConnectionEpoch:$a.gatewayConnectionEpoch,
       readmittedAtUtc:$a.readmittedAtUtc,confirmedAtUtc:$a.confirmedAtUtc,confirmationId:$a.confirmationId,
@@ -205,13 +213,9 @@ wait_for_web() {
 run_browser_oidc_smoke() {
   local expected_version="$1"
   local expect_current_shell="$2"
-  local proxy_address report_name
+  local report_name="$3"
+  local proxy_address
   proxy_address="$("${active_compose[@]}" port web-proxy 9444)"
-  if [[ "$expect_current_shell" == true ]]; then
-    report_name="upgraded-browser.trx"
-  else
-    report_name="previous-release-browser.trx"
-  fi
   rm -f "TestResults/postgresql-oidc/$report_name"
   if [[ -z "$chromium_nss_xdg_data_home" ]]; then
     prepare_chromium_nss_trust "$smoke_ca_certificate_path"
@@ -902,7 +906,7 @@ wait_for_migrations
 curl --retry 20 --retry-connrefused --fail --silent --show-error "http://127.0.0.1:${NETRATEL_OIDC_TEST_PORT}/isalive" >/dev/null
 wait_for_web
 stage="authenticating through the published ${legacy_version} OIDC browser journey"
-run_browser_oidc_smoke "$legacy_version" false
+run_browser_oidc_smoke "$legacy_version" "$prior_expect_current_shell" previous-release-browser.trx
 stage="recording an existing ${legacy_version} PostgreSQL OIDC principal fixture"
 seed_historical_oidc_principal
 legacy_principal_count="$(durable_oidc_principal_count)"
@@ -920,7 +924,7 @@ wait_for_migrations
 curl --retry 20 --retry-connrefused --fail --silent --show-error "http://127.0.0.1:${NETRATEL_OIDC_TEST_PORT}/isalive" >/dev/null
 wait_for_web
 stage="authenticating through the upgraded PostgreSQL/OIDC browser journey"
-run_browser_oidc_smoke "v$(python3 tools/ci/product-version.py)" true
+run_browser_oidc_smoke "v$(python3 tools/ci/product-version.py)" true upgraded-browser.trx
 [[ "$(durable_oidc_principal_count)" == "$legacy_principal_count" ]] || {
   echo "The upgraded PostgreSQL/OIDC stack did not retain the durable ${legacy_version} external principal set." >&2
   exit 1
