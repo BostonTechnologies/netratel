@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -49,11 +50,11 @@ internal sealed class LinuxLogSourceAdapter(ILinuxLogCommandRunner? commandRunne
         if (!OperatingSystem.IsLinux()) return [];
 
         var discovered = new List<LinuxSource>();
-        var journal = await _commands.RunAsync(
+        var journal = await TryDiscoverCommandAsync(
             "journalctl",
             ["--no-pager", "--quiet", "--output=json", "--lines=1"],
             cancellationToken).ConfigureAwait(false);
-        if (journal.ExitCode == 0)
+        if (journal is { ExitCode: 0 })
         {
             discovered.Add(Journal("linux-journal-system", "System Journal", []));
             discovered.Add(Journal("linux-journal-kernel", "Kernel", ["--dmesg"]));
@@ -118,11 +119,11 @@ internal sealed class LinuxLogSourceAdapter(ILinuxLogCommandRunner? commandRunne
 
     private async Task<IReadOnlyList<string>> DiscoverServiceUnitsAsync(CancellationToken cancellationToken)
     {
-        var units = await _commands.RunAsync(
+        var units = await TryDiscoverCommandAsync(
             "systemctl",
             ["list-units", "--type=service", "--state=running", "--no-legend", "--plain", "--no-pager"],
             cancellationToken).ConfigureAwait(false);
-        if (units.ExitCode != 0) return [];
+        if (units is not { ExitCode: 0 }) return [];
 
         return units.StandardOutput
             .Select(line => line.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault())
@@ -132,6 +133,22 @@ internal sealed class LinuxLogSourceAdapter(ILinuxLogCommandRunner? commandRunne
             .Take(MaximumServiceSources)
             .Cast<string>()
             .ToArray();
+    }
+
+    private async Task<LinuxCommandResult?> TryDiscoverCommandAsync(string executable, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            return await _commands.RunAsync(executable, arguments, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Win32Exception exception) when (exception.NativeErrorCode == 2)
+        {
+            // Containers and non-systemd hosts may lack these optional tools.
+            // Keep runtime/file logs available; other native failures stay visible.
+            cancellationToken.ThrowIfCancellationRequested();
+            return null;
+        }
     }
 
     private async Task<ClientLogPage> ReadJournalHistoryAsync(LinuxSource source, ClientLogQuery query, int pageSize, CancellationToken cancellationToken)

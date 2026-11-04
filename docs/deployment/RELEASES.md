@@ -299,7 +299,9 @@ These receipts are under `TestResults/mcp-http-image`.
 
 The profile then reuses source Compose and public HTTPS fixtures for a fresh local-account stack. It generates into the supplied persistent setup volume, approves that exact generation through the administrator protocol, executes the generated apply action, obtains a separate temporary personal MCP credential, and requires authenticated catalog plus a delegated read-only API status result. It also runs bare `dotnet NetRatel.Mcp.Http.dll setup` inside the serving container, saves the personal default to its separate client-data volume, then reloads and verifies that profile after recreation. It recreates tooling/runtime containers and repeats host verification with the equivalent `/mcp` input and unchanged generation fingerprint. The redacted receipts under `TestResults/http-host-setup` distinguish this headless generation/protocol/deployment smoke from the focused interactive terminal fixtures and later owner testing. The default deployment profile remains the existing `oidc` suite; neither profile enters required PR/main CI.
 
-The optional `api-image` diagnostic compares the unchanged default noble API image with the `chiseled-candidate` target on one linux/amd64 hosted runner. The candidate uses Microsoft's [noble-chiseled-extra base](https://github.com/dotnet/dotnet-docker/tree/main/src/aspnet/10.0/noble-chiseled-extra) and Canonical's [GSSAPI library slice](https://github.com/canonical/chisel-releases/blob/ubuntu-24.04/slices/libgssapi-krb5-2.yaml), including its dependency and copyright closure. Both arms must retain identical application/SBOM bytes and runtime patches. The selected probes cover actual GSSAPI application loading, nonroot ownership/writes, trust/globalization/timezone support, and disposable PostgreSQL/local upgrade with owner-only keys and graceful API shutdown. Published latest-completed Web/migrations/CLI inputs stay fixed; candidate images stay on the runner.
+The optional `api-image` diagnostic defaults to `api_comparison=base` and compares the default noble API image with the `chiseled-candidate` target on one linux/amd64 hosted runner. The candidate uses Microsoft's [noble-chiseled-extra base](https://github.com/dotnet/dotnet-docker/tree/main/src/aspnet/10.0/noble-chiseled-extra) and Canonical's [GSSAPI library slice](https://github.com/canonical/chisel-releases/blob/ubuntu-24.04/slices/libgssapi-krb5-2.yaml), including its dependency and copyright closure. Both arms must retain identical application/SBOM bytes and runtime patches. The selected probes cover actual GSSAPI application loading, nonroot ownership/writes, trust/globalization/timezone support, and disposable PostgreSQL/local upgrade with owner-only keys and graceful API shutdown. Published latest-completed Web/migrations/CLI inputs stay fixed; candidate images stay on the runner.
+
+Choose `api_comparison=identity-web` to measure the unused Microsoft Identity Web dependency removal. The control diagnostically reconstructs the former two `4.16.1` package references and three unused imports. Both arms share the new explicit `Microsoft.IdentityModel.Protocols.OpenIdConnect` `8.23.0` preservation pin, which prevents removing Identity Web from downgrading active OIDC protocol libraries. The control therefore does not restore the original project or published bytes. Both Linux x64 arms use the same resolved noble/SDK base digests, source/version identity and fixed diagnostic build timestamp. The comparison requires exactly 19 DLL/package removals, all seven PDB paths, unchanged retained dependencies and payload, and unchanged retained upstream notice sections. Only API assembly/debug metadata, its dependency graph and regenerated notices/SPDX may vary. The same native, PostgreSQL/upgrade and shutdown probes run before standalone and fixed-companion unique-layer measurements. Production JWT/OIDC handlers and the active Duende client-credentials implementation remain in place; symbol separation and trimming/AOT are not enabled.
 
 The diagnostic records standalone and five-image unique-layer exports normalized to gzip level 6 with zero mtime and no filename. These exclude config/manifests and are not registry transfer bytes. A smaller standalone image can increase the shared-stack union when companion images retain the original base. The default production target, framework-dependent untrimmed mode and release publication remain unchanged; OIDC/Hybrid, gateway/client recovery, OTEL and broader functional acceptance remain separate gates before adoption.
 
@@ -313,6 +315,34 @@ service-link rotation proof and its pinned released-peer selector are retired.
 An upgrade selects and records the latest other completed published release
 through the existing prior-release selector, reusing verified public archives
 and immutable image digests.
+
+For `native-client`, a nonblank `measurement_verify_run` selects a successful
+**Release build** run instead of publishing another Client. Use the exact product
+source from that run as `source_ref`; the workflow's separately pinned tooling
+checkout supplies the acceptance helpers. The two original Actions ZIPs bind
+the ordinary untrimmed Linux Client archive and Compose bundle by run, attempt,
+source, digest, checksum, manifest and SBOM. Current API/Web/migrations images
+are built from that product source through the existing hosted builder; the
+prior release keeps its completed-publication and immutable-image checks.
+
+From a terminal with authenticated GitHub CLI access to the repository:
+
+```bash
+gh workflow run integration-validation.yml --ref HARNESS_BRANCH \
+  -f suite=native-client -f source_ref=FULL_PRODUCT_SOURCE_SHA \
+  -f measurement_verify_run=SUCCESSFUL_RELEASE_BUILD_RUN_ID
+```
+
+This reuses the existing PostgreSQL/OIDC upgrade fixture, including its database
+and browser journeys. Its real host service must retain protected state, admit
+the server-approved update nonce, write confirmation/readiness, and reconnect
+with the same agent after an actual service restart. Receipts distinguish the
+product and tooling sources, original installed file bytes, service PID and
+invocation, fresh acknowledgement and gateway admission. Pending cooldown
+consumption is reported only when its existing log occurs naturally; a healthy
+update does not establish that recovery-only path. A blank run ID retains the
+existing native archive publish/integrity/PTY diagnostic. These optional checks
+do not change shipping modes or establish another platform's acceptance.
 
 When explicitly requested, each Compose smoke
 verifies an anonymous protected API request is rejected, performs an

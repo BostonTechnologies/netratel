@@ -65,7 +65,7 @@ builder.Services
     {
         ["netratel_config"] = typeof(ReadOnlyTools),
         ["netratel_remote_support_v2"] = typeof(MutationTools)
-    }, mcpInstance))
+    }, mcpInstance, NetRatelMcpStdioJsonContext.Default))
     .WithResources<NetRatelMcpCatalogResources>()
     .WithPrompts<NetRatelPrompts>();
 

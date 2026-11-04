@@ -216,7 +216,7 @@ public sealed class ExistingHttpHostSettings
     {
         if (OutboundConfigurationPath is not null) return OutboundConfigurationPath;
         if (_environmentOutboundConfiguration is null) return null;
-        var material = JsonSerializer.Serialize(_environmentOutboundConfiguration, AgentClientConfiguration.JsonOptions);
+        var material = JsonSerializer.Serialize(_environmentOutboundConfiguration, AgentClientConfiguration.JsonTypeInfo);
         if (Encoding.UTF8.GetByteCount(material) >= 65_536)
             throw new AgentClientValidationException("The existing outbound environment exceeds the protected configuration size limit. Keep its managed sources and review their size before setup; no identity was written.");
         var output = HttpHostingStorage.Resolve(outputDirectory);

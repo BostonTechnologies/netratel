@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import tarfile
 import unittest
 from unittest.mock import patch
 import sys
@@ -120,6 +121,68 @@ class PortableToolInputTests(unittest.TestCase):
 
         with patch.object(tool.prior_releases.subprocess, "run", side_effect=emit_utf8):
             self.assertEqual("release \u201d", tool.prior_releases.gh("api", "synthetic-release-json"))
+
+
+class ArtifactSetupInputTests(unittest.TestCase):
+    def test_terminal_guard_rejects_visibly_complete_credentials_split_by_ANSI_or_cursor_moves(self):
+        credential = "synthetic-private"
+        for raw in (b"synthetic-\x1b[0mprivate", b"\x1b[1;1Hsynthetic-\x1b[1;11Hprivate"):
+            with self.subTest(raw=raw):
+                self.assertNotIn(credential.encode(), raw)
+                self.assertIn(credential, tool.setup_fixture.screen(raw))
+                with self.assertRaisesRegex(ValueError, "rendered"):
+                    tool.setup_fixture.checked_terminal_screen(raw, credential)
+
+    def test_terminal_cursor_diffs_restore_spaces_and_replace_stale_prompts(self):
+        text = "Use existing authentication"
+        raw = b"\x1b[2J" + b"".join(f"\x1b[2;{column}H{letter}".encode()
+                                    for column, letter in enumerate(text, 1) if letter != " ")
+        self.assertIn(text, tool.setup_fixture.screen(raw))
+        replaced = raw + b"\x1b[2J\x1b[1;1HInstance Web URL"
+        self.assertIn("Instance Web URL", tool.setup_fixture.screen(replaced))
+        self.assertNotIn(text, tool.setup_fixture.screen(replaced))
+
+    def test_successful_exit_cannot_hide_changed_protected_files_modes_or_credential_output(self):
+        before = {name: {"sha256": "a" * 64, "bytes": 10, "mode": 0o600}
+                  for name in ("profile.json", "credential.secret")}
+        requests = [{"method": "GET", "path": "/api/integration-pairing/v1/capabilities", "authenticated": False, "tls": True},
+                    {"method": "GET", "path": "/api/v1/auth/ai-agent/status", "authenticated": True, "tls": True}]
+        tool.setup_fixture.validate_preservation(before, before, requests, b"saved", "synthetic-private")
+        for changes in ({"sha256": "b" * 64}, {"mode": 0o644}):
+            after = {**before, "profile.json": {**before["profile.json"], **changes}}
+            with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, "protected"):
+                tool.setup_fixture.validate_preservation(before, after, requests, b"saved", "synthetic-private")
+        with self.assertRaisesRegex(ValueError, "disclosed"):
+            tool.setup_fixture.validate_preservation(before, before, requests, b"synthetic-private", "synthetic-private")
+        with self.assertRaisesRegex(ValueError, "unexpected"):
+            tool.setup_fixture.validate_preservation(before, before, requests + [{"method": "POST"}], b"saved", "synthetic-private")
+        with self.assertRaisesRegex(ValueError, "unexpected"):
+            tool.setup_fixture.validate_preservation(before, before, [{**item, "tls": False} for item in requests], b"saved", "synthetic-private")
+
+    def test_runtime_selection_requires_unique_actual_hostfxr_framework_and_root(self):
+        trace = "Using dotnet root path [C:\\dotnet]\nResolved fxr [C:\\dotnet\\host\\fxr\\10.0.14\\hostfxr.dll]...\nChose FX version [C:\\dotnet\\shared\\Microsoft.NETCore.App\\10.0.14]\n"
+        self.assertEqual("C:\\dotnet\\host\\fxr\\10.0.14\\hostfxr.dll", tool.selected_runtime_paths(trace)["hostfxr"])
+        for modified in (trace.replace("Resolved fxr", "not a selection"),
+                         trace + "Chose FX version [C:\\dotnet\\shared\\Microsoft.NETCore.App\\10.0.15]\n"):
+            with self.assertRaisesRegex(ValueError, "missing/ambiguous"):
+                tool.selected_runtime_paths(modified)
+
+    def test_archive_extraction_rejects_traversal_duplicate_paths_and_links(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for variation in ("traversal", "duplicate", "link"):
+                with self.subTest(variation=variation):
+                    path = root / (variation + ".tar.gz")
+                    with tarfile.open(path, "w:gz") as archive:
+                        member = tarfile.TarInfo("../outside" if variation == "traversal" else "payload")
+                        if variation == "link":
+                            member.type = tarfile.SYMTYPE
+                            member.linkname = "/outside"
+                        archive.addfile(member)
+                        if variation == "duplicate":
+                            archive.addfile(member)
+                    with self.assertRaisesRegex(ValueError, "unsafe, duplicate or special"):
+                        tool.safe_tar_extract(path, root / "expanded")
 
 
 if __name__ == "__main__":

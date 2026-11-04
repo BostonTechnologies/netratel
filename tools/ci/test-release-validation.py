@@ -21,7 +21,8 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+import uuid
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 import hashlib
 import tarfile
@@ -2021,6 +2022,269 @@ class RuntimeSelectorRetirementTests(unittest.TestCase):
         self.assertEqual([], existing, "Known retired runtime implementation paths must remain deleted.")
 
 
+@unittest.skipUnless(sys.platform == "linux", "Native service acceptance is Linux-only")
+class NativeUpgradeAcceptanceTests(unittest.TestCase):
+    def setUp(self):
+        self.prepare = module("prepare-native-upgrade-acceptance")
+        self.service = module("verify-native-upgrade-service")
+        temporary = tempfile.TemporaryDirectory(prefix="netratel-native-upgrade-contract-")
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        self.source = "a" * 40
+        self.run = {"id": 123, "status": "completed", "conclusion": "success", "head_sha": self.source,
+            "path": ".github/workflows/release-build.yml", "event": "workflow_dispatch", "run_attempt": 1,
+            "repository": {"full_name": "BostonTechnologies/netratel"}, "head_repository": {"full_name": "BostonTechnologies/netratel"},
+            "run_started_at": "2026-11-04T12:00:00Z", "updated_at": "2026-11-04T12:05:00Z"}
+        self.artifact = {"id": 456, "name": "candidate", "expired": False, "digest": "sha256:" + "b" * 64,
+            "size_in_bytes": 100, "created_at": "2026-11-04T12:04:00Z", "workflow_run": {"id": 123, "head_sha": self.source}}
+
+    def test_candidate_run_and_artifact_reject_wrong_source_forks_failures_and_old_uploads(self):
+        self.prepare.validate_run(self.run, 123, self.source)
+        for changes in ({"head_sha": "b" * 40}, {"conclusion": "failure"}, {"status": "in_progress"},
+                {"path": ".github/workflows/public-pr-validation.yml"}, {"head_repository": {"full_name": "other/repo"}},
+                {"event": "pull_request"}, {"run_attempt": 0}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.prepare.validate_run({**self.run, **changes}, 123, self.source)
+        listing = {"total_count": 1, "artifacts": [self.artifact]}
+        self.assertEqual(self.artifact, self.prepare.select_artifact(listing, "candidate", self.run))
+        for changes in ({"expired": True}, {"digest": "missing"}, {"created_at": "2026-11-03T12:04:00Z"},
+                {"workflow_run": {"id": 123, "head_sha": "b" * 40}}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.prepare.select_artifact({"total_count": 1, "artifacts": [{**self.artifact, **changes}]}, "candidate", self.run)
+        for bad in ({"total_count": 2, "artifacts": [self.artifact]}, {"total_count": 2, "artifacts": [self.artifact, self.artifact]}):
+            with self.assertRaises(ValueError):
+                self.prepare.select_artifact(bad, "candidate", self.run)
+
+    def test_original_checksum_inventory_rejects_changed_bytes_duplicates_and_extra_paths(self):
+        data = self.directory / "archive.tar.gz"
+        data.write_bytes(b"original synthetic archive")
+        sums = self.directory / "SHA256SUMS"
+        line = hashlib.sha256(data.read_bytes()).hexdigest() + "  " + data.name + "\n"
+        sums.write_text(line)
+        self.assertEqual({data.name: hashlib.sha256(data.read_bytes()).hexdigest()}, self.prepare.verify_checksums(self.directory, [data.name]))
+        for body in (line + line, line.replace(data.name, "../archive.tar.gz"), line.replace(data.name, "missing")):
+            sums.write_text(body)
+            with self.assertRaises(ValueError):
+                self.prepare.verify_checksums(self.directory, [data.name])
+        sums.write_text(line)
+        data.write_bytes(b"changed")
+        with self.assertRaises(ValueError):
+            self.prepare.verify_checksums(self.directory, [data.name])
+
+    def client_archive(self, path, source=None, machine=62):
+        manifest = {"schema": "netratel.client.manifest.v1", "product": "NetRatel.Client", "version": "1.2.3",
+            "runtimeId": "linux-x64", "commitSha": source or self.source, "executable": "NetRatel.Client", "selfContained": True, "singleFile": True}
+        header = bytearray(64); header[:6] = b"\x7fELF\x02\x01"; header[18:20] = machine.to_bytes(2, "little")
+        with tarfile.open(path, "w:gz") as archive:
+            for name, data in (("netratel-client-manifest.json", json.dumps(manifest).encode()), ("NetRatel.Client", bytes(header))):
+                entry = tarfile.TarInfo("netratel-client-linux-x64/" + name); entry.size = len(data)
+                archive.addfile(entry, io.BytesIO(data))
+
+    def test_actual_client_header_and_same_version_wrong_source_are_rejected(self):
+        archive = self.directory / "client.tar.gz"
+        self.client_archive(archive)
+        self.assertEqual(self.source, self.prepare.inspect_client(archive, "1.2.3", self.source)["manifest"]["commitSha"])
+        for source, machine in (("b" * 40, 62), (self.source, 183)):
+            self.client_archive(archive, source, machine)
+            with self.assertRaises(ValueError):
+                self.prepare.inspect_client(archive, "1.2.3", self.source)
+
+    def test_preparation_uses_original_two_zip_digests_and_product_checkout_verifiers(self):
+        product = self.directory / "product"; product.mkdir(); (product / "release").mkdir()
+        template = {"schemaVersion": 1, "product": "NetRatel", "components": []}
+        (product / "release/release-manifest.json").write_text(json.dumps(template))
+        archives, metadata = {}, []
+        for index, (kind, artifact_name) in enumerate((("client", "netratel-client-1.2.3-linux-x64"), ("package", "netratel-1.2.3-linux-x64"))):
+            contents = self.directory / kind; contents.mkdir()
+            if kind == "client":
+                self.client_archive(contents / "netratel-client-1.2.3-linux-x64.tar.gz")
+                (contents / "netratel-client-1.2.3-linux-x64.spdx.json").write_text("{}")
+            else:
+                for name in ("netratel-cli-1.2.3-linux-x64.tar.gz", "NetRatel.Cli.1.2.3.nupkg", "netratel-mcp-stdio-1.2.3-linux-x64.tar.gz", "netratel-1.2.3.spdx.json"):
+                    (contents / name).write_bytes(b"synthetic contract input")
+                with tarfile.open(contents / "netratel-compose-1.2.3.tar.gz", "w:gz") as bundle:
+                    data = json.dumps({**template, "version": "1.2.3", "prerelease": False}).encode()
+                    entry = tarfile.TarInfo("./release-manifest.json"); entry.size = len(data); bundle.addfile(entry, io.BytesIO(data))
+            (contents / "SHA256SUMS").write_text("".join(hashlib.sha256(p.read_bytes()).hexdigest() + "  " + p.name + "\n" for p in contents.iterdir()))
+            archive = self.directory / (kind + ".zip")
+            with zipfile.ZipFile(archive, "w") as zipped:
+                for path in contents.iterdir(): zipped.write(path, path.name)
+            artifact_id = 456 + index
+            archives[artifact_id] = archive
+            metadata.append({**self.artifact, "id": artifact_id, "name": artifact_name, "size_in_bytes": archive.stat().st_size,
+                "digest": "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()})
+        def api(endpoint):
+            return {"total_count": 2, "artifacts": metadata} if endpoint.endswith("artifacts?per_page=100") else self.run
+        properties = {"Properties": {"PublishTrimmed": "false", "PublishAot": "false", "PublishSingleFile": "true", "SelfContained": "true", "RuntimeIdentifier": "linux-x64"}}
+        def download(artifact_id, path): shutil.copyfile(archives[artifact_id], path)
+        for corrupt in (False, True):
+            work = self.directory / ("bad" if corrupt else "good"); work.mkdir()
+            evidence = work / "evidence"; evidence.mkdir()
+            if corrupt: metadata[0]["digest"] = "sha256:" + "0" * 64
+            with patch.object(self.prepare, "api", side_effect=api), patch.object(self.prepare.promotion, "download_artifact", side_effect=download), \
+                    patch.object(self.prepare.subprocess, "run") as run, patch.object(self.prepare, "command", return_value=json.dumps(properties)):
+                if corrupt:
+                    with self.assertRaisesRegex(ValueError, "ZIP size or digest"):
+                        self.prepare.prepare_candidate(product, "123", work, evidence, "1.2.3", self.source)
+                else:
+                    receipt = self.prepare.prepare_candidate(product, "123", work, evidence, "1.2.3", self.source)
+                    self.assertEqual("unpublished Actions candidate", receipt["publicationState"])
+                    self.assertEqual(2, len(receipt["artifacts"]))
+                    self.assertEqual(2, run.call_count)
+                    self.assertEqual(str(product / "tools/ci/verify-client-release-artifact.sh"), run.call_args_list[0].args[0][1])
+                    self.assertIn("--integrity-only", run.call_args_list[0].args[0])
+
+    def test_prior_keeps_completed_publication_tag_build_and_public_asset_digest_gates(self):
+        version = "1.2.2"
+        images = {name: self.prepare.promotion.IMAGE_REPOSITORIES[name] + "@sha256:" + "c" * 64 for name in self.prepare.promotion.COMPONENTS}
+        selected = {"tag": "v" + version, "images": images}
+        names = self.prepare.promotion.required_artifacts(version)
+        files = {name: {"artifact": "shipping", "artifactId": 456, "artifactDigest": "sha256:" + "d" * 64,
+            "path": name, "sha256": "a" * 64} for name in names}
+        files[f"netratel-compose-{version}.tar.gz"]["sha256"] = "e" * 64
+        record = {"productVersion": version, "publicCommit": self.source, "images": images, "verification": {"state": "complete"},
+            "artifacts": {name: "a" * 64 for name in names}, "inputReceipt": {"repository": "BostonTechnologies/netratel", "workflow": ".github/workflows/release-build.yml",
+                "runId": 123, "attempt": 1, "headSha": self.source, "productVersion": version, "files": files},
+            "derivedBundle": {"sourceSha256": "e" * 64, "finalSha256": "a" * 64, "transformation": "Inserted verified immutable image digests into .env.images.example."}}
+        for case in ("valid", "incomplete", "tag", "asset", "input", "derived-source", "derived-final", "derived-transform"):
+            body = copy.deepcopy(record)
+            if case == "incomplete": body["verification"]["state"] = "candidate"
+            if case == "input": body["inputReceipt"]["files"][names[0]]["sha256"] = "f" * 64
+            if case == "derived-source": body["derivedBundle"]["sourceSha256"] = "f" * 64
+            if case == "derived-final": body["derivedBundle"]["finalSha256"] = "f" * 64
+            if case == "derived-transform": body["derivedBundle"]["transformation"] = "An unchecked change"
+            publication = json.dumps(body).encode()
+            sums = ("".join("a" * 64 + "  " + name + "\n" for name in names) + hashlib.sha256(publication).hexdigest() + "  publication.json\n").encode()
+            downloads = {"publication.json": publication, "SHA256SUMS": sums}
+            metadata = {"draft": False, "published_at": "2026-11-04T11:00:00Z", "tag_name": selected["tag"],
+                "assets": [{"name": name, "state": "uploaded", "digest": "sha256:" + "a" * 64, "size": 123} for name in names] +
+                    [{"name": name, "state": "uploaded", "digest": "sha256:" + hashlib.sha256(data).hexdigest(), "size": len(data)} for name, data in downloads.items()]}
+            if case == "asset": metadata["assets"][0]["digest"] = "sha256:" + "b" * 64
+            def api(endpoint):
+                if endpoint.startswith("releases/"): return metadata
+                if endpoint.startswith("commits/"): return {"sha": "b" * 40 if case == "tag" else self.source}
+                return {**self.run, "event": "push", "head_branch": selected["tag"]}
+            def download(tag, name, asset, directory):
+                (directory / name).write_bytes(downloads[name])
+            def loaded(name):
+                return SimpleNamespace(select=lambda current: selected) if name == "select-prior-release" else SimpleNamespace(checked_download=download)
+            work = self.directory / ("prior-" + case); work.mkdir(); evidence = work / "evidence"; evidence.mkdir()
+            with patch.object(self.prepare, "api", side_effect=api), patch.object(self.prepare, "module", side_effect=loaded):
+                if case == "valid": self.assertEqual(selected, self.prepare.prepare_prior("1.2.3", work, evidence))
+                else:
+                    with self.subTest(case=case), self.assertRaises(ValueError): self.prepare.prepare_prior("1.2.3", work, evidence)
+
+    def test_source_image_commands_use_real_dockerfiles_from_the_pinned_git_archive_without_building(self):
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        dockerfiles = module("record-stack-image-comparison").DOCKERFILES
+        actual_run = subprocess.run
+        built = []
+        def run(arguments, **kwargs):
+            if arguments[0] == "tar":
+                return actual_run(arguments, **kwargs)
+            self.assertEqual(["bash", "tools/ci/build-public-image.sh"], arguments[:2])
+            role = ("api", "web", "migrations")[len(built)]
+            dockerfile = arguments[arguments.index("--dockerfile") + 1]
+            staged = Path(kwargs["cwd"]) / dockerfile
+            self.assertTrue(staged.is_file(), "Builder must receive an existing Dockerfile in the actual staged source")
+            self.assertEqual(dockerfiles[role], dockerfile)
+            self.assertEqual(actual_run(["git", "show", revision + ":" + dockerfile], cwd=ROOT, check=True, stdout=subprocess.PIPE).stdout, staged.read_bytes())
+            self.assertEqual(revision, arguments[arguments.index("--revision") + 1])
+            built.append(role)
+            return subprocess.CompletedProcess(arguments, 0)
+        image = [{"Id": "sha256:" + "a" * 64, "Config": {"Labels": {
+            "org.opencontainers.image.revision": revision, "org.opencontainers.image.version": "1.2.3"}}}]
+        with patch.object(self.prepare.subprocess, "run", side_effect=run), patch.object(self.prepare, "command", return_value=json.dumps(image)):
+            roles = self.prepare.build_source_images(ROOT, revision, "1.2.3", self.directory)
+        self.assertEqual(["api", "web", "migrations"], built)
+        self.assertEqual(set(built), set(roles))
+
+    def service_fixture(self):
+        properties = {"ActiveState": "active", "SubState": "running", "FragmentPath": "/etc/systemd/system/netratel-client.service",
+            "Restart": "always", "RestartUSec": "30s", "RestartPreventExitStatus": "78", "StartLimitIntervalUSec": "0", "MainPID": "42", "InvocationID": "c" * 32}
+        process = {"pid": 42, "uid": 10001, "invocationId": "c" * 32, "executable": "/synthetic/client", "arguments": ["--service"], "mode": "Service", "container": False}
+        return properties, process
+
+    def test_service_requires_actual_mainpid_invocation_owner_executable_and_normal_enablement(self):
+        properties, process = self.service_fixture()
+        self.service.validate_service(properties, process, "/synthetic/client", 10001)
+        for changes in ({"pid": 41}, {"uid": 0}, {"invocationId": "d" * 32}, {"executable": "/another/client"},
+                {"arguments": ["--service", "--api", "http://example.test"]}, {"container": True}, {"mode": "Disabled"}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.service.validate_service(properties, {**process, **changes}, "/synthetic/client", 10001)
+
+    def test_existing_systemctl_wrapper_allows_only_the_exact_owned_service_readback(self):
+        source = (ROOT / "tools/ci/smoke-postgresql-oidc-upgrade.sh").read_text()
+        wrapper = source.split('  cat > "$native_directory/bin/systemctl" <<\'SH\'\n', 1)[1].split('\nSH\n', 1)[0]
+        native = self.directory / "native-systemctl"
+        native.write_text("#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n"); native.chmod(0o755)
+        executable = self.directory / "systemctl"
+        executable.write_text(wrapper.replace("/usr/bin/systemctl", shlex.quote(str(native)))); executable.chmod(0o755)
+        properties = "--property=MainPID,FragmentPath,DropInPaths,ExecStart,Restart,RestartUSec,StartLimitIntervalUSec,RestartPreventExitStatus"
+        allowed = subprocess.run([str(executable), "show", "netratel-client.service", properties], capture_output=True, text=True)
+        self.assertEqual(0, allowed.returncode, allowed.stderr)
+        self.assertEqual(["show", "netratel-client.service", properties], json.loads(allowed.stdout))
+        for arguments in (("show", "another.service", properties), ("show", "netratel-client.service", "--property=Environment"), ("stop", "netratel-client.service")):
+            denied = subprocess.run([str(executable), *arguments], capture_output=True, text=True)
+            self.assertNotEqual(0, denied.returncode)
+            self.assertEqual("", denied.stdout)
+
+    def activation_fixture(self):
+        attempt, release, confirmation = "11111111-2222-4333-8444-555555555555", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "99999999-8888-4777-8666-555555555555"
+        nonce = "1" * 64; now = "2026-11-04T12:04:00Z"
+        server = {"attemptId": attempt, "releasePublicId": release, "confirmationId": confirmation, "state": "Accepted", "targetVersion": "1.2.3", "runtimeId": "linux-x64",
+            "readmittedAtUtc": now, "confirmedAtUtc": now, "admissionNonceHash": hashlib.sha256(nonce.encode()).hexdigest(), "gatewayConnectionId": "bbbbbbbb-2222-4333-8444-555555555555", "gatewayConnectionEpoch": 2, "tenantId": 1, "agentId": "cccccccc-2222-4333-8444-555555555555"}
+        request = {"schema": "netratel.update.request.v2", "attemptId": attempt, "releaseId": release, "toVersion": "1.2.3", "runtimeId": "linux-x64", "admissionNonce": nonce}
+        ready = {"schema": "netratel.update.ready.v2", "attemptId": attempt, "releaseId": release, "version": "1.2.3", "confirmationId": confirmation}
+        activation = {"schema": "netratel.update.activation.v1", "attemptId": attempt, "releaseId": release, "targetVersion": "1.2.3", "currentVersion": "1.2.3", "runtimeId": "linux-x64", "processId": 42, "connectionEpoch": 2}
+        activation.update({name: now for name in ("requestLoadedAtUtc", "activationContextAttachedAtUtc", "connectAcceptedAtUtc", "firstHeartbeatSentAtUtc", "heartbeatAcceptedAtUtc", "confirmationReceivedAtUtc", "readyMarkerWrittenAtUtc")})
+        return request, ready, activation, server
+
+    def test_version_only_telemetry_wrong_nonce_confirmation_or_process_cannot_pass_activation(self):
+        request, ready, activation, server = self.activation_fixture()
+        result = self.service.validate_activation(request, ready, activation, server, "1.2.3", 42)
+        self.assertNotIn("admissionNonce", result)
+        for changed in ({"admissionNonce": "2" * 64}, {"attemptId": "22222222-2222-4333-8444-555555555555"}):
+            with self.assertRaises(ValueError): self.service.validate_activation({**request, **changed}, ready, activation, server, "1.2.3", 42)
+        for changed in ({"processId": 41}, {"connectionEpoch": 1}, {"activationContextAttachedAtUtc": None}, {"confirmationReceivedAtUtc": None}):
+            with self.assertRaises(ValueError): self.service.validate_activation(request, ready, {**activation, **changed}, server, "1.2.3", 42)
+        with self.assertRaises(ValueError): self.service.validate_activation(request, ready, activation, {**server, "gatewayConnectionEpoch": 0}, "1.2.3", 42)
+        with self.assertRaises(ValueError): self.service.validate_activation(request, {**ready, "confirmationId": str(uuid.UUID(int=0))}, activation, server, "1.2.3", 42)
+
+    def test_restart_requires_new_process_ack_admission_and_retained_identity_bytes(self):
+        request, ready, activation, server = self.activation_fixture()
+        proof = self.service.validate_activation(request, ready, activation, server, "1.2.3", 42)
+        old = {"pid": 42, "invocationId": "c" * 32, "acknowledgedAtUtc": "2026-11-04T12:04:00Z", "activation": proof,
+            "executableSha256": "a" * 64, "files": {"request.json": {"sha256": "b" * 64}}, "policyRevision": 9}
+        new = {**copy.deepcopy(old), "pid": 43, "invocationId": "d" * 32, "acknowledgedAtUtc": "2026-11-04T12:05:00Z"}
+        new["activation"].update(gatewayConnectionEpoch=3, gatewayConnectionId="fresh")
+        self.service.validate_restart(old, new)
+        for changes in ({"pid": 42}, {"invocationId": "c" * 32}, {"acknowledgedAtUtc": old["acknowledgedAtUtc"]}, {"policyRevision": 8}, {"executableSha256": "c" * 64}):
+            with self.assertRaises(ValueError): self.service.validate_restart(old, {**new, **changes})
+        changed = copy.deepcopy(new); changed["activation"]["tenantId"] = 2
+        with self.assertRaises(ValueError): self.service.validate_restart(old, changed)
+
+    def test_late_old_process_ack_after_old_snapshot_cannot_pass_post_restart_return_boundary(self):
+        old_capture = "2026-11-04T12:04:00.100000Z"
+        late_old_ack = "2026-11-04T12:04:00.900000Z"
+        after_restart_return = "2026-11-04T12:04:01.000001Z"
+        self.assertGreater(self.service.utc(late_old_ack), self.service.utc(old_capture))
+        with self.assertRaises(ValueError):
+            self.service.validate_acknowledgement({"version": "1.2.3", "acknowledgedAtUtc": late_old_ack}, "1.2.3", after_restart_return)
+        self.service.validate_acknowledgement({"version": "1.2.3", "acknowledgedAtUtc": "2026-11-04T12:04:01.000002Z"}, "1.2.3", after_restart_return)
+
+    def test_durable_state_protection_rejects_symlinks_wrong_modes_and_writable_ancestors(self):
+        state = self.directory / "state"; state.mkdir(mode=0o700)
+        path = state / "presence.json"; path.write_text("{}"); path.chmod(0o600)
+        self.assertEqual("0600", self.service.protected_file(path, os.getuid())["mode"])
+        path.chmod(0o640)
+        with self.assertRaises(ValueError): self.service.protected_file(path, os.getuid())
+        path.chmod(0o600); alias = state / "alias.json"; alias.symlink_to(path)
+        with self.assertRaises(ValueError): self.service.protected_file(alias, os.getuid())
+        state.chmod(0o777)
+        with self.assertRaises(ValueError): self.service.protected_file(path, os.getuid())
+
+
 class OidcUpgradeChannelTests(unittest.TestCase):
     script_path = ROOT / "tools/ci/smoke-postgresql-oidc-upgrade.sh"
 
@@ -2654,6 +2918,123 @@ class ClientMeasurementHelperTests(unittest.TestCase):
 class ClientArchiveAcceptanceTests(unittest.TestCase):
     def setUp(self):
         self.helper = module("prepare-client-archive-acceptance")
+
+    def test_runtime_log_guards_require_an_available_source_and_bounded_real_history(self):
+        source = (ROOT / "tools/ci/smoke-oidc-compose.sh").read_text()
+        descriptor = {"sourceId": "netratel-runtime", "kind": "runtime", "platform": "linux", "available": True,
+                      "unavailableReason": None, "supportsLive": True, "supportsHistory": True, "supportsPaging": True}
+        record = {"sourceId": "netratel-runtime", "category": "Gateway", "prefix": "Gateway", "sequence": 1,
+                  "cursor": "1", "timestampUtc": "2030-01-01T00:00:00Z",
+                  "message": "Presence admitted. connectionEpoch=41, heartbeatInterval=15s.", "truncated": False}
+        page = {"records": [record], "errorCode": None, "resyncRequired": False, "hasMore": False, "droppedRecordCount": 0}
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary) / "response.json"
+
+            def check(name, value, *arguments):
+                body = re.search(r"^" + name + r"\(\) \{\n.*?^\}", source, re.MULTILINE | re.DOTALL).group(0)
+                fixture.write_text(json.dumps(value))
+                if name == "runtime_log_history_valid":
+                    arguments = (*arguments, "41")
+                return subprocess.run(["bash", "-c", body + '\n' + name + ' "$@"', "fixture", str(fixture), *arguments],
+                                      capture_output=True, text=True).returncode
+
+            self.assertEqual(0, check("runtime_log_source_available", [descriptor]))
+            for value in ([], {}, [descriptor, descriptor], ["netratel-runtime"]):
+                self.assertNotEqual(0, check("runtime_log_source_available", value))
+            for key, value in (("sourceId", "other"), ("kind", "journal"), ("platform", "windows"), ("available", False),
+                               ("available", "true"), ("unavailableReason", "denied"), ("supportsHistory", False),
+                               ("supportsPaging", False), ("supportsLive", False), ("supportsLive", "true")):
+                self.assertNotEqual(0, check("runtime_log_source_available", [{**descriptor, key: value}]))
+            self.assertEqual(0, check("runtime_log_history_valid", page, "1"))
+            self.assertEqual(0, check("runtime_log_history_valid", {**page, "records": []}, "0"))
+            self.assertNotEqual(0, check("runtime_log_history_valid", {**page, "records": []}, "1"))
+            for key, value in (("sourceId", "other"), ("category", "Other"), ("prefix", "Other"), ("sequence", "1"),
+                               ("sequence", 0), ("sequence", 0.5), ("sequence", True), ("cursor", ""), ("timestampUtc", None),
+                               ("message", "unrelated"), ("message", "Presence admitted. connectionEpoch=40, heartbeatInterval=15s."),
+                               ("message", None), ("truncated", True)):
+                self.assertNotEqual(0, check("runtime_log_history_valid", {**page, "records": [{**record, key: value}]}, "1"))
+            for key, value in (("records", {}), ("records", None), ("records", [record] * 101), ("errorCode", "source_unavailable"),
+                               ("resyncRequired", True), ("hasMore", "false"), ("droppedRecordCount", -1),
+                               ("droppedRecordCount", "0"), ("droppedRecordCount", 0.5), ("droppedRecordCount", True)):
+                self.assertNotEqual(0, check("runtime_log_history_valid", {**page, key: value}, "0"))
+
+    def test_runtime_log_probe_preserves_http_transport_empty_page_and_malformed_failures(self):
+        source = (ROOT / "tools/ci/smoke-oidc-compose.sh").read_text()
+        functions = '\n'.join(re.search(r"^" + name + r"\(\) \{\n.*?^\}", source, re.MULTILINE | re.DOTALL).group(0)
+                              for name in ("runtime_log_source_available", "runtime_log_history_valid", "verify_runtime_log_acceptance"))
+        descriptor = {"sourceId": "netratel-runtime", "kind": "runtime", "platform": "linux", "available": True,
+                      "unavailableReason": None, "supportsLive": True, "supportsHistory": True, "supportsPaging": True}
+        record = {"sourceId": "netratel-runtime", "category": "Gateway", "prefix": "Gateway", "sequence": 1,
+                  "cursor": "1", "timestampUtc": "2030-01-01T00:00:00Z",
+                  "message": "Presence admitted. connectionEpoch=41, heartbeatInterval=15s.", "truncated": False}
+        page = {"records": [record], "errorCode": None, "resyncRequired": False, "hasMore": False, "droppedRecordCount": 0}
+        mocks = r'''
+curl() {
+  local url="${@: -1}" output=
+  printf '%s\n' "$url" >> "$FIXTURE_DIR/calls"
+  if [[ "$url" == */sources ]]; then
+    while (( $# )); do
+      if [[ "$1" == --output ]]; then output="$2"; fi
+      shift
+    done
+    cat "$FIXTURE_DIR/sources.json" > "$output"
+    [[ "$FIXTURE_CASE" != transport ]] || return 7
+    if [[ "$FIXTURE_CASE" == admission-wait && "$(wc -l < "$FIXTURE_DIR/calls")" == 1 ]]; then printf 404; else printf '%s' "$SOURCE_STATUS"; fi
+  else
+    [[ "$FIXTURE_CASE" != history-http ]] || return 22
+    cat "$FIXTURE_DIR/history.json"
+  fi
+}
+sleep() { :; }
+docker() {
+  [[ "$FIXTURE_CASE" != container-read ]] || return 42
+  printf '%s\n' '[Gateway] Presence admitted. connectionEpoch=41, heartbeatInterval=15s.'
+}
+record_client_acceptance() { printf '%s\n' "$1" >> "$FIXTURE_DIR/stages"; }
+'''
+        agent = "11111111-1111-1111-1111-111111111111"
+        for case, status, expected in (("success", "200", 0), ("admission-wait", "200", 0), ("unauthorized", "401", 1),
+                                       ("forbidden", "403", 1), ("not-ready", "404", 1), ("transport", "200", 7),
+                                       ("history-http", "200", 22), ("empty", "200", 1), ("malformed", "200", 1),
+                                       ("restarted-success", "200", 0), ("restarted-stale", "200", 1),
+                                       ("restarted-duplicate", "200", 1), ("restarted-missing-initial", "200", 1), ("container-read", "200", 42)):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                (root / "sources.json").write_text(json.dumps([descriptor]))
+                history = copy.deepcopy(page)
+                if case == "empty":
+                    history["records"] = []
+                elif case == "malformed":
+                    history["records"][0]["sequence"] = "1"
+                elif case == "restarted-stale":
+                    history["records"][0]["message"] = "Presence admitted. connectionEpoch=40, heartbeatInterval=15s."
+                phase = "restarted" if case.startswith("restarted-") else "initial"
+                if phase == "restarted":
+                    (root / "evidence").mkdir()
+                    previous_epoch = None if case == "restarted-missing-initial" else "41" if case == "restarted-duplicate" else "40"
+                    (root / "evidence/runtime-logs-initial.json").write_text(json.dumps({"connectionEpoch": previous_epoch}))
+                (root / "history.json").write_text(json.dumps(history))
+                result = subprocess.run(["bash", "-c", 'set -euo pipefail\n' + functions + mocks +
+                    '\nverify_runtime_log_acceptance synthetic-token "$FIXTURE_DIR/evidence" "$PHASE"'],
+                    env={**os.environ, "FIXTURE_DIR": str(root), "FIXTURE_CASE": case, "SOURCE_STATUS": status,
+                         "PHASE": phase, "gateway_client": "synthetic-client", "api_url": "http://127.0.0.1:9222", "tenant_id": "7", "agent_id": agent}, capture_output=True, text=True)
+                self.assertEqual(expected, result.returncode, result.stderr)
+                receipt = root / f"evidence/runtime-logs-{phase}.json"
+                calls = (root / "calls").read_text().splitlines() if (root / "calls").exists() else []
+                self.assertTrue(all(url.startswith(f"http://127.0.0.1:9222/api/v2/agents/7/{agent}/logs/") for url in calls))
+                if expected == 0:
+                    evidence = json.loads(receipt.read_text())
+                    self.assertEqual((7, agent, 1, True, False), (evidence["tenantId"], evidence["agentId"],
+                        evidence["historyRecordCount"], evidence["liveAdvertised"], evidence["liveDeliveryExecuted"]))
+                    self.assertEqual("41", evidence["connectionEpoch"])
+                    self.assertEqual(f"{phase}-runtime-log-source-and-history\n", (root / "stages").read_text())
+                    self.assertEqual(3 if case == "admission-wait" else 2, len(calls))
+                else:
+                    self.assertFalse(receipt.exists())
+                    self.assertFalse((root / "stages").exists())
+                    self.assertEqual(60 if case == "empty" else 30 if case == "not-ready" else
+                                     2 if case in ("history-http", "malformed", "restarted-stale") else
+                                     0 if case in ("restarted-duplicate", "restarted-missing-initial", "container-read") else 1, len(calls))
 
     def test_inventory_status_and_real_package_checks_reject_incomplete_or_unrelated_receipts(self):
         source = (ROOT / "tools/ci/smoke-oidc-compose.sh").read_text()
@@ -3890,6 +4271,121 @@ class PublicImageSourceIdentityTests(unittest.TestCase):
                 self.assertIn("controlled by --revision", result.stderr)
 
 
+class WindowsStdioCertificateTests(unittest.TestCase):
+    def test_incomplete_tls_handshake_cannot_hold_fixture_shutdown_open(self):
+        import socket
+        import threading
+
+        helper = module("probe-stdio-assessment")
+        started = threading.Event()
+        original = helper.ssl.SSLContext.wrap_socket
+
+        def handshake(context, *arguments, **options):
+            try:
+                arguments[0].getpeername()
+            except OSError:
+                pass  # Wrapping a listening socket does not enter a handshake.
+            else:
+                started.set()
+            return original(context, *arguments, **options)
+
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.object(helper, "HANDSHAKE_TIMEOUT_SECONDS", 0.1), \
+             patch.object(helper.ssl.SSLContext, "wrap_socket", new=handshake):
+            fixture = helper.Fixture(Path(temporary) / "fixture")
+            connection = socket.create_connection(("127.0.0.1", fixture.server.server_port), timeout=2)
+            worker = threading.Thread(target=fixture.close)
+            try:
+                self.assertTrue(started.wait(timeout=2), "The control must enter an incomplete TLS handshake")
+                worker.start()
+                worker.join(timeout=2)
+                self.assertFalse(worker.is_alive(), "A silent TCP client must not block fixture cleanup")
+            finally:
+                connection.close()
+                if worker.ident is None:
+                    worker.start()
+                worker.join(timeout=2)
+
+    def certificate_api(self):
+        import ctypes
+
+        def add(store, encoding, data, size, disposition, context):
+            ctypes.cast(context, ctypes.POINTER(ctypes.c_void_p))[0] = 202
+            return True
+
+        return SimpleNamespace(CertOpenStore=Mock(return_value=101),
+            CertAddEncodedCertificateToStore=Mock(side_effect=add),
+            CertDeleteCertificateFromStore=Mock(return_value=True), CertCloseStore=Mock(return_value=True))
+
+    def test_protocol_failure_removes_owned_machine_certificate_and_closes_store(self):
+        helper = module("probe-windows-stdio-archive")
+        api = self.certificate_api()
+        with patch.object(helper, "require_disposable_windows"), \
+             patch.object(helper, "crypt32", return_value=api), \
+             patch.object(helper.ssl, "PEM_cert_to_DER_cert", return_value=b"synthetic-certificate"), \
+             tempfile.TemporaryDirectory() as temporary:
+            certificate = Path(temporary) / "fixture.crt"
+            certificate.write_text("synthetic fixture certificate")
+            with self.assertRaisesRegex(ValueError, "protocol failure"):
+                with helper.trusted_certificate(certificate) as record:
+                    self.assertTrue(record["added"])
+                    self.assertFalse(record["removed"])
+                    raise ValueError("protocol failure")
+            self.assertTrue(record["removed"])
+            self.assertEqual(0x20000 | 0x4000, api.CertOpenStore.call_args.args[3])
+            self.assertEqual(1, api.CertAddEncodedCertificateToStore.call_args.args[4])
+            self.assertEqual(202, api.CertDeleteCertificateFromStore.call_args.args[0].value)
+            api.CertDeleteCertificateFromStore.assert_called_once()
+            api.CertCloseStore.assert_called_once_with(101, 0)
+
+    def test_failed_add_never_deletes_an_existing_certificate(self):
+        helper = module("probe-windows-stdio-archive")
+        api = self.certificate_api()
+        api.CertAddEncodedCertificateToStore.side_effect = None
+        api.CertAddEncodedCertificateToStore.return_value = False
+        with patch.object(helper, "require_disposable_windows"), \
+             patch.object(helper, "crypt32", return_value=api), \
+             patch.object(helper, "windows_error", return_value=OSError("existing certificate")), \
+             patch.object(helper.ssl, "PEM_cert_to_DER_cert", return_value=b"synthetic-certificate"), \
+             tempfile.TemporaryDirectory() as temporary:
+            certificate = Path(temporary) / "fixture.crt"
+            certificate.write_text("synthetic fixture certificate")
+            with self.assertRaisesRegex(OSError, "existing certificate"):
+                with helper.trusted_certificate(certificate):
+                    self.fail("An existing certificate cannot become owned fixture state")
+            api.CertDeleteCertificateFromStore.assert_not_called()
+            api.CertCloseStore.assert_called_once_with(101, 0)
+
+    def test_certificate_cleanup_failure_cannot_be_counted_as_a_pass(self):
+        helper = module("probe-windows-stdio-archive")
+        api = self.certificate_api()
+        api.CertDeleteCertificateFromStore.return_value = False
+        with patch.object(helper, "require_disposable_windows"), \
+             patch.object(helper, "crypt32", return_value=api), \
+             patch.object(helper, "windows_error", return_value=OSError("remove failed")), \
+             patch.object(helper.ssl, "PEM_cert_to_DER_cert", return_value=b"synthetic-certificate"), \
+             tempfile.TemporaryDirectory() as temporary:
+            certificate = Path(temporary) / "fixture.crt"
+            certificate.write_text("synthetic fixture certificate")
+            with self.assertRaisesRegex(OSError, "remove failed"):
+                with helper.trusted_certificate(certificate) as record:
+                    pass
+            self.assertTrue(record["added"])
+            self.assertFalse(record["removed"])
+            api.CertCloseStore.assert_called_once_with(101, 0)
+
+    def test_machine_trust_is_unavailable_on_non_disposable_hosts(self):
+        helper = module("probe-windows-stdio-archive")
+        for environment in ({}, {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "self-hosted"}):
+            with self.subTest(environment=environment), \
+                 patch.object(helper, "os", SimpleNamespace(name="nt", environ=environment)), \
+                 patch.object(helper, "crypt32") as native_api:
+                with self.assertRaisesRegex(ValueError, "disposable GitHub-hosted Windows"):
+                    with helper.trusted_certificate(Path("unopened-fixture.crt")):
+                        self.fail("Non-disposable hosts cannot modify certificate trust")
+                native_api.assert_not_called()
+
+
 class WindowsMcpReleaseContractTests(unittest.TestCase):
     def test_release_requires_original_windows_archive_smoke_and_attestation(self):
         workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
@@ -3917,6 +4413,9 @@ class WindowsMcpReleaseContractTests(unittest.TestCase):
         self.assertIn("ref: ${{ inputs.source_ref }}", windows)
         self.assertIn("runs-on: windows-latest", windows)
         self.assertIn("-SourceRevision $env:PublicSourceRevision", windows)
+        self.assertIn("|| inputs.suite == 'stdio-assessment'", windows)
+        self.assertIn("tools/ci/probe-windows-stdio-archive.py --artifacts artifacts --source .", windows)
+        self.assertIn("TestResults/windows-mcp-protocol", windows)
         self.assertNotIn("continue-on-error", windows)
         self.assertNotIn("test-windows-mcp-archive", (ROOT / ".github/workflows/public-pr-validation.yml").read_text())
         smoke = (ROOT / "tools/ci/test-windows-mcp-archive.ps1").read_text()

@@ -1,7 +1,9 @@
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.DependencyInjection;
+using ModelContextProtocol;
 using ModelContextProtocol.Server;
 using NetRatel.Shared.Operations;
 
@@ -16,6 +18,19 @@ public static partial class NetRatelMcpToolDefinitions
 {
     private const string EnvelopeDescription = "Use operation to select exactly one catalogued operation. Put operation-specific fields only in request.";
     private static readonly Type[] HttpHandlerTypes = [typeof(NetRatelMcpCatalogTools), typeof(NetRatelMcpOperationalTools)];
+    private static readonly JsonSerializerOptions ToolSerializerOptions = CreateToolSerializerOptions();
+
+    private static JsonSerializerOptions CreateToolSerializerOptions(IJsonTypeInfoResolver? compatibilityResolver = null)
+    {
+        var options = new JsonSerializerOptions(McpJsonUtilities.DefaultOptions);
+        options.TypeInfoResolverChain.Insert(0, NetRatelMcpToolJsonContext.Default);
+        if (compatibilityResolver is not null)
+        {
+            options.TypeInfoResolverChain.Insert(0, compatibilityResolver);
+        }
+        options.MakeReadOnly();
+        return options;
+    }
 
     /// <summary>
     /// Creates the exact Streamable HTTP tool surface, including only the
@@ -47,7 +62,8 @@ public static partial class NetRatelMcpToolDefinitions
             operation => IsAvailableOverHttp(operation, instance, operatorSurfaceEnabled, hostContext),
             _ => HttpHandlerTypes,
             instance,
-            operatorSurfaceEnabled);
+            operatorSurfaceEnabled,
+            ToolSerializerOptions);
 
     /// <summary>
     /// Creates every stdio tool from the same catalog as HTTP. The caller
@@ -55,6 +71,25 @@ public static partial class NetRatelMcpToolDefinitions
     /// operation contracts are still generated here rather than by reflection.
     /// </summary>
     public static IReadOnlyList<McpServerTool> CreateForStdio(IReadOnlyDictionary<string, Type> compatibilityHandlerTypes, string instance = "dev")
+        => CreateForStdio(compatibilityHandlerTypes, instance, ToolSerializerOptions);
+
+    /// <summary>
+    /// Supplies the caller-owned JSON contracts for its stdio compatibility
+    /// handlers while retaining the shared and SDK serialization contracts.
+    /// </summary>
+    public static IReadOnlyList<McpServerTool> CreateForStdio(
+        IReadOnlyDictionary<string, Type> compatibilityHandlerTypes,
+        string instance,
+        IJsonTypeInfoResolver compatibilityResolver)
+    {
+        ArgumentNullException.ThrowIfNull(compatibilityResolver);
+        return CreateForStdio(compatibilityHandlerTypes, instance, CreateToolSerializerOptions(compatibilityResolver));
+    }
+
+    private static IReadOnlyList<McpServerTool> CreateForStdio(
+        IReadOnlyDictionary<string, Type> compatibilityHandlerTypes,
+        string instance,
+        JsonSerializerOptions serializerOptions)
         => Create(
             tool => tool.Operations.Any(operation => operation.IsAvailableIn(instance)),
             operation => operation.IsAvailableIn(instance),
@@ -65,7 +100,8 @@ public static partial class NetRatelMcpToolDefinitions
                 _ => HttpHandlerTypes
             },
             instance,
-            operatorSurfaceEnabled: string.Equals(instance, "prod", StringComparison.Ordinal));
+            operatorSurfaceEnabled: string.Equals(instance, "prod", StringComparison.Ordinal),
+            serializerOptions);
 
     private static bool IsAvailableOverHttp(
         NetRatelMcpOperationDescriptor operation,
@@ -88,11 +124,12 @@ public static partial class NetRatelMcpToolDefinitions
         Func<NetRatelMcpOperationDescriptor, bool> includeOperation,
         Func<NetRatelMcpToolDescriptor, IReadOnlyList<Type>> handlerTypes,
         string instance,
-        bool operatorSurfaceEnabled)
+        bool operatorSurfaceEnabled,
+        JsonSerializerOptions serializerOptions)
     {
         return NetRatelMcpCatalog.Tools
             .Where(includeTool)
-            .Select(tool => Create(tool, handlerTypes(tool), includeOperation, instance, operatorSurfaceEnabled))
+            .Select(tool => Create(tool, handlerTypes(tool), includeOperation, instance, operatorSurfaceEnabled, serializerOptions))
             .OrderBy(tool => tool.ProtocolTool.Name, StringComparer.Ordinal)
             .ToArray();
     }
@@ -102,7 +139,8 @@ public static partial class NetRatelMcpToolDefinitions
         IReadOnlyList<Type> toolTypes,
         Func<NetRatelMcpOperationDescriptor, bool> includeOperation,
         string instance,
-        bool operatorSurfaceEnabled)
+        bool operatorSurfaceEnabled,
+        JsonSerializerOptions serializerOptions)
     {
         var method = toolTypes
             .Select(type => descriptor.Name == "netratel_capabilities"
@@ -118,6 +156,7 @@ public static partial class NetRatelMcpToolDefinitions
 
         var options = new McpServerToolCreateOptions
         {
+            SerializerOptions = serializerOptions,
             Name = descriptor.Name,
             Title = Title(descriptor.Name),
             Description = operatorSurfaceEnabled ? NetRatelMcpOperatorInstructions.Describe(descriptor) : descriptor.Description,
@@ -126,13 +165,14 @@ public static partial class NetRatelMcpToolDefinitions
             Idempotent = descriptor.Name is "netratel_notifications" || operations.All(operation => operation.Safety == NetRatelMcpOperationSafety.Read),
             OpenWorld = string.Equals(descriptor.Name, "netratel_search", StringComparison.Ordinal),
             UseStructuredContent = true,
-            OutputSchema = JsonSerializer.SerializeToElement(ResponseSchema())
+            OutputSchema = JsonSerializer.SerializeToElement(ResponseSchema(), NetRatelMcpSchemaJsonContext.Default.JsonObject)
         };
         var tool = McpServerTool.Create(
             method,
             context => CreateHandler(context.Services, method.DeclaringType!),
             options);
-        tool.ProtocolTool.InputSchema = JsonSerializer.SerializeToElement(InputSchema(descriptor.Name, operations, instance, operatorSurfaceEnabled));
+        tool.ProtocolTool.InputSchema = JsonSerializer.SerializeToElement(
+            InputSchema(descriptor.Name, operations, instance, operatorSurfaceEnabled), NetRatelMcpSchemaJsonContext.Default.JsonObject);
         return tool;
     }
 
@@ -164,7 +204,7 @@ public static partial class NetRatelMcpToolDefinitions
             if (request is not null)
             {
                 properties["request"] = request.Schema;
-                if (request.Required) required.Add("request");
+                if (request.Required) required.Add(JsonValue.Create("request"));
             }
             if (operation.RequiresConfirmation)
             {
@@ -882,8 +922,8 @@ public static partial class NetRatelMcpToolDefinitions
         var properties = request.Schema["properties"]!.AsObject();
         properties["planToken"] = new JsonObject { ["type"] = "string", ["minLength"] = 32, ["maxLength"] = 128, ["description"] = "Opaque credential returned by preview_execute." };
         properties["idempotencyKey"] = new JsonObject { ["type"] = "string", ["minLength"] = 32, ["maxLength"] = 128, ["description"] = "Opaque credential returned by preview_execute." };
-        request.Schema["required"]!.AsArray().Add("planToken");
-        request.Schema["required"]!.AsArray().Add("idempotencyKey");
+        request.Schema["required"]!.AsArray().Add(JsonValue.Create("planToken"));
+        request.Schema["required"]!.AsArray().Add(JsonValue.Create("idempotencyKey"));
         return request;
     }
 
@@ -1012,8 +1052,8 @@ public static partial class NetRatelMcpToolDefinitions
         var properties = request.Schema["properties"]!.AsObject();
         properties["planToken"] = new JsonObject { ["type"] = "string", ["minLength"] = 32, ["maxLength"] = 128, ["pattern"] = "^[A-Za-z0-9_-]{32,128}$", ["description"] = "Opaque credential returned by preview_ping." };
         properties["idempotencyKey"] = new JsonObject { ["type"] = "string", ["minLength"] = 32, ["maxLength"] = 128, ["pattern"] = "^[A-Za-z0-9_-]{32,128}$", ["description"] = "Opaque credential returned by preview_ping." };
-        request.Schema["required"]!.AsArray().Add("planToken");
-        request.Schema["required"]!.AsArray().Add("idempotencyKey");
+        request.Schema["required"]!.AsArray().Add(JsonValue.Create("planToken"));
+        request.Schema["required"]!.AsArray().Add(JsonValue.Create("idempotencyKey"));
         return request;
     }
 
@@ -1023,8 +1063,8 @@ public static partial class NetRatelMcpToolDefinitions
         var properties = request.Schema["properties"]!.AsObject();
         properties["planToken"] = new JsonObject { ["type"] = "string", ["minLength"] = 32, ["maxLength"] = 128, ["pattern"] = "^[A-Za-z0-9_-]{32,128}$", ["description"] = "Opaque credential returned by preview_software_update." };
         properties["idempotencyKey"] = new JsonObject { ["type"] = "string", ["minLength"] = 32, ["maxLength"] = 128, ["pattern"] = "^[A-Za-z0-9_-]{32,128}$", ["description"] = "Opaque credential returned by preview_software_update." };
-        request.Schema["required"]!.AsArray().Add("planToken");
-        request.Schema["required"]!.AsArray().Add("idempotencyKey");
+        request.Schema["required"]!.AsArray().Add(JsonValue.Create("planToken"));
+        request.Schema["required"]!.AsArray().Add(JsonValue.Create("idempotencyKey"));
         return request;
     }
 
@@ -1051,8 +1091,8 @@ public static partial class NetRatelMcpToolDefinitions
         var properties = request.Schema["properties"]!.AsObject();
         properties["planToken"] = new JsonObject { ["type"] = "string", ["minLength"] = 32, ["maxLength"] = 128, ["pattern"] = "^[A-Za-z0-9_-]{32,128}$", ["description"] = "Opaque credential returned by preview_disable." };
         properties["idempotencyKey"] = new JsonObject { ["type"] = "string", ["minLength"] = 32, ["maxLength"] = 128, ["pattern"] = "^[A-Za-z0-9_-]{32,128}$", ["description"] = "Opaque credential returned by preview_disable." };
-        request.Schema["required"]!.AsArray().Add("planToken");
-        request.Schema["required"]!.AsArray().Add("idempotencyKey");
+        request.Schema["required"]!.AsArray().Add(JsonValue.Create("planToken"));
+        request.Schema["required"]!.AsArray().Add(JsonValue.Create("idempotencyKey"));
         return request;
     }
 
@@ -1068,8 +1108,8 @@ public static partial class NetRatelMcpToolDefinitions
         var properties = request.Schema["properties"]!.AsObject();
         properties["planToken"] = new JsonObject { ["type"] = "string", ["minLength"] = 32, ["maxLength"] = 128, ["pattern"] = "^[A-Za-z0-9_-]{32,128}$", ["description"] = "Opaque credential returned by preview_delete." };
         properties["idempotencyKey"] = new JsonObject { ["type"] = "string", ["minLength"] = 32, ["maxLength"] = 128, ["pattern"] = "^[A-Za-z0-9_-]{32,128}$", ["description"] = "Opaque credential returned by preview_delete." };
-        request.Schema["required"]!.AsArray().Add("planToken");
-        request.Schema["required"]!.AsArray().Add("idempotencyKey");
+        request.Schema["required"]!.AsArray().Add(JsonValue.Create("planToken"));
+        request.Schema["required"]!.AsArray().Add(JsonValue.Create("idempotencyKey"));
         return request;
     }
 
@@ -1079,8 +1119,8 @@ public static partial class NetRatelMcpToolDefinitions
         var properties = request.Schema["properties"]!.AsObject();
         properties["planToken"] = new JsonObject { ["type"] = "string", ["minLength"] = 32, ["maxLength"] = 128, ["pattern"] = "^[A-Za-z0-9_-]{32,128}$", ["description"] = "Opaque credential returned by preview_enable." };
         properties["idempotencyKey"] = new JsonObject { ["type"] = "string", ["minLength"] = 32, ["maxLength"] = 128, ["pattern"] = "^[A-Za-z0-9_-]{32,128}$", ["description"] = "Opaque credential returned by preview_enable." };
-        request.Schema["required"]!.AsArray().Add("planToken");
-        request.Schema["required"]!.AsArray().Add("idempotencyKey");
+        request.Schema["required"]!.AsArray().Add(JsonValue.Create("planToken"));
+        request.Schema["required"]!.AsArray().Add(JsonValue.Create("idempotencyKey"));
         return request;
     }
 
@@ -1220,7 +1260,7 @@ public static partial class NetRatelMcpToolDefinitions
         foreach (var (name, schema, isRequired) in fields)
         {
             properties[name] = schema;
-            if (isRequired) requiredFields.Add(name);
+            if (isRequired) requiredFields.Add(JsonValue.Create(name));
         }
 
         return new RequestDefinition(new JsonObject
