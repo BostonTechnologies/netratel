@@ -142,6 +142,15 @@ public static class FlowExecutionPreview
                 node.Kind is FlowNodeKind.AlertRaised or FlowNodeKind.ExecutionEvent or FlowNodeKind.Condition or FlowNodeKind.MapIncident or FlowNodeKind.Finish)
                 return new("preview-fixture-node", fixture?.NodeId);
             if (!IsOutcome(fixture.Outcome)) return new("preview-fixture-outcome", fixture.NodeId);
+            if (fixture.Output.ValueKind != JsonValueKind.Undefined)
+            {
+                try
+                {
+                    using var document = JsonDocument.Parse(fixture.Output.GetRawText(),
+                        new JsonDocumentOptions { MaxDepth = FlowPreviewLimits.MaximumFixtureDepth });
+                }
+                catch (JsonException) { return new("preview-fixture-depth", fixture.NodeId); }
+            }
             var size = JsonSerializer.SerializeToUtf8Bytes(fixture, Json).Length;
             total += size;
             if (size > FlowPreviewLimits.MaximumFixtureBytes || total > FlowPreviewLimits.MaximumFixtureTotalBytes)

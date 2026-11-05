@@ -62,6 +62,84 @@ public sealed class FlowPreviewPlaybackTests(ClientsManagementBrowserFixture bro
     }
 
 
+
+    [Theory]
+    [InlineData(1280, 800)]
+    [InlineData(195, 422)]
+    public async Task Execution_preview_requires_explicit_external_samples_and_shows_real_pure_values(int width, int height)
+    {
+        var fixture = _fixture!; fixture.FlowsData.SeedExecutionPreviewGraph();
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = width, Height = height } });
+        var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000);
+        var errors = new List<string>(); page.PageError += (_, error) => errors.Add(error);
+        await page.GotoAsync(fixture.BaseAddress + "/flows", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("flow-row").WaitForAsync(new() { Timeout = 90_000 });
+        await page.GetByTestId("flow-edit").First.ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(6);
+        await page.GetByTestId("flow-fit").ClickAsync();
+        var before = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!;
+        await page.GetByTestId("flow-dry-run-toggle").ClickAsync();
+        var dialog = page.GetByTestId("flow-preview-dialog");
+        await Assertions.Expect(dialog).ToBeVisibleAsync();
+        var during = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!;
+        Assert.InRange(during.Y, before.Y - 1, before.Y + 1);
+        Assert.InRange(during.Height, before.Height - 1, before.Height + 1);
+        await dialog.GetByTestId("flow-sample-execution-id").FillAsync("9223372036854775805");
+        await dialog.GetByTestId("flow-execution-preview").ClickAsync();
+        await Assertions.Expect(dialog).ToBeHiddenAsync();
+        var player = page.GetByTestId("flow-trace-player");
+        await Assertions.Expect(player).ToBeVisibleAsync();
+        await Assertions.Expect(player.Locator("[data-trace-position]")).ToHaveTextAsync("Step 1 of 2");
+        await player.Locator("[data-trace-action=next]").ClickAsync();
+        await Assertions.Expect(player.Locator("[data-trace-panel]:not([hidden])")).ToContainTextAsync("sample-result-unavailable");
+        await Assertions.Expect(player.Locator("[data-trace-panel]:not([hidden])")).ToContainTextAsync("No external action was executed");
+        await player.Locator("[data-trace-action=exit]").ClickAsync();
+
+        await page.GetByTestId("flow-dry-run-toggle").ClickAsync();
+        await Assertions.Expect(dialog).ToBeVisibleAsync();
+        await Assertions.Expect(dialog.GetByTestId("flow-sample-execution-id")).ToHaveValueAsync("9223372036854775805");
+        await dialog.Locator(".flow-sample-fixtures summary").ClickAsync();
+        await dialog.GetByTestId("flow-sample-fixture-enabled").CheckAsync();
+        await dialog.GetByTestId("flow-execution-preview").ClickAsync();
+        await Assertions.Expect(dialog.GetByTestId("flow-sample-error")).ToContainTextAsync("Choose the simulated outcome");
+        Assert.Equal(1, fixture.FlowsData.DryRunCalls);
+        await dialog.GetByTestId("flow-sample-fixture-outcome").SelectOptionAsync("succeeded");
+        await dialog.GetByTestId("flow-sample-fixture-output").FillAsync(JsonSerializer.Serialize(new
+        { outcome = "succeeded", executionId = "9223372036854775807", exitCode = 0, summary = "Explicit synthetic repair sample" }));
+        var evidence = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.Combine(Directory.GetCurrentDirectory(), "TestResults", "playwright");
+        Directory.CreateDirectory(evidence);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"flows-execution-sample-{width}.png"), Animations = ScreenshotAnimations.Disabled });
+        await dialog.GetByTestId("flow-execution-preview").ClickAsync();
+        await Assertions.Expect(dialog).ToBeHiddenAsync();
+        await Assertions.Expect(player).ToBeVisibleAsync();
+        await Assertions.Expect(player.Locator("[data-trace-position]")).ToHaveTextAsync("Step 1 of 5");
+        await player.Locator("[data-trace-action=next]").ClickAsync();
+        await Assertions.Expect(player.Locator("[data-trace-panel]:not([hidden])")).ToContainTextAsync("9223372036854775807");
+        await Assertions.Expect(player.Locator("[data-trace-panel]:not([hidden])")).ToContainTextAsync("Explicit synthetic repair sample");
+        await player.Locator("[data-trace-action=next]").ClickAsync();
+        await Assertions.Expect(player.Locator("[data-trace-panel]:not([hidden])")).ToContainTextAsync("true");
+        await player.Locator("[data-trace-action=next]").ClickAsync();
+        var mapped = player.Locator("[data-trace-panel]:not([hidden])");
+        await Assertions.Expect(mapped).ToContainTextAsync("Map explicit sample result");
+        await Assertions.Expect(mapped).ToContainTextAsync("Sample job: 9223372036854775807");
+        await mapped.Locator("details").Last.Locator("pre").ScrollIntoViewIfNeededAsync();
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"flows-execution-mapped-{width}.png"), Animations = ScreenshotAnimations.Disabled });
+        await player.Locator("[data-trace-action=previous]").ClickAsync();
+        await player.Locator("[data-trace-action=restart]").ClickAsync();
+        Assert.Equal(2, fixture.FlowsData.DryRunCalls);
+        Assert.Equal(0, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls);
+        var after = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!;
+        Assert.InRange(after.Y, before.Y - 1, before.Y + 1); Assert.InRange(after.Height, before.Height - 1, before.Height + 1);
+        await File.WriteAllTextAsync(Path.Combine(evidence, $"flows-execution-preview-{width}.json"), JsonSerializer.Serialize(new
+        {
+            width, height, before, during, after, evaluations = fixture.FlowsData.DryRunCalls,
+            saves = fixture.FlowsData.SaveCalls, publications = fixture.FlowsData.PublishCalls,
+            sourceExecutionId = "9223372036854775805", simulatedExecutionId = "9223372036854775807",
+            expectedBranch = new[] { "event", "succeeded", "true", "result", "finished" }
+        }));
+        Assert.Empty(errors);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
