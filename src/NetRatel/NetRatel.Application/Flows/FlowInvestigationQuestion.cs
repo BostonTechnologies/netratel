@@ -39,7 +39,7 @@ public static class FlowInvestigationQuestion
                 draft.InvestigationInputs.Values.Any(value => value.ValueKind == JsonValueKind.Undefined))
                 throw new ArgumentException("The bound input snapshot is invalid.", nameof(draft));
             var snapshot = JsonSerializer.SerializeToElement(draft.InvestigationInputs, Json);
-            if (!FlowJsonValueBounds.Valid(snapshot, MaximumInputsBytes))
+            if (!FlowJsonValueBounds.Valid(snapshot, MaximumInputsBytes, FlowGraphV2Limits.MaximumValueDepth + 1))
                 throw new ArgumentException("The bound input snapshot exceeds its capture limits.", nameof(draft));
             inputs = draft.InvestigationInputs.Count == 0 ? "Empty (captured): {}" : ProtectedJson(snapshot);
         }

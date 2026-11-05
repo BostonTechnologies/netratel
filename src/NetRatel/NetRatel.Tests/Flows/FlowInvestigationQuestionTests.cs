@@ -122,6 +122,17 @@ public sealed class FlowInvestigationQuestionTests
         };
         Assert.Throws<ArgumentException>(() => FlowInvestigationQuestion.Compose(oversized));
         Assert.Throws<ArgumentException>(() => FlowInvestigationQuestion.Compose(draft with
+        {
+            InvestigationInputs = new Dictionary<string, JsonElement> { ["undefined"] = default }
+        }));
+        var deepestValue = string.Concat(Enumerable.Repeat("{\"level\":", FlowGraphV2Limits.MaximumValueDepth)) +
+            "0" + new string('}', FlowGraphV2Limits.MaximumValueDepth);
+        Assert.Contains("level", FlowInvestigationQuestion.Compose(draft with
+        {
+            InvestigationInputs = new Dictionary<string, JsonElement>
+                { ["deep"] = JsonSerializer.Deserialize<JsonElement>(deepestValue) }
+        }));
+        Assert.Throws<ArgumentException>(() => FlowInvestigationQuestion.Compose(draft with
             { Kind = FlowActionKind.RatelDeskIncident }));
     }
 
