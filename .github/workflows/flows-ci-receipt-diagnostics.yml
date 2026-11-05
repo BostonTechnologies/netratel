@@ -1,4 +1,4 @@
-name: Selected Flows browser artifact inspection
+name: Selected Flows CI receipt diagnostics
 
 on:
   push:
@@ -11,51 +11,41 @@ permissions:
 
 jobs:
   original-receipts:
-    name: Read retained synthetic browser evidence
+    name: Read original synthetic Flows test receipts
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Download existing synthetic browser evidence
+      - name: Download existing failed-run receipts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
-          run-id: '42087845596'
-          name: selected-flows-browser-evidence
+          run-id: '42085463697'
+          name: dotnet-test-results
           path: receipts
-      - name: List original receipts and one bounded synthetic screenshot
+      - name: Print bounded original counters and failures
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import base64
-          import hashlib
-          import json
           import xml.etree.ElementTree as ET
-          root = Path('receipts')
-          print('Original product source: d5fe6f00edd53ef69fb29ea1b554eaf5ad35860d')
-          print('Original browser run: 42087845596; artifact inspection only. No tests or product commands executed here.')
-          for path in sorted(root.rglob('*')):
-              if path.is_file():
-                  print('ARTIFACT_ENTRY', path.relative_to(root).as_posix(), path.stat().st_size)
-          for report in sorted(root.rglob('*.trx')):
-              tree = ET.parse(report).getroot()
-              print('ORIGINAL_COUNTERS', report.name, [node.attrib for node in tree.iter() if node.tag.endswith('Counters')])
-              for result in tree.iter():
-                  if result.tag.endswith('UnitTestResult') and result.attrib.get('outcome') != 'Passed':
-                      print('ORIGINAL_NONPASS', result.attrib.get('testName'), result.attrib.get('outcome'))
-                      for detail in result.iter():
-                          if detail.tag.endswith('Message'):
-                              print((detail.text or '')[:1500])
-          selected = list(root.rglob('flows-connection-before-drop.png'))
-          if len(selected) != 1:
-              raise SystemExit('Expected exactly one existing synthetic connection screenshot.')
-          screenshot = selected[0]
-          data = screenshot.read_bytes()
-          if not data.startswith(b'\x89PNG\r\n\x1a\n') or len(data) > 600 * 1024:
-              raise SystemExit('Selected screenshot is not a bounded PNG.')
-          print('SYNTHETIC_SCREENSHOT_META', json.dumps({'path': screenshot.relative_to(root).as_posix(), 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}))
-          print('SYNTHETIC_SCREENSHOT_BASE64_BEGIN')
-          print(base64.b64encode(data).decode('ascii'))
-          print('SYNTHETIC_SCREENSHOT_BASE64_END')
+          print('Original source: 3aee79e0d93d79adfd2296a8a0c9dcbf3582e70d')
+          print('Original run: 42085463697; receipts only, no tests or product commands executed here.')
+          reports = sorted(Path('receipts').rglob('*.trx'))
+          if not reports:
+              raise SystemExit('No original TRX receipts were downloaded.')
+          failures = 0
+          for report in reports:
+              root = ET.parse(report).getroot()
+              counters = [node.attrib for node in root.iter() if node.tag.endswith('Counters')]
+              print('\nREPORT', report.name, counters)
+              for result in root.iter():
+                  if not result.tag.endswith('UnitTestResult') or result.attrib.get('outcome') == 'Passed':
+                      continue
+                  failures += 1
+                  print('ORIGINAL_NONPASS', result.attrib.get('testName'), result.attrib.get('outcome'))
+                  for detail in result.iter():
+                      if detail.tag.endswith('Message') or detail.tag.endswith('StackTrace'):
+                          print((detail.text or '')[:6000])
+          print('Original non-passed result rows:', failures)
           PY
