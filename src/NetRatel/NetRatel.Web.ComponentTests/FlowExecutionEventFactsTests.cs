@@ -105,7 +105,7 @@ public sealed class FlowExecutionEventFactsTests : AsyncBunitContext
         return new(node, "source-investigation", FlowActionStatus.Failed, 1, null, "ai-unsupported", null)
         {
             Kind = FlowActionKind.NetclawInvestigation, Name = "Configured source investigation", AiFailureBehavior = behavior,
-            AiResult = new(17, run.Id, run.FlowVersionId, node, null, Guid.NewGuid(), FlowAiResultStatus.Unsupported, time, time)
+            AiResult = new(17, run.Id, run.FlowVersionId, node, Guid.Empty, Guid.NewGuid(), FlowAiResultStatus.Unsupported, time, time)
         };
     }
 
