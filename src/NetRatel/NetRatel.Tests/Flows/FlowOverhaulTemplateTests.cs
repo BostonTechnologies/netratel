@@ -75,7 +75,7 @@ public sealed class FlowOverhaulTemplateTests
         var predicate = Assert.Single(graph.Nodes, node => node.Kind == FlowNodeKind.Condition).Predicate!;
         var time = new DateTimeOffset(2026, 11, 5, 12, 0, 0, TimeSpan.Zero);
         var source = new FlowExecutionEventDto(Guid.NewGuid(), Guid.NewGuid(), 17, FlowExecutionSourceKind.Request,
-            null, "9007199254740993", "attempt-1", new(null, "Synthetic endpoint"), outcome,
+            new("42", "Synthetic execution", "4", new string('a', 64)), "9007199254740993", "attempt-1", new(null, "Synthetic endpoint"), outcome,
             outcome.ToString(), time, time);
         var result = FlowValueEvaluation.Matches(predicate, source, null, new Dictionary<Guid, JsonElement>());
         Assert.True(result.Available, result.Code);
