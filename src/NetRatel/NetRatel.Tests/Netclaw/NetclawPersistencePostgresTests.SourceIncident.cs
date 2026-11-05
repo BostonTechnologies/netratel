@@ -28,8 +28,9 @@ public sealed partial class NetclawPersistencePostgresTests
     private const string IncidentPublisher = "synthetic-incident-publisher";
     private static readonly JsonSerializerOptions IncidentJson = new(JsonSerializerDefaults.Web);
 
-    // Native lifecycle, ingress, runtime/checkpoints, AI policy, receiver preparation and receipt
-    // persistence are real. Only pairing and the remote receiver transport are synthetic.
+    // Native lifecycle, source/current-grant admission, runtime/checkpoints, AI policy, final
+    // enrichment and receiver preparation/receipt persistence are real. Published configuration
+    // is seeded; pairing, receiver connector binding metadata and remote transport are synthetic.
     [Fact]
     public async Task Native_request_failure_freezes_one_enriched_incident_and_recovers_its_original_receipt_after_restart()
     {
