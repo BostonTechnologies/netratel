@@ -2,6 +2,7 @@ using System.Text.Json;
 using AwesomeAssertions;
 using NetRatel.Shared.Contracts.Flows;
 using NetRatel.Mcp.Core;
+using NetRatel.Shared.Operations;
 using Xunit;
 
 namespace NetRatel.Tests.Flows;
@@ -31,6 +32,19 @@ public sealed class FlowGraphV2ContractTests
             .And.NotContain("executionTrigger").And.NotContain("executionAction").And.NotContain("predicate")
             .And.NotContain("RunLibraryScript").And.NotContain("RerunOriginalExecution");
         // Existing frozen catalog digest tests still verify exact bytes on both transports.
+    }
+
+    [Fact]
+    public void Managed_schema_one_ingress_rejects_schema_two_even_when_new_fields_have_been_stripped()
+    {
+        var descriptor = ManagedOperationCatalog.Find("netratel_flows", "validate")!;
+        var stripped = new FlowGraphDto(2, [], [], new());
+        var request = JsonSerializer.SerializeToElement(new { tenantId = 17, data = stripped }, ManagedOperationCatalog.JsonOptions);
+        ManagedOperationCatalog.TryValidate(descriptor, request, out var error).Should().BeFalse();
+        error.Should().Contain("schema one");
+        var legacy = JsonSerializer.Deserialize<FlowGraphDto>(LegacyPublishedFixture, Json)!;
+        ManagedOperationCatalog.TryValidate(descriptor,
+            JsonSerializer.SerializeToElement(new { tenantId = 17, data = legacy }, ManagedOperationCatalog.JsonOptions), out _).Should().BeTrue();
     }
 
     [Fact]
