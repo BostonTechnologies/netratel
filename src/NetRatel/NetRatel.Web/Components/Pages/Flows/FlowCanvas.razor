@@ -110,7 +110,7 @@
         </div>
     }
 </section>
-<div class="flow-connection-status" role="status" data-testid="flow-connection-status"><span data-testid="flow-connection-message">@_connectionMessage</span>
+<div class="flow-connection-status" role="status" data-testid="flow-connection-status"><span data-testid="flow-connection-message">@_connectionMessage</span><span data-testid="flow-connection-transient"></span>
     @if (_connectingFrom is not null) { <button type="button" @onclick="CancelConnectionAsync" data-testid="flow-connection-cancel">Cancel connection</button> }
 </div>
 <p class="flow-canvas-hint">Drag compatible ports, or activate an output and then an input using keyboard or touch. Select a curve to inspect or remove it. Pan on blank canvas; Ctrl + wheel zooms.</p>

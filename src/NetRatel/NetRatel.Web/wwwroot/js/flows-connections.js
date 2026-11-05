@@ -5,9 +5,20 @@ export function attach(id, reference) {
     detach(id);
     const panel = document.getElementById(id);
     if (!panel) return;
-    let gesture = null, routeDrag = null, routePreview = null, frame = 0, disposed = false, suppressClick = false, keyboardCancelled = false, idleTarget = null;
+    let gesture = null, routeDrag = null, routePreview = null, frame = 0, disposed = false, suppressClick = false, keyboardCancelled = false, idleTarget = null, messageGeneration = 0;
     const ghost = () => panel.querySelector('[data-testid="flow-virtual-link"]');
-    const message = () => panel.parentElement?.querySelector('[data-testid="flow-connection-message"]');
+    const message = () => panel.parentElement?.querySelector('[data-testid="flow-connection-transient"]');
+    const managedMessage = () => panel.parentElement?.querySelector('[data-testid="flow-connection-message"]');
+    const setMessage = value => {
+        const target = message(); if (!target) return;
+        const text = value ?? '';
+        if (target.textContent !== text) target.textContent = text;
+        target.parentElement?.toggleAttribute('data-flow-transient', text.length > 0);
+    };
+    const finishMessage = generation => {
+        if (!disposed && generation === messageGeneration && !gesture && !routeDrag) setMessage('');
+    };
+    const failMessage = (generation, text) => { if (!disposed && generation === messageGeneration) setMessage(text); };
     const portAt = event => document.elementFromPoint(event.clientX, event.clientY)?.closest('.flow-port');
     const writable = () => panel.dataset.readOnly !== 'true';
     const inverseScale = () => {
@@ -104,9 +115,11 @@ export function attach(id, reference) {
     };
     const cancel = () => {
         if (!gesture && !panel.dataset.connectionStart) return;
+        const generation = ++messageGeneration;
         keyboardCancelled = true;
         clear(false);
-        if (!disposed) reference.invokeMethodAsync('CancelPortConnection').catch(() => {});
+        if (!disposed) reference.invokeMethodAsync('CancelPortConnection').then(() => finishMessage(generation))
+            .catch(() => failMessage(generation, 'The cancellation could not be confirmed. Inspect the draft.'));
     };
     const down = event => {
         const active = routeDrag ?? gesture;
@@ -117,6 +130,7 @@ export function attach(id, reference) {
             event.preventDefault(); event.stopPropagation();
             const point = localPoint(event.clientX, event.clientY), group = panel.querySelector('[data-flow-edge-id="' + handle.dataset.edgeId + '"][data-flow-route]');
             if (!point || !group) return;
+            ++messageGeneration; setMessage('');
             routeDrag = { handle, group, index: Number(handle.dataset.pointIndex), pointerId: event.pointerId };
             routePreview = { group, index: routeDrag.index, ...point };
             handle.classList.add('dragging'); handle.setPointerCapture(event.pointerId);
@@ -126,9 +140,10 @@ export function attach(id, reference) {
         if (!source || !panel.contains(source)) return;
         suppressClick = false; keyboardCancelled = false;
         if (!writable()) { event.preventDefault(); event.stopImmediatePropagation(); return; }
+        ++messageGeneration; setMessage('');
         if (event.pointerType === 'touch' || source.dataset.portDirection !== 'output' || event.button !== 0) return;
         gesture = { source, pointerId: event.pointerId, targets: highlight(source), x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, moved: false };
-        if (message()) message().textContent = 'Drag to a highlighted input. Escape cancels.';
+        setMessage('Drag to a highlighted input. Escape cancels.');
         draw(); // Visible immediately while the pointer is still held down.
     };
     const move = event => {
@@ -145,11 +160,11 @@ export function attach(id, reference) {
             gesture.x = event.clientX; gesture.y = event.clientY;
             gesture.moved ||= Math.hypot(event.clientX - gesture.startX, event.clientY - gesture.startY) > 4;
             const target = portAt(event);
-            if (message()) message().textContent = target && panel.contains(target)
+            setMessage(target && panel.contains(target)
                 ? gesture.targets.has(target.dataset.portNode) && target.dataset.portDirection === 'input'
                     ? 'Release to connect these ports.'
                     : 'This input is incompatible, occupied, or would create a cycle.'
-                : 'Drag to a highlighted input. Escape cancels.';
+                : 'Drag to a highlighted input. Escape cancels.');
             if (!frame) frame = requestAnimationFrame(draw);
             event.stopPropagation();
             return;
@@ -170,26 +185,28 @@ export function attach(id, reference) {
     const up = event => {
         if (routeDrag) {
             if (routeDrag.pointerId !== event.pointerId) return;
-            const active = routeDrag, point = localPoint(event.clientX, event.clientY);
+            const active = routeDrag, point = localPoint(event.clientX, event.clientY), generation = messageGeneration;
             routeDrag = null; active.handle.classList.remove('dragging');
             if (active.handle.hasPointerCapture?.(active.pointerId)) active.handle.releasePointerCapture(active.pointerId);
             if (point && !disposed) reference.invokeMethodAsync('CommitRoutePoint', active.group.dataset.flowEdgeId, active.index, point.x, point.y)
-                .then(() => { routePreview = null; if (!disposed) requestAnimationFrame(() => syncRoute(active.group)); })
-                .catch(() => { routePreview = null; if (!disposed) { syncRoute(active.group); if (message()) message().textContent = 'The route change could not be confirmed.'; } });
+                .then(() => { routePreview = null; finishMessage(generation); if (!disposed) requestAnimationFrame(() => syncRoute(active.group)); })
+                .catch(() => { routePreview = null; if (!disposed) { syncRoute(active.group); failMessage(generation, 'The route change could not be confirmed.'); } });
             return;
         }
         if (!gesture || gesture.pointerId !== event.pointerId) return;
-        const source = gesture.source.dataset.portNode, gestureSourcePort = gesture.source.dataset.portId, target = portAt(event);
+        const source = gesture.source.dataset.portNode, gestureSourcePort = gesture.source.dataset.portId, target = portAt(event), generation = messageGeneration;
         suppressClick = gesture.moved;
         const valid = target && panel.contains(target) && target.dataset.portDirection === 'input' && gesture.targets.has(target.dataset.portNode);
         clear();
+        setMessage(valid ? 'Connecting ports…' : 'Connection cancelled. Drop on a compatible input.');
         if (valid && !disposed)
-            reference.invokeMethodAsync('CompleteNamedPortConnection', source, gestureSourcePort, target.dataset.portNode, target.dataset.portId).catch(() => {
-                if (!disposed && message()) message().textContent = 'The connection could not be confirmed. Reconnect and inspect the draft.';
-            });
+            reference.invokeMethodAsync('CompleteNamedPortConnection', source, gestureSourcePort, target.dataset.portNode, target.dataset.portId)
+                .then(() => finishMessage(generation))
+                .catch(() => failMessage(generation, 'The connection could not be confirmed. Reconnect and inspect the draft.'));
         else if (target?.dataset.portNode && !disposed)
-            reference.invokeMethodAsync('ExplainNamedPortConnection', source, gestureSourcePort, target.dataset.portNode, target.dataset.portId).catch(() => {});
-        if (message()) message().textContent = valid ? 'Connecting ports…' : 'Connection cancelled. Drop on a compatible input.';
+            reference.invokeMethodAsync('ExplainNamedPortConnection', source, gestureSourcePort, target.dataset.portNode, target.dataset.portId)
+                .then(() => finishMessage(generation))
+                .catch(() => failMessage(generation, 'The connection could not be validated. Inspect the draft.'));
     };
     const touch = event => {
         const port = event.target.closest?.('.flow-port');
@@ -230,6 +247,9 @@ export function attach(id, reference) {
     const observer = new MutationObserver(mutations => {
         if (!panel.isConnected) { detach(id); return; }
         for (const mutation of mutations) {
+            if (managedMessage()?.contains(mutation.target) && !gesture && !routeDrag) {
+                ++messageGeneration; setMessage('');
+            }
             if (mutation.type === 'attributes' && mutation.attributeName === 'data-flow-route') {
                 if (!routeDrag && routePreview?.group === mutation.target) routePreview = null;
                 syncRoute(mutation.target);
@@ -245,6 +265,8 @@ export function attach(id, reference) {
         syncKeyboard();
     });
     observer.observe(panel, { subtree: true, childList: true, attributes: true, attributeFilter: ['d', 'data-flow-route', 'data-connection-start', 'data-connection-port', 'data-read-only', 'data-inverse-scale'] });
+    const managed = managedMessage();
+    if (managed) observer.observe(managed, { subtree: true, childList: true, characterData: true });
     const layout = () => {
         // The adapter's design card differs from upstream demo sizes. Use each real
         // native node width so glyphs and routed links share the same zoom frame.
@@ -273,8 +295,10 @@ export function attach(id, reference) {
     window.addEventListener('blur', blur);
     canvases.set(id, () => {
         disposed = true;
+        ++messageGeneration;
         if (frame) cancelAnimationFrame(frame);
         observer.disconnect(); removed.disconnect(); resize.disconnect(); clearHighlights();
+        setMessage('');
         document.removeEventListener('veloxdev-wf-layout-changed', layout); document.removeEventListener('fullscreenchange', fullscreen); routeDrag = null; routePreview = null;
         panel.removeEventListener('pointerdown', down, true); panel.removeEventListener('mousedown', mouseGuard, true); panel.removeEventListener('click', clickGuard, true);
         panel.removeEventListener('touchstart', touch, true);
