@@ -1,0 +1,51 @@
+name: Selected Flows CI receipt diagnostics
+
+on:
+  push:
+    branches: [codex/flows-ci-receipt-diagnostics]
+    paths: [.github/workflows/flows-ci-receipt-diagnostics.yml]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  original-receipts:
+    name: Read original synthetic Flows test receipts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download existing failed-run receipts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '42082213892'
+          name: dotnet-test-results
+          path: receipts
+      - name: Print bounded original counters and failures
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          print('Original source: 2ee818b845a0f898ab952684e45f5a3830f573cc')
+          print('Original run: 42082213892; receipts only, no tests or product commands executed here.')
+          reports = sorted(Path('receipts').rglob('*.trx'))
+          if not reports:
+              raise SystemExit('No original TRX receipts were downloaded.')
+          failures = 0
+          for report in reports:
+              root = ET.parse(report).getroot()
+              counters = [node.attrib for node in root.iter() if node.tag.endswith('Counters')]
+              print('\nREPORT', report.name, counters)
+              for result in root.iter():
+                  if not result.tag.endswith('UnitTestResult') or result.attrib.get('outcome') == 'Passed':
+                      continue
+                  failures += 1
+                  print('ORIGINAL_NONPASS', result.attrib.get('testName'), result.attrib.get('outcome'))
+                  for detail in result.iter():
+                      if detail.tag.endswith('Message') or detail.tag.endswith('StackTrace'):
+                          print((detail.text or '')[:6000])
+          print('Original non-passed result rows:', failures)
+          PY
