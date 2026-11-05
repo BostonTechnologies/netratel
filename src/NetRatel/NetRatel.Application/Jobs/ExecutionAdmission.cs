@@ -20,7 +20,7 @@ public sealed record ExecutionAdmissionIdentity(
             NodeAttempt is < 1 or > 8 || IntegrationCredentialId?.Length > 256)
             throw new ArgumentException("A complete bounded execution admission identity is required.");
         if (Causation is { } causation && (string.IsNullOrWhiteSpace(causation.RootOccurrenceId) ||
-            causation.RootOccurrenceId.Length > 128 || causation.SourceExecutionId?.Length > 128 ||
+            causation.RootOccurrenceId.Length > 128 || causation.SourceExecutionId?.Length > 256 ||
             causation.HopCount is < 0 or > 8 || causation.RecoveryAttempt is < 0 or > 8))
             throw new ArgumentException("The execution admission causation is invalid or exhausted.");
     }
