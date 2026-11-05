@@ -37,6 +37,12 @@ public sealed class FlowExecutionEvidenceTests
         Assert.Contains("Mapped before investigation.", final.Description);
         Assert.Contains("Likely exhausted storage.", final.Description);
         Assert.Equal("Mapped before investigation.", mappedBeforeAi.Description);
+        var longName = original with { Definition = original.Definition with { Name = new string('n', 200) } };
+        var longNameResult = FlowExecutionEvidenceFormatter.Map(new("{definitionName}: {outcome}", "Original failure"),
+            longName, 17, RunId, VersionId, ai);
+        Assert.True(FlowGraphValidator.IsBoundedText(longNameResult.Title, FlowLimits.MaximumTitleLength));
+        Assert.DoesNotContain("\n", longNameResult.Title);
+        Assert.Contains("[Truncated for display", longNameResult.Title);
     }
 
     [Fact]
@@ -125,7 +131,7 @@ public sealed class FlowExecutionEvidenceTests
         var safe = InvestigationStore.SafeResultText("password=synthetic-private-value\0\nBearer synthetic-token", 120);
         Assert.DoesNotContain("synthetic-private-value", safe);
         Assert.DoesNotContain("synthetic-token", safe);
-        Assert.DoesNotContain("\0", safe);
+        Assert.DoesNotContain('\0', safe);
         Assert.Contains("[REDACTED]", safe);
     }
 

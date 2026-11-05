@@ -37,7 +37,7 @@ public static class FlowExecutionEvidenceFormatter
             !ValidTemplate(mapping.DescriptionTemplate, FlowLimits.MaximumTemplateLength, multiline: true) ||
             mapping.Priority is < 0 or > 3)
             throw new ArgumentException("Invalid execution incident mapping.", nameof(mapping));
-        var title = Expand(mapping.TitleTemplate, original, ai);
+        var title = Expand(mapping.TitleTemplate, original, ai).ReplaceLineEndings(" ").Replace('\t', ' ');
         if (!FlowGraphValidator.IsBoundedText(title, FlowLimits.MaximumTitleLength))
             throw new InvalidOperationException("mapping-output-limit");
         return Enrich(new(title, Expand(mapping.DescriptionTemplate, original, ai), mapping.Priority),
@@ -60,7 +60,7 @@ public static class FlowExecutionEvidenceFormatter
             "\n\n" + DescribeRecovery(original, runId, attempts ?? []);
         if (!FlowGraphValidator.IsBoundedText(description, FlowLimits.MaximumDescriptionLength, multiline: true))
             throw new InvalidOperationException("mapping-output-limit");
-        return new(Safe(mapped.Title, FlowLimits.MaximumTitleLength), description, mapped.Priority);
+        return new(Safe(mapped.Title, FlowLimits.MaximumTitleLength).ReplaceLineEndings(" ").Replace('\t', ' '), description, mapped.Priority);
     }
 
     public static string InvestigationQuestion(FlowExecutionEventDto original, int tenantId)
