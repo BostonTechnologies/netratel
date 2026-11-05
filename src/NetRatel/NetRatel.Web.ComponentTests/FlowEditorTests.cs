@@ -387,6 +387,7 @@ public sealed class FlowEditorTests : AsyncBunitContext
         await cut.WaitForAssertionAsync(() => cut.Find("[data-testid=flow-trace-player]").TextContent.Should().Contain("Synthetic preview output"));
         cut.FindAll("[data-testid=flow-preview-dialog]").Should().BeEmpty();
         cut.FindAll("[data-testid=flow-trace-stale]").Should().BeEmpty();
+        cut.FindComponent<FlowTracePlayer>().Instance.ScopeId.Should().StartWith("flow-editor-");
         _api.DryRunCalls.Should().Be(1); _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
         adapter.ExecutionCalls.Should().Be(0);
         await cut.InvokeAsync(() => cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "Changed draft" }));
