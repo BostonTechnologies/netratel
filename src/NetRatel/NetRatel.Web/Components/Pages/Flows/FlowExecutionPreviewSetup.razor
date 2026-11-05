@@ -30,6 +30,9 @@ else
             <label>Target host name<input @bind="_targetHost" maxlength="512" /></label>
             @if (_source == FlowExecutionSourceKind.Request)
             {
+                <label>Definition family<select @bind="_definitionFamily" @bind:after="DefinitionFamilyChanged" data-testid="flow-sample-definition-family">
+                    @foreach (var source in Enum.GetValues<FlowExecutionSourceKind>()) { <option value="@source">@SourceLabel(source)</option> }
+                </select></label>
                 <label>Request kind<input @bind="_requestKind" maxlength="128" data-testid="flow-sample-request-kind" /></label>
             }
             <label>Reason<textarea @bind="_reason" maxlength="@FlowExecutionEventLimits.MaximumReasonLength"></textarea></label>
@@ -88,7 +91,7 @@ else
     private string? _sampleContext;
     private int _tenantContext;
     private Guid _eventId, _occurrenceId;
-    private FlowExecutionSourceKind _source;
+    private FlowExecutionSourceKind _source, _definitionFamily;
     private FlowExecutionOutcome _outcome;
     private string _rawStatus = "", _definitionName = "", _definitionId = "", _definitionRevision = "sample-1", _definitionHash = "";
     private string _executionId = "9223372036854775806", _attemptId = "sample-attempt-1", _agentId = "", _targetName = "Sample endpoint", _targetHost = "sample.invalid";
@@ -129,9 +132,19 @@ else
 
     private void SourceChanged()
     {
-        _definitionId = _trigger?.ExecutionTrigger?.DefinitionReferences?.FirstOrDefault(value => value.SourceKind == _source)?.Id ??
+        _definitionFamily = _source == FlowExecutionSourceKind.Request
+            ? _trigger?.ExecutionTrigger?.DefinitionReferences?.FirstOrDefault()?.SourceKind ?? FlowExecutionSourceKind.Request
+            : _source;
+        DefinitionFamilyChanged();
+    }
+
+    private void DefinitionFamilyChanged()
+    {
+        _definitionId = _trigger?.ExecutionTrigger?.DefinitionReferences?.FirstOrDefault(value => value.SourceKind == _definitionFamily)?.Id ??
             (_trigger?.ExecutionTrigger?.Sources.Count == 1 ? _trigger?.ExecutionTrigger?.DefinitionIds?.FirstOrDefault() : null) ?? "sample-definition";
-        _definitionName = "Sample " + SourceLabel(_source).ToLowerInvariant();
+        _definitionName = "Sample " + SourceLabel(_definitionFamily).ToLowerInvariant();
+        if (_source == FlowExecutionSourceKind.Request && _trigger?.ExecutionTrigger?.RequestKinds is not { Count: > 0 })
+            _requestKind = _definitionFamily switch { FlowExecutionSourceKind.Job => "Job", FlowExecutionSourceKind.Script => "Script", _ => "Admission" };
     }
 
     private void OutcomeChanged() => _rawStatus = _outcome switch
@@ -171,6 +184,7 @@ else
             {
                 CompletedAtUtc = occurredAt, Reason = Empty(_reason), ExitCode = exitCode,
                 RequestKind = _source == FlowExecutionSourceKind.Request ? Empty(_requestKind) : null,
+                DefinitionSourceKind = _source == FlowExecutionSourceKind.Request && _definitionFamily != FlowExecutionSourceKind.Request ? _definitionFamily : null,
                 Provenance = "explicit-preview-sample"
             };
             var validation = FlowExecutionEventValidator.Validate(execution);

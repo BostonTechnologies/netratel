@@ -38,10 +38,20 @@ public sealed class FlowExecutionSubscriptionWaitTests
             request with { CorrelationId = "request:17", ParentExecutionId = null }, default));
         Assert.False(await ExecutionLifecycleSubscriptionWorker.AwaitsKnownParentAsync(db,
             trigger with { Sources = [FlowExecutionSourceKind.Request] }, request, default));
+        var scriptAndRequest = trigger with { Sources = [FlowExecutionSourceKind.Script, FlowExecutionSourceKind.Request] };
+        var script = request with { SourceKind = FlowExecutionSourceKind.Script, ExecutionId = "native-script",
+            AttemptId = "native-script" };
+        Assert.True(await ExecutionLifecycleSubscriptionWorker.AwaitsKnownParentAsync(db, scriptAndRequest, script, default));
+        Assert.True(await ExecutionLifecycleSubscriptionWorker.AwaitsKnownParentAsync(db, scriptAndRequest, request, default));
+        Assert.False(await ExecutionLifecycleSubscriptionWorker.AwaitsKnownParentAsync(db,
+            scriptAndRequest with { AggregateCorrelatedEvents = false }, script, default));
+        Assert.False(await ExecutionLifecycleSubscriptionWorker.AwaitsKnownParentAsync(db,
+            scriptAndRequest with { Sources = [FlowExecutionSourceKind.Script] }, script, default));
         control.TerminalReadyAtUtc = now;
         control.TerminalResultHash = new string('a', 64);
         await db.SaveChangesAsync();
         Assert.False(await ExecutionLifecycleSubscriptionWorker.AwaitsKnownParentAsync(db, trigger, request, default));
+        Assert.False(await ExecutionLifecycleSubscriptionWorker.AwaitsKnownParentAsync(db, scriptAndRequest, script, default));
     }
 
     internal static FlowExecutionTriggerSettingsDto Trigger() => new(

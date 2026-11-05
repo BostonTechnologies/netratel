@@ -49,9 +49,13 @@ export async function attach(id, x, y, reference) {
     const keys = event => { if (event.key === 'Delete' && !isEditing()) event.preventDefault(); };
     const size = () => {
         if (workspace) workspace.style.setProperty('--flow-workspace-top', `${Math.max(0, workspace.getBoundingClientRect().top)}px`);
+        const panel = el.closest('.flow-canvas-panel');
+        if (panel) panel.style.setProperty('--flow-canvas-tools-inset', `${canvasToolsInset(panel.id)}px`);
     };
     const observer = new ResizeObserver(size);
     if (workspace?.parentElement) observer.observe(workspace.parentElement);
+    const tools = el.closest('.flow-canvas-panel')?.parentElement?.querySelector('.flow-canvas-tools');
+    if (tools) observer.observe(tools);
     window.addEventListener('resize', size);
     document.addEventListener('dragstart', start, true);
     document.addEventListener('touchstart', start, { capture: true, passive: true });
@@ -77,6 +81,12 @@ export async function attach(id, x, y, reference) {
 }
 export function detach(id) { viewers.get(id)?.(); viewers.delete(id); }
 export function focus(id) { document.getElementById(id)?.focus(); }
+export function canvasToolsInset(panelId) {
+    const panel = document.getElementById(panelId);
+    const tools = panel?.parentElement?.querySelector('.flow-canvas-tools');
+    if (!panel || !tools || getComputedStyle(tools).position !== 'absolute') return 0;
+    return Math.max(0, Math.ceil(tools.getBoundingClientRect().bottom - panel.getBoundingClientRect().top + 8));
+}
 export async function fitPosition(id, marginX, marginY) {
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const el = document.getElementById(id);

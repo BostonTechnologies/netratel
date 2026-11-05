@@ -55,6 +55,7 @@ public sealed class FlowApiException(HttpStatusCode statusCode, string? code = n
         "connector-unavailable" => "The selected connector is unavailable. Review Flows connectors before publishing; your draft is preserved.",
         "execution-definition-source-unsupported" => "This lifecycle source has no runnable library definition. Choose a job or library script.",
         "execution-definition-unavailable" => "The selected execution definition is unavailable in this tenant.",
+        "execution-definition-name-limit" => "This definition name exceeds the supported 512-character limit.",
         "execution-definition-query-invalid" or "execution-definition-id-invalid" or "execution-target-query-invalid" => "The definition search or selection is invalid. Reload the catalogue.",
         "mapping-output-limit" => "The sample expands beyond the incident field limits. Shorten the title or description template.",
         "canonical-principal-required" => "This session cannot publish. Sign in again with an authorized operator account; your draft is preserved.",

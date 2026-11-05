@@ -51,12 +51,17 @@ public sealed class FlowGraphV2RuntimeTests
         store.Current = restored;
         var restarted = lease with { Token = Guid.NewGuid(), Fence = lease.Fence + 1,
             Continuation = new(restored.NodeId, restored.Fields, restored.Investigation) { Node = restored } };
-        var completed = await runtime.ExecuteAsync(restarted, NoIncident);
+        var resumed = new FlowGraphV2Runtime(store, new VeloxFlowRuntimeAdapter(),
+            services.GetRequiredService<IServiceScopeFactory>(), new FixedClock(restored.StartedAtUtc.AddSeconds(37)));
+        var completed = await resumed.ExecuteAsync(restarted, NoIncident);
         completed.Status.Should().Be(FlowRunStatus.Succeeded);
         dispatch.Dispatched.Should().ContainSingle();
         dispatch.Observed.Should().ContainSingle().Which.Should().Be(Executions.NativeId);
         store.Current!.Trace!.Steps.Should().HaveCount(3);
         store.Current.Trace.Steps[1].SelectedPort.Should().Be(FlowNodeCatalogue.Succeeded);
+        store.Current.Trace.Steps[1].DurationMilliseconds.Should().Be(37000);
+        store.Current.Trace.Steps[0].DurationMilliseconds.Should().Be(0);
+        store.Current.Trace.Steps[2].DurationMilliseconds.Should().Be(0);
         var recorded = store.Current.Outputs[lease.Version.Graph.Nodes[1].Id];
         recorded.GetProperty("executionId").GetString().Should().Be(Executions.NativeId);
         recorded.GetProperty("receipt").GetProperty("executionId").GetString().Should().Be(Executions.NativeId);
@@ -140,6 +145,7 @@ public sealed class FlowGraphV2RuntimeTests
         store.Current!.Progress.Should().Be(FlowNodeProgress.Failed);
         store.Current.Trace!.Steps.Should().HaveCountGreaterThan(2);
         store.Current.Trace.Steps[^1].ErrorCode.Should().Be("node-output-limit");
+        store.Current.Trace.Steps[^1].DurationMilliseconds.Should().Be(0);
         var writes = store.Writes;
         var state = store.Current;
         var repeated = await runtime.ExecuteAsync(lease with { Continuation = new(state.NodeId, state.Fields) { Node = state } }, NoIncident);

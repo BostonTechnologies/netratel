@@ -132,13 +132,117 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
         var terminal = await TerminalAsync(expected.TenantId, FlowExecutionSourceKind.Job, binding.ExecutionId, ct);
         var definition = new FlowExecutionDefinitionDto(submitted.Snapshot.Definition.Job.Id.ToString(CultureInfo.InvariantCulture),
             submitted.Snapshot.Definition.Job.Name, submitted.Snapshot.ComputeDigest(), submitted.Snapshot.ComputeDigest());
+        var projection = JobOutput(details);
         var output = new FlowExecutionActionOutput(definition, new(details.Run.AgentId, details.Run.TargetDisplayName, details.Run.TargetHostName),
             binding.ExecutionId, binding.ExecutionId, details.Run.StartedAtUtc, details.Run.CompletedAtUtc,
-            Summary: Bound(details.Run.Error), Data: JsonSerializer.SerializeToElement(new
-            { status = details.Run.Status.ToString(), steps = details.Steps.Count, completed = details.Steps.Count(step => step.Status == JobStepRunState.Succeeded) }),
-            OutputAvailable: true, References: terminal?.Results);
+            projection.ExitCode, Summary: Bound(details.Run.Error), StandardOutput: projection.StandardOutput,
+            StandardError: projection.StandardError, Data: projection.Data,
+            OutputAvailable: true, Truncated: projection.Truncated, References: terminal?.Results);
         return new(disposition, "job-" + disposition.ToString().ToLowerInvariant(), Receipt(binding), output, terminal);
     }
+
+
+    private sealed record JobOutputProjection(JsonElement Data, string? StandardOutput, string? StandardError,
+        int? ExitCode, bool Truncated);
+    private sealed record JobStepOutput(JobStepRunInfo Step, JobTaskActivityInfo? Activity, string OutputState,
+        string StandardOutputState, string StandardErrorState, string? StandardOutput, string? StandardError, bool Truncated);
+
+    // GetDetailsAsync already applies native TaskOutputProtection and protected job-input redaction.
+    // Never read raw activity output or protected inputs/options to build this diagnostic projection.
+    private static JobOutputProjection JobOutput(JobRunDetails details)
+    {
+        const int maximumSteps = 8;
+        var entries = details.Steps.OrderBy(step => step.Ordinal).ThenBy(step => step.Id).Take(maximumSteps)
+            .Select(step => JobStepOutputFor(details, step)).ToArray();
+        JsonElement Data(int included) => JsonSerializer.SerializeToElement(new
+        {
+            status = details.Run.Status.ToString(), steps = details.Steps.Count,
+            completed = details.Steps.Count(step => step.Status == JobStepRunState.Succeeded),
+            stepOutcomesIncluded = included, stepOutcomesTruncated = included < details.Steps.Count,
+            stepOutcomes = entries.Take(included).Select(entry => new
+            {
+                id = entry.Step.Id.ToString(CultureInfo.InvariantCulture),
+                definitionStepId = entry.Step.JobStepId?.ToString(CultureInfo.InvariantCulture),
+                ordinal = entry.Step.Ordinal, outcome = StepOutcome(entry.Step.Status),
+                rawStatus = entry.Step.Status.ToString(), executionId = entry.Step.TaskRequestId,
+                startedAtUtc = entry.Step.StartedAtUtc, completedAtUtc = entry.Step.CompletedAtUtc,
+                exitCode = entry.Activity?.ExitCode, outputState = entry.OutputState,
+                standardOutputState = entry.StandardOutputState, standardErrorState = entry.StandardErrorState,
+                outputTruncated = entry.Truncated
+            })
+        }, Json);
+        var included = entries.Length;
+        var data = Data(included);
+        while (included > 0 && Encoding.UTF8.GetByteCount(data.GetRawText()) > FlowGraphV2Limits.MaximumBindingBytes) data = Data(--included);
+        entries = entries.Take(included).ToArray();
+        var stdout = Join(entry => entry.StandardOutput);
+        var stderr = Join(entry => entry.StandardError);
+        return new(data, Bound(stdout), Bound(stderr), details.Steps.Count == 1 ? entries.SingleOrDefault()?.Activity?.ExitCode : null,
+            included < details.Steps.Count || entries.Any(entry => entry.Truncated) ||
+            WouldTruncate(stdout) || WouldTruncate(stderr) || WouldTruncate(details.Run.Error));
+
+        string? Join(Func<JobStepOutput, string?> select)
+        {
+            var values = entries.Select(select).Where(value => value is not null).ToArray();
+            return values.Length == 0 ? null : string.Join("\n", values.Where(value => value!.Length > 0));
+        }
+    }
+
+    private static JobStepOutput JobStepOutputFor(JobRunDetails details, JobStepRunInfo step)
+    {
+        var activity = step.TaskRequestId is null ? null : details.Activities.SingleOrDefault(value =>
+            value.RequestId == step.TaskRequestId && value.JobRunId == details.Run.Id &&
+            value.JobStepId == step.JobStepId && value.TenantId == details.Run.TenantId && value.AgentId == details.Run.AgentId);
+        if (activity?.ResultJson is not { } json)
+            return new(step, activity, "missing", "missing", "missing", null, null, false);
+        if (Encoding.UTF8.GetByteCount(json) > 65536)
+            return new(step, activity, "truncated", "unavailable", "unavailable", null, null, true);
+        if (string.IsNullOrWhiteSpace(json))
+            return new(step, activity, "empty", "missing", "missing", null, null, false);
+        try
+        {
+            using var document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = FlowGraphV2Limits.MaximumValueDepth });
+            var data = document.RootElement;
+            var withheld = data.ValueKind == JsonValueKind.Object &&
+                data.TryGetProperty("outputRedacted", out var marker) && marker.ValueKind == JsonValueKind.True;
+            if (withheld) return new(step, activity, "withheld",
+                data.TryGetProperty("stdout", out _) ? "withheld" : "missing",
+                data.TryGetProperty("stderr", out _) ? "withheld" : "missing",
+                Text(data, "stdout"), Text(data, "stderr"), TextTruncated(data, "stdout") || TextTruncated(data, "stderr"));
+            var stdout = Stream("stdout");
+            var stderr = Stream("stderr");
+            var empty = data.ValueKind == JsonValueKind.Null ||
+                data.ValueKind == JsonValueKind.String && data.GetString()!.Length == 0 ||
+                data.ValueKind == JsonValueKind.Object && !data.EnumerateObject().Any() ||
+                data.ValueKind == JsonValueKind.Array && data.GetArrayLength() == 0;
+            return new(step, activity, empty ? "empty" : "recorded", stdout.State, stderr.State,
+                stdout.Text, stderr.Text, stdout.Truncated || stderr.Truncated);
+
+            (string State, string? Text, bool Truncated) Stream(string property)
+            {
+                if (data.ValueKind != JsonValueKind.Object || !data.TryGetProperty(property, out var value))
+                    return ("missing", null, false);
+                if (value.ValueKind == JsonValueKind.Null) return ("empty", null, false);
+                if (value.ValueKind is not (JsonValueKind.String or JsonValueKind.Array) ||
+                    value.ValueKind == JsonValueKind.Array && value.EnumerateArray().Any(item => item.ValueKind != JsonValueKind.String))
+                    return ("unavailable", null, false);
+                var text = Text(data, property);
+                var truncated = TextTruncated(data, property);
+                return (truncated ? "truncated" : string.IsNullOrEmpty(text) ? "empty" : "recorded", text, truncated);
+            }
+        }
+        catch (JsonException)
+        {
+            return new(step, activity, "unavailable", "unavailable", "unavailable", null, null, false);
+        }
+    }
+    private static string StepOutcome(JobStepRunState state) => state switch
+    {
+        JobStepRunState.Succeeded => "succeeded", JobStepRunState.Failed => "failed",
+        JobStepRunState.TimedOut => "timed_out", JobStepRunState.Cancelled => "cancelled",
+        JobStepRunState.Skipped => "skipped", JobStepRunState.Pending => "pending",
+        JobStepRunState.Running => "running", _ => "unknown"
+    };
 
     private async Task<FlowExecutionActionResult> ScriptResultAsync(FlowExecutionActionRequest request,
         ExecutionAdmissionBinding binding, JobTaskActivityInfo? activity, bool uncertain, bool denied, CancellationToken ct)
