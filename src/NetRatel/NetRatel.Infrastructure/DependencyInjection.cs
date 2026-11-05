@@ -71,6 +71,7 @@ public static class DependencyInjection
         services.AddScoped<IJobDefinitionService, JobDefinitionService>();
         services.AddScoped<IJobRunService, JobRunService>();
         services.AddScoped<IExecutionAdmissionStore, ExecutionAdmissionStore>();
+        services.AddScoped<IScriptExecutionReplayStore, ScriptExecutionReplayStore>();
         services.AddScoped<NetRatel.Infrastructure.Flows.FlowExecutionAuthority>();
         services.AddScoped<IKeyedExecutionAuthority>(provider => provider.GetRequiredService<NetRatel.Infrastructure.Flows.FlowExecutionAuthority>());
         services.AddScoped<IJobExecutionSnapshotCapture, PinnedJobExecutionSnapshotCapture>();

@@ -141,6 +141,7 @@ public static class AgentTaskEndpoints
             [FromServices] OrchestratorDbContext db,
             IJobRunService runs,
             IScriptService scripts,
+            [FromServices] IScriptExecutionReplayStore replayPins,
             IAgentCommandAuthorityDispatcher commands,
             IEventRecorder events,
             ICorrelationContext correlation,
@@ -173,6 +174,10 @@ public static class AgentTaskEndpoints
                 return Results.Conflict(new { code = "request_id_in_use" });
             var presentation = CreatePresentation(agent);
             var metadata = BuildExecutionMetadata(taskType, payload.Value!, payload.ScriptName);
+            await using var creationTransaction = await db.Database.BeginTransactionAsync(ct);
+            if (payload.ReplaySnapshot is { } sourcePin)
+                await replayPins.CaptureAsync(requestId, new(request.TenantId.Value, request.AgentId.Value, sourcePin,
+                    request.Environment, payload.Value!, payload.OutputPolicy!), ct);
             var created = await runs.CreateTaskActivityAsync(new CreateJobTaskActivityCommand(
                 requestId, null, null, string.Empty, request.TenantId, taskType, "Pending", null, DateTimeOffset.UtcNow, null, request.AgentId,
                 Environment: request.Environment,
@@ -188,6 +193,7 @@ public static class AgentTaskEndpoints
             if (created.TenantId != request.TenantId || created.AgentId != request.AgentId)
                 return Results.Conflict(new { code = "request_id_in_use" });
 
+            await creationTransaction.CommitAsync(ct);
             await commands.DispatchAsync(target, requestId, correlation.Current ?? $"netratel-task-{requestId}", taskType, payload.Value!, (int)request.Environment, ct);
             await events.RecordAsync(new DomainEvent
             {
@@ -302,7 +308,8 @@ public static class AgentTaskEndpoints
                 ScriptId = scriptId, ScriptType = type, ScriptContent = script.Content, Preferred = request.Preferred,
                 Parameters = request.Parameters, WorkingDirectory = request.WorkingDirectory, TimeoutSeconds = request.TimeoutSeconds,
                 OutputPolicy = outputPolicy
-            }), null, script.Name, outputPolicy);
+            }), null, script.Name, outputPolicy,
+                new PinnedJobScriptSnapshot(script, parameters, hash));
         }
         return taskType is TaskKinds.OsInfo or TaskKinds.ProcessesList or TaskKinds.ProcessesTopCpu or TaskKinds.DiskFree
             ? (request.Payload ?? string.Empty, null)
@@ -386,7 +393,8 @@ public static class AgentTaskEndpoints
         return new(null, null, null, null);
     }
 
-    internal sealed record PreparedTaskPayload(string? Value, string? Error, string? ScriptName = null, TaskOutputPolicy? OutputPolicy = null)
+    internal sealed record PreparedTaskPayload(string? Value, string? Error, string? ScriptName = null, TaskOutputPolicy? OutputPolicy = null,
+        PinnedJobScriptSnapshot? ReplaySnapshot = null)
     {
         public static implicit operator PreparedTaskPayload((string? Value, string? Error) result) => new(result.Value, result.Error);
     }
