@@ -7,6 +7,7 @@ using NetRatel.API.Endpoints;
 using NetRatel.API.Gateway;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Flows;
+using NetRatel.Shared.Contracts.Flows;
 using NetRatel.Application.Presence;
 using NetRatel.Application.Scripts;
 using NetRatel.Infrastructure.Flows;
@@ -20,7 +21,7 @@ namespace NetRatel.API.Services.Flows;
 /// A durable send claim is never replayed after an ambiguous process or transport boundary.
 /// </summary>
 public sealed class KeyedScriptExecutionService(OrchestratorDbContext db, IExecutionAdmissionStore admissions,
-    IJobRunService runs, FlowExecutionAuthority authority, IAgentCommandAuthorityDispatcher commands, TimeProvider clock)
+    IJobRunService runs, FlowExecutionAuthority authority, IAgentCommandAuthorityDispatcher commands, TimeProvider clock, IScriptExecutionReplayStore? replayPins = null)
     : IKeyedScriptExecutionService
 {
     private sealed record Submission(KeyedScriptAdmissionRequest Request, string PayloadJson, TaskOutputPolicy OutputPolicy);
@@ -48,6 +49,44 @@ public sealed class KeyedScriptExecutionService(OrchestratorDbContext db, IExecu
         var normalized = request with { Parameters = parameters };
         return await AdmitPreparedAsync(new(normalized, JsonSerializer.Serialize(invocation), outputPolicy),
             request.FlowLease, cancellationToken);
+    }
+
+    public async Task<KeyedScriptAdmissionResult> StartReplayAsync(ExecutionAdmissionIdentity identity, FlowRunLease lease,
+        FlowExecutionReplayDescriptorDto replay, CancellationToken cancellationToken = default)
+    {
+        identity.Validate();
+        if (lease.Event.ExecutionEvent is not { Outcome: FlowExecutionOutcome.Failed or FlowExecutionOutcome.TimedOut } source ||
+            source.Replay != replay || !replay.Supported || replay.SourceKind != FlowExecutionSourceKind.Script ||
+            replay.InputsReference != "script-execution:" + replay.SourceExecutionId ||
+            identity.Causation?.SourceExecutionId != replay.SourceExecutionId || identity.Causation.RecoveryAttempt < 1)
+            throw new ExecutionAdmissionDeniedException("The original script replay is not a trusted recoverable execution.");
+        var original = replayPins is null ? null : await replayPins.ResolveAsync(identity.TenantId, replay.SourceExecutionId, cancellationToken);
+        if (original is null)
+        {
+            var prior = await admissions.FindByExecutionAsync(ExecutionAdmissionKind.LibraryScript, replay.SourceExecutionId, cancellationToken);
+            if (prior?.Identity.TenantId != identity.TenantId)
+                throw new NotSupportedException("The protected original script replay material is unavailable.");
+            var priorSubmission = JsonSerializer.Deserialize<Submission>(prior.PayloadJson, Json)
+                ?? throw new NotSupportedException("The protected original script replay material is unavailable.");
+            original = new(identity.TenantId, priorSubmission.Request.AgentId, priorSubmission.Request.Snapshot,
+                priorSubmission.Request.Environment, priorSubmission.PayloadJson, priorSubmission.OutputPolicy);
+        }
+        original.Validate();
+        var pin = original.Script;
+        if (original.AgentId != replay.Target.AgentId || pin.Script.Id.ToString(CultureInfo.InvariantCulture) != replay.Definition.Id ||
+            pin.Script.SourceRevision.ToString(CultureInfo.InvariantCulture) != replay.Definition.Revision ||
+            !string.Equals(pin.ContentHash, replay.Definition.ContentHash, StringComparison.OrdinalIgnoreCase))
+            throw new ExecutionAdmissionDeniedException("The original script replay descriptor differs from its protected material.");
+        await authority.RequireScriptAsync(identity, pin.Script.Id, original.AgentId, cancellationToken);
+        var invocation = JsonSerializer.Deserialize<ExecLibraryScriptPayload>(original.NativePayloadJson)!;
+        var outputPolicy = original.OutputPolicy with { Binding = identity.ActionKey.ToString("N") };
+        invocation.OutputPolicy = outputPolicy;
+        var request = new KeyedScriptAdmissionRequest(identity, pin, original.AgentId, invocation.Parameters ?? [],
+            original.Environment, invocation.TimeoutSeconds ?? 3600, invocation.WorkingDirectory);
+        Validate(request);
+        // Preserve the original native shell, parameter presence and runtime options exactly.
+        // Only the output binding changes because this is one deliberate new execution.
+        return await AdmitPreparedAsync(new(request, JsonSerializer.Serialize(invocation), outputPolicy), lease, cancellationToken);
     }
 
     /// <summary>Retries only a provably unstarted protected admission, preserving its exact native payload and key.</summary>

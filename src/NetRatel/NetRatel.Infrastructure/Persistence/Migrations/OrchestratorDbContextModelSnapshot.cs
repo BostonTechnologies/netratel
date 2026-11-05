@@ -25,6 +25,23 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ScriptExecutionReplayRecord", b =>
+                {
+                    b.Property<string>("RequestId").HasMaxLength(256).HasColumnType("character varying(256)");
+                    b.Property<int>("TenantId").HasColumnType("integer");
+                    b.Property<Guid>("AgentId").HasColumnType("uuid");
+                    b.Property<long>("ScriptId").HasColumnType("bigint");
+                    b.Property<string>("ScriptName").IsRequired().HasMaxLength(512).HasColumnType("character varying(512)");
+                    b.Property<long>("ScriptRevision").HasColumnType("bigint");
+                    b.Property<string>("ScriptContentHash").IsRequired().HasMaxLength(64).HasColumnType("character varying(64)");
+                    b.Property<string>("PayloadHash").IsRequired().HasMaxLength(64).HasColumnType("character varying(64)");
+                    b.Property<string>("ProtectedSnapshotJson").IsRequired().HasColumnType("text");
+                    b.Property<DateTimeOffset>("CreatedAtUtc").HasColumnType("timestamp with time zone");
+                    b.HasKey("RequestId");
+                    b.HasIndex("TenantId", "AgentId", "CreatedAtUtc");
+                    b.ToTable("ScriptExecutionReplays", (string)null);
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ExecutionAdmissionRecord", b =>
                 {
                     b.Property<Guid>("ActionKey")

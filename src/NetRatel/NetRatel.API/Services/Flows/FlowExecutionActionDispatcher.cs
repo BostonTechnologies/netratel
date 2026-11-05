@@ -218,16 +218,7 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
         if (replay.SourceKind == FlowExecutionSourceKind.Script &&
             replay.InputsReference == "script-execution:" + replay.SourceExecutionId)
         {
-            var binding = await admissions.FindByExecutionAsync(ExecutionAdmissionKind.LibraryScript, replay.SourceExecutionId, ct);
-            if (binding?.Identity.TenantId != identity.TenantId)
-                return Result(FlowExecutionActionDisposition.Unsupported, "original-script-inputs-unavailable");
-            var submitted = JsonSerializer.Deserialize<ScriptSubmission>(binding.PayloadJson, Json)!;
-            var pin = submitted.Request.Snapshot;
-            if (submitted.Request.AgentId != replay.Target.AgentId || pin.Script.Id.ToString(CultureInfo.InvariantCulture) != replay.Definition.Id ||
-                pin.Script.SourceRevision.ToString(CultureInfo.InvariantCulture) != replay.Definition.Revision ||
-                !string.Equals(pin.ContentHash, replay.Definition.ContentHash, StringComparison.OrdinalIgnoreCase))
-                return Result(FlowExecutionActionDisposition.Unsupported, "original-script-pin-unavailable");
-            var accepted = await scripts.StartKeyedAsync(submitted.Request with { Identity = identity, FlowLease = request.Lease }, ct);
+            var accepted = await scripts.StartReplayAsync(identity, request.Lease, replay, ct);
             return await ScriptResultAsync(request, accepted.Binding, accepted.Activity, accepted.DispatchUncertain, accepted.AuthorityDenied, ct);
         }
         return Result(FlowExecutionActionDisposition.Unsupported, "original-request-not-replayable");
