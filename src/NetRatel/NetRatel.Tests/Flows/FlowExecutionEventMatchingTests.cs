@@ -56,6 +56,20 @@ public sealed class FlowExecutionEventMatchingTests
         Assert.False(FlowExecutionEventMatching.Matches(7, trigger, request with { Target = new(Guid.NewGuid()) }, Now.AddMinutes(-1)));
     }
 
+
+    [Theory]
+    [InlineData(FlowExecutionSourceKind.Job, FlowExecutionEventProvenance.JobTerminalReady)]
+    [InlineData(FlowExecutionSourceKind.Script, FlowExecutionEventProvenance.ScriptTerminalCommit)]
+    [InlineData(FlowExecutionSourceKind.Request, FlowExecutionEventProvenance.RequestStateCommit)]
+    public void Native_provenance_is_source_specific_and_does_not_trust_samples(FlowExecutionSourceKind source, string provenance)
+    {
+        var fact = Event(source, "42") with { Provenance = provenance };
+        Assert.True(FlowExecutionEventProvenance.IsNative(fact));
+        Assert.False(FlowExecutionEventProvenance.IsNative(fact with { Provenance = "sample" }));
+        var differentSource = source == FlowExecutionSourceKind.Job ? FlowExecutionSourceKind.Request : FlowExecutionSourceKind.Job;
+        Assert.False(FlowExecutionEventProvenance.IsNative(fact with { SourceKind = differentSource }));
+    }
+
     private static FlowExecutionTriggerSettingsDto Combined() => new(
         [FlowExecutionSourceKind.Job, FlowExecutionSourceKind.Script, FlowExecutionSourceKind.Request],
         [FlowExecutionOutcome.Failed, FlowExecutionOutcome.Unknown], FlowExecutionScope.AllInTenant);

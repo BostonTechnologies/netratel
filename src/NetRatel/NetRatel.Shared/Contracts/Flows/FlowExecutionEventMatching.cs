@@ -62,9 +62,9 @@ public static class FlowExecutionEventMatching
     }
 
     /// <summary>
-    /// Caller supplies same-key immutable facts already eligible for the subscription. A correlated request
-    /// is linked only after the source writer proves the terminal job boundary, so that durable job fact can
-    /// be selected regardless of delivery order. All source facts retain their own identities.
+    /// Caller supplies same-key immutable facts already eligible for the subscription. A known accepted parent
+    /// is correlated before its terminal result; combined admission waits for that authoritative boundary.
+    /// All source facts retain their own identities regardless of arrival order.
     /// </summary>
     public static FlowExecutionEventAggregateDto Aggregate(Guid flowVersionId, Guid triggerNodeId,
         FlowExecutionTriggerSettingsDto settings, IReadOnlyList<FlowExecutionEventDto> facts)
