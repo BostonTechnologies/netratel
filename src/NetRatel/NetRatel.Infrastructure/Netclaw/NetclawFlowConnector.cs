@@ -34,21 +34,23 @@ public sealed class NetclawFlowConnector(OrchestratorDbContext db, NetclawAuthor
         if (draft.Kind != FlowActionKind.NetclawInvestigation || !FlowContractValidation.ValidEnvelope(draft.Event) ||
             draft.Event.TenantId != draft.TenantId || draft.RunId == Guid.Empty || draft.IdempotencyKey is not { Length: > 0 and <= 256 })
             return new(FlowIncidentActionResultKind.Failed, "invalid-netclaw-action");
+        var messageId = FlowAiCorrelation.MessageId(draft);
+        var execution = draft.Event.ExecutionEvent;
         var existing = await db.Set<AiInvestigationRecord>().AsNoTracking()
             .SingleOrDefaultAsync(x => x.TenantId == draft.TenantId && x.SourceActionKey == draft.IdempotencyKey, ct);
         FlowAiResultDto Outcome(FlowAiResultStatus status, Guid? investigation = null) => new(draft.TenantId, draft.RunId,
-            draft.Event.FlowVersionId, draft.ActionNodeId, investigation ?? existing?.Id ?? Guid.Empty, draft.Event.EventId, status,
+            draft.Event.FlowVersionId, draft.ActionNodeId, investigation ?? existing?.Id ?? Guid.Empty, messageId, status,
             clock.GetUtcNow(), status is FlowAiResultStatus.Queued or FlowAiResultStatus.Processing or FlowAiResultStatus.AwaitingApproval ? null : clock.GetUtcNow());
         if (existing is not null)
         {
             // Read the exact committed automated turn; later manual turns and Idle are not evidence.
             var terminal = await db.Set<AiInvestigationTurnResultRecord>().AsNoTracking().SingleOrDefaultAsync(x =>
-                x.TenantId == draft.TenantId && x.InvestigationId == existing.Id && x.MessageId == draft.Event.EventId, ct);
+                x.TenantId == draft.TenantId && x.InvestigationId == existing.Id && x.MessageId == messageId, ct);
             if (terminal is not null)
             {
                 var result = JsonSerializer.Deserialize<FlowAiResultDto>(terminal.ResultJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
                 if (result is null || result.TenantId != draft.TenantId || result.FlowRunId != draft.RunId || result.FlowVersionId != draft.Event.FlowVersionId ||
-                    result.ActionNodeId != draft.ActionNodeId || result.MessageId != draft.Event.EventId || result.InvestigationId != existing.Id)
+                    result.ActionNodeId != draft.ActionNodeId || result.MessageId != messageId || result.InvestigationId != existing.Id)
                     return Result(Outcome(FlowAiResultStatus.Failed), "ai-correlation-invalid");
                 if (draft.AiDeadlineAtUtc is { } limit && result.CompletedAtUtc > limit)
                     return Result(Outcome(FlowAiResultStatus.Timeout), "ai-investigation-timeout");
@@ -63,22 +65,27 @@ public sealed class NetclawFlowConnector(OrchestratorDbContext db, NetclawAuthor
         if (draft.AiDeadlineAtUtc is { } deadline && clock.GetUtcNow() >= deadline)
             return Result(Outcome(FlowAiResultStatus.Timeout), "ai-investigation-timeout");
         // An action retry identifies the same local investigation and automated message. It never resends a remote turn.
-        var agentIds = draft.Event.Data.AgentId != Guid.Empty ? new[] { draft.Event.Data.AgentId } : Array.Empty<Guid>();
-        if (agentIds.Length == 0 && draft.Event.Data.OfflineSummary is not null)
+        var alert = draft.Event.Data;
+        var targetAgentId = execution is not null ? execution.Target.AgentId : alert?.AgentId;
+        var agentIds = targetAgentId is { } agent && agent != Guid.Empty ? new[] { agent } : Array.Empty<Guid>();
+        if (execution is null && agentIds.Length == 0 && alert?.OfflineSummary is not null)
         {
             var stateJson = await db.MonitoringSeries.AsNoTracking().Where(x => x.TenantId == draft.TenantId &&
-                x.RuleId == draft.Event.Data.RuleId && x.ActiveOccurrenceId == draft.Event.OccurrenceId && x.AgentId == Guid.Empty)
+                x.RuleId == alert!.RuleId && x.ActiveOccurrenceId == draft.Event.OccurrenceId && x.AgentId == Guid.Empty)
                 .Select(x => x.StateJson).SingleOrDefaultAsync(ct);
             var state = stateJson is null ? null : JsonSerializer.Deserialize<MonitoringSeriesState>(stateJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
             if (state is not null && !state.OfflineAgentIds.IsDefault) agentIds = state.OfflineAgentIds.Take(20).ToArray();
         }
         if (agentIds.Length == 0) return Result(Outcome(FlowAiResultStatus.Failed), "netclaw-no-client-context");
         var row = existing ?? await investigations.CreateAsync(draft.TenantId,
-            new InvestigationCreateRequest(Guid.NewGuid(), draft.Fields.Title, agentIds, draft.Event.OccurrenceId)
+            new InvestigationCreateRequest(Guid.NewGuid(), draft.Fields.Title, agentIds, execution is null ? draft.Event.OccurrenceId : null)
                 { SelectedPrompts = draft.AiSettings?.OptionalPrompts }, draft.Event.Authority.PrincipalId, ct,
             sourceActionKey: draft.IdempotencyKey, flowRunId: draft.RunId, pinnedPrompts: draft.AiSettings?.PinnedPrompts);
+        var question = execution is null
+            ? "Investigate the linked monitoring alert for the selected systems. Gather evidence with permitted NetRatel tools, explain the likely cause, and propose remediation. Request operator approval before changing systems.\n\nAlert description:\n" + draft.Fields.Description
+            : FlowExecutionEvidenceFormatter.InvestigationQuestion(execution, draft.TenantId);
         await investigations.AcceptMessageAsync(draft.TenantId, row.Id,
-            new(draft.Event.EventId, "Investigate the linked monitoring alert for the selected systems. Gather evidence with permitted NetRatel tools, explain the likely cause, and propose remediation. Request operator approval before changing systems.\n\nAlert description:\n" + draft.Fields.Description),
+            new(messageId, question),
             draft.Event.Authority.PrincipalId, draft.Event.Authority.IntegrationCredentialId, true, ct);
         // Admission commits a waiting checkpoint, never a successful discovery result.
         return Result(Outcome(row.State switch { InvestigationState.AwaitingApproval => FlowAiResultStatus.AwaitingApproval,
