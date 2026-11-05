@@ -1,0 +1,72 @@
+@using System.ComponentModel
+@using NetRatel.Shared.Contracts.Flows
+@using VeloxDev.WorkflowSystem
+@using VeloxDev.WorkflowSystem.AttachedBehaviors
+@implements IDisposable
+
+@if (Path is { Length: > 0 } path)
+{
+    <g class="flow-connection @(Selected ? "selected" : "")"
+       data-veloxdev-link-id="@WorkflowRuntimeIds.Get(Link)"
+       data-veloxdev-sender-slot="@WorkflowRuntimeIds.Get(Link.Sender)"
+       data-veloxdev-receiver-slot="@WorkflowRuntimeIds.Get(Link.Receiver)"
+       data-flow-source-node="@Source" data-flow-target-node="@Target">
+        <path d="@path" class="flow-connection-hit" fill="none" stroke="transparent" stroke-width="16"
+              pointer-events="stroke" tabindex="0" role="button" aria-label="@Label"
+              @onclick="SelectAsync" @onclick:stopPropagation @onfocus="SelectAsync" @onkeydown="KeyDown"
+              data-testid="flow-link-hit" />
+        <path d="@path" class="flow-connection-line" data-veloxdev-link-curve="1" fill="none"
+              stroke="@(Selected ? "var(--mud-palette-secondary)" : "var(--mud-palette-primary)")"
+              stroke-width="@(Selected ? "4" : "3")" pointer-events="none" data-testid="flow-link"
+              data-flow-source-node="@Source" data-flow-target-node="@Target" />
+    </g>
+}
+
+@code {
+    [Parameter, EditorRequired] public IWorkflowLinkViewModel Link { get; set; } = default!;
+    [Parameter] public Guid Source { get; set; }
+    [Parameter] public Guid Target { get; set; }
+    [Parameter] public string Label { get; set; } = "Inspect connection";
+    [Parameter] public bool Selected { get; set; }
+    [Parameter] public EventCallback SelectedChanged { get; set; }
+    private IWorkflowLinkViewModel? _subscribed;
+    private bool _disposed;
+    private string Path => BuildCurve();
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(Link, _subscribed)) return;
+        Unsubscribe();
+        _subscribed = Link;
+        Link.PropertyChanged += GeometryChanged;
+        Link.Sender.PropertyChanged += GeometryChanged;
+        Link.Receiver.PropertyChanged += GeometryChanged;
+    }
+    private string BuildCurve()
+    {
+        var sx = Link.Sender.Anchor.Horizontal; var sy = Link.Sender.Anchor.Vertical;
+        var ex = Link.Receiver.Anchor.Horizontal; var ey = Link.Receiver.Anchor.Vertical;
+        if (!new[] { sx, sy, ex, ey }.All(double.IsFinite))
+        { Link.PublishCurve(null); return ""; }
+        var points = LinkCurve.LinkCurvePoints(Link, sx, sy, ex, ey, 40);
+        // The actual Core hit-test geometry and SVG are derived from the same controls.
+        Link.PublishCurve(LinkCurve.BuildLinkCubic(Link, sx, sy, ex, ey, 40), this);
+        return FormattableString.Invariant($"M {points[0].X:F2},{points[0].Y:F2} C {points[1].X:F2},{points[1].Y:F2} {points[2].X:F2},{points[2].Y:F2} {points[3].X:F2},{points[3].Y:F2}");
+    }
+    private void GeometryChanged(object? sender, PropertyChangedEventArgs args)
+    {
+        if (!_disposed && args.PropertyName is nameof(IWorkflowSlotViewModel.Anchor) or nameof(IWorkflowLinkViewModel.Sender) or nameof(IWorkflowLinkViewModel.Receiver) or null or "")
+            _ = InvokeAsync(StateHasChanged);
+    }
+    private Task SelectAsync() => SelectedChanged.InvokeAsync();
+    private Task KeyDown(KeyboardEventArgs args) => args.Key is "Enter" or " " ? SelectAsync() : Task.CompletedTask;
+    private void Unsubscribe()
+    {
+        if (_subscribed is not { } link) return;
+        link.PropertyChanged -= GeometryChanged;
+        link.Sender.PropertyChanged -= GeometryChanged;
+        link.Receiver.PropertyChanged -= GeometryChanged;
+        link.PublishCurve(null);
+        _subscribed = null;
+    }
+    public void Dispose() { _disposed = true; Unsubscribe(); }
+}

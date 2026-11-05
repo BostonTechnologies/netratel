@@ -371,7 +371,13 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
     {
         var a = (await from.BoundingBoxAsync())!; var b = (await to.BoundingBoxAsync())!;
         await page.Mouse.MoveAsync(a.X + a.Width / 2, a.Y + a.Height / 2); await page.Mouse.DownAsync();
-        await page.Mouse.MoveAsync(b.X + b.Width / 2, b.Y + b.Height / 2, new() { Steps = 18 }); await page.Mouse.UpAsync();
+        await page.Mouse.MoveAsync(b.X + b.Width / 2, b.Y + b.Height / 2, new() { Steps = 18 });
+        await page.WaitForFunctionAsync("() => {const p=document.querySelector('[data-testid=flow-virtual-link]');return p&&!p.hasAttribute('hidden')&&p.getAttribute('d')?.includes(' C ')}");
+        await Assertions.Expect(page.GetByTestId("flow-virtual-link")).ToHaveAttributeAsync("stroke-dasharray", "7 5");
+        var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-connection-before-drop.png"), Animations = ScreenshotAnimations.Disabled });
+        await page.Mouse.UpAsync();
+        await Assertions.Expect(page.GetByTestId("flow-virtual-link")).ToHaveAttributeAsync("hidden", "hidden");
     }
     private static async Task AssertNativeNodesFitAsync(IPage page)
     {
