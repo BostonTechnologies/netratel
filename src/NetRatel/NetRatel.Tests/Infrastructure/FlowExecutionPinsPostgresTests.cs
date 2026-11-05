@@ -1,0 +1,117 @@
+using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using AwesomeAssertions;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.EntityFrameworkCore;
+using NetRatel.Application.Flows;
+using NetRatel.Infrastructure.Flows;
+using NetRatel.Infrastructure.Identity.Authorization;
+using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Services;
+using NetRatel.Shared.Contracts.Flows;
+using Xunit;
+
+namespace NetRatel.Tests.Infrastructure;
+
+[Collection(PostgreSqlPersistenceCollection.Name)]
+public sealed class FlowExecutionPinsPostgresTests(PostgreSqlPersistenceFixture postgres) : IAsyncLifetime
+{
+    private DbContextOptions<OrchestratorDbContext> _options = null!;
+    private readonly IDataProtectionProvider _keys = new EphemeralDataProtectionProvider();
+
+    public async ValueTask InitializeAsync()
+    {
+        _options = new DbContextOptionsBuilder<OrchestratorDbContext>()
+            .UseNpgsql(await postgres.CreateDatabaseAsync()).Options;
+        await using var db = new OrchestratorDbContext(_options);
+        await db.Database.MigrateAsync();
+    }
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    [Fact]
+    public async Task Published_script_sources_remain_protected_and_immutable_after_edits_and_tenant_switch()
+    {
+        await using var db = new OrchestratorDbContext(_options);
+        var scripts = new ScriptService(db);
+        const string content = "printf synthetic-pinned-source";
+        var script = await scripts.CreateAsync(new("diagnostic", "/", "fixture", content, "bash", null));
+        var nodeId = Guid.NewGuid();
+        var node = new FlowNodeDto(nodeId, FlowNodeKind.RunLibraryScript, "Diagnostic", new(0, 0))
+        {
+            ExecutionAction = new(FlowExecutionSourceKind.Script,
+                new(script.Id.ToString(), script.Name, script.SourceRevision.ToString(),
+                    Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content)))))
+        };
+        var graph = new FlowGraphDto(2, [node], [], new());
+        var versionId = Guid.NewGuid();
+        var pins = Service(db);
+        var capture = await pins.CaptureAsync(7, new("operator"), versionId, graph);
+        capture.ProtectedPinsJson.Should().NotContain(content);
+        var flowId = Guid.NewGuid();
+        db.FlowDefinitions.Add(new() { Id = flowId, TenantId = 7, Name = "synthetic", DraftJson = JsonSerializer.Serialize(capture.Graph) });
+        db.FlowVersions.Add(new()
+        {
+            Id = versionId, FlowId = flowId, TenantId = 7, VersionNumber = 1, GraphJson = JsonSerializer.Serialize(capture.Graph),
+            ConfigurationHash = "synthetic", PublishedBy = "operator", PublishedAtUtc = DateTimeOffset.UtcNow,
+            ProtectedExecutionPinsJson = capture.ProtectedPinsJson
+        });
+        await db.SaveChangesAsync();
+        await scripts.UpdateAsync(new(script.Id, null, null, null, "printf edited-source", null, null, script.SourceRevision));
+        db.ChangeTracker.Clear();
+
+        var pinned = await Service(db).ResolveAsync(7, versionId, nodeId);
+        pinned!.Script!.Script.Content.Should().Be(content);
+        pinned.Script.Script.SourceRevision.Should().Be(script.SourceRevision);
+        (await Service(db).ResolveAsync(8, versionId, nodeId)).Should().BeNull();
+        var changed = () => Service(db).CaptureAsync(7, new("operator"), Guid.NewGuid(), graph);
+        await changed.Should().ThrowAsync<FlowExecutionPinException>().WithMessage("execution-definition-revision-conflict");
+    }
+
+    [Fact]
+    public async Task A_job_pin_retains_its_canonical_target_and_referenced_library_revision()
+    {
+        await using var db = new OrchestratorDbContext(_options);
+        var now = DateTimeOffset.UtcNow;
+        var target = Guid.NewGuid();
+        db.Agents.Add(new() { Id = target, TenantId = 7, Name = "synthetic-host", FriendlyName = "Synthetic worker", CreatedAtUtc = now });
+        await db.SaveChangesAsync();
+        var script = await new ScriptService(db).CreateAsync(new("repair", "/", "fixture", "printf repair", "bash", null));
+        var jobs = new JobDefinitionService(db);
+        var job = await jobs.CreateAsync(new("bound-job", "/", null, 7, string.Empty, AgentId: target));
+        await jobs.AddStepAsync(new(job.Id, 1, NetRatel.Application.Jobs.JobStepKind.LibraryScript, null, null, script.Id, null, true));
+        var node = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.RunJob, "Job", new(0, 0))
+        {
+            ExecutionAction = new(FlowExecutionSourceKind.Job, new(job.Id.ToString(), job.Name))
+            { Target = new(target) }
+        };
+        var capture = await Service(db).CaptureAsync(7, new("operator"), Guid.NewGuid(), new(2, [node], [], new()));
+        capture.Graph.Nodes[0].ExecutionAction!.Target!.AgentId.Should().Be(target);
+        capture.Graph.Nodes[0].ExecutionAction!.Definition.ContentHash.Should().HaveLength(64);
+        var wrongTarget = node with { ExecutionAction = node.ExecutionAction! with { Target = new(Guid.NewGuid()) } };
+        var changed = () => Service(db).CaptureAsync(7, new("operator"), Guid.NewGuid(), new(2, [wrongTarget], [], new()));
+        await changed.Should().ThrowAsync<FlowExecutionPinException>().WithMessage("job-bound-target-conflict");
+    }
+
+    private FlowExecutionDefinitionPins Service(OrchestratorDbContext db)
+    {
+        var scripts = new ScriptService(db);
+        return new(db, new PinnedJobExecutionSnapshotCapture(db, new JobDefinitionService(db), scripts),
+            scripts, new Authority(), new Access(), _keys);
+    }
+
+    private sealed class Authority : IFlowExecutionAuthorityVerifier
+    {
+        public Task<bool> AuthorizeAsync(int tenantId, FlowExecutionAuthorityDto authority, CancellationToken ct = default)
+            => Task.FromResult(tenantId == 7 && authority.PrincipalId == "operator");
+    }
+    private sealed class Access : IEffectiveAccessService
+    {
+        public Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenantId, CancellationToken ct = default)
+            => Task.FromResult(tenantId == 7);
+        public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenantId, CancellationToken ct = default)
+            => throw new NotSupportedException();
+        public Task ReconcileBuiltInRolesAsync(CancellationToken ct = default) => Task.CompletedTask;
+    }
+}

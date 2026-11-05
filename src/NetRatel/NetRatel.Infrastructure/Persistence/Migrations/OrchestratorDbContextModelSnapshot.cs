@@ -2816,6 +2816,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.FlowDefinitionRecord", b =>
                 {
+                    b.Property<DateTimeOffset?>("EnabledSinceUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
@@ -3021,6 +3024,11 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.FlowVersionRecord", b =>
                 {
+                    b.Property<string>("ProtectedExecutionPinsJson")
+                        .HasColumnType("text");
+                    b.Property<string>("ExecutionAuthorityJson")
+                        .HasColumnType("text");
+
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
