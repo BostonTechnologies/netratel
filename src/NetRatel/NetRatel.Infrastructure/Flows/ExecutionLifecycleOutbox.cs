@@ -233,6 +233,7 @@ public static class ExecutionLifecycleOutbox
                 if (HasSubmission(db, request)) value = value with { DefinitionSourceKind = FlowExecutionSourceKind.Job };
                 if (LinkedJob(db, request) is { } run) value = CorrelateJob(value, run);
             }
+            value = ApplyNativeScriptReplay(db, value);
             value = ApplyAdmission(value, Admission(db, value));
             Append(db, value);
         }
@@ -249,6 +250,7 @@ public static class ExecutionLifecycleOutbox
                 if (await HasTrustedSubmissionAsync(db, request, ct)) value = value with { DefinitionSourceKind = FlowExecutionSourceKind.Job };
                 if (await LinkedJobAsync(db, request, ct) is { } run) value = CorrelateJob(value, run);
             }
+            value = await ApplyNativeScriptReplayAsync(db, value, ct);
             value = ApplyAdmission(value, await AdmissionAsync(db, value, ct));
             Append(db, value);
         }
@@ -526,6 +528,54 @@ public static class ExecutionLifecycleOutbox
         return new(FlowExecutionSourceKind.Job, definition, target, "job-run:" + id, id, id, supported,
             supported ? null : "canonical_replay_material_unavailable");
     }
+
+    private static FlowExecutionEventDto ApplyNativeScriptReplay(OrchestratorDbContext db, FlowExecutionEventDto value)
+    {
+        if (value.SourceKind != FlowExecutionSourceKind.Script) return value;
+        var pinned = db.Set<ScriptExecutionReplayRecord>().Local.SingleOrDefault(row =>
+            row.RequestId == value.ExecutionId && row.TenantId == value.TenantId) ??
+            db.Set<ScriptExecutionReplayRecord>().AsNoTracking().SingleOrDefault(row =>
+                row.RequestId == value.ExecutionId && row.TenantId == value.TenantId);
+        return ApplyNativeScriptReplay(value, pinned);
+    }
+
+    private static async Task<FlowExecutionEventDto> ApplyNativeScriptReplayAsync(OrchestratorDbContext db,
+        FlowExecutionEventDto value, CancellationToken ct)
+    {
+        if (value.SourceKind != FlowExecutionSourceKind.Script) return value;
+        var pinned = db.Set<ScriptExecutionReplayRecord>().Local.SingleOrDefault(row =>
+            row.RequestId == value.ExecutionId && row.TenantId == value.TenantId) ??
+            await db.Set<ScriptExecutionReplayRecord>().AsNoTracking().SingleOrDefaultAsync(row =>
+                row.RequestId == value.ExecutionId && row.TenantId == value.TenantId, ct);
+        return ApplyNativeScriptReplay(value, pinned);
+    }
+
+    private static FlowExecutionEventDto ApplyNativeScriptReplay(FlowExecutionEventDto value,
+        ScriptExecutionReplayRecord? pinned)
+    {
+        // Only the canonical activity's exact protected script payload can advertise script replay.
+        // A child task never substitutes its parent job. Admission independently decrypts and
+        // verifies this material and current authority before creating another native execution.
+        if (pinned is null || value.SourceKind != FlowExecutionSourceKind.Script ||
+            pinned.RequestId != value.ExecutionId || pinned.TenantId != value.TenantId ||
+            pinned.AgentId == Guid.Empty || pinned.AgentId != value.Target.AgentId ||
+            pinned.ScriptId <= 0 || pinned.ScriptRevision <= 0 ||
+            value.Definition.Id != pinned.ScriptId.ToString(CultureInfo.InvariantCulture) ||
+            value.Definition.Revision != pinned.ScriptRevision.ToString(CultureInfo.InvariantCulture) ||
+            !IsReplayDigest(pinned.ScriptContentHash) || !IsReplayDigest(pinned.PayloadHash) ||
+            !string.Equals(value.Definition.ContentHash, pinned.ScriptContentHash, StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(pinned.ProtectedSnapshotJson)) return value;
+        var definition = new FlowExecutionDefinitionDto(pinned.ScriptId.ToString(CultureInfo.InvariantCulture),
+            Bound(pinned.ScriptName, 512), pinned.ScriptRevision.ToString(CultureInfo.InvariantCulture), pinned.ScriptContentHash);
+        return value with
+        {
+            Definition = definition,
+            Replay = new(FlowExecutionSourceKind.Script, definition, value.Target, "script-execution:" + value.ExecutionId,
+                value.ExecutionId, value.AttemptId, true)
+        };
+    }
+
+    private static bool IsReplayDigest(string? hash) => hash is { Length: 64 } && hash.All(char.IsAsciiHexDigit);
 
     private static IQueryable<ExecutionAdmissionRecord> Admissions(OrchestratorDbContext db, FlowExecutionEventDto value)
     {
