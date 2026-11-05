@@ -712,6 +712,7 @@ public static class ExecutionLifecycleOutbox
 
     private static void Append(OrchestratorDbContext db, FlowExecutionEventDto value)
     {
+        value = FitSourcePresentation(value);
         if (db.OutboxMessages.Local.Any(x => x.Id == value.EventId)) return;
         var validation = FlowExecutionEventValidator.Validate(value);
         if (!validation.Valid) throw new InvalidOperationException("Invalid execution lifecycle event: " + string.Join(", ", validation.Issues));
@@ -725,6 +726,43 @@ public static class ExecutionLifecycleOutbox
             Status = OutboxStatuses.Pending, NextAttemptUtc = value.ObservedAtUtc
         });
     }
+
+    // Source identity and replay references are lossless. Presentation has a smaller combined
+    // budget because default JSON escaping can expand individually valid Unicode fields.
+    // Reserve room for the transaction's final timestamp stamp before its payload hash is frozen.
+    private static FlowExecutionEventDto FitSourcePresentation(FlowExecutionEventDto value)
+    {
+        const int byteBudget = FlowExecutionEventLimits.MaximumEnvelopeBytes - 256;
+        if (Bytes(value) <= byteBudget) return value;
+        FlowExecutionEventDto fitted = value;
+        foreach (var limit in new[] { 256, 128, 64, 32, 16, 0 })
+        {
+            fitted = value with
+            {
+                Definition = DefinitionPresentation(value.Definition, limit),
+                Target = TargetPresentation(value.Target, limit),
+                Reason = (Shorten(value.Reason, limit) ?? string.Empty) +
+                    " [Presentation truncated; see the canonical execution.]",
+                Replay = value.Replay is not { } replay ? null : replay with
+                {
+                    Definition = DefinitionPresentation(replay.Definition, limit),
+                    Target = TargetPresentation(replay.Target, limit)
+                }
+            };
+            if (Bytes(fitted) <= byteBudget) return fitted;
+        }
+        return fitted;
+
+        static int Bytes(FlowExecutionEventDto source) =>
+            JsonSerializer.SerializeToUtf8Bytes(source, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto).Length;
+        static FlowExecutionDefinitionDto DefinitionPresentation(FlowExecutionDefinitionDto definition, int limit) =>
+            definition with { Name = Shorten(definition.Name, limit) };
+        static FlowExecutionTargetDto TargetPresentation(FlowExecutionTargetDto target, int limit) =>
+            target with { DisplayName = Shorten(target.DisplayName, limit), HostName = Shorten(target.HostName, limit) };
+    }
+
+    private static string? Shorten(string? value, int limit) => value is null || value.Length <= limit
+        ? value : limit == 0 ? null : Bound(value, limit - 1) + "…";
 
     private static void PreserveFacts(OrchestratorDbContext db)
     {

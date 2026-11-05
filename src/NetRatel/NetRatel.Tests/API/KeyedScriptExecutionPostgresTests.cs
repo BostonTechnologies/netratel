@@ -290,7 +290,7 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
     [Fact]
     public async Task Original_native_script_rerun_keeps_full_source_identity_null_parameters_shell_target_and_runtime_after_edits()
     {
-        var requestId = "9007199254740997-native-" + new string('x', 180);
+        var requestId = new string('原', 256);
         FlowExecutionReplayDescriptorDto replay = null!;
         FlowExecutionEventDto source = null!;
         var original = await SeedAsync(current =>
@@ -304,7 +304,8 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
                 definition, requestId, requestId, replay.Target, FlowExecutionOutcome.Failed, "Failed", occurred, occurred)
             {
                 Replay = replay, ExitCode = 1, CompletedAtUtc = occurred,
-                RootExecutionId = "9007199254740993-synthetic-original-root", Provenance = "script-terminal-commit"
+                RootExecutionId = new string('始', 256), Causation = new(new string('起', 128)),
+                Provenance = "script-terminal-commit"
             };
             var rerun = new FlowNodeDto(selected.Id, FlowNodeKind.RerunOriginalExecution, "Rerun original", new(0, 0)) { Rerun = new() };
             var graph = new FlowGraphDto(2, [rerun], [], new());
@@ -365,6 +366,8 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         actual.TimeoutSeconds.Should().Be(37);
         actual.WorkingDirectory.Should().Be("/tmp/synthetic-original");
         actual.OutputPolicy!.Binding.Should().Be(original.Identity.ActionKey.ToString("N"));
+        _commands.LastClient.Should().Be(new ClientKey(7, original.AgentId));
+        _commands.LastEnvironment.Should().Be((int)ClientEnvironment.Dev);
         await using var restarted = new OrchestratorDbContext(_options);
         var same = await Dispatcher(restarted).DispatchAsync(action);
         same.Receipt!.ExecutionId.Should().Be(accepted.Receipt.ExecutionId);
@@ -372,6 +375,23 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
             .FindByExecutionAsync(ExecutionAdmissionKind.LibraryScript, accepted.Receipt.ExecutionId, CancellationToken.None);
         binding!.Identity.Causation!.SourceExecutionId.Should().Be(requestId);
         binding.Identity.Causation.RootExecutionId.Should().Be(source.RootExecutionId);
+        await new JobRunService(restarted, _keys).UpdateTaskActivityStatusAsync(new(accepted.Receipt.ExecutionId,
+            "Completed", null, DateTimeOffset.UtcNow, ResultJson: """{"stdout":"Synthetic verified rerun result","exitCode":0}""", ExitCode: 0));
+        var terminal = await Dispatcher(restarted).ObserveAsync(action, same.Receipt);
+        terminal.Disposition.Should().Be(FlowExecutionActionDisposition.Succeeded);
+        terminal.TerminalEvent.Should().NotBeNull();
+        terminal.TerminalEvent!.ExecutionId.Should().Be(accepted.Receipt.ExecutionId);
+        terminal.TerminalEvent.ParentExecutionId.Should().Be(requestId);
+        terminal.TerminalEvent.RootExecutionId.Should().Be(source.RootExecutionId);
+        terminal.TerminalEvent.Causation!.FlowRunId.Should().Be(lease.RunId);
+        terminal.TerminalEvent.Causation.NodeId.Should().Be(node.Id);
+        terminal.TerminalEvent.Causation.ParentEventId.Should().Be(source.EventId);
+        terminal.TerminalEvent.Causation.RecoveryAttempt.Should().Be(1);
+        terminal.TerminalEvent.Causation.RootOccurrenceId.Should().Be(source.Causation!.RootOccurrenceId);
+        terminal.TerminalEvent.Definition.Id.Should().Be(replay.Definition.Id);
+        terminal.TerminalEvent.Definition.Revision.Should().Be(replay.Definition.Revision);
+        terminal.TerminalEvent.Definition.ContentHash.Should().Be(replay.Definition.ContentHash);
+        terminal.TerminalEvent.Provenance.Should().Be("script-terminal-commit");
         _commands.Dispatches.Should().Be(1);
     }
 
@@ -446,10 +466,12 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         public int Dispatches { get; private set; }
         public string Payload { get; private set; } = "";
         public bool ThrowAfterSend { get; set; }
+        public ClientKey? LastClient { get; private set; }
+        public int LastEnvironment { get; private set; }
         public bool IsAvailable(ClientKey client) => true;
         public Task DispatchAsync(ClientKey client, string commandId, string correlationId, string taskType, string payload, int environment, CancellationToken ct)
         {
-            Dispatches++; Payload = payload;
+            Dispatches++; Payload = payload; LastClient = client; LastEnvironment = environment;
             if (ThrowAfterSend) throw new IOException("synthetic ambiguous transport");
             return Task.CompletedTask;
         }
