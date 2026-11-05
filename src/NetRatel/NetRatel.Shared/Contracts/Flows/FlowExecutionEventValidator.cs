@@ -20,8 +20,8 @@ public static class FlowExecutionEventValidator
         Required(value.ExecutionId, "execution_id");
         Required(value.AttemptId, "attempt_id");
         Required(value.RawStatus, "raw_status");
-        if (FlowExecutionOutcomes.FromAuthoritativeStatus(value.RawStatus) != value.Outcome)
-            issues.Add("event_raw_outcome_mismatch");
+        // Native status vocabularies differ. Only the trusted source writer/accepted ledger can
+        // establish normalization (including a definitive admission denial recorded as Failed).
         Optional(value.CorrelationId, "correlation_id");
         Optional(value.RequestKind, "request_kind");
         Optional(value.ParentExecutionId, "parent_execution_id");
@@ -51,8 +51,9 @@ public static class FlowExecutionEventValidator
             Text(replay.InputsReference, 256, "replay_inputs_reference");
             Text(replay.UnsupportedReason, 128, "replay_unsupported_reason");
             if (replay.Supported && (string.IsNullOrWhiteSpace(replay.Definition?.Id) ||
-                string.IsNullOrWhiteSpace(replay.Definition?.Revision) || replay.Target?.AgentId is null ||
-                string.IsNullOrWhiteSpace(replay.InputsReference) || replay.Target != value.Target ||
+                string.IsNullOrWhiteSpace(replay.Definition?.Revision) || replay.Definition?.ContentHash is not { Length: 64 } ||
+                replay.SourceKind is not (FlowExecutionSourceKind.Job or FlowExecutionSourceKind.Script) || replay.Target?.AgentId is null ||
+                string.IsNullOrWhiteSpace(replay.InputsReference) || replay.Target.AgentId != value.Target?.AgentId ||
                 !string.Equals(replay.InputsReference, replay.SourceKind switch
                 {
                     FlowExecutionSourceKind.Job => "job-run:" + replay.SourceExecutionId,
