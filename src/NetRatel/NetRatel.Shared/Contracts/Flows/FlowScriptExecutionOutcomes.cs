@@ -24,17 +24,20 @@ public static class FlowScriptExecutionOutcomes
             try
             {
                 using var document = JsonDocument.Parse(nativeResultJson, new JsonDocumentOptions { MaxDepth = 32 });
-                if (document.RootElement.ValueKind == JsonValueKind.Object)
-                {
-                    var root = document.RootElement;
-                    unknown = True(root, "outcomeUnknown");
-                    timedOut = True(root, "timedOut");
-                    cancelled = True(root, "cancelled");
-                    if (root.TryGetProperty("exitCode", out var code) && code.ValueKind == JsonValueKind.Number &&
-                        code.TryGetInt32(out var number)) payloadExitCode = number;
-                }
+                if (document.RootElement.ValueKind != JsonValueKind.Object) return InvalidBody(status.Value, exitCode);
+                var root = document.RootElement;
+                unknown = True(root, "outcomeUnknown");
+                timedOut = True(root, "timedOut");
+                cancelled = True(root, "cancelled");
+                if (root.TryGetProperty("exitCode", out var code) && code.ValueKind == JsonValueKind.Number &&
+                    code.TryGetInt32(out var number)) payloadExitCode = number;
             }
-            catch (JsonException) { }
+            catch (JsonException)
+            {
+                // A malformed body cannot prove that an otherwise finished process had a known outcome.
+                // Native authoritative timeout/cancellation/unknown states remain decisive.
+                return InvalidBody(status.Value, exitCode);
+            }
         }
         var acceptedExitCode = exitCode ?? payloadExitCode;
         if (status == FlowExecutionOutcome.Unknown || unknown ||
@@ -46,6 +49,10 @@ public static class FlowScriptExecutionOutcomes
             return new(FlowExecutionOutcome.Failed, acceptedExitCode);
         return new(acceptedExitCode == 0 ? FlowExecutionOutcome.Succeeded : FlowExecutionOutcome.Unknown, acceptedExitCode);
     }
+
+    private static FlowScriptExecutionTerminalDto InvalidBody(FlowExecutionOutcome status, int? exitCode) =>
+        new(status is FlowExecutionOutcome.TimedOut or FlowExecutionOutcome.Cancelled or FlowExecutionOutcome.Unknown
+            ? status : FlowExecutionOutcome.Unknown, exitCode);
 
     private static bool True(JsonElement root, string property) =>
         root.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.True;

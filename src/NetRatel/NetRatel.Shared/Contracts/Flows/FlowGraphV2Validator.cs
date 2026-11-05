@@ -261,7 +261,7 @@ public static class FlowGraphV2Validator
         var references = trigger.DefinitionReferences ?? [];
         if (ids.Count > FlowGraphV2Limits.MaximumSelectedDefinitions || references.Count > FlowGraphV2Limits.MaximumSelectedDefinitions ||
             ids.Any(id => !Text(id, 128)) || ids.Distinct(StringComparer.Ordinal).Count() != ids.Count ||
-            references.Any(reference => reference is null || !trigger.Sources.Contains(reference.SourceKind) || !Text(reference.Id, 128)) ||
+            references.Any(reference => reference is null || (!trigger.Sources.Contains(reference.SourceKind) && !(trigger.Sources.Contains(FlowExecutionSourceKind.Request) && reference.SourceKind is FlowExecutionSourceKind.Job or FlowExecutionSourceKind.Script)) || !Text(reference.Id, 128)) ||
             references.Where(reference => reference is not null).Select(reference => (reference.SourceKind, reference.Id)).Distinct().Count() != references.Count)
             return false;
         if (trigger.Scope == FlowExecutionScope.AllInTenant ? ids.Count != 0 || references.Count != 0 :
