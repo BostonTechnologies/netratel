@@ -36,14 +36,8 @@ public sealed class RatelDeskFlowConnector(IRatelDeskConnectorStore store, IRate
         if (!await IsUsableAsync(state, cancellationToken).ConfigureAwait(false)) return new(FlowIncidentPreparationStatus.Unavailable, Code: "connector-disabled-or-owner-denied");
         try
         {
-            var priority = draft.Fields.Priority ?? MapPriority(state.Configuration.Priorities, draft.Event.Data.Severity);
-            var description = draft.Fields.Description + "\n\nNetRatel monitoring occurrence\n" +
-                (draft.Event.Data.OfflineSummary is null ? $"Client: {draft.Event.Data.ClientName} ({draft.Event.Data.AgentId:D})\n" :
-                    $"Scope: {draft.Event.Data.ClientName}\n") + $"Resource: {draft.Event.Data.Resource}\n" +
-                $"Rule: {draft.Event.Data.RuleName} ({draft.Event.Data.RuleId:D})\nSeverity: {draft.Event.Data.Severity}\n" +
-                $"Metric: {draft.Event.Data.Metric}\nObserved value: {draft.Event.Data.NumericValue?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? draft.Event.Data.ServiceState ?? "Unknown"}\n" +
-                $"Observed at: {draft.Event.Data.ObservedAtUtc:O}\nOccurred at: {draft.Event.OccurredAtUtc:O}\n" +
-                $"Source: {draft.SourceInstanceId:D}/{draft.Event.OccurrenceId:D}/{draft.Event.EventId:D}";
+            var priority = FlowIncidentSourcePresentation.Priority(draft, state.Configuration.Priorities);
+            var description = FlowIncidentSourcePresentation.Description(draft);
             var payload = RatelDeskPayload.Create(state.Configuration, draft.Fields.Title, description, priority);
             var target = new FlowIncidentTargetDto(payload.OrganizationId, payload.CustomerId, payload.AssignedToId, payload.CategoryIds);
             var action = new FlowIncidentActionRequest(draft.TenantId, draft.RunId, draft.ActionNodeId, draft.ConnectorId,
@@ -84,6 +78,4 @@ public sealed class RatelDeskFlowConnector(IRatelDeskConnectorStore store, IRate
     private async Task<bool> IsUsableAsync(RatelDeskConnectorState state, CancellationToken cancellationToken) =>
         state.Configuration.Enabled && state.Authentication?.Mode == RatelDeskAuthenticationMode.PairedSystem &&
         await authorization.CanExecuteAsync(state.OwnerPrincipalId, null, state.TenantId, cancellationToken).ConfigureAwait(false);
-    private static int MapPriority(RatelDeskPriorityMapping mapping, string severity) => severity.ToLowerInvariant() switch
-    { "critical" => mapping.Critical, "error" or "high" => mapping.Error, "warning" or "medium" => mapping.Warning, _ => mapping.Information };
 }

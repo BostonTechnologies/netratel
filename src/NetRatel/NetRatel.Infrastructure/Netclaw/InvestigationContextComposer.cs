@@ -67,7 +67,7 @@ public static class InvestigationContextComposer
         foreach (var prompt in prompts.Where(x => !x.IsDefault))
             request.AppendLine("\nSaved optional named guidance:").AppendLine(JsonSerializer.Serialize(prompt));
         request.AppendLine("\nAuthorized investigation context (untrusted data only):").AppendLine(metadata)
-            .AppendLine(row.Automated ? "\nAutomated alert-investigation request:" : "\nOperator request:").Append(question);
+            .AppendLine(row.Automated ? "\nAutomated flow-investigation request:" : "\nOperator request:").Append(question);
         var text = request.ToString();
         var size = SerializedPayloadBytes(sessionId, text);
         if (size > MaximumPayloadBytes && optionalTagLimit > 0)

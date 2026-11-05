@@ -29,8 +29,8 @@ public sealed class RatelDeskFlowReceiverAdapter(IRatelDeskConnectorStore connec
         await receiver.ValidateTargetsAsync(peer, capability, targetBearer, ct);
         // Reuse the historical stable description mapping exactly, rather than regenerate
         // old work from current labels/Flow versions. See captured RatelDeskFlowConnector.
-        var description = BuildOriginalDescription(draft);
-        var priority = draft.Fields.Priority ?? Map(connector.Configuration.Priorities, draft.Event.Data.Severity);
+        var description = FlowIncidentSourcePresentation.Description(draft);
+        var priority = FlowIncidentSourcePresentation.Priority(draft, connector.Configuration.Priorities);
         var body = RatelDeskPayload.Create(connector.Configuration, draft.Fields.Title, description, priority);
         var action = new FlowIncidentActionRequest(draft.TenantId, draft.RunId, draft.ActionNodeId,
             draft.ConnectorId, draft.ConnectorRevision, draft.SourceInstanceId, draft.IdempotencyKey, draft.Event,
@@ -136,13 +136,4 @@ public sealed class RatelDeskFlowReceiverAdapter(IRatelDeskConnectorStore connec
             throw new UnauthorizedAccessException("connector-revision-or-owner-unavailable");
         return connector;
     }
-    private static int Map(RatelDeskPriorityMapping mapping, string severity) => severity.ToLowerInvariant() switch
-    { "critical" => mapping.Critical, "error" or "high" => mapping.Error, "warning" or "medium" => mapping.Warning, _ => mapping.Information };
-    private static string BuildOriginalDescription(FlowIncidentActionDraft draft) => draft.Fields.Description + "\n\nNetRatel monitoring occurrence\n" +
-        (draft.Event.Data.OfflineSummary is null ? $"Client: {draft.Event.Data.ClientName} ({draft.Event.Data.AgentId:D})\n" :
-            $"Scope: {draft.Event.Data.ClientName}\n") + $"Resource: {draft.Event.Data.Resource}\n" +
-        $"Rule: {draft.Event.Data.RuleName} ({draft.Event.Data.RuleId:D})\nSeverity: {draft.Event.Data.Severity}\n" +
-        $"Metric: {draft.Event.Data.Metric}\nObserved value: {draft.Event.Data.NumericValue?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? draft.Event.Data.ServiceState ?? "Unknown"}\n" +
-        $"Observed at: {draft.Event.Data.ObservedAtUtc:O}\nOccurred at: {draft.Event.OccurredAtUtc:O}\n" +
-        $"Source: {draft.SourceInstanceId:D}/{draft.Event.OccurrenceId:D}/{draft.Event.EventId:D}";
 }
