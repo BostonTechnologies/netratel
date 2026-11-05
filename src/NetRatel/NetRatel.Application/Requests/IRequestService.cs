@@ -36,8 +36,14 @@ public sealed record UpdateRequestCommand(
     string? JobInputs,
     IReadOnlyList<string>? Logs);
 
+/// <summary>Protected internal execution material; never serialize this from a public request endpoint.</summary>
+public sealed record RequestExecutionMaterial(int RequestId, string SourceSystem, ulong JobDefinitionId,
+    int TenantId, Guid AgentId, string? InputsJson);
+
 public interface IRequestService
 {
+    Task<RequestExecutionMaterial?> GetExecutionMaterialAsync(int requestId, CancellationToken ct = default)
+        => Task.FromResult<RequestExecutionMaterial?>(null);
     Task<IReadOnlyList<RequestInfo>> ListAsync(CancellationToken ct = default);
     Task<RequestInfo?> GetAsync(int requestId, CancellationToken ct = default);
     Task<RequestInfo> CreateAsync(CreateRequestCommand command, CancellationToken ct = default);

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using NetRatel.Application.Jobs;
 using NetRatel.Shared.Contracts.Flows;
 
@@ -28,13 +29,20 @@ public enum FlowExecutionActionDisposition
 
 /// <summary>Resolved inputs are server-owned and omitted from trace receipts. The durable runtime supplies its exact current lease.</summary>
 public sealed record FlowExecutionActionRequest(FlowRunLease Lease, Guid NodeId, Guid ActionKey, int NodeAttempt,
-    string? InputsJson = null, FlowExecutionReplayDescriptorDto? OriginalReplay = null);
+    string? InputsJson = null, FlowExecutionReplayDescriptorDto? OriginalReplay = null)
+{
+    public int RecoveryAttempt { get; init; }
+    public DateTimeOffset? DeadlineAtUtc { get; init; }
+    public bool AllowUnstartedDispatch { get; init; } = true;
+}
 public sealed record FlowExecutionActionReceipt(Guid ActionKey, ExecutionAdmissionKind Kind, string ExecutionId,
     string? SourceExecutionId = null, int RecoveryAttempt = 0);
 
 public sealed record FlowExecutionActionOutput(FlowExecutionDefinitionDto Definition, FlowExecutionTargetDto Target,
     string ExecutionId, string AttemptId, DateTimeOffset? StartedAtUtc = null, DateTimeOffset? CompletedAtUtc = null,
     int? ExitCode = null, string? Summary = null, string? StandardOutput = null, string? StandardError = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonConverter(typeof(FlowNullableJsonElementConverter))]
     JsonElement? Data = null, bool OutputAvailable = false, bool Truncated = false,
     IReadOnlyList<FlowExecutionDataReferenceDto>? References = null);
 public sealed record FlowExecutionActionResult(FlowExecutionActionDisposition Disposition, string Code,

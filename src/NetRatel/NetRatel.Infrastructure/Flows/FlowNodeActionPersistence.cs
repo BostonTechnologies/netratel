@@ -1,0 +1,100 @@
+using Microsoft.EntityFrameworkCore;
+using NetRatel.Application.Flows;
+using NetRatel.Infrastructure.Persistence;
+using NetRatel.Shared.Contracts.Flows;
+
+namespace NetRatel.Infrastructure.Flows;
+
+public sealed partial class FlowPersistenceService
+{
+    private async Task<FlowActionExecutionState?> GetOrCreateNodeActionAsync(OrchestratorDbContext db,
+        FlowRunLease lease, FlowIncidentActionDraft draft, CancellationToken ct)
+    {
+        if (draft.RunId != lease.RunId || draft.TenantId != lease.Event.TenantId || draft.SourceInstanceId != lease.SourceInstanceId ||
+            draft.IdempotencyKey != FlowActionKeys.Create(lease, draft.ActionNodeId) || !FlowJsonCanonical.Equal(draft.Event, lease.Event))
+            return null;
+        var target = FlowGraphValidator.ActionTargets(lease.Version.Graph).SingleOrDefault(action => action.Id == draft.ActionNodeId);
+        if (target is null || target.Kind != draft.Kind || target.ConnectorId != draft.ConnectorId ||
+            target.ConnectorRevision != draft.ConnectorRevision) return null;
+        await using var transaction = await BeginAsync(db, ct).ConfigureAwait(false);
+        var run = await CurrentLeaseAsync(db, lease, ct).ConfigureAwait(false);
+        var state = run?.ContinuationJson is null ? null : Parse<FlowContinuationDto>(run.ContinuationJson).Node;
+        if (state is null || state.Progress != FlowNodeProgress.Dispatching || !FlowNodeCheckpointRules.Valid(lease, state)) return null;
+        var node = lease.Version.Graph.Nodes.SingleOrDefault(node => node.Id == state.NodeId);
+        if (node is null || (node.Kind == FlowNodeKind.ActionGroup
+            ? node.Actions?.Any(action => action.Id == draft.ActionNodeId) != true : node.Id != draft.ActionNodeId)) return null;
+        var expectedInputs = draft.Kind == FlowActionKind.NetclawInvestigation && state.Inputs.Count > 0 ? state.Inputs : null;
+        if (!FlowJsonCanonical.Equal(expectedInputs, draft.InvestigationInputs) ||
+            draft.InvestigationInputs is not null && System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(draft.InvestigationInputs, Json).Length >
+                FlowGraphV2Limits.MaximumInvestigationInputBytes) return null;
+        var configured = draft.Kind == FlowActionKind.NetclawInvestigation ? node.AiSettings : null;
+        if (Serialize(configured) != Serialize(draft.AiSettings) ||
+            (draft.Kind == FlowActionKind.NetclawInvestigation ? draft.AiDeadlineAtUtc != state.DeadlineAtUtc : draft.AiDeadlineAtUtc is not null))
+            return null;
+        var action = await db.FlowActions.SingleOrDefaultAsync(row => row.TenantId == draft.TenantId &&
+            row.RunId == draft.RunId && row.NodeId == draft.ActionNodeId, ct).ConfigureAwait(false);
+        if (action is not null)
+        {
+            // The previously frozen draft wins even after a worker crash or a later mapping/AI node.
+            if (!FlowJsonCanonical.Equal(Parse<FlowIncidentActionDraft>(action.DraftJson), draft)) return null;
+            if (action.Status == FlowActionStatus.Dispatching && action.LeaseFence < lease.Fence &&
+                (draft.Kind is not (FlowActionKind.RatelDeskIncident or FlowActionKind.NetclawInvestigation) ||
+                    action.PreparedJson is not null && !Parse<FlowIncidentActionRequest>(action.PreparedJson).SupportsSafeReplay))
+            { action.Status = FlowActionStatus.DeliveryUnknown; action.Code = "interrupted-delivery-unknown"; action.LeaseFence = lease.Fence; }
+            else if (action.Status is FlowActionStatus.Pending or FlowActionStatus.RetryWaiting or FlowActionStatus.WaitingForAi or FlowActionStatus.AwaitingApproval)
+                action.LeaseFence = lease.Fence;
+        }
+        else
+        {
+            FlowIncidentActionDraft expected;
+            if (draft.Kind == FlowActionKind.NetclawInvestigation)
+                expected = draft with { Fields = state.Fields ?? FlowGraphV2Runtime.InitialFields(lease) };
+            else
+            {
+                if (state.PreparedActionFields?.TryGetValue(draft.ActionNodeId, out var frozen) != true) return null;
+                expected = draft with { Fields = frozen };
+            }
+            if (!FlowJsonCanonical.Equal(expected, draft)) return null;
+            action = new FlowActionRecord { RunId = draft.RunId, NodeId = draft.ActionNodeId, TenantId = draft.TenantId,
+                IdempotencyKey = draft.IdempotencyKey, DraftJson = Serialize(draft), ConnectorRevision = draft.ConnectorRevision,
+                Status = FlowActionStatus.Pending, LeaseFence = lease.Fence };
+            db.FlowActions.Add(action);
+        }
+        if (!await ReceiverLeaseEffectiveAsync(db, lease, ct).ConfigureAwait(false)) return null;
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        if (!await ReceiverLeaseEffectiveAsync(db, lease, ct).ConfigureAwait(false)) return null;
+        if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false);
+        return ActionState(action);
+    }
+
+    private async Task<bool> CompleteNodeRunAsync(OrchestratorDbContext db, FlowRunLease lease, FlowRuntimeResult result, CancellationToken ct)
+    {
+        await using var transaction = await BeginAsync(db, ct).ConfigureAwait(false);
+        var run = await CurrentLeaseAsync(db, lease, ct).ConfigureAwait(false);
+        if (run is null) return false;
+        var state = run.ContinuationJson is null ? null : Parse<FlowContinuationDto>(run.ContinuationJson).Node;
+        if (result.Status == FlowRunStatus.RetryWaiting)
+        {
+            // A timeout/shutdown between canonical acceptance and checkpoint save retries the same action key.
+            // The persisted token, not the in-memory prefix, governs restart.
+            run.Status = FlowRunStatus.RetryWaiting; run.Code = result.Code;
+            run.NextAttemptAtUtc = Now.AddSeconds(5); run.CompletedAtUtc = null;
+        }
+        else
+        {
+            var invalidInput = result.Status == FlowRunStatus.Failed && result.Code is
+                "runtime-input-invalid" or "runtime-source-mismatch" or "runtime-checkpoint-invalid" or "runtime-step-limit";
+            if (!invalidInput && (state?.Progress is not (FlowNodeProgress.Completed or FlowNodeProgress.Failed) ||
+                state.NextNodeId is not null || state.ResultStatus != result.Status || state.ResultCode != result.Code))
+                return false;
+            // Only the selected, completed path determines this run. Inactive branch actions never become pending work.
+            run.Status = result.Status; run.Code = result.Code; run.CompletedAtUtc = Now; run.NextAttemptAtUtc = null;
+        }
+        run.LeaseToken = null; run.LeaseOwner = null; run.LeaseExpiresAtUtc = null;
+        if (!await ReceiverLeaseEffectiveAsync(db, lease, ct).ConfigureAwait(false)) return false;
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        if (!await ReceiverLeaseEffectiveAsync(db, lease, ct).ConfigureAwait(false)) return false;
+        if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false);
+        return true;
+    }
+}

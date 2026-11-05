@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using NetRatel.Shared.Contracts.Flows;
 
@@ -6,10 +7,16 @@ namespace NetRatel.Application.Flows;
 /// <summary>Current tenant-paired identity is rechecked; never replace this with a service/global-admin principal.</summary>
 public sealed record FlowExecutionAuthorityDto(string PrincipalId, string? IntegrationCredentialId = null);
 public sealed record FlowEventEnvelope(int TenantId, Guid EventId, Guid OccurrenceId, Guid FlowVersionId,
-    DateTimeOffset OccurredAtUtc, FlowEventDataDto Data, FlowExecutionAuthorityDto Authority)
+    DateTimeOffset OccurredAtUtc, [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] FlowEventDataDto? Data, FlowExecutionAuthorityDto Authority)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public FlowExecutionEventDto? ExecutionEvent { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? SourceDeliveryId { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? SourceAdmissionKey { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<Guid>? SourceEventIds { get; init; }
 }
 public enum FlowIngressDisposition { Enqueued, Duplicate, Conflict, Disabled, Invalid, CapacityExceeded }
 public sealed record FlowIngressResult(FlowIngressDisposition Disposition, Guid? RunId = null, string? Code = null);
@@ -40,6 +47,8 @@ public sealed record FlowIncidentActionDraft(int TenantId, Guid RunId, Guid Acti
     public FlowAiSettingsDto? AiSettings { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DateTimeOffset? AiDeadlineAtUtc { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyDictionary<string, JsonElement>? InvestigationInputs { get; init; }
 }
 public sealed record FlowIncidentTargetDto(string OrganizationId, string CustomerId, string? AssignedToId, IReadOnlyList<Guid> CategoryIds);
 /// <summary>Preparation resolves and pins connector mapping before this exact semantic request is persisted and sent.</summary>
@@ -95,7 +104,11 @@ public sealed record FlowRunLease(Guid RunId, Guid Token, Guid WorkerId, long Fe
     public FlowContinuationDto? Continuation { get; init; }
     public DateTimeOffset CreatedAtUtc { get; init; }
 }
-public sealed record FlowContinuationDto(Guid ResumeNodeId, FlowIncidentFieldsDto? Fields, FlowAiResultDto? AiResult = null);
+public sealed record FlowContinuationDto(Guid ResumeNodeId, FlowIncidentFieldsDto? Fields, FlowAiResultDto? AiResult = null)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FlowNodeCheckpointDto? Node { get; init; }
+}
 public sealed record FlowRuntimeResult(FlowRunStatus Status, string Code)
 {
     public FlowContinuationDto? Continuation { get; init; }

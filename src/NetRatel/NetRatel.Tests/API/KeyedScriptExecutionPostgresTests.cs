@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using NetRatel.API.Gateway;
 using NetRatel.API.Services.Flows;
+using NetRatel.API.Services.Jobs;
 using NetRatel.Application.Flows;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Presence;
@@ -17,6 +18,8 @@ using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared.Contracts.Execution;
+using NetRatel.Shared;
 using NetRatel.Shared.Contracts.Tasks;
 using NetRatel.Tests.Infrastructure;
 using Xunit;
@@ -125,6 +128,229 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
     }
 
 
+    [Fact]
+    public async Task Flow_action_observes_pending_then_real_native_output_and_current_permission_revocation()
+    {
+        var original = await SeedAsync();
+        await using var db = new OrchestratorDbContext(_options);
+        var authority = new FlowExecutionAuthority(db, new Verifier(), _access, _source, TimeProvider.System);
+        var native = new JobRunService(db, _keys);
+        var pins = new Pins(new(original.Identity.NodeId, FlowNodeKind.RunLibraryScript,
+            original.FlowLease!.Version.Graph.Nodes[0].ExecutionAction!.Definition, new(original.AgentId), Script: original.Snapshot));
+        var dispatcher = new FlowExecutionActionDispatcher(db, pins, new NoJobs(), Service(db), native,
+            new ExecutionAdmissionStore(db, _keys, TimeProvider.System), authority);
+        var request = new FlowExecutionActionRequest(original.FlowLease, original.Identity.NodeId, original.Identity.ActionKey, 1);
+        var queued = await dispatcher.DispatchAsync(request);
+        queued.Disposition.Should().Be(FlowExecutionActionDisposition.Pending);
+        queued.Receipt!.ExecutionId.Should().NotBeEmpty();
+        _commands.Dispatches.Should().Be(1);
+        await native.UpdateTaskActivityStatusAsync(new(queued.Receipt.ExecutionId, "Completed", null,
+            DateTimeOffset.UtcNow, ResultJson: """{"stdout":["synthetic terminal output","second line"],"exitCode":0}""", ExitCode: 0));
+        var terminal = await dispatcher.ObserveAsync(request, queued.Receipt);
+        terminal.Disposition.Should().Be(FlowExecutionActionDisposition.Succeeded);
+        terminal.Output!.StandardOutput.Should().Be("synthetic terminal output\nsecond line");
+        terminal.Output.ExecutionId.Should().Be(queued.Receipt.ExecutionId);
+        _commands.Dispatches.Should().Be(1);
+        _access.Allowed = false;
+        (await dispatcher.ObserveAsync(request, queued.Receipt)).Disposition.Should().Be(FlowExecutionActionDisposition.Denied);
+        _commands.Dispatches.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task A_typed_native_reference_reaches_protected_admission_without_resolving_or_checkpointing_a_secret_value()
+    {
+        var original = await SeedAsync(lease =>
+        {
+            var graph = lease.Version.Graph with
+            {
+                Nodes = [lease.Version.Graph.Nodes[0] with
+                {
+                    Inputs = new Dictionary<string, FlowInputBindingDto>
+                    { ["vault"] = new(FlowInputSource.SecretReference, FlowDataType.SecretReference, "SYNTHETIC_FLOW_TOKEN") }
+                }]
+            };
+            return lease with { Version = lease.Version with { Graph = graph,
+                ConfigurationHash = FlowGraphSerialization.Hash(graph) } };
+        });
+        await using var db = new OrchestratorDbContext(_options);
+        var pin = original.Snapshot with
+        { Parameters = [new ScriptParamInfo(1, original.Snapshot.Script.Id, "vault", "secret_reference", true, null, null, null)] };
+        db.ScriptParameters.Add(new() { ScriptId = checked((long)pin.Script.Id), Name = "vault", Type = "secret_reference", Required = true });
+        await db.SaveChangesAsync();
+        var authority = new FlowExecutionAuthority(db, new Verifier(), _access, _source, TimeProvider.System);
+        var native = new JobRunService(db, _keys);
+        var dispatcher = new FlowExecutionActionDispatcher(db, new Pins(new(original.Identity.NodeId,
+            FlowNodeKind.RunLibraryScript, original.FlowLease!.Version.Graph.Nodes[0].ExecutionAction!.Definition,
+            new(original.AgentId), Script: pin)), new NoJobs(), Service(db), native,
+            new ExecutionAdmissionStore(db, _keys, TimeProvider.System), authority);
+        var action = new FlowExecutionActionRequest(original.FlowLease, original.Identity.NodeId, original.Identity.ActionKey, 1, "{}");
+        _commands.Available = false;
+        var reserved = await dispatcher.DispatchAsync(action);
+        reserved.Disposition.Should().Be(FlowExecutionActionDisposition.Pending);
+        _commands.Dispatches.Should().Be(0);
+        var checkpoint = JsonSerializer.Deserialize<FlowContinuationDto>(
+            (await db.FlowRuns.AsNoTracking().SingleAsync()).ContinuationJson!, Json)!;
+        checkpoint.Node!.Inputs.Should().BeEmpty();
+        (await db.FlowRuns.AsNoTracking().SingleAsync()).ContinuationJson.Should().NotContain("SYNTHETIC_FLOW_TOKEN");
+        var record = await db.Set<ExecutionAdmissionRecord>().AsNoTracking().SingleAsync();
+        record.ProtectedPayloadJson.Should().NotContain("SYNTHETIC_FLOW_TOKEN");
+        _commands.Available = true;
+        var accepted = await dispatcher.ObserveAsync(action, reserved.Receipt!);
+        accepted.Receipt!.ExecutionId.Should().Be(reserved.Receipt.ExecutionId);
+        _commands.Dispatches.Should().Be(1);
+        var actual = JsonSerializer.Deserialize<ExecLibraryScriptPayload>(_commands.Payload)!;
+        actual.Parameters!["vault"].Should().Be("SYNTHETIC_FLOW_TOKEN");
+        actual.OutputSecretValues.Should().BeNull();
+        actual.OutputPolicy!.SecretParameters.Should().BeEmpty();
+        actual.OutputPolicy.SecretReferenceParameters.Should().Equal("vault");
+        (await dispatcher.ObserveAsync(action, accepted.Receipt)).Receipt!.ExecutionId.Should().Be(accepted.Receipt.ExecutionId);
+        _commands.Dispatches.Should().Be(1);
+        checkpoint = JsonSerializer.Deserialize<FlowContinuationDto>(
+            (await db.FlowRuns.AsNoTracking().SingleAsync()).ContinuationJson!, Json)!;
+        checkpoint.Node!.Inputs.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Unknown_and_nonreplayable_original_results_never_send_a_repair_or_rerun()
+    {
+        var original = await SeedAsync();
+        await using var db = new OrchestratorDbContext(_options);
+        var node = new FlowNodeDto(original.Identity.NodeId, FlowNodeKind.RerunOriginalExecution, "Rerun original", new(0, 0)) { Rerun = new() };
+        var replay = new FlowExecutionReplayDescriptorDto(FlowExecutionSourceKind.Script, new(original.Snapshot.Script.Id.ToString()),
+            new(original.AgentId), "script-execution:unavailable", "unavailable", "unavailable", true);
+        var source = new FlowExecutionEventDto(Guid.NewGuid(), Guid.NewGuid(), 7, FlowExecutionSourceKind.Script,
+            replay.Definition, replay.SourceExecutionId, replay.SourceAttemptId, replay.Target, FlowExecutionOutcome.Unknown,
+            "DeliveryUnknown", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow) { Replay = replay };
+        var lease = original.FlowLease! with { Version = original.FlowLease.Version with { Graph = new(2, [node], [], new()) },
+            Event = original.FlowLease.Event with { ExecutionEvent = source } };
+        var dispatcher = new FlowExecutionActionDispatcher(db, new Pins(null), new NoJobs(), Service(db), new JobRunService(db, _keys),
+            new ExecutionAdmissionStore(db, _keys, TimeProvider.System),
+            new FlowExecutionAuthority(db, new Verifier(), _access, _source, TimeProvider.System));
+        var action = new FlowExecutionActionRequest(lease, node.Id, Guid.NewGuid(), 1, OriginalReplay: replay);
+        (await dispatcher.DispatchAsync(action)).Disposition.Should().Be(FlowExecutionActionDisposition.Unknown);
+        (await dispatcher.DispatchAsync(action with { Lease = lease with { Event = lease.Event with
+        { ExecutionEvent = source with { Outcome = FlowExecutionOutcome.Failed, RawStatus = "Failed" } } },
+            OriginalReplay = null })).Disposition.Should().Be(FlowExecutionActionDisposition.Unsupported);
+        var hopExhausted = action with { Lease = lease with { Event = lease.Event with
+            { ExecutionEvent = source with { Causation = new("bounded-original", HopCount: FlowExecutionEventLimits.MaximumHopCount) } } } };
+        (await dispatcher.DispatchAsync(hopExhausted)).Disposition.Should().Be(FlowExecutionActionDisposition.Denied);
+        _commands.Dispatches.Should().Be(0);
+        (await db.Set<ExecutionAdmissionRecord>().CountAsync()).Should().Be(0);
+    }
+
+
+    [Theory]
+    [InlineData("Failed", """{"timedOut":true}""", null, FlowExecutionActionDisposition.TimedOut)]
+    [InlineData("Failed", """{"outcomeUnknown":true}""", null, FlowExecutionActionDisposition.Unknown)]
+    [InlineData("Completed", "{}", null, FlowExecutionActionDisposition.Unknown)]
+    public async Task Flow_action_classifies_committed_native_terminal_flags_without_fabricating_success(
+        string rawStatus, string resultJson, int? exitCode, FlowExecutionActionDisposition expected)
+    {
+        var original = await SeedAsync();
+        await using var db = new OrchestratorDbContext(_options);
+        var native = new JobRunService(db, _keys);
+        var dispatcher = new FlowExecutionActionDispatcher(db, new Pins(new(original.Identity.NodeId, FlowNodeKind.RunLibraryScript,
+            original.FlowLease!.Version.Graph.Nodes[0].ExecutionAction!.Definition, new(original.AgentId), Script: original.Snapshot)),
+            new NoJobs(), Service(db), native, new ExecutionAdmissionStore(db, _keys, TimeProvider.System),
+            new FlowExecutionAuthority(db, new Verifier(), _access, _source, TimeProvider.System));
+        var request = new FlowExecutionActionRequest(original.FlowLease, original.Identity.NodeId, original.Identity.ActionKey, 1);
+        var accepted = await dispatcher.DispatchAsync(request);
+        await native.UpdateTaskActivityStatusAsync(new(accepted.Receipt!.ExecutionId, rawStatus, null,
+            DateTimeOffset.UtcNow, ResultJson: resultJson, ExitCode: exitCode));
+        var observed = await dispatcher.ObserveAsync(request, accepted.Receipt);
+        observed.Disposition.Should().Be(expected);
+        _commands.Dispatches.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_reserved_offline_script_resumes_after_restart_with_the_same_id_and_never_resends_a_started_claim(bool ambiguousSend)
+    {
+        var original = await SeedAsync();
+        var action = new FlowExecutionActionRequest(original.FlowLease!, original.Identity.NodeId, original.Identity.ActionKey, 1);
+        FlowExecutionActionDispatcher Dispatcher(OrchestratorDbContext context) => new(context, new Pins(new(original.Identity.NodeId,
+            FlowNodeKind.RunLibraryScript, original.FlowLease!.Version.Graph.Nodes[0].ExecutionAction!.Definition,
+            new(original.AgentId), Script: original.Snapshot)), new NoJobs(), Service(context), new JobRunService(context, _keys),
+            new ExecutionAdmissionStore(context, _keys, TimeProvider.System),
+            new FlowExecutionAuthority(context, new Verifier(), _access, _source, TimeProvider.System));
+        _commands.Available = false;
+        FlowExecutionActionResult reserved;
+        await using (var first = new OrchestratorDbContext(_options))
+        {
+            reserved = await Dispatcher(first).DispatchAsync(action);
+            reserved.Disposition.Should().Be(FlowExecutionActionDisposition.Pending);
+            reserved.Code.Should().Be("script-reserved");
+            (await first.Set<ExecutionAdmissionRecord>().SingleAsync()).DispatchStartedAtUtc.Should().BeNull();
+            (await first.JobTaskActivities.CountAsync()).Should().Be(0);
+        }
+        _commands.Dispatches.Should().Be(0);
+        var renewed = original.FlowLease! with { Token = Guid.NewGuid(), WorkerId = Guid.NewGuid(),
+            Fence = original.FlowLease.Fence + 1, ExpiresAtUtc = original.FlowLease.ExpiresAtUtc.AddMinutes(1) };
+        await using (var edit = new OrchestratorDbContext(_options))
+        {
+            await new ScriptService(edit).UpdateAsync(new(original.Snapshot.Script.Id, null, null, null,
+                "printf changed-after-reservation", null, null, original.Snapshot.Script.SourceRevision));
+            var run = await edit.FlowRuns.SingleAsync();
+            run.LeaseToken = renewed.Token; run.LeaseOwner = renewed.WorkerId; run.Fence = renewed.Fence;
+            run.LeaseExpiresAtUtc = renewed.ExpiresAtUtc;
+            await edit.SaveChangesAsync();
+        }
+        action = action with { Lease = renewed };
+        _commands.Available = true;
+        _commands.ThrowAfterSend = ambiguousSend;
+        await using (var expiredObserver = new OrchestratorDbContext(_options))
+        {
+            var expired = await Dispatcher(expiredObserver).ObserveAsync(action with
+                { AllowUnstartedDispatch = false, DeadlineAtUtc = original.FlowLease.Event.OccurredAtUtc.AddSeconds(-1) }, reserved.Receipt!);
+            expired.Receipt!.ExecutionId.Should().Be(reserved.Receipt!.ExecutionId);
+            expired.Disposition.Should().Be(FlowExecutionActionDisposition.Pending);
+            (await expiredObserver.Set<ExecutionAdmissionRecord>().SingleAsync()).DispatchStartedAtUtc.Should().BeNull();
+            (await expiredObserver.JobTaskActivities.CountAsync()).Should().Be(0);
+        }
+        _commands.Dispatches.Should().Be(0);
+        await using (var restarted = new OrchestratorDbContext(_options))
+        {
+            var resumed = await Dispatcher(restarted).ObserveAsync(action, reserved.Receipt!);
+            resumed.Receipt!.ExecutionId.Should().Be(reserved.Receipt!.ExecutionId);
+            resumed.Disposition.Should().Be(ambiguousSend ? FlowExecutionActionDisposition.Unknown : FlowExecutionActionDisposition.Pending);
+            var binding = await restarted.Set<ExecutionAdmissionRecord>().SingleAsync();
+            binding.DispatchStartedAtUtc.Should().NotBeNull();
+            if (ambiguousSend) binding.DispatchAcceptedAtUtc.Should().BeNull();
+            else binding.DispatchAcceptedAtUtc.Should().NotBeNull();
+            (await restarted.JobTaskActivities.SingleAsync()).RequestId.Should().Be(reserved.Receipt.ExecutionId);
+        }
+        _commands.Dispatches.Should().Be(1);
+        _commands.Payload.Should().Contain(original.Snapshot.Script.Content).And.NotContain("changed-after-reservation");
+        await using (var observe = new OrchestratorDbContext(_options))
+            (await Dispatcher(observe).ObserveAsync(action, reserved.Receipt!)).Receipt!.ExecutionId.Should().Be(reserved.Receipt!.ExecutionId);
+        _commands.Dispatches.Should().Be(1);
+        await using (var terminal = new OrchestratorDbContext(_options))
+            await new JobRunService(terminal, _keys).UpdateTaskActivityStatusAsync(new(reserved.Receipt!.ExecutionId,
+                "Completed", null, DateTimeOffset.UtcNow, ResultJson: """{"stdout":"synthetic resumed result","exitCode":0}""", ExitCode: 0));
+        await using var final = new OrchestratorDbContext(_options);
+        var completed = await Dispatcher(final).ObserveAsync(action with
+            { AllowUnstartedDispatch = false, DeadlineAtUtc = original.FlowLease.Event.OccurredAtUtc.AddSeconds(-1) }, reserved.Receipt!);
+        completed.Disposition.Should().Be(FlowExecutionActionDisposition.Succeeded);
+        completed.Output!.ExecutionId.Should().Be(reserved.Receipt!.ExecutionId);
+        _commands.Dispatches.Should().Be(1);
+    }
+
+    private sealed class Pins(FlowPinnedExecutionDefinition? value) : IFlowExecutionDefinitionPins
+    {
+        public Task<FlowPinnedExecutionDefinition?> ResolveAsync(int tenant, Guid version, Guid node, CancellationToken ct = default)
+            => Task.FromResult(value);
+        public Task<FlowExecutionPinsCapture> CaptureAsync(int tenant, FlowExecutionAuthorityDto authority, Guid version,
+            FlowGraphDto graph, CancellationToken ct = default) => throw new NotSupportedException();
+    }
+    private sealed class NoJobs : IAkkaJobAuthorityService
+    {
+        public Task<JobRunInfo> StartAsync(ulong id, NetRatel.Shared.Contracts.Jobs.RunJobRequest request, CancellationToken ct) => throw new NotSupportedException();
+        public Task RecordLifecycleAsync(ClientKey client, JobLifecycleUpdateEnvelope lifecycle, CancellationToken ct) => throw new NotSupportedException();
+        public Task<bool> CancelAsync(ulong id, string reason, CancellationToken ct) => throw new NotSupportedException();
+    }
+
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -171,6 +397,63 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         (await recovered.JobTaskActivities.CountAsync()).Should().Be(1);
     }
 
+    [Fact]
+    public async Task Node_deadline_expiring_during_activity_save_rolls_back_the_unstarted_claim_and_prevents_later_resume()
+    {
+        var request = await SeedAsync();
+        var deadline = request.FlowLease!.Event.OccurredAtUtc.AddSeconds(30);
+        await using (var configure = new OrchestratorDbContext(_options))
+        {
+            var run = await configure.FlowRuns.SingleAsync();
+            var continuation = JsonSerializer.Deserialize<FlowContinuationDto>(run.ContinuationJson!, Json)!;
+            run.ContinuationJson = JsonSerializer.Serialize(continuation with
+                { Node = continuation.Node! with { DeadlineAtUtc = deadline } }, Json);
+            await configure.SaveChangesAsync();
+        }
+        var clock = new AdmissionClock();
+        var options = new DbContextOptionsBuilder<OrchestratorDbContext>(_options)
+            .AddInterceptors(new AfterActivitySave(() => clock.UtcNow = deadline.AddSeconds(1))).Options;
+        await using (var dispatch = new OrchestratorDbContext(options))
+        {
+            var attempt = () => Service(dispatch, clock: clock).StartKeyedAsync(request);
+            await attempt.Should().ThrowAsync<ExecutionAdmissionDeniedException>().WithMessage("*node deadline*");
+        }
+        await using var restarted = new OrchestratorDbContext(_options);
+        (await restarted.JobTaskActivities.CountAsync()).Should().Be(0);
+        var binding = await restarted.Set<ExecutionAdmissionRecord>().SingleAsync();
+        binding.DispatchStartedAtUtc.Should().BeNull();
+        binding.DispatchAcceptedAtUtc.Should().BeNull();
+        var retry = () => Service(restarted, clock: clock).StartKeyedAsync(request);
+        await retry.Should().ThrowAsync<ExecutionAdmissionDeniedException>().WithMessage("*node deadline*");
+        _commands.Dispatches.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Missing_or_mismatched_persisted_action_checkpoint_cannot_create_a_script_activity(bool mismatch)
+    {
+        var request = await SeedAsync();
+        await using (var configure = new OrchestratorDbContext(_options))
+        {
+            var run = await configure.FlowRuns.SingleAsync();
+            if (mismatch)
+            {
+                var continuation = JsonSerializer.Deserialize<FlowContinuationDto>(run.ContinuationJson!, Json)!;
+                run.ContinuationJson = JsonSerializer.Serialize(continuation with
+                    { Node = continuation.Node! with { NodeId = Guid.NewGuid() } }, Json);
+            }
+            else run.ContinuationJson = null;
+            await configure.SaveChangesAsync();
+        }
+        await using var dispatch = new OrchestratorDbContext(_options);
+        var attempt = () => Service(dispatch).StartKeyedAsync(request);
+        await attempt.Should().ThrowAsync<ExecutionAdmissionDeniedException>().WithMessage("*checkpoint*");
+        (await dispatch.JobTaskActivities.CountAsync()).Should().Be(0);
+        (await dispatch.Set<ExecutionAdmissionRecord>().SingleAsync()).DispatchStartedAtUtc.Should().BeNull();
+        _commands.Dispatches.Should().Be(0);
+    }
+
     private sealed class AdmissionClock : TimeProvider
     {
         public DateTimeOffset UtcNow { get; set; } = new(DateTimeOffset.UtcNow.UtcTicks / 10 * 10, TimeSpan.Zero);
@@ -188,11 +471,121 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         }
     }
 
+
+    [Fact]
+    public async Task Original_native_script_rerun_keeps_full_source_identity_null_parameters_shell_target_and_runtime_after_edits()
+    {
+        var requestId = new string('原', 256);
+        FlowExecutionReplayDescriptorDto replay = null!;
+        FlowExecutionEventDto source = null!;
+        var original = await SeedAsync(current =>
+        {
+            var selected = current.Version.Graph.Nodes[0];
+            var definition = selected.ExecutionAction!.Definition;
+            replay = new(FlowExecutionSourceKind.Script, definition, selected.ExecutionAction.Target!,
+                "script-execution:" + requestId, requestId, requestId, true);
+            var occurred = current.Event.OccurredAtUtc;
+            source = new(Guid.NewGuid(), Guid.NewGuid(), 7, FlowExecutionSourceKind.Script,
+                definition, requestId, requestId, replay.Target, FlowExecutionOutcome.Failed, "Failed", occurred, occurred)
+            {
+                Replay = replay, ExitCode = 1, CompletedAtUtc = occurred,
+                RootExecutionId = new string('始', 256), Causation = new(new string('起', 128)),
+                Provenance = "script-terminal-commit"
+            };
+            var rerun = new FlowNodeDto(selected.Id, FlowNodeKind.RerunOriginalExecution, "Rerun original", new(0, 0)) { Rerun = new() };
+            var graph = new FlowGraphDto(2, [rerun], [], new());
+            return current with
+            {
+                Version = current.Version with { Graph = graph,
+                    ConfigurationHash = FlowGraphSerialization.Hash(graph) },
+                Event = current.Event with { EventId = source.EventId, OccurrenceId = source.OccurrenceId,
+                    OccurredAtUtc = source.OccurredAtUtc, ExecutionEvent = source }
+            };
+        });
+        var schema = new ScriptParamInfo(1, original.Snapshot.Script.Id, "optional", "string", false,
+            "must-not-be-added-during-replay", null, null);
+        var pin = original.Snapshot with { Parameters = [schema] };
+        var policy = TaskOutputPolicy.Create([("optional", "string")], checked((long)pin.Script.Id),
+            pin.Script.SourceRevision, pin.ContentHash);
+        var invocation = new ExecLibraryScriptPayload
+        {
+            ScriptId = checked((int)pin.Script.Id), ScriptType = ScriptType.Bash, ScriptContent = pin.Script.Content,
+            Preferred = ShellExecutor.Bash, Parameters = null, TimeoutSeconds = 37,
+            WorkingDirectory = "/tmp/synthetic-original", OutputPolicy = policy
+        };
+        var lease = original.FlowLease!;
+        var node = lease.Version.Graph.Nodes[0];
+        var now = source.OccurredAtUtc;
+        await using (var setup = new OrchestratorDbContext(_options))
+        {
+            await using (var transaction = await setup.Database.BeginTransactionAsync())
+            {
+                await new ScriptExecutionReplayStore(setup, _keys, TimeProvider.System).CaptureAsync(requestId,
+                    new(7, original.AgentId, pin, ClientEnvironment.Dev, JsonSerializer.Serialize(invocation), policy));
+                await new JobRunService(setup, _keys).CreateTaskActivityAsync(new(requestId, null, null, "", 7,
+                    TaskKinds.ExecLibraryScript, "Pending", null, now, null, AgentId: original.AgentId,
+                    ScriptName: pin.Script.Name, ScriptType: ScriptType.Bash.ToString(), ScriptContentHash: pin.ContentHash, OutputPolicy: policy));
+                await transaction.CommitAsync();
+            }
+            await new JobRunService(setup, _keys).UpdateTaskActivityStatusAsync(new(requestId, "Failed", "Synthetic native failure.",
+                now, ResultJson: """{"exitCode":1}""", ExitCode: 1));
+            await new ScriptService(setup).UpdateAsync(new(pin.Script.Id, null, null, null,
+                "printf changed-native-source", null, null, pin.Script.SourceRevision));
+        }
+        FlowExecutionActionDispatcher Dispatcher(OrchestratorDbContext context) => new(context, new Pins(null), new NoJobs(),
+            Service(context), new JobRunService(context, _keys), new ExecutionAdmissionStore(context, _keys, TimeProvider.System),
+            new FlowExecutionAuthority(context, new Verifier(), _access, _source, TimeProvider.System));
+        var action = new FlowExecutionActionRequest(lease, node.Id, original.Identity.ActionKey, 1, OriginalReplay: replay)
+            { RecoveryAttempt = 1 };
+        FlowExecutionActionResult accepted;
+        await using (var first = new OrchestratorDbContext(_options))
+            accepted = await Dispatcher(first).DispatchAsync(action);
+        accepted.Disposition.Should().Be(FlowExecutionActionDisposition.Pending);
+        accepted.Receipt!.ExecutionId.Should().NotBe(requestId);
+        accepted.Receipt.SourceExecutionId.Should().Be(requestId);
+        accepted.Receipt.RecoveryAttempt.Should().Be(1);
+        var actual = JsonSerializer.Deserialize<ExecLibraryScriptPayload>(_commands.Payload!)!;
+        actual.ScriptContent.Should().Be(pin.Script.Content).And.NotContain("changed-native-source");
+        actual.Parameters.Should().BeNull();
+        actual.Preferred.Should().Be(ShellExecutor.Bash);
+        actual.TimeoutSeconds.Should().Be(37);
+        actual.WorkingDirectory.Should().Be("/tmp/synthetic-original");
+        actual.OutputPolicy!.Binding.Should().Be(original.Identity.ActionKey.ToString("N"));
+        _commands.LastClient.Should().Be(new ClientKey(7, original.AgentId));
+        _commands.LastEnvironment.Should().Be((int)ClientEnvironment.Dev);
+        await using var restarted = new OrchestratorDbContext(_options);
+        var same = await Dispatcher(restarted).DispatchAsync(action);
+        same.Receipt!.ExecutionId.Should().Be(accepted.Receipt.ExecutionId);
+        var binding = await new ExecutionAdmissionStore(restarted, _keys, TimeProvider.System)
+            .FindByExecutionAsync(ExecutionAdmissionKind.LibraryScript, accepted.Receipt.ExecutionId, CancellationToken.None);
+        binding!.Identity.Causation!.SourceExecutionId.Should().Be(requestId);
+        binding.Identity.Causation.RootExecutionId.Should().Be(source.RootExecutionId);
+        await new JobRunService(restarted, _keys).UpdateTaskActivityStatusAsync(new(accepted.Receipt.ExecutionId,
+            "Completed", null, DateTimeOffset.UtcNow, ResultJson: """{"stdout":"Synthetic verified rerun result","exitCode":0}""", ExitCode: 0));
+        var terminal = await Dispatcher(restarted).ObserveAsync(action, same.Receipt);
+        terminal.Disposition.Should().Be(FlowExecutionActionDisposition.Succeeded);
+        terminal.TerminalEvent.Should().NotBeNull();
+        terminal.TerminalEvent!.ExecutionId.Should().Be(accepted.Receipt.ExecutionId);
+        terminal.TerminalEvent.ParentExecutionId.Should().Be(requestId);
+        terminal.TerminalEvent.RootExecutionId.Should().Be(source.RootExecutionId);
+        terminal.TerminalEvent.Causation!.FlowRunId.Should().Be(lease.RunId);
+        terminal.TerminalEvent.Causation.NodeId.Should().Be(node.Id);
+        terminal.TerminalEvent.Causation.ParentEventId.Should().Be(source.EventId);
+        terminal.TerminalEvent.Causation.RecoveryAttempt.Should().Be(1);
+        terminal.TerminalEvent.Causation.RootOccurrenceId.Should().Be(source.Causation!.RootOccurrenceId);
+        terminal.TerminalEvent.Definition.Id.Should().Be(replay.Definition.Id);
+        terminal.TerminalEvent.Definition.Revision.Should().Be(replay.Definition.Revision);
+        terminal.TerminalEvent.Definition.ContentHash.Should().Be(replay.Definition.ContentHash);
+        terminal.TerminalEvent.Provenance.Should().Be("script-terminal-commit");
+        _commands.Dispatches.Should().Be(1);
+    }
+
     private KeyedScriptExecutionService Service(OrchestratorDbContext db, IExecutionAdmissionStore? store = null, TimeProvider? clock = null) =>
         new(db, store ?? new ExecutionAdmissionStore(db, _keys, clock ?? TimeProvider.System), new JobRunService(db, _keys),
-            new FlowExecutionAuthority(db, new Verifier(), _access, _source, clock ?? TimeProvider.System), _commands, clock ?? TimeProvider.System);
+            new FlowExecutionAuthority(db, new Verifier(), _access, _source, clock ?? TimeProvider.System), _commands, clock ?? TimeProvider.System,
+            new ScriptExecutionReplayStore(db, _keys, clock ?? TimeProvider.System));
 
-    private async Task<KeyedScriptAdmissionRequest> SeedAsync()
+    private async Task<KeyedScriptAdmissionRequest> SeedAsync(Func<FlowRunLease, FlowRunLease>? configureLease = null)
     {
         await using var db = new OrchestratorDbContext(_options);
         var now = new DateTimeOffset(DateTimeOffset.UtcNow.UtcTicks / 10 * 10, TimeSpan.Zero);
@@ -202,21 +595,29 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         var script = await new ScriptService(db).CreateAsync(new("synthetic-diagnostic", "/", null,
             "printf pinned-synthetic-source", "bash", null));
         var nodeId = Guid.NewGuid();
-        var graph = new FlowGraphDto(2, [new(nodeId, FlowNodeKind.RunLibraryScript, "Run diagnostic", new(0, 0))], [], new());
+        var graph = new FlowGraphDto(2, [new(nodeId, FlowNodeKind.RunLibraryScript, "Run diagnostic", new(0, 0))
+        { ExecutionAction = new(FlowExecutionSourceKind.Script, new(script.Id.ToString(), script.Name,
+            script.SourceRevision.ToString(), Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(script.Content)))) )
+            { Target = new(agent) } }], [], new());
         var flow = Guid.NewGuid(); var versionId = Guid.NewGuid(); var runId = Guid.NewGuid();
         var authority = new FlowExecutionAuthorityDto("operator");
         var version = new FlowVersionDto(versionId, flow, 7, 1, graph,
-            FlowContractValidation.Hash(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(graph, Json))), "operator", now);
+            FlowGraphSerialization.Hash(graph), "operator", now);
         var envelope = new FlowEventEnvelope(7, Guid.NewGuid(), Guid.NewGuid(), versionId, now,
             new(agent, Guid.NewGuid(), "Synthetic rule", "Synthetic worker", "resource", "metric", "Warning", 1, null, now), authority);
         var lease = new FlowRunLease(runId, Guid.NewGuid(), Guid.NewGuid(), 1, now.AddMinutes(2),
             Guid.NewGuid(), version, envelope, 1);
+        lease = configureLease?.Invoke(lease) ?? lease;
+        version = lease.Version; envelope = lease.Event; graph = version.Graph;
         db.FlowDefinitions.Add(new() { Id = flow, TenantId = 7, Name = "Synthetic flow", Enabled = true,
-            DraftJson = JsonSerializer.Serialize(graph, Json) });
+            DraftJson = FlowGraphSerialization.Serialize(graph) });
         db.FlowVersions.Add(new() { Id = versionId, TenantId = 7, FlowId = flow, VersionNumber = 1,
-            GraphJson = JsonSerializer.Serialize(graph, Json), ConfigurationHash = version.ConfigurationHash,
+            GraphJson = FlowGraphSerialization.Serialize(graph), ConfigurationHash = version.ConfigurationHash,
             PublishedBy = "operator", PublishedAtUtc = now, ExecutionAuthorityJson = JsonSerializer.Serialize(authority, Json) });
-        db.FlowRuns.Add(new() { Id = runId, TenantId = 7, FlowId = flow, FlowVersionId = versionId,
+        var checkpoint = new FlowNodeCheckpointDto(nodeId, 1, 1, FlowNodeProgress.Dispatching,
+            FlowActionKeys.Create(lease, nodeId), envelope.OccurredAtUtc, envelope.OccurredAtUtc.AddMinutes(10));
+        db.FlowRuns.Add(new() { ContinuationJson = JsonSerializer.Serialize(new FlowContinuationDto(nodeId, null) { Node = checkpoint }, Json),
+            Id = runId, TenantId = 7, FlowId = flow, FlowVersionId = versionId,
             EventId = envelope.EventId, OccurrenceId = envelope.OccurrenceId, EventJson = JsonSerializer.Serialize(envelope, Json),
             EventFingerprint = FlowContractValidation.Hash(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(envelope, Json))),
             Status = FlowRunStatus.Running, Fence = 1, LeaseToken = lease.Token, LeaseOwner = lease.WorkerId,
@@ -224,7 +625,7 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         db.FlowRuntimeIdentity.Add(new() { Id = 1, SourceInstanceId = lease.SourceInstanceId });
         await db.SaveChangesAsync();
         var pin = new PinnedJobScriptSnapshot(script, [], Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(script.Content))));
-        return new(new(Guid.NewGuid(), 7, "operator", versionId, runId, nodeId, 1), pin, agent,
+        return new(new(FlowActionKeys.CreateExecution(lease, nodeId), 7, "operator", versionId, runId, nodeId, 1), pin, agent,
             new Dictionary<string, string>()) { FlowLease = lease };
     }
 
@@ -253,10 +654,13 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         public int Dispatches { get; private set; }
         public string Payload { get; private set; } = "";
         public bool ThrowAfterSend { get; set; }
-        public bool IsAvailable(ClientKey client) => true;
+        public ClientKey? LastClient { get; private set; }
+        public int LastEnvironment { get; private set; }
+        public bool Available { get; set; } = true;
+        public bool IsAvailable(ClientKey client) => Available;
         public Task DispatchAsync(ClientKey client, string commandId, string correlationId, string taskType, string payload, int environment, CancellationToken ct)
         {
-            Dispatches++; Payload = payload;
+            Dispatches++; Payload = payload; LastClient = client; LastEnvironment = environment;
             if (ThrowAfterSend) throw new IOException("synthetic ambiguous transport");
             return Task.CompletedTask;
         }

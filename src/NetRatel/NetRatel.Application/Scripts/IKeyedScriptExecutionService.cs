@@ -2,6 +2,7 @@ using NetRatel.Application.Jobs;
 using NetRatel.Application.Flows;
 using System.Text.Json.Serialization;
 using NetRatel.Shared;
+using NetRatel.Shared.Contracts.Flows;
 
 namespace NetRatel.Application.Scripts;
 
@@ -16,6 +17,12 @@ public sealed record KeyedScriptAdmissionResult(ExecutionAdmissionBinding Bindin
     bool DispatchUncertain = false, bool AuthorityDenied = false);
 public interface IKeyedScriptExecutionService
 {
+    Task<KeyedScriptAdmissionResult> ResumeAsync(ExecutionAdmissionIdentity identity, string executionId, FlowRunLease lease,
+        CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("Resuming protected script admission is unavailable.");
     Task<KeyedScriptAdmissionResult> StartKeyedAsync(KeyedScriptAdmissionRequest request,
         CancellationToken cancellationToken = default);
+    Task<KeyedScriptAdmissionResult> StartReplayAsync(ExecutionAdmissionIdentity identity, FlowRunLease lease,
+        FlowExecutionReplayDescriptorDto replay, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("Canonical original script replay is unavailable.");
 }

@@ -9,13 +9,23 @@ public static class FlowServiceRegistration
 {
     public static IServiceCollection AddNetRatelFlows(this IServiceCollection services)
     {
+        services.AddHostedService<ExecutionLifecycleSubscriptionWorker>();
         services.TryAddSingleton(TimeProvider.System); services.TryAddSingleton<FlowPersistenceService>();
-        services.TryAddSingleton<IFlowDefinitionService>(provider => provider.GetRequiredService<FlowPersistenceService>());
         services.TryAddSingleton<IFlowTemplateService>(provider => provider.GetRequiredService<FlowPersistenceService>());
+        services.TryAddSingleton<IFlowExecutionEventIngress>(provider => provider.GetRequiredService<FlowPersistenceService>());
+        services.TryAddSingleton<IFlowDefinitionService>(provider => provider.GetRequiredService<FlowPersistenceService>());
         services.TryAddSingleton<IFlowEventIngress>(provider => provider.GetRequiredService<FlowPersistenceService>());
         services.TryAddSingleton<IFlowExecutionStore>(provider => provider.GetRequiredService<FlowPersistenceService>());
-        services.TryAddSingleton<IFlowRuntimeAdapter, VeloxFlowRuntimeAdapter>(); services.TryAddSingleton<FlowRunProcessor>();
+        services.TryAddSingleton<IFlowNodeExecutionStore>(provider => provider.GetRequiredService<FlowPersistenceService>());
+        services.TryAddSingleton<VeloxFlowRuntimeAdapter>();
+        services.TryAddSingleton<IFlowRuntimeAdapter>(provider => provider.GetRequiredService<VeloxFlowRuntimeAdapter>());
+        services.TryAddSingleton<IFlowNodeRuntime>(provider => provider.GetRequiredService<VeloxFlowRuntimeAdapter>());
+        services.TryAddSingleton<FlowGraphV2Runtime>();
+        services.TryAddSingleton<FlowRunProcessor>();
         services.TryAddScoped<IFlowExecutionAuthorityVerifier, FlowCurrentAuthorityVerifier>();
+        services.TryAddScoped<FlowExecutionEventAdmission>();
+        services.TryAddScoped<IFlowExecutionEventAdmission>(provider => provider.GetRequiredService<FlowExecutionEventAdmission>());
+        services.TryAddScoped<FlowIncidentEvidenceReader>();
         services.TryAddScoped<IFlowTransactionAdmission, MonitoringFlowTransactionAdmission>();
         services.TryAddScoped<IFlowDispatchGuard, UnavailableMonitoringDispatchGuard>();
         services.TryAddScoped<IFlowConnectorCatalog, UnavailableFlowConnector>(); services.TryAddScoped<IFlowIncidentActionDispatcher, UnavailableFlowConnector>();

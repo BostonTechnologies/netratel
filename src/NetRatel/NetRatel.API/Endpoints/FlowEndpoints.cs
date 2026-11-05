@@ -17,10 +17,12 @@ public static partial class FlowEndpoints
         var group = app.MapGroup("/api/v1/tenants/{tenantId:int}/flows").RequireAuthorization().WithTags("Flows");
         group.MapGet("", ListAsync); group.MapPost("", CreateAsync);
         group.MapGet("/template", TemplateAsync); group.MapGet("/connectors", ConnectorsAsync);
+        group.MapGet("/schema-capabilities", SchemaCapabilitiesAsync);
+        group.MapGet("/execution-connectors", ExecutionConnectorsAsync);
         group.MapGet("/templates", TemplatesAsync); group.MapPost("/from-template", CreateFromTemplateAsync);
         group.MapGet("/versions/{versionId:guid}", VersionByIdAsync); group.MapGet("/runs/{runId:guid}", RunByIdAsync);
         group.MapPost("/validate", ValidateAsync); group.MapPost("/dry-run", DryRunAsync);
-        group.MapPost("/dry-run-execution", ExecutionDryRunAsync);
+        group.MapPost("/dry-run-execution", DryRunExecutionAsync);
         group.MapGet("/{flowId:guid}", GetAsync);
         group.MapPut("/{flowId:guid}/draft", SaveAsync); group.MapPost("/{flowId:guid}/clone", CloneAsync);
         group.MapPut("/{flowId:guid}/enabled", EnabledAsync); group.MapPost("/{flowId:guid}/publish", PublishAsync);
@@ -77,11 +79,47 @@ public static partial class FlowEndpoints
     private static async Task<FlowRunDetailDto> ProjectAiResultsAsync(int tenantId, FlowRunDetailDto run,
         HttpContext http, IEffectiveAccessService access, CancellationToken ct)
     {
-        if (run.Actions.All(action => action.AiResult is null)) return run;
-        var readable = await access.AuthorizeAsync(http.User, NetRatelPermissions.TelemetryRead, tenantId, ct).ConfigureAwait(false) &&
-            await access.AuthorizeAsync(http.User, NetRatelPermissions.MonitoringRead, tenantId, ct).ConfigureAwait(false);
-        return run with { Actions = run.Actions.Select(action => action with
-            { AiResult = readable && action.AiResult?.TenantId == tenantId ? action.AiResult : null }).ToArray() };
+        // Source and trace projection occurs before the legacy no-AI fast path. Snapshots can contain
+        // AI or canonical execution outputs even when no ActionSummary currently carries an AI result.
+        if (run.ExecutionEvent is { } execution)
+        {
+            var permission = execution.SourceKind == FlowExecutionSourceKind.Script
+                ? NetRatelPermissions.ScriptExecute : NetRatelPermissions.JobManagement;
+            if (execution.TenantId != tenantId || !await access.AuthorizeAsync(http.User, permission, tenantId, ct).ConfigureAwait(false))
+                return run with { Input = null, ExecutionEvent = null, Trace = null, DataUnavailableReason = "source-read-denied",
+                    Actions = run.Actions.Select(action => action with { AiResult = null }).ToArray() };
+        }
+        var traceContainsAi = false;
+        if (run.Trace is not null)
+        {
+            var version = await http.RequestServices.GetRequiredService<IFlowDefinitionService>()
+                .GetVersionAsync(tenantId, run.Run.FlowVersionId, ct).ConfigureAwait(false);
+            var readable = version is not null;
+            if (version is not null)
+            {
+                traceContainsAi = version.Graph.Nodes.Any(node => node.Kind == FlowNodeKind.InvestigateWithAi ||
+                    node.Actions?.Any(action => action.Kind == FlowActionKind.NetclawInvestigation) == true);
+                var permissions = version.Graph.Nodes.Where(node => node.Kind is FlowNodeKind.RunJob or FlowNodeKind.RunLibraryScript)
+                    .Select(node => node.Kind == FlowNodeKind.RunJob ? NetRatelPermissions.JobManagement : NetRatelPermissions.ScriptExecute).Distinct().ToList();
+                if (run.ExecutionEvent is null) permissions.Add(NetRatelPermissions.MonitoringRead);
+                if (version.Graph.Nodes.Any(node => node.Kind == FlowNodeKind.RerunOriginalExecution))
+                    permissions.Add(run.ExecutionEvent?.Replay?.SourceKind == FlowExecutionSourceKind.Script
+                        ? NetRatelPermissions.ScriptExecute : NetRatelPermissions.JobManagement);
+                foreach (var permission in permissions.Distinct())
+                    readable &= await access.AuthorizeAsync(http.User, permission, tenantId, ct).ConfigureAwait(false);
+            }
+            if (!readable) run = run with { Trace = null, DataUnavailableReason = "execution-output-read-denied" };
+        }
+        var hasAi = traceContainsAi || run.Actions.Any(action => action.AiResult is not null) ||
+            run.Trace?.Steps.Any(step => step.Output.Value is { ValueKind: System.Text.Json.JsonValueKind.Object } value &&
+                value.TryGetProperty("aiResult", out _)) == true;
+        if (!hasAi) return run;
+        var aiReadable = await access.AuthorizeAsync(http.User, NetRatelPermissions.TelemetryRead, tenantId, ct).ConfigureAwait(false) &&
+            (run.ExecutionEvent is not null || await access.AuthorizeAsync(http.User, NetRatelPermissions.MonitoringRead, tenantId, ct).ConfigureAwait(false));
+        return run with { Trace = aiReadable ? run.Trace : null,
+            DataUnavailableReason = aiReadable ? run.DataUnavailableReason : "ai-results-read-denied",
+            Actions = run.Actions.Select(action => action with { AiResult = aiReadable && action.AiResult?.TenantId == tenantId
+                ? action.AiResult : null }).ToArray() };
     }
 
     internal static async Task<IResult> ListAsync(int tenantId, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, IFlowDefinitionService flows, CancellationToken ct)
@@ -137,7 +175,8 @@ public static partial class FlowEndpoints
     {
         var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied;
         denied = await PromptAccessAsync(tenantId, UsesPrompts(graph), http, access, ct).ConfigureAwait(false); if (denied is not null) return denied;
-        var validation = FlowGraphValidator.ValidateComplete(graph);
+        var validation = graph.SchemaVersion == FlowGraphV2Limits.SchemaVersion
+            ? FlowGraphV2Validator.ValidateComplete(graph) : FlowGraphValidator.ValidateComplete(graph);
         if (validation.Valid && !await PromptReferencesAvailableAsync(tenantId, graph, http, ct).ConfigureAwait(false))
             return Results.Ok(new FlowValidationResultDto(false, [new("ai-prompt-unavailable")]));
         return Results.Ok(validation);

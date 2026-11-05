@@ -9,6 +9,7 @@ using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts.Netclaw;
+using NetRatel.Shared.Contracts.Flows;
 
 namespace NetRatel.Infrastructure.Netclaw;
 
@@ -26,6 +27,30 @@ public sealed class NetclawAuthority(IEffectiveAccessService access, NetRatelIde
             await access.AuthorizeAsync(principal, NetRatelPermissions.TelemetryRead, tenantId, ct) &&
             await access.AuthorizeAsync(principal, NetRatelPermissions.SecretUse, tenantId, ct) &&
             (!automated || await access.AuthorizeAsync(principal, NetRatelPermissions.MonitoringRead, tenantId, ct));
+    }
+
+    public async Task<bool> CanInvestigateExecutionAsync(int tenantId, string actor, string? credential,
+        IReadOnlyList<FlowExecutionSourceKind> sources, CancellationToken ct)
+    {
+        if (tenantId <= 0 || string.IsNullOrWhiteSpace(actor) || sources is not { Count: > 0 and <= 3 } ||
+            sources.Any(source => !Enum.IsDefined(source)) || sources.Distinct().Count() != sources.Count ||
+            !await identity.ApplicationPrincipals.AsNoTracking().AnyAsync(x => x.Id == actor, ct) ||
+            await identity.Users.AsNoTracking().AnyAsync(x => x.PrincipalId == actor && !x.IsEnabled, ct)) return false;
+        var claims = new List<Claim> { new("netratel_principal_id", actor) };
+        if (credential is not null) claims.Add(new("netratel_integration_credential_id", credential));
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, "NetclawSavedExecutionAuthority"));
+        var required = new List<string>
+        {
+            NetRatelPermissions.FlowExecute, NetRatelPermissions.ClientManagement,
+            NetRatelPermissions.TelemetryRead, NetRatelPermissions.SecretUse
+        };
+        // Request endpoints use JobManagement for tenant-scoped request reads, including request-only failures.
+        if (sources.Contains(FlowExecutionSourceKind.Job) || sources.Contains(FlowExecutionSourceKind.Request))
+            required.Add(NetRatelPermissions.JobManagement);
+        if (sources.Contains(FlowExecutionSourceKind.Script)) required.Add(NetRatelPermissions.ScriptExecute);
+        foreach (var permission in required)
+            if (!await access.AuthorizeAsync(principal, permission, tenantId, ct)) return false;
+        return true;
     }
 
     public async Task<bool> CanReadAlertAsync(int tenantId, string actor, string? credential, CancellationToken ct)

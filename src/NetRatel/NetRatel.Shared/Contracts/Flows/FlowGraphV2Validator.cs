@@ -31,10 +31,10 @@ public static class FlowGraphV2Validator
             return new(false, [new("graph-limit")]);
         try
         {
-            if (JsonSerializer.SerializeToUtf8Bytes(graph).Length > FlowGraphV2Limits.MaximumGraphBytes)
+            if (Encoding.UTF8.GetByteCount(FlowGraphSerialization.Serialize(graph)) > FlowGraphV2Limits.MaximumGraphBytes)
                 return new(false, [new("graph-bytes")]);
         }
-        catch (Exception error) when (error is JsonException or ArgumentException or NotSupportedException)
+        catch (Exception error) when (error is JsonException or ArgumentException or InvalidOperationException or NotSupportedException)
         { return new(false, [new("graph-value")]); }
 
         var issues = new List<FlowValidationIssueDto>();
@@ -66,7 +66,7 @@ public static class FlowGraphV2Validator
                 node.Kind is not (FlowNodeKind.RunLibraryScript or FlowNodeKind.RunJob) && node.ExecutionAction is not null ||
                 node.Kind != FlowNodeKind.RerunOriginalExecution && node.Rerun is not null ||
                 node.Kind != FlowNodeKind.Condition && node.Predicate is not null ||
-                node.Kind is not (FlowNodeKind.RunLibraryScript or FlowNodeKind.RunJob or FlowNodeKind.MapIncident) && node.Inputs is not null)
+                node.Kind is not (FlowNodeKind.RunLibraryScript or FlowNodeKind.RunJob or FlowNodeKind.MapIncident or FlowNodeKind.InvestigateWithAi) && node.Inputs is not null)
                 Error("node-properties", node.Id);
 
             if (node.Kind == FlowNodeKind.ExecutionEvent &&
@@ -260,8 +260,8 @@ public static class FlowGraphV2Validator
         var ids = trigger.DefinitionIds ?? [];
         var references = trigger.DefinitionReferences ?? [];
         if (ids.Count > FlowGraphV2Limits.MaximumSelectedDefinitions || references.Count > FlowGraphV2Limits.MaximumSelectedDefinitions ||
-            ids.Any(id => !Text(id, 128)) || ids.Distinct(StringComparer.Ordinal).Count() != ids.Count ||
-            references.Any(reference => reference is null || !trigger.Sources.Contains(reference.SourceKind) || !Text(reference.Id, 128)) ||
+            ids.Any(id => !Text(id, FlowExecutionEventLimits.MaximumIdentifierLength)) || ids.Distinct(StringComparer.Ordinal).Count() != ids.Count ||
+            references.Any(reference => reference is null || (!trigger.Sources.Contains(reference.SourceKind) && !(trigger.Sources.Contains(FlowExecutionSourceKind.Request) && reference.SourceKind is FlowExecutionSourceKind.Job or FlowExecutionSourceKind.Script)) || !Text(reference.Id, FlowExecutionEventLimits.MaximumIdentifierLength) || reference.Name is not null && !Text(reference.Name, 512)) ||
             references.Where(reference => reference is not null).Select(reference => (reference.SourceKind, reference.Id)).Distinct().Count() != references.Count)
             return false;
         if (trigger.Scope == FlowExecutionScope.AllInTenant ? ids.Count != 0 || references.Count != 0 :
@@ -270,7 +270,7 @@ public static class FlowGraphV2Validator
         return (trigger.AgentIds is null || trigger.AgentIds.Count <= FlowGraphV2Limits.MaximumSelectedDefinitions &&
                 trigger.AgentIds.All(id => id != Guid.Empty) && trigger.AgentIds.Distinct().Count() == trigger.AgentIds.Count) &&
             (trigger.RequestKinds is null || trigger.Sources.Contains(FlowExecutionSourceKind.Request) &&
-                trigger.RequestKinds.Count <= 32 && trigger.RequestKinds.All(kind => Text(kind, 128)) &&
+                trigger.RequestKinds.Count <= FlowGraphV2Limits.MaximumRequestSourceSystems && trigger.RequestKinds.All(kind => Text(kind, FlowExecutionEventLimits.MaximumIdentifierLength)) &&
                 trigger.RequestKinds.Distinct(StringComparer.Ordinal).Count() == trigger.RequestKinds.Count);
     }
 
@@ -288,7 +288,7 @@ public static class FlowGraphV2Validator
             FlowInputSource.SecretReference => Text(binding.Path, 256) && binding.NodeId is null && binding.Literal is null && binding.DataType == FlowDataType.SecretReference,
             FlowInputSource.Literal => binding.Path is null && binding.NodeId is null && binding.Literal is { } value &&
                 value.ValueKind != JsonValueKind.Undefined && binding.DataType != FlowDataType.SecretReference &&
-                Encoding.UTF8.GetByteCount(value.GetRawText()) <= FlowGraphV2Limits.MaximumBindingBytes && JsonType(value) == binding.DataType,
+                FlowJsonValueBounds.Valid(value, FlowGraphV2Limits.MaximumBindingBytes) && JsonType(value) == binding.DataType,
             _ => false
         };
     }
@@ -296,7 +296,7 @@ public static class FlowGraphV2Validator
     private static bool ValidPredicateValue(FlowPredicateDto predicate) =>
         predicate.Input is not null && JsonType(predicate.Value) == predicate.Input.DataType &&
         predicate.Value.ValueKind is JsonValueKind.String or JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False &&
-        Encoding.UTF8.GetByteCount(predicate.Value.GetRawText()) <= FlowGraphV2Limits.MaximumBindingBytes &&
+        FlowJsonValueBounds.Valid(predicate.Value, FlowGraphV2Limits.MaximumBindingBytes) &&
         (predicate.Input.DataType == FlowDataType.Number ||
             predicate.Comparison is FlowComparison.Equal or FlowComparison.NotEqual);
     private static FlowDataType? JsonType(JsonElement value) => value.ValueKind switch
@@ -308,30 +308,8 @@ public static class FlowGraphV2Validator
         _ => null
     };
 
-    private static FlowDataType? EventType(string path, bool? execution) => path switch
-    {
-        "event.exitCode" when execution is not false => FlowDataType.Number,
-        "event.sourceKind" or "event.outcome" or "event.rawStatus" or "event.reason" or "event.reasonCode" or
-        "event.executionId" or "event.attemptId" or "event.definition.id" or "event.definition.name" or
-        "event.definition.revision" or "event.definition.contentHash" or "event.target.agentId" or
-        "event.target.displayName" or "event.target.hostName" or "event.occurredAtUtc" or
-        "event.startedAtUtc" or "event.completedAtUtc" when execution is not false => FlowDataType.Text,
-        "alert.numericValue" when execution is not true => FlowDataType.Number,
-        "alert.ruleName" or "alert.clientName" or "alert.resource" or "alert.metric" or "alert.severity" or
-        "alert.serviceState" or "alert.agentId" or "alert.ruleId" or "alert.observedAtUtc" when execution is not true => FlowDataType.Text,
-        _ => null
-    };
-    private static FlowDataType? OutputType(FlowNodeKind kind, string path) => (kind, path) switch
-    {
-        (FlowNodeKind.RunLibraryScript or FlowNodeKind.RunJob or FlowNodeKind.RerunOriginalExecution, "exitCode") => FlowDataType.Number,
-        (FlowNodeKind.RunLibraryScript or FlowNodeKind.RunJob or FlowNodeKind.RerunOriginalExecution, "outcome" or "executionId" or "attemptId" or "summary" or "stdout" or "stderr") => FlowDataType.Text,
-        (FlowNodeKind.RunLibraryScript or FlowNodeKind.RunJob or FlowNodeKind.RerunOriginalExecution, "data") => FlowDataType.Json,
-        (FlowNodeKind.InvestigateWithAi, "summary" or "evidence" or "recommendations" or "status") => FlowDataType.Text,
-        (FlowNodeKind.MapIncident, "title" or "description") => FlowDataType.Text,
-        (FlowNodeKind.MapIncident, "priority") => FlowDataType.Number,
-        (FlowNodeKind.Condition, "result") => FlowDataType.Boolean,
-        _ => null
-    };
+    private static FlowDataType? EventType(string path, bool? execution) => FlowBindingCatalogue.TypeForEvent(path, execution);
+    private static FlowDataType? OutputType(FlowNodeKind kind, string path) => FlowBindingCatalogue.TypeForOutput(kind, path);
 
     private static Dictionary<Guid, HashSet<Guid>> Dominators(IEnumerable<Guid> ids,
         IReadOnlyDictionary<Guid, List<Guid>> incoming, Guid? triggerId)

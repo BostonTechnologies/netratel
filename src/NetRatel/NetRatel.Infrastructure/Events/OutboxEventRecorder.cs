@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using NetRatel.Application.Events;
 using NetRatel.Application.Observability;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Flows;
 using Microsoft.Extensions.Logging;
 
 namespace NetRatel.Infrastructure.Events;
@@ -26,6 +27,8 @@ public sealed class OutboxEventRecorder(
 
     public async Task RecordAsync(DomainEvent domainEvent, CancellationToken ct = default)
     {
+        if (domainEvent.EventType.StartsWith(ExecutionLifecycleOutbox.EventTypePrefix, StringComparison.Ordinal))
+            throw new InvalidOperationException("Execution lifecycle source and selection records require their canonical native writers.");
         using var activity = NetRatelTelemetry.StartActivity("netratel.outbox.record");
         activity?.SetTag("event.id", domainEvent.EventId);
         activity?.SetTag("event.type", domainEvent.EventType);
