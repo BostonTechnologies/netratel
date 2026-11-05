@@ -243,8 +243,8 @@ public sealed partial class JobRunOwnedBoundaryPostgresTests
         duplicate.Disposition.Should().Be(FlowIngressDisposition.Duplicate);
         duplicate.RunId.Should().Be(runId);
         Assert.Null(await restartedStore.ClaimAsync(Guid.NewGuid(), ct));
-        (await h.DetailsAsync(original.Id, ct)).Run.Status.Should().Be(NetRatel.Shared.Contracts.Jobs.JobRunState.Failed);
-        (await h.DetailsAsync(rerunId, ct)).Run.Status.Should().Be(NetRatel.Shared.Contracts.Jobs.JobRunState.Succeeded);
+        (await h.DetailsAsync(original.Id, ct)).Run.Status.Should().Be(NetRatel.Application.Jobs.JobRunState.Failed);
+        (await h.DetailsAsync(rerunId, ct)).Run.Status.Should().Be(NetRatel.Application.Jobs.JobRunState.Succeeded);
         h.Gateway.Dispatches.Should().Be(2);
         h.RepairCommands.Dispatches.Should().Be(1);
         investigationCalls.Should().Be(1);
