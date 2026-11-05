@@ -205,7 +205,7 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
                 .Append(ClientUpdateReconciliationEvidenceMigration).Append(ProtectJobRunInputsMigration).Append(ProtectTaskOutputsMigration)
                 .Append(ScopeOrchestrationExecutionAttemptsMigration).Append(PairedCatalogInputPresentationMigration).Append(CallbackTerminalRejectionMigration).Append(RetainJobDefinitionHistoryMigration)
                 .Append(ComputerUseSessionsMigration).Append(IntegrationPolicyHierarchyMigration).Append(SoftwareInventoryMigration)
-                .Append(ConversationTraceAndScriptPlacementMigration).Append(TenantAndUpdateRetirementMigration).Append(ExecutionAdmissionsMigration).Append("20261105173000_AddFlowExecutionPins"),
+                .Append(ConversationTraceAndScriptPlacementMigration).Append(TenantAndUpdateRetirementMigration).Append(ExecutionAdmissionsMigration).Append("20261105173000_AddFlowExecutionPins").Append("20261105180000_AddScriptExecutionDispatch"),
             "registered history retains the exact historical ownership range followed by pairing, client metadata/offboarding, notification connectors, client operations, Netclaw investigations, tenant prompts, AI flow continuations and local client release deletion");
         // These historical Down/Up proofs explicitly stop at the shipped native-refresh range.
         // Later pairing, client metadata/offboarding, notification connector, client operation,

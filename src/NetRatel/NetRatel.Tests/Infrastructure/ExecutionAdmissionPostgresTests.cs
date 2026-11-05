@@ -103,6 +103,53 @@ public sealed class ExecutionAdmissionPostgresTests(PostgreSqlPersistenceFixture
         (await committed.Set<ExecutionAdmissionRecord>().SingleAsync()).AuthorityDeniedAtUtc.Should().NotBeNull();
     }
 
+
+    [Fact]
+    public async Task A_dispatch_claim_and_its_canonical_activity_prepare_commit_atomically_and_are_never_replayed()
+    {
+        var submission = new ExecutionAdmissionSubmission(Identity(), ExecutionAdmissionKind.LibraryScript, "{}");
+        ExecutionAdmissionBinding binding;
+        await using (var reserve = new OrchestratorDbContext(_options))
+            binding = await new ExecutionAdmissionStore(reserve, _keys, TimeProvider.System)
+                .ReserveAsync(submission, () => "synthetic-script-request", CancellationToken.None);
+        await using (var crashed = new OrchestratorDbContext(_options))
+        {
+            var store = new ExecutionAdmissionStore(crashed, _keys, TimeProvider.System);
+            var prepare = () => store.TryBeginDispatchAsync(binding, async ct =>
+            {
+                await new JobRunService(crashed, _keys).CreateTaskActivityAsync(new(binding.ExecutionId,
+                    null, null, "", 7, "os-info", "Pending", null, DateTimeOffset.UtcNow, null), ct);
+                throw new IOException("synthetic crash before commit");
+            }, CancellationToken.None);
+            await prepare.Should().ThrowAsync<IOException>();
+        }
+        await using (var read = new OrchestratorDbContext(_options))
+        {
+            (await read.JobTaskActivities.CountAsync()).Should().Be(0);
+            (await read.Set<ExecutionAdmissionRecord>().SingleAsync()).DispatchStartedAtUtc.Should().BeNull();
+        }
+        await using (var accepted = new OrchestratorDbContext(_options))
+        {
+            var store = new ExecutionAdmissionStore(accepted, _keys, TimeProvider.System);
+            (await store.TryBeginDispatchAsync(binding, async ct =>
+            {
+                await new JobRunService(accepted, _keys).CreateTaskActivityAsync(new(binding.ExecutionId,
+                    null, null, "", 7, "os-info", "Pending", null, DateTimeOffset.UtcNow, null), ct);
+            }, CancellationToken.None))
+                .Should().BeTrue();
+        }
+        await using var restarted = new OrchestratorDbContext(_options);
+        var replayed = false;
+        var reloaded = new ExecutionAdmissionStore(restarted, _keys, TimeProvider.System);
+        (await reloaded.TryBeginDispatchAsync(binding, _ => { replayed = true; return Task.CompletedTask; }, CancellationToken.None))
+            .Should().BeFalse();
+        replayed.Should().BeFalse();
+        (await restarted.JobTaskActivities.CountAsync()).Should().Be(1);
+        await reloaded.RecordDispatchAcceptedAsync(binding, CancellationToken.None);
+        (await reloaded.FindByExecutionAsync(binding.Kind, binding.ExecutionId, CancellationToken.None))!
+            .DispatchAcceptedAtUtc.Should().NotBeNull();
+    }
+
     private static ExecutionAdmissionIdentity Identity()
         => new(Guid.NewGuid(), 7, "operator@example.test", Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 1);
 }
