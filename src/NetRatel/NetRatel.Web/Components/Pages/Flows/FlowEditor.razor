@@ -13,7 +13,7 @@
 @inject NavigationManager Navigation
 
 <NavigationLock ConfirmExternalNavigation="@(_dirty && !_allowNavigation)" OnBeforeInternalNavigation="BeforeNavigation" />
-<section id="@_shellId" class="flow-editor @(_focused ? "focused" : "")" data-testid="flow-editor" aria-label="@(ReadOnly ? "Published flow viewer" : "Flow editor")" @onkeydown="KeyDown">
+<section id="@_shellId" class="flow-editor @(_focused ? "focused" : "")" data-testid="flow-editor" data-history-enabled="@(!ReadOnly && CanEdit && !_busy ? "true" : "false")" aria-label="@(ReadOnly ? "Published flow viewer" : "Flow editor")" @onkeydown="KeyDown">
     @if (_loading || _adapter is null)
     {
         <header class="flow-editor-header"><h2>@(ReadOnly ? "Published version" : "Flow draft")</h2>
@@ -25,12 +25,14 @@
     else if (_adapter is not null && _current is not null)
     {
         <div class="flow-toolbar">
-            <label class="flow-name">Flow name<input @bind="_name" @bind:event="oninput" @bind:after="CheckDirty" maxlength="@FlowLimits.MaximumNameLength" disabled="@(ReadOnly || _busy || !CanEdit)" data-testid="flow-name" /></label>
+            <label class="flow-name">Flow name<input @bind="_name" @bind:event="oninput" @bind:after="NameEdited" @onblur="EndNameEdit" maxlength="@FlowLimits.MaximumNameLength" disabled="@(ReadOnly || _busy || !CanEdit)" data-testid="flow-name" /></label>
             <span class="flow-context">@TenantName</span>
             <span role="status" data-testid="flow-dirty">@(ReadOnly ? $"Immutable version {VersionNumber}" : _busy ? OperationLabel : _dirty ? "Unsaved changes" : $"Saved draft · revision {_current.Revision}")</span>
             <div class="flow-editor-actions">
             @if (!ReadOnly)
             {
+                <MudTooltip Text="Undo last graph edit · Ctrl+Z"><MudIconButton Icon="@Icons.Material.Filled.Undo" Size="MudBlazor.Size.Small" OnClick="UndoAsync" Disabled="@(_busy || !CanEdit || !_history.CanUndo)" aria-label="Undo graph edit" data-testid="flow-undo" /></MudTooltip>
+                <MudTooltip Text="Redo graph edit · Ctrl+Shift+Z"><MudIconButton Icon="@Icons.Material.Filled.Redo" Size="MudBlazor.Size.Small" OnClick="RedoAsync" Disabled="@(_busy || !CanEdit || !_history.CanRedo)" aria-label="Redo graph edit" data-testid="flow-redo" /></MudTooltip>
                 <MudTooltip Text="@SaveHint"><MudIconButton Icon="@Icons.Material.Filled.Save" Size="MudBlazor.Size.Small" Color="Color.Primary" OnClick="SaveAsync" Disabled="@(_busy || !CanEdit || !_dirty)" aria-label="Save draft" data-testid="flow-save" /></MudTooltip>
                 <MudTooltip Text="Validate draft"><MudIconButton Icon="@Icons.Material.Filled.FactCheck" Size="MudBlazor.Size.Small" OnClick="ValidateAsync" Disabled="@_busy" aria-label="Validate draft" data-testid="flow-validate" /></MudTooltip>
                 <MudTooltip Text="Dry run · preview only"><MudIconButton Icon="@Icons.Material.Filled.Science" Size="MudBlazor.Size.Small" OnClick="TogglePreviewAsync" Disabled="@_busy" aria-expanded="@(_showDryRun ? "true" : "false")" aria-label="Dry run" data-testid="flow-dry-run-toggle" /></MudTooltip>
@@ -113,7 +115,7 @@
                         <MudTooltip Text="@(_propertiesPinned ? "Overlay properties" : "Dock properties")"><MudIconButton Icon="@Icons.Material.Filled.PushPin" Color="@(_propertiesPinned ? Color.Primary : Color.Default)" Size="MudBlazor.Size.Small" OnClick="() => _propertiesPinned = !_propertiesPinned" aria-label="@(_propertiesPinned ? "Overlay properties" : "Dock properties")" aria-pressed="@(_propertiesPinned ? "true" : "false")" data-testid="flow-properties-pin" /></MudTooltip>
                         <MudTooltip Text="Close properties"><MudIconButton Icon="@Icons.Material.Filled.Close" Size="MudBlazor.Size.Small" OnClick="ClosePropertiesAsync" aria-label="Close properties" data-testid="flow-properties-close" /></MudTooltip>
                     </div></header>
-                    <div class="flow-properties-body">
+                    <div class="flow-properties-body" @key="_generation">
                     @if (SelectedDefinition is { } selected)
                     {
                         <fieldset disabled="@(ReadOnly || !CanEdit || _busy)">
@@ -227,6 +229,9 @@
     private FlowDefinitionDto? _current;
     private FlowCanvasAdapter? _adapter;
     private FlowCanvas? _canvas;
+    private readonly FlowEditorHistory _history = new();
+    private string? _historyGroup;
+    private bool _restoringHistory, _historyFocusPending;
     private FlowViewportDto _initialViewport = new();
     private Guid? _selected;
     private string _name = "", _baseline = "";
@@ -268,6 +273,15 @@
         if (_current?.Id == Definition.Id && _current.TenantId == Definition.TenantId && _current.Revision == Definition.Revision) return;
         _lifetime.Cancel(); _lifetime.Dispose(); _lifetime = new(); var generation = ++_generation;
         _loading = true; _error = null; _busy = false;
+        if (_current is not null && (_current.Id != Definition.Id || _current.TenantId != Definition.TenantId))
+        {
+            // A failed replacement must never display the previous tenant's graph in the new context.
+            var stale = _adapter; _adapter = null; _canvas = null; _current = null; _selected = null;
+            _history.Clear(); _historyGroup = null; _dirty = false;
+            if (stale is not null) await stale.DisposeAsync();
+            await DirtyChanged.InvokeAsync(false);
+            if (!Current(generation, Definition.TenantId, Definition.Id)) return;
+        }
         await ReplaceAsync(Definition, generation, _lifetime.Token);
     }
     private async Task ReplaceAsync(FlowDefinitionDto definition, int generation, CancellationToken token)
@@ -281,6 +295,7 @@
             _initialViewport = definition.Draft.Viewport; _selected = definition.Draft.Nodes.FirstOrDefault(n => n.Id == InitialSelectedNodeId)?.Id ?? definition.Draft.Nodes.FirstOrDefault()?.Id;
             _showProperties = InitialSelectedNodeId is not null && _selected == InitialSelectedNodeId;
             _baseline = Fingerprint(definition.Name, definition.Draft); _dirty = false; _issues = []; _preview = null; _previewGraphHash = null; _showDryRun = false; _reviewedFingerprint = null; _focusPending = true;
+            _history.Reset(_name, definition.Draft, _selected); _historyGroup = null;
             if (old is not null) await old.DisposeAsync();
             await DirtyChanged.InvokeAsync(false);
         }
@@ -299,7 +314,8 @@
             await _module.InvokeVoidAsync("attachShell", _shellId, _shellReference);
         }
         if (_showDryRun && _module is not null) await _module.InvokeVoidAsync("showPreview", _shellId, _previewId);
-        if (_propertiesFocusPending && _showProperties) { _propertiesFocusPending = false; _focusPending = false; await _propertiesHeader.FocusAsync(); }
+        if (_historyFocusPending && _canvas?.IsReady == true) { _historyFocusPending = false; await _canvas.FocusAsync(); }
+        else if (_propertiesFocusPending && _showProperties) { _propertiesFocusPending = false; _focusPending = false; await _propertiesHeader.FocusAsync(); }
         else if (_focusPending && !_loading && _closeButton is not null) { _focusPending = false; await _closeButton.FocusAsync(); }
     }
     private async Task ToggleFocusAsync()
@@ -325,10 +341,18 @@
         if (_module is not null) await _module.InvokeVoidAsync("closePreview", _shellId, _previewId);
     }
     private static string Fingerprint(string name, FlowGraphDto graph) => name + "\n" + JsonSerializer.Serialize(graph);
+    private Task NameEdited() { _historyGroup = "name"; return CheckDirty(); }
+    private void EndNameEdit() { _historyGroup = null; _history.BreakGroup(); }
+    [JSInvokable]
+    public Task BeginCanvasEditGesture() => InvokeAsync(() => { if (!_disposed && !_busy && CanEdit && !ReadOnly) _historyGroup = Guid.NewGuid().ToString("N"); });
+    [JSInvokable]
+    public Task NavigateGraphHistory(bool redo) => InvokeAsync(() => redo ? RedoAsync() : UndoAsync());
     private async Task CheckDirty()
     {
         if (ReadOnly || _adapter is null || _disposed) return;
-        var fingerprint = Fingerprint(_name, _canvas?.CaptureCurrent() ?? _adapter.Capture(_initialViewport.ScrollX, _initialViewport.ScrollY));
+        var graph = _canvas?.CaptureCurrent() ?? _adapter.Capture(_initialViewport.ScrollX, _initialViewport.ScrollY);
+        var fingerprint = Fingerprint(_name, graph);
+        if (!_restoringHistory) _history.Record(_name, graph, _selected, _historyGroup);
         if (_reviewedFingerprint is not null && _reviewedFingerprint != fingerprint)
         { _reviewedFingerprint = null; _issues = []; _preview = null; _previewGraphHash = null; _message = "Draft changed. Validate the current draft."; }
         var next = fingerprint != _baseline;
@@ -339,12 +363,51 @@
         if (_busy || _disposed || _current is null) return;
         var generation = _generation; var tenant = _current.TenantId; var id = _current.Id;
         _busy = true; _operation = operation; _error = null; _message = null; _issues = [];
+        _historyGroup = operation is "add" or "move" or "remove" ? Guid.NewGuid().ToString("N") : null;
         try { await command(tenant, id, _lifetime.Token); }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
         catch (HttpRequestException exception) { if (Current(generation, tenant, id)) _error = exception is FlowApiException ? exception.Message : "The flow request failed. Your unsaved edits are preserved. Try again."; }
         catch (InvalidOperationException exception) when (operation is "connect" or "add") { if (Current(generation, tenant, id)) _error = exception.Message; }
         catch (Exception) { if (Current(generation, tenant, id)) _error = "The workflow operation could not finish. Your unsaved edits are preserved."; }
         finally { if (Current(generation, tenant, id)) { _busy = false; _operation = null; } }
+    }
+    private Task UndoAsync() => ApplyHistoryAsync(false);
+    private Task RedoAsync() => ApplyHistoryAsync(true);
+    private async Task ApplyHistoryAsync(bool redo)
+    {
+        if (_busy || _disposed || ReadOnly || !CanEdit || _adapter is null || _current is null) return;
+        await CheckDirty();
+        var snapshot = redo ? _history.PeekRedo(FlowCanvasAdapter.StructurallySafe) : _history.PeekUndo(FlowCanvasAdapter.StructurallySafe);
+        if (snapshot is null) { _message = "No further safe graph edit is available in local history."; return; }
+        var viewport = (_canvas?.CaptureCurrent() ?? _adapter.Capture(_initialViewport.ScrollX, _initialViewport.ScrollY)).Viewport;
+        var graph = snapshot.Graph with { Viewport = viewport };
+        var replacement = new FlowCanvasAdapter();
+        var generation = _generation; var tenant = _current.TenantId; var id = _current.Id; var token = _lifetime.Token;
+        var installed = false;
+        _busy = true; _restoringHistory = true; _operation = "history"; _error = null;
+        try
+        {
+            await replacement.RestoreAsync(graph, token);
+            if (!Current(generation, tenant, id)) { await replacement.DisposeAsync(); return; }
+            if (_showDryRun) await ClosePreviewAsync();
+            if (!Current(generation, tenant, id)) { await replacement.DisposeAsync(); return; }
+            _history.Accept(snapshot);
+            _lifetime.Cancel(); _lifetime.Dispose(); _lifetime = new(); ++_generation;
+            var previous = _adapter; _adapter = replacement; _canvas = null; installed = true;
+            _name = snapshot.Name; _selected = graph.Nodes.Any(node => node.Id == snapshot.SelectedNodeId) ? snapshot.SelectedNodeId : null;
+            _initialViewport = viewport; _historyGroup = null; _historyFocusPending = true;
+            _reviewedFingerprint = null; _issues = []; _preview = null; _previewGraphHash = null;
+            _message = redo ? "Graph edit restored. Save the draft to retain it." : "Graph edit undone. Save the draft to retain it.";
+            await previous.DisposeAsync();
+            await CheckDirty();
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested && !installed) { await replacement.DisposeAsync(); }
+        catch (Exception exception) when (!installed && exception is InvalidOperationException or TimeoutException or JSDisconnectedException)
+        {
+            await replacement.DisposeAsync();
+            if (Current(generation, tenant, id)) _error = "This local edit could not be restored safely. The current draft is preserved.";
+        }
+        finally { _restoringHistory = false; if (!_disposed && Definition.TenantId == tenant && Definition.Id == id) { _busy = false; _operation = null; } }
     }
     private async Task<FlowGraphDto> CaptureAsync() => _canvas is not null ? await _canvas.CaptureAsync() : _adapter!.Capture(_initialViewport.ScrollX, _initialViewport.ScrollY);
     private Task SaveAsync() => !CanEdit || ReadOnly ? Task.CompletedTask : CommandAsync("save", async (tenant, id, token) =>
@@ -354,6 +417,7 @@
         if (!result.Valid) { _issues = result.Issues; _message = "The draft has unsafe or invalid fields. Correct these before saving."; return; }
         var saved = await Api.SaveAsync(tenant, id, new(_current!.Revision, nameAtSubmit, graph), token);
         if (!Current(generation, tenant, id) || saved.TenantId != tenant || saved.Id != id || saved.Revision <= _current.Revision) return;
+        _history.BreakGroup();
         _current = saved; if (_name == nameAtSubmit) _name = saved.Name; _baseline = Fingerprint(saved.Name, saved.Draft);
         _dirty = Fingerprint(_name, _canvas?.CaptureCurrent() ?? _adapter!.Capture(_initialViewport.ScrollX, _initialViewport.ScrollY)) != _baseline;
         _message = _dirty ? "Submitted draft saved. Newer canvas changes remain unsaved. No action ran." : "Draft saved. No action ran.";
@@ -502,7 +566,7 @@
         graph.Nodes.Any(node => node.Id == edge.TargetNodeId && FlowGraphValidator.IsTerminal(node.Kind))) : null;
     private string InsertHint(FlowNodeKind kind) => kind == FlowNodeKind.InvestigateWithAi && AiInsertionEdge is not null
         ? "Insert AI before the existing final action" : $"Insert {FlowCanvas.KindLabel(kind)} at canvas center";
-    private void UpdateNode(FlowNodeDto node) { if (ReadOnly || !CanEdit || _busy || _adapter is null) return; _adapter.Update(node); _ = CheckDirty(); }
+    private void UpdateNode(FlowNodeDto node) { if (ReadOnly || !CanEdit || _busy || _adapter is null) return; _historyGroup = null; _adapter.Update(node); _ = CheckDirty(); }
     private Task MoveNodeAsync(FlowNodeDto definition, bool x, ChangeEventArgs args) => CommandAsync("move", async (tenant, id, token) =>
     {
         if (ReadOnly || !CanEdit || _adapter is null || !double.TryParse(args.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var value) || !double.IsFinite(value) || Math.Abs(value) > 20000) { _error = "Coordinates must be finite numbers within the canvas bounds."; return; }
