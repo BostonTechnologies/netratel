@@ -9,7 +9,7 @@ using NetRatel.Shared.Contracts.Netclaw;
 
 namespace NetRatel.API.Endpoints;
 
-public static class FlowEndpoints
+public static partial class FlowEndpoints
 {
     public static IEndpointRouteBuilder MapFlowEndpoints(this IEndpointRouteBuilder app)
     {
@@ -17,6 +17,7 @@ public static class FlowEndpoints
         var group = app.MapGroup("/api/v1/tenants/{tenantId:int}/flows").RequireAuthorization().WithTags("Flows");
         group.MapGet("", ListAsync); group.MapPost("", CreateAsync);
         group.MapGet("/template", TemplateAsync); group.MapGet("/connectors", ConnectorsAsync);
+        group.MapGet("/templates", TemplatesAsync); group.MapPost("/from-template", CreateFromTemplateAsync);
         group.MapGet("/versions/{versionId:guid}", VersionByIdAsync); group.MapGet("/runs/{runId:guid}", RunByIdAsync);
         group.MapPost("/validate", ValidateAsync); group.MapPost("/dry-run", DryRunAsync);
         group.MapGet("/{flowId:guid}", GetAsync);
