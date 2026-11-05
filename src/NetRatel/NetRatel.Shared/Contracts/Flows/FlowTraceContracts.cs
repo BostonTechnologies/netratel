@@ -25,6 +25,7 @@ public sealed record FlowExecutionReferenceDto(FlowExecutionSourceKind SourceKin
         FlowExecutionSourceKind.Job => PositiveDecimal(value.DefinitionId) && PositiveDecimal(value.ExecutionId),
         FlowExecutionSourceKind.Script =>
             (value.DefinitionId is null || PositiveDecimal(value.DefinitionId)) &&
+            value.ExecutionId is not ("." or "..") &&
             FlowGraphValidator.IsBoundedText(value.ExecutionId, FlowExecutionEventLimits.MaximumIdentifierLength),
         _ => false
     });

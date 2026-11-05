@@ -205,6 +205,10 @@ public sealed partial class JobRunOwnedBoundaryPostgresTests
             checkpoint.Trace!.Steps.Single(step => step.NodeId == published.TriggerId).ExecutionReference.Should().Be(
                 new FlowExecutionReferenceDto(FlowExecutionSourceKind.Job, failure.Definition.Id,
                     original.Id.ToString(CultureInfo.InvariantCulture)));
+            FlowNodeCheckpointRules.Valid(final, checkpoint).Should().BeTrue();
+            var changed = checkpoint.Trace.Steps.Select(step => step.NodeId == published.TriggerId
+                ? step with { ExecutionReference = step.ExecutionReference! with { ExecutionId = original.Id == 1 ? "2" : "1" } } : step).ToArray();
+            FlowNodeCheckpointRules.Valid(final, checkpoint with { Trace = checkpoint.Trace with { Steps = changed } }).Should().BeFalse();
             checkpoint.NodeId.Should().Be(published.RecoveredId);
             var order = checkpoint.Trace!.Steps.OrderBy(step => step.Sequence).Select(step => step.NodeId).ToArray();
             order.Should().Equal(published.TriggerId, published.InvestigationId, published.RepairId, published.RerunId, published.RecoveredId);
