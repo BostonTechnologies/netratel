@@ -1,0 +1,59 @@
+using System.Text.Json;
+using AwesomeAssertions;
+using Bunit;
+using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Web.Components.Pages.Flows;
+using Xunit;
+
+namespace NetRatel.Web.ComponentTests;
+
+public sealed class FlowTracePlayerTests : AsyncBunitContext
+{
+    public FlowTracePlayerTests()
+    {
+        JSInterop.Mode = JSRuntimeMode.Loose;
+        JSInterop.SetupModule("./js/flows-playback.js").Mode = JSRuntimeMode.Loose;
+    }
+
+    [Fact]
+    public void Playback_labels_simulated_data_missing_output_and_presentation_controls()
+    {
+        var node = Guid.NewGuid();
+        var trace = new FlowTraceDto(1, "graph-a", FlowTraceProvenance.Simulated,
+            [new(0, node, "Synthetic investigation", FlowTraceStepStatus.Planned, "sample-result-unavailable",
+                FlowTraceProvenance.Simulated, new(FlowTraceDataState.Present)
+                { Value = JsonSerializer.SerializeToElement(new { ruleName = "Synthetic CPU threshold", value = 94 }) },
+                new(FlowTraceDataState.Missing))]);
+        var cut = Render<FlowTracePlayer>(p => p.Add(x => x.Trace, trace).Add(x => x.ContextKey, "tenant-17-draft-a")
+            .Add(x => x.ExpectedConfigurationHash, "graph-a"));
+        cut.Markup.Should().Contain("Simulated playback").And.Contain("no actions run").And.Contain("Synthetic CPU threshold")
+            .And.Contain("Data unavailable").And.Contain("explicit sample result").And.Contain("Not captured");
+        cut.FindAll("[data-trace-action]").Should().HaveCount(5);
+        cut.FindAll("[data-trace-panel]").Should().ContainSingle();
+        cut.Find("[data-trace-panel]").GetAttribute("data-node-id").Should().Be(node.ToString());
+        cut.FindAll("[data-testid=flow-trace-stale]").Should().BeEmpty();
+    }
+
+    [Fact]
+    public void A_trace_for_another_revision_never_presents_its_node_snapshots_as_current_data()
+    {
+        var trace = new FlowTraceDto(1, "old-graph", FlowTraceProvenance.Recorded,
+            [new(0, Guid.NewGuid(), "Old graph node", FlowTraceStepStatus.Completed, "succeeded", FlowTraceProvenance.Recorded,
+                new(FlowTraceDataState.Present) { Value = JsonSerializer.SerializeToElement("old recorded facts") },
+                new(FlowTraceDataState.Empty) { Value = JsonSerializer.SerializeToElement("") })]);
+        var cut = Render<FlowTracePlayer>(p => p.Add(x => x.Trace, trace).Add(x => x.ContextKey, "tenant-91-draft-b")
+            .Add(x => x.ExpectedConfigurationHash, "new-graph"));
+        cut.Find("[data-testid=flow-trace-stale]").TextContent.Should().Contain("different graph revision");
+        cut.Markup.Should().NotContain("Old graph node").And.NotContain("old recorded facts");
+        cut.FindAll("[data-trace-panel]").Should().BeEmpty();
+        cut.FindAll("[data-trace-action]").Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Older_run_without_snapshots_reports_unavailable_instead_of_reconstructed_history()
+    {
+        var cut = Render<FlowTracePlayer>(p => p.Add(x => x.ContextKey, "tenant-17-run-a"));
+        cut.Find("[data-testid=flow-trace-unavailable]").TextContent.Should().Contain("no captured node snapshots");
+        cut.FindAll("[data-trace-panel]").Should().BeEmpty();
+    }
+}

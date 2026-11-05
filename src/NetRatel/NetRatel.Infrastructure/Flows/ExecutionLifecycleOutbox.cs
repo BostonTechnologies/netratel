@@ -245,6 +245,8 @@ public static class ExecutionLifecycleOutbox
                 }
             }
             value = ApplyAdmission(value, Admission(db, value));
+            if (!db.OutboxMessages.Local.Any(x => x.Id == value.EventId) &&
+                db.OutboxMessages.AsNoTracking().Any(x => x.Id == value.EventId)) continue;
             Append(db, value);
         }
     }
@@ -266,6 +268,8 @@ public static class ExecutionLifecycleOutbox
                 }
             }
             value = ApplyAdmission(value, await AdmissionAsync(db, value, ct));
+            if (!db.OutboxMessages.Local.Any(x => x.Id == value.EventId) &&
+                await db.OutboxMessages.AsNoTracking().AnyAsync(x => x.Id == value.EventId, ct)) continue;
             Append(db, value);
         }
     }
@@ -367,11 +371,12 @@ public static class ExecutionLifecycleOutbox
         };
     }
 
-    public static FlowExecutionEventDto? ScriptEvent(JobTaskActivityRecord row, string? previousStatus, DateTimeOffset observedAtUtc)
+    public static FlowExecutionEventDto? ScriptEvent(JobTaskActivityRecord row, string? previousStatus, DateTimeOffset observedAtUtc,
+        bool terminalEvidenceChanged = false)
     {
         if (row.TenantId is not > 0 || string.IsNullOrWhiteSpace(row.RequestId) ||
             row.TaskType is not (TaskKinds.ExecLibraryScript or TaskKinds.Legacy_RunLibraryScript) ||
-            string.Equals(row.Status, previousStatus, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(row.Status, previousStatus, StringComparison.OrdinalIgnoreCase) && !terminalEvidenceChanged ||
             FlowScriptExecutionOutcomes.ClassifyCommittedResult(row.Status, row.ExitCode, row.ResultJson) is not { } terminal) return null;
         var outcome = terminal.Outcome;
         var policy = TaskOutputProtection.Metadata(row);
@@ -382,9 +387,11 @@ public static class ExecutionLifecycleOutbox
         var result = TaskOutputProtection.Project(row, row.ResultJson);
         var id = row.RequestId;
         var parent = row.JobRunId?.ToString(CultureInfo.InvariantCulture);
-        return Create(row.TenantId.Value, FlowExecutionSourceKind.Script, definition, id, id, target,
-            outcome, row.Status.Trim(), observedAtUtc, observedAtUtc, row.CompletedAtUtc ?? row.CreatedAtUtc) with
+        var accepted = Create(row.TenantId.Value, FlowExecutionSourceKind.Script, definition, id, id, target,
+            outcome, row.Status.Trim(), observedAtUtc, observedAtUtc, row.CompletedAtUtc ?? row.CreatedAtUtc);
+        return accepted with
         {
+            EventId = Identity($"script-evidence|{accepted.EventId:N}|{terminal.ExitCode?.ToString(CultureInfo.InvariantCulture)}|{Digest(result)}"),
             StartedAtUtc = row.StartedAtUtc,
             CompletedAtUtc = row.CompletedAtUtc,
             ParentExecutionId = parent,
@@ -413,9 +420,14 @@ public static class ExecutionLifecycleOutbox
         }
         foreach (var entry in db.ChangeTracker.Entries<JobTaskActivityRecord>().Where(x => x.State is EntityState.Added or EntityState.Modified))
         {
-            if (entry.State == EntityState.Modified && !entry.Property(x => x.Status).IsModified) continue;
             var previous = entry.State == EntityState.Added ? null : entry.Property(x => x.Status).OriginalValue;
-            if (ScriptEvent(entry.Entity, previous, observed) is { } value) candidates.Add((value, null));
+            var evidenceChanged = entry.State == EntityState.Modified &&
+                (entry.Property(x => x.ExitCode).OriginalValue != entry.Entity.ExitCode ||
+                 !string.Equals(entry.Property(x => x.ResultJson).OriginalValue, entry.Entity.ResultJson, StringComparison.Ordinal) ||
+                 entry.Property(x => x.CompletedAtUtc).OriginalValue != entry.Entity.CompletedAtUtc);
+            if (entry.State == EntityState.Modified && !evidenceChanged &&
+                string.Equals(previous, entry.Entity.Status, StringComparison.OrdinalIgnoreCase)) continue;
+            if (ScriptEvent(entry.Entity, previous, observed, evidenceChanged) is { } value) candidates.Add((value, null));
         }
         return candidates;
     }
@@ -602,12 +614,15 @@ public static class ExecutionLifecycleOutbox
         ExecutionAdmissionCausation? cause = null;
         if (admission.CausationJson is { } json)
         {
-            if (Encoding.UTF8.GetByteCount(json) > 2048)
+            if (Encoding.UTF8.GetByteCount(json) > 8192)
                 throw new InvalidOperationException("Accepted execution causation exceeds its metadata budget.");
             cause = JsonSerializer.Deserialize<ExecutionAdmissionCausation>(json)
                 ?? throw new InvalidOperationException("Accepted execution causation is unavailable.");
         }
         var denied = value.Outcome == FlowExecutionOutcome.Failed && admission.AuthorityDeniedAtUtc is not null;
+        var linkedRerun = !string.IsNullOrWhiteSpace(cause?.SourceExecutionId) &&
+            (value.SourceKind == FlowExecutionSourceKind.Job ||
+             value.SourceKind == FlowExecutionSourceKind.Script && value.ParentExecutionId is null);
         var replay = value.Replay;
         if (admission.Kind == (int)ExecutionAdmissionKind.LibraryScript && value.SourceKind == FlowExecutionSourceKind.Script &&
             value.Definition.Id is not null && value.Definition.Revision is not null &&
@@ -619,6 +634,8 @@ public static class ExecutionLifecycleOutbox
         {
             Outcome = denied ? FlowExecutionOutcome.Denied : value.Outcome,
             ReasonCode = denied ? "execution_authority_denied" : value.ReasonCode,
+            ParentExecutionId = linkedRerun ? cause!.SourceExecutionId : value.ParentExecutionId,
+            RootExecutionId = linkedRerun ? cause!.RootExecutionId ?? cause.SourceExecutionId : value.RootExecutionId,
             Causation = new(cause?.RootOccurrenceId ?? value.OccurrenceId.ToString("N"), cause?.ParentEventId,
                 admission.FlowRunId, admission.NodeId, cause?.HopCount ?? 0, cause?.RecoveryAttempt ?? 0),
             Replay = replay
