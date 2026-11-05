@@ -1,4 +1,4 @@
-name: Selected Flows near-limit diagnostic
+name: Selected Flows transient pointer diagnostic
 
 on:
   push:
@@ -14,19 +14,19 @@ concurrency:
 
 jobs:
   browser:
-    name: Selected disposable near-limit diagnostic
+    name: Selected disposable pointer diagnostic
     if: github.repository == 'BostonTechnologies/netratel' && github.ref == 'refs/heads/codex/flows-browser-acceptance'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      EXPECTED_SOURCE_SHA: f051a8e47eff7568ffbc9bb03efe2b4e38fe23ef
-      BROWSER_CLASSES: NetRatel.Web.PlaywrightTests.FlowTypedAuthoringAcceptanceTests
-      BROWSER_METHODS: NetRatel.Web.PlaywrightTests.FlowTypedAuthoringAcceptanceTests.Near_Limit_Graph_Mount_Fit_Pan_Zoom_And_Route_Are_Measured_Without_Execution
+      EXPECTED_SOURCE_SHA: c3b0711321dfb0375e6bae9d2207ba56d2f3383c
+      BROWSER_CLASSES: NetRatel.Web.PlaywrightTests.FlowsResponsiveTests
+      BROWSER_METHODS: NetRatel.Web.PlaywrightTests.FlowsResponsiveTests.Actual_Native_Drag_And_Pointer_Connections_Save_Reload_Stable_Properties_And_Viewport
       NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT: ${{ github.workspace }}/TestResults/playwright
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: f051a8e47eff7568ffbc9bb03efe2b4e38fe23ef
+          ref: c3b0711321dfb0375e6bae9d2207ba56d2f3383c
           fetch-depth: 1
           persist-credentials: false
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
@@ -47,7 +47,7 @@ jobs:
           python3 - "$source_sha" "$version" <<'PY'
           import json, os, sys
           from pathlib import Path
-          identity = {"suite": "selected-flows-near-limit-diagnostic", "sourceKind": "reviewed-unmerged-candidate", "sourcePullRequest": 636, "sourceSha": sys.argv[1], "productVersion": sys.argv[2],
+          identity = {"suite": "selected-flows-transient-pointer-diagnostic", "sourceKind": "reviewed-unmerged-candidate", "sourcePullRequest": 636, "sourceSha": sys.argv[1], "productVersion": sys.argv[2],
                       "dotnetSdkVersion": os.environ["NETRATEL_DOTNET_SDK_VERSION"],
                       "runId": os.environ["GITHUB_RUN_ID"], "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
                       "workflowEventSha": os.environ["GITHUB_SHA"],
@@ -83,7 +83,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: selected-flows-near-limit-diagnostic-evidence
+          name: selected-flows-transient-pointer-diagnostic-evidence
           path: |
             TestResults
             src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright
