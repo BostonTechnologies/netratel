@@ -39,6 +39,7 @@ public sealed record FlowExecutionEventDto(Guid EventId, Guid OccurrenceId, int 
     public string? ReasonCode { get; init; }
     public string? Reason { get; init; }
     public int? ExitCode { get; init; }
+    public string? RequestKind { get; init; }
     public string? CorrelationId { get; init; }
     public string? ParentExecutionId { get; init; }
     public string? RootExecutionId { get; init; }

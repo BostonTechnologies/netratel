@@ -22,6 +22,7 @@ public static class FlowExecutionEventValidator
         if (FlowExecutionOutcomes.FromAuthoritativeStatus(value.RawStatus) != value.Outcome)
             issues.Add("event_raw_outcome_mismatch");
         Optional(value.CorrelationId, "correlation_id");
+        Optional(value.RequestKind, "request_kind");
         Optional(value.ParentExecutionId, "parent_execution_id");
         Optional(value.RootExecutionId, "root_execution_id");
         Text(value.ReasonCode, 128, "reason_code");
