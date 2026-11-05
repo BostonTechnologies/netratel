@@ -36,20 +36,39 @@ public sealed class FlowExecutionDefinitionPins(OrchestratorDbContext db, IJobEx
         var pins = new List<FlowPinnedExecutionDefinition>();
         var updated = new Dictionary<Guid, FlowNodeDto>();
         await using var transaction = await ScriptReferenceFence.BeginAsync(db, cancellationToken);
-        // Every job fence precedes every script fence, matching canonical definition mutation order.
-        // Re-acquiring a held job fence inside the snapshot capture is harmless.
-        foreach (var node in nodes.Where(node => node.Kind == FlowNodeKind.RunJob)
-            .OrderBy(node => node.ExecutionAction?.Definition.Id, StringComparer.Ordinal))
+        // Parse aliases before locking: every publisher takes numeric job IDs, then the numeric
+        // union of direct and job-referenced script IDs. Node layout/GUIDs cannot change lock order.
+        var selectedIds = nodes.ToDictionary(node => node.Id, node =>
+            ulong.TryParse(node.ExecutionAction?.Definition.Id, NumberStyles.None, CultureInfo.InvariantCulture, out var id) &&
+            id > 0 && id <= long.MaxValue ? checked((long)id) : throw new FlowExecutionPinException("execution-definition-id"));
+        var jobIds = nodes.Where(node => node.Kind == FlowNodeKind.RunJob).Select(node => selectedIds[node.Id])
+            .Distinct().Order().ToArray();
+        if (jobIds.Length > 0 &&
+            !await access.AuthorizeAsync(principal, NetRatelPermissions.JobManagement, tenantId, cancellationToken))
+            throw new FlowExecutionPinException("execution-definition-denied");
+        if (nodes.Any(node => node.Kind == FlowNodeKind.RunLibraryScript) &&
+            !await access.AuthorizeAsync(principal, NetRatelPermissions.ScriptExecute, tenantId, cancellationToken))
+            throw new FlowExecutionPinException("execution-definition-denied");
+        foreach (var jobId in jobIds)
         {
-            if (!await access.AuthorizeAsync(principal, NetRatelPermissions.JobManagement, tenantId, cancellationToken))
-                throw new FlowExecutionPinException("execution-definition-denied");
-            if (!ulong.TryParse(node.ExecutionAction?.Definition.Id, NumberStyles.None, CultureInfo.InvariantCulture, out var jobId) ||
-                jobId == 0 || jobId > long.MaxValue)
-                throw new FlowExecutionPinException("execution-definition-id");
-            if (!await db.Jobs.AsNoTracking().AnyAsync(job => job.Id == checked((long)jobId) && job.TenantId == tenantId, cancellationToken) ||
-                !await JobDefinitionMutationFence.LockActiveAsync(db, checked((long)jobId), cancellationToken))
+            if (!await db.Jobs.AsNoTracking().AnyAsync(job => job.Id == jobId && job.TenantId == tenantId, cancellationToken) ||
+                !await JobDefinitionMutationFence.LockActiveAsync(db, jobId, cancellationToken))
                 throw new FlowExecutionPinException("execution-definition-unavailable");
         }
+        // The job fences make this reference set stable until the publication commits.
+        var referenced = await db.JobSteps.AsNoTracking().Where(step => jobIds.Contains(step.JobId) &&
+            step.Enabled && step.Type == (int)JobStepKind.LibraryScript)
+            .Select(step => new { step.ScriptId, step.PayloadJson }).ToArrayAsync(cancellationToken);
+        var referencedIds = referenced.Select(step => step.ScriptId is { } id ? checked((ulong)id) :
+            PinnedJobExecutionSnapshotCapture.LegacyScriptId(step.PayloadJson) ??
+                throw new FlowExecutionPinException("execution-definition-unavailable"))
+            .Select(id => id is > 0 and <= long.MaxValue ? checked((long)id) :
+                throw new FlowExecutionPinException("execution-definition-id"));
+        var scriptIds = nodes.Where(node => node.Kind == FlowNodeKind.RunLibraryScript).Select(node => selectedIds[node.Id])
+            .Concat(referencedIds).Distinct().Order().ToArray();
+        foreach (var scriptId in scriptIds)
+            if (!await ScriptReferenceFence.LockActiveAsync(db, scriptId, cancellationToken))
+                throw new FlowExecutionPinException("execution-definition-unavailable");
         foreach (var node in nodes.OrderBy(node => node.Id))
         {
             var selected = node.ExecutionAction ?? throw new FlowExecutionPinException("execution-action-required");

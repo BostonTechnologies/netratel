@@ -1,6 +1,8 @@
 using AwesomeAssertions;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
+using NetRatel.Shared.Contracts.Flows;
 using NetRatel.Application.Jobs;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
@@ -105,6 +107,47 @@ public sealed class ExecutionAdmissionPostgresTests(PostgreSqlPersistenceFixture
 
 
     [Fact]
+    public async Task Concurrent_different_rerun_nodes_share_one_default_budget_and_retries_keep_the_accepted_id()
+    {
+        var first = Identity() with { Causation = new("original-occurrence", RecoveryAttempt: 1, SourceExecutionId: "original-execution") };
+        var second = first with { ActionKey = Guid.NewGuid(), NodeId = Guid.NewGuid() };
+        await using (var seed = new OrchestratorDbContext(_options))
+        {
+            var flowId = Guid.NewGuid();
+            var graph = new FlowGraphDto(2, [
+                new(first.NodeId, FlowNodeKind.RerunOriginalExecution, "First linked attempt", new(0, 0)) { Rerun = new() },
+                new(second.NodeId, FlowNodeKind.RerunOriginalExecution, "Another branch", new(300, 0)) { Rerun = new() }
+            ], [], new());
+            seed.FlowDefinitions.Add(new() { Id = flowId, TenantId = first.TenantId, Name = "synthetic recovery", DraftJson = JsonSerializer.Serialize(graph) });
+            seed.FlowVersions.Add(new() { Id = first.FlowVersionId, FlowId = flowId, TenantId = first.TenantId,
+                VersionNumber = 1, GraphJson = JsonSerializer.Serialize(graph, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+                ConfigurationHash = "synthetic", PublishedBy = first.PrincipalId, PublishedAtUtc = DateTimeOffset.UtcNow });
+            await seed.SaveChangesAsync();
+        }
+        var allocations = 0;
+        async Task<ExecutionAdmissionBinding?> Admit(ExecutionAdmissionIdentity identity)
+        {
+            await using var db = new OrchestratorDbContext(_options);
+            try
+            {
+                return await new ExecutionAdmissionStore(db, _keys, TimeProvider.System)
+                    .ReserveAsync(new(identity, ExecutionAdmissionKind.Job, "{}"),
+                        () => (100 + Interlocked.Increment(ref allocations)).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        CancellationToken.None);
+            }
+            catch (ExecutionAdmissionBudgetExhaustedException) { return null; }
+        }
+        var attempts = await Task.WhenAll(Admit(first), Admit(second));
+        var accepted = attempts.Where(binding => binding is not null).Should().ContainSingle().Which!;
+        allocations.Should().Be(1);
+        var retry = await Admit(accepted.Identity);
+        retry!.ExecutionId.Should().Be(accepted.ExecutionId);
+        (await Admit(accepted.Identity with { ActionKey = Guid.NewGuid(), NodeAttempt = 2 })).Should().BeNull();
+        await using var verify = new OrchestratorDbContext(_options);
+        (await verify.Set<ExecutionAdmissionRecord>().CountAsync()).Should().Be(1);
+    }
+
+    [Fact]
     public async Task A_dispatch_claim_and_its_canonical_activity_prepare_commit_atomically_and_are_never_replayed()
     {
         var submission = new ExecutionAdmissionSubmission(Identity(), ExecutionAdmissionKind.LibraryScript, "{}");
@@ -120,7 +163,7 @@ public sealed class ExecutionAdmissionPostgresTests(PostgreSqlPersistenceFixture
                 await new JobRunService(crashed, _keys).CreateTaskActivityAsync(new(binding.ExecutionId,
                     null, null, "", 7, "os-info", "Pending", null, DateTimeOffset.UtcNow, null), ct);
                 throw new IOException("synthetic crash before commit");
-            }, CancellationToken.None);
+            }, _ => Task.CompletedTask, CancellationToken.None);
             await prepare.Should().ThrowAsync<IOException>();
         }
         await using (var read = new OrchestratorDbContext(_options))
@@ -135,13 +178,13 @@ public sealed class ExecutionAdmissionPostgresTests(PostgreSqlPersistenceFixture
             {
                 await new JobRunService(accepted, _keys).CreateTaskActivityAsync(new(binding.ExecutionId,
                     null, null, "", 7, "os-info", "Pending", null, DateTimeOffset.UtcNow, null), ct);
-            }, CancellationToken.None))
+            }, _ => Task.CompletedTask, CancellationToken.None))
                 .Should().BeTrue();
         }
         await using var restarted = new OrchestratorDbContext(_options);
         var replayed = false;
         var reloaded = new ExecutionAdmissionStore(restarted, _keys, TimeProvider.System);
-        (await reloaded.TryBeginDispatchAsync(binding, _ => { replayed = true; return Task.CompletedTask; }, CancellationToken.None))
+        (await reloaded.TryBeginDispatchAsync(binding, _ => { replayed = true; return Task.CompletedTask; }, _ => Task.CompletedTask, CancellationToken.None))
             .Should().BeFalse();
         replayed.Should().BeFalse();
         (await restarted.JobTaskActivities.CountAsync()).Should().Be(1);
