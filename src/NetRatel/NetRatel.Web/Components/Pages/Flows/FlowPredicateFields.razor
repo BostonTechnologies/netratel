@@ -57,9 +57,9 @@ else
             if (_input is not { } input) return null;
             return input.Source switch
             {
-                FlowInputSource.Event => _fields.FirstOrDefault(field => field.Path == input.Path)?.AllowedValues,
+                FlowInputSource.Event => _fields.FirstOrDefault(choice => choice.Path == input.Path)?.AllowedValues,
                 FlowInputSource.NodeOutput when _producers.FirstOrDefault(node => node.Id == input.NodeId) is { } producer =>
-                    FlowBindingCatalogue.OutputFields(producer.Kind).FirstOrDefault(field => field.Path == input.Path)?.AllowedValues,
+                    FlowBindingCatalogue.OutputFields(producer.Kind).FirstOrDefault(choice => choice.Path == input.Path)?.AllowedValues,
                 _ => null
             };
         }
