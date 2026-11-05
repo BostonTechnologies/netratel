@@ -24,7 +24,7 @@ public static class FlowExecutionEventMatching
         if (settings.Scope == FlowExecutionScope.SelectedDefinitions)
         {
             var matches = settings.DefinitionReferences is { Count: > 0 } references
-                ? references.Any(reference => reference.SourceKind == value.SourceKind &&
+                ? references.Any(reference => reference.SourceKind == (value.DefinitionSourceKind ?? value.SourceKind) &&
                     string.Equals(reference.Id, value.Definition.Id, StringComparison.Ordinal))
                 : settings.Sources.Count == 1 && settings.DefinitionIds is { Count: > 0 } ids &&
                     ids.Contains(value.Definition.Id, StringComparer.Ordinal);
@@ -62,9 +62,9 @@ public static class FlowExecutionEventMatching
     }
 
     /// <summary>
-    /// Caller supplies same-key immutable facts already eligible for the subscription. A correlated request
-    /// is linked only after the source writer proves the terminal job boundary, so that durable job fact can
-    /// be selected regardless of delivery order. All source facts retain their own identities.
+    /// Caller supplies same-key immutable facts already eligible for the subscription. A known accepted parent
+    /// is correlated before its terminal result; combined admission waits for that authoritative boundary.
+    /// All source facts retain their own identities regardless of arrival order.
     /// </summary>
     public static FlowExecutionEventAggregateDto Aggregate(Guid flowVersionId, Guid triggerNodeId,
         FlowExecutionTriggerSettingsDto settings, IReadOnlyList<FlowExecutionEventDto> facts)
@@ -95,8 +95,8 @@ public static class FlowExecutionEventMatching
         if (ids is { Count: > 0 } && (sources.Count != 1 || ids.Count > FlowGraphV2Limits.MaximumSelectedDefinitions ||
             ids.Any(id => !Identifier(id)) || ids.Distinct(StringComparer.Ordinal).Count() != ids.Count)) return false;
         if (references is { Count: > 0 } && (references.Count > FlowGraphV2Limits.MaximumSelectedDefinitions ||
-            references.Any(reference => reference is null || !sources.Contains(reference.SourceKind) || !Identifier(reference.Id)) ||
-            references.Distinct().Count() != references.Count)) return false;
+            references.Any(reference => reference is null || (!sources.Contains(reference.SourceKind) && !(sources.Contains(FlowExecutionSourceKind.Request) && reference.SourceKind is FlowExecutionSourceKind.Job or FlowExecutionSourceKind.Script)) || !Identifier(reference.Id)) ||
+            references.Select(reference => (reference.SourceKind, reference.Id)).Distinct().Count() != references.Count)) return false;
         var hasIds = ids is { Count: > 0 };
         var hasReferences = references is { Count: > 0 };
         if (settings.Scope == FlowExecutionScope.AllInTenant && (hasIds || hasReferences) ||
@@ -110,5 +110,5 @@ public static class FlowExecutionEventMatching
     }
 
     private static bool Identifier(string? value) => !string.IsNullOrWhiteSpace(value) &&
-        value.Length <= FlowExecutionEventLimits.MaximumIdentifierLength && !value.Any(char.IsControl);
+        FlowGraphValidator.IsBoundedText(value, FlowExecutionEventLimits.MaximumIdentifierLength) && !value.Any(char.IsControl);
 }
