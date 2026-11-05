@@ -108,8 +108,8 @@ Execution facts use `FlowExecutionEventDto` schema one with exact source, normal
 definition/execution/attempt identity, target, timestamps, causation and bounded evidence references.
 Execution identifiers remain strings across JavaScript; numeric IDs use decimal text without number conversion. The native fact budget is 16 KiB; the
 source-aware runtime wrapper is 24 KiB. These limits are separate from the graph, prepared-action
-and trace budgets. `occurredAt` records the source transition/terminal-ready selection boundary under the durable
-subscription locks and live database clock. Native `startedAt`/`completedAt` remain separate: a delayed
+and trace budgets. `occurredAtUtc` records the source transition/terminal-ready selection boundary under the durable
+subscription locks and live database clock. Native `startedAtUtc`/`completedAtUtc` remain separate: a delayed
 projection can commit after enable even when native completion was earlier.
 Replay descriptors reference server-owned protected original inputs/definition/target;
 they contain no credentials and confer no authority. The immutable run envelope retains up to 16
