@@ -39,9 +39,10 @@ public sealed partial class NetclawPersistencePostgresTests
             .UseNpgsql(connection.Database.GetConnectionString()).Options;
         var clock = new RecoveryClock();
         var daemon = new Daemon();
-        var remote = new IncidentReceiver(clock);
+        var remote = new IncidentReceiver(clock, options);
+        var protection = new EphemeralDataProtectionProvider();
         var reader = new IncidentReaderCounter();
-        await using var original = IncidentProvider(options, identityOptions, clock, daemon, remote, reader);
+        await using var original = IncidentProvider(options, identityOptions, clock, daemon, remote, reader, protection);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(45));
         var ct = deadline.Token;
         Guid versionId;
@@ -214,7 +215,8 @@ public sealed partial class NetclawPersistencePostgresTests
         clock.Advance(FlowLimits.LeaseDuration + TimeSpan.FromSeconds(1));
         crashed.Cancel();
         await active.WaitAsync(ct);
-        await using var restarted = IncidentProvider(options, identityOptions, clock, daemon, remote, reader);
+        await original.DisposeAsync();
+        await using var restarted = IncidentProvider(options, identityOptions, clock, daemon, remote, reader, protection);
         var duplicate = await restarted.GetRequiredService<IFlowExecutionEventIngress>().EnqueueExecutionAsync(admission, ct);
         Assert.Equal(FlowIngressDisposition.Duplicate, duplicate.Disposition);
         Assert.Equal(runId, duplicate.RunId);
@@ -262,7 +264,7 @@ public sealed partial class NetclawPersistencePostgresTests
 
     private static ServiceProvider IncidentProvider(DbContextOptions<OrchestratorDbContext> options,
         DbContextOptions<NetRatelIdentityDbContext> identityOptions, RecoveryClock clock, Daemon daemon,
-        IncidentReceiver remote, IncidentReaderCounter reader)
+        IncidentReceiver remote, IncidentReaderCounter reader, IDataProtectionProvider protection)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -270,7 +272,7 @@ public sealed partial class NetclawPersistencePostgresTests
         services.AddSingleton(options); services.AddScoped<OrchestratorDbContext>();
         services.AddSingleton(identityOptions); services.AddScoped<NetRatelIdentityDbContext>();
         services.AddSingleton<IConfiguration>(new ConfigurationBuilder().Build());
-        services.AddSingleton<IDataProtectionProvider>(new EphemeralDataProtectionProvider());
+        services.AddSingleton<IDataProtectionProvider>(protection);
         services.AddSingleton<INetclawPairingService, Pairing>();
         services.AddSingleton<IAiAssistantChatClientFactory>(daemon);
         services.AddScoped<IEffectiveAccessService, EffectiveAccessService>();
@@ -317,7 +319,7 @@ public sealed partial class NetclawPersistencePostgresTests
 
     private sealed class IncidentReaderCounter { public int Reads; }
 
-    private sealed class IncidentReceiver(RecoveryClock clock) : IRatelDeskConnectorStore, IRatelDeskConnectorBindingStore,
+    private sealed class IncidentReceiver(RecoveryClock clock, DbContextOptions<OrchestratorDbContext> options) : IRatelDeskConnectorStore, IRatelDeskConnectorBindingStore,
         IRatelDeskOutboundBindingResolver, IRatelDeskReceiverTransport
     {
         public Guid ConnectorId { get; } = Guid.NewGuid();
@@ -371,6 +373,12 @@ public sealed partial class NetclawPersistencePostgresTests
         }
         public async Task<RatelDeskReceiverObservation> CreateAsync(RatelDeskReceiverPreparationV2 prepared, string bearer, CancellationToken ct)
         {
+            await using (var db = new OrchestratorDbContext(options))
+            {
+                var persisted = await db.Set<FlowReceiverEvidenceRecord>().AsNoTracking().SingleAsync(ct);
+                Assert.True(persisted.MayHaveCommitted);
+                Assert.Null(persisted.FullReceiptJson);
+            }
             Creates++;
             Assert.Null(committedPreparation);
             committedPreparation = prepared;
