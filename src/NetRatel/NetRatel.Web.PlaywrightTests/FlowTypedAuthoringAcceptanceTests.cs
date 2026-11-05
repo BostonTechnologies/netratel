@@ -71,7 +71,7 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-pan-start.json"),
             JsonSerializer.Serialize(new { fitted, panTarget }, new JsonSerializerOptions { WriteIndented = true }));
         Assert.True(panTarget.GetProperty("blank").GetBoolean(), "The native pan must start on an ordinary blank scroller surface.");
-        var panX = panTarget.GetProperty("x").GetDouble(); var panY = panTarget.GetProperty("y").GetDouble();
+        var panX = panTarget.GetProperty("x").GetSingle(); var panY = panTarget.GetProperty("y").GetSingle();
         var before = (await page.Locator(".flow-node").First.BoundingBoxAsync())!;
         clock.Restart();
         await page.Mouse.MoveAsync(panX, panY);

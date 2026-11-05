@@ -211,7 +211,7 @@
                                     }
                                     <p class="flow-help">Approval pauses until the deadline. Failed, timed-out or unconfirmed results never become successful findings.</p>
                                     @if (_adapter.SchemaVersion == FlowGraphV2Limits.SchemaVersion)
-                                    { <FlowNamedInputFields @key="selected.Id" Node="selected" Graph="_adapter.Capture()" Disabled="@(ReadOnly || !EditingAllowed || _busy)" Changed="UpdateNode" /> }
+                                    { <FlowNamedInputFields @key="(selected.Id, nameof(FlowNamedInputFields))" Node="selected" Graph="_adapter.Capture()" Disabled="@(ReadOnly || !EditingAllowed || _busy)" Changed="UpdateNode" /> }
                                     <PromptPicker @key="selected.Id" TenantId="Definition.TenantId" Selected="@(ai.OptionalPrompts ?? [])" SelectedChanged="references => UpdateAiPrompts(selected, references)"
                                         PinnedPrompts="ai.PinnedPrompts" Disabled="@(ReadOnly || !EditingAllowed || _busy)" />
                                     <a href="@($"/account/integration-credentials?tab=netclaw&tenantId={Definition.TenantId}")">Configure Netclaw</a>
