@@ -9,6 +9,7 @@ using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared;
 using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
@@ -70,6 +71,32 @@ public sealed class FlowExecutionDefinitionCatalogPostgresTests(PostgreSqlPersis
         await unsupported.Should().ThrowAsync<NotSupportedException>();
         var invalid = () => Catalog(db, new Access(true)).ListAsync(7, new("operator"), FlowExecutionSourceKind.Job, afterId: "9e15");
         await invalid.Should().ThrowAsync<ArgumentException>();
+    }
+
+
+    [Fact]
+    public async Task Target_names_exclude_foreign_revoked_disabled_and_superseded_targets_and_keep_presence_unasserted()
+    {
+        await using var db = new OrchestratorDbContext(_options);
+        var now = DateTimeOffset.UtcNow;
+        var first = Guid.NewGuid(); var second = Guid.NewGuid();
+        db.Agents.AddRange(
+            new() { Id = first, TenantId = 7, Name = "synthetic-host-one", FriendlyName = "Repair worker one", CreatedAtUtc = now },
+            new() { Id = second, TenantId = 7, Name = "synthetic-host-two", FriendlyName = "Repair worker two", CreatedAtUtc = now },
+            new() { Id = Guid.NewGuid(), TenantId = 8, Name = "foreign", FriendlyName = "Repair foreign", CreatedAtUtc = now },
+            new() { Id = Guid.NewGuid(), TenantId = 7, Name = "disabled", FriendlyName = "Repair disabled", IsEnabled = false, CreatedAtUtc = now },
+            new() { Id = Guid.NewGuid(), TenantId = 7, Name = "revoked", FriendlyName = "Repair revoked", RevokedAtUtc = now, CreatedAtUtc = now },
+            new() { Id = Guid.NewGuid(), TenantId = 7, Name = "superseded", FriendlyName = "Repair superseded", SupersededByAgentId = first, CreatedAtUtc = now });
+        await db.SaveChangesAsync();
+        var service = Catalog(db, new Access(true));
+        var page = await service.ListTargetsAsync(7, new("operator"), FlowExecutionSourceKind.Script, "REPAIR", limit: 1);
+        page.Items.Should().ContainSingle();
+        page.Items[0].DisplayName.Should().StartWith("Repair worker");
+        page.NextAfterId.Should().NotBeNull();
+        var next = await service.ListTargetsAsync(7, new("operator"), FlowExecutionSourceKind.Script, "repair", page.NextAfterId, 1);
+        next.Items.Should().ContainSingle();
+        new[] { page.Items[0].AgentId, next.Items[0].AgentId }.Should().BeEquivalentTo(new Guid?[] { first, second });
+        next.NextAfterId.Should().BeNull();
     }
 
     private static FlowExecutionDefinitionCatalog Catalog(OrchestratorDbContext db, Access access)

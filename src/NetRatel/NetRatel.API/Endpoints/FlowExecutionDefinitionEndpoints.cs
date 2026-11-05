@@ -13,6 +13,7 @@ public static class FlowExecutionDefinitionEndpoints
         var group = app.MapGroup("/api/v1/tenants/{tenantId:int}/flows/execution-definitions")
             .RequireAuthorization().WithTags("Flows");
         group.MapGet("", ListAsync);
+        group.MapGet("/targets", ListTargetsAsync);
         group.MapGet("/{sourceKind}/{definitionId}", GetAsync);
         return app;
     }
@@ -29,6 +30,19 @@ public static class FlowExecutionDefinitionEndpoints
         try { return Results.Ok(await catalog.ListAsync(tenantId, authority, sourceKind, search, afterId, limit ?? 50, ct)); }
         catch (ExecutionAdmissionDeniedException) { return Results.Forbid(); }
         catch (ArgumentException) { return Results.BadRequest(new { code = "execution-definition-query-invalid" }); }
+        catch (NotSupportedException) { return Results.UnprocessableEntity(new { code = "execution-definition-source-unsupported" }); }
+    }
+
+
+    internal static async Task<IResult> ListTargetsAsync(int tenantId, FlowExecutionSourceKind sourceKind,
+        string? search, string? afterId, int? limit, HttpContext http, IEffectiveAccessService access,
+        IFlowExecutionDefinitionCatalog catalog, CancellationToken ct)
+    {
+        if (Authority(http.User) is not { } authority ||
+            !await access.AuthorizeAsync(http.User, NetRatelPermissions.FlowRead, tenantId, ct)) return Results.Forbid();
+        try { return Results.Ok(await catalog.ListTargetsAsync(tenantId, authority, sourceKind, search, afterId, limit ?? 50, ct)); }
+        catch (ExecutionAdmissionDeniedException) { return Results.Forbid(); }
+        catch (ArgumentException) { return Results.BadRequest(new { code = "execution-target-query-invalid" }); }
         catch (NotSupportedException) { return Results.UnprocessableEntity(new { code = "execution-definition-source-unsupported" }); }
     }
 

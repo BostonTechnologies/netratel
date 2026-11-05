@@ -212,7 +212,7 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
     private sealed class NoJobs : IAkkaJobAuthorityService
     {
         public Task<JobRunInfo> StartAsync(ulong id, NetRatel.Shared.Contracts.Jobs.RunJobRequest request, CancellationToken ct) => throw new NotSupportedException();
-        public Task RecordLifecycleAsync(ClientKey client, NetRatel.Shared.Contracts.Jobs.JobLifecycleUpdateEnvelope lifecycle, CancellationToken ct) => throw new NotSupportedException();
+        public Task RecordLifecycleAsync(ClientKey client, JobLifecycleUpdateEnvelope lifecycle, CancellationToken ct) => throw new NotSupportedException();
         public Task<bool> CancelAsync(ulong id, string reason, CancellationToken ct) => throw new NotSupportedException();
     }
 

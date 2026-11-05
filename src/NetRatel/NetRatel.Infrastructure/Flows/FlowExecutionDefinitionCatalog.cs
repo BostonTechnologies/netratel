@@ -6,6 +6,7 @@ using NetRatel.Application.Jobs;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared;
 
 namespace NetRatel.Infrastructure.Flows;
 
@@ -60,6 +61,28 @@ public sealed class FlowExecutionDefinitionCatalog(OrchestratorDbContext db, IFl
         var capture = await pins.CaptureAsync(tenantId, authority, Guid.NewGuid(), new(2, [node], [], new()), cancellationToken);
         // Only actual publication may supply the permanent protected version reference.
         return capture.Graph.Nodes[0].ExecutionAction! with { PinnedSnapshotReference = null };
+    }
+
+
+    public async Task<FlowExecutionTargetsPageDto> ListTargetsAsync(int tenantId, FlowExecutionAuthorityDto authority,
+        FlowExecutionSourceKind sourceKind, string? search = null, string? afterId = null, int limit = 50,
+        CancellationToken cancellationToken = default)
+    {
+        await RequireAsync(tenantId, authority, sourceKind, cancellationToken);
+        if (limit is < 1 or > 50 || search?.Length > 256 || afterId is not null && !Guid.TryParse(afterId, out _))
+            throw new ArgumentException("The target search or cursor exceeds its bound.");
+        var term = search?.Trim().ToLowerInvariant();
+        var query = afterId is null ? db.Agents.AsQueryable() :
+            db.Agents.FromSqlInterpolated($"SELECT * FROM \"Agents\" WHERE \"TenantId\" = {tenantId} AND \"Id\" > {Guid.Parse(afterId)}");
+        var rows = await query.AsNoTracking().Where(agent => agent.TenantId == tenantId &&
+                agent.IsEnabled && agent.Status == AgentStatus.Active && agent.DeletedAtUtc == null &&
+                agent.RevokedAtUtc == null && agent.SupersededAtUtc == null && agent.SupersededByAgentId == null &&
+                (term == null || term == "" || (agent.Name ?? "").ToLower().Contains(term) ||
+                    (agent.FriendlyName ?? "").ToLower().Contains(term)))
+            .OrderBy(agent => agent.Id).Take(limit + 1)
+            .Select(agent => new FlowExecutionTargetDto(agent.Id, agent.FriendlyName ?? agent.Name, agent.Name))
+            .ToArrayAsync(cancellationToken);
+        return new(rows.Take(limit).ToArray(), rows.Length > limit ? rows[limit - 1].AgentId!.Value.ToString("D") : null);
     }
 
     private async Task RequireAsync(int tenantId, FlowExecutionAuthorityDto authority, FlowExecutionSourceKind kind, CancellationToken ct)

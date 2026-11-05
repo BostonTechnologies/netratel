@@ -9,4 +9,7 @@ public interface IFlowExecutionDefinitionCatalog
         CancellationToken cancellationToken = default);
     Task<FlowExecutionActionSettingsDto?> GetAsync(int tenantId, FlowExecutionAuthorityDto authority,
         FlowExecutionSourceKind sourceKind, string definitionId, CancellationToken cancellationToken = default);
+    Task<FlowExecutionTargetsPageDto> ListTargetsAsync(int tenantId, FlowExecutionAuthorityDto authority,
+        FlowExecutionSourceKind sourceKind, string? search = null, string? afterId = null, int limit = 50,
+        CancellationToken cancellationToken = default);
 }
