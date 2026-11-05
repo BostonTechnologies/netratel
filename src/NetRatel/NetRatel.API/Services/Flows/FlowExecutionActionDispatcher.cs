@@ -161,13 +161,13 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
             script.Script.SourceRevision.ToString(CultureInfo.InvariantCulture), script.ContentHash);
         JsonElement? data = null;
         try { if (activity.ResultJson is not null) data = JsonSerializer.Deserialize<JsonElement>(activity.ResultJson); }
-        catch (JsonException) { }
+        catch (JsonException) { data = null; }
         var terminal = await TerminalAsync(binding.Identity.TenantId, FlowExecutionSourceKind.Script, binding.ExecutionId, ct);
         return new(disposition, "script-" + disposition.ToString().ToLowerInvariant(), receipt,
             new(definition, new(activity.AgentId, activity.TargetDisplayName, activity.TargetHostName), binding.ExecutionId,
                 binding.ExecutionId, activity.StartedAtUtc, activity.CompletedAtUtc, native?.ExitCode,
                 Summary: Bound(activity.Error), StandardOutput: Text(data, "stdout"), StandardError: Text(data, "stderr"),
-                Data: Bounded(data), OutputAvailable: activity.ResultJson is not null,
+                Data: Bounded(data), OutputAvailable: data is not null,
                 Truncated: activity.ResultJson is not null && Encoding.UTF8.GetByteCount(activity.ResultJson) > 16384, References: terminal?.Results), terminal);
     }
 
