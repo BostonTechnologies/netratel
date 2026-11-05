@@ -15,6 +15,8 @@ using NetRatel.Application.Agents;
 using NetRatel.Application.Fanout;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Requests;
+using NetRatel.Application.Scripts;
+using NetRatel.Shared.Contracts.Tasks;
 using NetRatel.Infrastructure.Flows;
 using NetRatel.Application.Presence;
 using NetRatel.Shared.Contracts.Jobs;
@@ -62,7 +64,8 @@ public sealed class AkkaJobAuthorityService(
     IExecutionAdmissionStore? executionAdmissions = null,
     IKeyedExecutionAuthority? keyedAuthority = null,
     IJobExecutionSnapshotCapture? snapshotCapture = null,
-    IRequestService? requests = null) : IAkkaJobAuthorityService
+    IRequestService? requests = null,
+    IScriptExecutionReplayStore? scriptReplayPins = null) : IAkkaJobAuthorityService
 {
     private const string Authority = "akka";
     private const string Feature = "jobs";
@@ -179,7 +182,8 @@ public sealed class AkkaJobAuthorityService(
         return submitted;
     }
 
-    private async Task<KeyedJobAdmissionRequest> RequireKeyedDispatchAsync(JobRunInfo run, CancellationToken ct)
+    private async Task<KeyedJobAdmissionRequest> RequireKeyedDispatchAsync(JobRunInfo run, CancellationToken ct,
+        bool initialDispatch, NetRatel.Application.Flows.FlowRunLease? firstDispatchLease)
     {
         if (executionAdmissions is null || keyedAuthority is null)
             throw new ExecutionAdmissionDeniedException("The canonical execution authority is unavailable.");
@@ -191,6 +195,8 @@ public sealed class AkkaJobAuthorityService(
             submitted.Snapshot.Definition.Job.AgentId != run.AgentId || submitted.Request.StartedBy != run.StartedBy)
             throw new ExecutionAdmissionDeniedException("The canonical execution target differs from its admitted binding.");
         await keyedAuthority.RequireAllowedAsync(submitted.Identity, submitted.Snapshot.Definition.Job, ct);
+        if (initialDispatch) await keyedAuthority.RequireFirstDispatchAsync(submitted.Identity, firstDispatchLease, ct);
+        else await keyedAuthority.RequireContinuationAsync(submitted.Identity, ct);
         return submitted;
     }
 
@@ -279,6 +285,8 @@ public sealed class AkkaJobAuthorityService(
     {
         var definition = pinnedSnapshot?.Definition ?? mcpSnapshot?.Definition ?? await jobDefinitions.GetDetailsAsync(jobId, cancellationToken).ConfigureAwait(false)
             ?? throw new KeyNotFoundException($"Job {jobId} was not found.");
+        if (db is not null && definition.Job.TenantId is > 0)
+            await ExecutionLifecycleSubscriptions.AcquireTenantAsync(db, definition.Job.TenantId.Value, cancellationToken);
         if (pinnedSnapshot is null && mcpSnapshot is null && snapshotCapture is not null &&
             definition.Job.TenantId is > 0 && definition.Job.AgentId is { } boundAgent && boundAgent != Guid.Empty &&
             definition.Steps.Where(step => step.Enabled).All(step => step.Type == JobStepKind.RunCommand ||
@@ -405,7 +413,7 @@ public sealed class AkkaJobAuthorityService(
         await CommitBeforeTransportAsync(cancellationToken);
         onSourceAccepted?.Invoke(run);
         await BeginAfterTransportAsync(cancellationToken);
-        return await DispatchNextAsync(run.Id, client, nextVersion: 3, nextSequence: 3, cancellationToken, firstDispatchLease).ConfigureAwait(false);
+        return await DispatchNextAsync(run.Id, client, nextVersion: 3, nextSequence: 3, cancellationToken, firstDispatchLease, initialDispatch: true).ConfigureAwait(false);
     }
 
     public async Task RecordLifecycleAsync(ClientKey client, JobLifecycleUpdateEnvelope lifecycle, CancellationToken cancellationToken)
@@ -552,7 +560,7 @@ public sealed class AkkaJobAuthorityService(
     }
 
     private async Task<JobRunInfo> DispatchNextAsync(ulong runId, ClientKey client, ulong nextVersion, ulong nextSequence, CancellationToken cancellationToken,
-        NetRatel.Application.Flows.FlowRunLease? firstDispatchLease = null)
+        NetRatel.Application.Flows.FlowRunLease? firstDispatchLease = null, bool initialDispatch = false)
     {
         var details = await jobRuns.GetDetailsAsync(runId, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Job run {runId} was not found.");
@@ -585,7 +593,7 @@ public sealed class AkkaJobAuthorityService(
         {
             try
             {
-                var admitted = await RequireKeyedDispatchAsync(run, cancellationToken);
+                var admitted = await RequireKeyedDispatchAsync(run, cancellationToken, initialDispatch, firstDispatchLease);
                 if (pinnedSnapshot is null || pinnedSnapshot.ComputeDigest() != admitted.Snapshot.ComputeDigest())
                     throw new ExecutionAdmissionDeniedException("The pinned canonical job snapshot is unavailable or changed.");
             }
@@ -654,6 +662,17 @@ public sealed class AkkaJobAuthorityService(
             Environment: run.Environment, TargetDisplayName: run.TargetDisplayName, TargetHostName: run.TargetHostName, TargetName: run.TargetName,
             ScriptName: invocation.ScriptName, ScriptType: invocation.ScriptType, CommandLabel: invocation.CommandLabel, ScriptContentHash: invocation.ScriptContentHash,
             OutputPolicy: invocation.OutputPolicy), cancellationToken).ConfigureAwait(false);
+        if (scriptReplayPins is not null && pinnedSnapshot is not null && step.Type == JobStepKind.LibraryScript &&
+            invocation.TaskType == TaskKinds.ExecLibraryScript)
+        {
+            var script = pinnedSnapshot.Scripts.Single(item => item.Script.Id == step.ScriptId);
+            await scriptReplayPins.CaptureAsync(activity.RequestId, new(
+                run.TenantId ?? throw new InvalidOperationException("A pinned script step requires its native tenant."),
+                run.AgentId ?? throw new InvalidOperationException("A pinned script step requires its bound target."),
+                script, run.Environment ?? ClientEnvironment.None, invocation.PayloadJson,
+                invocation.OutputPolicy ?? throw new InvalidOperationException("A pinned script step requires native output classification.")),
+                cancellationToken);
+        }
         var pendingStep = await jobRuns.UpsertStepRunAsync(new UpsertJobStepRunCommand(
             next.Id, run.Id, step.Id, JobStepRunState.Pending, next.Ordinal, activity.RequestId, null, null, null), cancellationToken).ConfigureAwait(false);
         if (db is not null)
@@ -669,6 +688,17 @@ public sealed class AkkaJobAuthorityService(
             control.Revision++;
             await db.SaveChangesAsync(cancellationToken);
         }
+        if (run.StartedBy.StartsWith("flow-keyed:", StringComparison.Ordinal))
+        {
+            try { await RequireKeyedDispatchAsync(run, cancellationToken, initialDispatch, firstDispatchLease); }
+            catch (ExecutionAdmissionDeniedException)
+            {
+                await executionAdmissions!.RecordAuthorityDeniedAsync(ExecutionAdmissionKind.Job,
+                    run.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), cancellationToken);
+                await FailBeforeDispatchAsync(running, cancellationToken, "execution-admission-denied: The current flow execution authority is unavailable.");
+                return (await jobRuns.GetAsync(run.Id, cancellationToken))!;
+            }
+        }
         await CommitBeforeTransportAsync(cancellationToken);
         try
         {
@@ -676,9 +706,7 @@ public sealed class AkkaJobAuthorityService(
                 await managedGuard!.AuthorizeDispatchAsync(run, definition.Job, cancellationToken);
             if (run.StartedBy.StartsWith("flow-keyed:", StringComparison.Ordinal))
             {
-                var keyed = await RequireKeyedDispatchAsync(run, cancellationToken);
-                if (firstDispatchLease is not null)
-                    await keyedAuthority!.RequireFirstDispatchAsync(keyed.Identity, firstDispatchLease, cancellationToken);
+                await RequireKeyedDispatchAsync(run, cancellationToken, initialDispatch, firstDispatchLease);
             }
             await sessions.DispatchAsync(client, new JobGatewayStepDispatch(
                 run.Id, step.Id, next.Id, next.Ordinal, activity.RequestId, $"akka-job-{run.Id}", invocation.TaskType, invocation.PayloadJson,

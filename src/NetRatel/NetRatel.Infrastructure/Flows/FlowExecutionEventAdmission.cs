@@ -54,7 +54,7 @@ public sealed class FlowExecutionEventAdmission(IFlowExecutionAuthorityVerifier 
     }
 
     internal async Task<FlowSourceProofResult> LoadAsync(OrchestratorDbContext db,
-        FlowExecutionEventAdmissionRequest request, CancellationToken ct)
+        FlowExecutionEventAdmissionRequest request, CancellationToken ct, bool skipHistoricalContributors = false)
     {
         if (!db.Database.IsNpgsql() || db.Database.CurrentTransaction is null || request.TenantId <= 0 ||
             request.FlowVersionId == Guid.Empty || request.SourceEventId == Guid.Empty || request.DeliveryId is not { } primaryDelivery ||
@@ -63,6 +63,7 @@ public sealed class FlowExecutionEventAdmission(IFlowExecutionAuthorityVerifier 
         var ids = (request.ContributingEventIds ?? []).Prepend(request.SourceEventId).Distinct().ToArray();
         if (ids.Length is < 1 or > FlowExecutionEventLimits.MaximumReferences || ids.Any(id => id == Guid.Empty))
             return Deny("execution-source-reference-limit");
+        await FlowTenantTransactionLock.AcquireAsync(db, request.TenantId, ct).ConfigureAwait(false);
         var version = await db.FlowVersions.AsNoTracking().SingleOrDefaultAsync(row =>
             row.TenantId == request.TenantId && row.Id == request.FlowVersionId, ct).ConfigureAwait(false);
         if (version is null) return Deny("execution-source-version-unavailable");
@@ -80,7 +81,7 @@ public sealed class FlowExecutionEventAdmission(IFlowExecutionAuthorityVerifier 
         }
         catch (JsonException) { return Deny("execution-source-version-invalid"); }
         if (graph is null || !FlowGraphV2Validator.ValidatePublished(graph).Valid ||
-            version.ConfigurationHash != FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(graph, FlowPersistenceService.Json)) ||
+            version.ConfigurationHash != FlowGraphSerialization.Hash(graph) ||
             !FlowContractValidation.ValidAuthority(authority) || authority!.PrincipalId != version.PublishedBy)
             return Deny("execution-source-version-invalid");
         var trigger = graph.Nodes.SingleOrDefault(node => node.Kind == FlowNodeKind.ExecutionEvent);
@@ -88,16 +89,19 @@ public sealed class FlowExecutionEventAdmission(IFlowExecutionAuthorityVerifier 
         var activeSince = definition.EnabledSinceUtc is { } enabled && enabled > version.PublishedAtUtc
             ? enabled : version.PublishedAtUtc;
         var now = await EffectiveNowAsync(db, ct).ConfigureAwait(false);
+        var primary = ReadFact(await db.OutboxMessages.AsNoTracking().SingleOrDefaultAsync(row => row.Id == request.SourceEventId, ct).ConfigureAwait(false),
+            request.TenantId);
+        if (primary is null || !FlowExecutionEventMatching.Matches(request.TenantId, settings, primary, activeSince))
+            return Deny("execution-source-fact-invalid");
         var facts = new List<FlowExecutionEventDto>(ids.Length);
-        Guid? admissionKey = null;
+        Guid? admissionKey = FlowExecutionEventMatching.AdmissionKey(version.Id, trigger.Id, settings, primary);
         foreach (var id in ids.Order())
         {
             var source = await db.OutboxMessages.FromSqlInterpolated($@"SELECT * FROM ""OutboxMessages""
                 WHERE ""Id"" = {id} FOR SHARE").AsNoTracking().SingleOrDefaultAsync(ct).ConfigureAwait(false);
             var fact = ReadFact(source, request.TenantId);
-            if (fact is null || !FlowExecutionEventMatching.Matches(request.TenantId, settings, fact, activeSince) ||
-                fact.OccurredAtUtc <= now - FlowLimits.MaximumRetryAge || fact.OccurredAtUtc > now.AddMinutes(5) ||
-                fact.ObservedAtUtc > now.AddMinutes(5))
+            if (fact is null || !FlowExecutionEventMatching.Matches(request.TenantId, settings, fact, DateTimeOffset.MinValue) ||
+                fact.OccurredAtUtc > now.AddMinutes(5) || fact.ObservedAtUtc > now.AddMinutes(5))
                 return Deny("execution-source-fact-invalid");
             var intentId = ExecutionLifecycleSubscriptions.DeliveryId(version.Id, trigger.Id, fact.EventId);
             var intentRow = await db.OutboxMessages.FromSqlInterpolated($@"SELECT * FROM ""OutboxMessages""
@@ -108,13 +112,17 @@ public sealed class FlowExecutionEventAdmission(IFlowExecutionAuthorityVerifier 
             if (intent is null || intent.DeliveryId != intentId || intent.TenantId != request.TenantId ||
                 intent.FlowVersionId != version.Id || intent.TriggerNodeId != trigger.Id || intent.SourceEventId != fact.EventId ||
                 intent.ConfigurationHash != version.ConfigurationHash || intent.SourcePayloadHash != ExecutionLifecycleSubscriptions.PayloadHash(source!.PayloadJson) ||
-                intent.ActiveSinceUtc != activeSince || intent.AdmissionKey != key ||
+                intent.AdmissionKey != key ||
                 intentRow!.TenantId != request.TenantId.ToString(CultureInfo.InvariantCulture) ||
                 intentRow.EntityId != version.Id.ToString("N") || intentRow.CorrelationId != key.ToString("N") ||
                 admissionKey is { } prior && prior != key)
                 return Deny("execution-source-selection-invalid");
             if (id == request.SourceEventId && intentId != primaryDelivery)
                 return Deny("execution-source-selection-conflict");
+            var historical = fact.OccurredAtUtc < activeSince || fact.ObservedAtUtc < activeSince ||
+                fact.OccurredAtUtc <= now - FlowLimits.MaximumRetryAge;
+            if (historical && skipHistoricalContributors && id != request.SourceEventId && intent.ActiveSinceUtc <= activeSince) continue;
+            if (historical || intent.ActiveSinceUtc != activeSince) return Deny("execution-source-selection-invalid");
             admissionKey = key;
             if (await ExecutionLifecycleSubscriptionWorker.AwaitsKnownParentAsync(db, settings, fact, ct).ConfigureAwait(false))
                 return new(new(false, "execution-parent-result-pending"), Pending: true);

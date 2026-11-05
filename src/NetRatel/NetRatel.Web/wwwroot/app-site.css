@@ -1636,3 +1636,6 @@ html[data-netratel-theme="light"] .netratel-login-panel {
 html.netratel-flow-fullscreen,
 html.netratel-flow-fullscreen body { overflow: hidden; }
 html.netratel-flow-fullscreen .mud-popover { z-index: 1450 !important; }
+
+/* Flow tooltips describe controls; their portal must not intercept another control. */
+html.netratel-flow-editor-open .mud-popover.mud-tooltip { pointer-events: none; }

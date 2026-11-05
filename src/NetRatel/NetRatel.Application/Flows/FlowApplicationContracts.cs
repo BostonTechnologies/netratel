@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using NetRatel.Shared.Contracts.Flows;
 
@@ -46,6 +47,8 @@ public sealed record FlowIncidentActionDraft(int TenantId, Guid RunId, Guid Acti
     public FlowAiSettingsDto? AiSettings { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DateTimeOffset? AiDeadlineAtUtc { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyDictionary<string, JsonElement>? InvestigationInputs { get; init; }
 }
 public sealed record FlowIncidentTargetDto(string OrganizationId, string CustomerId, string? AssignedToId, IReadOnlyList<Guid> CategoryIds);
 /// <summary>Preparation resolves and pins connector mapping before this exact semantic request is persisted and sent.</summary>

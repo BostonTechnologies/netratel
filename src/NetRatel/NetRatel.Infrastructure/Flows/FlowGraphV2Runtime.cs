@@ -24,7 +24,7 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
         if (!FlowGraphV2Validator.ValidatePublished(graph).Valid || !FlowContractValidation.ValidEnvelope(lease.Event) ||
             lease.Version.TenantId != lease.Event.TenantId || lease.Version.Id != lease.Event.FlowVersionId ||
             lease.SourceInstanceId == Guid.Empty ||
-            FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(graph, Json)) != lease.Version.ConfigurationHash)
+            FlowGraphSerialization.Hash(graph) != lease.Version.ConfigurationHash)
             return new(FlowRunStatus.Failed, "runtime-input-invalid");
         var trigger = graph.Nodes.Single(node => FlowNodeCatalogue.IsTrigger(node.Kind));
         if ((trigger.Kind == FlowNodeKind.ExecutionEvent) != (lease.Event.ExecutionEvent is not null))
@@ -56,7 +56,7 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
             if (current is not { Progress: FlowNodeProgress.Prepared or FlowNodeProgress.Dispatching or
                 FlowNodeProgress.Waiting or FlowNodeProgress.AwaitingApproval } prior) return false;
             var node = graph.Nodes.Single(definition => definition.Id == prior.NodeId);
-            var outputLimit = !valid && JsonSerializer.SerializeToUtf8Bytes(next.Outputs, Json).Length > FlowNodeCheckpointLimits.MaximumOutputsBytes;
+            var outputLimit = !valid && Encoding.UTF8.GetByteCount(FlowJsonCanonical.Serialize(next.Outputs)) > FlowNodeCheckpointLimits.MaximumOutputsBytes;
             var code = outcome == FlowCheckpointWriteDisposition.Denied ? "node-admission-denied" :
                 outputLimit ? "node-output-limit" : "node-checkpoint-invalid";
             var basis = prior with { AcceptedSourceKind = next.AcceptedSourceKind ?? prior.AcceptedSourceKind,
@@ -65,7 +65,9 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
             var failure = outcome == FlowCheckpointWriteDisposition.Denied &&
                 FlowNodeCatalogue.Port(node.Kind, FlowNodeCatalogue.Denied, FlowPortDirection.Output) is not null
                 ? Complete(lease, node, basis, FlowNodeCatalogue.Denied,
-                    JsonSerializer.SerializeToElement(new { outcome = "denied", code }, Json), basis.Fields)
+                    node.Kind == FlowNodeKind.InvestigateWithAi ? AiOutput(new(FlowIncidentActionResultKind.Failed, code)) :
+                        ExecutionOutput(new(FlowExecutionActionDisposition.Denied, code,
+                            basis.AcceptedReceipt?.Deserialize<FlowExecutionActionReceipt>(Json))), basis.Fields)
                 : Fail(lease, node, basis, code);
             if (FlowNodeCheckpointRules.CanAdvance(lease, prior, failure) &&
                 await checkpoints.SaveNodeCheckpointAsync(lease, prior.Revision, failure, ct).ConfigureAwait(false) == FlowCheckpointWriteDisposition.Stored)
@@ -94,13 +96,15 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
                 var values = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
                 foreach (var pair in node.Inputs ?? new Dictionary<string, FlowInputBindingDto>())
                 {
+                    if (pair.Value.Source == FlowInputSource.SecretReference && node.Kind is FlowNodeKind.RunJob or FlowNodeKind.RunLibraryScript) continue;
                     var resolved = FlowValueEvaluation.Resolve(pair.Value, lease.Event.ExecutionEvent, lease.Event.Data,
                         current?.Outputs ?? new Dictionary<Guid, JsonElement>());
                     if (!resolved.Available || resolved.Value is not { } value)
                     { inputError = pair.Value.Source == FlowInputSource.SecretReference ? "secret-reference-unavailable" : resolved.Code; break; }
-                    values.Add(pair.Key, value);
+                    values.Add(pair.Key, FlowJsonCanonical.Capture(value));
                 }
                 var started = clock.GetUtcNow();
+                if (started < lease.CreatedAtUtc) started = lease.CreatedAtUtc;
                 var minutes = node.ExecutionAction?.TimeoutMinutes ?? node.Rerun?.TimeoutMinutes ??
                     node.AiSettings?.DeadlineMinutes ?? 60;
                 var deadline = started.AddMinutes(minutes);
@@ -116,13 +120,19 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
             // Re-evaluate missing inputs after a prepared-node restart; prior outputs and event are immutable.
             if (inputError is null)
                 foreach (var pair in node.Inputs ?? new Dictionary<string, FlowInputBindingDto>())
-                    if (!state.Inputs.ContainsKey(pair.Key)) { inputError = pair.Value.Source == FlowInputSource.SecretReference ? "secret-reference-unavailable" : "node-input-unavailable"; break; }
+                    if (!(pair.Value.Source == FlowInputSource.SecretReference && node.Kind is FlowNodeKind.RunJob or FlowNodeKind.RunLibraryScript) &&
+                        !state.Inputs.ContainsKey(pair.Key)) { inputError = pair.Value.Source == FlowInputSource.SecretReference ? "secret-reference-unavailable" : "node-input-unavailable"; break; }
+            if (node.Kind == FlowNodeKind.InvestigateWithAi &&
+                Encoding.UTF8.GetByteCount(FlowJsonCanonical.Serialize(state.Inputs)) > FlowGraphV2Limits.MaximumInvestigationInputBytes)
+                inputError = "investigation-input-limit";
             if (inputError is not null)
             {
-                var inputFailure = inputError == "secret-reference-unavailable" &&
+                var inputFailure =
                     FlowNodeCatalogue.Port(node.Kind, FlowNodeCatalogue.Unsupported, FlowPortDirection.Output) is not null
                     ? Complete(lease, node, state, FlowNodeCatalogue.Unsupported,
-                        JsonSerializer.SerializeToElement(new { outcome = "unsupported", code = inputError }, Json), state.Fields)
+                        node.Kind == FlowNodeKind.InvestigateWithAi
+                            ? AiOutput(new(FlowIncidentActionResultKind.Unavailable, SafeCode(inputError)))
+                            : ExecutionOutput(new(FlowExecutionActionDisposition.Unsupported, SafeCode(inputError))), state.Fields)
                     : Fail(lease, node, state, SafeCode(inputError));
                 if (!await SaveAsync(inputFailure).ConfigureAwait(false)) return Resume("node-error-not-committed");
                 continue;
@@ -150,7 +160,7 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
             {
                 var recovery = RecoveryOrdinal(lease, state);
                 var request = new FlowExecutionActionRequest(lease, node.Id, FlowActionKeys.CreateExecution(lease, node.Id, state.Attempt),
-                    state.Attempt, JsonSerializer.Serialize(state.Inputs, Json), lease.Event.ExecutionEvent?.Replay)
+                    state.Attempt, FlowJsonCanonical.Serialize(state.Inputs), lease.Event.ExecutionEvent?.Replay)
                 { RecoveryAttempt = recovery, DeadlineAtUtc = state.DeadlineAtUtc,
                     AllowUnstartedDispatch = clock.GetUtcNow() < state.DeadlineAtUtc };
                 var dispatcher = services.GetRequiredService<IFlowExecutionActionDispatcher>();
@@ -199,28 +209,38 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
                 new[] { new FlowActionTargetDto(node.Id, node.Kind == FlowNodeKind.InvestigateWithAi
                     ? FlowActionKind.NetclawInvestigation : FlowActionKind.RatelDeskIncident, node.ConnectorId, node.ConnectorRevision) };
             var results = new Dictionary<Guid, FlowIncidentActionResult>();
-            var rawFields = FieldsForAction(lease, state);
-            async Task<FlowIncidentActionResult> RunTargetAsync(FlowActionTargetDto target)
-            {
-                var draft = new FlowIncidentActionDraft(lease.Event.TenantId, lease.RunId, target.Id, target.ConnectorId!.Value,
+            FlowIncidentActionDraft Draft(FlowActionTargetDto target) =>
+                new(lease.Event.TenantId, lease.RunId, target.Id, target.ConnectorId!.Value,
                     target.ConnectorRevision!.Value, lease.SourceInstanceId, FlowActionKeys.Create(lease, target.Id), lease.Event,
-                    target.Kind == FlowActionKind.NetclawInvestigation ? state.Fields ?? InitialFields(lease) : rawFields)
+                    target.Kind == FlowActionKind.NetclawInvestigation ? state.Fields ?? InitialFields(lease) :
+                        current!.PreparedActionFields?.GetValueOrDefault(target.Id) ?? FieldsForAction(lease, current))
                 { Kind = target.Kind, AiSettings = target.Kind == FlowActionKind.NetclawInvestigation ? node.AiSettings : null,
-                    AiDeadlineAtUtc = target.Kind == FlowActionKind.NetclawInvestigation ? state.DeadlineAtUtc : null };
+                    AiDeadlineAtUtc = target.Kind == FlowActionKind.NetclawInvestigation ? state.DeadlineAtUtc : null,
+                    InvestigationInputs = target.Kind == FlowActionKind.NetclawInvestigation && state.Inputs.Count > 0 ? state.Inputs : null };
+
+            async Task<bool> PrepareTargetAsync(FlowActionTargetDto target)
+            {
+                if (current!.PreparedActionFields?.ContainsKey(target.Id) == true) return true;
+                var draft = Draft(target);
                 if (target.Kind == FlowActionKind.RatelDeskIncident && lease.Event.ExecutionEvent is not null)
                 {
-                    var attempts = FlowRecoveryEvidence.FromOutputs(lease, current!.Outputs, Order(current));
+                    var attempts = FlowRecoveryEvidence.FromOutputs(lease, current.Outputs, Order(current));
                     await using var targetScope = scopes.CreateAsyncScope();
                     var enriched = await targetScope.ServiceProvider.GetRequiredService<FlowIncidentEvidenceReader>().ReadAsync(draft,
                         current.Investigation?.ActionNodeId, attempts, ct).ConfigureAwait(false);
-                    if (enriched.Disposition == FlowIncidentEvidenceDisposition.Waiting)
-                        return new(FlowIncidentActionResultKind.RetryableSafe, "incident-investigation-pending");
                     if (enriched.Disposition != FlowIncidentEvidenceDisposition.Ready || enriched.Draft is null)
-                        return new(FlowIncidentActionResultKind.Unavailable, enriched.Code ?? "incident-evidence-unavailable");
+                    {
+                        results[target.Id] = new(FlowIncidentActionResultKind.Unavailable,
+                            enriched.Code ?? "incident-evidence-unavailable");
+                        return true;
+                    }
                     draft = enriched.Draft;
                 }
-                return await executeAction(draft, ct).ConfigureAwait(false);
+                var fields = (current.PreparedActionFields ?? new Dictionary<Guid, FlowIncidentFieldsDto>()).ToDictionary(pair => pair.Key, pair => pair.Value);
+                fields.Add(target.Id, draft.Fields);
+                return await SaveAsync(current with { Revision = current.Revision + 1, PreparedActionFields = fields }).ConfigureAwait(false);
             }
+            Task<FlowIncidentActionResult> RunTargetAsync(FlowActionTargetDto target) => executeAction(Draft(target), ct);
             // Findings must be final before an incident in the same independent group freezes its semantic payload.
             foreach (var target in targets.Where(target => target.Kind == FlowActionKind.NetclawInvestigation))
             {
@@ -235,7 +255,11 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
             }
             if (!results.Values.Any(result => result.Kind == FlowIncidentActionResultKind.Waiting))
             {
-                var others = await Task.WhenAll(targets.Where(target => target.Kind != FlowActionKind.NetclawInvestigation)
+                // Freeze fields once, sequentially, before bounded sibling dispatch. Every resumed
+                // target consumes this persisted value; no receiver enriches an already frozen payload.
+                foreach (var target in targets.Where(target => target.Kind != FlowActionKind.NetclawInvestigation))
+                    if (!await PrepareTargetAsync(target).ConfigureAwait(false)) return Resume("incident-fields-not-committed");
+                var others = await Task.WhenAll(targets.Where(target => target.Kind != FlowActionKind.NetclawInvestigation && !results.ContainsKey(target.Id))
                     .Select(async target => (target.Id, Result: await velox.ExecuteNodeAsync(lease.RunId, node, _ => RunTargetAsync(target), ct).ConfigureAwait(false))))
                     .ConfigureAwait(false);
                 foreach (var item in others) results.Add(item.Id, item.Result);
@@ -315,12 +339,12 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
     {
         var edge = port is null ? null : lease.Version.Graph.Edges.Single(candidate => candidate.SourceNodeId == node.Id && candidate.SourcePort == port);
         var outputs = state.Outputs.ToDictionary(pair => pair.Key, pair => pair.Value);
-        if (output is { } value) outputs[node.Id] = value;
+        if (output is { } value) outputs[node.Id] = FlowJsonCanonical.Capture(value);
         var step = new FlowNodeTraceDto(state.Sequence, node.Id, node.Name, FlowTraceStepStatus.Completed, port ?? code ?? "completed",
             FlowTraceProvenance.Actual, Snapshot(JsonSerializer.SerializeToElement(state.Inputs, Json)), Snapshot(output))
         { SelectedPort = port, EdgeId = edge?.Id, NextNodeId = edge?.TargetNodeId, Attempt = state.Attempt };
         return state with { Revision = state.Revision + 1, Progress = FlowNodeProgress.Completed,
-            Output = output, Outputs = outputs, SelectedPort = port, SelectedEdgeId = edge?.Id, NextNodeId = edge?.TargetNodeId,
+            Output = output is { } recordedOutput ? FlowJsonCanonical.Capture(recordedOutput) : null, Outputs = outputs, SelectedPort = port, SelectedEdgeId = edge?.Id, NextNodeId = edge?.TargetNodeId,
             Fields = fields, WaitingActionIds = null, Trace = Append(lease, state.Trace, step), ResultStatus = terminal, ResultCode = code };
     }
     private static FlowNodeCheckpointDto Fail(FlowRunLease lease, FlowNodeDto node, FlowNodeCheckpointDto state, string code)
@@ -443,11 +467,14 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
         }
         return FlowTypedMapping.Map(mapping, lease.Event.ExecutionEvent, lease.Event.Data, inputs, state.Investigation);
     }
-    internal static FlowIncidentFieldsDto InitialFields(FlowRunLease lease) => lease.Event.ExecutionEvent is { } source
-        ? new(("Execution " + source.Outcome + ": " + (source.Definition.Name ?? source.ExecutionId))[..Math.Min(200,
-            ("Execution " + source.Outcome + ": " + (source.Definition.Name ?? source.ExecutionId)).Length)],
-            "Original execution outcome: " + source.Outcome + ". Raw status: " + source.RawStatus + ".")
-        : new("Monitoring alert", "Original monitoring alert.");
+    internal static FlowIncidentFieldsDto InitialFields(FlowRunLease lease)
+    {
+        if (lease.Event.ExecutionEvent is not { } source) return new("Monitoring alert", "Original monitoring alert.");
+        var fields = FlowExecutionEvidenceFormatter.Values(source);
+        var title = ("Execution " + fields["outcome"] + ": " + fields["definitionName"]).ReplaceLineEndings(" ").Replace('\t', ' ');
+        return new(string.Concat(title.EnumerateRunes().Take(100).Select(rune => rune.ToString())),
+            "Original execution outcome: " + source.Outcome + ". Raw status: " + source.RawStatus + ".");
+    }
     private static string SafeCode(string code) => code.Length is > 0 and <= 128 &&
         code.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '.' or '_') ? code : "node-input-unavailable";
 }

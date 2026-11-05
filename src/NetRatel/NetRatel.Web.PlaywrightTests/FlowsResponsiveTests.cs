@@ -33,6 +33,11 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(3);
         await Assertions.Expect(page.GetByTestId("flow-close")).ToBeFocusedAsync();
         await Assertions.Expect(page.GetByTestId("flow-overview-toggle")).ToHaveAttributeAsync("aria-expanded", "false");
+        if (width == 640)
+        {
+            await page.GetByTestId("flow-close").FocusAsync();
+            await Assertions.Expect(page.Locator(".mud-popover-open.mud-tooltip").Filter(new() { HasText = "Close editor" })).ToBeVisibleAsync();
+        }
         await page.GetByTestId("flow-overview-toggle").ClickAsync();
         await page.Locator(".veloxdev-wf-minimap").WaitForAsync();
         await page.GetByTestId("flow-fit").ClickAsync();
@@ -337,6 +342,50 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await Assertions.Expect(page.Locator(".flow-connection[data-flow-route]")).ToHaveCountAsync(0);
         Assert.Equal(setupWrites, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls);
         Assert.Equal(0, fixture.FlowsData.DryRunCalls); Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
+    }
+
+    [Fact]
+    public async Task Native_Spaces_Text_Undo_And_Port_Activation_Preserve_Graph_History_And_Viewport()
+    {
+        var fixture = _fixture!;
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1280, Height = 900 } });
+        var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000);
+        await OpenPageAsync(page, fixture); await page.GetByTestId("flow-edit").First.ClickAsync();
+        var name = page.GetByTestId("flow-name");
+        await Assertions.Expect(name).ToHaveValueAsync("Incident from alert");
+        await name.FillAsync("Synthetic local history");
+        await page.GetByTestId("flow-canvas").FocusAsync(); await name.FocusAsync();
+        await name.PressAsync("End"); await page.Keyboard.TypeAsync(" edited");
+        await Assertions.Expect(name).ToHaveValueAsync("Synthetic local history edited");
+        await name.PressAsync("Control+z");
+        await Assertions.Expect(name).ToHaveValueAsync("Synthetic local history");
+        await page.GetByTestId("flow-zoom-in").ClickAsync();
+        var before = await page.GetByTestId("flow-canvas").EvaluateAsync<JsonElement>("e => e.getBoundingClientRect()");
+        var width = (await page.Locator(".flow-node").First.BoundingBoxAsync())!.Width;
+        await page.GetByTestId("flow-undo").ClickAsync();
+        await Assertions.Expect(name).ToHaveValueAsync("Incident from alert");
+        Assert.InRange((await page.Locator(".flow-node").First.BoundingBoxAsync())!.Width, width - .01f, width + .01f);
+        await page.GetByTestId("flow-canvas").FocusAsync();
+        await page.Keyboard.PressAsync("Control+Shift+z");
+        await Assertions.Expect(name).ToHaveValueAsync("Synthetic local history");
+        var after = await page.GetByTestId("flow-canvas").EvaluateAsync<JsonElement>("e => e.getBoundingClientRect()");
+        var firstLink = page.GetByTestId("flow-link-hit").First;
+        await firstLink.FocusAsync(); await page.GetByTestId("flow-edge-remove").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(1);
+        var source = page.Locator("[data-node-kind=AlertRaised] .flow-port.output button");
+        var target = page.Locator("[data-node-kind=MapIncident] .flow-port.input button");
+        await source.FocusAsync(); await page.Keyboard.PressAsync("Space");
+        await Assertions.Expect(source).ToHaveAttributeAsync("aria-pressed", "true");
+        await target.FocusAsync(); await page.Keyboard.PressAsync("Space");
+        await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(2);
+        await page.Locator("[data-node-kind=MapIncident] [data-testid=flow-node-title]").FocusAsync();
+        await page.Keyboard.PressAsync("Space");
+        await Assertions.Expect(page.Locator("[data-node-kind=MapIncident].selected")).ToHaveCountAsync(1);
+        var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
+        await File.WriteAllTextAsync(Path.Combine(evidence, "flows-local-history.json"), JsonSerializer.Serialize(new { before, after }));
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-local-history.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+        Assert.Equal(0, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls); Assert.Equal(0, fixture.FlowsData.DryRunCalls);
+        Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
     }
 
     private static async Task CloseEditorAsync(IPage page)

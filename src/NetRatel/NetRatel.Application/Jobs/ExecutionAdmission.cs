@@ -81,6 +81,8 @@ public interface IExecutionAdmissionStore
 public interface IKeyedExecutionAuthority
 {
     Task RequireAllowedAsync(ExecutionAdmissionIdentity identity, JobDefinitionInfo pinnedDefinition, CancellationToken cancellationToken);
+    Task RequireContinuationAsync(ExecutionAdmissionIdentity identity, CancellationToken cancellationToken)
+        => throw new ExecutionAdmissionDeniedException("Current persisted source admission is unavailable.");
     Task RequireFirstDispatchAsync(ExecutionAdmissionIdentity identity, FlowRunLease? lease, CancellationToken cancellationToken)
         => throw new ExecutionAdmissionDeniedException("Current source admission and flow lease proof are unavailable.");
 }

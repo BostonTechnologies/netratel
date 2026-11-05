@@ -14,11 +14,17 @@
     }
     else if (Trace is not { Steps.Count: > 0 } trace)
     {
-        <p data-testid="flow-trace-unavailable">Node data unavailable. This run has no captured node snapshots.</p>
+        <p data-testid="flow-trace-unavailable">Node data unavailable.
+            @if (DataUnavailableReason is { Length: > 0 })
+            { <span>Source or node data could not be provided: <code>@DataUnavailableReason</code>.</span> }
+            else
+            { <span>This run has no captured node snapshots.</span> }
+        </p>
     }
     else
     {
         <header><strong>@ProvenanceLabel(trace.Provenance) playback</strong><span>Presentation only · no actions run</span></header>
+        @if (DataUnavailableReason is { Length: > 0 }) { <p class="flow-trace-warning">Some source or node data is unavailable: <code>@DataUnavailableReason</code>.</p> }
         @if (trace.Truncated) { <p class="flow-trace-warning">Some trace data was omitted to stay within the capture budget.</p> }
         <div class="flow-trace-controls" role="group" aria-label="Playback controls">
             <button type="button" data-trace-action="restart" aria-label="Restart playback">Restart</button>
@@ -36,6 +42,7 @@
                 <button type="button" data-trace-step="@index" aria-current="@(index == 0 ? "step" : null)">@($"{index + 1}. {step.NodeName}")</button>
             }
         </div>
+        <p hidden data-trace-unvisited>No step was captured for the selected node. Its input, output and outcome are unavailable.</p>
         @for (var index = 0; index < trace.Steps.Count; index++)
         {
             var step = trace.Steps[index];
@@ -62,6 +69,7 @@
     [Parameter] public FlowTraceDto? Trace { get; set; }
     [Parameter, EditorRequired] public string ContextKey { get; set; } = "";
     [Parameter] public string? ExpectedConfigurationHash { get; set; }
+    [Parameter] public string? DataUnavailableReason { get; set; }
     [Parameter] public string? ScopeId { get; set; }
     [Parameter] public int? ExpectedGraphSchemaVersion { get; set; }
     private readonly string _id = "flow-trace-" + Guid.NewGuid().ToString("N");

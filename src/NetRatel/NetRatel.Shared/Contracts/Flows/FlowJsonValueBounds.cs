@@ -9,8 +9,8 @@ public static class FlowJsonValueBounds
     public static bool Valid(JsonElement value, int maximumBytes, int maximumDepth = FlowGraphV2Limits.MaximumValueDepth)
     {
         if (value.ValueKind == JsonValueKind.Undefined || maximumBytes < 0 || maximumDepth < 1) return false;
-        try { return Encoding.UTF8.GetByteCount(value.GetRawText()) <= maximumBytes && Depth(value, maximumDepth); }
-        catch (InvalidOperationException) { return false; }
+        try { return Depth(value, maximumDepth) && Encoding.UTF8.GetByteCount(FlowJsonCanonical.SerializeValue(value)) <= maximumBytes; }
+        catch (Exception error) when (error is InvalidOperationException or JsonException) { return false; }
     }
     private static bool Depth(JsonElement value, int remaining)
     {

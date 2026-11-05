@@ -1,0 +1,238 @@
+@using System.Globalization
+@using System.Text.Json
+@using NetRatel.Shared.Contracts.Flows
+
+@if (Graph.SchemaVersion != FlowGraphV2Limits.SchemaVersion || _trigger is null)
+{
+    <p role="alert">Choose a schema-two graph with exactly one event trigger to configure this preview.</p>
+}
+else
+{
+    <fieldset class="flow-dry-run" disabled="@Busy" data-testid="flow-execution-preview-form">
+        <legend>@(_trigger.Kind == FlowNodeKind.ExecutionEvent ? "Simulated execution event" : "Sample monitoring event")</legend>
+        @if (_trigger.Kind == FlowNodeKind.ExecutionEvent)
+        {
+            <label>Source<select @bind="_source" @bind:after="SourceChanged" data-testid="flow-sample-source">
+                @foreach (var source in Enum.GetValues<FlowExecutionSourceKind>()) { <option value="@source">@SourceLabel(source)</option> }
+            </select></label>
+            <label>Outcome<select @bind="_outcome" @bind:after="OutcomeChanged" data-testid="flow-sample-outcome">
+                @foreach (var outcome in Enum.GetValues<FlowExecutionOutcome>()) { <option value="@outcome">@OutcomeLabel(outcome)</option> }
+            </select></label>
+            <label>Raw source status<input @bind="_rawStatus" maxlength="128" data-testid="flow-sample-raw-status" /></label>
+            <label>Definition name<input @bind="_definitionName" maxlength="512" /></label>
+            <label>Definition ID<input @bind="_definitionId" maxlength="128" data-testid="flow-sample-definition-id" /></label>
+            <label>Definition revision<input @bind="_definitionRevision" maxlength="128" /></label>
+            <label>Definition content hash (optional)<input @bind="_definitionHash" maxlength="64" /></label>
+            <label>Execution ID<input @bind="_executionId" maxlength="128" data-testid="flow-sample-execution-id" /></label>
+            <label>Attempt ID<input @bind="_attemptId" maxlength="128" data-testid="flow-sample-attempt-id" /></label>
+            <label>Target agent ID (optional)<input @bind="_agentId" maxlength="36" data-testid="flow-sample-agent-id" /></label>
+            <label>Target name<input @bind="_targetName" maxlength="512" /></label>
+            <label>Target host name<input @bind="_targetHost" maxlength="512" /></label>
+            @if (_source == FlowExecutionSourceKind.Request)
+            {
+                <label>Request kind<input @bind="_requestKind" maxlength="128" data-testid="flow-sample-request-kind" /></label>
+            }
+            <label>Reason<textarea @bind="_reason" maxlength="@FlowExecutionEventLimits.MaximumReasonLength"></textarea></label>
+            <label>Exit code (optional)<input @bind="_exitCode" inputmode="numeric" data-testid="flow-sample-exit-code" /></label>
+            <p class="flow-help">These are sample lifecycle facts. They do not grant replay or execution authority. Source and outcome filters are evaluated exactly as configured.</p>
+        }
+        else
+        {
+            <label>Rule name<input @bind="_rule" maxlength="512" /></label>
+            <label>Client name<input @bind="_client" maxlength="512" /></label>
+            <label>Resource<input @bind="_resource" maxlength="512" /></label>
+            <label>Metric<input @bind="_metric" maxlength="512" /></label>
+            <label>Severity<select @bind="_severity"><option>warning</option><option>critical</option><option>info</option></select></label>
+            <label>Numeric value<input @bind="_number" inputmode="decimal" data-testid="flow-sample-value" /></label>
+            <label>Service state<input @bind="_service" maxlength="512" /></label>
+        }
+        <label>Event time (UTC or explicit offset)<input @bind="_occurredAt" data-testid="flow-sample-time" /></label>
+        @if (_fixtures.Count > 0)
+        {
+            <div class="flow-sample-fixtures">
+                <h4>External result samples</h4>
+                <p class="flow-help">Without a sample, evaluation stops before that external action with unavailable output. Choosing an outcome alone does not supply output data. A blank output is missing; JSON null and {} are captured values.</p>
+                @foreach (var fixture in _fixtures)
+                {
+                    <details @key="fixture.NodeId" data-testid="@("flow-sample-fixture-" + fixture.NodeId.ToString("N"))">
+                        <summary>@fixture.Name · @KindLabel(fixture.Kind)</summary>
+                        <label><input type="checkbox" @bind="fixture.Enabled" data-testid="flow-sample-fixture-enabled" /> Provide a sample result</label>
+                        <fieldset disabled="@(!fixture.Enabled)">
+                            <label>Simulated outcome<select @bind="fixture.Outcome" data-testid="flow-sample-fixture-outcome">
+                                <option value="">Choose a simulated outcome</option>
+                                @foreach (var outcome in Enum.GetValues<FlowExecutionOutcome>()) { <option value="@Port(outcome)">@OutcomeLabel(outcome)</option> }
+                            </select></label>
+                            <label>Sample output JSON<textarea @bind="fixture.Output" maxlength="@FlowPreviewLimits.MaximumFixtureBytes" rows="5" data-testid="flow-sample-fixture-output"></textarea></label>
+                            <p class="flow-help">@OutputHelp(fixture.Kind)</p>
+                        </fieldset>
+                    </details>
+                }
+            </div>
+        }
+        @if (_error is not null) { <p role="alert" data-testid="flow-sample-error">@_error</p> }
+        <button type="button" @onclick="SubmitAsync" data-testid="flow-execution-preview">Preview sample</button>
+    </fieldset>
+}
+
+@code {
+    [Parameter, EditorRequired] public FlowGraphDto Graph { get; set; } = default!;
+    [Parameter] public int TenantId { get; set; }
+    [Parameter, EditorRequired] public string ContextKey { get; set; } = "";
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public EventCallback<FlowExecutionDryRunRequest> Preview { get; set; }
+
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly Guid SampleAgent = Guid.Parse("77777777-7777-4777-8777-777777777777");
+    private static readonly Guid SampleRule = Guid.Parse("88888888-8888-4888-8888-888888888888");
+    private FlowNodeDto? _trigger;
+    private string? _sampleContext;
+    private int _tenantContext;
+    private Guid _eventId, _occurrenceId;
+    private FlowExecutionSourceKind _source;
+    private FlowExecutionOutcome _outcome;
+    private string _rawStatus = "", _definitionName = "", _definitionId = "", _definitionRevision = "sample-1", _definitionHash = "";
+    private string _executionId = "9223372036854775806", _attemptId = "sample-attempt-1", _agentId = "", _targetName = "Sample endpoint", _targetHost = "sample.invalid";
+    private string _requestKind = "Script", _reason = "Synthetic failure evidence", _exitCode = "", _occurredAt = "2026-01-01T12:00:00Z";
+    private string _rule = "Sample rule", _client = "Sample client", _resource = "Sample resource", _metric = "cpu", _severity = "warning", _number = "95", _service = "";
+    private string? _error;
+    private List<FixtureInput> _fixtures = [];
+
+    protected override void OnParametersSet()
+    {
+        var triggers = Graph.Nodes.Where(node => FlowNodeCatalogue.IsTrigger(node.Kind)).Take(2).ToArray();
+        var trigger = triggers.Length == 1 ? triggers[0] : null;
+        var reset = _sampleContext != ContextKey || _tenantContext != TenantId ||
+            _trigger?.Id != trigger?.Id || _trigger?.Kind != trigger?.Kind;
+        var previous = reset ? new Dictionary<Guid, FixtureInput>() : _fixtures.ToDictionary(value => value.NodeId);
+        _fixtures = Graph.Nodes.Where(node => !FlowNodeCatalogue.IsTrigger(node.Kind) &&
+                node.Kind is not (FlowNodeKind.Condition or FlowNodeKind.MapIncident or FlowNodeKind.Finish))
+            .Select(node => previous.TryGetValue(node.Id, out var value) && value.Kind == node.Kind
+                ? new FixtureInput(node.Id, node.Name, node.Kind) { Enabled = value.Enabled, Outcome = value.Outcome, Output = value.Output }
+                : new FixtureInput(node.Id, node.Name, node.Kind)).ToList();
+        _trigger = trigger;
+        if (!reset) return;
+        _sampleContext = ContextKey; _tenantContext = TenantId; _error = null;
+        _eventId = Guid.NewGuid(); _occurrenceId = Guid.NewGuid();
+        _source = _trigger?.ExecutionTrigger?.Sources.FirstOrDefault() ?? FlowExecutionSourceKind.Job;
+        _outcome = _trigger?.ExecutionTrigger?.Outcomes.FirstOrDefault() ?? FlowExecutionOutcome.Failed;
+        if (!Enum.IsDefined(_source)) _source = FlowExecutionSourceKind.Job;
+        if (!Enum.IsDefined(_outcome)) _outcome = FlowExecutionOutcome.Failed;
+        _executionId = "9223372036854775806"; _attemptId = "sample-attempt-1";
+        _agentId = _trigger?.ExecutionTrigger?.AgentIds?.Select(id => id.ToString()).FirstOrDefault() ?? "";
+        _definitionRevision = "sample-1"; _definitionHash = ""; _exitCode = "";
+        _requestKind = _trigger?.ExecutionTrigger?.RequestKinds?.FirstOrDefault() ?? "Script";
+        _reason = "Synthetic failure evidence"; _targetName = "Sample endpoint"; _targetHost = "sample.invalid";
+        _occurredAt = "2026-01-01T12:00:00Z";
+        _rule = "Sample rule"; _client = "Sample client"; _resource = "Sample resource"; _metric = "cpu"; _severity = "warning"; _number = "95"; _service = "";
+        SourceChanged(); OutcomeChanged();
+    }
+
+    private void SourceChanged()
+    {
+        _definitionId = _trigger?.ExecutionTrigger?.DefinitionReferences?.FirstOrDefault(value => value.SourceKind == _source)?.Id ??
+            (_trigger?.ExecutionTrigger?.Sources.Count == 1 ? _trigger?.ExecutionTrigger?.DefinitionIds?.FirstOrDefault() : null) ?? "sample-definition";
+        _definitionName = "Sample " + SourceLabel(_source).ToLowerInvariant();
+    }
+
+    private void OutcomeChanged() => _rawStatus = _outcome switch
+    {
+        FlowExecutionOutcome.Succeeded => "Completed", FlowExecutionOutcome.Failed => "Failed",
+        FlowExecutionOutcome.TimedOut => "TimedOut", FlowExecutionOutcome.Cancelled => "Cancelled",
+        FlowExecutionOutcome.Unknown => "DeliveryUnknown", FlowExecutionOutcome.Unsupported => "Unsupported",
+        FlowExecutionOutcome.Denied => "Denied", _ => ""
+    };
+
+    private async Task SubmitAsync()
+    {
+        if (Busy || _trigger is null || Graph.SchemaVersion != FlowGraphV2Limits.SchemaVersion) return;
+        _error = null;
+        if (TenantId <= 0) { _error = "Choose an authorized tenant before previewing."; return; }
+        if (!DateTimeOffset.TryParse(_occurredAt, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var occurredAt) || occurredAt == default)
+        { _error = "Enter a valid event time with a UTC or explicit offset."; return; }
+        FlowExecutionEventDto? execution = null;
+        FlowEventDataDto? alert = null;
+        if (_trigger.Kind == FlowNodeKind.ExecutionEvent)
+        {
+            Guid? agentId = null;
+            if (!string.IsNullOrWhiteSpace(_agentId))
+            {
+                if (!Guid.TryParse(_agentId, out var parsed) || parsed == Guid.Empty) { _error = "Enter a nonempty target agent ID or leave it unavailable."; return; }
+                agentId = parsed;
+            }
+            int? exitCode = null;
+            if (!string.IsNullOrWhiteSpace(_exitCode))
+            {
+                if (!int.TryParse(_exitCode, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)) { _error = "Enter an integer exit code or leave it unavailable."; return; }
+                exitCode = parsed;
+            }
+            execution = new(_eventId, _occurrenceId, TenantId, _source,
+                new(Empty(_definitionId), Empty(_definitionName), Empty(_definitionRevision), Empty(_definitionHash)),
+                _executionId, _attemptId, new(agentId, Empty(_targetName), Empty(_targetHost)), _outcome, _rawStatus, occurredAt, occurredAt)
+            {
+                CompletedAtUtc = occurredAt, Reason = Empty(_reason), ExitCode = exitCode,
+                RequestKind = _source == FlowExecutionSourceKind.Request ? Empty(_requestKind) : null,
+                Provenance = "explicit-preview-sample"
+            };
+            var validation = FlowExecutionEventValidator.Validate(execution);
+            if (!validation.Valid) { _error = "Check the sample event: " + string.Join(", ", validation.Issues); return; }
+        }
+        else
+        {
+            if (!double.TryParse(_number, NumberStyles.Float, CultureInfo.InvariantCulture, out var number) || !double.IsFinite(number))
+            { _error = "Enter a finite numeric monitoring value."; return; }
+            alert = new(SampleAgent, SampleRule, _rule, _client, _resource, _metric, _severity, number, Empty(_service), occurredAt);
+        }
+
+        var fixtures = new List<FlowPreviewFixtureDto>();
+        var total = 0;
+        foreach (var input in _fixtures.Where(value => value.Enabled))
+        {
+            if (!Enum.GetValues<FlowExecutionOutcome>().Any(value => Port(value) == input.Outcome))
+            { _error = "Choose the simulated outcome for " + input.Name + "."; return; }
+            var fixture = new FlowPreviewFixtureDto(input.NodeId, input.Outcome);
+            if (!string.IsNullOrWhiteSpace(input.Output))
+            {
+                try
+                {
+                    using var document = JsonDocument.Parse(input.Output, new JsonDocumentOptions { MaxDepth = FlowPreviewLimits.MaximumFixtureDepth });
+                    fixture = fixture with { Output = document.RootElement.Clone() };
+                }
+                catch (JsonException) { _error = "Enter valid bounded JSON for the sample result of " + input.Name + "."; return; }
+            }
+            var size = JsonSerializer.SerializeToUtf8Bytes(fixture, Json).Length;
+            total += size;
+            if (size > FlowPreviewLimits.MaximumFixtureBytes || total > FlowPreviewLimits.MaximumFixtureTotalBytes)
+            { _error = "External result samples exceed the preview byte limit. Reduce the supplied evidence."; return; }
+            fixtures.Add(fixture);
+        }
+        await Preview.InvokeAsync(new(Graph, execution, alert, fixtures.Count == 0 ? null : fixtures.ToArray()));
+    }
+
+    private static string? Empty(string text) => string.IsNullOrWhiteSpace(text) ? null : text;
+    private static string SourceLabel(FlowExecutionSourceKind source) => source switch { FlowExecutionSourceKind.Job => "Job", FlowExecutionSourceKind.Script => "Script execution", FlowExecutionSourceKind.Request => "Request", _ => "Unknown" };
+    private static string OutcomeLabel(FlowExecutionOutcome outcome) => outcome switch { FlowExecutionOutcome.TimedOut => "Timed out", _ => outcome.ToString() };
+    private static string KindLabel(FlowNodeKind kind) => FlowNodeCatalogue.Find(kind)?.Name ?? kind.ToString();
+    private static string Port(FlowExecutionOutcome outcome) => outcome switch
+    {
+        FlowExecutionOutcome.Succeeded => FlowNodeCatalogue.Succeeded, FlowExecutionOutcome.Failed => FlowNodeCatalogue.Failed,
+        FlowExecutionOutcome.TimedOut => FlowNodeCatalogue.TimedOut, FlowExecutionOutcome.Cancelled => FlowNodeCatalogue.Cancelled,
+        FlowExecutionOutcome.Unknown => FlowNodeCatalogue.Unknown, FlowExecutionOutcome.Unsupported => FlowNodeCatalogue.Unsupported,
+        FlowExecutionOutcome.Denied => FlowNodeCatalogue.Denied, _ => ""
+    };
+    private static string OutputHelp(FlowNodeKind kind) => kind switch
+    {
+        FlowNodeKind.InvestigateWithAi => "Optional text fields: summary, evidence, recommendations, status. Only supplied sample findings can be mapped.",
+        FlowNodeKind.RunLibraryScript or FlowNodeKind.RunJob or FlowNodeKind.RerunOriginalExecution =>
+            "Optional fields: outcome, executionId (string), attemptId (string), exitCode (integer), summary, stdout, stderr, data (object or array). An outcome field must agree with the chosen sample outcome.",
+        _ => "Supply a sample object or JSON null. No incident, notification, or connector write occurs."
+    };
+    private sealed class FixtureInput(Guid nodeId, string name, FlowNodeKind kind)
+    {
+        public Guid NodeId { get; } = nodeId;
+        public string Name { get; } = name;
+        public FlowNodeKind Kind { get; } = kind;
+        public bool Enabled { get; set; }
+        public string Outcome { get; set; } = "";
+        public string Output { get; set; } = "";
+    }
+}
