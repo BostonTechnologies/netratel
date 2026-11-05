@@ -9,6 +9,7 @@ using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Tasks;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared.Security;
 
 namespace NetRatel.Infrastructure.Flows;
 
@@ -302,6 +303,7 @@ public static class ExecutionLifecycleOutbox
             CorrelationId = "job-run:" + id,
             RootExecutionId = id,
             ReasonCode = "job_" + outcome.Value.ToString().ToLowerInvariant(),
+            Reason = Bound(details.Run.Error, 512),
             Results = [new("job-result", id, resultHash, Available: true)],
             Replay = JobReplay(row, definition, target),
             Provenance = "job-terminal-ready"
@@ -332,6 +334,7 @@ public static class ExecutionLifecycleOutbox
             RequestKind = Bound(row.SourceSystem, FlowExecutionEventLimits.MaximumIdentifierLength),
             CorrelationId = "request:" + id,
             ReasonCode = "request_" + outcome.ToString().ToLowerInvariant(),
+            Reason = Bound(row.ResultMessage, 512),
             Results = [new("request-result", id, Digest(row.ResultData), row.ResultData is not null)],
             Replay = new(FlowExecutionSourceKind.Request, definition, target, "request:" + id, id, attempt,
                 false, "request_replay_binding_unavailable"),
@@ -364,6 +367,7 @@ public static class ExecutionLifecycleOutbox
             CorrelationId = parent is null ? BoundedCorrelation("script-execution:", id) : "job-run:" + parent,
             ExitCode = terminal.ExitCode,
             ReasonCode = "script_" + outcome.ToString().ToLowerInvariant(),
+            Reason = Bound(TaskOutputProtection.Project(row, row.Error, TaskOutputRedactor.ReadBinding(row.ResultJson), envelope: false), 512),
             Results = [new("script-result", id, Digest(result), result is not null)],
             Replay = new(FlowExecutionSourceKind.Script, definition, target, "script-execution:" + id, id, id,
                 false, "canonical_replay_admission_required"),

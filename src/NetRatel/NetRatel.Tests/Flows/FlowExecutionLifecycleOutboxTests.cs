@@ -59,6 +59,7 @@ public sealed class FlowExecutionLifecycleOutboxTests
         activity.Status = "Completed";
         activity.CompletedAtUtc = now.AddSeconds(1);
         activity.ResultJson = "{\"stdout\":\"synthetic bounded output\"}";
+        activity.Error = "Synthetic native script failure.";
         await db.SaveChangesAsync();
         var saved = Assert.Single(await db.OutboxMessages.AsNoTracking().ToArrayAsync());
         var value = Read(saved);
@@ -67,6 +68,7 @@ public sealed class FlowExecutionLifecycleOutboxTests
         Assert.Equal("Synthetic diagnosis", value.Definition.Name);
         Assert.Equal(new string('A', 64), value.Definition.ContentHash);
         Assert.DoesNotContain("synthetic bounded output", saved.PayloadJson);
+        Assert.Equal("Synthetic native script failure.", value.Reason);
         Assert.True(Assert.Single(value.Results!).Available);
 
         activity.ScriptName = "Renamed after execution";
@@ -245,13 +247,15 @@ public sealed class FlowExecutionLifecycleOutboxTests
             null, null, null, null, null, "{\"token\":\"changed\"}", null)));
         await Assert.ThrowsAsync<InvalidOperationException>(() => requests.UpdateAsync(new(request.Id, "another-source",
             null, null, null, null, null, null, null, null)));
-        await requests.UpdateAsync(new(request.Id, null, null, null, null, "Failed", "Admission was rejected.", null, null, null));
+        await requests.UpdateAsync(new(request.Id, null, null, null, null, "Failed", "Admission was rejected: synthetic-original", null, null, null));
         var fact = Read(await db.OutboxMessages.SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType));
         Assert.Equal(FlowExecutionSourceKind.Request, fact.SourceKind);
         Assert.Equal(FlowExecutionSourceKind.Job, fact.DefinitionSourceKind);
         Assert.Equal("41", fact.Definition.Id);
         Assert.Null(fact.ParentExecutionId);
         Assert.False(fact.Replay!.Supported);
+        Assert.NotNull(fact.Reason);
+        Assert.DoesNotContain("synthetic-original", fact.Reason!);
         Assert.Empty(await db.JobRuns.ToArrayAsync());
         var selected = new FlowExecutionTriggerSettingsDto([FlowExecutionSourceKind.Request],
             [FlowExecutionOutcome.Failed], FlowExecutionScope.SelectedDefinitions)
@@ -298,7 +302,7 @@ public sealed class FlowExecutionLifecycleOutboxTests
         await ExecutionLifecycleOutbox.ReserveCanonicalRequestRunAsync(db, request.Id, () => 42, default);
         db.JobRuns.Add(new() { Id = 42, JobId = 41, TenantId = 7, AgentId = agent, StartedBy = "synthetic-source",
             Status = (int)JobRunState.Running, CreatedAtUtc = now });
-        var run = new JobRunInfo(42, 41, "Synthetic approved job", 7, string.Empty, "synthetic-source",
+        var run = new JobRunInfo(42, 41, 7, string.Empty, "synthetic-source",
             JobRunState.Running, 0, now, null, null, null, null, null, agent);
         await ExecutionLifecycleOutbox.RecordCanonicalRequestBindingAsync(db, request.Id, run, now, default);
         await db.SaveChangesAsync();
@@ -306,13 +310,14 @@ public sealed class FlowExecutionLifecycleOutboxTests
         await db.SaveChangesAsync();
         Assert.Equal(now, (await requests.GetAsync(request.Id))!.UpdatedAtUtc);
         var terminal = (await requests.UpdateAsync(new(request.Id, null, null, null, null, "Failed", null, null, null, null)))!;
-        var fact = Read(await db.OutboxMessages.SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType));
+        var savedPayload = (await db.OutboxMessages.SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType)).PayloadJson;
+        var fact = JsonSerializer.Deserialize(savedPayload, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto)!;
         await ExecutionLifecycleOutbox.RecordCanonicalRequestBindingAsync(db, request.Id, run, now.AddMinutes(2), default);
         await db.SaveChangesAsync();
         var afterRetry = (await requests.GetAsync(request.Id))!;
         Assert.Equal("Failed", afterRetry.Status);
         Assert.Equal(terminal.UpdatedAtUtc, afterRetry.UpdatedAtUtc);
-        Assert.Equal(fact, Read(await db.OutboxMessages.SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType)));
+        Assert.Equal(savedPayload, (await db.OutboxMessages.SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType)).PayloadJson);
         Assert.Equal("job-run:42", fact.CorrelationId);
     }
 
