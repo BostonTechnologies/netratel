@@ -18,7 +18,7 @@ public sealed class FlowExecutionPreviewSetupTests : AsyncBunitContext
     {
         FlowExecutionDryRunRequest? sent = null;
         var graph = Graph();
-        var cut = Render<FlowExecutionPreviewSetup>(p => p.Add(c => c.Graph, graph).Add(c => c.TenantId, 17)
+        var cut = Render<FlowExecutionPreviewSetup>(p => p.Add(c => c.Graph, graph).Add(c => c.TenantId, 17).Add(c => c.ContextKey, "tenant-17-draft-a")
             .Add(c => c.Preview, request => sent = request));
         cut.Find("[data-testid=flow-sample-definition-id]").GetAttribute("value").Should().Be("selected-job");
         cut.Find("[data-testid=flow-sample-agent-id]").GetAttribute("value").Should().Be(AgentId.ToString());
@@ -45,7 +45,7 @@ public sealed class FlowExecutionPreviewSetupTests : AsyncBunitContext
     {
         FlowExecutionDryRunRequest? sent = null;
         var cut = Render<FlowExecutionPreviewSetup>(p => p.Add(c => c.Graph, Graph(FlowExecutionSourceKind.Request, agent: false))
-            .Add(c => c.TenantId, 17).Add(c => c.Preview, request => sent = request));
+            .Add(c => c.TenantId, 17).Add(c => c.ContextKey, "tenant-17-draft-a").Add(c => c.Preview, request => sent = request));
         await Change(cut, "flow-sample-request-kind", "Admission");
         await Change(cut, "flow-sample-outcome", FlowExecutionOutcome.TimedOut.ToString());
         await Submit(cut);
@@ -63,7 +63,7 @@ public sealed class FlowExecutionPreviewSetupTests : AsyncBunitContext
     {
         var sent = new List<FlowExecutionDryRunRequest>();
         var cut = Render<FlowExecutionPreviewSetup>(p => p.Add(c => c.Graph, Graph(external: true))
-            .Add(c => c.TenantId, 17).Add(c => c.Preview, request => sent.Add(request)));
+            .Add(c => c.TenantId, 17).Add(c => c.ContextKey, "tenant-17-draft-a").Add(c => c.Preview, request => sent.Add(request)));
         await Submit(cut);
         sent[^1].Fixtures.Should().BeNull();
         await Change(cut, "flow-sample-fixture-enabled", true);
@@ -87,7 +87,7 @@ public sealed class FlowExecutionPreviewSetupTests : AsyncBunitContext
     {
         var calls = 0;
         var cut = Render<FlowExecutionPreviewSetup>(p => p.Add(c => c.Graph, Graph(external: true))
-            .Add(c => c.TenantId, 17).Add(c => c.Preview, _ => calls++));
+            .Add(c => c.TenantId, 17).Add(c => c.ContextKey, "tenant-17-draft-a").Add(c => c.Preview, _ => calls++));
         await Change(cut, "flow-sample-fixture-enabled", true);
         await Change(cut, "flow-sample-fixture-output", "{broken");
         await Submit(cut);
@@ -104,13 +104,13 @@ public sealed class FlowExecutionPreviewSetupTests : AsyncBunitContext
     {
         var sent = new List<FlowExecutionDryRunRequest>();
         var graph = Graph(external: true);
-        var cut = Render<FlowExecutionPreviewSetup>(p => p.Add(c => c.Graph, graph).Add(c => c.TenantId, 17)
+        var cut = Render<FlowExecutionPreviewSetup>(p => p.Add(c => c.Graph, graph).Add(c => c.TenantId, 17).Add(c => c.ContextKey, "tenant-17-draft-a")
             .Add(c => c.Preview, request => sent.Add(request)));
         await Change(cut, "flow-sample-execution-id", "old-tenant-id");
         await Change(cut, "flow-sample-fixture-enabled", true);
         await Change(cut, "flow-sample-fixture-output", "{\"summary\":\"Old sample\"}");
         await Submit(cut);
-        cut.Render(p => p.Add(c => c.Graph, graph).Add(c => c.TenantId, 23).Add(c => c.Preview, request => sent.Add(request)));
+        cut.Render(p => p.Add(c => c.Graph, graph).Add(c => c.TenantId, 23).Add(c => c.ContextKey, "tenant-23-draft-a").Add(c => c.Preview, request => sent.Add(request)));
         await Submit(cut);
         sent[1].Input!.TenantId.Should().Be(23);
         sent[1].Input!.ExecutionId.Should().NotBe("old-tenant-id");
@@ -126,7 +126,7 @@ public sealed class FlowExecutionPreviewSetupTests : AsyncBunitContext
         var source = new FlowNodeDto(TriggerId, FlowNodeKind.AlertRaised, "Synthetic alert", new(0, 0));
         var finish = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.Finish, "End", new(300, 0));
         var graph = new FlowGraphDto(2, [source, finish], [new(TriggerId, "event", finish.Id, "in") { Id = Guid.NewGuid() }], new());
-        var cut = Render<FlowExecutionPreviewSetup>(p => p.Add(c => c.Graph, graph).Add(c => c.TenantId, 17)
+        var cut = Render<FlowExecutionPreviewSetup>(p => p.Add(c => c.Graph, graph).Add(c => c.TenantId, 17).Add(c => c.ContextKey, "tenant-17-draft-a")
             .Add(c => c.Preview, request => sent = request));
         await Change(cut, "flow-sample-value", "NaN");
         await Submit(cut);
@@ -137,6 +137,38 @@ public sealed class FlowExecutionPreviewSetupTests : AsyncBunitContext
         sent!.Input.Should().BeNull(); sent.Alert.Should().NotBeNull();
         sent.Alert!.NumericValue.Should().Be(97.5);
         sent.Fixtures.Should().BeNull();
+    }
+
+
+    [Fact]
+    public async Task Same_editor_context_keeps_last_sample_across_layout_changes_and_reconciles_fixture_nodes()
+    {
+        var sent = new List<FlowExecutionDryRunRequest>();
+        var graph = Graph(external: true);
+        var cut = Render<FlowExecutionPreviewSetup>(p => p.Add(c => c.Graph, graph).Add(c => c.TenantId, 17)
+            .Add(c => c.ContextKey, "draft-a").Add(c => c.Preview, request => sent.Add(request)));
+        await Change(cut, "flow-sample-execution-id", "sample-to-keep");
+        await Change(cut, "flow-sample-fixture-enabled", true);
+        await Change(cut, "flow-sample-fixture-output", "{\"summary\":\"Retained sample\"}");
+        await Submit(cut);
+        var moved = graph with
+        {
+            Nodes = graph.Nodes.Select(node => node.Id == ExternalId ? node with { Name = "Renamed sample job", Position = new(450, 200) } : node).ToArray()
+        };
+        cut.Render(p => p.Add(c => c.Graph, moved).Add(c => c.TenantId, 17).Add(c => c.ContextKey, "draft-a")
+            .Add(c => c.Preview, request => sent.Add(request)));
+        await Submit(cut);
+        sent[1].Input!.ExecutionId.Should().Be("sample-to-keep");
+        sent[1].Input!.EventId.Should().Be(sent[0].Input!.EventId);
+        sent[1].Fixtures!.Single().Output.GetProperty("summary").GetString().Should().Be("Retained sample");
+        cut.Find("summary").TextContent.Should().Contain("Renamed sample job");
+
+        cut.Render(p => p.Add(c => c.Graph, moved).Add(c => c.TenantId, 17).Add(c => c.ContextKey, "draft-b")
+            .Add(c => c.Preview, request => sent.Add(request)));
+        await Submit(cut);
+        sent[2].Input!.ExecutionId.Should().NotBe("sample-to-keep");
+        sent[2].Input!.EventId.Should().NotBe(sent[1].Input!.EventId);
+        sent[2].Fixtures.Should().BeNull();
     }
 
     private static FlowGraphDto Graph(FlowExecutionSourceKind source = FlowExecutionSourceKind.Job, bool agent = true, bool external = false)

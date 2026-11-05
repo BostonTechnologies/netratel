@@ -76,6 +76,7 @@ else
 @code {
     [Parameter, EditorRequired] public FlowGraphDto Graph { get; set; } = default!;
     [Parameter] public int TenantId { get; set; }
+    [Parameter, EditorRequired] public string ContextKey { get; set; } = "";
     [Parameter] public bool Busy { get; set; }
     [Parameter] public EventCallback<FlowExecutionDryRunRequest> Preview { get; set; }
 
@@ -83,7 +84,7 @@ else
     private static readonly Guid SampleAgent = Guid.Parse("77777777-7777-4777-8777-777777777777");
     private static readonly Guid SampleRule = Guid.Parse("88888888-8888-4888-8888-888888888888");
     private FlowNodeDto? _trigger;
-    private string? _graphContext;
+    private string? _sampleContext;
     private int _tenantContext;
     private Guid _eventId, _occurrenceId;
     private FlowExecutionSourceKind _source;
@@ -97,11 +98,19 @@ else
 
     protected override void OnParametersSet()
     {
-        var context = JsonSerializer.Serialize(Graph, Json);
-        if (_graphContext == context && _tenantContext == TenantId) return;
-        _graphContext = context; _tenantContext = TenantId; _error = null;
         var triggers = Graph.Nodes.Where(node => FlowNodeCatalogue.IsTrigger(node.Kind)).Take(2).ToArray();
-        _trigger = triggers.Length == 1 ? triggers[0] : null;
+        var trigger = triggers.Length == 1 ? triggers[0] : null;
+        var reset = _sampleContext != ContextKey || _tenantContext != TenantId ||
+            _trigger?.Id != trigger?.Id || _trigger?.Kind != trigger?.Kind;
+        var previous = reset ? new Dictionary<Guid, FixtureInput>() : _fixtures.ToDictionary(value => value.NodeId);
+        _fixtures = Graph.Nodes.Where(node => !FlowNodeCatalogue.IsTrigger(node.Kind) &&
+                node.Kind is not (FlowNodeKind.Condition or FlowNodeKind.MapIncident or FlowNodeKind.Finish))
+            .Select(node => previous.TryGetValue(node.Id, out var value) && value.Kind == node.Kind
+                ? new FixtureInput(node.Id, node.Name, node.Kind) { Enabled = value.Enabled, Outcome = value.Outcome, Output = value.Output }
+                : new FixtureInput(node.Id, node.Name, node.Kind)).ToList();
+        _trigger = trigger;
+        if (!reset) return;
+        _sampleContext = ContextKey; _tenantContext = TenantId; _error = null;
         _eventId = Guid.NewGuid(); _occurrenceId = Guid.NewGuid();
         _source = _trigger?.ExecutionTrigger?.Sources.FirstOrDefault() ?? FlowExecutionSourceKind.Job;
         _outcome = _trigger?.ExecutionTrigger?.Outcomes.FirstOrDefault() ?? FlowExecutionOutcome.Failed;
@@ -115,9 +124,6 @@ else
         _occurredAt = "2026-01-01T12:00:00Z";
         _rule = "Sample rule"; _client = "Sample client"; _resource = "Sample resource"; _metric = "cpu"; _severity = "warning"; _number = "95"; _service = "";
         SourceChanged(); OutcomeChanged();
-        _fixtures = Graph.Nodes.Where(node => !FlowNodeCatalogue.IsTrigger(node.Kind) &&
-                node.Kind is not (FlowNodeKind.Condition or FlowNodeKind.MapIncident or FlowNodeKind.Finish))
-            .Select(node => new FixtureInput(node.Id, node.Name, node.Kind)).ToList();
     }
 
     private void SourceChanged()
