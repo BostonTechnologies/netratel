@@ -25,7 +25,7 @@ using Xunit;
 
 namespace NetRatel.Tests.Flows;
 
-public sealed class FlowEndpointTests
+public sealed partial class FlowEndpointTests
 {
     private const string Path = "/api/v1/tenants/17/flows";
 

@@ -3,6 +3,7 @@
 .flow-editor-header,.flow-properties header{display:flex;justify-content:space-between;align-items:center;gap:.5rem;min-width:0}
 .flow-editor-header h2{font-size:1rem;margin:0}.flow-editor-header p{font-size:.8125rem;margin:.15rem 0;color:var(--mud-palette-text-secondary)}
 .flow-editor-actions{display:flex;align-items:center;gap:.15rem;flex-shrink:0}
+.flow-toolbar>.flow-editor-actions{flex-shrink:1;flex-wrap:wrap;max-width:100%;min-width:0}
 .flow-editor input,.flow-editor select,.flow-editor textarea,.flow-editor button:not(.mud-button-root){font:inherit;font-size:.8125rem;max-width:100%;min-width:0;background:var(--mud-palette-surface);color:var(--mud-palette-text-primary);border:1px solid var(--mud-palette-divider);border-radius:4px;padding:.4rem .55rem}
 .flow-editor button{cursor:pointer}.flow-editor button:disabled{opacity:.55;cursor:default}
 .flow-editor label{display:flex;flex-direction:column;gap:.25rem;font-size:.8125rem;min-width:0}
