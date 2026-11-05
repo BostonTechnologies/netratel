@@ -1,7 +1,7 @@
-@using System.Globalization
 @using System.Text.Json
 @using System.Text
 @using NetRatel.Shared.Contracts.Flows
+@using NetRatel.Web.Services.Flows
 @implements IDisposable
 
 <fieldset disabled="@Disabled" class="flow-binding-field" data-testid="flow-binding-field">
@@ -144,12 +144,13 @@
     private async Task SetLiteral(ChangeEventArgs args)
     {
         _literal = args.Value?.ToString() ?? "";
+        if (Encoding.UTF8.GetByteCount(_literal) > FlowGraphV2Limits.MaximumBindingBytes)
+        { _error = $"This value exceeds {FlowGraphV2Limits.MaximumBindingBytes} UTF-8 bytes. The previous mapping is retained."; return; }
         JsonElement literal;
         if (DataType == FlowDataType.Number)
         {
-            if (!double.TryParse(_literal, NumberStyles.Float, CultureInfo.InvariantCulture, out var number) || !double.IsFinite(number))
+            if (!FlowAuthoringContext.TryParseFiniteNumber(_literal, out literal))
             { _error = "Enter a finite number. The previous mapping is retained."; return; }
-            literal = JsonSerializer.SerializeToElement(number);
         }
         else if (DataType == FlowDataType.Json)
         {

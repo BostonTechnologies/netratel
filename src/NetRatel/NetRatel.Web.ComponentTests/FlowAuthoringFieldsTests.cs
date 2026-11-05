@@ -87,6 +87,39 @@ public sealed class FlowAuthoringFieldsTests : AsyncBunitContext
         await cut.InvokeAsync(() => cut.Find("[data-testid=flow-binding-literal]").ChangeAsync(new() { Value = "\"scalar\"" }));
         Assert.Contains("object, array or null", cut.Find("[role=alert]").TextContent, StringComparison.Ordinal);
         Assert.Equal(JsonValueKind.Null, binding.Literal.Value.ValueKind);
+
+        cut.Render(p => p.Add(component => component.DataType, FlowDataType.Number).Add(component => component.Value, (FlowInputBindingDto?)null));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-binding-source]").ChangeAsync(new() { Value = nameof(FlowInputSource.Literal) }));
+        var source = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.ExecutionEvent, "Synthetic source", new(0, 0));
+        var node = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.Condition, "Precise comparison", new(300, 0))
+        { Predicate = new(new(FlowInputSource.Event, FlowDataType.Number, "event.exitCode"), FlowComparison.GreaterThan, JsonSerializer.SerializeToElement(0)) };
+        FlowNodeDto? changed = null;
+        var predicate = Render<FlowPredicateFields>(p => p.Add(component => component.Node, node)
+            .Add(component => component.Graph, new FlowGraphDto(2, [source, node], [], new()))
+            .Add(component => component.Changed, value => changed = value));
+        foreach (var number in new[] { "9007199254740993", "1234567890.123456789012345678" })
+        {
+            await cut.InvokeAsync(() => cut.Find("[data-testid=flow-binding-literal]").ChangeAsync(new() { Value = number }));
+            Assert.Equal(number, binding!.Literal!.Value.GetRawText());
+            Assert.Equal(number, JsonSerializer.SerializeToElement(binding, new JsonSerializerOptions(JsonSerializerDefaults.Web)).GetProperty("literal").GetRawText());
+            cut.Render(p => p.Add(component => component.Value, binding));
+            Assert.Equal(number, cut.Find("[data-testid=flow-binding-literal]").GetAttribute("value"));
+
+            await predicate.InvokeAsync(() => predicate.Find("[data-testid=flow-condition-match]").ChangeAsync(new() { Value = number }));
+            Assert.Equal(number, changed!.Predicate!.Value.GetRawText());
+            Assert.Equal(number, JsonSerializer.SerializeToElement(changed.Predicate).GetProperty("Value").GetRawText());
+            predicate.Render(p => p.Add(component => component.Node, changed));
+            Assert.Equal(number, predicate.Find("[data-testid=flow-condition-match]").GetAttribute("value"));
+        }
+        var previousBinding = binding; var previousPredicate = changed;
+        foreach (var invalid in new[] { "1e309", "NaN", "\"12\"", "0." + new string('0', FlowGraphV2Limits.MaximumBindingBytes) + "1" })
+        {
+            await cut.InvokeAsync(() => cut.Find("[data-testid=flow-binding-literal]").ChangeAsync(new() { Value = invalid }));
+            Assert.Same(previousBinding, binding); Assert.Single(cut.FindAll("[role=alert]"));
+            await predicate.InvokeAsync(() => predicate.Find("[data-testid=flow-condition-match]").ChangeAsync(new() { Value = invalid }));
+            Assert.Same(previousPredicate, changed); Assert.Single(predicate.FindAll("[role=alert]"));
+        }
+        Assert.Equal(0, _api.SaveCalls); Assert.Equal(0, _api.PublishCalls); Assert.Equal(0, _api.DryRunCalls);
     }
 
     [Fact]
@@ -110,6 +143,47 @@ public sealed class FlowAuthoringFieldsTests : AsyncBunitContext
         await cut.InvokeAsync(() => cut.Find("[data-testid=flow-trigger-source-Request]").ChangeAsync(new() { Value = false }));
         Assert.Contains("Retain at least one execution source", cut.Find("[role=alert]").TextContent, StringComparison.Ordinal);
         Assert.Contains(FlowExecutionSourceKind.Request, changed.ExecutionTrigger.Sources);
+
+        _api.DefinitionSearch = (_, family, _, _, _, _) => Task.FromResult(new FlowExecutionDefinitionsPageDto(
+            [new(family, new("42", $"Synthetic {family} 42"))]));
+        var legacy = node with { ExecutionTrigger = new([FlowExecutionSourceKind.Job], [FlowExecutionOutcome.Failed], FlowExecutionScope.SelectedDefinitions) { DefinitionIds = ["42"] } };
+        cut.Render(p => p.Add(component => component.Node, legacy));
+        changed = null;
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-trigger-preset]").ChangeAsync(new() { Value = nameof(FlowExecutionSourceKind.Script) }));
+        Assert.Null(changed);
+        Assert.Contains("Remove the saved legacy definition filters", cut.Find("[role=alert]").TextContent, StringComparison.Ordinal);
+        Assert.Equal(FlowExecutionSourceKind.Job, Assert.Single(cut.Instance.Node.ExecutionTrigger!.Sources));
+        Assert.Equal("42", Assert.Single(cut.Instance.Node.ExecutionTrigger.DefinitionIds!));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-trigger-source-Script]").ChangeAsync(new() { Value = true }));
+        Assert.Null(changed);
+        Assert.Equal(FlowExecutionSourceKind.Job, Assert.Single(cut.Instance.Node.ExecutionTrigger.Sources));
+        Assert.Equal("42", Assert.Single(cut.Instance.Node.ExecutionTrigger.DefinitionIds!));
+
+        await cut.InvokeAsync(() => cut.Find(".flow-trigger-selected button").ClickAsync(new()));
+        Assert.Empty(changed!.ExecutionTrigger!.DefinitionIds!);
+        cut.Render(p => p.Add(component => component.Node, changed));
+        await cut.WaitForAssertionAsync(() => Assert.Contains("Synthetic Job 42", cut.Markup, StringComparison.Ordinal));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-trigger-preset]").ChangeAsync(new() { Value = nameof(FlowExecutionSourceKind.Script) }));
+        Assert.Equal(FlowExecutionSourceKind.Script, Assert.Single(changed!.ExecutionTrigger!.Sources));
+        Assert.Empty(changed.ExecutionTrigger.DefinitionIds!);
+        cut.Render(p => p.Add(component => component.Node, changed));
+        await cut.WaitForAssertionAsync(() => Assert.Contains("Synthetic Script 42", cut.Markup, StringComparison.Ordinal));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-definition-choice]").ClickAsync(new()));
+        var reference = Assert.Single(changed!.ExecutionTrigger!.DefinitionReferences!);
+        Assert.Equal(FlowExecutionSourceKind.Script, reference.SourceKind); Assert.Equal("42", reference.Id);
+        cut.Render(p => p.Add(component => component.Node, changed));
+        changed = null;
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-trigger-preset]").ChangeAsync(new() { Value = nameof(FlowExecutionSourceKind.Request) }));
+        Assert.Null(changed);
+        Assert.Contains("Remove incompatible selected definitions", cut.Find("[role=alert]").TextContent, StringComparison.Ordinal);
+        Assert.Equal(FlowExecutionSourceKind.Script, Assert.Single(cut.Instance.Node.ExecutionTrigger!.Sources));
+
+        var imported = node with { ExecutionTrigger = new([FlowExecutionSourceKind.Request], [FlowExecutionOutcome.Failed], FlowExecutionScope.SelectedDefinitions) { DefinitionReferences = [reference] } };
+        cut.Render(p => p.Add(component => component.Node, imported));
+        Assert.Equal(nameof(FlowExecutionSourceKind.Job), Assert.Single(cut.FindAll("[data-testid=flow-trigger-definition-family] option")).GetAttribute("value"));
+        Assert.Contains("Request events expose job-backed definitions", cut.Markup, StringComparison.Ordinal);
+        var retained = Assert.Single(cut.Instance.Node.ExecutionTrigger!.DefinitionReferences!);
+        Assert.Equal(FlowExecutionSourceKind.Script, retained.SourceKind); Assert.Equal("42", retained.Id);
         Assert.Equal(0, _api.SaveCalls); Assert.Equal(0, _api.PublishCalls); Assert.Equal(0, _api.DryRunCalls);
     }
 
