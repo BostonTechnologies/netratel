@@ -185,7 +185,7 @@ export function attachShell(id, reference) {
     };
     const escape = event => {
         if (event.key !== 'Escape' || !state.focused) return;
-        if (root.querySelector('dialog[open], .flow-properties, .flow-live-link:not([hidden]), [data-connection-start]:not([data-connection-start=""])')) return;
+        if (root.querySelector('dialog[open], .flow-properties, .flow-live-link:not([hidden]), .flow-route-handle.dragging, [data-connection-start]:not([data-connection-start=""])')) return;
         const overlayOpen = [...document.querySelectorAll('.mud-dialog-container, .mud-popover-open')]
             .some(el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
         if (overlayOpen) return;
