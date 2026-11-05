@@ -19,7 +19,7 @@ public sealed class FlowPreviewPlaybackTests(ClientsManagementBrowserFixture bro
         await page.GetByTestId("flow-row").WaitForAsync(new() { Timeout = 90_000 });
         await page.GetByTestId("flow-edit").First.ClickAsync();
         await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(3);
-        await page.GetByTestId("flow-fit").ClickAsync();
+        await FitAndWaitAsync(page);
         var before = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!;
         await page.GetByTestId("flow-dry-run-toggle").ClickAsync();
         await Assertions.Expect(page.GetByTestId("flow-preview-dialog")).ToBeVisibleAsync();
@@ -76,9 +76,10 @@ public sealed class FlowPreviewPlaybackTests(ClientsManagementBrowserFixture bro
         await page.GetByTestId("flow-row").WaitForAsync(new() { Timeout = 90_000 });
         await page.GetByTestId("flow-edit").First.ClickAsync();
         await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(6);
-        await page.GetByTestId("flow-fit").ClickAsync();
+        await FitAndWaitAsync(page);
+        var documentScroll = await page.EvaluateAsync<double[]>("() => [window.scrollX, window.scrollY]");
         var before = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!;
-        await CaptureExecutionPreviewEvidenceAsync(page, width, height, "before-open", before);
+        await CaptureExecutionPreviewEvidenceAsync(page, width, height, "before-open", new { before, documentScroll });
         await page.GetByTestId("flow-dry-run-toggle").ClickAsync();
         var dialog = page.GetByTestId("flow-preview-dialog");
         await Assertions.Expect(dialog).ToBeVisibleAsync();
@@ -130,7 +131,12 @@ public sealed class FlowPreviewPlaybackTests(ClientsManagementBrowserFixture bro
         await player.Locator("[data-trace-action=restart]").ClickAsync();
         Assert.Equal(2, fixture.FlowsData.DryRunCalls);
         Assert.Equal(0, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls);
+        await CaptureExecutionPreviewEvidenceAsync(page, width, height, "after-inspection", new { before, documentScroll });
+        // Inspecting output and clicking playback controls can scroll the document. Compare at the original document viewport.
+        await page.EvaluateAsync("position => window.scrollTo({ left: position[0], top: position[1], behavior: 'instant' })", documentScroll);
+        await page.WaitForFunctionAsync("position => window.scrollX === position[0] && window.scrollY === position[1]", documentScroll);
         var after = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!;
+        await CaptureExecutionPreviewEvidenceAsync(page, width, height, "after-restore", new { before, after, documentScroll });
         Assert.InRange(after.Y, before.Y - 1, before.Y + 1); Assert.InRange(after.Height, before.Height - 1, before.Height + 1);
         await File.WriteAllTextAsync(Path.Combine(evidence, $"flows-execution-preview-{width}.json"), JsonSerializer.Serialize(new
         {
@@ -330,6 +336,19 @@ public sealed class FlowPreviewPlaybackTests(ClientsManagementBrowserFixture bro
     }
 
 
+    private static async Task FitAndWaitAsync(IPage page)
+    {
+        var canvas = page.GetByTestId("flow-canvas");
+        var previous = long.Parse((await canvas.GetAttributeAsync("data-fit-revision"))!, System.Globalization.CultureInfo.InvariantCulture);
+        await page.GetByTestId("flow-fit").ClickAsync();
+        await page.WaitForFunctionAsync("""
+            previous => {
+                const panel = document.querySelector('[data-testid=flow-canvas]');
+                return panel?.dataset.fitState === 'complete' && Number(panel.dataset.fitRevision) > previous;
+            }
+            """, previous);
+    }
+
     private async Task ExpectExecutionPreviewHiddenAsync(IPage page, ILocator dialog, int width, int height, string stage)
     {
         await CaptureExecutionPreviewEvidenceAsync(page, width, height, stage);
@@ -360,7 +379,7 @@ public sealed class FlowPreviewPlaybackTests(ClientsManagementBrowserFixture bro
                     viewport:{ width:innerWidth, height:innerHeight, scrollX, scrollY, dpr:devicePixelRatio },
                     active:{ tag:document.activeElement?.tagName, testId:document.activeElement?.getAttribute('data-testid') },
                     editor:rect(one('[data-testid="flow-editor"]')), canvas:rect(canvas),
-                    inverseScale:canvas?.getAttribute('data-inverse-scale'), scroll:rect(one('[id^="flow-scroll-"]')),
+                    inverseScale:canvas?.getAttribute('data-inverse-scale'), fit:{state:canvas?.dataset.fitState, revision:canvas?.dataset.fitRevision}, scroll:rect(one('[id^="flow-scroll-"]')),
                     toolbar:rect(one('.flow-toolbar')), canvasTools:rect(one('.flow-canvas-tools')),
                     zoom:text('.flow-canvas-tools>span'), dirty:text('[data-testid="flow-dirty"]'),
                     dialog:{ open:dialog?.open ?? false, box:rect(dialog), children:dialog?.childElementCount ?? 0,

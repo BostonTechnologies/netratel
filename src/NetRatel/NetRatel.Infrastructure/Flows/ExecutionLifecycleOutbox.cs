@@ -662,8 +662,9 @@ public static class ExecutionLifecycleOutbox
             !IsReplayDigest(pinned.ScriptContentHash) || !IsReplayDigest(pinned.PayloadHash) ||
             !string.Equals(value.Definition.ContentHash, pinned.ScriptContentHash, StringComparison.OrdinalIgnoreCase) ||
             string.IsNullOrWhiteSpace(pinned.ProtectedSnapshotJson)) return value;
+        // Retain the validated native digest spelling so replay and terminal lineage stay exact.
         var definition = new FlowExecutionDefinitionDto(pinned.ScriptId.ToString(CultureInfo.InvariantCulture),
-            Bound(pinned.ScriptName, 512), pinned.ScriptRevision.ToString(CultureInfo.InvariantCulture), pinned.ScriptContentHash);
+            Bound(pinned.ScriptName, 512), pinned.ScriptRevision.ToString(CultureInfo.InvariantCulture), value.Definition.ContentHash);
         return value with
         {
             Definition = definition,

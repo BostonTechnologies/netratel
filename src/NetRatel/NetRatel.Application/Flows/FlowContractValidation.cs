@@ -16,7 +16,6 @@ public static class FlowContractValidation
                 input.SourceDeliveryId is { } delivery && delivery != Guid.Empty &&
                 input.SourceAdmissionKey is { } admissionKey && admissionKey != Guid.Empty &&
                 input.SourceEventIds is { Count: > 0 and <= FlowExecutionEventLimits.MaximumReferences } ids &&
-                (!input.SourceEventIdsTruncated || ids.Count == FlowExecutionEventLimits.MaximumReferences) &&
                 ids.Contains(execution.EventId) && ids.All(id => id != Guid.Empty) && ids.Distinct().Count() == ids.Count &&
                 JsonSerializer.SerializeToUtf8Bytes(input).Length <= FlowGraphV2Limits.MaximumEventBytes;
         return input.SourceAdmissionKey is null && input.SourceDeliveryId is null && input.SourceEventIds is null && !input.SourceEventIdsTruncated && FlowPureEvaluation.ValidEventData(input.Data) &&
