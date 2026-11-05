@@ -24,8 +24,8 @@ public static class FlowExecutionEvidenceFormatter
 {
     private const int OriginalBudget = 3400;
     private const int MappingBudget = 700;
-    private const int AiBudget = 1700;
-    private const int RecoveryBudget = 1500;
+    private const int AiBudget = 1600;
+    private const int RecoveryBudget = 2000;
 
     /// <summary>The caller supplies the exact committed AI turn; this layer validates its tenant/run/version scope.</summary>
     public static FlowIncidentFieldsDto Map(FlowIncidentMappingDto mapping, FlowExecutionEventDto original,
@@ -170,16 +170,28 @@ public static class FlowExecutionEvidenceFormatter
     private static string DescribeRecovery(FlowExecutionEventDto original, Guid runId, IReadOnlyList<FlowRecoveryAttemptEvidence> attempts)
     {
         var text = new StringBuilder("Recovery attempted\nDisposition: ").Append(RecoveryDisposition(original, runId, attempts));
+        var rerun = attempts.LastOrDefault(attempt => attempt.IsOriginalRerun);
+        // Keep the final verification and accepted ID visible even when a bounded repair plan is long.
+        if (rerun is not null) AppendAttempt(text, rerun);
         foreach (var attempt in attempts)
-        {
-            text.Append("\n").Append(attempt.IsOriginalRerun ? "Original rerun" : "Configured repair").Append(" attempt ").Append(attempt.Attempt)
-                .Append(": ").Append(Safe(attempt.ActionName, 128)).Append("\nState: ").Append(attempt.State)
-                .Append("\nAccepted execution: ").Append(Safe(attempt.AcceptedExecutionId, FlowExecutionEventLimits.MaximumIdentifierLength));
-            if (attempt.TerminalEvent is { } terminal)
-                text.Append("\nRecorded terminal outcome: ").Append(terminal.Outcome).Append("\nTerminal event: ").Append(terminal.EventId.ToString("D"));
-            else text.Append("\nTerminal result: Unavailable; acceptance does not prove completion.");
-        }
+            if (!ReferenceEquals(attempt, rerun)) AppendAttempt(text, attempt);
         return Clip(text.ToString(), RecoveryBudget);
+    }
+
+    private static void AppendAttempt(StringBuilder text, FlowRecoveryAttemptEvidence attempt)
+    {
+        text.Append("\n").Append(attempt.IsOriginalRerun ? "Original rerun" : "Configured repair").Append(" attempt ").Append(attempt.Attempt)
+            .Append(": ").Append(Safe(attempt.ActionName, 128)).Append("\nState: ").Append(attempt.State)
+            .Append("\nAccepted execution: ").Append(Safe(attempt.AcceptedExecutionId, FlowExecutionEventLimits.MaximumIdentifierLength));
+        if (attempt.TerminalEvent is { } terminal)
+            text.Append("\nRecorded terminal outcome: ").Append(terminal.Outcome)
+                .Append("\nDefinition: ").Append(Safe(terminal.Definition.Name, 128))
+                .Append("\nTarget: ").Append(Safe(terminal.Target.DisplayName ?? terminal.Target.HostName, 128))
+                .Append("\nRaw status: ").Append(Safe(terminal.RawStatus, 64))
+                .Append("\nTerminal event: ").Append(terminal.EventId.ToString("D"))
+                .Append("\nExecution view: ").Append(ExecutionLink(terminal))
+                .Append("\nReason: ").Append(Safe(terminal.Reason, 160));
+        else text.Append("\nTerminal result: Unavailable; acceptance does not prove completion.");
     }
 
     private static bool VerifiedRerun(FlowExecutionEventDto original, Guid runId, FlowRecoveryAttemptEvidence attempt)
@@ -218,7 +230,7 @@ public static class FlowExecutionEvidenceFormatter
         ValidateOriginal(original, tenantId);
         if (runId == Guid.Empty || versionId == Guid.Empty || ai is not null &&
             (ai.TenantId != tenantId || ai.FlowRunId != runId || ai.FlowVersionId != versionId) ||
-            attempts is not null && (attempts.Count > FlowExecutionEventLimits.MaximumRecoveryAttempts * 2 ||
+            attempts is not null && (attempts.Count > FlowGraphV2Limits.MaximumNodes ||
                 attempts.Any(x => x is null || x.NodeId == Guid.Empty || x.Attempt is < 1 or > FlowExecutionEventLimits.MaximumRecoveryAttempts ||
                     !Enum.IsDefined(x.State) || !FlowGraphValidator.IsBoundedText(x.ActionName, FlowLimits.MaximumNameLength) ||
                     x.AcceptedExecutionId is not null && !FlowGraphValidator.IsBoundedText(x.AcceptedExecutionId, FlowExecutionEventLimits.MaximumIdentifierLength) ||
