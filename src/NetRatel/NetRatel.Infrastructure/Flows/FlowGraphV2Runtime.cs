@@ -35,15 +35,49 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
         await using var scope = scopes.CreateAsyncScope();
         var services = scope.ServiceProvider;
 
+        FlowCheckpointWriteDisposition? lastWrite = null;
         async Task<bool> SaveAsync(FlowNodeCheckpointDto next)
         {
-            var outcome = await checkpoints.SaveNodeCheckpointAsync(lease, current?.Revision ?? 0, next, ct).ConfigureAwait(false);
-            if (outcome != FlowCheckpointWriteDisposition.Stored) return false;
-            current = next;
-            return true;
+            var valid = FlowNodeCheckpointRules.Valid(lease, next);
+            var outcome = valid ? await checkpoints.SaveNodeCheckpointAsync(lease, current?.Revision ?? 0, next, ct).ConfigureAwait(false) :
+                FlowCheckpointWriteDisposition.Invalid;
+            lastWrite = outcome;
+            if (outcome == FlowCheckpointWriteDisposition.Stored) { current = next; return true; }
+            if (outcome is not (FlowCheckpointWriteDisposition.Invalid or FlowCheckpointWriteDisposition.Denied)) return false;
+            if (outcome == FlowCheckpointWriteDisposition.Invalid && next.Progress == FlowNodeProgress.Prepared)
+            {
+                // Persist a bounded entry before its terminal data-limit decision. Never retry the same
+                // oversized literal/input collection indefinitely.
+                var bounded = next with { Inputs = new Dictionary<string, JsonElement>() };
+                if (FlowNodeCheckpointRules.CanAdvance(lease, current, bounded) &&
+                    await checkpoints.SaveNodeCheckpointAsync(lease, current?.Revision ?? 0, bounded, ct).ConfigureAwait(false) == FlowCheckpointWriteDisposition.Stored)
+                    current = bounded;
+            }
+            if (current is not { Progress: FlowNodeProgress.Prepared or FlowNodeProgress.Dispatching or
+                FlowNodeProgress.Waiting or FlowNodeProgress.AwaitingApproval } prior) return false;
+            var node = graph.Nodes.Single(definition => definition.Id == prior.NodeId);
+            var outputLimit = !valid && JsonSerializer.SerializeToUtf8Bytes(next.Outputs, Json).Length > FlowNodeCheckpointLimits.MaximumOutputsBytes;
+            var code = outcome == FlowCheckpointWriteDisposition.Denied ? "node-admission-denied" :
+                outputLimit ? "node-output-limit" : "node-checkpoint-invalid";
+            var basis = prior with { AcceptedSourceKind = next.AcceptedSourceKind ?? prior.AcceptedSourceKind,
+                AcceptedExecutionId = next.AcceptedExecutionId ?? prior.AcceptedExecutionId,
+                AcceptedReceipt = next.AcceptedReceipt ?? prior.AcceptedReceipt };
+            var failure = outcome == FlowCheckpointWriteDisposition.Denied &&
+                FlowNodeCatalogue.Port(node.Kind, FlowNodeCatalogue.Denied, FlowPortDirection.Output) is not null
+                ? Complete(lease, node, basis, FlowNodeCatalogue.Denied,
+                    JsonSerializer.SerializeToElement(new { outcome = "denied", code }, Json), basis.Fields)
+                : Fail(lease, node, basis, code);
+            if (FlowNodeCheckpointRules.CanAdvance(lease, prior, failure) &&
+                await checkpoints.SaveNodeCheckpointAsync(lease, prior.Revision, failure, ct).ConfigureAwait(false) == FlowCheckpointWriteDisposition.Stored)
+                current = failure;
+            return false;
         }
-        FlowRuntimeResult Resume(string code) => new(FlowRunStatus.RetryWaiting, code)
-        { Continuation = current is null ? null : new(current.NodeId, current.Fields, current.Investigation) { Node = current } };
+        FlowRuntimeResult Resume(string code) =>
+            current is { Progress: FlowNodeProgress.Failed } ||
+            current is { Progress: FlowNodeProgress.Completed, NextNodeId: null }
+                ? new(current.ResultStatus ?? FlowRunStatus.Failed, current.ResultCode ?? "runtime-terminal-invalid")
+                : new(FlowRunStatus.RetryWaiting, lastWrite == FlowCheckpointWriteDisposition.Denied ? "node-admission-denied" : code)
+                { Continuation = current is null ? null : new(current.NodeId, current.Fields, current.Investigation) { Node = current } };
 
         for (var visited = 0; visited <= FlowGraphV2Limits.MaximumNodes; visited++)
         {
@@ -117,12 +151,15 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
                 var recovery = RecoveryOrdinal(lease, state);
                 var request = new FlowExecutionActionRequest(lease, node.Id, FlowActionKeys.CreateExecution(lease, node.Id, state.Attempt),
                     state.Attempt, JsonSerializer.Serialize(state.Inputs, Json), lease.Event.ExecutionEvent?.Replay)
-                { RecoveryAttempt = recovery };
+                { RecoveryAttempt = recovery, DeadlineAtUtc = state.DeadlineAtUtc,
+                    AllowUnstartedDispatch = clock.GetUtcNow() < state.DeadlineAtUtc };
                 var dispatcher = services.GetRequiredService<IFlowExecutionActionDispatcher>();
                 var receipt = state.AcceptedReceipt?.Deserialize<FlowExecutionActionReceipt>(Json);
-                var execution = await velox.ExecuteNodeAsync(lease.RunId, node,
-                    token => receipt is null ? dispatcher.DispatchAsync(request, token) : dispatcher.ObserveAsync(request, receipt, token),
-                    ct).ConfigureAwait(false);
+                var execution = receipt is null && !request.AllowUnstartedDispatch
+                    ? new FlowExecutionActionResult(FlowExecutionActionDisposition.Unknown, "execution-admission-deadline-expired")
+                    : await velox.ExecuteNodeAsync(lease.RunId, node,
+                        token => receipt is null ? dispatcher.DispatchAsync(request, token) : dispatcher.ObserveAsync(request, receipt, token),
+                        ct).ConfigureAwait(false);
                 execution = ConfirmTerminal(lease, node, execution);
                 if (execution.Disposition is FlowExecutionActionDisposition.Pending or FlowExecutionActionDisposition.Running or
                     FlowExecutionActionDisposition.AwaitingApproval)
@@ -173,7 +210,8 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
                 if (target.Kind == FlowActionKind.RatelDeskIncident && lease.Event.ExecutionEvent is not null)
                 {
                     var attempts = FlowRecoveryEvidence.FromOutputs(lease, current!.Outputs, Order(current));
-                    var enriched = await services.GetRequiredService<FlowIncidentEvidenceReader>().ReadAsync(draft,
+                    await using var targetScope = scopes.CreateAsyncScope();
+                    var enriched = await targetScope.ServiceProvider.GetRequiredService<FlowIncidentEvidenceReader>().ReadAsync(draft,
                         current.Investigation?.ActionNodeId, attempts, ct).ConfigureAwait(false);
                     if (enriched.Disposition == FlowIncidentEvidenceDisposition.Waiting)
                         return new(FlowIncidentActionResultKind.RetryableSafe, "incident-investigation-pending");
@@ -296,10 +334,10 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
     private static FlowTraceDto Append(FlowRunLease lease, FlowTraceDto? trace, FlowNodeTraceDto step)
     {
         var steps = (trace?.Steps ?? []).Append(step).ToArray();
-        if (steps.Sum(value => Bytes(value.Input) + Bytes(value.Output)) > FlowTraceLimits.MaximumSnapshotTotalBytes)
-            steps[^1] = step with { Input = Reference(step.Input), Output = Reference(step.Output) };
+        var omitted = steps.Sum(value => Bytes(value.Input) + Bytes(value.Output)) > FlowTraceLimits.MaximumSnapshotTotalBytes;
+        if (omitted) steps[^1] = step with { Input = Reference(step.Input), Output = Reference(step.Output) };
         return new(2, lease.Version.ConfigurationHash, FlowTraceProvenance.Actual, steps,
-            trace?.Truncated == true || steps[^1].Input.State == FlowTraceDataState.Truncated || steps[^1].Output.State == FlowTraceDataState.Truncated);
+            trace?.Truncated == true || omitted || steps[^1].Input.State == FlowTraceDataState.Truncated || steps[^1].Output.State == FlowTraceDataState.Truncated);
     }
     private static int Bytes(FlowTraceSnapshotDto snapshot) => snapshot.Value is { } value ? Encoding.UTF8.GetByteCount(value.GetRawText()) : 0;
     private static FlowTraceSnapshotDto Reference(FlowTraceSnapshotDto snapshot) =>
@@ -351,7 +389,8 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
             if (output.Summary is { } summary) values["summary"] = summary;
             if (output.StandardOutput is { } stdout) values["stdout"] = stdout;
             if (output.StandardError is { } stderr) values["stderr"] = stderr;
-            if (output.Data is { } data) values["data"] = data;
+            if (output.Data is { } data && FlowJsonValueBounds.Valid(data, FlowGraphV2Limits.MaximumBindingBytes)) values["data"] = data;
+            else if (output.Data is not null) { values["truncated"] = true; values["dataUnavailableReason"] = "output-value-limit"; }
             values["references"] = output.References;
         }
         return JsonSerializer.SerializeToElement(values, Json);

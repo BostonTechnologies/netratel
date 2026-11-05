@@ -125,6 +125,11 @@ public sealed partial class NetclawPersistencePostgresTests
                 Status = FlowRunStatus.WaitingForAi, Fence = 9, CreatedAtUtc = at });
             await db.SaveChangesAsync();
             var store = scope.ServiceProvider.GetRequiredService<InvestigationStore>();
+            var connector = new NetclawFlowConnector(db, authority,
+                scope.ServiceProvider.GetRequiredService<NetclawProfileService>(), store, TimeProvider.System);
+            Assert.False(Assert.Single(await connector.ListAsync(17, publishedAuthority)).CanExecute);
+            Assert.True(Assert.Single(await connector.ListForExecutionAsync(17, publishedAuthority,
+                [FlowExecutionSourceKind.Job])).CanExecute);
             var investigation = await store.CreateAsync(17, new(Guid.NewGuid(), "Synthetic source investigation", [agentId]),
                 "source-publisher", default, sourceActionKey: draft.IdempotencyKey, flowRunId: runId);
             investigationId = investigation.Id;

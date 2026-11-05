@@ -47,23 +47,25 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
         if (!await db.Tenants.AnyAsync(row => row.Id == tenantId, ct).ConfigureAwait(false)) return new(FlowWriteDisposition.NotFound);
         if (await db.FlowDefinitions.CountAsync(row => row.TenantId == tenantId, ct).ConfigureAwait(false) >= FlowLimits.MaximumFlowsPerTenant) return new(FlowWriteDisposition.CapacityExceeded);
         var now = clock.GetUtcNow(); var row = new FlowDefinitionRecord { Id = Guid.NewGuid(), TenantId = tenantId, Name = request.Name.Trim(), Revision = 1, Enabled = true,
-            DraftJson = Serialize(request.UseTemplate ? FlowGraphTemplates.IncidentFromAlert() : new FlowGraphDto(1, [], [], new())), CreatedAtUtc = now, UpdatedAtUtc = now };
+            DraftJson = Serialize(request.UseTemplate ? FlowGraphTemplates.IncidentFromAlert() : new FlowGraphDto(1, [], [], new())), CreatedAtUtc = now, UpdatedAtUtc = now, EnabledSinceUtc = now };
         db.FlowDefinitions.Add(row); Audit(db, row, actorId, "created"); await db.SaveChangesAsync(ct).ConfigureAwait(false); if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false);
         return new(FlowWriteDisposition.Stored, Definition(row));
     });
 
     public async Task<FlowDefinitionWriteResult> SaveDraftAsync(int tenantId, Guid flowId, FlowSaveDraftRequest request, string actorId, CancellationToken ct = default)
     {
-        var validation = FlowGraphValidator.ValidateDraft(request.Graph);
+        var validation = request.Graph?.SchemaVersion == FlowGraphV2Limits.SchemaVersion
+            ? FlowGraphV2Validator.ValidateDraft(request.Graph) : FlowGraphValidator.ValidateDraft(request.Graph);
         if (!ValidName(request.Name) || !validation.Valid) return new FlowDefinitionWriteResult(FlowWriteDisposition.Invalid, Code: validation.Issues.FirstOrDefault()?.Code ?? "flow-name");
         if (await ResolveFlowPromptsAsync(tenantId, request.Graph, false, ct) is null) return new(FlowWriteDisposition.Invalid, Code: "ai-prompt-unavailable");
         var draft = request.Graph with { Nodes = request.Graph.Nodes.Select(node => node.AiSettings is { } settings
-            ? node with { AiSettings = settings with { PinnedPrompts = null } } : node).ToArray() };
+            ? node with { AiSettings = settings with { PinnedPrompts = null } } : node).Select(node =>
+                node.ExecutionAction is { } action ? node with { ExecutionAction = action with { PinnedSnapshotReference = null } } : node).ToArray() };
         return await MutateAsync(tenantId, flowId, request.ExpectedRevision, actorId, "draft-saved", row => { row.Name = request.Name.Trim(); row.DraftJson = Serialize(draft); }, ct,
             row => Parse<FlowGraphDto>(row.DraftJson).SchemaVersion > request.Graph.SchemaVersion ? "graph-schema-downgrade" : null);
     }
     public Task<FlowDefinitionWriteResult> SetEnabledAsync(int tenantId, Guid flowId, FlowEnabledRequest request, string actorId, CancellationToken ct = default) =>
-        MutateAsync(tenantId, flowId, request.ExpectedRevision, actorId, request.Enabled ? "enabled" : "disabled", row => row.Enabled = request.Enabled, ct);
+        MutateAsync(tenantId, flowId, request.ExpectedRevision, actorId, request.Enabled ? "enabled" : "disabled", row => { if (request.Enabled && !row.Enabled) row.EnabledSinceUtc = clock.GetUtcNow(); row.Enabled = request.Enabled; }, ct);
 
     private Task<FlowDefinitionWriteResult> MutateAsync(int tenantId, Guid flowId, long expected, string actorId, string operation, Action<FlowDefinitionRecord> change, CancellationToken ct, Func<FlowDefinitionRecord, string?>? validate = null) => WithDb(async (db, _) =>
     {
@@ -85,7 +87,8 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
         if (source is null) return new(FlowWriteDisposition.NotFound); if (source.Revision != request.ExpectedRevision) return new(FlowWriteDisposition.Conflict);
         if (await db.FlowDefinitions.CountAsync(row => row.TenantId == tenantId, ct).ConfigureAwait(false) >= FlowLimits.MaximumFlowsPerTenant) return new(FlowWriteDisposition.CapacityExceeded);
         var graph = Parse<FlowGraphDto>(source.DraftJson); var ids = graph.Nodes.ToDictionary(node => node.Id, _ => Guid.NewGuid());
-        graph = graph with { Nodes = graph.Nodes.Select(node => node with { Id = ids[node.Id],
+        graph = graph.SchemaVersion == FlowGraphV2Limits.SchemaVersion ? FlowGraphDraftClone.SchemaTwo(graph) :
+            graph with { Nodes = graph.Nodes.Select(node => node with { Id = ids[node.Id],
                 Actions = node.Actions?.Select(action => action with { Id = Guid.NewGuid() }).ToArray() }).ToArray(),
             Edges = graph.Edges.Select(edge => edge with { SourceNodeId = ids[edge.SourceNodeId], TargetNodeId = ids[edge.TargetNodeId] }).ToArray() };
         var now = clock.GetUtcNow(); var row = new FlowDefinitionRecord { Id = Guid.NewGuid(), TenantId = tenantId, Name = request.Name.Trim(), Revision = 1, Enabled = false,
@@ -101,7 +104,10 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
         var row = await db.FlowDefinitions.SingleOrDefaultAsync(row => row.TenantId == tenantId && row.Id == flowId, ct).ConfigureAwait(false);
         if (row is null) return new(FlowWriteDisposition.NotFound); if (row.Revision != request.ExpectedRevision) return new(FlowWriteDisposition.Conflict);
         if (row.PublishedVersionNumber >= FlowLimits.MaximumVersionsPerFlow) return new(FlowWriteDisposition.CapacityExceeded);
-        var graph = Parse<FlowGraphDto>(row.DraftJson); var validation = FlowGraphValidator.ValidateComplete(graph);
+        var graph = Parse<FlowGraphDto>(row.DraftJson);
+        if (graph.SchemaVersion == FlowGraphV2Limits.SchemaVersion)
+            return await PublishSchemaTwoAsync(db, provider, row, graph, authority, transaction, ct).ConfigureAwait(false);
+        var validation = FlowGraphValidator.ValidateComplete(graph);
         if (!validation.Valid) return new(FlowWriteDisposition.Invalid, Code: validation.Issues[0].Code);
         var catalog = provider.GetRequiredService<IFlowConnectorCatalog>();
         var pinned = new Dictionary<Guid, FlowActionTargetDto>();
