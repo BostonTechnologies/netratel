@@ -182,6 +182,13 @@ export function attach(id, reference) {
     };
     const cancelPointer = event => { if (routeDrag?.pointerId === event.pointerId) cancelRoute(); else if (gesture?.pointerId === event.pointerId) cancel(); };
     const keys = event => {
+        const handle = event.target.closest?.('.flow-route-handle');
+        if (handle && panel.contains(handle) && writable() && !event.ctrlKey && !event.altKey && !event.metaKey &&
+            ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+            // Preserve normal Tab/Shift+Tab and Escape. Only route-adjustment arrows
+            // suppress browser scrolling; the Blazor key handler still commits once.
+            event.preventDefault();
+        }
         if (event.key === 'Escape' && routeDrag) { event.preventDefault(); event.stopImmediatePropagation(); cancelRoute(); return; }
         if (event.key !== 'Escape' || (!gesture && !panel.dataset.connectionStart)) return;
         event.preventDefault(); event.stopImmediatePropagation(); cancel();

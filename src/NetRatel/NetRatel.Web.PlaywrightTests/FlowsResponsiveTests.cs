@@ -299,6 +299,46 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await Assertions.Expect(opener).ToBeFocusedAsync();
     }
 
+    [Fact]
+    public async Task Schema_Two_Route_Keyboard_Arrows_Edit_Coordinates_And_Tab_Leaves_The_Handle()
+    {
+        var fixture = _fixture!;
+        var flow = Assert.Single(await fixture.FlowsData.ListAsync(17));
+        var graph = FlowDraftMigration.UpgradeToSchemaTwo(flow.Draft);
+        graph = graph with { Edges = graph.Edges.Select((edge, index) => index == 0
+            ? edge with { Route = new([new(300, 200)]) } : edge).ToArray() };
+        await fixture.FlowsData.SaveAsync(17, flow.Id, new(flow.Revision, flow.Name, graph));
+        var setupWrites = fixture.FlowsData.SaveCalls;
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1440, Height = 900 } });
+        var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000);
+        await OpenPageAsync(page, fixture);
+        await page.GetByTestId("flow-edit").First.ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(3);
+        await page.GetByTestId("flow-fit").ClickAsync();
+        await page.GetByTestId("flow-link-hit").First.FocusAsync();
+        var handle = page.GetByTestId("flow-route-handle");
+        await Assertions.Expect(handle).ToHaveCountAsync(1);
+        await handle.FocusAsync();
+        await page.Keyboard.PressAsync("ArrowRight");
+        await Assertions.Expect(handle).ToHaveAttributeAsync("data-world-x", "301");
+        await page.Keyboard.PressAsync("Shift+ArrowDown");
+        await Assertions.Expect(handle).ToHaveAttributeAsync("data-world-y", "210");
+        await page.Keyboard.PressAsync("Tab");
+        await Assertions.Expect(handle).Not.ToBeFocusedAsync();
+        await page.Keyboard.PressAsync("Shift+Tab");
+        await Assertions.Expect(handle).ToBeFocusedAsync();
+        var coordinate = page.GetByRole(AriaRole.Spinbutton, new() { Name = "Point 1 X", Exact = true });
+        await coordinate.FillAsync("410"); await coordinate.PressAsync("Tab");
+        await Assertions.Expect(handle).ToHaveAttributeAsync("data-world-x", "410");
+        var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-route-keyboard.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+        await page.GetByTestId("flow-route-reset").ClickAsync();
+        await Assertions.Expect(handle).ToHaveCountAsync(0);
+        await Assertions.Expect(page.Locator(".flow-connection[data-flow-route]")).ToHaveCountAsync(0);
+        Assert.Equal(setupWrites, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls);
+        Assert.Equal(0, fixture.FlowsData.DryRunCalls); Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
+    }
+
     private static async Task CloseEditorAsync(IPage page)
     {
         await page.GetByTestId("flow-close").ClickAsync();

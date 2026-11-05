@@ -10,7 +10,7 @@
         <circle class="flow-route-handle" cx="@Number(point.X / Scale)" cy="@Number(point.Y / Scale)" r="7"
             data-edge-id="@edgeId" data-point-index="@index" data-world-x="@Number(point.X)" data-world-y="@Number(point.Y)"
             tabindex="0" role="slider" aria-label="@($"Route point {index + 1}")" aria-valuetext="@($"X {Number(point.X)}, Y {Number(point.Y)}")"
-            @onkeydown="args => KeyDown(pointIndex, args)" @onkeydown:preventDefault data-testid="flow-route-handle" />
+            @onkeydown="args => KeyDown(pointIndex, args)" data-testid="flow-route-handle" />
     }
 }
 
@@ -20,7 +20,7 @@
     [Parameter] public EventCallback<FlowRoutePointEdit> Changed { get; set; }
     private Task KeyDown(int index, KeyboardEventArgs args)
     {
-        if (Edge is not { Id: { } edgeId, Route: { } route } || index < 0 || index >= route.Points.Count) return Task.CompletedTask;
+        if (args.CtrlKey || args.AltKey || args.MetaKey || Edge is not { Id: { } edgeId, Route: { } route } || index < 0 || index >= route.Points.Count) return Task.CompletedTask;
         var step = args.ShiftKey ? 10d : 1d; var point = route.Points[index];
         var next = args.Key switch
         {
