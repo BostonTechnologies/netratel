@@ -142,6 +142,14 @@ public static class ExecutionLifecycleOutbox
         var row = await query.SingleOrDefaultAsync(ct)
             ?? throw new InvalidOperationException("The submitted request is unavailable.");
         var executionId = run.Id.ToString(CultureInfo.InvariantCulture);
+        var submissionId = Identity($"request-submission|{row.TargetTenantId}|{requestId}");
+        var reservationId = Identity($"request-reservation|{row.TargetTenantId}|{requestId}");
+        var submission = db.OutboxMessages.Local.SingleOrDefault(x => x.Id == submissionId) ??
+            await db.OutboxMessages.AsNoTracking().SingleOrDefaultAsync(x => x.Id == submissionId, ct);
+        var reservation = db.OutboxMessages.Local.SingleOrDefault(x => x.Id == reservationId) ??
+            await db.OutboxMessages.AsNoTracking().SingleOrDefaultAsync(x => x.Id == reservationId, ct);
+        if (!MatchesSubmission(row, submission) || !MatchesBinding(row, reservation, RequestReservationOutboxType))
+            throw new InvalidOperationException("Native request acceptance requires its exact immutable submission and reservation.");
         if (row.ExecutionId is not null && row.ExecutionId != executionId ||
             row.ExecutionId is null && FlowExecutionOutcomes.FromAuthoritativeStatus(row.Status) is not null)
             throw new InvalidOperationException("The submitted request already has a different accepted disposition.");
