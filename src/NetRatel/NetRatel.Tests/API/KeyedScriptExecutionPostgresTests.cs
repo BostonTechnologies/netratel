@@ -157,6 +157,60 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
     }
 
     [Fact]
+    public async Task A_typed_native_reference_reaches_protected_admission_without_resolving_or_checkpointing_a_secret_value()
+    {
+        var original = await SeedAsync(lease =>
+        {
+            var graph = lease.Version.Graph with
+            {
+                Nodes = [lease.Version.Graph.Nodes[0] with
+                {
+                    Inputs = new Dictionary<string, FlowInputBindingDto>
+                    { ["vault"] = new(FlowInputSource.SecretReference, FlowDataType.SecretReference, "SYNTHETIC_FLOW_TOKEN") }
+                }]
+            };
+            return lease with { Version = lease.Version with { Graph = graph,
+                ConfigurationHash = FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(graph, Json)) } };
+        });
+        await using var db = new OrchestratorDbContext(_options);
+        var pin = original.Snapshot with
+        { Parameters = [new ScriptParamInfo(1, original.Snapshot.Script.Id, "vault", "secret_reference", true, null, null, null)] };
+        db.ScriptParameters.Add(new() { ScriptId = checked((long)pin.Script.Id), Name = "vault", Type = "secret_reference", Required = true });
+        await db.SaveChangesAsync();
+        var authority = new FlowExecutionAuthority(db, new Verifier(), _access, _source, TimeProvider.System);
+        var native = new JobRunService(db, _keys);
+        var dispatcher = new FlowExecutionActionDispatcher(db, new Pins(new(original.Identity.NodeId,
+            FlowNodeKind.RunLibraryScript, original.FlowLease!.Version.Graph.Nodes[0].ExecutionAction!.Definition,
+            new(original.AgentId), Script: pin)), new NoJobs(), Service(db), native,
+            new ExecutionAdmissionStore(db, _keys, TimeProvider.System), authority);
+        var action = new FlowExecutionActionRequest(original.FlowLease, original.Identity.NodeId, original.Identity.ActionKey, 1, "{}");
+        _commands.Available = false;
+        var reserved = await dispatcher.DispatchAsync(action);
+        reserved.Disposition.Should().Be(FlowExecutionActionDisposition.Pending);
+        _commands.Dispatches.Should().Be(0);
+        var checkpoint = JsonSerializer.Deserialize<FlowContinuationDto>(
+            (await db.FlowRuns.AsNoTracking().SingleAsync()).ContinuationJson!, Json)!;
+        checkpoint.Node!.Inputs.Should().BeEmpty();
+        (await db.FlowRuns.AsNoTracking().SingleAsync()).ContinuationJson.Should().NotContain("SYNTHETIC_FLOW_TOKEN");
+        var record = await db.Set<ExecutionAdmissionRecord>().AsNoTracking().SingleAsync();
+        record.ProtectedPayloadJson.Should().NotContain("SYNTHETIC_FLOW_TOKEN");
+        _commands.Available = true;
+        var accepted = await dispatcher.ObserveAsync(action, reserved.Receipt!);
+        accepted.Receipt!.ExecutionId.Should().Be(reserved.Receipt.ExecutionId);
+        _commands.Dispatches.Should().Be(1);
+        var actual = JsonSerializer.Deserialize<ExecLibraryScriptPayload>(_commands.Payload)!;
+        actual.Parameters!["vault"].Should().Be("SYNTHETIC_FLOW_TOKEN");
+        actual.OutputSecretValues.Should().BeNull();
+        actual.OutputPolicy!.SecretParameters.Should().BeEmpty();
+        actual.OutputPolicy.SecretReferenceParameters.Should().Equal("vault");
+        (await dispatcher.ObserveAsync(action, accepted.Receipt)).Receipt!.ExecutionId.Should().Be(accepted.Receipt.ExecutionId);
+        _commands.Dispatches.Should().Be(1);
+        checkpoint = JsonSerializer.Deserialize<FlowContinuationDto>(
+            (await db.FlowRuns.AsNoTracking().SingleAsync()).ContinuationJson!, Json)!;
+        checkpoint.Node!.Inputs.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Unknown_and_nonreplayable_original_results_never_send_a_repair_or_rerun()
     {
         var original = await SeedAsync();

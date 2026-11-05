@@ -199,6 +199,71 @@ public sealed class FlowExecutionPinsPostgresTests(PostgreSqlPersistenceFixture 
         }
     }
 
+    [Theory]
+    [InlineData("script")]
+    [InlineData("job")]
+    public async Task Native_reference_names_are_validated_against_the_actual_pinned_parameter_schema_at_publish(string source)
+    {
+        await using var db = new OrchestratorDbContext(_options);
+        var scripts = new ScriptService(db);
+        var script = await scripts.CreateAsync(new("synthetic-reference-script", "/", null,
+            "printf reference-only", "bash", null));
+        db.ScriptParameters.Add(new() { ScriptId = checked((long)script.Id), Name = "vault", Type = "secret_reference", Required = true });
+        var target = Guid.NewGuid();
+        db.Agents.Add(new() { Id = target, TenantId = 7, Name = "synthetic-reference-worker", CreatedAtUtc = DateTimeOffset.UtcNow });
+        await db.SaveChangesAsync();
+        FlowNodeDto node;
+        if (source == "script")
+            node = new(Guid.NewGuid(), FlowNodeKind.RunLibraryScript, "Synthetic reference script", new(0, 0))
+            { ExecutionAction = new(FlowExecutionSourceKind.Script, new(script.Id.ToString(), script.Name)) };
+        else
+        {
+            var jobs = new JobDefinitionService(db);
+            var job = await jobs.CreateAsync(new("synthetic-reference-job", "/", null, 7, "", AgentId: target));
+            await jobs.AddParamAsync(new(job.Id, "vault", "secret_reference", true, null, null, null));
+            await jobs.AddStepAsync(new(job.Id, 1, JobStepKind.LibraryScript, null, null, script.Id,
+                """{"parameters":{"vault":"@option.vault@"}}""", true));
+            node = new(Guid.NewGuid(), FlowNodeKind.RunJob, "Synthetic reference job", new(0, 0))
+            { ExecutionAction = new(FlowExecutionSourceKind.Job, new(job.Id.ToString(), job.Name)) { Target = new(target) } };
+        }
+        node = node with { Inputs = new Dictionary<string, FlowInputBindingDto>
+            { ["vault"] = new(FlowInputSource.SecretReference, FlowDataType.SecretReference, "SYNTHETIC_FLOW_TOKEN") } };
+        var capture = await Service(db).CaptureAsync(7, new("operator"), Guid.NewGuid(), new(2, [node], [], new()));
+        capture.Graph.Nodes[0].ExecutionAction!.Parameters!.Single().DataType.Should().Be(FlowDataType.SecretReference);
+        capture.Graph.Nodes[0].Inputs!["vault"].Path.Should().Be("SYNTHETIC_FLOW_TOKEN");
+        Assert.Empty(await db.FlowRuns.ToArrayAsync());
+        Assert.Empty(await db.JobRuns.ToArrayAsync());
+        Assert.Empty(await db.Set<ExecutionAdmissionRecord>().ToArrayAsync());
+    }
+
+    [Theory]
+    [InlineData("secret", "SYNTHETIC_FLOW_TOKEN", "secret-reference-parameter-unavailable")]
+    [InlineData("secretref", "SYNTHETIC_FLOW_TOKEN", "secret-reference-parameter-unavailable")]
+    [InlineData(" secret_reference ", "SYNTHETIC_FLOW_TOKEN", "secret-reference-parameter-unavailable")]
+    [InlineData("string", "SYNTHETIC_FLOW_TOKEN", "secret-reference-parameter-unavailable")]
+    [InlineData("secret_reference", "vault/synthetic", "secret-reference-invalid")]
+    [InlineData("secret_reference", "inline credential value", "secret-reference-invalid")]
+    public async Task A_reference_binding_cannot_change_an_inline_secret_or_arbitrary_string_into_a_native_reference(
+        string nativeType, string reference, string expectedCode)
+    {
+        await using var db = new OrchestratorDbContext(_options);
+        var script = await new ScriptService(db).CreateAsync(new("synthetic-incompatible-secret", "/", null, "printf no-dispatch", "bash", null));
+        db.ScriptParameters.Add(new() { ScriptId = checked((long)script.Id), Name = "vault", Type = nativeType, Required = true });
+        await db.SaveChangesAsync();
+        var node = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.RunLibraryScript, "Synthetic incompatible reference", new(0, 0))
+        {
+            ExecutionAction = new(FlowExecutionSourceKind.Script, new(script.Id.ToString(), script.Name)),
+            Inputs = new Dictionary<string, FlowInputBindingDto>
+            { ["vault"] = new(FlowInputSource.SecretReference, FlowDataType.SecretReference, reference) }
+        };
+        var error = await Assert.ThrowsAsync<FlowExecutionPinException>(() =>
+            Service(db).CaptureAsync(7, new("operator"), Guid.NewGuid(), new(2, [node], [], new())));
+        error.Code.Should().Be(expectedCode);
+        Assert.Empty(await db.FlowVersions.ToArrayAsync());
+        Assert.Empty(await db.JobTaskActivities.ToArrayAsync());
+        Assert.Empty(await db.Set<ExecutionAdmissionRecord>().ToArrayAsync());
+    }
+
     private FlowExecutionDefinitionPins Service(OrchestratorDbContext db)
     {
         var scripts = new ScriptService(db);
