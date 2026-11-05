@@ -57,6 +57,8 @@
         else
         { <label>Literal @DataType<input value="@_literal" @onchange="SetLiteral" type="@(DataType == FlowDataType.Number ? "number" : "text")" step="any" maxlength="@FlowGraphV2Limits.MaximumBindingBytes" data-testid="flow-binding-literal" /></label> }
     }
+    @if (Value is { } stored && stored.DataType != DataType)
+    { <p role="alert" class="flow-binding-error">The stored @stored.DataType mapping differs from the selected @DataType parameter. Choose a replacement mapping.</p> }
     @if (_error is not null) { <p role="alert" class="flow-binding-error">@_error</p> }
 </fieldset>
 

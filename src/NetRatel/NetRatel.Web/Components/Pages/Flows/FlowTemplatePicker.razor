@@ -43,6 +43,9 @@
         {
             var templates = await Api.GetTemplatesAsync(tenant, token);
             if (_disposed || generation != _generation || tenant != TenantId) return;
+            if (templates.Any(template => template is null || string.IsNullOrWhiteSpace(template.Id) || string.IsNullOrWhiteSpace(template.Name) ||
+                template.Description is null || template.RequiredConfiguration is null || template.SchemaVersion <= 0))
+                throw new HttpRequestException("The template catalogue returned an invalid descriptor.");
             _templates = templates.Where(template => template.SchemaVersion == FlowGraphV2Limits.SchemaVersion)
                 .GroupBy(template => template.Id, StringComparer.Ordinal).Select(group => group.First()).ToArray();
         }

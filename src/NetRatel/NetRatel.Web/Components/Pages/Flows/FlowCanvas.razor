@@ -14,19 +14,25 @@
     <MudTooltip Text="Fit graph"><MudIconButton Icon="@Icons.Material.Filled.CenterFocusStrong" Size="MudBlazor.Size.Small" OnClick="FitAsync" aria-label="Fit graph" data-testid="flow-fit" /></MudTooltip>
     <MudTooltip Text="@(_overviewOpen ? "Hide overview" : "Show overview")"><MudIconButton Icon="@Icons.Material.Filled.Map" Size="MudBlazor.Size.Small" OnClick="ToggleOverviewAsync" aria-expanded="@(_overviewOpen ? "true" : "false")" aria-label="@(_overviewOpen ? "Hide overview" : "Show overview")" data-testid="flow-overview-toggle" /></MudTooltip>
 </div>
-<section class="flow-canvas-panel" id="@PanelId" aria-label="Workflow canvas" data-testid="flow-canvas" tabindex="0">
+<section class="flow-canvas-panel" id="@PanelId" aria-label="Workflow canvas" data-testid="flow-canvas" tabindex="0" data-read-only="@(ReadOnly ? "true" : "false")" data-connection-start="@_connectingFrom" data-connection-port="@_connectingPort" data-inverse-scale="@Adapter.Tree.Layout.Scale.Horizontal.ToString("R", CultureInfo.InvariantCulture)">
     <FlowSurfaceBehavior @ref="_surface" @key="Adapter.Tree" Tree="Adapter.Tree" IsEnabled="true" ZoomEnabled="true"
         ScrollViewerId="@ScrollId" CanvasId="@CanvasId" Background="var(--mud-palette-background)"
         GridColor="var(--mud-palette-divider)" MajorGridColor="var(--mud-palette-text-disabled)">
         <Minimap Context="viewport">@if (_overviewOpen) { <div data-testid="flow-overview"><WorkflowMinimapOverlay Viewport="viewport" Width="120" Height="76" ScrollViewerId="@ScrollId"
             Background="var(--mud-palette-surface)" ViewportStroke="var(--mud-palette-primary)" /></div> }</Minimap>
         <ChildContent Context="canvas">
-            <svg class="flow-links" width="@canvas.Width" height="@canvas.Height" aria-hidden="true">
+            <svg class="flow-links" width="@canvas.Width" height="@canvas.Height" role="group" aria-label="Workflow connections">
                 @foreach (var link in Adapter.Tree.Links.ToArray())
                 {
-                    @if (Adapter.Ports.ContainsKey(link.Sender) && Adapter.Ports.ContainsKey(link.Receiver) && new[] { link.Sender.Anchor.Horizontal, link.Sender.Anchor.Vertical, link.Receiver.Anchor.Horizontal, link.Receiver.Anchor.Vertical }.All(double.IsFinite))
-                    { <line x1="@link.Sender.Anchor.Horizontal" y1="@link.Sender.Anchor.Vertical" x2="@link.Receiver.Anchor.Horizontal" y2="@link.Receiver.Anchor.Vertical" stroke="var(--mud-palette-primary)" stroke-width="3" data-testid="flow-link" /> }
+                    @if (Adapter.Ports.ContainsKey(link.Sender) && Adapter.Ports.ContainsKey(link.Receiver))
+                    {
+                        var definition = Adapter.Edge(link); var source = definition.SourceNodeId; var target = definition.TargetNodeId;
+                        <FlowConnectionPath @key="link" Link="link" Definition="definition" Scale="Adapter.Tree.Layout.Scale.Horizontal" Source="source" Target="target"
+                            Label="@($"Connection from {NodeName(source)} to {NodeName(target)}")"
+                            Selected="@IsSelected(definition)" SelectedChanged="() => SelectConnection(definition)" />
+                    }
                 }
+                <path class="flow-live-link" hidden="hidden" fill="none" stroke="var(--mud-palette-primary)" stroke-width="3" stroke-dasharray="7 5" pointer-events="none" aria-hidden="true" data-native-virtual-link="@WorkflowRuntimeIds.Get(Adapter.Tree.VirtualLink)" data-testid="flow-virtual-link" />
             </svg>
             <ViewPool ItemsSource="Adapter.Tree.Nodes.ToArray()" KeySelector="item => item">
                 <ItemTemplate Context="item">
@@ -35,22 +41,29 @@
                     {
                     <WorkflowSlotLayoutBehavior Node="node" IsEnabled="true">
                         <WorkflowNodeDragBehavior Node="node" IsEnabled="@(!ReadOnly)" Style="@NodeStyle(node)">
-                            <article class="flow-node @(SelectedNodeId == metadata.Id ? "selected" : "")" data-node-id="@metadata.Id" data-node-kind="@metadata.Kind" style="@CardStyle(node)">
+                            <article class="flow-node @(Adapter.SchemaVersion == 2 ? "schema-two" : "") @(SelectedNodeId == metadata.Id ? "selected" : "")" data-design-width="@Adapter.DesignSize(metadata.Kind).Width" data-node-id="@metadata.Id" data-node-kind="@metadata.Kind" style="@CardStyle(node)">
                                 <header class="flow-node-header">
-                                    <div role="button" tabindex="0" class="flow-node-title" @onclick="() => Selected.InvokeAsync(metadata.Id)" @onkeydown="e => SelectFromKeyboard(metadata.Id, e)" data-testid="flow-node-title">@metadata.Name</div>
+                                    <div role="button" tabindex="0" class="flow-node-title" @onclick="() => Selected.InvokeAsync(metadata.Id)" @onkeydown="e => SelectFromKeyboard(metadata.Id, e)" data-testid="flow-node-title">@if (Adapter.SchemaVersion == FlowGraphV2Limits.SchemaVersion) { <small class="flow-node-header-kind">@FlowNodeCatalogue.Find(metadata.Kind)?.Category · @FlowNodeCatalogue.Find(metadata.Kind)?.Name</small> }@metadata.Name</div>
                                     <div class="flow-node-actions" @onpointerdown:stopPropagation @onmousedown:stopPropagation @onclick:stopPropagation>
                                         <MudTooltip Text="Node settings"><MudIconButton Icon="@Icons.Material.Filled.Settings" Size="MudBlazor.Size.Small" OnClick="() => Settings.InvokeAsync(metadata.Id)" aria-label="@($"Settings for {metadata.Name}")" data-testid="flow-node-settings" /></MudTooltip>
                                         <MudTooltip Text="Delete node"><MudIconButton Icon="@Icons.Material.Filled.DeleteOutline" Size="MudBlazor.Size.Small" OnClick="() => Delete.InvokeAsync(metadata.Id)" Disabled="@ReadOnly" aria-label="@($"Delete {metadata.Name}")" data-testid="flow-node-delete" /></MudTooltip>
                                     </div>
                                 </header>
-                                <div class="flow-node-body"><span>@(metadata.Kind == FlowNodeKind.ActionGroup ? $"{metadata.Actions?.Count ?? 0} notification / incident actions" : metadata.Kind == FlowNodeKind.InvestigateWithAi ? "Waits for the correlated AI turn" : KindLabel(metadata.Kind))</span>
+                                <div class="flow-node-body" style="@BodyStyle(metadata.Kind)"><small class="flow-node-category">@(Adapter.SchemaVersion == 2 ? FlowNodeCatalogue.Find(metadata.Kind)?.Name : KindLabel(metadata.Kind))</small><span class="flow-node-summary">@NodeSummary(metadata)</span>
                                     @foreach (var slot in node.Slots)
                                     {
                                         if (!Adapter.Ports.TryGetValue(slot, out var port)) continue;
-                                        var output = port.Output;
-                                        <div class="flow-port @(output ? "output" : "input")" data-port-node="@metadata.Id" data-port-direction="@(output ? "output" : "input")">
-                                            <WorkflowSlotConnectionBehavior Slot="slot" Tree="Adapter.Tree" IsEnabled="@(!ReadOnly)">
-                                                <svg width="24" height="24" viewBox="0 0 24 24" aria-label="@(output ? $"{FlowCanvasAdapter.OutputType(metadata.Kind)} output port" : $"{FlowCanvasAdapter.InputType(metadata.Kind)} input port")"><circle cx="12" cy="12" r="9" fill="var(--mud-palette-primary)" stroke="var(--mud-palette-primary-text)" stroke-width="2" /></svg>
+                                        var output = port.Output; var portId = Adapter.PortIds[slot];
+                                        var descriptor = Adapter.NodePorts(metadata.Kind).Single(value => value.Id == portId && (value.Direction == FlowPortDirection.Output) == output);
+                                        <div class="flow-port @(output ? "output" : "input")" data-port-node="@metadata.Id" style="@PortStyle(node, slot)" data-port-id="@portId" data-port-direction="@(output ? "output" : "input")" data-compatible-targets="@(output ? CompatibleTargets(metadata.Id, portId) : null)">
+                                            <WorkflowSlotConnectionBehavior Slot="slot" Tree="Adapter.Tree" IsEnabled="false">
+                                                <button type="button" class="flow-port-button" disabled="@ReadOnly"
+                                                    aria-label="@($"{descriptor.Name}, {descriptor.ValueLabel}, {(output ? "output" : "input")} port of {metadata.Name}")"
+                                                    aria-pressed="@(_connectingFrom == metadata.Id && _connectingPort == portId && output ? "true" : "false")"
+                                                    @onclick="() => ActivatePortAsync(metadata.Id, output, portId)" data-testid="flow-port-button">
+                                                    <svg class="veloxdev-wf-slot-svg" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="var(--mud-palette-primary)" stroke="var(--mud-palette-primary-text)" stroke-width="2" /></svg>
+                                                    <span class="flow-port-label">@($"{descriptor.Name} · {descriptor.ValueLabel}")</span>
+                                                </button>
                                             </WorkflowSlotConnectionBehavior>
                                         </div>
                                     }
@@ -61,14 +74,51 @@
                     }
                 </ItemTemplate>
             </ViewPool>
+            @if (!ReadOnly && SelectedConnection is { Route: not null } routedEdge)
+            {
+                <svg class="flow-route-overlay" width="@canvas.Width" height="@canvas.Height" role="group" aria-label="Selected connection route controls">
+                    <FlowRouteHandles Edge="routedEdge" Scale="Adapter.Tree.Layout.Scale.Horizontal" Changed="MoveRoutePointAsync" />
+                </svg>
+            }
         </ChildContent>
     </FlowSurfaceBehavior>
+    @if (SelectedConnection is { } connection)
+    {
+        <div class="flow-edge-tools" data-testid="flow-edge-tools"><span>@NodeName(connection.SourceNodeId) → @NodeName(connection.TargetNodeId)</span>
+            @if (!ReadOnly) { <button type="button" @onclick="RemoveSelectedConnectionAsync" data-testid="flow-edge-remove">Remove connection</button> }
+            <button type="button" @onclick="() => _selectedConnection = null" aria-label="Close connection inspector">Close</button>
+            @if (Adapter.SchemaVersion == FlowGraphV2Limits.SchemaVersion && !ReadOnly && connection.Id is { } edgeId)
+            {
+                <div class="flow-route-controls">
+                    <button type="button" @onclick="AddRoutePoint" disabled="@(connection.Route?.Points.Count >= FlowGraphV2Limits.MaximumRoutePoints)" data-testid="flow-route-add">Add route point</button>
+                    <button type="button" @onclick="() => SetRoute(edgeId, null)" disabled="@(connection.Route is null)" data-testid="flow-route-reset">Reset route</button>
+                    @if (connection.Route is { } route)
+                    {
+                        @for (var index = 0; index < route.Points.Count; index++)
+                        {
+                            var pointIndex = index; var point = route.Points[index];
+                            <div class="flow-route-coordinate"><span>Point @(index + 1)</span>
+                                <label>X<input type="number" value="@Number(point.X)" @onchange="args => ChangeRouteCoordinate(edgeId, pointIndex, true, args)" aria-label="@($"Point {index + 1} X")" /></label>
+                                <label>Y<input type="number" value="@Number(point.Y)" @onchange="args => ChangeRouteCoordinate(edgeId, pointIndex, false, args)" aria-label="@($"Point {index + 1} Y")" /></label>
+                                <button type="button" @onclick="() => RemoveRoutePoint(edgeId, pointIndex)" aria-label="@($"Remove route point {index + 1}")">Remove</button>
+                            </div>
+                        }
+                    }
+                </div>
+            }
+        </div>
+    }
 </section>
-<p class="flow-canvas-hint">Drag nodes and compatible ports. Pan on blank canvas; Ctrl + wheel zooms. Use node settings for properties; Delete removes the selected node.</p>
+<div class="flow-connection-status" role="status" data-testid="flow-connection-status"><span data-testid="flow-connection-message">@_connectionMessage</span>
+    @if (_connectingFrom is not null) { <button type="button" @onclick="CancelConnectionAsync" data-testid="flow-connection-cancel">Cancel connection</button> }
+</div>
+<p class="flow-canvas-hint">Drag compatible ports, or activate an output and then an input using keyboard or touch. Select a curve to inspect or remove it. Pan on blank canvas; Ctrl + wheel zooms.</p>
 
 @code {
     [Parameter, EditorRequired] public FlowCanvasAdapter Adapter { get; set; } = default!;
     [Parameter] public bool ReadOnly { get; set; }
+    [Parameter] public int TenantId { get; set; }
+    [Parameter] public IReadOnlyList<FlowConnectorReferenceDto> Connectors { get; set; } = [];
     [Parameter] public Guid? SelectedNodeId { get; set; }
     [Parameter] public EventCallback<Guid> Selected { get; set; }
     [Parameter] public EventCallback<Guid> Settings { get; set; }
@@ -82,15 +132,28 @@
     private string CanvasId => "flow-canvas-" + _id;
     private string PanelId => "flow-panel-" + _id;
     private WorkflowSurfaceBehavior? _surface;
-    private IJSObjectReference? _module;
+    private IJSObjectReference? _module, _connections;
     private DotNetObjectReference<FlowCanvas>? _reference;
     private bool _disposed;
     private bool _overviewOpen;
     private FlowCanvasAdapter? _subscribed;
     private double _scrollX, _scrollY;
+    private Guid? _connectingFrom;
+    private string _connectingPort = FlowLimits.OutputPort;
+    private bool _committingConnection;
+    private readonly CancellationTokenSource _portLifetime = new();
+    public bool IsConnecting => _connectingFrom is not null;
+    private FlowEdgeDto? _selectedConnection;
+    private string? _connectionMessage;
+    private readonly Dictionary<(Guid, string), string> _compatibleTargets = [];
+    private long _compatibilityRevision = -1;
+    private FlowEdgeDto? SelectedConnection => _selectedConnection is { } selected ? Adapter.Capture().Edges.FirstOrDefault(edge => SameConnection(edge, selected)) : null;
+    private static bool SameConnection(FlowEdgeDto left, FlowEdgeDto right) => left.SourceNodeId == right.SourceNodeId && left.SourcePort == right.SourcePort && left.TargetNodeId == right.TargetNodeId && left.TargetPort == right.TargetPort;
+    private bool IsSelected(FlowEdgeDto edge) => _selectedConnection is { } selected && SameConnection(selected, edge);
 
     protected override void OnParametersSet()
     {
+        if (ReadOnly) _connectingFrom = null;
         if (_subscribed == Adapter) return;
         Unsubscribe(); _subscribed = Adapter;
         Adapter.Changed += ScheduleRefresh;
@@ -115,9 +178,151 @@
             _reference = DotNetObjectReference.Create(this);
             _scrollX = InitialViewport.ScrollX; _scrollY = InitialViewport.ScrollY;
             await _module.InvokeVoidAsync("attach", ScrollId, InitialViewport.ScrollX, InitialViewport.ScrollY, _reference);
+            _connections = await JS.InvokeAsync<IJSObjectReference>("import", "./js/flows-connections.js");
+            if (_disposed) { await _connections.DisposeAsync(); _connections = null; return; }
+            await _connections.InvokeVoidAsync("attach", PanelId, _reference);
             if (!_disposed) { IsReady = true; await Ready.InvokeAsync(); }
         }
         catch (JSDisconnectedException) { return; }
+    }
+
+    private string NodeName(Guid id) => Adapter.Metadata.Values.FirstOrDefault(node => node.Id == id)?.Name ?? "Unknown node";
+    private string NodeSummary(FlowNodeDto node) => node.Kind switch
+    {
+        FlowNodeKind.AlertRaised => "A monitoring occurrence starts this path",
+        FlowNodeKind.Condition when node.Condition is { } condition => $"{condition.Field} {condition.Comparison} {condition.NumericValue?.ToString(CultureInfo.InvariantCulture) ?? condition.TextValue}",
+        FlowNodeKind.MapIncident => node.Mapping?.TitleTemplate ?? "Configure the message fields",
+        FlowNodeKind.ActionGroup => $"{node.Actions?.Count ?? 0} independent destinations",
+        FlowNodeKind.InvestigateWithAi => Adapter.SchemaVersion == FlowGraphV2Limits.SchemaVersion ? $"{ConnectorName(node)} · diagnostic investigation" : $"{ConnectorName(node)} · waits for the exact AI turn",
+        FlowNodeKind.CreateIncident => ConnectorName(node),
+        FlowNodeKind.ExecutionEvent when node.ExecutionTrigger is { } trigger => $"{string.Join(", ", trigger.Sources)} · {string.Join(", ", trigger.Outcomes)} · {(trigger.Scope == FlowExecutionScope.AllInTenant ? "all matching executions" : "selected definitions")}",
+        FlowNodeKind.RunLibraryScript or FlowNodeKind.RunJob when node.ExecutionAction is { } action => $"{action.Definition.Name ?? "Selected definition"} · {action.Target?.DisplayName ?? action.Target?.HostName ?? "Select a target"}",
+        FlowNodeKind.RerunOriginalExecution => $"Original pinned execution · at most {node.Rerun?.MaximumAttempts ?? 1} linked rerun(s)",
+        FlowNodeKind.Finish => "Ends the selected outcome path",
+        _ => "Configure this node"
+    };
+    private string ConnectorName(FlowNodeDto node) => Connectors.FirstOrDefault(connector => connector.Id == node.ConnectorId && connector.TenantId == TenantId)?.Name ?? "Select a connection";
+    private string CompatibleTargets(Guid source, string sourcePort)
+    {
+        if (_compatibilityRevision != Adapter.StructureRevision) { _compatibleTargets.Clear(); _compatibilityRevision = Adapter.StructureRevision; }
+        if (_compatibleTargets.TryGetValue((source, sourcePort), out var cached)) return cached;
+        var targets = string.Join(" ", Adapter.CompatibleInputs(source, sourcePort));
+        _compatibleTargets[(source, sourcePort)] = targets;
+        return targets;
+    }
+    private Task SelectConnection(FlowEdgeDto edge)
+    { _selectedConnection = edge; return Task.CompletedTask; }
+    public bool HasSelectedConnection => SelectedConnection is not null;
+    public void ClearConnectionSelection() => _selectedConnection = null;
+    public async Task RemoveSelectedConnectionAsync()
+    {
+        if (ReadOnly || SelectedConnection is not { } edge) return;
+        await Adapter.DisconnectAsync(edge); _selectedConnection = null;
+    }
+    private async Task ActivatePortAsync(Guid node, bool output, string portId)
+    {
+        if (ReadOnly || _disposed) return;
+        if (output)
+        {
+            await CancelConnectionAsync();
+            _connectingFrom = node; _connectingPort = portId; _selectedConnection = null;
+            _connectionMessage = $"Connecting from {NodeName(node)}. Activate a compatible input port, or cancel.";
+            return;
+        }
+        if (_connectingFrom is not { } source) { _connectionMessage = "Activate an output port first."; return; }
+        if (Adapter.ConnectionRejection(source, _connectingPort, node, portId) is { } reason) { _connectionMessage = reason; return; }
+        await CreateConnectionAsync(source, _connectingPort, node, portId);
+    }
+    [JSInvokable] public Task CompletePortConnection(string source, string target) => InvokeAsync(async () =>
+    {
+        if (_disposed || ReadOnly || !Guid.TryParse(source, out var from) || !Guid.TryParse(target, out var to)) return;
+        if (Adapter.SchemaVersion != 1) { _connectionMessage = "Choose the named outcome port."; StateHasChanged(); return; }
+        await CreateConnectionAsync(from, FlowLimits.OutputPort, to, FlowLimits.InputPort);
+        if (!_disposed) StateHasChanged();
+    });
+    private async Task CreateConnectionAsync(Guid source, string sourcePort, Guid target, string targetPort)
+    {
+        if (_disposed || ReadOnly) return;
+        if (_committingConnection) { _connectionMessage = "Wait for the current connection before starting another."; return; }
+        if (Adapter.ConnectionRejection(source, sourcePort, target, targetPort) is { } reason) { _connectionMessage = reason; return; }
+        _committingConnection = true;
+        try
+        {
+            await Adapter.ConnectAsync(source, sourcePort, target, targetPort, _portLifetime.Token);
+            if (!_disposed) { _connectingFrom = null; _connectionMessage = "Connection created."; }
+        }
+        catch (OperationCanceledException) when (_portLifetime.IsCancellationRequested) { return; }
+        catch (InvalidOperationException exception) { if (!_disposed) _connectionMessage = exception.Message; }
+        finally { _committingConnection = false; }
+    }
+    [JSInvokable] public Task CompleteNamedPortConnection(string source, string sourcePort, string target, string targetPort) => InvokeAsync(async () =>
+    {
+        if (_disposed || ReadOnly || !Guid.TryParse(source, out var from) || !Guid.TryParse(target, out var to)) return;
+        await CreateConnectionAsync(from, sourcePort, to, targetPort);
+        if (!_disposed) StateHasChanged();
+    });
+    [JSInvokable] public Task ExplainNamedPortConnection(string source, string sourcePort, string target, string targetPort) => InvokeAsync(() =>
+    {
+        if (_disposed || ReadOnly || !Guid.TryParse(source, out var from) || !Guid.TryParse(target, out var to)) return;
+        _connectionMessage = Adapter.ConnectionRejection(from, sourcePort, to, targetPort); StateHasChanged();
+    });
+    [JSInvokable] public Task ExplainPortConnection(string source, string target) => InvokeAsync(() =>
+    {
+        if (_disposed || ReadOnly || !Guid.TryParse(source, out var from) || !Guid.TryParse(target, out var to)) return;
+        _connectionMessage = Adapter.SchemaVersion == 1 ? Adapter.ConnectionRejection(from, to) : "Choose the named outcome port.";
+        StateHasChanged();
+    });
+    [JSInvokable] public Task CancelPortConnection() => InvokeAsync(CancelConnectionAsync);
+    public async Task CancelConnectionAsync()
+    {
+        _connectingFrom = null; _connectionMessage = null;
+        if (!_disposed && Adapter.Tree.ResetVirtualLinkCommand.CanExecute(null))
+            await FlowCanvasAdapter.CompleteAsync(Adapter.Tree.ResetVirtualLinkCommand, null);
+        if (!_disposed) StateHasChanged();
+    }
+
+    private void SetRoute(Guid edgeId, IReadOnlyList<FlowPositionDto>? points)
+    {
+        if (_disposed || ReadOnly) return;
+        try { Adapter.SetRoute(edgeId, points); _connectionMessage = "Route updated. Save the draft to retain it."; }
+        catch (InvalidOperationException exception) { _connectionMessage = exception.Message; }
+    }
+    private void AddRoutePoint()
+    {
+        if (SelectedConnection is not { Id: { } edgeId } edge || ReadOnly) return;
+        var source = Adapter.Ports.Single(pair => pair.Value == (edge.SourceNodeId, true) && Adapter.PortIds[pair.Key] == edge.SourcePort).Key;
+        var target = Adapter.Ports.Single(pair => pair.Value == (edge.TargetNodeId, false) && Adapter.PortIds[pair.Key] == edge.TargetPort).Key;
+        var scale = Adapter.Tree.Layout.Scale.Horizontal; var points = edge.Route?.Points.ToList() ?? [];
+        if (points.Count >= FlowGraphV2Limits.MaximumRoutePoints) return;
+        points.Add(new((source.Anchor.Horizontal + target.Anchor.Horizontal) * scale / 2,
+            (source.Anchor.Vertical + target.Anchor.Vertical) * scale / 2 + points.Count * 20));
+        SetRoute(edgeId, points);
+    }
+    private Task MoveRoutePointAsync(FlowRoutePointEdit edit)
+    {
+        if (SelectedConnection is not { Id: { } edgeId, Route: { } route } || edgeId != edit.EdgeId || edit.Index < 0 || edit.Index >= route.Points.Count)
+            return Task.CompletedTask;
+        var points = route.Points.ToArray(); points[edit.Index] = edit.Position; SetRoute(edgeId, points);
+        return Task.CompletedTask;
+    }
+    [JSInvokable] public Task CommitRoutePoint(string edgeId, int index, double x, double y) => InvokeAsync(async () =>
+    {
+        if (_disposed || ReadOnly || !Guid.TryParse(edgeId, out var id) || !double.IsFinite(x) || !double.IsFinite(y)) return;
+        var scale = Adapter.Tree.Layout.Scale.Horizontal;
+        await MoveRoutePointAsync(new(id, index, new(Math.Round(x * scale, 6), Math.Round(y * scale, 6))));
+        StateHasChanged();
+    });
+    private Task ChangeRouteCoordinate(Guid edgeId, int index, bool x, ChangeEventArgs args)
+    {
+        if (SelectedConnection?.Route?.Points is not { } points || index < 0 || index >= points.Count ||
+            !double.TryParse(args.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var value) || !double.IsFinite(value))
+        { _connectionMessage = "Route coordinates must be finite numbers."; return Task.CompletedTask; }
+        var point = points[index]; return MoveRoutePointAsync(new(edgeId, index, x ? point with { X = value } : point with { Y = value }));
+    }
+    private void RemoveRoutePoint(Guid edgeId, int index)
+    {
+        if (SelectedConnection?.Route?.Points is not { } points || index < 0 || index >= points.Count) return;
+        SetRoute(edgeId, points.Where((_, pointIndex) => pointIndex != index).ToArray());
     }
 
     [JSInvokable] public Task ViewportChanged(double x, double y)
@@ -171,8 +376,8 @@
         var g = await _module.InvokeAsync<double[]>("geometry", ScrollId);
         var marginX = Math.Min(30, Math.Max(4, g[2] * .08));
         var marginY = Math.Min(30, Math.Max(4, g[3] * .08));
-        var desired = Math.Clamp(Math.Max((nodes.Max(n => n.Position.X) - nodes.Min(n => n.Position.X) + 220) / Math.Max(1, g[2] - marginX * 2),
-            (nodes.Max(n => n.Position.Y) - nodes.Min(n => n.Position.Y) + 140) / Math.Max(1, g[3] - marginY * 2 - (_overviewOpen ? 92 : 0))), .1, 10);
+        var desired = Math.Clamp(Math.Max((nodes.Max(n => n.Position.X + Adapter.DesignSize(n.Kind).Width) - nodes.Min(n => n.Position.X)) / Math.Max(1, g[2] - marginX * 2),
+            (nodes.Max(n => n.Position.Y + Adapter.DesignSize(n.Kind).Height) - nodes.Min(n => n.Position.Y)) / Math.Max(1, g[3] - marginY * 2 - (_overviewOpen ? 92 : 0))), .1, 10);
         var steps = (int)Math.Ceiling(Math.Log(desired / Adapter.Tree.Layout.Scale.Horizontal, 1.1));
         if (steps != 0) await ZoomAsync(-120 * steps);
         // Native zoom also changes the surface offset. Position using the actual rendered node bounds.
@@ -183,10 +388,10 @@
         _overviewOpen = !_overviewOpen;
         if (_overviewOpen) { StateHasChanged(); await FitAsync(); }
     }
-    private void NodeChanged(object? sender, IWorkflowNodeViewModel node) { node.PropertyChanged -= PropertyChanged; node.PropertyChanged += PropertyChanged; ScheduleRefresh(); }
-    private void NodeRemoved(object? sender, IWorkflowNodeViewModel node) { node.PropertyChanged -= PropertyChanged; ScheduleRefresh(); }
-    private void LinkChanged(object? sender, IWorkflowLinkViewModel link) => ScheduleRefresh();
-    private void CollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs args) => ScheduleRefresh();
+    private void NodeChanged(object? sender, IWorkflowNodeViewModel node) { _compatibleTargets.Clear(); node.PropertyChanged -= PropertyChanged; node.PropertyChanged += PropertyChanged; ScheduleRefresh(); }
+    private void NodeRemoved(object? sender, IWorkflowNodeViewModel node) { _compatibleTargets.Clear(); node.PropertyChanged -= PropertyChanged; ScheduleRefresh(); }
+    private void LinkChanged(object? sender, IWorkflowLinkViewModel link) { _connectingFrom = null; _compatibleTargets.Clear(); ScheduleRefresh(); }
+    private void CollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs args) { _compatibleTargets.Clear(); ScheduleRefresh(); }
     private void PropertyChanged(object? sender, PropertyChangedEventArgs args) => ScheduleRefresh();
     private void ScheduleRefresh()
     {
@@ -203,12 +408,31 @@
         adapter.Tree.GetHelper().LinkAdded -= LinkChanged; adapter.Tree.GetHelper().LinkRemoved -= LinkChanged;
         foreach (var node in adapter.Tree.Nodes) node.PropertyChanged -= PropertyChanged;
     }
-    public static string KindLabel(FlowNodeKind kind) => kind switch { FlowNodeKind.AlertRaised => "Alert raised", FlowNodeKind.Condition => "Typed condition", FlowNodeKind.MapIncident => "Map alert fields", FlowNodeKind.CreateIncident => "RatelDesk: Create incident", FlowNodeKind.InvestigateWithAi => "AI: Investigate alert", FlowNodeKind.ActionGroup => "Action group", _ => "Unsupported node" };
+    public static string KindLabel(FlowNodeKind kind) => kind switch { FlowNodeKind.AlertRaised => "Alert raised", FlowNodeKind.Condition => "Typed condition", FlowNodeKind.MapIncident => "Map alert fields", FlowNodeKind.CreateIncident => "RatelDesk: Create incident", FlowNodeKind.InvestigateWithAi => "AI: Investigate alert", FlowNodeKind.ActionGroup => "Action group", _ => FlowNodeCatalogue.Find(kind)?.Name ?? "Unsupported node" };
     private static string NodeStyle(IWorkflowNodeViewModel node) => FormattableString.Invariant($"width:{node.Size.Width}px;height:{node.Size.Height}px;");
-    private static string CardStyle(IWorkflowNodeViewModel node) => FormattableString.Invariant($"transform:scale({node.Size.Width / 220});");
+    private string CardStyle(IWorkflowNodeViewModel node)
+    {
+        var design = Adapter.DesignSize(Adapter.Metadata[node].Kind);
+        return FormattableString.Invariant($"width:{design.Width}px;height:{design.Height}px;transform:scale({node.Size.Width / design.Width});");
+    }
+    private string BodyStyle(FlowNodeKind kind) => FormattableString.Invariant($"height:{Adapter.DesignSize(kind).Height - 52}px;");
+    private string? PortStyle(IWorkflowNodeViewModel node, IWorkflowSlotViewModel slot)
+    {
+        if (Adapter.SchemaVersion != 2) return null;
+        var output = Adapter.Ports[slot].Output;
+        var index = node.Slots.Where(candidate => Adapter.Ports[candidate].Output == output).ToList().IndexOf(slot);
+        return FormattableString.Invariant($"top:{56 + index * 28}px;");
+    }
+    private static string Number(double value) => value.ToString("0.######", CultureInfo.InvariantCulture);
     public async ValueTask DisposeAsync()
     {
-        _disposed = true; IsReady = false; Unsubscribe();
+        _disposed = true; IsReady = false; _portLifetime.Cancel(); Unsubscribe();
+        if (_connections is { } connections)
+        {
+            _connections = null;
+            try { await connections.InvokeVoidAsync("detach", PanelId); await connections.DisposeAsync(); }
+            catch (JSDisconnectedException) { _connectingFrom = null; }
+        }
         if (_module is { } module)
         {
             _module = null;
@@ -220,6 +444,6 @@
                 catch (JSDisconnectedException) { _reference?.Dispose(); _reference = null; }
             }
         }
-        _reference?.Dispose(); _reference = null;
+        _reference?.Dispose(); _reference = null; _portLifetime.Dispose();
     }
 }

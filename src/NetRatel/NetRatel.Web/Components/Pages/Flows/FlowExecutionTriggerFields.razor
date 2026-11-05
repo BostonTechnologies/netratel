@@ -6,6 +6,12 @@
 <section class="flow-trigger-fields" data-testid="flow-execution-trigger-fields">
     <p>Subscribe to committed execution outcomes in this authorized tenant. Library definition edits do not produce execution events.</p>
     <fieldset disabled="@Disabled"><legend>Execution sources</legend>
+        <label>Source preset<select value="@(Settings.Sources.Count == 1 ? Settings.Sources[0].ToString() : "combined")" @onchange="SetPreset" data-testid="flow-trigger-preset">
+            <option value="combined" disabled>Combined sources</option>
+            <option value="@FlowExecutionSourceKind.Job">Job executions</option>
+            <option value="@FlowExecutionSourceKind.Script">Library script executions</option>
+            <option value="@FlowExecutionSourceKind.Request">Requests</option>
+        </select></label>
         @foreach (var source in Enum.GetValues<FlowExecutionSourceKind>())
         {
             <label class="flow-trigger-check"><input type="checkbox" checked="@Settings.Sources.Contains(source)" @onchange="e => ToggleSource(source, e)" data-testid="@($"flow-trigger-source-{source}")" />@SourceName(source)</label>
@@ -115,6 +121,8 @@
         {
             var selected = await Api.GetSelectedExecutionTargetsAsync(tenant, _targetSource, ids, token);
             if (_disposed || generation != _generation || tenant != TenantId || node != Node.Id) return;
+            if (selected.Any(entry => entry is null || entry.Target is null || entry.Target.AgentId is null || entry.Target.AgentId == Guid.Empty))
+                throw new HttpRequestException("The selected endpoint response was invalid.");
             _targets = selected.Where(entry => entry.Target.AgentId is { } id && ids.Contains(id))
                 .GroupBy(entry => entry.Target.AgentId!.Value).ToDictionary(group => group.Key, group => group.First());
         }
@@ -135,6 +143,12 @@
         if (Disabled) return Task.CompletedTask;
         var sources = Settings.Sources.ToHashSet();
         if (args.Value is true) sources.Add(source); else sources.Remove(source);
+        return SetSources(sources);
+    }
+    private Task SetPreset(ChangeEventArgs args) => !Disabled && Enum.TryParse<FlowExecutionSourceKind>(args.Value?.ToString(), out var source) && Enum.IsDefined(source)
+        ? SetSources([source]) : Task.CompletedTask;
+    private Task SetSources(HashSet<FlowExecutionSourceKind> sources)
+    {
         if (sources.Count == 0) { _error = "Retain at least one execution source."; return Task.CompletedTask; }
         if (Settings.DefinitionReferences?.Any(reference => !sources.Contains(reference.SourceKind) && !sources.Contains(FlowExecutionSourceKind.Request)) == true)
         { _error = "Remove incompatible selected definitions before removing this source."; return Task.CompletedTask; }
