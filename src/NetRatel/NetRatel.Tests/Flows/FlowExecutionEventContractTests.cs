@@ -26,6 +26,24 @@ public sealed class FlowExecutionEventContractTests
         => Assert.Null(FlowExecutionOutcomes.FromAuthoritativeStatus(raw));
 
     [Fact]
+    public void Validation_rejects_unbounded_causation_and_unpinned_replay_without_authorizing_payload()
+    {
+        var value = new FlowExecutionEventDto(Guid.NewGuid(), Guid.NewGuid(), 7, FlowExecutionSourceKind.Job,
+            new("42", "Synthetic check", "revision-1"), "9007199254740993", "9007199254740993", new(Guid.NewGuid()),
+            FlowExecutionOutcome.Unknown, "DeliveryUnknown", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)
+        {
+            Causation = new("root", HopCount: FlowExecutionEventLimits.MaximumHopCount + 1),
+            Replay = new(FlowExecutionSourceKind.Job, new("42"), new(null), "https://invalid.example/inputs", "42", "42", true),
+            Results = [new("job-result", "42", new string('z', 64))]
+        };
+        var result = FlowExecutionEventValidator.Validate(value);
+        Assert.False(result.Valid);
+        Assert.Contains("event_causation_budget_exceeded", result.Issues);
+        Assert.Contains("event_replay_material_unpinned", result.Issues);
+        Assert.Contains("event_reference_hash_invalid", result.Issues);
+    }
+
+    [Fact]
     public void Envelope_round_trip_preserves_large_ids_native_status_and_missing_versus_empty_data()
     {
         const string id = "18446744073709551615";
