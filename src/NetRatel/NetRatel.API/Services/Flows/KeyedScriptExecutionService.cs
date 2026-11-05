@@ -58,6 +58,13 @@ public sealed class KeyedScriptExecutionService(OrchestratorDbContext db, IExecu
             activity.AgentId != submitted.Request.AgentId || activity.TaskType != TaskKinds.ExecLibraryScript ||
             !string.Equals(activity.ScriptContentHash, submitted.Request.Snapshot.ContentHash, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException("The existing execution differs from its protected admission.");
+        if (activity is not null)
+        {
+            var classification = await db.JobTaskActivities.AsNoTracking().Where(row => row.RequestId == binding.ExecutionId)
+                .Select(row => row.OutputProtectionJson).SingleAsync(cancellationToken);
+            if (classification != JsonSerializer.Serialize(submitted.OutputPolicy))
+                throw new InvalidOperationException("The canonical output classification differs from its protected admission.");
+        }
         if (binding.DispatchStartedAtUtc is not null)
             return new(binding, activity, DispatchUncertain: binding.DispatchAcceptedAtUtc is null && binding.AuthorityDeniedAtUtc is null,
                 AuthorityDenied: binding.AuthorityDeniedAtUtc is not null);
