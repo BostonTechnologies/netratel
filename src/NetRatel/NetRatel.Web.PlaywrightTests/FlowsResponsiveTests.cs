@@ -162,7 +162,7 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
     public async Task Actual_Native_Drag_And_Pointer_Connections_Save_Reload_Stable_Properties_And_Viewport()
     {
         var fixture = _fixture!;
-        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1600, Height = 1000 } });
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1600, Height = 1000 }, HasTouch = true });
         var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000);
         // Test the cancellable full-window fallback explicitly; native fullscreen Escape is browser-owned.
         await page.AddInitScriptAsync("""
@@ -177,6 +177,12 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
                 return remove.call(this,type,listener,options);
             };
             window.flowMoveCaptureCount=()=>captures.size;
+            window.flowTouchPortEvents=[];
+            window.addEventListener('pointerdown',event=>{
+                const port=event.target.closest?.('.flow-port');
+                if(event.pointerType==='touch'&&port)window.flowTouchPortEvents.push({
+                    pointerType:event.pointerType,nodeId:port.dataset.portNode,direction:port.dataset.portDirection});
+            },true);
             """);
         var frames = new TransientMoveFrames(page);
         var errors = new List<string>(); page.PageError += (_, error) => errors.Add(error);
@@ -242,6 +248,41 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(0);
         Assert.Equal(0, await page.Locator(".flow-port.compatible,.flow-port.incompatible,.flow-port.pending").CountAsync());
         await page.Mouse.UpAsync();
+
+        await GestureAsync(page, page.Locator($"[data-port-node='{trigger}'][data-port-direction=output] svg"),
+            page.Locator($"[data-port-node='{mapping}'][data-port-direction=output] svg"), "flows-invalid-output-drop.png");
+        await Assertions.Expect(page.GetByTestId("flow-connection-message")).ToContainTextAsync("Choose an output and an input port.");
+        await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(0);
+        Assert.Equal(0, await page.Locator(".flow-port.compatible,.flow-port.incompatible,.flow-port.pending").CountAsync());
+        var invalidDrop = new { message = await page.GetByTestId("flow-connection-message").InnerTextAsync(),
+            edges = await page.GetByTestId("flow-link").CountAsync(), ghostHidden = await page.GetByTestId("flow-virtual-link").EvaluateAsync<bool>("path => path.hasAttribute('hidden')") };
+        Assert.True(invalidDrop.ghostHidden);
+
+        var touchSource = page.Locator($"[data-port-node='{trigger}'][data-port-direction=output] svg");
+        var touchTarget = page.Locator($"[data-port-node='{mapping}'][data-port-direction=input] svg");
+        var touchSourceBounds = (await touchSource.BoundingBoxAsync())!;
+        await page.Touchscreen.TapAsync(touchSourceBounds.X + touchSourceBounds.Width / 2, touchSourceBounds.Y + touchSourceBounds.Height / 2);
+        await Assertions.Expect(page.GetByTestId("flow-canvas")).ToHaveAttributeAsync("data-connection-start", trigger!);
+        var touchTargetBounds = (await touchTarget.BoundingBoxAsync())!;
+        await page.Touchscreen.TapAsync(touchTargetBounds.X + touchTargetBounds.Width / 2, touchTargetBounds.Y + touchTargetBounds.Height / 2);
+        await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(1);
+        await Assertions.Expect(page.GetByTestId("flow-virtual-link")).ToHaveAttributeAsync("hidden", "hidden");
+        Assert.Equal(0, await page.Locator(".flow-port.compatible,.flow-port.incompatible,.flow-port.pending").CountAsync());
+        var touchEvidence = await page.EvaluateAsync<JsonElement>("() => ({maxTouchPoints:navigator.maxTouchPoints,events:window.flowTouchPortEvents})");
+        Assert.True(touchEvidence.GetProperty("maxTouchPoints").GetInt32() > 0);
+        var touchEvents = touchEvidence.GetProperty("events").EnumerateArray().ToArray();
+        Assert.Equal(2, touchEvents.Length);
+        Assert.All(touchEvents, value => Assert.Equal("touch", value.GetProperty("pointerType").GetString()));
+        Assert.Equal(trigger, touchEvents[0].GetProperty("nodeId").GetString());
+        Assert.Equal("output", touchEvents[0].GetProperty("direction").GetString());
+        Assert.Equal(mapping, touchEvents[1].GetProperty("nodeId").GetString());
+        Assert.Equal("input", touchEvents[1].GetProperty("direction").GetString());
+        await File.WriteAllTextAsync(Path.Combine(transientEvidence, "flows-native-invalid-and-touch.json"), JsonSerializer.Serialize(new { invalidDrop, touchEvidence }));
+        await page.ScreenshotAsync(new() { Path = Path.Combine(transientEvidence, "flows-native-touch-connected.png"), Animations = ScreenshotAnimations.Disabled });
+        await page.GetByTestId("flow-link-hit").FocusAsync();
+        await page.GetByTestId("flow-edge-remove").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(0);
+
         await GestureAsync(page, page.Locator($"[data-port-node='{trigger}'][data-port-direction=output] svg"), page.Locator($"[data-port-node='{mapping}'][data-port-direction=input] svg"));
         await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(1);
         await GestureAsync(page, page.Locator($"[data-port-node='{mapping}'][data-port-direction=output] svg"), page.Locator($"[data-port-node='{action}'][data-port-direction=input] svg"));
@@ -590,7 +631,7 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
             return count;
         }
     }
-    private static async Task GestureAsync(IPage page, ILocator from, ILocator to)
+    private static async Task GestureAsync(IPage page, ILocator from, ILocator to, string screenshotName = "flows-connection-before-drop.png")
     {
         var a = (await from.BoundingBoxAsync())!; var b = (await to.BoundingBoxAsync())!;
         await page.Mouse.MoveAsync(a.X + a.Width / 2, a.Y + a.Height / 2); await page.Mouse.DownAsync();
@@ -598,7 +639,7 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await page.WaitForFunctionAsync("() => {const p=document.querySelector('[data-testid=flow-virtual-link]');return p&&!p.hasAttribute('hidden')&&p.getAttribute('d')?.includes(' C ')}");
         await Assertions.Expect(page.GetByTestId("flow-virtual-link")).ToHaveAttributeAsync("stroke-dasharray", "7 5");
         var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
-        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-connection-before-drop.png"), Animations = ScreenshotAnimations.Disabled });
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, screenshotName), Animations = ScreenshotAnimations.Disabled });
         await page.Mouse.UpAsync();
         await Assertions.Expect(page.GetByTestId("flow-virtual-link")).ToHaveAttributeAsync("hidden", "hidden");
     }
