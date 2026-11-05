@@ -89,6 +89,12 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
             var submission = JsonSerializer.Deserialize<ScriptSubmission>(binding.PayloadJson, Json)
                 ?? throw new InvalidOperationException("The protected script submission is unavailable.");
             await authority.RequireScriptAsync(expected, submission.Request.Snapshot.Script.Id, submission.Request.AgentId, ct);
+            if (binding.DispatchStartedAtUtc is null)
+            {
+                var resumed = await scripts.ResumeAsync(expected, binding.ExecutionId, request.Lease, ct);
+                return await ScriptResultAsync(request, resumed.Binding, resumed.Activity, resumed.DispatchUncertain,
+                    resumed.AuthorityDenied, ct);
+            }
             return await ScriptResultAsync(request, binding, await runs.GetActivityByRequestIdAsync(binding.ExecutionId, ct),
                 binding.DispatchStartedAtUtc is not null && binding.DispatchAcceptedAtUtc is null,
                 binding.AuthorityDeniedAtUtc is not null, ct);
