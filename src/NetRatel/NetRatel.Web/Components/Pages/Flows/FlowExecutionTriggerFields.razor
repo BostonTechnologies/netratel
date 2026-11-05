@@ -32,7 +32,7 @@
         {
             @foreach (var reference in Settings.DefinitionReferences ?? [])
             {
-                <div class="flow-trigger-selected" data-testid="flow-trigger-definition"><strong>@(reference.Name ?? "Definition name unavailable")</strong><small>@SourceName(reference.SourceKind)</small>
+                <div class="flow-trigger-selected" data-testid="flow-trigger-definition"><strong>@(reference.Name ?? "Definition name unavailable")</strong><small>@DefinitionFamilyName(reference.SourceKind)</small>
                     <details><summary>Definition ID</summary>@reference.Id</details>
                     <button type="button" @onclick="() => RemoveDefinition(reference)" disabled="@Disabled" aria-label="@($"Remove {reference.Name ?? "selected definition"}")">Remove</button>
                 </div>
@@ -47,7 +47,7 @@
             @if (!Disabled && Settings.DefinitionIds is not { Count: > 0 })
             {
                 <label>Definition family<select @bind="_definitionSource" data-testid="flow-trigger-definition-family">
-                    @foreach (var family in DefinitionSources) { <option value="@family">@SourceName(family)</option> }
+                    @foreach (var family in DefinitionSources) { <option value="@family">@DefinitionFamilyName(family)</option> }
                 </select></label>
                 <FlowExecutionDefinitionPicker @key="@(Node.Id.ToString() + ":" + _definitionSource)" TenantId="TenantId" NodeId="Node.Id"
                     SourceKind="_definitionSource" Disabled="Disabled" Chosen="AddDefinition" />
@@ -98,7 +98,7 @@
     private IEnumerable<FlowExecutionSourceKind> DefinitionSources => new[] { FlowExecutionSourceKind.Job, FlowExecutionSourceKind.Script }
         .Where(source => Settings.Sources.Contains(source) || Settings.Sources.Contains(FlowExecutionSourceKind.Request));
     private FlowExecutionSourceKind _definitionSource = FlowExecutionSourceKind.Job, _targetSource = FlowExecutionSourceKind.Job;
-    private string _requestKind = "", _targetContext = "";
+    private string _requestKind = "", _targetContext = "", _sourceContext = "";
     private string? _error, _targetError;
     private Guid _node;
     private Dictionary<Guid, FlowExecutionTargetSelectionDto> _targets = [];
@@ -106,6 +106,13 @@
     protected override async Task OnParametersSetAsync()
     {
         if (_node != Node.Id) { _node = Node.Id; _requestKind = ""; _error = null; }
+        var sourceContext = $"{TenantId}:{Node.Id}:{string.Join(",", Settings.Sources.Order())}";
+        if (_sourceContext != sourceContext)
+        {
+            _sourceContext = sourceContext;
+            _targetSource = Settings.Sources.Contains(FlowExecutionSourceKind.Script) && !Settings.Sources.Contains(FlowExecutionSourceKind.Job)
+                ? FlowExecutionSourceKind.Script : FlowExecutionSourceKind.Job;
+        }
         if (!DefinitionSources.Contains(_definitionSource)) _definitionSource = DefinitionSources.FirstOrDefault(FlowExecutionSourceKind.Job);
         await RefreshTargetNamesAsync();
     }
@@ -200,6 +207,8 @@
         _requestKind = ""; return Emit(Settings with { RequestKinds = [.. kinds, kind] });
     }
     private Task RemoveRequestKind(string kind) => Emit(Settings with { RequestKinds = Settings.RequestKinds?.Where(item => item != kind).ToArray() ?? [] });
+    private static string DefinitionFamilyName(FlowExecutionSourceKind source) => source switch
+    { FlowExecutionSourceKind.Job => "Job definition", FlowExecutionSourceKind.Script => "Library script definition", _ => "Request definition" };
     private static string SourceName(FlowExecutionSourceKind source) => source switch { FlowExecutionSourceKind.Job => "Job executions", FlowExecutionSourceKind.Script => "Script executions", FlowExecutionSourceKind.Request => "Requests", _ => "Unsupported source" };
     private static string OutcomeName(FlowExecutionOutcome outcome) => outcome switch
     {

@@ -114,6 +114,27 @@ public sealed class FlowAuthoringFieldsTests : AsyncBunitContext
     }
 
     [Fact]
+    public async Task Script_Source_Uses_Its_Own_Native_Target_Catalogue_And_Retained_Names()
+    {
+        var agent = Guid.NewGuid();
+        var node = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.ExecutionEvent, "Synthetic script events", new(0, 0))
+        { ExecutionTrigger = new([FlowExecutionSourceKind.Script], [FlowExecutionOutcome.Failed], FlowExecutionScope.AllInTenant) { AgentIds = [agent] } };
+        _api.TargetSearch = (_, source, _, _, _, _) =>
+        {
+            Assert.Equal(FlowExecutionSourceKind.Script, source); return Task.FromResult(new FlowExecutionTargetsPageDto([]));
+        };
+        _api.TargetSelections = (_, source, ids, _) =>
+        {
+            Assert.Equal(FlowExecutionSourceKind.Script, source);
+            return Task.FromResult<IReadOnlyList<FlowExecutionTargetSelectionDto>>([new(new(ids[0], "Retained synthetic script endpoint"), false)]);
+        };
+        var cut = Render<FlowExecutionTriggerFields>(p => p.Add(component => component.TenantId, 17).Add(component => component.Node, node));
+        await cut.WaitForAssertionAsync(() => Assert.Contains("Retained synthetic script endpoint", cut.Markup, StringComparison.Ordinal));
+        Assert.Contains("Unavailable for new actions", cut.Markup, StringComparison.Ordinal);
+        Assert.Equal(1, _api.TargetSearchCalls); Assert.Equal(1, _api.TargetSelectionCalls); Assert.Equal(0, _api.SaveCalls);
+    }
+
+    [Fact]
     public async Task Job_Action_Shows_Its_Bound_Target_And_Does_Not_Offer_Event_Target_Substitution()
     {
         var target = new FlowExecutionTargetDto(Guid.NewGuid(), "Synthetic bound job endpoint");
@@ -124,6 +145,9 @@ public sealed class FlowAuthoringFieldsTests : AsyncBunitContext
         Assert.Contains("Synthetic bound job endpoint", cut.Find("[data-testid=flow-job-bound-target]").TextContent, StringComparison.Ordinal);
         Assert.Empty(cut.FindAll("[data-testid=flow-script-target-mode]")); Assert.Equal(0, _api.TargetSearchCalls);
         Assert.Equal(0, _api.DefinitionSearchCalls); Assert.Equal(0, _api.SaveCalls);
+        cut.Render(p => p.Add(component => component.Node, node with { ExecutionAction = node.ExecutionAction! with { Target = null } }));
+        Assert.Contains("Bound endpoint not configured", cut.Find("[data-testid=flow-job-bound-target]").TextContent, StringComparison.Ordinal);
+        Assert.DoesNotContain("Source event endpoint", cut.Find("[data-testid=flow-job-bound-target]").TextContent, StringComparison.Ordinal);
     }
 
     [Fact]
