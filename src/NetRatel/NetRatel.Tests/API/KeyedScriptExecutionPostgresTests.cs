@@ -173,7 +173,7 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
 
     private sealed class AdmissionClock : TimeProvider
     {
-        public DateTimeOffset UtcNow { get; set; } = DateTimeOffset.UtcNow;
+        public DateTimeOffset UtcNow { get; set; } = new(DateTimeOffset.UtcNow.UtcTicks / 10 * 10, TimeSpan.Zero);
         public override DateTimeOffset GetUtcNow() => UtcNow;
     }
     private sealed class AfterActivitySave(Action after) : SaveChangesInterceptor
