@@ -605,6 +605,16 @@ public sealed class FlowEditorTests : AsyncBunitContext
 
 internal sealed class FakeFlowApi : IFlowApiService
 {
+    public int CapabilityReads;
+    public Func<int, CancellationToken, Task<FlowSchemaCapabilitiesDto>>? Capabilities;
+    public int DefinitionSearchCalls, DefinitionDetailsCalls, TargetSearchCalls, TargetSelectionCalls, TemplateReads, TemplateCreates;
+    public Func<int, FlowExecutionSourceKind, string?, string?, int, CancellationToken, Task<FlowExecutionDefinitionsPageDto>>? DefinitionSearch;
+    public Func<int, FlowExecutionSourceKind, string, CancellationToken, Task<FlowExecutionActionSettingsDto>>? DefinitionDetails;
+    public Func<int, FlowExecutionSourceKind, string?, string?, int, CancellationToken, Task<FlowExecutionTargetsPageDto>>? TargetSearch;
+    public Func<int, FlowExecutionSourceKind, IReadOnlyList<Guid>, CancellationToken, Task<IReadOnlyList<FlowExecutionTargetSelectionDto>>>? TargetSelections;
+    public Func<int, CancellationToken, Task<IReadOnlyList<FlowTemplateDescriptorDto>>>? Templates;
+    public Func<int, FlowCreateFromTemplateRequest, CancellationToken, Task<FlowDefinitionDto>>? TemplateCreate;
+
     public int SaveCalls, PublishCalls, ValidateCalls, DryRunCalls;
     public Func<FlowExecutionDryRunRequest, Task<FlowDryRunResultDto>>? ExecutionPreview;
     public Func<FlowDryRunRequest, Task<FlowDryRunResultDto>>? Preview;
@@ -616,6 +626,20 @@ internal sealed class FakeFlowApi : IFlowApiService
     public Func<int, Guid, CancellationToken, Task<IReadOnlyList<FlowVersionDto>>>? VersionsLookup;
     public Func<int, Guid, CancellationToken, Task<IReadOnlyList<FlowRunSummaryDto>>>? RunsLookup;
     public Func<int, Guid, Guid, CancellationToken, Task<FlowRunDetailDto>>? FlowRunLookup;
+    public Task<FlowSchemaCapabilitiesDto> GetSchemaCapabilitiesAsync(int tenantId, CancellationToken token = default)
+    { CapabilityReads++; return Capabilities?.Invoke(tenantId, token) ?? Task.FromResult(FlowSchemaCapabilities.Current); }
+    public Task<FlowExecutionDefinitionsPageDto> SearchExecutionDefinitionsAsync(int tenantId, FlowExecutionSourceKind sourceKind, string? search = null, string? afterId = null, int limit = 50, CancellationToken token = default)
+    { DefinitionSearchCalls++; return DefinitionSearch?.Invoke(tenantId, sourceKind, search, afterId, limit, token) ?? Task.FromResult(new FlowExecutionDefinitionsPageDto([])); }
+    public Task<FlowExecutionActionSettingsDto> GetExecutionDefinitionAsync(int tenantId, FlowExecutionSourceKind sourceKind, string definitionId, CancellationToken token = default)
+    { DefinitionDetailsCalls++; return DefinitionDetails?.Invoke(tenantId, sourceKind, definitionId, token) ?? throw new FlowApiException(HttpStatusCode.NotFound, "execution-definition-unavailable"); }
+    public Task<FlowExecutionTargetsPageDto> SearchExecutionTargetsAsync(int tenantId, FlowExecutionSourceKind sourceKind, string? search = null, string? afterId = null, int limit = 50, CancellationToken token = default)
+    { TargetSearchCalls++; return TargetSearch?.Invoke(tenantId, sourceKind, search, afterId, limit, token) ?? Task.FromResult(new FlowExecutionTargetsPageDto([])); }
+    public Task<IReadOnlyList<FlowExecutionTargetSelectionDto>> GetSelectedExecutionTargetsAsync(int tenantId, FlowExecutionSourceKind sourceKind, IReadOnlyList<Guid> ids, CancellationToken token = default)
+    { TargetSelectionCalls++; return TargetSelections?.Invoke(tenantId, sourceKind, ids, token) ?? Task.FromResult<IReadOnlyList<FlowExecutionTargetSelectionDto>>(ids.Select(id => new FlowExecutionTargetSelectionDto(new(id), false)).ToArray()); }
+    public Task<IReadOnlyList<FlowTemplateDescriptorDto>> GetTemplatesAsync(int tenantId, CancellationToken token = default)
+    { TemplateReads++; return Templates?.Invoke(tenantId, token) ?? Task.FromResult<IReadOnlyList<FlowTemplateDescriptorDto>>([]); }
+    public Task<FlowDefinitionDto> CreateFromTemplateAsync(int tenantId, FlowCreateFromTemplateRequest request, CancellationToken token = default)
+    { TemplateCreates++; return TemplateCreate?.Invoke(tenantId, request, token) ?? throw new NotSupportedException(); }
     public Task<IReadOnlyList<FlowTenantAccessDto>> GetTenantsAsync(CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowTenantAccessDto>>([new(17, "Tenant 17", true, true, true)]);
     public Task<IReadOnlyList<FlowDefinitionDto>> ListAsync(int tenantId, CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowDefinitionDto>>([FlowEditorTests.Definition()]);
     public Task<FlowDefinitionDto> GetAsync(int tenantId, Guid flowId, CancellationToken token = default) => Task.FromResult(ReloadDefinition ?? FlowEditorTests.Definition());

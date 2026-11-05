@@ -1,0 +1,103 @@
+@using System.Text.Json
+@using NetRatel.Shared.Contracts.Flows
+@using NetRatel.Web.Services.Flows
+
+<section class="flow-mapping-fields" data-testid="flow-mapping-fields">
+    <fieldset disabled="@Disabled">
+        <label>Message / incident title<input value="@Mapping.TitleTemplate" maxlength="@FlowLimits.MaximumTitleLength" @onchange="e => SetMapping(Mapping with { TitleTemplate = e.Value?.ToString() ?? string.Empty })" data-testid="flow-mapping-title" /></label>
+        <label>Description<textarea maxlength="@FlowLimits.MaximumTemplateLength" @onchange="e => SetMapping(Mapping with { DescriptionTemplate = e.Value?.ToString() ?? string.Empty })" data-testid="flow-mapping-description">@Mapping.DescriptionTemplate</textarea></label>
+        <label>Priority<select value="@(Mapping.Priority?.ToString() ?? "")" @onchange="SetPriority"><option value="">Connector default</option><option value="0">Low</option><option value="1">Normal</option><option value="2">High</option><option value="3">Urgent</option></select></label>
+        <label>Insert field<select @bind="_token" data-testid="flow-mapping-token">
+            @foreach (var token in Tokens) { <option value="@token.Value">@token.Name</option> }
+        </select></label>
+        <div class="flow-mapping-insert"><button type="button" @onclick="() => InsertToken(true)" disabled="@(Disabled || string.IsNullOrEmpty(_token))">Add to title</button>
+            <button type="button" @onclick="() => InsertToken(false)" disabled="@(Disabled || string.IsNullOrEmpty(_token))">Add to description</button></div>
+    </fieldset>
+    <p class="flow-mapping-help">Original failure facts remain distinct from AI findings. Final incident enrichment includes later investigation and actual recovery outcomes even when this mapping runs earlier.</p>
+    <h4>Typed values from the event or earlier outputs</h4>
+    @foreach (var pair in Node.Inputs ?? new Dictionary<string, FlowInputBindingDto>())
+    {
+        var key = pair.Key;
+        <FlowInputBindingField @key="@(Node.Id.ToString() + ":" + key)" NodeId="Node.Id" Label="@(key + " · {input." + key + "}")" DataType="pair.Value.DataType"
+            Value="pair.Value" ValueChanged="binding => SetInput(key, binding)" EventFields="_fields" Producers="_producers" Disabled="Disabled" AllowUnmapped="false" />
+        <button type="button" @onclick="() => RemoveInput(key)" disabled="@Disabled">Remove @key</button>
+    }
+    @if (!Disabled)
+    {
+        <fieldset>
+            <label>Value name<input @bind="_alias" maxlength="64" placeholder="failureSummary" data-testid="flow-mapping-alias" /></label>
+            <label>Value type<select @bind="_aliasType" data-testid="flow-mapping-alias-type">
+                @foreach (var type in new[] { FlowDataType.Text, FlowDataType.Number, FlowDataType.Boolean, FlowDataType.Json }) { <option value="@type">@type</option> }
+            </select></label>
+            <button type="button" @onclick="AddInput" disabled="@(Disabled || string.IsNullOrWhiteSpace(_alias))" data-testid="flow-mapping-add-binding">Add typed value</button>
+        </fieldset>
+    }
+    @if (_error is not null) { <p role="alert">@_error</p> }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public FlowNodeDto Node { get; set; } = default!;
+    [Parameter, EditorRequired] public FlowGraphDto Graph { get; set; } = default!;
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback<FlowNodeDto> Changed { get; set; }
+    private bool ExecutionSource => Graph.Nodes.Any(node => node.Kind == FlowNodeKind.ExecutionEvent);
+    private FlowIncidentMappingDto Mapping => Node.Mapping ?? (ExecutionSource ? new("{definitionName}: {outcome}", "{targetName} — {rawStatus}: {reason}") : new("{ruleName}: {resource}", "{clientName} — {metric}: {value}"));
+    private static readonly (string Value, string Name)[] ExecutionTokens =
+    [("sourceKind", "Execution source"), ("definitionName", "Definition name"), ("definitionRevision", "Definition revision"), ("executionId", "Execution ID"),
+     ("attemptId", "Attempt ID"), ("targetName", "Target endpoint"), ("outcome", "Normalized outcome"), ("rawStatus", "Original status"), ("reason", "Original reason"),
+     ("exitCode", "Exit code"), ("startedAt", "Started at"), ("completedAt", "Completed at"), ("executionLink", "Execution link")];
+    private static readonly (string Value, string Name)[] AlertTokens =
+    [("ruleName", "Rule name"), ("clientName", "Client name"), ("resource", "Resource"), ("metric", "Metric"), ("severity", "Severity"),
+     ("value", "Measured value"), ("serviceState", "Service state"), ("occurredAt", "Observed at"), ("offlineSummary", "Offline summary"), ("offlineClients", "Offline clients")];
+    private static readonly (string Value, string Name)[] AiTokens =
+    [("aiSummary", "AI findings summary"), ("aiEvidence", "AI evidence"), ("aiRecommendations", "AI recommendations"), ("aiStatus", "AI outcome")];
+    private IEnumerable<(string Value, string Name)> Tokens => (ExecutionSource ? ExecutionTokens : AlertTokens).Concat(AiTokens)
+        .Concat((Node.Inputs?.Keys ?? []).Select(key => ("input." + key, "Typed value: " + key)));
+    private string _alias = "", _token = ""; private string? _error; private FlowDataType _aliasType = FlowDataType.Text; private Guid _node;
+    private IReadOnlyList<FlowBindingFieldDto> _fields = []; private IReadOnlyList<FlowNodeDto> _producers = [];
+    protected override void OnParametersSet()
+    {
+        if (_node != Node.Id) { _node = Node.Id; _alias = ""; _error = null; }
+        _fields = FlowAuthoringContext.EventFields(Graph); _producers = FlowAuthoringContext.AvailableProducers(Graph, Node.Id);
+        if (!Tokens.Any(token => token.Value == _token)) _token = Tokens.First().Value;
+    }
+    private Task SetMapping(FlowIncidentMappingDto mapping) => Disabled ? Task.CompletedTask : Changed.InvokeAsync(Node with { Mapping = mapping });
+    private Task SetPriority(ChangeEventArgs args) => SetMapping(Mapping with { Priority = int.TryParse(args.Value?.ToString(), out var priority) ? priority : null });
+    private Task InsertToken(bool title)
+    {
+        if (Disabled || !Tokens.Any(token => token.Value == _token)) return Task.CompletedTask;
+        var value = "{" + _token + "}";
+        return SetMapping(title ? Mapping with { TitleTemplate = Mapping.TitleTemplate + value } : Mapping with { DescriptionTemplate = Mapping.DescriptionTemplate + value });
+    }
+    private Task SetInput(string key, FlowInputBindingDto? binding)
+    {
+        if (Disabled) return Task.CompletedTask;
+        if (binding is null) { _error = "Choose a replacement value or remove this named mapping explicitly."; return Task.CompletedTask; }
+        var inputs = Node.Inputs?.ToDictionary(pair => pair.Key, pair => pair.Value) ?? [];
+        inputs[key] = binding; _error = null; return Changed.InvokeAsync(Node with { Inputs = inputs });
+    }
+    private Task RemoveInput(string key)
+    {
+        if (Disabled) return Task.CompletedTask;
+        var token = "{input." + key + "}";
+        if (Mapping.TitleTemplate.Contains(token, StringComparison.Ordinal) || Mapping.DescriptionTemplate.Contains(token, StringComparison.Ordinal))
+        { _error = "Remove this value's template tokens before removing its mapping."; return Task.CompletedTask; }
+        var inputs = Node.Inputs?.Where(pair => pair.Key != key).ToDictionary(pair => pair.Key, pair => pair.Value);
+        return Changed.InvokeAsync(Node with { Inputs = inputs is { Count: > 0 } ? inputs : null });
+    }
+    private Task AddInput()
+    {
+        var alias = _alias.Trim();
+        if (Disabled) return Task.CompletedTask;
+        if (alias.Length is < 1 or > 64 || !alias.All(character => char.IsAsciiLetterOrDigit(character) || character == '_'))
+        { _error = "Use a unique value name containing letters, digits or underscore."; return Task.CompletedTask; }
+        var inputs = Node.Inputs?.ToDictionary(pair => pair.Key, pair => pair.Value) ?? [];
+        if (inputs.ContainsKey(alias)) { _error = "This value name is already mapped."; return Task.CompletedTask; }
+        if (inputs.Count >= FlowGraphV2Limits.MaximumBindings) { _error = "The typed value limit was reached."; return Task.CompletedTask; }
+        var literal = _aliasType switch
+        { FlowDataType.Number => JsonSerializer.SerializeToElement(0), FlowDataType.Boolean => JsonSerializer.SerializeToElement(false),
+          FlowDataType.Json => JsonSerializer.SerializeToElement<object?>(null), _ => JsonSerializer.SerializeToElement("") };
+        inputs.Add(alias, new(FlowInputSource.Literal, _aliasType, Literal: literal)); _alias = ""; _error = null;
+        return Changed.InvokeAsync(Node with { Inputs = inputs });
+    }
+}

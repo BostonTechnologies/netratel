@@ -1,0 +1,10 @@
+.flow-trigger-fields { display: grid; gap: .65rem; min-width: 0; }
+.flow-trigger-fields fieldset { display: grid; gap: .5rem; padding: .65rem; border: 1px solid var(--mud-palette-divider); min-width: 0; }
+.flow-trigger-check { display: flex; align-items: flex-start; gap: .45rem; font-size: .85rem; }
+.flow-trigger-selected { display: flex; align-items: baseline; flex-wrap: wrap; gap: .4rem; padding: .4rem; background: var(--mud-palette-background-grey); border-radius: .3rem; overflow-wrap: anywhere; }
+.flow-trigger-selected strong { flex: 1; }
+.flow-trigger-selected small, .flow-trigger-help { color: var(--mud-palette-text-secondary); font-size: .8rem; }
+.flow-trigger-fields input:not([type=checkbox]), .flow-trigger-fields select { width: 100%; box-sizing: border-box; padding: .4rem; color: inherit; background: var(--mud-palette-surface); border: 1px solid var(--mud-palette-divider); border-radius: .25rem; }
+.flow-trigger-fields input[type=checkbox] { width: auto; margin-top: .15rem; }
+.flow-trigger-fields button { padding: .35rem .5rem; color: var(--mud-palette-primary); }
+.flow-trigger-fields button:focus-visible { outline: 2px solid var(--mud-palette-primary); outline-offset: 2px; }
