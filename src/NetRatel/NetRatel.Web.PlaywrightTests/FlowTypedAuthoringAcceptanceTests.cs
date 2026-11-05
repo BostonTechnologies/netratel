@@ -87,7 +87,7 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
                 var held = await MeasurementsAsync(page);
                 await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-pan-held.json"), held.GetRawText());
                 panPhase = "displacement while held";
-                await page.WaitForFunctionAsync("previous => {const r=document.querySelector('.flow-node').getBoundingClientRect();return Math.abs(r.x-previous.x)>1||Math.abs(r.y-previous.y)>1}", new { x = before.X, y = before.Y });
+                await page.WaitForFunctionAsync("previous => {const r=document.querySelector('.flow-node').getBoundingClientRect();return Math.abs(r.x-previous.x)>1||Math.abs(r.y-previous.y)>1}", new { x = (double)before.X, y = (double)before.Y });
             }
             finally
             {
@@ -96,7 +96,7 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
                 await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-pan-released.json"), released.GetRawText());
             }
             panPhase = "displacement after release";
-            await page.WaitForFunctionAsync("previous => {const r=document.querySelector('.flow-node').getBoundingClientRect();return Math.abs(r.x-previous.x)>1||Math.abs(r.y-previous.y)>1}", new { x = before.X, y = before.Y });
+            await page.WaitForFunctionAsync("previous => {const r=document.querySelector('.flow-node').getBoundingClientRect();return Math.abs(r.x-previous.x)>1||Math.abs(r.y-previous.y)>1}", new { x = (double)before.X, y = (double)before.Y });
         }
         catch (Exception error)
         {
@@ -113,7 +113,7 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         }
         var panned = await MeasurementsAsync(page);
         await page.GetByTestId("flow-zoom-in").ClickAsync();
-        await page.WaitForFunctionAsync("previous => document.querySelector('.flow-node').getBoundingClientRect().width>previous+1", before.Width);
+        await page.WaitForFunctionAsync("previous => document.querySelector('.flow-node').getBoundingClientRect().width>previous+1", (double)before.Width);
         var panZoomMilliseconds = clock.Elapsed.TotalMilliseconds;
         var moved = await MeasurementsAsync(page);
 
