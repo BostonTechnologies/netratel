@@ -40,6 +40,9 @@ public sealed class FlowTypedEditorTests : AsyncBunitContext
         cut.FindComponent<FlowCanvas>().Instance.Adapter.Capture().Nodes.Select(node => node.Id).Should().Equal(ids);
         definition.Draft.SchemaVersion.Should().Be(1);
         cut.FindAll("[data-testid=flow-palette-RerunOriginalExecution]").Should().ContainSingle();
+        cut.Find("[data-testid=flow-palette-InvestigateWithAi]").TextContent.Should().Contain("Investigate failure");
+        cut.FindAll(".flow-palette-label").Select(item => item.GetAttribute("data-testid"))
+            .Should().Equal(FlowNodeCatalogue.Nodes.Select(node => $"flow-palette-{node.Kind}"));
         cut.Find("[data-testid=flow-publish]").HasAttribute("disabled").Should().BeTrue();
         _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
         await cut.InvokeAsync(() => cut.Find("[data-testid=flow-save]").ClickAsync(new()));
@@ -120,17 +123,20 @@ public sealed class FlowTypedEditorTests : AsyncBunitContext
             [new(source.Id, "event", diagnostic.Id, "in") { Id = Guid.NewGuid() },
              .. FlowNodeCatalogue.Find(diagnostic.Kind)!.Ports.Where(port => port.Direction == FlowPortDirection.Output)
                 .Select(port => new FlowEdgeDto(diagnostic.Id, port.Id, ai.Id, "in") { Id = Guid.NewGuid() })], new());
-        FlowNodeDto? changed = null;
-        var cut = Render<FlowNamedInputFields>(p => p.Add(component => component.Node, ai).Add(component => component.Graph, graph)
-            .Add(component => component.Changed, value => changed = value));
+        var cut = Editor(FlowEditorTests.Definition() with { Draft = graph }, true);
+        await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-select-node]").Should().ContainSingle());
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-select-node]").ChangeAsync(new() { Value = ai.Id.ToString() }));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-properties-toggle]").ClickAsync(new()));
+        await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-investigation-input-name]").Should().ContainSingle());
         await cut.InvokeAsync(() => cut.Find("[data-testid=flow-investigation-input-name]").ChangeAsync(new() { Value = "diagnosticSummary" }));
         await cut.InvokeAsync(() => cut.Find("[data-testid=flow-investigation-add-input]").ClickAsync(new()));
-        cut.Render(p => p.Add(component => component.Node, changed!));
         await cut.InvokeAsync(() => cut.Find("[data-testid=flow-binding-source]").ChangeAsync(new() { Value = nameof(FlowInputSource.NodeOutput) }));
         await cut.InvokeAsync(() => cut.Find("[data-testid=flow-binding-node]").ChangeAsync(new() { Value = diagnostic.Id.ToString() }));
         await cut.InvokeAsync(() => cut.Find("[data-testid=flow-binding-output]").ChangeAsync(new() { Value = "summary" }));
-        changed!.Inputs!["diagnosticSummary"].Should().Be(new FlowInputBindingDto(FlowInputSource.NodeOutput, FlowDataType.Text, "summary", diagnostic.Id));
-        cut.FindAll("option").Select(option => option.GetAttribute("value")).Should().NotContain(nameof(FlowInputSource.SecretReference));
+        var savedInput = cut.FindComponent<FlowCanvas>().Instance.Adapter.Capture().Nodes.Single(node => node.Id == ai.Id).Inputs!["diagnosticSummary"];
+        savedInput.Should().Be(new FlowInputBindingDto(FlowInputSource.NodeOutput, FlowDataType.Text, "summary", diagnostic.Id));
+        cut.FindAll("[data-testid=flow-investigation-inputs] option").Select(option => option.GetAttribute("value")).Should().NotContain(nameof(FlowInputSource.SecretReference));
+        cut.FindComponent<FlowCanvas>().Instance.Adapter.ExecutionCalls.Should().Be(0);
         _api.SaveCalls.Should().Be(0); _api.DryRunCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
     }
 

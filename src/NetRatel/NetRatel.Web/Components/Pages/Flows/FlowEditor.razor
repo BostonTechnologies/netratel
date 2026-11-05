@@ -86,7 +86,7 @@
             }
             </dialog>
         }
-        <MudDropContainer T="FlowNodeKind" Items="PaletteKinds" ItemsSelector="@((item, zone) => zone == "library")"
+        <MudDropContainer @key="_adapter.SchemaVersion" T="FlowNodeKind" Items="PaletteKinds" ItemsSelector="@((item, zone) => zone == "library")"
             ItemDisabled="@(kind => !CanInsert(kind))" CanDrop="CanDrop" ItemDropped="DropNodeAsync"
             ApplyDropClassesOnDragStarted="true" CanDropClass="flow-drop-allowed" NoDropClass="flow-drop-forbidden"
             Class="@($"flow-workspace {(_showProperties && _propertiesPinned ? "properties-docked" : "")} {(_paletteCollapsed ? "palette-collapsed" : "")}")">

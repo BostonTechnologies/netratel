@@ -56,14 +56,35 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-near-limit-fit.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
 
-        var panel = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!;
+        var panTarget = await page.GetByTestId("flow-canvas").EvaluateAsync<JsonElement>("""
+            panel => {
+                const scroller=panel.querySelector('[id^=flow-scroll-]'),r=scroller.getBoundingClientRect();
+                const x=r.left+scroller.clientWidth*.8,y=r.top+scroller.clientHeight*.5;
+                const hit=document.elementFromPoint(x,y);
+                return {id:scroller.id,x,y,bounds:r,clientWidth:scroller.clientWidth,clientHeight:scroller.clientHeight,
+                    scrollLeft:scroller.scrollLeft,scrollTop:scroller.scrollTop,
+                    maxScrollLeft:scroller.scrollWidth-scroller.clientWidth,maxScrollTop:scroller.scrollHeight-scroller.clientHeight,
+                    hit:{tag:hit?.tagName,id:hit?.id,classes:hit?.getAttribute('class')},
+                    blank:!!hit&&scroller.contains(hit)&&!hit.closest('.flow-node,.veloxdev-wf-node-drag,.veloxdev-wf-slot,.flow-canvas-tools,.flow-edge-tools,.veloxdev-wf-minimap,.flow-route-handle,input,select,button,[data-testid=flow-link-hit]')};
+            }
+            """);
+        await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-pan-start.json"),
+            JsonSerializer.Serialize(new { fitted, panTarget }, new JsonSerializerOptions { WriteIndented = true }));
+        Assert.True(panTarget.GetProperty("blank").GetBoolean(), "The native pan must start on an ordinary blank scroller surface.");
+        var panX = panTarget.GetProperty("x").GetDouble(); var panY = panTarget.GetProperty("y").GetDouble();
         var before = (await page.Locator(".flow-node").First.BoundingBoxAsync())!;
         clock.Restart();
-        await page.Mouse.MoveAsync(panel.X + panel.Width - 12, panel.Y + panel.Height - 12);
+        await page.Mouse.MoveAsync(panX, panY);
         await page.Mouse.DownAsync(new() { Button = MouseButton.Middle });
-        await page.Mouse.MoveAsync(panel.X + panel.Width - 72, panel.Y + panel.Height - 52, new() { Steps = 12 });
-        await page.Mouse.UpAsync(new() { Button = MouseButton.Middle });
+        try
+        {
+            // Velox 10.0.1 waits for its .NET press verdict; an early mouseup cancels the pending gesture.
+            await page.WaitForFunctionAsync("id => document.getElementById(id)?.style.cursor==='grabbing'", panTarget.GetProperty("id").GetString());
+            await page.Mouse.MoveAsync(panX - 60, panY - 40, new() { Steps = 12 });
+        }
+        finally { await page.Mouse.UpAsync(new() { Button = MouseButton.Middle }); }
         await page.WaitForFunctionAsync("previous => {const r=document.querySelector('.flow-node').getBoundingClientRect();return Math.abs(r.x-previous.x)>1||Math.abs(r.y-previous.y)>1}", new { x = before.X, y = before.Y });
+        var panned = await MeasurementsAsync(page);
         await page.GetByTestId("flow-zoom-in").ClickAsync();
         await page.WaitForFunctionAsync("previous => document.querySelector('.flow-node').getBoundingClientRect().width>previous+1", before.Width);
         var panZoomMilliseconds = clock.Elapsed.TotalMilliseconds;
@@ -111,10 +132,11 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         {
             schemaVersion = graph.SchemaVersion, nodeCount = graph.Nodes.Count, edgeCount = graph.Edges.Count,
             mountMilliseconds, fitMilliseconds, panZoomMilliseconds, routeMilliseconds,
-            fitted, moved, routed, narrowRoute, assertions = "32 native nodes;61 curves;all cards fit;7 outcome ports fit;actual pan and zoom;route edit and Tab exit;narrow bounded inspector with pointer and keyboard reachability",
+            fitted, panTarget, panned, moved, routed, narrowRoute, assertions = "32 native nodes;61 curves;all cards fit;7 outcome ports fit;actual pan and zoom;route edit and Tab exit;narrow bounded inspector with pointer and keyboard reachability",
             noExecutionWrites = fixture.FlowsData.SaveCalls == seedWrites && fixture.FlowsData.PublishCalls == 0 && fixture.FlowsData.DryRunCalls == 0
         }, new JsonSerializerOptions { WriteIndented = true }));
         Assert.Equal(seedWrites, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls); Assert.Equal(0, fixture.FlowsData.DryRunCalls);
+        Assert.Empty(_outgoingWrites);
         Assert.Empty(errors); Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
     }
 
@@ -132,6 +154,9 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         await page.GetByTestId("flow-create-blank").ClickAsync();
         await page.GetByTestId("flow-upgrade-draft").ClickAsync();
         await Assertions.Expect(page.GetByTestId("flow-palette-RerunOriginalExecution")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("flow-palette-InvestigateWithAi")).ToContainTextAsync("Investigate failure");
+        var palette = await page.Locator(".flow-palette-label").EvaluateAllAsync<string[]>("items => items.map(item => item.getAttribute('data-testid'))");
+        Assert.Equal(FlowNodeCatalogue.Nodes.Select(node => $"flow-palette-{node.Kind}").ToArray(), palette);
         await page.GetByTestId("flow-focus").ClickAsync();
         await page.WaitForFunctionAsync("() => document.querySelector('[data-testid=flow-editor]')?.classList.contains('focused')");
 
