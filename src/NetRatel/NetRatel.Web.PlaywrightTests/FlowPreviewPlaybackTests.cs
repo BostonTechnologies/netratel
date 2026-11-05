@@ -61,6 +61,77 @@ public sealed class FlowPreviewPlaybackTests(ClientsManagementBrowserFixture bro
         Assert.Empty(errors); Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
     }
 
+
+    [Theory]
+    [InlineData("root")]
+    [InlineData("scope")]
+    [InlineData("context")]
+    public async Task Detached_playback_disposes_client_resources_without_a_server_callback(string removal)
+    {
+        var fixture = _fixture!;
+        await using var context = await browserFixture.Browser.NewContextAsync();
+        var page = await context.NewPageAsync();
+        await page.GotoAsync(fixture.BaseAddress + "/flows", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        var result = await page.EvaluateAsync<JsonElement>("""
+            async removal => {
+                const { attach } = await import("/js/flows-playback.js");
+                const scope = document.createElement("section");
+                scope.id = "playback-cleanup-scope-" + removal;
+                const node = document.createElement("article");
+                node.className = "flow-node"; node.dataset.nodeId = "synthetic-source";
+                const root = document.createElement("section");
+                root.id = "playback-cleanup-player-" + removal;
+                root.dataset.scopeId = scope.id; root.dataset.context = "synthetic-context";
+                root.innerHTML = '<button data-trace-action="play">Play</button><button data-trace-action="previous">Previous</button><button data-trace-action="next">Next</button><output data-trace-position></output><article data-trace-panel="0" data-node-id="synthetic-source"></article><article data-trace-panel="1" data-node-id="synthetic-target"></article>';
+                scope.append(node, root); document.body.append(scope);
+                const visibility = new Set(), motion = new Set();
+                const originalAdd = document.addEventListener, originalRemove = document.removeEventListener;
+                const originalMatch = window.matchMedia;
+                const media = originalMatch.call(window, "(prefers-reduced-motion: reduce)");
+                let handle;
+                try {
+                    document.addEventListener = function(type, callback, options) {
+                        if (type === "visibilitychange") visibility.add(callback);
+                        return originalAdd.call(this, type, callback, options);
+                    };
+                    document.removeEventListener = function(type, callback, options) {
+                        if (type === "visibilitychange") visibility.delete(callback);
+                        return originalRemove.call(this, type, callback, options);
+                    };
+                    window.matchMedia = query => query === "(prefers-reduced-motion: reduce)" ? {
+                        get matches() { return media.matches; },
+                        addEventListener(type, callback, options) { motion.add(callback); media.addEventListener(type, callback, options); },
+                        removeEventListener(type, callback, options) { motion.delete(callback); media.removeEventListener(type, callback, options); }
+                    } : originalMatch.call(window, query);
+                    handle = attach(root.id, "synthetic-context");
+                    document.addEventListener = originalAdd; window.matchMedia = originalMatch;
+                    root.querySelector("[data-trace-action=play]").click();
+                    const styles = () => document.head.querySelectorAll('style[data-flow-playback-owner="' + root.id + '"]').length;
+                    const initial = { style: styles(), marked: node.hasAttribute("data-flow-playback-node"), visibility: visibility.size, motion: motion.size };
+                    if (removal === "root") root.remove();
+                    else if (removal === "scope") scope.remove();
+                    else root.dataset.context = "replaced-context";
+                    // Await native mutation-observer delivery; no server disposal or timer delay is used.
+                    await Promise.resolve(); await Promise.resolve();
+                    const after = { style: styles(), marked: node.hasAttribute("data-flow-playback-node"), visibility: visibility.size, motion: motion.size };
+                    handle.dispose(); handle.dispose();
+                    return { initial, after };
+                } finally {
+                    handle?.dispose(); scope.remove();
+                    document.addEventListener = originalAdd; document.removeEventListener = originalRemove;
+                    window.matchMedia = originalMatch;
+                }
+            }
+            """, removal);
+        var initial = result.GetProperty("initial");
+        Assert.Equal(1, initial.GetProperty("style").GetInt32()); Assert.True(initial.GetProperty("marked").GetBoolean());
+        Assert.Equal(1, initial.GetProperty("visibility").GetInt32()); Assert.Equal(1, initial.GetProperty("motion").GetInt32());
+        var after = result.GetProperty("after");
+        Assert.Equal(0, after.GetProperty("style").GetInt32()); Assert.False(after.GetProperty("marked").GetBoolean());
+        Assert.Equal(0, after.GetProperty("visibility").GetInt32()); Assert.Equal(0, after.GetProperty("motion").GetInt32());
+        Assert.Equal(0, fixture.FlowsData.DryRunCalls); Assert.Equal(0, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls);
+    }
+
     public async ValueTask InitializeAsync() => _fixture = await ClientsManagementFixtureHost.StartAsync();
     public async ValueTask DisposeAsync() { if (_fixture is not null) await _fixture.DisposeAsync(); }
 }
