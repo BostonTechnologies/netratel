@@ -137,12 +137,12 @@ public sealed class FlowEditorTests : AsyncBunitContext
         await cut.InvokeAsync(() => cut.Find($"[data-node-id='{mapping.Id}'] [data-testid=flow-node-settings]").ClickAsync(new()));
         await cut.InvokeAsync(() => cut.Find("[data-testid=flow-focus]").ClickAsync(new()));
         cut.Find("[data-testid=flow-editor]").ClassList.Should().Contain("focused");
-        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-editor]").KeyDownAsync(new() { Key = "Escape" }));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-editor]").KeyDownAsync(new Microsoft.AspNetCore.Components.Web.KeyboardEventArgs { Key = "Escape" }));
         cut.FindAll("[data-testid=flow-properties]").Should().BeEmpty();
         cut.Find("[data-testid=flow-editor]").ClassList.Should().Contain("focused");
-        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-editor]").KeyDownAsync(new() { Key = "Escape" }));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-editor]").KeyDownAsync(new Microsoft.AspNetCore.Components.Web.KeyboardEventArgs { Key = "Escape" }));
         cut.Find("[data-testid=flow-editor]").ClassList.Should().NotContain("focused");
-        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-editor]").KeyDownAsync(new() { Key = "Escape" }));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-editor]").KeyDownAsync(new Microsoft.AspNetCore.Components.Web.KeyboardEventArgs { Key = "Escape" }));
         closed.Should().Be(0);
         cut.FindComponent<FlowCanvas>().Instance.Adapter.Should().BeSameAs(adapter);
         cut.Find("[data-testid=flow-name]").GetAttribute("value").Should().Be("Preserved fullscreen draft");
