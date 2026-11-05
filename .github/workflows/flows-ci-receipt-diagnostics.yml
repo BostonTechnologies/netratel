@@ -20,7 +20,7 @@ jobs:
         with:
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
-          run-id: '42085463697'
+          run-id: '42086792337'
           name: dotnet-test-results
           path: receipts
       - name: Print bounded original counters and failures
@@ -29,8 +29,8 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import xml.etree.ElementTree as ET
-          print('Original source: 3aee79e0d93d79adfd2296a8a0c9dcbf3582e70d')
-          print('Original run: 42085463697; receipts only, no tests or product commands executed here.')
+          print('Original source: c5aabd7515af89068cda94bcd3d8ac172b63ad5b')
+          print('Original run: 42086792337; receipts only, no tests or product commands executed here.')
           reports = sorted(Path('receipts').rglob('*.trx'))
           if not reports:
               raise SystemExit('No original TRX receipts were downloaded.')
@@ -48,4 +48,9 @@ jobs:
                       if detail.tag.endswith('Message') or detail.tag.endswith('StackTrace'):
                           print((detail.text or '')[:6000])
           print('Original non-passed result rows:', failures)
+          for report in reports:
+              root = ET.parse(report).getroot()
+              for result in root.iter():
+                  if result.tag.endswith('UnitTestResult') and any(name in result.attrib.get('testName', '') for name in ('FlowExecutionIngressPostgresTests', 'FlowGraphV2RuntimeTests', 'FlowExecutionContinuationPostgresTests')):
+                      print('ORIGINAL_FOCUSED_RESULT', result.attrib.get('testName'), result.attrib.get('outcome'))
           PY
