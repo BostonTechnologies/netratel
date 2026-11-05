@@ -230,7 +230,7 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         }
         _commands.Dispatches.Should().Be(0);
         var renewed = original.FlowLease! with { Token = Guid.NewGuid(), WorkerId = Guid.NewGuid(),
-            Fence = original.FlowLease.Fence + 1, ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(2) };
+            Fence = original.FlowLease.Fence + 1, ExpiresAtUtc = original.FlowLease.ExpiresAtUtc.AddMinutes(1) };
         await using (var edit = new OrchestratorDbContext(_options))
         {
             await new ScriptService(edit).UpdateAsync(new(original.Snapshot.Script.Id, null, null, null,
