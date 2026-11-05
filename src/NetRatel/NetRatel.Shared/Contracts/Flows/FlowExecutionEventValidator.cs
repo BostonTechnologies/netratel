@@ -20,6 +20,12 @@ public static class FlowExecutionEventValidator
         Required(value.ExecutionId, "execution_id");
         Required(value.AttemptId, "attempt_id");
         Required(value.RawStatus, "raw_status");
+        var rawOutcome = FlowExecutionOutcomes.FromAuthoritativeStatus(value.RawStatus);
+        if (rawOutcome is null) issues.Add("event_raw_status_not_terminal");
+        else if (value.Outcome == FlowExecutionOutcome.Succeeded && rawOutcome != FlowExecutionOutcome.Succeeded)
+            issues.Add("event_raw_success_mismatch");
+        // Native task status can be Completed while authoritative exit/admission/cancellation
+        // evidence supplies a non-success outcome. The immutable producer/ledger proves it.
         // Native status vocabularies differ. Only the trusted source writer/accepted ledger can
         // establish normalization (including a definitive admission denial recorded as Failed).
         Optional(value.CorrelationId, "correlation_id");
