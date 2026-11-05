@@ -10,7 +10,7 @@ using NetRatel.Shared.Contracts.Netclaw;
 namespace NetRatel.Infrastructure.Netclaw;
 
 public sealed class NetclawFlowConnector(OrchestratorDbContext db, NetclawAuthority authority,
-    NetclawProfileService profiles, InvestigationStore investigations, TimeProvider clock) : IFlowConnectorCatalog
+    NetclawProfileService profiles, InvestigationStore investigations, TimeProvider clock) : IFlowConnectorCatalog, IFlowExecutionConnectorCatalog
 {
     public async Task<FlowConnectorReferenceDto?> GetAsync(int tenantId, Guid connectorId, FlowExecutionAuthorityDto actor, CancellationToken cancellationToken = default)
     {
@@ -20,6 +20,19 @@ public sealed class NetclawFlowConnector(OrchestratorDbContext db, NetclawAuthor
         var usable = connection.Enabled && connection.HasDeviceToken && connection.LastTestSucceeded == true && allowed;
         return new(connection.Id, tenantId, "Netclaw AI investigation", connection.Enabled, usable,
             usable ? null : "netclaw-connection-unverified-or-permission-denied", connection.Revision) { Kind = FlowActionKind.NetclawInvestigation };
+    }
+
+    public async Task<FlowConnectorReferenceDto?> GetForExecutionAsync(int tenantId, Guid connectorId,
+        FlowExecutionAuthorityDto actor, IReadOnlyList<FlowExecutionSourceKind> sources, CancellationToken cancellationToken = default)
+    {
+        var connection = await profiles.GetAsync(tenantId, cancellationToken);
+        if (connection.Id != connectorId || connectorId == Guid.Empty) return null;
+        var allowed = await authority.CanInvestigateExecutionAsync(tenantId, actor.PrincipalId,
+            actor.IntegrationCredentialId, sources, cancellationToken);
+        var usable = connection.Enabled && connection.HasDeviceToken && connection.LastTestSucceeded == true && allowed;
+        return new(connection.Id, tenantId, "Netclaw AI investigation", connection.Enabled, usable,
+            usable ? null : "netclaw-connection-unverified-or-permission-denied", connection.Revision)
+            { Kind = FlowActionKind.NetclawInvestigation };
     }
 
     public async Task<IReadOnlyList<FlowConnectorReferenceDto>> ListAsync(int tenantId, FlowExecutionAuthorityDto actor, CancellationToken cancellationToken = default)
@@ -59,7 +72,9 @@ public sealed class NetclawFlowConnector(OrchestratorDbContext db, NetclawAuthor
             if (existing.State == InvestigationState.Archived)
                 return Result(Outcome(FlowAiResultStatus.Cancelled), "ai-investigation-cancelled");
         }
-        var target = await GetAsync(draft.TenantId, draft.ConnectorId, draft.Event.Authority, ct);
+        var target = execution is null
+            ? await GetAsync(draft.TenantId, draft.ConnectorId, draft.Event.Authority, ct)
+            : await GetForExecutionAsync(draft.TenantId, draft.ConnectorId, draft.Event.Authority, [execution.SourceKind], ct);
         if (target is not { CanExecute: true } || target.Revision != draft.ConnectorRevision)
             return Result(Outcome(FlowAiResultStatus.Failed), "netclaw-connection-revision-unavailable");
         if (draft.AiDeadlineAtUtc is { } deadline && clock.GetUtcNow() >= deadline)
@@ -98,15 +113,22 @@ public sealed class NetclawFlowConnector(OrchestratorDbContext db, NetclawAuthor
         FlowAiResultStatus.Completed => FlowIncidentActionResultKind.Succeeded,
         FlowAiResultStatus.Queued or FlowAiResultStatus.Processing or FlowAiResultStatus.AwaitingApproval => FlowIncidentActionResultKind.Waiting,
         FlowAiResultStatus.DeliveryUnknown => FlowIncidentActionResultKind.DeliveryUnknown,
+        FlowAiResultStatus.Unsupported => FlowIncidentActionResultKind.Unavailable,
         _ => FlowIncidentActionResultKind.Failed
-    }, code ?? "ai-investigation-" + result.Status.ToString().ToLowerInvariant(),
+    }, code ?? (result.Status == FlowAiResultStatus.Unsupported ? NativeFlowInvestigationToolPolicy.UnavailableCode :
+        "ai-investigation-" + result.Status.ToString().ToLowerInvariant()),
         result.InvestigationId == Guid.Empty ? null : new(result.InvestigationId.ToString("D"))) { AiResult = result };
 }
 
-public sealed class NetclawConnectorCatalog(NotificationAndIncidentConnectorCatalog existing, NetclawFlowConnector netclaw) : IFlowConnectorCatalog
+public sealed class NetclawConnectorCatalog(NotificationAndIncidentConnectorCatalog existing, NetclawFlowConnector netclaw)
+    : IFlowConnectorCatalog, IFlowExecutionConnectorCatalog
 {
     public async Task<FlowConnectorReferenceDto?> GetAsync(int tenantId, Guid connectorId, FlowExecutionAuthorityDto authority, CancellationToken cancellationToken = default) =>
         await existing.GetAsync(tenantId, connectorId, authority, cancellationToken) ?? await netclaw.GetAsync(tenantId, connectorId, authority, cancellationToken);
+    public async Task<FlowConnectorReferenceDto?> GetForExecutionAsync(int tenantId, Guid connectorId,
+        FlowExecutionAuthorityDto authority, IReadOnlyList<FlowExecutionSourceKind> sources, CancellationToken cancellationToken = default) =>
+        await existing.GetAsync(tenantId, connectorId, authority, cancellationToken) ??
+        await netclaw.GetForExecutionAsync(tenantId, connectorId, authority, sources, cancellationToken);
     public async Task<IReadOnlyList<FlowConnectorReferenceDto>> ListAsync(int tenantId, FlowExecutionAuthorityDto authority, CancellationToken cancellationToken = default) =>
         (await existing.ListAsync(tenantId, authority, cancellationToken)).Concat(await netclaw.ListAsync(tenantId, authority, cancellationToken)).ToArray();
 }
