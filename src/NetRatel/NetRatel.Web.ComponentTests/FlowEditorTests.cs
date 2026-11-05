@@ -450,7 +450,7 @@ public sealed class FlowEditorTests : AsyncBunitContext
         FlowExecutionDryRunRequest? submitted = null;
         _api.ExecutionPreview = request => { submitted = request; return Task.FromResult(PreviewResult(request.Graph)); };
         var definition = Definition() with { Draft = ExecutionPreviewGraph() };
-        var cut = RenderEditor(p => p.Add(e => e.Definition, definition));
+        var cut = RenderEditor(definition: definition);
         await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Should().ContainSingle());
         var adapter = cut.FindComponent<FlowCanvas>().Instance.Adapter;
         await cut.InvokeAsync(() => cut.Find("[data-testid=flow-dry-run-toggle]").ClickAsync(new()));
@@ -476,7 +476,7 @@ public sealed class FlowEditorTests : AsyncBunitContext
     {
         _api.ExecutionPreview = request => Task.FromResult(PreviewResult(request.Graph));
         var definition = Definition() with { Draft = ExecutionPreviewGraph() };
-        var cut = RenderEditor(p => p.Add(e => e.Definition, definition));
+        var cut = RenderEditor(definition: definition);
         await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Should().ContainSingle());
         await cut.InvokeAsync(() => cut.Find("[data-testid=flow-dry-run-toggle]").ClickAsync(new()));
         await cut.InvokeAsync(() => cut.Find("[data-testid=flow-sample-execution-id]").ChangeAsync(new() { Value = "sample-to-keep" }));
@@ -502,7 +502,7 @@ public sealed class FlowEditorTests : AsyncBunitContext
         FlowExecutionDryRunRequest? submitted = null;
         _api.ExecutionPreview = request => { submitted = request; return pending.Task; };
         var definition = Definition() with { Draft = ExecutionPreviewGraph() };
-        var cut = RenderEditor(p => p.Add(e => e.Definition, definition));
+        var cut = RenderEditor(definition: definition);
         await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Should().ContainSingle());
         await cut.InvokeAsync(() => cut.Find("[data-testid=flow-dry-run-toggle]").ClickAsync(new()));
         await cut.InvokeAsync(() => cut.Find("[data-testid=flow-sample-execution-id]").ChangeAsync(new() { Value = "old-tenant-sample" }));
@@ -542,8 +542,8 @@ public sealed class FlowEditorTests : AsyncBunitContext
         };
     }
 
-    private IRenderedComponent<FlowEditor> RenderEditor(Action<ComponentParameterCollectionBuilder<FlowEditor>>? extra = null) => Render<FlowEditor>(p =>
-    { p.Add(e => e.Definition, Definition()).Add(e => e.CanEdit, true).Add(e => e.CanPublish, true).Add(e => e.TenantName, "Tenant 17"); extra?.Invoke(p); });
+    private IRenderedComponent<FlowEditor> RenderEditor(Action<ComponentParameterCollectionBuilder<FlowEditor>>? extra = null, FlowDefinitionDto? definition = null) => Render<FlowEditor>(p =>
+    { p.Add(e => e.Definition, definition ?? Definition()).Add(e => e.CanEdit, true).Add(e => e.CanPublish, true).Add(e => e.TenantName, "Tenant 17"); extra?.Invoke(p); });
     private static readonly Guid FlowId = Guid.NewGuid();
     private static readonly FlowGraphDto Graph = FlowGraphTemplates.IncidentFromAlert();
     internal static FlowDefinitionDto Definition() => new(FlowId, 17, "Incident flow", 7, false, Graph, null, 0, DateTimeOffset.UtcNow);
