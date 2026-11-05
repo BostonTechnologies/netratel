@@ -24,8 +24,10 @@ public static class NetclawServiceRegistration
         services.TryAddScoped<PromptLibraryService>();
         services.TryAddScoped<IPromptLibraryService>(provider => provider.GetRequiredService<PromptLibraryService>());
         services.TryAddScoped<InvestigationStore>(); services.TryAddScoped<NetclawFlowConnector>();
+        services.TryAddScoped<IFlowInvestigationToolPolicy, NativeFlowInvestigationToolPolicy>();
         services.TryAddScoped<NotificationAndIncidentConnectorCatalog>();
         services.Replace(ServiceDescriptor.Scoped<IFlowConnectorCatalog, NetclawConnectorCatalog>());
+        services.TryAddScoped<IFlowExecutionConnectorCatalog, NetclawConnectorCatalog>();
         services.TryAddSingleton<NetclawInvestigationWorker>();
         services.AddHostedService(provider => provider.GetRequiredService<NetclawInvestigationWorker>());
         return services;
