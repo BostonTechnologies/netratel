@@ -37,7 +37,7 @@ public sealed class FlowExecutionEventAdmission(IFlowExecutionAuthorityVerifier 
         var result = await LoadAsync(db, new(input.TenantId, input.FlowVersionId, selection.SourceEventId, ids, delivery),
             cancellationToken).ConfigureAwait(false);
         if (!result.Decision.Allowed || result.Proof is not { } proof) return result.Decision;
-        if (proof.Aggregate.AdmissionKey != input.EventId ||
+        if (proof.Aggregate.AdmissionKey != input.SourceAdmissionKey ||
             proof.Aggregate.Representative.OccurrenceId != input.OccurrenceId ||
             proof.Aggregate.Representative.OccurredAtUtc != input.OccurredAtUtc ||
             !Same(proof.Aggregate.Representative, input.ExecutionEvent) || proof.Authority != input.Authority)
@@ -45,7 +45,7 @@ public sealed class FlowExecutionEventAdmission(IFlowExecutionAuthorityVerifier 
         var run = await db.FlowRuns.FromSqlInterpolated($@"SELECT * FROM ""FlowRuns""
             WHERE ""TenantId"" = {input.TenantId} AND ""Id"" = {runId} FOR SHARE")
             .AsNoTracking().SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-        if (run is null || run.FlowVersionId != input.FlowVersionId || run.EventId != input.EventId ||
+        if (run is null || run.FlowVersionId != input.FlowVersionId || run.EventId != input.SourceAdmissionKey ||
             run.EventFingerprint != FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(input, FlowPersistenceService.Json)) ||
             run.Status is not (FlowRunStatus.Running or FlowRunStatus.RetryWaiting or FlowRunStatus.WaitingForAi or
                 FlowRunStatus.AwaitingApproval or FlowRunStatus.WaitingForExecution))

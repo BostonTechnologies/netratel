@@ -20,6 +20,7 @@ public static class FlowServiceRegistration
         services.TryAddSingleton<VeloxFlowRuntimeAdapter>();
         services.TryAddSingleton<IFlowRuntimeAdapter>(provider => provider.GetRequiredService<VeloxFlowRuntimeAdapter>());
         services.TryAddSingleton<IFlowNodeRuntime>(provider => provider.GetRequiredService<VeloxFlowRuntimeAdapter>());
+        services.TryAddSingleton<FlowGraphV2Runtime>();
         services.TryAddSingleton<FlowRunProcessor>();
         services.TryAddScoped<IFlowExecutionAuthorityVerifier, FlowCurrentAuthorityVerifier>();
         services.TryAddScoped<FlowExecutionEventAdmission>();

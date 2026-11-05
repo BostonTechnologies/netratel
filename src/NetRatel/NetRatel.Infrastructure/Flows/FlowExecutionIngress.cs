@@ -36,15 +36,15 @@ public sealed partial class FlowPersistenceService : IFlowExecutionEventIngress
             await db.FlowRuns.CountAsync(row => row.TenantId == request.TenantId && active.Contains(row.Status), ct).ConfigureAwait(false) >= FlowLimits.MaximumQueuedRunsPerTenant)
             return new(FlowIngressDisposition.CapacityExceeded);
         var original = proof.Aggregate.Representative;
-        var input = new FlowEventEnvelope(request.TenantId, proof.Aggregate.AdmissionKey, original.OccurrenceId,
+        var input = new FlowEventEnvelope(request.TenantId, original.EventId, original.OccurrenceId,
             proof.Version.Id, original.OccurredAtUtc, null, proof.Authority)
-        { ExecutionEvent = original, SourceDeliveryId = proof.DeliveryId, SourceEventIds = proof.Aggregate.ContributingEventIds };
+        { ExecutionEvent = original, SourceAdmissionKey = proof.Aggregate.AdmissionKey, SourceDeliveryId = proof.DeliveryId, SourceEventIds = proof.Aggregate.ContributingEventIds };
         if (!FlowContractValidation.ValidEnvelope(input)) return new(FlowIngressDisposition.Invalid, Code: "execution-source-envelope-invalid");
         var now = Now;
         var admitted = selection.Decision.Allowed;
         var json = Serialize(input);
         var run = new FlowRunRecord { Id = Guid.NewGuid(), TenantId = request.TenantId, FlowId = proof.Version.FlowId,
-            FlowVersionId = proof.Version.Id, EventId = input.EventId, OccurrenceId = input.OccurrenceId,
+            FlowVersionId = proof.Version.Id, EventId = proof.Aggregate.AdmissionKey, OccurrenceId = input.OccurrenceId,
             EventJson = json, EventFingerprint = FlowContractValidation.Hash(Encoding.UTF8.GetBytes(json)),
             Status = admitted ? FlowRunStatus.Queued : FlowRunStatus.Failed, CreatedAtUtc = now,
             CompletedAtUtc = admitted ? null : now, Code = admitted ? null : selection.Decision.Code };
