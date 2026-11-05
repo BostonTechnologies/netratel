@@ -27,16 +27,25 @@ public sealed partial class JobRunOwnedBoundaryPostgresTests
     // result and command transports are synthetic; no external AI policy/model or native process
     // execution is claimed by this regression.
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Native_job_failure_recovers_through_saved_investigation_pinned_repair_and_exactly_one_verified_original_rerun(bool truncateOutput)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Native_job_failure_recovers_through_saved_investigation_pinned_repair_and_exactly_one_verified_original_rerun(bool truncateOutput, bool withholdOutput)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         var ct = deadline.Token;
         await using var h = await Harness.CreateAsync(await postgres.CreateDatabaseAsync(ct), ct, retainFlowRecovery: true);
+        const string submittedSecret = "synthetic-native-secret-output-value";
+        if (withholdOutput)
+        {
+            await using var secretSetup = h.Services.CreateAsyncScope();
+            var secretDb = secretSetup.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            secretDb.JobParameters.Add(new() { Id = 44, JobId = 41, Name = "phrase", Type = "secret" });
+            await secretDb.SaveChangesAsync(ct);
+        }
         var published = await PrepareNativeRecoveryAsync(h, ct);
         await AdvanceRecoveryClockAsync(h, ct);
-        var original = await h.StartAsync(ct);
+        var original = await h.StartAsync(ct, withholdOutput ? JsonSerializer.Serialize(new { phrase = submittedSecret }) : null);
         var originalPayload = JsonSerializer.Deserialize<ExecShellCommandPayload>(h.Gateway.LastDispatchPayload!)!;
         await h.LifecycleAsync(original.Id, JobGatewayLifecycleStatus.Started, 3, null, false, ct);
         await h.LifecycleAsync(original.Id, JobGatewayLifecycleStatus.Failed, 4,
@@ -175,7 +184,11 @@ public sealed partial class JobRunOwnedBoundaryPostgresTests
         await h.LifecycleAsync(rerunId, JobGatewayLifecycleStatus.Started, 3, null, true, ct);
         var nativeStdout = "synthetic original rerun verified" + (truncateOutput ? new string('界', 4000) : "");
         await h.LifecycleAsync(rerunId, JobGatewayLifecycleStatus.Completed, 4,
-            JsonSerializer.Serialize(new { stdout = new[] { nativeStdout }, exitCode = 0 }), true, ct);
+            JsonSerializer.Serialize(new
+            {
+                stdout = withholdOutput ? Enumerable.Repeat(submittedSecret, 129).ToArray() : new[] { nativeStdout },
+                exitCode = 0
+            }), true, ct);
         await h.RecoverAsync(rerunId, false, ct);
         await AdvanceRecoveryClockAsync(h, ct);
         var final = (await restartedStore.ClaimAsync(Guid.NewGuid(), ct))!;
@@ -205,10 +218,19 @@ public sealed partial class JobRunOwnedBoundaryPostgresTests
             var recorded = checkpoint.Outputs[published.RerunId];
             recorded.GetProperty("exitCode").GetInt32().Should().Be(0);
             var excerpt = recorded.GetProperty("stdout").GetString()!;
-            excerpt.Should().StartWith("synthetic original rerun verified");
             System.Text.Encoding.UTF8.GetByteCount(excerpt).Should().BeLessThanOrEqualTo(8192);
-            if (!truncateOutput) excerpt.Should().Be(nativeStdout);
-            else excerpt.Length.Should().BeLessThan(nativeStdout.Length);
+            if (withholdOutput)
+            {
+                excerpt.Split('\n').Should().HaveCount(128).And.OnlyContain(line => line == NetRatel.Shared.Security.TaskOutputRedactor.Mask);
+                recorded.GetRawText().Should().NotContain(submittedSecret);
+                run.ContinuationJson.Should().NotContain(submittedSecret);
+            }
+            else
+            {
+                excerpt.Should().StartWith("synthetic original rerun verified");
+                if (!truncateOutput) excerpt.Should().Be(nativeStdout);
+                else excerpt.Length.Should().BeLessThan(nativeStdout.Length);
+            }
             recorded.TryGetProperty("stderr", out _).Should().BeFalse();
             recorded.GetProperty("truncated").GetBoolean().Should().Be(truncateOutput);
             var structured = recorded.GetProperty("data");
@@ -225,8 +247,8 @@ public sealed partial class JobRunOwnedBoundaryPostgresTests
             stepOutput.GetProperty("exitCode").GetInt32().Should().Be(nativeActivity.ExitCode);
             stepOutput.GetProperty("startedAtUtc").GetDateTimeOffset().Should().Be(nativeStep.StartedAtUtc!.Value);
             stepOutput.GetProperty("completedAtUtc").GetDateTimeOffset().Should().Be(nativeStep.CompletedAtUtc!.Value);
-            stepOutput.GetProperty("outputState").GetString().Should().Be("recorded");
-            stepOutput.GetProperty("standardOutputState").GetString().Should().Be(truncateOutput ? "truncated" : "recorded");
+            stepOutput.GetProperty("outputState").GetString().Should().Be(withholdOutput ? "withheld" : "recorded");
+            stepOutput.GetProperty("standardOutputState").GetString().Should().Be(withholdOutput ? "withheld" : truncateOutput ? "truncated" : "recorded");
             stepOutput.GetProperty("standardErrorState").GetString().Should().Be("missing");
             stepOutput.GetProperty("outputTruncated").GetBoolean().Should().Be(truncateOutput);
             recorded.GetProperty("references").Deserialize<IReadOnlyList<FlowExecutionDataReferenceDto>>(StepJson)

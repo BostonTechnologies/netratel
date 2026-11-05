@@ -205,8 +205,10 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
             var data = document.RootElement;
             var withheld = data.ValueKind == JsonValueKind.Object &&
                 data.TryGetProperty("outputRedacted", out var marker) && marker.ValueKind == JsonValueKind.True;
-            if (withheld) return new(step, activity, "unavailable", "unavailable", "unavailable",
-                Text(data, "stdout"), Text(data, "stderr"), false);
+            if (withheld) return new(step, activity, "withheld",
+                data.TryGetProperty("stdout", out _) ? "withheld" : "missing",
+                data.TryGetProperty("stderr", out _) ? "withheld" : "missing",
+                Text(data, "stdout"), Text(data, "stderr"), TextTruncated(data, "stdout") || TextTruncated(data, "stderr"));
             var stdout = Stream("stdout");
             var stderr = Stream("stderr");
             var empty = data.ValueKind == JsonValueKind.Null ||
