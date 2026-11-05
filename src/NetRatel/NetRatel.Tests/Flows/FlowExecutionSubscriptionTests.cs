@@ -470,8 +470,7 @@ public sealed class FlowExecutionSubscriptionPostgreSqlTests(PostgreSqlPersisten
         var goodId = Guid.NewGuid();
         var badId = Guid.NewGuid();
         var good = Version(Guid.NewGuid(), goodId, Guid.NewGuid(), 1, at);
-        var bad = Version(Guid.NewGuid(), badId, Guid.NewGuid(), 1, at);
-        bad.ConfigurationHash = new string('0', 64);
+        var bad = Version(Guid.NewGuid(), badId, Guid.NewGuid(), 1, at, configurationHash: new string('0', 64));
         var goodDefinition = new FlowDefinitionRecord { Id = goodId, TenantId = 7, Name = "Synthetic valid source",
             Revision = 1, Enabled = true, EnabledSinceUtc = at, DraftJson = "{}", CreatedAtUtc = at, UpdatedAtUtc = at };
         var badDefinition = new FlowDefinitionRecord { Id = badId, TenantId = 7, Name = "Synthetic invalid source",
@@ -513,7 +512,7 @@ public sealed class FlowExecutionSubscriptionPostgreSqlTests(PostgreSqlPersisten
     }
 
     private static FlowVersionRecord Version(Guid id, Guid flowId, Guid triggerId, int number, DateTimeOffset published,
-        FlowExecutionTriggerSettingsDto? settings = null)
+        FlowExecutionTriggerSettingsDto? settings = null, string? configurationHash = null)
     {
         var finish = Guid.NewGuid();
         var graph = new FlowGraphDto(2,
@@ -524,7 +523,7 @@ public sealed class FlowExecutionSubscriptionPostgreSqlTests(PostgreSqlPersisten
         Assert.True(FlowGraphV2Validator.ValidatePublished(graph).Valid);
         var json = FlowGraphSerialization.Serialize(graph);
         return new() { Id = id, FlowId = flowId, TenantId = 7, VersionNumber = number, GraphJson = json,
-            ConfigurationHash = FlowGraphSerialization.Hash(graph),
+            ConfigurationHash = configurationHash ?? FlowGraphSerialization.Hash(graph),
             PublishedAtUtc = published, PublishedBy = "synthetic-operator",
             ExecutionAuthorityJson = "{\"principalId\":\"synthetic-configuring-operator\"}" };
     }

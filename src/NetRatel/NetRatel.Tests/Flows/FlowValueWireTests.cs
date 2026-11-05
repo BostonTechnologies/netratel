@@ -1,6 +1,7 @@
 using System.Text.Json;
 using AwesomeAssertions;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Application.Flows;
 using Xunit;
 
 namespace NetRatel.Tests.Flows;
@@ -35,6 +36,17 @@ public sealed class FlowValueWireTests
         Assert.Equal(FlowTraceDataState.Null, restored.State);
         Assert.Equal(JsonValueKind.Null, restored.Value!.Value.ValueKind);
         Assert.Equal(serialized, JsonSerializer.Serialize(restored, Json));
+    }
+
+    [Fact]
+    public void Source_reference_truncation_is_omitted_for_historical_alerts_and_cannot_masquerade_as_alert_data()
+    {
+        var original = FlowTestData.Lease("Synthetic legacy envelope", 90).Event;
+        var serialized = JsonSerializer.Serialize(original, Json);
+        serialized.Should().NotContain("sourceEventIdsTruncated");
+        JsonSerializer.Serialize(original with { SourceEventIdsTruncated = false }, Json).Should().Be(serialized);
+        FlowContractValidation.ValidEnvelope(original).Should().BeTrue();
+        FlowContractValidation.ValidEnvelope(original with { SourceEventIdsTruncated = true }).Should().BeFalse();
     }
 
     [Fact]

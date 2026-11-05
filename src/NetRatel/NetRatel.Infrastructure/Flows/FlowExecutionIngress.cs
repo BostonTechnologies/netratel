@@ -19,6 +19,7 @@ public sealed partial class FlowPersistenceService : IFlowExecutionEventIngress
             return new FlowIngressResult(FlowIngressDisposition.Invalid, Code: "execution-source-transaction-required");
         await TenantLockAsync(db, request.TenantId, ct).ConfigureAwait(false);
         var admission = services.GetRequiredService<FlowExecutionEventAdmission>();
+        var contributorReferencesTruncated = false;
         var selection = await admission.LoadAsync(db, request, ct, skipHistoricalContributors: true).ConfigureAwait(false);
         if (selection.Proof is { Trigger.ExecutionTrigger: { AggregateCorrelatedEvents: true, Sources.Count: > 1 } } initial)
         {
@@ -26,9 +27,10 @@ public sealed partial class FlowPersistenceService : IFlowExecutionEventIngress
             // The tenant fence makes this committed intent group stable through the acceptance commit.
             var row = await db.OutboxMessages.AsNoTracking().SingleAsync(item => item.Id == initial.DeliveryId, ct).ConfigureAwait(false);
             var delivery = ExecutionLifecycleSubscriptions.ReadDelivery(row.PayloadJson)!;
-            var contributors = await ExecutionLifecycleSubscriptionWorker.ContributorsAsync(db, delivery,
-                await ActivationNowAsync(db, ct).ConfigureAwait(false), ct).ConfigureAwait(false);
-            selection = await admission.LoadAsync(db, request with { ContributingEventIds = contributors }, ct, skipHistoricalContributors: true).ConfigureAwait(false);
+            var contributors = await ExecutionLifecycleSubscriptionWorker.SelectContributorsAsync(db, delivery,
+                await admission.EffectiveNowAsync(db, ct).ConfigureAwait(false), ct).ConfigureAwait(false);
+            contributorReferencesTruncated = contributors.Truncated;
+            selection = await admission.LoadAsync(db, request with { ContributingEventIds = contributors.EventIds }, ct, skipHistoricalContributors: true).ConfigureAwait(false);
         }
         if (selection.Pending) return new(FlowIngressDisposition.CapacityExceeded, Code: "execution-parent-result-pending");
         if (selection.Proof is not { } proof) return new(FlowIngressDisposition.Invalid, Code: selection.Decision.Code);
@@ -49,7 +51,8 @@ public sealed partial class FlowPersistenceService : IFlowExecutionEventIngress
         var original = proof.Aggregate.Representative;
         var input = new FlowEventEnvelope(request.TenantId, original.EventId, original.OccurrenceId,
             proof.Version.Id, original.OccurredAtUtc, null, proof.Authority)
-        { ExecutionEvent = original, SourceAdmissionKey = proof.Aggregate.AdmissionKey, SourceDeliveryId = proof.DeliveryId, SourceEventIds = proof.Aggregate.ContributingEventIds };
+        { ExecutionEvent = original, SourceAdmissionKey = proof.Aggregate.AdmissionKey, SourceDeliveryId = proof.DeliveryId, SourceEventIds = proof.Aggregate.ContributingEventIds,
+            SourceEventIdsTruncated = contributorReferencesTruncated || proof.Aggregate.Truncated };
         if (!FlowContractValidation.ValidEnvelope(input)) return new(FlowIngressDisposition.Invalid, Code: "execution-source-envelope-invalid");
         var now = await ActivationNowAsync(db, ct).ConfigureAwait(false);
         var admitted = selection.Decision.Allowed;

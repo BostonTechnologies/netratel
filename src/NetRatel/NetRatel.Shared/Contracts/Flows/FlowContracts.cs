@@ -114,6 +114,10 @@ public sealed record FlowRunDetailDto(FlowRunSummaryDto Run,
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public FlowExecutionEventDto? ExecutionEvent { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<Guid>? SourceEventIds { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool SourceEventIdsTruncated { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? DataUnavailableReason { get; init; }
 }
 public sealed record FlowConnectorReferenceDto(Guid Id, int TenantId, string Name, bool Enabled, bool CanExecute, string? UnavailableReason = null, long Revision = 0)

@@ -17,6 +17,8 @@ public sealed record FlowEventEnvelope(int TenantId, Guid EventId, Guid Occurren
     public Guid? SourceAdmissionKey { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<Guid>? SourceEventIds { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool SourceEventIdsTruncated { get; init; }
 }
 public enum FlowIngressDisposition { Enqueued, Duplicate, Conflict, Disabled, Invalid, CapacityExceeded }
 public sealed record FlowIngressResult(FlowIngressDisposition Disposition, Guid? RunId = null, string? Code = null);

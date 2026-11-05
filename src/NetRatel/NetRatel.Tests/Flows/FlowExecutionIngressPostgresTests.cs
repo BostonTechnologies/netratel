@@ -299,7 +299,9 @@ public sealed class FlowExecutionIngressPostgresTests(PostgreSqlPersistenceFixtu
             foreach (var fact in new[] { facts[0], facts[^1] })
             {
                 var delivery = Assert.Single(deliveries, item => item.SourceEventId == fact.EventId);
-                var ids = await ExecutionLifecycleSubscriptionWorker.ContributorsAsync(db, delivery, DateTimeOffset.UtcNow, ct);
+                var selected = await ExecutionLifecycleSubscriptionWorker.SelectContributorsAsync(db, delivery, DateTimeOffset.UtcNow, ct);
+                Assert.True(selected.Truncated);
+                var ids = selected.EventIds;
                 Assert.Equal(FlowExecutionEventLimits.MaximumReferences, ids.Count);
                 Assert.Contains(fact.EventId, ids);
                 Assert.Contains(facts[0].EventId, ids);
@@ -316,6 +318,11 @@ public sealed class FlowExecutionIngressPostgresTests(PostgreSqlPersistenceFixtu
         string frozen;
         await using (var scope = h.Provider.CreateAsyncScope())
             frozen = (await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().FlowRuns.AsNoTracking().SingleAsync(ct)).EventJson;
+        using (var acceptedEnvelope = JsonDocument.Parse(frozen))
+        {
+            Assert.True(acceptedEnvelope.RootElement.GetProperty("sourceEventIdsTruncated").GetBoolean());
+            Assert.Equal(FlowExecutionEventLimits.MaximumReferences, acceptedEnvelope.RootElement.GetProperty("sourceEventIds").GetArrayLength());
+        }
         foreach (var fact in facts)
         {
             var duplicate = await ingress.EnqueueExecutionAsync(Claim(fact), ct);
