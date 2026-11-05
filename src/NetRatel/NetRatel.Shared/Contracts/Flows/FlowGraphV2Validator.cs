@@ -308,30 +308,8 @@ public static class FlowGraphV2Validator
         _ => null
     };
 
-    private static FlowDataType? EventType(string path, bool? execution) => path switch
-    {
-        "event.exitCode" when execution is not false => FlowDataType.Number,
-        "event.sourceKind" or "event.outcome" or "event.rawStatus" or "event.reason" or "event.reasonCode" or
-        "event.executionId" or "event.attemptId" or "event.definition.id" or "event.definition.name" or
-        "event.definition.revision" or "event.definition.contentHash" or "event.target.agentId" or
-        "event.target.displayName" or "event.target.hostName" or "event.occurredAtUtc" or
-        "event.startedAtUtc" or "event.completedAtUtc" when execution is not false => FlowDataType.Text,
-        "alert.numericValue" when execution is not true => FlowDataType.Number,
-        "alert.ruleName" or "alert.clientName" or "alert.resource" or "alert.metric" or "alert.severity" or
-        "alert.serviceState" or "alert.agentId" or "alert.ruleId" or "alert.observedAtUtc" when execution is not true => FlowDataType.Text,
-        _ => null
-    };
-    private static FlowDataType? OutputType(FlowNodeKind kind, string path) => (kind, path) switch
-    {
-        (FlowNodeKind.RunLibraryScript or FlowNodeKind.RunJob or FlowNodeKind.RerunOriginalExecution, "exitCode") => FlowDataType.Number,
-        (FlowNodeKind.RunLibraryScript or FlowNodeKind.RunJob or FlowNodeKind.RerunOriginalExecution, "outcome" or "executionId" or "attemptId" or "summary" or "stdout" or "stderr") => FlowDataType.Text,
-        (FlowNodeKind.RunLibraryScript or FlowNodeKind.RunJob or FlowNodeKind.RerunOriginalExecution, "data") => FlowDataType.Json,
-        (FlowNodeKind.InvestigateWithAi, "summary" or "evidence" or "recommendations" or "status") => FlowDataType.Text,
-        (FlowNodeKind.MapIncident, "title" or "description") => FlowDataType.Text,
-        (FlowNodeKind.MapIncident, "priority") => FlowDataType.Number,
-        (FlowNodeKind.Condition, "result") => FlowDataType.Boolean,
-        _ => null
-    };
+    private static FlowDataType? EventType(string path, bool? execution) => FlowBindingCatalogue.TypeForEvent(path, execution);
+    private static FlowDataType? OutputType(FlowNodeKind kind, string path) => FlowBindingCatalogue.TypeForOutput(kind, path);
 
     private static Dictionary<Guid, HashSet<Guid>> Dominators(IEnumerable<Guid> ids,
         IReadOnlyDictionary<Guid, List<Guid>> incoming, Guid? triggerId)

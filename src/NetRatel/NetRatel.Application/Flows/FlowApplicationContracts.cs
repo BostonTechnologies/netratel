@@ -95,7 +95,11 @@ public sealed record FlowRunLease(Guid RunId, Guid Token, Guid WorkerId, long Fe
     public FlowContinuationDto? Continuation { get; init; }
     public DateTimeOffset CreatedAtUtc { get; init; }
 }
-public sealed record FlowContinuationDto(Guid ResumeNodeId, FlowIncidentFieldsDto? Fields, FlowAiResultDto? AiResult = null);
+public sealed record FlowContinuationDto(Guid ResumeNodeId, FlowIncidentFieldsDto? Fields, FlowAiResultDto? AiResult = null)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FlowNodeCheckpointDto? Node { get; init; }
+}
 public sealed record FlowRuntimeResult(FlowRunStatus Status, string Code)
 {
     public FlowContinuationDto? Continuation { get; init; }

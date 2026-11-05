@@ -13,7 +13,11 @@ public static class FlowServiceRegistration
         services.TryAddSingleton<IFlowDefinitionService>(provider => provider.GetRequiredService<FlowPersistenceService>());
         services.TryAddSingleton<IFlowEventIngress>(provider => provider.GetRequiredService<FlowPersistenceService>());
         services.TryAddSingleton<IFlowExecutionStore>(provider => provider.GetRequiredService<FlowPersistenceService>());
-        services.TryAddSingleton<IFlowRuntimeAdapter, VeloxFlowRuntimeAdapter>(); services.TryAddSingleton<FlowRunProcessor>();
+        services.TryAddSingleton<IFlowNodeExecutionStore>(provider => provider.GetRequiredService<FlowPersistenceService>());
+        services.TryAddSingleton<VeloxFlowRuntimeAdapter>();
+        services.TryAddSingleton<IFlowRuntimeAdapter>(provider => provider.GetRequiredService<VeloxFlowRuntimeAdapter>());
+        services.TryAddSingleton<IFlowNodeRuntime>(provider => provider.GetRequiredService<VeloxFlowRuntimeAdapter>());
+        services.TryAddSingleton<FlowRunProcessor>();
         services.TryAddScoped<IFlowExecutionAuthorityVerifier, FlowCurrentAuthorityVerifier>();
         services.TryAddScoped<IFlowTransactionAdmission, MonitoringFlowTransactionAdmission>();
         services.TryAddScoped<IFlowDispatchGuard, UnavailableMonitoringDispatchGuard>();

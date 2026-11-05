@@ -8,7 +8,7 @@ using VeloxDev.WorkflowSystem;
 namespace NetRatel.Infrastructure.Flows;
 
 /// <summary>The only backend Velox entry. Each run has new allowlisted models, helpers and RuntimeContext.</summary>
-public sealed class VeloxFlowRuntimeAdapter : IFlowRuntimeAdapter
+public sealed partial class VeloxFlowRuntimeAdapter : IFlowRuntimeAdapter, IFlowNodeRuntime
 {
     public async Task<FlowRuntimeResult> ExecuteAsync(FlowRunLease lease,
         Func<FlowIncidentActionDraft, CancellationToken, Task<FlowIncidentActionResult>> executeAction, CancellationToken cancellationToken = default)

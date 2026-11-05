@@ -14,7 +14,7 @@ using NetRatel.Shared.Contracts.Flows;
 namespace NetRatel.Infrastructure.Flows;
 
 /// <summary>Operation-scoped contexts and transaction/lease fences own durability; no browser or library model is stored.</summary>
-public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, TimeProvider clock) : IFlowDefinitionService, IFlowEventIngress, IFlowExecutionStore, IFlowReceiverEvidenceStore, IFlowSourceIdentityResolver
+public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, TimeProvider clock) : IFlowDefinitionService, IFlowEventIngress, IFlowExecutionStore, IFlowNodeExecutionStore, IFlowReceiverEvidenceStore, IFlowSourceIdentityResolver
 {
     // PostgreSQL stores microseconds; normalize before returning lease timestamps that are compared
     // with a fresh scoped read during receipt commits.
@@ -172,7 +172,7 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
         var version = await db.FlowVersions.AsNoTracking().SingleOrDefaultAsync(row => row.TenantId == input.TenantId && row.Id == input.FlowVersionId, ct).ConfigureAwait(false);
         if (version is null || !FlowGraphValidator.ValidatePublished(Parse<FlowGraphDto>(version.GraphJson)).Valid) return new(FlowIngressDisposition.Invalid, Code: "flow-version");
         var enabled = await db.FlowDefinitions.AnyAsync(row => row.TenantId == input.TenantId && row.Id == version.FlowId && row.Enabled, ct).ConfigureAwait(false);
-        var active = new[] { FlowRunStatus.Queued, FlowRunStatus.Running, FlowRunStatus.RetryWaiting, FlowRunStatus.WaitingForAi, FlowRunStatus.AwaitingApproval };
+        var active = new[] { FlowRunStatus.Queued, FlowRunStatus.Running, FlowRunStatus.RetryWaiting, FlowRunStatus.WaitingForAi, FlowRunStatus.AwaitingApproval, FlowRunStatus.WaitingForExecution };
         if (await db.FlowRuns.CountAsync(row => row.TenantId == input.TenantId, ct).ConfigureAwait(false) >= FlowLimits.MaximumRunsPerTenant ||
             await db.FlowRuns.CountAsync(row => row.TenantId == input.TenantId && active.Contains(row.Status), ct).ConfigureAwait(false) >= FlowLimits.MaximumQueuedRunsPerTenant) return new(FlowIngressDisposition.CapacityExceeded);
         var run = new FlowRunRecord { Id = Guid.NewGuid(), TenantId = input.TenantId, FlowId = version.FlowId, FlowVersionId = version.Id, EventId = input.EventId,
