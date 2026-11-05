@@ -47,7 +47,7 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
         if (!await db.Tenants.AnyAsync(row => row.Id == tenantId, ct).ConfigureAwait(false)) return new(FlowWriteDisposition.NotFound);
         if (await db.FlowDefinitions.CountAsync(row => row.TenantId == tenantId, ct).ConfigureAwait(false) >= FlowLimits.MaximumFlowsPerTenant) return new(FlowWriteDisposition.CapacityExceeded);
         var now = clock.GetUtcNow(); var row = new FlowDefinitionRecord { Id = Guid.NewGuid(), TenantId = tenantId, Name = request.Name.Trim(), Revision = 1, Enabled = true,
-            DraftJson = Serialize(request.UseTemplate ? FlowGraphTemplates.IncidentFromAlert() : new FlowGraphDto(1, [], [], new())), CreatedAtUtc = now, UpdatedAtUtc = now };
+            DraftJson = Serialize(request.UseTemplate ? FlowGraphTemplates.IncidentFromAlert() : new FlowGraphDto(1, [], [], new())), CreatedAtUtc = now, UpdatedAtUtc = now, EnabledSinceUtc = await ActivationNowAsync(db, ct).ConfigureAwait(false) };
         db.FlowDefinitions.Add(row); Audit(db, row, actorId, "created"); await db.SaveChangesAsync(ct).ConfigureAwait(false); if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false);
         return new(FlowWriteDisposition.Stored, Definition(row));
     });
@@ -69,10 +69,15 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
     {
         if (expected < 1 || !ValidActor(actorId)) return new FlowDefinitionWriteResult(FlowWriteDisposition.Invalid);
         await using var transaction = await BeginAsync(db, ct).ConfigureAwait(false); await TenantLockAsync(db, tenantId, ct).ConfigureAwait(false);
-        var row = await db.FlowDefinitions.SingleOrDefaultAsync(row => row.TenantId == tenantId && row.Id == flowId, ct).ConfigureAwait(false);
+        var row = db.Database.IsNpgsql()
+            ? await db.FlowDefinitions.FromSqlInterpolated($"SELECT * FROM \"FlowDefinitions\" WHERE \"TenantId\" = {tenantId} AND \"Id\" = {flowId} FOR UPDATE").SingleOrDefaultAsync(ct).ConfigureAwait(false)
+            : await db.FlowDefinitions.SingleOrDefaultAsync(row => row.TenantId == tenantId && row.Id == flowId, ct).ConfigureAwait(false);
         if (row is null) return new(FlowWriteDisposition.NotFound); if (row.Revision != expected) return new(FlowWriteDisposition.Conflict);
         if (validate?.Invoke(row) is { } rejected) return new(FlowWriteDisposition.Invalid, Code: rejected);
-        change(row); row.Revision = checked(row.Revision + 1); row.UpdatedAtUtc = clock.GetUtcNow(); Audit(db, row, actorId, operation);
+        var reenabled = operation == "enabled" && !row.Enabled;
+        change(row);
+        if (reenabled && row.Enabled) row.EnabledSinceUtc = await ActivationNowAsync(db, ct).ConfigureAwait(false);
+        row.Revision = checked(row.Revision + 1); row.UpdatedAtUtc = clock.GetUtcNow(); Audit(db, row, actorId, operation);
         try { await db.SaveChangesAsync(ct).ConfigureAwait(false); } catch (DbUpdateConcurrencyException) { return new(FlowWriteDisposition.Conflict); }
         if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false); return new(FlowWriteDisposition.Stored, Definition(row));
     });
@@ -202,6 +207,11 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
         }
         return graph with { Nodes = nodes };
     });
+
+    private async Task<DateTimeOffset> ActivationNowAsync(OrchestratorDbContext db, CancellationToken ct) =>
+        db.Database.IsNpgsql() ? await db.Database.SqlQuery<DateTimeOffset>($"SELECT clock_timestamp() AS \"Value\"")
+            .SingleAsync(ct).ConfigureAwait(false) : Now;
+
 
     private static bool ValidName(string name) => FlowGraphValidator.IsBoundedText(name, FlowLimits.MaximumNameLength);
     private static bool ValidActor(string id) => FlowGraphValidator.IsBoundedText(id, 256);
