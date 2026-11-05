@@ -1,6 +1,8 @@
 @page "/flows"
 @rendermode InteractiveServer
 @attribute [Authorize]
+@using System.Security.Cryptography
+@using System.Text.Json
 @using NetRatel.Shared.Contracts.Flows
 @using NetRatel.Web.Services.Flows
 @implements IAsyncDisposable
@@ -24,6 +26,7 @@
     {
         <FlowEditor @ref="_editor" InitialSelectedNodeId="RequestedNodeId" @key="(_editorDefinition.Id, _version?.Id)" Definition="_editorDefinition" TenantName="@Access!.TenantName" Connectors="_connectors"
             CanEdit="@(Access.CanEdit)" CanPublish="@(Access.CanPublish)" SupportedDraftSchemas="_schemaCapabilities.SupportedDraftSchemas" ExecutableSchemas="_schemaCapabilities.ExecutableSchemas" ReadOnly="@(_version is not null)" VersionNumber="@(_version?.VersionNumber ?? 0)"
+            RecordedRunId="_recordedRun?.Run.Id" RecordedTrace="_recordedRun?.Trace" RecordedConfigurationHash="@_version?.ConfigurationHash"
             Saved="DefinitionSaved" Closed="CloseEditor" DirtyChanged="DirtyChanged" />
     }
     else
@@ -92,7 +95,7 @@
         {
             <FlowHistoryPanel Flow="history" TenantId="_tenantId" Versions="_versions" Runs="_runs" Detail="_runDetail" Loading="_historyLoading" RunLoading="_runLoading" Busy="_busy"
                               Error="@_historyError" BodyId="@HistoryBodyId(historyGeneration)" FocusTarget="@_historyFocusTarget"
-                              Reload="ReloadHistoryAsync" ViewVersion="ViewVersionAsync" ViewRun="LoadRunAsync" Back="BackToHistory" />
+                              Reload="ReloadHistoryAsync" ViewVersion="ViewVersionAsync" ViewRun="LoadRunAsync" ReplayRun="ReplayRunAsync" Back="BackToHistory" />
         }
     </DialogContent>
     <DialogActions>
@@ -118,7 +121,7 @@
     private IReadOnlyList<FlowRunSummaryDto> _runs = [];
     private FlowDefinitionDto? _editorDefinition, _history, _clone;
     private FlowVersionDto? _version;
-    private FlowRunDetailDto? _runDetail;
+    private FlowRunDetailDto? _runDetail, _recordedRun;
     private int _tenantId, _generation, _historyGeneration;
     private string _search = "", _createName = "Incident from alert", _cloneName = "";
     private bool _loadingTenants = true, _loading, _busy, _disposed, _dirty, _showCreate;
@@ -187,7 +190,7 @@
                 var flow = await Api.GetAsync(scopeTenant, version.FlowId, token);
                 if (!Current(generation, scopeTenant) || flow.TenantId != scopeTenant || flow.Id != version.FlowId) return;
                 var connectors = await Api.GetConnectorsAsync(scopeTenant, token); if (!Current(generation, scopeTenant)) return;
-                _connectors = connectors.Where(c => c.TenantId == scopeTenant).ToArray(); _editorDefinition = flow with { Draft = version.Graph }; _version = version; _history = null; _dirty = false;
+                _connectors = connectors.Where(c => c.TenantId == scopeTenant).ToArray(); _editorDefinition = flow with { Draft = version.Graph }; _version = version; _recordedRun = null; _history = null; _dirty = false;
             }
             else if (query.RequestedRunId is { } runId)
             {
@@ -197,7 +200,7 @@
                 if (!Current(generation, scopeTenant) || flow.TenantId != scopeTenant || flow.Id != detail.Run.FlowId) return;
                 var version = await Api.GetVersionAsync(scopeTenant, detail.Run.FlowVersionId, token);
                 if (!Current(generation, scopeTenant) || version.TenantId != scopeTenant || version.Id != detail.Run.FlowVersionId || version.FlowId != flow.Id) return;
-                _editorDefinition = null; _version = null; BeginHistory(flow); _versions = [version]; _runs = [detail.Run]; _runDetail = detail;
+                _editorDefinition = null; _version = null; _recordedRun = null; BeginHistory(flow); _versions = [version]; _runs = [detail.Run]; _runDetail = detail;
             }
         });
     }
@@ -237,7 +240,7 @@
     private void ResetScope()
     {
         _scope.Cancel(); _scope.Dispose(); _scope = new(); ++_generation;
-        _connectors = []; _editorDefinition = null; _version = null; _history = null; _clone = null; _versions = []; _runs = []; _runDetail = null; _dirty = false;
+        _connectors = []; _editorDefinition = null; _version = null; _recordedRun = null; _history = null; _clone = null; _versions = []; _runs = []; _runDetail = null; _dirty = false;
         _editor = null; _busy = false; _error = null; _showCreate = false; _loading = false;
         _historyError = null; _historyOpen = _historyLoading = _runLoading = _restoreHistoryFocus = false; ++_historyGeneration;
     }
@@ -289,7 +292,7 @@
         await Task.WhenAll(connectorsTask, capabilitiesTask);
         if (!Current(generation, flow.TenantId)) return;
         _schemaCapabilities = await capabilitiesTask;
-        _connectors = (await connectorsTask).Where(c => c.TenantId == flow.TenantId).ToArray(); _editorDefinition = flow; _version = null; _dirty = false; _history = null; _historyOpen = false;
+        _connectors = (await connectorsTask).Where(c => c.TenantId == flow.TenantId).ToArray(); _editorDefinition = flow; _version = null; _recordedRun = null; _dirty = false; _history = null; _historyOpen = false;
     }
     private Task DefinitionSaved(FlowDefinitionDto flow)
     {
@@ -299,10 +302,11 @@
     private Task DirtyChanged(bool dirty) { _dirty = dirty; return Task.CompletedTask; }
     private Task CloseEditor()
     {
-        if (_version is not null && _versions.Any(v => v.Id == _version.Id) && _history is not null)
+        if (_recordedRun is not null && _history is not null) _historyFocusTarget = "flow-run-replay";
+        else if (_version is not null && _versions.Any(v => v.Id == _version.Id) && _history is not null)
             _historyFocusTarget = $"flow-version-{_version.Id:N}";
         else _restoreFocus = _editorDefinition is null ? null : $"flow-open-{_editorDefinition.Id:N}";
-        _editorDefinition = null; _version = null; _dirty = false; _editor = null; return Task.CompletedTask;
+        _editorDefinition = null; _version = null; _recordedRun = null; _dirty = false; _editor = null; return Task.CompletedTask;
     }
     private void BeginClone(FlowDefinitionDto flow) { _clone = flow; _cloneName = flow.Name.Length > 120 ? flow.Name[..120] + " copy" : flow.Name + " copy"; }
     private Task CloneAsync() => ScopeCommandAsync(async (tenant, generation, token) =>
@@ -337,7 +341,7 @@
     private void BeginHistory(FlowDefinitionDto flow)
     {
         if (!_historyOpen || _history?.Id != flow.Id) ++_historyGeneration;
-        _history = flow; _historyOpen = true; _restoreHistoryFocus = false; _historyFocusTarget = "flow-history-dismiss";
+        _recordedRun = null; _history = flow; _historyOpen = true; _restoreHistoryFocus = false; _historyFocusTarget = "flow-history-dismiss";
     }
     private Task ReloadHistoryAsync() => _history is { } flow ? LoadHistoryAsync(flow) : Task.CompletedTask;
     private Task LoadRunAsync(FlowRunSummaryDto run) => ScopeCommandAsync(async (tenant, generation, token) =>
@@ -358,7 +362,22 @@
     {
         if (_history is null || version.TenantId != tenant || version.FlowId != _history.Id) return;
         var connectors = await Api.GetConnectorsAsync(tenant, token); if (!Current(generation, tenant)) return;
-        _connectors = connectors.Where(c => c.TenantId == tenant).ToArray(); _editorDefinition = _history with { Draft = version.Graph }; _version = version; _dirty = false;
+        _connectors = connectors.Where(c => c.TenantId == tenant).ToArray(); _editorDefinition = _history with { Draft = version.Graph }; _version = version; _recordedRun = null; _dirty = false;
+    }, historyRequest: true);
+    private Task ReplayRunAsync(FlowRunDetailDto detail) => ScopeCommandAsync(async (tenant, generation, token) =>
+    {
+        if (_history is null || detail.Run.FlowId != _history.Id || _runDetail?.Run.Id != detail.Run.Id) return;
+        var flowId = _history.Id;
+        var version = await Api.GetVersionAsync(tenant, detail.Run.FlowVersionId, token);
+        if (!Current(generation, tenant) || _history?.Id != flowId || _runDetail?.Run.Id != detail.Run.Id ||
+            version.TenantId != tenant || version.FlowId != flowId || version.Id != detail.Run.FlowVersionId) return;
+        var hash = Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(version.Graph, new JsonSerializerOptions(JsonSerializerDefaults.Web))));
+        if (!string.Equals(hash, version.ConfigurationHash, StringComparison.Ordinal))
+        { _historyError = "This run's immutable graph could not be verified. Recorded playback is unavailable."; return; }
+        var connectors = await Api.GetConnectorsAsync(tenant, token);
+        if (!Current(generation, tenant) || _history?.Id != flowId || _runDetail?.Run.Id != detail.Run.Id) return;
+        _connectors = connectors.Where(c => c.TenantId == tenant).ToArray();
+        _editorDefinition = _history with { Draft = version.Graph }; _version = version; _recordedRun = detail; _dirty = false;
     }, historyRequest: true);
     private void HistoryVisibleChanged(int generation, bool visible)
     {

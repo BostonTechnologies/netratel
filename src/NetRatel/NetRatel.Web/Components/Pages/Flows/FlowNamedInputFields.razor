@@ -1,0 +1,65 @@
+@using System.Text.Json
+@using NetRatel.Shared.Contracts.Flows
+@using NetRatel.Web.Services.Flows
+
+<section class="flow-named-inputs" data-testid="flow-investigation-inputs">
+    <h4>Additional investigation inputs</h4>
+    <p>Bind labelled event facts or guaranteed earlier outputs. These values add context; they do not replace the original evidence or authorize a repair. Environment variable values are unavailable to investigation.</p>
+    @foreach (var pair in Node.Inputs ?? new Dictionary<string, FlowInputBindingDto>())
+    {
+        var key = pair.Key;
+        @if (pair.Value.DataType == FlowDataType.SecretReference)
+        { <p role="alert">@key: environment references are unavailable to investigation.</p> }
+        else
+        {
+            <FlowInputBindingField @key="@(Node.Id.ToString() + ":" + key)" NodeId="Node.Id" Label="@key" DataType="pair.Value.DataType" Value="pair.Value"
+                ValueChanged="binding => SetInput(key, binding)" EventFields="_fields" Producers="_producers" Disabled="Disabled" />
+        }
+        <button type="button" @onclick="() => SetInput(key, null)" disabled="@Disabled">Remove @key</button>
+    }
+    @if (!Disabled)
+    {
+        <fieldset>
+            <label>Input name<input @bind="_name" maxlength="64" placeholder="diagnosticSummary" data-testid="flow-investigation-input-name" /></label>
+            <label>Input type<select @bind="_type">
+                @foreach (var type in new[] { FlowDataType.Text, FlowDataType.Number, FlowDataType.Boolean, FlowDataType.Json }) { <option value="@type">@type</option> }
+            </select></label>
+            <button type="button" @onclick="AddInput" disabled="@string.IsNullOrWhiteSpace(_name)" data-testid="flow-investigation-add-input">Add input</button>
+        </fieldset>
+    }
+    @if (_error is not null) { <p role="alert">@_error</p> }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public FlowNodeDto Node { get; set; } = default!;
+    [Parameter, EditorRequired] public FlowGraphDto Graph { get; set; } = default!;
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback<FlowNodeDto> Changed { get; set; }
+    private Guid _node; private string _name = ""; private FlowDataType _type = FlowDataType.Text; private string? _error;
+    private IReadOnlyList<FlowBindingFieldDto> _fields = []; private IReadOnlyList<FlowNodeDto> _producers = [];
+    protected override void OnParametersSet()
+    {
+        if (_node != Node.Id) { _node = Node.Id; _name = ""; _error = null; }
+        _fields = FlowAuthoringContext.EventFields(Graph); _producers = FlowAuthoringContext.AvailableProducers(Graph, Node.Id);
+    }
+    private Task SetInput(string key, FlowInputBindingDto? binding)
+    {
+        if (Disabled || binding?.DataType == FlowDataType.SecretReference) return Task.CompletedTask;
+        var inputs = Node.Inputs?.ToDictionary(pair => pair.Key, pair => pair.Value) ?? [];
+        if (binding is null) inputs.Remove(key); else inputs[key] = binding;
+        _error = null; return Changed.InvokeAsync(Node with { Inputs = inputs.Count == 0 ? null : inputs });
+    }
+    private Task AddInput()
+    {
+        if (Disabled) return Task.CompletedTask;
+        var name = _name.Trim();
+        if (name.Length is < 1 or > 64 || !name.All(character => char.IsAsciiLetterOrDigit(character) || character == '_'))
+        { _error = "Use a unique input name containing letters, digits or underscore."; return Task.CompletedTask; }
+        if (Node.Inputs?.ContainsKey(name) == true) { _error = "This input name is already configured."; return Task.CompletedTask; }
+        if (Node.Inputs?.Count >= FlowGraphV2Limits.MaximumBindings) { _error = "The input limit was reached."; return Task.CompletedTask; }
+        var literal = _type switch
+        { FlowDataType.Number => JsonSerializer.SerializeToElement(0), FlowDataType.Boolean => JsonSerializer.SerializeToElement(false),
+          FlowDataType.Json => JsonSerializer.SerializeToElement<object?>(null), _ => JsonSerializer.SerializeToElement("") };
+        var key = name; _name = ""; return SetInput(key, new(FlowInputSource.Literal, _type, Literal: literal));
+    }
+}

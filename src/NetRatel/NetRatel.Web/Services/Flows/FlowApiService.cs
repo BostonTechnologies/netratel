@@ -17,12 +17,15 @@ public interface IFlowApiService
     Task<FlowVersionDto> PublishAsync(int tenantId, Guid flowId, FlowRevisionRequest request, CancellationToken token = default);
     Task<FlowValidationResultDto> ValidateAsync(int tenantId, FlowGraphDto graph, CancellationToken token = default);
     Task<FlowDryRunResultDto> DryRunAsync(int tenantId, FlowDryRunRequest request, CancellationToken token = default);
+    Task<FlowDryRunResultDto> DryRunExecutionAsync(int tenantId, FlowExecutionDryRunRequest request, CancellationToken token = default);
     Task<IReadOnlyList<FlowConnectorReferenceDto>> GetConnectorsAsync(int tenantId, CancellationToken token = default);
     Task<IReadOnlyList<FlowVersionDto>> GetVersionsAsync(int tenantId, Guid flowId, CancellationToken token = default);
     Task<IReadOnlyList<FlowRunSummaryDto>> GetRunsAsync(int tenantId, Guid flowId, CancellationToken token = default);
     Task<FlowRunDetailDto> GetRunAsync(int tenantId, Guid flowId, Guid runId, CancellationToken token = default);
     Task<FlowVersionDto> GetVersionAsync(int tenantId, Guid versionId, CancellationToken token = default);
     Task<FlowRunDetailDto> GetRunByIdAsync(int tenantId, Guid runId, CancellationToken token = default);
+    Task<FlowSchemaCapabilitiesDto> GetSchemaCapabilitiesAsync(int tenantId, CancellationToken token = default) =>
+        Task.FromResult(new FlowSchemaCapabilitiesDto([FlowLimits.SchemaVersion], [FlowLimits.SchemaVersion]));
     Task<IReadOnlyList<FlowTemplateDescriptorDto>> GetTemplatesAsync(int tenantId, CancellationToken token = default) =>
         Task.FromException<IReadOnlyList<FlowTemplateDescriptorDto>>(new NotSupportedException("Flow templates are unavailable."));
     Task<FlowDefinitionDto> CreateFromTemplateAsync(int tenantId, FlowCreateFromTemplateRequest request, CancellationToken token = default) =>
@@ -85,6 +88,7 @@ public sealed class FlowApiService(IHttpClientFactory factory) : IFlowApiService
     public Task<FlowVersionDto> PublishAsync(int tenantId, Guid flowId, FlowRevisionRequest request, CancellationToken token = default) => SendAsync<FlowVersionDto>(HttpMethod.Post, Flow(tenantId, flowId) + "/publish", request, token);
     public Task<FlowValidationResultDto> ValidateAsync(int tenantId, FlowGraphDto graph, CancellationToken token = default) => SendAsync<FlowValidationResultDto>(HttpMethod.Post, Root(tenantId) + "/validate", graph, token);
     public Task<FlowDryRunResultDto> DryRunAsync(int tenantId, FlowDryRunRequest request, CancellationToken token = default) => SendAsync<FlowDryRunResultDto>(HttpMethod.Post, Root(tenantId) + "/dry-run", request, token);
+    public Task<FlowDryRunResultDto> DryRunExecutionAsync(int tenantId, FlowExecutionDryRunRequest request, CancellationToken token = default) => SendAsync<FlowDryRunResultDto>(HttpMethod.Post, Root(tenantId) + "/dry-run-execution", request, token);
     public Task<IReadOnlyList<FlowConnectorReferenceDto>> GetConnectorsAsync(int tenantId, CancellationToken token = default) => SendAsync<IReadOnlyList<FlowConnectorReferenceDto>>(HttpMethod.Get, Root(tenantId) + "/connectors", null, token);
     public Task<IReadOnlyList<FlowVersionDto>> GetVersionsAsync(int tenantId, Guid flowId, CancellationToken token = default) => SendAsync<IReadOnlyList<FlowVersionDto>>(HttpMethod.Get, Flow(tenantId, flowId) + "/versions", null, token);
     public Task<IReadOnlyList<FlowRunSummaryDto>> GetRunsAsync(int tenantId, Guid flowId, CancellationToken token = default) => SendAsync<IReadOnlyList<FlowRunSummaryDto>>(HttpMethod.Get, Flow(tenantId, flowId) + "/runs", null, token);
@@ -92,6 +96,8 @@ public sealed class FlowApiService(IHttpClientFactory factory) : IFlowApiService
     public Task<FlowVersionDto> GetVersionAsync(int tenantId, Guid versionId, CancellationToken token = default) => SendAsync<FlowVersionDto>(HttpMethod.Get, Root(tenantId) + $"/versions/{versionId:D}", null, token);
     public Task<FlowRunDetailDto> GetRunByIdAsync(int tenantId, Guid runId, CancellationToken token = default) => SendAsync<FlowRunDetailDto>(HttpMethod.Get, Root(tenantId) + $"/runs/{runId:D}", null, token);
 
+    public Task<FlowSchemaCapabilitiesDto> GetSchemaCapabilitiesAsync(int tenantId, CancellationToken token = default) =>
+        SendAsync<FlowSchemaCapabilitiesDto>(HttpMethod.Get, Root(tenantId) + "/schema-capabilities", null, token);
     public Task<IReadOnlyList<FlowTemplateDescriptorDto>> GetTemplatesAsync(int tenantId, CancellationToken token = default) =>
         SendAsync<IReadOnlyList<FlowTemplateDescriptorDto>>(HttpMethod.Get, Root(tenantId) + "/templates", null, token);
     public Task<FlowDefinitionDto> CreateFromTemplateAsync(int tenantId, FlowCreateFromTemplateRequest request, CancellationToken token = default) =>
@@ -136,6 +142,8 @@ public sealed class FlowApiService(IHttpClientFactory factory) : IFlowApiService
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromSeconds(30));
         using var request = new HttpRequestMessage(method, path);
+        if (body is FlowSaveDraftRequest { Graph.SchemaVersion: FlowGraphV2Limits.SchemaVersion } or FlowGraphDto { SchemaVersion: FlowGraphV2Limits.SchemaVersion })
+            request.Headers.Add("X-NetRatel-Flow-Schema", FlowGraphV2Limits.SchemaVersion.ToString(System.Globalization.CultureInfo.InvariantCulture));
         if (body is not null) request.Content = JsonContent.Create(body, body.GetType());
         try
         {

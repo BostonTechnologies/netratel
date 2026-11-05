@@ -1,4 +1,5 @@
 using Bunit;
+using System.Text.Json;
 using AwesomeAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor;
@@ -106,6 +107,46 @@ public sealed class FlowTypedEditorTests : AsyncBunitContext
         _api.TemplateCreates.Should().Be(1); _api.CapabilityReads.Should().BeGreaterThan(0);
         _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0); _api.DryRunCalls.Should().Be(0);
         cut.Find("[data-testid=flow-publish]").HasAttribute("disabled").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Investigation_Inputs_Use_Explicit_Typed_Earlier_Outputs_And_Never_Secret_References()
+    {
+        var source = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.ExecutionEvent, "Synthetic source", new(0, 0));
+        var diagnostic = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.RunLibraryScript, "Synthetic permitted diagnostic", new(300, 0));
+        var ai = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.InvestigateWithAi, "Investigate failure", new(600, 0));
+        var graph = new FlowGraphDto(2, [source, diagnostic, ai],
+            [new(source.Id, "event", diagnostic.Id, "in") { Id = Guid.NewGuid() },
+             .. FlowNodeCatalogue.Find(diagnostic.Kind)!.Ports.Where(port => port.Direction == FlowPortDirection.Output)
+                .Select(port => new FlowEdgeDto(diagnostic.Id, port.Id, ai.Id, "in") { Id = Guid.NewGuid() })], new());
+        FlowNodeDto? changed = null;
+        var cut = Render<FlowNamedInputFields>(p => p.Add(component => component.Node, ai).Add(component => component.Graph, graph)
+            .Add(component => component.Changed, value => changed = value));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-investigation-input-name]").ChangeAsync(new() { Value = "diagnosticSummary" }));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-investigation-add-input]").ClickAsync(new()));
+        cut.Render(p => p.Add(component => component.Node, changed!));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-binding-source]").ChangeAsync(new() { Value = nameof(FlowInputSource.NodeOutput) }));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-binding-node]").ChangeAsync(new() { Value = diagnostic.Id.ToString() }));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-binding-output]").ChangeAsync(new() { Value = "summary" }));
+        changed!.Inputs!["diagnosticSummary"].Should().Be(new FlowInputBindingDto(FlowInputSource.NodeOutput, FlowDataType.Text, "summary", diagnostic.Id));
+        cut.FindAll("option").Select(option => option.GetAttribute("value")).Should().NotContain(nameof(FlowInputSource.SecretReference));
+        _api.SaveCalls.Should().Be(0); _api.DryRunCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Native_Secret_Input_Stores_Only_A_Validated_Target_Environment_Variable_Name()
+    {
+        FlowInputBindingDto? changed = null;
+        var cut = Render<FlowInputBindingField>(p => p.Add(component => component.NodeId, Guid.NewGuid()).Add(component => component.Label, "Native secret reference")
+            .Add(component => component.DataType, FlowDataType.SecretReference).Add(component => component.ValueChanged, value => changed = value));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-binding-source]").ChangeAsync(new() { Value = nameof(FlowInputSource.SecretReference) }));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-binding-secret-reference]").ChangeAsync(new() { Value = "DB_PASSWORD" }));
+        changed!.Path.Should().Be("DB_PASSWORD"); changed.Literal.Should().BeNull();
+        cut.Markup.Should().Contain("Environment variable name");
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-binding-secret-reference]").ChangeAsync(new() { Value = "vault/private/key" }));
+        cut.Find("[role=alert]").TextContent.Should().Contain("environment variable name");
+        changed.Path.Should().Be("DB_PASSWORD");
+        _api.SaveCalls.Should().Be(0); _api.DryRunCalls.Should().Be(0);
     }
 
     private IRenderedComponent<FlowEditor> Editor(FlowDefinitionDto definition, bool supportsTwo) => Render<FlowEditor>(p => p

@@ -29,7 +29,7 @@ else
             <label>Maximum wait (minutes)<input type="number" min="1" max="@FlowGraphV2Limits.MaximumOperationMinutes" value="@action.TimeoutMinutes" @onchange="SetTimeout" data-testid="flow-execution-timeout" /></label>
             @if (Node.Kind == FlowNodeKind.RunJob)
             {
-                <p data-testid="flow-job-bound-target"><strong>Job endpoint:</strong> @TargetName(action.Target)</p>
+                <p data-testid="flow-job-bound-target"><strong>Job endpoint:</strong> @(action.Target is null ? "Bound endpoint not configured" : TargetName(action.Target))</p>
                 <p class="flow-execution-help">This job retains its configured tenant and endpoint.</p>
             }
             else

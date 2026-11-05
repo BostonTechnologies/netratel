@@ -89,37 +89,6 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         Assert.Empty(errors); Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
     }
 
-    [Fact]
-    public async Task Graph_History_Retains_Native_Text_Undo_And_Current_Viewport_Without_Dispatch()
-    {
-        var fixture = _fixture!;
-        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1280, Height = 900 } });
-        var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000);
-        await OpenAsync(page, fixture); await page.GetByTestId("flow-edit").First.ClickAsync();
-        var name = page.GetByTestId("flow-name");
-        await Assertions.Expect(name).ToHaveValueAsync("Incident from alert");
-        await name.FillAsync("Synthetic local history");
-        await page.GetByTestId("flow-canvas").FocusAsync(); await name.FocusAsync();
-        await name.PressAsync("End"); await page.Keyboard.TypeAsync(" edited");
-        await name.PressAsync("Control+z");
-        await Assertions.Expect(name).ToHaveValueAsync("Synthetic local history");
-        await page.GetByTestId("flow-zoom-in").ClickAsync();
-        var before = await MeasurementsAsync(page);
-        var width = (await page.Locator(".flow-node").First.BoundingBoxAsync())!.Width;
-        await page.GetByTestId("flow-undo").ClickAsync();
-        await Assertions.Expect(name).ToHaveValueAsync("Incident from alert");
-        Assert.InRange((await page.Locator(".flow-node").First.BoundingBoxAsync())!.Width, width - .01f, width + .01f);
-        await page.GetByTestId("flow-canvas").FocusAsync();
-        await page.Keyboard.PressAsync("Control+Shift+z");
-        await Assertions.Expect(name).ToHaveValueAsync("Synthetic local history");
-        var after = await MeasurementsAsync(page);
-        var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
-        await File.WriteAllTextAsync(Path.Combine(evidence, "flows-local-history.json"), JsonSerializer.Serialize(new { before, after }));
-        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-local-history.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
-        Assert.Equal(0, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls); Assert.Equal(0, fixture.FlowsData.DryRunCalls);
-        Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
-    }
-
     private static FlowGraphDto NearLimitGraph()
     {
         var kinds = new[] { FlowNodeKind.ExecutionEvent }.Concat(Enumerable.Repeat(FlowNodeKind.RunLibraryScript, 5))

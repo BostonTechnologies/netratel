@@ -38,8 +38,10 @@ public sealed class FlowAuthoringFieldsTests : AsyncBunitContext
     {
         var definition = new FlowExecutionDefinitionDto("42", "Synthetic library script");
         var pending = new TaskCompletionSource<FlowExecutionActionSettingsDto>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _api.DefinitionSearch = (tenant, source, _, _, _, _) => Task.FromResult(new FlowExecutionDefinitionsPageDto(tenant == 17 ? [new(source, definition)] : []));
-        _api.DefinitionDetails = (_, _, _, _) => pending.Task;
+        var current = new FlowExecutionDefinitionDto("43", "Current tenant library script");
+        _api.DefinitionSearch = (tenant, source, _, _, _, _) => Task.FromResult(new FlowExecutionDefinitionsPageDto([new(source, tenant == 17 ? definition : current)]));
+        _api.DefinitionDetails = (_, source, id, _) => id == definition.Id ? pending.Task :
+            Task.FromResult(new FlowExecutionActionSettingsDto(source, current));
         var selections = 0;
         var cut = Render<FlowExecutionDefinitionPicker>(p => p.Add(component => component.TenantId, 17).Add(component => component.NodeId, Guid.NewGuid())
             .Add(component => component.SourceKind, FlowExecutionSourceKind.Script).Add(component => component.Selected, _ => selections++));
@@ -49,7 +51,11 @@ public sealed class FlowAuthoringFieldsTests : AsyncBunitContext
         cut.Render(p => p.Add(component => component.TenantId, 23).Add(component => component.NodeId, Guid.NewGuid()));
         pending.SetResult(new(FlowExecutionSourceKind.Script, definition));
         await choose;
-        Assert.Equal(0, selections); Assert.Empty(cut.FindAll("[data-testid=flow-definition-choice]"));
+        Assert.Equal(0, selections);
+        await cut.WaitForAssertionAsync(() => Assert.False(cut.Find("[data-testid=flow-definition-choice]").HasAttribute("disabled")));
+        Assert.Contains("Current tenant library script", cut.Markup, StringComparison.Ordinal);
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-definition-choice]").ClickAsync(new()));
+        Assert.Equal(1, selections);
     }
 
     [Fact]
@@ -100,7 +106,32 @@ public sealed class FlowAuthoringFieldsTests : AsyncBunitContext
         await cut.InvokeAsync(() => cut.Find("[data-testid=flow-trigger-request-system-add]").ClickAsync(new()));
         Assert.Equal("Canonical.Source", Assert.Single(changed!.ExecutionTrigger!.RequestKinds!));
         Assert.Contains(FlowExecutionOutcome.Unknown, changed.ExecutionTrigger.Outcomes);
+        cut.Render(p => p.Add(component => component.Node, changed));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-trigger-source-Request]").ChangeAsync(new() { Value = false }));
+        Assert.Contains("Retain at least one execution source", cut.Find("[role=alert]").TextContent, StringComparison.Ordinal);
+        Assert.Contains(FlowExecutionSourceKind.Request, changed.ExecutionTrigger.Sources);
         Assert.Equal(0, _api.SaveCalls); Assert.Equal(0, _api.PublishCalls); Assert.Equal(0, _api.DryRunCalls);
+    }
+
+    [Fact]
+    public async Task Script_Source_Uses_Its_Own_Native_Target_Catalogue_And_Retained_Names()
+    {
+        var agent = Guid.NewGuid();
+        var node = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.ExecutionEvent, "Synthetic script events", new(0, 0))
+        { ExecutionTrigger = new([FlowExecutionSourceKind.Script], [FlowExecutionOutcome.Failed], FlowExecutionScope.AllInTenant) { AgentIds = [agent] } };
+        _api.TargetSearch = (_, source, _, _, _, _) =>
+        {
+            Assert.Equal(FlowExecutionSourceKind.Script, source); return Task.FromResult(new FlowExecutionTargetsPageDto([]));
+        };
+        _api.TargetSelections = (_, source, ids, _) =>
+        {
+            Assert.Equal(FlowExecutionSourceKind.Script, source);
+            return Task.FromResult<IReadOnlyList<FlowExecutionTargetSelectionDto>>([new(new(ids[0], "Retained synthetic script endpoint"), false)]);
+        };
+        var cut = Render<FlowExecutionTriggerFields>(p => p.Add(component => component.TenantId, 17).Add(component => component.Node, node));
+        await cut.WaitForAssertionAsync(() => Assert.Contains("Retained synthetic script endpoint", cut.Markup, StringComparison.Ordinal));
+        Assert.Contains("Unavailable for new actions", cut.Markup, StringComparison.Ordinal);
+        Assert.Equal(1, _api.TargetSearchCalls); Assert.Equal(1, _api.TargetSelectionCalls); Assert.Equal(0, _api.SaveCalls);
     }
 
     [Fact]
@@ -114,6 +145,9 @@ public sealed class FlowAuthoringFieldsTests : AsyncBunitContext
         Assert.Contains("Synthetic bound job endpoint", cut.Find("[data-testid=flow-job-bound-target]").TextContent, StringComparison.Ordinal);
         Assert.Empty(cut.FindAll("[data-testid=flow-script-target-mode]")); Assert.Equal(0, _api.TargetSearchCalls);
         Assert.Equal(0, _api.DefinitionSearchCalls); Assert.Equal(0, _api.SaveCalls);
+        cut.Render(p => p.Add(component => component.Node, node with { ExecutionAction = node.ExecutionAction! with { Target = null } }));
+        Assert.Contains("Bound endpoint not configured", cut.Find("[data-testid=flow-job-bound-target]").TextContent, StringComparison.Ordinal);
+        Assert.DoesNotContain("Source event endpoint", cut.Find("[data-testid=flow-job-bound-target]").TextContent, StringComparison.Ordinal);
     }
 
     [Fact]
