@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Microsoft.Playwright;
 using NetRatel.Shared.Contracts.Flows;
@@ -164,7 +165,20 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1600, Height = 1000 } });
         var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000);
         // Test the cancellable full-window fallback explicitly; native fullscreen Escape is browser-owned.
-        await page.AddInitScriptAsync("Object.defineProperty(document, 'fullscreenEnabled', { configurable: true, get: () => false });");
+        await page.AddInitScriptAsync("""
+            Object.defineProperty(document, 'fullscreenEnabled', { configurable: true, get: () => false });
+            const captures=new Set(),add=window.addEventListener,remove=window.removeEventListener;
+            window.addEventListener=function(type,listener,options){
+                if(type==='pointermove'&&(options===true||options?.capture))captures.add(listener);
+                return add.call(this,type,listener,options);
+            };
+            window.removeEventListener=function(type,listener,options){
+                if(type==='pointermove'&&(options===true||options?.capture))captures.delete(listener);
+                return remove.call(this,type,listener,options);
+            };
+            window.flowMoveCaptureCount=()=>captures.size;
+            """);
+        var frames = new TransientMoveFrames(page);
         var errors = new List<string>(); page.PageError += (_, error) => errors.Add(error);
         foreach (var (path, mime) in new[] { ("/_content/VeloxDev.Razor/veloxdev.workflow.css", "text/css"), ("/_content/VeloxDev.Razor/veloxdev.workflow.js", "text/javascript"), ("/js/flows-editor.js", "text/javascript") })
         {
@@ -172,6 +186,7 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
             Assert.Equal(200, asset.Status); Assert.Contains(mime, asset.Headers["content-type"]);
         }
         await OpenPageAsync(page, fixture);
+        var captureBaseline = await page.EvaluateAsync<int>("() => window.flowMoveCaptureCount()");
         await page.GetByTestId("flows-new").ClickAsync(); await page.GetByTestId("flow-create-name").FillAsync("Native canvas roundtrip");
         await page.GetByTestId("flow-create-blank").ClickAsync();
         await page.GetByTestId("flow-editor").WaitForAsync();
@@ -191,11 +206,34 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         var action = await page.Locator("[data-node-kind=CreateIncident]").GetAttributeAsync("data-node-id");
         await page.GetByTestId("flow-focus").ClickAsync();
         await Assertions.Expect(page.GetByTestId("flow-focus")).ToHaveAttributeAsync("aria-pressed", "true");
+        await page.GetByTestId("flow-canvas").FocusAsync();
+        var blank = await page.GetByTestId("flow-canvas").EvaluateAsync<JsonElement>("""
+            panel=>{const scroller=panel.querySelector('.veloxdev-wf-scroll'),r=scroller.getBoundingClientRect();
+                const x=r.right-100,y=r.bottom-100,hit=document.elementFromPoint(x,y);
+                return{x,y,blank:!!hit&&scroller.contains(hit)&&!hit.closest('.flow-node,.flow-connection,.flow-canvas-tools,.flow-edge-tools,.veloxdev-wf-minimap')};}
+            """);
+        Assert.True(blank.GetProperty("blank").GetBoolean());
+        var blankX = blank.GetProperty("x").GetSingle(); var blankY = blank.GetProperty("y").GetSingle();
+        await frames.PrimeAsync(page, () => page.Mouse.MoveAsync(blankX, blankY));
+        var idleMoves = await ObserveTransientMovesAsync(page, frames,
+            () => page.Mouse.MoveAsync(blankX - 60, blankY - 40, new() { Steps = 16 }));
         var cancelPort = (await page.Locator($"[data-port-node='{trigger}'][data-port-direction=output] svg").BoundingBoxAsync())!;
-        await page.Mouse.MoveAsync(cancelPort.X + cancelPort.Width / 2, cancelPort.Y + cancelPort.Height / 2);
+        await frames.PrimeAsync(page, () => page.Mouse.MoveAsync(cancelPort.X + cancelPort.Width / 2, cancelPort.Y + cancelPort.Height / 2));
         await page.Mouse.DownAsync();
-        await page.Mouse.MoveAsync(cancelPort.X + 100, cancelPort.Y + 40, new() { Steps = 4 });
+        var ghostMoves = await ObserveTransientMovesAsync(page, frames,
+            () => page.Mouse.MoveAsync(cancelPort.X + 100, cancelPort.Y + 40, new() { Steps = 16 }));
         await page.WaitForFunctionAsync("() => !document.querySelector('[data-testid=flow-virtual-link]').hasAttribute('hidden')");
+        var transientEvidence = EvidenceRoot(); Directory.CreateDirectory(transientEvidence);
+        await File.WriteAllTextAsync(Path.Combine(transientEvidence, "flows-native-transient-moves.json"),
+            JsonSerializer.Serialize(new { idleMoves, ghostMoves, frames.ObservedSockets, frames.ObservedRenderBatches }));
+        foreach (var observation in new[] { idleMoves, ghostMoves })
+        {
+            Assert.True(observation.Dom.GetProperty("physical").GetInt32() > 1, "The probe must execute multiple actual pointer moves.");
+            Assert.Equal(0, observation.Dom.GetProperty("delegated").GetInt32());
+            Assert.Equal(0, observation.PointerMoveEvents); Assert.Equal(0, observation.RenderBatches);
+        }
+        Assert.True(frames.ObservedSockets > 0); Assert.True(frames.ObservedRenderBatches > 0);
+        Assert.True(await page.EvaluateAsync<int>("() => window.flowMoveCaptureCount()") > captureBaseline);
         await page.EvaluateAsync("document.dispatchEvent(new PointerEvent('pointerup', { pointerId: 999999, pointerType: 'touch', bubbles: true }))");
         Assert.False(await page.GetByTestId("flow-virtual-link").EvaluateAsync<bool>("path => path.hasAttribute('hidden')"));
         await page.Keyboard.PressAsync("Escape");
@@ -277,7 +315,8 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(0);
         Assert.Empty(errors);
         Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
-
+        await CloseEditorAsync(page);
+        await page.WaitForFunctionAsync("expected => window.flowMoveCaptureCount()===expected", captureBaseline);
     }
 
     [Fact]
@@ -472,6 +511,84 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await page.GotoAsync($"{fixture.BaseAddress}/flows?tenantId=17&version={fixture.FlowsData.SeededVersionId:D}", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
         await Assertions.Expect(page.GetByTestId("flow-dirty")).ToContainTextAsync("Immutable version 1");
         Assert.Equal(0, await page.GetByTestId("flow-save").CountAsync()); Assert.Equal(0, fixture.FlowsData.HistoryReads);
+    }
+    private sealed record TransientMoveObservation(JsonElement Dom, int PointerMoveEvents, int RenderBatches);
+    private static async Task<TransientMoveObservation> ObserveTransientMovesAsync(IPage page, TransientMoveFrames frames, Func<Task> move)
+    {
+        await using var observer = await page.EvaluateHandleAsync("""
+            () => {
+                const panel=document.querySelector('[data-testid=flow-canvas]');let physical=0,delegated=0;
+                const countPhysical=e=>{if(panel.contains(e.target))physical++},countDelegated=e=>{if(panel.contains(e.target))delegated++};
+                window.addEventListener('pointermove',countPhysical,true);document.addEventListener('pointermove',countDelegated);
+                return{snapshot:()=>({physical,delegated}),dispose:()=>{
+                    window.removeEventListener('pointermove',countPhysical,true);document.removeEventListener('pointermove',countDelegated);
+                }};
+            }
+            """);
+        frames.Start();
+        try
+        {
+            await move();
+            // The ghost's scheduled SVG draw must execute before taking the browser-side observation.
+            await page.EvaluateAsync("() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+            var dom = await observer.EvaluateAsync<JsonElement>("observer => observer.snapshot()");
+            var counts = frames.Stop();
+            return new(dom, counts.Moves, counts.Renders);
+        }
+        finally { frames.Stop(); await observer.EvaluateAsync("observer => observer.dispose()"); }
+    }
+    private sealed class TransientMoveFrames
+    {
+        private int _pending, _sawMove, _recording, _moves, _renders, _sockets, _allRenders;
+        private TaskCompletionSource _settled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int ObservedSockets => Volatile.Read(ref _sockets);
+        public int ObservedRenderBatches => Volatile.Read(ref _allRenders);
+        public TransientMoveFrames(IPage page) => page.WebSocket += (_, socket) =>
+        {
+            if (!new Uri(socket.Url).AbsolutePath.EndsWith("/_blazor", StringComparison.Ordinal)) return;
+            Interlocked.Increment(ref _sockets);
+            socket.FrameSent += (_, frame) =>
+            {
+                var payload = Payload(frame);
+                Interlocked.Add(ref _pending, Occurrences(payload, "BeginInvokeDotNetFromJS"));
+                if (payload.Contains("DispatchEventAsync", StringComparison.Ordinal) && payload.Contains("pointermove", StringComparison.Ordinal))
+                {
+                    Volatile.Write(ref _sawMove, 1);
+                    if (Volatile.Read(ref _recording) != 0) Interlocked.Increment(ref _moves);
+                }
+            };
+            socket.FrameReceived += (_, frame) =>
+            {
+                var payload = Payload(frame); var renders = Occurrences(payload, "JS.RenderBatch");
+                Interlocked.Add(ref _allRenders, renders);
+                if (Volatile.Read(ref _recording) != 0) Interlocked.Add(ref _renders, renders);
+                var ended = Occurrences(payload, "JS.EndInvokeDotNet");
+                if (ended > 0 && Interlocked.Add(ref _pending, -ended) == 0 && Volatile.Read(ref _sawMove) != 0) _settled.TrySetResult();
+            };
+        };
+        public async Task PrimeAsync(IPage page, Func<Task> move)
+        {
+            // Leaving the canvas clears its idle target; re-entry must forward a real native transition.
+            await page.Mouse.MoveAsync(1, 1);
+            _settled = new(TaskCreationOptions.RunContinuationsAsynchronously); Volatile.Write(ref _sawMove, 0);
+            await move();
+            // The actual native dispatch and all preceding circuit calls must complete before measurement.
+            try { await _settled.Task.WaitAsync(TimeSpan.FromSeconds(30)); }
+            catch (TimeoutException)
+            {
+                Console.WriteLine($"Native pointer fence: sockets={ObservedSockets}, renders={ObservedRenderBatches}, pending={Volatile.Read(ref _pending)}, sawMove={Volatile.Read(ref _sawMove)}");
+                throw;
+            }
+        }
+        public void Start() { Interlocked.Exchange(ref _moves, 0); Interlocked.Exchange(ref _renders, 0); Volatile.Write(ref _recording, 1); }
+        public (int Moves, int Renders) Stop() { Volatile.Write(ref _recording, 0); return (Volatile.Read(ref _moves), Volatile.Read(ref _renders)); }
+        private static string Payload(IWebSocketFrame frame) => frame.Binary is { } bytes ? Encoding.UTF8.GetString(bytes) : frame.Text ?? "";
+        private static int Occurrences(string value, string marker)
+        {
+            var count = 0;
+            for (var position = 0; (position = value.IndexOf(marker, position, StringComparison.Ordinal)) >= 0; position += marker.Length) count++;
+            return count;
+        }
     }
     private static async Task GestureAsync(IPage page, ILocator from, ILocator to)
     {

@@ -23,7 +23,8 @@ public sealed class FlowEditorHistory
     public void Record(string name, FlowGraphDto graph, Guid? selection, string? group = null)
     {
         // Keeping the current viewport on restore avoids undoing zoom, pan or window resize.
-        var json = JsonSerializer.Serialize(graph with { Viewport = new() });
+        var snapshot = graph with { Viewport = new() };
+        var json = graph.SchemaVersion == FlowGraphV2Limits.SchemaVersion ? FlowGraphSerialization.Serialize(snapshot) : JsonSerializer.Serialize(snapshot);
         var fingerprint = name + "\n" + json;
         var entry = new FlowEditorHistoryEntry(fingerprint, name.Length, selection);
         if (_cursor >= 0 && _entries[_cursor].Fingerprint == fingerprint)
@@ -66,7 +67,8 @@ public sealed class FlowEditorHistory
 
 public sealed record FlowEditorHistoryEntry(string Fingerprint, int NameLength, Guid? SelectedNodeId)
 {
+    private static readonly JsonSerializerOptions ReadJson = new(JsonSerializerDefaults.Web);
     public string Name => Fingerprint[..NameLength];
-    public FlowGraphDto Graph => JsonSerializer.Deserialize<FlowGraphDto>(Fingerprint[(NameLength + 1)..])
+    public FlowGraphDto Graph => JsonSerializer.Deserialize<FlowGraphDto>(Fingerprint[(NameLength + 1)..], ReadJson)
         ?? throw new InvalidOperationException("The local graph history is unavailable.");
 }
