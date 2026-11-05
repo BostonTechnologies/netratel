@@ -65,7 +65,9 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
             var failure = outcome == FlowCheckpointWriteDisposition.Denied &&
                 FlowNodeCatalogue.Port(node.Kind, FlowNodeCatalogue.Denied, FlowPortDirection.Output) is not null
                 ? Complete(lease, node, basis, FlowNodeCatalogue.Denied,
-                    JsonSerializer.SerializeToElement(new { outcome = "denied", code }, Json), basis.Fields)
+                    node.Kind == FlowNodeKind.InvestigateWithAi ? AiOutput(new(FlowIncidentActionResultKind.Failed, code)) :
+                        ExecutionOutput(new(FlowExecutionActionDisposition.Denied, code,
+                            basis.AcceptedReceipt?.Deserialize<FlowExecutionActionReceipt>(Json))), basis.Fields)
                 : Fail(lease, node, basis, code);
             if (FlowNodeCheckpointRules.CanAdvance(lease, prior, failure) &&
                 await checkpoints.SaveNodeCheckpointAsync(lease, prior.Revision, failure, ct).ConfigureAwait(false) == FlowCheckpointWriteDisposition.Stored)
@@ -117,12 +119,17 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
             if (inputError is null)
                 foreach (var pair in node.Inputs ?? new Dictionary<string, FlowInputBindingDto>())
                     if (!state.Inputs.ContainsKey(pair.Key)) { inputError = pair.Value.Source == FlowInputSource.SecretReference ? "secret-reference-unavailable" : "node-input-unavailable"; break; }
+            if (node.Kind == FlowNodeKind.InvestigateWithAi &&
+                JsonSerializer.SerializeToUtf8Bytes(state.Inputs, Json).Length > FlowGraphV2Limits.MaximumInvestigationInputBytes)
+                inputError = "investigation-input-limit";
             if (inputError is not null)
             {
-                var inputFailure = inputError == "secret-reference-unavailable" &&
+                var inputFailure =
                     FlowNodeCatalogue.Port(node.Kind, FlowNodeCatalogue.Unsupported, FlowPortDirection.Output) is not null
                     ? Complete(lease, node, state, FlowNodeCatalogue.Unsupported,
-                        JsonSerializer.SerializeToElement(new { outcome = "unsupported", code = inputError }, Json), state.Fields)
+                        node.Kind == FlowNodeKind.InvestigateWithAi
+                            ? AiOutput(new(FlowIncidentActionResultKind.Unavailable, SafeCode(inputError)))
+                            : ExecutionOutput(new(FlowExecutionActionDisposition.Unsupported, SafeCode(inputError))), state.Fields)
                     : Fail(lease, node, state, SafeCode(inputError));
                 if (!await SaveAsync(inputFailure).ConfigureAwait(false)) return Resume("node-error-not-committed");
                 continue;
@@ -205,7 +212,8 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
                     target.Kind == FlowActionKind.NetclawInvestigation ? state.Fields ?? InitialFields(lease) :
                         current!.PreparedActionFields?.GetValueOrDefault(target.Id) ?? FieldsForAction(lease, current))
                 { Kind = target.Kind, AiSettings = target.Kind == FlowActionKind.NetclawInvestigation ? node.AiSettings : null,
-                    AiDeadlineAtUtc = target.Kind == FlowActionKind.NetclawInvestigation ? state.DeadlineAtUtc : null };
+                    AiDeadlineAtUtc = target.Kind == FlowActionKind.NetclawInvestigation ? state.DeadlineAtUtc : null,
+                    InvestigationInputs = target.Kind == FlowActionKind.NetclawInvestigation && state.Inputs.Count > 0 ? state.Inputs : null };
 
             async Task<bool> PrepareTargetAsync(FlowActionTargetDto target)
             {

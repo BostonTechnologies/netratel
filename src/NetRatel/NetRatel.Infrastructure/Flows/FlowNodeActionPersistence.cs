@@ -23,6 +23,10 @@ public sealed partial class FlowPersistenceService
         var node = lease.Version.Graph.Nodes.SingleOrDefault(node => node.Id == state.NodeId);
         if (node is null || (node.Kind == FlowNodeKind.ActionGroup
             ? node.Actions?.Any(action => action.Id == draft.ActionNodeId) != true : node.Id != draft.ActionNodeId)) return null;
+        var expectedInputs = draft.Kind == FlowActionKind.NetclawInvestigation && state.Inputs.Count > 0 ? state.Inputs : null;
+        if (Serialize(expectedInputs) != Serialize(draft.InvestigationInputs) ||
+            draft.InvestigationInputs is not null && System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(draft.InvestigationInputs, Json).Length >
+                FlowGraphV2Limits.MaximumInvestigationInputBytes) return null;
         var configured = draft.Kind == FlowActionKind.NetclawInvestigation ? node.AiSettings : null;
         if (Serialize(configured) != Serialize(draft.AiSettings) ||
             (draft.Kind == FlowActionKind.NetclawInvestigation ? draft.AiDeadlineAtUtc != state.DeadlineAtUtc : draft.AiDeadlineAtUtc is not null))
