@@ -177,6 +177,20 @@ export function attachShell(id, reference) {
         event.preventDefault(); event.stopImmediatePropagation();
         void state.setFocus(!state.focused);
     };
+    const historyPointer = event => {
+        if (state.disposed || root.dataset.historyEnabled !== 'true' || event.button > 0 ||
+            !event.target.closest?.('[data-testid="flow-canvas"]')) return;
+        // One callback per physical gesture, before Velox's mousedown/move commands.
+        reference.invokeMethodAsync("BeginCanvasEditGesture").catch(() => {});
+    };
+    const historyKey = event => {
+        if (state.disposed || root.dataset.historyEnabled !== 'true' || isEditing() || event.altKey ||
+            !(event.ctrlKey || event.metaKey) || root.querySelector('dialog[open]')) return;
+        const key = event.key.toLowerCase();
+        if (key !== 'z' && key !== 'y') return;
+        event.preventDefault(); event.stopImmediatePropagation();
+        reference.invokeMethodAsync("NavigateGraphHistory", key === 'y' || event.shiftKey).catch(() => {});
+    };
     const fullscreen = () => {
         if (state.ownsNative && document.fullscreenElement !== document.documentElement) {
             state.ownsNative = false;
@@ -202,12 +216,16 @@ export function attachShell(id, reference) {
     observer.observe(document.body, { childList: true, subtree: true });
     observer.observe(root, { attributes: true, attributeFilter: ['class'] });
     root.addEventListener('click', click, true);
+    root.addEventListener('pointerdown', historyPointer, true);
+    root.addEventListener('keydown', historyKey, true);
     document.addEventListener('keydown', escape, true);
     document.addEventListener('fullscreenchange', fullscreen);
     state.dispose = () => {
         state.disposed = true;
         observer.disconnect();
         root.removeEventListener('click', click, true);
+        root.removeEventListener('pointerdown', historyPointer, true);
+        root.removeEventListener('keydown', historyKey, true);
         document.removeEventListener('keydown', escape, true);
         document.removeEventListener('fullscreenchange', fullscreen);
         if (state.preview) { state.preview.element.removeEventListener('cancel', state.preview.cancel); state.preview.element.close(); }
