@@ -191,6 +191,8 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await page.Mouse.DownAsync();
         await page.Mouse.MoveAsync(cancelPort.X + 100, cancelPort.Y + 40, new() { Steps = 4 });
         await page.WaitForFunctionAsync("() => !document.querySelector('[data-testid=flow-virtual-link]').hasAttribute('hidden')");
+        await page.EvaluateAsync("document.dispatchEvent(new PointerEvent('pointerup', { pointerId: 999999, pointerType: 'touch', bubbles: true }))");
+        Assert.False(await page.GetByTestId("flow-virtual-link").EvaluateAsync<bool>("path => path.hasAttribute('hidden')"));
         await page.Keyboard.PressAsync("Escape");
         await Assertions.Expect(page.GetByTestId("flow-virtual-link")).ToHaveAttributeAsync("hidden", "hidden");
         await Assertions.Expect(page.GetByTestId("flow-focus")).ToHaveAttributeAsync("aria-pressed", "true");

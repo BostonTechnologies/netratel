@@ -5,7 +5,7 @@ export function attach(id, reference) {
     detach(id);
     const panel = document.getElementById(id);
     if (!panel) return;
-    let gesture = null, frame = 0, disposed = false, suppressClick = false;
+    let gesture = null, frame = 0, disposed = false, suppressClick = false, keyboardCancelled = false;
     const ghost = () => panel.querySelector('[data-testid="flow-virtual-link"]');
     const message = () => panel.parentElement?.querySelector('[data-testid="flow-connection-message"]');
     const portAt = event => document.elementFromPoint(event.clientX, event.clientY)?.closest('.flow-port');
@@ -36,23 +36,24 @@ export function attach(id, reference) {
         path.setAttribute('d', `M ${x},${y} C ${x + pull},${y} ${ex - pull},${ey} ${ex},${ey}`);
         path.removeAttribute('hidden');
     };
-    const clear = () => {
+    const clear = (restoreKeyboard = true) => {
         if (frame) cancelAnimationFrame(frame);
         frame = 0; gesture = null;
         ghost()?.setAttribute('hidden', 'hidden');
         clearHighlights();
-        syncKeyboard();
+        if (restoreKeyboard) syncKeyboard();
     };
     const cancel = () => {
         if (!gesture && !panel.dataset.connectionStart) return;
-        clear();
+        keyboardCancelled = true;
+        clear(false);
         if (!disposed) reference.invokeMethodAsync('CancelPortConnection').catch(() => {});
     };
     const down = event => {
         const source = event.target.closest?.('.flow-port');
         if (!source || !panel.contains(source)) return;
         if (gesture && gesture.pointerId !== event.pointerId) return;
-        suppressClick = false;
+        suppressClick = false; keyboardCancelled = false;
         if (!writable()) { event.preventDefault(); event.stopImmediatePropagation(); return; }
         if (event.pointerType === 'touch' || source.dataset.portDirection !== 'output' || event.button !== 0) return;
         gesture = { source, pointerId: event.pointerId, targets: highlight(source), x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, moved: false };
@@ -100,6 +101,7 @@ export function attach(id, reference) {
         if (event.target.closest?.('.flow-port')) { event.preventDefault(); event.stopImmediatePropagation(); }
     };
     const clickGuard = event => {
+        if (!suppressClick && event.target.closest?.('.flow-port')) keyboardCancelled = false;
         if (suppressClick && event.detail !== 0 && event.target.closest?.('.flow-port')) {
             suppressClick = false; event.preventDefault(); event.stopImmediatePropagation();
         }
@@ -107,6 +109,8 @@ export function attach(id, reference) {
     const syncKeyboard = () => {
         if (gesture) return;
         clearHighlights();
+        if (!panel.dataset.connectionStart) keyboardCancelled = false;
+        if (keyboardCancelled) return;
         const source = [...panel.querySelectorAll('.flow-port.output')].find(port => port.dataset.portNode === panel.dataset.connectionStart);
         if (source && writable()) highlight(source);
     };
