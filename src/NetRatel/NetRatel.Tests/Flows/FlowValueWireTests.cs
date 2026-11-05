@@ -50,6 +50,21 @@ public sealed class FlowValueWireTests
     }
 
     [Fact]
+    public void A_truncated_source_snapshot_can_keep_fewer_references_after_other_contributors_expire()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var source = new FlowExecutionEventDto(Guid.NewGuid(), Guid.NewGuid(), 17, FlowExecutionSourceKind.Request,
+            new(null), "9007199254740993", "9007199254740993", new(Guid.NewGuid()), FlowExecutionOutcome.Failed,
+            "Failed", now, now);
+        var input = new FlowEventEnvelope(17, source.EventId, source.OccurrenceId, Guid.NewGuid(), now, null, FlowTestData.Authority)
+        { ExecutionEvent = source, SourceAdmissionKey = Guid.NewGuid(), SourceDeliveryId = Guid.NewGuid(),
+            SourceEventIds = [source.EventId], SourceEventIdsTruncated = true };
+        FlowContractValidation.ValidEnvelope(input).Should().BeTrue();
+        JsonSerializer.Deserialize<FlowEventEnvelope>(JsonSerializer.Serialize(input, Json), Json)!.SourceEventIdsTruncated
+            .Should().BeTrue();
+    }
+
+    [Fact]
     public void Canonical_JSON_retains_decimal_precision_and_bounds_exponent_expansion_and_duplicate_keys()
     {
         using var left = JsonDocument.Parse("""{"longer":9007199254740993.00,"a":{"longer":1e2,"b":0.100}}""");
