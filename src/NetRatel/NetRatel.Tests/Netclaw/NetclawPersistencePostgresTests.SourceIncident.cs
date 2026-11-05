@@ -34,6 +34,7 @@ public sealed partial class NetclawPersistencePostgresTests
     [Fact]
     public async Task Native_request_failure_freezes_one_enriched_incident_and_recovers_its_original_receipt_after_restart()
     {
+        const string failureReason = "Synthetic request was rejected before any job run existed.";
         var options = await DatabaseAsync();
         await using var connection = new OrchestratorDbContext(options);
         var identityOptions = new DbContextOptionsBuilder<NetRatelIdentityDbContext>()
@@ -71,6 +72,10 @@ public sealed partial class NetclawPersistencePostgresTests
             var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
             db.Agents.Add(new Agent { Id = agentId, TenantId = 17, Name = "Synthetic request target",
                 CreatedAtUtc = clock.GetUtcNow(), LastSeenUtc = clock.GetUtcNow() });
+            // Capture the native submitted-definition sensitivity policy. No job run is admitted;
+            // an absent definition would correctly withhold its unclassified diagnostics.
+            db.Jobs.Add(new() { Id = 4242, TenantId = 17, AgentId = agentId, Name = "Synthetic request definition",
+                CreatedAtUtc = clock.GetUtcNow(), UpdatedAtUtc = clock.GetUtcNow() });
             await db.SaveChangesAsync(ct);
             var paired = await scope.ServiceProvider.GetRequiredService<NetclawProfileService>()
                 .PairAsync(17, new("https://netclaw.example.test", "synthetic-code"), IncidentPublisher, ct);
@@ -105,7 +110,7 @@ public sealed partial class NetclawPersistencePostgresTests
             var service = scope.ServiceProvider.GetRequiredService<IRequestService>();
             var request = await service.CreateAsync(new("synthetic-gateway", "", "4242", "{}", 17, agentId), ct);
             await service.UpdateAsync(new(request.Id, null, null, null, null, "Failed",
-                "Synthetic request was rejected before any job existed.", null, null, null), ct);
+                failureReason, null, null, null), ct);
             var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
             var nativeId = request.Id.ToString(CultureInfo.InvariantCulture);
             var source = await db.OutboxMessages.AsNoTracking().SingleAsync(row =>
@@ -115,6 +120,8 @@ public sealed partial class NetclawPersistencePostgresTests
             Assert.Equal(FlowExecutionSourceKind.Request, fact.SourceKind);
             Assert.Equal(FlowExecutionOutcome.Failed, fact.Outcome);
             Assert.Equal(FlowExecutionEventProvenance.RequestStateCommit, fact.Provenance);
+            Assert.Equal("Synthetic request definition", fact.Definition.Name);
+            Assert.Equal(failureReason, fact.Reason);
             var selections = await db.OutboxMessages.AsNoTracking().Where(row =>
                 row.Type == FlowExecutionSubscriptionLimits.OutboxType).Select(row => row.PayloadJson).ToArrayAsync(ct);
             var selection = Assert.Single(selections.Select(value => JsonSerializer.Deserialize(value,
@@ -167,6 +174,17 @@ public sealed partial class NetclawPersistencePostgresTests
         clock.Advance(TimeSpan.FromSeconds(6));
         using var crashed = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var active = original.GetRequiredService<FlowRunProcessor>().ProcessOneAsync(crashed.Token);
+        if (await Task.WhenAny(active, remote.Committed.Task).WaitAsync(ct) == active)
+        {
+            var claimed = await active;
+            await using var inspect = new OrchestratorDbContext(options);
+            var run = await inspect.FlowRuns.AsNoTracking().SingleAsync(row => row.Id == runId, ct);
+            var actions = await inspect.FlowActions.AsNoTracking().Where(row => row.RunId == runId)
+                .Select(row => new { row.NodeId, row.Status, row.Code }).ToArrayAsync(ct);
+            Assert.Fail($"Worker ended before the receiver POST: claimed={claimed}, now={clock.GetUtcNow():O}, " +
+                $"status={run.Status}, code={run.Code}, due={run.NextAttemptAtUtc:O}, " +
+                $"actions={JsonSerializer.Serialize(actions, IncidentJson)}");
+        }
         await remote.Committed.Task.WaitAsync(ct);
         string frozenDraft;
         string frozenPrepared;
@@ -185,7 +203,7 @@ public sealed partial class NetclawPersistencePostgresTests
             Assert.Null(draft.Event.Data);
             Assert.Equal(fact.EventId, draft.Event.ExecutionEvent!.EventId);
             Assert.Contains("Original execution facts", draft.Fields.Description);
-            Assert.Contains("Synthetic request was rejected before any job existed.", draft.Fields.Description);
+            Assert.Contains(failureReason, draft.Fields.Description);
             Assert.Contains("Mapped before investigation", draft.Fields.Description);
             Assert.Contains("Outcome: Unsupported", draft.Fields.Description);
             Assert.DoesNotContain("Recovered (", draft.Fields.Description);
@@ -195,6 +213,7 @@ public sealed partial class NetclawPersistencePostgresTests
             Assert.Contains("Original execution facts", wire.Description);
             Assert.Contains("Outcome: Unsupported", wire.Description);
             Assert.Contains("Synthetic request target", wire.Description);
+            Assert.Contains("Synthetic request definition", wire.Description);
             Assert.Contains("NetRatel execution occurrence", wire.Description);
             Assert.DoesNotContain("NetRatel monitoring occurrence", wire.Description);
             Assert.Contains("/requests", wire.Description);
@@ -287,6 +306,7 @@ public sealed partial class NetclawPersistencePostgresTests
         services.AddScoped<IRequestService, RequestService>();
         services.AddSingleton<IFlowReceiverEvidenceStore>(provider => provider.GetRequiredService<FlowPersistenceService>());
         services.AddSingleton<IRatelDeskReceiverFingerprint, RatelDeskReceiverFingerprint>();
+        services.AddSingleton<ReceiverPreparationBuilder>();
         services.AddScoped<IRatelDeskConnectorAuthorization, RatelDeskConnectorAuthorization>();
         services.AddScoped<RatelDeskConnectorStore>();
         services.AddScoped<IRatelDeskConnectorStore>(provider => provider.GetRequiredService<RatelDeskConnectorStore>());
