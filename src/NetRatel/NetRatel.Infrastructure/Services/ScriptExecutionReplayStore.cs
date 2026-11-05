@@ -20,6 +20,21 @@ public sealed class ScriptExecutionReplayStore(OrchestratorDbContext db, IDataPr
         if (string.IsNullOrWhiteSpace(requestId) || requestId.Length > 256)
             throw new ArgumentException("A bounded native script request identifier is required.");
         var json = JsonSerializer.Serialize(snapshot);
+        var existing = db.Set<ScriptExecutionReplayRecord>().Local.SingleOrDefault(record => record.RequestId == requestId) ??
+            await db.Set<ScriptExecutionReplayRecord>().AsNoTracking()
+                .SingleOrDefaultAsync(record => record.RequestId == requestId, cancellationToken);
+        var payloadHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json)));
+        if (existing is not null)
+        {
+            snapshot.Validate();
+            if (existing.TenantId != snapshot.TenantId || existing.AgentId != snapshot.AgentId ||
+                existing.ScriptId != checked((long)snapshot.Script.Script.Id) || existing.ScriptName != snapshot.Script.Script.Name ||
+                existing.ScriptRevision != snapshot.Script.Script.SourceRevision ||
+                existing.ScriptContentHash != snapshot.Script.ContentHash || existing.PayloadHash != payloadHash ||
+                Protector(existing).Unprotect(existing.ProtectedSnapshotJson) != json)
+                throw new InvalidOperationException("The native script request already has different replay material.");
+            return;
+        }
         // Legacy native submissions outside flow replay bounds retain their ordinary execution behavior;
         // absence of protected replay material is explicitly Unsupported at the lifecycle boundary.
         if (Encoding.UTF8.GetByteCount(json) > ExecutionAdmissionSubmission.MaximumPayloadBytes || snapshot.Script.Parameters.Count > 128)
@@ -28,14 +43,12 @@ public sealed class ScriptExecutionReplayStore(OrchestratorDbContext db, IDataPr
         if (invocation?.TimeoutSeconds is < 1 or > 86400 || invocation?.WorkingDirectory?.Length > 1024 ||
             invocation?.Parameters?.Count > 128) return;
         snapshot.Validate();
-        if (await db.Set<ScriptExecutionReplayRecord>().AnyAsync(record => record.RequestId == requestId, cancellationToken))
-            throw new InvalidOperationException("The native script request already has replay material.");
         var row = new ScriptExecutionReplayRecord
         {
             RequestId = requestId, TenantId = snapshot.TenantId, AgentId = snapshot.AgentId,
             ScriptId = checked((long)snapshot.Script.Script.Id), ScriptName = snapshot.Script.Script.Name,
             ScriptRevision = snapshot.Script.Script.SourceRevision, ScriptContentHash = snapshot.Script.ContentHash,
-            PayloadHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json))),
+            PayloadHash = payloadHash,
             CreatedAtUtc = clock.GetUtcNow()
         };
         row.ProtectedSnapshotJson = Protector(row).Protect(json);

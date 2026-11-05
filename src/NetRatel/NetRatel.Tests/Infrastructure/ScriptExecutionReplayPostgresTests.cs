@@ -79,6 +79,46 @@ public sealed class ScriptExecutionReplayPostgresTests(PostgreSqlPersistenceFixt
         (await read.JobTaskActivities.CountAsync()).Should().Be(0);
     }
 
+    [Fact]
+    public async Task Native_transport_retries_reuse_identical_protected_material_and_reject_a_different_attempt_payload()
+    {
+        const string requestId = "synthetic-idempotent-native-script";
+        ScriptExecutionReplaySnapshot original;
+        string firstProtection;
+        DateTimeOffset firstCapturedAt;
+        await using (var admission = new OrchestratorDbContext(_options))
+        {
+            original = await SnapshotAsync(admission);
+            await using var transaction = await admission.Database.BeginTransactionAsync();
+            var store = new ScriptExecutionReplayStore(admission, _keys, TimeProvider.System);
+            await store.CaptureAsync(requestId, original);
+            await store.CaptureAsync(requestId, original);
+            await admission.SaveChangesAsync();
+            await transaction.CommitAsync();
+            var row = await admission.Set<ScriptExecutionReplayRecord>().AsNoTracking().SingleAsync();
+            firstProtection = row.ProtectedSnapshotJson;
+            firstCapturedAt = row.CreatedAtUtc;
+        }
+        await using (var retry = new OrchestratorDbContext(_options))
+        {
+            await using var transaction = await retry.Database.BeginTransactionAsync();
+            var store = new ScriptExecutionReplayStore(retry, _keys, TimeProvider.System);
+            await store.CaptureAsync(requestId, original);
+            var changed = JsonSerializer.Deserialize<ExecLibraryScriptPayload>(original.NativePayloadJson)!;
+            changed.Parameters!["message"] = "a-different-deliberate-attempt";
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                store.CaptureAsync(requestId, original with { NativePayloadJson = JsonSerializer.Serialize(changed) }));
+            await retry.SaveChangesAsync();
+            await transaction.CommitAsync();
+            var exact = await retry.Set<ScriptExecutionReplayRecord>().AsNoTracking().SingleAsync();
+            exact.ProtectedSnapshotJson.Should().Be(firstProtection);
+            exact.CreatedAtUtc.Should().Be(firstCapturedAt);
+            (await store.ResolveAsync(original.TenantId, requestId))!.NativePayloadJson.Should().Be(original.NativePayloadJson);
+        }
+        await using var read = new OrchestratorDbContext(_options);
+        (await read.Set<ScriptExecutionReplayRecord>().CountAsync()).Should().Be(1);
+    }
+
     private static async Task<ScriptExecutionReplaySnapshot> SnapshotAsync(OrchestratorDbContext db)
     {
         var script = await new ScriptService(db).CreateAsync(new("Native diagnostic", "/", null,

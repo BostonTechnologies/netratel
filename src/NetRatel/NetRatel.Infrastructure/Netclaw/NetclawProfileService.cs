@@ -44,7 +44,9 @@ public sealed class NetclawAuthority(IEffectiveAccessService access, NetRatelIde
             NetRatelPermissions.FlowExecute, NetRatelPermissions.ClientManagement,
             NetRatelPermissions.TelemetryRead, NetRatelPermissions.SecretUse
         };
-        if (sources.Contains(FlowExecutionSourceKind.Job)) required.Add(NetRatelPermissions.JobManagement);
+        // Request endpoints use JobManagement for tenant-scoped request reads, including request-only failures.
+        if (sources.Contains(FlowExecutionSourceKind.Job) || sources.Contains(FlowExecutionSourceKind.Request))
+            required.Add(NetRatelPermissions.JobManagement);
         if (sources.Contains(FlowExecutionSourceKind.Script)) required.Add(NetRatelPermissions.ScriptExecute);
         foreach (var permission in required)
             if (!await access.AuthorizeAsync(principal, permission, tenantId, ct)) return false;

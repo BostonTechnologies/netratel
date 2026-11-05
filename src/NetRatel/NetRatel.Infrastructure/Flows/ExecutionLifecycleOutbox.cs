@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore.ChangeTracking;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Requests;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Clients;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Tasks;
 using NetRatel.Shared.Contracts.Flows;
@@ -237,6 +238,7 @@ public static class ExecutionLifecycleOutbox
             var value = candidate.Event;
             if (candidate.Request is { } request)
             {
+                value = RequestTarget(value, RequestTargets(db, value).SingleOrDefault());
                 if (HasSubmission(db, request)) value = value with { DefinitionSourceKind = FlowExecutionSourceKind.Job };
                 if (LinkedJob(db, request) is { } run)
                 {
@@ -261,6 +263,7 @@ public static class ExecutionLifecycleOutbox
             var value = candidate.Event;
             if (candidate.Request is { } request)
             {
+                value = RequestTarget(value, await RequestTargets(db, value).SingleOrDefaultAsync(ct));
                 if (await HasTrustedSubmissionAsync(db, request, ct)) value = value with { DefinitionSourceKind = FlowExecutionSourceKind.Job };
                 if (await LinkedJobAsync(db, request, ct) is { } run)
                 {
@@ -283,6 +286,7 @@ public static class ExecutionLifecycleOutbox
     {
         var value = RequestEvent(row, previousStatus, observedAtUtc);
         if (value is null) return;
+        value = RequestTarget(value, await RequestTargets(db, value).SingleOrDefaultAsync(ct));
         if (await HasTrustedSubmissionAsync(db, row, ct)) value = value with { DefinitionSourceKind = FlowExecutionSourceKind.Job };
         if (await LinkedJobAsync(db, row, ct) is { } run)
         {
@@ -576,16 +580,35 @@ public static class ExecutionLifecycleOutbox
         };
     }
 
+    private sealed record RequestDirectoryTarget(string? Name, string? FriendlyName, string? DeviceInfoJson);
+
+    private static IQueryable<RequestDirectoryTarget> RequestTargets(OrchestratorDbContext db, FlowExecutionEventDto value) =>
+        db.Agents.AsNoTracking().Where(agent => agent.TenantId == value.TenantId && agent.Id == value.Target.AgentId)
+            .Select(agent => new RequestDirectoryTarget(agent.Name, agent.FriendlyName, agent.DeviceInfoJson));
+
+    private static FlowExecutionEventDto RequestTarget(FlowExecutionEventDto value, RequestDirectoryTarget? directory)
+    {
+        if (directory is null) return value;
+        var device = ClientDirectoryIdentity.Parse(directory.DeviceInfoJson);
+        var name = new[] { directory.FriendlyName, directory.Name, device.HostName }
+            .FirstOrDefault(text => !string.IsNullOrWhiteSpace(text))?.Trim();
+        var target = value.Target with { DisplayName = Bound(name, 512), HostName = Bound(device.HostName, 512) };
+        return value with { Target = target, Replay = value.Replay is not { } replay ? null : replay with { Target = target } };
+    }
+
     private static FlowExecutionEventDto CorrelateJob(FlowExecutionEventDto value, JobRunRecord run)
     {
         var id = Decimal(run.Id);
         var metadata = JobRunInputProtection.Metadata(run);
         var definition = new FlowExecutionDefinitionDto(Decimal(run.JobId), Bound(metadata.DefinitionName, 512),
             metadata.DefinitionRevision, TrustedReplayHash(run, metadata));
+        var target = new FlowExecutionTargetDto(value.Target.AgentId,
+            Bound(run.TargetDisplayName ?? run.TargetName ?? value.Target.DisplayName, 512),
+            Bound(run.TargetHostName ?? value.Target.HostName, 512));
         return value with
         {
             CorrelationId = "job-run:" + id, ParentExecutionId = id, RootExecutionId = id, AttemptId = id,
-            Definition = definition, DefinitionSourceKind = FlowExecutionSourceKind.Job, Replay = JobReplay(run, definition, value.Target)
+            Definition = definition, DefinitionSourceKind = FlowExecutionSourceKind.Job, Target = target, Replay = JobReplay(run, definition, target)
         };
     }
 

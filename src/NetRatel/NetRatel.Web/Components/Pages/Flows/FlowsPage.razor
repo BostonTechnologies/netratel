@@ -1,8 +1,6 @@
 @page "/flows"
 @rendermode InteractiveServer
 @attribute [Authorize]
-@using System.Security.Cryptography
-@using System.Text.Json
 @using NetRatel.Shared.Contracts.Flows
 @using NetRatel.Web.Services.Flows
 @implements IAsyncDisposable
@@ -85,7 +83,7 @@
     <TitleContent>
         <div class="flow-history-heading">
             <div class="flow-history-symbol"><MudIcon Icon="@Icons.Material.Outlined.History" Size="Size.Large" /></div>
-            <div class="flow-history-title"><span>FLOW HISTORY</span><h2>@_history?.Name</h2><p>@Access?.TenantName · Published versions and execution results</p></div>
+            <div class="flow-history-title"><span>FLOW HISTORY</span><h2 title="@_history?.Name">@_history?.Name</h2><p title="@Access?.TenantName"><span>@Access?.TenantName</span><span class="flow-history-subtitle"> · Published versions and execution results</span></p></div>
             <MudIconButton id="flow-history-dismiss" Icon="@Icons.Material.Filled.Close" OnClick="CloseHistory" aria-label="Close flow history" data-testid="flow-history-dismiss" />
         </div>
     </TitleContent>
@@ -342,7 +340,7 @@
         var version = await Api.GetVersionAsync(tenant, detail.Run.FlowVersionId, token);
         if (!Current(generation, tenant) || _history?.Id != flowId || _runDetail?.Run.Id != detail.Run.Id ||
             version.TenantId != tenant || version.FlowId != flowId || version.Id != detail.Run.FlowVersionId) return;
-        var hash = Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(version.Graph, new JsonSerializerOptions(JsonSerializerDefaults.Web))));
+        var hash = FlowGraphSerialization.Hash(version.Graph);
         if (!string.Equals(hash, version.ConfigurationHash, StringComparison.Ordinal))
         { _historyError = "This run's immutable graph could not be verified. Recorded playback is unavailable."; return; }
         var connectors = await Api.GetConnectorsAsync(tenant, token);

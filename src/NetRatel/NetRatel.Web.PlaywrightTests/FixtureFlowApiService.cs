@@ -79,6 +79,8 @@ internal sealed class FixtureFlowApiService : IFlowApiService
             ? node with { ConnectorId = Guid.NewGuid(), ConnectorRevision = 1 } : node).ToArray() };
         _definitions[flow.Id] = flow with { Draft = graph };
     }
+    public Task<FlowDryRunResultDto> DryRunExecutionAsync(int tenantId, FlowExecutionDryRunRequest request, CancellationToken token = default)
+    { DryRunCalls++; return Task.FromResult(FlowExecutionPreview.DryRun(request, tenantId)); }
     public Task<IReadOnlyList<FlowConnectorReferenceDto>> GetConnectorsAsync(int tenantId, CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowConnectorReferenceDto>>([]);
     public Task<IReadOnlyList<FlowVersionDto>> GetVersionsAsync(int tenantId, Guid flowId, CancellationToken token = default) { HistoryReads++; Find(tenantId, flowId); return Task.FromResult<IReadOnlyList<FlowVersionDto>>(_versions.GetValueOrDefault(flowId, []).ToArray()); }
     public Task<IReadOnlyList<FlowRunSummaryDto>> GetRunsAsync(int tenantId, Guid flowId, CancellationToken token = default) { HistoryReads++; Find(tenantId, flowId); return Task.FromResult<IReadOnlyList<FlowRunSummaryDto>>(_runs.Values.Select(r => r.Run).Where(r => r.FlowId == flowId).ToArray()); }
@@ -99,12 +101,52 @@ internal sealed class FixtureFlowApiService : IFlowApiService
         return _runs[summary.Id];
     }
 
+
+    public void SeedExecutionPreviewGraph()
+    {
+        var flow = _definitions.Values.First();
+        var triggerId = Guid.NewGuid(); var repairId = Guid.NewGuid(); var conditionId = Guid.NewGuid();
+        var mapId = Guid.NewGuid(); var finishId = Guid.NewGuid(); var unresolvedId = Guid.NewGuid();
+        var agentId = Guid.Parse("77777777-7777-4777-8777-777777777777");
+        FlowNodeDto[] nodes =
+        [
+            new(triggerId, FlowNodeKind.ExecutionEvent, "Synthetic job failure", new(40, 100))
+            { ExecutionTrigger = new([FlowExecutionSourceKind.Job], [FlowExecutionOutcome.Failed], FlowExecutionScope.SelectedDefinitions)
+                { DefinitionReferences = [new(FlowExecutionSourceKind.Job, "12")], AgentIds = [agentId] } },
+            new(repairId, FlowNodeKind.RunLibraryScript, "Pinned synthetic repair", new(340, 100))
+            { ExecutionAction = new(FlowExecutionSourceKind.Script, new("42", "Synthetic repair", "7", new string('a', 64)))
+                { Target = new(agentId, "Synthetic endpoint"), Parameters = [] } },
+            new(conditionId, FlowNodeKind.Condition, "Inspect sample exit code", new(640, 100))
+            { Predicate = new(new(FlowInputSource.NodeOutput, FlowDataType.Number, "exitCode", repairId), FlowComparison.Equal, System.Text.Json.JsonSerializer.SerializeToElement(0)) },
+            new(mapId, FlowNodeKind.MapIncident, "Map explicit sample result", new(940, 100),
+                Mapping: new("{definitionName}: {input.executionId}", "Original {rawStatus} on {targetName}"))
+            { Inputs = new Dictionary<string, FlowInputBindingDto> { ["executionId"] = new(FlowInputSource.NodeOutput, FlowDataType.Text, "executionId", repairId) } },
+            new(finishId, FlowNodeKind.Finish, "Finish simulated successful branch", new(1240, 100)),
+            new(unresolvedId, FlowNodeKind.Finish, "Finish explicit unresolved branch", new(940, 380))
+        ];
+        FlowEdgeDto Edge(Guid source, string port, Guid target) => new(source, port, target, FlowNodeCatalogue.Input) { Id = Guid.NewGuid() };
+        var edges = new List<FlowEdgeDto>
+        {
+            Edge(triggerId, FlowNodeCatalogue.Event, repairId), Edge(repairId, FlowNodeCatalogue.Succeeded, conditionId),
+            Edge(conditionId, FlowNodeCatalogue.True, mapId), Edge(conditionId, FlowNodeCatalogue.False, unresolvedId),
+            Edge(mapId, FlowNodeCatalogue.Result, finishId)
+        };
+        foreach (var outcome in new[] { FlowNodeCatalogue.Failed, FlowNodeCatalogue.TimedOut, FlowNodeCatalogue.Cancelled,
+            FlowNodeCatalogue.Unknown, FlowNodeCatalogue.Unsupported, FlowNodeCatalogue.Denied })
+            edges.Add(Edge(repairId, outcome, unresolvedId));
+        var graph = new FlowGraphDto(2, nodes, edges, new());
+        var validation = FlowGraphV2Validator.ValidateComplete(graph);
+        if (!validation.Valid) throw new InvalidOperationException("Execution preview fixture must be a complete graph.");
+        _definitions[flow.Id] = flow with { Name = "Synthetic execution preview", Draft = graph };
+    }
+
+
     public FlowRunDetailDto SeedRecordedRun(bool snapshots = true)
     {
         var detail = SeedRun();
         var flow = _definitions[detail.Run.FlowId];
         var version = _versions[flow.Id].Single(value => value.Id == detail.Run.FlowVersionId);
-        var hash = FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(version.Graph, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        var hash = FlowGraphSerialization.Hash(version.Graph);
         _versions[flow.Id] = [version with { ConfigurationHash = hash }];
         _definitions[flow.Id] = flow with { Draft = flow.Draft with
             { Nodes = flow.Draft.Nodes.Select(node => node.Kind == FlowNodeKind.MapIncident ? node with { Name = "Current mutable draft mapping" } : node).ToArray() } };

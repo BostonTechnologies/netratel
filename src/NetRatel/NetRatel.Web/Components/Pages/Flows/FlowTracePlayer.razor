@@ -42,6 +42,7 @@
                 <button type="button" data-trace-step="@index" aria-current="@(index == 0 ? "step" : null)">@($"{index + 1}. {step.NodeName}")</button>
             }
         </div>
+        <p hidden data-trace-unvisited>No step was captured for the selected node. Its input, output and outcome are unavailable.</p>
         @for (var index = 0; index < trace.Steps.Count; index++)
         {
             var step = trace.Steps[index];
