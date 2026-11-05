@@ -4,7 +4,7 @@ using NetRatel.Shared.Contracts.Netclaw;
 
 namespace NetRatel.Shared.Contracts.Flows;
 
-public enum FlowNodeKind { AlertRaised = 1, Condition = 2, MapIncident = 3, CreateIncident = 4, ActionGroup = 5, InvestigateWithAi = 6 }
+public enum FlowNodeKind { AlertRaised = 1, Condition = 2, MapIncident = 3, CreateIncident = 4, ActionGroup = 5, InvestigateWithAi = 6, ExecutionEvent = 7, RunLibraryScript = 8, RunJob = 9, RerunOriginalExecution = 10, Finish = 11 }
 public enum FlowActionKind { RatelDeskIncident = 0, Discord = 1, Slack = 2, NetclawInvestigation = 3 }
 public enum FlowValueField { NumericValue = 1, Severity = 2, Metric = 3, Resource = 4, RuleName = 5, ClientName = 6, ServiceState = 7 }
 public enum FlowComparison { Equal = 1, NotEqual = 2, GreaterThan = 3, GreaterThanOrEqual = 4, LessThan = 5, LessThanOrEqual = 6 }
@@ -43,10 +43,30 @@ public sealed record FlowNodeDto(Guid Id, FlowNodeKind Kind, string Name, FlowPo
     public IReadOnlyList<FlowActionTargetDto>? Actions { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public FlowAiSettingsDto? AiSettings { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FlowExecutionTriggerSettingsDto? ExecutionTrigger { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FlowExecutionActionSettingsDto? ExecutionAction { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FlowRerunSettingsDto? Rerun { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FlowPredicateDto? Predicate { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyDictionary<string, FlowInputBindingDto>? Inputs { get; init; }
 }
-public sealed record FlowEdgeDto(Guid SourceNodeId, string SourcePort, Guid TargetNodeId, string TargetPort);
+public sealed record FlowEdgeDto(Guid SourceNodeId, string SourcePort, Guid TargetNodeId, string TargetPort)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? Id { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FlowEdgeRouteDto? Route { get; init; }
+}
 public sealed record FlowGraphDto(int SchemaVersion, IReadOnlyList<FlowNodeDto> Nodes, IReadOnlyList<FlowEdgeDto> Edges, FlowViewportDto Viewport);
-public sealed record FlowValidationIssueDto(string Code, Guid? NodeId = null);
+public sealed record FlowValidationIssueDto(string Code, Guid? NodeId = null)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? EdgeId { get; init; }
+}
 public sealed record FlowValidationResultDto(bool Valid, IReadOnlyList<FlowValidationIssueDto> Issues);
 
 public sealed record FlowEventDataDto(Guid AgentId, Guid RuleId, string RuleName, string ClientName, string Resource,

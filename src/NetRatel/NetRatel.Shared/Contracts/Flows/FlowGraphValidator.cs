@@ -29,8 +29,10 @@ public static class FlowGraphValidator
         foreach (var node in graph.Nodes)
         {
             if (node is null || node.Id == Guid.Empty || !nodes.TryAdd(node.Id, node)) { Error("node-id"); continue; }
-            if (!Enum.IsDefined(node.Kind)) Error("node-kind", node.Id);
+            if (!Enum.IsDefined(node.Kind) || (int)node.Kind > 6) Error("node-kind", node.Id);
             if (!IsBoundedText(node.Name, FlowLimits.MaximumNameLength) || node.Position is null || !ValidCoordinate(node.Position.X) || !ValidCoordinate(node.Position.Y)) Error("node-layout", node.Id);
+            if (node.ExecutionTrigger is not null || node.ExecutionAction is not null || node.Rerun is not null ||
+                node.Predicate is not null || node.Inputs is not null) Error("node-properties", node.Id);
             if (node.Kind != FlowNodeKind.Condition && node.Condition is not null || node.Kind != FlowNodeKind.MapIncident && node.Mapping is not null ||
                 node.Kind is not (FlowNodeKind.CreateIncident or FlowNodeKind.InvestigateWithAi) && (node.ConnectorId is not null || node.ConnectorRevision is not null) ||
                 node.Kind != FlowNodeKind.ActionGroup && node.Actions is not null ||
@@ -90,6 +92,7 @@ public static class FlowGraphValidator
         foreach (var edge in graph.Edges)
         {
             if (edge is null || !nodes.TryGetValue(edge.SourceNodeId, out var source) || !nodes.TryGetValue(edge.TargetNodeId, out var target)) { Error("edge-node"); continue; }
+            if (edge.Id is not null || edge.Route is not null) Error("edge-schema");
             if (edge.SourcePort != FlowLimits.OutputPort || edge.TargetPort != FlowLimits.InputPort || !CanConnect(source.Kind, target.Kind)) Error("typed-port");
             if (!outgoing.TryAdd(source.Id, target.Id) || !incoming.TryAdd(target.Id, source.Id)) Error("fanout");
         }

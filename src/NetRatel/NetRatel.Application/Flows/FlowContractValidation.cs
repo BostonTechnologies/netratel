@@ -6,7 +6,7 @@ namespace NetRatel.Application.Flows;
 
 public static class FlowContractValidation
 {
-    public static bool ValidEnvelope(FlowEventEnvelope? input) => input is not null && input.TenantId > 0 && input.EventId != Guid.Empty &&
+    public static bool ValidEnvelope(FlowEventEnvelope? input) => input is not null && input.ExecutionEvent is null && input.TenantId > 0 && input.EventId != Guid.Empty &&
         input.OccurrenceId != Guid.Empty && input.FlowVersionId != Guid.Empty && input.OccurredAtUtc != default && FlowPureEvaluation.ValidEventData(input.Data) &&
         ValidAuthority(input.Authority) && JsonSerializer.SerializeToUtf8Bytes(input).Length <= FlowLimits.MaximumEventBytes;
     public static bool ValidAuthority(FlowExecutionAuthorityDto? authority) => authority is not null &&

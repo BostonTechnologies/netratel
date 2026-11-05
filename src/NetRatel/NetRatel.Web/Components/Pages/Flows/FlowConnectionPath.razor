@@ -23,7 +23,7 @@
         <path d="@path" class="flow-connection-line" data-veloxdev-link-curve="@(HasRoute ? null : "1")" fill="none"
               stroke="@(Selected ? "var(--mud-palette-secondary)" : "var(--mud-palette-primary)")"
               stroke-width="@(Selected ? "4" : "3")" marker-end="@($"url(#{ArrowId})")" pointer-events="none" data-testid="flow-link"
-              data-flow-source-node="@Source" data-flow-target-node="@Target" />
+              data-flow-source-node="@Source" data-flow-target-node="@Target" data-flow-edge-id="@Definition?.Id" />
     </g>
 }
 
