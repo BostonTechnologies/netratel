@@ -19,7 +19,7 @@ public sealed class FlowPreviewPlaybackTests(ClientsManagementBrowserFixture bro
         await page.GetByTestId("flow-row").WaitForAsync(new() { Timeout = 90_000 });
         await page.GetByTestId("flow-edit").First.ClickAsync();
         await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(3);
-        await page.GetByTestId("flow-fit").ClickAsync();
+        await FitAndWaitAsync(page);
         var before = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!;
         await page.GetByTestId("flow-dry-run-toggle").ClickAsync();
         await Assertions.Expect(page.GetByTestId("flow-preview-dialog")).ToBeVisibleAsync();
@@ -76,17 +76,19 @@ public sealed class FlowPreviewPlaybackTests(ClientsManagementBrowserFixture bro
         await page.GetByTestId("flow-row").WaitForAsync(new() { Timeout = 90_000 });
         await page.GetByTestId("flow-edit").First.ClickAsync();
         await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(6);
-        await page.GetByTestId("flow-fit").ClickAsync();
+        await FitAndWaitAsync(page);
         var before = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!;
+        await CaptureExecutionPreviewEvidenceAsync(page, width, height, "before-open", before);
         await page.GetByTestId("flow-dry-run-toggle").ClickAsync();
         var dialog = page.GetByTestId("flow-preview-dialog");
         await Assertions.Expect(dialog).ToBeVisibleAsync();
         var during = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!;
+        await CaptureExecutionPreviewEvidenceAsync(page, width, height, "dialog-open", new { before, during });
         Assert.InRange(during.Y, before.Y - 1, before.Y + 1);
         Assert.InRange(during.Height, before.Height - 1, before.Height + 1);
         await dialog.GetByTestId("flow-sample-execution-id").FillAsync("9223372036854775805");
         await dialog.GetByTestId("flow-execution-preview").ClickAsync();
-        await Assertions.Expect(dialog).ToBeHiddenAsync();
+        await ExpectExecutionPreviewHiddenAsync(page, dialog, width, height, "first-submit");
         var player = page.GetByTestId("flow-trace-player");
         await Assertions.Expect(player).ToBeVisibleAsync();
         await Assertions.Expect(player.Locator("[data-trace-position]")).ToHaveTextAsync("Step 1 of 2");
@@ -110,7 +112,7 @@ public sealed class FlowPreviewPlaybackTests(ClientsManagementBrowserFixture bro
         Directory.CreateDirectory(evidence);
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"flows-execution-sample-{width}.png"), Animations = ScreenshotAnimations.Disabled });
         await dialog.GetByTestId("flow-execution-preview").ClickAsync();
-        await Assertions.Expect(dialog).ToBeHiddenAsync();
+        await ExpectExecutionPreviewHiddenAsync(page, dialog, width, height, "fixture-submit");
         await Assertions.Expect(player).ToBeVisibleAsync();
         await Assertions.Expect(player.Locator("[data-trace-position]")).ToHaveTextAsync("Step 1 of 5");
         await player.Locator("[data-trace-action=next]").ClickAsync();
@@ -325,6 +327,75 @@ public sealed class FlowPreviewPlaybackTests(ClientsManagementBrowserFixture bro
         Assert.Equal("Step 1 of 2", result.GetProperty("restarted").GetProperty("position").GetString()); Assert.True(result.GetProperty("restarted").GetProperty("message").GetBoolean());
         Assert.Equal("Copy was not permitted. Select the visible text to copy it.", result.GetProperty("deniedStatus").GetString());
         Assert.Equal(0, fixture.FlowsData.DryRunCalls); Assert.Equal(0, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls);
+    }
+
+
+    private static async Task FitAndWaitAsync(IPage page)
+    {
+        var canvas = page.GetByTestId("flow-canvas");
+        var previous = long.Parse((await canvas.GetAttributeAsync("data-fit-revision"))!, System.Globalization.CultureInfo.InvariantCulture);
+        await page.GetByTestId("flow-fit").ClickAsync();
+        await page.WaitForFunctionAsync("""
+            previous => {
+                const panel = document.querySelector('[data-testid=flow-canvas]');
+                return panel?.dataset.fitState === 'complete' && Number(panel.dataset.fitRevision) > previous;
+            }
+            """, previous);
+    }
+
+    private async Task ExpectExecutionPreviewHiddenAsync(IPage page, ILocator dialog, int width, int height, string stage)
+    {
+        await CaptureExecutionPreviewEvidenceAsync(page, width, height, stage);
+        try { await Assertions.Expect(dialog).ToBeHiddenAsync(); }
+        catch
+        {
+            await CaptureExecutionPreviewEvidenceAsync(page, width, height, stage + "-failed");
+            throw;
+        }
+    }
+
+    private async Task CaptureExecutionPreviewEvidenceAsync(IPage page, int width, int height, string stage, object? measured = null)
+    {
+        var dom = await page.EvaluateAsync<JsonElement>("""
+            () => {
+                const rect = element => {
+                    if (!element) return null;
+                    const r = element.getBoundingClientRect(), style = getComputedStyle(element);
+                    return { x:r.x, y:r.y, width:r.width, height:r.height, scrollLeft:element.scrollLeft,
+                        scrollTop:element.scrollTop, clientWidth:element.clientWidth, clientHeight:element.clientHeight,
+                        display:style.display, position:style.position, overflowX:style.overflowX, overflowY:style.overflowY };
+                };
+                const one = selector => document.querySelector(selector);
+                const text = selector => one(selector)?.textContent?.slice(0,2000) ?? null;
+                const dialog = one('[data-testid="flow-preview-dialog"]');
+                const canvas = one('[data-testid="flow-canvas"]');
+                return {
+                    viewport:{ width:innerWidth, height:innerHeight, scrollX, scrollY, dpr:devicePixelRatio },
+                    active:{ tag:document.activeElement?.tagName, testId:document.activeElement?.getAttribute('data-testid') },
+                    editor:rect(one('[data-testid="flow-editor"]')), canvas:rect(canvas),
+                    inverseScale:canvas?.getAttribute('data-inverse-scale'), fit:{state:canvas?.dataset.fitState, revision:canvas?.dataset.fitRevision}, scroll:rect(one('[id^="flow-scroll-"]')),
+                    toolbar:rect(one('.flow-toolbar')), canvasTools:rect(one('.flow-canvas-tools')),
+                    zoom:text('.flow-canvas-tools>span'), dirty:text('[data-testid="flow-dirty"]'),
+                    dialog:{ open:dialog?.open ?? false, box:rect(dialog), children:dialog?.childElementCount ?? 0,
+                        fieldset:rect(dialog?.querySelector('fieldset')), text:dialog?.textContent?.slice(0,3000) ?? null },
+                    error:text('[data-testid="flow-error"]'), issues:text('[data-testid="flow-validation-issues"]'),
+                    result:text('[data-testid="flow-preview"]'), sampleError:text('[data-testid="flow-sample-error"]'),
+                    fields:[...(dialog?.querySelectorAll('input,select,textarea,button') ?? [])].slice(0,40).map(element => ({
+                        tag:element.tagName, type:element.type, testId:element.getAttribute('data-testid'),
+                        disabled:element.disabled, value:String(element.value ?? '').slice(0,160), box:rect(element)
+                    }))
+                };
+            }
+            """);
+        var api = _fixture!.FlowsData;
+        var receipt = JsonSerializer.Serialize(new { stage, width, height, measured, evaluations = api.DryRunCalls,
+            saves = api.SaveCalls, publications = api.PublishCalls, dom });
+        var evidence = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ??
+            Path.Combine(Directory.GetCurrentDirectory(), "TestResults", "playwright");
+        Directory.CreateDirectory(evidence);
+        await File.WriteAllTextAsync(Path.Combine(evidence, $"flows-execution-dialog-{width}-{stage}.json"), receipt);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"flows-execution-dialog-{width}-{stage}.png"), Animations = ScreenshotAnimations.Disabled });
+        Console.WriteLine($"Flow execution preview evidence {width}/{stage}: {receipt}");
     }
 
     public async ValueTask InitializeAsync() => _fixture = await ClientsManagementFixtureHost.StartAsync();
