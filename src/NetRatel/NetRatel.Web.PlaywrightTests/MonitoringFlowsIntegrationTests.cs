@@ -68,14 +68,15 @@ public sealed class MonitoringFlowsIntegrationTests(ClientsManagementBrowserFixt
         await Assertions.Expect(page.GetByTestId("flow-run-result")).ToContainTextAsync(input.ClientName);
         await Assertions.Expect(page.GetByTestId("flow-run-result")).ToContainTextAsync("96");
         var actionResult = page.GetByTestId("flow-action-result");
-        await Assertions.Expect(actionResult.Locator("p").First).ToHaveTextAsync("Status: Succeeded · Attempts: 1");
+        var actionStatus = actionResult.GetByText("Status: Succeeded · Attempts: 1", new() { Exact = true });
+        await Assertions.Expect(actionStatus).ToHaveTextAsync("Status: Succeeded · Attempts: 1");
         await Assertions.Expect(actionResult.GetByTestId("flow-action-code")).ToHaveTextAsync("incident-created");
         await Assertions.Expect(actionResult.GetByTestId("flow-incident-id")).ToHaveTextAsync(receipt.IncidentId);
         await Assertions.Expect(actionResult.GetByTestId("flow-incident-tracking")).ToHaveTextAsync(receipt.TrackingId!);
         await Assertions.Expect(actionResult.Locator("dt")).ToHaveTextAsync(new[] { "Incident ID", "Tracking number" });
         var incidentLink = actionResult.GetByRole(AriaRole.Link, new() { Name = "Open incident", Exact = true });
         await Assertions.Expect(incidentLink).ToHaveAttributeAsync("href", receipt.SafeLink!);
-        foreach (var field in new[] { actionResult.Locator("p").First, actionResult.GetByTestId("flow-action-code"), actionResult.GetByTestId("flow-incident-id"), actionResult.GetByTestId("flow-incident-tracking"), incidentLink })
+        foreach (var field in new[] { actionStatus, actionResult.GetByTestId("flow-action-code"), actionResult.GetByTestId("flow-incident-id"), actionResult.GetByTestId("flow-incident-tracking"), incidentLink })
         {
             await Assertions.Expect(field).ToBeVisibleAsync();
             await field.EvaluateAsync("e => e.scrollIntoView({block:'center',inline:'nearest'})");
