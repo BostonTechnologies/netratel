@@ -73,6 +73,8 @@ A selected job or script filter also matches a request's proven backing definiti
 
 Rerun support requires the original protected execution material. A canonical job can replay its pinned whole job; a library-script execution can replay only its exact pinned script payload and inputs. A script step inside a job remains `Unsupported` until its own complete script execution material is retained; it never silently reruns the whole parent job. A job-backed request can replay the proven canonical job, retaining the request source identity. Legacy or manually claimed requests without trusted replay material remain `Unsupported`.
 
+Deferred source deliveries are scheduled by their next due time so old parent waits and capacity retries cannot starve newly due work. A known-parent wait that passes the existing immutable event retry age finishes as an expired delivery; the source outcome and native request/job state remain unchanged.
+
 The lifecycle delivery worker is inert until the trusted execution-event ingress is registered. It passes server-owned fact and delivery IDs, and the ingress independently verifies the pinned selection and fresh configured authority. The in-memory `RequestEventBus` remains a UI channel and does not admit automation. Preview and playback do not write this ledger or dispatch its subscriptions.
 
 ## Schema transition
