@@ -1,4 +1,4 @@
-name: Selected Flows Fit preview diagnostic
+name: Selected Flows typed authoring diagnostic
 
 on:
   push:
@@ -14,18 +14,18 @@ concurrency:
 
 jobs:
   browser:
-    name: Selected disposable Fit preview diagnostic
+    name: Selected disposable typed authoring diagnostic
     if: github.repository == 'BostonTechnologies/netratel' && github.ref == 'refs/heads/codex/flows-browser-acceptance'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      EXPECTED_SOURCE_SHA: 89437d72f220e33e432ec920e6705f39c40fadcd
-      BROWSER_CLASSES: NetRatel.Web.PlaywrightTests.FlowPreviewPlaybackTests
+      EXPECTED_SOURCE_SHA: 677de2368fca19f7ff16f70baa01e9cad6525320
+      BROWSER_CLASSES: NetRatel.Web.PlaywrightTests.FlowTypedAuthoringAcceptanceTests
       NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT: ${{ github.workspace }}/TestResults/playwright
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: 89437d72f220e33e432ec920e6705f39c40fadcd
+          ref: 677de2368fca19f7ff16f70baa01e9cad6525320
           fetch-depth: 1
           persist-credentials: false
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
@@ -46,7 +46,7 @@ jobs:
           python3 - "$source_sha" "$version" <<'PY'
           import json, os, sys
           from pathlib import Path
-          identity = {"suite": "selected-flows-fit-preview-diagnostic", "sourceKind": "reviewed-unmerged-candidate", "sourcePullRequest": 639, "sourceSha": sys.argv[1], "productVersion": sys.argv[2],
+          identity = {"suite": "selected-flows-typed-authoring-diagnostic", "sourceKind": "reviewed-unmerged-candidate", "sourcePullRequest": 636, "sourceSha": sys.argv[1], "productVersion": sys.argv[2],
                       "dotnetSdkVersion": os.environ["NETRATEL_DOTNET_SDK_VERSION"],
                       "runId": os.environ["GITHUB_RUN_ID"], "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
                       "workflowEventSha": os.environ["GITHUB_SHA"],
@@ -71,17 +71,17 @@ jobs:
           dotnet test --project src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
             --configuration Release --no-build --no-restore --max-parallel-test-modules 1 \
             --filter-class "${selected_classes[@]}" --filter-not-trait category=compose category=hosted \
-            --minimum-expected-tests 9 --results-directory TestResults/browser \
+            --minimum-expected-tests 2 --results-directory TestResults/browser \
             --report-trx --report-trx-filename browser.trx
       - name: Verify nonzero complete browser execution
         if: always()
         shell: bash
-        run: python3 tools/ci/verify-mtp-trx.py TestResults/browser/browser.trx --expected-executed 9
+        run: python3 tools/ci/verify-mtp-trx.py TestResults/browser/browser.trx --expected-executed 2
       - name: Retain selected TRX, screenshots and sanitized receipts
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: selected-flows-fit-preview-diagnostic-evidence
+          name: selected-flows-typed-authoring-diagnostic-evidence
           path: |
             TestResults
             src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright
