@@ -84,7 +84,7 @@ public sealed class MonitoringFlowsIntegrationTests(ClientsManagementBrowserFixt
         }
         Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth + 1"));
         Assert.False(await actionResult.EvaluateAsync<bool>("e => e.scrollWidth > e.clientWidth + 1"));
-        await page.GetByTestId("flow-run-detail").FocusAsync();
+        await page.GetByTestId("flow-run-replay").FocusAsync();
         await page.Keyboard.PressAsync("Tab");
         await Assertions.Expect(incidentLink).ToBeFocusedAsync();
         Assert.True(await incidentLink.EvaluateAsync<bool>("e => e.matches(':focus-visible') && getComputedStyle(e).outlineStyle !== 'none' && parseFloat(getComputedStyle(e).outlineWidth) > 0"));
