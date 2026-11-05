@@ -1,4 +1,4 @@
-name: Selected Flows typed authoring diagnostic
+name: Selected Flows near-limit diagnostic
 
 on:
   push:
@@ -14,18 +14,19 @@ concurrency:
 
 jobs:
   browser:
-    name: Selected disposable typed authoring diagnostic
+    name: Selected disposable near-limit diagnostic
     if: github.repository == 'BostonTechnologies/netratel' && github.ref == 'refs/heads/codex/flows-browser-acceptance'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      EXPECTED_SOURCE_SHA: 677de2368fca19f7ff16f70baa01e9cad6525320
+      EXPECTED_SOURCE_SHA: 02fffdf2c1644bb6b34907e29102541884b91956
       BROWSER_CLASSES: NetRatel.Web.PlaywrightTests.FlowTypedAuthoringAcceptanceTests
+      BROWSER_METHODS: NetRatel.Web.PlaywrightTests.FlowTypedAuthoringAcceptanceTests.Near_Limit_Graph_Mount_Fit_Pan_Zoom_And_Route_Are_Measured_Without_Execution
       NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT: ${{ github.workspace }}/TestResults/playwright
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: 677de2368fca19f7ff16f70baa01e9cad6525320
+          ref: 02fffdf2c1644bb6b34907e29102541884b91956
           fetch-depth: 1
           persist-credentials: false
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
@@ -46,11 +47,12 @@ jobs:
           python3 - "$source_sha" "$version" <<'PY'
           import json, os, sys
           from pathlib import Path
-          identity = {"suite": "selected-flows-typed-authoring-diagnostic", "sourceKind": "reviewed-unmerged-candidate", "sourcePullRequest": 636, "sourceSha": sys.argv[1], "productVersion": sys.argv[2],
+          identity = {"suite": "selected-flows-near-limit-diagnostic", "sourceKind": "reviewed-unmerged-candidate", "sourcePullRequest": 636, "sourceSha": sys.argv[1], "productVersion": sys.argv[2],
                       "dotnetSdkVersion": os.environ["NETRATEL_DOTNET_SDK_VERSION"],
                       "runId": os.environ["GITHUB_RUN_ID"], "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
                       "workflowEventSha": os.environ["GITHUB_SHA"],
                       "classes": os.environ["BROWSER_CLASSES"].split(),
+                      "methods": os.environ["BROWSER_METHODS"].split(),
                       "excludedTraits": ["category=compose", "category=hosted"]}
           Path("TestResults/selected-source.json").write_text(json.dumps(identity, indent=2) + "\n")
           PY
@@ -67,21 +69,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          read -r -a selected_classes <<< "$BROWSER_CLASSES"
+          read -r -a selected_methods <<< "$BROWSER_METHODS"
           dotnet test --project src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
             --configuration Release --no-build --no-restore --max-parallel-test-modules 1 \
-            --filter-class "${selected_classes[@]}" --filter-not-trait category=compose category=hosted \
-            --minimum-expected-tests 2 --results-directory TestResults/browser \
+            --filter-method "${selected_methods[@]}" --filter-not-trait category=compose category=hosted \
+            --minimum-expected-tests 1 --results-directory TestResults/browser \
             --report-trx --report-trx-filename browser.trx
       - name: Verify nonzero complete browser execution
         if: always()
         shell: bash
-        run: python3 tools/ci/verify-mtp-trx.py TestResults/browser/browser.trx --expected-executed 2
+        run: python3 tools/ci/verify-mtp-trx.py TestResults/browser/browser.trx --expected-executed 1
       - name: Retain selected TRX, screenshots and sanitized receipts
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: selected-flows-typed-authoring-diagnostic-evidence
+          name: selected-flows-near-limit-diagnostic-evidence
           path: |
             TestResults
             src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright
