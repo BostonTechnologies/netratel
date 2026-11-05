@@ -156,7 +156,7 @@ public sealed class FlowExecutionContinuationPostgresTests(PostgreSqlPersistence
              ..FlowNodeCatalogue.Find(FlowNodeKind.RunJob)!.Ports.Where(port => port.Direction == FlowPortDirection.Output)
                 .Select(port => new FlowEdgeDto(nodeId, port.Id, finishId, FlowNodeCatalogue.Input) { Id = Guid.NewGuid() })], new());
         Assert.True(FlowGraphV2Validator.ValidatePublished(graph).Valid);
-        var graphJson = JsonSerializer.Serialize(graph, Json);
+        var graphJson = FlowGraphSerialization.Serialize(graph);
         var principal = new FlowExecutionAuthorityDto("synthetic-operator");
         db.Tenants.Add(new() { Id = 7, Name = "Synthetic tenant", CreatedAtUtc = active, UpdatedAtUtc = active });
         var definition = new FlowDefinitionRecord { Id = flowId, TenantId = 7, Name = "Synthetic continuation",
@@ -164,7 +164,7 @@ public sealed class FlowExecutionContinuationPostgresTests(PostgreSqlPersistence
             CreatedAtUtc = active, UpdatedAtUtc = active };
         db.FlowDefinitions.Add(definition);
         db.FlowVersions.Add(new() { Id = versionId, FlowId = flowId, TenantId = 7, VersionNumber = 1,
-            GraphJson = graphJson, ConfigurationHash = FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(graph, Json)),
+            GraphJson = graphJson, ConfigurationHash = FlowGraphSerialization.Hash(graph),
             ExecutionAuthorityJson = JsonSerializer.Serialize(principal, Json), PublishedBy = principal.PrincipalId, PublishedAtUtc = active });
         db.FlowRuntimeIdentity.Add(new() { Id = 1, SourceInstanceId = sourceInstance });
         await db.SaveChangesAsync(ct);

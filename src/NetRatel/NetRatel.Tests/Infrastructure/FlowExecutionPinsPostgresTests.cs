@@ -53,11 +53,11 @@ public sealed class FlowExecutionPinsPostgresTests(PostgreSqlPersistenceFixture 
         var capture = await pins.CaptureAsync(7, new("operator"), versionId, graph);
         capture.ProtectedPinsJson.Should().NotContain(content);
         var flowId = Guid.NewGuid();
-        db.FlowDefinitions.Add(new() { Id = flowId, TenantId = 7, Name = "synthetic", DraftJson = JsonSerializer.Serialize(capture.Graph) });
+        db.FlowDefinitions.Add(new() { Id = flowId, TenantId = 7, Name = "synthetic", DraftJson = FlowGraphSerialization.Serialize(capture.Graph) });
         db.FlowVersions.Add(new()
         {
-            Id = versionId, FlowId = flowId, TenantId = 7, VersionNumber = 1, GraphJson = JsonSerializer.Serialize(capture.Graph),
-            ConfigurationHash = "synthetic", PublishedBy = "operator", PublishedAtUtc = DateTimeOffset.UtcNow,
+            Id = versionId, FlowId = flowId, TenantId = 7, VersionNumber = 1, GraphJson = FlowGraphSerialization.Serialize(capture.Graph),
+            ConfigurationHash = FlowGraphSerialization.Hash(capture.Graph), PublishedBy = "operator", PublishedAtUtc = DateTimeOffset.UtcNow,
             ProtectedExecutionPinsJson = capture.ProtectedPinsJson
         });
         await db.SaveChangesAsync();
@@ -151,10 +151,10 @@ public sealed class FlowExecutionPinsPostgresTests(PostgreSqlPersistenceFixture 
             var versionId = Guid.NewGuid();
             var capture = await Service(db).CaptureAsync(7, new("operator"), versionId, new(2, nodes, [], new()), ct);
             var flowId = Guid.NewGuid();
-            db.FlowDefinitions.Add(new() { Id = flowId, TenantId = 7, Name = "Concurrent synthetic publication", DraftJson = JsonSerializer.Serialize(capture.Graph) });
+            db.FlowDefinitions.Add(new() { Id = flowId, TenantId = 7, Name = "Concurrent synthetic publication", DraftJson = FlowGraphSerialization.Serialize(capture.Graph) });
             db.FlowVersions.Add(new() { Id = versionId, FlowId = flowId, TenantId = 7, VersionNumber = 1,
-                GraphJson = JsonSerializer.Serialize(capture.Graph), ProtectedExecutionPinsJson = capture.ProtectedPinsJson,
-                ConfigurationHash = "synthetic", PublishedBy = "operator", PublishedAtUtc = DateTimeOffset.UtcNow });
+                GraphJson = FlowGraphSerialization.Serialize(capture.Graph), ProtectedExecutionPinsJson = capture.ProtectedPinsJson,
+                ConfigurationHash = FlowGraphSerialization.Hash(capture.Graph), PublishedBy = "operator", PublishedAtUtc = DateTimeOffset.UtcNow });
             await db.SaveChangesAsync(ct);
             await transaction.CommitAsync(ct);
             return capture;

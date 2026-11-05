@@ -98,6 +98,30 @@ public sealed class FlowExecutionPreviewTests
         FlowExecutionPreview.DryRun(new(Graph(), Event(), Fixtures: [missing, missing]), 17).Code.Should().Be("preview-fixture-node");
     }
 
+
+    [Theory]
+    [InlineData(16, true)]
+    [InlineData(17, false)]
+    [InlineData(58, false)]
+    public void External_fixture_depth_is_bounded_before_trace_wrappers_are_serialized(int depth, bool accepted)
+    {
+        var nested = new string('[', depth - 1) + "0" + new string(']', depth - 1);
+        using var document = JsonDocument.Parse("{\"data\":" + nested + "}", new JsonDocumentOptions { MaxDepth = 64 });
+        var fixture = new FlowPreviewFixtureDto(RepairId, FlowNodeCatalogue.Succeeded) { Output = document.RootElement.Clone() };
+        var preview = FlowExecutionPreview.DryRun(new(Graph(), Event(), Fixtures: [fixture]), 17);
+        if (!accepted)
+        {
+            preview.Valid.Should().BeFalse();
+            preview.Code.Should().Be("preview-fixture-depth");
+            preview.Trace.Should().BeNull();
+            preview.VisitedNodeIds.Should().BeEmpty();
+            return;
+        }
+        preview.Code.Should().Be("node-output-unavailable");
+        preview.Trace!.Steps[1].Output.Value!.Value.GetProperty("data").ValueKind.Should().Be(JsonValueKind.Array);
+        JsonSerializer.Serialize(preview).Should().NotBeNullOrEmpty();
+    }
+
     [Fact]
     public void Typed_mapping_is_single_pass_and_never_reinterprets_bound_text_as_another_placeholder()
     {

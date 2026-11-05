@@ -89,11 +89,38 @@ public sealed class MonitoringFlowsIntegrationTests(ClientsManagementBrowserFixt
         await Assertions.Expect(incidentLink).ToBeFocusedAsync();
         Assert.True(await incidentLink.EvaluateAsync<bool>("e => e.matches(':focus-visible') && getComputedStyle(e).outlineStyle !== 'none' && parseFloat(getComputedStyle(e).outlineWidth) > 0"));
         Assert.Contains("underline", await incidentLink.EvaluateAsync<string>("e => getComputedStyle(e).textDecorationLine"));
-        Assert.True(await incidentLink.EvaluateAsync<bool>("e => {const r=e.getBoundingClientRect();const hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return hit===e||e.contains(hit)}"));
-        Assert.Equal(1, flows.RunLookups); Assert.Equal(1, flows.VersionLookups); Assert.Equal(0, flows.HistoryReads);
+        var hitEvidence = await incidentLink.EvaluateAsync<JsonElement>("""
+            e => {
+                const rect = element => {
+                    const r = element.getBoundingClientRect();
+                    return { x:r.x, y:r.y, width:r.width, height:r.height, right:r.right, bottom:r.bottom };
+                };
+                const describe = element => element ? {
+                    tag:element.tagName, id:element.id, testId:element.getAttribute("data-testid"),
+                    role:element.getAttribute("role"), classes:element.className?.toString(),
+                    text:element.textContent?.trim().slice(0,120), bounds:rect(element)
+                } : null;
+                const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
+                const hit=document.elementFromPoint(x,y);
+                const ancestors=[];
+                for(let parent=e.parentElement; parent && ancestors.length<12; parent=parent.parentElement) {
+                    const style=getComputedStyle(parent);
+                    ancestors.push({ element:describe(parent), overflowX:style.overflowX, overflowY:style.overflowY,
+                        position:style.position, zIndex:style.zIndex, scrollTop:parent.scrollTop,
+                        clientHeight:parent.clientHeight, scrollHeight:parent.scrollHeight });
+                }
+                return { reachable:hit===e||e.contains(hit), point:{x,y}, link:describe(e), hit:describe(hit),
+                    stack:document.elementsFromPoint(x,y).slice(0,6).map(describe),
+                    viewport:{width:innerWidth,height:innerHeight,dpr:devicePixelRatio}, ancestors };
+            }
+            """);
         var evidence = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.GetFullPath("TestResults/playwright");
         Directory.CreateDirectory(evidence);
         var variant = $"{width}x{height}-dpr{dpr}";
+        await File.WriteAllTextAsync(Path.Combine(evidence, $"monitoring-flows-hit-target-{variant}.json"), hitEvidence.GetRawText());
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"monitoring-flows-hit-target-{variant}.png"), Animations = ScreenshotAnimations.Disabled });
+        Assert.True(hitEvidence.GetProperty("reachable").GetBoolean(), "The incident link center must receive pointer input. " + hitEvidence.GetRawText());
+        Assert.Equal(1, flows.RunLookups); Assert.Equal(1, flows.VersionLookups); Assert.Equal(0, flows.HistoryReads);
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"monitoring-flows-run-receipt-{variant}.png"), FullPage = true });
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"monitoring-flows-run-receipt-{variant}-viewport.png") });
         await page.GoBackAsync(new() { WaitUntil = WaitUntilState.DOMContentLoaded });

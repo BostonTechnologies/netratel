@@ -44,6 +44,8 @@ public sealed class FlowValueWireTests
         using var right = JsonDocument.Parse("""{"a":{"b":0.1,"longer":100},"longer":9007199254740993}""");
         FlowJsonCanonical.SerializeValue(left.RootElement).Should().Be(FlowJsonCanonical.SerializeValue(right.RootElement));
         FlowJsonCanonical.SerializeValue(left.RootElement).Should().Contain("9007199254740993");
+        using var strings = JsonDocument.Parse("""{"id":"9007199254740993","parameter":"1e3"}""");
+        FlowJsonCanonical.SerializeValue(strings.RootElement).Should().Be("""{"id":"9007199254740993","parameter":"1e3"}""");
         using var huge = JsonDocument.Parse("1e9999");
         FlowJsonValueBounds.Valid(huge.RootElement, 4096).Should().BeFalse();
         using var duplicate = JsonDocument.Parse("""{"value":1,"value":2}""");

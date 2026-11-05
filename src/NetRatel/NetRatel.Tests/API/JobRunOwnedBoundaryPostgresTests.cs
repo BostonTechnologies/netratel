@@ -1005,13 +1005,13 @@ public sealed partial class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersisten
              ..FlowNodeCatalogue.Find(FlowNodeKind.RerunOriginalExecution)!.Ports.Where(port => port.Direction == FlowPortDirection.Output)
                 .Select(port => new FlowEdgeDto(rerunId, port.Id, finishId, FlowNodeCatalogue.Input) { Id = Guid.NewGuid() })], new());
         Assert.True(FlowGraphV2Validator.ValidatePublished(graph).Valid);
-        var hash = FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(graph, StepJson));
+        var hash = FlowGraphSerialization.Hash(graph);
         var definition = new FlowDefinitionRecord { Id = flowId, TenantId = 7, Name = "Synthetic exact child replay",
             Enabled = true, EnabledSinceUtc = published, Revision = 1, CreatedAtUtc = published, UpdatedAtUtc = published,
-            DraftJson = JsonSerializer.Serialize(graph, StepJson) };
+            DraftJson = FlowGraphSerialization.Serialize(graph) };
         db.FlowDefinitions.Add(definition);
         db.FlowVersions.Add(new() { Id = versionId, FlowId = flowId, TenantId = 7, VersionNumber = 1,
-            GraphJson = JsonSerializer.Serialize(graph, StepJson), ConfigurationHash = hash, PublishedBy = authority.PrincipalId,
+            GraphJson = FlowGraphSerialization.Serialize(graph), ConfigurationHash = hash, PublishedBy = authority.PrincipalId,
             PublishedAtUtc = published, ExecutionAuthorityJson = JsonSerializer.Serialize(authority, StepJson) });
         db.FlowRuntimeIdentity.Add(new() { Id = 1, SourceInstanceId = source });
         await db.SaveChangesAsync(ct);

@@ -16,6 +16,7 @@ public sealed record FlowExecutionDryRunRequest(FlowGraphDto Graph, FlowExecutio
 
 public static class FlowPreviewLimits
 {
+    public const int MaximumFixtureDepth = 16;
     public const int MaximumFixtureBytes = 16384;
     public const int MaximumFixtureTotalBytes = 65536;
     public const int MaximumRequestBytes = FlowGraphV2Limits.MaximumGraphBytes +

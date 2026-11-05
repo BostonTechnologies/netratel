@@ -271,11 +271,11 @@ public sealed class FlowExecutionIngressPostgresTests(PostgreSqlPersistenceFixtu
             var valid = FlowGraphV2Validator.ValidatePublished(graph);
             Assert.True(valid.Valid, string.Join(", ", valid.Issues.Select(issue => issue.Code)));
             var time = DateTimeOffset.UtcNow.AddMinutes(-5);
-            var json = JsonSerializer.Serialize(graph, Json);
+            var json = FlowGraphSerialization.Serialize(graph);
             var flow = new FlowDefinitionRecord { Id = Guid.NewGuid(), TenantId = 17, Name = "Synthetic source flow",
                 Revision = 1, Enabled = true, EnabledSinceUtc = time, DraftJson = json, CreatedAtUtc = time, UpdatedAtUtc = time };
             var version = new FlowVersionRecord { Id = Guid.NewGuid(), FlowId = flow.Id, TenantId = 17, VersionNumber = 1,
-                GraphJson = json, ConfigurationHash = FlowContractValidation.Hash(System.Text.Encoding.UTF8.GetBytes(json)),
+                GraphJson = json, ConfigurationHash = FlowGraphSerialization.Hash(graph),
                 PublishedBy = AccessPolicy.PrincipalId, PublishedAtUtc = time,
                 ExecutionAuthorityJson = JsonSerializer.Serialize(new FlowExecutionAuthorityDto(AccessPolicy.PrincipalId), Json) };
             await using var scope = Provider.CreateAsyncScope();
