@@ -54,7 +54,8 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
 
     public async Task<FlowDefinitionWriteResult> SaveDraftAsync(int tenantId, Guid flowId, FlowSaveDraftRequest request, string actorId, CancellationToken ct = default)
     {
-        var validation = request.Graph?.SchemaVersion == FlowGraphV2Limits.SchemaVersion
+        if (request.Graph is null) return new(FlowWriteDisposition.Invalid, Code: "graph-schema");
+        var validation = request.Graph.SchemaVersion == FlowGraphV2Limits.SchemaVersion
             ? FlowGraphV2Validator.ValidateDraft(request.Graph) : FlowGraphValidator.ValidateDraft(request.Graph);
         if (!ValidName(request.Name) || !validation.Valid) return new FlowDefinitionWriteResult(FlowWriteDisposition.Invalid, Code: validation.Issues.FirstOrDefault()?.Code ?? "flow-name");
         if (await ResolveFlowPromptsAsync(tenantId, request.Graph, false, ct) is null) return new(FlowWriteDisposition.Invalid, Code: "ai-prompt-unavailable");
