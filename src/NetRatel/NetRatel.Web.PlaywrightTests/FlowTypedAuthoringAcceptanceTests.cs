@@ -155,14 +155,63 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         await page.Keyboard.PressAsync("Enter"); await Assertions.Expect(handle).ToHaveCountAsync(6);
         var narrowRoute = await MeasurementsAsync(page);
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-near-limit-route-narrow.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+
+        var edgeId = graph.Edges[0].Id!.Value;
+        var routedGroup = page.Locator($".flow-connection[data-flow-edge-id='{edgeId}']");
+        var routedCurve = routedGroup.Locator("[data-testid=flow-link]");
+        var nodeIds = await page.Locator(".flow-node[data-node-id]").EvaluateAllAsync<string[]>("nodes => nodes.map(node=>node.dataset.nodeId).sort()");
+        var edgeIds = await page.Locator(".flow-connection[data-flow-edge-id]").EvaluateAllAsync<string[]>("edges => edges.map(edge=>edge.dataset.flowEdgeId).sort()");
+        await page.GetByTestId("flow-save").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-result")).ToContainTextAsync("Draft saved");
+        var savedGraph = fixture.FlowsData.SavedGraph!;
+        Assert.Equal(32, savedGraph.Nodes.Count); Assert.Equal(61, savedGraph.Edges.Count);
+        Assert.Equal(graph.Nodes.Select(node => node.Id).Order(), savedGraph.Nodes.Select(node => node.Id).Order());
+        Assert.Equal(graph.Edges.Select(value => value.Id).Order(), savedGraph.Edges.Select(value => value.Id).Order());
+        var savedRoute = Assert.Single(savedGraph.Edges, value => value.Id == edgeId).Route!;
+        Assert.Equal(6, savedRoute.Points.Count);
+        var savedRouteJson = (await routedGroup.GetAttributeAsync("data-flow-route"))!;
+        var savedPath = (await routedCurve.GetAttributeAsync("d"))!;
+        Assert.Contains(" C ", savedPath);
+        var beforeReload = await MeasurementsAsync(page);
+        await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-route-saved.json"), JsonSerializer.Serialize(savedGraph));
+
+        await page.ReloadAsync(new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("flow-row").Filter(new() { HasText = "Synthetic near-limit graph" }).GetByTestId("flow-edit").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(32);
+        await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(61);
+        Assert.Equal(nodeIds, await page.Locator(".flow-node[data-node-id]").EvaluateAllAsync<string[]>("nodes => nodes.map(node=>node.dataset.nodeId).sort()"));
+        Assert.Equal(edgeIds, await page.Locator(".flow-connection[data-flow-edge-id]").EvaluateAllAsync<string[]>("edges => edges.map(edge=>edge.dataset.flowEdgeId).sort()"));
+        await Assertions.Expect(routedGroup).ToHaveAttributeAsync("data-flow-route", savedRouteJson);
+        await Assertions.Expect(routedGroup).ToHaveAttributeAsync("data-flow-source-node", graph.Edges[0].SourceNodeId.ToString());
+        await Assertions.Expect(routedGroup).ToHaveAttributeAsync("data-flow-target-node", graph.Edges[0].TargetNodeId.ToString());
+        await Assertions.Expect(routedCurve).ToHaveAttributeAsync("d", savedPath);
+        await routedGroup.GetByTestId("flow-link-hit").FocusAsync();
+        await Assertions.Expect(handle).ToHaveCountAsync(6);
+        var reloadedRoute = await MeasurementsAsync(page);
+        var displayedPointsBeforeReload = narrowRoute.GetProperty("routePoints").Deserialize<FlowPositionDto[]>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var restoredPoints = reloadedRoute.GetProperty("routePoints").Deserialize<FlowPositionDto[]>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-route-roundtrip.json"), JsonSerializer.Serialize(new
+        {
+            fullPrecisionPoints = savedRoute.Points, savedRouteJson,
+            restoredRouteJson = await routedGroup.GetAttributeAsync("data-flow-route"), savedPath,
+            restoredPath = await routedCurve.GetAttributeAsync("d"), displayedPointsBeforeReload, restoredPoints
+        }, new JsonSerializerOptions { WriteIndented = true }));
+        Assert.Equal(displayedPointsBeforeReload!, restoredPoints!);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-near-limit-route-reloaded.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+        await page.GetByTestId("flow-route-reset").ClickAsync();
+        await Assertions.Expect(handle).ToHaveCountAsync(0);
+        await Assertions.Expect(page.Locator(".flow-connection[data-flow-route]")).ToHaveCountAsync(0);
+        await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(61);
         await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit.json"), JsonSerializer.Serialize(new
         {
             schemaVersion = graph.SchemaVersion, nodeCount = graph.Nodes.Count, edgeCount = graph.Edges.Count,
             mountMilliseconds, fitMilliseconds, panZoomMilliseconds, routeMilliseconds,
-            fitted, panTarget, panned, moved, routed, narrowRoute, assertions = "32 native nodes;61 curves;all cards fit;7 outcome ports fit;actual pan and zoom;route edit and Tab exit;narrow bounded inspector with pointer and keyboard reachability",
-            noExecutionWrites = fixture.FlowsData.SaveCalls == seedWrites && fixture.FlowsData.PublishCalls == 0 && fixture.FlowsData.DryRunCalls == 0
+            fitted, panTarget, panned, moved, routed, narrowRoute, beforeReload, reloadedRoute, savedRouteJson, savedPath,
+            draftSaves = fixture.FlowsData.SaveCalls - seedWrites,
+            assertions = "32 native nodes;61 curves;all cards fit;7 outcome ports fit;actual pan and zoom;route edit and Tab exit;narrow bounded inspector with pointer and keyboard reachability;save/reload preserves IDs, six route points and exact curve geometry;reset retains all edges",
+            noExecutionWrites = fixture.FlowsData.PublishCalls == 0 && fixture.FlowsData.DryRunCalls == 0 && _outgoingWrites.IsEmpty
         }, new JsonSerializerOptions { WriteIndented = true }));
-        Assert.Equal(seedWrites, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls); Assert.Equal(0, fixture.FlowsData.DryRunCalls);
+        Assert.Equal(seedWrites + 1, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls); Assert.Equal(0, fixture.FlowsData.DryRunCalls);
         Assert.Empty(_outgoingWrites);
         Assert.Empty(errors); Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
     }
