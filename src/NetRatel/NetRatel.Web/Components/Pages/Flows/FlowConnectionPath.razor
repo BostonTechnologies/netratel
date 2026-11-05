@@ -24,18 +24,6 @@
               stroke="@(Selected ? "var(--mud-palette-secondary)" : "var(--mud-palette-primary)")"
               stroke-width="@(Selected ? "4" : "3")" marker-end="@($"url(#{ArrowId})")" pointer-events="none" data-testid="flow-link"
               data-flow-source-node="@Source" data-flow-target-node="@Target" />
-        @if (Selected && !ReadOnly && Definition?.Id is { } edgeId && Definition.Route is { } route)
-        {
-            @for (var index = 0; index < route.Points.Count; index++)
-            {
-                var pointIndex = index; var point = route.Points[index];
-                <circle class="flow-route-handle" cx="@Number(point.X / Scale)" cy="@Number(point.Y / Scale)" r="7"
-                    data-edge-id="@edgeId" data-point-index="@index" data-world-x="@Number(point.X)" data-world-y="@Number(point.Y)"
-                    tabindex="0" role="slider" aria-label="@($"Route point {index + 1}")" aria-valuetext="@($"X {Number(point.X)}, Y {Number(point.Y)}")"
-                    @onfocus="SelectAsync" @onkeydown="args => RouteKeyDown(pointIndex, args)" @onkeydown:preventDefault
-                    data-testid="flow-route-handle" />
-            }
-        }
     </g>
 }
 
@@ -43,8 +31,6 @@
     [Parameter, EditorRequired] public IWorkflowLinkViewModel Link { get; set; } = default!;
     [Parameter] public FlowEdgeDto? Definition { get; set; }
     [Parameter] public double Scale { get; set; } = 1;
-    [Parameter] public bool ReadOnly { get; set; }
-    [Parameter] public EventCallback<FlowRoutePointEdit> RouteChanged { get; set; }
     [Parameter] public Guid Source { get; set; }
     [Parameter] public Guid Target { get; set; }
     [Parameter] public string Label { get; set; } = "Inspect connection";
@@ -99,18 +85,6 @@
         }
         Link.PublishCurve(LinkCurve.FromPoints(xs, ys), this);
         return builder.ToString();
-    }
-    private Task RouteKeyDown(int index, KeyboardEventArgs args)
-    {
-        if (ReadOnly || Definition?.Id is not { } edgeId || Definition.Route?.Points is not { } points || index < 0 || index >= points.Count)
-            return Task.CompletedTask;
-        var step = args.ShiftKey ? 10d : 1d; var point = points[index];
-        var next = args.Key switch
-        {
-            "ArrowLeft" => point with { X = point.X - step }, "ArrowRight" => point with { X = point.X + step },
-            "ArrowUp" => point with { Y = point.Y - step }, "ArrowDown" => point with { Y = point.Y + step }, _ => point
-        };
-        return next == point ? Task.CompletedTask : RouteChanged.InvokeAsync(new(edgeId, index, next));
     }
     private static string Number(double value) => value.ToString("0.######", CultureInfo.InvariantCulture);
     private void GeometryChanged(object? sender, PropertyChangedEventArgs args)

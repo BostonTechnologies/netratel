@@ -27,7 +27,7 @@
                     @if (Adapter.Ports.ContainsKey(link.Sender) && Adapter.Ports.ContainsKey(link.Receiver))
                     {
                         var definition = Adapter.Edge(link); var source = definition.SourceNodeId; var target = definition.TargetNodeId;
-                        <FlowConnectionPath @key="link" Link="link" Definition="definition" Scale="Adapter.Tree.Layout.Scale.Horizontal" ReadOnly="ReadOnly" RouteChanged="MoveRoutePointAsync" Source="source" Target="target"
+                        <FlowConnectionPath @key="link" Link="link" Definition="definition" Scale="Adapter.Tree.Layout.Scale.Horizontal" Source="source" Target="target"
                             Label="@($"Connection from {NodeName(source)} to {NodeName(target)}")"
                             Selected="@IsSelected(definition)" SelectedChanged="() => SelectConnection(definition)" />
                     }
@@ -74,6 +74,12 @@
                     }
                 </ItemTemplate>
             </ViewPool>
+            @if (!ReadOnly && SelectedConnection is { Route: not null } routedEdge)
+            {
+                <svg class="flow-route-overlay" width="@canvas.Width" height="@canvas.Height" role="group" aria-label="Selected connection route controls">
+                    <FlowRouteHandles Edge="routedEdge" Scale="Adapter.Tree.Layout.Scale.Horizontal" Changed="MoveRoutePointAsync" />
+                </svg>
+            }
         </ChildContent>
     </FlowSurfaceBehavior>
     @if (SelectedConnection is { } connection)

@@ -54,7 +54,7 @@ export function attach(id, reference) {
         if (![source, ...points, target].every(point => Number.isFinite(point.x) && Number.isFinite(point.y))) return;
         const path = routedPath([source, ...points, target]);
         for (const element of group.querySelectorAll('.flow-connection-line,.flow-connection-hit')) if (element.getAttribute('d') !== path) element.setAttribute('d', path);
-        group.querySelectorAll('.flow-route-handle').forEach(handle => {
+        panel.querySelectorAll('.flow-route-handle[data-edge-id="' + group.dataset.flowEdgeId + '"]').forEach(handle => {
             const point = points[Number(handle.dataset.pointIndex)];
             if (point) { handle.setAttribute('cx', point.x); handle.setAttribute('cy', point.y); }
         });
@@ -115,7 +115,7 @@ export function attach(id, reference) {
         if (handle && panel.contains(handle)) {
             if (!writable() || event.button !== 0) return;
             event.preventDefault(); event.stopPropagation();
-            const point = localPoint(event.clientX, event.clientY), group = handle.closest('[data-flow-edge-id]');
+            const point = localPoint(event.clientX, event.clientY), group = panel.querySelector('[data-flow-edge-id="' + handle.dataset.edgeId + '"][data-flow-route]');
             if (!point || !group) return;
             routeDrag = { handle, group, index: Number(handle.dataset.pointIndex), pointerId: event.pointerId };
             routePreview = { group, index: routeDrag.index, ...point };
