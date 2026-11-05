@@ -143,6 +143,42 @@ public sealed class FlowExecutionPreviewTests
         JsonSerializer.SerializeToUtf8Bytes(preview.Trace).Length.Should().BeLessThanOrEqualTo(FlowTraceLimits.MaximumTraceBytes);
     }
 
+
+    [Theory]
+    [InlineData("succeeded")]
+    [InlineData("failed")]
+    public void Ai_findings_are_mapped_only_when_the_sample_explicitly_captured_them(string outcome)
+    {
+        var original = Graph();
+        var source = original.Nodes.Single(node => node.Id == TriggerId);
+        var ai = new FlowNodeDto(RepairId, FlowNodeKind.InvestigateWithAi, "Synthetic investigation", new(320, 100),
+            ConnectorId: Guid.Parse("91111111-1111-4111-8111-111111111111"), ConnectorRevision: 1)
+            { AiSettings = new() };
+        var mapping = new FlowNodeDto(MapId, FlowNodeKind.MapIncident, "Map supplied findings", new(620, 100),
+            Mapping: new("Investigation: {aiSummary}", "Original {rawStatus}"));
+        var finish = original.Nodes.Single(node => node.Id == SuccessId);
+        var edges = new List<FlowEdgeDto> { Edge(TriggerId, FlowNodeCatalogue.Event, RepairId), Edge(MapId, FlowNodeCatalogue.Result, SuccessId) };
+        edges.AddRange(FlowNodeCatalogue.Find(ai.Kind)!.Ports.Where(port => port.Direction == FlowPortDirection.Output)
+            .Select(port => Edge(RepairId, port.Id, MapId)));
+        var graph = new FlowGraphDto(2, [source, ai, mapping, finish], edges, new());
+        FlowGraphV2Validator.ValidateComplete(graph).Valid.Should().BeTrue();
+        var missing = new FlowPreviewFixtureDto(RepairId, outcome);
+        var unavailable = FlowExecutionPreview.DryRun(new(graph, Event(), Fixtures: [missing]), 17);
+        unavailable.Code.Should().Be("mapping-input-unavailable");
+        unavailable.Incident.Should().BeNull();
+        unavailable.Trace!.Steps[1].Output.State.Should().Be(FlowTraceDataState.Missing);
+        unavailable.Trace.Steps[^1].Output.State.Should().Be(FlowTraceDataState.Missing);
+
+        var empty = missing with { Output = JsonSerializer.SerializeToElement(new { summary = "" }) };
+        var capturedEmpty = FlowExecutionPreview.DryRun(new(graph, Event(), Fixtures: [empty]), 17);
+        capturedEmpty.Code.Should().Be("inert-preview");
+        capturedEmpty.Incident!.Title.Should().Be("Investigation: ");
+        var supplied = missing with { Output = JsonSerializer.SerializeToElement(new { summary = "Explicit synthetic findings" }) };
+        var captured = FlowExecutionPreview.DryRun(new(graph, Event(), Fixtures: [supplied]), 17);
+        captured.Incident!.Title.Should().Be("Investigation: Explicit synthetic findings");
+        captured.Trace!.Steps[1].Output.Value!.Value.GetProperty("summary").GetString().Should().Be("Explicit synthetic findings");
+    }
+
     internal static readonly Guid TriggerId = Guid.Parse("f05d4ba5-a3b3-4815-8d59-78d071e45c01");
     internal static readonly Guid RepairId = Guid.Parse("f05d4ba5-a3b3-4815-8d59-78d071e45c02");
     internal static readonly Guid ConditionId = Guid.Parse("f05d4ba5-a3b3-4815-8d59-78d071e45c03");

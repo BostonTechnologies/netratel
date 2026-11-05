@@ -186,11 +186,6 @@ public static class FlowExecutionPreview
     private static IReadOnlyDictionary<string, string> AiSample(FlowPreviewFixtureDto fixture)
     {
         var values = new Dictionary<string, string>(StringComparer.Ordinal) { ["aiStatus"] = "Simulated " + fixture.Outcome };
-        if (fixture.Outcome != FlowNodeCatalogue.Succeeded)
-        {
-            values["aiSummary"] = ""; values["aiEvidence"] = ""; values["aiRecommendations"] = "";
-            return values;
-        }
         if (fixture.Output.ValueKind != JsonValueKind.Object) return values;
         foreach (var (property, field) in new[] { ("summary", "aiSummary"), ("evidence", "aiEvidence"), ("recommendations", "aiRecommendations") })
             if (fixture.Output.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String)
