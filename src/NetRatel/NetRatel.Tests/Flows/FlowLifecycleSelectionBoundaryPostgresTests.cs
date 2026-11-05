@@ -181,6 +181,59 @@ public sealed class FlowLifecycleSelectionBoundaryPostgresTests(PostgreSqlPersis
         Assert.Equal(0, await final.FlowRuns.CountAsync(ct));
     }
 
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Earlier_enable_intervals_and_expired_contributors_cannot_hide_current_matching_facts(bool expired)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var ct = deadline.Token;
+        var connection = await postgres.CreateDatabaseAsync(ct);
+        var options = new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(connection).Options;
+        await using var db = new OrchestratorDbContext(options);
+        await db.Database.MigrateAsync(ct);
+        var now = DateTimeOffset.UtcNow;
+        var currentSince = expired ? now.AddHours(-26) : now.AddSeconds(-30);
+        var previousSince = expired ? currentSince : now.AddMinutes(-2);
+        var oldAt = expired ? now.AddHours(-25) : now.AddMinutes(-1);
+        var versionId = Guid.NewGuid();
+        var triggerId = Guid.NewGuid();
+        var key = Guid.NewGuid();
+        var primaryEvent = Guid.NewGuid();
+        var otherEvent = Guid.NewGuid();
+        FlowExecutionSubscriptionDeliveryDto Delivery(Guid source, DateTimeOffset since) => new(
+            ExecutionLifecycleSubscriptions.DeliveryId(versionId, triggerId, source), 7, versionId, triggerId,
+            source, since, key, new string('a', 64), new string('b', 64));
+        OutboxMessage Intent(FlowExecutionSubscriptionDeliveryDto value, DateTimeOffset at, string source) => new()
+        {
+            Id = value.DeliveryId, Type = FlowExecutionSubscriptionLimits.OutboxType,
+            PayloadJson = JsonSerializer.Serialize(value, FlowExecutionSubscriptionJsonContext.Default.FlowExecutionSubscriptionDeliveryDto),
+            OccurredUtc = at, Source = source, CorrelationId = key.ToString("N"),
+            TenantId = "7", EntityId = versionId.ToString("N"), Status = OutboxStatuses.Pending
+        };
+        var primary = Delivery(primaryEvent, currentSince);
+        db.OutboxMessages.Add(Intent(primary, now, "flow-subscription:3"));
+        db.OutboxMessages.Add(Intent(Delivery(otherEvent, currentSince), now.AddSeconds(-1), "flow-subscription:2"));
+        // More historical rows than the bounded reference budget must be excluded in SQL,
+        // before Take, so eligible contributors cannot disappear behind an earlier interval/age.
+        for (var index = 0; index <= FlowExecutionEventLimits.MaximumReferences; index++)
+            db.OutboxMessages.Add(Intent(Delivery(Guid.NewGuid(), previousSince), oldAt, "flow-subscription:1"));
+        await db.SaveChangesAsync(ct);
+        var before = await db.OutboxMessages.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.PayloadJson, ct);
+
+        var references = await ExecutionLifecycleSubscriptionWorker.ContributorsAsync(db, primary, now, ct);
+        Assert.Equal(2, references.Count);
+        Assert.Contains(primaryEvent, references);
+        Assert.Contains(otherEvent, references);
+        Assert.False(db.ChangeTracker.HasChanges());
+        var after = await db.OutboxMessages.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.PayloadJson, ct);
+        Assert.Equal(before.Count, after.Count);
+        foreach (var (id, payload) in before) Assert.Equal(payload, after[id]);
+        Assert.Equal(0, await db.FlowRuns.CountAsync(ct));
+        Assert.Equal(0, await db.JobRuns.CountAsync(ct));
+    }
+
     private static ServiceProvider Provider(string connection, IDataProtectionProvider protection, BoundaryGate gate)
     {
         var services = new ServiceCollection();

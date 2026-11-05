@@ -100,7 +100,7 @@ public sealed class ExecutionLifecycleSubscriptionWorker(IServiceScopeFactory sc
                         await DeferAsync(owned, row.Attempts, "execution-parent-result-pending", Poll, ct);
                     continue;
                 }
-                var references = await ContributorsAsync(db, intent, ct);
+                var references = await ContributorsAsync(db, intent, clock.GetUtcNow(), ct);
                 // The handoff proof is this exact claimed source fact. Ingress chooses a deterministic
                 // aggregate representative and records late provenance without changing accepted EventJson.
                 var result = await ingress.EnqueueExecutionAsync(new(intent.TenantId, intent.FlowVersionId,
@@ -164,18 +164,20 @@ public sealed class ExecutionLifecycleSubscriptionWorker(IServiceScopeFactory sc
     }
 
     internal static async Task<IReadOnlyList<Guid>> ContributorsAsync(OrchestratorDbContext db,
-        FlowExecutionSubscriptionDeliveryDto delivery, CancellationToken ct)
+        FlowExecutionSubscriptionDeliveryDto delivery, DateTimeOffset now, CancellationToken ct)
     {
         var tenant = delivery.TenantId.ToString(CultureInfo.InvariantCulture);
         var version = delivery.FlowVersionId.ToString("N");
         var key = delivery.AdmissionKey.ToString("N");
+        var cutoff = now - FlowLimits.MaximumRetryAge;
         var rows = await db.OutboxMessages.AsNoTracking().Where(x => x.Type == FlowExecutionSubscriptionLimits.OutboxType &&
-                x.TenantId == tenant && x.EntityId == version && x.CorrelationId == key)
+                x.TenantId == tenant && x.EntityId == version && x.CorrelationId == key &&
+                x.OccurredUtc >= delivery.ActiveSinceUtc && x.OccurredUtc > cutoff)
             .OrderBy(x => x.Source).ThenBy(x => x.Id).Take(FlowExecutionEventLimits.MaximumReferences + 1)
             .Select(x => x.PayloadJson).ToArrayAsync(ct);
         return rows.Select(ExecutionLifecycleSubscriptions.ReadDelivery).Where(x => x is not null &&
                 x.FlowVersionId == delivery.FlowVersionId && x.TriggerNodeId == delivery.TriggerNodeId &&
-                x.AdmissionKey == delivery.AdmissionKey).Select(x => x!.SourceEventId)
+                x.ActiveSinceUtc == delivery.ActiveSinceUtc && x.AdmissionKey == delivery.AdmissionKey).Select(x => x!.SourceEventId)
             .Prepend(delivery.SourceEventId).Distinct().Take(FlowExecutionEventLimits.MaximumReferences).ToArray();
     }
 
