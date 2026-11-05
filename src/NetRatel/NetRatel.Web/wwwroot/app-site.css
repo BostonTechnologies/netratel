@@ -1630,3 +1630,9 @@ html[data-netratel-theme="light"] .netratel-login-panel {
 @media (max-width: 959px) {
     .mud-dialog.jobs-edit-dialog { max-height: calc(100dvh - 24px); }
 }
+
+/* Native fullscreen includes the document so Mud providers stay in their original DOM.
+   Keep menu/selector portals above the focused workspace and lock the page underneath. */
+html.netratel-flow-fullscreen,
+html.netratel-flow-fullscreen body { overflow: hidden; }
+html.netratel-flow-fullscreen .mud-popover { z-index: 1450 !important; }
