@@ -11,6 +11,10 @@ namespace NetRatel.Infrastructure.Flows;
 /// <summary>Source state, immutable fact and selected immutable subscription commit in one transaction.</summary>
 public static class ExecutionLifecycleSubscriptions
 {
+    /// <summary>Native admission enters before static definition fences if it may record a terminal result before its first commit.</summary>
+    public static Task AcquireTenantAsync(OrchestratorDbContext db, int tenantId, CancellationToken ct = default) =>
+        FlowTenantTransactionLock.AcquireAsync(db, tenantId, ct);
+
     internal static bool NeedsTransaction(OrchestratorDbContext db)
     {
         db.ChangeTracker.DetectChanges();
@@ -26,7 +30,8 @@ public static class ExecutionLifecycleSubscriptions
         var facts = PendingFacts(db);
         if (facts.Count == 0) return;
         RequireTransaction(db);
-        var tenants = facts.Select(x => x.Event.TenantId).Distinct().ToArray();
+        var tenants = facts.Select(x => x.Event.TenantId).Distinct().Order().ToArray();
+        foreach (var tenant in tenants) FlowTenantTransactionLock.Acquire(db, tenant);
         var definitions = Definitions(db, tenants).ToArray();
         var linearizedAt = db.Database.IsNpgsql()
             ? db.Database.SqlQuery<DateTimeOffset>($"SELECT clock_timestamp() AS \"Value\"").Single()
@@ -42,7 +47,8 @@ public static class ExecutionLifecycleSubscriptions
         var facts = PendingFacts(db);
         if (facts.Count == 0) return;
         RequireTransaction(db);
-        var tenants = facts.Select(x => x.Event.TenantId).Distinct().ToArray();
+        var tenants = facts.Select(x => x.Event.TenantId).Distinct().Order().ToArray();
+        foreach (var tenant in tenants) await FlowTenantTransactionLock.AcquireAsync(db, tenant, ct);
         var definitions = await Definitions(db, tenants).ToArrayAsync(ct);
         var linearizedAt = db.Database.IsNpgsql()
             ? await db.Database.SqlQuery<DateTimeOffset>($"SELECT clock_timestamp() AS \"Value\"").SingleAsync(ct)
@@ -54,7 +60,8 @@ public static class ExecutionLifecycleSubscriptions
     }
 
     // The source transition, selected version and enable interval linearize under the ordered SHARE
-    // locks. Only new, uncommitted facts are stamped here; persisted duplicate facts are never rebuilt.
+    // locks. The tenant fence also covers disabled, unpublished and not-yet-created definitions.
+    // Only new, uncommitted facts are stamped here; persisted duplicate facts are never rebuilt.
     private static void StampNewFacts(List<(OutboxMessage Row, FlowExecutionEventDto Event)> facts, DateTimeOffset at)
     {
         for (var index = 0; index < facts.Count; index++)
@@ -71,9 +78,9 @@ public static class ExecutionLifecycleSubscriptions
     private static IQueryable<FlowDefinitionRecord> Definitions(OrchestratorDbContext db, int[] tenants) =>
         db.Database.IsNpgsql()
             ? db.FlowDefinitions.FromSqlInterpolated($@"SELECT * FROM ""FlowDefinitions""
-                WHERE ""Enabled"" AND ""PublishedVersionId"" IS NOT NULL AND ""TenantId"" = ANY ({tenants})
+                WHERE ""TenantId"" = ANY ({tenants})
                 ORDER BY ""Id"" FOR SHARE").AsNoTracking()
-            : db.FlowDefinitions.AsNoTracking().Where(x => x.Enabled && tenants.Contains(x.TenantId) && x.PublishedVersionId != null);
+            : db.FlowDefinitions.AsNoTracking().Where(x => tenants.Contains(x.TenantId)).OrderBy(x => x.Id);
 
     private static void RequireTransaction(OrchestratorDbContext db)
     {
@@ -112,7 +119,7 @@ public static class ExecutionLifecycleSubscriptions
     private static void Append(OrchestratorDbContext db, IReadOnlyList<(OutboxMessage Row, FlowExecutionEventDto Event)> facts,
         IReadOnlyList<FlowDefinitionRecord> definitions, IReadOnlyList<FlowVersionRecord> versions)
     {
-        foreach (var definition in definitions)
+        foreach (var definition in definitions.Where(x => x.Enabled && x.PublishedVersionId is not null))
         {
             var version = versions.SingleOrDefault(x => x.Id == definition.PublishedVersionId &&
                 x.TenantId == definition.TenantId && x.FlowId == definition.Id);

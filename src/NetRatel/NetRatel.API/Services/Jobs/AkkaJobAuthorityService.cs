@@ -279,6 +279,8 @@ public sealed class AkkaJobAuthorityService(
     {
         var definition = pinnedSnapshot?.Definition ?? mcpSnapshot?.Definition ?? await jobDefinitions.GetDetailsAsync(jobId, cancellationToken).ConfigureAwait(false)
             ?? throw new KeyNotFoundException($"Job {jobId} was not found.");
+        if (db is not null && definition.Job.TenantId is > 0)
+            await ExecutionLifecycleSubscriptions.AcquireTenantAsync(db, definition.Job.TenantId.Value, cancellationToken);
         if (pinnedSnapshot is null && mcpSnapshot is null && snapshotCapture is not null &&
             definition.Job.TenantId is > 0 && definition.Job.AgentId is { } boundAgent && boundAgent != Guid.Empty &&
             definition.Steps.Where(step => step.Enabled).All(step => step.Type == JobStepKind.RunCommand ||

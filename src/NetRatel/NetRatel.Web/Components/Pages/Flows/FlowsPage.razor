@@ -85,7 +85,7 @@
     <TitleContent>
         <div class="flow-history-heading">
             <div class="flow-history-symbol"><MudIcon Icon="@Icons.Material.Outlined.History" Size="Size.Large" /></div>
-            <div class="flow-history-title"><span>FLOW HISTORY</span><h2>@_history?.Name</h2><p>@Access?.TenantName · Published versions and execution results</p></div>
+            <div class="flow-history-title"><span>FLOW HISTORY</span><h2 title="@_history?.Name">@_history?.Name</h2><p title="@Access?.TenantName"><span>@Access?.TenantName</span><span class="flow-history-subtitle"> · Published versions and execution results</span></p></div>
             <MudIconButton id="flow-history-dismiss" Icon="@Icons.Material.Filled.Close" OnClick="CloseHistory" aria-label="Close flow history" data-testid="flow-history-dismiss" />
         </div>
     </TitleContent>
