@@ -129,6 +129,46 @@ public sealed class FlowTracePlayerTests : AsyncBunitContext
         cut.Render(p => p.Add(x => x.Snapshot, new FlowTraceSnapshotDto(FlowTraceDataState.Present)));
         cut.FindAll("[data-trace-copy]").Should().BeEmpty();
         cut.Markup.Should().Contain("Captured data unavailable");
+
+        var step = new FlowNodeTraceDto(0, Guid.NewGuid(), "Synthetic pinned execution", FlowTraceStepStatus.Completed,
+            "succeeded", FlowTraceProvenance.Actual, new(FlowTraceDataState.Missing),
+            new(FlowTraceDataState.Truncated) { Excerpt = "bounded native output", Reference = "https://untrusted.invalid/not-a-detail-link" })
+        { ExecutionReference = new(FlowExecutionSourceKind.Job, "9007199254740993", "9223372036854775807") };
+        var trace = new FlowTraceDto(2, "native-execution", FlowTraceProvenance.Actual, [step]);
+        var player = Render<FlowTracePlayer>(p => p.Add(x => x.Trace, trace).Add(x => x.ContextKey, "tenant-17-native-details"));
+        var link = player.Find("[data-testid=flow-execution-details-link]");
+        link.GetAttribute("href").Should().Be("/jobs/9007199254740993/runs/9223372036854775807");
+        link.GetAttribute("target").Should().Be("_blank"); link.GetAttribute("rel").Should().Be("noopener noreferrer");
+        player.FindAll("a").Should().ContainSingle(); player.Markup.Should().Contain("bounded native output");
+
+        step = step with { Output = new(FlowTraceDataState.Missing) { Reference = "snapshot-budget-unavailable" }, Provenance = FlowTraceProvenance.Recorded };
+        player.Render(p => p.Add(x => x.Trace, trace with { Provenance = FlowTraceProvenance.Recorded, Steps = [step] }));
+        player.Find("[data-testid=flow-execution-details-link]").GetAttribute("href").Should().Be("/jobs/9007199254740993/runs/9223372036854775807");
+        player.Markup.Should().Contain("Data unavailable");
+
+        step = step with { ExecutionReference = new(FlowExecutionSourceKind.Script, null, "synthetic run/part?x=1#result") };
+        player.Render(p => p.Add(x => x.Trace, trace with { Steps = [step] }));
+        player.Find("[data-testid=flow-execution-details-link]").GetAttribute("href").Should().Be("/tasks/request/synthetic%20run%2Fpart%3Fx%3D1%23result");
+        player.Render(p => p.Add(x => x.Trace, trace with { Provenance = FlowTraceProvenance.Simulated, Steps = [step] }));
+        player.FindAll("a").Should().BeEmpty(); player.Markup.Should().Contain("simulated or unspecified data");
+        player.Render(p => p.Add(x => x.Trace, trace with { Steps = [step with { Provenance = FlowTraceProvenance.Simulated }] }));
+        player.FindAll("a").Should().BeEmpty();
+
+        foreach (var reference in new[] {
+            new FlowExecutionReferenceDto(FlowExecutionSourceKind.Job, "0", "1"),
+            new(FlowExecutionSourceKind.Job, "01", "1"), new(FlowExecutionSourceKind.Job, "42", "9223372036854775808"),
+            new(FlowExecutionSourceKind.Job, "42", "../1"), new(FlowExecutionSourceKind.Script, "42", "\r\n"),
+            new(FlowExecutionSourceKind.Script, "not-a-native-definition", "request-42"),
+            new(FlowExecutionSourceKind.Script, "42", ".."), new(FlowExecutionSourceKind.Script, "42", new string('x', 257)),
+            new(FlowExecutionSourceKind.Request, "42", "request-42") })
+        {
+            player.Render(p => p.Add(x => x.Trace, trace with { Steps = [step with { ExecutionReference = reference }] }));
+            player.FindAll("a").Should().BeEmpty();
+            player.Find("[data-testid=flow-execution-details-unavailable]").TextContent.Should().Contain("unavailable");
+        }
+        player.Render(p => p.Add(x => x.Trace, trace with { Steps = [step with { ExecutionReference = null }] }));
+        player.FindAll("a").Should().BeEmpty();
+        player.FindAll("[data-testid=flow-execution-details-unavailable]").Should().BeEmpty();
     }
 
     [Fact]

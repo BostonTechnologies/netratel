@@ -58,6 +58,8 @@
                 </dl>
                 <details open><summary>Input · @StateLabel(step.Input.State)</summary><FlowTraceData Snapshot="step.Input" /></details>
                 <details open><summary>Output · @StateLabel(step.Output.State)</summary><FlowTraceData Snapshot="step.Output" /></details>
+                @if (step.ExecutionReference is not null)
+                { <FlowExecutionDetailsLink Reference="step.ExecutionReference" Provenance="step.Provenance" TraceProvenance="trace.Provenance" /> }
                 @if (step.Status == FlowTraceStepStatus.Planned)
                 { <p>No external action was executed. An explicit sample result is required to preview downstream outcomes.</p> }
             </article>
