@@ -143,10 +143,10 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         queued.Receipt!.ExecutionId.Should().NotBeEmpty();
         _commands.Dispatches.Should().Be(1);
         await native.UpdateTaskActivityStatusAsync(new(queued.Receipt.ExecutionId, "Completed", null,
-            DateTimeOffset.UtcNow, ResultJson: """{"stdout":"synthetic terminal output","exitCode":0}""", ExitCode: 0));
+            DateTimeOffset.UtcNow, ResultJson: """{"stdout":["synthetic terminal output","second line"],"exitCode":0}""", ExitCode: 0));
         var terminal = await dispatcher.ObserveAsync(request, queued.Receipt);
         terminal.Disposition.Should().Be(FlowExecutionActionDisposition.Succeeded);
-        terminal.Output!.StandardOutput.Should().Be("synthetic terminal output");
+        terminal.Output!.StandardOutput.Should().Be("synthetic terminal output\nsecond line");
         terminal.Output.ExecutionId.Should().Be(queued.Receipt.ExecutionId);
         _commands.Dispatches.Should().Be(1);
         _access.Allowed = false;
@@ -175,6 +175,9 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         (await dispatcher.DispatchAsync(action with { Lease = lease with { Event = lease.Event with
         { ExecutionEvent = source with { Outcome = FlowExecutionOutcome.Failed, RawStatus = "Failed" } } },
             OriginalReplay = null })).Disposition.Should().Be(FlowExecutionActionDisposition.Unsupported);
+        var hopExhausted = action with { Lease = lease with { Event = lease.Event with
+            { ExecutionEvent = source with { Causation = new("bounded-original", HopCount: FlowExecutionEventLimits.MaximumHopCount) } } } };
+        (await dispatcher.DispatchAsync(hopExhausted)).Disposition.Should().Be(FlowExecutionActionDisposition.Denied);
         _commands.Dispatches.Should().Be(0);
         (await db.Set<ExecutionAdmissionRecord>().CountAsync()).Should().Be(0);
     }

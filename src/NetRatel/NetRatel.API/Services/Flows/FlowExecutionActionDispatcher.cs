@@ -28,6 +28,13 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
         try
         {
             var node = Node(request);
+            if (request.Lease.Event.ExecutionEvent?.Causation?.HopCount >= FlowExecutionEventLimits.MaximumHopCount)
+                return Result(FlowExecutionActionDisposition.Denied, "execution-causation-exhausted");
+            if (node.Kind == FlowNodeKind.RerunOriginalExecution &&
+                (request.RecoveryAttempt > FlowExecutionEventLimits.MaximumRecoveryAttempts ||
+                 request.RecoveryAttempt == 0 && request.Lease.Event.ExecutionEvent?.Causation?.RecoveryAttempt >=
+                    (node.Rerun?.MaximumAttempts ?? 1)))
+                return Result(FlowExecutionActionDisposition.Denied, "rerun-attempts-exhausted");
             var identity = Identity(request, node.Kind == FlowNodeKind.RerunOriginalExecution);
             if (node.Kind == FlowNodeKind.RerunOriginalExecution) return await RerunAsync(request, identity, ct);
             var pin = await pins.ResolveAsync(identity.TenantId, identity.FlowVersionId, identity.NodeId, ct);
@@ -168,7 +175,8 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
                 binding.ExecutionId, activity.StartedAtUtc, activity.CompletedAtUtc, native?.ExitCode,
                 Summary: Bound(activity.Error), StandardOutput: Text(data, "stdout"), StandardError: Text(data, "stderr"),
                 Data: Bounded(data), OutputAvailable: data is not null,
-                Truncated: activity.ResultJson is not null && Encoding.UTF8.GetByteCount(activity.ResultJson) > 16384, References: terminal?.Results), terminal);
+                Truncated: activity.ResultJson is not null && Encoding.UTF8.GetByteCount(activity.ResultJson) > 16384 ||
+                    TextTruncated(data, "stdout") || TextTruncated(data, "stderr") || WouldTruncate(activity.Error), References: terminal?.Results), terminal);
     }
 
     private async Task<FlowExecutionActionResult> RerunAsync(FlowExecutionActionRequest request, ExecutionAdmissionIdentity identity, CancellationToken ct)
@@ -265,16 +273,34 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
         return document.RootElement.EnumerateObject().ToDictionary(property => property.Name,
             property => property.Value.ValueKind == JsonValueKind.String ? property.Value.GetString()! : property.Value.GetRawText(), StringComparer.Ordinal);
     }
-    private static string? Text(JsonElement? data, string property) => data is { ValueKind: JsonValueKind.Object } element &&
-        element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String ? Bound(value.GetString()) : null;
+    private static string? RawText(JsonElement? data, string property)
+    {
+        if (data is not { ValueKind: JsonValueKind.Object } element || !element.TryGetProperty(property, out var value)) return null;
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString(),
+            JsonValueKind.Array => string.Join("\n", value.EnumerateArray().Take(128)
+                .Where(item => item.ValueKind == JsonValueKind.String).Select(item => item.GetString())),
+            _ => null
+        };
+    }
+    private static string? Text(JsonElement? data, string property) => Bound(RawText(data, property));
+    private static bool TextTruncated(JsonElement? data, string property) => WouldTruncate(RawText(data, property)) ||
+        data is { ValueKind: JsonValueKind.Object } element && element.TryGetProperty(property, out var value) &&
+            value.ValueKind == JsonValueKind.Array && value.GetArrayLength() > 128;
+    private static bool WouldTruncate(string? value) => value is not null &&
+        Encoding.UTF8.GetByteCount(OperatorOutputRedactor.Redact(value)) > 8192;
     private static JsonElement? Bounded(JsonElement? data) => data is { } value && Encoding.UTF8.GetByteCount(value.GetRawText()) <= 16384 ? value : null;
     private static string? Bound(string? value)
     {
         var safe = value is null ? null : OperatorOutputRedactor.Redact(value);
         if (safe is null) return null;
-        var length = Math.Min(safe.Length, 8192);
-        while (Encoding.UTF8.GetByteCount(safe.AsSpan(0, length)) > 8192) length--;
-        if (length > 0 && char.IsHighSurrogate(safe[length - 1])) length--;
+        var length = 0; var bytes = 0;
+        foreach (var rune in safe.EnumerateRunes())
+        {
+            if (bytes + rune.Utf8SequenceLength > 8192) break;
+            bytes += rune.Utf8SequenceLength; length += rune.Utf16SequenceLength;
+        }
         return safe[..length];
     }
 }
