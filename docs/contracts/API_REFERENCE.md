@@ -82,6 +82,9 @@ The schema-two contract is introduced independently of execution activation. Exi
 save/publish/validate and monitoring ingress continue to accept schema one; submitting schema two
 to those routes returns `graph-schema` until the durable v2 executor is enabled.
 `FlowGraphV2Validator` is the pure version-two contract validator. It does not dispatch work.
+Existing managed MCP Flows operations continue to advertise the exact schema-one input contract;
+v2 fields and node kinds require an explicit future MCP contract activation. Older schema-one
+writers cannot downgrade a stored newer draft and erase its metadata.
 
 Schema two retains `FlowGraphDto`, existing enum values and nullable-omitted additions. New node
 kinds are execution event (7), run library script (8), run job (9), rerun original execution (10)

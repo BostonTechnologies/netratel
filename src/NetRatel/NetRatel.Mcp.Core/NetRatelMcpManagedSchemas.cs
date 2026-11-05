@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Schema;
 using System.Text.Json.Serialization.Metadata;
 using NetRatel.Shared.Operations;
+using NetRatel.Shared.Contracts.Flows;
 
 namespace NetRatel.Mcp.Core;
 
@@ -39,13 +40,23 @@ public static partial class NetRatelMcpToolDefinitions
                 ["description"] = "Exact callId from the investigation's pendingApprovals. Never invent an approval." };
         if (operation.DataType is { } dataType)
         {
-            // The schema and the API both use the real shared DTO and serializer.
-            // Adding a graph node or changing a typed body cannot leave a stale MCP copy.
+            // Existing managed Flows operations advertise schema one until explicit v2 MCP
+            // admission is enabled. Use the real DTO, with only that unsupported additive metadata
+            // excluded from this export; never change persistence or HTTP serializer options.
+            var resolver = new DefaultJsonTypeInfoResolver();
+            if (operation.Tool == "netratel_flows") resolver.Modifiers.Add(LegacyFlowSchemaMetadata);
             var options = new JsonSerializerOptions(ManagedOperationCatalog.JsonOptions)
-            { TypeInfoResolver = new DefaultJsonTypeInfoResolver() };
+            { TypeInfoResolver = resolver };
             var schema = options.GetJsonSchemaAsNode(dataType, new JsonSchemaExporterOptions
             {
-                TreatNullObliviousAsNonNullable = true
+                TreatNullObliviousAsNonNullable = true,
+                TransformSchemaNode = (context, node) =>
+                {
+                    if (operation.Tool == "netratel_flows" && context.TypeInfo.Type == typeof(FlowNodeKind) &&
+                        node is JsonObject enumSchema && enumSchema["enum"] is JsonArray)
+                        enumSchema["enum"] = new JsonArray("AlertRaised", "Condition", "MapIncident", "CreateIncident", "ActionGroup", "InvestigateWithAi");
+                    return node;
+                }
             });
             // Exported references are relative to the DTO root. Inline them
             // before embedding under the tool's operation-discriminated request.
@@ -58,6 +69,16 @@ public static partial class NetRatelMcpToolDefinitions
             ["required"] = new JsonArray(operation.RequiredProperties.Select(name => (JsonNode?)JsonValue.Create(name)).ToArray()),
             ["description"] = $"Requires {string.Join(", ", new[] { operation.Permission }.Concat(operation.AdditionalPermissions))} for this tenant plus current MCP operation policy. Typed data uses the same request contract as the UI."
         }, true);
+    }
+
+    private static void LegacyFlowSchemaMetadata(JsonTypeInfo type)
+    {
+        string[] unsupported = type.Type == typeof(FlowNodeDto)
+            ? ["executionTrigger", "executionAction", "rerun", "predicate", "inputs"]
+            : type.Type == typeof(FlowEdgeDto) ? ["id", "route"] : [];
+        foreach (var property in type.Properties.Where(property =>
+            unsupported.Contains(property.Name, StringComparer.OrdinalIgnoreCase)).ToArray())
+            type.Properties.Remove(property);
     }
 
     private static JsonNode? InlineManagedSchema(JsonNode? node, JsonNode root, IReadOnlySet<string> references)

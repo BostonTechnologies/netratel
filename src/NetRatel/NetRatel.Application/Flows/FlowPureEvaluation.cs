@@ -13,18 +13,58 @@ public static class FlowPureEvaluation
         var validation = FlowGraphValidator.ValidateComplete(request.Graph);
         if (!validation.Valid || !ValidEventData(request.Input)) return new(false, false, "invalid-draft", null, [], validation.Issues);
         var nodes = request.Graph.Nodes.ToDictionary(node => node.Id);
-        var edges = request.Graph.Edges.ToDictionary(edge => edge.SourceNodeId, edge => edge.TargetNodeId);
+        var edges = request.Graph.Edges.ToDictionary(edge => edge.SourceNodeId);
         var current = request.Graph.Nodes.Single(node => node.Kind == FlowNodeKind.AlertRaised);
         var visited = new List<Guid>(); FlowIncidentFieldsDto? fields = null;
+        var trace = new FlowPreviewTrace(request.Graph);
+        var traceOpen = true;
         while (true)
         {
             visited.Add(current.Id);
-            if (current.Kind == FlowNodeKind.Condition && !Matches(current.Condition!, request.Input)) return new(true, true, "condition-false", null, visited, []);
-            if (current.Kind == FlowNodeKind.MapIncident) fields = Map(current.Mapping!, request.Input);
-            if (!edges.TryGetValue(current.Id, out var next)) break;
-            current = nodes[next];
+            edges.TryGetValue(current.Id, out var edge);
+            if (current.Kind == FlowNodeKind.Condition && !Matches(current.Condition!, request.Input))
+            {
+                if (traceOpen) trace.Add(current, new { Event = request.Input, current.Condition }, false, FlowTraceStepStatus.Skipped, "condition-false");
+                return new(true, true, "condition-false", null, visited, []) { Trace = trace.Build() };
+            }
+            if (current.Kind == FlowNodeKind.MapIncident)
+            {
+                try { fields = Map(current.Mapping!, request.Input); }
+                catch (InvalidOperationException error) when (error.Message == "mapping-output-limit")
+                {
+                    if (traceOpen) trace.Add(current, new { Event = request.Input, current.Mapping }, null, FlowTraceStepStatus.Failed,
+                        "failed", outputUnavailable: true, errorCode: "mapping-output-limit");
+                    return new(false, false, "mapping-output-limit", null, visited, [new("mapping-output-limit", current.Id)]) { Trace = trace.Build() };
+                }
+            }
+            if (traceOpen)
+            {
+                switch (current.Kind)
+                {
+                    case FlowNodeKind.AlertRaised:
+                        trace.Add(current, request.Input, request.Input, FlowTraceStepStatus.Completed, "event", edge);
+                        break;
+                    case FlowNodeKind.Condition:
+                        trace.Add(current, new { Event = request.Input, current.Condition }, true, FlowTraceStepStatus.Completed, "condition-true", edge);
+                        break;
+                    case FlowNodeKind.MapIncident:
+                        trace.Add(current, new { Event = request.Input, current.Mapping }, fields, FlowTraceStepStatus.Completed, "mapped", edge);
+                        break;
+                    default:
+                        trace.Add(current, new { Event = request.Input, Incident = fields }, null, FlowTraceStepStatus.Planned,
+                            "sample-result-unavailable", outputUnavailable: true);
+                        traceOpen = false;
+                        break;
+                }
+            }
+            // Keep the historical schema-1 summary for existing clients. The new trace stops at the first
+            // external action; downstream outcomes are unavailable without an explicit sample result.
+            if (edge is null) break;
+            current = nodes[edge.TargetNodeId];
         }
-        return fields is null ? new(false, false, "mapping-required", null, visited, []) : new(true, false, "inert-preview", fields, visited, []);
+        return fields is null
+            ? new(false, false, "mapping-required", null, visited, []) { Trace = trace.Build() }
+            : new(true, false, "inert-preview", fields, visited, []) { Trace = trace.Build() };
     }
     public static bool ValidEventData(FlowEventDataDto? data) => data is not null && data.RuleId != Guid.Empty &&
         (data.AgentId != Guid.Empty || ValidOfflineSummary(data)) &&
