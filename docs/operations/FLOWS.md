@@ -6,10 +6,6 @@ Flows support bounded drafts, previews, RatelDesk incidents and Discord/Slack no
 
 Open **Signals → Flows**, choose an authorized tenant, and create the named incident template. The real VeloxDev canvas supports moving nodes, connecting typed ports, deleting edges/nodes, pan, zoom, fit and minimap. The property forms offer a keyboard path to node positions, conditions, mappings and connections. Save retains stable node IDs, properties, positions and viewport in NetRatel's canonical schema; a canvas or CLR object is never persisted.
 
-The compact toolbar includes a searchable, collapsible node library and **Fullscreen workspace** for both drafts and immutable viewers. Fullscreen covers the viewport; the browser Fullscreen API is requested directly from the click where supported, with a full-window fallback. The existing dialog and popover providers stay inside the native fullscreen document. Entering or leaving keeps the same canvas adapter, selected node, draft and pan/zoom. Escape keeps the editor open; use its explicit Close action to leave.
-
-Preview sample data opens in a modal dialog and does not reduce the canvas height. Closing the dialog returns focus to Preview. Evaluation remains pure and uses the current draft; opening or closing preview does not save or publish it.
-
 The initial catalogue is deliberately small:
 
 1. Alert raised.
@@ -56,6 +52,16 @@ Incoming webhooks do not provide the verified replay contract used for RatelDesk
 Exhausting a retry budget preserves a verified success receipt or an ambiguous send instead of overwriting it with a generic failure. An event aimed at a known version of a disabled flow records a real failed run, and re-enabling the definition does not resurrect that event. Metric recovery does not automatically resolve a helpdesk incident.
 
 The initial bounds are eight nodes, seven edges, 32 KiB canonical graph, 8 KiB event, 24 KiB prepared action, 20-second execution deadline, 60-second lease, five action attempts and a 24-hour retry age. There are at most 128 definitions/tenant, 128 versions/definition, 256 active runs/tenant and 4,096 retained runs/tenant. Run history reads return at most 100 rows. Detailed terminal history is pruned after 90 days; ambiguous deliveries retain their keys and evidence. After pruning, an original event older than the 24-hour ingress window cannot start a new action. The monitoring bridge must retain the original immutable event timestamp when redelivering. Receiver deduplication retention must cover the supported retry window before safe replay can be enabled.
+
+## Execution lifecycle source ledger
+
+Authoritative request and library-script terminal writes append immutable source facts in the same transaction as their state. Request `Success` and `Completed` normalize to success while retaining the original status. Unknown delivery remains distinct from failure and timeout. Job facts are appended only when the final terminal projection and result hash are ready. A recorded canonical authority denial can normalize native `Failed` to denied; error-message text alone cannot.
+
+The event occurrence time is the durable terminal transition or terminal-ready boundary. Native completion time is retained separately. A newly accepted late projection can match a subscription enabled before that commit; redelivery retains the original immutable event time. Events committed before an enable interval are not resurrected.
+
+Source commits pin matching immutable versions and trigger nodes in subscription delivery intents, including the source payload hash, configuration hash and enabled interval. A later publish does not retarget an already selected delivery. Combined subscriptions aggregate by immutable version, trigger, accepted execution attempt and outcome. Known job-backed requests retain their parent correlation even while the final job result is pending; combined admission waits for that result boundary. A request-only admission failure without an accepted job is available immediately. All contributing source facts keep their own identities.
+
+The lifecycle delivery worker is inert until the trusted execution-event ingress is registered. It passes server-owned fact and delivery IDs, and the ingress independently verifies the pinned selection and fresh configured authority. The in-memory `RequestEventBus` remains a UI channel and does not admit automation. Preview and playback do not write this ledger or dispatch its subscriptions.
 
 ## Schema transition
 
