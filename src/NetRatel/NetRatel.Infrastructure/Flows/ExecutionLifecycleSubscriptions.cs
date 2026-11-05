@@ -11,6 +11,10 @@ namespace NetRatel.Infrastructure.Flows;
 /// <summary>Source state, immutable fact and selected immutable subscription commit in one transaction.</summary>
 public static class ExecutionLifecycleSubscriptions
 {
+    /// <summary>Native admission enters before static definition fences if it may record a terminal result before its first commit.</summary>
+    public static Task AcquireTenantAsync(OrchestratorDbContext db, int tenantId, CancellationToken ct = default) =>
+        FlowTenantTransactionLock.AcquireAsync(db, tenantId, ct);
+
     internal static bool NeedsTransaction(OrchestratorDbContext db)
     {
         db.ChangeTracker.DetectChanges();
