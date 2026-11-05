@@ -185,6 +185,28 @@ public sealed partial class NetclawPersistencePostgresTests
             Assert.Contains("Mapped before investigation", draft.Fields.Description);
             Assert.Contains("Outcome: Unsupported", draft.Fields.Description);
             Assert.DoesNotContain("Recovered (", draft.Fields.Description);
+            var prepared = JsonSerializer.Deserialize<FlowIncidentActionRequest>(frozenPrepared, IncidentJson)!;
+            var wire = JsonSerializer.Deserialize<RatelDeskCreateIncidentDto>(remote.ExactBody!, IncidentJson)!;
+            Assert.Equal(prepared.Fields.Description, wire.Description);
+            Assert.Contains("Original execution facts", wire.Description);
+            Assert.Contains("Outcome: Unsupported", wire.Description);
+            Assert.Contains("NetRatel execution occurrence", wire.Description);
+            Assert.DoesNotContain("NetRatel monitoring occurrence", wire.Description);
+            Assert.Contains("/requests", wire.Description);
+            Assert.True(wire.Description.Length <= RatelDeskConnectorLimits.MaximumDescriptionCharacters);
+            var aiRow = await db.AiInvestigations.SingleAsync(ct);
+            await InvestigationStore.StageTurnResultAsync(db, aiRow, FlowAiResultStatus.Completed,
+                clock.GetUtcNow(), ct, summary: "Late synthetic findings cannot replace the saved unsupported result.");
+            var edited = await db.FlowDefinitions.SingleAsync(row => row.Id == flowId, ct);
+            edited.Name = "Edited synthetic draft after first send"; edited.Revision++;
+            var editedGraph = JsonSerializer.Deserialize<FlowGraphDto>(edited.DraftJson, IncidentJson)!;
+            edited.DraftJson = JsonSerializer.Serialize(editedGraph with
+            {
+                Nodes = editedGraph.Nodes.Select(node => node.Kind == FlowNodeKind.MapIncident
+                    ? node with { Mapping = new("Later draft title", "Later draft must not change the original frozen payload.") }
+                    : node).ToArray()
+            }, IncidentJson);
+            await db.SaveChangesAsync(ct);
             Assert.Equal(1, reader.Reads);
         }
         // End the old lease before cancelling its blocked transport. Its later completion cannot
@@ -221,6 +243,10 @@ public sealed partial class NetclawPersistencePostgresTests
             Assert.Equal(0, await db.JobRuns.CountAsync(ct));
             Assert.Equal(0, await db.MonitoringOccurrences.CountAsync(ct));
             Assert.Equal(1, await db.Set<AiInvestigationTurnResultRecord>().CountAsync(ct));
+            var originalAiResult = JsonSerializer.Deserialize<FlowAiResultDto>((await db.Set<AiInvestigationTurnResultRecord>()
+                .AsNoTracking().SingleAsync(ct)).ResultJson, IncidentJson)!;
+            Assert.Equal(FlowAiResultStatus.Unsupported, originalAiResult.Status);
+            Assert.Null(originalAiResult.Summary);
         }
         Assert.Equal(1, remote.Creates);
         Assert.Equal(1, remote.Lookups);
@@ -302,6 +328,7 @@ public sealed partial class NetclawPersistencePostgresTests
         public int Creates { get; private set; }
         public int Lookups { get; private set; }
         public RatelDeskVerifiedReceipt? Receipt { get; private set; }
+        public string? ExactBody => committedPreparation?.ExactCreateBodyJson;
         private RatelDeskReceiverPreparationV2? committedPreparation;
 
         private RatelDeskConnectorState Connector => new(ConnectorId, 17, 1, 1, IncidentPublisher,
