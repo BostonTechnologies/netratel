@@ -179,7 +179,8 @@ public sealed class AkkaJobAuthorityService(
         return submitted;
     }
 
-    private async Task<KeyedJobAdmissionRequest> RequireKeyedDispatchAsync(JobRunInfo run, CancellationToken ct)
+    private async Task<KeyedJobAdmissionRequest> RequireKeyedDispatchAsync(JobRunInfo run, CancellationToken ct,
+        bool initialDispatch, NetRatel.Application.Flows.FlowRunLease? firstDispatchLease)
     {
         if (executionAdmissions is null || keyedAuthority is null)
             throw new ExecutionAdmissionDeniedException("The canonical execution authority is unavailable.");
@@ -191,6 +192,8 @@ public sealed class AkkaJobAuthorityService(
             submitted.Snapshot.Definition.Job.AgentId != run.AgentId || submitted.Request.StartedBy != run.StartedBy)
             throw new ExecutionAdmissionDeniedException("The canonical execution target differs from its admitted binding.");
         await keyedAuthority.RequireAllowedAsync(submitted.Identity, submitted.Snapshot.Definition.Job, ct);
+        if (initialDispatch) await keyedAuthority.RequireFirstDispatchAsync(submitted.Identity, firstDispatchLease, ct);
+        else await keyedAuthority.RequireContinuationAsync(submitted.Identity, ct);
         return submitted;
     }
 
@@ -405,7 +408,7 @@ public sealed class AkkaJobAuthorityService(
         await CommitBeforeTransportAsync(cancellationToken);
         onSourceAccepted?.Invoke(run);
         await BeginAfterTransportAsync(cancellationToken);
-        return await DispatchNextAsync(run.Id, client, nextVersion: 3, nextSequence: 3, cancellationToken, firstDispatchLease).ConfigureAwait(false);
+        return await DispatchNextAsync(run.Id, client, nextVersion: 3, nextSequence: 3, cancellationToken, firstDispatchLease, initialDispatch: true).ConfigureAwait(false);
     }
 
     public async Task RecordLifecycleAsync(ClientKey client, JobLifecycleUpdateEnvelope lifecycle, CancellationToken cancellationToken)
@@ -552,7 +555,7 @@ public sealed class AkkaJobAuthorityService(
     }
 
     private async Task<JobRunInfo> DispatchNextAsync(ulong runId, ClientKey client, ulong nextVersion, ulong nextSequence, CancellationToken cancellationToken,
-        NetRatel.Application.Flows.FlowRunLease? firstDispatchLease = null)
+        NetRatel.Application.Flows.FlowRunLease? firstDispatchLease = null, bool initialDispatch = false)
     {
         var details = await jobRuns.GetDetailsAsync(runId, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Job run {runId} was not found.");
@@ -585,7 +588,7 @@ public sealed class AkkaJobAuthorityService(
         {
             try
             {
-                var admitted = await RequireKeyedDispatchAsync(run, cancellationToken);
+                var admitted = await RequireKeyedDispatchAsync(run, cancellationToken, initialDispatch, firstDispatchLease);
                 if (pinnedSnapshot is null || pinnedSnapshot.ComputeDigest() != admitted.Snapshot.ComputeDigest())
                     throw new ExecutionAdmissionDeniedException("The pinned canonical job snapshot is unavailable or changed.");
             }
@@ -669,6 +672,17 @@ public sealed class AkkaJobAuthorityService(
             control.Revision++;
             await db.SaveChangesAsync(cancellationToken);
         }
+        if (run.StartedBy.StartsWith("flow-keyed:", StringComparison.Ordinal))
+        {
+            try { await RequireKeyedDispatchAsync(run, cancellationToken, initialDispatch, firstDispatchLease); }
+            catch (ExecutionAdmissionDeniedException)
+            {
+                await executionAdmissions!.RecordAuthorityDeniedAsync(ExecutionAdmissionKind.Job,
+                    run.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), cancellationToken);
+                await FailBeforeDispatchAsync(running, cancellationToken, "execution-admission-denied: The current flow execution authority is unavailable.");
+                return (await jobRuns.GetAsync(run.Id, cancellationToken))!;
+            }
+        }
         await CommitBeforeTransportAsync(cancellationToken);
         try
         {
@@ -676,9 +690,7 @@ public sealed class AkkaJobAuthorityService(
                 await managedGuard!.AuthorizeDispatchAsync(run, definition.Job, cancellationToken);
             if (run.StartedBy.StartsWith("flow-keyed:", StringComparison.Ordinal))
             {
-                var keyed = await RequireKeyedDispatchAsync(run, cancellationToken);
-                if (firstDispatchLease is not null)
-                    await keyedAuthority!.RequireFirstDispatchAsync(keyed.Identity, firstDispatchLease, cancellationToken);
+                await RequireKeyedDispatchAsync(run, cancellationToken, initialDispatch, firstDispatchLease);
             }
             await sessions.DispatchAsync(client, new JobGatewayStepDispatch(
                 run.Id, step.Id, next.Id, next.Ordinal, activity.RequestId, $"akka-job-{run.Id}", invocation.TaskType, invocation.PayloadJson,
