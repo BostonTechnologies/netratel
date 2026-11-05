@@ -1,0 +1,5 @@
+.flow-execution-facts,dl>div{min-width:0}
+header h4{font-size:.95rem;margin:0}header p{font-size:.8rem;color:var(--mud-palette-text-secondary)}
+dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(190px,100%),1fr));gap:.65rem;margin:.7rem 0}
+dt{font-size:.72rem;color:var(--mud-palette-text-secondary)}dd{margin:.15rem 0 0;font-size:.85rem;white-space:pre-wrap;overflow-wrap:anywhere}
+summary{cursor:pointer;font-size:.85rem}details p,details li{font-size:.8rem;overflow-wrap:anywhere}code{overflow-wrap:anywhere}

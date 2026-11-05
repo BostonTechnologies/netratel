@@ -14,6 +14,8 @@ Preview sample data opens in a modal dialog and does not reduce the canvas heigh
 
 Evaluation uses the current draft and never saves, publishes or dispatches an action. Editing the draft or changing tenant/flow removes its old trace. Playback moves through captured data entirely in the browser, respects reduced motion, and pauses while hidden or offscreen; backward stepping performs no evaluation or network command.
 
+From a run result, choose **Replay recorded run** to inspect its exact immutable published graph. The viewer verifies the graph's configuration hash and presents stored node snapshots without evaluating the current draft. Historical runs without node snapshots show unavailable data. An unsupported trace format, a changed graph hash or a different graph schema cannot display its snapshots as current data.
+
 The initial catalogue is deliberately small:
 
 1. Alert raised.

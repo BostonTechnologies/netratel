@@ -28,19 +28,36 @@
     {
         <div class="history-result" data-testid="flow-run-result">
             <MudButton StartIcon="@Icons.Material.Filled.ArrowBack" OnClick="Back" data-testid="flow-history-back">Back to history</MudButton>
+            <MudButton id="flow-run-replay" StartIcon="@Icons.Material.Outlined.PlayCircle" OnClick="() => ReplayRun.InvokeAsync(detail)" Disabled="Busy" data-testid="flow-run-replay">Replay recorded run</MudButton>
+            @if (detail.DataUnavailableReason is { Length: > 0 } unavailableReason)
+            { <p class="history-hint" data-testid="flow-run-data-unavailable">Some original source or node data is unavailable: <code>@unavailableReason</code>.</p> }
+            else if (detail.Trace is null)
+            { <p class="history-hint">No node snapshots were captured for this run. Replay shows its immutable graph with unavailable node data.</p> }
             <div class="history-result-heading">
                 <div><span class="history-eyebrow">RUN RESULT</span><h3 id="flow-run-heading" tabindex="-1">@RunStatusLabel(detail.Run.Status)</h3><p>@detail.Run.Code · @(detail.Run.CompletedAtUtc?.ToUniversalTime().ToString("u") ?? "Not completed")</p></div>
                 <MudChip T="string" Color="@RunColor(detail.Run.Status)" Variant="Variant.Outlined" Icon="@RunIcon(detail.Run.Status)">@RunStatusLabel(detail.Run.Status)</MudChip>
             </div>
             <section class="history-card" aria-label="Trigger details">
+                @if (detail.ExecutionEvent is { } execution)
+                {
+                    <FlowExecutionEventFacts Event="execution" />
+                }
+                else if (detail.Input is { } alert)
+                {
                 <header><MudIcon Icon="@Icons.Material.Outlined.NotificationsActive" /><h4>Alert that started this run</h4></header>
                 <dl class="history-facts">
-                    <div><dt>Rule</dt><dd>@detail.Input.RuleName</dd></div><div><dt>Client</dt><dd>@detail.Input.ClientName</dd></div>
-                    <div><dt>Resource</dt><dd>@detail.Input.Resource</dd></div><div><dt>Metric</dt><dd>@detail.Input.Metric</dd></div>
-                    <div><dt>Severity</dt><dd>@detail.Input.Severity</dd></div><div><dt>Observed value</dt><dd>@(detail.Input.NumericValue?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? detail.Input.ServiceState ?? "Unknown")</dd></div>
-                    <div><dt>Observed at (UTC)</dt><dd>@detail.Input.ObservedAtUtc.ToUniversalTime().ToString("u")</dd></div>
+                    <div><dt>Rule</dt><dd>@alert.RuleName</dd></div><div><dt>Client</dt><dd>@alert.ClientName</dd></div>
+                    <div><dt>Resource</dt><dd>@alert.Resource</dd></div><div><dt>Metric</dt><dd>@alert.Metric</dd></div>
+                    <div><dt>Severity</dt><dd>@alert.Severity</dd></div><div><dt>Observed value</dt><dd>@(alert.NumericValue?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? alert.ServiceState ?? "Unknown")</dd></div>
+                    <div><dt>Observed at (UTC)</dt><dd>@alert.ObservedAtUtc.ToUniversalTime().ToString("u")</dd></div>
                     <div><dt>Run ID</dt><dd><code>@detail.Run.Id</code></dd></div>
                 </dl>
+                }
+                else
+                {
+                    <header><MudIcon Icon="@Icons.Material.Outlined.NotificationsActive" /><h4>Original source</h4></header>
+                    <p data-testid="flow-source-unavailable">Original source data is unavailable.</p>
+                }
             </section>
             <div class="history-section-heading"><h4>Action outcomes</h4><span>@detail.Actions.Count action@(detail.Actions.Count == 1 ? "" : "s")</span></div>
             @if (detail.Actions.Count == 0) { <p class="history-hint">No action outcomes have been recorded for this run.</p> }
@@ -129,6 +146,7 @@
     [Parameter] public EventCallback Reload { get; set; }
     [Parameter] public EventCallback<FlowVersionDto> ViewVersion { get; set; }
     [Parameter] public EventCallback<FlowRunSummaryDto> ViewRun { get; set; }
+    [Parameter] public EventCallback<FlowRunDetailDto> ReplayRun { get; set; }
     [Parameter] public EventCallback Back { get; set; }
     private string? _focusedTarget;
     private bool _disposed;
@@ -154,7 +172,7 @@
     { FlowRunStatus.Succeeded => Icons.Material.Outlined.CheckCircle, FlowRunStatus.Failed => Icons.Material.Outlined.ErrorOutline, _ => Icons.Material.Outlined.Schedule };
     private static string RunStatusLabel(FlowRunStatus status) => status switch
     { FlowRunStatus.PartiallySucceeded => "Partially succeeded", FlowRunStatus.RetryWaiting => "Waiting to retry", FlowRunStatus.DeliveryUnknown => "Delivery unconfirmed",
-        FlowRunStatus.WaitingForAi => "Waiting for AI completion", FlowRunStatus.AwaitingApproval => "Awaiting AI approval", _ => status.ToString() };
+        FlowRunStatus.WaitingForExecution => "Waiting for execution", FlowRunStatus.WaitingForAi => "Waiting for AI completion", FlowRunStatus.AwaitingApproval => "Awaiting AI approval", _ => status.ToString() };
     private static string AiStatusLabel(FlowAiResultStatus status) => status switch
     { FlowAiResultStatus.AwaitingApproval => "Awaiting operator approval", FlowAiResultStatus.DeliveryUnknown => "Completion unconfirmed", _ => status.ToString() };
     private static string? SafeReceiptLink(string? link) => Uri.TryCreate(link, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps ? uri.AbsoluteUri : null;

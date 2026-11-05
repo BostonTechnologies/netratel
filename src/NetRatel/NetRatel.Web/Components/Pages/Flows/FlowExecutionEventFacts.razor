@@ -1,0 +1,62 @@
+@using System.Globalization
+@using NetRatel.Shared.Contracts.Flows
+
+<div class="flow-execution-facts" data-testid="flow-execution-facts">
+    <header><h4>Original @SourceLabel(Event.SourceKind) execution</h4><p>Immutable source facts · @Text(Event.Provenance)</p></header>
+    <dl>
+        @if (Event.SourceKind == FlowExecutionSourceKind.Request && Event.DefinitionSourceKind is { } family)
+        { <div><dt>Definition family</dt><dd>@SourceLabel(family)</dd></div> }
+        <div><dt>Definition</dt><dd>@Text(Event.Definition.Name)</dd></div>
+        <div><dt>Definition ID</dt><dd><code>@Text(Event.Definition.Id)</code></dd></div>
+        <div><dt>Revision</dt><dd>@Text(Event.Definition.Revision)</dd></div>
+        <div><dt>Target</dt><dd>@Text(Event.Target.DisplayName ?? Event.Target.HostName)</dd></div>
+        <div><dt>Host name</dt><dd>@Text(Event.Target.HostName)</dd></div>
+        <div><dt>Agent</dt><dd><code>@(Event.Target.AgentId?.ToString("D") ?? "Unavailable")</code></dd></div>
+        <div><dt>Outcome</dt><dd>@OutcomeLabel(Event.Outcome)</dd></div>
+        <div><dt>Raw source status</dt><dd>@Text(Event.RawStatus)</dd></div>
+        <div><dt>Execution ID</dt><dd><code data-testid="flow-source-execution-id">@Event.ExecutionId</code></dd></div>
+        <div><dt>Attempt ID</dt><dd><code>@Event.AttemptId</code></dd></div>
+        @if (Event.SourceKind == FlowExecutionSourceKind.Request)
+        { <div><dt>Request kind</dt><dd>@Text(Event.RequestKind)</dd></div> }
+        <div><dt>Occurred at (UTC)</dt><dd>@Time(Event.OccurredAtUtc)</dd></div>
+        <div><dt>Observed at (UTC)</dt><dd>@Time(Event.ObservedAtUtc)</dd></div>
+        <div><dt>Started at (UTC)</dt><dd>@Time(Event.StartedAtUtc)</dd></div>
+        <div><dt>Completed at (UTC)</dt><dd>@Time(Event.CompletedAtUtc)</dd></div>
+        <div><dt>Exit code</dt><dd>@(Event.ExitCode?.ToString(CultureInfo.InvariantCulture) ?? "Unavailable")</dd></div>
+        <div><dt>Reason code</dt><dd>@Text(Event.ReasonCode)</dd></div>
+        <div><dt>Reason</dt><dd>@Text(Event.Reason)</dd></div>
+    </dl>
+    <details>
+        <summary>Source identity and replay evidence</summary>
+        <dl>
+            <div><dt>Content hash</dt><dd><code>@Text(Event.Definition.ContentHash)</code></dd></div>
+            <div><dt>Event ID</dt><dd><code>@Event.EventId</code></dd></div>
+            <div><dt>Occurrence ID</dt><dd><code>@Event.OccurrenceId</code></dd></div>
+            <div><dt>Correlation ID</dt><dd><code>@Text(Event.CorrelationId)</code></dd></div>
+            <div><dt>Parent execution ID</dt><dd><code>@Text(Event.ParentExecutionId)</code></dd></div>
+            <div><dt>Root execution ID</dt><dd><code>@Text(Event.RootExecutionId)</code></dd></div>
+        </dl>
+        @if (Event.Replay is { Supported: true })
+        { <p>Source replay material was captured. Rerun admission checks current authority and the pinned source again.</p> }
+        else
+        { <p>Source replay unavailable: @Text(Event.Replay?.UnsupportedReason).</p> }
+        @if (Event.Results is null)
+        { <p>Result references unavailable; none were recorded.</p> }
+        else if (Event.Results.Count == 0)
+        { <p>Empty result reference list was recorded.</p> }
+        else
+        {
+            <p>Result references identify protected data. Access is checked separately.</p>
+            <ul>@foreach (var reference in Event.Results)
+            { <li>@reference.Kind: <code>@reference.Id</code> · @(reference.Available ? "Source reports available" : "Source unavailable")@(reference.Truncated ? " · truncated" : "")</li> }</ul>
+        }
+    </details>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public FlowExecutionEventDto Event { get; set; } = default!;
+    private static string Text(string? value) => value is null ? "Unavailable" : value.Length == 0 ? "Captured empty" : value;
+    private static string Time(DateTimeOffset? value) => value?.ToUniversalTime().ToString("u", CultureInfo.InvariantCulture) ?? "Unavailable";
+    private static string SourceLabel(FlowExecutionSourceKind kind) => kind switch { FlowExecutionSourceKind.Job => "job", FlowExecutionSourceKind.Script => "script", FlowExecutionSourceKind.Request => "request", _ => "unknown source" };
+    private static string OutcomeLabel(FlowExecutionOutcome outcome) => outcome switch { FlowExecutionOutcome.TimedOut => "Timed out", _ => outcome.ToString() };
+}
