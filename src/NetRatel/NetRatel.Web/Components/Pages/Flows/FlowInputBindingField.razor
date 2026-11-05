@@ -1,0 +1,160 @@
+@using System.Globalization
+@using System.Text.Json
+@using NetRatel.Shared.Contracts.Flows
+@implements IDisposable
+
+<fieldset disabled="@Disabled" class="flow-binding-field" data-testid="flow-binding-field">
+    <legend>@Label <small>@DataType</small></legend>
+    <label>Value from<select value="@_source" @onchange="SelectSource" data-testid="flow-binding-source">
+        @if (AllowUnmapped) { <option value="none">Not mapped</option> }
+        @if (DataType == FlowDataType.SecretReference)
+        { <option value="@nameof(FlowInputSource.SecretReference)">Configured credential reference</option> }
+        else
+        {
+            <option value="@nameof(FlowInputSource.Event)">Source event field</option>
+            <option value="@nameof(FlowInputSource.NodeOutput)">Earlier node output</option>
+            <option value="@nameof(FlowInputSource.Literal)">Literal value</option>
+        }
+    </select></label>
+    @if (_source == nameof(FlowInputSource.Event))
+    {
+        <label>Event field<select value="@_path" @onchange="SelectField" data-testid="flow-binding-event">
+            <option value="">Choose a @DataType field</option>
+            @foreach (var choice in EventFields.Where(choice => choice.DataType == DataType))
+            { <option value="@choice.Path">@choice.Name@(choice.MayBeMissing ? " (may be unavailable)" : "")</option> }
+            @if (!string.IsNullOrEmpty(_path) && !EventFields.Any(choice => choice.Path == _path && choice.DataType == DataType))
+            { <option value="@_path">Stored field unavailable · @_path</option> }
+        </select></label>
+    }
+    else if (_source == nameof(FlowInputSource.NodeOutput))
+    {
+        <label>Earlier node<select value="@(_producer?.ToString() ?? "")" @onchange="SelectProducer" data-testid="flow-binding-node">
+            <option value="">Choose a node on every path to this step</option>
+            @foreach (var node in Producers.Where(node => FlowBindingCatalogue.OutputFields(node.Kind).Any(choice => choice.DataType == DataType)))
+            { <option value="@node.Id">@node.Name</option> }
+            @if (_producer is { } missing && !Producers.Any(node => node.Id == missing))
+            { <option value="@missing">Stored producer unavailable</option> }
+        </select></label>
+        <label>Output field<select value="@_path" @onchange="SelectField" disabled="@(_producer is null)" data-testid="flow-binding-output">
+            <option value="">Choose an output</option>
+            @foreach (var choice in ProducerFields)
+            { <option value="@choice.Path">@choice.Name@(choice.MayBeMissing ? " (may be unavailable)" : "")</option> }
+            @if (!string.IsNullOrEmpty(_path) && !ProducerFields.Any(choice => choice.Path == _path))
+            { <option value="@_path">Stored output unavailable · @_path</option> }
+        </select></label>
+    }
+    else if (_source == nameof(FlowInputSource.SecretReference))
+    {
+        <label>Configured reference name<input value="@_path" @onchange="SetReference" maxlength="256" autocomplete="off" data-testid="flow-binding-secret-reference" /></label>
+        <p class="flow-binding-help">The server resolves this reference under the execution authority. Enter a reference name, never its secret value.</p>
+    }
+    else if (_source == nameof(FlowInputSource.Literal))
+    {
+        @if (DataType == FlowDataType.Boolean)
+        { <label class="flow-binding-boolean"><input type="checkbox" checked="@(Value?.Literal?.ValueKind == JsonValueKind.True)" @onchange="SetBoolean" data-testid="flow-binding-literal" /> True (unchecked means false)</label> }
+        else if (DataType == FlowDataType.Json)
+        { <label>JSON value<textarea @onchange="SetLiteral" maxlength="@FlowGraphV2Limits.MaximumBindingBytes" data-testid="flow-binding-literal">@_literal</textarea></label> }
+        else
+        { <label>Literal @DataType<input value="@_literal" @onchange="SetLiteral" type="@(DataType == FlowDataType.Number ? "number" : "text")" step="any" maxlength="@FlowGraphV2Limits.MaximumBindingBytes" data-testid="flow-binding-literal" /></label> }
+    }
+    @if (_error is not null) { <p role="alert" class="flow-binding-error">@_error</p> }
+</fieldset>
+
+@code {
+    [Parameter, EditorRequired] public Guid NodeId { get; set; }
+    [Parameter] public string Label { get; set; } = "";
+    [Parameter] public FlowDataType DataType { get; set; } = FlowDataType.Text;
+    [Parameter] public FlowInputBindingDto? Value { get; set; }
+    [Parameter] public EventCallback<FlowInputBindingDto?> ValueChanged { get; set; }
+    [Parameter] public IReadOnlyList<FlowBindingFieldDto> EventFields { get; set; } = [];
+    [Parameter] public IReadOnlyList<FlowNodeDto> Producers { get; set; } = [];
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public bool AllowUnmapped { get; set; } = true;
+    private Guid _node;
+    private FlowDataType _type;
+    private FlowInputBindingDto? _seen;
+    private string _source = "none", _path = "", _literal = "";
+    private string? _error;
+    private Guid? _producer;
+    private bool _disposed;
+    private IReadOnlyList<FlowBindingFieldDto> ProducerFields => _producer is { } id && Producers.FirstOrDefault(node => node.Id == id) is { } node
+        ? FlowBindingCatalogue.OutputFields(node.Kind).Where(choice => choice.DataType == DataType).ToArray() : [];
+
+    protected override void OnParametersSet()
+    {
+        if (_node == NodeId && _type == DataType && Equals(_seen, Value)) return;
+        _node = NodeId; _type = DataType; _seen = Value; _source = Value?.Source.ToString() ?? "none";
+        _path = Value?.Path ?? ""; _producer = Value?.NodeId; _error = null;
+        _literal = Value?.Literal is { } literal ? literal.ValueKind == JsonValueKind.String ? literal.GetString() ?? "" : literal.GetRawText() : "";
+    }
+    private async Task Emit(FlowInputBindingDto? binding)
+    {
+        if (_disposed || Disabled) return;
+        _seen = binding; _error = null; await ValueChanged.InvokeAsync(binding);
+    }
+    private async Task SelectSource(ChangeEventArgs args)
+    {
+        if (Disabled) return;
+        _source = args.Value?.ToString() ?? "none"; _path = ""; _producer = null; _literal = "";
+        if (_source == nameof(FlowInputSource.Literal))
+        {
+            var value = DataType switch
+            {
+                FlowDataType.Number => JsonSerializer.SerializeToElement(0),
+                FlowDataType.Boolean => JsonSerializer.SerializeToElement(false),
+                FlowDataType.Json => JsonSerializer.SerializeToElement<object?>(null),
+                _ => JsonSerializer.SerializeToElement("")
+            };
+            _literal = DataType == FlowDataType.Text ? "" : value.GetRawText();
+            await Emit(new(FlowInputSource.Literal, DataType, Literal: value));
+        }
+        else if (Enum.TryParse<FlowInputSource>(_source, out var source)) await Emit(new(source, DataType));
+        else if (AllowUnmapped) await Emit(null);
+    }
+    private async Task SelectProducer(ChangeEventArgs args)
+    {
+        _producer = Guid.TryParse(args.Value?.ToString(), out var id) && Producers.Any(node => node.Id == id) ? id : null;
+        _path = ""; await Emit(new(FlowInputSource.NodeOutput, DataType, NodeId: _producer));
+    }
+    private async Task SelectField(ChangeEventArgs args)
+    {
+        var path = args.Value?.ToString() ?? "";
+        if (path.Length == 0) { _path = ""; await Emit(new(_source == nameof(FlowInputSource.Event) ? FlowInputSource.Event : FlowInputSource.NodeOutput, DataType, NodeId: _producer)); return; }
+        var choices = _source == nameof(FlowInputSource.Event) ? EventFields.Where(choice => choice.DataType == DataType) : ProducerFields;
+        if (!choices.Any(choice => choice.Path == path)) { _error = "This field is unavailable in the current source or branch."; return; }
+        _path = path;
+        await Emit(new(_source == nameof(FlowInputSource.Event) ? FlowInputSource.Event : FlowInputSource.NodeOutput, DataType,
+            path, _source == nameof(FlowInputSource.NodeOutput) ? _producer : null));
+    }
+    private Task SetReference(ChangeEventArgs args)
+    {
+        var path = args.Value?.ToString()?.Trim() ?? ""; _path = path;
+        return Emit(new(FlowInputSource.SecretReference, FlowDataType.SecretReference, path));
+    }
+    private Task SetBoolean(ChangeEventArgs args) =>
+        Emit(new(FlowInputSource.Literal, FlowDataType.Boolean, Literal: JsonSerializer.SerializeToElement(args.Value is true)));
+    private async Task SetLiteral(ChangeEventArgs args)
+    {
+        _literal = args.Value?.ToString() ?? "";
+        JsonElement literal;
+        if (DataType == FlowDataType.Number)
+        {
+            if (!double.TryParse(_literal, NumberStyles.Float, CultureInfo.InvariantCulture, out var number) || !double.IsFinite(number))
+            { _error = "Enter a finite number. The previous mapping is retained."; return; }
+            literal = JsonSerializer.SerializeToElement(number);
+        }
+        else if (DataType == FlowDataType.Json)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(_literal); literal = document.RootElement.Clone();
+                if (literal.ValueKind is not (JsonValueKind.Object or JsonValueKind.Array or JsonValueKind.Null))
+                { _error = "Use an object, array or null for JSON. Choose the matching type for scalar values."; return; }
+            }
+            catch (JsonException) { _error = "Enter a valid JSON value. The previous mapping is retained."; return; }
+        }
+        else literal = JsonSerializer.SerializeToElement(_literal);
+        await Emit(new(FlowInputSource.Literal, DataType, Literal: literal));
+    }
+    public void Dispose() => _disposed = true;
+}

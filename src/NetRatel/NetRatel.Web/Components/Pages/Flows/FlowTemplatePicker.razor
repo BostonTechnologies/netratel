@@ -1,0 +1,60 @@
+@using NetRatel.Shared.Contracts.Flows
+@using NetRatel.Web.Services.Flows
+@implements IDisposable
+@inject IFlowApiService Api
+
+<section class="flow-template-picker" data-testid="flow-template-picker">
+    <h3>Execution templates</h3>
+    <p>Creates a disabled, unpublished draft. Choose real definitions, endpoints and connections before publishing.</p>
+    @if (_loading) { <p role="status">Loading templates…</p> }
+    @if (_error is not null) { <p role="alert">@_error</p><button type="button" @onclick="ReadAsync" disabled="@Disabled">Retry templates</button> }
+    @if (!_loading && _error is null && _templates.Count == 0) { <p>No execution templates are available on this server.</p> }
+    <div class="flow-template-options">
+        @foreach (var template in _templates)
+        {
+            <article>
+                <h4>@template.Name</h4><p>@template.Description</p>
+                <small>Configure: @string.Join(", ", template.RequiredConfiguration)</small>
+                <button type="button" @onclick="() => Choose(template)" disabled="@(Disabled || _loading)" data-testid="flow-template-create" data-template-id="@template.Id">Create disabled draft</button>
+            </article>
+        }
+    </div>
+</section>
+
+@code {
+    [Parameter] public int TenantId { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback<FlowTemplateDescriptorDto> Selected { get; set; }
+    private IReadOnlyList<FlowTemplateDescriptorDto> _templates = [];
+    private CancellationTokenSource _read = new(); private long _generation;
+    private int _tenant; private bool _loading, _disposed; private string? _error;
+    protected override Task OnParametersSetAsync()
+    {
+        if (_tenant == TenantId) return Task.CompletedTask;
+        _tenant = TenantId; _templates = []; return ReadAsync();
+    }
+    private async Task ReadAsync()
+    {
+        if (_disposed || TenantId <= 0) return;
+        _read.Cancel(); _read.Dispose(); _read = new();
+        var token = _read.Token; var generation = ++_generation; var tenant = TenantId;
+        _loading = true; _error = null;
+        try
+        {
+            var templates = await Api.GetTemplatesAsync(tenant, token);
+            if (_disposed || generation != _generation || tenant != TenantId) return;
+            _templates = templates.Where(template => template.SchemaVersion == FlowGraphV2Limits.SchemaVersion)
+                .GroupBy(template => template.Id, StringComparer.Ordinal).Select(group => group.First()).ToArray();
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception exception) when (exception is HttpRequestException or NotSupportedException)
+        {
+            if (!_disposed && generation == _generation && tenant == TenantId)
+                _error = exception is FlowApiException ? exception.Message : "Execution templates could not be loaded. Your draft name is retained.";
+        }
+        finally { if (!_disposed && generation == _generation && tenant == TenantId) _loading = false; }
+    }
+    private Task Choose(FlowTemplateDescriptorDto template) => Disabled || _disposed || _loading || _tenant != TenantId ||
+        !_templates.Any(item => ReferenceEquals(item, template)) ? Task.CompletedTask : Selected.InvokeAsync(template);
+    public void Dispose() { _disposed = true; ++_generation; _read.Cancel(); _read.Dispose(); }
+}

@@ -1,0 +1,111 @@
+@using NetRatel.Shared.Contracts.Flows
+@using NetRatel.Web.Services.Flows
+@implements IDisposable
+@inject IFlowApiService Api
+
+<section class="flow-definition-picker" data-testid="flow-definition-picker">
+    <label>Search @(SourceKind == FlowExecutionSourceKind.Job ? "jobs" : "library scripts") by name
+        <input type="search" value="@_search" @onchange="SearchAsync" maxlength="256" disabled="@(Disabled || _selecting)" data-testid="flow-definition-search" />
+    </label>
+    @if (_loading) { <p role="status">Loading definitions…</p> }
+    @if (_error is not null) { <p role="alert">@_error</p><button type="button" @onclick="ReloadAsync" disabled="@Disabled">Retry</button> }
+    <div class="flow-definition-options">
+        @foreach (var option in _page.Items)
+        {
+            <button type="button" class="flow-definition-option" disabled="@(Disabled || _loading || _selecting)" @onclick="() => SelectAsync(option)" data-testid="flow-definition-choice" data-definition-id="@option.Definition.Id">
+                <strong>@(option.Definition.Name ?? "Definition metadata unavailable")</strong>
+                @if (option.Definition.Revision is { } revision) { <small>Revision @revision</small> }
+                @if (SourceKind == FlowExecutionSourceKind.Job && option.Target is { } target)
+                { <small>Bound endpoint: @(target.DisplayName ?? target.HostName ?? "Endpoint metadata unavailable")</small> }
+            </button>
+        }
+        @if (!_loading && _error is null && _page.Items.Count == 0) { <p>No matching definitions.</p> }
+    </div>
+    <div class="flow-definition-pages"><button type="button" @onclick="ReloadAsync" disabled="@(Disabled || _loading)">First page</button>
+        <button type="button" @onclick="NextAsync" disabled="@(Disabled || _loading || _page.NextAfterId is null)" data-testid="flow-definition-next">Next page</button>
+        <small>Pages of 50. @(Chosen.HasDelegate ? "Filters match the selected definition IDs across executions." : "The selected revision is pinned on publish.")</small>
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public int TenantId { get; set; }
+    [Parameter] public FlowExecutionSourceKind SourceKind { get; set; }
+    [Parameter] public Guid NodeId { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback<FlowExecutionDefinitionOptionDto> Chosen { get; set; }
+    [Parameter] public EventCallback<FlowExecutionActionSettingsDto> Selected { get; set; }
+    private FlowExecutionDefinitionsPageDto _page = new([]);
+    private CancellationTokenSource _read = new(), _selection = new();
+    private int _tenant; private FlowExecutionSourceKind _source; private Guid _node;
+    private long _generation, _selectionGeneration;
+    private bool _loading, _selecting, _disposed, _disabled;
+    private string _search = "";
+    private string? _error;
+    protected override async Task OnParametersSetAsync()
+    {
+        var contextChanged = _tenant != TenantId || _source != SourceKind || _node != NodeId;
+        var enabled = _disabled && !Disabled; _disabled = Disabled;
+        if (Disabled)
+        {
+            _read.Cancel(); _selection.Cancel(); ++_generation; ++_selectionGeneration;
+            _loading = false; _selecting = false; return;
+        }
+        if (!contextChanged && !enabled) return;
+        _tenant = TenantId; _source = SourceKind; _node = NodeId; _search = ""; _page = new([]);
+        _selection.Cancel(); _selection.Dispose(); _selection = new(); ++_selectionGeneration;
+        await ReadAsync(null);
+    }
+    private Task SearchAsync(ChangeEventArgs args) { _search = args.Value?.ToString() ?? ""; return ReadAsync(null); }
+    private Task ReloadAsync() => ReadAsync(null);
+    private Task NextAsync() => _page.NextAfterId is { } cursor ? ReadAsync(cursor) : Task.CompletedTask;
+    private bool Current(long generation, int tenant, FlowExecutionSourceKind source, Guid node) =>
+        !_disposed && !Disabled && generation == _generation && tenant == TenantId && source == SourceKind && node == NodeId;
+    private async Task ReadAsync(string? after)
+    {
+        if (Disabled || _disposed) return;
+        _read.Cancel(); _read.Dispose(); _read = new();
+        var token = _read.Token; var generation = ++_generation; var tenant = TenantId; var source = SourceKind; var node = NodeId;
+        _loading = true; _error = null;
+        try
+        {
+            var page = await Api.SearchExecutionDefinitionsAsync(tenant, source, _search, after, 50, token);
+            if (!Current(generation, tenant, source, node)) return;
+            if (page.Items is null || page.Items.Any(option => option is null || option.SourceKind != source || option.Definition is null || string.IsNullOrWhiteSpace(option.Definition.Id)))
+                throw new HttpRequestException("The definition catalogue returned an invalid selection.");
+            _page = page;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
+        catch (Exception error) when (error is HttpRequestException or NotSupportedException)
+        { if (Current(generation, tenant, source, node)) _error = error is FlowApiException ? error.Message : "Could not load definitions in this tenant. Your configured selection is retained."; }
+        finally { if (Current(generation, tenant, source, node)) _loading = false; }
+    }
+    private async Task SelectAsync(FlowExecutionDefinitionOptionDto option)
+    {
+        if (Disabled || _disposed || _loading || _selecting || _tenant != TenantId || _source != SourceKind || _node != NodeId ||
+            !_page.Items.Any(item => ReferenceEquals(item, option)) || option.SourceKind != SourceKind || option.Definition.Id is not { } id) return;
+        _selection.Cancel(); _selection.Dispose(); _selection = new();
+        var token = _selection.Token; var generation = ++_selectionGeneration; var tenant = TenantId; var source = SourceKind; var node = NodeId;
+        _selecting = true; _error = null;
+        try
+        {
+            if (Chosen.HasDelegate) { await Chosen.InvokeAsync(option); return; }
+            var selected = await Api.GetExecutionDefinitionAsync(tenant, source, id, token);
+            if (_disposed || Disabled || generation != _selectionGeneration || tenant != TenantId || source != SourceKind || node != NodeId) return;
+            if (selected.SourceKind != source || selected.Definition is null || selected.Definition.Id != id)
+                throw new HttpRequestException("The selected definition response did not match this context.");
+            await Selected.InvokeAsync(selected);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
+        catch (Exception error) when (error is HttpRequestException or NotSupportedException)
+        {
+            if (!_disposed && generation == _selectionGeneration && tenant == TenantId && source == SourceKind && node == NodeId)
+                _error = error is FlowApiException ? error.Message : "This definition is unavailable for the current execution authority. Choose another or retry.";
+        }
+        finally { if (!_disposed && generation == _selectionGeneration) _selecting = false; }
+    }
+    public void Dispose()
+    {
+        _disposed = true; ++_generation; ++_selectionGeneration;
+        _read.Cancel(); _read.Dispose(); _selection.Cancel(); _selection.Dispose();
+    }
+}

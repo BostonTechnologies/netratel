@@ -1,0 +1,153 @@
+@using System.Globalization
+@using NetRatel.Shared
+@using NetRatel.Shared.Contracts.Flows
+@using NetRatel.Web.Services.Flows
+
+<section class="flow-execution-fields" data-testid="flow-execution-action-fields">
+@if (Node.Kind == FlowNodeKind.RerunOriginalExecution)
+{
+    var rerun = Node.Rerun ?? new FlowRerunSettingsDto();
+    <p>Rerun the original supported execution using its trusted pinned definition, inputs and endpoint. Other requests return Unsupported. Success requires its committed terminal result.</p>
+    <fieldset disabled="@Disabled">
+        <label>Maximum linked reruns<input type="number" min="1" max="@FlowGraphV2Limits.MaximumRecoveryAttempts" value="@rerun.MaximumAttempts" @onchange="SetReruns" data-testid="flow-rerun-budget" /></label>
+        <label>Maximum wait (minutes)<input type="number" min="1" max="@FlowGraphV2Limits.MaximumOperationMinutes" value="@rerun.TimeoutMinutes" @onchange="SetRerunTimeout" /></label>
+    </fieldset>
+}
+else
+{
+    @if (Node.ExecutionAction is { } action)
+    {
+        <div class="flow-definition-summary" data-testid="flow-execution-definition-summary">
+            <strong>@action.Definition.Name</strong>
+            <span>Revision @(action.Definition.Revision ?? "not selected")</span>
+            <small>@(action.PinnedSnapshotReference is null ? "Selected definition; pinned on publish" : "Published pinned definition")</small>
+            <details><summary>Definition details</summary><p>Definition ID: @action.Definition.Id</p>
+                <p>Content hash: @(action.Definition.ContentHash ?? "Unavailable")</p></details>
+        </div>
+        @if (!Disabled) { <button type="button" @onclick="() => _choosing = !_choosing" data-testid="flow-change-execution-definition">@(_choosing ? "Keep selection" : "Choose or update definition")</button> }
+        <fieldset disabled="@Disabled">
+            <label>Maximum wait (minutes)<input type="number" min="1" max="@FlowGraphV2Limits.MaximumOperationMinutes" value="@action.TimeoutMinutes" @onchange="SetTimeout" data-testid="flow-execution-timeout" /></label>
+            @if (Node.Kind == FlowNodeKind.RunJob)
+            {
+                <p data-testid="flow-job-bound-target"><strong>Job endpoint:</strong> @TargetName(action.Target)</p>
+                <p class="flow-execution-help">This job retains its configured tenant and endpoint.</p>
+            }
+            else
+            {
+                <label>Endpoint<select value="@(action.Target is null ? "event" : "fixed")" @onchange="SetTargetMode" data-testid="flow-script-target-mode"><option value="event">Source event endpoint</option><option value="fixed">Fixed endpoint</option></select></label>
+                @if (action.Target is not null)
+                {
+                    <p>Selected endpoint: @TargetName(action.Target)</p>
+                    @if (!Disabled) { <FlowExecutionTargetPicker TenantId="TenantId" NodeId="Node.Id" SourceKind="FlowExecutionSourceKind.Script" Disabled="Disabled" Selected="SelectTarget" /> }
+                }
+                <label>Execution environment<select value="@((int)action.Environment)" @onchange="SetEnvironment"><option value="0">None specified</option><option value="1">Development</option><option value="2">Production</option><option value="3">Development and production</option></select></label>
+                <label>Working directory (optional)<input value="@action.WorkingDirectory" maxlength="1024" @onchange="SetDirectory" /></label>
+            }
+        </fieldset>
+        @if (action.Parameters is { Count: > 0 } parameters)
+        {
+            <h4>Inputs</h4>
+            @foreach (var parameter in parameters)
+            {
+                var key = parameter.Name;
+                <FlowInputBindingField @key="@(Node.Id.ToString() + ":" + key)" NodeId="Node.Id" Label="@(parameter.Name + (parameter.Required ? " · required" : ""))" DataType="parameter.DataType"
+                    Value="@(Node.Inputs?.GetValueOrDefault(key))" ValueChanged="binding => SetInput(key, binding)"
+                    EventFields="_eventFields" Producers="_producers" Disabled="Disabled" />
+            }
+        }
+        else if (action.Parameters is null)
+        {
+            <p class="flow-execution-help">The input schema is unavailable. Choose the current authorized definition to review its parameters.</p>
+            @if (Node.Inputs is { Count: > 0 } stored)
+            {
+                <details><summary>Stored mappings</summary>
+                @foreach (var pair in stored)
+                {
+                    <FlowInputBindingField @key="@(Node.Id.ToString() + ":" + pair.Key)" NodeId="Node.Id" Label="@pair.Key" DataType="pair.Value.DataType"
+                        Value="pair.Value" EventFields="_eventFields" Producers="_producers" Disabled="true" />
+                }
+                </details>
+            }
+        }
+        else { <p class="flow-execution-help">The selected definition has an empty input schema.</p> }
+        @if (UnknownInputs.Count > 0)
+        {
+            <p role="alert">These stored mappings are absent from the selected parameter schema. Review them before publishing.</p>
+            @foreach (var key in UnknownInputs) { <p>@key <button type="button" @onclick="() => SetInput(key, null)" disabled="@Disabled">Remove mapping</button></p> }
+        }
+    }
+    else { <p>Select an authorized @(Node.Kind == FlowNodeKind.RunJob ? "job" : "library script") definition.</p> }
+    @if (!Disabled && (Node.ExecutionAction is null || _choosing))
+    {
+        <FlowExecutionDefinitionPicker @key="Node.Id" TenantId="TenantId" NodeId="Node.Id" SourceKind="Source" Disabled="Disabled" Selected="SelectDefinition" />
+    }
+}
+@if (_error is not null) { <p role="alert">@_error</p> }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public FlowNodeDto Node { get; set; } = default!;
+    [Parameter, EditorRequired] public FlowGraphDto Graph { get; set; } = default!;
+    [Parameter] public int TenantId { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback<FlowNodeDto> Changed { get; set; }
+    private Guid _node; private bool _choosing; private string? _error;
+    private IReadOnlyList<FlowNodeDto> _producers = [];
+    private IReadOnlyList<FlowBindingFieldDto> _eventFields = [];
+    private FlowExecutionSourceKind Source => Node.Kind == FlowNodeKind.RunJob ? FlowExecutionSourceKind.Job : FlowExecutionSourceKind.Script;
+    private IReadOnlyList<string> UnknownInputs => Node.ExecutionAction?.Parameters is { } parameters
+        ? Node.Inputs?.Keys.Where(key => !parameters.Any(parameter => parameter.Name == key)).ToArray() ?? [] : [];
+    protected override void OnParametersSet()
+    {
+        if (_node != Node.Id) { _node = Node.Id; _choosing = false; _error = null; }
+        _producers = FlowAuthoringContext.AvailableProducers(Graph, Node.Id); _eventFields = FlowAuthoringContext.EventFields(Graph);
+    }
+    private static string TargetName(FlowExecutionTargetDto? target) => target is null ? "Source event endpoint" :
+        target.AgentId is null ? "Choose a fixed endpoint" : target.DisplayName ?? target.HostName ?? "Endpoint metadata unavailable";
+    private async Task SelectDefinition(FlowExecutionActionSettingsDto selected)
+    {
+        if (Disabled || selected.SourceKind != Source) return;
+        var previous = Node.ExecutionAction;
+        if (previous is not null) selected = selected with
+        {
+            TimeoutMinutes = previous.TimeoutMinutes, Environment = previous.Environment, WorkingDirectory = previous.WorkingDirectory,
+            Target = Source == FlowExecutionSourceKind.Script ? previous.Target : selected.Target
+        };
+        _choosing = false; _error = null;
+        await Changed.InvokeAsync(Node with { ExecutionAction = selected with { PinnedSnapshotReference = null } });
+    }
+    private Task SetAction(FlowExecutionActionSettingsDto action) => Disabled ? Task.CompletedTask :
+        Changed.InvokeAsync(Node with { ExecutionAction = action with { PinnedSnapshotReference = null } });
+    private Task SetTargetMode(ChangeEventArgs args) => Node.ExecutionAction is { } action
+        ? SetAction(action with { Target = args.Value?.ToString() == "fixed" ? action.Target ?? new(null) : null }) : Task.CompletedTask;
+    private Task SelectTarget(FlowExecutionTargetDto target) => Node.ExecutionAction is { } action ? SetAction(action with { Target = target }) : Task.CompletedTask;
+    private Task SetEnvironment(ChangeEventArgs args) => Node.ExecutionAction is { } action && int.TryParse(args.Value?.ToString(), out var value) && Enum.IsDefined((ClientEnvironment)value)
+        ? SetAction(action with { Environment = (ClientEnvironment)value }) : Task.CompletedTask;
+    private Task SetDirectory(ChangeEventArgs args) => Node.ExecutionAction is { } action
+        ? SetAction(action with { WorkingDirectory = string.IsNullOrWhiteSpace(args.Value?.ToString()) ? null : args.Value!.ToString() }) : Task.CompletedTask;
+    private Task SetTimeout(ChangeEventArgs args)
+    {
+        if (Node.ExecutionAction is not { } action || !Minutes(args, out var minutes)) return Task.CompletedTask;
+        return SetAction(action with { TimeoutMinutes = minutes });
+    }
+    private Task SetInput(string key, FlowInputBindingDto? binding)
+    {
+        if (Disabled) return Task.CompletedTask;
+        var inputs = Node.Inputs?.ToDictionary(pair => pair.Key, pair => pair.Value) ?? [];
+        if (binding is null) inputs.Remove(key); else inputs[key] = binding;
+        return Changed.InvokeAsync(Node with { Inputs = inputs.Count == 0 ? null : inputs });
+    }
+    private bool Minutes(ChangeEventArgs args, out int minutes)
+    {
+        var valid = int.TryParse(args.Value?.ToString(), NumberStyles.None, CultureInfo.InvariantCulture, out minutes) && minutes is >= 1 and <= FlowGraphV2Limits.MaximumOperationMinutes;
+        _error = valid ? null : $"Choose a wait between 1 and {FlowGraphV2Limits.MaximumOperationMinutes} minutes."; return valid;
+    }
+    private Task SetReruns(ChangeEventArgs args)
+    {
+        if (Disabled || !int.TryParse(args.Value?.ToString(), out var value) || value is < 1 or > FlowGraphV2Limits.MaximumRecoveryAttempts)
+        { _error = $"Choose between 1 and {FlowGraphV2Limits.MaximumRecoveryAttempts} linked reruns."; return Task.CompletedTask; }
+        return Changed.InvokeAsync(Node with { Rerun = (Node.Rerun ?? new()) with { MaximumAttempts = value } });
+    }
+    private Task SetRerunTimeout(ChangeEventArgs args) => !Disabled && Minutes(args, out var minutes)
+        ? Changed.InvokeAsync(Node with { Rerun = (Node.Rerun ?? new()) with { TimeoutMinutes = minutes } }) : Task.CompletedTask;
+}

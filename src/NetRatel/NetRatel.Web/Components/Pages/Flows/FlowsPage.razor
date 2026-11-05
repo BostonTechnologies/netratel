@@ -9,7 +9,7 @@
 
 <PageTitle>Flows</PageTitle>
 <main class="flows-page" data-testid="flows-page">
-    <header class="flows-heading"><div><h1 id="flows-heading" tabindex="-1">Flows</h1><p>Build bounded incident workflows from monitoring alerts.</p></div>
+    <header class="flows-heading"><div><h1 id="flows-heading" tabindex="-1">Flows</h1><p>Build workflows from monitoring and committed execution outcomes.</p></div>
         <label>Tenant<select @bind:get="_tenantId" @bind:set="TenantChosenAsync" disabled="@(_loadingTenants || _tenants.Count == 0)" data-testid="flow-tenant">
             @if (_tenantId == 0) { <option value="0" disabled>Choose an authorized tenant</option> }
             @foreach (var tenant in _tenants) { <option value="@tenant.TenantId">@tenant.TenantName</option> }
@@ -39,6 +39,7 @@
                 <button type="button" @onclick="() => CreateAsync(true)" data-testid="flow-create-template">Create incident from alert template</button>
                 <button type="button" @onclick="() => CreateAsync(false)" data-testid="flow-create-blank">Create blank draft</button>
                 <button type="button" @onclick="() => _showCreate = false">Cancel</button>
+                <FlowTemplatePicker @key="_tenantId" TenantId="_tenantId" Disabled="@(_busy || Access?.CanEdit != true)" Selected="CreateFromTemplateAsync" />
             </fieldset>
         }
         @if (_clone is not null)
@@ -248,6 +249,15 @@
         if (Access?.CanEdit != true || string.IsNullOrWhiteSpace(_createName)) return;
         var flow = await Api.CreateAsync(tenant, new(_createName.Trim(), template), token);
         if (!Current(generation, tenant) || flow.TenantId != tenant) return;
+        _flows = [.. _flows, flow]; _showCreate = false; await OpenEditorCoreAsync(flow, generation, token);
+    });
+    private Task CreateFromTemplateAsync(FlowTemplateDescriptorDto template) => ScopeCommandAsync(async (tenant, generation, token) =>
+    {
+        if (Access?.CanEdit != true || string.IsNullOrWhiteSpace(_createName)) return;
+        var flow = await Api.CreateFromTemplateAsync(tenant, new(_createName.Trim(), template.Id), token);
+        if (!Current(generation, tenant) || flow.TenantId != tenant) return;
+        if (flow.Enabled || flow.PublishedVersionId is not null || flow.PublishedVersionNumber != 0 || flow.Id == Guid.Empty || flow.Draft.SchemaVersion != template.SchemaVersion)
+        { _error = "The template response was not a disabled unpublished draft. Refresh the list before continuing."; return; }
         _flows = [.. _flows, flow]; _showCreate = false; await OpenEditorCoreAsync(flow, generation, token);
     });
     private Task OpenEditorAsync(FlowDefinitionDto flow) => ScopeCommandAsync(async (_, generation, token) =>

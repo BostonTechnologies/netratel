@@ -1,0 +1,197 @@
+@using NetRatel.Shared.Contracts.Flows
+@using NetRatel.Web.Services.Flows
+@implements IDisposable
+@inject IFlowApiService Api
+
+<section class="flow-trigger-fields" data-testid="flow-execution-trigger-fields">
+    <p>Subscribe to committed execution outcomes in this authorized tenant. Library definition edits do not produce execution events.</p>
+    <fieldset disabled="@Disabled"><legend>Execution sources</legend>
+        @foreach (var source in Enum.GetValues<FlowExecutionSourceKind>())
+        {
+            <label class="flow-trigger-check"><input type="checkbox" checked="@Settings.Sources.Contains(source)" @onchange="e => ToggleSource(source, e)" data-testid="@($"flow-trigger-source-{source}")" />@SourceName(source)</label>
+        }
+    </fieldset>
+    <fieldset disabled="@Disabled"><legend>Outcomes</legend>
+        @foreach (var outcome in Enum.GetValues<FlowExecutionOutcome>())
+        {
+            <label class="flow-trigger-check"><input type="checkbox" checked="@Settings.Outcomes.Contains(outcome)" @onchange="e => ToggleOutcome(outcome, e)" data-testid="@($"flow-trigger-outcome-{outcome}")" />@OutcomeName(outcome)</label>
+        }
+        <p class="flow-trigger-help">Timed out means the source committed an authoritative timeout. Unknown remains separate from failure and never authorizes a blind rerun.</p>
+    </fieldset>
+    <fieldset disabled="@Disabled"><legend>Definition scope</legend>
+        <label>Match<select value="@((int)Settings.Scope)" @onchange="SetScope" data-testid="flow-trigger-scope">
+            <option value="1">All matching executions in this tenant</option><option value="2">Selected jobs or library scripts</option>
+        </select></label>
+        @if (Settings.Scope == FlowExecutionScope.SelectedDefinitions)
+        {
+            @foreach (var reference in Settings.DefinitionReferences ?? [])
+            {
+                <div class="flow-trigger-selected" data-testid="flow-trigger-definition"><strong>@(reference.Name ?? "Definition name unavailable")</strong><small>@SourceName(reference.SourceKind)</small>
+                    <details><summary>Definition ID</summary>@reference.Id</details>
+                    <button type="button" @onclick="() => RemoveDefinition(reference)" disabled="@Disabled" aria-label="@($"Remove {reference.Name ?? "selected definition"}")">Remove</button>
+                </div>
+            }
+            @foreach (var id in Settings.DefinitionIds ?? [])
+            {
+                <div class="flow-trigger-selected"><span>Saved legacy definition filter</span><details><summary>Definition ID</summary>@id</details>
+                    <button type="button" @onclick="() => RemoveLegacyDefinition(id)" disabled="@Disabled">Remove</button></div>
+            }
+            @if ((Settings.DefinitionReferences?.Count ?? 0) + (Settings.DefinitionIds?.Count ?? 0) == 0)
+            { <p role="status">Choose at least one definition before publishing. An empty selection does not mean all executions.</p> }
+            @if (!Disabled && Settings.DefinitionIds is not { Count: > 0 })
+            {
+                <label>Definition family<select @bind="_definitionSource" data-testid="flow-trigger-definition-family">
+                    @foreach (var family in DefinitionSources) { <option value="@family">@SourceName(family)</option> }
+                </select></label>
+                <FlowExecutionDefinitionPicker @key="@(Node.Id.ToString() + ":" + _definitionSource)" TenantId="TenantId" NodeId="Node.Id"
+                    SourceKind="_definitionSource" Disabled="Disabled" Chosen="AddDefinition" />
+            }
+            <p class="flow-trigger-help">Matching uses definition IDs across revisions. Job or script backed request events retain the Request source and can match these selected definitions, including admission failures before a run exists.</p>
+        }
+        <label class="flow-trigger-check"><input type="checkbox" checked="@Settings.AggregateCorrelatedEvents" @onchange="SetAggregation" data-testid="flow-trigger-aggregate" />Aggregate correlated source events per subscription, execution attempt and outcome</label>
+    </fieldset>
+    <fieldset disabled="@Disabled"><legend>Endpoint filter (optional)</legend>
+        <p class="flow-trigger-help">No selected endpoints means all endpoints allowed by this subscription's current tenant authority. Endpoint state shown here is catalogue availability, not online presence.</p>
+        @foreach (var id in Settings.AgentIds ?? [])
+        {
+            var entry = _targets.GetValueOrDefault(id);
+            <div class="flow-trigger-selected" data-testid="flow-trigger-target"><strong>@(entry?.Target.DisplayName ?? entry?.Target.HostName ?? "Endpoint name unavailable")</strong>
+                @if (entry is { Eligible: false }) { <small>Unavailable for new actions</small> }
+                <details><summary>Endpoint ID</summary>@id</details>
+                <button type="button" @onclick="() => RemoveTarget(id)" disabled="@Disabled">Remove</button>
+            </div>
+        }
+        @if (_targetError is not null) { <p role="status">@_targetError</p> }
+        @if (!Disabled)
+        {
+            <label>Endpoint catalogue<select @bind="_targetSource" @bind:after="RefreshTargetNamesAsync" data-testid="flow-trigger-target-family"><option value="@FlowExecutionSourceKind.Job">Job authority</option><option value="@FlowExecutionSourceKind.Script">Script authority</option></select></label>
+            <FlowExecutionTargetPicker @key="@(Node.Id.ToString() + ":" + _targetSource)" TenantId="TenantId" NodeId="Node.Id" SourceKind="_targetSource" Disabled="Disabled" Selected="AddTarget" />
+        }
+    </fieldset>
+    @if (Settings.Sources.Contains(FlowExecutionSourceKind.Request))
+    {
+        <fieldset disabled="@Disabled"><legend>Request source systems (optional)</legend>
+            <p class="flow-trigger-help">Use exact, case sensitive source system values. Leave empty to match every request source system.</p>
+            @foreach (var kind in Settings.RequestKinds ?? [])
+            {
+                <div class="flow-trigger-selected"><span>@kind</span><button type="button" @onclick="() => RemoveRequestKind(kind)" disabled="@Disabled">Remove</button></div>
+            }
+            <label>Source system<input value="@_requestKind" @oninput="e => _requestKind = e.Value?.ToString() ?? string.Empty" maxlength="256" data-testid="flow-trigger-request-system" /></label>
+            <button type="button" @onclick="AddRequestKind" disabled="@(Disabled || string.IsNullOrWhiteSpace(_requestKind))" data-testid="flow-trigger-request-system-add">Add source system</button>
+        </fieldset>
+    }
+    @if (_error is not null) { <p role="alert">@_error</p> }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public FlowNodeDto Node { get; set; } = default!;
+    [Parameter] public int TenantId { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback<FlowNodeDto> Changed { get; set; }
+    private FlowExecutionTriggerSettingsDto Settings => Node.ExecutionTrigger ?? new([FlowExecutionSourceKind.Job], [FlowExecutionOutcome.Failed], FlowExecutionScope.AllInTenant);
+    private IEnumerable<FlowExecutionSourceKind> DefinitionSources => new[] { FlowExecutionSourceKind.Job, FlowExecutionSourceKind.Script }
+        .Where(source => Settings.Sources.Contains(source) || Settings.Sources.Contains(FlowExecutionSourceKind.Request));
+    private FlowExecutionSourceKind _definitionSource = FlowExecutionSourceKind.Job, _targetSource = FlowExecutionSourceKind.Job;
+    private string _requestKind = "", _targetContext = "";
+    private string? _error, _targetError;
+    private Guid _node;
+    private Dictionary<Guid, FlowExecutionTargetSelectionDto> _targets = [];
+    private CancellationTokenSource _lookup = new(); private long _generation; private bool _disposed;
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_node != Node.Id) { _node = Node.Id; _requestKind = ""; _error = null; }
+        if (!DefinitionSources.Contains(_definitionSource)) _definitionSource = DefinitionSources.FirstOrDefault(FlowExecutionSourceKind.Job);
+        await RefreshTargetNamesAsync();
+    }
+    private async Task RefreshTargetNamesAsync()
+    {
+        var context = $"{TenantId}:{Node.Id}:{_targetSource}:{string.Join(",", Settings.AgentIds ?? [])}";
+        if (_targetContext == context) return;
+        _targetContext = context; _targets = []; _targetError = null;
+        _lookup.Cancel(); _lookup.Dispose(); _lookup = new();
+        var token = _lookup.Token; var generation = ++_generation; var tenant = TenantId; var node = Node.Id;
+        if (Settings.AgentIds is not { Count: > 0 } ids) return;
+        try
+        {
+            var selected = await Api.GetSelectedExecutionTargetsAsync(tenant, _targetSource, ids, token);
+            if (_disposed || generation != _generation || tenant != TenantId || node != Node.Id) return;
+            _targets = selected.Where(entry => entry.Target.AgentId is { } id && ids.Contains(id))
+                .GroupBy(entry => entry.Target.AgentId!.Value).ToDictionary(group => group.Key, group => group.First());
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception error) when (error is HttpRequestException or NotSupportedException)
+        {
+            if (!_disposed && generation == _generation && tenant == TenantId && node == Node.Id)
+                _targetError = "Selected endpoint names could not be loaded under the current authority. Their saved filters are retained.";
+        }
+    }
+    private Task Emit(FlowExecutionTriggerSettingsDto settings)
+    {
+        if (Disabled || _disposed) return Task.CompletedTask;
+        _error = null; return Changed.InvokeAsync(Node with { ExecutionTrigger = settings });
+    }
+    private Task ToggleSource(FlowExecutionSourceKind source, ChangeEventArgs args)
+    {
+        if (Disabled) return Task.CompletedTask;
+        var sources = Settings.Sources.ToHashSet();
+        if (args.Value is true) sources.Add(source); else sources.Remove(source);
+        if (sources.Count == 0) { _error = "Retain at least one execution source."; return Task.CompletedTask; }
+        if (Settings.DefinitionReferences?.Any(reference => !sources.Contains(reference.SourceKind) && !sources.Contains(FlowExecutionSourceKind.Request)) == true)
+        { _error = "Remove incompatible selected definitions before removing this source."; return Task.CompletedTask; }
+        if (!sources.Contains(FlowExecutionSourceKind.Request) && Settings.RequestKinds is { Count: > 0 })
+        { _error = "Remove the request source system filters before removing Request events."; return Task.CompletedTask; }
+        return Emit(Settings with { Sources = sources.Order().ToArray() });
+    }
+    private Task ToggleOutcome(FlowExecutionOutcome outcome, ChangeEventArgs args)
+    {
+        if (Disabled) return Task.CompletedTask;
+        var outcomes = Settings.Outcomes.ToHashSet();
+        if (args.Value is true) outcomes.Add(outcome); else outcomes.Remove(outcome);
+        if (outcomes.Count == 0) { _error = "Retain at least one outcome."; return Task.CompletedTask; }
+        return Emit(Settings with { Outcomes = outcomes.Order().ToArray() });
+    }
+    private Task SetScope(ChangeEventArgs args) => int.TryParse(args.Value?.ToString(), out var value) && Enum.IsDefined((FlowExecutionScope)value)
+        ? Emit(Settings with { Scope = (FlowExecutionScope)value, DefinitionIds = value == (int)FlowExecutionScope.AllInTenant ? null : Settings.DefinitionIds,
+            DefinitionReferences = value == (int)FlowExecutionScope.AllInTenant ? null : Settings.DefinitionReferences ?? [] }) : Task.CompletedTask;
+    private Task SetAggregation(ChangeEventArgs args) => Emit(Settings with { AggregateCorrelatedEvents = args.Value is true });
+    private Task AddDefinition(FlowExecutionDefinitionOptionDto option)
+    {
+        if (Disabled || Settings.DefinitionIds is { Count: > 0 } || string.IsNullOrWhiteSpace(option.Definition.Id) || !DefinitionSources.Contains(option.SourceKind)) return Task.CompletedTask;
+        var references = Settings.DefinitionReferences?.ToList() ?? [];
+        if (references.Any(reference => reference.SourceKind == option.SourceKind && reference.Id == option.Definition.Id)) return Task.CompletedTask;
+        if (references.Count >= FlowGraphV2Limits.MaximumSelectedDefinitions) { _error = "The selected definition limit was reached."; return Task.CompletedTask; }
+        references.Add(new(option.SourceKind, option.Definition.Id) { Name = option.Definition.Name });
+        return Emit(Settings with { Scope = FlowExecutionScope.SelectedDefinitions, DefinitionReferences = references, DefinitionIds = null });
+    }
+    private Task RemoveDefinition(FlowExecutionDefinitionReferenceDto reference) =>
+        Emit(Settings with { DefinitionReferences = Settings.DefinitionReferences?.Where(item => item.SourceKind != reference.SourceKind || item.Id != reference.Id).ToArray() ?? [] });
+    private Task RemoveLegacyDefinition(string id) => Emit(Settings with { DefinitionIds = Settings.DefinitionIds?.Where(item => item != id).ToArray() ?? [] });
+    private Task AddTarget(FlowExecutionTargetDto target)
+    {
+        if (Disabled || target.AgentId is not { } id || id == Guid.Empty) return Task.CompletedTask;
+        var ids = Settings.AgentIds?.ToList() ?? [];
+        if (ids.Contains(id)) return Task.CompletedTask;
+        if (ids.Count >= FlowGraphV2Limits.MaximumSelectedDefinitions) { _error = "The selected endpoint limit was reached."; return Task.CompletedTask; }
+        _targets[id] = new(target, true);
+        return Emit(Settings with { AgentIds = [.. ids, id] });
+    }
+    private Task RemoveTarget(Guid id) => Emit(Settings with { AgentIds = Settings.AgentIds?.Where(item => item != id).ToArray() ?? [] });
+    private Task AddRequestKind()
+    {
+        var kind = _requestKind;
+        if (Disabled || string.IsNullOrWhiteSpace(kind) || kind.Length > 256 || kind.Any(char.IsControl)) { _error = "Enter an exact source system value of up to 256 characters."; return Task.CompletedTask; }
+        var kinds = Settings.RequestKinds?.ToList() ?? [];
+        if (kinds.Contains(kind, StringComparer.Ordinal)) return Task.CompletedTask;
+        if (kinds.Count >= 32) { _error = "A trigger supports at most 32 request source systems."; return Task.CompletedTask; }
+        _requestKind = ""; return Emit(Settings with { RequestKinds = [.. kinds, kind] });
+    }
+    private Task RemoveRequestKind(string kind) => Emit(Settings with { RequestKinds = Settings.RequestKinds?.Where(item => item != kind).ToArray() ?? [] });
+    private static string SourceName(FlowExecutionSourceKind source) => source switch { FlowExecutionSourceKind.Job => "Job executions", FlowExecutionSourceKind.Script => "Script executions", FlowExecutionSourceKind.Request => "Requests", _ => "Unsupported source" };
+    private static string OutcomeName(FlowExecutionOutcome outcome) => outcome switch
+    {
+        FlowExecutionOutcome.Succeeded => "Succeeded", FlowExecutionOutcome.Failed => "Failed", FlowExecutionOutcome.TimedOut => "Timed out",
+        FlowExecutionOutcome.Cancelled => "Cancelled", FlowExecutionOutcome.Unknown => "Unknown / delivery unknown",
+        FlowExecutionOutcome.Unsupported => "Unsupported", FlowExecutionOutcome.Denied => "Denied", _ => "Unsupported outcome"
+    };
+    public void Dispose() { _disposed = true; ++_generation; _lookup.Cancel(); _lookup.Dispose(); }
+}

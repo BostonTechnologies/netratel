@@ -45,6 +45,67 @@ public sealed class FlowApiServiceTests
         Assert.Equal(status, error.StatusCode); Assert.Single(factory.Requests);
         Assert.DoesNotContain("sensitive detail", error.Message, StringComparison.Ordinal);
     }
+    [Fact]
+    public async Task Execution_Catalogue_Uses_Tenant_Search_Cursor_And_Decimal_String_Ids()
+    {
+        Uri? uri = null;
+        var selected = new FlowExecutionDefinitionOptionDto(FlowExecutionSourceKind.Job,
+            new("9007199254740993", "Synthetic maintenance", "7", new string('a', 64)), new(Guid.NewGuid(), "Synthetic bound endpoint"));
+        var factory = new Factory(request => { uri = request.RequestUri; return new(HttpStatusCode.OK) { Content = JsonContent.Create(new FlowExecutionDefinitionsPageDto([selected], "9007199254740995")) }; });
+        var api = new FlowApiService(factory);
+        var page = await api.SearchExecutionDefinitionsAsync(17, FlowExecutionSourceKind.Job, "Server & CPU", "9007199254740993", 50);
+        Assert.Equal("9007199254740993", Assert.Single(page.Items).Definition.Id);
+        Assert.Equal("9007199254740995", page.NextAfterId);
+        Assert.Equal("/api/v1/tenants/17/flows/execution-definitions", uri!.AbsolutePath);
+        Assert.Contains("sourceKind=Job", uri.Query, StringComparison.Ordinal);
+        Assert.Contains("search=Server%20%26%20CPU", uri.Query, StringComparison.Ordinal);
+        Assert.Contains("afterId=9007199254740993", uri.Query, StringComparison.Ordinal);
+        Assert.Single(factory.Requests);
+    }
+
+    [Fact]
+    public async Task Target_Metadata_Lookup_Preserves_Selected_Unavailable_Ids_And_Native_Cursor()
+    {
+        var agent = Guid.NewGuid(); var missing = Guid.NewGuid(); Uri? uri = null;
+        var factory = new Factory(request => { uri = request.RequestUri; return new(HttpStatusCode.OK) { Content = JsonContent.Create(
+            new FlowExecutionTargetSelectionDto[] { new(new(agent, "Disabled synthetic endpoint"), false), new(new(missing), false) }) }; });
+        var api = new FlowApiService(factory);
+        var selections = await api.GetSelectedExecutionTargetsAsync(17, FlowExecutionSourceKind.Script, [agent, missing]);
+        Assert.Equal(2, selections.Count); Assert.All(selections, item => Assert.False(item.Eligible));
+        Assert.Equal(missing, selections[1].Target.AgentId); Assert.Null(selections[1].Target.DisplayName);
+        Assert.Equal("/api/v1/tenants/17/flows/execution-definitions/targets/selected", uri!.AbsolutePath);
+        Assert.Contains("ids=" + agent.ToString("D"), uri.Query, StringComparison.Ordinal);
+        Assert.Contains("ids=" + missing.ToString("D"), uri.Query, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Execution_Search_Denial_Is_An_Error_And_Never_An_Empty_Selection()
+    {
+        var factory = new Factory(_ => new(HttpStatusCode.Forbidden) { Content = JsonContent.Create(new { detail = "protected source" }) });
+        var api = new FlowApiService(factory);
+        var error = await Assert.ThrowsAsync<FlowApiException>(() => api.SearchExecutionDefinitionsAsync(17, FlowExecutionSourceKind.Script));
+        Assert.Equal(HttpStatusCode.Forbidden, error.StatusCode);
+        Assert.DoesNotContain("protected source", error.Message, StringComparison.Ordinal); Assert.Single(factory.Requests);
+    }
+
+    [Fact]
+    public async Task Template_Creation_Uses_Separate_Disabled_Draft_Command_Without_Changing_Legacy_Wire_Shape()
+    {
+        var flow = FlowEditorTests.Definition() with { Enabled = false };
+        var factory = new Factory(_ => new(HttpStatusCode.OK) { Content = JsonContent.Create(flow) });
+        var api = new FlowApiService(factory);
+        var created = await api.CreateFromTemplateAsync(17, new("Synthetic recovery", FlowOverhaulTemplates.ScriptRecovery));
+        Assert.False(created.Enabled);
+        Assert.Equal("POST /api/v1/tenants/17/flows/from-template", factory.Requests[0].Route);
+        using var body = JsonDocument.Parse(factory.Requests[0].Body!);
+        Assert.Equal("Synthetic recovery", body.RootElement.GetProperty("name").GetString());
+        Assert.Equal("script-recovery", body.RootElement.GetProperty("templateId").GetString());
+        Assert.False(body.RootElement.TryGetProperty("useTemplate", out _));
+        Assert.DoesNotContain(factory.Requests, request => request.Route.Contains("/publish", StringComparison.Ordinal) || request.Route.Contains("/execute", StringComparison.Ordinal));
+        var legacy = JsonSerializer.SerializeToElement(new FlowCreateRequest("Old template"), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Assert.True(legacy.GetProperty("useTemplate").GetBoolean()); Assert.False(legacy.TryGetProperty("templateId", out _));
+    }
+
     private sealed class Factory(Func<HttpRequestMessage, HttpResponseMessage> respond) : IHttpClientFactory
     {
         public List<(string Route, string? Body)> Requests { get; } = [];
