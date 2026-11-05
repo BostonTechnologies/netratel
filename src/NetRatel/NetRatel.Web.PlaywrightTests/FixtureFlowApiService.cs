@@ -146,7 +146,7 @@ internal sealed class FixtureFlowApiService : IFlowApiService
         var detail = SeedRun();
         var flow = _definitions[detail.Run.FlowId];
         var version = _versions[flow.Id].Single(value => value.Id == detail.Run.FlowVersionId);
-        var hash = FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(version.Graph, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        var hash = FlowGraphSerialization.Hash(version.Graph);
         _versions[flow.Id] = [version with { ConfigurationHash = hash }];
         _definitions[flow.Id] = flow with { Draft = flow.Draft with
             { Nodes = flow.Draft.Nodes.Select(node => node.Kind == FlowNodeKind.MapIncident ? node with { Name = "Current mutable draft mapping" } : node).ToArray() } };

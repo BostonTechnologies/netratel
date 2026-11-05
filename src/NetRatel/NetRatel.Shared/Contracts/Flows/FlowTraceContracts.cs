@@ -11,6 +11,7 @@ public enum FlowTraceStepStatus { Completed = 1, Skipped = 2, Planned = 3, Unava
 public sealed record FlowTraceSnapshotDto(FlowTraceDataState State)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [JsonConverter(typeof(FlowNullableJsonElementConverter))]
     public JsonElement? Value { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? OriginalUtf8Bytes { get; init; }

@@ -58,7 +58,7 @@ internal sealed class FlowPreviewTrace(FlowGraphDto graph)
 
     public FlowTraceDto Build()
     {
-        var hash = FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(graph, Json));
+        var hash = FlowGraphSerialization.Hash(graph);
         var trace = new FlowTraceDto(graph.SchemaVersion, hash, FlowTraceProvenance.Simulated, _steps.ToArray(), _truncated);
         while (JsonSerializer.SerializeToUtf8Bytes(trace, Json).Length > FlowTraceLimits.MaximumTraceBytes && _steps.Count > 0)
         {

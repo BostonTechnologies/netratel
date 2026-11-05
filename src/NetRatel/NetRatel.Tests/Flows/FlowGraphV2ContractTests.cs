@@ -235,6 +235,62 @@ public sealed class FlowGraphV2ContractTests
         FlowGraphV2Validator.ValidatePublished(graph).Valid.Should().BeFalse();
     }
 
+
+    [Theory]
+    [InlineData("SYNTHETIC_ENV", true)]
+    [InlineData("_synthetic7", true)]
+    [InlineData("credential:synthetic", false)]
+    [InlineData("7_SYNTHETIC", false)]
+    [InlineData("SYNTHETIC-PASSWORD", false)]
+    [InlineData("length-129", false)]
+    public void Execution_secret_bindings_are_exact_native_environment_reference_names(string reference, bool valid)
+    {
+        if (reference == "length-129") reference = new string('A', 129);
+        var graph = Replace(RecoveryGraph(), node => node.Kind == FlowNodeKind.RunLibraryScript, node => node with
+        {
+            ExecutionAction = node.ExecutionAction! with { Parameters = [new("password", FlowDataType.SecretReference, true)] },
+            Inputs = new Dictionary<string, FlowInputBindingDto>
+            { ["password"] = new(FlowInputSource.SecretReference, FlowDataType.SecretReference, reference) }
+        });
+        FlowExecutionInputNames.IsEnvironmentReferenceName(reference).Should().Be(valid);
+        FlowGraphV2Validator.ValidatePublished(graph).Valid.Should().Be(valid);
+    }
+
+    [Theory]
+    [InlineData(FlowNodeKind.MapIncident)]
+    [InlineData(FlowNodeKind.InvestigateWithAi)]
+    public void Unused_secret_bindings_cannot_imply_AI_or_mapping_secret_access(FlowNodeKind kind)
+    {
+        var graph = RecoveryGraph();
+        var map = graph.Nodes.Single(node => node.Kind == FlowNodeKind.MapIncident);
+        graph = Replace(graph, node => node.Id == map.Id, node => node with
+        {
+            Kind = kind, Mapping = kind == FlowNodeKind.MapIncident ? node.Mapping : null,
+            ConnectorId = kind == FlowNodeKind.InvestigateWithAi ? Guid.NewGuid() : null,
+            ConnectorRevision = kind == FlowNodeKind.InvestigateWithAi ? 1 : null,
+            Inputs = new Dictionary<string, FlowInputBindingDto>
+            { ["unused"] = new(FlowInputSource.SecretReference, FlowDataType.SecretReference, "SYNTHETIC_ENV") }
+        });
+        var validation = FlowGraphV2Validator.ValidateDraft(graph);
+        validation.Valid.Should().BeFalse();
+        validation.Issues.Should().Contain(issue => issue.Code == "secret-reference-source" && issue.NodeId == map.Id);
+    }
+
+
+    [Theory]
+    [InlineData(200, true)]
+    [InlineData(512, true)]
+    [InlineData(513, false)]
+    public void Pinned_action_names_accept_native_library_names_with_an_explicit_presentation_bound(int length, bool valid)
+    {
+        var graph = Replace(RecoveryGraph(), node => node.Kind == FlowNodeKind.RunLibraryScript, node => node with
+        {
+            ExecutionAction = node.ExecutionAction! with
+            { Definition = node.ExecutionAction.Definition with { Name = new string('N', length) } }
+        });
+        FlowGraphV2Validator.ValidatePublished(graph).Valid.Should().Be(valid);
+    }
+
     private static FlowGraphDto Replace(FlowGraphDto graph, Func<FlowNodeDto, bool> predicate,
         Func<FlowNodeDto, FlowNodeDto> update) => graph with { Nodes = graph.Nodes.Select(node => predicate(node) ? update(node) : node).ToArray() };
 

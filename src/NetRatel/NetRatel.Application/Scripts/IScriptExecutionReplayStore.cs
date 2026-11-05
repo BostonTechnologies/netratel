@@ -32,7 +32,7 @@ public sealed record ScriptExecutionReplaySnapshot(int TenantId, Guid AgentId, P
 
 public interface IScriptExecutionReplayStore
 {
-    /// <summary>Stages trusted replay material in the native activity creation transaction; does not commit it independently.</summary>
+    /// <summary>Stages trusted material in the native activity transaction; identical retries retain the first pin, and different material is rejected.</summary>
     Task CaptureAsync(string requestId, ScriptExecutionReplaySnapshot snapshot, CancellationToken cancellationToken = default);
     Task<ScriptExecutionReplaySnapshot?> ResolveAsync(int tenantId, string requestId, CancellationToken cancellationToken = default);
 }

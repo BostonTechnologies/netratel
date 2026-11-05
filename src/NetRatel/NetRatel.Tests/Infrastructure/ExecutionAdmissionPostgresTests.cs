@@ -119,10 +119,10 @@ public sealed class ExecutionAdmissionPostgresTests(PostgreSqlPersistenceFixture
                 new(first.NodeId, FlowNodeKind.RerunOriginalExecution, "First linked attempt", new(0, 0)) { Rerun = new() },
                 new(second.NodeId, FlowNodeKind.RerunOriginalExecution, "Another branch", new(300, 0)) { Rerun = new() }
             ], [], new());
-            seed.FlowDefinitions.Add(new() { Id = flowId, TenantId = first.TenantId, Name = "synthetic recovery", DraftJson = JsonSerializer.Serialize(graph) });
+            seed.FlowDefinitions.Add(new() { Id = flowId, TenantId = first.TenantId, Name = "synthetic recovery", DraftJson = FlowGraphSerialization.Serialize(graph) });
             seed.FlowVersions.Add(new() { Id = first.FlowVersionId, FlowId = flowId, TenantId = first.TenantId,
-                VersionNumber = 1, GraphJson = JsonSerializer.Serialize(graph, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
-                ConfigurationHash = "synthetic", PublishedBy = first.PrincipalId, PublishedAtUtc = DateTimeOffset.UtcNow });
+                VersionNumber = 1, GraphJson = FlowGraphSerialization.Serialize(graph),
+                ConfigurationHash = FlowGraphSerialization.Hash(graph), PublishedBy = first.PrincipalId, PublishedAtUtc = DateTimeOffset.UtcNow });
             await seed.SaveChangesAsync();
         }
         var allocations = 0;

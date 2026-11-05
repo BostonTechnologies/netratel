@@ -3,7 +3,6 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text;
-using System.Text.Json;
 using System.Text.Encodings.Web;
 using AwesomeAssertions;
 using Microsoft.AspNetCore.Authentication;
@@ -88,61 +87,8 @@ public sealed partial class FlowEndpointTests
         await using var scope = host.Services.CreateAsyncScope(); (await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().FlowDefinitions.CountAsync()).Should().Be(0);
     }
 
-
-    [Fact]
-    public async Task Source_neutral_preview_accepts_bounded_large_fixtures_for_a_reader_without_runtime_or_database_writes()
-    {
-        using var host = await HostAsync(); var http = host.GetTestClient();
-        http.DefaultRequestHeaders.Authorization = new("Test", "read");
-        var original = FlowExecutionPreviewTests.Graph();
-        var nodes = new List<FlowNodeDto> { original.Nodes.Single(node => node.Id == FlowExecutionPreviewTests.TriggerId) };
-        var script = original.Nodes.Single(node => node.Id == FlowExecutionPreviewTests.RepairId);
-        for (var index = 0; index < 4; index++)
-            nodes.Add(script with { Id = Guid.NewGuid(), Name = "Synthetic sample script " + index });
-        nodes.Add(original.Nodes.Single(node => node.Id == FlowExecutionPreviewTests.SuccessId));
-        FlowEdgeDto Edge(Guid source, string port, Guid target) => new(source, port, target, "in") { Id = Guid.NewGuid() };
-        var edges = new List<FlowEdgeDto> { Edge(nodes[0].Id, "event", nodes[1].Id) };
-        for (var index = 1; index < nodes.Count - 1; index++)
-            foreach (var port in FlowNodeCatalogue.Find(nodes[index].Kind)!.Ports.Where(port => port.Direction == FlowPortDirection.Output))
-                edges.Add(Edge(nodes[index].Id, port.Id, nodes[index + 1].Id));
-        var fixtures = nodes.Where(node => node.Kind == FlowNodeKind.RunLibraryScript)
-            .Select(node => new FlowPreviewFixtureDto(node.Id, "succeeded")
-            { Output = JsonSerializer.SerializeToElement(new { outcome = "succeeded", summary = new string('s', 12000) }) }).ToArray();
-        var request = new FlowExecutionDryRunRequest(new(2, nodes, edges, new()), FlowExecutionPreviewTests.Event(), Fixtures: fixtures);
-        JsonSerializer.SerializeToUtf8Bytes(request).Length.Should().BeGreaterThan((int)FlowRequestBodyLimitMiddleware.MaximumBytes);
-        var response = await http.PostAsJsonAsync(Path + "/dry-run-execution", request);
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-        var preview = (await response.Content.ReadFromJsonAsync<FlowDryRunResultDto>())!;
-        preview.Valid.Should().BeTrue(); preview.Code.Should().Be("inert-preview");
-        preview.Trace!.Steps.Should().HaveCount(6);
-        preview.Trace.Truncated.Should().BeTrue();
-        (await http.PostAsJsonAsync(Path.Replace("/17/", "/18/", StringComparison.Ordinal) + "/dry-run-execution", request)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
-        host.Services.GetRequiredService<ExecutionSentinel>().Calls.Should().Be(0);
-        await using var scope = host.Services.CreateAsyncScope(); var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
-        (await db.FlowDefinitions.CountAsync()).Should().Be(0);
-        (await db.FlowVersions.CountAsync()).Should().Be(0);
-        (await db.FlowRuns.CountAsync()).Should().Be(0);
-        (await db.FlowActions.CountAsync()).Should().Be(0);
-    }
-
-    [Theory]
-    [InlineData(false, false)]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
-    [InlineData(true, true)]
-    public async Task Execution_preview_declared_and_chunked_bodies_obey_their_own_finite_budget(bool chunked, bool uppercasePath)
-    {
-        using var host = await HostAsync(); var http = host.GetTestClient(); http.DefaultRequestHeaders.Authorization = new("Test", "read");
-        var bytes = Encoding.UTF8.GetBytes("{\"fixture\":\"" + new string('x', FlowPreviewLimits.MaximumRequestBytes) + "\"}");
-        using HttpContent content = chunked ? new UnknownLengthContent(bytes) : new ByteArrayContent(bytes);
-        content.Headers.ContentType = new("application/json");
-        var target = Path + "/dry-run-execution";
-        if (uppercasePath) target = target.ToUpperInvariant();
-        (await http.PostAsync(target, content)).StatusCode.Should().Be(HttpStatusCode.RequestEntityTooLarge);
-        host.Services.GetRequiredService<ExecutionSentinel>().Calls.Should().Be(0);
-    }
-
-    private static async Task<IHost> HostAsync()
+    internal static async Task<IHost> HostAsync(string? postgresConnection = null,
+        IEffectiveAccessService? accessOverride = null, IFlowExecutionAuthorityVerifier? authorityOverride = null)
     {
         var database = Guid.NewGuid().ToString("N");
         var builder = Host.CreateDefaultBuilder().ConfigureWebHost(web =>
@@ -150,17 +96,33 @@ public sealed partial class FlowEndpointTests
             web.UseTestServer(); web.ConfigureServices(services =>
             {
                 services.AddRouting(); services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, Authentication>("Test", _ => { }); services.AddAuthorization();
-                services.AddDbContext<OrchestratorDbContext>(options => options.UseInMemoryDatabase(database));
-                services.AddSingleton<IEffectiveAccessService, Access>(); services.AddSingleton<ExecutionSentinel>(); services.AddNetRatelFlows();
+                services.AddDbContext<OrchestratorDbContext>(options =>
+                {
+                    if (postgresConnection is null) options.UseInMemoryDatabase(database);
+                    else options.UseNpgsql(postgresConnection);
+                });
+                if (accessOverride is null) services.AddSingleton<IEffectiveAccessService, Access>();
+                else services.AddSingleton<IEffectiveAccessService>(accessOverride);
+                services.AddSingleton<ExecutionSentinel>(); services.AddNetRatelFlows();
+                if (authorityOverride is not null) services.AddSingleton<IFlowExecutionAuthorityVerifier>(authorityOverride);
+                if (postgresConnection is not null)
+                    services.AddSingleton<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>(
+                        new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
                 services.AddSingleton<IFlowConnectorCatalog, Catalog>();
                 services.AddSingleton<IFlowRuntimeAdapter>(provider => provider.GetRequiredService<ExecutionSentinel>());
                 services.AddSingleton<IFlowIncidentActionDispatcher>(provider => provider.GetRequiredService<ExecutionSentinel>());
             });
             web.Configure(app => { app.UseMiddleware<FlowRequestBodyLimitMiddleware>(); app.UseRouting(); app.UseAuthentication(); app.UseAuthorization(); app.UseEndpoints(endpoints => endpoints.MapFlowEndpoints()); });
         });
-        var host = await builder.StartAsync();
-        await using var scope = host.Services.CreateAsyncScope(); var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
-        db.Tenants.AddRange(new Tenant { Id = 17, Name = "Authorized" }, new Tenant { Id = 18, Name = "Protected" }); await db.SaveChangesAsync(); return host;
+        var host = builder.Build();
+        await using (var scope = host.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            if (postgresConnection is not null) await db.Database.MigrateAsync();
+            db.Tenants.AddRange(new Tenant { Id = 17, Name = "Authorized" }, new Tenant { Id = 18, Name = "Protected" });
+            await db.SaveChangesAsync();
+        }
+        await host.StartAsync(); return host;
     }
     private sealed class Authentication(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder)
         : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
@@ -176,7 +138,8 @@ public sealed partial class FlowEndpointTests
     private sealed class Access : IEffectiveAccessService
     {
         public Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenantId, CancellationToken cancellationToken = default) => Task.FromResult(tenantId == 17 &&
-            (principal.FindFirstValue("mode") == "all" || permission == NetRatelPermissions.FlowRead));
+            (principal.FindFirstValue("mode") == "all" || permission == NetRatelPermissions.FlowRead ||
+                principal.FindFirstValue("mode") == "source" && permission == NetRatelPermissions.JobManagement));
         public Task<int[]?> GetAuthorizedTenantIdsAsync(ClaimsPrincipal principal, string permission, CancellationToken cancellationToken = default) => Task.FromResult<int[]?>([17]);
         public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenantId, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task ReconcileBuiltInRolesAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;

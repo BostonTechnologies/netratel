@@ -8,7 +8,7 @@ public enum FlowNodeKind { AlertRaised = 1, Condition = 2, MapIncident = 3, Crea
 public enum FlowActionKind { RatelDeskIncident = 0, Discord = 1, Slack = 2, NetclawInvestigation = 3 }
 public enum FlowValueField { NumericValue = 1, Severity = 2, Metric = 3, Resource = 4, RuleName = 5, ClientName = 6, ServiceState = 7 }
 public enum FlowComparison { Equal = 1, NotEqual = 2, GreaterThan = 3, GreaterThanOrEqual = 4, LessThan = 5, LessThanOrEqual = 6 }
-public enum FlowRunStatus { Queued = 1, Running = 2, RetryWaiting = 3, Succeeded = 4, Skipped = 5, Failed = 6, DeliveryUnknown = 7, PartiallySucceeded = 8, WaitingForAi = 9, AwaitingApproval = 10 }
+public enum FlowRunStatus { Queued = 1, Running = 2, RetryWaiting = 3, Succeeded = 4, Skipped = 5, Failed = 6, DeliveryUnknown = 7, PartiallySucceeded = 8, WaitingForAi = 9, AwaitingApproval = 10, WaitingForExecution = 11 }
 public enum FlowActionStatus { Pending = 1, Dispatching = 2, RetryWaiting = 3, Succeeded = 4, Failed = 5, DeliveryUnknown = 6, WaitingForAi = 7, AwaitingApproval = 8 }
 
 public enum FlowAiFailureBehavior { ContinueWithAlert = 0, StopFlow = 1 }
@@ -105,10 +105,20 @@ public sealed record FlowActionSummaryDto(Guid NodeId, string IdempotencyKey, Fl
     public FlowAiResultDto? AiResult { get; init; }
     public FlowAiFailureBehavior? AiFailureBehavior { get; init; }
 }
-public sealed record FlowRunDetailDto(FlowRunSummaryDto Run, FlowEventDataDto Input, IReadOnlyList<FlowActionSummaryDto> Actions)
+public sealed record FlowRunDetailDto(FlowRunSummaryDto Run,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] FlowEventDataDto? Input,
+    IReadOnlyList<FlowActionSummaryDto> Actions)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public FlowTraceDto? Trace { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FlowExecutionEventDto? ExecutionEvent { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<Guid>? SourceEventIds { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool SourceEventIdsTruncated { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DataUnavailableReason { get; init; }
 }
 public sealed record FlowConnectorReferenceDto(Guid Id, int TenantId, string Name, bool Enabled, bool CanExecute, string? UnavailableReason = null, long Revision = 0)
 {

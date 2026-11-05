@@ -91,7 +91,7 @@ public sealed class FlowExecutionPreviewSecretFixtureTests
     }
 
     [Fact]
-    public void Pure_mapping_does_not_gain_a_secret_value_from_an_earlier_explicit_action_fixture()
+    public void Pure_mapping_rejects_an_unused_secret_binding_before_evaluating_action_fixtures()
     {
         var graph = WithSecret(FlowNodeKind.RunLibraryScript);
         graph = graph with
@@ -101,17 +101,20 @@ public sealed class FlowExecutionPreviewSecretFixtureTests
                     .Append(new KeyValuePair<string, FlowInputBindingDto>("credential", Secret())).ToDictionary(pair => pair.Key, pair => pair.Value) }
                 : node).ToArray()
         };
-        FlowGraphV2Validator.ValidateComplete(graph).Valid.Should().BeTrue();
+        var before = JsonSerializer.Serialize(graph);
+        var validation = FlowGraphV2Validator.ValidateComplete(graph);
+        validation.Valid.Should().BeFalse();
+        validation.Issues.Should().ContainSingle(issue => issue.Code == "secret-reference-source" && issue.NodeId == MapId);
         var preview = FlowExecutionPreview.DryRun(new(graph, Event(), Fixtures: [Fixture()]), 17);
 
-        preview.Code.Should().Be("secret-reference-unavailable");
+        preview.Valid.Should().BeFalse();
+        preview.Code.Should().Be("invalid-draft");
+        preview.Issues.Should().ContainSingle(issue => issue.Code == "secret-reference-source" && issue.NodeId == MapId);
         preview.Incident.Should().BeNull();
-        preview.Trace!.Steps.Select(step => step.NodeId).Should().Equal(TriggerId, RepairId, ConditionId, MapId);
-        preview.Trace.Steps[^1].Status.Should().Be(FlowTraceStepStatus.Unavailable);
-        preview.Trace.Steps[^1].Output.State.Should().Be(FlowTraceDataState.Missing);
-        preview.Trace.Steps[^1].NextNodeId.Should().BeNull();
-        preview.Trace.Steps[^1].Input.Value!.Value.TryGetProperty("unavailableInputs", out _).Should().BeFalse();
+        preview.Trace.Should().BeNull();
+        preview.VisitedNodeIds.Should().BeEmpty();
         JsonSerializer.Serialize(preview).Should().NotContain(SecretReference).And.NotContain("credential");
+        JsonSerializer.Serialize(graph).Should().Be(before);
     }
 
     [Theory]

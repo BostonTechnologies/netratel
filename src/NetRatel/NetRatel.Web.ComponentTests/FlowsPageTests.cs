@@ -1,5 +1,4 @@
 using System.Net;
-using System.Security.Cryptography;
 using System.Text.Json;
 using Bunit;
 using AwesomeAssertions;
@@ -158,18 +157,40 @@ public sealed class FlowsPageTests : AsyncBunitContext
 
 
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task Historical_playback_loads_the_exact_immutable_version_and_keeps_old_missing_snapshots_explicit(bool captured)
+    [InlineData(true, 1)]
+    [InlineData(false, 1)]
+    [InlineData(true, 2)]
+    [InlineData(false, 2)]
+    public async Task Historical_playback_loads_the_exact_immutable_version_and_keeps_old_missing_snapshots_explicit(bool captured, int schema)
     {
         var version = Version(1, "Published captured trigger");
-        var hash = Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(version.Graph, new JsonSerializerOptions(JsonSerializerDefaults.Web))));
+        string hash;
+        if (schema == FlowGraphV2Limits.SchemaVersion)
+        {
+            var original = FlowDraftMigration.UpgradeToSchemaTwo(version.Graph);
+            var bindings = new Dictionary<string, FlowInputBindingDto>
+            {
+                ["z"] = new(FlowInputSource.Literal, FlowDataType.Text, Literal: JsonSerializer.SerializeToElement("Second")),
+                ["a"] = new(FlowInputSource.Literal, FlowDataType.Text, Literal: JsonSerializer.SerializeToElement("First"))
+            };
+            original = original with { Nodes = original.Nodes.Select(node => node.Kind == FlowNodeKind.MapIncident
+                ? node with { Inputs = bindings } : node).ToArray() };
+            hash = FlowGraphSerialization.Hash(original);
+            // JSONB reorders object keys; the immutable graph proof must survive that storage representation.
+            var stored = original with { Nodes = original.Nodes.Select(node => node.Kind == FlowNodeKind.MapIncident
+                ? node with { Inputs = bindings.OrderBy(pair => pair.Key, StringComparer.Ordinal).ToDictionary(pair => pair.Key, pair => pair.Value) }
+                : node).ToArray() };
+            JsonSerializer.Serialize(stored).Should().NotBe(JsonSerializer.Serialize(original));
+            FlowGraphSerialization.Hash(stored).Should().Be(hash);
+            version = version with { Graph = stored };
+        }
+        else hash = FlowGraphSerialization.Hash(version.Graph);
         version = version with { ConfigurationHash = hash };
         var definition = FlowEditorTests.Definition(); var now = DateTimeOffset.UtcNow;
         var detail = new FlowRunDetailDto(new(Guid.NewGuid(), definition.Id, version.Id, Guid.NewGuid(), Guid.NewGuid(), FlowRunStatus.Succeeded, now, now),
             new(Guid.NewGuid(), Guid.NewGuid(), "Recorded rule", "Recorded client", "cpu", "CPU", "warning", 95, null, now), []);
         if (captured)
-            detail = detail with { Trace = new(1, hash, FlowTraceProvenance.Recorded,
+            detail = detail with { Trace = new(schema, hash, FlowTraceProvenance.Recorded,
                 [new(0, version.Graph.Nodes[0].Id, "Published captured trigger", FlowTraceStepStatus.Completed, "event", FlowTraceProvenance.Recorded,
                     new(FlowTraceDataState.Empty) { Value = JsonSerializer.SerializeToElement("") },
                     new(FlowTraceDataState.Present) { Value = JsonSerializer.SerializeToElement("Exact recorded output") })]) };

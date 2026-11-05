@@ -8,14 +8,14 @@ using VeloxDev.WorkflowSystem;
 namespace NetRatel.Infrastructure.Flows;
 
 /// <summary>The only backend Velox entry. Each run has new allowlisted models, helpers and RuntimeContext.</summary>
-public sealed class VeloxFlowRuntimeAdapter : IFlowRuntimeAdapter
+public sealed partial class VeloxFlowRuntimeAdapter : IFlowRuntimeAdapter, IFlowNodeRuntime
 {
     public async Task<FlowRuntimeResult> ExecuteAsync(FlowRunLease lease,
         Func<FlowIncidentActionDraft, CancellationToken, Task<FlowIncidentActionResult>> executeAction, CancellationToken cancellationToken = default)
     {
         if (!FlowGraphValidator.ValidatePublished(lease.Version.Graph).Valid || !FlowContractValidation.ValidEnvelope(lease.Event) ||
             lease.Version.TenantId != lease.Event.TenantId || lease.Version.Id != lease.Event.FlowVersionId || lease.SourceInstanceId == Guid.Empty ||
-            FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(lease.Version.Graph, FlowPersistenceService.Json)) != lease.Version.ConfigurationHash)
+            FlowGraphSerialization.Hash(lease.Version.Graph) != lease.Version.ConfigurationHash)
             return new(FlowRunStatus.Failed, "runtime-input-invalid");
         var tree = new TreeDefaultViewModel();
         var state = new RunState(lease, executeAction);
