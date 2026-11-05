@@ -58,6 +58,8 @@ public sealed class FlowExecutionIngressPostgresTests(PostgreSqlPersistenceFixtu
         Assert.Equal(0, await db.JobRuns.CountAsync());
         Assert.Equal(0, await db.FlowActions.CountAsync());
         Assert.Equal(0, h.Grants.MonitoringReadCalls);
+        Assert.Equal(AccessPolicy.PrincipalId, h.Grants.NativePrincipalObserved);
+        Assert.NotEqual("synthetic-gateway", h.Grants.NativePrincipalObserved);
     }
 
     [Fact]
@@ -133,6 +135,40 @@ public sealed class FlowExecutionIngressPostgresTests(PostgreSqlPersistenceFixtu
         Assert.Equal(selected.SourcePayload, (await db.OutboxMessages.SingleAsync(row => row.Id == selected.Fact.EventId)).PayloadJson);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Existing_facts_and_deliveries_cannot_be_cross_paired(bool otherSubscription)
+    {
+        await using var h = await Harness.CreateAsync(postgres);
+        var otherVersion = await h.AddSubscriptionAsync();
+        var first = await h.FailRequestAsync();
+        FlowExecutionEventAdmissionRequest crossed;
+        if (otherSubscription)
+        {
+            await using var scope = h.Provider.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var rows = await db.OutboxMessages.AsNoTracking().Where(row => row.Type == FlowExecutionSubscriptionLimits.OutboxType)
+                .Select(row => row.PayloadJson).ToArrayAsync();
+            var delivery = Assert.Single(rows.Select(ParseDelivery), item => item.FlowVersionId == otherVersion &&
+                item.SourceEventId == first.Fact.EventId);
+            crossed = first.Admission with { DeliveryId = delivery.DeliveryId };
+        }
+        else
+        {
+            var second = await h.FailRequestAsync();
+            crossed = first.Admission with { SourceEventId = second.Fact.EventId,
+                ContributingEventIds = [second.Fact.EventId] };
+        }
+        var result = await h.Provider.GetRequiredService<IFlowExecutionEventIngress>().EnqueueExecutionAsync(crossed);
+        Assert.Equal(FlowIngressDisposition.Invalid, result.Disposition);
+        Assert.Null(result.RunId);
+        await using var verification = h.Provider.CreateAsyncScope();
+        var verify = verification.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        Assert.Equal(0, await verify.FlowRuns.CountAsync());
+        Assert.Equal(first.SourcePayload, (await verify.OutboxMessages.SingleAsync(row => row.Id == first.Fact.EventId)).PayloadJson);
+    }
+
     [Fact]
     public async Task Separate_subscriptions_admit_independent_runs_and_receipts_for_the_same_native_fact()
     {
@@ -172,13 +208,17 @@ public sealed class FlowExecutionIngressPostgresTests(PostgreSqlPersistenceFixtu
         public const string PrincipalId = "synthetic-source-publisher";
         public bool NativeRead { get; set; } = true;
         public int MonitoringReadCalls { get; private set; }
+        public string? NativePrincipalObserved { get; private set; }
         public Task<bool> AuthorizeAsync(int tenantId, FlowExecutionAuthorityDto authority, CancellationToken cancellationToken = default) =>
             Task.FromResult(tenantId == 17 && authority.PrincipalId == PrincipalId && authority.IntegrationCredentialId is null);
         public Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenantId,
             CancellationToken cancellationToken = default)
         {
             if (permission == NetRatelPermissions.MonitoringRead) MonitoringReadCalls++;
-            return Task.FromResult(tenantId == 17 && permission != NetRatelPermissions.MonitoringRead &&
+            var configuredPrincipal = principal.FindFirstValue("netratel_principal_id");
+            if (permission == NetRatelPermissions.JobManagement) NativePrincipalObserved = configuredPrincipal;
+            return Task.FromResult(tenantId == 17 && configuredPrincipal == PrincipalId &&
+                permission != NetRatelPermissions.MonitoringRead &&
                 (permission != NetRatelPermissions.JobManagement || NativeRead));
         }
         public Task<int[]?> GetAuthorizedTenantIdsAsync(ClaimsPrincipal principal, string permission,

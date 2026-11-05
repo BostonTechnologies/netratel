@@ -104,9 +104,22 @@ public sealed class NetclawFlowConnector(OrchestratorDbContext db, NetclawAuthor
             new InvestigationCreateRequest(Guid.NewGuid(), draft.Fields.Title, agentIds, execution is null ? draft.Event.OccurrenceId : null)
                 { SelectedPrompts = draft.AiSettings?.OptionalPrompts }, draft.Event.Authority.PrincipalId, ct,
             sourceActionKey: draft.IdempotencyKey, flowRunId: draft.RunId, pinnedPrompts: draft.AiSettings?.PinnedPrompts);
-        var question = execution is null
-            ? "Investigate the linked monitoring alert for the selected systems. Gather evidence with permitted NetRatel tools, explain the likely cause, and propose remediation. Request operator approval before changing systems.\n\nAlert description:\n" + draft.Fields.Description
-            : FlowExecutionEvidenceFormatter.InvestigationQuestion(execution, draft.TenantId);
+        string question;
+        // A retried source/typed turn consumes its accepted text. JSONB normalization must not
+        // regenerate an already accepted question or allocate another automated message.
+        var savedQuestion = existing is not null && (execution is not null || draft.InvestigationInputs is not null)
+            ? await db.Set<AiInvestigationEventRecord>().AsNoTracking().SingleOrDefaultAsync(item =>
+                item.InvestigationId == row.Id && item.MessageId == messageId, ct)
+            : null;
+        if (savedQuestion is not null)
+        {
+            if (savedQuestion.Type != "operator" || savedQuestion.Actor != draft.Event.Authority.PrincipalId ||
+                row.FlowRunId != draft.RunId || row.SourceActionKey != draft.IdempotencyKey ||
+                row.CreatedBy != draft.Event.Authority.PrincipalId || !row.AgentIds.SequenceEqual(agentIds))
+                return Result(Outcome(FlowAiResultStatus.Failed), "ai-correlation-invalid");
+            question = savedQuestion.Text;
+        }
+        else question = FlowInvestigationQuestion.Compose(draft);
         await investigations.AcceptMessageAsync(draft.TenantId, row.Id,
             new(messageId, question),
             draft.Event.Authority.PrincipalId, draft.Event.Authority.IntegrationCredentialId, true, ct);

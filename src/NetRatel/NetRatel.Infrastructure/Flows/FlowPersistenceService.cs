@@ -186,7 +186,10 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
         if (input.OccurredAtUtc <= Now - FlowLimits.MaximumRetryAge || input.OccurredAtUtc > Now.AddMinutes(5))
             return new(FlowIngressDisposition.Invalid, Code: "flow-event-expired");
         var version = await db.FlowVersions.AsNoTracking().SingleOrDefaultAsync(row => row.TenantId == input.TenantId && row.Id == input.FlowVersionId, ct).ConfigureAwait(false);
-        if (version is null || !FlowGraphValidator.ValidatePublished(Parse<FlowGraphDto>(version.GraphJson)).Valid) return new(FlowIngressDisposition.Invalid, Code: "flow-version");
+        if (version is null) return new(FlowIngressDisposition.Invalid, Code: "flow-version");
+        var graph = Parse<FlowGraphDto>(version.GraphJson);
+        if (!ValidRuntimeGraph(graph) || !graph.Nodes.Any(node => node.Kind == FlowNodeKind.AlertRaised))
+            return new(FlowIngressDisposition.Invalid, Code: "flow-version");
         var enabled = await db.FlowDefinitions.AnyAsync(row => row.TenantId == input.TenantId && row.Id == version.FlowId && row.Enabled, ct).ConfigureAwait(false);
         var active = new[] { FlowRunStatus.Queued, FlowRunStatus.Running, FlowRunStatus.RetryWaiting, FlowRunStatus.WaitingForAi, FlowRunStatus.AwaitingApproval, FlowRunStatus.WaitingForExecution };
         if (await db.FlowRuns.CountAsync(row => row.TenantId == input.TenantId, ct).ConfigureAwait(false) >= FlowLimits.MaximumRunsPerTenant ||
@@ -233,5 +236,5 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
     private static FlowRunSummaryDto Summary(FlowRunRecord row) => new(row.Id, row.FlowId, row.FlowVersionId, row.EventId, row.OccurrenceId, row.Status, row.CreatedAtUtc, row.CompletedAtUtc, row.Code);
     private static async Task<IDbContextTransaction?> BeginAsync(OrchestratorDbContext db, CancellationToken ct) => db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct).ConfigureAwait(false) : null;
     private static async Task TenantLockAsync(OrchestratorDbContext db, int tenantId, CancellationToken ct)
-    { if (db.Database.IsNpgsql()) await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({733450001}, {tenantId})", ct).ConfigureAwait(false); }
+    { await FlowTenantTransactionLock.AcquireAsync(db, tenantId, ct).ConfigureAwait(false); }
 }

@@ -11,7 +11,7 @@ public sealed partial class FlowPersistenceService
         FlowRunLease lease, FlowIncidentActionDraft draft, CancellationToken ct)
     {
         if (draft.RunId != lease.RunId || draft.TenantId != lease.Event.TenantId || draft.SourceInstanceId != lease.SourceInstanceId ||
-            draft.IdempotencyKey != FlowActionKeys.Create(lease, draft.ActionNodeId) || Serialize(draft.Event) != Serialize(lease.Event))
+            draft.IdempotencyKey != FlowActionKeys.Create(lease, draft.ActionNodeId) || !FlowJsonCanonical.Equal(draft.Event, lease.Event))
             return null;
         var target = FlowGraphValidator.ActionTargets(lease.Version.Graph).SingleOrDefault(action => action.Id == draft.ActionNodeId);
         if (target is null || target.Kind != draft.Kind || target.ConnectorId != draft.ConnectorId ||
@@ -24,7 +24,7 @@ public sealed partial class FlowPersistenceService
         if (node is null || (node.Kind == FlowNodeKind.ActionGroup
             ? node.Actions?.Any(action => action.Id == draft.ActionNodeId) != true : node.Id != draft.ActionNodeId)) return null;
         var expectedInputs = draft.Kind == FlowActionKind.NetclawInvestigation && state.Inputs.Count > 0 ? state.Inputs : null;
-        if (Serialize(expectedInputs) != Serialize(draft.InvestigationInputs) ||
+        if (!FlowJsonCanonical.Equal(expectedInputs, draft.InvestigationInputs) ||
             draft.InvestigationInputs is not null && System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(draft.InvestigationInputs, Json).Length >
                 FlowGraphV2Limits.MaximumInvestigationInputBytes) return null;
         var configured = draft.Kind == FlowActionKind.NetclawInvestigation ? node.AiSettings : null;
@@ -36,7 +36,7 @@ public sealed partial class FlowPersistenceService
         if (action is not null)
         {
             // The previously frozen draft wins even after a worker crash or a later mapping/AI node.
-            if (Serialize(Parse<FlowIncidentActionDraft>(action.DraftJson)) != Serialize(draft)) return null;
+            if (!FlowJsonCanonical.Equal(Parse<FlowIncidentActionDraft>(action.DraftJson), draft)) return null;
             if (action.Status == FlowActionStatus.Dispatching && action.LeaseFence < lease.Fence &&
                 (draft.Kind is not (FlowActionKind.RatelDeskIncident or FlowActionKind.NetclawInvestigation) ||
                     action.PreparedJson is not null && !Parse<FlowIncidentActionRequest>(action.PreparedJson).SupportsSafeReplay))
@@ -54,7 +54,7 @@ public sealed partial class FlowPersistenceService
                 if (state.PreparedActionFields?.TryGetValue(draft.ActionNodeId, out var frozen) != true) return null;
                 expected = draft with { Fields = frozen };
             }
-            if (Serialize(expected) != Serialize(draft)) return null;
+            if (!FlowJsonCanonical.Equal(expected, draft)) return null;
             action = new FlowActionRecord { RunId = draft.RunId, NodeId = draft.ActionNodeId, TenantId = draft.TenantId,
                 IdempotencyKey = draft.IdempotencyKey, DraftJson = Serialize(draft), ConnectorRevision = draft.ConnectorRevision,
                 Status = FlowActionStatus.Pending, LeaseFence = lease.Fence };
@@ -82,8 +82,10 @@ public sealed partial class FlowPersistenceService
         }
         else
         {
-            if (state?.Progress is not (FlowNodeProgress.Completed or FlowNodeProgress.Failed) ||
-                state.NextNodeId is not null || state.ResultStatus != result.Status || state.ResultCode != result.Code)
+            var invalidInput = result.Status == FlowRunStatus.Failed && result.Code is
+                "runtime-input-invalid" or "runtime-source-mismatch" or "runtime-checkpoint-invalid" or "runtime-step-limit";
+            if (!invalidInput && (state?.Progress is not (FlowNodeProgress.Completed or FlowNodeProgress.Failed) ||
+                state.NextNodeId is not null || state.ResultStatus != result.Status || state.ResultCode != result.Code))
                 return false;
             // Only the selected, completed path determines this run. Inactive branch actions never become pending work.
             run.Status = result.Status; run.Code = result.Code; run.CompletedAtUtc = Now; run.NextAttemptAtUtc = null;

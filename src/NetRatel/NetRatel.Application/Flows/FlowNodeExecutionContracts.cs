@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text;
 using System.Text.Json.Serialization;
 using NetRatel.Shared.Contracts.Flows;
 
@@ -134,13 +135,13 @@ public static class FlowNodeCheckpointRules
             return false;
         try
         {
-            if (JsonSerializer.SerializeToUtf8Bytes(state.Inputs).Length > FlowLimits.MaximumActionBytes ||
-                JsonSerializer.SerializeToUtf8Bytes(state.Outputs).Length > FlowNodeCheckpointLimits.MaximumOutputsBytes ||
-                JsonSerializer.SerializeToUtf8Bytes(state).Length > FlowNodeCheckpointLimits.MaximumCheckpointBytes)
+            if (Encoding.UTF8.GetByteCount(FlowJsonCanonical.Serialize(state.Inputs)) > FlowLimits.MaximumActionBytes ||
+                Encoding.UTF8.GetByteCount(FlowJsonCanonical.Serialize(state.Outputs)) > FlowNodeCheckpointLimits.MaximumOutputsBytes ||
+                Encoding.UTF8.GetByteCount(FlowJsonCanonical.Serialize(state)) > FlowNodeCheckpointLimits.MaximumCheckpointBytes)
                 return false;
             if (state.Trace is { } trace && (trace.SchemaVersion != 1 || trace.GraphSchemaVersion != 2 ||
                 trace.ConfigurationHash != lease.Version.ConfigurationHash || trace.Provenance != FlowTraceProvenance.Actual ||
-                trace.Steps is null || trace.Steps.Count > FlowTraceLimits.MaximumSteps || JsonSerializer.SerializeToUtf8Bytes(trace).Length > FlowTraceLimits.MaximumTraceBytes ||
+                trace.Steps is null || trace.Steps.Count > FlowTraceLimits.MaximumSteps || Encoding.UTF8.GetByteCount(FlowJsonCanonical.Serialize(trace)) > FlowTraceLimits.MaximumTraceBytes ||
                 trace.Steps.Any(step => step is null || step.Provenance != FlowTraceProvenance.Actual ||
                     !lease.Version.Graph.Nodes.Any(node => node.Id == step.NodeId) ||
                     !FlowGraphValidator.IsBoundedText(step.NodeName, FlowLimits.MaximumNameLength) ||
@@ -169,7 +170,7 @@ public static class FlowNodeCheckpointRules
         var nextSteps = next.Trace?.Steps ?? [];
         if (nextSteps.Count < priorSteps.Count || nextSteps.Count > priorSteps.Count + 1) return false;
         for (var index = 0; index < priorSteps.Count; index++)
-            if (JsonSerializer.Serialize(priorSteps[index]) != JsonSerializer.Serialize(nextSteps[index])) return false;
+            if (!FlowJsonCanonical.Equal(priorSteps[index], nextSteps[index])) return false;
         if (previous.Progress == FlowNodeProgress.Completed)
             return previous.NextNodeId == next.NodeId && next.Sequence == previous.Sequence + 1 &&
                 next.Progress == FlowNodeProgress.Prepared && next.Attempt == 1 && next.AcceptedReceipt is null &&
@@ -177,11 +178,11 @@ public static class FlowNodeCheckpointRules
                 nextSteps.Count == priorSteps.Count;
         foreach (var pair in previous.PreparedActionFields ?? new Dictionary<Guid, FlowIncidentFieldsDto>())
             if (next.PreparedActionFields?.TryGetValue(pair.Key, out var fields) != true ||
-                JsonSerializer.Serialize(pair.Value) != JsonSerializer.Serialize(fields)) return false;
+                !FlowJsonCanonical.Equal(pair.Value, fields)) return false;
         if (previous.NodeId != next.NodeId || previous.Sequence != next.Sequence ||
             previous.Attempt != next.Attempt || previous.DispatchKey != next.DispatchKey ||
             previous.StartedAtUtc != next.StartedAtUtc || previous.DeadlineAtUtc != next.DeadlineAtUtc ||
-            JsonSerializer.Serialize(previous.Inputs) != JsonSerializer.Serialize(next.Inputs) ||
+            !FlowJsonCanonical.Equal(previous.Inputs, next.Inputs) ||
             previous.AcceptedExecutionId is not null && (previous.AcceptedSourceKind != next.AcceptedSourceKind ||
                 previous.AcceptedExecutionId != next.AcceptedExecutionId ||
                 previous.AcceptedReceipt is { } receipt && (next.AcceptedReceipt is not { } nextReceipt || !JsonElement.DeepEquals(receipt, nextReceipt))))

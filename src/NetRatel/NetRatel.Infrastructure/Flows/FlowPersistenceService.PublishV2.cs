@@ -38,8 +38,10 @@ public sealed partial class FlowPersistenceService
         FlowExecutionPinsCapture capture;
         try
         {
-            capture = await services.GetRequiredService<IFlowExecutionDefinitionPins>().CaptureAsync(row.TenantId, authority,
-                versionId, graph, ct).ConfigureAwait(false);
+            capture = graph.Nodes.Any(node => node.Kind is FlowNodeKind.RunLibraryScript or FlowNodeKind.RunJob)
+                ? await services.GetRequiredService<IFlowExecutionDefinitionPins>().CaptureAsync(row.TenantId, authority,
+                    versionId, graph, ct).ConfigureAwait(false)
+                : new FlowExecutionPinsCapture(graph, null);
         }
         catch (FlowExecutionPinException error) { return new(FlowWriteDisposition.Invalid, Code: error.Code); }
         graph = capture.Graph;

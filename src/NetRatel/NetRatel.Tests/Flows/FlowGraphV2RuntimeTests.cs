@@ -87,25 +87,26 @@ public sealed class FlowGraphV2RuntimeTests
     }
 
     [Fact]
-    public async Task Secret_reference_is_explicit_unsupported_and_dispatches_nothing()
+    public async Task Native_secret_reference_names_are_not_resolved_or_copied_into_checkpoint_inputs()
     {
         var lease = FlowNodeTestData.Lease();
         var script = lease.Version.Graph.Nodes[1] with
         {
             Inputs = new Dictionary<string, FlowInputBindingDto>
-            { ["credential"] = new(FlowInputSource.SecretReference, FlowDataType.SecretReference, "synthetic-reference") },
+            { ["credential"] = new(FlowInputSource.SecretReference, FlowDataType.SecretReference, "SYNTHETIC_SECRET_REF") },
             ExecutionAction = lease.Version.Graph.Nodes[1].ExecutionAction! with
             { Parameters = [new("credential", FlowDataType.SecretReference)] }
         };
         var graph = lease.Version.Graph with { Nodes = [lease.Version.Graph.Nodes[0], script, lease.Version.Graph.Nodes[2]] };
         lease = WithGraph(lease, graph);
-        var store = new Checkpoints(); var dispatch = new Executions();
+        var store = new Checkpoints(); var dispatch = new Executions { TerminalImmediately = true };
         using var services = Services(dispatch);
         var runtime = new FlowGraphV2Runtime(store, new VeloxFlowRuntimeAdapter(),
             services.GetRequiredService<IServiceScopeFactory>(), new FixedClock(lease.CreatedAtUtc.AddSeconds(1)));
         await runtime.ExecuteAsync(lease, NoIncident);
-        dispatch.Dispatched.Should().BeEmpty();
-        store.Current!.Trace!.Steps.Single(step => step.NodeId == script.Id).SelectedPort.Should().Be(FlowNodeCatalogue.Unsupported);
+        dispatch.Dispatched.Should().ContainSingle();
+        dispatch.InputSubmissions.Should().ContainSingle().Which.Should().Be("{}");
+        store.Current!.Trace!.Steps.Single(step => step.NodeId == script.Id).SelectedPort.Should().Be(FlowNodeCatalogue.Succeeded);
         JsonSerializer.Serialize(store.Current, FlowNodeTestData.Json).Should().NotContain("credential-value");
     }
 
@@ -315,11 +316,12 @@ public sealed class FlowGraphV2RuntimeTests
         public bool TerminalImmediately { get; init; }
         public bool OmitTerminal { get; init; }
         public List<Guid> Dispatched { get; } = [];
+        public List<string?> InputSubmissions { get; } = [];
         public List<string> Observed { get; } = [];
         public List<bool> ObservationMayAdmit { get; } = [];
         public Task<FlowExecutionActionResult> DispatchAsync(FlowExecutionActionRequest request, CancellationToken cancellationToken = default)
         {
-            Dispatched.Add(request.NodeId);
+            Dispatched.Add(request.NodeId); InputSubmissions.Add(request.InputsJson);
             return Task.FromResult(Result(request, TerminalImmediately));
         }
         public Task<FlowExecutionActionResult> ObserveAsync(FlowExecutionActionRequest request, FlowExecutionActionReceipt receipt,

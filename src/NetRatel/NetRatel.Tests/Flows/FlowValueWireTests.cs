@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AwesomeAssertions;
 using NetRatel.Shared.Contracts.Flows;
 using Xunit;
 
@@ -36,4 +37,16 @@ public sealed class FlowValueWireTests
         Assert.Equal(serialized, JsonSerializer.Serialize(restored, Json));
     }
 
+    [Fact]
+    public void Canonical_JSON_retains_decimal_precision_and_bounds_exponent_expansion_and_duplicate_keys()
+    {
+        using var left = JsonDocument.Parse("""{"longer":9007199254740993.00,"a":{"longer":1e2,"b":0.100}}""");
+        using var right = JsonDocument.Parse("""{"a":{"b":0.1,"longer":100},"longer":9007199254740993}""");
+        FlowJsonCanonical.SerializeValue(left.RootElement).Should().Be(FlowJsonCanonical.SerializeValue(right.RootElement));
+        FlowJsonCanonical.SerializeValue(left.RootElement).Should().Contain("9007199254740993");
+        using var huge = JsonDocument.Parse("1e9999");
+        FlowJsonValueBounds.Valid(huge.RootElement, 4096).Should().BeFalse();
+        using var duplicate = JsonDocument.Parse("""{"value":1,"value":2}""");
+        FlowJsonValueBounds.Valid(duplicate.RootElement, 4096).Should().BeFalse();
+    }
 }

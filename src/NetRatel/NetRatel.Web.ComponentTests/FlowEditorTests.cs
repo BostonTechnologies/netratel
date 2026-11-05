@@ -455,6 +455,62 @@ public sealed class FlowEditorTests : AsyncBunitContext
         };
     }
 
+    [Fact]
+    public async Task Local_Undo_Redo_Coalesces_Name_Input_And_Preserves_Current_Viewport_Without_Writes()
+    {
+        var cut = RenderEditor();
+        await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
+        var original = cut.FindComponent<FlowCanvas>().Instance.Adapter;
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "Edited" }));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "Edited name" }));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-zoom-out]").ClickAsync(new()));
+        var scale = original.Tree.Layout.Scale.Horizontal;
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-undo]").ClickAsync(new()));
+        await cut.WaitForAssertionAsync(() => cut.Find("[data-testid=flow-name]").GetAttribute("value").Should().Be("Incident flow"));
+        var undone = cut.FindComponent<FlowCanvas>().Instance.Adapter;
+        undone.Should().NotBeSameAs(original);
+        undone.Tree.Layout.Scale.Horizontal.Should().Be(scale);
+        await cut.WaitForAssertionAsync(() => cut.Find("[data-testid=flow-redo]").HasAttribute("disabled").Should().BeFalse());
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-redo]").ClickAsync(new()));
+        await cut.WaitForAssertionAsync(() => cut.Find("[data-testid=flow-name]").GetAttribute("value").Should().Be("Edited name"));
+        cut.FindComponent<FlowCanvas>().Instance.Adapter.Tree.Layout.Scale.Horizontal.Should().Be(scale);
+        _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0); _api.DryRunCalls.Should().Be(0);
+        original.ExecutionCalls.Should().Be(0); undone.ExecutionCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Undo_After_Save_Keeps_The_Current_Revision_For_The_Next_Compare_And_Swap()
+    {
+        var cut = RenderEditor();
+        await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "Saved name" }));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-save]").ClickAsync(new()));
+        _api.LastSave!.ExpectedRevision.Should().Be(7);
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-undo]").ClickAsync(new()));
+        await cut.WaitForAssertionAsync(() => cut.Find("[data-testid=flow-name]").GetAttribute("value").Should().Be("Incident flow"));
+        cut.Find("[data-testid=flow-dirty]").TextContent.Should().Contain("Unsaved");
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-save]").ClickAsync(new()));
+        _api.LastSave!.ExpectedRevision.Should().Be(8);
+        _api.LastSave.Name.Should().Be("Incident flow");
+        _api.PublishCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Failed_New_Tenant_Draft_Replacement_Cannot_Display_Or_Save_The_Previous_Graph()
+    {
+        var cut = RenderEditor();
+        await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "Private old tenant draft" }));
+        var next = Definition() with { Id = Guid.NewGuid(), TenantId = 23, Name = "Invalid new tenant graph",
+            Draft = Definition().Draft with { SchemaVersion = 99 } };
+        cut.Render(p => p.Add(e => e.Definition, next).Add(e => e.TenantName, "Tenant 23"));
+        await cut.WaitForAssertionAsync(() => cut.Find("[data-testid=flow-error]").TextContent.Should().Contain("cannot be displayed safely"));
+        cut.FindAll("[data-testid=flow-name]").Should().BeEmpty();
+        cut.FindAll("[data-testid=flow-canvas]").Should().BeEmpty();
+        cut.FindAll("[data-testid=flow-save]").Should().BeEmpty();
+        _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
+    }
+
     private IRenderedComponent<FlowEditor> RenderEditor(Action<ComponentParameterCollectionBuilder<FlowEditor>>? extra = null) => Render<FlowEditor>(p =>
     { p.Add(e => e.Definition, Definition()).Add(e => e.CanEdit, true).Add(e => e.CanPublish, true).Add(e => e.TenantName, "Tenant 17"); extra?.Invoke(p); });
     private static readonly Guid FlowId = Guid.NewGuid();
@@ -465,6 +521,7 @@ public sealed class FlowEditorTests : AsyncBunitContext
 internal sealed class FakeFlowApi : IFlowApiService
 {
     public int SaveCalls, PublishCalls, ValidateCalls, DryRunCalls;
+    public Func<FlowExecutionDryRunRequest, Task<FlowDryRunResultDto>>? ExecutionPreview;
     public Func<FlowDryRunRequest, Task<FlowDryRunResultDto>>? Preview;
     public FlowSaveDraftRequest? LastSave;
     public TaskCompletionSource<FlowDefinitionDto>? SavePending;
@@ -485,6 +542,8 @@ internal sealed class FakeFlowApi : IFlowApiService
     public Task<FlowVersionDto> PublishAsync(int tenantId, Guid flowId, FlowRevisionRequest request, CancellationToken token = default) { PublishCalls++; throw new NotSupportedException(); }
     public Task<FlowValidationResultDto> ValidateAsync(int tenantId, FlowGraphDto graph, CancellationToken token = default) { ValidateCalls++; return Task.FromResult(FlowGraphValidator.ValidateComplete(graph)); }
     public Task<FlowDryRunResultDto> DryRunAsync(int tenantId, FlowDryRunRequest request, CancellationToken token = default) { DryRunCalls++; return Preview?.Invoke(request) ?? Task.FromResult(new FlowDryRunResultDto(false, false, "connector-required", null, [], [new("connector-required")])); }
+    public Task<FlowDryRunResultDto> DryRunExecutionAsync(int tenantId, FlowExecutionDryRunRequest request, CancellationToken token = default)
+    { DryRunCalls++; return ExecutionPreview?.Invoke(request) ?? throw new InvalidOperationException("No execution preview fixture configured."); }
     public Task<IReadOnlyList<FlowConnectorReferenceDto>> GetConnectorsAsync(int tenantId, CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowConnectorReferenceDto>>([]);
     public Task<IReadOnlyList<FlowVersionDto>> GetVersionsAsync(int tenantId, Guid flowId, CancellationToken token = default) => VersionsLookup?.Invoke(tenantId, flowId, token) ?? Task.FromResult<IReadOnlyList<FlowVersionDto>>([]);
     public Task<IReadOnlyList<FlowRunSummaryDto>> GetRunsAsync(int tenantId, Guid flowId, CancellationToken token = default) => RunsLookup?.Invoke(tenantId, flowId, token) ?? Task.FromResult<IReadOnlyList<FlowRunSummaryDto>>([]);

@@ -93,6 +93,7 @@ public sealed class FlowExecutionAuthority(OrchestratorDbContext db, IFlowExecut
         if (!db.Database.IsNpgsql() || identity.NodeAttempt > FlowGraphV2Limits.MaximumRecoveryAttempts)
             throw new ExecutionAdmissionDeniedException("Persisted flow continuation admission is unavailable.");
         await using var transaction = db.Database.CurrentTransaction is null ? await db.Database.BeginTransactionAsync(ct) : null;
+        await FlowTenantTransactionLock.AcquireAsync(db, identity.TenantId, ct).ConfigureAwait(false);
         // Source admission owns the configuration/source-before-run lock order. This first read is intentionally nonlocking.
         var candidate = await db.FlowRuns.AsNoTracking().SingleOrDefaultAsync(row =>
             row.TenantId == identity.TenantId && row.Id == identity.FlowRunId, ct);

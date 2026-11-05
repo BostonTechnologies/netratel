@@ -22,6 +22,7 @@ public static partial class FlowEndpoints
         group.MapGet("/templates", TemplatesAsync); group.MapPost("/from-template", CreateFromTemplateAsync);
         group.MapGet("/versions/{versionId:guid}", VersionByIdAsync); group.MapGet("/runs/{runId:guid}", RunByIdAsync);
         group.MapPost("/validate", ValidateAsync); group.MapPost("/dry-run", DryRunAsync);
+        group.MapPost("/dry-run-execution", DryRunExecutionAsync);
         group.MapGet("/{flowId:guid}", GetAsync);
         group.MapPut("/{flowId:guid}/draft", SaveAsync); group.MapPost("/{flowId:guid}/clone", CloneAsync);
         group.MapPut("/{flowId:guid}/enabled", EnabledAsync); group.MapPost("/{flowId:guid}/publish", PublishAsync);

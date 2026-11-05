@@ -114,6 +114,7 @@ public sealed class FlowExecutionDefinitionPins(OrchestratorDbContext db, IJobEx
                 parameters = scriptParameters.Select(parameter =>
                     new FlowParameterDefinitionDto(parameter.Name, DataType(parameter.Type), parameter.Required)).ToArray();
             }
+            FlowExecutionSecretReferences.Validate(node, pin);
             pins.Add(pin);
             updated.Add(node.Id, node with
             {

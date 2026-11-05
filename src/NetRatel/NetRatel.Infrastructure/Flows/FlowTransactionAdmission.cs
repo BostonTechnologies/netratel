@@ -31,6 +31,7 @@ public sealed class MonitoringFlowTransactionAdmission(IFlowExecutionAuthorityVe
             return new(false, "flow-transaction-admission-invalid");
         try
         {
+            await FlowTenantTransactionLock.AcquireAsync(db, lease.Event.TenantId, cancellationToken).ConfigureAwait(false);
             var connection = (NpgsqlConnection)db.Database.GetDbConnection();
             var transaction = (NpgsqlTransaction)currentTransaction.GetDbTransaction();
             if (lease.ExpiresAtUtc <= await ClientConnectionEpochStore.EffectiveNowAsync(connection, transaction, clock,

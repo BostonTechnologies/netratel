@@ -20,6 +20,7 @@ internal sealed class FlowPreviewTrace(FlowGraphDto graph)
             Capture(input), outputUnavailable ? new(FlowTraceDataState.Missing) : Capture(output))
         {
             SelectedPort = selectedEdge?.SourcePort,
+            EdgeId = selectedEdge?.Id,
             NextNodeId = selectedEdge?.TargetNodeId,
             ErrorCode = errorCode
         });

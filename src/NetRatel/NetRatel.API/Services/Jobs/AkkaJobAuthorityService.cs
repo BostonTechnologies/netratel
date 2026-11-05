@@ -15,6 +15,8 @@ using NetRatel.Application.Agents;
 using NetRatel.Application.Fanout;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Requests;
+using NetRatel.Application.Scripts;
+using NetRatel.Shared.Contracts.Tasks;
 using NetRatel.Infrastructure.Flows;
 using NetRatel.Application.Presence;
 using NetRatel.Shared.Contracts.Jobs;
@@ -62,7 +64,8 @@ public sealed class AkkaJobAuthorityService(
     IExecutionAdmissionStore? executionAdmissions = null,
     IKeyedExecutionAuthority? keyedAuthority = null,
     IJobExecutionSnapshotCapture? snapshotCapture = null,
-    IRequestService? requests = null) : IAkkaJobAuthorityService
+    IRequestService? requests = null,
+    IScriptExecutionReplayStore? scriptReplayPins = null) : IAkkaJobAuthorityService
 {
     private const string Authority = "akka";
     private const string Feature = "jobs";
@@ -282,6 +285,8 @@ public sealed class AkkaJobAuthorityService(
     {
         var definition = pinnedSnapshot?.Definition ?? mcpSnapshot?.Definition ?? await jobDefinitions.GetDetailsAsync(jobId, cancellationToken).ConfigureAwait(false)
             ?? throw new KeyNotFoundException($"Job {jobId} was not found.");
+        if (db is not null && definition.Job.TenantId is > 0)
+            await ExecutionLifecycleSubscriptions.AcquireTenantAsync(db, definition.Job.TenantId.Value, cancellationToken);
         if (pinnedSnapshot is null && mcpSnapshot is null && snapshotCapture is not null &&
             definition.Job.TenantId is > 0 && definition.Job.AgentId is { } boundAgent && boundAgent != Guid.Empty &&
             definition.Steps.Where(step => step.Enabled).All(step => step.Type == JobStepKind.RunCommand ||
@@ -657,6 +662,17 @@ public sealed class AkkaJobAuthorityService(
             Environment: run.Environment, TargetDisplayName: run.TargetDisplayName, TargetHostName: run.TargetHostName, TargetName: run.TargetName,
             ScriptName: invocation.ScriptName, ScriptType: invocation.ScriptType, CommandLabel: invocation.CommandLabel, ScriptContentHash: invocation.ScriptContentHash,
             OutputPolicy: invocation.OutputPolicy), cancellationToken).ConfigureAwait(false);
+        if (scriptReplayPins is not null && pinnedSnapshot is not null && step.Type == JobStepKind.LibraryScript &&
+            invocation.TaskType == TaskKinds.ExecLibraryScript)
+        {
+            var script = pinnedSnapshot.Scripts.Single(item => item.Script.Id == step.ScriptId);
+            await scriptReplayPins.CaptureAsync(activity.RequestId, new(
+                run.TenantId ?? throw new InvalidOperationException("A pinned script step requires its native tenant."),
+                run.AgentId ?? throw new InvalidOperationException("A pinned script step requires its bound target."),
+                script, run.Environment ?? ClientEnvironment.None, invocation.PayloadJson,
+                invocation.OutputPolicy ?? throw new InvalidOperationException("A pinned script step requires native output classification.")),
+                cancellationToken);
+        }
         var pendingStep = await jobRuns.UpsertStepRunAsync(new UpsertJobStepRunCommand(
             next.Id, run.Id, step.Id, JobStepRunState.Pending, next.Ordinal, activity.RequestId, null, null, null), cancellationToken).ConfigureAwait(false);
         if (db is not null)
