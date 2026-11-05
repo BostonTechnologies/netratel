@@ -70,7 +70,14 @@ internal sealed class FixtureFlowApiService : IFlowApiService
     }
     public Task<FlowValidationResultDto> ValidateAsync(int tenantId, FlowGraphDto graph, CancellationToken token = default) { ValidateCalls++; return Task.FromResult(FlowGraphValidator.ValidateComplete(graph)); }
     public Task<FlowDryRunResultDto> DryRunAsync(int tenantId, FlowDryRunRequest request, CancellationToken token = default)
-    { DryRunCalls++; var valid = FlowGraphValidator.ValidateComplete(request.Graph); return Task.FromResult(new FlowDryRunResultDto(valid.Valid, false, valid.Valid ? "preview" : "connector-required", null, [], valid.Issues)); }
+    { DryRunCalls++; return Task.FromResult(FlowPureEvaluation.DryRun(request)); }
+    public void SeedPreviewGraph()
+    {
+        var flow = _definitions.Values.First();
+        var graph = flow.Draft with { Nodes = flow.Draft.Nodes.Select(node => node.Kind == FlowNodeKind.CreateIncident
+            ? node with { ConnectorId = Guid.NewGuid(), ConnectorRevision = 1 } : node).ToArray() };
+        _definitions[flow.Id] = flow with { Draft = graph };
+    }
     public Task<FlowDryRunResultDto> DryRunExecutionAsync(int tenantId, FlowExecutionDryRunRequest request, CancellationToken token = default)
     { DryRunCalls++; return Task.FromResult(FlowExecutionPreview.DryRun(request, tenantId)); }
     public Task<IReadOnlyList<FlowConnectorReferenceDto>> GetConnectorsAsync(int tenantId, CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowConnectorReferenceDto>>([]);

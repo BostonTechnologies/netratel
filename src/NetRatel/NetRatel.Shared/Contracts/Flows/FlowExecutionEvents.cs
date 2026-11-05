@@ -39,8 +39,8 @@ public sealed record FlowExecutionEventDto(Guid EventId, Guid OccurrenceId, int 
     public string? ReasonCode { get; init; }
     public string? Reason { get; init; }
     public int? ExitCode { get; init; }
-    public string? RequestKind { get; init; }
     public string? CorrelationId { get; init; }
+    public string? RequestKind { get; init; }
     public string? ParentExecutionId { get; init; }
     public string? RootExecutionId { get; init; }
     public FlowExecutionCausationDto? Causation { get; init; }
@@ -72,7 +72,7 @@ public static class FlowExecutionEventLimits
     public const int MaximumEnvelopeBytes = 16384;
     public const int MaximumReasonLength = 2048;
     public const int MaximumReferences = 16;
-    public const int MaximumIdentifierLength = 128;
+    public const int MaximumIdentifierLength = 256;
     public const int MaximumHopCount = 8;
     public const int DefaultRecoveryAttempts = 1;
     public const int MaximumRecoveryAttempts = 3;
