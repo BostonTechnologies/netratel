@@ -175,8 +175,8 @@ public sealed partial class FlowEndpointTests
         if (ai) edges.AddRange(FlowNodeCatalogue.Find(investigation.Kind)!.Ports.Where(port => port.Direction == FlowPortDirection.Output)
             .Select(port => new FlowEdgeDto(investigation.Id, port.Id, finish.Id, FlowNodeCatalogue.Input) { Id = Guid.NewGuid() }));
         var graph = new FlowGraphDto(2, nodes, edges, new());
-        var json = JsonSerializer.Serialize(graph, FlowNodeTestData.Json);
-        var hash = FlowContractValidation.Hash(Encoding.UTF8.GetBytes(json));
+        var json = FlowGraphSerialization.Serialize(graph);
+        var hash = FlowGraphSerialization.Hash(graph);
         var source = new FlowExecutionEventDto(Guid.NewGuid(), Guid.NewGuid(), 17, FlowExecutionSourceKind.Request,
             new("synthetic", "Synthetic admission"), "9007199254740993", "9007199254740993", new(Guid.NewGuid(), "Synthetic endpoint"),
             FlowExecutionOutcome.Failed, "Failed", now, now)

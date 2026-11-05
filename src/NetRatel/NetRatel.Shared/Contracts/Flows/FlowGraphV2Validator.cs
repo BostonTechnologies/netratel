@@ -31,7 +31,7 @@ public static class FlowGraphV2Validator
             return new(false, [new("graph-limit")]);
         try
         {
-            if (JsonSerializer.SerializeToUtf8Bytes(graph).Length > FlowGraphV2Limits.MaximumGraphBytes)
+            if (Encoding.UTF8.GetByteCount(FlowGraphSerialization.Serialize(graph)) > FlowGraphV2Limits.MaximumGraphBytes)
                 return new(false, [new("graph-bytes")]);
         }
         catch (Exception error) when (error is JsonException or ArgumentException or InvalidOperationException or NotSupportedException)

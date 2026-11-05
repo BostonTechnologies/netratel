@@ -288,7 +288,7 @@ public sealed class FlowGraphV2RuntimeTests
     {
         FlowGraphV2Validator.ValidatePublished(graph).Valid.Should().BeTrue();
         return lease with { Version = lease.Version with { Graph = graph,
-            ConfigurationHash = FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(graph, FlowNodeTestData.Json)) } };
+            ConfigurationHash = FlowGraphSerialization.Hash(graph) } };
     }
     private sealed class FixedClock(DateTimeOffset now) : TimeProvider { public override DateTimeOffset GetUtcNow() => now; }
     private sealed class Checkpoints : IFlowNodeExecutionStore

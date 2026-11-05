@@ -40,6 +40,5 @@ public sealed class PublishedMonitoringFlowProvider(IFlowDefinitionService flows
         (version.Graph.SchemaVersion == FlowLimits.SchemaVersion ? FlowGraphValidator.ValidatePublished(version.Graph).Valid :
             version.Graph.SchemaVersion == FlowGraphV2Limits.SchemaVersion && FlowGraphV2Validator.ValidatePublished(version.Graph).Valid &&
             version.Graph.Nodes.Any(node => node.Kind == FlowNodeKind.AlertRaised)) &&
-        version.ConfigurationHash == FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(version.Graph,
-            new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        version.ConfigurationHash == FlowGraphSerialization.Hash(version.Graph);
 }

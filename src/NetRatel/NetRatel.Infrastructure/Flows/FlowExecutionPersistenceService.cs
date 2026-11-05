@@ -111,7 +111,7 @@ public sealed partial class FlowPersistenceService
         var version = await db.FlowVersions.AsNoTracking().SingleAsync(row => row.TenantId == run.TenantId && row.Id == run.FlowVersionId, ct).ConfigureAwait(false);
         if (lease.Version.TenantId != run.TenantId || lease.Version.FlowId != run.FlowId || lease.Version.ConfigurationHash != version.ConfigurationHash ||
             !ValidRuntimeGraph(lease.Version.Graph) ||
-            FlowContractValidation.Hash(Encoding.UTF8.GetBytes(Serialize(lease.Version.Graph))) != version.ConfigurationHash ||
+            FlowGraphSerialization.Hash(lease.Version.Graph) != version.ConfigurationHash ||
             !await db.FlowRuntimeIdentity.AnyAsync(row => row.Id == 1 && row.SourceInstanceId == lease.SourceInstanceId, ct).ConfigureAwait(false)) return null;
         return run;
     }

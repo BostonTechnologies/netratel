@@ -81,7 +81,7 @@ public sealed class FlowExecutionEventAdmission(IFlowExecutionAuthorityVerifier 
         }
         catch (JsonException) { return Deny("execution-source-version-invalid"); }
         if (graph is null || !FlowGraphV2Validator.ValidatePublished(graph).Valid ||
-            version.ConfigurationHash != FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(graph, FlowPersistenceService.Json)) ||
+            version.ConfigurationHash != FlowGraphSerialization.Hash(graph) ||
             !FlowContractValidation.ValidAuthority(authority) || authority!.PrincipalId != version.PublishedBy)
             return Deny("execution-source-version-invalid");
         var trigger = graph.Nodes.SingleOrDefault(node => node.Kind == FlowNodeKind.ExecutionEvent);

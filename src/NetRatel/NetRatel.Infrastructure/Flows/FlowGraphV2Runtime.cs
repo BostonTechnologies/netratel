@@ -24,7 +24,7 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
         if (!FlowGraphV2Validator.ValidatePublished(graph).Valid || !FlowContractValidation.ValidEnvelope(lease.Event) ||
             lease.Version.TenantId != lease.Event.TenantId || lease.Version.Id != lease.Event.FlowVersionId ||
             lease.SourceInstanceId == Guid.Empty ||
-            FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(graph, Json)) != lease.Version.ConfigurationHash)
+            FlowGraphSerialization.Hash(graph) != lease.Version.ConfigurationHash)
             return new(FlowRunStatus.Failed, "runtime-input-invalid");
         var trigger = graph.Nodes.Single(node => FlowNodeCatalogue.IsTrigger(node.Kind));
         if ((trigger.Kind == FlowNodeKind.ExecutionEvent) != (lease.Event.ExecutionEvent is not null))

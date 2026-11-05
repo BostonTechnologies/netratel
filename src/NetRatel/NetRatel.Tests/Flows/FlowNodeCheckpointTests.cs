@@ -146,13 +146,12 @@ public sealed class FlowNodeCheckpointPostgreSqlTests(PostgreSqlPersistenceFixtu
                     ["a"] = new(FlowInputSource.Literal, FlowDataType.Number, Literal: number.RootElement.Clone()) } };
             graph = graph with { Nodes = [graph.Nodes[0], ai, graph.Nodes[2]] };
             FlowGraphV2Validator.ValidatePublished(graph).Valid.Should().BeTrue();
-            version.GraphJson = JsonSerializer.Serialize(graph, FlowNodeTestData.Json);
+            version.GraphJson = FlowGraphSerialization.Serialize(graph);
             await db.SaveChangesAsync();
             db.ChangeTracker.Clear();
             // Publication hashes the graph after the saved draft's JSONB normalization.
             version = await db.FlowVersions.SingleAsync();
-            version.ConfigurationHash = FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(
-                JsonSerializer.Deserialize<FlowGraphDto>(version.GraphJson, FlowNodeTestData.Json), FlowNodeTestData.Json));
+            version.ConfigurationHash = FlowGraphSerialization.Hash(JsonSerializer.Deserialize<FlowGraphDto>(version.GraphJson, FlowNodeTestData.Json)!);
             await db.SaveChangesAsync();
         }
         var lease = (await provider.GetRequiredService<IFlowExecutionStore>().ClaimAsync(Guid.NewGuid()))!;
@@ -208,7 +207,7 @@ public sealed class FlowNodeCheckpointPostgreSqlTests(PostgreSqlPersistenceFixtu
         FlowGraphV2Validator.ValidatePublished(graph).Valid.Should().BeTrue();
         var flowId = Guid.NewGuid(); var versionId = Guid.NewGuid();
         var now = clock.GetUtcNow();
-        var graphJson = JsonSerializer.Serialize(graph, FlowNodeTestData.Json);
+        var graphJson = FlowGraphSerialization.Serialize(graph);
         var input = new FlowEventEnvelope(17, Guid.NewGuid(), Guid.NewGuid(), versionId, now,
             FlowTestData.EventData("Synthetic checkpoint endpoint", 90) with { ObservedAtUtc = now }, FlowTestData.Authority);
         var eventJson = JsonSerializer.Serialize(input, FlowNodeTestData.Json);
@@ -216,7 +215,7 @@ public sealed class FlowNodeCheckpointPostgreSqlTests(PostgreSqlPersistenceFixtu
         db.FlowDefinitions.Add(new() { Id = flowId, TenantId = 17, Name = "Checkpoint fixture", Revision = 1,
             Enabled = true, DraftJson = graphJson, PublishedVersionId = versionId, PublishedVersionNumber = 1, CreatedAtUtc = now, UpdatedAtUtc = now });
         db.FlowVersions.Add(new() { Id = versionId, FlowId = flowId, TenantId = 17, VersionNumber = 1,
-            GraphJson = graphJson, ConfigurationHash = FlowContractValidation.Hash(System.Text.Encoding.UTF8.GetBytes(graphJson)),
+            GraphJson = graphJson, ConfigurationHash = FlowGraphSerialization.Hash(graph),
             PublishedBy = "fixture", PublishedAtUtc = now });
         db.FlowRuns.Add(new() { Id = Guid.NewGuid(), TenantId = 17, FlowId = flowId, FlowVersionId = versionId,
             EventId = input.EventId, OccurrenceId = input.OccurrenceId, EventJson = eventJson,
@@ -270,7 +269,7 @@ internal static class FlowNodeTestData
         return original with
         {
             Version = original.Version with { Graph = graph,
-                ConfigurationHash = FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(graph, Json)) },
+                ConfigurationHash = FlowGraphSerialization.Hash(graph) },
             CreatedAtUtc = original.Event.OccurredAtUtc
         };
     }
