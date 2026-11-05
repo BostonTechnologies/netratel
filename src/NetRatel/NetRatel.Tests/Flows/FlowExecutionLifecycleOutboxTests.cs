@@ -523,7 +523,7 @@ public sealed class FlowExecutionLifecycleOutboxPostgreSqlTests(PostgreSqlPersis
         }
     }
     [Fact]
-    public async Task Large_source_presentation_is_visibly_bounded_without_losing_protected_replay_or_causal_identity()
+    public async Task Large_native_presentation_is_visibly_bounded_without_losing_execution_or_replay_reference_identity()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var ct = deadline.Token;
@@ -531,9 +531,6 @@ public sealed class FlowExecutionLifecycleOutboxPostgreSqlTests(PostgreSqlPersis
             .UseNpgsql(await postgres.CreateDatabaseAsync(ct)).Options;
         var keys = new EphemeralDataProtectionProvider();
         var requestId = new string('原', 256);
-        var parentId = new string('先', 256);
-        var rootId = new string('始', 256);
-        var occurrence = new string('起', 128);
         var definitionName = new string('名', 512);
         var targetName = new string('機', 512);
         var agent = Guid.NewGuid();
@@ -549,14 +546,6 @@ public sealed class FlowExecutionLifecycleOutboxPostgreSqlTests(PostgreSqlPersis
             OutputProtectionJson = JsonSerializer.Serialize(TaskOutputPolicy.Create([], 91, 4, new string('A', 64)))
         });
         await db.SaveChangesAsync(ct);
-        var identity = new ExecutionAdmissionIdentity(Guid.NewGuid(), 7, "synthetic-operator",
-            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 1)
-        {
-            Causation = new(occurrence, Guid.NewGuid(), 1, 1, parentId) { RootExecutionId = rootId }
-        };
-        var admission = await new ExecutionAdmissionStore(db, keys, TimeProvider.System).ReserveAsync(
-            new(identity, ExecutionAdmissionKind.LibraryScript, "{\"syntheticPinnedSource\":\"protected fixture\"}"),
-            () => requestId, ct);
         var result = "{\"exitCode\":7,\"stderr\":\"Synthetic definitive failure\"}";
         await new JobRunService(db, keys).UpdateTaskActivityStatusAsync(
             new(requestId, "Completed", new string('錯', 512), now, result, ExitCode: 7), ct);
@@ -575,11 +564,9 @@ public sealed class FlowExecutionLifecycleOutboxPostgreSqlTests(PostgreSqlPersis
         Assert.True(Encoding.UTF8.GetByteCount(row.PayloadJson) <= FlowExecutionEventLimits.MaximumEnvelopeBytes - 256);
         Assert.Equal(requestId, value.ExecutionId);
         Assert.Equal(requestId, value.AttemptId);
-        Assert.Equal(parentId, value.ParentExecutionId);
-        Assert.Equal(rootId, value.RootExecutionId);
-        Assert.Equal(occurrence, value.Causation!.RootOccurrenceId);
-        Assert.Equal(identity.FlowRunId, value.Causation.FlowRunId);
-        Assert.Equal(identity.NodeId, value.Causation.NodeId);
+        Assert.Null(value.ParentExecutionId);
+        Assert.Equal(requestId, value.RootExecutionId);
+        Assert.Null(value.Causation);
         Assert.Equal(FlowExecutionOutcome.Failed, value.Outcome);
         Assert.Equal("Completed", value.RawStatus);
         Assert.Equal(7, value.ExitCode);
@@ -589,7 +576,8 @@ public sealed class FlowExecutionLifecycleOutboxPostgreSqlTests(PostgreSqlPersis
         Assert.EndsWith("…", value.Definition.Name);
         Assert.StartsWith("機", value.Target.DisplayName);
         Assert.EndsWith("…", value.Target.DisplayName);
-        Assert.True(value.Replay!.Supported);
+        Assert.False(value.Replay!.Supported);
+        Assert.NotNull(value.Replay.UnsupportedReason);
         Assert.Equal(FlowExecutionSourceKind.Script, value.Replay.SourceKind);
         Assert.Equal("91", value.Replay.Definition.Id);
         Assert.Equal("4", value.Replay.Definition.Revision);
@@ -600,7 +588,7 @@ public sealed class FlowExecutionLifecycleOutboxPostgreSqlTests(PostgreSqlPersis
         Assert.Equal("script-execution:" + requestId, value.Replay.InputsReference);
         Assert.Equal(requestId, Assert.Single(value.Results!).Id);
         Assert.NotNull(Assert.Single(value.Results!).ContentHash);
-        Assert.Equal(admission.ExecutionId, (await db.Set<ExecutionAdmissionRecord>().SingleAsync(ct)).ExecutionId);
+        Assert.False(await db.Set<ExecutionAdmissionRecord>().AnyAsync(ct));
     }
 
 }
