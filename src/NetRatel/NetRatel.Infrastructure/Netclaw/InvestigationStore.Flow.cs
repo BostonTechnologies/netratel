@@ -26,7 +26,7 @@ public sealed partial class InvestigationStore
         var action = await db.FlowActions.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == row.TenantId && x.RunId == runId && x.IdempotencyKey == row.SourceActionKey, ct);
         if (action is null) return;
         var draft = JsonSerializer.Deserialize<FlowIncidentActionDraft>(action.DraftJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
-        if (draft is null || draft.Kind != FlowActionKind.NetclawInvestigation || draft.Event.EventId != message || draft.Event.TenantId != row.TenantId || draft.RunId != runId) return;
+        if (draft is null || draft.Kind != FlowActionKind.NetclawInvestigation || FlowAiCorrelation.MessageId(draft) != message || draft.Event.TenantId != row.TenantId || draft.RunId != runId) return;
         var result = new FlowAiResultDto(row.TenantId, runId, draft.Event.FlowVersionId, action.NodeId, row.Id, message, status, observedAt, observedAt);
         if (status == FlowAiResultStatus.Completed)
         {

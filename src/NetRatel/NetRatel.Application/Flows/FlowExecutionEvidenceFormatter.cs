@@ -40,14 +40,27 @@ public static class FlowExecutionEvidenceFormatter
         var title = Expand(mapping.TitleTemplate, original, ai);
         if (!FlowGraphValidator.IsBoundedText(title, FlowLimits.MaximumTitleLength))
             throw new InvalidOperationException("mapping-output-limit");
-        var mapped = Expand(mapping.DescriptionTemplate, original, ai);
+        return Enrich(new(title, Expand(mapping.DescriptionTemplate, original, ai), mapping.Priority),
+            original, tenantId, runId, versionId, ai, attempts);
+    }
+
+    /// <summary>Call once with the final permitted findings and action results before freezing receiver payloads.</summary>
+    public static FlowIncidentFieldsDto Enrich(FlowIncidentFieldsDto mapped, FlowExecutionEventDto original,
+        int tenantId, Guid runId, Guid versionId, FlowAiResultDto? ai = null,
+        IReadOnlyList<FlowRecoveryAttemptEvidence>? attempts = null)
+    {
+        ValidateContext(original, tenantId, runId, versionId, ai, attempts);
+        if (mapped is null || !FlowGraphValidator.IsBoundedText(mapped.Title, FlowLimits.MaximumTitleLength) ||
+            !FlowGraphValidator.IsBoundedText(mapped.Description, FlowLimits.MaximumDescriptionLength, multiline: true) ||
+            mapped.Priority is < 0 or > 3)
+            throw new ArgumentException("Invalid mapped execution incident fields.", nameof(mapped));
         var description = DescribeOriginal(original) +
-            "\n\nMapped description:\n" + Clip(mapped, MappingBudget) +
+            "\n\nMapped description:\n" + Safe(mapped.Description, MappingBudget) +
             "\n\n" + DescribeAi(ai) +
             "\n\n" + DescribeRecovery(original, runId, attempts ?? []);
         if (!FlowGraphValidator.IsBoundedText(description, FlowLimits.MaximumDescriptionLength, multiline: true))
             throw new InvalidOperationException("mapping-output-limit");
-        return new(title, description, mapping.Priority);
+        return new(Safe(mapped.Title, FlowLimits.MaximumTitleLength), description, mapped.Priority);
     }
 
     public static string InvestigationQuestion(FlowExecutionEventDto original, int tenantId)
@@ -209,8 +222,12 @@ public static class FlowExecutionEvidenceFormatter
             throw new ArgumentException("Invalid original execution evidence.", nameof(original));
     }
 
-    private static string Expand(string template, FlowExecutionEventDto original, FlowAiResultDto? ai)
+    /// <summary>Pure allowlisted source values; the caller supplies any exact correlated or explicitly simulated AI result.</summary>
+    public static IReadOnlyDictionary<string, string> Values(FlowExecutionEventDto original, FlowAiResultDto? ai = null)
     {
+        ValidateOriginal(original, original.TenantId);
+        if (ai is not null && ai.TenantId != original.TenantId)
+            throw new ArgumentException("AI findings belong to another tenant.", nameof(ai));
         var values = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["sourceKind"] = original.SourceKind.ToString(), ["definitionName"] = Safe(original.Definition.Name, 128),
@@ -226,6 +243,12 @@ public static class FlowExecutionEvidenceFormatter
             ["aiStatus"] = ai?.Status.ToString() ?? "Not run", ["aiObservedAt"] = ai is null ? "" : ai.ObservedAtUtc.ToString("O", CultureInfo.InvariantCulture),
             ["aiInvestigationId"] = ai?.InvestigationId.ToString("D") ?? ""
         };
+        return new System.Collections.ObjectModel.ReadOnlyDictionary<string, string>(values);
+    }
+
+    private static string Expand(string template, FlowExecutionEventDto original, FlowAiResultDto? ai)
+    {
+        var values = Values(original, ai);
         var text = new StringBuilder();
         for (var index = 0; index < template.Length; index++)
         {

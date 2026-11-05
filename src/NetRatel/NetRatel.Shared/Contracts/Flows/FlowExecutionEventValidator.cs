@@ -14,6 +14,7 @@ public static class FlowExecutionEventValidator
         if (value.SchemaVersion != FlowExecutionEventLimits.SchemaVersion) issues.Add("event_schema_unsupported");
         if (value.EventId == Guid.Empty || value.OccurrenceId == Guid.Empty) issues.Add("event_identity_required");
         if (value.TenantId <= 0) issues.Add("event_tenant_required");
+        if (value.OccurredAtUtc == default || value.ObservedAtUtc == default) issues.Add("event_timestamp_required");
         if (!Enum.IsDefined(value.SourceKind)) issues.Add("event_source_unsupported");
         if (!Enum.IsDefined(value.Outcome)) issues.Add("event_outcome_unsupported");
         Required(value.ExecutionId, "execution_id");
@@ -90,7 +91,7 @@ public static class FlowExecutionEventValidator
         }
         void Text(string? text, int maximum, string field)
         {
-            if (text is not null && (text.Length > maximum || text.Any(c => char.IsControl(c) && c is not ('\n' or '\r' or '\t'))))
+            if (text is not null && !FlowGraphValidator.IsBoundedText(text, maximum, allowEmpty: true, multiline: true))
                 issues.Add("event_" + field + "_invalid");
         }
         void Hash(string? hash, string field)
