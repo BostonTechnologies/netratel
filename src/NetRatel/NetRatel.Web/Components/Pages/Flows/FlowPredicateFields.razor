@@ -22,6 +22,13 @@ else
         </select></label>
         @if (_type == FlowDataType.Boolean)
         { <label><input type="checkbox" checked="@(_value.ValueKind == JsonValueKind.True)" @onchange="SetBoolean" data-testid="flow-condition-match" /> Compare with true (unchecked means false)</label> }
+        else if (_type == FlowDataType.Text && AllowedValues is { Count: > 0 } values)
+        {
+            <label>Compare with<select value="@_text" @onchange="SetValue" data-testid="flow-condition-match">
+                @foreach (var value in values) { <option value="@value">@value</option> }
+                @if (!values.Contains(_text, StringComparer.Ordinal)) { <option value="@_text">Stored value: @_text</option> }
+            </select></label>
+        }
         else
         { <label>Compare with<input value="@_text" type="@(_type == FlowDataType.Number ? "number" : "text")" step="any" maxlength="@FlowGraphV2Limits.MaximumBindingBytes" @onchange="SetValue" data-testid="flow-condition-match" /></label> }
     </fieldset>
@@ -43,6 +50,20 @@ else
     private string _text = ""; private string? _error;
     private IReadOnlyList<FlowBindingFieldDto> _fields = [];
     private IReadOnlyList<FlowNodeDto> _producers = [];
+    private IReadOnlyList<string>? AllowedValues
+    {
+        get
+        {
+            if (_input is not { } input) return null;
+            return input.Source switch
+            {
+                FlowInputSource.Event => _fields.FirstOrDefault(field => field.Path == input.Path)?.AllowedValues,
+                FlowInputSource.NodeOutput when _producers.FirstOrDefault(node => node.Id == input.NodeId) is { } producer =>
+                    FlowBindingCatalogue.OutputFields(producer.Kind).FirstOrDefault(field => field.Path == input.Path)?.AllowedValues,
+                _ => null
+            };
+        }
+    }
     protected override void OnParametersSet()
     {
         _fields = FlowAuthoringContext.EventFields(Graph); _producers = FlowAuthoringContext.AvailableProducers(Graph, Node.Id);
