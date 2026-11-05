@@ -77,7 +77,7 @@ public sealed class ExecutionAdmissionStore(OrchestratorDbContext db, IDataProte
         if (updated != 1) throw new InvalidOperationException("The denied execution admission disappeared.");
     }
 
-    public async Task<bool> TryBeginDispatchAsync(ExecutionAdmissionBinding binding, Func<CancellationToken, Task> prepare,
+    public async Task<bool> TryBeginDispatchAsync(ExecutionAdmissionBinding binding, Func<CancellationToken, Task> prepare, Func<CancellationToken, Task> validate,
         CancellationToken cancellationToken)
     {
         if (db.Database.ProviderName != "Npgsql.EntityFrameworkCore.PostgreSQL" || db.Database.CurrentTransaction is not null)
@@ -96,12 +96,15 @@ public sealed class ExecutionAdmissionStore(OrchestratorDbContext db, IDataProte
             await transaction.CommitAsync(cancellationToken);
             return false;
         }
+        ArgumentNullException.ThrowIfNull(validate);
         await prepare(cancellationToken);
+        await validate(cancellationToken);
         var startedAt = clock.GetUtcNow();
         var updated = await db.Set<ExecutionAdmissionRecord>().Where(record => record.ActionKey == binding.Identity.ActionKey &&
                 record.DispatchStartedAtUtc == null)
             .ExecuteUpdateAsync(setters => setters.SetProperty(record => record.DispatchStartedAtUtc, startedAt), cancellationToken);
         if (updated != 1) throw new InvalidOperationException("The canonical dispatch claim was lost.");
+        await validate(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return true;
     }

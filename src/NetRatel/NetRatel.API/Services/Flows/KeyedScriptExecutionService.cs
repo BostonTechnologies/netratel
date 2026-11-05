@@ -85,6 +85,10 @@ public sealed class KeyedScriptExecutionService(OrchestratorDbContext db, IExecu
             if (created.TenantId != binding.Identity.TenantId || created.AgentId != submitted.Request.AgentId ||
                 created.TaskType != TaskKinds.ExecLibraryScript || created.ScriptContentHash != submitted.Request.Snapshot.ContentHash)
                 throw new InvalidOperationException("The canonical activity does not match its protected admission.");
+        }, async ct =>
+        {
+            await authority.RequireScriptAsync(binding.Identity, submitted.Request.Snapshot.Script.Id, submitted.Request.AgentId, ct);
+            await authority.RequireFirstDispatchAsync(binding.Identity, request.FlowLease, ct);
         }, cancellationToken);
         if (!claimed)
         {
@@ -95,8 +99,8 @@ public sealed class KeyedScriptExecutionService(OrchestratorDbContext db, IExecu
         }
         try
         {
-            await authority.RequireFirstDispatchAsync(binding.Identity, request.FlowLease, cancellationToken);
             await authority.RequireScriptAsync(binding.Identity, submitted.Request.Snapshot.Script.Id, submitted.Request.AgentId, cancellationToken);
+            await authority.RequireFirstDispatchAsync(binding.Identity, request.FlowLease, cancellationToken);
         }
         catch (ExecutionAdmissionDeniedException)
         {
