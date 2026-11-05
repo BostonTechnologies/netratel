@@ -151,7 +151,7 @@ public sealed class FlowExecutionPinsPostgresTests(PostgreSqlPersistenceFixture 
             var versionId = Guid.NewGuid();
             var capture = await Service(db).CaptureAsync(7, new("operator"), versionId, new(2, nodes, [], new()), ct);
             var flowId = Guid.NewGuid();
-            db.FlowDefinitions.Add(new() { Id = flowId, TenantId = 7, Name = "Concurrent synthetic publication" });
+            db.FlowDefinitions.Add(new() { Id = flowId, TenantId = 7, Name = "Concurrent synthetic publication", DraftJson = JsonSerializer.Serialize(capture.Graph) });
             db.FlowVersions.Add(new() { Id = versionId, FlowId = flowId, TenantId = 7, VersionNumber = 1,
                 GraphJson = JsonSerializer.Serialize(capture.Graph), ProtectedExecutionPinsJson = capture.ProtectedPinsJson,
                 ConfigurationHash = "synthetic", PublishedBy = "operator", PublishedAtUtc = DateTimeOffset.UtcNow });

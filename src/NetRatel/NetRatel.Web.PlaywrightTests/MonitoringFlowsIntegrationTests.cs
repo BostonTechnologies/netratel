@@ -38,12 +38,25 @@ public sealed class MonitoringFlowsIntegrationTests(ClientsManagementBrowserFixt
         var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000);
         var errors = new List<string>(); page.PageError += (_, error) => errors.Add(error);
         await page.GotoAsync(host.BaseAddress + "/monitoring", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
-        var row = page.GetByTestId("monitoring-series-row").Filter(new() { HasText = occurrence.OccurrenceId.ToString() });
+        // Identity and automation evidence are presented in the occurrence's sibling details row.
+        var row = page.GetByTestId("monitoring-detail-row").Filter(new() { HasText = occurrence.OccurrenceId.ToString() });
         await row.WaitForAsync(new() { Timeout = 90_000 });
-        await Assertions.Expect(row.GetByTestId("monitoring-incident-receipt")).ToContainTextAsync($"Incident {receipt.IncidentId}");
-        await Assertions.Expect(row.GetByTestId("monitoring-incident-receipt")).ToContainTextAsync(receipt.TrackingId!);
-        await Assertions.Expect(row.GetByTestId("monitoring-incident-receipt").GetByRole(AriaRole.Link, new() { Name = "Open incident", Exact = true }))
-            .ToHaveAttributeAsync("href", receipt.SafeLink!);
+        await OpenOccurrenceDetailsAsync();
+        var monitoringReceipt = row.GetByTestId("monitoring-incident-receipt");
+        await Assertions.Expect(monitoringReceipt.Locator("dt")).ToHaveTextAsync(new[] { "Incident ID" });
+        await Assertions.Expect(monitoringReceipt.Locator("dd code")).ToHaveTextAsync(receipt.IncidentId);
+        await Assertions.Expect(monitoringReceipt).ToContainTextAsync(receipt.TrackingId!);
+        var monitoringTicket = monitoringReceipt.GetByTestId("monitoring-rateldesk-ticket");
+        await Assertions.Expect(monitoringTicket).ToHaveTextAsync("Open RatelDesk ticket");
+        await Assertions.Expect(monitoringTicket).ToHaveAttributeAsync("href", receipt.SafeLink!);
+        await Assertions.Expect(monitoringTicket).ToHaveAttributeAsync("rel", "noopener noreferrer");
+        async Task OpenOccurrenceDetailsAsync()
+        {
+            var details = row.GetByTestId("monitoring-alert-details");
+            if (await details.GetAttributeAsync("open") is null)
+                await details.Locator(":scope > summary").ClickAsync();
+            await Assertions.Expect(details).ToHaveAttributeAsync("open", "");
+        }
         var nav = page.GetByTestId("app-navigation-drawer");
         var signalLinks = await nav.Locator("a[href='/notifications'],a[href='/monitoring'],a[href='/flows']").AllTextContentsAsync();
         Assert.Equal(new[] { "Notifications", "Monitoring", "Flows" }, signalLinks.Select(text => text.Trim()).ToArray());
@@ -84,6 +97,7 @@ public sealed class MonitoringFlowsIntegrationTests(ClientsManagementBrowserFixt
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"monitoring-flows-run-receipt-{variant}-viewport.png") });
         await page.GoBackAsync(new() { WaitUntil = WaitUntilState.DOMContentLoaded });
         await row.WaitForAsync();
+        await OpenOccurrenceDetailsAsync();
         var versionLink = row.GetByRole(AriaRole.Link, new() { Name = "Published flow", Exact = true });
         await Assertions.Expect(versionLink).ToHaveAttributeAsync("href", $"/flows?tenantId=1&version={flows.SeededVersionId:D}");
         await versionLink.ClickAsync();

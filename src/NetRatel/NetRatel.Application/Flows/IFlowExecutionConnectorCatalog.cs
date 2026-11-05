@@ -8,4 +8,7 @@ public interface IFlowExecutionConnectorCatalog
     Task<FlowConnectorReferenceDto?> GetForExecutionAsync(int tenantId, Guid connectorId,
         FlowExecutionAuthorityDto authority, IReadOnlyList<FlowExecutionSourceKind> sources,
         CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<FlowConnectorReferenceDto>> ListForExecutionAsync(int tenantId,
+        FlowExecutionAuthorityDto authority, IReadOnlyList<FlowExecutionSourceKind> sources,
+        CancellationToken cancellationToken = default);
 }

@@ -61,12 +61,14 @@ public sealed class FlowExecutionAuthority(OrchestratorDbContext db, IFlowExecut
                 node.Kind is FlowNodeKind.RunJob or FlowNodeKind.RunLibraryScript or FlowNodeKind.RerunOriginalExecution) ||
             !await db.FlowRuntimeIdentity.AsNoTracking().AnyAsync(row => row.Id == 1 && row.SourceInstanceId == lease.SourceInstanceId, ct))
             throw new ExecutionAdmissionDeniedException("The immutable version or published execution authority differs.");
-        var now = clock.GetUtcNow();
         var databaseNow = await db.Database.SqlQuery<DateTimeOffset>($"SELECT clock_timestamp() AS \"Value\"").SingleAsync(ct);
+        var now = clock.GetUtcNow();
         if (databaseNow > now) now = databaseNow;
         if (run.LeaseExpiresAtUtc <= now)
             throw new ExecutionAdmissionDeniedException("The flow lease was reclaimed or expired.");
         if (transaction is not null) await transaction.CommitAsync(ct);
+        if (lease.ExpiresAtUtc <= clock.GetUtcNow())
+            throw new ExecutionAdmissionDeniedException("The flow lease expired before physical dispatch.");
     }
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);

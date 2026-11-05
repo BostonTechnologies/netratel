@@ -63,6 +63,50 @@ public sealed class FlowPreviewPlaybackTests(ClientsManagementBrowserFixture bro
 
 
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Historical_replay_uses_immutable_graph_and_recorded_snapshots_with_no_evaluation_or_writes(bool captured)
+    {
+        var fixture = _fixture!; var detail = fixture.FlowsData.SeedRecordedRun(captured);
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1440, Height = 900 } });
+        var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000);
+        var errors = new List<string>(); page.PageError += (_, error) => errors.Add(error);
+        await page.GotoAsync($"{fixture.BaseAddress}/flows?tenantId=17&run={detail.Run.Id:D}", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await Assertions.Expect(page.GetByTestId("flow-run-result")).ToContainTextAsync("Fixture client", new() { Timeout = 90_000 });
+        await page.GetByTestId("flow-run-replay").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-dirty")).ToContainTextAsync("Immutable version 1");
+        await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(3);
+        await Assertions.Expect(page.Locator("[data-node-kind=MapIncident] [data-testid=flow-node-title]")).Not.ToHaveTextAsync("Current mutable draft mapping");
+        var player = page.GetByTestId("flow-trace-player");
+        await Assertions.Expect(player).ToBeVisibleAsync();
+        if (captured)
+        {
+            await Assertions.Expect(player).ToContainTextAsync("Recorded playback");
+            await player.Locator("[data-trace-action=next]").ClickAsync();
+            await Assertions.Expect(player.Locator("[data-trace-panel]:not([hidden])")).ToContainTextAsync("Recorded synthetic incident");
+            await player.Locator("[data-trace-action=next]").ClickAsync();
+            await Assertions.Expect(player.Locator("[data-trace-panel]:not([hidden])")).ToContainTextAsync("NR-2026-000123");
+            await player.Locator("[data-trace-action=previous]").ClickAsync();
+            await player.Locator("[data-trace-action=restart]").ClickAsync();
+            await Assertions.Expect(player.Locator("[data-trace-position]")).ToHaveTextAsync("Step 1 of 3");
+        }
+        else
+        {
+            await Assertions.Expect(player).ToContainTextAsync("no captured node snapshots");
+            await Assertions.Expect(player.Locator("[data-trace-action]")).ToHaveCountAsync(0);
+        }
+        await page.GetByTestId("flow-focus").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-focus")).ToHaveAttributeAsync("aria-pressed", "true");
+        var evidence = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.Combine(Directory.GetCurrentDirectory(), "TestResults", "playwright");
+        Directory.CreateDirectory(evidence);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, captured ? "flows-recorded-playback.png" : "flows-recorded-missing.png"), Animations = ScreenshotAnimations.Disabled });
+        Assert.Equal(1, fixture.FlowsData.RunLookups); Assert.Equal(2, fixture.FlowsData.VersionLookups); Assert.Equal(0, fixture.FlowsData.HistoryReads);
+        Assert.Equal(0, fixture.FlowsData.DryRunCalls); Assert.Equal(0, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls);
+        Assert.Empty(errors); Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
+    }
+
+
+    [Theory]
     [InlineData("root")]
     [InlineData("scope")]
     [InlineData("context")]

@@ -22,7 +22,7 @@ else
 {
     <p>Captured data unavailable.</p>
 }
-@if (Snapshot.Reference is not null) { <p>Authorized output reference: <code>@Snapshot.Reference</code></p> }
+@if (Snapshot.Reference is not null) { <p>Output reference (access checked separately): <code>@Snapshot.Reference</code></p> }
 
 @code {
     [Parameter, EditorRequired] public FlowTraceSnapshotDto Snapshot { get; set; } = default!;
