@@ -428,7 +428,7 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
             const box=element=>{
                 if(!element)return null;
                 const style=getComputedStyle(element);
-                return{rect:element.getBoundingClientRect(),style:element.getAttribute('style'),computed:{
+                return{rect:element.getBoundingClientRect().toJSON(),style:element.getAttribute('style'),computed:{
                     left:style.left,top:style.top,width:style.width,height:style.height,transform:style.transform,
                     transformOrigin:style.transformOrigin,paddingLeft:style.paddingLeft,paddingTop:style.paddingTop,
                     borderLeft:style.borderLeftWidth,borderTop:style.borderTopWidth}};
