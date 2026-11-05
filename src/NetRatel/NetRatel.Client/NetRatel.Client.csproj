@@ -29,7 +29,7 @@
 
   <ItemGroup>
     <PackageReference Include="Google.Protobuf" Version="3.36.2" />
-    <PackageReference Include="Grpc.Net.Client" Version="2.84.0" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.85.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.14" />
     <PackageReference Include="Microsoft.Extensions.Configuration.CommandLine" Version="10.0.14" />
     <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.14" />
