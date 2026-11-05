@@ -35,6 +35,24 @@ public sealed class FlowIncidentEnrichmentTests
             fixture.AiDraft, fixture.AiResult with { ActionNodeId = fixture.Incident.ActionNodeId }));
     }
 
+    [Fact]
+    public void Source_presentation_values_remain_usable_in_single_line_typed_titles()
+    {
+        var fixture = Create();
+        var source = fixture.Original with
+        {
+            Definition = fixture.Original.Definition with { Name = new string('n', 200) },
+            Target = fixture.Original.Target with { DisplayName = "Synthetic target\nsecond\tline" }
+        };
+        var values = FlowExecutionEvidenceFormatter.Values(source);
+        Assert.Contains("[Truncated for display", values["definitionName"]);
+        Assert.Equal("Synthetic target second line", values["targetName"]);
+        Assert.True(FlowGraphValidator.IsBoundedText(values["definitionName"] + ": " + values["outcome"],
+            FlowLimits.MaximumTitleLength));
+        Assert.Equal(new string('n', 200), source.Definition.Name);
+        Assert.Equal("Synthetic target\nsecond\tline", source.Target.DisplayName);
+    }
+
     [Theory]
     [InlineData(FlowAiResultStatus.Queued)]
     [InlineData(FlowAiResultStatus.Processing)]
