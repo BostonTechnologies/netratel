@@ -23,13 +23,18 @@ public sealed record ExecutionAdmissionIdentity(
             throw new ArgumentException("A complete bounded execution admission identity is required.");
         if (Causation is { } causation && (string.IsNullOrWhiteSpace(causation.RootOccurrenceId) ||
             causation.RootOccurrenceId.Length > 128 || causation.SourceExecutionId?.Length > 256 ||
+            causation.RootExecutionId?.Length > 256 || causation.RootExecutionId is not null && string.IsNullOrWhiteSpace(causation.SourceExecutionId) ||
             causation.HopCount is < 0 or > 8 || causation.RecoveryAttempt is < 0 or > 3))
             throw new ArgumentException("The execution admission causation is invalid or exhausted.");
     }
 }
 
 public sealed record ExecutionAdmissionCausation(string RootOccurrenceId, Guid? ParentEventId = null,
-    int HopCount = 0, int RecoveryAttempt = 0, string? SourceExecutionId = null);
+    int HopCount = 0, int RecoveryAttempt = 0, string? SourceExecutionId = null)
+{
+    // Omitted for old admissions so their protected payload and semantic hash remain unchanged.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? RootExecutionId { get; init; }
+}
 
 public enum ExecutionAdmissionKind { Job = 1, LibraryScript = 2 }
 
