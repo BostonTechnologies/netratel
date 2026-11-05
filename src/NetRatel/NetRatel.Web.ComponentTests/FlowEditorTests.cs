@@ -126,6 +126,32 @@ public sealed class FlowEditorTests : AsyncBunitContext
     }
 
     [Fact]
+    public async Task Visible_Ports_Connect_Through_Native_Validation_Without_Dirtying_The_Start_Gesture()
+    {
+        var cut = RenderEditor();
+        await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
+        var canvas = cut.FindComponent<FlowCanvas>().Instance;
+        var adapter = canvas.Adapter;
+        var trigger = adapter.Capture().Nodes.Single(node => node.Kind == FlowNodeKind.AlertRaised);
+        var mapping = adapter.Capture().Nodes.Single(node => node.Kind == FlowNodeKind.MapIncident);
+        var edge = adapter.Capture().Edges.Single(link => link.SourceNodeId == trigger.Id);
+        await cut.InvokeAsync(() => adapter.DisconnectAsync(edge));
+        var before = System.Text.Json.JsonSerializer.Serialize(adapter.Capture());
+        cut.FindAll("[data-testid=flow-connect-from],[data-testid=flow-connect-to],[data-testid=flow-connect]").Should().BeEmpty();
+        await cut.InvokeAsync(() => cut.Find($"[data-port-node='{trigger.Id}'][data-port-direction=output] button").ClickAsync(new()));
+        cut.Find("[data-testid=flow-connection-status]").TextContent.Should().Contain("compatible input");
+        System.Text.Json.JsonSerializer.Serialize(adapter.Capture()).Should().Be(before);
+        await cut.InvokeAsync(() => cut.Find($"[data-port-node='{mapping.Id}'][data-port-direction=input] button").ClickAsync(new()));
+        adapter.Capture().Edges.Should().HaveCount(2);
+        canvas.IsConnecting.Should().BeFalse();
+        await cut.InvokeAsync(() => canvas.CompletePortConnection(trigger.Id.ToString(), mapping.Id.ToString()));
+        adapter.Capture().Edges.Should().HaveCount(2);
+        cut.Find("[data-testid=flow-connection-status]").TextContent.Should().NotBeNullOrWhiteSpace();
+        adapter.ExecutionCalls.Should().Be(0);
+        _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
+    }
+
+    [Fact]
     public async Task Fullscreen_And_Escape_Preserve_The_Draft_Selection_And_Native_Adapter()
     {
         var closed = 0;
@@ -158,6 +184,7 @@ public sealed class FlowEditorTests : AsyncBunitContext
         cut.FindAll("[data-testid=flow-save]").Should().BeEmpty(); cut.FindAll("[data-testid=flow-publish]").Should().BeEmpty();
         cut.Find("[data-testid=flow-name]").HasAttribute("disabled").Should().BeTrue();
         cut.Find("[data-testid=flow-add-Condition]").HasAttribute("disabled").Should().BeTrue();
+        cut.FindAll("[data-testid=flow-port-button]").Should().OnlyContain(port => port.HasAttribute("disabled"));
         _api.SaveCalls.Should().Be(0);
     }
 
