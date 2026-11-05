@@ -148,6 +148,9 @@ public sealed class FlowCanvasAdapterTests
         await using var adapter = new FlowCanvasAdapter();
         await adapter.RestoreAsync(graph);
         Assert.Equal(3, adapter.Tree.Links.Count);
+        var input = adapter.Ports.Single(port => port.Value == (finish.Id, false)).Key;
+        Assert.Equal(2, input.Sources.Count);
+        Assert.All(adapter.Tree.Links, link => Assert.Same(link, adapter.Tree.LinksMap[link.Sender][link.Receiver]));
         Assert.Empty(adapter.CompatibleInputs(condition.Id, FlowNodeCatalogue.True));
         Assert.Empty(adapter.CompatibleInputs(condition.Id, FlowNodeCatalogue.False));
         Assert.Equal(JsonSerializer.Serialize(graph), JsonSerializer.Serialize(adapter.Capture()));
@@ -165,6 +168,19 @@ public sealed class FlowCanvasAdapterTests
         Assert.Equal(JsonSerializer.Serialize(routed), JsonSerializer.Serialize(adapter.Capture()));
         adapter.SetRoute(edgeId, null);
         Assert.Null(adapter.Capture().Edges.Single(edge => edge.Id == edgeId).Route);
+        await adapter.DisconnectAsync(graph.Edges.Single(edge => edge.SourcePort == FlowNodeCatalogue.False));
+        Assert.Equal(2, adapter.Tree.Links.Count);
+        Assert.Single(input.Sources);
+        Assert.Contains(adapter.Capture().Edges, edge => edge.SourcePort == FlowNodeCatalogue.True);
+        await adapter.ConnectAsync(condition.Id, FlowNodeCatalogue.False, finish.Id, FlowNodeCatalogue.Input);
+        Assert.Equal(3, adapter.Tree.Links.Count);
+        Assert.Equal(2, input.Sources.Count);
+        Assert.True(FlowGraphV2Validator.ValidateComplete(adapter.Capture()).Valid);
+        var beforeUndo = JsonSerializer.Serialize(adapter.Capture());
+        await FlowCanvasAdapter.CompleteAsync(adapter.Tree.UndoCommand, null);
+        Assert.Equal(2, adapter.Tree.Links.Count);
+        await FlowCanvasAdapter.CompleteAsync(adapter.Tree.RedoCommand, null);
+        Assert.Equal(beforeUndo, JsonSerializer.Serialize(adapter.Capture()));
         Assert.Equal(0, adapter.ExecutionCalls);
     }
 

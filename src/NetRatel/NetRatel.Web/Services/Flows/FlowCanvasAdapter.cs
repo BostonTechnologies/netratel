@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using NetRatel.Shared.Contracts.Flows;
 using VeloxDev.MVVM;
 using VeloxDev.WorkflowSystem;
@@ -14,6 +15,13 @@ public sealed class FlowCanvasAdapter : IAsyncDisposable
     public Dictionary<IWorkflowSlotViewModel, (Guid NodeId, bool Output)> Ports { get; } = new();
     public Dictionary<IWorkflowSlotViewModel, string> PortIds { get; } = new();
     private readonly Dictionary<IWorkflowLinkViewModel, FlowEdgeDto> _edges = new();
+    private readonly ConditionalWeakTable<IWorkflowLinkViewModel, EdgeIdentity> _edgeIdentities = new();
+    private sealed class EdgeIdentity(FlowEdgeDto value) { public FlowEdgeDto Value = value; }
+    private void RememberEdge(IWorkflowLinkViewModel link, FlowEdgeDto edge)
+    {
+        _edgeIdentities.GetValue(link, _ => new(edge)).Value = edge;
+        _edges[link] = edge;
+    }
     private Dictionary<(Guid NodeId, string PortId), IReadOnlyList<Guid>>? _compatibleInputs;
     public long StructureRevision { get; private set; }
     private void InvalidateCompatibility() { _compatibleInputs = null; StructureRevision++; }
@@ -91,8 +99,9 @@ public sealed class FlowCanvasAdapter : IAsyncDisposable
     private void RecordLink(object? sender, IWorkflowLinkViewModel link)
     {
         if (_edges.ContainsKey(link) || !Ports.TryGetValue(link.Sender, out var source) || !Ports.TryGetValue(link.Receiver, out var target)) return;
-        _edges.Add(link, new(source.NodeId, PortIds[link.Sender], target.NodeId, PortIds[link.Receiver])
-        { Id = SchemaVersion == 2 ? Guid.NewGuid() : null });
+        RememberEdge(link, _edgeIdentities.TryGetValue(link, out var identity) ? identity.Value :
+            new(source.NodeId, PortIds[link.Sender], target.NodeId, PortIds[link.Receiver])
+            { Id = SchemaVersion == 2 ? Guid.NewGuid() : null });
         InvalidateCompatibility();
     }
     private void ForgetLink(object? sender, IWorkflowLinkViewModel link) { _edges.Remove(link); InvalidateCompatibility(); }
@@ -130,7 +139,7 @@ public sealed class FlowCanvasAdapter : IAsyncDisposable
         var graph = Capture();
         var candidate = graph with { Edges = graph.Edges.Select(edge => edge.Id == edgeId ? next : edge).ToArray() };
         if (!FlowGraphV2Validator.ValidateDraft(candidate).Valid) throw new InvalidOperationException($"Use at most {FlowGraphV2Limits.MaximumRoutePoints} finite route points within the canvas bounds.");
-        _edges[pair.Key] = next; Changed?.Invoke();
+        RememberEdge(pair.Key, next); Changed?.Invoke();
     }
     public FlowGraphDto Capture(double scrollX = 0, double scrollY = 0)
     {
@@ -156,7 +165,7 @@ public sealed class FlowCanvasAdapter : IAsyncDisposable
             await ConnectAsync(edge.SourceNodeId, edge.SourcePort, edge.TargetNodeId, edge.TargetPort, token);
             var from = FindPort(edge.SourceNodeId, edge.SourcePort, true); var to = FindPort(edge.TargetNodeId, edge.TargetPort, false);
             var link = Tree.Links.Single(link => ReferenceEquals(link.Sender, from) && ReferenceEquals(link.Receiver, to));
-            _edges[link] = edge;
+            RememberEdge(link, edge);
         }
         Tree.Layout.Scale = new Scale(graph.Viewport.Scale, graph.Viewport.Scale);
     }
@@ -247,8 +256,57 @@ public sealed class FlowCanvasAdapter : IAsyncDisposable
     }
     private sealed class TypedTreeHelper(FlowCanvasAdapter owner) : TreeHelper
     {
+        private IWorkflowSlotViewModel? _sender;
         public override bool ValidateConnection(IWorkflowSlotViewModel sender, IWorkflowSlotViewModel receiver) => owner.CanConnect(sender, receiver);
-        public override void ReceiveConnection(IWorkflowSlotViewModel slot) { base.ReceiveConnection(slot); owner.Changed?.Invoke(); }
+        public override void SendConnection(IWorkflowSlotViewModel slot)
+        {
+            base.SendConnection(slot);
+            _sender = slot;
+        }
+        public override void ResetVirtualLink() { _sender = null; base.ResetVirtualLink(); }
+        public override void ReceiveConnection(IWorkflowSlotViewModel slot)
+        {
+            if (owner.SchemaVersion != FlowGraphV2Limits.SchemaVersion)
+            {
+                base.ReceiveConnection(slot); owner.Changed?.Invoke(); return;
+            }
+            // Velox 10.0.1's default receive removes every older link between the same two nodes.
+            // Named exclusive outcomes may converge, so retain the native model/action pipeline
+            // with port-level validation and identity instead of that node-pair replacement rule.
+            var sender = _sender;
+            try
+            {
+                if (sender is null || !owner.CanConnect(sender, slot)) return;
+                var handle = RaiseConnecting(sender, slot);
+                if (handle.PreventDefault || !owner.CanConnect(sender, slot)) return;
+                var link = CreateLink(sender, slot);
+                Submit(new WorkflowActionPair(
+                    () =>
+                    {
+                        if (!owner.Tree.LinksMap.ContainsKey(sender)) owner.Tree.LinksMap[sender] = [];
+                        owner.Tree.LinksMap[sender][slot] = link;
+                        owner.Tree.Links.Add(link);
+                        sender.Targets.Add(slot); slot.Sources.Add(sender);
+                        sender.GetHelper().UpdateState(); slot.GetHelper().UpdateState();
+                        link.IsVisible = true;
+                    },
+                    () =>
+                    {
+                        owner.Tree.Links.Remove(link);
+                        if (owner.Tree.LinksMap.TryGetValue(sender, out var targets))
+                        {
+                            targets.Remove(slot);
+                            if (targets.Count == 0) owner.Tree.LinksMap.Remove(sender);
+                        }
+                        sender.Targets.Remove(slot); slot.Sources.Remove(sender);
+                        sender.GetHelper().UpdateState(); slot.GetHelper().UpdateState();
+                        link.IsVisible = false;
+                    }));
+                RaiseConnected(sender, slot, handle);
+                owner.Changed?.Invoke();
+            }
+            finally { ResetVirtualLink(); }
+        }
     }
     private sealed class InertNodeHelper(FlowCanvasAdapter owner) : NodeHelper
     {
