@@ -83,5 +83,5 @@ public sealed partial class FlowPersistenceService
         if (!await ReceiverLeaseEffectiveAsync(db, lease, ct).ConfigureAwait(false)) return false;
         await transaction.CommitAsync(ct).ConfigureAwait(false);
         return true;
-    }
+    });
 }
