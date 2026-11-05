@@ -1,30 +1,44 @@
 @using System.Text.Json
 @using NetRatel.Shared.Contracts.Flows
 
+<div data-trace-data>
 @if (Snapshot.State == FlowTraceDataState.Missing)
 {
     <p>Data unavailable. No result was captured or supplied.</p>
 }
 else if (Snapshot.State == FlowTraceDataState.Null)
 {
-    <pre>null</pre>
+    <pre data-trace-value>null</pre>
 }
 else if (Snapshot.State == FlowTraceDataState.Truncated)
 {
     <p>Truncated snapshot@(Snapshot.OriginalUtf8Bytes is { } bytes ? $" ({bytes} original UTF-8 bytes)" : "").</p>
-    @if (Snapshot.Excerpt is not null) { <p>Text excerpt only:</p><pre>@Snapshot.Excerpt</pre> }
+    @if (Snapshot.Excerpt is not null) { <p>Text excerpt only:</p><pre data-trace-value>@Snapshot.Excerpt</pre> }
 }
 else if (Snapshot.Value is { } value)
 {
-    <pre>@JsonSerializer.Serialize(value, Json)</pre>
+    <pre data-trace-value>@JsonSerializer.Serialize(value, Json)</pre>
 }
 else
 {
     <p>Captured data unavailable.</p>
 }
+@if (CanCopy)
+{
+    <button type="button" data-trace-copy>@(Snapshot.State == FlowTraceDataState.Truncated ? "Copy visible excerpt" : "Copy captured JSON")</button>
+    <span role="status" data-trace-copy-status></span>
+}
 @if (Snapshot.Reference is not null) { <p>Output reference (access checked separately): <code>@Snapshot.Reference</code></p> }
+</div>
 
 @code {
     [Parameter, EditorRequired] public FlowTraceSnapshotDto Snapshot { get; set; } = default!;
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
+    private bool CanCopy => Snapshot.State switch
+    {
+        FlowTraceDataState.Null => true,
+        FlowTraceDataState.Truncated => Snapshot.Excerpt is not null,
+        FlowTraceDataState.Present or FlowTraceDataState.Empty => Snapshot.Value.HasValue,
+        _ => false
+    };
 }
