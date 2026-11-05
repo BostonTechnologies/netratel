@@ -1,0 +1,6 @@
+.flow-template-picker { flex-basis: 100%; min-width: 0; display: grid; gap: .5rem; }
+.flow-template-picker h3, .flow-template-picker h4 { margin: 0; font-size: .9rem; }
+.flow-template-picker p, .flow-template-picker small { font-size: .8rem; overflow-wrap: anywhere; color: var(--mud-palette-text-secondary); }
+.flow-template-options { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,260px),1fr)); gap: .6rem; min-width: 0; }
+.flow-template-options article { display: grid; gap: .4rem; padding: .6rem; border: 1px solid var(--mud-palette-divider); border-radius: .4rem; min-width: 0; }
+.flow-template-options button { justify-self: start; color: var(--mud-palette-primary); border: 1px solid var(--mud-palette-primary); border-radius: .3rem; padding: .4rem .6rem; }

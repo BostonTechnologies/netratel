@@ -7,6 +7,8 @@ namespace NetRatel.API.Middleware;
 public sealed class FlowRequestBodyLimitMiddleware(RequestDelegate next)
 {
     public const long MaximumBytes = FlowLimits.MaximumGraphBytes + FlowLimits.MaximumEventBytes + 4096;
+    public const long MaximumSchemaTwoBytes = FlowGraphV2Limits.MaximumGraphBytes + 4096;
+    public const long MaximumExecutionPreviewBytes = FlowPreviewLimits.MaximumRequestBytes;
     public async Task InvokeAsync(HttpContext http)
     {
         var path = http.Request.Path.Value;
@@ -14,7 +16,8 @@ public sealed class FlowRequestBodyLimitMiddleware(RequestDelegate next)
             path.StartsWith("/api/v1/tenants/", StringComparison.OrdinalIgnoreCase) && path.Contains("/flows", StringComparison.OrdinalIgnoreCase));
         if (!isFlow || HttpMethods.IsGet(http.Request.Method) || HttpMethods.IsHead(http.Request.Method)) { await next(http).ConfigureAwait(false); return; }
         var maximumBytes = path!.EndsWith("/flows/dry-run-execution", StringComparison.OrdinalIgnoreCase)
-            ? FlowPreviewLimits.MaximumRequestBytes : MaximumBytes;
+            ? MaximumExecutionPreviewBytes : http.Request.Headers["X-NetRatel-Flow-Schema"].ToString() == "2"
+                ? MaximumSchemaTwoBytes : MaximumBytes;
         if (http.Request.ContentLength > maximumBytes) { http.Response.StatusCode = StatusCodes.Status413PayloadTooLarge; return; }
         if (http.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } feature) feature.MaxRequestBodySize = maximumBytes;
         var original = http.Request.Body; http.Request.Body = new LimitedReadStream(original, maximumBytes);

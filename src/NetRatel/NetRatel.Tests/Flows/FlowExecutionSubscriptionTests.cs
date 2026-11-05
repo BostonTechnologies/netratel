@@ -1,7 +1,5 @@
 using System.Data.Common;
 using Microsoft.EntityFrameworkCore.Diagnostics;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
@@ -40,10 +38,20 @@ public sealed class FlowExecutionSubscriptionWaitTests
             request with { CorrelationId = "request:17", ParentExecutionId = null }, default));
         Assert.False(await ExecutionLifecycleSubscriptionWorker.AwaitsKnownParentAsync(db,
             trigger with { Sources = [FlowExecutionSourceKind.Request] }, request, default));
+        var scriptAndRequest = trigger with { Sources = [FlowExecutionSourceKind.Script, FlowExecutionSourceKind.Request] };
+        var script = request with { SourceKind = FlowExecutionSourceKind.Script, ExecutionId = "native-script",
+            AttemptId = "native-script" };
+        Assert.True(await ExecutionLifecycleSubscriptionWorker.AwaitsKnownParentAsync(db, scriptAndRequest, script, default));
+        Assert.True(await ExecutionLifecycleSubscriptionWorker.AwaitsKnownParentAsync(db, scriptAndRequest, request, default));
+        Assert.False(await ExecutionLifecycleSubscriptionWorker.AwaitsKnownParentAsync(db,
+            scriptAndRequest with { AggregateCorrelatedEvents = false }, script, default));
+        Assert.False(await ExecutionLifecycleSubscriptionWorker.AwaitsKnownParentAsync(db,
+            scriptAndRequest with { Sources = [FlowExecutionSourceKind.Script] }, script, default));
         control.TerminalReadyAtUtc = now;
         control.TerminalResultHash = new string('a', 64);
         await db.SaveChangesAsync();
         Assert.False(await ExecutionLifecycleSubscriptionWorker.AwaitsKnownParentAsync(db, trigger, request, default));
+        Assert.False(await ExecutionLifecycleSubscriptionWorker.AwaitsKnownParentAsync(db, scriptAndRequest, script, default));
     }
 
     internal static FlowExecutionTriggerSettingsDto Trigger() => new(
@@ -448,6 +456,46 @@ public sealed class FlowExecutionSubscriptionPostgreSqlTests(PostgreSqlPersisten
         Assert.Empty(await verify.FlowRuns.AsNoTracking().ToArrayAsync(ct));
     }
 
+
+    [Fact]
+    public async Task Invalid_published_hash_does_not_select_an_intent_or_block_an_independent_valid_subscription()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var ct = deadline.Token;
+        var options = new DbContextOptionsBuilder<OrchestratorDbContext>()
+            .UseNpgsql(await postgres.CreateDatabaseAsync(ct)).Options;
+        await using var db = new OrchestratorDbContext(options);
+        await db.Database.MigrateAsync(ct);
+        var at = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var goodId = Guid.NewGuid();
+        var badId = Guid.NewGuid();
+        var good = Version(Guid.NewGuid(), goodId, Guid.NewGuid(), 1, at);
+        var bad = Version(Guid.NewGuid(), badId, Guid.NewGuid(), 1, at, configurationHash: new string('0', 64));
+        var goodDefinition = new FlowDefinitionRecord { Id = goodId, TenantId = 7, Name = "Synthetic valid source",
+            Revision = 1, Enabled = true, EnabledSinceUtc = at, DraftJson = "{}", CreatedAtUtc = at, UpdatedAtUtc = at };
+        var badDefinition = new FlowDefinitionRecord { Id = badId, TenantId = 7, Name = "Synthetic invalid source",
+            Revision = 1, Enabled = true, EnabledSinceUtc = at, DraftJson = "{}", CreatedAtUtc = at, UpdatedAtUtc = at };
+        db.Tenants.Add(new Tenant { Id = 7, Name = "Synthetic hash tenant" });
+        db.FlowDefinitions.AddRange(goodDefinition, badDefinition);
+        await db.SaveChangesAsync(ct);
+        db.FlowVersions.AddRange(good, bad);
+        await db.SaveChangesAsync(ct);
+        goodDefinition.PublishedVersionId = good.Id;
+        badDefinition.PublishedVersionId = bad.Id;
+        await db.SaveChangesAsync(ct);
+        var requests = new RequestService(db, new EphemeralDataProtectionProvider());
+        var request = await requests.CreateAsync(new("synthetic-source", string.Empty, "missing-definition", null, 7, null), ct);
+        await requests.UpdateAsync(new(request.Id, null, null, null, null, "Failed",
+            "Synthetic native admission failure.", null, null, null), ct);
+        Assert.Equal("Failed", (await db.Requests.AsNoTracking().SingleAsync(x => x.Id == request.Id, ct)).Status);
+        Assert.Single(await db.OutboxMessages.AsNoTracking().Where(x => x.Type == FlowExecutionEventLimits.OutboxType).ToArrayAsync(ct));
+        var intent = ExecutionLifecycleSubscriptions.ReadDelivery((await db.OutboxMessages.AsNoTracking()
+            .SingleAsync(x => x.Type == FlowExecutionSubscriptionLimits.OutboxType, ct)).PayloadJson)!;
+        Assert.Equal(good.Id, intent.FlowVersionId);
+        Assert.NotEqual(bad.Id, intent.FlowVersionId);
+        Assert.Equal(0, await db.FlowRuns.CountAsync(ct));
+    }
+
     private sealed class SubscriptionSelectionObserver : DbCommandInterceptor
     {
         private readonly TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -464,7 +512,7 @@ public sealed class FlowExecutionSubscriptionPostgreSqlTests(PostgreSqlPersisten
     }
 
     private static FlowVersionRecord Version(Guid id, Guid flowId, Guid triggerId, int number, DateTimeOffset published,
-        FlowExecutionTriggerSettingsDto? settings = null)
+        FlowExecutionTriggerSettingsDto? settings = null, string? configurationHash = null)
     {
         var finish = Guid.NewGuid();
         var graph = new FlowGraphDto(2,
@@ -473,9 +521,9 @@ public sealed class FlowExecutionSubscriptionPostgreSqlTests(PostgreSqlPersisten
              new(finish, FlowNodeKind.Finish, "Finish", new(250, 0))],
             [new(triggerId, FlowNodeCatalogue.Event, finish, FlowNodeCatalogue.Input) { Id = Guid.NewGuid() }], new());
         Assert.True(FlowGraphV2Validator.ValidatePublished(graph).Valid);
-        var json = JsonSerializer.Serialize(graph, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var json = FlowGraphSerialization.Serialize(graph);
         return new() { Id = id, FlowId = flowId, TenantId = 7, VersionNumber = number, GraphJson = json,
-            ConfigurationHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json))).ToLowerInvariant(),
+            ConfigurationHash = configurationHash ?? FlowGraphSerialization.Hash(graph),
             PublishedAtUtc = published, PublishedBy = "synthetic-operator",
             ExecutionAuthorityJson = "{\"principalId\":\"synthetic-configuring-operator\"}" };
     }

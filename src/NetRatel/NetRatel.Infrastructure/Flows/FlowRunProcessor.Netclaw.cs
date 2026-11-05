@@ -18,7 +18,7 @@ public sealed partial class FlowRunProcessor
         {
             var denied = new FlowIncidentActionResult(FlowIncidentActionResultKind.Failed, SafeCode(gate.Code))
             { AiResult = new(lease.Event.TenantId, lease.RunId, lease.Version.Id, draft.ActionNodeId, Guid.Empty,
-                lease.Event.EventId, FlowAiResultStatus.Cancelled, provider.GetRequiredService<TimeProvider>().GetUtcNow(), provider.GetRequiredService<TimeProvider>().GetUtcNow()) };
+                FlowAiCorrelation.MessageId(draft), FlowAiResultStatus.Cancelled, provider.GetRequiredService<TimeProvider>().GetUtcNow(), provider.GetRequiredService<TimeProvider>().GetUtcNow()) };
             await store.CompleteActionAsync(lease, draft.ActionNodeId, denied, ct); return denied;
         }
         var started = polling ? existing : await store.StartActionAsync(lease, draft.ActionNodeId, ct);
@@ -32,7 +32,7 @@ public sealed partial class FlowRunProcessor
             var now = provider.GetRequiredService<TimeProvider>().GetUtcNow();
             result = new(FlowIncidentActionResultKind.DeliveryUnknown, "ai-investigation-admission-unconfirmed")
             { AiResult = new(lease.Event.TenantId, lease.RunId, lease.Version.Id, draft.ActionNodeId,
-                existing.AiResult?.InvestigationId ?? Guid.Empty, lease.Event.EventId, FlowAiResultStatus.DeliveryUnknown, now, now) };
+                existing.AiResult?.InvestigationId ?? Guid.Empty, FlowAiCorrelation.MessageId(draft), FlowAiResultStatus.DeliveryUnknown, now, now) };
         }
         using var completion = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         return await store.CompleteActionAsync(lease, draft.ActionNodeId, result, completion.Token) ? result

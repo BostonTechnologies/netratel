@@ -160,12 +160,18 @@ public static class ManagedOperationEndpoints
         };
     }
 
-    private static Task<IResult> FlowsAsync(string operation, JsonElement request, HttpContext http,
+    private static async Task<IResult> FlowsAsync(string operation, JsonElement request, HttpContext http,
         IEffectiveAccessService access, OrchestratorDbContext db, CancellationToken ct)
     {
         var tenant = request.GetProperty("tenantId").GetInt32();
         var flows = http.RequestServices.GetRequiredService<IFlowDefinitionService>();
-        return operation switch
+        if (operation is "publish" or "set_enabled" or "clone")
+        {
+            var stored = await flows.GetAsync(tenant, Id(request, "flowId"), ct).ConfigureAwait(false);
+            if (stored?.Draft.SchemaVersion is > FlowLimits.SchemaVersion)
+                return Invalid("The existing netratel_flows contract supports schema one. Use the schema-aware editor for this draft.");
+        }
+        return await (operation switch
         {
             "list" => FlowEndpoints.ListAsync(tenant, http, access, db, flows, ct),
             "get" => FlowEndpoints.GetAsync(tenant, Id(request, "flowId"), http, access, db, flows, ct),
@@ -183,7 +189,7 @@ public static class ManagedOperationEndpoints
             "runs" => FlowEndpoints.RunsAsync(tenant, Id(request, "flowId"), http, access, db, flows, ct),
             "run" => FlowEndpoints.RunByIdAsync(tenant, Id(request, "runId"), http, access, db, flows, ct),
             _ => throw new InvalidOperationException("Unmapped managed flow operation.")
-        };
+        }).ConfigureAwait(false);
     }
 
     private static Task<IResult> InvestigationsAsync(string operation, JsonElement request, HttpContext http,

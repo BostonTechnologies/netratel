@@ -1,6 +1,5 @@
 using System.Data.Common;
 using System.Globalization;
-using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
@@ -21,8 +20,6 @@ namespace NetRatel.Tests.Flows;
 [Collection(PostgreSqlPersistenceCollection.Name)]
 public sealed class FlowLifecycleSelectionBoundaryPostgresTests(PostgreSqlPersistenceFixture postgres)
 {
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-
     [Theory]
     [InlineData("enable", false)]
     [InlineData("publish", false)]
@@ -269,9 +266,9 @@ public sealed class FlowLifecycleSelectionBoundaryPostgresTests(PostgreSqlPersis
              new(finish, FlowNodeKind.Finish, "Finish", new(250, 0))],
             [new(trigger, FlowNodeCatalogue.Event, finish, FlowNodeCatalogue.Input) { Id = Guid.NewGuid() }], new());
         Assert.True(FlowGraphV2Validator.ValidatePublished(graph).Valid);
-        var json = JsonSerializer.Serialize(graph, Json);
+        var json = FlowGraphSerialization.Serialize(graph);
         return new() { Id = id, FlowId = flowId, TenantId = 7, VersionNumber = 1, GraphJson = json,
-            ConfigurationHash = FlowContractValidation.Hash(Encoding.UTF8.GetBytes(json)),
+            ConfigurationHash = FlowGraphSerialization.Hash(graph),
             PublishedAtUtc = at, PublishedBy = "synthetic-operator",
             ExecutionAuthorityJson = "{\"principalId\":\"synthetic-operator\"}" };
     }

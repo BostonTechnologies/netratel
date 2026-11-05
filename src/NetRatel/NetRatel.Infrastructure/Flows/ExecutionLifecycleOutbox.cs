@@ -662,8 +662,9 @@ public static class ExecutionLifecycleOutbox
             !IsReplayDigest(pinned.ScriptContentHash) || !IsReplayDigest(pinned.PayloadHash) ||
             !string.Equals(value.Definition.ContentHash, pinned.ScriptContentHash, StringComparison.OrdinalIgnoreCase) ||
             string.IsNullOrWhiteSpace(pinned.ProtectedSnapshotJson)) return value;
+        // Retain the validated native digest spelling so replay and terminal lineage stay exact.
         var definition = new FlowExecutionDefinitionDto(pinned.ScriptId.ToString(CultureInfo.InvariantCulture),
-            Bound(pinned.ScriptName, 512), pinned.ScriptRevision.ToString(CultureInfo.InvariantCulture), pinned.ScriptContentHash);
+            Bound(pinned.ScriptName, 512), pinned.ScriptRevision.ToString(CultureInfo.InvariantCulture), value.Definition.ContentHash);
         return value with
         {
             Definition = definition,
@@ -735,8 +736,8 @@ public static class ExecutionLifecycleOutbox
 
     private static void Append(OrchestratorDbContext db, FlowExecutionEventDto value)
     {
-        if (db.OutboxMessages.Local.Any(x => x.Id == value.EventId)) return;
         value = FitSourcePresentation(value);
+        if (db.OutboxMessages.Local.Any(x => x.Id == value.EventId)) return;
         var validation = FlowExecutionEventValidator.Validate(value);
         if (!validation.Valid) throw new InvalidOperationException("Invalid execution lifecycle event: " + string.Join(", ", validation.Issues));
         db.OutboxMessages.Add(new()
@@ -800,15 +801,15 @@ public static class ExecutionLifecycleOutbox
         }
     }
 
+    private static string? PositiveDecimal(string? value) => ulong.TryParse(value, NumberStyles.None,
+        CultureInfo.InvariantCulture, out var id) && id > 0 ? id.ToString(CultureInfo.InvariantCulture) : null;
+    private static string Decimal(long value) => value.ToString(CultureInfo.InvariantCulture);
     // Historical source-system labels can exceed the optional filter contract. Keep the native
     // record intact and omit an unavailable filter value rather than truncate it into another kind.
     private static string? OptionalIdentifier(string? value) => !string.IsNullOrWhiteSpace(value) &&
         FlowGraphValidator.IsBoundedText(value, FlowExecutionEventLimits.MaximumIdentifierLength) &&
         !value.Any(char.IsControl) ? value : null;
 
-    private static string? PositiveDecimal(string? value) => ulong.TryParse(value, NumberStyles.None,
-        CultureInfo.InvariantCulture, out var id) && id > 0 ? id.ToString(CultureInfo.InvariantCulture) : null;
-    private static string Decimal(long value) => value.ToString(CultureInfo.InvariantCulture);
     private static string? Bound(string? value, int limit)
     {
         if (value is null) return null;

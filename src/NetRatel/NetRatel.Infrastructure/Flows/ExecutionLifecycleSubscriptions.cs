@@ -125,10 +125,14 @@ public static class ExecutionLifecycleSubscriptions
                 x.TenantId == definition.TenantId && x.FlowId == definition.Id);
             if (version is null || string.IsNullOrWhiteSpace(version.ExecutionAuthorityJson)) continue;
             FlowGraphDto? graph;
-            try { graph = JsonSerializer.Deserialize<FlowGraphDto>(version.GraphJson, FlowPersistenceService.Json); }
+            try
+            {
+                graph = JsonSerializer.Deserialize<FlowGraphDto>(version.GraphJson, FlowPersistenceService.Json);
+                if (graph?.SchemaVersion != FlowGraphV2Limits.SchemaVersion ||
+                    !FlowGraphV2Validator.ValidatePublished(graph).Valid ||
+                    version.ConfigurationHash != FlowGraphSerialization.Hash(graph)) continue;
+            }
             catch (JsonException) { continue; }
-            if (graph?.SchemaVersion != FlowGraphV2Limits.SchemaVersion ||
-                !FlowGraphV2Validator.ValidatePublished(graph).Valid) continue;
             var activeSince = definition.EnabledSinceUtc > version.PublishedAtUtc
                 ? definition.EnabledSinceUtc.Value : version.PublishedAtUtc;
             foreach (var node in graph.Nodes.Where(x => x.Kind == FlowNodeKind.ExecutionEvent && x.ExecutionTrigger != null))

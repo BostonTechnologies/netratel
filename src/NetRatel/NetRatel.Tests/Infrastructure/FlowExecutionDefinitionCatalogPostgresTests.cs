@@ -120,6 +120,38 @@ public sealed class FlowExecutionDefinitionCatalogPostgresTests(PostgreSqlPersis
         System.Text.Json.JsonSerializer.Serialize(values).Should().NotContain("foreign-hidden-host");
     }
 
+    [Fact]
+    public async Task Native_names_within_source_bounds_remain_exact_and_oversized_definition_selection_is_explicitly_unavailable()
+    {
+        await using var db = new OrchestratorDbContext(_options);
+        var target = Guid.NewGuid();
+        db.Agents.Add(new() { Id = target, TenantId = 7, Name = "synthetic-name-bound-target", CreatedAtUtc = DateTimeOffset.UtcNow });
+        await db.SaveChangesAsync();
+        var scripts = new ScriptService(db);
+        var scriptName = new string('s', 200);
+        var script = await scripts.CreateAsync(new(scriptName, "/", null, "printf synthetic", "bash", null));
+        var jobs = new JobDefinitionService(db);
+        var jobName = new string('j', 512);
+        var oversizedName = new string('x', 513);
+        var job = await jobs.CreateAsync(new(jobName, "/", null, 7, "", AgentId: target));
+        var oversized = await jobs.CreateAsync(new(oversizedName, "/", null, 7, "", AgentId: target));
+        await jobs.AddStepAsync(new(job.Id, 1, JobStepKind.LibraryScript, null, null, script.Id, null, true));
+        await jobs.AddStepAsync(new(oversized.Id, 1, JobStepKind.LibraryScript, null, null, script.Id, null, true));
+        var service = Catalog(db, new Access(true));
+        (await service.GetAsync(7, new("operator"), FlowExecutionSourceKind.Script, script.Id.ToString()))!
+            .Definition.Name.Should().Be(scriptName);
+        var selected = await service.GetAsync(7, new("operator"), FlowExecutionSourceKind.Job, job.Id.ToString());
+        selected!.Definition.Name.Should().Be(jobName);
+        selected.Target!.AgentId.Should().Be(target);
+        var page = await service.ListAsync(7, new("operator"), FlowExecutionSourceKind.Job);
+        var visible = Assert.Single(page.Items, option => option.Definition.Id == oversized.Id.ToString());
+        visible.Definition.Name.Should().Be(oversizedName);
+        var unavailable = () => service.GetAsync(7, new("operator"), FlowExecutionSourceKind.Job, oversized.Id.ToString());
+        (await unavailable.Should().ThrowAsync<FlowExecutionPinException>()).Which.Code.Should().Be("execution-definition-name-limit");
+        (await db.Jobs.AsNoTracking().SingleAsync(row => row.Id == (long)oversized.Id)).Name.Should().Be(oversizedName);
+        Assert.Empty(await db.FlowVersions.AsNoTracking().ToArrayAsync());
+    }
+
     private static FlowExecutionDefinitionCatalog Catalog(OrchestratorDbContext db, Access access)
     {
         var scripts = new ScriptService(db);

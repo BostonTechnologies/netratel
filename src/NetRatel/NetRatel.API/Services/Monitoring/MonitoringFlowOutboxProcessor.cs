@@ -77,7 +77,7 @@ public sealed class MonitoringFlowOutboxProcessor(IMonitoringStore store, IFlowE
     private async Task<MonitoringFlowOutcomeDto?> ReadVerifiedTerminalAsync(MonitoringOutboxIntent intent, FlowRunSummaryDto run,
         CancellationToken cancellationToken)
     {
-        if (run.Status is FlowRunStatus.Queued or FlowRunStatus.Running or FlowRunStatus.RetryWaiting or FlowRunStatus.WaitingForAi or FlowRunStatus.AwaitingApproval ||
+        if (run.Status is FlowRunStatus.Queued or FlowRunStatus.Running or FlowRunStatus.RetryWaiting or FlowRunStatus.WaitingForAi or FlowRunStatus.AwaitingApproval or FlowRunStatus.WaitingForExecution ||
             !Enum.IsDefined(run.Status) || run.CompletedAtUtc is not { } completed || completed == default || completed > clock.GetUtcNow()) return null;
         var canonical = MonitoringFlowEventFactory.Create(intent);
         if (canonical is null) return null;

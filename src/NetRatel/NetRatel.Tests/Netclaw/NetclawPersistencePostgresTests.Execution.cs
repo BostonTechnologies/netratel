@@ -86,12 +86,20 @@ public sealed partial class NetclawPersistencePostgresTests
             var envelope = JsonSerializer.Deserialize<FlowEventEnvelope>(JsonSerializer.Serialize(new
             {
                 tenantId = 17, eventId = source.EventId, occurrenceId = source.OccurrenceId, flowVersionId = versionId,
-                occurredAtUtc = source.OccurredAtUtc, authority = publishedAuthority, executionEvent = source
+                occurredAtUtc = source.OccurredAtUtc, authority = publishedAuthority, executionEvent = source,
+                sourceDeliveryId = Guid.NewGuid(), sourceAdmissionKey = source.EventId, sourceEventIds = new[] { source.EventId }
             }), new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? throw new InvalidOperationException("Missing source envelope.");
             Assert.Null(envelope.Data);
             var draft = new FlowIncidentActionDraft(17, runId, nodeId, paired.Connection.Id, paired.Connection.Revision,
                 Guid.NewGuid(), "flow:synthetic:saved-source:1", envelope, new("Original failed job", "Original failure facts"))
-                { Kind = FlowActionKind.NetclawInvestigation, AiSettings = new(), AiDeadlineAtUtc = at.AddMinutes(15) };
+                {
+                    Kind = FlowActionKind.NetclawInvestigation, AiSettings = new(), AiDeadlineAtUtc = at.AddMinutes(15),
+                    InvestigationInputs = new Dictionary<string, JsonElement>
+                    {
+                        ["longer"] = JsonSerializer.Deserialize<JsonElement>("{\"zeta\":1e3,\"a\":2}"),
+                        ["a"] = JsonSerializer.SerializeToElement("Synthetic prior output")
+                    }
+                };
             messageId = FlowAiCorrelation.MessageId(draft);
             Assert.NotEqual(source.EventId, messageId);
             var flowId = Guid.NewGuid();
@@ -133,13 +141,27 @@ public sealed partial class NetclawPersistencePostgresTests
             var investigation = await store.CreateAsync(17, new(Guid.NewGuid(), "Synthetic source investigation", [agentId]),
                 "source-publisher", default, sourceActionKey: draft.IdempotencyKey, flowRunId: runId);
             investigationId = investigation.Id;
+            var acceptedQuestion = FlowInvestigationQuestion.Compose(draft);
             await store.AcceptMessageAsync(17, investigationId, new(messageId,
-                FlowExecutionEvidenceFormatter.InvestigationQuestion(source, 17)), "source-publisher", null, true, default);
+                acceptedQuestion), "source-publisher", null, true, default);
             db.FlowActions.Add(new() { TenantId = 17, RunId = runId, NodeId = nodeId, IdempotencyKey = draft.IdempotencyKey,
                 Status = FlowActionStatus.WaitingForAi, DraftJson = JsonSerializer.Serialize(draft),
                 AiResultJson = JsonSerializer.Serialize(new FlowAiResultDto(17, runId, versionId, nodeId, investigationId,
                     messageId, FlowAiResultStatus.Queued, at)) });
             await db.SaveChangesAsync();
+            // PostgreSQL normalizes JSONB numeric syntax. A poll must retain the already
+            // accepted operator message, not regenerate text from the normalized snapshot.
+            var persistedDraftJson = await db.FlowActions.AsNoTracking().Where(item => item.RunId == runId &&
+                item.NodeId == nodeId).Select(item => item.DraftJson).SingleAsync();
+            var persistedDraft = JsonSerializer.Deserialize<FlowIncidentActionDraft>(persistedDraftJson,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? throw new InvalidOperationException("Missing saved source draft.");
+            Assert.NotEqual(acceptedQuestion, FlowInvestigationQuestion.Compose(persistedDraft));
+            var pending = await connector.DispatchAsync(persistedDraft, default);
+            Assert.Equal(FlowIncidentActionResultKind.Waiting, pending.Kind);
+            Assert.Equal(investigationId, pending.AiResult?.InvestigationId);
+            var accepted = Assert.Single(await db.AiInvestigationEvents.AsNoTracking().Where(item =>
+                item.InvestigationId == investigationId && item.Type == "operator").ToListAsync());
+            Assert.Equal(acceptedQuestion, accepted.Text);
             Assert.Empty(await db.MonitoringOccurrences.AsNoTracking().ToListAsync());
             Assert.Empty(await db.MonitoringFlowOutbox.AsNoTracking().ToListAsync());
         }

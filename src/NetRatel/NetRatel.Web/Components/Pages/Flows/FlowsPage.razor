@@ -1,8 +1,6 @@
 @page "/flows"
 @rendermode InteractiveServer
 @attribute [Authorize]
-@using System.Security.Cryptography
-@using System.Text.Json
 @using NetRatel.Shared.Contracts.Flows
 @using NetRatel.Web.Services.Flows
 @implements IAsyncDisposable
@@ -26,7 +24,7 @@
     {
         <FlowEditor @ref="_editor" InitialSelectedNodeId="RequestedNodeId" @key="(_editorDefinition.Id, _version?.Id)" Definition="_editorDefinition" TenantName="@Access!.TenantName" Connectors="_connectors"
             CanEdit="@(Access.CanEdit)" CanPublish="@(Access.CanPublish)" ReadOnly="@(_version is not null)" VersionNumber="@(_version?.VersionNumber ?? 0)"
-            RecordedRunId="_recordedRun?.Run.Id" RecordedTrace="_recordedRun?.Trace" RecordedConfigurationHash="@_version?.ConfigurationHash"
+            RecordedRunId="_recordedRun?.Run.Id" RecordedTrace="_recordedRun?.Trace" RecordedConfigurationHash="@_version?.ConfigurationHash" RecordedDataUnavailableReason="@_recordedRun?.DataUnavailableReason"
             Saved="DefinitionSaved" Closed="CloseEditor" DirtyChanged="DirtyChanged" />
     }
     else
@@ -342,7 +340,7 @@
         var version = await Api.GetVersionAsync(tenant, detail.Run.FlowVersionId, token);
         if (!Current(generation, tenant) || _history?.Id != flowId || _runDetail?.Run.Id != detail.Run.Id ||
             version.TenantId != tenant || version.FlowId != flowId || version.Id != detail.Run.FlowVersionId) return;
-        var hash = Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(version.Graph, new JsonSerializerOptions(JsonSerializerDefaults.Web))));
+        var hash = FlowGraphSerialization.Hash(version.Graph);
         if (!string.Equals(hash, version.ConfigurationHash, StringComparison.Ordinal))
         { _historyError = "This run's immutable graph could not be verified. Recorded playback is unavailable."; return; }
         var connectors = await Api.GetConnectorsAsync(tenant, token);

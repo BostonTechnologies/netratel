@@ -86,6 +86,8 @@ public sealed class FlowExecutionDefinitionPins(OrchestratorDbContext db, IJobEx
                 var digest = snapshot.ComputeDigest();
                 var definition = new FlowExecutionDefinitionDto(id.ToString(CultureInfo.InvariantCulture),
                     snapshot.Definition.Job.Name, digest, digest);
+                if (definition.Name is { Length: > 512 })
+                    throw new FlowExecutionPinException("execution-definition-name-limit");
                 RequireSelectedRevision(selected.Definition, definition);
                 var target = await TargetAsync(tenantId, snapshot.Definition.Job.AgentId!.Value, cancellationToken);
                 if (selected.Target?.AgentId != target.AgentId)
@@ -107,6 +109,8 @@ public sealed class FlowExecutionDefinitionPins(OrchestratorDbContext db, IJobEx
                 var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(script.Content)));
                 var definition = new FlowExecutionDefinitionDto(id.ToString(CultureInfo.InvariantCulture), script.Name,
                     script.SourceRevision.ToString(CultureInfo.InvariantCulture), hash);
+                if (definition.Name is { Length: > 512 })
+                    throw new FlowExecutionPinException("execution-definition-name-limit");
                 RequireSelectedRevision(selected.Definition, definition);
                 var target = selected.Target?.AgentId is { } agentId
                     ? await TargetAsync(tenantId, agentId, cancellationToken) : null;
@@ -114,6 +118,7 @@ public sealed class FlowExecutionDefinitionPins(OrchestratorDbContext db, IJobEx
                 parameters = scriptParameters.Select(parameter =>
                     new FlowParameterDefinitionDto(parameter.Name, DataType(parameter.Type), parameter.Required)).ToArray();
             }
+            FlowExecutionSecretReferences.Validate(node, pin);
             pins.Add(pin);
             updated.Add(node.Id, node with
             {

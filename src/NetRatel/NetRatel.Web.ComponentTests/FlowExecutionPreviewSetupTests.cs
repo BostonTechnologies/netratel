@@ -193,6 +193,31 @@ public sealed class FlowExecutionPreviewSetupTests : AsyncBunitContext
         sent[2].Fixtures.Should().BeNull();
     }
 
+
+    [Theory]
+    [InlineData(FlowExecutionSourceKind.Job)]
+    [InlineData(FlowExecutionSourceKind.Script)]
+    public async Task Request_sample_keeps_request_source_and_selected_backing_definition_family(FlowExecutionSourceKind family)
+    {
+        FlowExecutionDryRunRequest? sent = null;
+        var original = Graph(FlowExecutionSourceKind.Request, agent: false);
+        var graph = original with { Nodes = original.Nodes.Select(node => node.Id == TriggerId ? node with
+        {
+            ExecutionTrigger = new([FlowExecutionSourceKind.Request], [FlowExecutionOutcome.Failed], FlowExecutionScope.SelectedDefinitions)
+            { DefinitionReferences = [new(family, "selected-backed-definition")], RequestKinds = [family == FlowExecutionSourceKind.Job ? "Job" : "Script"] }
+        } : node).ToArray() };
+        var cut = Render<FlowExecutionPreviewSetup>(p => p.Add(c => c.Graph, graph).Add(c => c.TenantId, 17).Add(c => c.ContextKey, "request-source")
+            .Add(c => c.Preview, request => sent = request));
+        cut.Find("[data-testid=flow-sample-definition-id]").GetAttribute("value").Should().Be("selected-backed-definition");
+        await Submit(cut);
+        sent!.Input!.SourceKind.Should().Be(FlowExecutionSourceKind.Request);
+        sent.Input.DefinitionSourceKind.Should().Be(family);
+        sent.Input.Definition.Id.Should().Be("selected-backed-definition");
+        sent.Input.Replay.Should().BeNull(); sent.Input.ParentExecutionId.Should().BeNull();
+        sent.Alert.Should().BeNull();
+        FlowExecutionEventMatching.Matches(17, graph.Nodes[0].ExecutionTrigger!, sent.Input, DateTimeOffset.MinValue).Should().BeTrue();
+    }
+
     private static FlowGraphDto Graph(FlowExecutionSourceKind source = FlowExecutionSourceKind.Job, bool agent = true, bool external = false)
     {
         var trigger = new FlowNodeDto(TriggerId, FlowNodeKind.ExecutionEvent, "Synthetic execution", new(0, 0))

@@ -2,6 +2,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NetRatel.Application.Flows;
+using Microsoft.EntityFrameworkCore;
+using NetRatel.Infrastructure.Persistence;
 using NetRatel.Application.RatelDesk;
 using NetRatel.Shared.Contracts.Flows;
 
@@ -16,9 +18,20 @@ public sealed partial class FlowRunProcessor(IFlowExecutionStore store, IFlowRun
         var lease = await store.ClaimAsync(_workerId, cancellationToken).ConfigureAwait(false); if (lease is null) return false;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken); timeout.CancelAfter(FlowLimits.ExecutionTimeout);
         FlowRuntimeResult result;
-        try { result = await runtime.ExecuteAsync(lease, (draft, token) => ExecuteActionAsync(lease, draft, token), timeout.Token).ConfigureAwait(false); }
-        catch (OperationCanceledException) { result = new(FlowRunStatus.Failed, "execution-cancelled"); }
-        catch (Exception) { result = new(FlowRunStatus.Failed, "execution-failed"); }
+        try
+        {
+            if (lease.Version.Graph.SchemaVersion == FlowGraphV2Limits.SchemaVersion)
+            {
+                await using var scope = scopes.CreateAsyncScope();
+                result = await scope.ServiceProvider.GetRequiredService<FlowGraphV2Runtime>().ExecuteAsync(lease,
+                    (draft, token) => ExecuteActionAsync(lease, draft, token), timeout.Token).ConfigureAwait(false);
+            }
+            else result = await runtime.ExecuteAsync(lease, (draft, token) => ExecuteActionAsync(lease, draft, token), timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { result = new(lease.Version.Graph.SchemaVersion == FlowGraphV2Limits.SchemaVersion
+            ? FlowRunStatus.RetryWaiting : FlowRunStatus.Failed, "execution-cancelled"); }
+        catch (Exception) { result = new(lease.Version.Graph.SchemaVersion == FlowGraphV2Limits.SchemaVersion
+            ? FlowRunStatus.RetryWaiting : FlowRunStatus.Failed, "execution-failed"); }
         // Receipt persistence can finish after an execution timeout; an expired/reclaimed lease still rejects it.
         using var completion = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await store.CompleteRunAsync(lease, result, completion.Token).ConfigureAwait(false); return true;
@@ -122,11 +135,19 @@ public sealed partial class FlowRunProcessor(IFlowExecutionStore store, IFlowRun
         var flow = await provider.GetRequiredService<IFlowDefinitionService>().GetAsync(lease.Event.TenantId, lease.Version.FlowId, ct).ConfigureAwait(false);
         if (flow is not { Enabled: true }) return new(false, "flow-disabled");
         if (!await provider.GetRequiredService<IFlowExecutionAuthorityVerifier>().AuthorizeAsync(lease.Event.TenantId, lease.Event.Authority, ct).ConfigureAwait(false)) return new(false, "execution-authority-revoked");
+        if (lease.Event.ExecutionEvent is not null)
+        {
+            var db = provider.GetRequiredService<OrchestratorDbContext>();
+            await using var transaction = await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+            return await provider.GetRequiredService<IFlowTransactionAdmission>().CanStartActionAsync(db, lease, ct).ConfigureAwait(false);
+        }
         return await provider.GetRequiredService<IFlowDispatchGuard>().CanDispatchAsync(lease.Event, ct).ConfigureAwait(false);
     }
     private static FlowIncidentActionResult? Terminal(FlowActionExecutionState state) => state.Status switch
     {
         FlowActionStatus.Succeeded => new(FlowIncidentActionResultKind.Succeeded, state.Code ?? "incident-created", state.Receipt) { AiResult = state.AiResult },
+        FlowActionStatus.Failed when state.AiResult?.Status == FlowAiResultStatus.Unsupported =>
+            new(FlowIncidentActionResultKind.Unavailable, state.Code ?? "netclaw-investigation-tool-policy-unavailable", state.Receipt) { AiResult = state.AiResult },
         FlowActionStatus.Failed => new(FlowIncidentActionResultKind.Failed, state.Code ?? "action-failed", state.Receipt) { AiResult = state.AiResult },
         FlowActionStatus.DeliveryUnknown => new(FlowIncidentActionResultKind.DeliveryUnknown, state.Code ?? "delivery-unknown", state.Receipt) { AiResult = state.AiResult }, _ => null
     };

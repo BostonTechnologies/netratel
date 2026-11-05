@@ -1,0 +1,7 @@
+.flow-mapping-fields, .flow-mapping-fields fieldset { display: grid; gap: .6rem; min-width: 0; }
+.flow-mapping-fields fieldset { border: 1px solid var(--mud-palette-divider); padding: .6rem; }
+.flow-mapping-fields input, .flow-mapping-fields select, .flow-mapping-fields textarea { width: 100%; padding: .4rem; color: inherit; background: var(--mud-palette-surface); border: 1px solid var(--mud-palette-divider); border-radius: .25rem; }
+.flow-mapping-fields textarea { min-height: 7rem; resize: vertical; }
+.flow-mapping-insert { display: flex; gap: .5rem; }
+.flow-mapping-fields button { color: var(--mud-palette-primary); padding: .35rem; }
+.flow-mapping-help { font-size: .8rem; color: var(--mud-palette-text-secondary); }

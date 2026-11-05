@@ -36,7 +36,7 @@ internal static class FlowExecutionTerminalFacts
             catch (JsonException) { continue; }
             if (value?.EventId == row.Id && value.TenantId == tenantId && value.SourceKind == kind &&
                 value.ExecutionId == executionId && value.Provenance == provenance &&
-                FlowExecutionEventValidator.Validate(value).Valid)
+                FlowExecutionEventProvenance.IsNative(value) && FlowExecutionEventValidator.Validate(value).Valid)
                 return value;
         }
         return null;
