@@ -19,14 +19,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      EXPECTED_SOURCE_SHA: af3c1bf6f6eec0968ffc69279cd314a472887407
+      EXPECTED_SOURCE_SHA: a91ab2da5fdcfd8fc2547cf8ce6fcf9e8dab694b
       BROWSER_CLASSES: NetRatel.Web.PlaywrightTests.FlowsResponsiveTests NetRatel.Web.PlaywrightTests.FlowTypedAuthoringAcceptanceTests
       BROWSER_METHODS: NetRatel.Web.PlaywrightTests.FlowsResponsiveTests.Actual_Native_Drag_And_Pointer_Connections_Save_Reload_Stable_Properties_And_Viewport NetRatel.Web.PlaywrightTests.FlowTypedAuthoringAcceptanceTests.Near_Limit_Graph_Mount_Fit_Pan_Zoom_And_Route_Are_Measured_Without_Execution
       NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT: ${{ github.workspace }}/TestResults/playwright
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: af3c1bf6f6eec0968ffc69279cd314a472887407
+          ref: a91ab2da5fdcfd8fc2547cf8ce6fcf9e8dab694b
           fetch-depth: 1
           persist-credentials: false
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
