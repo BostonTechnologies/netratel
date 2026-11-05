@@ -130,6 +130,7 @@ export function attachShell(id, reference) {
     detachShell(id);
     const root = document.getElementById(id);
     if (!root) return;
+    document.documentElement.classList.add('netratel-flow-editor-open');
     const state = { root, reference, focused: false, ownsNative: false, nativePending: false, disposed: false, unsynchronized: false, returnFocus: null, preview: null };
     const notify = () => {
         if (state.disposed) return;
@@ -177,6 +178,35 @@ export function attachShell(id, reference) {
         event.preventDefault(); event.stopImmediatePropagation();
         void state.setFocus(!state.focused);
     };
+    const historyPointer = event => {
+        if (state.disposed || root.dataset.historyEnabled !== 'true' || event.button > 0 ||
+            !event.target.closest?.('[data-testid="flow-canvas"]')) return;
+        // One callback per physical gesture, before Velox's mousedown/move commands.
+        reference.invokeMethodAsync("BeginCanvasEditGesture").catch(() => {});
+    };
+    const historyKey = event => {
+        if (state.disposed || root.dataset.historyEnabled !== 'true' || isEditing() || event.altKey ||
+            !(event.ctrlKey || event.metaKey) || root.querySelector('dialog[open]')) return;
+        const key = event.key.toLowerCase();
+        if (key !== 'z' && key !== 'y') return;
+        event.preventDefault(); event.stopImmediatePropagation();
+        reference.invokeMethodAsync("NavigateGraphHistory", key === 'y' || event.shiftKey).catch(() => {});
+    };
+    const editingSpace = event => {
+        if (state.disposed || !root.isConnected || event.code !== 'Space' || !root.querySelector('.flow-canvas-panel')) return;
+        const title = event.target.closest?.('.flow-node-title');
+        if (title && root.contains(title)) {
+            event.preventDefault(); event.stopImmediatePropagation();
+            title.click(); // Same selection path as the title's ordinary click.
+            return;
+        }
+        const control = event.target.closest?.('input,textarea,select,button,[contenteditable]');
+        if (!control || control.matches('input[readonly]')) return;
+        if (!control.matches('input,textarea,select,button') && !control.isContentEditable) return;
+        // Velox's document Space handler arms canvas panning and prevents the
+        // browser default. Editing and native control activation keep that default.
+        event.stopImmediatePropagation();
+    };
     const fullscreen = () => {
         if (state.ownsNative && document.fullscreenElement !== document.documentElement) {
             state.ownsNative = false;
@@ -202,12 +232,19 @@ export function attachShell(id, reference) {
     observer.observe(document.body, { childList: true, subtree: true });
     observer.observe(root, { attributes: true, attributeFilter: ['class'] });
     root.addEventListener('click', click, true);
+    window.addEventListener('keydown', editingSpace, true);
+    root.addEventListener('pointerdown', historyPointer, true);
+    root.addEventListener('keydown', historyKey, true);
     document.addEventListener('keydown', escape, true);
     document.addEventListener('fullscreenchange', fullscreen);
     state.dispose = () => {
         state.disposed = true;
         observer.disconnect();
         root.removeEventListener('click', click, true);
+        window.removeEventListener('keydown', editingSpace, true);
+        document.documentElement.classList.toggle('netratel-flow-editor-open', [...shells.values()].some(shell => shell !== state && !shell.disposed));
+        root.removeEventListener('pointerdown', historyPointer, true);
+        root.removeEventListener('keydown', historyKey, true);
         document.removeEventListener('keydown', escape, true);
         document.removeEventListener('fullscreenchange', fullscreen);
         if (state.preview) { state.preview.element.removeEventListener('cancel', state.preview.cancel); state.preview.element.close(); }

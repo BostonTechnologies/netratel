@@ -102,6 +102,35 @@ public sealed class FlowTracePlayerTests : AsyncBunitContext
         cut.Markup.Should().Contain("Current recorded node").And.NotContain("Old recorded node");
     }
 
+
+    [Fact]
+    public void Snapshot_copy_is_available_only_for_visible_captured_values_and_excerpts()
+    {
+        var cut = Render<FlowTraceData>(p => p.Add(x => x.Snapshot, new FlowTraceSnapshotDto(FlowTraceDataState.Null)));
+        cut.Find("[data-trace-value]").TextContent.Should().Be("null");
+        cut.Find("[data-trace-copy]").TextContent.Should().Be("Copy captured JSON");
+
+        cut.Render(p => p.Add(x => x.Snapshot, new FlowTraceSnapshotDto(FlowTraceDataState.Empty)
+            { Value = JsonSerializer.SerializeToElement("") }));
+        cut.Find("[data-trace-value]").TextContent.Should().Be("\"\"");
+        cut.FindAll("[data-trace-copy]").Should().ContainSingle();
+
+        cut.Render(p => p.Add(x => x.Snapshot, new FlowTraceSnapshotDto(FlowTraceDataState.Truncated)
+            { Excerpt = "bounded excerpt", Reference = "protected-result-reference", OriginalUtf8Bytes = 9000 }));
+        cut.Find("[data-trace-value]").TextContent.Should().Be("bounded excerpt");
+        cut.Find("[data-trace-copy]").TextContent.Should().Be("Copy visible excerpt");
+        cut.Markup.Should().Contain("access checked separately").And.Contain("9000 original UTF-8 bytes");
+
+        cut.Render(p => p.Add(x => x.Snapshot, new FlowTraceSnapshotDto(FlowTraceDataState.Missing)
+            { Reference = "protected-result-reference" }));
+        cut.FindAll("[data-trace-copy]").Should().BeEmpty();
+        cut.FindAll("[data-trace-value]").Should().BeEmpty();
+        cut.Markup.Should().Contain("Data unavailable");
+        cut.Render(p => p.Add(x => x.Snapshot, new FlowTraceSnapshotDto(FlowTraceDataState.Present)));
+        cut.FindAll("[data-trace-copy]").Should().BeEmpty();
+        cut.Markup.Should().Contain("Captured data unavailable");
+    }
+
     private sealed class DeferredImportRuntime : IJSRuntime
     {
         public ConcurrentQueue<TaskCompletionSource<IJSObjectReference>> Imports { get; } = new();

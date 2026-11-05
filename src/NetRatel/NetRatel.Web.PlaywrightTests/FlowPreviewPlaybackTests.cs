@@ -62,6 +62,84 @@ public sealed class FlowPreviewPlaybackTests(ClientsManagementBrowserFixture bro
     }
 
 
+
+    [Theory]
+    [InlineData(1280, 800)]
+    [InlineData(195, 422)]
+    public async Task Execution_preview_requires_explicit_external_samples_and_shows_real_pure_values(int width, int height)
+    {
+        var fixture = _fixture!; fixture.FlowsData.SeedExecutionPreviewGraph();
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = width, Height = height } });
+        var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000);
+        var errors = new List<string>(); page.PageError += (_, error) => errors.Add(error);
+        await page.GotoAsync(fixture.BaseAddress + "/flows", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("flow-row").WaitForAsync(new() { Timeout = 90_000 });
+        await page.GetByTestId("flow-edit").First.ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(6);
+        await page.GetByTestId("flow-fit").ClickAsync();
+        var before = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!;
+        await page.GetByTestId("flow-dry-run-toggle").ClickAsync();
+        var dialog = page.GetByTestId("flow-preview-dialog");
+        await Assertions.Expect(dialog).ToBeVisibleAsync();
+        var during = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!;
+        Assert.InRange(during.Y, before.Y - 1, before.Y + 1);
+        Assert.InRange(during.Height, before.Height - 1, before.Height + 1);
+        await dialog.GetByTestId("flow-sample-execution-id").FillAsync("9223372036854775805");
+        await dialog.GetByTestId("flow-execution-preview").ClickAsync();
+        await Assertions.Expect(dialog).ToBeHiddenAsync();
+        var player = page.GetByTestId("flow-trace-player");
+        await Assertions.Expect(player).ToBeVisibleAsync();
+        await Assertions.Expect(player.Locator("[data-trace-position]")).ToHaveTextAsync("Step 1 of 2");
+        await player.Locator("[data-trace-action=next]").ClickAsync();
+        await Assertions.Expect(player.Locator("[data-trace-panel]:not([hidden])")).ToContainTextAsync("sample-result-unavailable");
+        await Assertions.Expect(player.Locator("[data-trace-panel]:not([hidden])")).ToContainTextAsync("No external action was executed");
+        await player.Locator("[data-trace-action=exit]").ClickAsync();
+
+        await page.GetByTestId("flow-dry-run-toggle").ClickAsync();
+        await Assertions.Expect(dialog).ToBeVisibleAsync();
+        await Assertions.Expect(dialog.GetByTestId("flow-sample-execution-id")).ToHaveValueAsync("9223372036854775805");
+        await dialog.Locator(".flow-sample-fixtures summary").ClickAsync();
+        await dialog.GetByTestId("flow-sample-fixture-enabled").CheckAsync();
+        await dialog.GetByTestId("flow-execution-preview").ClickAsync();
+        await Assertions.Expect(dialog.GetByTestId("flow-sample-error")).ToContainTextAsync("Choose the simulated outcome");
+        Assert.Equal(1, fixture.FlowsData.DryRunCalls);
+        await dialog.GetByTestId("flow-sample-fixture-outcome").SelectOptionAsync("succeeded");
+        await dialog.GetByTestId("flow-sample-fixture-output").FillAsync(JsonSerializer.Serialize(new
+        { outcome = "succeeded", executionId = "9223372036854775807", exitCode = 0, summary = "Explicit synthetic repair sample" }));
+        var evidence = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.Combine(Directory.GetCurrentDirectory(), "TestResults", "playwright");
+        Directory.CreateDirectory(evidence);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"flows-execution-sample-{width}.png"), Animations = ScreenshotAnimations.Disabled });
+        await dialog.GetByTestId("flow-execution-preview").ClickAsync();
+        await Assertions.Expect(dialog).ToBeHiddenAsync();
+        await Assertions.Expect(player).ToBeVisibleAsync();
+        await Assertions.Expect(player.Locator("[data-trace-position]")).ToHaveTextAsync("Step 1 of 5");
+        await player.Locator("[data-trace-action=next]").ClickAsync();
+        await Assertions.Expect(player.Locator("[data-trace-panel]:not([hidden])")).ToContainTextAsync("9223372036854775807");
+        await Assertions.Expect(player.Locator("[data-trace-panel]:not([hidden])")).ToContainTextAsync("Explicit synthetic repair sample");
+        await player.Locator("[data-trace-action=next]").ClickAsync();
+        await Assertions.Expect(player.Locator("[data-trace-panel]:not([hidden])")).ToContainTextAsync("true");
+        await player.Locator("[data-trace-action=next]").ClickAsync();
+        var mapped = player.Locator("[data-trace-panel]:not([hidden])");
+        await Assertions.Expect(mapped).ToContainTextAsync("Map explicit sample result");
+        await Assertions.Expect(mapped).ToContainTextAsync("Sample job: 9223372036854775807");
+        await mapped.Locator("details").Last.Locator("pre").ScrollIntoViewIfNeededAsync();
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"flows-execution-mapped-{width}.png"), Animations = ScreenshotAnimations.Disabled });
+        await player.Locator("[data-trace-action=previous]").ClickAsync();
+        await player.Locator("[data-trace-action=restart]").ClickAsync();
+        Assert.Equal(2, fixture.FlowsData.DryRunCalls);
+        Assert.Equal(0, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls);
+        var after = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!;
+        Assert.InRange(after.Y, before.Y - 1, before.Y + 1); Assert.InRange(after.Height, before.Height - 1, before.Height + 1);
+        await File.WriteAllTextAsync(Path.Combine(evidence, $"flows-execution-preview-{width}.json"), JsonSerializer.Serialize(new
+        {
+            width, height, before, during, after, evaluations = fixture.FlowsData.DryRunCalls,
+            saves = fixture.FlowsData.SaveCalls, publications = fixture.FlowsData.PublishCalls,
+            sourceExecutionId = "9223372036854775805", simulatedExecutionId = "9223372036854775807",
+            expectedBranch = new[] { "event", "succeeded", "true", "result", "finished" }
+        }));
+        Assert.Empty(errors);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -173,6 +251,79 @@ public sealed class FlowPreviewPlaybackTests(ClientsManagementBrowserFixture bro
         var after = result.GetProperty("after");
         Assert.Equal(0, after.GetProperty("style").GetInt32()); Assert.False(after.GetProperty("marked").GetBoolean());
         Assert.Equal(0, after.GetProperty("visibility").GetInt32()); Assert.Equal(0, after.GetProperty("motion").GetInt32());
+        Assert.Equal(0, fixture.FlowsData.DryRunCalls); Assert.Equal(0, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls);
+    }
+
+
+    [Fact]
+    public async Task Client_playback_copies_visible_captured_data_and_marks_only_the_recorded_route()
+    {
+        var fixture = _fixture!;
+        await using var context = await browserFixture.Browser.NewContextAsync();
+        var page = await context.NewPageAsync();
+        await page.GotoAsync(fixture.BaseAddress + "/flows", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        var result = await page.EvaluateAsync<JsonElement>("""
+            async () => {
+                const { attach } = await import("/js/flows-playback.js");
+                const scope = document.createElement("section");
+                scope.id = "playback-inspection-scope";
+                scope.innerHTML = '<article class="flow-node" data-node-id="captured-node"></article><article class="flow-node" data-node-id="target-node"></article><article class="flow-node" data-node-id="uncaptured-node"></article><svg><g data-flow-edge-id="chosen-edge" data-flow-source-node="captured-node" data-flow-target-node="target-node"><path data-flow-edge-id="chosen-edge" data-flow-source-node="captured-node" data-flow-target-node="target-node"></path></g><path data-flow-edge-id="other-edge" data-flow-source-node="captured-node" data-flow-target-node="target-node"></path></svg>';
+                const root = document.createElement("section");
+                root.id = "playback-inspection-player";
+                root.dataset.scopeId = scope.id; root.dataset.context = "captured-inspection";
+                root.innerHTML = '<button data-trace-action="play">Play</button><button data-trace-action="previous">Previous</button><button data-trace-action="next">Next</button><button data-trace-action="restart">Restart</button><output data-trace-position></output><p hidden data-trace-unvisited>No captured step</p><article data-trace-panel="0" data-node-id="captured-node" data-next-node-id="target-node" data-edge-id="chosen-edge"><div data-trace-data><pre data-trace-value>null</pre><button data-trace-copy>Copy captured JSON</button><span data-trace-copy-status></span></div></article><article hidden data-trace-panel="1" data-node-id="target-node"><div data-trace-data><pre data-trace-value>visible excerpt</pre><button data-trace-copy>Copy visible excerpt</button><span data-trace-copy-status></span><code>protected-reference-not-fetched</code></div></article>';
+                scope.append(root); document.body.append(scope);
+                const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+                const copied = [];
+                let handle;
+                try {
+                    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async text => copied.push(text) } });
+                    handle = attach(root.id, "captured-inspection");
+                    const chosenPath = scope.querySelector('path[data-flow-edge-id="chosen-edge"]');
+                    const route = {
+                        path: chosenPath.hasAttribute("data-flow-playback-edge"),
+                        group: scope.querySelector("svg g").hasAttribute("data-flow-playback-edge"),
+                        other: scope.querySelector('path[data-flow-edge-id="other-edge"]').hasAttribute("data-flow-playback-edge")
+                    };
+                    root.querySelector('[data-trace-panel="0"] [data-trace-copy]').click();
+                    await Promise.resolve();
+                    const nullStatus = root.querySelector('[data-trace-panel="0"] [data-trace-copy-status]').textContent;
+                    root.querySelector("[data-trace-action=next]").click();
+                    root.querySelector('[data-trace-panel="1"] [data-trace-copy]').click();
+                    await Promise.resolve();
+                    const excerptStatus = root.querySelector('[data-trace-panel="1"] [data-trace-copy-status]').textContent;
+                    scope.querySelector('[data-node-id="uncaptured-node"]').click();
+                    const uncaptured = {
+                        message: !root.querySelector("[data-trace-unvisited]").hidden,
+                        visiblePanels: root.querySelectorAll("[data-trace-panel]:not([hidden])").length,
+                        marked: scope.querySelector('[data-node-id="uncaptured-node"]').hasAttribute("data-flow-playback-node"),
+                        edges: scope.querySelectorAll("[data-flow-playback-edge]").length,
+                        position: root.querySelector("[data-trace-position]").textContent
+                    };
+                    root.querySelector("[data-trace-action=restart]").click();
+                    const restarted = { position: root.querySelector("[data-trace-position]").textContent, message: root.querySelector("[data-trace-unvisited]").hidden };
+                    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async () => { throw new Error("denied"); } } });
+                    root.querySelector('[data-trace-panel="0"] [data-trace-copy]').click();
+                    await Promise.resolve(); await Promise.resolve();
+                    const deniedStatus = root.querySelector('[data-trace-panel="0"] [data-trace-copy-status]').textContent;
+                    return { route, copied, nullStatus, excerptStatus, uncaptured, restarted, deniedStatus };
+                } finally {
+                    handle?.dispose(); scope.remove();
+                    if (clipboardDescriptor) Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
+                    else delete navigator.clipboard;
+                }
+            }
+            """);
+        var route = result.GetProperty("route");
+        Assert.True(route.GetProperty("path").GetBoolean()); Assert.False(route.GetProperty("group").GetBoolean()); Assert.False(route.GetProperty("other").GetBoolean());
+        Assert.Equal(new[] { "null", "visible excerpt" }, result.GetProperty("copied").EnumerateArray().Select(item => item.GetString()).ToArray());
+        Assert.Equal("Copied visible data.", result.GetProperty("nullStatus").GetString()); Assert.Equal("Copied visible data.", result.GetProperty("excerptStatus").GetString());
+        var uncaptured = result.GetProperty("uncaptured");
+        Assert.True(uncaptured.GetProperty("message").GetBoolean()); Assert.True(uncaptured.GetProperty("marked").GetBoolean());
+        Assert.Equal(0, uncaptured.GetProperty("visiblePanels").GetInt32()); Assert.Equal(0, uncaptured.GetProperty("edges").GetInt32());
+        Assert.Equal("Selected node has no captured step", uncaptured.GetProperty("position").GetString());
+        Assert.Equal("Step 1 of 2", result.GetProperty("restarted").GetProperty("position").GetString()); Assert.True(result.GetProperty("restarted").GetProperty("message").GetBoolean());
+        Assert.Equal("Copy was not permitted. Select the visible text to copy it.", result.GetProperty("deniedStatus").GetString());
         Assert.Equal(0, fixture.FlowsData.DryRunCalls); Assert.Equal(0, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls);
     }
 

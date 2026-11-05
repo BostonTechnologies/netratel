@@ -39,12 +39,14 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
             if (node.Kind == FlowNodeKind.RerunOriginalExecution) return await RerunAsync(request, identity, ct);
             var pin = await pins.ResolveAsync(identity.TenantId, identity.FlowVersionId, identity.NodeId, ct);
             if (pin is null || pin.Kind != node.Kind) return Result(FlowExecutionActionDisposition.Unsupported, "execution-pin-unavailable");
+            var inputs = FlowExecutionSecretReferences.MergeInputs(node, pin, Inputs(request.InputsJson));
             if (node.Kind == FlowNodeKind.RunJob && pin.Job is { } job)
             {
                 var timeout = node.ExecutionAction!.TimeoutMinutes * 60;
-                var run = await jobs.StartKeyedAsync(new(identity, job, new("flow-action", Inputs(request.InputsJson),
+                var run = await jobs.StartKeyedAsync(new(identity, job, new("flow-action", inputs,
                     null, ExpectedRuntimeSeconds: timeout, GraceSeconds: 0, HardTimeoutSeconds: timeout,
-                    Environment: node.ExecutionAction.Environment)) { FlowLease = request.Lease }, ct);
+                    Environment: node.ExecutionAction.Environment == NetRatel.Shared.ClientEnvironment.None
+                        ? null : node.ExecutionAction.Environment)) { FlowLease = request.Lease }, ct);
                 return await ObserveAsync(request, new(request.ActionKey, ExecutionAdmissionKind.Job,
                     run.Id.ToString(CultureInfo.InvariantCulture)), ct);
             }
@@ -53,7 +55,7 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
                 var target = pin.Target?.AgentId ?? request.Lease.Event.ExecutionEvent?.Target.AgentId ??
                     (request.Lease.Event.ExecutionEvent is null ? request.Lease.Event.Data.AgentId : null);
                 if (target is null || target == Guid.Empty) return Result(FlowExecutionActionDisposition.Unsupported, "script-target-unavailable");
-                var accepted = await scripts.StartKeyedAsync(new(identity, script, target.Value, Parameters(request.InputsJson),
+                var accepted = await scripts.StartKeyedAsync(new(identity, script, target.Value, Parameters(inputs),
                     node.ExecutionAction!.Environment, node.ExecutionAction.TimeoutMinutes * 60, node.ExecutionAction.WorkingDirectory)
                     { FlowLease = request.Lease }, ct);
                 return await ScriptResultAsync(request, accepted.Binding, accepted.Activity, accepted.DispatchUncertain,
@@ -89,7 +91,7 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
             var submission = JsonSerializer.Deserialize<ScriptSubmission>(binding.PayloadJson, Json)
                 ?? throw new InvalidOperationException("The protected script submission is unavailable.");
             await authority.RequireScriptAsync(expected, submission.Request.Snapshot.Script.Id, submission.Request.AgentId, ct);
-            if (binding.DispatchStartedAtUtc is null)
+            if (binding.DispatchStartedAtUtc is null && request.AllowUnstartedDispatch)
             {
                 var resumed = await scripts.ResumeAsync(expected, binding.ExecutionId, request.Lease, ct);
                 return await ScriptResultAsync(request, resumed.Binding, resumed.Activity, resumed.DispatchUncertain,

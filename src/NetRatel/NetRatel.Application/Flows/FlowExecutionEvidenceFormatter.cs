@@ -83,7 +83,10 @@ public static class FlowExecutionEvidenceFormatter
     {
         ValidateOriginal(original, original.TenantId);
         var text = new StringBuilder("Original execution facts\nProvenance: ").Append(Safe(original.Provenance, 64)).Append('\n');
-        text.Append("Source: ").Append(original.SourceKind).Append("\nOutcome: ").Append(original.Outcome)
+        text.Append("Source: ").Append(original.SourceKind);
+        if (original.SourceKind == FlowExecutionSourceKind.Request && original.RequestKind is not null)
+            text.Append("\nRequest source: ").Append(Safe(original.RequestKind, 128));
+        text.Append("\nOutcome: ").Append(original.Outcome)
             .Append("\nRaw status: ").Append(Safe(original.RawStatus, 64))
             .Append("\nDefinition: ").Append(Safe(original.Definition.Name, 128)).Append(" (")
             .Append(Safe(original.Definition.Id, FlowExecutionEventLimits.MaximumIdentifierLength)).Append(')')
@@ -260,10 +263,10 @@ public static class FlowExecutionEvidenceFormatter
             throw new ArgumentException("AI findings belong to another tenant.", nameof(ai));
         var values = new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["sourceKind"] = original.SourceKind.ToString(), ["definitionName"] = Safe(original.Definition.Name, 128),
-            ["definitionRevision"] = Safe(original.Definition.Revision, 128), ["executionId"] = original.ExecutionId,
-            ["attemptId"] = original.AttemptId, ["targetName"] = Safe(original.Target.DisplayName ?? original.Target.HostName, 128),
-            ["outcome"] = original.Outcome.ToString(), ["rawStatus"] = Safe(original.RawStatus, 128),
+            ["sourceKind"] = original.SourceKind.ToString(), ["definitionName"] = Inline(original.Definition.Name, 128),
+            ["definitionRevision"] = Inline(original.Definition.Revision, 128), ["executionId"] = original.ExecutionId,
+            ["attemptId"] = original.AttemptId, ["targetName"] = Inline(original.Target.DisplayName ?? original.Target.HostName, 128),
+            ["outcome"] = original.Outcome.ToString(), ["rawStatus"] = Inline(original.RawStatus, 128),
             ["reason"] = Safe(original.Reason, 512), ["exitCode"] = original.ExitCode?.ToString(CultureInfo.InvariantCulture) ?? "Unavailable",
             ["startedAt"] = Timestamp(original.StartedAtUtc), ["completedAt"] = Timestamp(original.CompletedAtUtc),
             ["occurredAt"] = original.OccurredAtUtc.ToString("O", CultureInfo.InvariantCulture), ["executionLink"] = ExecutionLink(original),
@@ -303,6 +306,7 @@ public static class FlowExecutionEvidenceFormatter
     private static string Safe(string? value, int maximum) => value is null ? "Unavailable" :
         value.Length == 0 ? "(empty)" : Clip(OperatorOutputRedactor.Redact(
             new string(value.Where(c => !char.IsControl(c) || c is '\n' or '\r' or '\t').ToArray())), maximum);
+    private static string Inline(string? value, int maximum) => Safe(value, maximum).ReplaceLineEndings(" ").Replace('\t', ' ');
     private static string Clip(string value, int maximum)
     {
         if (value.Length <= maximum) return value;

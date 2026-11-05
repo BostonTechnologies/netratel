@@ -96,6 +96,7 @@ public sealed class FlowTypedEditorTests : AsyncBunitContext
     public async Task Template_Picker_Creates_And_Opens_Only_A_Disabled_Schema_Two_Draft()
     {
         _api.Templates = (_, _) => Task.FromResult(FlowOverhaulTemplates.Descriptors);
+        _api.Capabilities = (_, _) => Task.FromResult(new FlowSchemaCapabilitiesDto([1, 2], [1]));
         _api.TemplateCreate = (tenant, request, _) => Task.FromResult(FlowEditorTests.Definition() with
         { Id = Guid.NewGuid(), TenantId = tenant, Name = request.Name, Revision = 1, Enabled = false, Draft = FlowOverhaulTemplates.CreateDraft(request.TemplateId) });
         var cut = Render<FlowsPage>();

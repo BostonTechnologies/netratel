@@ -35,14 +35,31 @@ public sealed partial class FlowPersistenceService
         await using var transaction = await BeginAsync(db, ct).ConfigureAwait(false); var now = Now;
         FlowRunRecord? run;
         if (db.Database.IsNpgsql())
-            run = await db.FlowRuns.FromSqlInterpolated($"SELECT * FROM \"FlowRuns\" WHERE \"Status\" IN (1,2,3,9,10,11) AND (\"NextAttemptAtUtc\" IS NULL OR \"NextAttemptAtUtc\" <= {now}) AND (\"LeaseExpiresAtUtc\" IS NULL OR \"LeaseExpiresAtUtc\" <= {now}) ORDER BY \"CreatedAtUtc\", \"Id\" LIMIT 1 FOR UPDATE SKIP LOCKED").SingleOrDefaultAsync(ct).ConfigureAwait(false);
+            run = await db.FlowRuns.FromSqlInterpolated($"SELECT * FROM \"FlowRuns\" WHERE \"Status\" IN (1,2,3,9,10,11) AND (\"NextAttemptAtUtc\" IS NULL OR \"NextAttemptAtUtc\" <= {now}) AND (\"LeaseExpiresAtUtc\" IS NULL OR \"LeaseExpiresAtUtc\" <= {now}) ORDER BY COALESCE(\"NextAttemptAtUtc\", \"CreatedAtUtc\"), \"CreatedAtUtc\", \"Id\" LIMIT 1 FOR UPDATE SKIP LOCKED").SingleOrDefaultAsync(ct).ConfigureAwait(false);
         else run = await db.FlowRuns.Where(row => (row.Status == FlowRunStatus.Queued || row.Status == FlowRunStatus.Running || row.Status == FlowRunStatus.RetryWaiting || row.Status == FlowRunStatus.WaitingForAi || row.Status == FlowRunStatus.AwaitingApproval || row.Status == FlowRunStatus.WaitingForExecution) &&
-            (row.NextAttemptAtUtc == null || row.NextAttemptAtUtc <= now) && (row.LeaseExpiresAtUtc == null || row.LeaseExpiresAtUtc <= now)).OrderBy(row => row.CreatedAtUtc).FirstOrDefaultAsync(ct).ConfigureAwait(false);
+            (row.NextAttemptAtUtc == null || row.NextAttemptAtUtc <= now) && (row.LeaseExpiresAtUtc == null || row.LeaseExpiresAtUtc <= now)).OrderBy(row => row.NextAttemptAtUtc ?? row.CreatedAtUtc).ThenBy(row => row.CreatedAtUtc).ThenBy(row => row.Id).FirstOrDefaultAsync(ct).ConfigureAwait(false);
         if (run is null) return null;
         var version = await db.FlowVersions.AsNoTracking().SingleAsync(row => row.TenantId == run.TenantId && row.Id == run.FlowVersionId, ct).ConfigureAwait(false);
-        var expectedActions = FlowGraphValidator.ActionTargets(Parse<FlowGraphDto>(version.GraphJson)).Count;
+        var claimedGraph = Parse<FlowGraphDto>(version.GraphJson);
+        var expectedActions = FlowGraphValidator.ActionTargets(claimedGraph).Count +
+            claimedGraph.Nodes.Count(node => node.Kind is FlowNodeKind.RunLibraryScript or FlowNodeKind.RunJob or FlowNodeKind.RerunOriginalExecution);
         if (run.CreatedAtUtc + FlowLimits.MaximumRetryAge <= now || run.Attempts >= FlowLimits.MaximumActionAttempts * 2 * Math.Max(1, expectedActions))
         {
+            if (claimedGraph.SchemaVersion == FlowGraphV2Limits.SchemaVersion)
+            {
+                var checkpoint = run.ContinuationJson is null ? null : Parse<FlowContinuationDto>(run.ContinuationJson).Node;
+                var uncertain = checkpoint?.AcceptedExecutionId is not null || checkpoint?.Progress == FlowNodeProgress.Dispatching ||
+                    await db.FlowActions.AnyAsync(action => action.TenantId == run.TenantId && action.RunId == run.Id &&
+                        (action.Status == FlowActionStatus.Dispatching || action.Status == FlowActionStatus.DeliveryUnknown), ct).ConfigureAwait(false) ||
+                    await db.Set<FlowReceiverEvidenceRecord>().AnyAsync(row => row.TenantId == run.TenantId &&
+                        row.RunId == run.Id && row.MayHaveCommitted, ct).ConfigureAwait(false);
+                run.Status = uncertain ? FlowRunStatus.DeliveryUnknown : FlowRunStatus.Failed;
+                run.Code = uncertain ? "execution-budget-exhausted-unknown" : "execution-budget-exhausted";
+                run.CompletedAtUtc = now; run.LeaseToken = null; run.LeaseOwner = null; run.LeaseExpiresAtUtc = null; run.Fence++;
+                await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false);
+                return null;
+            }
             var actions = await db.FlowActions.Where(action => action.TenantId == run.TenantId && action.RunId == run.Id).ToListAsync(ct).ConfigureAwait(false);
             var uncertainNodes = await db.Set<FlowReceiverEvidenceRecord>().Where(row => row.TenantId == run.TenantId &&
                 row.RunId == run.Id && row.MayHaveCommitted).Select(row => row.NodeId).ToListAsync(ct).ConfigureAwait(false);
@@ -94,7 +111,7 @@ public sealed partial class FlowPersistenceService
         var version = await db.FlowVersions.AsNoTracking().SingleAsync(row => row.TenantId == run.TenantId && row.Id == run.FlowVersionId, ct).ConfigureAwait(false);
         if (lease.Version.TenantId != run.TenantId || lease.Version.FlowId != run.FlowId || lease.Version.ConfigurationHash != version.ConfigurationHash ||
             !ValidRuntimeGraph(lease.Version.Graph) ||
-            FlowContractValidation.Hash(Encoding.UTF8.GetBytes(Serialize(lease.Version.Graph))) != version.ConfigurationHash ||
+            FlowGraphSerialization.Hash(lease.Version.Graph) != version.ConfigurationHash ||
             !await db.FlowRuntimeIdentity.AnyAsync(row => row.Id == 1 && row.SourceInstanceId == lease.SourceInstanceId, ct).ConfigureAwait(false)) return null;
         return run;
     }

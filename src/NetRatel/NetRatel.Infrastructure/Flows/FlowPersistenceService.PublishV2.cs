@@ -38,8 +38,10 @@ public sealed partial class FlowPersistenceService
         FlowExecutionPinsCapture capture;
         try
         {
-            capture = await services.GetRequiredService<IFlowExecutionDefinitionPins>().CaptureAsync(row.TenantId, authority,
-                versionId, graph, ct).ConfigureAwait(false);
+            capture = graph.Nodes.Any(node => node.Kind is FlowNodeKind.RunLibraryScript or FlowNodeKind.RunJob)
+                ? await services.GetRequiredService<IFlowExecutionDefinitionPins>().CaptureAsync(row.TenantId, authority,
+                    versionId, graph, ct).ConfigureAwait(false)
+                : new FlowExecutionPinsCapture(graph, null);
         }
         catch (FlowExecutionPinException error) { return new(FlowWriteDisposition.Invalid, Code: error.Code); }
         graph = capture.Graph;
@@ -72,11 +74,11 @@ public sealed partial class FlowPersistenceService
             return new(FlowWriteDisposition.Invalid, Code: "published-graph");
         if (!await verifier.AuthorizeAsync(row.TenantId, authority, ct).ConfigureAwait(false))
             return new(FlowWriteDisposition.ConnectorDenied, Code: "execution-authority-revoked");
-        var json = Serialize(graph);
+        var json = FlowGraphSerialization.Serialize(graph);
         var version = new FlowVersionRecord { Id = versionId, FlowId = row.Id, TenantId = row.TenantId,
             VersionNumber = row.PublishedVersionNumber + 1, GraphJson = json,
-            ConfigurationHash = FlowContractValidation.Hash(Encoding.UTF8.GetBytes(json)), PublishedBy = authority.PrincipalId,
-            PublishedAtUtc = Now, ProtectedExecutionPinsJson = capture.ProtectedPinsJson, ExecutionAuthorityJson = Serialize(authority) };
+            ConfigurationHash = FlowGraphSerialization.Hash(graph), PublishedBy = authority.PrincipalId,
+            PublishedAtUtc = await ActivationNowAsync(db, ct).ConfigureAwait(false), ProtectedExecutionPinsJson = capture.ProtectedPinsJson, ExecutionAuthorityJson = Serialize(authority) };
         db.FlowVersions.Add(version);
         row.PublishedVersionId = version.Id; row.PublishedVersionNumber = version.VersionNumber; row.Revision++;
         row.UpdatedAtUtc = version.PublishedAtUtc;

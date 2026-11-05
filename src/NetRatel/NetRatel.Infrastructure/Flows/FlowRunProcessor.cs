@@ -30,7 +30,8 @@ public sealed partial class FlowRunProcessor(IFlowExecutionStore store, IFlowRun
         }
         catch (OperationCanceledException) { result = new(lease.Version.Graph.SchemaVersion == FlowGraphV2Limits.SchemaVersion
             ? FlowRunStatus.RetryWaiting : FlowRunStatus.Failed, "execution-cancelled"); }
-        catch (Exception) { result = new(FlowRunStatus.Failed, "execution-failed"); }
+        catch (Exception) { result = new(lease.Version.Graph.SchemaVersion == FlowGraphV2Limits.SchemaVersion
+            ? FlowRunStatus.RetryWaiting : FlowRunStatus.Failed, "execution-failed"); }
         // Receipt persistence can finish after an execution timeout; an expired/reclaimed lease still rejects it.
         using var completion = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await store.CompleteRunAsync(lease, result, completion.Token).ConfigureAwait(false); return true;

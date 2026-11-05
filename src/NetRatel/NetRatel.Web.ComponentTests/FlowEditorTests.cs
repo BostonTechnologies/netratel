@@ -1,5 +1,4 @@
 using System.Net;
-using System.Security.Cryptography;
 using System.Text.Json;
 using Bunit;
 using AwesomeAssertions;
@@ -531,7 +530,7 @@ public sealed class FlowEditorTests : AsyncBunitContext
 
     private static FlowDryRunResultDto PreviewResult(FlowGraphDto graph)
     {
-        var hash = Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(graph, new JsonSerializerOptions(JsonSerializerDefaults.Web))));
+        var hash = FlowGraphSerialization.Hash(graph);
         return new(true, false, "inert-preview", null, [graph.Nodes[0].Id], [])
         {
             Trace = new(graph.SchemaVersion, hash, FlowTraceProvenance.Simulated,

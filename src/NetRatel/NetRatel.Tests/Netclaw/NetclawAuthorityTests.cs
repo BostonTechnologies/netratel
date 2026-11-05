@@ -101,9 +101,11 @@ public sealed class NetclawAuthorityTests
         Assert.False(await authority.CanInvestigateExecutionAsync(17, actor, null, [FlowExecutionSourceKind.Script], default));
         Assert.False(await authority.CanInvestigateExecutionAsync(18, actor, null, [FlowExecutionSourceKind.Job], default));
         Assert.False(await authority.CanInvestigateExecutionAsync(17, actor, credential.Id, [FlowExecutionSourceKind.Job], default));
+        Assert.False(await authority.CanInvestigateExecutionAsync(17, actor, credential.Id, [FlowExecutionSourceKind.Request], default));
         credential.Grants.Add(new() { TenantId = 17, Permission = NetRatelPermissions.JobManagement });
         await db.SaveChangesAsync();
         Assert.True(await authority.CanInvestigateExecutionAsync(17, actor, credential.Id, [FlowExecutionSourceKind.Job], default));
+        Assert.True(await authority.CanInvestigateExecutionAsync(17, actor, credential.Id, [FlowExecutionSourceKind.Request], default));
         Assert.False(await authority.CanInvestigateExecutionAsync(17, "another-owner", credential.Id, [FlowExecutionSourceKind.Job], default));
         credential.RevokedAtUtc = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync();

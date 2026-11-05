@@ -16,6 +16,59 @@ namespace NetRatel.Tests.Flows;
 
 public sealed class FlowExecutionLifecycleOutboxTests
 {
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Request_target_presentation_is_tenant_scoped_and_frozen_for_tracked_and_relational_writers(bool synchronous)
+    {
+        await using var db = Memory();
+        var own = Guid.NewGuid();
+        var foreign = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        db.Agents.AddRange(
+            new Agent { Id = own, TenantId = 7, Name = "synthetic-host-label", FriendlyName = "Synthetic request target",
+                DeviceInfoJson = "{\"hostName\":\"synthetic-host.example\",\"privateValue\":\"never-copy-device-json\"}", CreatedAtUtc = now },
+            new Agent { Id = foreign, TenantId = 8, Name = "Forbidden foreign target", CreatedAtUtc = now });
+        await db.SaveChangesAsync();
+        var requests = new RequestService(db, new EphemeralDataProtectionProvider());
+        var created = await requests.CreateAsync(new("synthetic-gateway", string.Empty, "missing-definition", null, 7, own));
+        var native = await db.Requests.SingleAsync(x => x.Id == created.Id);
+        native.Status = "Failed";
+        native.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
+        var row = await db.OutboxMessages.SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType);
+        var original = row.PayloadJson;
+        var fact = JsonSerializer.Deserialize(original, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto)!;
+        Assert.Equal(own, fact.Target.AgentId);
+        Assert.Equal("Synthetic request target", fact.Target.DisplayName);
+        Assert.Equal("synthetic-host.example", fact.Target.HostName);
+        Assert.Equal(fact.Target, fact.Replay!.Target);
+        Assert.Null(fact.Definition.Name);
+        Assert.DoesNotContain("never-copy-device-json", original);
+
+        db.Agents.Local.Single(x => x.Id == own).FriendlyName = "Edited target after failure";
+        await db.SaveChangesAsync();
+        await ExecutionLifecycleOutbox.RecordRequestAsync(db, native, "Pending", DateTimeOffset.UtcNow, default);
+        await db.SaveChangesAsync();
+        Assert.Equal(original, (await db.OutboxMessages.SingleAsync(x => x.Id == fact.EventId)).PayloadJson);
+
+        var other = await requests.CreateAsync(new("synthetic-gateway", string.Empty, "missing-definition", null, 7, foreign));
+        var otherNative = await db.Requests.SingleAsync(x => x.Id == other.Id);
+        otherNative.Status = "Failed";
+        otherNative.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        // Exercise the same hook used by relational ExecuteUpdate projections, then commit the row.
+        await ExecutionLifecycleOutbox.RecordRequestAsync(db, otherNative, "Pending", DateTimeOffset.UtcNow, default);
+        await db.SaveChangesAsync();
+        var foreignRow = await db.OutboxMessages.SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType && x.Id != fact.EventId);
+        var otherFact = JsonSerializer.Deserialize(foreignRow.PayloadJson, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto)!;
+        Assert.Equal(foreign, otherFact.Target.AgentId);
+        Assert.Null(otherFact.Target.DisplayName);
+        Assert.Null(otherFact.Target.HostName);
+        Assert.DoesNotContain("Forbidden foreign target", foreignRow.PayloadJson);
+        Assert.Equal(0, await db.JobRuns.CountAsync());
+    }
+
     [Theory]
     [InlineData("Success", FlowExecutionOutcome.Succeeded)]
     [InlineData("Completed", FlowExecutionOutcome.Succeeded)]

@@ -8,8 +8,7 @@ public sealed class FlowRequestBodyLimitMiddleware(RequestDelegate next)
 {
     public const long MaximumBytes = FlowLimits.MaximumGraphBytes + FlowLimits.MaximumEventBytes + 4096;
     public const long MaximumSchemaTwoBytes = FlowGraphV2Limits.MaximumGraphBytes + 4096;
-    public const long MaximumExecutionPreviewBytes = FlowGraphV2Limits.MaximumGraphBytes +
-        FlowExecutionEventLimits.MaximumEnvelopeBytes + 65536 + 8192;
+    public const long MaximumExecutionPreviewBytes = FlowPreviewLimits.MaximumRequestBytes;
     public async Task InvokeAsync(HttpContext http)
     {
         var path = http.Request.Path.Value;

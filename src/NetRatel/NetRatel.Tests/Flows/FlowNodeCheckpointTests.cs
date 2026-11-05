@@ -123,6 +123,69 @@ public sealed class FlowNodeCheckpointPostgreSqlTests(PostgreSqlPersistenceFixtu
         afterCrash.Continuation.Node.Trace!.Steps.Should().HaveCount(2);
     }
 
+    [Fact]
+    public async Task Jsonb_reordering_and_numeric_normalization_preserve_bound_inputs_and_frozen_AI_draft()
+    {
+        var connection = await postgres.CreateDatabaseAsync();
+        var clock = new Clock(); var guard = new Guard();
+        await using var provider = Provider(connection, clock, guard);
+        await SeedAsync(provider, clock);
+        using var raw = JsonDocument.Parse("""{"longer":0.100,"q":{"longer":1e2,"a":1}}""");
+        using var number = JsonDocument.Parse("1e2");
+        var inputs = new Dictionary<string, JsonElement>
+        { ["longParameter"] = raw.RootElement.Clone(), ["a"] = number.RootElement.Clone() };
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var version = await db.FlowVersions.SingleAsync();
+            var graph = JsonSerializer.Deserialize<FlowGraphDto>(version.GraphJson, FlowNodeTestData.Json)!;
+            var ai = graph.Nodes[1] with { Kind = FlowNodeKind.InvestigateWithAi, Name = "Synthetic investigation",
+                ConnectorId = Guid.NewGuid(), ConnectorRevision = 1, ExecutionAction = null,
+                Inputs = new Dictionary<string, FlowInputBindingDto>
+                { ["longParameter"] = new(FlowInputSource.Literal, FlowDataType.Json, Literal: raw.RootElement.Clone()),
+                    ["a"] = new(FlowInputSource.Literal, FlowDataType.Number, Literal: number.RootElement.Clone()) } };
+            graph = graph with { Nodes = [graph.Nodes[0], ai, graph.Nodes[2]] };
+            FlowGraphV2Validator.ValidatePublished(graph).Valid.Should().BeTrue();
+            version.GraphJson = FlowGraphSerialization.Serialize(graph);
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+            // Publication hashes the graph after the saved draft's JSONB normalization.
+            version = await db.FlowVersions.SingleAsync();
+            version.ConfigurationHash = FlowGraphSerialization.Hash(JsonSerializer.Deserialize<FlowGraphDto>(version.GraphJson, FlowNodeTestData.Json)!);
+            await db.SaveChangesAsync();
+        }
+        var lease = (await provider.GetRequiredService<IFlowExecutionStore>().ClaimAsync(Guid.NewGuid()))!;
+        var store = provider.GetRequiredService<IFlowNodeExecutionStore>();
+        var trigger = FlowNodeTestData.Prepared(lease, lease.Version.Graph.Nodes[0], 1, 1);
+        (await store.SaveNodeCheckpointAsync(lease, 0, trigger)).Should().Be(FlowCheckpointWriteDisposition.Stored);
+        var first = FlowNodeTestData.Completed(lease, trigger);
+        (await store.SaveNodeCheckpointAsync(lease, 1, first)).Should().Be(FlowCheckpointWriteDisposition.Stored);
+        var prepared = FlowNodeTestData.Prepared(lease, lease.Version.Graph.Nodes[1], 3, 2) with
+        { Inputs = inputs, Outputs = first.Outputs, Trace = first.Trace };
+        (await store.SaveNodeCheckpointAsync(lease, 2, prepared)).Should().Be(FlowCheckpointWriteDisposition.Stored);
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var saved = JsonSerializer.Deserialize<FlowContinuationDto>((await db.FlowRuns.AsNoTracking().SingleAsync()).ContinuationJson!,
+                FlowNodeTestData.Json)!.Node!;
+            saved.Inputs["longParameter"].GetRawText().Should().NotBe(inputs["longParameter"].GetRawText());
+            FlowJsonCanonical.Serialize(saved.Inputs).Should().Be(FlowJsonCanonical.Serialize(inputs));
+        }
+        var dispatching = prepared with { Revision = 4, Progress = FlowNodeProgress.Dispatching };
+        (await store.SaveNodeCheckpointAsync(lease, 3, dispatching)).Should().Be(FlowCheckpointWriteDisposition.Stored);
+        var node = lease.Version.Graph.Nodes[1];
+        var draft = new FlowIncidentActionDraft(lease.Event.TenantId, lease.RunId, node.Id, node.ConnectorId!.Value,
+            node.ConnectorRevision!.Value, lease.SourceInstanceId, FlowActionKeys.Create(lease, node.Id), lease.Event,
+            new("Monitoring alert", "Original monitoring alert."))
+        { Kind = FlowActionKind.NetclawInvestigation, AiDeadlineAtUtc = prepared.DeadlineAtUtc, InvestigationInputs = inputs };
+        var actions = provider.GetRequiredService<IFlowExecutionStore>();
+        (await actions.GetOrCreateActionAsync(lease, draft)).Should().NotBeNull();
+        (await actions.GetOrCreateActionAsync(lease, draft)).Should().NotBeNull();
+        await using var finalScope = provider.CreateAsyncScope();
+        var finalDb = finalScope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        (await finalDb.FlowActions.CountAsync()).Should().Be(1);
+    }
+
     private static ServiceProvider Provider(string connection, Clock clock, Guard guard)
     {
         var services = new ServiceCollection();
@@ -144,7 +207,7 @@ public sealed class FlowNodeCheckpointPostgreSqlTests(PostgreSqlPersistenceFixtu
         FlowGraphV2Validator.ValidatePublished(graph).Valid.Should().BeTrue();
         var flowId = Guid.NewGuid(); var versionId = Guid.NewGuid();
         var now = clock.GetUtcNow();
-        var graphJson = JsonSerializer.Serialize(graph, FlowNodeTestData.Json);
+        var graphJson = FlowGraphSerialization.Serialize(graph);
         var input = new FlowEventEnvelope(17, Guid.NewGuid(), Guid.NewGuid(), versionId, now,
             FlowTestData.EventData("Synthetic checkpoint endpoint", 90) with { ObservedAtUtc = now }, FlowTestData.Authority);
         var eventJson = JsonSerializer.Serialize(input, FlowNodeTestData.Json);
@@ -152,7 +215,7 @@ public sealed class FlowNodeCheckpointPostgreSqlTests(PostgreSqlPersistenceFixtu
         db.FlowDefinitions.Add(new() { Id = flowId, TenantId = 17, Name = "Checkpoint fixture", Revision = 1,
             Enabled = true, DraftJson = graphJson, PublishedVersionId = versionId, PublishedVersionNumber = 1, CreatedAtUtc = now, UpdatedAtUtc = now });
         db.FlowVersions.Add(new() { Id = versionId, FlowId = flowId, TenantId = 17, VersionNumber = 1,
-            GraphJson = graphJson, ConfigurationHash = FlowContractValidation.Hash(System.Text.Encoding.UTF8.GetBytes(graphJson)),
+            GraphJson = graphJson, ConfigurationHash = FlowGraphSerialization.Hash(graph),
             PublishedBy = "fixture", PublishedAtUtc = now });
         db.FlowRuns.Add(new() { Id = Guid.NewGuid(), TenantId = 17, FlowId = flowId, FlowVersionId = versionId,
             EventId = input.EventId, OccurrenceId = input.OccurrenceId, EventJson = eventJson,
@@ -206,7 +269,7 @@ internal static class FlowNodeTestData
         return original with
         {
             Version = original.Version with { Graph = graph,
-                ConfigurationHash = FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(graph, Json)) },
+                ConfigurationHash = FlowGraphSerialization.Hash(graph) },
             CreatedAtUtc = original.Event.OccurredAtUtc
         };
     }
