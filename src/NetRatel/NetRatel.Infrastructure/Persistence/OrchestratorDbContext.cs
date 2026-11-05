@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Infrastructure.Netclaw;
+using NetRatel.Infrastructure.Flows;
 using NetRatel.Application.Operations;
 using NetRatel.Infrastructure.ServiceIdentity;
 using NetRatel.Infrastructure.SystemPairing;
@@ -127,15 +128,17 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
         PreserveComputerUseAudit();
         AdvanceScriptSourceRevisions();
         PreserveUpdateReleaseReference();
+        ExecutionLifecycleOutbox.CaptureTracked(this);
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
 
-    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
         PreserveComputerUseAudit();
         AdvanceScriptSourceRevisions();
         PreserveUpdateReleaseReference();
-        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        await ExecutionLifecycleOutbox.CaptureTrackedAsync(this, cancellationToken);
+        return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
 
     private void AdvanceScriptSourceRevisions()

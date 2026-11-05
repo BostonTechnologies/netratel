@@ -14,7 +14,7 @@ internal sealed class JobRunInputProtection(IDataProtectionProvider protection)
     internal const string Mask = "[REDACTED]";
     internal sealed record Parameter(long Id, string Name, string Type, bool Required);
     internal sealed record Sensitivity(string Provenance, string? DefinitionRevision, Parameter[] Parameters,
-        string? PriorTerminalResultHash = null, string? ProtectedTerminalResultHash = null)
+        string? PriorTerminalResultHash = null, string? ProtectedTerminalResultHash = null, string? DefinitionName = null)
     {
         public bool Legacy => Provenance != "submitted-definition-v1";
         public HashSet<string> Secrets => Parameters.Where(p => p.Type.Equals("secret", StringComparison.OrdinalIgnoreCase))
@@ -27,7 +27,7 @@ internal sealed class JobRunInputProtection(IDataProtectionProvider protection)
         var snapshot = parameters.OrderBy(p => p.Id).Select(p => new Parameter(p.Id, p.Name, p.Type, p.Required)).ToArray();
         var revision = definition is null ? null : Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
             JsonSerializer.Serialize(new { definition.Id, definition.UpdatedAtUtc, Parameters = snapshot }))));
-        return new(definition is null ? "legacy-unknown-v1" : "submitted-definition-v1", revision, snapshot);
+        return new(definition is null ? "legacy-unknown-v1" : "submitted-definition-v1", revision, snapshot, DefinitionName: definition?.Name);
     }
 
     public static Sensitivity Metadata(JobRunRecord run)

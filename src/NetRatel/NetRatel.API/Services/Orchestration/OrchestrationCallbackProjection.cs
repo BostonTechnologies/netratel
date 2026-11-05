@@ -4,6 +4,8 @@ using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Requests;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Flows;
+using NetRatel.Shared.Contracts.Flows;
 
 namespace NetRatel.API.Services.Orchestration;
 
@@ -27,16 +29,31 @@ public static class OrchestrationCallbackProjection
         var terminal = state is not (JobRunState.Pending or JobRunState.Running);
         if (db.Database.IsRelational())
         {
-            // The accepted terminal run body is immutable. This one-statement
-            // guard prevents a stale Running reader from regressing its request.
-            return await db.Requests.Where(x => x.Id == requestId && (terminal ||
-                    x.Status != "Completed" && x.Status != "Failed" && x.Status != "Cancelled" && x.Status != "TimedOut" && x.Status != "Unknown"))
+            // ExecuteUpdate bypasses SaveChanges interception. Lock and capture the original state,
+            // then commit its immutable lifecycle fact with the exact projection write.
+            await using var owned = db.Database.CurrentTransaction is null ? await db.Database.BeginTransactionAsync(ct) : null;
+            var query = db.Database.IsNpgsql()
+                ? db.Requests.FromSqlInterpolated($"SELECT * FROM \"Requests\" WHERE \"Id\" = {requestId} FOR UPDATE")
+                : db.Requests.Where(x => x.Id == requestId);
+            var row = await query.AsNoTracking().SingleOrDefaultAsync(ct);
+            if (row is null || !terminal && FlowExecutionOutcomes.FromAuthoritativeStatus(row.Status) is not null) return false;
+            var previous = row.Status;
+            var changed = await db.Requests.Where(x => x.Id == requestId && x.Status == previous)
                 .ExecuteUpdateAsync(update => update.SetProperty(x => x.Status, status)
                     .SetProperty(x => x.ResultMessage, message).SetProperty(x => x.ResultData, resultJson)
-                    .SetProperty(x => x.UpdatedAtUtc, now), ct) == 1;
+                    .SetProperty(x => x.UpdatedAtUtc, now), ct);
+            if (changed != 1) return false;
+            row.Status = status;
+            row.ResultMessage = message;
+            row.ResultData = resultJson;
+            row.UpdatedAtUtc = now;
+            await ExecutionLifecycleOutbox.RecordRequestAsync(db, row, previous, now, ct);
+            await db.SaveChangesAsync(ct);
+            if (owned is not null) await owned.CommitAsync(ct);
+            return true;
         }
         var current = await requests.GetAsync(requestId, ct);
-        if (current is null || !terminal && current.Status is "Completed" or "Failed" or "Cancelled" or "TimedOut" or "Unknown") return false;
+        if (current is null || !terminal && FlowExecutionOutcomes.FromAuthoritativeStatus(current.Status) is not null) return false;
         return await requests.UpdateAsync(new(requestId, null, null, null, null, status, message, resultJson, null, null), ct) is not null;
     }
 

@@ -7,6 +7,7 @@ using NetRatel.Application.Notifications;
 using NetRatel.Application.Observability;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts.Monitoring;
+using NetRatel.Shared.Contracts.Flows;
 
 namespace NetRatel.Infrastructure.Events;
 
@@ -44,7 +45,8 @@ public sealed class OutboxProcessor(IServiceProvider services, ILogger<OutboxPro
         var now = DateTimeOffset.UtcNow;
 
         var candidates = await db.OutboxMessages.AsNoTracking()
-            .Where(x => !x.Type.StartsWith(MonitoringLimits.NotificationEventPrefix) && x.Status == OutboxStatuses.Pending
+            .Where(x => !x.Type.StartsWith(MonitoringLimits.NotificationEventPrefix) &&
+                        x.Type != FlowExecutionEventLimits.OutboxType && x.Status == OutboxStatuses.Pending
                         && (x.NextAttemptUtc == null || x.NextAttemptUtc <= now)
                         && (x.LockedUntilUtc == null || x.LockedUntilUtc <= now))
             .OrderBy(x => x.OccurredUtc)
