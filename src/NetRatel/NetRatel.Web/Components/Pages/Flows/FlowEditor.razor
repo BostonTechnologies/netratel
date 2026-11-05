@@ -99,13 +99,13 @@
                     <ItemRenderer Context="kind">
                         <div class="flow-palette-item">
                             <MudDragHandle T="FlowNodeKind" Class="flow-palette-handle" aria-label="@($"Drag {FlowCanvas.KindLabel(kind)} to canvas")" data-testid="@($"flow-drag-{kind}")"><MudIcon Icon="@Icons.Material.Filled.DragIndicator" Size="MudBlazor.Size.Small" /></MudDragHandle>
-                            <button type="button" class="flow-palette-label" @onclick="() => _paletteSelection = kind" data-testid="@($"flow-palette-{kind}")"><small class="flow-palette-category">@PaletteCategory(kind)</small>@FlowCanvas.KindLabel(kind)</button>
+                            <button type="button" class="flow-palette-label" @onclick="() => _paletteSelection = kind" data-testid="@($"flow-palette-{kind}")"><small class="flow-palette-category">@PaletteCategory(kind)</small><span class="flow-palette-name">@FlowCanvas.KindLabel(kind)</span></button>
                             <MudTooltip Text="@(CanInsert(kind) ? InsertHint(kind) : InsertBlockReason(kind))"><MudIconButton Icon="@Icons.Material.Filled.AddCircleOutline" Size="MudBlazor.Size.Small" OnClick="() => InsertNodeAsync(kind)" Disabled="@(!CanInsert(kind))" aria-label="@InsertHint(kind)" data-testid="@($"flow-add-{kind}")" /></MudTooltip>
                         </div>
                     </ItemRenderer>
                 </MudDropZone>
                 <p class="flow-help">@(_paletteSelection is { } palette ? PaletteHelp(palette) : "Drag a handle onto the canvas, or use its insert button.")</p>
-                <p>@_adapter.Tree.Nodes.Count / @FlowLimits.MaximumNodes nodes</p>
+                <p>@_adapter.Tree.Nodes.Count / @_adapter.MaximumNodes nodes</p>
                 <label>Selected node<select value="@(_selected?.ToString() ?? "")" @onchange="SelectNode" data-testid="flow-select-node"><option value="">Choose a node</option>
                     @foreach (var n in _adapter.Capture().Nodes) { <option value="@n.Id">@n.Name</option> }
                 </select></label>
