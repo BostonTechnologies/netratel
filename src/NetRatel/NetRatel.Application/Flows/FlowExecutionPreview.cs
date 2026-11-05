@@ -48,18 +48,34 @@ public static class FlowExecutionPreview
             string outcome;
             object? output;
             var inputValues = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+            var redactedInputs = 0;
+            object SnapshotInput()
+            {
+                if (redactedInputs == 0) return new { request.Input, request.Alert, Inputs = inputValues, Incident = fields };
+                return new
+                {
+                    request.Input, request.Alert, Inputs = inputValues, Incident = fields,
+                    UnavailableInputs = new { State = "unavailable", Code = "secret-reference-unavailable", Redacted = true, Count = redactedInputs }
+                };
+            }
             foreach (var binding in current.Inputs ?? new Dictionary<string, FlowInputBindingDto>())
             {
                 var resolved = FlowValueEvaluation.Resolve(binding.Value, request.Input, request.Alert, outputs);
                 if (!resolved.Available || resolved.Value is not { } value)
                 {
-                    trace.Add(current, new { request.Input, request.Alert, Inputs = inputValues }, null,
+                    if (resolved.Code == "secret-reference-unavailable" &&
+                        (current.Kind is FlowNodeKind.RunLibraryScript or FlowNodeKind.RunJob) && fixtures.ContainsKey(current.Id))
+                    {
+                        redactedInputs++;
+                        continue;
+                    }
+                    trace.Add(current, SnapshotInput(), null,
                         FlowTraceStepStatus.Unavailable, resolved.Code, outputUnavailable: true, errorCode: resolved.Code);
                     return Result(resolved.Code);
                 }
                 inputValues.Add(binding.Key, value);
             }
-            var input = new { request.Input, request.Alert, Inputs = inputValues, Incident = fields };
+            var input = SnapshotInput();
 
             switch (current.Kind)
             {
