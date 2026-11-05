@@ -1198,7 +1198,7 @@ public sealed partial class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersisten
             managedGuard: managedGuard, db: services.GetRequiredService<OrchestratorDbContext>(), clock: Clock,
             requests: services.GetRequiredService<IRequestService>(),
             executionAdmissions: RetainFlowRecovery ? services.GetRequiredService<IExecutionAdmissionStore>() : null,
-            executionAuthority: RetainFlowRecovery ? services.GetRequiredService<IKeyedExecutionAuthority>() : null,
+            keyedAuthority: RetainFlowRecovery ? services.GetRequiredService<IKeyedExecutionAuthority>() : null,
             snapshotCapture: RetainStepScriptReplay ? services.GetRequiredService<IJobExecutionSnapshotCapture>() : null,
             scriptReplayPins: RetainStepScriptReplay ? services.GetRequiredService<IScriptExecutionReplayStore>() : null);
         public async Task<JobRunInfo> StartAsync(CancellationToken ct, string? inputs = null, NetRatel.Shared.ClientEnvironment? environment = null)
