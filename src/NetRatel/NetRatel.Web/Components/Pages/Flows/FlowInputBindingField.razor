@@ -5,11 +5,11 @@
 @implements IDisposable
 
 <fieldset disabled="@Disabled" class="flow-binding-field" data-testid="flow-binding-field">
-    <legend>@Label <small>@DataType</small></legend>
+    <legend>@Label <small>@(DataType == FlowDataType.SecretReference ? "Environment reference" : DataType.ToString())</small></legend>
     <label>Value from<select value="@_source" @onchange="SelectSource" data-testid="flow-binding-source">
         @if (AllowUnmapped) { <option value="none">Not mapped</option> }
         @if (DataType == FlowDataType.SecretReference)
-        { <option value="@nameof(FlowInputSource.SecretReference)">Configured credential reference</option> }
+        { <option value="@nameof(FlowInputSource.SecretReference)">Environment variable reference</option> }
         else
         {
             <option value="@nameof(FlowInputSource.Event)">Source event field</option>
@@ -46,8 +46,8 @@
     }
     else if (_source == nameof(FlowInputSource.SecretReference))
     {
-        <label>Configured reference name<input value="@_path" @onchange="SetReference" maxlength="256" autocomplete="off" data-testid="flow-binding-secret-reference" /></label>
-        <p class="flow-binding-help">The server resolves this reference under the execution authority. Enter a reference name, never its secret value.</p>
+        <label>Environment variable name<input value="@_path" @onchange="SetReference" maxlength="128" autocomplete="off" data-testid="flow-binding-secret-reference" /></label>
+        <p class="flow-binding-help">Uses the named variable on the selected execution target. Store its name, never the secret value. Preview and AI do not receive the value.</p>
     }
     else if (_source == nameof(FlowInputSource.Literal))
     {
@@ -132,6 +132,12 @@
     private Task SetReference(ChangeEventArgs args)
     {
         var path = args.Value?.ToString()?.Trim() ?? ""; _path = path;
+        if (path.Length is < 1 or > 128 || !(char.IsAsciiLetter(path[0]) || path[0] == '_') ||
+            !path.All(character => char.IsAsciiLetterOrDigit(character) || character == '_'))
+        {
+            _error = "Use a target environment variable name: a letter or underscore, followed by letters, digits or underscore (up to 128 characters). The previous reference is retained.";
+            return Task.CompletedTask;
+        }
         return Emit(new(FlowInputSource.SecretReference, FlowDataType.SecretReference, path));
     }
     private Task SetBoolean(ChangeEventArgs args) =>
