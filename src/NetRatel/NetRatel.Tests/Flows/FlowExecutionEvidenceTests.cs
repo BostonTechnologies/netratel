@@ -32,6 +32,11 @@ public sealed class FlowExecutionEvidenceTests
         Assert.Contains("Likely exhausted storage.", result.Description);
         Assert.DoesNotContain("monitoring alert", result.Description);
         Assert.Equal(serialized, JsonSerializer.Serialize(original));
+        var mappedBeforeAi = new FlowIncidentFieldsDto("Synthetic incident", "Mapped before investigation.");
+        var final = FlowExecutionEvidenceFormatter.Enrich(mappedBeforeAi, original, 17, RunId, VersionId, ai);
+        Assert.Contains("Mapped before investigation.", final.Description);
+        Assert.Contains("Likely exhausted storage.", final.Description);
+        Assert.Equal("Mapped before investigation.", mappedBeforeAi.Description);
     }
 
     [Fact]
@@ -68,6 +73,10 @@ public sealed class FlowExecutionEvidenceTests
             [rerun with { TerminalEvent = terminal with { Outcome = FlowExecutionOutcome.Unknown } }]));
         Assert.StartsWith("Unknown", FlowExecutionEvidenceFormatter.RecoveryDisposition(original, RunId,
             [rerun with { TerminalEvent = terminal with { Provenance = "sample" } }]));
+        Assert.StartsWith("Unknown", FlowExecutionEvidenceFormatter.RecoveryDisposition(original, RunId,
+            [rerun with { TerminalEvent = terminal with { Provenance = "request-state-commit" } }]));
+        Assert.StartsWith("Unknown", FlowExecutionEvidenceFormatter.RecoveryDisposition(original with
+            { Provenance = "sample" }, RunId, [rerun]));
         Assert.StartsWith("Unknown", FlowExecutionEvidenceFormatter.RecoveryDisposition(original, RunId,
             [rerun with { TerminalEvent = terminal with { Causation = terminal.Causation! with { RootOccurrenceId = "different-root" } } }]));
         Assert.StartsWith("Unknown", FlowExecutionEvidenceFormatter.RecoveryDisposition(original, RunId,
@@ -121,14 +130,14 @@ public sealed class FlowExecutionEvidenceTests
     }
 
     [Fact]
-    public void Large_script_identifiers_keep_their_exact_value_when_the_current_detail_route_cannot_represent_them()
+    public void Script_links_use_the_canonical_request_identity_and_preserve_large_identifiers()
     {
         var original = Source() with { SourceKind = FlowExecutionSourceKind.Script, Replay = null };
         var description = FlowExecutionEvidenceFormatter.DescribeOriginal(original);
         Assert.Contains("Execution: 9007199254740993", description);
-        Assert.Contains("Execution view: /tasks/history", description);
+        Assert.Contains("Execution view: /tasks/request/9007199254740993", description);
         var supported = original with { ExecutionId = "42" };
-        Assert.Contains("Execution view: /tasks/42", FlowExecutionEvidenceFormatter.DescribeOriginal(supported));
+        Assert.Contains("Execution view: /tasks/request/42", FlowExecutionEvidenceFormatter.DescribeOriginal(supported));
     }
 
     [Fact]
@@ -152,7 +161,7 @@ public sealed class FlowExecutionEvidenceTests
             FlowExecutionOutcome.Failed, "Failed", at, at)
         {
             StartedAtUtc = at.AddSeconds(-10), CompletedAtUtc = at, ExitCode = 12, ReasonCode = "job-step-failed",
-            Reason = "The synthetic volume is full.",
+            Reason = "The synthetic volume is full.", Provenance = "job-terminal-ready",
             Replay = new(FlowExecutionSourceKind.Job, definition, target, "job-run:9007199254740993", "9007199254740993", "1", true)
         };
     }

@@ -187,9 +187,10 @@ public static class FlowExecutionEvidenceFormatter
         var replay = original.Replay;
         var terminal = attempt.TerminalEvent;
         return (original.Outcome is FlowExecutionOutcome.Failed or FlowExecutionOutcome.TimedOut) &&
+            FlowExecutionEventValidator.Validate(original).Valid && HasNativeProvenance(original) &&
             replay is { Supported: true } && terminal is not null &&
             FlowExecutionEventValidator.Validate(terminal).Valid && terminal.TenantId == original.TenantId &&
-            terminal.Provenance == "authoritative-transition" && terminal.Outcome == FlowExecutionOutcome.Succeeded &&
+            HasNativeProvenance(terminal) && terminal.Outcome == FlowExecutionOutcome.Succeeded &&
             terminal.CompletedAtUtc is not null && terminal.EventId != original.EventId &&
             terminal.ExecutionId == attempt.AcceptedExecutionId && terminal.ExecutionId != replay.SourceExecutionId &&
             terminal.AttemptId != replay.SourceAttemptId && terminal.ParentExecutionId == replay.SourceExecutionId &&
@@ -201,6 +202,14 @@ public static class FlowExecutionEvidenceFormatter
             cause.ParentEventId == original.EventId && cause.RecoveryAttempt == attempt.Attempt &&
             cause.RootOccurrenceId == (original.Causation?.RootOccurrenceId ?? original.OccurrenceId.ToString("D"));
     }
+
+    private static bool HasNativeProvenance(FlowExecutionEventDto value) => value.SourceKind switch
+    {
+        FlowExecutionSourceKind.Job => value.Provenance == "job-terminal-ready",
+        FlowExecutionSourceKind.Script => value.Provenance == "script-terminal-commit",
+        FlowExecutionSourceKind.Request => value.Provenance == "request-state-commit",
+        _ => false
+    };
 
     private static void ValidateContext(FlowExecutionEventDto original, int tenantId, Guid runId, Guid versionId,
         FlowAiResultDto? ai, IReadOnlyList<FlowRecoveryAttemptEvidence>? attempts)
@@ -264,9 +273,8 @@ public static class FlowExecutionEvidenceFormatter
     {
         FlowExecutionSourceKind.Job when PositiveDecimal(value.Definition.Id) && PositiveDecimal(value.ExecutionId) =>
             "/jobs/" + value.Definition.Id + "/runs/" + value.ExecutionId,
-        FlowExecutionSourceKind.Script when int.TryParse(value.ExecutionId, NumberStyles.None, CultureInfo.InvariantCulture, out var id) && id > 0 =>
-            "/tasks/" + value.ExecutionId,
-        FlowExecutionSourceKind.Script => "/tasks/history",
+        // Script execution identity is the canonical RequestId, not the activity row's int detail ID.
+        FlowExecutionSourceKind.Script => "/tasks/request/" + Uri.EscapeDataString(value.ExecutionId),
         _ => "/requests"
     };
     private static bool PositiveDecimal(string? value) =>
