@@ -167,7 +167,7 @@ public sealed class FlowInvestigationQuestionTests
             Provenance = "job-terminal-ready"
         };
         var envelope = new FlowEventEnvelope(17, source.EventId, source.OccurrenceId, Guid.NewGuid(), at,
-            new("synthetic-publisher"), null!) { ExecutionEvent = source };
+            null, new("synthetic-publisher")) { ExecutionEvent = source };
         return new(17, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 7, Guid.NewGuid(), "synthetic:ai:1",
             envelope, new("Synthetic failure", "Mapped before investigation."))
             { Kind = FlowActionKind.NetclawInvestigation };
