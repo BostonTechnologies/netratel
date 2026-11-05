@@ -6,10 +6,14 @@ namespace NetRatel.Application.Flows;
 /// <summary>Current tenant-paired identity is rechecked; never replace this with a service/global-admin principal.</summary>
 public sealed record FlowExecutionAuthorityDto(string PrincipalId, string? IntegrationCredentialId = null);
 public sealed record FlowEventEnvelope(int TenantId, Guid EventId, Guid OccurrenceId, Guid FlowVersionId,
-    DateTimeOffset OccurredAtUtc, FlowEventDataDto Data, FlowExecutionAuthorityDto Authority)
+    DateTimeOffset OccurredAtUtc, [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] FlowEventDataDto? Data, FlowExecutionAuthorityDto Authority)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public FlowExecutionEventDto? ExecutionEvent { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? SourceDeliveryId { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<Guid>? SourceEventIds { get; init; }
 }
 public enum FlowIngressDisposition { Enqueued, Duplicate, Conflict, Disabled, Invalid, CapacityExceeded }
 public sealed record FlowIngressResult(FlowIngressDisposition Disposition, Guid? RunId = null, string? Code = null);

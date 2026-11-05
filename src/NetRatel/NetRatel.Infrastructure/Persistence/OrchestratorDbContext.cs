@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Infrastructure.Netclaw;
+using NetRatel.Infrastructure.Flows;
 using NetRatel.Application.Operations;
 using NetRatel.Infrastructure.ServiceIdentity;
 using NetRatel.Infrastructure.SystemPairing;
@@ -124,18 +125,40 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
+        // EF's automatic transaction starts after SaveChanges interception. Own it before source
+        // subscription selection so its SHARE locks and the source state/facts commit atomically.
+        using var sourceTransaction = Database.IsNpgsql() && Database.CurrentTransaction is null &&
+            ExecutionLifecycleSubscriptions.NeedsTransaction(this) ? Database.BeginTransaction() : null;
         PreserveComputerUseAudit();
         AdvanceScriptSourceRevisions();
         PreserveUpdateReleaseReference();
-        return base.SaveChanges(acceptAllChangesOnSuccess);
+        ExecutionLifecycleOutbox.CaptureTracked(this);
+        ExecutionLifecycleSubscriptions.Capture(this);
+        var result = base.SaveChanges(sourceTransaction is null && acceptAllChangesOnSuccess);
+        if (sourceTransaction is not null)
+        {
+            sourceTransaction.Commit();
+            if (acceptAllChangesOnSuccess) ChangeTracker.AcceptAllChanges();
+        }
+        return result;
     }
 
-    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
+        await using var sourceTransaction = Database.IsNpgsql() && Database.CurrentTransaction is null &&
+            ExecutionLifecycleSubscriptions.NeedsTransaction(this) ? await Database.BeginTransactionAsync(cancellationToken) : null;
         PreserveComputerUseAudit();
         AdvanceScriptSourceRevisions();
         PreserveUpdateReleaseReference();
-        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        await ExecutionLifecycleOutbox.CaptureTrackedAsync(this, cancellationToken);
+        await ExecutionLifecycleSubscriptions.CaptureAsync(this, cancellationToken);
+        var result = await base.SaveChangesAsync(sourceTransaction is null && acceptAllChangesOnSuccess, cancellationToken);
+        if (sourceTransaction is not null)
+        {
+            await sourceTransaction.CommitAsync(cancellationToken);
+            if (acceptAllChangesOnSuccess) ChangeTracker.AcceptAllChanges();
+        }
+        return result;
     }
 
     private void AdvanceScriptSourceRevisions()
@@ -156,6 +179,8 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        ExecutionAdmissionPersistenceModel.Configure(modelBuilder);
+        ScriptExecutionReplayPersistenceModel.Configure(modelBuilder);
         SoftwareInventoryPersistenceModel.Configure(modelBuilder);
         ComputerUsePersistenceModel.Configure(modelBuilder);
         ClientServiceOperationModel.Configure(modelBuilder);

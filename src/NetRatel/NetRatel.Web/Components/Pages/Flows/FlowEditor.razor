@@ -1,5 +1,6 @@
 @using System.Globalization
 @using System.Text.Json
+@using System.Security.Cryptography
 @using MudBlazor.Extensions
 @using NetRatel.Shared.Contracts.Flows
 @using NetRatel.Shared.Contracts.Netclaw
@@ -96,7 +97,14 @@
             </aside>
             }
             <MudDropZone T="FlowNodeKind" Identifier="canvas" OnlyZone="true" Class="flow-canvas-column">
-                <FlowCanvas @key="_adapter" @ref="_canvas" Adapter="_adapter" ReadOnly="@(ReadOnly || !CanEdit || _busy)" SelectedNodeId="_selected" Selected="SelectNodeAsync" Settings="OpenPropertiesAsync" Delete="RequestRemoveAsync" Changed="CheckDirty" Ready="CanvasReady" InitialViewport="_initialViewport" />
+                <FlowCanvas @key="_adapter" @ref="_canvas" Adapter="_adapter" TenantId="Definition.TenantId" Connectors="Connectors" ReadOnly="@(ReadOnly || !CanEdit || _busy)" SelectedNodeId="_selected" Selected="SelectNodeAsync" Settings="OpenPropertiesAsync" Delete="RequestRemoveAsync" Changed="CheckDirty" Ready="CanvasReady" InitialViewport="_initialViewport" />
+                @if (_preview?.Trace is { } trace && _previewGraphHash is not null)
+                {
+                    <div class="flow-playback-overlay">
+                        <FlowTracePlayer @key="trace" Trace="trace" ContextKey="@($"{Definition.TenantId}:{Definition.Id:N}:{_generation}:{_previewGraphHash}")"
+                            ExpectedConfigurationHash="@_previewGraphHash" ScopeId="@_shellId" />
+                    </div>
+                }
             </MudDropZone>
             @if (_showProperties)
             {
@@ -179,14 +187,7 @@
                         </fieldset>
                     }
                     else { <p>Select a node on the canvas or in the node list.</p> }
-                    <fieldset disabled="@(ReadOnly || !CanEdit || _busy)" class="flow-connections"><legend>Connections</legend>
-                        <label>From<select @bind="_from" data-testid="flow-connect-from"><option value="">Choose output</option>@foreach (var n in _adapter.Capture().Nodes.Where(n => !FlowGraphValidator.IsTerminal(n.Kind))) { <option value="@n.Id">@n.Name · @FlowCanvasAdapter.OutputType(n.Kind)</option> }</select></label>
-                        <label>To<select @bind="_to" data-testid="flow-connect-to"><option value="">Choose input</option>@foreach (var n in _adapter.Capture().Nodes.Where(n => n.Kind != FlowNodeKind.AlertRaised)) { <option value="@n.Id">@n.Name · @FlowCanvasAdapter.InputType(n.Kind)</option> }</select></label>
-                        <button type="button" @onclick="ConnectAsync" data-testid="flow-connect">Connect ports</button>
-                        @foreach (var edge in _adapter.Capture().Edges)
-                        { <p class="flow-edge">@NodeLabel(edge.SourceNodeId) → @NodeLabel(edge.TargetNodeId)<button type="button" @onclick="() => DisconnectAsync(edge)" aria-label="@($"Disconnect {NodeLabel(edge.SourceNodeId)} from {NodeLabel(edge.TargetNodeId)}")">Remove</button></p> }
-                    </fieldset>
-                    </div>
+           </div>
                 </aside>
             }
             </ChildContent>
@@ -228,7 +229,7 @@
     private FlowCanvas? _canvas;
     private FlowViewportDto _initialViewport = new();
     private Guid? _selected;
-    private string _name = "", _baseline = "", _from = "", _to = "";
+    private string _name = "", _baseline = "";
     private bool _dirty, _busy, _loading, _disposed, _showProperties, _propertiesPinned, _focused, _showDryRun, _focusPending, _propertiesFocusPending, _allowNavigation;
     private Guid? _pendingDelete;
     private FlowNodeKind? _paletteSelection;
@@ -252,6 +253,7 @@
     private string? _error, _message, _operation, _reviewedFingerprint;
     private IReadOnlyList<FlowValidationIssueDto> _issues = [];
     private FlowDryRunResultDto? _preview;
+    private string? _previewGraphHash;
     private CancellationTokenSource _lifetime = new();
     private int _generation;
     private MudIconButton? _closeButton;
@@ -278,7 +280,7 @@
             var old = _adapter; _adapter = replacement; _canvas = null; _current = definition; _name = definition.Name;
             _initialViewport = definition.Draft.Viewport; _selected = definition.Draft.Nodes.FirstOrDefault(n => n.Id == InitialSelectedNodeId)?.Id ?? definition.Draft.Nodes.FirstOrDefault()?.Id;
             _showProperties = InitialSelectedNodeId is not null && _selected == InitialSelectedNodeId;
-            _baseline = Fingerprint(definition.Name, definition.Draft); _dirty = false; _issues = []; _preview = null; _showDryRun = false; _reviewedFingerprint = null; _focusPending = true;
+            _baseline = Fingerprint(definition.Name, definition.Draft); _dirty = false; _issues = []; _preview = null; _previewGraphHash = null; _showDryRun = false; _reviewedFingerprint = null; _focusPending = true;
             if (old is not null) await old.DisposeAsync();
             await DirtyChanged.InvokeAsync(false);
         }
@@ -328,7 +330,7 @@
         if (ReadOnly || _adapter is null || _disposed) return;
         var fingerprint = Fingerprint(_name, _canvas?.CaptureCurrent() ?? _adapter.Capture(_initialViewport.ScrollX, _initialViewport.ScrollY));
         if (_reviewedFingerprint is not null && _reviewedFingerprint != fingerprint)
-        { _reviewedFingerprint = null; _issues = []; _preview = null; _message = "Draft changed. Validate the current draft."; }
+        { _reviewedFingerprint = null; _issues = []; _preview = null; _previewGraphHash = null; _message = "Draft changed. Validate the current draft."; }
         var next = fingerprint != _baseline;
         if (next == _dirty) return; _dirty = next; await DirtyChanged.InvokeAsync(next);
     }
@@ -372,7 +374,10 @@
         var graph = await CaptureAsync(); var reviewed = Fingerprint(_name, graph);
         var result = await Api.DryRunAsync(tenant, new(graph, input), token);
         if (!Current(generation, tenant, id)) return;
-        _reviewedFingerprint = reviewed; _preview = result; _issues = result.Issues; await CheckDirty();
+        _reviewedFingerprint = reviewed; _preview = result; _issues = result.Issues;
+        _previewGraphHash = Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(graph, new JsonSerializerOptions(JsonSerializerDefaults.Web))));
+        await CheckDirty();
+        if (_preview?.Trace is { Steps.Count: > 0 }) await ClosePreviewAsync();
     });
     private Task PublishAsync() => ReadOnly || !CanPublish || _dirty ? Task.CompletedTask : CommandAsync("publish", async (tenant, id, token) =>
     {
@@ -392,6 +397,7 @@
     public async Task RequestLeaveAsync(Func<Task> destination)
     {
         if (_busy || _disposed || _pendingLeave is not null) return;
+        if (_showDryRun) await ClosePreviewAsync();
         if (_pendingDelete is not null) await KeepNodeAsync();
         if (_dirty) { ++_leaveDialogGeneration; _pendingLeave = destination; await InvokeAsync(StateHasChanged); return; }
         await destination();
@@ -448,19 +454,24 @@
         if (_pendingLeave is not null || _pendingDelete is not null) return;
         if (args.Key == "Escape")
         {
-            if (_showDryRun) await ClosePreviewAsync();
+            if (_canvas?.IsConnecting == true) await _canvas.CancelConnectionAsync();
+            else if (_showDryRun) await ClosePreviewAsync();
             else if (_showProperties) await ClosePropertiesAsync();
             else if (_focused) await ToggleFocusAsync();
         }
-        else if (args.Key == "Delete" && _selected is { } node && !ReadOnly && CanEdit && !_busy)
+        else if (args.Key == "Delete" && !ReadOnly && CanEdit && !_busy)
         {
             _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/flows-editor.js");
-            if (!await _module.InvokeAsync<bool>("isEditing")) await RequestRemoveAsync(node);
+            if (!await _module.InvokeAsync<bool>("isEditing"))
+            {
+                if (_canvas?.HasSelectedConnection == true) await _canvas.RemoveSelectedConnectionAsync();
+                else if (_selected is { } node) await RequestRemoveAsync(node);
+            }
         }
     }
     private void SelectNode(ChangeEventArgs args) => _selected = Guid.TryParse(args.Value?.ToString(), out var id) && _adapter?.Metadata.Values.Any(n => n.Id == id) == true ? id : null;
-    private Task SelectNodeAsync(Guid id) { _selected = id; return Task.CompletedTask; }
-    private Task OpenPropertiesAsync(Guid id) { _selected = id; _showProperties = true; _propertiesFocusPending = true; return Task.CompletedTask; }
+    private Task SelectNodeAsync(Guid id) { _canvas?.ClearConnectionSelection(); _selected = id; return Task.CompletedTask; }
+    private Task OpenPropertiesAsync(Guid id) { _canvas?.ClearConnectionSelection(); _selected = id; _showProperties = true; _propertiesFocusPending = true; return Task.CompletedTask; }
     private Task TogglePropertiesAsync()
     {
         if (_showProperties) return ClosePropertiesAsync();
@@ -556,16 +567,12 @@
         var generation = _generation; await _adapter!.RemoveAsync(node, token);
         if (!Current(generation, tenant, id)) return;
         if (_selected == node) { _selected = null; _showProperties = false; }
-        _from = _from == node.ToString() ? "" : _from; _to = _to == node.ToString() ? "" : _to;
         await CheckDirty();
     });
     private static string PaletteCategory(FlowNodeKind kind) => kind switch
     { FlowNodeKind.AlertRaised => "Events", FlowNodeKind.Condition => "Logic", FlowNodeKind.MapIncident => "Data",
       FlowNodeKind.InvestigateWithAi => "AI", _ => "Integrations" };
     private static string PaletteHelp(FlowNodeKind kind) => kind switch { FlowNodeKind.AlertRaised => "Starts when a monitoring occurrence fires.", FlowNodeKind.Condition => "Checks a selected alert value.", FlowNodeKind.MapIncident => "Sets the message title, description and incident priority.", FlowNodeKind.CreateIncident => "Delivers an incident through an approved RatelDesk connection.", FlowNodeKind.InvestigateWithAi => "Waits for one AI investigation before the next action. Insert it into an existing incident path to retain and enrich the incident.", FlowNodeKind.ActionGroup => "Runs notification, incident and AI actions independently.", _ => "Unsupported node." };
-    private Task ConnectAsync() => CommandAsync("connect", async (tenant, id, token) =>
-    { if (!CanEdit || ReadOnly || !Guid.TryParse(_from, out var from) || !Guid.TryParse(_to, out var to)) { _error = "Select an output and an input."; return; } var generation = _generation; await _adapter!.ConnectAsync(from, to, token); if (Current(generation, tenant, id)) await CheckDirty(); });
-    private Task DisconnectAsync(FlowEdgeDto edge) => CommandAsync("disconnect", async (tenant, id, token) => { if (!CanEdit || ReadOnly) return; var generation = _generation; await _adapter!.DisconnectAsync(edge, token); if (Current(generation, tenant, id)) await CheckDirty(); });
     private void UpdateConditionField(FlowNodeDto node, ChangeEventArgs e) { if (Enum.TryParse<FlowValueField>(e.Value?.ToString(), out var field)) UpdateNode(node with { Condition = field == FlowValueField.NumericValue ? new(field, FlowComparison.GreaterThan, 90) : new(field, FlowComparison.Equal, null, "") }); }
     private void UpdateConditionComparison(FlowNodeDto node, ChangeEventArgs e) { if (Enum.TryParse<FlowComparison>(e.Value?.ToString(), out var comparison)) UpdateNode(node with { Condition = (node.Condition ?? new(FlowValueField.NumericValue, comparison, 90)) with { Comparison = comparison } }); }
     private void UpdateConditionNumber(FlowNodeDto node, ChangeEventArgs e)

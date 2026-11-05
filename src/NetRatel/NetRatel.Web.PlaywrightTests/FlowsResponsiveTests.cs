@@ -38,11 +38,11 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await page.GetByTestId("flow-fit").ClickAsync();
         await AssertNativeNodesFitAsync(page);
         await AssertNoOverflowAsync(page);
+        var canvasEvidence = EvidenceRoot(); Directory.CreateDirectory(canvasEvidence);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(canvasEvidence, $"flows-{width}x{height}-{theme}-workspace.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
         foreach (var id in new[] { "flow-close", "flow-name", "flow-save", "flow-validate", "flow-dry-run-toggle", "flow-publish", "flow-reload", "flow-properties-toggle", "flow-fit", "flow-overview-toggle" })
             await AssertControlReachableAsync(page.GetByTestId(id), width, height);
         var actionId = await page.Locator("[data-node-kind=CreateIncident]").GetAttributeAsync("data-node-id");
-        var canvasEvidence = EvidenceRoot(); Directory.CreateDirectory(canvasEvidence);
-        await page.ScreenshotAsync(new() { Path = Path.Combine(canvasEvidence, $"flows-{width}x{height}-{theme}-workspace.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
         await Assertions.Expect(page.GetByTestId("flow-properties")).ToHaveCountAsync(0);
         await page.Locator($"[data-node-id='{actionId}'] [data-testid=flow-node-settings]").ClickAsync();
         await AssertControlReachableAsync(page.GetByTestId("flow-connector"), width, height);
@@ -158,6 +158,8 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         var fixture = _fixture!;
         await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1600, Height = 1000 } });
         var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000);
+        // Test the cancellable full-window fallback explicitly; native fullscreen Escape is browser-owned.
+        await page.AddInitScriptAsync("Object.defineProperty(document, 'fullscreenEnabled', { configurable: true, get: () => false });");
         var errors = new List<string>(); page.PageError += (_, error) => errors.Add(error);
         foreach (var (path, mime) in new[] { ("/_content/VeloxDev.Razor/veloxdev.workflow.css", "text/css"), ("/_content/VeloxDev.Razor/veloxdev.workflow.js", "text/javascript"), ("/js/flows-editor.js", "text/javascript") })
         {
@@ -182,6 +184,21 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         var trigger = await page.Locator("[data-node-kind=AlertRaised]").GetAttributeAsync("data-node-id");
         var mapping = await page.Locator("[data-node-kind=MapIncident]").GetAttributeAsync("data-node-id");
         var action = await page.Locator("[data-node-kind=CreateIncident]").GetAttributeAsync("data-node-id");
+        await page.GetByTestId("flow-focus").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-focus")).ToHaveAttributeAsync("aria-pressed", "true");
+        var cancelPort = (await page.Locator($"[data-port-node='{trigger}'][data-port-direction=output] svg").BoundingBoxAsync())!;
+        await page.Mouse.MoveAsync(cancelPort.X + cancelPort.Width / 2, cancelPort.Y + cancelPort.Height / 2);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(cancelPort.X + 100, cancelPort.Y + 40, new() { Steps = 4 });
+        await page.WaitForFunctionAsync("() => !document.querySelector('[data-testid=flow-virtual-link]').hasAttribute('hidden')");
+        await page.EvaluateAsync("document.dispatchEvent(new PointerEvent('pointerup', { pointerId: 999999, pointerType: 'touch', bubbles: true }))");
+        Assert.False(await page.GetByTestId("flow-virtual-link").EvaluateAsync<bool>("path => path.hasAttribute('hidden')"));
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(page.GetByTestId("flow-virtual-link")).ToHaveAttributeAsync("hidden", "hidden");
+        await Assertions.Expect(page.GetByTestId("flow-focus")).ToHaveAttributeAsync("aria-pressed", "true");
+        await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(0);
+        Assert.Equal(0, await page.Locator(".flow-port.compatible,.flow-port.incompatible,.flow-port.pending").CountAsync());
+        await page.Mouse.UpAsync();
         await GestureAsync(page, page.Locator($"[data-port-node='{trigger}'][data-port-direction=output] svg"), page.Locator($"[data-port-node='{mapping}'][data-port-direction=input] svg"));
         await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(1);
         await GestureAsync(page, page.Locator($"[data-port-node='{mapping}'][data-port-direction=output] svg"), page.Locator($"[data-port-node='{action}'][data-port-direction=input] svg"));
@@ -371,7 +388,13 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
     {
         var a = (await from.BoundingBoxAsync())!; var b = (await to.BoundingBoxAsync())!;
         await page.Mouse.MoveAsync(a.X + a.Width / 2, a.Y + a.Height / 2); await page.Mouse.DownAsync();
-        await page.Mouse.MoveAsync(b.X + b.Width / 2, b.Y + b.Height / 2, new() { Steps = 18 }); await page.Mouse.UpAsync();
+        await page.Mouse.MoveAsync(b.X + b.Width / 2, b.Y + b.Height / 2, new() { Steps = 18 });
+        await page.WaitForFunctionAsync("() => {const p=document.querySelector('[data-testid=flow-virtual-link]');return p&&!p.hasAttribute('hidden')&&p.getAttribute('d')?.includes(' C ')}");
+        await Assertions.Expect(page.GetByTestId("flow-virtual-link")).ToHaveAttributeAsync("stroke-dasharray", "7 5");
+        var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-connection-before-drop.png"), Animations = ScreenshotAnimations.Disabled });
+        await page.Mouse.UpAsync();
+        await Assertions.Expect(page.GetByTestId("flow-virtual-link")).ToHaveAttributeAsync("hidden", "hidden");
     }
     private static async Task AssertNativeNodesFitAsync(IPage page)
     {
@@ -404,8 +427,11 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
     private static async Task AssertControlReachableAsync(ILocator control, int width, int height)
     {
         await control.EvaluateAsync("e => e.scrollIntoView({block:'center',inline:'nearest'})"); var bounds = (await control.BoundingBoxAsync())!;
-        Assert.InRange(bounds.X, -1, width); Assert.True(bounds.X + bounds.Width <= width + 1);
-        Assert.InRange(bounds.Y, -1, height); Assert.True(bounds.Y + bounds.Height <= height + 1);
+        var id = await control.GetAttributeAsync("data-testid") ?? await control.GetAttributeAsync("aria-label") ?? "control";
+        Assert.InRange(bounds.X, -1, width);
+        Assert.True(bounds.X + bounds.Width <= width + 1, $"{id} horizontal bounds X={bounds.X}, width={bounds.Width}, viewport={width}.");
+        Assert.InRange(bounds.Y, -1, height);
+        Assert.True(bounds.Y + bounds.Height <= height + 1, $"{id} vertical bounds Y={bounds.Y}, height={bounds.Height}, viewport={height}.");
         Assert.True(await control.EvaluateAsync<bool>("e => {const r=e.getBoundingClientRect();const hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return hit===e || e.contains(hit) || (e.matches(':disabled') && hit?.contains(e) && hit.closest('.mud-tooltip-root')===e.closest('.mud-tooltip-root'))}"), $"{await control.GetAttributeAsync("data-testid")} must not be covered by the app bar, drawer, or another panel.");
     }
     private static async Task AssertNoOverflowAsync(IPage page) => Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth + 1"));

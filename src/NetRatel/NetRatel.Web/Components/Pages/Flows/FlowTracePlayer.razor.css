@@ -1,0 +1,21 @@
+.flow-trace-player { max-width:min(720px,100%); max-height:min(62dvh,640px); overflow:auto; padding:12px; border:1px solid var(--mud-palette-divider); border-radius:10px; background:var(--mud-palette-surface); color:var(--mud-palette-text-primary); box-shadow:0 4px 16px #0002; font-size:.85rem; }
+.flow-trace-player header { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; }
+.flow-trace-player header span, .flow-trace-warning { font-size:.78rem; color:var(--mud-palette-text-secondary); }
+.flow-trace-controls { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:10px 0; }
+.flow-trace-player button, .flow-trace-player select { border:1px solid var(--mud-palette-divider); border-radius:5px; padding:5px 8px; color:inherit; background:var(--mud-palette-background); font:inherit; }
+.flow-trace-player button:focus-visible, .flow-trace-player select:focus-visible { outline:3px solid var(--mud-palette-primary); outline-offset:2px; }
+.flow-trace-player button[aria-pressed=true], .flow-trace-player button[aria-current=step] { background:var(--mud-palette-primary); color:var(--mud-palette-primary-text); }
+.flow-trace-player button:disabled { opacity:.5; }
+.flow-trace-controls label { display:flex; align-items:center; gap:4px; }
+.flow-trace-controls output { margin-inline-start:auto; font-variant-numeric:tabular-nums; }
+.flow-trace-steps { display:flex; gap:5px; padding:3px 1px 8px; overflow:auto; }
+.flow-trace-steps button { flex-shrink:0; }
+.flow-trace-step h4 { margin:6px 0; font-size:.95rem; }
+.flow-trace-step dl { display:flex; flex-wrap:wrap; gap:6px 20px; margin:8px 0; }
+.flow-trace-step dt { color:var(--mud-palette-text-secondary); font-size:.75rem; }
+.flow-trace-step dd { margin:0; overflow-wrap:anywhere; }
+.flow-trace-step details { margin-top:8px; }
+.flow-trace-step summary { cursor:pointer; font-weight:600; }
+.flow-trace-step ::deep pre { white-space:pre-wrap; overflow-wrap:anywhere; padding:8px; margin:6px 0; border-radius:5px; background:var(--mud-palette-background); max-height:220px; overflow:auto; font-size:.78rem; }
+.flow-trace-step ::deep p { overflow-wrap:anywhere; }
+@media(max-width:600px) { .flow-trace-player { max-height:52dvh; padding:8px; } .flow-trace-controls { gap:4px; } .flow-trace-controls output { width:100%; margin:0; } }

@@ -14,9 +14,12 @@ public interface IFlowTransactionAdmission
 }
 
 /// <summary>The mandatory default requires real current Monitoring and owner authority; no local fallback admits an action.</summary>
-public sealed class MonitoringFlowTransactionAdmission(IFlowExecutionAuthorityVerifier authority, TimeProvider clock)
+public sealed class MonitoringFlowTransactionAdmission(IFlowExecutionAuthorityVerifier authority, TimeProvider clock,
+    IFlowExecutionEventAdmission? source)
     : IFlowTransactionAdmission
 {
+    public MonitoringFlowTransactionAdmission(IFlowExecutionAuthorityVerifier authority, TimeProvider clock) : this(authority, clock, null) { }
+
     public async Task<FlowDispatchDecision> CanStartActionAsync(OrchestratorDbContext db, FlowRunLease lease,
         CancellationToken cancellationToken = default)
     {
@@ -35,8 +38,11 @@ public sealed class MonitoringFlowTransactionAdmission(IFlowExecutionAuthorityVe
                 return new(false, "flow-transaction-lease-expired");
             if (!await authority.AuthorizeAsync(lease.Event.TenantId, lease.Event.Authority, cancellationToken).ConfigureAwait(false))
                 return new(false, "flow-transaction-authority-unavailable");
-            var decision = await MonitoringStore.LockAndAdmitFlowAsync(db, lease.Event, lease.RunId, clock,
-                cancellationToken).ConfigureAwait(false);
+            var decision = lease.Event.ExecutionEvent is not null
+                ? source is null ? new FlowDispatchDecision(false, "execution-source-admission-unavailable")
+                    : await source.LockAndAdmitInvestigationAsync(db, lease.Event, lease.RunId, cancellationToken).ConfigureAwait(false)
+                : await MonitoringStore.LockAndAdmitFlowAsync(db, lease.Event, lease.RunId, clock,
+                    cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             return lease.ExpiresAtUtc <= await ClientConnectionEpochStore.EffectiveNowAsync(connection, transaction, clock,
                 cancellationToken).ConfigureAwait(false)

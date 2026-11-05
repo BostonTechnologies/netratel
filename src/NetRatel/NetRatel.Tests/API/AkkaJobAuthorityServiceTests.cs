@@ -322,6 +322,134 @@ public sealed class AkkaJobAuthorityServiceTests
         runs.Logs.Should().ContainSingle(); gateway.DispatchCount.Should().Be(1); runs.Activity!.ExitCode.Should().Be(0);
     }
 
+    [Fact]
+    public async Task Keyed_start_after_lost_flow_receipt_returns_the_existing_execution_without_dispatching_again()
+    {
+        var agent = Guid.NewGuid();
+        var runs = new InMemoryRuns();
+        var gateway = new AvailableGateway();
+        var admissions = new MemoryAdmissions();
+        var authority = new KeyedAuthority();
+        var definition = (await new OneStepDefinitions(agent).GetDetailsAsync(41))!;
+        var request = new KeyedJobAdmissionRequest(AdmissionIdentity(), new(definition, []), new("operator", "{}", null));
+        AkkaJobAuthorityService NewProcess() => new(new OneStepDefinitions(agent), runs,
+            new JobTaskBridge(new EmptyScripts(), NullLogger<JobTaskBridge>.Instance), gateway, new AcceptingRouter(),
+            new RecordingRealtimeFanoutSink(), new JobAuthorityIdGenerator(), new TestHostEnvironment(),
+            executionAdmissions: admissions, keyedAuthority: authority);
+
+        var accepted = await NewProcess().StartKeyedAsync(request, CancellationToken.None);
+        // The caller lost the receipt and a fresh worker/process retries the canonical boundary.
+        var recovered = await NewProcess().StartKeyedAsync(request, CancellationToken.None);
+
+        recovered.Id.Should().Be(accepted.Id);
+        recovered.Status.Should().Be(JobRunState.Running);
+        gateway.DispatchCount.Should().Be(1);
+        admissions.Allocations.Should().Be(1);
+        authority.Checks.Should().BeGreaterThan(4);
+        var changed = () => NewProcess().StartKeyedAsync(request with { Request = request.Request with { InputsJson = """{"different":true}""" } }, CancellationToken.None);
+        await changed.Should().ThrowAsync<InvalidOperationException>().WithMessage("*semantic*");
+        gateway.DispatchCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task A_crash_after_key_reservation_before_job_creation_consumes_the_same_pinned_identity()
+    {
+        var agent = Guid.NewGuid();
+        var original = (await new OneStepDefinitions(agent).GetDetailsAsync(41))!;
+        original = original with { Steps = [original.Steps[0] with { Command = "printf pinned-definition" }] };
+        var identity = AdmissionIdentity();
+        var request = new KeyedJobAdmissionRequest(identity, new(original, []), new("operator", "{}", null));
+        var admitted = request with { Request = request.Request with { StartedBy = $"flow-keyed:{identity.ActionKey:N}" } };
+        var admissions = new MemoryAdmissions();
+        await admissions.ReserveAsync(new(identity, ExecutionAdmissionKind.Job, JsonSerializer.Serialize(admitted)),
+            () => "9007199254740997", CancellationToken.None);
+        // The first process crashed here. Current mutable definitions differ from the admitted source.
+        var gateway = new AvailableGateway();
+        var service = new AkkaJobAuthorityService(new OneStepDefinitions(agent), new InMemoryRuns(),
+            new JobTaskBridge(new EmptyScripts(), NullLogger<JobTaskBridge>.Instance), gateway, new AcceptingRouter(),
+            new RecordingRealtimeFanoutSink(), new JobAuthorityIdGenerator(), new TestHostEnvironment(),
+            executionAdmissions: admissions, keyedAuthority: new KeyedAuthority());
+
+        var recovered = await service.StartKeyedAsync(request, CancellationToken.None);
+
+        recovered.Id.ToString(System.Globalization.CultureInfo.InvariantCulture).Should().Be("9007199254740997");
+        admissions.Allocations.Should().Be(1);
+        gateway.DispatchCount.Should().Be(1);
+        JsonSerializer.Deserialize<ExecShellCommandPayload>(gateway.LastDispatch!.PayloadJson)!.Command.Should().Be("printf pinned-definition");
+    }
+
+    [Fact]
+    public async Task Keyed_job_keeps_its_pinned_sources_and_checks_current_authority_for_the_next_step()
+    {
+        var agent = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        const string content = "printf pinned-flow-source";
+        var script = new ScriptInfo(91, "diagnostic", "/", "synthetic fixture", content, null, "bash", now, now, 4);
+        var definition = new JobDefinitionDetails(
+            new(41, "pinned-job", "/", null, 7, string.Empty, now, now, null, agent), [],
+            [new(42, 41, 1, JobStepKind.LibraryScript, null, null, 91, null, true),
+             new(43, 41, 2, JobStepKind.LibraryScript, null, null, 91, null, true)]);
+        var snapshot = new PinnedJobExecutionSnapshot(definition,
+            [new(script, [], Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content))))]);
+        var runs = new InMemoryRuns();
+        var gateway = new AvailableGateway();
+        var authority = new KeyedAuthority();
+        var service = new AkkaJobAuthorityService(new OneStepDefinitions(agent), runs,
+            new JobTaskBridge(new EmptyScripts(), NullLogger<JobTaskBridge>.Instance), gateway, new AcceptingRouter(),
+            new RecordingRealtimeFanoutSink(), new JobAuthorityIdGenerator(), new TestHostEnvironment(),
+            executionAdmissions: new MemoryAdmissions(), keyedAuthority: authority);
+        await service.StartKeyedAsync(new(AdmissionIdentity(), snapshot, new("operator", "{}", null)), CancellationToken.None);
+        JsonSerializer.Deserialize<ExecLibraryScriptPayload>(gateway.LastDispatch!.PayloadJson)!.ScriptContent.Should().Be(content);
+        authority.Allowed = false;
+
+        await service.RecordLifecycleAsync(new(7, agent), Lifecycle(runs, JobGatewayLifecycleStatus.Completed, 3, """{"exitCode":0}""", 0), CancellationToken.None);
+
+        gateway.DispatchCount.Should().Be(1);
+        runs.Run!.Status.Should().Be(JobRunState.Failed);
+        runs.Run.Error.Should().Contain("execution-admission-denied");
+    }
+
+    private static ExecutionAdmissionIdentity AdmissionIdentity()
+        => new(Guid.NewGuid(), 7, "operator@example.test", Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 1);
+
+    private sealed class KeyedAuthority : IKeyedExecutionAuthority
+    {
+        public bool Allowed { get; set; } = true;
+        public int Checks { get; private set; }
+        public Task RequireFirstDispatchAsync(ExecutionAdmissionIdentity identity, NetRatel.Application.Flows.FlowRunLease? lease, CancellationToken ct)
+        {
+            if (!Allowed) throw new ExecutionAdmissionDeniedException("The configuring principal is no longer authorized.");
+            return Task.CompletedTask;
+        }
+        public Task RequireAllowedAsync(ExecutionAdmissionIdentity identity, JobDefinitionInfo definition, CancellationToken ct)
+        {
+            Checks++;
+            if (!Allowed) throw new ExecutionAdmissionDeniedException("The configuring principal is no longer authorized.");
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class MemoryAdmissions : IExecutionAdmissionStore
+    {
+        private readonly Dictionary<Guid, (ExecutionAdmissionSubmission Submission, ExecutionAdmissionBinding Binding)> _bindings = [];
+        public int Allocations { get; private set; }
+        public Task<ExecutionAdmissionBinding> ReserveAsync(ExecutionAdmissionSubmission submission, Func<string> allocate, CancellationToken ct)
+        {
+            if (_bindings.TryGetValue(submission.Identity.ActionKey, out var saved))
+            {
+                if (saved.Submission != submission) throw new InvalidOperationException("Changed semantic payload.");
+                return Task.FromResult(saved.Binding);
+            }
+            Allocations++;
+            var binding = new ExecutionAdmissionBinding(submission.Identity, submission.Kind, allocate(), submission.PayloadJson, DateTimeOffset.UtcNow);
+            _bindings.Add(submission.Identity.ActionKey, (submission, binding));
+            return Task.FromResult(binding);
+        }
+        public Task RecordAuthorityDeniedAsync(ExecutionAdmissionKind kind, string id, CancellationToken ct) => Task.CompletedTask;
+        public Task<ExecutionAdmissionBinding?> FindByExecutionAsync(ExecutionAdmissionKind kind, string id, CancellationToken ct)
+            => Task.FromResult(_bindings.Values.Select(entry => entry.Binding).SingleOrDefault(binding => binding.Kind == kind && binding.ExecutionId == id));
+    }
+
     private static AkkaJobAuthorityService CreateAuthority(Guid agent, InMemoryRuns runs, IJobDefinitionService? definitions = null, AvailableGateway? gateway = null) =>
         new(definitions ?? new OneStepDefinitions(agent), runs, new JobTaskBridge(new EmptyScripts(), NullLogger<JobTaskBridge>.Instance),
             gateway ?? new AvailableGateway(), new AcceptingRouter(), new RecordingRealtimeFanoutSink(), new JobAuthorityIdGenerator(), new TestHostEnvironment());
@@ -393,6 +521,9 @@ public sealed class AkkaJobAuthorityServiceTests
 
     private sealed class InMemoryRuns : IJobRunService
     {
+        public PinnedJobExecutionSnapshot? PinnedSnapshot { get; set; }
+        public void BindPinnedExecutionSnapshot(ulong runId, PinnedJobExecutionSnapshot snapshot) => PinnedSnapshot = snapshot;
+        public Task<PinnedJobExecutionSnapshot?> GetPinnedExecutionSnapshotAsync(ulong runId, CancellationToken ct = default) => Task.FromResult(PinnedSnapshot);
         public McpOperatorJobExecutionSnapshot? McpSnapshot { get; set; }
         public void BindMcpExecutionSnapshot(ulong runId, McpOperatorJobExecutionSnapshot snapshot) => McpSnapshot = snapshot;
         public Task<McpOperatorJobExecutionSnapshot?> GetMcpExecutionSnapshotAsync(ulong runId, CancellationToken ct = default) => Task.FromResult(McpSnapshot);

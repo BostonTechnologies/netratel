@@ -25,6 +25,43 @@ public sealed class FlowExecutionEventContractTests
     public void Nonterminal_or_observational_state_does_not_become_a_terminal_event(string? raw)
         => Assert.Null(FlowExecutionOutcomes.FromAuthoritativeStatus(raw));
 
+    [Theory]
+    [InlineData("Running", FlowExecutionOutcome.Succeeded, false)]
+    [InlineData("Running", FlowExecutionOutcome.Failed, false)]
+    [InlineData("Pending", FlowExecutionOutcome.Unknown, false)]
+    [InlineData("Stale", FlowExecutionOutcome.Unknown, false)]
+    [InlineData("Disconnected", FlowExecutionOutcome.Unknown, false)]
+    [InlineData("Failed", FlowExecutionOutcome.Succeeded, false)]
+    [InlineData("DeliveryUnknown", FlowExecutionOutcome.Succeeded, false)]
+    [InlineData("Cancelled", FlowExecutionOutcome.Succeeded, false)]
+    [InlineData("TimedOut", FlowExecutionOutcome.Succeeded, false)]
+    [InlineData("Success", FlowExecutionOutcome.Succeeded, true)]
+    [InlineData("Completed", FlowExecutionOutcome.Succeeded, true)]
+    [InlineData("Completed", FlowExecutionOutcome.Failed, true)]
+    [InlineData("Completed", FlowExecutionOutcome.TimedOut, true)]
+    [InlineData("Completed", FlowExecutionOutcome.Cancelled, true)]
+    [InlineData("Completed", FlowExecutionOutcome.Unknown, true)]
+    [InlineData("Failed", FlowExecutionOutcome.Denied, true)]
+    [InlineData("Failed", FlowExecutionOutcome.TimedOut, true)]
+    [InlineData("Failed", FlowExecutionOutcome.Unknown, true)]
+    public void Event_shape_requires_a_terminal_raw_state_and_never_infers_success_from_failure(
+        string raw, FlowExecutionOutcome outcome, bool valid)
+    {
+        var at = DateTimeOffset.Parse("2026-11-05T12:00:00Z");
+        var value = new FlowExecutionEventDto(Guid.NewGuid(), Guid.NewGuid(), 7, FlowExecutionSourceKind.Script,
+            new("42", "Synthetic native script", "7"), "native-script-request", "native-script-request",
+            new(Guid.NewGuid()), outcome, raw, at, at)
+        {
+            CompletedAtUtc = at,
+            ExitCode = raw == "Completed" && outcome == FlowExecutionOutcome.Failed ? 7 : null
+        };
+        var result = FlowExecutionEventValidator.Validate(value);
+        Assert.Equal(valid, result.Valid);
+        if (!valid)
+            Assert.Contains(outcome == FlowExecutionOutcome.Succeeded && FlowExecutionOutcomes.FromAuthoritativeStatus(raw) is not null
+                ? "event_raw_success_mismatch" : "event_raw_status_not_terminal", result.Issues);
+    }
+
     [Fact]
     public void Validation_rejects_unbounded_causation_and_unpinned_replay_without_authorizing_payload()
     {

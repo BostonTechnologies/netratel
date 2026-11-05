@@ -3,6 +3,7 @@
 .flow-editor-header,.flow-properties header{display:flex;justify-content:space-between;align-items:center;gap:.5rem;min-width:0}
 .flow-editor-header h2{font-size:1rem;margin:0}.flow-editor-header p{font-size:.8125rem;margin:.15rem 0;color:var(--mud-palette-text-secondary)}
 .flow-editor-actions{display:flex;align-items:center;gap:.15rem;flex-shrink:0}
+.flow-toolbar>.flow-editor-actions{flex-shrink:1;flex-wrap:wrap;max-width:100%;min-width:0}
 .flow-editor input,.flow-editor select,.flow-editor textarea,.flow-editor button:not(.mud-button-root){font:inherit;font-size:.8125rem;max-width:100%;min-width:0;background:var(--mud-palette-surface);color:var(--mud-palette-text-primary);border:1px solid var(--mud-palette-divider);border-radius:4px;padding:.4rem .55rem}
 .flow-editor button{cursor:pointer}.flow-editor button:disabled{opacity:.55;cursor:default}
 .flow-editor label{display:flex;flex-direction:column;gap:.25rem;font-size:.8125rem;min-width:0}
@@ -18,7 +19,7 @@
 .flow-editor ::deep .flow-palette-item{display:flex;align-items:center;gap:.15rem;padding:.35rem 0;min-width:0;border-bottom:1px solid var(--mud-palette-divider)}
 .flow-editor ::deep .flow-palette-handle{cursor:grab;display:flex;align-items:center;min-width:24px;min-height:32px;touch-action:none;color:var(--mud-palette-text-secondary)}
 .flow-editor ::deep .flow-palette-label{flex:1;border:0;background:none;text-align:left;padding:0;font-size:.75rem;line-height:1.25;overflow-wrap:anywhere}
-.flow-editor ::deep .flow-canvas-column{min-width:0;min-height:0;display:flex;flex-direction:column;border-radius:6px;isolation:isolate}
+.flow-editor ::deep .flow-canvas-column{position:relative;min-width:0;min-height:0;display:flex;flex-direction:column;border-radius:6px;isolation:isolate}
 .flow-editor ::deep .flow-drop-allowed{outline:2px dashed var(--mud-palette-success);outline-offset:-2px}
 .flow-editor ::deep .flow-drop-forbidden{outline:2px dashed var(--mud-palette-error);outline-offset:-2px}
 .flow-properties{display:flex;flex-direction:column;width:400px;max-width:100%;z-index:45;box-shadow:var(--mud-elevation-8)}
@@ -44,3 +45,6 @@
 .flow-editor.focused .flow-notice,.flow-editor.focused .flow-error,.flow-editor.focused .flow-issues{flex:none;max-height:80px;overflow:auto}
 @media(max-width:1100px){.flow-editor ::deep .flow-workspace.palette-collapsed.properties-docked{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:600px){.flow-editor.focused ::deep .flow-workspace{grid-template-rows:auto minmax(0,1fr)}.flow-editor.focused ::deep .flow-workspace.palette-collapsed{grid-template-rows:minmax(0,1fr)}.flow-preview-dialog{width:calc(100vw - 1rem);max-height:calc(100dvh - 1rem);padding:.65rem}.flow-toolbar>.flow-editor-actions{flex-wrap:wrap}}
+
+.flow-playback-overlay{position:absolute;left:.5rem;right:.5rem;bottom:.5rem;z-index:42;pointer-events:none;display:flex;justify-content:flex-end;min-width:0}
+.flow-playback-overlay ::deep .flow-trace-player{pointer-events:auto;width:min(680px,100%);max-height:min(48dvh,460px)}

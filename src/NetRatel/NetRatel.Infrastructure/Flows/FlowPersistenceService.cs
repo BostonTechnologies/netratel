@@ -161,7 +161,7 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
 
     public Task<FlowIngressResult> EnqueueAsync(FlowEventEnvelope input, CancellationToken ct = default) => WithDb(async (db, _) =>
     {
-        if (!FlowContractValidation.ValidEnvelope(input)) return new FlowIngressResult(FlowIngressDisposition.Invalid, Code: "flow-event");
+        if (input.ExecutionEvent is not null || !FlowContractValidation.ValidEnvelope(input)) return new FlowIngressResult(FlowIngressDisposition.Invalid, Code: "flow-event");
         var json = Serialize(input); var fingerprint = FlowContractValidation.Hash(Encoding.UTF8.GetBytes(json));
         await using var transaction = await BeginAsync(db, ct).ConfigureAwait(false); await TenantLockAsync(db, input.TenantId, ct).ConfigureAwait(false);
         var existing = await db.FlowRuns.AsNoTracking().SingleOrDefaultAsync(row => row.TenantId == input.TenantId && row.EventId == input.EventId && row.FlowVersionId == input.FlowVersionId, ct).ConfigureAwait(false);

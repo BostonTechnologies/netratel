@@ -9,6 +9,7 @@ public sealed class FlowDefinitionRecord
     public string Name { get; set; } = "";
     public long Revision { get; set; }
     public bool Enabled { get; set; }
+    public DateTimeOffset? EnabledSinceUtc { get; set; }
     public string DraftJson { get; set; } = "";
     public Guid? PublishedVersionId { get; set; }
     public int PublishedVersionNumber { get; set; }
@@ -17,6 +18,8 @@ public sealed class FlowDefinitionRecord
 }
 public sealed class FlowVersionRecord
 {
+    public string? ProtectedExecutionPinsJson { get; init; }
+    public string? ExecutionAuthorityJson { get; init; }
     public Guid Id { get; init; }
     public Guid FlowId { get; init; }
     public int TenantId { get; init; }

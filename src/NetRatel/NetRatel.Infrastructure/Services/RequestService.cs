@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.DataProtection;
 using NetRatel.Application.Requests;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Flows;
 
 namespace NetRatel.Infrastructure.Services;
 
@@ -9,6 +10,18 @@ public sealed class RequestService(OrchestratorDbContext db, IDataProtectionProv
 {
     private readonly OrchestratorDbContext _db = db;
     private readonly JobRunInputProtection _protection = new(protection);
+
+    public async Task<RequestExecutionMaterial?> GetExecutionMaterialAsync(int requestId, CancellationToken ct = default)
+    {
+        await ProtectLegacyAsync(requestId, ct);
+        var row = await _db.Requests.AsNoTracking().SingleOrDefaultAsync(x => x.Id == requestId, ct);
+        if (row is null || row.TargetTenantId is not > 0 || row.TargetAgentId is not { } agent ||
+            !ulong.TryParse(row.JobDefinitionId, out var definition) || definition is 0 or > long.MaxValue ||
+            row.ProtectedJobInputsJson is null || !await ExecutionLifecycleOutbox.HasImmutableSubmittedRequestAsync(_db, row, ct))
+            return null;
+        var execution = _protection.ForExecution(Material(row));
+        return new(row.Id, row.SourceSystem, definition, row.TargetTenantId.Value, agent, execution.InputsJson);
+    }
 
     public async Task<IReadOnlyList<RequestInfo>> ListAsync(CancellationToken ct = default)
     {
@@ -65,6 +78,13 @@ public sealed class RequestService(OrchestratorDbContext db, IDataProtectionProv
             return null;
         }
 
+        if (await ExecutionLifecycleOutbox.HasImmutableSubmittedRequestAsync(_db, row, ct))
+        {
+            if (command.SourceSystem is not null && command.SourceSystem.Trim() != row.SourceSystem ||
+                command.JobInputs is not null ||
+                command.ExecutionId is not null && NormalizeNullable(command.ExecutionId) != row.ExecutionId)
+                throw new InvalidOperationException("A submitted canonical request cannot change its source, inputs or reserved execution binding.");
+        }
         if (command.SourceSystem is not null) row.SourceSystem = command.SourceSystem.Trim();
         if (command.TargetClientIdentity is not null) row.TargetClientIdentity = command.TargetClientIdentity.Trim();
         if (command.JobDefinitionId is not null && NormalizeNullable(command.JobDefinitionId) != row.JobDefinitionId)

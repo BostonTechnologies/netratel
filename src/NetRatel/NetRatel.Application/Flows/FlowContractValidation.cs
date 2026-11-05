@@ -6,9 +6,20 @@ namespace NetRatel.Application.Flows;
 
 public static class FlowContractValidation
 {
-    public static bool ValidEnvelope(FlowEventEnvelope? input) => input is not null && input.ExecutionEvent is null && input.TenantId > 0 && input.EventId != Guid.Empty &&
-        input.OccurrenceId != Guid.Empty && input.FlowVersionId != Guid.Empty && input.OccurredAtUtc != default && FlowPureEvaluation.ValidEventData(input.Data) &&
-        ValidAuthority(input.Authority) && JsonSerializer.SerializeToUtf8Bytes(input).Length <= FlowLimits.MaximumEventBytes;
+    public static bool ValidEnvelope(FlowEventEnvelope? input)
+    {
+        if (input is null || input.TenantId <= 0 || input.EventId == Guid.Empty || input.OccurrenceId == Guid.Empty ||
+            input.FlowVersionId == Guid.Empty || input.OccurredAtUtc == default || !ValidAuthority(input.Authority)) return false;
+        if (input.ExecutionEvent is { } execution)
+            return input.Data is null && execution.TenantId == input.TenantId && execution.OccurrenceId == input.OccurrenceId &&
+                execution.OccurredAtUtc == input.OccurredAtUtc && FlowExecutionEventValidator.Validate(execution).Valid &&
+                input.SourceDeliveryId is { } delivery && delivery != Guid.Empty &&
+                input.SourceEventIds is { Count: > 0 and <= FlowExecutionEventLimits.MaximumReferences } ids &&
+                ids.Contains(execution.EventId) && ids.All(id => id != Guid.Empty) && ids.Distinct().Count() == ids.Count &&
+                JsonSerializer.SerializeToUtf8Bytes(input).Length <= FlowExecutionEventLimits.MaximumEnvelopeBytes + 4096;
+        return input.SourceDeliveryId is null && input.SourceEventIds is null && FlowPureEvaluation.ValidEventData(input.Data) &&
+            JsonSerializer.SerializeToUtf8Bytes(input).Length <= FlowLimits.MaximumEventBytes;
+    }
     public static bool ValidAuthority(FlowExecutionAuthorityDto? authority) => authority is not null &&
         FlowGraphValidator.IsBoundedText(authority.PrincipalId, 256) && (authority.IntegrationCredentialId is null || FlowGraphValidator.IsBoundedText(authority.IntegrationCredentialId, 256));
     public static bool ValidPrepared(FlowIncidentActionRequest? action, FlowIncidentActionDraft draft) => draft.Kind == FlowActionKind.RatelDeskIncident && action is not null &&

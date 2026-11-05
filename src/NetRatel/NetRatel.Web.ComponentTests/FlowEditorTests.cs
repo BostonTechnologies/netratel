@@ -1,4 +1,6 @@
 using System.Net;
+using System.Security.Cryptography;
+using System.Text.Json;
 using Bunit;
 using AwesomeAssertions;
 using Microsoft.Extensions.DependencyInjection;
@@ -24,6 +26,7 @@ public sealed class FlowEditorTests : AsyncBunitContext
     {
         JSInterop.Mode = JSRuntimeMode.Loose;
         JSInterop.SetupModule("./_content/VeloxDev.Razor/veloxdev.workflow.js").Mode = JSRuntimeMode.Loose;
+        JSInterop.SetupModule("./js/flows-playback.js").Mode = JSRuntimeMode.Loose;
         var editorModule = JSInterop.SetupModule("./js/flows-editor.js");
         editorModule.Mode = JSRuntimeMode.Loose;
         editorModule.Setup<double[]>("geometry", _ => true).SetResult([0, 0, 1000, 800, 1200, 1000]);
@@ -126,6 +129,32 @@ public sealed class FlowEditorTests : AsyncBunitContext
     }
 
     [Fact]
+    public async Task Visible_Ports_Connect_Through_Native_Validation_Without_Dirtying_The_Start_Gesture()
+    {
+        var cut = RenderEditor();
+        await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
+        var canvas = cut.FindComponent<FlowCanvas>().Instance;
+        var adapter = canvas.Adapter;
+        var trigger = adapter.Capture().Nodes.Single(node => node.Kind == FlowNodeKind.AlertRaised);
+        var mapping = adapter.Capture().Nodes.Single(node => node.Kind == FlowNodeKind.MapIncident);
+        var edge = adapter.Capture().Edges.Single(link => link.SourceNodeId == trigger.Id);
+        await cut.InvokeAsync(() => adapter.DisconnectAsync(edge));
+        var before = System.Text.Json.JsonSerializer.Serialize(adapter.Capture());
+        cut.FindAll("[data-testid=flow-connect-from],[data-testid=flow-connect-to],[data-testid=flow-connect]").Should().BeEmpty();
+        await cut.InvokeAsync(() => cut.Find($"[data-port-node='{trigger.Id}'][data-port-direction=output] button").ClickAsync(new()));
+        cut.Find("[data-testid=flow-connection-status]").TextContent.Should().Contain("compatible input");
+        System.Text.Json.JsonSerializer.Serialize(adapter.Capture()).Should().Be(before);
+        await cut.InvokeAsync(() => cut.Find($"[data-port-node='{mapping.Id}'][data-port-direction=input] button").ClickAsync(new()));
+        adapter.Capture().Edges.Should().HaveCount(2);
+        canvas.IsConnecting.Should().BeFalse();
+        await cut.InvokeAsync(() => canvas.CompletePortConnection(trigger.Id.ToString(), mapping.Id.ToString()));
+        adapter.Capture().Edges.Should().HaveCount(2);
+        cut.Find("[data-testid=flow-connection-status]").TextContent.Should().NotBeNullOrWhiteSpace();
+        adapter.ExecutionCalls.Should().Be(0);
+        _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
+    }
+
+    [Fact]
     public async Task Fullscreen_And_Escape_Preserve_The_Draft_Selection_And_Native_Adapter()
     {
         var closed = 0;
@@ -158,6 +187,7 @@ public sealed class FlowEditorTests : AsyncBunitContext
         cut.FindAll("[data-testid=flow-save]").Should().BeEmpty(); cut.FindAll("[data-testid=flow-publish]").Should().BeEmpty();
         cut.Find("[data-testid=flow-name]").HasAttribute("disabled").Should().BeTrue();
         cut.Find("[data-testid=flow-add-Condition]").HasAttribute("disabled").Should().BeTrue();
+        cut.FindAll("[data-testid=flow-port-button]").Should().OnlyContain(port => port.HasAttribute("disabled"));
         _api.SaveCalls.Should().Be(0);
     }
 
@@ -371,6 +401,60 @@ public sealed class FlowEditorTests : AsyncBunitContext
         cut.FindComponent<FlowCanvas>().Instance.Adapter.ExecutionCalls.Should().Be(0);
     }
 
+
+    [Fact]
+    public async Task Pure_trace_closes_setup_and_mounts_playback_without_dispatch_then_invalidates_on_edit()
+    {
+        _api.Preview = request => Task.FromResult(PreviewResult(request));
+        var cut = RenderEditor();
+        await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
+        var adapter = cut.FindComponent<FlowCanvas>().Instance.Adapter;
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-dry-run-toggle]").ClickAsync(new()));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-dry-run]").ClickAsync(new()));
+        await cut.WaitForAssertionAsync(() => cut.Find("[data-testid=flow-trace-player]").TextContent.Should().Contain("Synthetic preview output"));
+        cut.FindAll("[data-testid=flow-preview-dialog]").Should().BeEmpty();
+        cut.FindAll("[data-testid=flow-trace-stale]").Should().BeEmpty();
+        cut.FindComponent<FlowTracePlayer>().Instance.ScopeId.Should().StartWith("flow-editor-");
+        _api.DryRunCalls.Should().Be(1); _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
+        adapter.ExecutionCalls.Should().Be(0);
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "Changed draft" }));
+        cut.FindAll("[data-testid=flow-trace-player]").Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Old_tenant_preview_response_cannot_mount_trace_after_context_replacement()
+    {
+        var pending = new TaskCompletionSource<FlowDryRunResultDto>(TaskCreationOptions.RunContinuationsAsynchronously);
+        FlowDryRunRequest? submitted = null;
+        _api.Preview = request => { submitted = request; return pending.Task; };
+        var cut = RenderEditor();
+        await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-dry-run-toggle]").ClickAsync(new()));
+        var preview = cut.InvokeAsync(() => cut.Find("[data-testid=flow-dry-run]").ClickAsync(new()));
+        await cut.WaitForAssertionAsync(() => _api.DryRunCalls.Should().Be(1));
+        var next = Definition() with { Id = Guid.NewGuid(), TenantId = 23, Name = "Other tenant flow" };
+        cut.Render(p => p.Add(e => e.Definition, next).Add(e => e.CanEdit, true).Add(e => e.TenantName, "Tenant 23"));
+        await cut.WaitForAssertionAsync(() => cut.Find("[data-testid=flow-name]").GetAttribute("value").Should().Be("Other tenant flow"));
+        pending.SetResult(PreviewResult(submitted!));
+        await preview;
+        cut.Find("[data-testid=flow-name]").GetAttribute("value").Should().Be("Other tenant flow");
+        cut.FindAll("[data-testid=flow-trace-player]").Should().BeEmpty();
+        cut.FindAll("[data-testid=flow-preview-dialog]").Should().BeEmpty();
+        _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
+    }
+
+    private static FlowDryRunResultDto PreviewResult(FlowDryRunRequest request)
+    {
+        var hash = Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(request.Graph, new JsonSerializerOptions(JsonSerializerDefaults.Web))));
+        return new(true, false, "inert-preview", null, [request.Graph.Nodes[0].Id], [])
+        {
+            Trace = new(request.Graph.SchemaVersion, hash, FlowTraceProvenance.Simulated,
+                [new(0, request.Graph.Nodes[0].Id, request.Graph.Nodes[0].Name, FlowTraceStepStatus.Completed, "event",
+                    FlowTraceProvenance.Simulated, new(FlowTraceDataState.Empty) { Value = JsonSerializer.SerializeToElement("") },
+                    new(FlowTraceDataState.Present) { Value = JsonSerializer.SerializeToElement("Synthetic preview output") })])
+        };
+    }
+
     private IRenderedComponent<FlowEditor> RenderEditor(Action<ComponentParameterCollectionBuilder<FlowEditor>>? extra = null) => Render<FlowEditor>(p =>
     { p.Add(e => e.Definition, Definition()).Add(e => e.CanEdit, true).Add(e => e.CanPublish, true).Add(e => e.TenantName, "Tenant 17"); extra?.Invoke(p); });
     private static readonly Guid FlowId = Guid.NewGuid();
@@ -381,6 +465,7 @@ public sealed class FlowEditorTests : AsyncBunitContext
 internal sealed class FakeFlowApi : IFlowApiService
 {
     public int SaveCalls, PublishCalls, ValidateCalls, DryRunCalls;
+    public Func<FlowDryRunRequest, Task<FlowDryRunResultDto>>? Preview;
     public FlowSaveDraftRequest? LastSave;
     public TaskCompletionSource<FlowDefinitionDto>? SavePending;
     public FlowDefinitionDto? ReloadDefinition;
@@ -399,7 +484,7 @@ internal sealed class FakeFlowApi : IFlowApiService
     public Task<FlowDefinitionDto> SetEnabledAsync(int tenantId, Guid flowId, FlowEnabledRequest request, CancellationToken token = default) => throw new NotSupportedException();
     public Task<FlowVersionDto> PublishAsync(int tenantId, Guid flowId, FlowRevisionRequest request, CancellationToken token = default) { PublishCalls++; throw new NotSupportedException(); }
     public Task<FlowValidationResultDto> ValidateAsync(int tenantId, FlowGraphDto graph, CancellationToken token = default) { ValidateCalls++; return Task.FromResult(FlowGraphValidator.ValidateComplete(graph)); }
-    public Task<FlowDryRunResultDto> DryRunAsync(int tenantId, FlowDryRunRequest request, CancellationToken token = default) { DryRunCalls++; return Task.FromResult(new FlowDryRunResultDto(false, false, "connector-required", null, [], [new("connector-required")])); }
+    public Task<FlowDryRunResultDto> DryRunAsync(int tenantId, FlowDryRunRequest request, CancellationToken token = default) { DryRunCalls++; return Preview?.Invoke(request) ?? Task.FromResult(new FlowDryRunResultDto(false, false, "connector-required", null, [], [new("connector-required")])); }
     public Task<IReadOnlyList<FlowConnectorReferenceDto>> GetConnectorsAsync(int tenantId, CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowConnectorReferenceDto>>([]);
     public Task<IReadOnlyList<FlowVersionDto>> GetVersionsAsync(int tenantId, Guid flowId, CancellationToken token = default) => VersionsLookup?.Invoke(tenantId, flowId, token) ?? Task.FromResult<IReadOnlyList<FlowVersionDto>>([]);
     public Task<IReadOnlyList<FlowRunSummaryDto>> GetRunsAsync(int tenantId, Guid flowId, CancellationToken token = default) => RunsLookup?.Invoke(tenantId, flowId, token) ?? Task.FromResult<IReadOnlyList<FlowRunSummaryDto>>([]);
