@@ -18,6 +18,7 @@ public sealed class FlowExecutionEvidenceTests
         var original = Source();
         var serialized = JsonSerializer.Serialize(original);
         var ai = Ai(original) with { Summary = "Likely exhausted storage.", Evidence = "Volume report.", Recommendations = "Use the configured repair." };
+        Assert.NotEqual(original.EventId, ai.MessageId);
         var result = FlowExecutionEvidenceFormatter.Map(new("{definitionName}: {outcome}",
             "Target {targetName}; native state {rawStatus}; {executionLink}"), original, 17, RunId, VersionId, ai);
         Assert.Equal("Synthetic nightly job: Failed", result.Title);
@@ -52,7 +53,8 @@ public sealed class FlowExecutionEvidenceTests
         var terminal = original with
         {
             EventId = Guid.NewGuid(), ExecutionId = "9007199254740994", AttemptId = "2",
-            Outcome = FlowExecutionOutcome.Succeeded, RawStatus = "Completed",
+            Outcome = FlowExecutionOutcome.Succeeded, RawStatus = "Completed", Replay = null,
+            ParentExecutionId = original.ExecutionId, RootExecutionId = original.ExecutionId,
             Causation = new(original.OccurrenceId.ToString("D"), original.EventId, RunId, NodeId, 1, 1)
         };
         var rerun = new FlowRecoveryAttemptEvidence(NodeId, 1, "Rerun original", FlowRecoveryActionState.Succeeded,
@@ -66,6 +68,10 @@ public sealed class FlowExecutionEvidenceTests
             [rerun with { TerminalEvent = terminal with { Outcome = FlowExecutionOutcome.Unknown } }]));
         Assert.StartsWith("Unknown", FlowExecutionEvidenceFormatter.RecoveryDisposition(original, RunId,
             [rerun with { TerminalEvent = terminal with { Provenance = "sample" } }]));
+        Assert.StartsWith("Unknown", FlowExecutionEvidenceFormatter.RecoveryDisposition(original, RunId,
+            [rerun with { TerminalEvent = terminal with { Causation = terminal.Causation! with { RootOccurrenceId = "different-root" } } }]));
+        Assert.StartsWith("Unknown", FlowExecutionEvidenceFormatter.RecoveryDisposition(original, RunId,
+            [rerun with { TerminalEvent = terminal with { RawStatus = "Running" } }]));
         Assert.StartsWith("Unknown", FlowExecutionEvidenceFormatter.RecoveryDisposition(original with
             { Replay = original.Replay! with { Supported = false } }, RunId, [rerun]));
     }
@@ -107,6 +113,17 @@ public sealed class FlowExecutionEvidenceTests
     }
 
     [Fact]
+    public void Large_script_identifiers_keep_their_exact_value_when_the_current_detail_route_cannot_represent_them()
+    {
+        var original = Source() with { SourceKind = FlowExecutionSourceKind.Script, Replay = null };
+        var description = FlowExecutionEvidenceFormatter.DescribeOriginal(original);
+        Assert.Contains("Execution: 9007199254740993", description);
+        Assert.Contains("Execution view: /tasks/history", description);
+        var supported = original with { ExecutionId = "42" };
+        Assert.Contains("Execution view: /tasks/42", FlowExecutionEvidenceFormatter.DescribeOriginal(supported));
+    }
+
+    [Fact]
     public void Source_specific_question_does_not_authorize_model_generated_repairs()
     {
         var question = FlowExecutionEvidenceFormatter.InvestigationQuestion(Source(), 17);
@@ -128,10 +145,10 @@ public sealed class FlowExecutionEvidenceTests
         {
             StartedAtUtc = at.AddSeconds(-10), CompletedAtUtc = at, ExitCode = 12, ReasonCode = "job-step-failed",
             Reason = "The synthetic volume is full.",
-            Replay = new(FlowExecutionSourceKind.Job, definition, target, "protected-input-snapshot", "9007199254740993", "1", true)
+            Replay = new(FlowExecutionSourceKind.Job, definition, target, "job-run:9007199254740993", "9007199254740993", "1", true)
         };
     }
 
     private static FlowAiResultDto Ai(FlowExecutionEventDto original) => new(17, RunId, VersionId, NodeId,
-        Guid.NewGuid(), original.EventId, FlowAiResultStatus.Completed, original.ObservedAtUtc, original.ObservedAtUtc);
+        Guid.NewGuid(), Guid.NewGuid(), FlowAiResultStatus.Completed, original.ObservedAtUtc, original.ObservedAtUtc);
 }

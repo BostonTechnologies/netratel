@@ -27,6 +27,7 @@ public static class FlowExecutionEvidenceFormatter
     private const int AiBudget = 1700;
     private const int RecoveryBudget = 1500;
 
+    /// <summary>The caller supplies the exact committed AI turn; this layer validates its tenant/run/version scope.</summary>
     public static FlowIncidentFieldsDto Map(FlowIncidentMappingDto mapping, FlowExecutionEventDto original,
         int tenantId, Guid runId, Guid versionId, FlowAiResultDto? ai = null,
         IReadOnlyList<FlowRecoveryAttemptEvidence>? attempts = null)
@@ -97,7 +98,7 @@ public static class FlowExecutionEvidenceFormatter
         {
             foreach (var reference in original.Results.Take(4))
                 text.Append("\n- ").Append(Safe(reference.Kind, 64)).Append(": ").Append(Safe(reference.Id, 128))
-                    .Append(reference.Available ? " (available with current authorization)" : " (unavailable)")
+                    .Append(reference.Available ? " (source reports available; access checked separately)" : " (source unavailable)")
                     .Append(reference.Truncated ? " (truncated)" : "");
             if (original.Results.Count > 4) text.Append("\n[Additional result references omitted; retained in flow history.]");
         }
@@ -173,14 +174,18 @@ public static class FlowExecutionEvidenceFormatter
         var replay = original.Replay;
         var terminal = attempt.TerminalEvent;
         return replay is { Supported: true } && terminal is not null &&
-            terminal.TenantId == original.TenantId && terminal.Provenance == "authoritative-transition" && terminal.Outcome == FlowExecutionOutcome.Succeeded &&
+            FlowExecutionEventValidator.Validate(terminal).Valid && terminal.TenantId == original.TenantId &&
+            terminal.Provenance == "authoritative-transition" && terminal.Outcome == FlowExecutionOutcome.Succeeded &&
             terminal.CompletedAtUtc is not null && terminal.EventId != original.EventId &&
             terminal.ExecutionId == attempt.AcceptedExecutionId && terminal.ExecutionId != replay.SourceExecutionId &&
+            terminal.AttemptId != replay.SourceAttemptId && terminal.ParentExecutionId == replay.SourceExecutionId &&
+            terminal.RootExecutionId == (original.RootExecutionId ?? replay.SourceExecutionId) &&
             terminal.SourceKind == replay.SourceKind && terminal.Target.AgentId == replay.Target.AgentId &&
             terminal.Definition.Id == replay.Definition.Id && terminal.Definition.Revision == replay.Definition.Revision &&
             terminal.Definition.ContentHash == replay.Definition.ContentHash &&
             terminal.Causation is { } cause && cause.FlowRunId == runId && cause.NodeId == attempt.NodeId &&
-            cause.ParentEventId == original.EventId && cause.RecoveryAttempt == attempt.Attempt;
+            cause.ParentEventId == original.EventId && cause.RecoveryAttempt == attempt.Attempt &&
+            cause.RootOccurrenceId == (original.Causation?.RootOccurrenceId ?? original.OccurrenceId.ToString("D"));
     }
 
     private static void ValidateContext(FlowExecutionEventDto original, int tenantId, Guid runId, Guid versionId,
@@ -188,7 +193,7 @@ public static class FlowExecutionEvidenceFormatter
     {
         ValidateOriginal(original, tenantId);
         if (runId == Guid.Empty || versionId == Guid.Empty || ai is not null &&
-            (ai.TenantId != tenantId || ai.FlowRunId != runId || ai.FlowVersionId != versionId || ai.MessageId != original.EventId) ||
+            (ai.TenantId != tenantId || ai.FlowRunId != runId || ai.FlowVersionId != versionId) ||
             attempts is not null && (attempts.Count > FlowExecutionEventLimits.MaximumRecoveryAttempts * 2 ||
                 attempts.Any(x => x is null || x.NodeId == Guid.Empty || x.Attempt is < 1 or > FlowExecutionEventLimits.MaximumRecoveryAttempts ||
                     !Enum.IsDefined(x.State) || !FlowGraphValidator.IsBoundedText(x.ActionName, FlowLimits.MaximumNameLength) ||
@@ -200,14 +205,7 @@ public static class FlowExecutionEvidenceFormatter
 
     private static void ValidateOriginal(FlowExecutionEventDto original, int tenantId)
     {
-        if (original is null || tenantId <= 0 || original.TenantId != tenantId || original.EventId == Guid.Empty ||
-            original.OccurrenceId == Guid.Empty || original.SchemaVersion != FlowExecutionEventLimits.SchemaVersion ||
-            !Enum.IsDefined(original.SourceKind) || !Enum.IsDefined(original.Outcome) || original.Definition is null || original.Target is null ||
-            original.OccurredAtUtc == default || original.ObservedAtUtc == default ||
-            !FlowGraphValidator.IsBoundedText(original.ExecutionId, FlowExecutionEventLimits.MaximumIdentifierLength) ||
-            !FlowGraphValidator.IsBoundedText(original.AttemptId, FlowExecutionEventLimits.MaximumIdentifierLength) ||
-            !FlowGraphValidator.IsBoundedText(original.RawStatus, 128) ||
-            original.Results?.Count > FlowExecutionEventLimits.MaximumReferences)
+        if (tenantId <= 0 || original?.TenantId != tenantId || !FlowExecutionEventValidator.Validate(original).Valid)
             throw new ArgumentException("Invalid original execution evidence.", nameof(original));
     }
 
@@ -244,6 +242,7 @@ public static class FlowExecutionEvidenceFormatter
             "/jobs/" + value.Definition.Id + "/runs/" + value.ExecutionId,
         FlowExecutionSourceKind.Script when int.TryParse(value.ExecutionId, NumberStyles.None, CultureInfo.InvariantCulture, out var id) && id > 0 =>
             "/tasks/" + value.ExecutionId,
+        FlowExecutionSourceKind.Script => "/tasks/history",
         _ => "/requests"
     };
     private static bool PositiveDecimal(string? value) =>
@@ -255,7 +254,7 @@ public static class FlowExecutionEvidenceFormatter
     private static string Clip(string value, int maximum)
     {
         if (value.Length <= maximum) return value;
-        const string note = "\n[Truncated; full authorized evidence retained in flow history.]";
+        const string note = "\n[Truncated for display; additional data may be unavailable.]";
         var cut = Math.Max(0, maximum - note.Length);
         if (cut > 0 && char.IsHighSurrogate(value[cut - 1])) cut--;
         return value[..cut] + note[..Math.Min(note.Length, maximum - cut)];
