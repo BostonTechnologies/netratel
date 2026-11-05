@@ -141,7 +141,11 @@ checked before definition/version/run disclosure.
 Successful mutations return `FlowDefinitionDto`; publish returns `FlowVersionDto`. Rejections
 use bounded safe codes: 409 for revision conflict, 429 for capacity and 422 for unavailable/unauthorized
 dependencies. An unverified receiver returns `receiver-idempotency-unverified` and preserves the draft.
-Definition/target query denials return 403; unsupported source families return 422 and malformed filters 400.
+Definition/target query denials return 403; unsupported lookup families return 422 and malformed filters 400.
+Native Request events currently prove Job backing only; library executions emit Script events.
+Publication returns 400/`execution-trigger-source-unavailable` when active selected Script references
+lack the Script source family. Generic pure simulation remains separate from native producer capability;
+legacy single-family definition IDs retain their stored meaning.
 Execution definition metadata retains names up to 512 characters; exceeding that bound is explicit.
 Pinned native `secret_reference` inputs accept only an environment-name reference matching
 `[A-Za-z_][A-Za-z0-9_]{0,127}`. The reference name is passed only into protected canonical admission,
