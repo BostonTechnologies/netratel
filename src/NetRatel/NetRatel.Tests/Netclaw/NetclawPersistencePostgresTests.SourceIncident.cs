@@ -30,7 +30,7 @@ public sealed partial class NetclawPersistencePostgresTests
 
     // Native lifecycle, source/current-grant admission, runtime/checkpoints, AI policy, final
     // enrichment and receiver preparation/receipt persistence are real. Published configuration
-    // is seeded; pairing, receiver connector binding metadata and remote transport are synthetic.
+    // is seeded; pairing, outbound credential resolution and remote transport are synthetic.
     [Fact]
     public async Task Native_request_failure_freezes_one_enriched_incident_and_recovers_its_original_receipt_after_restart()
     {
@@ -75,6 +75,8 @@ public sealed partial class NetclawPersistencePostgresTests
             var paired = await scope.ServiceProvider.GetRequiredService<NetclawProfileService>()
                 .PairAsync(17, new("https://netclaw.example.test", "synthetic-code"), IncidentPublisher, ct);
             Assert.True(paired.Success);
+            Assert.True(await scope.ServiceProvider.GetRequiredService<IRatelDeskConnectorStore>()
+                .SaveAsync(remote.FixtureConnector, 0, ct));
             var graph = IncidentGraph(paired.Connection.Id, paired.Connection.Revision, remote.ConnectorId);
             Assert.True(FlowGraphV2Validator.ValidatePublished(graph).Valid);
             aiNodeId = graph.Nodes.Single(node => node.Kind == FlowNodeKind.InvestigateWithAi).Id;
@@ -286,8 +288,9 @@ public sealed partial class NetclawPersistencePostgresTests
         services.AddSingleton<IFlowReceiverEvidenceStore>(provider => provider.GetRequiredService<FlowPersistenceService>());
         services.AddSingleton<IRatelDeskReceiverFingerprint, RatelDeskReceiverFingerprint>();
         services.AddScoped<IRatelDeskConnectorAuthorization, RatelDeskConnectorAuthorization>();
-        services.AddSingleton<IRatelDeskConnectorStore>(remote);
-        services.AddSingleton<IRatelDeskConnectorBindingStore>(remote);
+        services.AddScoped<RatelDeskConnectorStore>();
+        services.AddScoped<IRatelDeskConnectorStore>(provider => provider.GetRequiredService<RatelDeskConnectorStore>());
+        services.AddScoped<IRatelDeskConnectorBindingStore>(provider => provider.GetRequiredService<RatelDeskConnectorStore>());
         services.AddSingleton<IRatelDeskOutboundBindingResolver>(remote);
         services.AddSingleton<IRatelDeskReceiverTransport>(remote);
         services.AddScoped<IFlowReceiverDispatcher, RatelDeskFlowReceiverAdapter>();
@@ -321,7 +324,7 @@ public sealed partial class NetclawPersistencePostgresTests
 
     private sealed class IncidentReaderCounter { public int Reads; }
 
-    private sealed class IncidentReceiver(RecoveryClock clock, DbContextOptions<OrchestratorDbContext> options) : IRatelDeskConnectorStore, IRatelDeskConnectorBindingStore,
+    private sealed class IncidentReceiver(RecoveryClock clock, DbContextOptions<OrchestratorDbContext> options) :
         IRatelDeskOutboundBindingResolver, IRatelDeskReceiverTransport
     {
         public Guid ConnectorId { get; } = Guid.NewGuid();
@@ -335,20 +338,14 @@ public sealed partial class NetclawPersistencePostgresTests
         public string? ExactBody => committedPreparation?.ExactCreateBodyJson;
         private RatelDeskReceiverPreparationV2? committedPreparation;
 
-        private RatelDeskConnectorState Connector => new(ConnectorId, 17, 1, 1, IncidentPublisher,
+        public RatelDeskConnectorState FixtureConnector => new(ConnectorId, 17, 1, 1, IncidentPublisher,
             new("Synthetic receiver", "https://receiver.example.test/help", "organization-17", "customer-17", null,
-                [], new(), true), "synthetic-protected-binding", 1);
-        public Task<RatelDeskConnectorState?> GetAsync(int tenantId, Guid id, CancellationToken ct) =>
-            Task.FromResult<RatelDeskConnectorState?>(tenantId == 17 && id == ConnectorId ? Connector : null);
-        public Task<IReadOnlyList<RatelDeskConnectorState>> ListAsync(int tenantId, CancellationToken ct) =>
-            Task.FromResult<IReadOnlyList<RatelDeskConnectorState>>(tenantId == 17 ? [Connector] : []);
-        public Task<bool> SaveAsync(RatelDeskConnectorState state, long expected, CancellationToken ct) => throw new NotSupportedException();
-        public Task<RatelDeskConnectorAuthentication> GetAuthenticationAsync(int tenantId, Guid id, CancellationToken ct) =>
-            Task.FromResult(new RatelDeskConnectorAuthentication(RatelDeskAuthenticationMode.PairedSystem, credentialId));
+                [], new(), true), "synthetic-protected-binding", 1)
+            { Authentication = new(RatelDeskAuthenticationMode.PairedSystem, credentialId) };
         public Task<RatelDeskSemanticPeer> CaptureAsync(RatelDeskConnectorState current, RatelDeskConnectorAuthentication authentication,
             Guid source, CancellationToken ct) => Task.FromResult(new RatelDeskSemanticPeer(RatelDeskAuthenticationMode.PairedSystem,
                 17, ConnectorId, credentialId, 1, new string('a', 64), receiverId, "organization-17",
-                Connector.Configuration.Origin, "https://issuer.example.test/services", "rateldesk-api",
+                current.Configuration.Origin, "https://issuer.example.test/services", "rateldesk-api",
                 "https://receiver.example.test/help/connect/token", "synthetic-client", "paired", source, sourceNamespace,
                 "organization-17", "customer-17", null, []));
         public Task<string> GetBearerAsync(RatelDeskConnectorState current, RatelDeskSemanticPeer peer, string scope, CancellationToken ct) =>
