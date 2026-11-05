@@ -52,7 +52,8 @@ public sealed class AkkaJobAuthorityService(
     TimeProvider? clock = null,
     NetRatelAkkaOptions? options = null,
     IExecutionAdmissionStore? executionAdmissions = null,
-    IKeyedExecutionAuthority? keyedAuthority = null) : IAkkaJobAuthorityService
+    IKeyedExecutionAuthority? keyedAuthority = null,
+    IJobExecutionSnapshotCapture? snapshotCapture = null) : IAkkaJobAuthorityService
 {
     private const string Authority = "akka";
     private const string Feature = "jobs";
@@ -214,6 +215,14 @@ public sealed class AkkaJobAuthorityService(
     {
         var definition = pinnedSnapshot?.Definition ?? mcpSnapshot?.Definition ?? await jobDefinitions.GetDetailsAsync(jobId, cancellationToken).ConfigureAwait(false)
             ?? throw new KeyNotFoundException($"Job {jobId} was not found.");
+        if (pinnedSnapshot is null && mcpSnapshot is null && snapshotCapture is not null &&
+            definition.Job.TenantId is > 0 && definition.Job.AgentId is { } boundAgent && boundAgent != Guid.Empty &&
+            definition.Steps.Where(step => step.Enabled).All(step => step.Type == JobStepKind.RunCommand ||
+                step.Type == JobStepKind.LibraryScript && step.ScriptId is not null))
+        {
+            pinnedSnapshot = await snapshotCapture.CaptureAsync(jobId, definition.Job.TenantId ?? 0, cancellationToken);
+            definition = pinnedSnapshot.Definition;
+        }
         if (pinnedSnapshot is not null) jobRuns.BindPinnedExecutionSnapshot(runId, pinnedSnapshot);
         else if (mcpSnapshot is null) jobRuns.BindSubmittedDefinition(runId, definition);
         else jobRuns.BindMcpExecutionSnapshot(runId, mcpSnapshot);

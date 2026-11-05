@@ -11,6 +11,7 @@ public static class FlowServiceRegistration
     {
         services.TryAddSingleton(TimeProvider.System); services.TryAddSingleton<FlowPersistenceService>();
         services.TryAddSingleton<IFlowDefinitionService>(provider => provider.GetRequiredService<FlowPersistenceService>());
+        services.TryAddSingleton<IFlowTemplateService>(provider => provider.GetRequiredService<FlowPersistenceService>());
         services.TryAddSingleton<IFlowEventIngress>(provider => provider.GetRequiredService<FlowPersistenceService>());
         services.TryAddSingleton<IFlowExecutionStore>(provider => provider.GetRequiredService<FlowPersistenceService>());
         services.TryAddSingleton<IFlowRuntimeAdapter, VeloxFlowRuntimeAdapter>(); services.TryAddSingleton<FlowRunProcessor>();
