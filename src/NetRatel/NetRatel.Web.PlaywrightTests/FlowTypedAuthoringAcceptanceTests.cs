@@ -76,14 +76,41 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         clock.Restart();
         await page.Mouse.MoveAsync(panX, panY);
         await page.Mouse.DownAsync(new() { Button = MouseButton.Middle });
+        var panPhase = "native acceptance";
         try
         {
-            // Velox 10.0.1 waits for its .NET press verdict; an early mouseup cancels the pending gesture.
-            await page.WaitForFunctionAsync("id => document.getElementById(id)?.style.cursor==='grabbing'", panTarget.GetProperty("id").GetString());
-            await page.Mouse.MoveAsync(panX - 60, panY - 40, new() { Steps = 12 });
+            try
+            {
+                // Velox 10.0.1 waits for its .NET press verdict; an early mouseup cancels the pending gesture.
+                await page.WaitForFunctionAsync("id => document.getElementById(id)?.style.cursor==='grabbing'", panTarget.GetProperty("id").GetString());
+                await page.Mouse.MoveAsync(panX - 60, panY - 40, new() { Steps = 12 });
+                var held = await MeasurementsAsync(page);
+                await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-pan-held.json"), held.GetRawText());
+                panPhase = "displacement while held";
+                await page.WaitForFunctionAsync("previous => {const r=document.querySelector('.flow-node').getBoundingClientRect();return Math.abs(r.x-previous.x)>1||Math.abs(r.y-previous.y)>1}", new { x = before.X, y = before.Y });
+            }
+            finally
+            {
+                await page.Mouse.UpAsync(new() { Button = MouseButton.Middle });
+                var released = await MeasurementsAsync(page);
+                await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-pan-released.json"), released.GetRawText());
+            }
+            panPhase = "displacement after release";
+            await page.WaitForFunctionAsync("previous => {const r=document.querySelector('.flow-node').getBoundingClientRect();return Math.abs(r.x-previous.x)>1||Math.abs(r.y-previous.y)>1}", new { x = before.X, y = before.Y });
         }
-        finally { await page.Mouse.UpAsync(new() { Button = MouseButton.Middle }); }
-        await page.WaitForFunctionAsync("previous => {const r=document.querySelector('.flow-node').getBoundingClientRect();return Math.abs(r.x-previous.x)>1||Math.abs(r.y-previous.y)>1}", new { x = before.X, y = before.Y });
+        catch (Exception error)
+        {
+            try
+            {
+                var failed = await MeasurementsAsync(page);
+                await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-pan-failure.json"),
+                    JsonSerializer.Serialize(new { panPhase, error = error.GetType().Name, failed }, new JsonSerializerOptions { WriteIndented = true }));
+                await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-near-limit-pan-failure.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+            }
+            catch (Exception diagnosticError) when (diagnosticError is PlaywrightException or IOException or UnauthorizedAccessException)
+            { Console.WriteLine($"Pan failure evidence could not be retained: {diagnosticError.GetType().Name}"); }
+            throw;
+        }
         var panned = await MeasurementsAsync(page);
         await page.GetByTestId("flow-zoom-in").ClickAsync();
         await page.WaitForFunctionAsync("previous => document.querySelector('.flow-node').getBoundingClientRect().width>previous+1", before.Width);
@@ -314,8 +341,12 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
     private static Task<JsonElement> MeasurementsAsync(IPage page) => page.GetByTestId("flow-canvas").EvaluateAsync<JsonElement>("""
         panel => ({
             viewport:{width:innerWidth,height:innerHeight,dpr:devicePixelRatio},
+            document:{x:scrollX,y:scrollY,active:document.activeElement?.getAttribute('class')},
             panel:panel.getBoundingClientRect(),fitState:panel.dataset.fitState,fitRevision:Number(panel.dataset.fitRevision),
-            scroller:(()=>{const e=panel.querySelector('[id^=flow-scroll-]');return e?{x:e.scrollLeft,y:e.scrollTop,width:e.scrollWidth,height:e.scrollHeight}:null})(),
+            scroller:(()=>{const e=panel.querySelector('[id^=flow-scroll-]'),content=e?.querySelector('.veloxdev-wf-canvas-content');
+                return e?{id:e.id,connected:e.isConnected,cursor:e.style.cursor,x:e.scrollLeft,y:e.scrollTop,width:e.scrollWidth,height:e.scrollHeight,
+                    clientWidth:e.clientWidth,clientHeight:e.clientHeight,rect:e.getBoundingClientRect(),
+                    canvas:e.querySelector('.veloxdev-wf-canvas')?.getBoundingClientRect(),content:content?.getBoundingClientRect(),contentTransform:content?.style.transform}:null})(),
             nodes:[...panel.querySelectorAll('.flow-node')].map(node=>({id:node.dataset.nodeId,kind:node.dataset.nodeKind,rect:node.getBoundingClientRect(),ports:node.querySelectorAll('.flow-port').length})),
             curves:panel.querySelectorAll('[data-testid=flow-link]').length,
             routePoints:[...panel.querySelectorAll('.flow-route-handle')].map(handle=>({x:Number(handle.dataset.worldX),y:Number(handle.dataset.worldY)}))
