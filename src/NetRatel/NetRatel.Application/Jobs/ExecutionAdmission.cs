@@ -70,7 +70,8 @@ public interface IExecutionAdmissionStore
     Task<ExecutionAdmissionBinding> ReserveAsync(ExecutionAdmissionSubmission submission, Func<string> allocateExecutionId, CancellationToken cancellationToken);
     Task<ExecutionAdmissionBinding?> FindByExecutionAsync(ExecutionAdmissionKind kind, string executionId, CancellationToken cancellationToken);
     Task RecordAuthorityDeniedAsync(ExecutionAdmissionKind kind, string executionId, CancellationToken cancellationToken);
-    Task<bool> TryBeginDispatchAsync(ExecutionAdmissionBinding binding, Func<CancellationToken, Task> prepare, CancellationToken cancellationToken)
+    Task<bool> TryBeginDispatchAsync(ExecutionAdmissionBinding binding, Func<CancellationToken, Task> prepare,
+        Func<CancellationToken, Task> validate, CancellationToken cancellationToken)
         => throw new NotSupportedException("Atomic keyed physical dispatch admission is unavailable.");
     Task RecordDispatchAcceptedAsync(ExecutionAdmissionBinding binding, CancellationToken cancellationToken)
         => throw new NotSupportedException("Atomic keyed physical dispatch acceptance is unavailable.");

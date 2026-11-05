@@ -5,6 +5,7 @@ using System.Text.Json;
 using AwesomeAssertions;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using NetRatel.API.Gateway;
 using NetRatel.API.Services.Flows;
 using NetRatel.Application.Flows;
@@ -123,9 +124,73 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         _commands.Dispatches.Should().Be(0);
     }
 
-    private KeyedScriptExecutionService Service(OrchestratorDbContext db, IExecutionAdmissionStore? store = null) =>
-        new(db, store ?? new ExecutionAdmissionStore(db, _keys, TimeProvider.System), new JobRunService(db, _keys),
-            new FlowExecutionAuthority(db, new Verifier(), _access, _source, TimeProvider.System), _commands, TimeProvider.System);
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Expiry_or_revocation_during_activity_save_rolls_back_activity_and_claim_then_a_new_lease_recovers_the_same_key(bool expireLease)
+    {
+        var request = await SeedAsync();
+        var clock = new AdmissionClock();
+        var interceptor = new AfterActivitySave(() =>
+        {
+            if (expireLease) clock.UtcNow = request.FlowLease!.ExpiresAtUtc.AddSeconds(1);
+            else _access.Allowed = false;
+        });
+        var options = new DbContextOptionsBuilder<OrchestratorDbContext>(_options).AddInterceptors(interceptor).Options;
+        await using (var dispatch = new OrchestratorDbContext(options))
+        {
+            var attempt = () => Service(dispatch, clock: clock).StartKeyedAsync(request);
+            await attempt.Should().ThrowAsync<ExecutionAdmissionDeniedException>();
+        }
+        string reserved;
+        await using (var verify = new OrchestratorDbContext(_options))
+        {
+            (await verify.JobTaskActivities.CountAsync()).Should().Be(0);
+            var binding = await verify.Set<ExecutionAdmissionRecord>().SingleAsync();
+            binding.DispatchStartedAtUtc.Should().BeNull();
+            binding.DispatchAcceptedAtUtc.Should().BeNull();
+            reserved = binding.ExecutionId;
+        }
+        _commands.Dispatches.Should().Be(0);
+        _access.Allowed = true;
+        var newLease = request.FlowLease! with { Token = Guid.NewGuid(), WorkerId = Guid.NewGuid(),
+            Fence = request.FlowLease.Fence + 1, ExpiresAtUtc = clock.GetUtcNow().AddMinutes(2) };
+        await using (var renew = new OrchestratorDbContext(_options))
+        {
+            var run = await renew.FlowRuns.SingleAsync();
+            run.LeaseToken = newLease.Token; run.LeaseOwner = newLease.WorkerId;
+            run.Fence = newLease.Fence; run.LeaseExpiresAtUtc = newLease.ExpiresAtUtc;
+            await renew.SaveChangesAsync();
+        }
+        await using var recovered = new OrchestratorDbContext(_options);
+        var result = await Service(recovered, clock: clock).StartKeyedAsync(request with { FlowLease = newLease });
+        result.Binding.ExecutionId.Should().Be(reserved);
+        result.Binding.DispatchAcceptedAtUtc.Should().NotBeNull();
+        _commands.Dispatches.Should().Be(1);
+        (await recovered.JobTaskActivities.CountAsync()).Should().Be(1);
+    }
+
+    private sealed class AdmissionClock : TimeProvider
+    {
+        public DateTimeOffset UtcNow { get; set; } = new(DateTimeOffset.UtcNow.UtcTicks / 10 * 10, TimeSpan.Zero);
+        public override DateTimeOffset GetUtcNow() => UtcNow;
+    }
+    private sealed class AfterActivitySave(Action after) : SaveChangesInterceptor
+    {
+        private int _changed;
+        public override ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData eventData, int result,
+            CancellationToken cancellationToken = default)
+        {
+            if (eventData.Context!.ChangeTracker.Entries<JobTaskActivityRecord>().Any() &&
+                Interlocked.Exchange(ref _changed, 1) == 0) after();
+            return ValueTask.FromResult(result);
+        }
+    }
+
+    private KeyedScriptExecutionService Service(OrchestratorDbContext db, IExecutionAdmissionStore? store = null, TimeProvider? clock = null) =>
+        new(db, store ?? new ExecutionAdmissionStore(db, _keys, clock ?? TimeProvider.System), new JobRunService(db, _keys),
+            new FlowExecutionAuthority(db, new Verifier(), _access, _source, clock ?? TimeProvider.System), _commands, clock ?? TimeProvider.System);
 
     private async Task<KeyedScriptAdmissionRequest> SeedAsync()
     {
@@ -201,8 +266,9 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         public Task<ExecutionAdmissionBinding> ReserveAsync(ExecutionAdmissionSubmission submission, Func<string> allocate, CancellationToken ct) => inner.ReserveAsync(submission, allocate, ct);
         public Task<ExecutionAdmissionBinding?> FindByExecutionAsync(ExecutionAdmissionKind kind, string id, CancellationToken ct) => inner.FindByExecutionAsync(kind, id, ct);
         public Task RecordAuthorityDeniedAsync(ExecutionAdmissionKind kind, string id, CancellationToken ct) => inner.RecordAuthorityDeniedAsync(kind, id, ct);
-        public async Task<bool> TryBeginDispatchAsync(ExecutionAdmissionBinding binding, Func<CancellationToken, Task> prepare, CancellationToken ct)
-        { var claimed = await inner.TryBeginDispatchAsync(binding, prepare, ct); if (claimed) after(); return claimed; }
+        public async Task<bool> TryBeginDispatchAsync(ExecutionAdmissionBinding binding, Func<CancellationToken, Task> prepare,
+            Func<CancellationToken, Task> validate, CancellationToken ct)
+        { var claimed = await inner.TryBeginDispatchAsync(binding, prepare, validate, ct); if (claimed) after(); return claimed; }
         public Task RecordDispatchAcceptedAsync(ExecutionAdmissionBinding binding, CancellationToken ct) => inner.RecordDispatchAcceptedAsync(binding, ct);
     }
 }

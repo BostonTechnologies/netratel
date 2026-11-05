@@ -4,7 +4,11 @@
 @inject IJSRuntime JS
 
 <section id="@_id" class="flow-trace-player" data-testid="flow-trace-player" data-context="@ContextKey" data-scope-id="@ScopeId" aria-label="Flow playback" @onkeydown:stopPropagation>
-    @if (Stale)
+    @if (Trace is { SchemaVersion: not 1 })
+    {
+        <p role="alert" data-testid="flow-trace-unsupported">Node data unavailable. This trace format is unsupported.</p>
+    }
+    else if (Stale)
     {
         <p role="alert" data-testid="flow-trace-stale">This trace belongs to a different graph revision. Preview the current draft again.</p>
     }
@@ -59,20 +63,23 @@
     [Parameter, EditorRequired] public string ContextKey { get; set; } = "";
     [Parameter] public string? ExpectedConfigurationHash { get; set; }
     [Parameter] public string? ScopeId { get; set; }
+    [Parameter] public int? ExpectedGraphSchemaVersion { get; set; }
     private readonly string _id = "flow-trace-" + Guid.NewGuid().ToString("N");
     private IJSObjectReference? _module, _handle;
     private FlowTraceDto? _renderedTrace;
     private string? _renderedContext, _renderedHash, _renderedScope;
+    private int? _renderedGraphSchema;
     private long _generation;
     private bool _pendingAttach, _disposed;
-    private bool Stale => Trace is not null && ExpectedConfigurationHash is not null &&
-        !string.Equals(Trace.ConfigurationHash, ExpectedConfigurationHash, StringComparison.Ordinal);
+    private bool Stale => Trace is not null &&
+        (ExpectedConfigurationHash is not null && !string.Equals(Trace.ConfigurationHash, ExpectedConfigurationHash, StringComparison.Ordinal) ||
+         ExpectedGraphSchemaVersion is not null && Trace.GraphSchemaVersion != ExpectedGraphSchemaVersion);
 
     protected override void OnParametersSet()
     {
         if (ReferenceEquals(_renderedTrace, Trace) && _renderedContext == ContextKey &&
-            _renderedHash == ExpectedConfigurationHash && _renderedScope == ScopeId) return;
-        _renderedTrace = Trace; _renderedContext = ContextKey; _renderedHash = ExpectedConfigurationHash; _renderedScope = ScopeId;
+            _renderedHash == ExpectedConfigurationHash && _renderedScope == ScopeId && _renderedGraphSchema == ExpectedGraphSchemaVersion) return;
+        _renderedTrace = Trace; _renderedGraphSchema = ExpectedGraphSchemaVersion; _renderedContext = ContextKey; _renderedHash = ExpectedConfigurationHash; _renderedScope = ScopeId;
         ++_generation; _pendingAttach = true;
     }
 
@@ -85,9 +92,10 @@
         {
             var old = _handle; _handle = null;
             if (old is not null) { await old.InvokeVoidAsync("dispose"); await old.DisposeAsync(); }
-            if (Stale || Trace is not { Steps.Count: > 0 }) return;
+            if (_disposed || generation != _generation || Stale || Trace is not { SchemaVersion: 1, Steps.Count: > 0 }) return;
+            var imported = _module is null;
             var module = _module ?? await JS.InvokeAsync<IJSObjectReference>("import", "./js/flows-playback.js");
-            if (_disposed || generation != _generation) { if (_module is null) await module.DisposeAsync(); return; }
+            if (_disposed || generation != _generation) { if (imported) await module.DisposeAsync(); return; }
             _module = module;
             var handle = await module.InvokeAsync<IJSObjectReference?>("attach", _id, ContextKey);
             if (_disposed || generation != _generation)
