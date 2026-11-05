@@ -16,6 +16,9 @@ public static class FlowExecutionEventValidator
         if (value.TenantId <= 0) issues.Add("event_tenant_required");
         if (value.OccurredAtUtc == default || value.ObservedAtUtc == default) issues.Add("event_timestamp_required");
         if (!Enum.IsDefined(value.SourceKind)) issues.Add("event_source_unsupported");
+        if (value.DefinitionSourceKind is { } definitionKind && (!Enum.IsDefined(definitionKind) ||
+            value.SourceKind != FlowExecutionSourceKind.Request && definitionKind != value.SourceKind))
+            issues.Add("event_definition_source_invalid");
         if (!Enum.IsDefined(value.Outcome)) issues.Add("event_outcome_unsupported");
         Required(value.ExecutionId, "execution_id");
         Required(value.AttemptId, "attempt_id");

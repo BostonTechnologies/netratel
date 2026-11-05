@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Flows;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using NetRatel.Application.Jobs;
@@ -72,6 +75,7 @@ public static class RequestEndpoints
             IRequestEventBus requestEvents,
             IJobDefinitionService jobs,
             IAkkaJobAuthorityService jobAuthority,
+            [FromServices] OrchestratorDbContext db,
             CancellationToken ct) =>
         {
             var validation = ValidateCreateRequest(request, out var jobId);
@@ -92,25 +96,32 @@ public static class RequestEndpoints
                 (request.AgentId.HasValue && request.AgentId != job.AgentId))
                 return Results.Conflict(new { code = "request_target_must_match_job_target" });
 
-            var created = await requests.CreateAsync(new CreateRequestCommand(
-                request.SourceSystem!,
-                string.Empty,
-                request.ResolveJobDefinitionId(),
-                request.JobInputsJson,
-                job.TenantId,
-                job.AgentId), ct);
+            RequestInfo created;
+            await using (var submission = db.Database.IsRelational() && db.Database.CurrentTransaction is null
+                ? await db.Database.BeginTransactionAsync(ct) : null)
+            {
+                created = await requests.CreateAsync(new CreateRequestCommand(request.SourceSystem!, string.Empty,
+                    request.ResolveJobDefinitionId(), request.JobInputsJson, job.TenantId, job.AgentId), ct);
+                await ExecutionLifecycleOutbox.RecordSubmittedRequestIntentAsync(db, created, ct);
+                await db.SaveChangesAsync(ct);
+                if (submission is not null) await submission.CommitAsync(ct);
+            }
             try
             {
-                var run = await jobAuthority.StartAsync(job.Id, new NetRatel.Shared.Contracts.Jobs.RunJobRequest(
-                    request.SourceSystem!, request.JobInputsJson, null), ct);
-                created = (await requests.UpdateAsync(new UpdateRequestCommand(
-                    created.Id, null, null, null, run.Id.ToString(), "Processing", null, null, null,
-                    created.Logs.Concat([$"[{DateTimeOffset.UtcNow:O}] Dispatched to Akka job run {run.Id}."]).ToList()), ct))!;
+                await jobAuthority.StartRequestAsync(job.Id, new NetRatel.Shared.Contracts.Jobs.RunJobRequest(
+                    request.SourceSystem!, request.JobInputsJson, null), created.Id, ct);
             }
-            catch (InvalidOperationException ex)
+            catch (CanonicalRequestAdmissionRejectedException ex)
             {
+                // This is a definitive admission rejection, before any accepted job binding. Commit the
+                // request's own terminal fact so request-only subscriptions do not depend on a nonexistent run.
+                created = (await requests.UpdateAsync(new UpdateRequestCommand(created.Id, null, null, null, null,
+                    "Failed", "Job admission was rejected.", null, null, null), ct))!;
+                requestEvents.Publish(new RequestChangedEvent(created.Id, "failed", created.UpdatedAtUtc));
                 return Results.Conflict(new { code = "job_authority_unavailable", detail = ex.Message, requestId = created.Id });
             }
+            // Native job admission persists the immutable request binding and Processing state before transport.
+            created = (await requests.GetAsync(created.Id, ct))!;
             requestEvents.Publish(new RequestChangedEvent(created.Id, "created", created.UpdatedAtUtc));
             return Results.Accepted($"/api/v1/requests/{created.Id}", MapRequestDto(created));
         });

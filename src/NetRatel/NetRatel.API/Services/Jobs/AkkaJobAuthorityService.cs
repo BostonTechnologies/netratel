@@ -14,6 +14,8 @@ using NetRatel.API.Realtime;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Fanout;
 using NetRatel.Application.Jobs;
+using NetRatel.Application.Requests;
+using NetRatel.Infrastructure.Flows;
 using NetRatel.Application.Presence;
 using NetRatel.Shared.Contracts.Jobs;
 
@@ -22,6 +24,8 @@ namespace NetRatel.API.Services.Jobs;
 public interface IAkkaJobAuthorityService
 {
     Task<JobRunInfo> StartAsync(ulong jobId, RunJobRequest request, CancellationToken cancellationToken);
+    Task<JobRunInfo> StartRequestAsync(ulong jobId, RunJobRequest request, int recordedRequestId, CancellationToken cancellationToken)
+        => throw new CanonicalRequestAdmissionRejectedException("Canonical request admission is unavailable.");
     Task<JobRunInfo> StartKeyedAsync(KeyedJobAdmissionRequest admission, CancellationToken cancellationToken)
         => throw new NotSupportedException("Canonical keyed job admission is unavailable.");
     Task<JobRunInfo> StartReviewedMcpAsync(McpOperatorJobExecutionSnapshot snapshot, RunJobRequest request, CancellationToken cancellationToken)
@@ -32,6 +36,10 @@ public interface IAkkaJobAuthorityService
     Task<bool> CancelAsync(ulong jobRunId, string reason, CancellationToken cancellationToken);
     Task RecoverAsync(ulong jobRunId, CancellationToken cancellationToken) => Task.CompletedTask;
 }
+
+/// <summary>A definitive rejection before the native accepted request/job binding commits.</summary>
+public sealed class CanonicalRequestAdmissionRejectedException(string message, Exception? inner = null)
+    : InvalidOperationException(message, inner);
 
 /// <summary>
 /// Runtime owner for a job run. It records every transition through
@@ -53,7 +61,8 @@ public sealed class AkkaJobAuthorityService(
     NetRatelAkkaOptions? options = null,
     IExecutionAdmissionStore? executionAdmissions = null,
     IKeyedExecutionAuthority? keyedAuthority = null,
-    IJobExecutionSnapshotCapture? snapshotCapture = null) : IAkkaJobAuthorityService
+    IJobExecutionSnapshotCapture? snapshotCapture = null,
+    IRequestService? requests = null) : IAkkaJobAuthorityService
 {
     private const string Authority = "akka";
     private const string Feature = "jobs";
@@ -197,6 +206,58 @@ public sealed class AkkaJobAuthorityService(
     public Task<JobRunInfo> StartManagedAsync(ulong jobId, RunJobRequest request, int recordedRequestId, ClaimsPrincipal principal, CancellationToken cancellationToken)
         => StartCoreAsync(jobId, request, recordedRequestId, principal, cancellationToken);
 
+    public async Task<JobRunInfo> StartRequestAsync(ulong jobId, RunJobRequest request, int recordedRequestId,
+        CancellationToken cancellationToken)
+    {
+        if (db is null || requests is null || recordedRequestId <= 0)
+            throw new CanonicalRequestAdmissionRejectedException("Canonical request persistence is unavailable.");
+        var material = await requests.GetExecutionMaterialAsync(recordedRequestId, cancellationToken);
+        if (material is null || material.RequestId != recordedRequestId || material.JobDefinitionId != jobId ||
+            material.TenantId <= 0 || material.AgentId == Guid.Empty ||
+            material.SourceSystem.StartsWith("service:", StringComparison.Ordinal) ||
+            material.SourceSystem.StartsWith("mcp-reviewed:", StringComparison.Ordinal) ||
+            material.SourceSystem.StartsWith("flow-keyed:", StringComparison.Ordinal))
+            throw new CanonicalRequestAdmissionRejectedException("The protected original request material is unavailable.");
+        ulong runId;
+        try { runId = await ExecutionLifecycleOutbox.ReserveCanonicalRequestRunAsync(db, recordedRequestId, ids.Next, cancellationToken); }
+        catch (InvalidOperationException error) { throw new CanonicalRequestAdmissionRejectedException("The request admission intent is invalid.", error); }
+        JobRunInfo? acceptedBeforeTransport = null;
+        try
+        {
+            return await OwnAsync(runId, async ct =>
+            {
+                var existing = await jobRuns.GetAsync(runId, ct);
+                if (existing is not null)
+                {
+                    if (existing.JobId != material.JobDefinitionId || existing.TenantId != material.TenantId ||
+                        existing.AgentId != material.AgentId || existing.StartedBy != material.SourceSystem)
+                        throw new InvalidOperationException("The reserved request run differs from its protected material.");
+                    await ExecutionLifecycleOutbox.RecordCanonicalRequestBindingAsync(db, recordedRequestId, existing, _clock.GetUtcNow(), ct);
+                    // A committed native run is observed; even a queued accepted run is never re-dispatched here.
+                    return existing;
+                }
+                var original = request with { StartedBy = material.SourceSystem, InputsJson = material.InputsJson, ClientIdentityOverride = null };
+                return await StartOwnedAsync(jobId, original, null, null, runId, ct,
+                    sourceRequest: material, onSourceAccepted: run => acceptedBeforeTransport = run);
+            }, cancellationToken);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            if (acceptedBeforeTransport is not null) return acceptedBeforeTransport;
+            // A committed immutable binding is proof of acceptance even if the response/owner tail failed.
+            var tenant = material.TenantId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var requestId = recordedRequestId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var correlation = "job-run:" + runId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var committed = await db.OutboxMessages.AsNoTracking().AnyAsync(row =>
+                row.Type == ExecutionLifecycleOutbox.RequestBindingOutboxType && row.TenantId == tenant &&
+                row.EntityId == requestId && row.CorrelationId == correlation, cancellationToken);
+            if (committed)
+                return await jobRuns.GetAsync(runId, cancellationToken)
+                    ?? throw new InvalidOperationException("The accepted request run is currently unavailable.", error);
+            throw new CanonicalRequestAdmissionRejectedException("The job was definitively rejected before canonical request acceptance.", error);
+        }
+    }
+
     private async Task<JobRunInfo> StartCoreAsync(ulong jobId, RunJobRequest request, int? recordedRequestId, ClaimsPrincipal? principal, CancellationToken cancellationToken,
         McpOperatorJobExecutionSnapshot? mcpSnapshot = null)
     {
@@ -213,10 +274,13 @@ public sealed class AkkaJobAuthorityService(
 
     private async Task<JobRunInfo> StartOwnedAsync(ulong jobId, RunJobRequest request, int? recordedRequestId, ClaimsPrincipal? principal, ulong runId, CancellationToken cancellationToken,
         McpOperatorJobExecutionSnapshot? mcpSnapshot = null, PinnedJobExecutionSnapshot? pinnedSnapshot = null,
-        NetRatel.Application.Flows.FlowRunLease? firstDispatchLease = null)
+        NetRatel.Application.Flows.FlowRunLease? firstDispatchLease = null,
+        RequestExecutionMaterial? sourceRequest = null, Action<JobRunInfo>? onSourceAccepted = null)
     {
         var definition = pinnedSnapshot?.Definition ?? mcpSnapshot?.Definition ?? await jobDefinitions.GetDetailsAsync(jobId, cancellationToken).ConfigureAwait(false)
             ?? throw new KeyNotFoundException($"Job {jobId} was not found.");
+        if (db is not null && definition.Job.TenantId is > 0)
+            await ExecutionLifecycleSubscriptions.AcquireTenantAsync(db, definition.Job.TenantId.Value, cancellationToken);
         if (pinnedSnapshot is null && mcpSnapshot is null && snapshotCapture is not null &&
             definition.Job.TenantId is > 0 && definition.Job.AgentId is { } boundAgent && boundAgent != Guid.Empty &&
             definition.Steps.Where(step => step.Enabled).All(step => step.Type == JobStepKind.RunCommand ||
@@ -225,6 +289,10 @@ public sealed class AkkaJobAuthorityService(
             pinnedSnapshot = await snapshotCapture.CaptureAsync(jobId, definition.Job.TenantId ?? 0, cancellationToken);
             definition = pinnedSnapshot.Definition;
         }
+        if (sourceRequest is not null && (definition.Job.Id != sourceRequest.JobDefinitionId ||
+            definition.Job.TenantId != sourceRequest.TenantId || definition.Job.AgentId != sourceRequest.AgentId ||
+            request.StartedBy != sourceRequest.SourceSystem || request.InputsJson != sourceRequest.InputsJson))
+            throw new InvalidOperationException("The job admission target differs from the protected submitted request.");
         if (pinnedSnapshot is not null) jobRuns.BindPinnedExecutionSnapshot(runId, pinnedSnapshot);
         else if (mcpSnapshot is null) jobRuns.BindSubmittedDefinition(runId, definition);
         else jobRuns.BindMcpExecutionSnapshot(runId, mcpSnapshot);
@@ -334,7 +402,10 @@ public sealed class AkkaJobAuthorityService(
         NetRatelAkkaTelemetry.RecordAuthorityEvent(Feature, Authority, environment.EnvironmentName); // scheduled
         // Pending is a committed, proven-undispatched intent. Recovery can close
         // this stage truthfully; it never starts a replacement physical command.
+        if (sourceRequest is not null)
+            await ExecutionLifecycleOutbox.RecordCanonicalRequestBindingAsync(db!, sourceRequest.RequestId, run, _clock.GetUtcNow(), cancellationToken);
         await CommitBeforeTransportAsync(cancellationToken);
+        onSourceAccepted?.Invoke(run);
         await BeginAfterTransportAsync(cancellationToken);
         return await DispatchNextAsync(run.Id, client, nextVersion: 3, nextSequence: 3, cancellationToken, firstDispatchLease).ConfigureAwait(false);
     }
@@ -1010,6 +1081,10 @@ public sealed class AkkaJobAuthorityService(
         control.TerminalReadyAtUtc = _clock.GetUtcNow();
         control.TerminalResultHash = OrchestrationCallbackProjection.ResultHash(details);
         control.Revision++;
+        await ExecutionLifecycleOutbox.RecordJobAsync(db, details, control.TerminalResultHash,
+            control.TerminalReadyAtUtc.Value, ct, pinnedSnapshot: await jobRuns.GetPinnedExecutionSnapshotAsync(runId, ct));
+        if (requests is not null)
+            await ExecutionLifecycleOutbox.ProjectAcceptedRequestTerminalsAsync(db, details, control.TerminalResultHash, requests, ct);
         await db.SaveChangesAsync(ct);
     }
 
