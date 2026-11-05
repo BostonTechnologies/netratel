@@ -4,7 +4,17 @@ Flows support bounded drafts, previews, RatelDesk incidents and Discord/Slack no
 
 ## Editing and publishing
 
-Open **Signals → Flows**, choose an authorized tenant, and create the named incident template. The real VeloxDev canvas supports moving nodes, connecting typed ports, deleting edges/nodes, pan, zoom, fit and minimap. The property forms offer a keyboard path to node positions, conditions, mappings and connections. Save retains stable node IDs, properties, positions and viewport in NetRatel's canonical schema; a canvas or CLR object is never persisted.
+Open **Signals → Flows**, choose an authorized tenant, and create the named incident template. The real VeloxDev canvas supports moving nodes, connecting typed ports, deleting edges/nodes, pan, zoom, fit and minimap. The property forms offer a keyboard path to node positions, conditions and mappings. Visible input/output ports provide keyboard and touch connection authoring: activate an output, then a compatible input, or Cancel connection. Select a saved curve to inspect or remove it; read-only viewers allow inspection. Saved connections use curved paths and share Core hit-test geometry. Pointer-down immediately draws a dashed browser-local preview; compatible inputs highlight, invalid drops explain the rejection, and cancellation clears the preview. Pointer movement and hover do not capture the graph or send rendering frames through the server. Each committed drop uses the same authoritative native command/validation path as keyboard and touch.
+
+Save retains stable node IDs, properties, positions and viewport in NetRatel's canonical schema; a canvas or CLR object is never persisted.
+
+The compact toolbar includes a searchable, collapsible node library and **Fullscreen workspace** for both drafts and immutable viewers. Fullscreen covers the viewport; the browser Fullscreen API is requested directly from the click where supported, with a full-window fallback. The existing dialog and popover providers stay inside the native fullscreen document. Entering or leaving keeps the same canvas adapter, selected node, draft and pan/zoom. Escape keeps the editor open; use its explicit Close action to leave.
+
+Preview sample data opens in a modal dialog and does not reduce the canvas height. Closing the dialog returns focus to Preview. A captured trace opens a floating playback inspector with play/pause, previous/next, restart, speed and per-node Input/Output/Outcome. Selecting a node also selects its captured step. Pure nodes expose calculated values; the trace stops at the first external action and labels its output unavailable. No AI findings or action success is invented. Large snapshots are explicit bounded text excerpts, and missing, captured null and captured empty values remain distinct.
+
+Evaluation uses the current draft and never saves, publishes or dispatches an action. Editing the draft or changing tenant/flow removes its old trace. Playback moves through captured data entirely in the browser, respects reduced motion, and pauses while hidden or offscreen; backward stepping performs no evaluation or network command.
+
+From a run result, choose **Replay recorded run** to inspect its exact immutable published graph. The viewer verifies the graph's configuration hash and presents stored node snapshots without evaluating the current draft. Historical runs without node snapshots show unavailable data. An unsupported trace format, a changed graph hash or a different graph schema cannot display its snapshots as current data.
 
 The initial catalogue is deliberately small:
 
@@ -55,14 +65,27 @@ The initial bounds are eight nodes, seven edges, 32 KiB canonical graph, 8 KiB e
 
 ## Schema transition
 
-The compatible schema-two contracts are available for the overhaul while the current editor,
-save/publish routes and monitoring runtime remain on schema one. A draft upgrade is explicit;
+The compatible schema-two contracts and inert canvas adapter are available for the overhaul while
+the default authoring, save/publish routes and monitoring runtime remain on schema one. A draft upgrade is explicit;
 published versions, configuration hashes and running schema-one continuations are not rewritten.
 The new contract separates execution-event triggers from script/job/rerun actions and defines
 exclusive named outcomes, typed input bindings, stable edge IDs and finite optional routes.
 Its 32-node/64-edge/128 KiB budget is independent of existing execution and receipt bounds.
 The [API contract reference](../contracts/API_REFERENCE.md#flows) describes this transition.
 Execution activation and authoring of those new actions require their durable runtime integration.
+
+Schema-two snapshots retain their original schema, node settings, named ports, stable edge IDs and
+optional route points when loaded and captured. Cards derive their height from the real port count;
+schema-one geometry remains unchanged. Compatibility highlights are calculated from the current
+topology and occupied ports once per structural revision, with full validation repeated on a drop.
+
+In an editable schema-two draft, selecting a curve exposes **Add route point**, coordinate fields
+and **Reset route**. Drag a selected handle, or use arrow keys (Shift moves ten world units) and the
+coordinate fields. At most eight finite points within ±20,000 world units are saved per edge.
+Reset removes custom routing and retains the edge identity. Selected handles sit above nodes;
+readonly viewers permit inspection without route changes. Routing preview stays local to the browser
+and commits one layout change when a gesture completes. These controls do not migrate a schema-one
+draft or activate an execution node.
 
 ## VeloxDev compatibility and notices
 

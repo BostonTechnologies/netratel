@@ -26,7 +26,7 @@ using Xunit;
 
 namespace NetRatel.Tests.Flows;
 
-public sealed class FlowEndpointTests
+public sealed partial class FlowEndpointTests
 {
     private const string Path = "/api/v1/tenants/17/flows";
 
@@ -126,15 +126,19 @@ public sealed class FlowEndpointTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Execution_preview_declared_and_chunked_bodies_obey_their_own_finite_budget(bool chunked)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Execution_preview_declared_and_chunked_bodies_obey_their_own_finite_budget(bool chunked, bool uppercasePath)
     {
         using var host = await HostAsync(); var http = host.GetTestClient(); http.DefaultRequestHeaders.Authorization = new("Test", "read");
         var bytes = Encoding.UTF8.GetBytes("{\"fixture\":\"" + new string('x', FlowPreviewLimits.MaximumRequestBytes) + "\"}");
         using HttpContent content = chunked ? new UnknownLengthContent(bytes) : new ByteArrayContent(bytes);
         content.Headers.ContentType = new("application/json");
-        (await http.PostAsync(Path + "/dry-run-execution", content)).StatusCode.Should().Be(HttpStatusCode.RequestEntityTooLarge);
+        var target = Path + "/dry-run-execution";
+        if (uppercasePath) target = target.ToUpperInvariant();
+        (await http.PostAsync(target, content)).StatusCode.Should().Be(HttpStatusCode.RequestEntityTooLarge);
         host.Services.GetRequiredService<ExecutionSentinel>().Calls.Should().Be(0);
     }
 

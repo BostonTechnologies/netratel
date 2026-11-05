@@ -17,6 +17,7 @@ public static partial class FlowEndpoints
         var group = app.MapGroup("/api/v1/tenants/{tenantId:int}/flows").RequireAuthorization().WithTags("Flows");
         group.MapGet("", ListAsync); group.MapPost("", CreateAsync);
         group.MapGet("/template", TemplateAsync); group.MapGet("/connectors", ConnectorsAsync);
+        group.MapGet("/templates", TemplatesAsync); group.MapPost("/from-template", CreateFromTemplateAsync);
         group.MapGet("/versions/{versionId:guid}", VersionByIdAsync); group.MapGet("/runs/{runId:guid}", RunByIdAsync);
         group.MapPost("/validate", ValidateAsync); group.MapPost("/dry-run", DryRunAsync);
         group.MapPost("/dry-run-execution", ExecutionDryRunAsync);

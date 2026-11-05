@@ -194,7 +194,7 @@ else
             {
                 try
                 {
-                    using var document = JsonDocument.Parse(input.Output, new JsonDocumentOptions { MaxDepth = 16 });
+                    using var document = JsonDocument.Parse(input.Output, new JsonDocumentOptions { MaxDepth = FlowPreviewLimits.MaximumFixtureDepth });
                     fixture = fixture with { Output = document.RootElement.Clone() };
                 }
                 catch (JsonException) { _error = "Enter valid bounded JSON for the sample result of " + input.Name + "."; return; }

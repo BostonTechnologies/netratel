@@ -1,0 +1,107 @@
+@using System.ComponentModel
+@using System.Globalization
+@using System.Text
+@using System.Text.Json
+@using NetRatel.Web.Services.Flows
+@using NetRatel.Shared.Contracts.Flows
+@using VeloxDev.WorkflowSystem
+@using VeloxDev.WorkflowSystem.AttachedBehaviors
+@implements IDisposable
+
+@if (Path is { Length: > 0 } path)
+{
+    <g class="flow-connection @(Selected ? "selected" : "")"
+       data-veloxdev-link-id="@WorkflowRuntimeIds.Get(Link)"
+       data-veloxdev-sender-slot="@WorkflowRuntimeIds.Get(Link.Sender)"
+       data-veloxdev-receiver-slot="@WorkflowRuntimeIds.Get(Link.Receiver)"
+       data-flow-source-node="@Source" data-flow-target-node="@Target" data-flow-edge-id="@Definition?.Id" data-flow-route="@RouteJson" data-route-scale="@Scale.ToString("R", CultureInfo.InvariantCulture)">
+        <defs><marker id="@ArrowId" viewBox="0 0 10 8" refX="20" refY="4" markerWidth="10" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="M 0 0 L 10 4 L 0 8 Z" fill="@(Selected ? "var(--mud-palette-secondary)" : "var(--mud-palette-primary)")" /></marker></defs>
+        <path d="@path" class="flow-connection-hit" fill="none" stroke="transparent" stroke-width="16"
+              pointer-events="stroke" tabindex="0" role="button" aria-label="@Label"
+              @onclick="SelectAsync" @onclick:stopPropagation @onfocus="SelectAsync" @onkeydown="KeyDown"
+              data-testid="flow-link-hit" />
+        <path d="@path" class="flow-connection-line" data-veloxdev-link-curve="@(HasRoute ? null : "1")" fill="none"
+              stroke="@(Selected ? "var(--mud-palette-secondary)" : "var(--mud-palette-primary)")"
+              stroke-width="@(Selected ? "4" : "3")" marker-end="@($"url(#{ArrowId})")" pointer-events="none" data-testid="flow-link"
+              data-flow-source-node="@Source" data-flow-target-node="@Target" data-flow-edge-id="@Definition?.Id" />
+    </g>
+}
+
+@code {
+    [Parameter, EditorRequired] public IWorkflowLinkViewModel Link { get; set; } = default!;
+    [Parameter] public FlowEdgeDto? Definition { get; set; }
+    [Parameter] public double Scale { get; set; } = 1;
+    [Parameter] public Guid Source { get; set; }
+    [Parameter] public Guid Target { get; set; }
+    [Parameter] public string Label { get; set; } = "Inspect connection";
+    [Parameter] public bool Selected { get; set; }
+    [Parameter] public EventCallback SelectedChanged { get; set; }
+    private IWorkflowLinkViewModel? _subscribed;
+    private bool _disposed;
+    private string Path => BuildCurve();
+    private bool HasRoute => Definition?.Route?.Points is { Count: > 0 };
+    private string? RouteJson => HasRoute ? JsonSerializer.Serialize(Definition!.Route!.Points) : null;
+    private string ArrowId => "flow-arrow-" + WorkflowRuntimeIds.Get(Link);
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(Link, _subscribed)) return;
+        Unsubscribe();
+        _subscribed = Link;
+        Link.PropertyChanged += GeometryChanged;
+        Link.Sender.PropertyChanged += GeometryChanged;
+        Link.Receiver.PropertyChanged += GeometryChanged;
+    }
+    private string BuildCurve()
+    {
+        var sx = Link.Sender.Anchor.Horizontal; var sy = Link.Sender.Anchor.Vertical;
+        var ex = Link.Receiver.Anchor.Horizontal; var ey = Link.Receiver.Anchor.Vertical;
+        if (!new[] { sx, sy, ex, ey }.All(double.IsFinite))
+        { Link.PublishCurve(null); return ""; }
+        if (Definition?.Route?.Points is { Count: > 0 } route) return RoutedCurve(sx, sy, ex, ey, route);
+        var points = LinkCurve.LinkCurvePoints(Link, sx, sy, ex, ey, 40);
+        // The actual Core hit-test geometry and SVG are derived from the same controls.
+        Link.PublishCurve(LinkCurve.BuildLinkCubic(Link, sx, sy, ex, ey, 40), this);
+        return FormattableString.Invariant($"M {points[0].X:F2},{points[0].Y:F2} C {points[1].X:F2},{points[1].Y:F2} {points[2].X:F2},{points[2].Y:F2} {points[3].X:F2},{points[3].Y:F2}");
+    }
+    private string RoutedCurve(double sx, double sy, double ex, double ey, IReadOnlyList<FlowPositionDto> route)
+    {
+        var points = new List<(double X, double Y)> { (sx, sy) };
+        points.AddRange(route.Select(point => (point.X / Scale, point.Y / Scale)));
+        points.Add((ex, ey));
+        var builder = new StringBuilder(FormattableString.Invariant($"M {sx:F2},{sy:F2}"));
+        var xs = new List<double>(); var ys = new List<double>();
+        for (var index = 0; index + 1 < points.Count; index++)
+        {
+            var a = points[index]; var b = points[index + 1];
+            var previous = points[Math.Max(0, index - 1)]; var next = points[Math.Min(points.Count - 1, index + 2)];
+            var c1 = (X: a.X + (b.X - previous.X) / 6, Y: a.Y + (b.Y - previous.Y) / 6);
+            var c2 = (X: b.X - (next.X - a.X) / 6, Y: b.Y - (next.Y - a.Y) / 6);
+            if (index == 0) c1 = (a.X + Math.Max(40, Math.Abs(b.X - a.X) / 2), a.Y);
+            if (index + 2 == points.Count) c2 = (b.X - Math.Max(40, Math.Abs(b.X - a.X) / 2), b.Y);
+            builder.Append(FormattableString.Invariant($" C {c1.X:F2},{c1.Y:F2} {c2.X:F2},{c2.Y:F2} {b.X:F2},{b.Y:F2}"));
+            var segment = LinkCurve.FromCubic(a.X, a.Y, c1.X, c1.Y, c2.X, c2.Y, b.X, b.Y);
+            for (var sample = index == 0 ? 0 : 1; sample < segment.Count; sample++)
+            { xs.Add(segment.XAt(sample)); ys.Add(segment.YAt(sample)); }
+        }
+        Link.PublishCurve(LinkCurve.FromPoints(xs, ys), this);
+        return builder.ToString();
+    }
+    private static string Number(double value) => value.ToString("0.######", CultureInfo.InvariantCulture);
+    private void GeometryChanged(object? sender, PropertyChangedEventArgs args)
+    {
+        if (!_disposed && args.PropertyName is nameof(IWorkflowSlotViewModel.Anchor) or nameof(IWorkflowLinkViewModel.Sender) or nameof(IWorkflowLinkViewModel.Receiver) or null or "")
+            _ = InvokeAsync(StateHasChanged);
+    }
+    private Task SelectAsync() => SelectedChanged.InvokeAsync();
+    private Task KeyDown(KeyboardEventArgs args) => args.Key is "Enter" or " " ? SelectAsync() : Task.CompletedTask;
+    private void Unsubscribe()
+    {
+        if (_subscribed is not { } link) return;
+        link.PropertyChanged -= GeometryChanged;
+        link.Sender.PropertyChanged -= GeometryChanged;
+        link.Receiver.PropertyChanged -= GeometryChanged;
+        link.PublishCurve(null);
+        _subscribed = null;
+    }
+    public void Dispose() { _disposed = true; Unsubscribe(); }
+}

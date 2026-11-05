@@ -10,10 +10,10 @@ public sealed class FlowRequestBodyLimitMiddleware(RequestDelegate next)
     public async Task InvokeAsync(HttpContext http)
     {
         var path = http.Request.Path.Value;
-        var isFlow = path is not null && (path.StartsWith("/api/v1/flows/", StringComparison.Ordinal) ||
-            path.StartsWith("/api/v1/tenants/", StringComparison.Ordinal) && path.Contains("/flows", StringComparison.Ordinal));
+        var isFlow = path is not null && (path.StartsWith("/api/v1/flows/", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("/api/v1/tenants/", StringComparison.OrdinalIgnoreCase) && path.Contains("/flows", StringComparison.OrdinalIgnoreCase));
         if (!isFlow || HttpMethods.IsGet(http.Request.Method) || HttpMethods.IsHead(http.Request.Method)) { await next(http).ConfigureAwait(false); return; }
-        var maximumBytes = path!.EndsWith("/flows/dry-run-execution", StringComparison.Ordinal)
+        var maximumBytes = path!.EndsWith("/flows/dry-run-execution", StringComparison.OrdinalIgnoreCase)
             ? FlowPreviewLimits.MaximumRequestBytes : MaximumBytes;
         if (http.Request.ContentLength > maximumBytes) { http.Response.StatusCode = StatusCodes.Status413PayloadTooLarge; return; }
         if (http.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } feature) feature.MaxRequestBodySize = maximumBytes;

@@ -70,7 +70,7 @@ public static class FlowGraphV2Validator
                 Error("node-properties", node.Id);
 
             if (node.Kind == FlowNodeKind.ExecutionEvent &&
-                (node.ExecutionTrigger is { } trigger ? !ValidTrigger(trigger) : complete))
+                (node.ExecutionTrigger is { } trigger ? !ValidTrigger(trigger, complete) : complete))
                 Error("execution-trigger", node.Id);
             if (node.Kind == FlowNodeKind.Condition)
             {
@@ -94,7 +94,8 @@ public static class FlowGraphV2Validator
                 if (node.ExecutionAction is { } action)
                 {
                     if (action.SourceKind != expectedSource || !ValidDefinition(action.Definition) ||
-                        action.TimeoutMinutes is < 1 or > FlowGraphV2Limits.MaximumOperationMinutes ||
+                        action.TimeoutMinutes is < 1 or > FlowGraphV2Limits.MaximumOperationMinutes || !Enum.IsDefined(action.Environment) ||
+                        action.WorkingDirectory is not null && !Text(action.WorkingDirectory, 1024) ||
                         action.Target is { AgentId: null } || action.Target?.AgentId == Guid.Empty)
                         Error("execution-action", node.Id);
                     if (node.Kind == FlowNodeKind.RunJob && complete && action.Target?.AgentId is null)
@@ -161,7 +162,7 @@ public static class FlowGraphV2Validator
         foreach (var edge in graph.Edges)
         {
             if (edge is null) { Error("edge-id"); continue; }
-            if (edge.Id is not { } id || id == Guid.Empty || !edgeIds.Add(id)) Error("edge-id", edgeId: edge.Id);
+            if (edge.Id is not { } id || id == Guid.Empty || !edgeIds.Add(id)) Error("edge-id", edge.SourceNodeId, edge.Id);
             if (edge.Route is { } route && (route.Points is null || route.Points.Count > FlowGraphV2Limits.MaximumRoutePoints ||
                 route.Points.Any(point => point is null || !Coordinate(point.X) || !Coordinate(point.Y))))
                 Error("edge-route", edgeId: edge.Id);
@@ -207,6 +208,8 @@ public static class FlowGraphV2Validator
         bool? executionSource = triggers.SingleOrDefaultSafe() is { } eventTrigger ? eventTrigger.Kind == FlowNodeKind.ExecutionEvent : null;
         foreach (var node in nodes.Values)
         {
+            if (executionSource is true && node.Kind == FlowNodeKind.Condition && node.Condition is not null)
+                Error("condition-source", node.Id);
             var bindings = (node.Inputs?.Values ?? []).Concat(node.Predicate is { } predicate ? [predicate.Input] : []);
             foreach (var binding in bindings)
             {
@@ -247,21 +250,29 @@ public static class FlowGraphV2Validator
         return true;
     }
 
-    private static bool ValidTrigger(FlowExecutionTriggerSettingsDto trigger) =>
-        trigger.Sources is { Count: > 0 and <= 3 } && trigger.Sources.All(Enum.IsDefined) &&
-        trigger.Sources.Distinct().Count() == trigger.Sources.Count &&
-        trigger.Outcomes is { Count: > 0 and <= 7 } && trigger.Outcomes.All(Enum.IsDefined) &&
-        trigger.Outcomes.Distinct().Count() == trigger.Outcomes.Count && Enum.IsDefined(trigger.Scope) &&
-        (trigger.Scope == FlowExecutionScope.SelectedDefinitions
-            ? trigger.DefinitionIds is { Count: > 0 and <= FlowGraphV2Limits.MaximumSelectedDefinitions }
-            : trigger.DefinitionIds is null or { Count: 0 }) &&
-        (trigger.DefinitionIds is null || trigger.DefinitionIds.All(id => Text(id, 128)) &&
-            trigger.DefinitionIds.Distinct(StringComparer.Ordinal).Count() == trigger.DefinitionIds.Count) &&
-        (trigger.AgentIds is null || trigger.AgentIds.Count <= FlowGraphV2Limits.MaximumSelectedDefinitions &&
-            trigger.AgentIds.All(id => id != Guid.Empty) && trigger.AgentIds.Distinct().Count() == trigger.AgentIds.Count) &&
-        (trigger.RequestKinds is null || trigger.Sources.Contains(FlowExecutionSourceKind.Request) &&
-            trigger.RequestKinds.Count <= 32 && trigger.RequestKinds.All(kind => Text(kind, 128)) &&
-            trigger.RequestKinds.Distinct(StringComparer.Ordinal).Count() == trigger.RequestKinds.Count);
+    private static bool ValidTrigger(FlowExecutionTriggerSettingsDto trigger, bool complete)
+    {
+        if (trigger.Sources is not { Count: > 0 and <= 3 } || !trigger.Sources.All(Enum.IsDefined) ||
+            trigger.Sources.Distinct().Count() != trigger.Sources.Count ||
+            trigger.Outcomes is not { Count: > 0 and <= 7 } || !trigger.Outcomes.All(Enum.IsDefined) ||
+            trigger.Outcomes.Distinct().Count() != trigger.Outcomes.Count || !Enum.IsDefined(trigger.Scope))
+            return false;
+        var ids = trigger.DefinitionIds ?? [];
+        var references = trigger.DefinitionReferences ?? [];
+        if (ids.Count > FlowGraphV2Limits.MaximumSelectedDefinitions || references.Count > FlowGraphV2Limits.MaximumSelectedDefinitions ||
+            ids.Any(id => !Text(id, 128)) || ids.Distinct(StringComparer.Ordinal).Count() != ids.Count ||
+            references.Any(reference => reference is null || !trigger.Sources.Contains(reference.SourceKind) || !Text(reference.Id, 128)) ||
+            references.Where(reference => reference is not null).Select(reference => (reference.SourceKind, reference.Id)).Distinct().Count() != references.Count)
+            return false;
+        if (trigger.Scope == FlowExecutionScope.AllInTenant ? ids.Count != 0 || references.Count != 0 :
+            complete && ids.Count == 0 && references.Count == 0 || ids.Count > 0 && (references.Count > 0 || trigger.Sources.Count != 1))
+            return false;
+        return (trigger.AgentIds is null || trigger.AgentIds.Count <= FlowGraphV2Limits.MaximumSelectedDefinitions &&
+                trigger.AgentIds.All(id => id != Guid.Empty) && trigger.AgentIds.Distinct().Count() == trigger.AgentIds.Count) &&
+            (trigger.RequestKinds is null || trigger.Sources.Contains(FlowExecutionSourceKind.Request) &&
+                trigger.RequestKinds.Count <= 32 && trigger.RequestKinds.All(kind => Text(kind, 128)) &&
+                trigger.RequestKinds.Distinct(StringComparer.Ordinal).Count() == trigger.RequestKinds.Count);
+    }
 
     private static bool ValidDefinition(FlowExecutionDefinitionDto? definition) => definition is not null &&
         Text(definition.Id, 128) && (definition.Name is null || Text(definition.Name, 128)) &&

@@ -70,6 +70,11 @@ public static class DependencyInjection
         services.AddScoped<IEventPublisher, InternalEventPublisher>();
         services.AddScoped<IJobDefinitionService, JobDefinitionService>();
         services.AddScoped<IJobRunService, JobRunService>();
+        services.AddScoped<IExecutionAdmissionStore, ExecutionAdmissionStore>();
+        services.AddScoped<NetRatel.Infrastructure.Flows.FlowExecutionAuthority>();
+        services.AddScoped<IKeyedExecutionAuthority>(provider => provider.GetRequiredService<NetRatel.Infrastructure.Flows.FlowExecutionAuthority>());
+        services.AddScoped<IJobExecutionSnapshotCapture, PinnedJobExecutionSnapshotCapture>();
+        services.AddScoped<NetRatel.Application.Flows.IFlowExecutionDefinitionPins, NetRatel.Infrastructure.Flows.FlowExecutionDefinitionPins>();
         services.AddScoped<IRequestService, RequestService>();
         services.AddScoped<ITenantService, TenantService>();
         services.AddScoped<ISecretService, SecretService>();

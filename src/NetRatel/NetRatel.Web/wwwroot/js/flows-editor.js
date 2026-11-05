@@ -122,3 +122,116 @@ export function focusNodeSettings(panelId, nodeId) {
     const node = [...(panel?.querySelectorAll('[data-node-id]') ?? [])].find(item => item.dataset.nodeId === nodeId);
     (node?.querySelector('[data-testid="flow-node-settings"]') ?? panel)?.focus();
 }
+
+// A fixed workspace supplies the same layout when the Fullscreen API is unavailable.
+// The native root includes Mud's existing providers; never reparent Blazor-owned DOM.
+const shells = new Map();
+export function attachShell(id, reference) {
+    detachShell(id);
+    const root = document.getElementById(id);
+    if (!root) return;
+    const state = { root, reference, focused: false, ownsNative: false, nativePending: false, disposed: false, unsynchronized: false, returnFocus: null, preview: null };
+    const notify = () => {
+        if (state.disposed) return;
+        reference.invokeMethodAsync("FullscreenChanged", state.focused)
+            .then(() => { state.unsynchronized = false; })
+            .catch(() => { if (!root.isConnected) detachShell(id); else state.unsynchronized = true; });
+    };
+    state.setFocus = async focused => {
+        if (state.disposed || state.focused === focused) return;
+        const positions = [...root.querySelectorAll('[id^="flow-scroll-"]')].map(el => [el, el.scrollLeft, el.scrollTop]);
+        if (focused) state.returnFocus = document.activeElement;
+        state.focused = focused;
+        root.classList.toggle('focused', focused);
+        document.documentElement.classList.toggle('netratel-flow-fullscreen', [...shells.values()].some(shell => shell.focused && !shell.disposed));
+        notify();
+        // Start this call synchronously from the click handler, before the first await,
+        // so native fullscreen has a real browser user activation on a server circuit.
+        if (focused && !state.nativePending && !document.fullscreenElement && document.fullscreenEnabled && document.documentElement.requestFullscreen) {
+            state.ownsNative = true; state.nativePending = true;
+            try {
+                await document.documentElement.requestFullscreen();
+                if (state.disposed || !state.focused) {
+                    state.ownsNative = false;
+                    if (document.fullscreenElement === document.documentElement) await document.exitFullscreen();
+                }
+            }
+            catch { state.ownsNative = false; } // Fixed full-window fallback stays active.
+            finally { state.nativePending = false; }
+        } else if (!focused && state.ownsNative && !state.nativePending) {
+            state.ownsNative = false;
+            if (document.fullscreenElement === document.documentElement) {
+                try { await document.exitFullscreen(); } catch { /* Window mode is already restored. */ }
+            }
+        }
+        requestAnimationFrame(() => {
+            if (state.disposed) return;
+            for (const [el, x, y] of positions) if (el.isConnected) { el.scrollLeft = x; el.scrollTop = y; }
+            if (!focused && state.returnFocus?.isConnected) state.returnFocus.focus({ preventScroll: true });
+            window.dispatchEvent(new Event('resize'));
+        });
+    };
+    const click = event => {
+        if (state.unsynchronized) notify();
+        if (!event.target.closest?.('[data-testid="flow-focus"]')) return;
+        event.preventDefault(); event.stopImmediatePropagation();
+        void state.setFocus(!state.focused);
+    };
+    const fullscreen = () => {
+        if (state.ownsNative && document.fullscreenElement !== document.documentElement) {
+            state.ownsNative = false;
+            void state.setFocus(false);
+        }
+    };
+    const escape = event => {
+        if (event.key !== 'Escape' || !state.focused) return;
+        if (root.querySelector('dialog[open], .flow-properties, .flow-live-link:not([hidden]), .flow-route-handle.dragging, [data-connection-start]:not([data-connection-start=""])')) return;
+        const overlayOpen = [...document.querySelectorAll('.mud-dialog-container, .mud-popover-open')]
+            .some(el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
+        if (overlayOpen) return;
+        event.preventDefault(); event.stopImmediatePropagation();
+        void state.setFocus(false);
+    };
+    // A disconnected server cannot dispose browser listeners. Observe root removal
+    // so a replacement component never inherits this shell's body lock or callbacks.
+    const observer = new MutationObserver(() => {
+        if (!root.isConnected) { detachShell(id); return; }
+        // Keep local fullscreen presentation truthful while a circuit reconnects.
+        root.classList.toggle('focused', state.focused);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(root, { attributes: true, attributeFilter: ['class'] });
+    root.addEventListener('click', click, true);
+    document.addEventListener('keydown', escape, true);
+    document.addEventListener('fullscreenchange', fullscreen);
+    state.dispose = () => {
+        state.disposed = true;
+        observer.disconnect();
+        root.removeEventListener('click', click, true);
+        document.removeEventListener('keydown', escape, true);
+        document.removeEventListener('fullscreenchange', fullscreen);
+        if (state.preview) { state.preview.element.removeEventListener('cancel', state.preview.cancel); state.preview.element.close(); }
+        document.documentElement.classList.toggle('netratel-flow-fullscreen', [...shells.values()].some(shell => shell !== state && shell.focused && !shell.disposed));
+        if (state.ownsNative && document.fullscreenElement === document.documentElement) void document.exitFullscreen().catch(() => {});
+    };
+    shells.set(id, state);
+}
+export function setShellFocus(id, focused) { return shells.get(id)?.setFocus(focused); }
+export function detachShell(id) { shells.get(id)?.dispose(); shells.delete(id); }
+export function showPreview(shellId, previewId) {
+    const state = shells.get(shellId), dialog = document.getElementById(previewId);
+    if (!state || !dialog || dialog.open) return;
+    if (state.preview) state.preview.element.removeEventListener('cancel', state.preview.cancel);
+    const cancel = event => {
+        event.preventDefault();
+        if (!state.disposed) state.reference.invokeMethodAsync("PreviewCancelled").catch(() => {});
+    };
+    state.preview = { element: dialog, cancel };
+    dialog.addEventListener('cancel', cancel);
+    dialog.showModal();
+}
+export function closePreview(shellId, previewId) {
+    const state = shells.get(shellId);
+    document.getElementById(previewId)?.close();
+    state?.root.querySelector('[data-testid="flow-dry-run-toggle"]')?.focus({ preventScroll: true });
+}

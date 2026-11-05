@@ -142,6 +142,15 @@ public static class FlowExecutionPreview
                 node.Kind is FlowNodeKind.AlertRaised or FlowNodeKind.ExecutionEvent or FlowNodeKind.Condition or FlowNodeKind.MapIncident or FlowNodeKind.Finish)
                 return new("preview-fixture-node", fixture?.NodeId);
             if (!IsOutcome(fixture.Outcome)) return new("preview-fixture-outcome", fixture.NodeId);
+            if (fixture.Output.ValueKind != JsonValueKind.Undefined)
+            {
+                try
+                {
+                    using var document = JsonDocument.Parse(fixture.Output.GetRawText(),
+                        new JsonDocumentOptions { MaxDepth = FlowPreviewLimits.MaximumFixtureDepth });
+                }
+                catch (JsonException) { return new("preview-fixture-depth", fixture.NodeId); }
+            }
             var size = JsonSerializer.SerializeToUtf8Bytes(fixture, Json).Length;
             total += size;
             if (size > FlowPreviewLimits.MaximumFixtureBytes || total > FlowPreviewLimits.MaximumFixtureTotalBytes)
@@ -186,11 +195,6 @@ public static class FlowExecutionPreview
     private static IReadOnlyDictionary<string, string> AiSample(FlowPreviewFixtureDto fixture)
     {
         var values = new Dictionary<string, string>(StringComparer.Ordinal) { ["aiStatus"] = "Simulated " + fixture.Outcome };
-        if (fixture.Outcome != FlowNodeCatalogue.Succeeded)
-        {
-            values["aiSummary"] = ""; values["aiEvidence"] = ""; values["aiRecommendations"] = "";
-            return values;
-        }
         if (fixture.Output.ValueKind != JsonValueKind.Object) return values;
         foreach (var (property, field) in new[] { ("summary", "aiSummary"), ("evidence", "aiEvidence"), ("recommendations", "aiRecommendations") })
             if (fixture.Output.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String)

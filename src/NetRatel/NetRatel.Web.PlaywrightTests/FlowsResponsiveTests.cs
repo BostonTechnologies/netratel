@@ -38,11 +38,11 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await page.GetByTestId("flow-fit").ClickAsync();
         await AssertNativeNodesFitAsync(page);
         await AssertNoOverflowAsync(page);
+        var canvasEvidence = EvidenceRoot(); Directory.CreateDirectory(canvasEvidence);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(canvasEvidence, $"flows-{width}x{height}-{theme}-workspace.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
         foreach (var id in new[] { "flow-close", "flow-name", "flow-save", "flow-validate", "flow-dry-run-toggle", "flow-publish", "flow-reload", "flow-properties-toggle", "flow-fit", "flow-overview-toggle" })
             await AssertControlReachableAsync(page.GetByTestId(id), width, height);
         var actionId = await page.Locator("[data-node-kind=CreateIncident]").GetAttributeAsync("data-node-id");
-        var canvasEvidence = EvidenceRoot(); Directory.CreateDirectory(canvasEvidence);
-        await page.ScreenshotAsync(new() { Path = Path.Combine(canvasEvidence, $"flows-{width}x{height}-{theme}-workspace.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
         await Assertions.Expect(page.GetByTestId("flow-properties")).ToHaveCountAsync(0);
         await page.Locator($"[data-node-id='{actionId}'] [data-testid=flow-node-settings]").ClickAsync();
         await AssertControlReachableAsync(page.GetByTestId("flow-connector"), width, height);
@@ -89,6 +89,7 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await File.WriteAllTextAsync(Path.Combine(evidence, name + ".json"), geometry.GetRawText());
         Assert.Equal(width, geometry.GetProperty("cssWidth").GetInt32()); Assert.Equal(dpr, geometry.GetProperty("dpr").GetDouble());
         Assert.Equal("16px", geometry.GetProperty("rootFont").GetString());
+        await page.GetByTestId("flow-preview-close").ClickAsync();
         await page.GetByTestId("flow-canvas").ScrollIntoViewIfNeededAsync();
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, name + "-canvas.png"), Animations = ScreenshotAnimations.Disabled });
         await page.GetByTestId("flow-properties-close").ClickAsync();
@@ -106,11 +107,59 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
     }
 
     [Fact]
+    public async Task Fullscreen_Editor_And_Viewer_Keep_Preview_Modal_And_Preserve_Draft_On_Escape()
+    {
+        var fixture = _fixture!;
+        fixture.FlowsData.SeedRun();
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1280, Height = 800 } });
+        var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000);
+        await OpenPageAsync(page, fixture);
+        await page.GetByTestId("flow-edit").First.ClickAsync();
+        await page.GetByTestId("flow-name").FillAsync("Fullscreen retained draft");
+        var selected = await page.Locator(".flow-node.selected").GetAttributeAsync("data-node-id");
+        await page.GetByTestId("flow-focus").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-focus")).ToHaveAttributeAsync("aria-pressed", "true");
+        var shell = (await page.GetByTestId("flow-editor").BoundingBoxAsync())!;
+        Assert.InRange(shell.X, -1, 1); Assert.InRange(shell.Y, -1, 1);
+        Assert.InRange(shell.Width, 1278, 1282); Assert.InRange(shell.Height, 798, 802);
+        var canvas = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!;
+        await page.GetByTestId("flow-dry-run-toggle").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-preview-dialog")).ToBeVisibleAsync();
+        Assert.True(await page.GetByTestId("flow-preview-dialog").EvaluateAsync<bool>("e => e.matches(':modal')"));
+        var after = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!;
+        Assert.InRange(after.Y, canvas.Y - 1, canvas.Y + 1); Assert.InRange(after.Height, canvas.Height - 1, canvas.Height + 1);
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(page.GetByTestId("flow-preview-dialog")).ToHaveCountAsync(0);
+        await Assertions.Expect(page.GetByTestId("flow-dry-run-toggle")).ToBeFocusedAsync();
+        await Assertions.Expect(page.GetByTestId("flow-name")).ToHaveValueAsync("Fullscreen retained draft");
+        Assert.Equal(selected, await page.Locator(".flow-node.selected").GetAttributeAsync("data-node-id"));
+        var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-fullscreen-editor.png"), Animations = ScreenshotAnimations.Disabled });
+        await page.GetByTestId("flow-close").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-unsaved")).ToBeVisibleAsync();
+        Assert.True(await page.GetByTestId("flow-unsaved").EvaluateAsync<bool>("e => !document.fullscreenElement || document.fullscreenElement.contains(e)"));
+        await page.GetByTestId("flow-discard").ClickAsync();
+        await page.GotoAsync($"{fixture.BaseAddress}/flows?tenantId=17&version={fixture.FlowsData.SeededVersionId:D}", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await Assertions.Expect(page.GetByTestId("flow-dirty")).ToContainTextAsync("Immutable version 1");
+        await page.GetByTestId("flow-focus").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-focus")).ToHaveAttributeAsync("aria-pressed", "true");
+        var viewer = (await page.GetByTestId("flow-editor").BoundingBoxAsync())!;
+        Assert.InRange(viewer.Y, -1, 1); Assert.InRange(viewer.Height, 798, 802);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-fullscreen-viewer.png"), Animations = ScreenshotAnimations.Disabled });
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(page.GetByTestId("flow-editor")).ToHaveCountAsync(1);
+        Assert.Equal(0, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls);
+        Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
+    }
+
+    [Fact]
     public async Task Actual_Native_Drag_And_Pointer_Connections_Save_Reload_Stable_Properties_And_Viewport()
     {
         var fixture = _fixture!;
         await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1600, Height = 1000 } });
         var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000);
+        // Test the cancellable full-window fallback explicitly; native fullscreen Escape is browser-owned.
+        await page.AddInitScriptAsync("Object.defineProperty(document, 'fullscreenEnabled', { configurable: true, get: () => false });");
         var errors = new List<string>(); page.PageError += (_, error) => errors.Add(error);
         foreach (var (path, mime) in new[] { ("/_content/VeloxDev.Razor/veloxdev.workflow.css", "text/css"), ("/_content/VeloxDev.Razor/veloxdev.workflow.js", "text/javascript"), ("/js/flows-editor.js", "text/javascript") })
         {
@@ -135,6 +184,21 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         var trigger = await page.Locator("[data-node-kind=AlertRaised]").GetAttributeAsync("data-node-id");
         var mapping = await page.Locator("[data-node-kind=MapIncident]").GetAttributeAsync("data-node-id");
         var action = await page.Locator("[data-node-kind=CreateIncident]").GetAttributeAsync("data-node-id");
+        await page.GetByTestId("flow-focus").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-focus")).ToHaveAttributeAsync("aria-pressed", "true");
+        var cancelPort = (await page.Locator($"[data-port-node='{trigger}'][data-port-direction=output] svg").BoundingBoxAsync())!;
+        await page.Mouse.MoveAsync(cancelPort.X + cancelPort.Width / 2, cancelPort.Y + cancelPort.Height / 2);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(cancelPort.X + 100, cancelPort.Y + 40, new() { Steps = 4 });
+        await page.WaitForFunctionAsync("() => !document.querySelector('[data-testid=flow-virtual-link]').hasAttribute('hidden')");
+        await page.EvaluateAsync("document.dispatchEvent(new PointerEvent('pointerup', { pointerId: 999999, pointerType: 'touch', bubbles: true }))");
+        Assert.False(await page.GetByTestId("flow-virtual-link").EvaluateAsync<bool>("path => path.hasAttribute('hidden')"));
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(page.GetByTestId("flow-virtual-link")).ToHaveAttributeAsync("hidden", "hidden");
+        await Assertions.Expect(page.GetByTestId("flow-focus")).ToHaveAttributeAsync("aria-pressed", "true");
+        await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(0);
+        Assert.Equal(0, await page.Locator(".flow-port.compatible,.flow-port.incompatible,.flow-port.pending").CountAsync());
+        await page.Mouse.UpAsync();
         await GestureAsync(page, page.Locator($"[data-port-node='{trigger}'][data-port-direction=output] svg"), page.Locator($"[data-port-node='{mapping}'][data-port-direction=input] svg"));
         await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(1);
         await GestureAsync(page, page.Locator($"[data-port-node='{mapping}'][data-port-direction=output] svg"), page.Locator($"[data-port-node='{action}'][data-port-direction=input] svg"));
@@ -221,11 +285,8 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await page.GetByTestId("flow-name").FillAsync("My preserved changes"); fixture.FlowsData.ConflictNextSave = true;
         await page.GetByTestId("flow-save").ClickAsync(); await Assertions.Expect(page.GetByTestId("flow-error")).ToContainTextAsync("changed in another session");
         await Assertions.Expect(page.GetByTestId("flow-name")).ToHaveValueAsync("My preserved changes");
-        // Disabling Save during the request may move browser focus to the document.
-        // Escape is an editor keyboard action, so focus a real editor control first.
-        await page.GetByTestId("flow-close").FocusAsync();
-        await Assertions.Expect(page.GetByTestId("flow-close")).ToBeFocusedAsync();
-        await page.Keyboard.PressAsync("Escape"); await page.GetByTestId("flow-unsaved").WaitForAsync();
+        // Leaving is explicit; Escape only dismisses the inner overlay or fullscreen.
+        await page.GetByTestId("flow-close").ClickAsync(); await page.GetByTestId("flow-unsaved").WaitForAsync();
         var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-dirty-dialog.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
         await page.GetByRole(AriaRole.Button, new() { Name = "Keep editing", Exact = true }).ClickAsync();
@@ -236,6 +297,46 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await page.GetByTestId("flow-tenant").SelectOptionAsync("17"); await page.GetByTestId("flow-edit").First.ClickAsync();
         await CloseEditorAsync(page);
         await Assertions.Expect(opener).ToBeFocusedAsync();
+    }
+
+    [Fact]
+    public async Task Schema_Two_Route_Keyboard_Arrows_Edit_Coordinates_And_Tab_Leaves_The_Handle()
+    {
+        var fixture = _fixture!;
+        var flow = Assert.Single(await fixture.FlowsData.ListAsync(17));
+        var graph = FlowDraftMigration.UpgradeToSchemaTwo(flow.Draft);
+        graph = graph with { Edges = graph.Edges.Select((edge, index) => index == 0
+            ? edge with { Route = new([new(300, 200)]) } : edge).ToArray() };
+        await fixture.FlowsData.SaveAsync(17, flow.Id, new(flow.Revision, flow.Name, graph));
+        var setupWrites = fixture.FlowsData.SaveCalls;
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1440, Height = 900 } });
+        var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000);
+        await OpenPageAsync(page, fixture);
+        await page.GetByTestId("flow-edit").First.ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(3);
+        await page.GetByTestId("flow-fit").ClickAsync();
+        await page.GetByTestId("flow-link-hit").First.FocusAsync();
+        var handle = page.GetByTestId("flow-route-handle");
+        await Assertions.Expect(handle).ToHaveCountAsync(1);
+        await handle.FocusAsync();
+        await page.Keyboard.PressAsync("ArrowRight");
+        await Assertions.Expect(handle).ToHaveAttributeAsync("data-world-x", "301");
+        await page.Keyboard.PressAsync("Shift+ArrowDown");
+        await Assertions.Expect(handle).ToHaveAttributeAsync("data-world-y", "210");
+        await page.Keyboard.PressAsync("Tab");
+        await Assertions.Expect(handle).Not.ToBeFocusedAsync();
+        await page.Keyboard.PressAsync("Shift+Tab");
+        await Assertions.Expect(handle).ToBeFocusedAsync();
+        var coordinate = page.GetByRole(AriaRole.Spinbutton, new() { Name = "Point 1 X", Exact = true });
+        await coordinate.FillAsync("410"); await coordinate.PressAsync("Tab");
+        await Assertions.Expect(handle).ToHaveAttributeAsync("data-world-x", "410");
+        var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-route-keyboard.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+        await page.GetByTestId("flow-route-reset").ClickAsync();
+        await Assertions.Expect(handle).ToHaveCountAsync(0);
+        await Assertions.Expect(page.Locator(".flow-connection[data-flow-route]")).ToHaveCountAsync(0);
+        Assert.Equal(setupWrites, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls);
+        Assert.Equal(0, fixture.FlowsData.DryRunCalls); Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
     }
 
     private static async Task CloseEditorAsync(IPage page)
@@ -327,7 +428,13 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
     {
         var a = (await from.BoundingBoxAsync())!; var b = (await to.BoundingBoxAsync())!;
         await page.Mouse.MoveAsync(a.X + a.Width / 2, a.Y + a.Height / 2); await page.Mouse.DownAsync();
-        await page.Mouse.MoveAsync(b.X + b.Width / 2, b.Y + b.Height / 2, new() { Steps = 18 }); await page.Mouse.UpAsync();
+        await page.Mouse.MoveAsync(b.X + b.Width / 2, b.Y + b.Height / 2, new() { Steps = 18 });
+        await page.WaitForFunctionAsync("() => {const p=document.querySelector('[data-testid=flow-virtual-link]');return p&&!p.hasAttribute('hidden')&&p.getAttribute('d')?.includes(' C ')}");
+        await Assertions.Expect(page.GetByTestId("flow-virtual-link")).ToHaveAttributeAsync("stroke-dasharray", "7 5");
+        var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-connection-before-drop.png"), Animations = ScreenshotAnimations.Disabled });
+        await page.Mouse.UpAsync();
+        await Assertions.Expect(page.GetByTestId("flow-virtual-link")).ToHaveAttributeAsync("hidden", "hidden");
     }
     private static async Task AssertNativeNodesFitAsync(IPage page)
     {
@@ -360,8 +467,11 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
     private static async Task AssertControlReachableAsync(ILocator control, int width, int height)
     {
         await control.EvaluateAsync("e => e.scrollIntoView({block:'center',inline:'nearest'})"); var bounds = (await control.BoundingBoxAsync())!;
-        Assert.InRange(bounds.X, -1, width); Assert.True(bounds.X + bounds.Width <= width + 1);
-        Assert.InRange(bounds.Y, -1, height); Assert.True(bounds.Y + bounds.Height <= height + 1);
+        var id = await control.GetAttributeAsync("data-testid") ?? await control.GetAttributeAsync("aria-label") ?? "control";
+        Assert.InRange(bounds.X, -1, width);
+        Assert.True(bounds.X + bounds.Width <= width + 1, $"{id} horizontal bounds X={bounds.X}, width={bounds.Width}, viewport={width}.");
+        Assert.InRange(bounds.Y, -1, height);
+        Assert.True(bounds.Y + bounds.Height <= height + 1, $"{id} vertical bounds Y={bounds.Y}, height={bounds.Height}, viewport={height}.");
         Assert.True(await control.EvaluateAsync<bool>("e => {const r=e.getBoundingClientRect();const hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return hit===e || e.contains(hit) || (e.matches(':disabled') && hit?.contains(e) && hit.closest('.mud-tooltip-root')===e.closest('.mud-tooltip-root'))}"), $"{await control.GetAttributeAsync("data-testid")} must not be covered by the app bar, drawer, or another panel.");
     }
     private static async Task AssertNoOverflowAsync(IPage page) => Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth + 1"));

@@ -37,7 +37,7 @@ public static class FlowExecutionEvidenceFormatter
             !ValidTemplate(mapping.DescriptionTemplate, FlowLimits.MaximumTemplateLength, multiline: true) ||
             mapping.Priority is < 0 or > 3)
             throw new ArgumentException("Invalid execution incident mapping.", nameof(mapping));
-        var title = Expand(mapping.TitleTemplate, original, ai);
+        var title = Expand(mapping.TitleTemplate, original, ai).ReplaceLineEndings(" ").Replace('\t', ' ');
         if (!FlowGraphValidator.IsBoundedText(title, FlowLimits.MaximumTitleLength))
             throw new InvalidOperationException("mapping-output-limit");
         return Enrich(new(title, Expand(mapping.DescriptionTemplate, original, ai), mapping.Priority),
@@ -60,7 +60,7 @@ public static class FlowExecutionEvidenceFormatter
             "\n\n" + DescribeRecovery(original, runId, attempts ?? []);
         if (!FlowGraphValidator.IsBoundedText(description, FlowLimits.MaximumDescriptionLength, multiline: true))
             throw new InvalidOperationException("mapping-output-limit");
-        return new(Safe(mapped.Title, FlowLimits.MaximumTitleLength), description, mapped.Priority);
+        return new(Safe(mapped.Title, FlowLimits.MaximumTitleLength).ReplaceLineEndings(" ").Replace('\t', ' '), description, mapped.Priority);
     }
 
     public static string InvestigationQuestion(FlowExecutionEventDto original, int tenantId)
@@ -81,11 +81,11 @@ public static class FlowExecutionEvidenceFormatter
         text.Append("Source: ").Append(original.SourceKind).Append("\nOutcome: ").Append(original.Outcome)
             .Append("\nRaw status: ").Append(Safe(original.RawStatus, 64))
             .Append("\nDefinition: ").Append(Safe(original.Definition.Name, 128)).Append(" (")
-            .Append(Safe(original.Definition.Id, 128)).Append(')')
+            .Append(Safe(original.Definition.Id, FlowExecutionEventLimits.MaximumIdentifierLength)).Append(')')
             .Append("\nRevision: ").Append(Safe(original.Definition.Revision, 128))
             .Append("\nContent hash: ").Append(Safe(original.Definition.ContentHash, 64))
-            .Append("\nExecution: ").Append(Safe(original.ExecutionId, 128))
-            .Append("\nAttempt: ").Append(Safe(original.AttemptId, 128))
+            .Append("\nExecution: ").Append(Safe(original.ExecutionId, FlowExecutionEventLimits.MaximumIdentifierLength))
+            .Append("\nAttempt: ").Append(Safe(original.AttemptId, FlowExecutionEventLimits.MaximumIdentifierLength))
             .Append("\nTarget: ").Append(Safe(original.Target.DisplayName ?? original.Target.HostName, 128))
             .Append("\nHostname: ").Append(Safe(original.Target.HostName, 128))
             .Append("\nAgent: ").Append(original.Target.AgentId?.ToString("D") ?? "Unavailable")
@@ -100,9 +100,9 @@ public static class FlowExecutionEvidenceFormatter
             .Append("\nReason: ").Append(Safe(original.Reason, 512))
             .Append("\nEvent: ").Append(original.EventId.ToString("D"))
             .Append("\nOccurrence: ").Append(original.OccurrenceId.ToString("D"))
-            .Append("\nCorrelation: ").Append(Safe(original.CorrelationId, 128))
-            .Append("\nParent execution: ").Append(Safe(original.ParentExecutionId, 128))
-            .Append("\nRoot execution: ").Append(Safe(original.RootExecutionId, 128))
+            .Append("\nCorrelation: ").Append(Safe(original.CorrelationId, FlowExecutionEventLimits.MaximumIdentifierLength))
+            .Append("\nParent execution: ").Append(Safe(original.ParentExecutionId, FlowExecutionEventLimits.MaximumIdentifierLength))
+            .Append("\nRoot execution: ").Append(Safe(original.RootExecutionId, FlowExecutionEventLimits.MaximumIdentifierLength))
             .Append("\nExecution view: ").Append(ExecutionLink(original))
             .Append("\nResult references: ");
         if (original.Results is null) text.Append("Unavailable (not recorded)");
@@ -110,7 +110,7 @@ public static class FlowExecutionEvidenceFormatter
         else
         {
             foreach (var reference in original.Results.Take(4))
-                text.Append("\n- ").Append(Safe(reference.Kind, 64)).Append(": ").Append(Safe(reference.Id, 128))
+                text.Append("\n- ").Append(Safe(reference.Kind, 64)).Append(": ").Append(Safe(reference.Id, FlowExecutionEventLimits.MaximumIdentifierLength))
                     .Append(reference.Available ? " (source reports available; access checked separately)" : " (source unavailable)")
                     .Append(reference.Truncated ? " (truncated)" : "");
             if (original.Results.Count > 4) text.Append("\n[Additional result references omitted from this description.]");
@@ -174,7 +174,7 @@ public static class FlowExecutionEvidenceFormatter
         {
             text.Append("\n").Append(attempt.IsOriginalRerun ? "Original rerun" : "Configured repair").Append(" attempt ").Append(attempt.Attempt)
                 .Append(": ").Append(Safe(attempt.ActionName, 128)).Append("\nState: ").Append(attempt.State)
-                .Append("\nAccepted execution: ").Append(Safe(attempt.AcceptedExecutionId, 128));
+                .Append("\nAccepted execution: ").Append(Safe(attempt.AcceptedExecutionId, FlowExecutionEventLimits.MaximumIdentifierLength));
             if (attempt.TerminalEvent is { } terminal)
                 text.Append("\nRecorded terminal outcome: ").Append(terminal.Outcome).Append("\nTerminal event: ").Append(terminal.EventId.ToString("D"));
             else text.Append("\nTerminal result: Unavailable; acceptance does not prove completion.");
@@ -191,6 +191,7 @@ public static class FlowExecutionEvidenceFormatter
             replay is { Supported: true } && terminal is not null &&
             FlowExecutionEventValidator.Validate(terminal).Valid && terminal.TenantId == original.TenantId &&
             HasNativeProvenance(terminal) && terminal.Outcome == FlowExecutionOutcome.Succeeded &&
+            FlowExecutionOutcomes.FromAuthoritativeStatus(terminal.RawStatus) == FlowExecutionOutcome.Succeeded &&
             terminal.CompletedAtUtc is not null && terminal.EventId != original.EventId &&
             terminal.ExecutionId == attempt.AcceptedExecutionId && terminal.ExecutionId != replay.SourceExecutionId &&
             terminal.AttemptId != replay.SourceAttemptId && terminal.ParentExecutionId == replay.SourceExecutionId &&

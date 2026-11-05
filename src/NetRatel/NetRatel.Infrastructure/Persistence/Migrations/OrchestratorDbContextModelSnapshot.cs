@@ -24,6 +24,61 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
             NpgsqlModelBuilderExtensions.HasPostgresExtension(modelBuilder, "pg_trgm");
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ExecutionAdmissionRecord", b =>
+                {
+                    b.Property<Guid>("ActionKey")
+                        .HasColumnType("uuid");
+                    b.Property<DateTimeOffset?>("DispatchStartedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("DispatchAcceptedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("AuthorityDeniedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+                    b.Property<string>("CausationJson")
+                        .HasColumnType("text");
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+                    b.Property<string>("ExecutionId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+                    b.Property<Guid>("FlowRunId")
+                        .HasColumnType("uuid");
+                    b.Property<Guid>("FlowVersionId")
+                        .HasColumnType("uuid");
+                    b.Property<string>("IntegrationCredentialId")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+                    b.Property<int>("Kind")
+                        .HasColumnType("integer");
+                    b.Property<int>("NodeAttempt")
+                        .HasColumnType("integer");
+                    b.Property<Guid>("NodeId")
+                        .HasColumnType("uuid");
+                    b.Property<string>("PayloadHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+                    b.Property<string>("PrincipalId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+                    b.Property<string>("ProtectedPayloadJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+                    b.HasKey("ActionKey");
+                    b.HasIndex("Kind", "ExecutionId")
+                        .IsUnique();
+                    b.HasIndex("TenantId", "FlowRunId", "NodeId", "NodeAttempt")
+                        .IsUnique();
+                    b.ToTable("ExecutionAdmissions");
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Netclaw.AiInvestigationApprovalRecord", b =>
                 {
                     b.Property<Guid>("InvestigationId")
@@ -2767,6 +2822,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.FlowDefinitionRecord", b =>
                 {
+                    b.Property<DateTimeOffset?>("EnabledSinceUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
@@ -2972,6 +3030,11 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.FlowVersionRecord", b =>
                 {
+                    b.Property<string>("ProtectedExecutionPinsJson")
+                        .HasColumnType("text");
+                    b.Property<string>("ExecutionAuthorityJson")
+                        .HasColumnType("text");
+
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");

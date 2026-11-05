@@ -49,6 +49,9 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
     private const string ConversationTraceAndScriptPlacementMigration = "20261102074553_AddConversationTraceAndScriptPlacement";
 
     private const string TenantAndUpdateRetirementMigration = "20261102112327_RetireTenantAndAbandonedUpdateAuthority";
+    private const string ExecutionAdmissionsMigration = "20261105170000_AddExecutionAdmissions";
+    private const string FlowExecutionPinsMigration = "20261105173000_AddFlowExecutionPins";
+    private const string ScriptExecutionDispatchMigration = "20261105180000_AddScriptExecutionDispatch";
 
     [Fact]
     public async Task True_foundation_upgrade_preserves_legacy_jobs_and_matches_fresh_pre_pairing_schema()
@@ -204,7 +207,7 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
                 .Append(ClientUpdateReconciliationEvidenceMigration).Append(ProtectJobRunInputsMigration).Append(ProtectTaskOutputsMigration)
                 .Append(ScopeOrchestrationExecutionAttemptsMigration).Append(PairedCatalogInputPresentationMigration).Append(CallbackTerminalRejectionMigration).Append(RetainJobDefinitionHistoryMigration)
                 .Append(ComputerUseSessionsMigration).Append(IntegrationPolicyHierarchyMigration).Append(SoftwareInventoryMigration)
-                .Append(ConversationTraceAndScriptPlacementMigration).Append(TenantAndUpdateRetirementMigration),
+                .Append(ConversationTraceAndScriptPlacementMigration).Append(TenantAndUpdateRetirementMigration).Append(ExecutionAdmissionsMigration).Append(FlowExecutionPinsMigration).Append(ScriptExecutionDispatchMigration),
             "registered history retains the exact historical ownership range followed by pairing, client metadata/offboarding, notification connectors, client operations, Netclaw investigations, tenant prompts, AI flow continuations and local client release deletion");
         // These historical Down/Up proofs explicitly stop at the shipped native-refresh range.
         // Later pairing, client metadata/offboarding, notification connector, client operation,
@@ -392,7 +395,7 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
         await using var db = Context(database);
         (await db.Database.GetAppliedMigrationsAsync(ct)).Should().Equal(plan.CurrentMigrationIds);
         (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal(
-            [PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration, ClientOperationsAndNetclawMigration, TenantPromptsAndAiFlowContinuationsMigration, LocalClientReleaseDeletionMigration, ExecutionContextAndLifecycleReceiptsMigration, ClientUpdateReconciliationEvidenceMigration, ProtectJobRunInputsMigration, ProtectTaskOutputsMigration, ScopeOrchestrationExecutionAttemptsMigration, PairedCatalogInputPresentationMigration, CallbackTerminalRejectionMigration, RetainJobDefinitionHistoryMigration, ComputerUseSessionsMigration, IntegrationPolicyHierarchyMigration, SoftwareInventoryMigration, ConversationTraceAndScriptPlacementMigration, TenantAndUpdateRetirementMigration],
+            [PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration, ClientOperationsAndNetclawMigration, TenantPromptsAndAiFlowContinuationsMigration, LocalClientReleaseDeletionMigration, ExecutionContextAndLifecycleReceiptsMigration, ClientUpdateReconciliationEvidenceMigration, ProtectJobRunInputsMigration, ProtectTaskOutputsMigration, ScopeOrchestrationExecutionAttemptsMigration, PairedCatalogInputPresentationMigration, CallbackTerminalRejectionMigration, RetainJobDefinitionHistoryMigration, ComputerUseSessionsMigration, IntegrationPolicyHierarchyMigration, SoftwareInventoryMigration, ConversationTraceAndScriptPlacementMigration, TenantAndUpdateRetirementMigration, ExecutionAdmissionsMigration, FlowExecutionPinsMigration, ScriptExecutionDispatchMigration],
             "the historical range leaves exactly the later pairing, client metadata/offboarding, notification connector, client operation, Netclaw investigation, tenant prompt, AI flow continuation and local client release deletion migrations unapplied");
         db.Database.HasPendingModelChanges().Should().BeFalse();
     }
