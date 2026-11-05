@@ -59,7 +59,8 @@ public sealed class AkkaJobAuthorityServiceTests
         var gateway = new AvailableGateway();
         // The current definition is now a different shell job and the current
         // script no longer exists. Only the reviewed snapshot may be dispatched.
-        var service = CreateAuthority(agentId, runs, new OneStepDefinitions(agentId), gateway);
+        var replayPins = new RejectStepReplayStore();
+        var service = CreateAuthority(agentId, runs, new OneStepDefinitions(agentId), gateway, replayPins);
 
         await service.StartReviewedMcpAsync(snapshot, new RunJobRequest("mcp-reviewed:operator", "{\"credential\":\"synthetic-only\"}", null), CancellationToken.None);
 
@@ -69,6 +70,7 @@ public sealed class AkkaJobAuthorityServiceTests
         first.WorkingDirectory.Should().Be("/tmp/reviewed-script");
         first.TimeoutSeconds.Should().Be(15);
         first.OutputPolicy!.SecretParameters.Should().Contain("credential");
+        replayPins.Captures.Should().Be(0);
         if (loseSnapshot) runs.McpSnapshot = null;
         await service.RecordLifecycleAsync(new ClientKey(7, agentId), Lifecycle(runs, JobGatewayLifecycleStatus.Completed, 3,
             "{\"exitCode\":0}", 0), CancellationToken.None);
@@ -88,6 +90,7 @@ public sealed class AkkaJobAuthorityServiceTests
             second.TimeoutSeconds.Should().Be(15);
             second.OutputPolicy!.SecretParameters.Should().Contain("credential");
             gateway.LastDispatch.JobStepId.Should().Be(43);
+            replayPins.Captures.Should().Be(0);
         }
     }
 
@@ -519,9 +522,23 @@ public sealed class AkkaJobAuthorityServiceTests
             => Task.FromResult(_bindings.Values.Select(entry => entry.Binding).SingleOrDefault(binding => binding.Kind == kind && binding.ExecutionId == id));
     }
 
-    private static AkkaJobAuthorityService CreateAuthority(Guid agent, InMemoryRuns runs, IJobDefinitionService? definitions = null, AvailableGateway? gateway = null) =>
+    private static AkkaJobAuthorityService CreateAuthority(Guid agent, InMemoryRuns runs, IJobDefinitionService? definitions = null, AvailableGateway? gateway = null,
+        IScriptExecutionReplayStore? scriptReplayPins = null) =>
         new(definitions ?? new OneStepDefinitions(agent), runs, new JobTaskBridge(new EmptyScripts(), NullLogger<JobTaskBridge>.Instance),
-            gateway ?? new AvailableGateway(), new AcceptingRouter(), new RecordingRealtimeFanoutSink(), new JobAuthorityIdGenerator(), new TestHostEnvironment());
+            gateway ?? new AvailableGateway(), new AcceptingRouter(), new RecordingRealtimeFanoutSink(), new JobAuthorityIdGenerator(), new TestHostEnvironment(),
+            scriptReplayPins: scriptReplayPins);
+
+    private sealed class RejectStepReplayStore : IScriptExecutionReplayStore
+    {
+        public int Captures { get; private set; }
+        public Task CaptureAsync(string requestId, ScriptExecutionReplaySnapshot snapshot, CancellationToken ct = default)
+        {
+            Captures++;
+            throw new InvalidOperationException("MCP-scoped material must not become neutral script replay material.");
+        }
+        public Task<ScriptExecutionReplaySnapshot?> ResolveAsync(int tenant, string id, CancellationToken ct = default) =>
+            Task.FromResult<ScriptExecutionReplaySnapshot?>(null);
+    }
 
     private static JobLifecycleUpdateEnvelope Lifecycle(InMemoryRuns runs, JobGatewayLifecycleStatus status, ulong sequence, string? result = null, int? exitCode = null) =>
         new(runs.Run!.Id, runs.Step!.JobStepId!.Value, runs.Step.Id, runs.Step.Ordinal, runs.Activity!.RequestId,

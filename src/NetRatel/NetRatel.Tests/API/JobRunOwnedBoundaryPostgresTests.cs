@@ -17,6 +17,9 @@ using NetRatel.API.Gateway;
 using NetRatel.API.Services.Jobs;
 using NetRatel.API.Services.Orchestration;
 using NetRatel.Application.Jobs;
+using NetRatel.Application.Flows;
+using NetRatel.API.Services.Flows;
+using NetRatel.Shared.Contracts.Tasks;
 using NetRatel.Application.Presence;
 using NetRatel.Application.Scripts;
 using NetRatel.Infrastructure.Persistence;
@@ -827,12 +830,242 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         h.Gateway.Dispatches.Should().Be(0);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_native_library_step_retains_its_exact_child_replay_before_transport_and_links_only_one_real_rerun(bool loseNativeAcknowledgement)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var ct = deadline.Token;
+        await using var h = await Harness.CreateAsync(await postgres.CreateDatabaseAsync(ct), ct, retainStepScriptReplay: true);
+        var flow = await PrepareStepReplayFlowAsync(h, ct);
+        ScriptInfo script;
+        await using (var setup = h.Services.CreateAsyncScope())
+        {
+            var db = setup.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            script = await setup.ServiceProvider.GetRequiredService<IScriptService>().CreateAsync(
+                new("synthetic-child-script", "/", "Synthetic pinned child", "printf '%s' \"$phrase\"", "bash", null), ct);
+            db.ScriptParameters.Add(new() { ScriptId = checked((long)script.Id), Name = "phrase", Type = "string", Required = true });
+            var step = await db.JobSteps.SingleAsync(ct);
+            step.Type = (int)JobStepKind.LibraryScript; step.ScriptId = checked((long)script.Id); step.Runner = null; step.Command = null;
+            step.PayloadJson = """{"parameters":{"phrase":"@option.phrase@"},"workingDirectory":"/tmp/synthetic-pinned-step"}""";
+            db.JobParameters.Add(new() { Id = 44, JobId = 41, Name = "phrase", Type = "string", Required = true });
+            await db.SaveChangesAsync(ct);
+        }
+        h.Gateway.AmbiguousNextDispatch = loseNativeAcknowledgement;
+        ulong originalJobId;
+        if (loseNativeAcknowledgement)
+        {
+            await Assert.ThrowsAsync<TimeoutException>(() => h.StartAsync(ct, """{"phrase":"retained-child-input"}""", NetRatel.Shared.ClientEnvironment.Dev));
+            originalJobId = h.Gateway.LastDispatchRunId;
+        }
+        else originalJobId = (await h.StartAsync(ct, """{"phrase":"retained-child-input"}""", NetRatel.Shared.ClientEnvironment.Dev)).Id;
+        h.Gateway.ObservedStepScriptReplayBeforeTransport.Should().BeTrue();
+        var original = await h.DetailsAsync(originalJobId, ct);
+        var childId = Assert.Single(original.Activities).RequestId;
+        var firstPayload = JsonSerializer.Deserialize<ExecLibraryScriptPayload>(h.Gateway.LastDispatchPayload!)!;
+        firstPayload.Parameters!["phrase"].Should().Be("retained-child-input");
+        firstPayload.WorkingDirectory.Should().Be("/tmp/synthetic-pinned-step");
+        await h.LifecycleAsync(originalJobId, JobGatewayLifecycleStatus.Started, 3, null, false, ct);
+        await h.LifecycleAsync(originalJobId, JobGatewayLifecycleStatus.Failed, 4,
+            """{"stderr":["synthetic child failed"],"exitCode":1}""", false, ct);
+        await h.RecoverAsync(originalJobId, true, ct);
+        h.Gateway.Dispatches.Should().Be(1);
+        FlowExecutionEventDto failure;
+        FlowExecutionSubscriptionDeliveryDto selection;
+        await using (var evidence = h.Services.CreateAsyncScope())
+        {
+            var db = evidence.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var row = await db.OutboxMessages.AsNoTracking().SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType &&
+                x.Source == "script-terminal-commit" && x.EntityId == childId, ct);
+            failure = JsonSerializer.Deserialize(row.PayloadJson, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto)!;
+            selection = ExecutionLifecycleSubscriptions.ReadDelivery((await db.OutboxMessages.AsNoTracking()
+                .SingleAsync(x => x.Type == FlowExecutionSubscriptionLimits.OutboxType, ct)).PayloadJson)!;
+            failure.Replay!.Supported.Should().BeTrue();
+            failure.Replay.SourceKind.Should().Be(FlowExecutionSourceKind.Script);
+            failure.Replay.SourceExecutionId.Should().Be(childId);
+            failure.Replay.InputsReference.Should().Be("script-execution:" + childId);
+            failure.ParentExecutionId.Should().Be(originalJobId.ToString());
+            failure.RootExecutionId.Should().Be(originalJobId.ToString());
+            (await db.Set<ScriptExecutionReplayRecord>().CountAsync(ct)).Should().Be(1);
+            await evidence.ServiceProvider.GetRequiredService<IScriptService>().UpdateAsync(new(script.Id, null, null, null,
+                "printf edited-after-native-step", null, null, script.SourceRevision), ct);
+        }
+        var commands = new StepReplayCommands();
+        KeyedScriptAdmissionResult rerun;
+        ExecutionAdmissionIdentity identity;
+        FlowRunLease lease;
+        await using (var admission = h.Services.CreateAsyncScope())
+        {
+            var db = admission.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var now = new DateTimeOffset(DateTimeOffset.UtcNow.UtcTicks / 10 * 10, TimeSpan.Zero);
+            var input = new FlowEventEnvelope(7, failure.EventId, failure.OccurrenceId, flow.Version.Id,
+                failure.OccurredAtUtc, null, flow.Authority)
+                { ExecutionEvent = failure, SourceAdmissionKey = selection.AdmissionKey, SourceDeliveryId = selection.DeliveryId,
+                  SourceEventIds = [failure.EventId] };
+            Assert.True(FlowContractValidation.ValidEnvelope(input));
+            var runId = Guid.NewGuid();
+            lease = new(runId, Guid.NewGuid(), Guid.NewGuid(), 1, now.AddMinutes(2),
+                flow.SourceInstanceId, flow.Version, input, 1) { CreatedAtUtc = now };
+            var node = new FlowNodeCheckpointDto(flow.RerunNodeId, 5, 2, FlowNodeProgress.Dispatching,
+                FlowActionKeys.Create(lease, flow.RerunNodeId), now, now.AddMinutes(10));
+            db.FlowRuns.Add(new() { Id = runId, TenantId = 7, FlowId = flow.Version.FlowId, FlowVersionId = flow.Version.Id,
+                EventId = selection.AdmissionKey, OccurrenceId = failure.OccurrenceId, EventJson = JsonSerializer.Serialize(input, StepJson),
+                EventFingerprint = FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(input, StepJson)),
+                Status = FlowRunStatus.Running, CreatedAtUtc = now, Fence = lease.Fence, LeaseToken = lease.Token,
+                LeaseOwner = lease.WorkerId, LeaseExpiresAtUtc = lease.ExpiresAtUtc,
+                ContinuationJson = JsonSerializer.Serialize(new FlowContinuationDto(flow.RerunNodeId, null) { Node = node }, StepJson) });
+            await db.SaveChangesAsync(ct);
+            identity = new(FlowActionKeys.CreateExecution(lease, flow.RerunNodeId), 7, flow.Authority.PrincipalId,
+                flow.Version.Id, runId, flow.RerunNodeId, 1)
+                { Causation = new(failure.Causation!.RootOccurrenceId, failure.EventId, 1, 1, childId)
+                    { RootExecutionId = failure.RootExecutionId } };
+            rerun = await StepReplayService(admission.ServiceProvider, commands).StartReplayAsync(identity, lease, failure.Replay!, ct);
+        }
+        rerun.Binding.ExecutionId.Should().NotBe(childId).And.NotBe(originalJobId.ToString());
+        commands.Dispatches.Should().Be(1);
+        commands.AgentId.Should().Be(h.AgentId);
+        commands.Environment.Should().Be((int)NetRatel.Shared.ClientEnvironment.Dev);
+        var replayPayload = JsonSerializer.Deserialize<ExecLibraryScriptPayload>(commands.Payload)!;
+        replayPayload.ScriptContent.Should().Be(script.Content).And.NotContain("edited-after-native-step");
+        replayPayload.Parameters.Should().BeEquivalentTo(firstPayload.Parameters);
+        replayPayload.TimeoutSeconds.Should().Be(firstPayload.TimeoutSeconds);
+        replayPayload.WorkingDirectory.Should().Be(firstPayload.WorkingDirectory);
+        replayPayload.Preferred.Should().Be(firstPayload.Preferred);
+        await using (var nativeResult = h.Services.CreateAsyncScope())
+            await nativeResult.ServiceProvider.GetRequiredService<IJobRunService>().UpdateTaskActivityStatusAsync(new(
+                rerun.Binding.ExecutionId, "Completed", null, DateTimeOffset.UtcNow,
+                ResultJson: """{"stdout":["synthetic child recovered"],"exitCode":0}""", ExitCode: 0), ct);
+        await using (var restarted = h.Services.CreateAsyncScope())
+        {
+            var recovered = await StepReplayService(restarted.ServiceProvider, commands).StartReplayAsync(identity, lease, failure.Replay!, ct);
+            recovered.Binding.ExecutionId.Should().Be(rerun.Binding.ExecutionId);
+            recovered.Activity!.Status.Should().Be("Completed");
+            var db = restarted.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var row = await db.OutboxMessages.AsNoTracking().SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType &&
+                x.Source == "script-terminal-commit" && x.EntityId == rerun.Binding.ExecutionId, ct);
+            var actual = JsonSerializer.Deserialize(row.PayloadJson, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto)!;
+            actual.Outcome.Should().Be(FlowExecutionOutcome.Succeeded);
+            actual.ParentExecutionId.Should().Be(childId);
+            actual.RootExecutionId.Should().Be(originalJobId.ToString());
+            actual.Causation!.FlowRunId.Should().Be(lease.RunId);
+            actual.Causation.NodeId.Should().Be(flow.RerunNodeId);
+            actual.Causation.ParentEventId.Should().Be(failure.EventId);
+            actual.Causation.RecoveryAttempt.Should().Be(1);
+            actual.Definition.Id.Should().Be(failure.Replay!.Definition.Id);
+            actual.Definition.Revision.Should().Be(failure.Replay.Definition.Revision);
+            actual.Definition.ContentHash.Should().Be(failure.Replay.Definition.ContentHash);
+        }
+        commands.Dispatches.Should().Be(1);
+        h.Gateway.Dispatches.Should().Be(1);
+        (await h.DetailsAsync(originalJobId, ct)).Run.Status.Should().Be(JobRunState.Failed);
+    }
+
+    [Fact]
+    public async Task A_native_raw_command_never_advertises_or_retains_library_script_replay_material()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var ct = deadline.Token;
+        await using var h = await Harness.CreateAsync(await postgres.CreateDatabaseAsync(ct), ct, retainStepScriptReplay: true);
+        var run = await h.StartAsync(ct);
+        var child = Assert.Single((await h.DetailsAsync(run.Id, ct)).Activities);
+        await h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Started, 3, null, false, ct);
+        await h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Completed, 4, """{"exitCode":0}""", false, ct);
+        await using var scope = h.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        Assert.Empty(await db.Set<ScriptExecutionReplayRecord>().AsNoTracking().ToArrayAsync(ct));
+        Assert.Null(await scope.ServiceProvider.GetRequiredService<IScriptExecutionReplayStore>().ResolveAsync(7, child.RequestId, ct));
+        Assert.DoesNotContain(await db.OutboxMessages.AsNoTracking().Where(row => row.Type == FlowExecutionEventLimits.OutboxType)
+            .Select(row => row.PayloadJson).ToArrayAsync(ct), json =>
+                JsonSerializer.Deserialize(json, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto)!.SourceKind == FlowExecutionSourceKind.Script);
+        h.Gateway.ObservedStepScriptReplayBeforeTransport.Should().BeFalse();
+        h.Gateway.Dispatches.Should().Be(1);
+    }
+
+    private static readonly JsonSerializerOptions StepJson = new(JsonSerializerDefaults.Web);
+    private sealed record StepReplayFlow(FlowVersionDto Version, FlowExecutionAuthorityDto Authority,
+        Guid RerunNodeId, Guid SourceInstanceId);
+
+    private static async Task<StepReplayFlow> PrepareStepReplayFlowAsync(Harness h, CancellationToken ct)
+    {
+        await using var scope = h.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        var flowId = Guid.NewGuid(); var versionId = Guid.NewGuid(); var triggerId = Guid.NewGuid();
+        var rerunId = Guid.NewGuid(); var finishId = Guid.NewGuid(); var source = Guid.NewGuid();
+        var published = h.Clock.GetUtcNow().AddSeconds(-1);
+        var authority = new FlowExecutionAuthorityDto("synthetic-step-operator");
+        var graph = new FlowGraphDto(2,
+            [new(triggerId, FlowNodeKind.ExecutionEvent, "Synthetic script failure", new(0, 0))
+                { ExecutionTrigger = new([FlowExecutionSourceKind.Script], [FlowExecutionOutcome.Failed], FlowExecutionScope.AllInTenant) },
+             new(rerunId, FlowNodeKind.RerunOriginalExecution, "Rerun exact child", new(250, 0)) { Rerun = new() },
+             new(finishId, FlowNodeKind.Finish, "Finish", new(500, 0))],
+            [new(triggerId, FlowNodeCatalogue.Event, rerunId, FlowNodeCatalogue.Input) { Id = Guid.NewGuid() },
+             ..FlowNodeCatalogue.Find(FlowNodeKind.RerunOriginalExecution)!.Ports.Where(port => port.Direction == FlowPortDirection.Output)
+                .Select(port => new FlowEdgeDto(rerunId, port.Id, finishId, FlowNodeCatalogue.Input) { Id = Guid.NewGuid() })], new());
+        Assert.True(FlowGraphV2Validator.ValidatePublished(graph).Valid);
+        var hash = FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(graph, StepJson));
+        var definition = new FlowDefinitionRecord { Id = flowId, TenantId = 7, Name = "Synthetic exact child replay",
+            Enabled = true, EnabledSinceUtc = published, Revision = 1, CreatedAtUtc = published, UpdatedAtUtc = published,
+            DraftJson = JsonSerializer.Serialize(graph, StepJson) };
+        db.FlowDefinitions.Add(definition);
+        db.FlowVersions.Add(new() { Id = versionId, FlowId = flowId, TenantId = 7, VersionNumber = 1,
+            GraphJson = JsonSerializer.Serialize(graph, StepJson), ConfigurationHash = hash, PublishedBy = authority.PrincipalId,
+            PublishedAtUtc = published, ExecutionAuthorityJson = JsonSerializer.Serialize(authority, StepJson) });
+        db.FlowRuntimeIdentity.Add(new() { Id = 1, SourceInstanceId = source });
+        await db.SaveChangesAsync(ct);
+        definition.PublishedVersionId = versionId; definition.PublishedVersionNumber = 1;
+        await db.SaveChangesAsync(ct);
+        return new(new(versionId, flowId, 7, 1, graph, hash, authority.PrincipalId, published), authority, rerunId, source);
+    }
+
+    private static KeyedScriptExecutionService StepReplayService(IServiceProvider services, StepReplayCommands commands)
+    {
+        var db = services.GetRequiredService<OrchestratorDbContext>();
+        var verifier = new StepReplayVerifier();
+        var access = new StepReplayAccess();
+        var source = new FlowExecutionEventAdmission(verifier, access, TimeProvider.System);
+        var authority = new FlowExecutionAuthority(db, verifier, access,
+            new MonitoringFlowTransactionAdmission(verifier, TimeProvider.System, source), TimeProvider.System, source);
+        return new(db, new ExecutionAdmissionStore(db, services.GetRequiredService<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>(), TimeProvider.System),
+            services.GetRequiredService<IJobRunService>(), authority, commands, TimeProvider.System,
+            services.GetRequiredService<IScriptExecutionReplayStore>());
+    }
+
+    private sealed class StepReplayVerifier : IFlowExecutionAuthorityVerifier
+    {
+        public Task<bool> AuthorizeAsync(int tenant, FlowExecutionAuthorityDto authority, CancellationToken ct = default) =>
+            Task.FromResult(tenant == 7 && authority == new FlowExecutionAuthorityDto("synthetic-step-operator"));
+    }
+    private sealed class StepReplayAccess : IEffectiveAccessService
+    {
+        public Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenant, CancellationToken ct = default) =>
+            Task.FromResult(tenant == 7 && permission == NetRatelPermissions.ScriptExecute &&
+                principal.FindFirst("netratel_principal_id")?.Value == "synthetic-step-operator" && !principal.IsInRole("Operator"));
+        public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenant, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task ReconcileBuiltInRolesAsync(CancellationToken ct = default) => Task.CompletedTask;
+    }
+    private sealed class StepReplayCommands : NetRatel.API.Gateway.IAgentCommandAuthorityDispatcher
+    {
+        public int Dispatches { get; private set; }
+        public Guid AgentId { get; private set; }
+        public int Environment { get; private set; }
+        public string Payload { get; private set; } = "";
+        public bool IsAvailable(ClientKey client) => true;
+        public Task DispatchAsync(ClientKey client, string commandId, string correlationId, string taskType,
+            string payload, int environment, CancellationToken ct)
+        {
+            Dispatches++; AgentId = client.AgentId; Payload = payload; Environment = environment;
+            return Task.CompletedTask;
+        }
+    }
+
     private sealed class Harness : IAsyncDisposable
     {
         public ServiceProvider Services { get; private set; } = null!;
         public SaveGate Gate { get; } = new();
         public MutableClock Clock { get; } = new();
         public RecordingGateway Gateway { get; private set; } = null!;
+        public bool RetainStepScriptReplay { get; private set; }
         public ActorRouter Primary { get; private set; } = null!;
         public ActorRouter Replica { get; private set; } = null!;
         public Guid AgentId { get; } = Guid.NewGuid();
@@ -855,9 +1088,9 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             return await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().JobShadowObservations
                 .AsNoTracking().Where(x => x.JobRunId == runId).OrderBy(x => x.SourceEventId).ToArrayAsync(ct);
         }
-        public static async Task<Harness> CreateAsync(string connection, CancellationToken ct, string? legacyClientIdentity = null)
+        public static async Task<Harness> CreateAsync(string connection, CancellationToken ct, string? legacyClientIdentity = null, bool retainStepScriptReplay = false)
         {
-            var h = new Harness();
+            var h = new Harness { RetainStepScriptReplay = retainStepScriptReplay };
             var services = new ServiceCollection();
             services.AddDbContext<OrchestratorDbContext>(o => o.UseNpgsql(connection).AddInterceptors(h.Gate));
             services.AddDbContext<NetRatelIdentityDbContext>(o => o.UseNpgsql(connection));
@@ -868,6 +1101,9 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             services.AddScoped<IJobDefinitionService, JobDefinitionService>();
             services.AddSingleton<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>(new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
             services.AddScoped<IJobRunService, JobRunService>();
+            services.AddScoped<IScriptService, ScriptService>();
+            services.AddScoped<IJobExecutionSnapshotCapture, PinnedJobExecutionSnapshotCapture>();
+            services.AddScoped<IScriptExecutionReplayStore, ScriptExecutionReplayStore>();
             services.AddScoped<NetRatel.Application.Requests.IRequestService, RequestService>();
             h.Services = services.BuildServiceProvider();
             h._actors = ActorSystem.Create("owned-job-pg-" + Guid.NewGuid().ToString("N"));
@@ -938,12 +1174,14 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         }
         private AkkaJobAuthorityService Authority(IServiceProvider services, bool replica, ManagedOrchestrationInvocationGuard? managedGuard = null) => new(
             services.GetRequiredService<IJobDefinitionService>(), services.GetRequiredService<IJobRunService>(),
-            new JobTaskBridge(new EmptyScripts(), NullLogger<JobTaskBridge>.Instance), Gateway, replica ? Replica : Primary,
+            new JobTaskBridge(RetainStepScriptReplay ? services.GetRequiredService<IScriptService>() : new EmptyScripts(), NullLogger<JobTaskBridge>.Instance), Gateway, replica ? Replica : Primary,
             new RecordingRealtimeFanoutSink(), new JobAuthorityIdGenerator(), new TestEnvironment(),
             managedGuard: managedGuard, db: services.GetRequiredService<OrchestratorDbContext>(), clock: Clock,
-            requests: services.GetRequiredService<IRequestService>());
-        public async Task<JobRunInfo> StartAsync(CancellationToken ct, string? inputs = null)
-        { await using var scope = Services.CreateAsyncScope(); return await Authority(scope.ServiceProvider, false).StartAsync(41, new("operator-test", inputs, null), ct); }
+            requests: services.GetRequiredService<IRequestService>(),
+            snapshotCapture: RetainStepScriptReplay ? services.GetRequiredService<IJobExecutionSnapshotCapture>() : null,
+            scriptReplayPins: RetainStepScriptReplay ? services.GetRequiredService<IScriptExecutionReplayStore>() : null);
+        public async Task<JobRunInfo> StartAsync(CancellationToken ct, string? inputs = null, NetRatel.Shared.ClientEnvironment? environment = null)
+        { await using var scope = Services.CreateAsyncScope(); return await Authority(scope.ServiceProvider, false).StartAsync(41, new("operator-test", inputs, null, Environment: environment), ct); }
 
         public async Task<int> SubmitCanonicalRequestAsync(string inputs, CancellationToken ct)
         {
@@ -1079,6 +1317,7 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         public int? ExpectedCanonicalRequestId;
         public bool ObservedCanonicalRequestBeforeTransport;
         public bool AmbiguousNextDispatch;
+        public bool ObservedStepScriptReplayBeforeTransport;
         public ulong LastDispatchRunId;
         public string? LastDispatchPayload;
         public AgentJobGatewayRegistration Register(ClientKey client, Guid id, ulong epoch, bool provisional = false) =>
@@ -1105,6 +1344,19 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
                 (await db.OutboxMessages.AnyAsync(row => row.Type == ExecutionLifecycleOutbox.RequestBindingOutboxType &&
                     row.EntityId == requestId.ToString() && row.CorrelationId == "job-run:" + dispatch.JobRunId, ct)).Should().BeTrue();
                 ObservedCanonicalRequestBeforeTransport = true;
+            }
+            if (harness.RetainStepScriptReplay && dispatch.TaskType == TaskKinds.ExecLibraryScript)
+            {
+                await using var pinScope = harness.Services.CreateAsyncScope();
+                var pinDb = pinScope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                var row = await pinDb.Set<ScriptExecutionReplayRecord>().AsNoTracking().SingleAsync(x => x.RequestId == dispatch.RequestId, ct);
+                var pin = await pinScope.ServiceProvider.GetRequiredService<IScriptExecutionReplayStore>()
+                    .ResolveAsync(client.TenantId, dispatch.RequestId, ct);
+                pin.Should().NotBeNull();
+                pin!.AgentId.Should().Be(client.AgentId);
+                pin.NativePayloadJson.Should().Be(dispatch.PayloadJson);
+                row.ProtectedSnapshotJson.Should().NotContain(pin.Script.Script.Content);
+                ObservedStepScriptReplayBeforeTransport = true;
             }
             await _backend.DispatchAsync(client, dispatch, ct);
             var frame = await harness.Registration.Reader.ReadAsync(ct);
