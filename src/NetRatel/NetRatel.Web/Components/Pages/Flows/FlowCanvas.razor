@@ -1,4 +1,5 @@
 @using System.Globalization
+@using System.Text.Json
 @using System.ComponentModel
 @using VeloxDev.WorkflowSystem
 @using VeloxDev.WorkflowSystem.AttachedBehaviors
@@ -41,7 +42,7 @@
                     {
                     <WorkflowSlotLayoutBehavior Node="node" IsEnabled="true">
                         <WorkflowNodeDragBehavior Node="node" IsEnabled="@(!ReadOnly)" Style="@NodeStyle(node)">
-                            <article class="flow-node @(Adapter.SchemaVersion == 2 ? "schema-two" : "") @(SelectedNodeId == metadata.Id ? "selected" : "")" data-design-width="@Adapter.DesignSize(metadata.Kind).Width" data-node-id="@metadata.Id" data-node-kind="@metadata.Kind" style="@CardStyle(node)">
+                            <article class="flow-node @(Adapter.SchemaVersion == 2 ? "schema-two" : "") @(SelectedNodeId == metadata.Id ? "selected" : "")" data-design-width="@Adapter.DesignSize(metadata.Kind).Width" data-node-id="@metadata.Id" data-node-kind="@metadata.Kind" data-world-x="@Number(node.Anchor.Horizontal * Adapter.Tree.Layout.Scale.Horizontal)" data-world-y="@Number(node.Anchor.Vertical * Adapter.Tree.Layout.Scale.Horizontal)" style="@CardStyle(node)">
                                 <header class="flow-node-header">
                                     <div role="button" tabindex="0" class="flow-node-title" @onclick="() => Selected.InvokeAsync(metadata.Id)" @onkeydown="e => SelectFromKeyboard(metadata.Id, e)" data-testid="flow-node-title">@if (Adapter.SchemaVersion == FlowGraphV2Limits.SchemaVersion) { <small class="flow-node-header-kind">@FlowNodeCatalogue.Find(metadata.Kind)?.Category · @FlowNodeCatalogue.Find(metadata.Kind)?.Name</small> }@metadata.Name</div>
                                     <div class="flow-node-actions" @onpointerdown:stopPropagation @onmousedown:stopPropagation @onclick:stopPropagation>
@@ -193,17 +194,42 @@
     private string NodeSummary(FlowNodeDto node) => node.Kind switch
     {
         FlowNodeKind.AlertRaised => "A monitoring occurrence starts this path",
+        FlowNodeKind.Condition when node.Predicate is { } predicate => PredicateSummary(predicate),
         FlowNodeKind.Condition when node.Condition is { } condition => $"{condition.Field} {condition.Comparison} {condition.NumericValue?.ToString(CultureInfo.InvariantCulture) ?? condition.TextValue}",
         FlowNodeKind.MapIncident => node.Mapping?.TitleTemplate ?? "Configure the message fields",
         FlowNodeKind.ActionGroup => $"{node.Actions?.Count ?? 0} independent destinations",
         FlowNodeKind.InvestigateWithAi => Adapter.SchemaVersion == FlowGraphV2Limits.SchemaVersion ? $"{ConnectorName(node)} · diagnostic investigation" : $"{ConnectorName(node)} · waits for the exact AI turn",
         FlowNodeKind.CreateIncident => ConnectorName(node),
         FlowNodeKind.ExecutionEvent when node.ExecutionTrigger is { } trigger => $"{string.Join(", ", trigger.Sources)} · {string.Join(", ", trigger.Outcomes)} · {(trigger.Scope == FlowExecutionScope.AllInTenant ? "all matching executions" : "selected definitions")}",
-        FlowNodeKind.RunLibraryScript or FlowNodeKind.RunJob when node.ExecutionAction is { } action => $"{action.Definition.Name ?? "Selected definition"} · {action.Target?.DisplayName ?? action.Target?.HostName ?? "Select a target"}",
+        FlowNodeKind.RunLibraryScript or FlowNodeKind.RunJob when node.ExecutionAction is { } action => $"{action.Definition.Name ?? "Selected definition"} · {action.Target?.DisplayName ?? action.Target?.HostName ?? (node.Kind == FlowNodeKind.RunJob ? "Bound endpoint not configured" : action.Target is null ? "Source event endpoint" : "Select an endpoint")}",
         FlowNodeKind.RerunOriginalExecution => $"Original pinned execution · at most {node.Rerun?.MaximumAttempts ?? 1} linked rerun(s)",
         FlowNodeKind.Finish => "Ends the selected outcome path",
         _ => "Configure this node"
     };
+    private string PredicateSummary(FlowPredicateDto predicate)
+    {
+        var input = predicate.Input;
+        if (input is null || input.Source == FlowInputSource.SecretReference || input.DataType == FlowDataType.SecretReference)
+            return "Condition input unavailable";
+        var source = input.Source switch
+        {
+            FlowInputSource.Event => Bounded(input.Path ?? "Choose an event field", 64),
+            FlowInputSource.NodeOutput => $"{Bounded(input.NodeId is { } id ? NodeName(id) : "Choose an earlier node", 48)}.{Bounded(input.Path ?? "choose an output", 48)}",
+            FlowInputSource.Literal => $"Literal {SummaryValue(input.Literal ?? default)}",
+            _ => "Choose a typed input"
+        };
+        var comparison = predicate.Comparison switch
+        {
+            FlowComparison.Equal => "equals", FlowComparison.NotEqual => "does not equal",
+            FlowComparison.GreaterThan => "is greater than", FlowComparison.GreaterThanOrEqual => "is at least",
+            FlowComparison.LessThan => "is less than", FlowComparison.LessThanOrEqual => "is at most",
+            _ => "choose a comparison"
+        };
+        return Bounded($"{source} {comparison} {SummaryValue(predicate.Value)}", 240);
+    }
+    private static string SummaryValue(JsonElement value) => value.ValueKind is JsonValueKind.String or JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False
+        ? Bounded(value.GetRawText(), 80) : "choose a scalar comparison value";
+    private static string Bounded(string value, int maximum) => value.Length <= maximum ? value : value[..(maximum - 1)] + "…";
     private string ConnectorName(FlowNodeDto node) => Connectors.FirstOrDefault(connector => connector.Id == node.ConnectorId && connector.TenantId == TenantId)?.Name ?? "Select a connection";
     private string CompatibleTargets(Guid source, string sourcePort)
     {

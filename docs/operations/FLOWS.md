@@ -1,4 +1,4 @@
-# Monitoring flows
+# Flows
 
 Flows support bounded drafts, previews, RatelDesk incidents and Discord/Slack notifications. Automatic incident delivery requires an authorized RatelDesk connector whose receiver provides verified atomic idempotency. A normal create endpoint alone does not establish that contract. Discord and Slack use separately configured incoming webhook targets; see [notification connectors](../integrations/NOTIFICATION-CONNECTORS.md).
 
@@ -18,7 +18,7 @@ Evaluation uses the current draft and never saves, publishes or dispatches an ac
 
 From a run result, choose **Replay recorded run** to inspect its exact immutable published graph. The viewer verifies the graph's configuration hash and presents stored node snapshots without evaluating the current draft. Historical runs without node snapshots show unavailable data. An unsupported trace format, a changed graph hash or a different graph schema cannot display its snapshots as current data.
 
-The initial catalogue is deliberately small:
+The schema-one catalogue is deliberately small:
 
 1. Alert raised.
 2. An optional typed condition.
@@ -26,7 +26,7 @@ The initial catalogue is deliberately small:
 4. An optional AI: Investigate alert step with a bounded deadline, failure disposition and tenant guidance.
 5. RatelDesk: Create incident, or an action group containing one to eight supported independent actions. AI may also end an AI-only path.
 
-A published graph has one reachable acyclic path, at most one condition, one mapping, one sequential AI step and one final action or action group, or an AI-only final step. Drafts can remain incomplete while being edited. Publish requires a complete valid path and enabled, currently authorized connectors with the capability required by each action. Publish pins every connector configuration revision and selected optional prompt revision and creates an immutable version. Later draft edits, guidance edits and credential rotation cannot silently change the semantic target or fields of an existing version/run. After editing a target, choose **Use updated target** in the action settings and republish any flow that should use it. Clone creates a disabled draft with new node IDs.
+A schema-one published graph has one reachable acyclic path, at most one condition, one mapping, one sequential AI step and one final action or action group, or an AI-only final step. Drafts can remain incomplete while being edited. Publish requires a complete valid path and enabled, currently authorized connectors with the capability required by each action. Publish pins every connector configuration revision and selected optional prompt revision and creates an immutable version. Later draft edits, guidance edits and credential rotation cannot silently change the semantic target or fields of an existing version/run. After editing a target, choose **Use updated target** in the action settings and republish any flow that should use it. Clone creates a disabled draft with new node IDs.
 
 Select an existing incident action and use **Add more actions** to retain that incident target while adding notification actions. Each child has a stable ID and its own target, durable delivery state and receipt. The mapped title and description feed every action; priority applies to incident actions. One failed destination does not prevent the other children from running. History shows each result and reports a partially succeeded run when some destinations succeed and others fail or remain uncertain. A safe retry resumes only the children that still need delivery; successful children are not sent again.
 
@@ -71,14 +71,15 @@ The initial bounds are eight nodes, seven edges, 32 KiB canonical graph, 8 KiB e
 
 ## Schema transition
 
-The compatible schema-two contracts and inert canvas adapter are available for the overhaul while
-the default authoring, save/publish routes and monitoring runtime remain on schema one. A draft upgrade is explicit;
-published versions, configuration hashes and running schema-one continuations are not rewritten.
-The new contract separates execution-event triggers from script/job/rerun actions and defines
-exclusive named outcomes, typed input bindings, stable edge IDs and finite optional routes.
-Its 32-node/64-edge/128 KiB budget is independent of existing execution and receipt bounds.
-The [API contract reference](../contracts/API_REFERENCE.md#flows) describes this transition.
-Execution activation and authoring of those new actions require their durable runtime integration.
+Schema-one drafts remain compatible until an operator explicitly upgrades a draft. Published versions,
+configuration hashes and running schema-one continuations are not rewritten. Server capabilities report
+supported draft and executable schemas separately; a server may accept an inert schema-two draft before
+its execution support is available. The editor follows that response for save and publish.
+
+Schema two separates execution-event triggers from script/job/rerun actions and defines exclusive named
+outcomes, typed input bindings, stable edge IDs and finite optional routes. Its 32-node/64-edge/128 KiB
+budget is independent of existing execution and receipt bounds. The [API contract reference](../contracts/API_REFERENCE.md#flows)
+describes the schema and HTTP capability contract.
 
 Schema-two snapshots retain their original schema, node settings, named ports, stable edge IDs and
 optional route points when loaded and captured. Cards derive their height from the real port count;
@@ -92,6 +93,51 @@ Reset removes custom routing and retains the edge identity. Selected handles sit
 readonly viewers permit inspection without route changes. Routing preview stays local to the browser
 and commits one layout change when a gesture completes. These controls do not migrate a schema-one
 draft or activate an execution node.
+
+## Typed authoring and templates
+
+New flow keeps the alert template and blank schema-one draft choices. When the server supports schema-two drafts, **Upgrade draft to named outcomes** performs a local edit until Save. Undo can restore the prior draft schema; published versions, hashes and running continuations stay unchanged. Draft editing and execution support are advertised separately, and Publish explains when a schema is not executable on the current server. Execution templates create
+disabled, unpublished drafts and list the definitions, endpoints and connections still required.
+Use synthetic names when rehearsing a template. Creating, viewing, configuring or previewing a
+template never runs a script/job, sends an AI turn or delivers an incident/notification.
+
+The searchable library groups events, logic, data, scripts/jobs, AI and integrations. An execution
+event offers Job executions, Library script executions and Requests presets, combined sources,
+genuine terminal outcomes, all matching executions in the authorized tenant or selected named
+definitions. Definition filters retain their family and decimal-string ID across revisions.
+Job/script-backed request events retain the Request source and may match their selected definition,
+including admission failures before a run exists. Optional request source systems use exact case
+sensitive values; no selection means every supported source system. Unknown/delivery unknown stays
+separate from definitive failure and authoritative timeout.
+
+**Run job** shows and retains its bound tenant endpoint. **Run library script** chooses the source
+event endpoint or an explicit fixed endpoint; selecting a fixed endpoint is incomplete until one is
+chosen. Search and retained-selection metadata show meaningful names and explicit unavailable state.
+Discovery is not proof of online presence or future execution authorization. Choosing/updating a
+definition deliberately selects its revision/hash and parameter schema; publish resolves protected
+pins under current authority. A queued/accepted execution is pending until its committed terminal
+result. **Rerun original execution** uses trusted original inputs, definition and target, defaults
+to one linked attempt, and leaves unsupported/unknown/denied/exhausted outcomes explicit.
+
+Typed inputs offer compatible event fields, outputs guaranteed on every path to the step, literal
+values or target environment variable references. A native `secret_reference` parameter stores only
+the selected target's variable name (`[A-Za-z_][A-Za-z0-9_]{0,127}`), never its value. Preview and AI
+do not receive that value. Other secret aliases remain Unsupported. Missing parameter schemas are labelled unavailable, not empty. Mapping aliases use
+`{input.name}`; the title/description token picker separates original event facts from AI findings.
+JSON null, missing values and empty values remain distinct. Every output must lead to a configured
+exclusive outcome branch before publication; converging branches do not create a parallel join.
+
+Additional investigation inputs bind named event facts or guaranteed earlier outputs; they add context without replacing the original evidence or authorizing a repair.
+
+Execution-source AI follows named outcome ports. Legacy Stop/Continue-with-alert policy applies
+only to schema one. The investigation remains diagnostic; lack of enforceable diagnostic-only tools
+reports Unsupported rather than sending an unrestricted turn. Repairs are explicit permitted pinned
+script/job nodes, and recovery is verified only by the linked rerun's real terminal outcome.
+
+The main toolbar stays compact; zoom, Fit and overview occupy a canvas overlay. Fit accounts for its
+measured height, including wrapped controls at narrow widths. The palette search remains reachable
+at narrow widths. Local Undo/Redo retains current pan/zoom and saved compare-and-save revision while restoring
+graph edits; editable text fields keep native text undo. Equivalent JSON object order and number formats do not create a false schema-two edit or undo entry. Captured null survives undo. Typed condition cards summarize their configured source, comparison and value; full settings remain in the inspector and environment references are never shown as condition values. The selected connection inspector scrolls within the remaining canvas height so lower route controls remain reachable.
 
 ## VeloxDev compatibility and notices
 

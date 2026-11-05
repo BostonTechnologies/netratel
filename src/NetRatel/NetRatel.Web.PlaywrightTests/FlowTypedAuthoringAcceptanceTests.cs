@@ -1,4 +1,7 @@
 using System.Diagnostics;
+using System.Collections.Concurrent;
+using System.Net;
+using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json;
 using Microsoft.Playwright;
 using NetRatel.Shared.Contracts.Flows;
@@ -9,6 +12,7 @@ namespace NetRatel.Web.PlaywrightTests;
 public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFixture browserFixture) : IClassFixture<ClientsManagementBrowserFixture>, IAsyncLifetime
 {
     private ClientsManagementFixtureHost? _fixture;
+    private readonly ConcurrentQueue<string> _outgoingWrites = new();
 
     [Fact]
     public async Task Near_Limit_Graph_Mount_Fit_Pan_Zoom_And_Route_Are_Measured_Without_Execution()
@@ -52,16 +56,64 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-near-limit-fit.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
 
-        var panel = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!;
+        var panTarget = await page.GetByTestId("flow-canvas").EvaluateAsync<JsonElement>("""
+            panel => {
+                const scroller=panel.querySelector('[id^=flow-scroll-]'),r=scroller.getBoundingClientRect();
+                const x=r.left+scroller.clientWidth*.8,y=r.top+scroller.clientHeight*.5;
+                const hit=document.elementFromPoint(x,y);
+                return {id:scroller.id,x,y,bounds:r,clientWidth:scroller.clientWidth,clientHeight:scroller.clientHeight,
+                    scrollLeft:scroller.scrollLeft,scrollTop:scroller.scrollTop,
+                    maxScrollLeft:scroller.scrollWidth-scroller.clientWidth,maxScrollTop:scroller.scrollHeight-scroller.clientHeight,
+                    hit:{tag:hit?.tagName,id:hit?.id,classes:hit?.getAttribute('class')},
+                    blank:!!hit&&scroller.contains(hit)&&!hit.closest('.flow-node,.veloxdev-wf-node-drag,.veloxdev-wf-slot,.flow-canvas-tools,.flow-edge-tools,.veloxdev-wf-minimap,.flow-route-handle,input,select,button,[data-testid=flow-link-hit]')};
+            }
+            """);
+        await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-pan-start.json"),
+            JsonSerializer.Serialize(new { fitted, panTarget }, new JsonSerializerOptions { WriteIndented = true }));
+        Assert.True(panTarget.GetProperty("blank").GetBoolean(), "The native pan must start on an ordinary blank scroller surface.");
+        var panX = panTarget.GetProperty("x").GetSingle(); var panY = panTarget.GetProperty("y").GetSingle();
         var before = (await page.Locator(".flow-node").First.BoundingBoxAsync())!;
         clock.Restart();
-        await page.Mouse.MoveAsync(panel.X + panel.Width - 12, panel.Y + panel.Height - 12);
+        await page.Mouse.MoveAsync(panX, panY);
         await page.Mouse.DownAsync(new() { Button = MouseButton.Middle });
-        await page.Mouse.MoveAsync(panel.X + panel.Width - 72, panel.Y + panel.Height - 52, new() { Steps = 12 });
-        await page.Mouse.UpAsync(new() { Button = MouseButton.Middle });
-        await page.WaitForFunctionAsync("previous => {const r=document.querySelector('.flow-node').getBoundingClientRect();return Math.abs(r.x-previous.x)>1||Math.abs(r.y-previous.y)>1}", new { x = before.X, y = before.Y });
+        var panPhase = "native acceptance";
+        try
+        {
+            try
+            {
+                // Velox 10.0.1 waits for its .NET press verdict; an early mouseup cancels the pending gesture.
+                await page.WaitForFunctionAsync("id => document.getElementById(id)?.style.cursor==='grabbing'", panTarget.GetProperty("id").GetString());
+                await page.Mouse.MoveAsync(panX - 60, panY - 40, new() { Steps = 12 });
+                var held = await MeasurementsAsync(page);
+                await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-pan-held.json"), held.GetRawText());
+                panPhase = "displacement while held";
+                await page.WaitForFunctionAsync("previous => {const r=document.querySelector('.flow-node').getBoundingClientRect();return Math.abs(r.x-previous.x)>1||Math.abs(r.y-previous.y)>1}", new { x = (double)before.X, y = (double)before.Y });
+            }
+            finally
+            {
+                await page.Mouse.UpAsync(new() { Button = MouseButton.Middle });
+                var released = await MeasurementsAsync(page);
+                await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-pan-released.json"), released.GetRawText());
+            }
+            panPhase = "displacement after release";
+            await page.WaitForFunctionAsync("previous => {const r=document.querySelector('.flow-node').getBoundingClientRect();return Math.abs(r.x-previous.x)>1||Math.abs(r.y-previous.y)>1}", new { x = (double)before.X, y = (double)before.Y });
+        }
+        catch (Exception error)
+        {
+            try
+            {
+                var failed = await MeasurementsAsync(page);
+                await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-pan-failure.json"),
+                    JsonSerializer.Serialize(new { panPhase, error = error.GetType().Name, failed }, new JsonSerializerOptions { WriteIndented = true }));
+                await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-near-limit-pan-failure.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+            }
+            catch (Exception diagnosticError) when (diagnosticError is PlaywrightException or IOException or UnauthorizedAccessException)
+            { Console.WriteLine($"Pan failure evidence could not be retained: {diagnosticError.GetType().Name}"); }
+            throw;
+        }
+        var panned = await MeasurementsAsync(page);
         await page.GetByTestId("flow-zoom-in").ClickAsync();
-        await page.WaitForFunctionAsync("previous => document.querySelector('.flow-node').getBoundingClientRect().width>previous+1", before.Width);
+        await page.WaitForFunctionAsync("previous => document.querySelector('.flow-node').getBoundingClientRect().width>previous+1", (double)before.Width);
         var panZoomMilliseconds = clock.Elapsed.TotalMilliseconds;
         var moved = await MeasurementsAsync(page);
 
@@ -107,11 +159,168 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         {
             schemaVersion = graph.SchemaVersion, nodeCount = graph.Nodes.Count, edgeCount = graph.Edges.Count,
             mountMilliseconds, fitMilliseconds, panZoomMilliseconds, routeMilliseconds,
-            fitted, moved, routed, narrowRoute, assertions = "32 native nodes;61 curves;all cards fit;7 outcome ports fit;actual pan and zoom;route edit and Tab exit;narrow bounded inspector with pointer and keyboard reachability",
+            fitted, panTarget, panned, moved, routed, narrowRoute, assertions = "32 native nodes;61 curves;all cards fit;7 outcome ports fit;actual pan and zoom;route edit and Tab exit;narrow bounded inspector with pointer and keyboard reachability",
             noExecutionWrites = fixture.FlowsData.SaveCalls == seedWrites && fixture.FlowsData.PublishCalls == 0 && fixture.FlowsData.DryRunCalls == 0
         }, new JsonSerializerOptions { WriteIndented = true }));
         Assert.Equal(seedWrites, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls); Assert.Equal(0, fixture.FlowsData.DryRunCalls);
+        Assert.Empty(_outgoingWrites);
         Assert.Empty(errors); Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
+    }
+
+    [Fact]
+    public async Task Explicit_Upgrade_Named_Definitions_Bound_Job_Target_And_Typed_Mapping_Save_And_Reload_Without_Dispatch()
+    {
+        var fixture = _fixture!;
+        var metadata = fixture.FlowsData.SeedExecutionAuthoringCatalogue();
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1440, Height = 1050 } });
+        var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000);
+        var errors = new List<string>(); page.PageError += (_, error) => errors.Add(error);
+        await OpenAsync(page, fixture);
+        await page.GetByTestId("flows-new").ClickAsync();
+        await page.GetByTestId("flow-create-name").FillAsync("Synthetic typed authoring");
+        await page.GetByTestId("flow-create-blank").ClickAsync();
+        await page.GetByTestId("flow-upgrade-draft").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-palette-RerunOriginalExecution")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("flow-palette-InvestigateWithAi")).ToContainTextAsync("Investigate failure");
+        var palette = await page.Locator(".flow-palette-label").EvaluateAllAsync<string[]>("items => items.map(item => item.getAttribute('data-testid'))");
+        Assert.Equal(FlowNodeCatalogue.Nodes.Select(node => $"flow-palette-{node.Kind}").ToArray(), palette);
+        await page.GetByTestId("flow-focus").ClickAsync();
+        await page.WaitForFunctionAsync("() => document.querySelector('[data-testid=flow-editor]')?.classList.contains('focused')");
+
+        await page.GetByTestId("flow-add-ExecutionEvent").ClickAsync();
+        await PositionSelectedAsync(page, FlowNodeKind.ExecutionEvent, 40, 90);
+        await page.GetByTestId("flow-trigger-preset").SelectOptionAsync(nameof(FlowExecutionSourceKind.Job));
+        await page.GetByTestId("flow-trigger-scope").SelectOptionAsync("2");
+        await ChooseDefinitionAsync(page, "source", metadata.SourceJob.Definition.Id, metadata.SourceJob.Definition.Name!);
+        await Assertions.Expect(page.GetByTestId("flow-trigger-definition")).ToContainTextAsync("Synthetic source job");
+
+        await page.GetByTestId("flow-add-RunJob").ClickAsync();
+        await PositionSelectedAsync(page, FlowNodeKind.RunJob, 410, 90);
+        await ChooseDefinitionAsync(page, "maintenance", metadata.Job.Definition.Id, metadata.Job.Definition.Name!);
+        await Assertions.Expect(page.GetByTestId("flow-job-bound-target")).ToContainTextAsync("Bound synthetic repair endpoint");
+        await Assertions.Expect(page.GetByTestId("flow-script-target-mode")).ToHaveCountAsync(0);
+        await MapEventInputAsync(page, "event.definition.name");
+        var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-job-bound-target.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+
+        await page.GetByTestId("flow-add-RunLibraryScript").ClickAsync();
+        await PositionSelectedAsync(page, FlowNodeKind.RunLibraryScript, 780, 90);
+        await ChooseDefinitionAsync(page, "diagnostic", metadata.Script.Definition.Id, metadata.Script.Definition.Name!);
+        await Assertions.Expect(page.GetByTestId("flow-script-target-mode")).ToHaveValueAsync("event");
+        await MapEventInputAsync(page, "event.reason");
+
+        await page.GetByTestId("flow-add-MapIncident").ClickAsync();
+        await PositionSelectedAsync(page, FlowNodeKind.MapIncident, 410, 500);
+        await page.GetByTestId("flow-mapping-alias").FillAsync("failureReason");
+        await page.GetByTestId("flow-mapping-alias").PressAsync("Tab");
+        await page.GetByTestId("flow-mapping-add-binding").ClickAsync();
+        await MapEventInputAsync(page, "event.reason");
+        await page.GetByTestId("flow-mapping-title").FillAsync("Synthetic {input.failureReason}");
+        await page.GetByTestId("flow-mapping-title").PressAsync("Tab");
+        await page.GetByTestId("flow-mapping-description").FillAsync("Original definition: {definitionName}");
+        await page.GetByTestId("flow-mapping-description").PressAsync("Tab");
+
+        await page.GetByTestId("flow-add-RerunOriginalExecution").ClickAsync();
+        await PositionSelectedAsync(page, FlowNodeKind.RerunOriginalExecution, 780, 500);
+        await Assertions.Expect(page.GetByTestId("flow-rerun-budget")).ToHaveValueAsync("1");
+        await page.GetByTestId("flow-properties-close").ClickAsync();
+        await FitAsync(page);
+        await ConnectAsync(page, FlowNodeKind.ExecutionEvent, "event", FlowNodeKind.RunJob, 1);
+        await ConnectAsync(page, FlowNodeKind.RunJob, "succeeded", FlowNodeKind.RunLibraryScript, 2);
+        await ConnectAsync(page, FlowNodeKind.RunLibraryScript, "succeeded", FlowNodeKind.MapIncident, 3);
+        await ConnectAsync(page, FlowNodeKind.MapIncident, "result", FlowNodeKind.RerunOriginalExecution, 4);
+        var eventCategory = FlowNodeCatalogue.Find(FlowNodeKind.ExecutionEvent)!.Category;
+        var actionCategory = FlowNodeCatalogue.Find(FlowNodeKind.RunJob)!.Category;
+        Assert.NotEqual(eventCategory, actionCategory);
+        await Assertions.Expect(page.Locator("[data-node-kind=ExecutionEvent] .flow-node-header-kind")).ToContainTextAsync(eventCategory);
+        await Assertions.Expect(page.Locator("[data-node-kind=RunJob] .flow-node-header-kind")).ToContainTextAsync(actionCategory);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-typed-authoring.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+        await page.GetByTestId("flow-save").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-dirty")).ToContainTextAsync("Saved draft");
+
+        var saved = Assert.Single((await fixture.FlowsData.ListAsync(17)).Where(flow => flow.Name == "Synthetic typed authoring"));
+        Assert.False(saved.Enabled); Assert.Null(saved.PublishedVersionId); Assert.Equal(0, saved.PublishedVersionNumber);
+        Assert.Equal(2, saved.Draft.SchemaVersion); Assert.Equal(5, saved.Draft.Nodes.Count); Assert.Equal(4, saved.Draft.Edges.Count);
+        Assert.True(FlowGraphV2Validator.ValidateDraft(saved.Draft).Valid);
+        Assert.Equal(new FlowPositionDto(40, 90), saved.Draft.Nodes.Single(node => node.Kind == FlowNodeKind.ExecutionEvent).Position);
+        Assert.Equal(new FlowPositionDto(410, 500), saved.Draft.Nodes.Single(node => node.Kind == FlowNodeKind.MapIncident).Position);
+        var trigger = saved.Draft.Nodes.Single(node => node.Kind == FlowNodeKind.ExecutionEvent);
+        var job = saved.Draft.Nodes.Single(node => node.Kind == FlowNodeKind.RunJob);
+        var script = saved.Draft.Nodes.Single(node => node.Kind == FlowNodeKind.RunLibraryScript);
+        var mapping = saved.Draft.Nodes.Single(node => node.Kind == FlowNodeKind.MapIncident);
+        Assert.Equal("42", Assert.Single(trigger.ExecutionTrigger!.DefinitionReferences!).Id);
+        Assert.Equal("9007199254740993", job.ExecutionAction!.Definition.Id);
+        Assert.Equal(metadata.Job.Target, job.ExecutionAction.Target);
+        Assert.NotEqual(metadata.SourceJob.Target!.AgentId, job.ExecutionAction.Target!.AgentId);
+        Assert.Null(job.ExecutionAction.PinnedSnapshotReference);
+        Assert.Equal("event.definition.name", job.Inputs!["message"].Path);
+        Assert.Equal("9007199254740995", script.ExecutionAction!.Definition.Id); Assert.Null(script.ExecutionAction.Target);
+        Assert.Equal("event.reason", mapping.Inputs!["failureReason"].Path);
+        Assert.Equal("Synthetic {input.failureReason}", mapping.Mapping!.TitleTemplate);
+        Assert.Equal(1, saved.Draft.Nodes.Single(node => node.Kind == FlowNodeKind.RerunOriginalExecution).Rerun!.MaximumAttempts);
+
+        await page.GetByTestId("flow-close").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-editor")).ToHaveCountAsync(0);
+        var row = page.GetByTestId("flow-row").Filter(new() { HasText = "Synthetic typed authoring" });
+        await Assertions.Expect(row).ToContainTextAsync("Disabled"); await Assertions.Expect(row).ToContainTextAsync("Not published");
+        await row.GetByTestId("flow-edit").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(5);
+        await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(4);
+        await page.GetByTestId("flow-select-node").SelectOptionAsync(job.Id.ToString());
+        await page.GetByTestId("flow-properties-toggle").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-job-bound-target")).ToContainTextAsync("Bound synthetic repair endpoint");
+        await Assertions.Expect(page.GetByTestId("flow-binding-event")).ToHaveValueAsync("event.definition.name");
+        await page.GetByTestId("flow-select-node").SelectOptionAsync(mapping.Id.ToString());
+        await Assertions.Expect(page.GetByTestId("flow-mapping-title")).ToHaveValueAsync("Synthetic {input.failureReason}");
+        await Assertions.Expect(page.GetByTestId("flow-binding-event")).ToHaveValueAsync("event.reason");
+        Assert.True(fixture.FlowsData.CapabilityReads >= 2);
+        Assert.Contains(fixture.FlowsData.ExecutionSearches, request => request.Source == FlowExecutionSourceKind.Job && request.Search == "maintenance");
+        Assert.Contains(fixture.FlowsData.ExecutionSearches, request => request.Source == FlowExecutionSourceKind.Script && request.Search == "diagnostic");
+        Assert.Equal(2, fixture.FlowsData.ExecutionDefinitionReads);
+        Assert.Equal(1, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls); Assert.Equal(0, fixture.FlowsData.DryRunCalls);
+        Assert.Empty(await fixture.FlowsData.GetRunsAsync(17, saved.Id)); Assert.Empty(_outgoingWrites);
+        Assert.Empty(errors); Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
+        await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-typed-authoring.json"), JsonSerializer.Serialize(new
+        {
+            scenario = "inert authoring through actual UI controls; no execution evidence is implied",
+            saved.Id, saved.Revision, saved.Enabled, saved.PublishedVersionNumber,
+            saved.Draft.SchemaVersion, nodeCount = saved.Draft.Nodes.Count, edgeCount = saved.Draft.Edges.Count,
+            sourceJobId = metadata.SourceJob.Definition.Id, repairJobId = job.ExecutionAction.Definition.Id,
+            retainedJobTarget = job.ExecutionAction.Target.DisplayName, scriptId = script.ExecutionAction.Definition.Id,
+            searches = fixture.FlowsData.ExecutionSearches.Select(request => new { source = request.Source.ToString(), request.Search }),
+            fixture.FlowsData.ExecutionDefinitionReads, fixture.FlowsData.CapabilityReads,
+            fixture.FlowsData.SaveCalls, fixture.FlowsData.PublishCalls, fixture.FlowsData.DryRunCalls,
+            outgoingWriteAttempts = _outgoingWrites.ToArray()
+        }, new JsonSerializerOptions { WriteIndented = true }));
+    }
+    private static async Task ChooseDefinitionAsync(IPage page, string search, string id, string name)
+    {
+        var input = page.GetByTestId("flow-definition-search");
+        await input.FillAsync(search); await input.PressAsync("Tab");
+        var choice = page.Locator($"[data-testid=flow-definition-choice][data-definition-id='{id}']");
+        await Assertions.Expect(choice).ToContainTextAsync(name);
+        await choice.ClickAsync();
+    }
+    private static async Task PositionSelectedAsync(IPage page, FlowNodeKind kind, int x, int y)
+    {
+        await Assertions.Expect(page.Locator($".flow-node.selected[data-node-kind='{kind}']")).ToHaveCountAsync(1);
+        await page.GetByTestId("flow-node-x").FillAsync(x.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        await page.GetByTestId("flow-node-x").PressAsync("Tab");
+        await Assertions.Expect(page.Locator(".flow-node.selected")).ToHaveAttributeAsync("data-world-x", x.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        await page.GetByTestId("flow-node-y").FillAsync(y.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        await page.GetByTestId("flow-node-y").PressAsync("Tab");
+        await Assertions.Expect(page.Locator(".flow-node.selected")).ToHaveAttributeAsync("data-world-y", y.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    }
+    private static async Task MapEventInputAsync(IPage page, string path)
+    {
+        await page.GetByTestId("flow-binding-source").SelectOptionAsync(nameof(FlowInputSource.Event));
+        await page.GetByTestId("flow-binding-event").SelectOptionAsync(path);
+    }
+    private static async Task ConnectAsync(IPage page, FlowNodeKind source, string outcome, FlowNodeKind target, int expectedEdges)
+    {
+        await page.Locator($"[data-node-kind='{source}'] .flow-port.output[data-port-id='{outcome}'] button").ClickAsync();
+        await page.Locator($"[data-node-kind='{target}'] .flow-port.input button").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(expectedEdges);
     }
 
     private static FlowGraphDto NearLimitGraph()
@@ -132,8 +341,12 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
     private static Task<JsonElement> MeasurementsAsync(IPage page) => page.GetByTestId("flow-canvas").EvaluateAsync<JsonElement>("""
         panel => ({
             viewport:{width:innerWidth,height:innerHeight,dpr:devicePixelRatio},
+            document:{x:scrollX,y:scrollY,active:document.activeElement?.getAttribute('class')},
             panel:panel.getBoundingClientRect(),fitState:panel.dataset.fitState,fitRevision:Number(panel.dataset.fitRevision),
-            scroller:(()=>{const e=panel.querySelector('[id^=flow-scroll-]');return e?{x:e.scrollLeft,y:e.scrollTop,width:e.scrollWidth,height:e.scrollHeight}:null})(),
+            scroller:(()=>{const e=panel.querySelector('[id^=flow-scroll-]'),content=e?.querySelector('.veloxdev-wf-canvas-content');
+                return e?{id:e.id,connected:e.isConnected,cursor:e.style.cursor,x:e.scrollLeft,y:e.scrollTop,width:e.scrollWidth,height:e.scrollHeight,
+                    clientWidth:e.clientWidth,clientHeight:e.clientHeight,rect:e.getBoundingClientRect(),
+                    canvas:e.querySelector('.veloxdev-wf-canvas')?.getBoundingClientRect(),content:content?.getBoundingClientRect(),contentTransform:content?.style.transform}:null})(),
             nodes:[...panel.querySelectorAll('.flow-node')].map(node=>({id:node.dataset.nodeId,kind:node.dataset.nodeKind,rect:node.getBoundingClientRect(),ports:node.querySelectorAll('.flow-port').length})),
             curves:panel.querySelectorAll('[data-testid=flow-link]').length,
             routePoints:[...panel.querySelectorAll('.flow-route-handle')].map(handle=>({x:Number(handle.dataset.worldX),y:Number(handle.dataset.worldY)}))
@@ -157,6 +370,24 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         await page.GetByTestId("flow-row").WaitForAsync(new() { Timeout = 90_000 });
     }
     private static string EvidenceRoot() => Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.Combine(Directory.GetCurrentDirectory(), "TestResults", "playwright");
-    public async ValueTask InitializeAsync() => _fixture = await ClientsManagementFixtureHost.StartAsync();
+    public async ValueTask InitializeAsync() => _fixture = await ClientsManagementFixtureHost.StartAsync(services =>
+        services.AddSingleton<IHttpClientFactory>(provider => new ReadOnlyFixtureHttpClientFactory(
+            provider.GetRequiredService<ClientDirectoryFixtureData>(), _outgoingWrites)));
+    private sealed class ReadOnlyFixtureHttpClientFactory(ClientDirectoryFixtureData directory, ConcurrentQueue<string> writes) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new(new Handler(directory, writes)) { BaseAddress = new("https://netratel.test") };
+        private sealed class Handler(ClientDirectoryFixtureData directory, ConcurrentQueue<string> writes) : HttpMessageHandler
+        {
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+            {
+                if (request.Method != HttpMethod.Get && request.Method != HttpMethod.Head && request.Method != HttpMethod.Options)
+                {
+                    writes.Enqueue($"{request.Method} {request.RequestUri?.AbsolutePath}");
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden));
+                }
+                return Task.FromResult(directory.Respond(request));
+            }
+        }
+    }
     public async ValueTask DisposeAsync() { if (_fixture is not null) await _fixture.DisposeAsync(); }
 }
