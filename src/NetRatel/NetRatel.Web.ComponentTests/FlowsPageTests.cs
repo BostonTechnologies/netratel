@@ -1,4 +1,6 @@
 using System.Net;
+using System.Security.Cryptography;
+using System.Text.Json;
 using Bunit;
 using AwesomeAssertions;
 using Microsoft.AspNetCore.Components;
@@ -20,6 +22,7 @@ public sealed class FlowsPageTests : AsyncBunitContext
     {
         JSInterop.Mode = JSRuntimeMode.Loose;
         JSInterop.SetupModule("./_content/VeloxDev.Razor/veloxdev.workflow.js").Mode = JSRuntimeMode.Loose;
+        JSInterop.SetupModule("./js/flows-playback.js").Mode = JSRuntimeMode.Loose;
         var module = JSInterop.SetupModule("./js/flows-editor.js"); module.Mode = JSRuntimeMode.Loose;
         module.Setup<double[]>("geometry", _ => true).SetResult([0, 0, 1000, 800, 1200, 1000]);
         Services.AddSingleton<IFlowApiService>(_api);
@@ -151,6 +154,59 @@ public sealed class FlowsPageTests : AsyncBunitContext
         _dialogs.FindAll("[data-testid=flow-run-result]").Should().BeEmpty();
         _dialogs.FindAll("[data-testid=flow-run-detail]").Should().HaveCount(1);
         _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
+    }
+
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Historical_playback_loads_the_exact_immutable_version_and_keeps_old_missing_snapshots_explicit(bool captured)
+    {
+        var version = Version(1, "Published captured trigger");
+        var hash = Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(version.Graph, new JsonSerializerOptions(JsonSerializerDefaults.Web))));
+        version = version with { ConfigurationHash = hash };
+        var definition = FlowEditorTests.Definition(); var now = DateTimeOffset.UtcNow;
+        var detail = new FlowRunDetailDto(new(Guid.NewGuid(), definition.Id, version.Id, Guid.NewGuid(), Guid.NewGuid(), FlowRunStatus.Succeeded, now, now),
+            new(Guid.NewGuid(), Guid.NewGuid(), "Recorded rule", "Recorded client", "cpu", "CPU", "warning", 95, null, now), []);
+        if (captured)
+            detail = detail with { Trace = new(1, hash, FlowTraceProvenance.Recorded,
+                [new(0, version.Graph.Nodes[0].Id, "Published captured trigger", FlowTraceStepStatus.Completed, "event", FlowTraceProvenance.Recorded,
+                    new(FlowTraceDataState.Empty) { Value = JsonSerializer.SerializeToElement("") },
+                    new(FlowTraceDataState.Present) { Value = JsonSerializer.SerializeToElement("Exact recorded output") })]) };
+        var reads = 0;
+        _api.RunLookup = (_, _, _) => Task.FromResult(detail);
+        _api.VersionLookup = (tenant, id, _) => { tenant.Should().Be(17); id.Should().Be(version.Id); reads++; return Task.FromResult(version); };
+        Services.GetRequiredService<NavigationManager>().NavigateTo($"/flows?tenantId=17&run={detail.Run.Id:D}");
+        var cut = Render<FlowsPage>();
+        await _dialogs.WaitForAssertionAsync(() => _dialogs.FindAll("[data-testid=flow-run-replay]").Should().ContainSingle());
+        await _dialogs.InvokeAsync(() => _dialogs.Find("[data-testid=flow-run-replay]").ClickAsync(new()));
+        await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-trace-player]").Should().ContainSingle());
+        var player = cut.Find("[data-testid=flow-trace-player]");
+        player.TextContent.Should().Contain(captured ? "Recorded playback" : "no captured node snapshots");
+        if (captured) player.TextContent.Should().Contain("Exact recorded output");
+        cut.FindComponent<FlowCanvas>().Instance.Adapter.Capture().Nodes[0].Name.Should().Be("Published captured trigger");
+        cut.FindAll("[data-testid=flow-dry-run-toggle]").Should().BeEmpty();
+        reads.Should().Be(2); _api.DryRunCalls.Should().Be(0); _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
+        cut.FindComponent<FlowCanvas>().Instance.Adapter.ExecutionCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Historical_playback_rejects_a_version_whose_graph_does_not_match_its_configuration_hash()
+    {
+        var version = Version(1, "Unverified immutable graph");
+        var definition = FlowEditorTests.Definition(); var now = DateTimeOffset.UtcNow;
+        var detail = new FlowRunDetailDto(new(Guid.NewGuid(), definition.Id, version.Id, Guid.NewGuid(), Guid.NewGuid(), FlowRunStatus.Succeeded, now, now),
+            new(Guid.NewGuid(), Guid.NewGuid(), "Recorded rule", "Recorded client", "cpu", "CPU", "warning", 95, null, now), []);
+        _api.RunLookup = (_, _, _) => Task.FromResult(detail);
+        _api.VersionLookup = (_, _, _) => Task.FromResult(version);
+        Services.GetRequiredService<NavigationManager>().NavigateTo($"/flows?tenantId=17&run={detail.Run.Id:D}");
+        var cut = Render<FlowsPage>();
+        await _dialogs.WaitForAssertionAsync(() => _dialogs.FindAll("[data-testid=flow-run-replay]").Should().ContainSingle());
+        await _dialogs.InvokeAsync(() => _dialogs.Find("[data-testid=flow-run-replay]").ClickAsync(new()));
+        await _dialogs.WaitForAssertionAsync(() => _dialogs.Find("[data-testid=flow-history-error]").TextContent.Should().Contain("could not be verified"));
+        cut.FindAll("[data-testid=flow-editor]").Should().BeEmpty();
+        cut.FindAll("[data-testid=flow-trace-player]").Should().BeEmpty();
+        _api.DryRunCalls.Should().Be(0); _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
     }
 
     private static FlowVersionDto Version(int number, string triggerName)

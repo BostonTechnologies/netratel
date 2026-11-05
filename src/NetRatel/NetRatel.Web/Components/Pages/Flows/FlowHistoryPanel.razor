@@ -28,6 +28,9 @@
     {
         <div class="history-result" data-testid="flow-run-result">
             <MudButton StartIcon="@Icons.Material.Filled.ArrowBack" OnClick="Back" data-testid="flow-history-back">Back to history</MudButton>
+            <MudButton id="flow-run-replay" StartIcon="@Icons.Material.Outlined.PlayCircle" OnClick="() => ReplayRun.InvokeAsync(detail)" Disabled="Busy" data-testid="flow-run-replay">Replay recorded run</MudButton>
+            @if (detail.Trace is null)
+            { <p class="history-hint">No node snapshots were captured for this run. Replay shows its immutable graph with unavailable node data.</p> }
             <div class="history-result-heading">
                 <div><span class="history-eyebrow">RUN RESULT</span><h3 id="flow-run-heading" tabindex="-1">@RunStatusLabel(detail.Run.Status)</h3><p>@detail.Run.Code · @(detail.Run.CompletedAtUtc?.ToUniversalTime().ToString("u") ?? "Not completed")</p></div>
                 <MudChip T="string" Color="@RunColor(detail.Run.Status)" Variant="Variant.Outlined" Icon="@RunIcon(detail.Run.Status)">@RunStatusLabel(detail.Run.Status)</MudChip>
@@ -129,6 +132,7 @@
     [Parameter] public EventCallback Reload { get; set; }
     [Parameter] public EventCallback<FlowVersionDto> ViewVersion { get; set; }
     [Parameter] public EventCallback<FlowRunSummaryDto> ViewRun { get; set; }
+    [Parameter] public EventCallback<FlowRunDetailDto> ReplayRun { get; set; }
     [Parameter] public EventCallback Back { get; set; }
     private string? _focusedTarget;
     private bool _disposed;

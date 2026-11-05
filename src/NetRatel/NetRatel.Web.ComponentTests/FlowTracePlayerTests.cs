@@ -56,4 +56,21 @@ public sealed class FlowTracePlayerTests : AsyncBunitContext
         cut.Find("[data-testid=flow-trace-unavailable]").TextContent.Should().Contain("no captured node snapshots");
         cut.FindAll("[data-trace-panel]").Should().BeEmpty();
     }
+    [Fact]
+    public void Unsupported_trace_format_and_mismatched_graph_schema_never_expose_node_data()
+    {
+        var trace = new FlowTraceDto(2, "same-hash", FlowTraceProvenance.Recorded,
+            [new(0, Guid.NewGuid(), "Mismatched node", FlowTraceStepStatus.Completed, "succeeded", FlowTraceProvenance.Recorded,
+                new(FlowTraceDataState.Present) { Value = JsonSerializer.SerializeToElement("Mismatched snapshot") },
+                new(FlowTraceDataState.Missing))]);
+        var cut = Render<FlowTracePlayer>(p => p.Add(x => x.Trace, trace).Add(x => x.ContextKey, "immutable-run")
+            .Add(x => x.ExpectedConfigurationHash, "same-hash").Add(x => x.ExpectedGraphSchemaVersion, 1));
+        cut.FindAll("[data-testid=flow-trace-stale]").Should().ContainSingle();
+        cut.Markup.Should().NotContain("Mismatched snapshot").And.NotContain("Mismatched node");
+        cut.Render(p => p.Add(x => x.Trace, trace with { SchemaVersion = 2 }).Add(x => x.ContextKey, "future-format")
+            .Add(x => x.ExpectedGraphSchemaVersion, 2));
+        cut.Find("[data-testid=flow-trace-unsupported]").TextContent.Should().Contain("trace format is unsupported");
+        cut.FindAll("[data-trace-panel]").Should().BeEmpty();
+    }
+
 }

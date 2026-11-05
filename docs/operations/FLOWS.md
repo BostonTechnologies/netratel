@@ -10,6 +10,8 @@ The compact toolbar includes a searchable, collapsible node library and **Fullsc
 
 Preview sample data opens in a modal dialog and does not reduce the canvas height. Closing the dialog returns focus to Preview. A captured trace opens a floating playback inspector with play/pause, previous/next, restart, speed and per-node Input/Output/Outcome. Selecting a node also selects its captured step. Pure nodes expose calculated values; the trace stops at the first external action and labels its output unavailable. No AI findings or action success is invented. Large snapshots are explicit bounded text excerpts, and missing, captured null and captured empty values remain distinct.\n\nEvaluation uses the current draft and never saves, publishes or dispatches an action. Editing the draft or changing tenant/flow removes its old trace. Playback moves through captured data entirely in the browser, respects reduced motion, and pauses while hidden or offscreen; backward stepping performs no evaluation or network command.
 
+From a run result, choose **Replay recorded run** to inspect its exact immutable published graph. The viewer verifies the graph's configuration hash and presents stored node snapshots without evaluating the current draft. Historical runs without node snapshots show unavailable data. An unsupported trace format, a changed graph hash or a different graph schema cannot display its snapshots as current data.
+
 The initial catalogue is deliberately small:
 
 1. Alert raised.

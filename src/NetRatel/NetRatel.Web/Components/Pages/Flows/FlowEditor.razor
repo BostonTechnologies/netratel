@@ -98,11 +98,18 @@
             }
             <MudDropZone T="FlowNodeKind" Identifier="canvas" OnlyZone="true" Class="flow-canvas-column">
                 <FlowCanvas @key="_adapter" @ref="_canvas" Adapter="_adapter" ReadOnly="@(ReadOnly || !CanEdit || _busy)" SelectedNodeId="_selected" Selected="SelectNodeAsync" Settings="OpenPropertiesAsync" Delete="RequestRemoveAsync" Changed="CheckDirty" Ready="CanvasReady" InitialViewport="_initialViewport" />
-                @if (_preview?.Trace is { } trace && _previewGraphHash is not null)
+                @if (ReadOnly && RecordedRunId is { } runId)
+                {
+                    <div class="flow-playback-overlay">
+                        <FlowTracePlayer @key="runId" Trace="RecordedTrace" ContextKey="@($"{Definition.TenantId}:{Definition.Id:N}:run:{runId:N}:{RecordedConfigurationHash}")"
+                            ExpectedConfigurationHash="RecordedConfigurationHash" ExpectedGraphSchemaVersion="Definition.Draft.SchemaVersion" ScopeId="_shellId" />
+                    </div>
+                }
+                else if (_preview?.Trace is { } trace && _previewGraphHash is not null)
                 {
                     <div class="flow-playback-overlay">
                         <FlowTracePlayer @key="trace" Trace="trace" ContextKey="@($"{Definition.TenantId}:{Definition.Id:N}:{_generation}:{_previewGraphHash}")"
-                            ExpectedConfigurationHash="_previewGraphHash" ScopeId="_shellId" />
+                            ExpectedConfigurationHash="_previewGraphHash" ExpectedGraphSchemaVersion="Definition.Draft.SchemaVersion" ScopeId="_shellId" />
                     </div>
                 }
             </MudDropZone>
@@ -227,6 +234,9 @@
     [Parameter] public bool CanPublish { get; set; }
     [Parameter] public bool ReadOnly { get; set; }
     [Parameter] public int VersionNumber { get; set; }
+    [Parameter] public Guid? RecordedRunId { get; set; }
+    [Parameter] public FlowTraceDto? RecordedTrace { get; set; }
+    [Parameter] public string? RecordedConfigurationHash { get; set; }
     [Parameter] public EventCallback<FlowDefinitionDto> Saved { get; set; }
     [Parameter] public EventCallback Closed { get; set; }
     [Parameter] public EventCallback<bool> DirtyChanged { get; set; }
