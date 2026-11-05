@@ -26,6 +26,12 @@ public sealed partial class FlowPersistenceService
             return new(FlowWriteDisposition.ConnectorDenied, Code: "execution-authority-revoked");
         var trigger = graph.Nodes.Single(node => FlowNodeCatalogue.IsTrigger(node.Kind));
         var sources = trigger.ExecutionTrigger?.Sources;
+        // Native Request records currently have trusted Job backing only. Script executions
+        // produce their own Script facts; a Request-only selector must not promise that source.
+        if (trigger.ExecutionTrigger is { Scope: FlowExecutionScope.SelectedDefinitions } subscription &&
+            !subscription.Sources.Contains(FlowExecutionSourceKind.Script) &&
+            subscription.DefinitionReferences?.Any(reference => reference.SourceKind == FlowExecutionSourceKind.Script) == true)
+            return new(FlowWriteDisposition.Invalid, Code: "execution-trigger-source-unavailable");
         var access = services.GetRequiredService<IEffectiveAccessService>();
         var claims = new List<Claim> { new("netratel_principal_id", authority.PrincipalId) };
         if (authority.IntegrationCredentialId is { } credential) claims.Add(new("netratel_integration_credential_id", credential));

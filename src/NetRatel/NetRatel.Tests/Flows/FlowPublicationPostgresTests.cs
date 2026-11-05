@@ -25,6 +25,60 @@ public sealed class FlowPublicationPostgresTests(PostgreSqlPersistenceFixture po
     private const string Root = "/api/v1/tenants/17/flows";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
+    [Theory]
+    [InlineData("request-script", false)]
+    [InlineData("script-request", true)]
+    [InlineData("legacy-request", true)]
+    public async Task Http_publication_checks_native_source_capability_without_reinterpreting_legacy_filters(string mode, bool supported)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var ct = deadline.Token;
+        var grants = new PublicationAuthority(scriptSource: true);
+        using var host = await FlowEndpointTests.HostAsync(await postgres.CreateDatabaseAsync(ct), grants, grants);
+        var client = host.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new("Test", "all");
+        client.DefaultRequestHeaders.Add("X-NetRatel-Flow-Schema", "2");
+        var createdResponse = await client.PostAsJsonAsync(Root, new FlowCreateRequest("Synthetic native source capability"), ct);
+        Assert.Equal(HttpStatusCode.OK, createdResponse.StatusCode);
+        var created = (await createdResponse.Content.ReadFromJsonAsync<FlowDefinitionDto>(ct))!;
+        var graph = TypedGraph();
+        var subscription = new FlowExecutionTriggerSettingsDto(
+            mode == "script-request" ? [FlowExecutionSourceKind.Script, FlowExecutionSourceKind.Request] : [FlowExecutionSourceKind.Request],
+            [FlowExecutionOutcome.Failed], FlowExecutionScope.SelectedDefinitions)
+        {
+            DefinitionReferences = mode == "legacy-request" ? null : [new(FlowExecutionSourceKind.Script, "42")],
+            DefinitionIds = mode == "legacy-request" ? ["42"] : null
+        };
+        graph = graph with { Nodes = graph.Nodes.Select(node => node.Kind == FlowNodeKind.ExecutionEvent
+            ? node with { ExecutionTrigger = subscription } : node).ToArray() };
+        // The generic contract remains useful for pure simulation and future producer capabilities.
+        Assert.True(FlowGraphV2Validator.ValidateComplete(graph).Valid);
+        var savedResponse = await client.PutAsJsonAsync($"{Root}/{created.Id}/draft",
+            new FlowSaveDraftRequest(created.Revision, created.Name, graph), ct);
+        Assert.Equal(HttpStatusCode.OK, savedResponse.StatusCode);
+        var saved = (await savedResponse.Content.ReadFromJsonAsync<FlowDefinitionDto>(ct))!;
+        var publication = await client.PostAsJsonAsync($"{Root}/{created.Id}/publish",
+            new FlowRevisionRequest(saved.Revision), ct);
+        Assert.Equal(supported ? HttpStatusCode.OK : HttpStatusCode.BadRequest, publication.StatusCode);
+        if (supported)
+        {
+            var version = (await publication.Content.ReadFromJsonAsync<FlowVersionDto>(ct))!;
+            Assert.Equal(FlowJsonCanonical.Serialize(subscription),
+                FlowJsonCanonical.Serialize(version.Graph.Nodes.Single(node => node.Kind == FlowNodeKind.ExecutionEvent).ExecutionTrigger));
+        }
+        else
+        {
+            using var error = JsonDocument.Parse(await publication.Content.ReadAsStringAsync(ct));
+            Assert.Equal("execution-trigger-source-unavailable", error.RootElement.GetProperty("code").GetString());
+        }
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        Assert.Equal(supported ? 1 : 0, await db.FlowVersions.CountAsync(ct));
+        Assert.Equal(0, await db.FlowRuns.CountAsync(ct));
+        Assert.Equal(0, await db.FlowActions.CountAsync(ct));
+        Assert.Equal(0, await db.JobRuns.CountAsync(ct));
+    }
+
     [Fact]
     public async Task Http_published_typed_graph_keeps_one_hash_through_jsonb_reload_pure_execution_and_recorded_API()
     {
@@ -192,7 +246,7 @@ public sealed class FlowPublicationPostgresTests(PostgreSqlPersistenceFixture po
 
     // The owning test is about publication/hash persistence. Exact synthetic tenant/principal grants
     // are the explicit authority seam; source/admission security has separate real-permission coverage.
-    private sealed class PublicationAuthority : IEffectiveAccessService, IFlowExecutionAuthorityVerifier
+    private sealed class PublicationAuthority(bool scriptSource = false) : IEffectiveAccessService, IFlowExecutionAuthorityVerifier
     {
         public int MonitoringReads;
         public Task<bool> AuthorizeAsync(int tenantId, FlowExecutionAuthorityDto authority, CancellationToken cancellationToken = default) =>
@@ -201,8 +255,9 @@ public sealed class FlowPublicationPostgresTests(PostgreSqlPersistenceFixture po
         {
             if (permission == NetRatelPermissions.MonitoringRead) Interlocked.Increment(ref MonitoringReads);
             return Task.FromResult(tenantId == 17 && principal.FindFirstValue("netratel_principal_id") == FlowTestData.Authority.PrincipalId &&
-                permission is NetRatelPermissions.FlowRead or NetRatelPermissions.FlowEdit or NetRatelPermissions.FlowPublish or
-                    NetRatelPermissions.FlowExecute or NetRatelPermissions.JobManagement);
+                (permission is NetRatelPermissions.FlowRead or NetRatelPermissions.FlowEdit or NetRatelPermissions.FlowPublish or
+                    NetRatelPermissions.FlowExecute or NetRatelPermissions.JobManagement ||
+                    scriptSource && permission == NetRatelPermissions.ScriptExecute));
         }
         public Task<int[]?> GetAuthorizedTenantIdsAsync(ClaimsPrincipal principal, string permission, CancellationToken cancellationToken = default) =>
             Task.FromResult<int[]?>([17]);
