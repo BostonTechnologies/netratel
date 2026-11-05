@@ -44,7 +44,8 @@ public sealed class ExecutionLifecycleSubscriptionWorker(IServiceScopeFactory sc
                 x.Type == FlowExecutionSubscriptionLimits.OutboxType && x.Status == OutboxStatuses.Pending &&
                 (x.NextAttemptUtc == null || x.NextAttemptUtc <= now) &&
                 (x.LockedUntilUtc == null || x.LockedUntilUtc <= now))
-            .OrderBy(x => x.OccurredUtc).ThenBy(x => x.Id)
+            // Deferrals move behind newly due work; old parent/capacity waits cannot own every batch.
+            .OrderBy(x => x.NextAttemptUtc ?? x.OccurredUtc).ThenBy(x => x.OccurredUtc).ThenBy(x => x.Id)
             .Take(FlowExecutionSubscriptionLimits.MaximumBatch).Select(x => x.Id).ToArrayAsync(ct);
         foreach (var id in candidates)
         {
@@ -93,7 +94,10 @@ public sealed class ExecutionLifecycleSubscriptionWorker(IServiceScopeFactory sc
                 }
                 if (await AwaitsKnownParentAsync(db, trigger, fact, ct))
                 {
-                    await DeferAsync(owned, row.Attempts, "execution-parent-result-pending", Poll, ct);
+                    if (fact.OccurredAtUtc <= clock.GetUtcNow() - FlowLimits.MaximumRetryAge)
+                        await FinishAsync(owned, OutboxStatuses.Failed, "flow-event-expired", ct);
+                    else
+                        await DeferAsync(owned, row.Attempts, "execution-parent-result-pending", Poll, ct);
                     continue;
                 }
                 var references = await ContributorsAsync(db, intent, ct);

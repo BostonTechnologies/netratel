@@ -89,6 +89,23 @@ public sealed class KeyedScriptExecutionService(OrchestratorDbContext db, IExecu
         return await AdmitPreparedAsync(new(request, JsonSerializer.Serialize(invocation), outputPolicy), lease, cancellationToken);
     }
 
+    /// <summary>Retries only a provably unstarted protected admission, preserving its exact native payload and key.</summary>
+    public async Task<KeyedScriptAdmissionResult> ResumeAsync(ExecutionAdmissionIdentity identity, string executionId,
+        FlowRunLease lease, CancellationToken cancellationToken = default)
+    {
+        identity.Validate();
+        var binding = await admissions.FindByExecutionAsync(ExecutionAdmissionKind.LibraryScript, executionId, cancellationToken);
+        if (binding is null || binding.Identity != identity || binding.Kind != ExecutionAdmissionKind.LibraryScript)
+            throw new ExecutionAdmissionDeniedException("The protected script execution binding is unavailable.");
+        var submitted = JsonSerializer.Deserialize<Submission>(binding.PayloadJson, Json)
+            ?? throw new InvalidOperationException("The protected script admission is unavailable.");
+        if (submitted.Request.Identity != identity)
+            throw new ExecutionAdmissionDeniedException("The protected script execution identity differs.");
+        Validate(submitted.Request);
+        await authority.RequireScriptAsync(identity, submitted.Request.Snapshot.Script.Id, submitted.Request.AgentId, cancellationToken);
+        return await AdmitPreparedAsync(submitted, lease, cancellationToken);
+    }
+
     private async Task<KeyedScriptAdmissionResult> AdmitPreparedAsync(Submission proposal, FlowRunLease? lease,
         CancellationToken cancellationToken)
     {

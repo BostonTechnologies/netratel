@@ -17,6 +17,7 @@ public static partial class FlowEndpoints
         var group = app.MapGroup("/api/v1/tenants/{tenantId:int}/flows").RequireAuthorization().WithTags("Flows");
         group.MapGet("", ListAsync); group.MapPost("", CreateAsync);
         group.MapGet("/template", TemplateAsync); group.MapGet("/connectors", ConnectorsAsync);
+        group.MapGet("/schema-capabilities", SchemaCapabilitiesAsync);
         group.MapGet("/templates", TemplatesAsync); group.MapPost("/from-template", CreateFromTemplateAsync);
         group.MapGet("/versions/{versionId:guid}", VersionByIdAsync); group.MapGet("/runs/{runId:guid}", RunByIdAsync);
         group.MapPost("/validate", ValidateAsync); group.MapPost("/dry-run", DryRunAsync);
@@ -136,7 +137,8 @@ public static partial class FlowEndpoints
     {
         var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied;
         denied = await PromptAccessAsync(tenantId, UsesPrompts(graph), http, access, ct).ConfigureAwait(false); if (denied is not null) return denied;
-        var validation = FlowGraphValidator.ValidateComplete(graph);
+        var validation = graph.SchemaVersion == FlowGraphV2Limits.SchemaVersion
+            ? FlowGraphV2Validator.ValidateComplete(graph) : FlowGraphValidator.ValidateComplete(graph);
         if (validation.Valid && !await PromptReferencesAvailableAsync(tenantId, graph, http, ct).ConfigureAwait(false))
             return Results.Ok(new FlowValidationResultDto(false, [new("ai-prompt-unavailable")]));
         return Results.Ok(validation);

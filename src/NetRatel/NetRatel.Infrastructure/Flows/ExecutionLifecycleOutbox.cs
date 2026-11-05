@@ -363,7 +363,7 @@ public static class ExecutionLifecycleOutbox
         {
             StartedAtUtc = row.CreatedAtUtc <= row.UpdatedAtUtc ? row.CreatedAtUtc : null,
             CompletedAtUtc = row.UpdatedAtUtc,
-            RequestKind = Bound(row.SourceSystem, FlowExecutionEventLimits.MaximumIdentifierLength),
+            RequestKind = OptionalIdentifier(row.SourceSystem),
             CorrelationId = "request:" + id,
             ReasonCode = unprovedTimeout ? "request_timeout_evidence_unavailable" : "request_" + outcome.ToString().ToLowerInvariant(),
             Reason = Bound(row.ResultMessage, 512),
@@ -780,6 +780,12 @@ public static class ExecutionLifecycleOutbox
     private static string? PositiveDecimal(string? value) => ulong.TryParse(value, NumberStyles.None,
         CultureInfo.InvariantCulture, out var id) && id > 0 ? id.ToString(CultureInfo.InvariantCulture) : null;
     private static string Decimal(long value) => value.ToString(CultureInfo.InvariantCulture);
+    // Historical source-system labels can exceed the optional filter contract. Keep the native
+    // record intact and omit an unavailable filter value rather than truncate it into another kind.
+    private static string? OptionalIdentifier(string? value) => !string.IsNullOrWhiteSpace(value) &&
+        FlowGraphValidator.IsBoundedText(value, FlowExecutionEventLimits.MaximumIdentifierLength) &&
+        !value.Any(char.IsControl) ? value : null;
+
     private static string? Bound(string? value, int limit)
     {
         if (value is null) return null;

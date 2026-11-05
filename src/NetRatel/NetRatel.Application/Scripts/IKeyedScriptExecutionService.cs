@@ -17,6 +17,9 @@ public sealed record KeyedScriptAdmissionResult(ExecutionAdmissionBinding Bindin
     bool DispatchUncertain = false, bool AuthorityDenied = false);
 public interface IKeyedScriptExecutionService
 {
+    Task<KeyedScriptAdmissionResult> ResumeAsync(ExecutionAdmissionIdentity identity, string executionId, FlowRunLease lease,
+        CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("Resuming protected script admission is unavailable.");
     Task<KeyedScriptAdmissionResult> StartKeyedAsync(KeyedScriptAdmissionRequest request,
         CancellationToken cancellationToken = default);
     Task<KeyedScriptAdmissionResult> StartReplayAsync(ExecutionAdmissionIdentity identity, FlowRunLease lease,

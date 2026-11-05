@@ -288,7 +288,7 @@ public static class FlowGraphV2Validator
             FlowInputSource.SecretReference => Text(binding.Path, 256) && binding.NodeId is null && binding.Literal is null && binding.DataType == FlowDataType.SecretReference,
             FlowInputSource.Literal => binding.Path is null && binding.NodeId is null && binding.Literal is { } value &&
                 value.ValueKind != JsonValueKind.Undefined && binding.DataType != FlowDataType.SecretReference &&
-                Encoding.UTF8.GetByteCount(value.GetRawText()) <= FlowGraphV2Limits.MaximumBindingBytes && JsonType(value) == binding.DataType,
+                FlowJsonValueBounds.Valid(value, FlowGraphV2Limits.MaximumBindingBytes) && JsonType(value) == binding.DataType,
             _ => false
         };
     }
@@ -296,7 +296,7 @@ public static class FlowGraphV2Validator
     private static bool ValidPredicateValue(FlowPredicateDto predicate) =>
         predicate.Input is not null && JsonType(predicate.Value) == predicate.Input.DataType &&
         predicate.Value.ValueKind is JsonValueKind.String or JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False &&
-        Encoding.UTF8.GetByteCount(predicate.Value.GetRawText()) <= FlowGraphV2Limits.MaximumBindingBytes &&
+        FlowJsonValueBounds.Valid(predicate.Value, FlowGraphV2Limits.MaximumBindingBytes) &&
         (predicate.Input.DataType == FlowDataType.Number ||
             predicate.Comparison is FlowComparison.Equal or FlowComparison.NotEqual);
     private static FlowDataType? JsonType(JsonElement value) => value.ValueKind switch
