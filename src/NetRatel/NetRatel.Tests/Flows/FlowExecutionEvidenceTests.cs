@@ -74,6 +74,8 @@ public sealed class FlowExecutionEvidenceTests
             [rerun with { TerminalEvent = terminal with { RawStatus = "Running" } }]));
         Assert.StartsWith("Unknown", FlowExecutionEvidenceFormatter.RecoveryDisposition(original with
             { Replay = original.Replay! with { Supported = false } }, RunId, [rerun]));
+        Assert.StartsWith("Unknown", FlowExecutionEvidenceFormatter.RecoveryDisposition(original with
+            { Outcome = FlowExecutionOutcome.Unknown, RawStatus = "DeliveryUnknown" }, RunId, [rerun]));
     }
 
     [Fact]
@@ -82,6 +84,12 @@ public sealed class FlowExecutionEvidenceTests
         var original = Source();
         Assert.Contains("Unavailable (not recorded)", FlowExecutionEvidenceFormatter.DescribeOriginal(original));
         Assert.Contains("Empty (recorded)", FlowExecutionEvidenceFormatter.DescribeOriginal(original with { Results = [] }));
+        var references = original with { Results = Enumerable.Range(1, 5).Select(x =>
+            new FlowExecutionDataReferenceDto("diagnostic", "synthetic-" + x, Available: true)).ToArray() };
+        var referenceText = FlowExecutionEvidenceFormatter.DescribeOriginal(references);
+        Assert.Contains("source reports available; access checked separately", referenceText);
+        Assert.Contains("Additional result references omitted from this description", referenceText);
+        Assert.DoesNotContain("retained in flow history", referenceText);
         var ai = Ai(original) with { Status = FlowAiResultStatus.Timeout, Summary = "Unconfirmed successful repair" };
         var result = FlowExecutionEvidenceFormatter.Map(new("{definitionName}", "Original outcome {outcome}"), original, 17, RunId, VersionId, ai);
         Assert.Contains("Outcome: Timeout", result.Description);

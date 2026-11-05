@@ -113,7 +113,7 @@ public static class FlowExecutionEvidenceFormatter
                 text.Append("\n- ").Append(Safe(reference.Kind, 64)).Append(": ").Append(Safe(reference.Id, 128))
                     .Append(reference.Available ? " (source reports available; access checked separately)" : " (source unavailable)")
                     .Append(reference.Truncated ? " (truncated)" : "");
-            if (original.Results.Count > 4) text.Append("\n[Additional result references omitted; retained in flow history.]");
+            if (original.Results.Count > 4) text.Append("\n[Additional result references omitted from this description.]");
         }
         return Clip(text.ToString(), OriginalBudget);
     }
@@ -186,7 +186,8 @@ public static class FlowExecutionEvidenceFormatter
     {
         var replay = original.Replay;
         var terminal = attempt.TerminalEvent;
-        return replay is { Supported: true } && terminal is not null &&
+        return (original.Outcome is FlowExecutionOutcome.Failed or FlowExecutionOutcome.TimedOut) &&
+            replay is { Supported: true } && terminal is not null &&
             FlowExecutionEventValidator.Validate(terminal).Valid && terminal.TenantId == original.TenantId &&
             terminal.Provenance == "authoritative-transition" && terminal.Outcome == FlowExecutionOutcome.Succeeded &&
             terminal.CompletedAtUtc is not null && terminal.EventId != original.EventId &&
