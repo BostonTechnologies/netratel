@@ -85,9 +85,10 @@
         {
             var old = _handle; _handle = null;
             if (old is not null) { await old.InvokeVoidAsync("dispose"); await old.DisposeAsync(); }
-            if (Stale || Trace is not { Steps.Count: > 0 }) return;
+            if (_disposed || generation != _generation || Stale || Trace is not { Steps.Count: > 0 }) return;
+            var imported = _module is null;
             var module = _module ?? await JS.InvokeAsync<IJSObjectReference>("import", "./js/flows-playback.js");
-            if (_disposed || generation != _generation) { if (_module is null) await module.DisposeAsync(); return; }
+            if (_disposed || generation != _generation) { if (imported) await module.DisposeAsync(); return; }
             _module = module;
             var handle = await module.InvokeAsync<IJSObjectReference?>("attach", _id, ContextKey);
             if (_disposed || generation != _generation)
