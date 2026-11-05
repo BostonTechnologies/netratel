@@ -5,7 +5,7 @@ export function attach(id, reference) {
     detach(id);
     const panel = document.getElementById(id);
     if (!panel) return;
-    let gesture = null, routeDrag = null, routePreview = null, frame = 0, disposed = false, suppressClick = false, keyboardCancelled = false;
+    let gesture = null, routeDrag = null, routePreview = null, frame = 0, disposed = false, suppressClick = false, keyboardCancelled = false, idleTarget = null;
     const ghost = () => panel.querySelector('[data-testid="flow-virtual-link"]');
     const message = () => panel.parentElement?.querySelector('[data-testid="flow-connection-message"]');
     const portAt = event => document.elementFromPoint(event.clientX, event.clientY)?.closest('.flow-port');
@@ -137,18 +137,35 @@ export function attach(id, reference) {
             const point = localPoint(event.clientX, event.clientY);
             if (point) routePreview = { group: routeDrag.group, index: routeDrag.index, ...point };
             if (!frame) frame = requestAnimationFrame(draw);
+            event.stopPropagation();
             return;
         }
-        if (!gesture || gesture.pointerId !== event.pointerId) return;
-        gesture.x = event.clientX; gesture.y = event.clientY;
-        gesture.moved ||= Math.hypot(event.clientX - gesture.startX, event.clientY - gesture.startY) > 4;
-        const target = portAt(event);
-        if (message()) message().textContent = target && panel.contains(target)
-            ? gesture.targets.has(target.dataset.portNode) && target.dataset.portDirection === 'input'
-                ? 'Release to connect these ports.'
-                : 'This input is incompatible, occupied, or would create a cycle.'
-            : 'Drag to a highlighted input. Escape cancels.';
-        if (!frame) frame = requestAnimationFrame(draw);
+        if (gesture) {
+            if (gesture.pointerId !== event.pointerId) return;
+            gesture.x = event.clientX; gesture.y = event.clientY;
+            gesture.moved ||= Math.hypot(event.clientX - gesture.startX, event.clientY - gesture.startY) > 4;
+            const target = portAt(event);
+            if (message()) message().textContent = target && panel.contains(target)
+                ? gesture.targets.has(target.dataset.portNode) && target.dataset.portDirection === 'input'
+                    ? 'Release to connect these ports.'
+                    : 'This input is incompatible, occupied, or would create a cycle.'
+                : 'Drag to a highlighted input. Escape cancels.';
+            if (!frame) frame = requestAnimationFrame(draw);
+            event.stopPropagation();
+            return;
+        }
+        // Native mouse pan uses document mousemove, independently of Blazor's pointer route.
+        // Keep actual node drags and touch input on that route; transient moves stay client-side.
+        if (event.pointerType === 'mouse' && panel.querySelector('.veloxdev-wf-scroll')?.style.cursor === 'grabbing') {
+            idleTarget = null; event.stopPropagation(); return;
+        }
+        if (!panel.contains(event.target)) { idleTarget = null; return; }
+        if (event.buttons || !['mouse', 'pen'].includes(event.pointerType)) { idleTarget = null; return; }
+        const target = event.target.closest?.('[data-veloxdev-slot-id],[data-veloxdev-node-id],[data-veloxdev-link-id]') ?? panel;
+        // A changed target still reaches native hit-testing (including hover then Delete).
+        // Repeated hover frames on the same target need no server event or render batch.
+        if (target === idleTarget) event.stopPropagation();
+        else idleTarget = target;
     };
     const up = event => {
         if (routeDrag) {
@@ -245,7 +262,7 @@ export function attach(id, reference) {
     panel.addEventListener('mousedown', mouseGuard, true);
     panel.addEventListener('click', clickGuard, true);
     panel.addEventListener('touchstart', touch, { capture: true, passive: false });
-    document.addEventListener('pointermove', move);
+    window.addEventListener('pointermove', move, true);
     document.addEventListener('pointerup', up);
     document.addEventListener('pointercancel', cancelPointer);
     document.addEventListener('lostpointercapture', cancelPointer);
@@ -261,7 +278,7 @@ export function attach(id, reference) {
         document.removeEventListener('veloxdev-wf-layout-changed', layout); document.removeEventListener('fullscreenchange', fullscreen); routeDrag = null; routePreview = null;
         panel.removeEventListener('pointerdown', down, true); panel.removeEventListener('mousedown', mouseGuard, true); panel.removeEventListener('click', clickGuard, true);
         panel.removeEventListener('touchstart', touch, true);
-        document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up);
+        window.removeEventListener('pointermove', move, true); document.removeEventListener('pointerup', up);
         document.removeEventListener('pointercancel', cancelPointer); document.removeEventListener('lostpointercapture', cancelPointer);
         window.removeEventListener('keydown', keys, true); window.removeEventListener('blur', blur);
         ghost()?.setAttribute('hidden', 'hidden');
