@@ -108,7 +108,10 @@ Execution facts use `FlowExecutionEventDto` schema one with exact source, normal
 definition/execution/attempt identity, target, timestamps, causation and bounded evidence references.
 Execution identifiers remain strings across JavaScript; numeric IDs use decimal text without number conversion. The native fact budget is 16 KiB; the
 source-aware runtime wrapper is 24 KiB. These limits are separate from the graph, prepared-action
-and trace budgets. Replay descriptors reference server-owned protected original inputs/definition/target;
+and trace budgets. `occurredAt` records the source transition/terminal-ready selection boundary under the durable
+subscription locks and live database clock. Native `startedAt`/`completedAt` remain separate: a delayed
+projection can commit after enable even when native completion was earlier.
+Replay descriptors reference server-owned protected original inputs/definition/target;
 they contain no credentials and confer no authority. The immutable run envelope retains up to 16
 contributing source-event IDs and an omitted-default `sourceEventIdsTruncated` flag for additional
 references known at admission. Later delivery receipts do not rewrite this flag or snapshot.
@@ -156,7 +159,9 @@ performs zero script/job admissions, AI turns, notifications and incident writes
 There is no browser/API execute route. Durable native transitions commit immutable source facts and
 selected subscription intents; the trusted backend ingress consumes their exact IDs and rechecks
 current source authority. Combined subscriptions aggregate only the configured version/trigger,
-accepted attempt and outcome, retaining contributing facts. Request-only failures do not need a job.
+accepted attempt and outcome, retaining contributing facts. A proven job-backed request or script
+step in an explicit combined aggregate waits for its parent terminal-ready result, even when Job is
+not selected as a source. Request-only failures do not need a job.
 Unknown/DeliveryUnknown is distinct from definitive failure or authoritative timeout.
 See [Flows](../operations/FLOWS.md) for durable admission, replay, recovery and receiver behavior.
 
