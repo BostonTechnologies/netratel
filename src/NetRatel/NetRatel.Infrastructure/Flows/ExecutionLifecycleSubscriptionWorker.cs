@@ -163,7 +163,7 @@ public sealed class ExecutionLifecycleSubscriptionWorker(IServiceScopeFactory sc
             select control.RunId).AnyAsync(ct);
     }
 
-    private static async Task<IReadOnlyList<Guid>> ContributorsAsync(OrchestratorDbContext db,
+    internal static async Task<IReadOnlyList<Guid>> ContributorsAsync(OrchestratorDbContext db,
         FlowExecutionSubscriptionDeliveryDto delivery, CancellationToken ct)
     {
         var tenant = delivery.TenantId.ToString(CultureInfo.InvariantCulture);

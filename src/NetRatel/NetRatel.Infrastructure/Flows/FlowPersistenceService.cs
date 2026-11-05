@@ -212,6 +212,6 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
     private static FlowVersionDto Version(FlowVersionRecord row) => new(row.Id, row.FlowId, row.TenantId, row.VersionNumber, Parse<FlowGraphDto>(row.GraphJson), row.ConfigurationHash, row.PublishedBy, row.PublishedAtUtc);
     private static FlowRunSummaryDto Summary(FlowRunRecord row) => new(row.Id, row.FlowId, row.FlowVersionId, row.EventId, row.OccurrenceId, row.Status, row.CreatedAtUtc, row.CompletedAtUtc, row.Code);
     private static async Task<IDbContextTransaction?> BeginAsync(OrchestratorDbContext db, CancellationToken ct) => db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct).ConfigureAwait(false) : null;
-    private static async Task TenantLockAsync(OrchestratorDbContext db, int tenantId, CancellationToken ct)
-    { if (db.Database.IsNpgsql()) await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({733450001}, {tenantId})", ct).ConfigureAwait(false); }
+    private static Task TenantLockAsync(OrchestratorDbContext db, int tenantId, CancellationToken ct) =>
+        FlowTenantTransactionLock.AcquireAsync(db, tenantId, ct);
 }
