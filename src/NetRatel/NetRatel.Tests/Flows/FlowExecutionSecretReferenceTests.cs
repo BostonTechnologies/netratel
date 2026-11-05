@@ -41,6 +41,21 @@ public sealed class FlowExecutionSecretReferenceTests
         }
     }
 
+    [Fact]
+    public void JSONB_property_reordering_does_not_change_protected_admission_semantics_after_reference_merge()
+    {
+        var (node, pin) = Definition();
+        const string first = """{"z":{"longId":"18446744073709551615","flag":false,"missing":null},"a":[{"second":2,"first":1}]}""";
+        const string reloaded = """{"a":[{"first":1,"second":2}],"z":{"missing":null,"flag":false,"longId":"18446744073709551615"}}""";
+        var expected = FlowExecutionSecretReferences.MergeInputs(node, pin, first);
+        FlowExecutionSecretReferences.MergeInputs(node, pin, reloaded).Should().Be(expected);
+        using var actual = JsonDocument.Parse(expected);
+        actual.RootElement.GetProperty("vault").GetString().Should().Be("SYNTHETIC_FLOW_TOKEN");
+        actual.RootElement.GetProperty("z").GetProperty("longId").GetString().Should().Be("18446744073709551615");
+        actual.RootElement.GetProperty("z").GetProperty("flag").GetBoolean().Should().BeFalse();
+        actual.RootElement.GetProperty("z").GetProperty("missing").ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
     private static (FlowNodeDto Node, FlowPinnedExecutionDefinition Pin) Definition()
     {
         var now = DateTimeOffset.UtcNow; var nodeId = Guid.NewGuid();

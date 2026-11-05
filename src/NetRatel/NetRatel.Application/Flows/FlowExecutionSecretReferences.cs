@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text;
 using System.Text.Json;
 using NetRatel.Shared.Contracts.Flows;
@@ -15,7 +16,6 @@ public static class FlowExecutionSecretReferences
     public static string MergeInputs(FlowNodeDto node, FlowPinnedExecutionDefinition pin, string inputsJson)
     {
         var references = References(node, pin);
-        if (references.Count == 0) return inputsJson;
         using var document = JsonDocument.Parse(inputsJson);
         if (document.RootElement.ValueKind != JsonValueKind.Object || Encoding.UTF8.GetByteCount(inputsJson) > 131072)
             throw new ArgumentException("Resolved execution inputs must be a bounded object.");
@@ -26,10 +26,37 @@ public static class FlowExecutionSecretReferences
         foreach (var reference in references)
             if (!values.TryAdd(reference.Key, JsonSerializer.SerializeToElement(reference.Value)))
                 throw new ArgumentException("A reference input cannot be replaced by a resolved or literal value.");
-        var json = JsonSerializer.Serialize(values);
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
+            WriteCanonical(writer, JsonSerializer.SerializeToElement(values));
+        var json = Encoding.UTF8.GetString(buffer.WrittenSpan);
         if (values.Count > 128 || Encoding.UTF8.GetByteCount(json) > 131072)
             throw new ArgumentException("Resolved execution inputs exceed their bound.");
         return json;
+    }
+
+    private static void WriteCanonical(Utf8JsonWriter writer, JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.Object)
+        {
+            writer.WriteStartObject();
+            var properties = value.EnumerateObject().OrderBy(property => property.Name, StringComparer.Ordinal).ToArray();
+            if (properties.Select(property => property.Name).Distinct(StringComparer.Ordinal).Count() != properties.Length)
+                throw new ArgumentException("Execution input objects cannot contain duplicate properties.");
+            foreach (var property in properties)
+            {
+                writer.WritePropertyName(property.Name);
+                WriteCanonical(writer, property.Value);
+            }
+            writer.WriteEndObject();
+        }
+        else if (value.ValueKind == JsonValueKind.Array)
+        {
+            writer.WriteStartArray();
+            foreach (var item in value.EnumerateArray()) WriteCanonical(writer, item);
+            writer.WriteEndArray();
+        }
+        else value.WriteTo(writer);
     }
 
     public static bool IsNativeReferenceName(string? reference) => reference is { Length: > 0 and <= 128 } &&
