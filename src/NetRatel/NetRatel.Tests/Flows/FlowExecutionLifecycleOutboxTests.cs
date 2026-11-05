@@ -422,9 +422,10 @@ public sealed class FlowExecutionLifecycleOutboxTests
         var agent = Guid.NewGuid();
         var now = DateTimeOffset.UtcNow;
         var execution = script ? "synthetic-script-rerun" : "42";
-        var original = script ? new string('p', 256) : "9007199254740993";
-        var root = script ? new string('r', 256) : "9007199254740001";
-        var cause = new ExecutionAdmissionCausation("synthetic-original-occurrence", Guid.NewGuid(), 1, 1, original)
+        var original = script ? new string('父', 256) : "9007199254740993";
+        var root = script ? new string('源', 256) : "9007199254740001";
+        var occurrence = script ? new string('起', 128) : "synthetic-original-occurrence";
+        var cause = new ExecutionAdmissionCausation(occurrence, Guid.NewGuid(), 1, 1, original)
             { RootExecutionId = root };
         var admission = new ExecutionAdmissionRecord
         {
@@ -457,7 +458,7 @@ public sealed class FlowExecutionLifecycleOutboxTests
         var value = Read(await db.OutboxMessages.SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType));
         Assert.Equal(original, value.ParentExecutionId);
         Assert.Equal(root, value.RootExecutionId);
-        Assert.Equal("synthetic-original-occurrence", value.Causation!.RootOccurrenceId);
+        Assert.Equal(occurrence, value.Causation!.RootOccurrenceId);
         Assert.Equal(cause.ParentEventId, value.Causation.ParentEventId);
         Assert.Equal(admission.FlowRunId, value.Causation.FlowRunId);
         Assert.True(FlowExecutionEventValidator.Validate(value).Valid);

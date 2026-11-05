@@ -18,8 +18,7 @@ public static class ExecutionLifecycleSubscriptions
                 x.Entity.Type == FlowExecutionEventLimits.OutboxType) ||
             db.ChangeTracker.Entries<RequestRecord>().Any(x => x.State == EntityState.Added ||
                 x.State == EntityState.Modified && x.Property(row => row.Status).IsModified) ||
-            db.ChangeTracker.Entries<JobTaskActivityRecord>().Any(x => x.State == EntityState.Added ||
-                x.State == EntityState.Modified && x.Property(row => row.Status).IsModified);
+            db.ChangeTracker.Entries<JobTaskActivityRecord>().Any(ExecutionLifecycleOutbox.HasScriptTransition);
     }
 
     internal static void Capture(OrchestratorDbContext db)

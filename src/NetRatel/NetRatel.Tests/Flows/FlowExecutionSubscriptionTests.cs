@@ -13,6 +13,7 @@ using NetRatel.Infrastructure.Flows;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared.Contracts.Tasks;
 using NetRatel.Tests.Infrastructure;
 using Xunit;
 
@@ -199,6 +200,87 @@ public sealed class FlowExecutionSubscriptionPostgreSqlTests(PostgreSqlPersisten
         Assert.Equal(ExecutionLifecycleSubscriptions.PayloadHash(row.PayloadJson), delivery.SourcePayloadHash);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Late_same_status_script_result_owns_the_source_transaction_and_selected_intent(bool synchronous)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var ct = deadline.Token;
+        var options = new DbContextOptionsBuilder<OrchestratorDbContext>()
+            .UseNpgsql(await postgres.CreateDatabaseAsync(ct)).Options;
+        await using var db = new OrchestratorDbContext(options);
+        await db.Database.MigrateAsync(ct);
+        var active = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var flowId = Guid.NewGuid();
+        var versionId = Guid.NewGuid();
+        var agent = Guid.NewGuid();
+        var definition = new FlowDefinitionRecord
+        {
+            Id = flowId, TenantId = 7, Name = "Synthetic late script result", Enabled = true,
+            EnabledSinceUtc = active, Revision = 1, DraftJson = "{}", CreatedAtUtc = active, UpdatedAtUtc = active
+        };
+        db.FlowDefinitions.Add(definition);
+        db.FlowVersions.Add(Version(versionId, flowId, Guid.NewGuid(), 1, active,
+            new([FlowExecutionSourceKind.Script], [FlowExecutionOutcome.Unknown, FlowExecutionOutcome.Failed],
+                FlowExecutionScope.AllInTenant)));
+        db.Agents.Add(new() { Id = agent, TenantId = 7, Name = "synthetic-host", CreatedAtUtc = active });
+        await db.SaveChangesAsync(ct);
+        definition.PublishedVersionId = versionId;
+        definition.PublishedVersionNumber = 1;
+        await db.SaveChangesAsync(ct);
+        var activity = new JobTaskActivityRecord
+        {
+            RequestId = "synthetic-late-result", TenantId = 7, AgentId = agent,
+            TaskType = TaskKinds.ExecLibraryScript, Status = "Completed", CreatedAtUtc = active, CompletedAtUtc = active,
+            ScriptName = "Synthetic library execution",
+            OutputProtectionJson = JsonSerializer.Serialize(TaskOutputPolicy.Create([], 91, 4, new string('A', 64)))
+        };
+        db.JobTaskActivities.Add(activity);
+        await SaveWithoutAmbientTransaction();
+        var original = await db.OutboxMessages.AsNoTracking().SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType, ct);
+        Assert.Equal(FlowExecutionOutcome.Unknown,
+            JsonSerializer.Deserialize(original.PayloadJson, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto)!.Outcome);
+
+        // The native result can commit after the transport marked Completed, without changing status.
+        activity.ExitCode = 7;
+        activity.ResultJson = "{\"exitCode\":7,\"stderr\":\"Synthetic definitive failure\"}";
+        await SaveWithoutAmbientTransaction();
+        var sources = await db.OutboxMessages.AsNoTracking()
+            .Where(x => x.Type == FlowExecutionEventLimits.OutboxType).ToArrayAsync(ct);
+        Assert.Equal(2, sources.Length);
+        Assert.Equal(original.PayloadJson, sources.Single(x => x.Id == original.Id).PayloadJson);
+        var failed = JsonSerializer.Deserialize(sources.Single(x => x.Id != original.Id).PayloadJson,
+            FlowExecutionEventJsonContext.Default.FlowExecutionEventDto)!;
+        Assert.Equal("Completed", failed.RawStatus);
+        Assert.Equal(FlowExecutionOutcome.Failed, failed.Outcome);
+        Assert.Equal(7, failed.ExitCode);
+        Assert.Equal(activity.CompletedAtUtc, failed.CompletedAtUtc);
+        var intents = await db.OutboxMessages.AsNoTracking()
+            .Where(x => x.Type == FlowExecutionSubscriptionLimits.OutboxType).ToArrayAsync(ct);
+        Assert.Equal(2, intents.Length);
+        Assert.All(intents, row =>
+        {
+            var intent = ExecutionLifecycleSubscriptions.ReadDelivery(row.PayloadJson)!;
+            Assert.Equal(versionId, intent.FlowVersionId);
+            Assert.Equal(ExecutionLifecycleSubscriptions.PayloadHash(sources.Single(x => x.Id == intent.SourceEventId).PayloadJson),
+                intent.SourcePayloadHash);
+        });
+        await SaveWithoutAmbientTransaction();
+        Assert.Equal(2, await db.OutboxMessages.CountAsync(x => x.Type == FlowExecutionEventLimits.OutboxType, ct));
+        Assert.Equal(2, await db.OutboxMessages.CountAsync(x => x.Type == FlowExecutionSubscriptionLimits.OutboxType, ct));
+        db.ChangeTracker.Clear();
+        Assert.Equal(7, (await db.JobTaskActivities.AsNoTracking().SingleAsync(ct)).ExitCode);
+
+        async Task SaveWithoutAmbientTransaction()
+        {
+            Assert.Null(db.Database.CurrentTransaction);
+            if (synchronous) db.SaveChanges();
+            else await db.SaveChangesAsync(ct);
+            Assert.Null(db.Database.CurrentTransaction);
+        }
+    }
+
     private sealed class SubscriptionSelectionObserver : DbCommandInterceptor
     {
         private readonly TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -214,12 +296,13 @@ public sealed class FlowExecutionSubscriptionPostgreSqlTests(PostgreSqlPersisten
         }
     }
 
-    private static FlowVersionRecord Version(Guid id, Guid flowId, Guid triggerId, int number, DateTimeOffset published)
+    private static FlowVersionRecord Version(Guid id, Guid flowId, Guid triggerId, int number, DateTimeOffset published,
+        FlowExecutionTriggerSettingsDto? settings = null)
     {
         var finish = Guid.NewGuid();
         var graph = new FlowGraphDto(2,
             [new(triggerId, FlowNodeKind.ExecutionEvent, "Synthetic execution event", new(0, 0))
-                { ExecutionTrigger = FlowExecutionSubscriptionWaitTests.Trigger() },
+                { ExecutionTrigger = settings ?? FlowExecutionSubscriptionWaitTests.Trigger() },
              new(finish, FlowNodeKind.Finish, "Finish", new(250, 0))],
             [new(triggerId, FlowNodeCatalogue.Event, finish, FlowNodeCatalogue.Input) { Id = Guid.NewGuid() }], new());
         Assert.True(FlowGraphV2Validator.ValidatePublished(graph).Valid);

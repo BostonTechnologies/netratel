@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Requests;
 using NetRatel.Infrastructure.Persistence;
@@ -407,6 +408,18 @@ public static class ExecutionLifecycleOutbox
         };
     }
 
+    // Candidate capture and transaction ownership use the same native transition predicate.
+    internal static bool HasScriptTransition(EntityEntry<JobTaskActivityRecord> entry) =>
+        entry.State == EntityState.Added || entry.State == EntityState.Modified &&
+        (!string.Equals(entry.Property(row => row.Status).OriginalValue, entry.Entity.Status, StringComparison.OrdinalIgnoreCase) ||
+         ScriptTerminalEvidenceChanged(entry));
+
+    private static bool ScriptTerminalEvidenceChanged(EntityEntry<JobTaskActivityRecord> entry) =>
+        entry.State == EntityState.Modified &&
+        (entry.Property(row => row.ExitCode).OriginalValue != entry.Entity.ExitCode ||
+         !string.Equals(entry.Property(row => row.ResultJson).OriginalValue, entry.Entity.ResultJson, StringComparison.Ordinal) ||
+         entry.Property(row => row.CompletedAtUtc).OriginalValue != entry.Entity.CompletedAtUtc);
+
     private static IReadOnlyList<(FlowExecutionEventDto Event, RequestRecord? Request)> Candidates(OrchestratorDbContext db)
     {
         db.ChangeTracker.DetectChanges();
@@ -418,16 +431,11 @@ public static class ExecutionLifecycleOutbox
             var previous = entry.State == EntityState.Added ? null : entry.Property(x => x.Status).OriginalValue;
             if (RequestEvent(entry.Entity, previous, observed) is { } value) candidates.Add((value, entry.Entity));
         }
-        foreach (var entry in db.ChangeTracker.Entries<JobTaskActivityRecord>().Where(x => x.State is EntityState.Added or EntityState.Modified))
+        foreach (var entry in db.ChangeTracker.Entries<JobTaskActivityRecord>().Where(HasScriptTransition))
         {
             var previous = entry.State == EntityState.Added ? null : entry.Property(x => x.Status).OriginalValue;
-            var evidenceChanged = entry.State == EntityState.Modified &&
-                (entry.Property(x => x.ExitCode).OriginalValue != entry.Entity.ExitCode ||
-                 !string.Equals(entry.Property(x => x.ResultJson).OriginalValue, entry.Entity.ResultJson, StringComparison.Ordinal) ||
-                 entry.Property(x => x.CompletedAtUtc).OriginalValue != entry.Entity.CompletedAtUtc);
-            if (entry.State == EntityState.Modified && !evidenceChanged &&
-                string.Equals(previous, entry.Entity.Status, StringComparison.OrdinalIgnoreCase)) continue;
-            if (ScriptEvent(entry.Entity, previous, observed, evidenceChanged) is { } value) candidates.Add((value, null));
+            if (ScriptEvent(entry.Entity, previous, observed, ScriptTerminalEvidenceChanged(entry)) is { } value)
+                candidates.Add((value, null));
         }
         return candidates;
     }
