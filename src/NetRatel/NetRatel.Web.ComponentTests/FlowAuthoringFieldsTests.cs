@@ -38,8 +38,10 @@ public sealed class FlowAuthoringFieldsTests : AsyncBunitContext
     {
         var definition = new FlowExecutionDefinitionDto("42", "Synthetic library script");
         var pending = new TaskCompletionSource<FlowExecutionActionSettingsDto>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _api.DefinitionSearch = (tenant, source, _, _, _, _) => Task.FromResult(new FlowExecutionDefinitionsPageDto(tenant == 17 ? [new(source, definition)] : []));
-        _api.DefinitionDetails = (_, _, _, _) => pending.Task;
+        var current = new FlowExecutionDefinitionDto("43", "Current tenant library script");
+        _api.DefinitionSearch = (tenant, source, _, _, _, _) => Task.FromResult(new FlowExecutionDefinitionsPageDto([new(source, tenant == 17 ? definition : current)]));
+        _api.DefinitionDetails = (_, source, id, _) => id == definition.Id ? pending.Task :
+            Task.FromResult(new FlowExecutionActionSettingsDto(source, current));
         var selections = 0;
         var cut = Render<FlowExecutionDefinitionPicker>(p => p.Add(component => component.TenantId, 17).Add(component => component.NodeId, Guid.NewGuid())
             .Add(component => component.SourceKind, FlowExecutionSourceKind.Script).Add(component => component.Selected, _ => selections++));
@@ -49,7 +51,11 @@ public sealed class FlowAuthoringFieldsTests : AsyncBunitContext
         cut.Render(p => p.Add(component => component.TenantId, 23).Add(component => component.NodeId, Guid.NewGuid()));
         pending.SetResult(new(FlowExecutionSourceKind.Script, definition));
         await choose;
-        Assert.Equal(0, selections); Assert.Empty(cut.FindAll("[data-testid=flow-definition-choice]"));
+        Assert.Equal(0, selections);
+        await cut.WaitForAssertionAsync(() => Assert.False(cut.Find("[data-testid=flow-definition-choice]").HasAttribute("disabled")));
+        Assert.Contains("Current tenant library script", cut.Markup, StringComparison.Ordinal);
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-definition-choice]").ClickAsync(new()));
+        Assert.Equal(1, selections);
     }
 
     [Fact]

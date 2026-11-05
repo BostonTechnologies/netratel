@@ -51,7 +51,7 @@
             _loading = false; _selecting = false; return;
         }
         if (!contextChanged && !enabled) return;
-        _tenant = TenantId; _source = SourceKind; _node = NodeId; _search = ""; _page = new([]);
+        _tenant = TenantId; _source = SourceKind; _node = NodeId; _search = ""; _page = new([]); _selecting = false;
         _selection.Cancel(); _selection.Dispose(); _selection = new(); ++_selectionGeneration;
         await ReadAsync(null);
     }
