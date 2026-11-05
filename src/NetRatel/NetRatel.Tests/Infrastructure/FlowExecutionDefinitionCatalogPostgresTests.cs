@@ -99,6 +99,27 @@ public sealed class FlowExecutionDefinitionCatalogPostgresTests(PostgreSqlPersis
         next.NextAfterId.Should().BeNull();
     }
 
+
+    [Fact]
+    public async Task Selected_target_lookup_retains_unavailable_ids_without_revealing_other_tenant_names()
+    {
+        await using var db = new OrchestratorDbContext(_options);
+        var disabled = Guid.NewGuid(); var foreign = Guid.NewGuid(); var missing = Guid.NewGuid();
+        db.Agents.AddRange(
+            new() { Id = disabled, TenantId = 7, Name = "synthetic-disabled", FriendlyName = "Retained selection", IsEnabled = false, CreatedAtUtc = DateTimeOffset.UtcNow },
+            new() { Id = foreign, TenantId = 8, Name = "foreign-hidden-host", CreatedAtUtc = DateTimeOffset.UtcNow });
+        await db.SaveChangesAsync();
+        var values = await Catalog(db, new Access(true)).GetSelectedTargetsAsync(7, new("operator"),
+            FlowExecutionSourceKind.Script, [disabled, foreign, missing]);
+        values.Should().HaveCount(3);
+        values.Should().OnlyContain(value => !value.Eligible);
+        values[0].Target.DisplayName.Should().Be("Retained selection");
+        values[1].Target.AgentId.Should().Be(foreign);
+        values[1].Target.DisplayName.Should().BeNull();
+        values[2].Target.AgentId.Should().Be(missing);
+        System.Text.Json.JsonSerializer.Serialize(values).Should().NotContain("foreign-hidden-host");
+    }
+
     private static FlowExecutionDefinitionCatalog Catalog(OrchestratorDbContext db, Access access)
     {
         var scripts = new ScriptService(db);

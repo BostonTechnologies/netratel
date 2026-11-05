@@ -8,3 +8,6 @@ public sealed record FlowExecutionDefinitionsPageDto(IReadOnlyList<FlowExecution
 
 /// <summary>Configured eligible targets; discovery is not proof of online presence or future execution authorization.</summary>
 public sealed record FlowExecutionTargetsPageDto(IReadOnlyList<FlowExecutionTargetDto> Items, string? NextAfterId = null);
+
+/// <summary>Configured target status for retained selections; no online presence or future authorization is implied.</summary>
+public sealed record FlowExecutionTargetSelectionDto(FlowExecutionTargetDto Target, bool Eligible);

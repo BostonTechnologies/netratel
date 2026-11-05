@@ -85,6 +85,25 @@ public sealed class FlowExecutionDefinitionCatalog(OrchestratorDbContext db, IFl
         return new(rows.Take(limit).ToArray(), rows.Length > limit ? rows[limit - 1].AgentId!.Value.ToString("D") : null);
     }
 
+
+    public async Task<IReadOnlyList<FlowExecutionTargetSelectionDto>> GetSelectedTargetsAsync(int tenantId,
+        FlowExecutionAuthorityDto authority, FlowExecutionSourceKind sourceKind, IReadOnlyList<Guid> ids,
+        CancellationToken cancellationToken = default)
+    {
+        await RequireAsync(tenantId, authority, sourceKind, cancellationToken);
+        if (ids.Count is < 1 or > 128 || ids.Any(id => id == Guid.Empty))
+            throw new ArgumentException("Selected target identifiers exceed their bound.");
+        var selected = ids.Distinct().ToArray();
+        var found = await db.Agents.AsNoTracking().Where(agent => agent.TenantId == tenantId && selected.Contains(agent.Id))
+            .Select(agent => new { agent.Id, agent.Name, agent.FriendlyName, Eligible = agent.IsEnabled &&
+                agent.Status == AgentStatus.Active && agent.DeletedAtUtc == null && agent.RevokedAtUtc == null &&
+                agent.SupersededAtUtc == null && agent.SupersededByAgentId == null })
+            .ToDictionaryAsync(agent => agent.Id, cancellationToken);
+        return selected.Select(id => found.TryGetValue(id, out var agent)
+            ? new FlowExecutionTargetSelectionDto(new(id, agent.FriendlyName ?? agent.Name, agent.Name), agent.Eligible)
+            : new(new(id), false)).ToArray();
+    }
+
     private async Task RequireAsync(int tenantId, FlowExecutionAuthorityDto authority, FlowExecutionSourceKind kind, CancellationToken ct)
     {
         if (kind is not (FlowExecutionSourceKind.Job or FlowExecutionSourceKind.Script))

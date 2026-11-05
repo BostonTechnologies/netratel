@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Microsoft.AspNetCore.Mvc;
 using NetRatel.Application.Flows;
 using NetRatel.Application.Jobs;
 using NetRatel.Infrastructure.Identity.Authorization;
@@ -14,6 +15,7 @@ public static class FlowExecutionDefinitionEndpoints
             .RequireAuthorization().WithTags("Flows");
         group.MapGet("", ListAsync);
         group.MapGet("/targets", ListTargetsAsync);
+        group.MapGet("/targets/selected", GetSelectedTargetsAsync);
         group.MapGet("/{sourceKind}/{definitionId}", GetAsync);
         return app;
     }
@@ -41,6 +43,19 @@ public static class FlowExecutionDefinitionEndpoints
         if (Authority(http.User) is not { } authority ||
             !await access.AuthorizeAsync(http.User, NetRatelPermissions.FlowRead, tenantId, ct)) return Results.Forbid();
         try { return Results.Ok(await catalog.ListTargetsAsync(tenantId, authority, sourceKind, search, afterId, limit ?? 50, ct)); }
+        catch (ExecutionAdmissionDeniedException) { return Results.Forbid(); }
+        catch (ArgumentException) { return Results.BadRequest(new { code = "execution-target-query-invalid" }); }
+        catch (NotSupportedException) { return Results.UnprocessableEntity(new { code = "execution-definition-source-unsupported" }); }
+    }
+
+
+    internal static async Task<IResult> GetSelectedTargetsAsync(int tenantId, FlowExecutionSourceKind sourceKind,
+        [FromQuery] Guid[] ids, HttpContext http, IEffectiveAccessService access,
+        IFlowExecutionDefinitionCatalog catalog, CancellationToken ct)
+    {
+        if (Authority(http.User) is not { } authority ||
+            !await access.AuthorizeAsync(http.User, NetRatelPermissions.FlowRead, tenantId, ct)) return Results.Forbid();
+        try { return Results.Ok(await catalog.GetSelectedTargetsAsync(tenantId, authority, sourceKind, ids, ct)); }
         catch (ExecutionAdmissionDeniedException) { return Results.Forbid(); }
         catch (ArgumentException) { return Results.BadRequest(new { code = "execution-target-query-invalid" }); }
         catch (NotSupportedException) { return Results.UnprocessableEntity(new { code = "execution-definition-source-unsupported" }); }

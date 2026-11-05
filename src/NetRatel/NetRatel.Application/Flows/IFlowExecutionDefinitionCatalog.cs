@@ -12,4 +12,6 @@ public interface IFlowExecutionDefinitionCatalog
     Task<FlowExecutionTargetsPageDto> ListTargetsAsync(int tenantId, FlowExecutionAuthorityDto authority,
         FlowExecutionSourceKind sourceKind, string? search = null, string? afterId = null, int limit = 50,
         CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<FlowExecutionTargetSelectionDto>> GetSelectedTargetsAsync(int tenantId, FlowExecutionAuthorityDto authority,
+        FlowExecutionSourceKind sourceKind, IReadOnlyList<Guid> ids, CancellationToken cancellationToken = default);
 }
