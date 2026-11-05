@@ -36,7 +36,7 @@ using Xunit;
 
 namespace NetRatel.Tests.API;
 
-public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixture postgres)
+public sealed partial class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixture postgres)
     : IClassFixture<PostgreSqlPersistenceFixture>
 {
     [Fact]
@@ -719,11 +719,13 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         private TaskCompletionSource<bool> _entered = NewSignal();
         private TaskCompletionSource<bool> _release = NewSignal();
         public Task Entered => _entered.Task;
+        public Action<OrchestratorDbContext>? ObserveSaved { get; set; }
         public void Arm(ulong runId, GateKind kind) { _runId = runId; _kind = kind; _used = 0; _entered = NewSignal(); _release = NewSignal(); }
         public void Release() => _release.TrySetResult(true);
         public override async ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData eventData, int result, CancellationToken cancellationToken = default)
         {
             var db = eventData.Context;
+            if (db is OrchestratorDbContext native) ObserveSaved?.Invoke(native);
             if (_runId == 0 || db is null) return result;
             var matches = _kind == GateKind.CancelRequested ? db.ChangeTracker.Entries<JobRunControlRecord>().Any(x =>
                 x.Entity.RunId == checked((long)_runId) && x.Entity.CancellationRequestedAtUtc is not null) :
@@ -833,6 +835,7 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         public SaveGate Gate { get; } = new();
         public MutableClock Clock { get; } = new();
         public RecordingGateway Gateway { get; private set; } = null!;
+        public bool RetainDefinitionSnapshot { get; private set; }
         public ActorRouter Primary { get; private set; } = null!;
         public ActorRouter Replica { get; private set; } = null!;
         public Guid AgentId { get; } = Guid.NewGuid();
@@ -855,9 +858,9 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             return await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().JobShadowObservations
                 .AsNoTracking().Where(x => x.JobRunId == runId).OrderBy(x => x.SourceEventId).ToArrayAsync(ct);
         }
-        public static async Task<Harness> CreateAsync(string connection, CancellationToken ct, string? legacyClientIdentity = null)
+        public static async Task<Harness> CreateAsync(string connection, CancellationToken ct, string? legacyClientIdentity = null, bool retainDefinitionSnapshot = false)
         {
-            var h = new Harness();
+            var h = new Harness { RetainDefinitionSnapshot = retainDefinitionSnapshot };
             var services = new ServiceCollection();
             services.AddDbContext<OrchestratorDbContext>(o => o.UseNpgsql(connection).AddInterceptors(h.Gate));
             services.AddDbContext<NetRatelIdentityDbContext>(o => o.UseNpgsql(connection));
@@ -941,7 +944,10 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             new JobTaskBridge(new EmptyScripts(), NullLogger<JobTaskBridge>.Instance), Gateway, replica ? Replica : Primary,
             new RecordingRealtimeFanoutSink(), new JobAuthorityIdGenerator(), new TestEnvironment(),
             managedGuard: managedGuard, db: services.GetRequiredService<OrchestratorDbContext>(), clock: Clock,
-            requests: services.GetRequiredService<IRequestService>());
+            requests: services.GetRequiredService<IRequestService>(),
+            snapshotCapture: RetainDefinitionSnapshot ? new PinnedJobExecutionSnapshotCapture(
+                services.GetRequiredService<OrchestratorDbContext>(), services.GetRequiredService<IJobDefinitionService>(),
+                new ScriptService(services.GetRequiredService<OrchestratorDbContext>())) : null);
         public async Task<JobRunInfo> StartAsync(CancellationToken ct, string? inputs = null)
         { await using var scope = Services.CreateAsyncScope(); return await Authority(scope.ServiceProvider, false).StartAsync(41, new("operator-test", inputs, null), ct); }
 
@@ -1152,12 +1158,13 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
     private sealed class ActorRouter(IActorRef actor) : IJobRuntimeRouter
     {
         public IActorRef Region => actor;
+        public Func<IJobRunOwner, IJobRunOwner>? OwnerDecoration { get; set; }
         private TaskCompletionSource<bool>? _next;
         public Task ObserveNextOperation() { _next = new(TaskCreationOptions.RunContinuationsAsynchronously); return _next.Task; }
         public async Task<T> ExecuteOwnedAsync<T>(ulong id, Func<IJobRunOwner, CancellationToken, Task<T>> operation, CancellationToken ct)
         {
             var result = await actor.Ask<object>(new ExecuteOwnedJobRun(id, async (owner, ownedCt) =>
-            { Interlocked.Exchange(ref _next, null)?.TrySetResult(true); return await operation(owner, ownedCt); }, ct), TimeSpan.FromSeconds(30), ct);
+            { Interlocked.Exchange(ref _next, null)?.TrySetResult(true); return await operation(OwnerDecoration?.Invoke(owner) ?? owner, ownedCt); }, ct), TimeSpan.FromSeconds(30), ct);
             return (T)result;
         }
         public Task<JobMessageResult> RecordAsync(RecordJobObservation message, CancellationToken ct) => actor.Ask<JobMessageResult>(message, TimeSpan.FromSeconds(30), ct);
