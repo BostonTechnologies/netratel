@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
@@ -521,4 +522,85 @@ public sealed class FlowExecutionLifecycleOutboxPostgreSqlTests(PostgreSqlPersis
             Assert.Equal("Failed", (await db.Requests.AsNoTracking().SingleAsync(ct)).Status);
         }
     }
+    [Fact]
+    public async Task Large_source_presentation_is_visibly_bounded_without_losing_protected_replay_or_causal_identity()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var ct = deadline.Token;
+        var options = new DbContextOptionsBuilder<OrchestratorDbContext>()
+            .UseNpgsql(await postgres.CreateDatabaseAsync(ct)).Options;
+        var keys = new EphemeralDataProtectionProvider();
+        var requestId = new string('原', 256);
+        var parentId = new string('先', 256);
+        var rootId = new string('始', 256);
+        var occurrence = new string('起', 128);
+        var definitionName = new string('名', 512);
+        var targetName = new string('機', 512);
+        var agent = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        await using var db = new OrchestratorDbContext(options);
+        await db.Database.MigrateAsync(ct);
+        db.Agents.Add(new() { Id = agent, TenantId = 7, Name = "synthetic-host", CreatedAtUtc = now });
+        db.JobTaskActivities.Add(new()
+        {
+            RequestId = requestId, TenantId = 7, AgentId = agent, TaskType = TaskKinds.ExecLibraryScript,
+            Status = "Running", CreatedAtUtc = now, ScriptName = definitionName,
+            TargetDisplayName = targetName, TargetHostName = "synthetic-host.example.test",
+            OutputProtectionJson = JsonSerializer.Serialize(TaskOutputPolicy.Create([], 91, 4, new string('A', 64)))
+        });
+        await db.SaveChangesAsync(ct);
+        var identity = new ExecutionAdmissionIdentity(Guid.NewGuid(), 7, "synthetic-operator",
+            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 1)
+        {
+            Causation = new(occurrence, Guid.NewGuid(), 1, 1, parentId) { RootExecutionId = rootId }
+        };
+        var admission = await new ExecutionAdmissionStore(db, keys, TimeProvider.System).ReserveAsync(
+            new(identity, ExecutionAdmissionKind.LibraryScript, "{\"syntheticPinnedSource\":\"protected fixture\"}"),
+            () => requestId, ct);
+        var result = "{\"exitCode\":7,\"stderr\":\"Synthetic definitive failure\"}";
+        await new JobRunService(db, keys).UpdateTaskActivityStatusAsync(
+            new(requestId, "Completed", new string('錯', 512), now, result, ExitCode: 7), ct);
+
+        db.ChangeTracker.Clear();
+        var native = await db.JobTaskActivities.AsNoTracking().SingleAsync(ct);
+        Assert.Equal("Completed", native.Status);
+        Assert.Equal(7, native.ExitCode);
+        Assert.Equal(definitionName, native.ScriptName);
+        Assert.Equal(targetName, native.TargetDisplayName);
+        var raw = ExecutionLifecycleOutbox.ScriptEvent(native, "Running", now)!;
+        Assert.Contains("event_byte_limit", FlowExecutionEventValidator.Validate(raw).Issues);
+        var row = await db.OutboxMessages.AsNoTracking().SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType, ct);
+        var value = JsonSerializer.Deserialize(row.PayloadJson, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto)!;
+        Assert.True(FlowExecutionEventValidator.Validate(value).Valid);
+        Assert.True(Encoding.UTF8.GetByteCount(row.PayloadJson) <= FlowExecutionEventLimits.MaximumEnvelopeBytes - 256);
+        Assert.Equal(requestId, value.ExecutionId);
+        Assert.Equal(requestId, value.AttemptId);
+        Assert.Equal(parentId, value.ParentExecutionId);
+        Assert.Equal(rootId, value.RootExecutionId);
+        Assert.Equal(occurrence, value.Causation!.RootOccurrenceId);
+        Assert.Equal(identity.FlowRunId, value.Causation.FlowRunId);
+        Assert.Equal(identity.NodeId, value.Causation.NodeId);
+        Assert.Equal(FlowExecutionOutcome.Failed, value.Outcome);
+        Assert.Equal("Completed", value.RawStatus);
+        Assert.Equal(7, value.ExitCode);
+        Assert.StartsWith("錯", value.Reason);
+        Assert.Contains("Presentation truncated", value.Reason);
+        Assert.StartsWith("名", value.Definition.Name);
+        Assert.EndsWith("…", value.Definition.Name);
+        Assert.StartsWith("機", value.Target.DisplayName);
+        Assert.EndsWith("…", value.Target.DisplayName);
+        Assert.True(value.Replay!.Supported);
+        Assert.Equal(FlowExecutionSourceKind.Script, value.Replay.SourceKind);
+        Assert.Equal("91", value.Replay.Definition.Id);
+        Assert.Equal("4", value.Replay.Definition.Revision);
+        Assert.Equal(new string('A', 64), value.Replay.Definition.ContentHash);
+        Assert.Equal(agent, value.Replay.Target.AgentId);
+        Assert.Equal(requestId, value.Replay.SourceExecutionId);
+        Assert.Equal(requestId, value.Replay.SourceAttemptId);
+        Assert.Equal("script-execution:" + requestId, value.Replay.InputsReference);
+        Assert.Equal(requestId, Assert.Single(value.Results!).Id);
+        Assert.NotNull(Assert.Single(value.Results!).ContentHash);
+        Assert.Equal(admission.ExecutionId, (await db.Set<ExecutionAdmissionRecord>().SingleAsync(ct)).ExecutionId);
+    }
+
 }
