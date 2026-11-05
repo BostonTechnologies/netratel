@@ -243,7 +243,7 @@
     private string _paletteQuery = "";
     private IEnumerable<FlowNodeKind> PaletteKinds => _nodeKinds.Where(kind => string.IsNullOrWhiteSpace(_paletteQuery) ||
         $"{FlowCanvas.KindLabel(kind)} {PaletteCategory(kind)} {PaletteHelp(kind)}".Contains(_paletteQuery.Trim(), StringComparison.OrdinalIgnoreCase));
-    private static readonly FlowNodeKind[] _nodeKinds = Enum.GetValues<FlowNodeKind>();
+    private static readonly FlowNodeKind[] _nodeKinds = [FlowNodeKind.AlertRaised, FlowNodeKind.Condition, FlowNodeKind.MapIncident, FlowNodeKind.CreateIncident, FlowNodeKind.InvestigateWithAi, FlowNodeKind.ActionGroup];
     private static readonly DialogOptions _leaveOptions = new() { FullWidth = true, MaxWidth = MaxWidth.Small, BackdropClick = false, CloseOnEscapeKey = false };
     private static readonly DialogOptions _deleteOptions = _leaveOptions with { CloseOnEscapeKey = true };
     private string OperationLabel => _operation switch { "save" => "Saving draft…", "validate" => "Validating…", "publish" => "Publishing version…", "preview" => "Previewing sample…", _ => "Updating draft…" };

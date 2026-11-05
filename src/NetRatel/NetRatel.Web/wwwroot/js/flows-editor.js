@@ -130,9 +130,12 @@ export function attachShell(id, reference) {
     detachShell(id);
     const root = document.getElementById(id);
     if (!root) return;
-    const state = { root, reference, focused: false, ownsNative: false, nativePending: false, disposed: false, returnFocus: null, preview: null };
+    const state = { root, reference, focused: false, ownsNative: false, nativePending: false, disposed: false, unsynchronized: false, returnFocus: null, preview: null };
     const notify = () => {
-        if (!state.disposed) reference.invokeMethodAsync("FullscreenChanged", state.focused).catch(() => {});
+        if (state.disposed) return;
+        reference.invokeMethodAsync("FullscreenChanged", state.focused)
+            .then(() => { state.unsynchronized = false; })
+            .catch(() => { if (!root.isConnected) detachShell(id); else state.unsynchronized = true; });
     };
     state.setFocus = async focused => {
         if (state.disposed || state.focused === focused) return;
@@ -169,6 +172,7 @@ export function attachShell(id, reference) {
         });
     };
     const click = event => {
+        if (state.unsynchronized) notify();
         if (!event.target.closest?.('[data-testid="flow-focus"]')) return;
         event.preventDefault(); event.stopImmediatePropagation();
         void state.setFocus(!state.focused);
@@ -188,11 +192,21 @@ export function attachShell(id, reference) {
         event.preventDefault(); event.stopImmediatePropagation();
         void state.setFocus(false);
     };
+    // A disconnected server cannot dispose browser listeners. Observe root removal
+    // so a replacement component never inherits this shell's body lock or callbacks.
+    const observer = new MutationObserver(() => {
+        if (!root.isConnected) { detachShell(id); return; }
+        // Keep local fullscreen presentation truthful while a circuit reconnects.
+        root.classList.toggle('focused', state.focused);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(root, { attributes: true, attributeFilter: ['class'] });
     root.addEventListener('click', click, true);
     document.addEventListener('keydown', escape, true);
     document.addEventListener('fullscreenchange', fullscreen);
     state.dispose = () => {
         state.disposed = true;
+        observer.disconnect();
         root.removeEventListener('click', click, true);
         document.removeEventListener('keydown', escape, true);
         document.removeEventListener('fullscreenchange', fullscreen);
