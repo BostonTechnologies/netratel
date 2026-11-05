@@ -168,7 +168,7 @@ public sealed class FlowExecutionEventAdmission(IFlowExecutionAuthorityVerifier 
         }
         return false;
     }
-    private async Task<DateTimeOffset> EffectiveNowAsync(OrchestratorDbContext db, CancellationToken ct) =>
+    internal async Task<DateTimeOffset> EffectiveNowAsync(OrchestratorDbContext db, CancellationToken ct) =>
         await ClientConnectionEpochStore.EffectiveNowAsync((NpgsqlConnection)db.Database.GetDbConnection(),
             (NpgsqlTransaction)db.Database.CurrentTransaction!.GetDbTransaction(), clock, ct).ConfigureAwait(false);
     private static FlowExecutionEventDto? ReadFact(OutboxMessage? row, int tenantId)

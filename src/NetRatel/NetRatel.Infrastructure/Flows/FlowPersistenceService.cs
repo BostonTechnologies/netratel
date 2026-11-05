@@ -172,7 +172,8 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
                 AiResult = action.AiResultJson is null ? null : Parse<FlowAiResultDto>(action.AiResultJson),
                 AiFailureBehavior = targets.GetValueOrDefault(action.NodeId)?.Kind == FlowActionKind.NetclawInvestigation
                     ? Parse<FlowGraphDto>(version.GraphJson).Nodes.SingleOrDefault(node => node.Id == action.NodeId)?.AiSettings?.FailureBehavior ?? FlowAiFailureBehavior.ContinueWithAlert : null }).ToArray())
-        { ExecutionEvent = original.ExecutionEvent, Trace = checkpoint?.Trace };
+        { ExecutionEvent = original.ExecutionEvent, SourceEventIds = original.SourceEventIds,
+            SourceEventIdsTruncated = original.SourceEventIdsTruncated, Trace = checkpoint?.Trace };
     }
 
     public Task<FlowIngressResult> EnqueueAsync(FlowEventEnvelope input, CancellationToken ct = default) => WithDb(async (db, _) =>

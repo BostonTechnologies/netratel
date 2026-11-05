@@ -67,10 +67,13 @@ public sealed partial class FlowEndpointTests
         http.DefaultRequestHeaders.Authorization = new("Test", "read");
         var hidden = (await http.GetFromJsonAsync<FlowRunDetailDto>($"{Path}/{flowId}/runs/{runId}"))!;
         hidden.Input.Should().BeNull(); hidden.ExecutionEvent.Should().BeNull(); hidden.Trace.Should().BeNull();
+        hidden.SourceEventIds.Should().BeNull(); hidden.SourceEventIdsTruncated.Should().BeFalse();
         hidden.DataUnavailableReason.Should().Be("source-read-denied");
         http.DefaultRequestHeaders.Authorization = new("Test", "source");
         var source = (await http.GetFromJsonAsync<FlowRunDetailDto>($"{Path}/{flowId}/runs/{runId}"))!;
         source.Input.Should().BeNull(); source.ExecutionEvent!.ExecutionId.Should().Be("9007199254740993");
+        source.SourceEventIds.Should().HaveCount(FlowExecutionEventLimits.MaximumReferences);
+        source.SourceEventIdsTruncated.Should().BeTrue();
         if (traceOnlyAi)
         { source.Trace.Should().BeNull(); source.DataUnavailableReason.Should().Be("ai-results-read-denied"); }
         else
@@ -182,7 +185,8 @@ public sealed partial class FlowEndpointTests
             FlowExecutionOutcome.Failed, "Failed", now, now)
         { Provenance = FlowExecutionEventProvenance.RequestStateCommit, Reason = "Synthetic source failure", CompletedAtUtc = now };
         var envelope = new FlowEventEnvelope(17, source.EventId, source.OccurrenceId, version, now, null, FlowTestData.Authority)
-        { ExecutionEvent = source, SourceAdmissionKey = Guid.NewGuid(), SourceDeliveryId = Guid.NewGuid(), SourceEventIds = [source.EventId] };
+        { ExecutionEvent = source, SourceAdmissionKey = Guid.NewGuid(), SourceDeliveryId = Guid.NewGuid(), SourceEventIds = new[] { source.EventId }.Concat(Enumerable.Range(1,
+            FlowExecutionEventLimits.MaximumReferences - 1).Select(_ => Guid.NewGuid())).ToArray(), SourceEventIdsTruncated = true };
         var value = JsonSerializer.SerializeToElement(ai ? new { summary = "Synthetic sensitive findings" } : new { summary = "Synthetic source facts" });
         var active = ai ? investigation : trigger;
         var snapshot = new FlowTraceSnapshotDto(FlowTraceDataState.Present) { Value = value };

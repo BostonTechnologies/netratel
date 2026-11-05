@@ -41,6 +41,14 @@
                 @if (detail.ExecutionEvent is { } execution)
                 {
                     <FlowExecutionEventFacts Event="execution" />
+                    <p class="history-hint" data-testid="flow-run-contributions">
+                        @if (detail.SourceEventIds is { } capturedSourceEvents)
+                        { <span>@capturedSourceEvents.Count contributing source reference@(capturedSourceEvents.Count == 1 ? "" : "s") captured.</span> }
+                        else
+                        { <span>Contributing source references unavailable.</span> }
+                        @if (detail.SourceEventIdsTruncated)
+                        { <span> Contributing references truncated at admission.</span> }
+                    </p>
                 }
                 else if (detail.Input is { } alert)
                 {

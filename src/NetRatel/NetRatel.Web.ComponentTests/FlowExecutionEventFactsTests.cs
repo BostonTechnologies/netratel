@@ -99,13 +99,47 @@ public sealed class FlowExecutionEventFactsTests : AsyncBunitContext
         if (schema == 2) cut.Find("[data-testid=flow-ai-result]").TextContent.Should().NotContain("Stop the flow").And.NotContain("Continue with the alert");
     }
 
+    [Fact]
+    public void Source_contributions_distinguish_unavailable_empty_captured_and_truncated_admission_evidence()
+    {
+        var flow = FlowEditorTests.Definition();
+        var source = Event();
+        var run = new FlowRunSummaryDto(Guid.NewGuid(), flow.Id, Guid.NewGuid(), source.EventId, source.OccurrenceId,
+            FlowRunStatus.WaitingForExecution, source.OccurredAtUtc, null, "execution-pending");
+        var detail = new FlowRunDetailDto(run, null, []) { ExecutionEvent = source };
+        var cut = Render<FlowHistoryPanel>(p => p.Add(c => c.Flow, flow).Add(c => c.TenantId, 17).Add(c => c.Detail, detail));
+        cut.Find("[data-testid=flow-run-contributions]").TextContent.Should().Contain("Contributing source references unavailable")
+            .And.NotContain("captured").And.NotContain("truncated");
+
+        cut.Render(p => p.Add(c => c.Flow, flow).Add(c => c.TenantId, 17)
+            .Add(c => c.Detail, detail with { SourceEventIds = [] }));
+        cut.Find("[data-testid=flow-run-contributions]").TextContent.Should().Contain("0 contributing source references captured")
+            .And.NotContain("unavailable").And.NotContain("truncated");
+
+        var captured = Enumerable.Range(0, 16).Select(_ => Guid.NewGuid()).ToArray();
+        cut.Render(p => p.Add(c => c.Flow, flow).Add(c => c.TenantId, 17)
+            .Add(c => c.Detail, detail with { SourceEventIds = captured, SourceEventIdsTruncated = true }));
+        cut.Find("[data-testid=flow-run-contributions]").TextContent.Should().Contain("16 contributing source references captured")
+            .And.Contain("Contributing references truncated at admission").And.NotContain("unavailable");
+
+        cut.Render(p => p.Add(c => c.Flow, flow).Add(c => c.TenantId, 17)
+            .Add(c => c.Detail, detail with { SourceEventIds = captured, SourceEventIdsTruncated = false }));
+        cut.Find("[data-testid=flow-run-contributions]").TextContent.Should().Contain("16 contributing source references captured")
+            .And.NotContain("truncated");
+
+        cut.Render(p => p.Add(c => c.Flow, flow).Add(c => c.TenantId, 17)
+            .Add(c => c.Detail, detail with { ExecutionEvent = null, SourceEventIds = null, DataUnavailableReason = "source-read-denied" }));
+        cut.FindAll("[data-testid=flow-run-contributions]").Should().BeEmpty();
+        cut.Find("[data-testid=flow-run-data-unavailable]").TextContent.Should().Contain("source-read-denied");
+    }
+
     private static FlowActionSummaryDto AiAction(FlowRunSummaryDto run, DateTimeOffset time, FlowAiFailureBehavior behavior)
     {
         var node = Guid.NewGuid();
         return new(node, "source-investigation", FlowActionStatus.Failed, 1, null, "ai-unsupported", null)
         {
             Kind = FlowActionKind.NetclawInvestigation, Name = "Configured source investigation", AiFailureBehavior = behavior,
-            AiResult = new(17, run.Id, run.FlowVersionId, node, null, Guid.NewGuid(), FlowAiResultStatus.Unsupported, time, time)
+            AiResult = new(17, run.Id, run.FlowVersionId, node, Guid.Empty, Guid.NewGuid(), FlowAiResultStatus.Unsupported, time, time)
         };
     }
 

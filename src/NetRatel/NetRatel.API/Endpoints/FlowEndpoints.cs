@@ -86,7 +86,8 @@ public static partial class FlowEndpoints
             var permission = execution.SourceKind == FlowExecutionSourceKind.Script
                 ? NetRatelPermissions.ScriptExecute : NetRatelPermissions.JobManagement;
             if (execution.TenantId != tenantId || !await access.AuthorizeAsync(http.User, permission, tenantId, ct).ConfigureAwait(false))
-                return run with { Input = null, ExecutionEvent = null, Trace = null, DataUnavailableReason = "source-read-denied",
+                return run with { Input = null, ExecutionEvent = null, SourceEventIds = null, SourceEventIdsTruncated = false,
+                    Trace = null, DataUnavailableReason = "source-read-denied",
                     Actions = run.Actions.Select(action => action with { AiResult = null }).ToArray() };
         }
         var traceContainsAi = false;

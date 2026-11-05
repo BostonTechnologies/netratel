@@ -129,31 +129,20 @@ public sealed class FlowNodeCheckpointPostgreSqlTests(PostgreSqlPersistenceFixtu
         var connection = await postgres.CreateDatabaseAsync();
         var clock = new Clock(); var guard = new Guard();
         await using var provider = Provider(connection, clock, guard);
-        await SeedAsync(provider, clock);
         using var raw = JsonDocument.Parse("""{"longer":0.100,"q":{"longer":1e2,"a":1}}""");
         using var number = JsonDocument.Parse("1e2");
         var inputs = new Dictionary<string, JsonElement>
         { ["longParameter"] = raw.RootElement.Clone(), ["a"] = number.RootElement.Clone() };
-        await using (var scope = provider.CreateAsyncScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
-            var version = await db.FlowVersions.SingleAsync();
-            var graph = JsonSerializer.Deserialize<FlowGraphDto>(version.GraphJson, FlowNodeTestData.Json)!;
-            var ai = graph.Nodes[1] with { Kind = FlowNodeKind.InvestigateWithAi, Name = "Synthetic investigation",
-                ConnectorId = Guid.NewGuid(), ConnectorRevision = 1, ExecutionAction = null,
-                Inputs = new Dictionary<string, FlowInputBindingDto>
-                { ["longParameter"] = new(FlowInputSource.Literal, FlowDataType.Json, Literal: raw.RootElement.Clone()),
-                    ["a"] = new(FlowInputSource.Literal, FlowDataType.Number, Literal: number.RootElement.Clone()) } };
-            graph = graph with { Nodes = [graph.Nodes[0], ai, graph.Nodes[2]] };
-            FlowGraphV2Validator.ValidatePublished(graph).Valid.Should().BeTrue();
-            version.GraphJson = FlowGraphSerialization.Serialize(graph);
-            await db.SaveChangesAsync();
-            db.ChangeTracker.Clear();
-            // Publication hashes the graph after the saved draft's JSONB normalization.
-            version = await db.FlowVersions.SingleAsync();
-            version.ConfigurationHash = FlowGraphSerialization.Hash(JsonSerializer.Deserialize<FlowGraphDto>(version.GraphJson, FlowNodeTestData.Json)!);
-            await db.SaveChangesAsync();
-        }
+        var graph = FlowNodeTestData.Graph();
+        var ai = graph.Nodes[1] with { Kind = FlowNodeKind.InvestigateWithAi, Name = "Synthetic investigation",
+            ConnectorId = Guid.NewGuid(), ConnectorRevision = 1, ExecutionAction = null,
+            Inputs = new Dictionary<string, FlowInputBindingDto>
+            { ["longParameter"] = new(FlowInputSource.Literal, FlowDataType.Json, Literal: raw.RootElement.Clone()),
+                ["a"] = new(FlowInputSource.Literal, FlowDataType.Number, Literal: number.RootElement.Clone()) } };
+        graph = graph with { Nodes = [graph.Nodes[0], ai, graph.Nodes[2]] };
+        // Seed the final immutable version and its canonical hash together; JSONB normalization
+        // is exercised by the later reload without modifying published configuration.
+        await SeedAsync(provider, clock, graph);
         var lease = (await provider.GetRequiredService<IFlowExecutionStore>().ClaimAsync(Guid.NewGuid()))!;
         var store = provider.GetRequiredService<IFlowNodeExecutionStore>();
         var trigger = FlowNodeTestData.Prepared(lease, lease.Version.Graph.Nodes[0], 1, 1);
@@ -197,13 +186,13 @@ public sealed class FlowNodeCheckpointPostgreSqlTests(PostgreSqlPersistenceFixtu
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }
 
-    private static async Task SeedAsync(ServiceProvider provider, Clock clock)
+    private static async Task SeedAsync(ServiceProvider provider, Clock clock, FlowGraphDto? configuredGraph = null)
     {
         await using var scope = provider.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
         await db.Database.MigrateAsync();
         clock.CaptureSystemTime();
-        var graph = FlowNodeTestData.Graph();
+        var graph = configuredGraph ?? FlowNodeTestData.Graph();
         FlowGraphV2Validator.ValidatePublished(graph).Valid.Should().BeTrue();
         var flowId = Guid.NewGuid(); var versionId = Guid.NewGuid();
         var now = clock.GetUtcNow();
