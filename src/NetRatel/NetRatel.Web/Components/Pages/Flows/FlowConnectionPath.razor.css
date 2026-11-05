@@ -1,0 +1,1 @@
+.flow-connection-hit{cursor:pointer}.flow-connection-hit:focus-visible{outline:none}.flow-connection-hit:focus-visible+.flow-connection-line{stroke:var(--mud-palette-secondary);stroke-width:5}.flow-connection-line{transition:stroke .12s}@media(prefers-reduced-motion:reduce){.flow-connection-line{transition:none}}

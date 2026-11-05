@@ -44,6 +44,21 @@ public sealed class FlowExecutionEventContractTests
     }
 
     [Fact]
+    public void Accepted_native_task_identifiers_up_to_256_characters_are_not_hashed_or_truncated()
+    {
+        var id = new string('x', 256);
+        var definition = new FlowExecutionDefinitionDto("42", "Synthetic script", "7", new string('a', 64));
+        var target = new FlowExecutionTargetDto(Guid.NewGuid());
+        var value = new FlowExecutionEventDto(Guid.NewGuid(), Guid.NewGuid(), 7, FlowExecutionSourceKind.Script,
+            definition, id, id, target, FlowExecutionOutcome.Failed, "Failed",
+            DateTimeOffset.Parse("2026-11-05T12:00:00Z"), DateTimeOffset.Parse("2026-11-05T12:00:01Z"))
+        { Replay = new(FlowExecutionSourceKind.Script, definition, target, "script-execution:" + id, id, id, true) };
+        Assert.True(FlowExecutionEventValidator.Validate(value).Valid);
+        var json = JsonSerializer.Serialize(value, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto);
+        Assert.Equal(id, JsonSerializer.Deserialize(json, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto)!.ExecutionId);
+    }
+
+    [Fact]
     public void Replay_uses_stable_target_identity_and_only_pinned_script_or_job_backing_material()
     {
         var target = new FlowExecutionTargetDto(Guid.NewGuid(), "Old display name");
