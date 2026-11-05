@@ -125,7 +125,7 @@ public sealed class FlowApiServiceTests
     }
 
     [Fact]
-    public async Task Oversized_Definition_Name_Has_An_Actionable_Message_Without_Server_Details()
+    public async Task Native_Definition_And_Trigger_Errors_Have_Actionable_Messages_Without_Server_Details()
     {
         var factory = new Factory(_ => new(HttpStatusCode.UnprocessableEntity) { Content = JsonContent.Create(new
         { code = "execution-definition-name-limit", detail = "protected native definition detail" }) });
@@ -134,6 +134,16 @@ public sealed class FlowApiServiceTests
         Assert.Equal("This definition name exceeds the supported 512-character limit.", error.Message);
         Assert.DoesNotContain("protected native definition", error.Message, StringComparison.Ordinal);
         Assert.Single(factory.Requests);
+
+        var publishFactory = new Factory(_ => new(HttpStatusCode.BadRequest) { Content = JsonContent.Create(new
+        { code = "execution-trigger-source-unavailable", detail = "protected native source detail" }) });
+        var publishApi = new FlowApiService(publishFactory);
+        var sourceError = await Assert.ThrowsAsync<FlowApiException>(() => publishApi.PublishAsync(17, Guid.NewGuid(), new(1)));
+        Assert.Equal(HttpStatusCode.BadRequest, sourceError.StatusCode);
+        Assert.Equal("execution-trigger-source-unavailable", sourceError.Code);
+        Assert.Equal("Request events currently support job-backed definitions. Select Script execution events for library scripts, or remove the unavailable filter. Your draft is preserved.", sourceError.Message);
+        Assert.DoesNotContain("protected native source", sourceError.Message, StringComparison.Ordinal);
+        Assert.Single(publishFactory.Requests);
     }
 
     private sealed class Factory(Func<HttpRequestMessage, HttpResponseMessage> respond) : IHttpClientFactory
