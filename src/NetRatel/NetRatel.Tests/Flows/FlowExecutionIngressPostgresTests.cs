@@ -201,6 +201,94 @@ public sealed class FlowExecutionIngressPostgresTests(PostgreSqlPersistenceFixtu
         Assert.Equal(0, await verify.JobRuns.CountAsync()); Assert.Equal(0, await verify.FlowActions.CountAsync());
     }
 
+    [Fact]
+    public async Task A_failed_canonical_repair_is_suppressed_for_its_ancestor_flow_without_spending_reruns_or_other_subscriptions()
+    {
+        // Exercise the canonical intent and terminal producer at the ingress boundary; no transport executes.
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var ct = deadline.Token;
+        var settings = new FlowExecutionTriggerSettingsDto([FlowExecutionSourceKind.Request, FlowExecutionSourceKind.Job],
+            [FlowExecutionOutcome.Failed], FlowExecutionScope.AllInTenant);
+        await using var h = await Harness.CreateAsync(postgres, settings, includeJobRepair: true);
+        var original = await h.FailRequestAsync();
+        var ingress = h.Provider.GetRequiredService<IFlowExecutionEventIngress>();
+        var admitted = await ingress.EnqueueExecutionAsync(original.Admission, ct);
+        Assert.Equal(FlowIngressDisposition.Enqueued, admitted.Disposition);
+        var ancestor = (await h.Provider.GetRequiredService<IFlowExecutionStore>().ClaimAsync(Guid.NewGuid(), ct))!;
+        Assert.Equal(admitted.RunId, ancestor.RunId);
+        var independentVersion = await h.AddSubscriptionAsync(settings);
+        var allocations = 0;
+        FlowExecutionEventDto repairFailure;
+        FlowExecutionSubscriptionDeliveryDto[] deliveries;
+        await using (var scope = h.Provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var keys = scope.ServiceProvider.GetRequiredService<IDataProtectionProvider>();
+            var identity = new ExecutionAdmissionIdentity(FlowActionKeys.CreateExecution(ancestor, h.RepairNodeId), 17,
+                AccessPolicy.PrincipalId, ancestor.Version.Id, ancestor.RunId, h.RepairNodeId, 1)
+            { Causation = new(original.Fact.Causation!.RootOccurrenceId, original.Fact.EventId, 1, 0) };
+            var submission = new KeyedJobAdmissionRequest(identity, h.RepairSnapshot!, new("synthetic-flow-repair", "{}", null));
+            var binding = await new ExecutionAdmissionStore(db, keys, TimeProvider.System).ReserveAsync(
+                new(identity, ExecutionAdmissionKind.Job, JsonSerializer.Serialize(submission, Json)),
+                () => { allocations++; return "9007199254740993"; }, ct);
+            var runId = ulong.Parse(binding.ExecutionId, CultureInfo.InvariantCulture);
+            var runs = new JobRunService(db, keys);
+            runs.BindPinnedExecutionSnapshot(runId, h.RepairSnapshot!);
+            var now = DateTimeOffset.UtcNow;
+            await runs.UpsertRunAsync(new(runId, 41, 17, h.RepairAgentId.ToString("D"), "synthetic-flow-repair",
+                JobRunState.Running, 1, now, now, null, null, "{}", null, h.RepairAgentId), ct);
+            await runs.UpsertStepRunAsync(new(301, runId, 42, JobStepRunState.Failed, 1, null,
+                "Synthetic permitted repair failed.", now, now), ct);
+            await runs.UpsertRunAsync(new(runId, 41, 17, h.RepairAgentId.ToString("D"), "synthetic-flow-repair",
+                JobRunState.Failed, 1, now, now, now, "Synthetic permitted repair failed.", "{}", null, h.RepairAgentId), ct);
+            var details = (await runs.GetDetailsAsync(runId, ct))!;
+            await using var ownerTransaction = await db.Database.BeginTransactionAsync(ct);
+            var resultHash = JobRunProjectionHash.Compute(details);
+            db.Set<JobRunControlRecord>().Add(new() { RunId = checked((long)runId),
+                TerminalReadyAtUtc = now, TerminalResultHash = resultHash });
+            await ExecutionLifecycleOutbox.RecordJobAsync(db, details, resultHash, now, ct, h.RepairSnapshot);
+            await db.SaveChangesAsync(ct);
+            await ownerTransaction.CommitAsync(ct);
+            repairFailure = JsonSerializer.Deserialize((await db.OutboxMessages.AsNoTracking().SingleAsync(row =>
+                row.Type == FlowExecutionEventLimits.OutboxType && row.EntityId == binding.ExecutionId, ct)).PayloadJson,
+                FlowExecutionEventJsonContext.Default.FlowExecutionEventDto)!;
+            Assert.Equal(FlowExecutionOutcome.Failed, repairFailure.Outcome);
+            Assert.Equal(0, repairFailure.Causation!.RecoveryAttempt);
+            Assert.Equal(ancestor.RunId, repairFailure.Causation.FlowRunId);
+            Assert.Equal(h.RepairNodeId, repairFailure.Causation.NodeId);
+            Assert.Equal(original.Fact.EventId, repairFailure.Causation.ParentEventId);
+            deliveries = (await db.OutboxMessages.AsNoTracking().Where(row =>
+                row.Type == FlowExecutionSubscriptionLimits.OutboxType).Select(row => row.PayloadJson).ToArrayAsync(ct))
+                .Select(ParseDelivery).Where(delivery => delivery.SourceEventId == repairFailure.EventId).ToArray();
+        }
+        FlowExecutionEventAdmissionRequest Selected(Guid version)
+        {
+            var delivery = Assert.Single(deliveries, item => item.FlowVersionId == version);
+            return new(17, version, repairFailure.EventId, [repairFailure.EventId], delivery.DeliveryId);
+        }
+        var suppressed = await ingress.EnqueueExecutionAsync(Selected(h.VersionId), ct);
+        Assert.Equal(FlowIngressDisposition.Disabled, suppressed.Disposition);
+        Assert.Equal("execution-self-caused-event-suppressed", suppressed.Code);
+        var independent = await ingress.EnqueueExecutionAsync(Selected(independentVersion), ct);
+        Assert.Equal(FlowIngressDisposition.Enqueued, independent.Disposition);
+        Assert.NotEqual(suppressed.RunId, independent.RunId);
+        var duplicate = await ingress.EnqueueExecutionAsync(Selected(h.VersionId), ct);
+        Assert.Equal(FlowIngressDisposition.Duplicate, duplicate.Disposition);
+        Assert.Equal(suppressed.RunId, duplicate.RunId);
+        var next = (await h.Provider.GetRequiredService<IFlowExecutionStore>().ClaimAsync(Guid.NewGuid(), ct))!;
+        Assert.Equal(independent.RunId, next.RunId);
+        Assert.True((await h.AdmitAsync(next)).Allowed);
+        await using var verification = h.Provider.CreateAsyncScope();
+        var verify = verification.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        Assert.Equal(FlowRunStatus.Failed, (await verify.FlowRuns.SingleAsync(row => row.Id == suppressed.RunId, ct)).Status);
+        Assert.Equal(1, allocations);
+        var onlyAdmission = Assert.Single(await verify.Set<ExecutionAdmissionRecord>().AsNoTracking().ToArrayAsync(ct));
+        Assert.Null(JsonSerializer.Deserialize<ExecutionAdmissionCausation>(onlyAdmission.CausationJson!)!.SourceExecutionId);
+        Assert.Equal(1, await verify.JobRuns.CountAsync(ct));
+        Assert.Equal(0, await verify.FlowActions.CountAsync(ct));
+        Assert.Equal(2, await verify.OutboxProcessedEvents.CountAsync(row => row.EventId == repairFailure.EventId, ct));
+    }
+
 
     [Fact]
     public async Task Large_script_request_aggregate_waits_for_parent_and_has_one_representative_for_first_or_last_claim()
@@ -390,6 +478,9 @@ public sealed class FlowExecutionIngressPostgresTests(PostgreSqlPersistenceFixtu
         public ServiceProvider Provider { get; }
         public Guid FlowId { get; private set; }
         public Guid VersionId { get; private set; }
+        public Guid RepairAgentId { get; private set; }
+        public Guid RepairNodeId { get; private set; }
+        public PinnedJobExecutionSnapshot? RepairSnapshot { get; private set; }
 
         public ServiceProvider NewProvider()
         {
@@ -401,7 +492,8 @@ public sealed class FlowExecutionIngressPostgresTests(PostgreSqlPersistenceFixtu
             services.AddNetRatelFlows(); services.AddScoped<IRequestService, RequestService>();
             return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         }
-        public static async Task<Harness> CreateAsync(PostgreSqlPersistenceFixture fixture, FlowExecutionTriggerSettingsDto? settings = null)
+        public static async Task<Harness> CreateAsync(PostgreSqlPersistenceFixture fixture, FlowExecutionTriggerSettingsDto? settings = null,
+            bool includeJobRepair = false)
         {
             var harness = new Harness(await fixture.CreateDatabaseAsync());
             await using (var scope = harness.Provider.CreateAsyncScope())
@@ -410,30 +502,61 @@ public sealed class FlowExecutionIngressPostgresTests(PostgreSqlPersistenceFixtu
                 await db.Database.MigrateAsync();
                 db.Tenants.AddRange(new Tenant { Id = 17, Name = "Synthetic source tenant" },
                     new Tenant { Id = 18, Name = "Separate synthetic tenant" });
+                if (includeJobRepair)
+                {
+                    harness.RepairAgentId = Guid.NewGuid();
+                    db.Agents.Add(new() { Id = harness.RepairAgentId, TenantId = 17,
+                        Name = "Synthetic configured repair target", CreatedAtUtc = DateTimeOffset.UtcNow });
+                    db.Jobs.Add(new() { Id = 41, TenantId = 17, AgentId = harness.RepairAgentId,
+                        Name = "Synthetic permitted repair", CreatedAtUtc = DateTimeOffset.UtcNow, UpdatedAtUtc = DateTimeOffset.UtcNow });
+                    db.JobSteps.Add(new() { Id = 42, JobId = 41, Ordinal = 1, Type = 0, Runner = "bash", Command = "false", Enabled = true });
+                }
                 await db.SaveChangesAsync();
             }
-            harness.VersionId = await harness.AddSubscriptionAsync(settings);
+            harness.VersionId = await harness.AddSubscriptionAsync(settings, includeJobRepair);
             return harness;
         }
-        public async Task<Guid> AddSubscriptionAsync(FlowExecutionTriggerSettingsDto? settings = null)
+        public async Task<Guid> AddSubscriptionAsync(FlowExecutionTriggerSettingsDto? settings = null, bool includeJobRepair = false)
         {
+            await using var scope = Provider.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var versionId = Guid.NewGuid();
             var trigger = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.ExecutionEvent, "Synthetic request failure", new(0, 0))
             { ExecutionTrigger = settings ?? new([FlowExecutionSourceKind.Request], [FlowExecutionOutcome.Failed], FlowExecutionScope.AllInTenant) };
             var finish = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.Finish, "Record original failure", new(360, 0));
             var graph = new FlowGraphDto(2, [trigger, finish],
                 [new(trigger.Id, FlowNodeCatalogue.Event, finish.Id, FlowNodeCatalogue.Input) { Id = Guid.NewGuid() }], new());
+            string? protectedPins = null;
+            if (includeJobRepair)
+            {
+                var repair = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.RunJob, "Synthetic permitted repair", new(180, 0))
+                { ExecutionAction = new(FlowExecutionSourceKind.Job, new("41")) { Target = new(RepairAgentId) } };
+                RepairNodeId = repair.Id;
+                graph = graph with { Nodes = [trigger, repair, finish], Edges =
+                    [new(trigger.Id, FlowNodeCatalogue.Event, repair.Id, FlowNodeCatalogue.Input) { Id = Guid.NewGuid() },
+                    .. FlowNodeCatalogue.Find(repair.Kind)!.Ports.Where(port => port.Direction == FlowPortDirection.Output)
+                        .Select(port => new FlowEdgeDto(repair.Id, port.Id, finish.Id, FlowNodeCatalogue.Input) { Id = Guid.NewGuid() })] };
+                var scripts = new ScriptService(db);
+                var snapshots = new PinnedJobExecutionSnapshotCapture(db, new JobDefinitionService(db), scripts);
+                var pins = new FlowExecutionDefinitionPins(db, snapshots, scripts, Grants, Grants,
+                    scope.ServiceProvider.GetRequiredService<IDataProtectionProvider>());
+                var capture = await pins.CaptureAsync(17, new(AccessPolicy.PrincipalId), versionId, graph, default);
+                graph = capture.Graph;
+                protectedPins = capture.ProtectedPinsJson;
+                RepairSnapshot = await snapshots.CaptureAsync(41, 17, default);
+                Assert.Equal(RepairSnapshot.ComputeDigest(), graph.Nodes.Single(node => node.Id == RepairNodeId).ExecutionAction!.Definition.ContentHash);
+            }
             var valid = FlowGraphV2Validator.ValidatePublished(graph);
             Assert.True(valid.Valid, string.Join(", ", valid.Issues.Select(issue => issue.Code)));
             var time = DateTimeOffset.UtcNow.AddMinutes(-5);
             var json = FlowGraphSerialization.Serialize(graph);
             var flow = new FlowDefinitionRecord { Id = Guid.NewGuid(), TenantId = 17, Name = "Synthetic source flow",
                 Revision = 1, Enabled = true, EnabledSinceUtc = time, DraftJson = json, CreatedAtUtc = time, UpdatedAtUtc = time };
-            var version = new FlowVersionRecord { Id = Guid.NewGuid(), FlowId = flow.Id, TenantId = 17, VersionNumber = 1,
+            var version = new FlowVersionRecord { Id = versionId, FlowId = flow.Id, TenantId = 17, VersionNumber = 1,
                 GraphJson = json, ConfigurationHash = FlowGraphSerialization.Hash(graph),
                 PublishedBy = AccessPolicy.PrincipalId, PublishedAtUtc = time,
-                ExecutionAuthorityJson = JsonSerializer.Serialize(new FlowExecutionAuthorityDto(AccessPolicy.PrincipalId), Json) };
-            await using var scope = Provider.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                ExecutionAuthorityJson = JsonSerializer.Serialize(new FlowExecutionAuthorityDto(AccessPolicy.PrincipalId), Json),
+                ProtectedExecutionPinsJson = protectedPins };
             db.FlowDefinitions.Add(flow); await db.SaveChangesAsync();
             db.FlowVersions.Add(version); await db.SaveChangesAsync();
             flow.PublishedVersionId = version.Id; flow.PublishedVersionNumber = 1;
