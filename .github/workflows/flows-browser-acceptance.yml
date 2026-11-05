@@ -1,0 +1,89 @@
+name: Selected Flows browser acceptance
+
+on:
+  push:
+    branches: [codex/flows-browser-acceptance]
+    paths: [.github/workflows/flows-browser-acceptance.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: selected-flows-browser-acceptance
+  cancel-in-progress: false
+
+jobs:
+  browser:
+    name: Selected disposable Flows browser checks
+    if: github.repository == 'BostonTechnologies/netratel' && github.ref == 'refs/heads/codex/flows-browser-acceptance'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      EXPECTED_SOURCE_SHA: df25fb8895d200b2296402f4bfa8502afd82f2a8
+      BROWSER_CLASSES: NetRatel.Web.PlaywrightTests.FlowsResponsiveTests NetRatel.Web.PlaywrightTests.FlowPreviewPlaybackTests NetRatel.Web.PlaywrightTests.MonitoringFlowsIntegrationTests
+      NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT: ${{ github.workspace }}/TestResults/playwright
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: df25fb8895d200b2296402f4bfa8502afd82f2a8
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - name: Verify and record the reviewed source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          test "$source_sha" = "$EXPECTED_SOURCE_SHA"
+          git diff --exit-code
+          version="$(python3 tools/ci/product-version.py)"
+          export NETRATEL_DOTNET_SDK_VERSION="$(dotnet --version)"
+          printf 'SOURCE_SHA=%s\nVERSION=%s\nNETRATEL_REVIEW_SOURCE_SHA=%s\nNETRATEL_REVIEW_TEST_MERGE_SHA=%s\nNETRATEL_DOTNET_SDK_VERSION=%s\n' \
+            "$source_sha" "$version" "$source_sha" "$source_sha" "$NETRATEL_DOTNET_SDK_VERSION" >> "$GITHUB_ENV"
+          mkdir -p TestResults
+          python3 - "$source_sha" "$version" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          identity = {"suite": "selected-flows-browser", "sourceSha": sys.argv[1], "productVersion": sys.argv[2],
+                      "dotnetSdkVersion": os.environ["NETRATEL_DOTNET_SDK_VERSION"],
+                      "runId": os.environ["GITHUB_RUN_ID"], "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                      "workflowEventSha": os.environ["GITHUB_SHA"],
+                      "classes": os.environ["BROWSER_CLASSES"].split(),
+                      "excludedTraits": ["category=compose", "category=hosted"]}
+          Path("TestResults/selected-source.json").write_text(json.dumps(identity, indent=2) + "\n")
+          PY
+      - name: Restore and build the browser test assembly
+        shell: bash
+        run: |
+          set -euo pipefail
+          project=src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj
+          dotnet restore "$project"
+          dotnet build "$project" --configuration Release --no-restore
+      - name: Install the pinned Playwright Chromium browser
+        run: pwsh src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
+      - name: Run the selected browser classes
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r -a selected_classes <<< "$BROWSER_CLASSES"
+          dotnet test --project src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
+            --configuration Release --no-build --no-restore --max-parallel-test-modules 1 \
+            --filter-class "${selected_classes[@]}" --filter-not-trait category=compose category=hosted \
+            --minimum-expected-tests 17 --results-directory TestResults/browser \
+            --report-trx --report-trx-filename browser.trx
+      - name: Verify nonzero complete browser execution
+        if: always()
+        shell: bash
+        run: python3 tools/ci/verify-mtp-trx.py TestResults/browser/browser.trx --expected-executed 17
+      - name: Retain selected TRX, screenshots and sanitized receipts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: selected-flows-browser-evidence
+          path: |
+            TestResults
+            src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright
+          if-no-files-found: error
+          retention-days: 14
