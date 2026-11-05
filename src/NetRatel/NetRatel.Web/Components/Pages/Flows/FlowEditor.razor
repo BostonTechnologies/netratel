@@ -96,7 +96,7 @@
             </aside>
             }
             <MudDropZone T="FlowNodeKind" Identifier="canvas" OnlyZone="true" Class="flow-canvas-column">
-                <FlowCanvas @key="_adapter" @ref="_canvas" Adapter="_adapter" Connectors="Connectors" ReadOnly="@(ReadOnly || !CanEdit || _busy)" SelectedNodeId="_selected" Selected="SelectNodeAsync" Settings="OpenPropertiesAsync" Delete="RequestRemoveAsync" Changed="CheckDirty" Ready="CanvasReady" InitialViewport="_initialViewport" />
+                <FlowCanvas @key="_adapter" @ref="_canvas" Adapter="_adapter" TenantId="Definition.TenantId" Connectors="Connectors" ReadOnly="@(ReadOnly || !CanEdit || _busy)" SelectedNodeId="_selected" Selected="SelectNodeAsync" Settings="OpenPropertiesAsync" Delete="RequestRemoveAsync" Changed="CheckDirty" Ready="CanvasReady" InitialViewport="_initialViewport" />
             </MudDropZone>
             @if (_showProperties)
             {
@@ -385,6 +385,7 @@
     public async Task RequestLeaveAsync(Func<Task> destination)
     {
         if (_busy || _disposed || _pendingLeave is not null) return;
+        if (_showDryRun) await ClosePreviewAsync();
         if (_pendingDelete is not null) await KeepNodeAsync();
         if (_dirty) { ++_leaveDialogGeneration; _pendingLeave = destination; await InvokeAsync(StateHasChanged); return; }
         await destination();

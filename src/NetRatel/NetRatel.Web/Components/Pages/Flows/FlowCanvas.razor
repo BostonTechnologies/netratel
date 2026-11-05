@@ -91,6 +91,7 @@
 @code {
     [Parameter, EditorRequired] public FlowCanvasAdapter Adapter { get; set; } = default!;
     [Parameter] public bool ReadOnly { get; set; }
+    [Parameter] public int TenantId { get; set; }
     [Parameter] public IReadOnlyList<FlowConnectorReferenceDto> Connectors { get; set; } = [];
     [Parameter] public Guid? SelectedNodeId { get; set; }
     [Parameter] public EventCallback<Guid> Selected { get; set; }
@@ -166,7 +167,7 @@
         FlowNodeKind.CreateIncident => ConnectorName(node),
         _ => "Configure this node"
     };
-    private string ConnectorName(FlowNodeDto node) => Connectors.FirstOrDefault(connector => connector.Id == node.ConnectorId)?.Name ?? "Select a connection";
+    private string ConnectorName(FlowNodeDto node) => Connectors.FirstOrDefault(connector => connector.Id == node.ConnectorId && connector.TenantId == TenantId)?.Name ?? "Select a connection";
     private string CompatibleTargets(Guid source)
     {
         if (_compatibleTargets.TryGetValue(source, out var cached)) return cached;
@@ -206,7 +207,8 @@
     });
     private async Task CreateConnectionAsync(Guid source, Guid target)
     {
-        if (_disposed || ReadOnly || _committingConnection) return;
+        if (_disposed || ReadOnly) return;
+        if (_committingConnection) { _connectionMessage = "Wait for the current connection before starting another."; return; }
         if (Adapter.ConnectionRejection(source, target) is { } reason) { _connectionMessage = reason; return; }
         _committingConnection = true;
         try

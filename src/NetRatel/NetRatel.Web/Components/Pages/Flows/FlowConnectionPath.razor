@@ -11,13 +11,14 @@
        data-veloxdev-sender-slot="@WorkflowRuntimeIds.Get(Link.Sender)"
        data-veloxdev-receiver-slot="@WorkflowRuntimeIds.Get(Link.Receiver)"
        data-flow-source-node="@Source" data-flow-target-node="@Target">
+        <defs><marker id="@ArrowId" viewBox="0 0 10 8" refX="20" refY="4" markerWidth="10" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="M 0 0 L 10 4 L 0 8 Z" fill="@(Selected ? "var(--mud-palette-secondary)" : "var(--mud-palette-primary)")" /></marker></defs>
         <path d="@path" class="flow-connection-hit" fill="none" stroke="transparent" stroke-width="16"
               pointer-events="stroke" tabindex="0" role="button" aria-label="@Label"
               @onclick="SelectAsync" @onclick:stopPropagation @onfocus="SelectAsync" @onkeydown="KeyDown"
               data-testid="flow-link-hit" />
         <path d="@path" class="flow-connection-line" data-veloxdev-link-curve="1" fill="none"
               stroke="@(Selected ? "var(--mud-palette-secondary)" : "var(--mud-palette-primary)")"
-              stroke-width="@(Selected ? "4" : "3")" pointer-events="none" data-testid="flow-link"
+              stroke-width="@(Selected ? "4" : "3")" marker-end="@($"url(#{ArrowId})")" pointer-events="none" data-testid="flow-link"
               data-flow-source-node="@Source" data-flow-target-node="@Target" />
     </g>
 }
@@ -32,6 +33,7 @@
     private IWorkflowLinkViewModel? _subscribed;
     private bool _disposed;
     private string Path => BuildCurve();
+    private string ArrowId => "flow-arrow-" + WorkflowRuntimeIds.Get(Link);
     protected override void OnParametersSet()
     {
         if (ReferenceEquals(Link, _subscribed)) return;

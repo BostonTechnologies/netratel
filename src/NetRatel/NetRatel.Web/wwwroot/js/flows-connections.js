@@ -90,6 +90,7 @@ export function attach(id, reference) {
         event.preventDefault(); event.stopPropagation();
         if (writable()) port.querySelector('button')?.click();
     };
+    const cancelPointer = () => { if (gesture) cancel(); };
     const keys = event => {
         if (event.key !== 'Escape' || (!gesture && !panel.dataset.connectionStart)) return;
         event.preventDefault(); event.stopImmediatePropagation(); cancel();
@@ -129,8 +130,8 @@ export function attach(id, reference) {
     panel.addEventListener('touchstart', touch, { capture: true, passive: false });
     document.addEventListener('pointermove', move);
     document.addEventListener('pointerup', up);
-    document.addEventListener('pointercancel', cancel);
-    document.addEventListener('lostpointercapture', cancel);
+    document.addEventListener('pointercancel', cancelPointer);
+    document.addEventListener('lostpointercapture', cancelPointer);
     document.addEventListener('keydown', keys, true);
     window.addEventListener('blur', cancel);
     canvases.set(id, () => {
@@ -140,7 +141,7 @@ export function attach(id, reference) {
         panel.removeEventListener('pointerdown', down, true); panel.removeEventListener('mousedown', mouseGuard, true); panel.removeEventListener('click', clickGuard, true);
         panel.removeEventListener('touchstart', touch, true);
         document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up);
-        document.removeEventListener('pointercancel', cancel); document.removeEventListener('lostpointercapture', cancel);
+        document.removeEventListener('pointercancel', cancelPointer); document.removeEventListener('lostpointercapture', cancelPointer);
         document.removeEventListener('keydown', keys, true); window.removeEventListener('blur', cancel);
         ghost()?.setAttribute('hidden', 'hidden');
     });
