@@ -170,7 +170,7 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
                 }]
             };
             return lease with { Version = lease.Version with { Graph = graph,
-                ConfigurationHash = FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(graph, Json)) } };
+                ConfigurationHash = FlowGraphSerialization.Hash(graph) } };
         });
         await using var db = new OrchestratorDbContext(_options);
         var pin = original.Snapshot with
@@ -497,7 +497,7 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
             return current with
             {
                 Version = current.Version with { Graph = graph,
-                    ConfigurationHash = FlowContractValidation.Hash(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(graph, Json))) },
+                    ConfigurationHash = FlowGraphSerialization.Hash(graph) },
                 Event = current.Event with { EventId = source.EventId, OccurrenceId = source.OccurrenceId,
                     OccurredAtUtc = source.OccurredAtUtc, ExecutionEvent = source }
             };
@@ -602,7 +602,7 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         var flow = Guid.NewGuid(); var versionId = Guid.NewGuid(); var runId = Guid.NewGuid();
         var authority = new FlowExecutionAuthorityDto("operator");
         var version = new FlowVersionDto(versionId, flow, 7, 1, graph,
-            FlowContractValidation.Hash(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(graph, Json))), "operator", now);
+            FlowGraphSerialization.Hash(graph), "operator", now);
         var envelope = new FlowEventEnvelope(7, Guid.NewGuid(), Guid.NewGuid(), versionId, now,
             new(agent, Guid.NewGuid(), "Synthetic rule", "Synthetic worker", "resource", "metric", "Warning", 1, null, now), authority);
         var lease = new FlowRunLease(runId, Guid.NewGuid(), Guid.NewGuid(), 1, now.AddMinutes(2),
@@ -610,9 +610,9 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         lease = configureLease?.Invoke(lease) ?? lease;
         version = lease.Version; envelope = lease.Event; graph = version.Graph;
         db.FlowDefinitions.Add(new() { Id = flow, TenantId = 7, Name = "Synthetic flow", Enabled = true,
-            DraftJson = JsonSerializer.Serialize(graph, Json) });
+            DraftJson = FlowGraphSerialization.Serialize(graph) });
         db.FlowVersions.Add(new() { Id = versionId, TenantId = 7, FlowId = flow, VersionNumber = 1,
-            GraphJson = JsonSerializer.Serialize(graph, Json), ConfigurationHash = version.ConfigurationHash,
+            GraphJson = FlowGraphSerialization.Serialize(graph), ConfigurationHash = version.ConfigurationHash,
             PublishedBy = "operator", PublishedAtUtc = now, ExecutionAuthorityJson = JsonSerializer.Serialize(authority, Json) });
         var checkpoint = new FlowNodeCheckpointDto(nodeId, 1, 1, FlowNodeProgress.Dispatching,
             FlowActionKeys.Create(lease, nodeId), envelope.OccurredAtUtc, envelope.OccurredAtUtc.AddMinutes(10));

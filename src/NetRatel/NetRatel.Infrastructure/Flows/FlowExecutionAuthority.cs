@@ -57,7 +57,7 @@ public sealed class FlowExecutionAuthority(OrchestratorDbContext db, IFlowExecut
         if (version is null || version.ExecutionAuthorityJson is null ||
             JsonSerializer.Deserialize<FlowExecutionAuthorityDto>(version.ExecutionAuthorityJson, Json) != lease.Event.Authority ||
             version.ConfigurationHash != lease.Version.ConfigurationHash ||
-            version.ConfigurationHash != FlowContractValidation.Hash(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(lease.Version.Graph, Json))) ||
+            version.ConfigurationHash != FlowGraphSerialization.Hash(lease.Version.Graph) ||
             !lease.Version.Graph.Nodes.Any(node => node.Id == identity.NodeId &&
                 node.Kind is FlowNodeKind.RunJob or FlowNodeKind.RunLibraryScript or FlowNodeKind.RerunOriginalExecution) ||
             !await db.FlowRuntimeIdentity.AsNoTracking().AnyAsync(row => row.Id == 1 && row.SourceInstanceId == lease.SourceInstanceId, ct))
@@ -138,7 +138,7 @@ public sealed class FlowExecutionAuthority(OrchestratorDbContext db, IFlowExecut
                 FlowRunStatus.AwaitingApproval or FlowRunStatus.WaitingForExecution) ||
             graph is null || !FlowGraphV2Validator.ValidatePublished(graph).Valid || publishedAuthority is null ||
             publishedAuthority != input.Authority || version.PublishedBy != publishedAuthority.PrincipalId ||
-            version.ConfigurationHash != FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(graph, Json)) ||
+            version.ConfigurationHash != FlowGraphSerialization.Hash(graph) ||
             !graph.Nodes.Any(node => node.Id == identity.NodeId &&
                 node.Kind is FlowNodeKind.RunJob or FlowNodeKind.RunLibraryScript or FlowNodeKind.RerunOriginalExecution) ||
             source is null || source.SourceInstanceId == Guid.Empty ||

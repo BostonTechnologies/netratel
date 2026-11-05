@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text;
 using System.Text.Json;
 using AwesomeAssertions;
 using Microsoft.EntityFrameworkCore;
@@ -274,19 +273,19 @@ public sealed partial class JobRunOwnedBoundaryPostgresTests
         graph = capture.Graph;
         Assert.True(FlowGraphV2Validator.ValidatePublished(graph).Valid);
         var at = h.Clock.GetUtcNow().AddMinutes(-1);
-        var graphJson = JsonSerializer.Serialize(graph, StepJson);
+        var graphJson = FlowGraphSerialization.Serialize(graph);
         var definition = new FlowDefinitionRecord { Id = flowId, TenantId = 7, Name = "Synthetic native recovery",
             Revision = 1, Enabled = true, EnabledSinceUtc = at, DraftJson = graphJson, CreatedAtUtc = at, UpdatedAtUtc = at };
         db.FlowDefinitions.Add(definition);
         db.FlowVersions.Add(new() { Id = versionId, TenantId = 7, FlowId = flowId, VersionNumber = 1,
-            GraphJson = graphJson, ConfigurationHash = FlowContractValidation.Hash(Encoding.UTF8.GetBytes(graphJson)),
+            GraphJson = graphJson, ConfigurationHash = FlowGraphSerialization.Hash(graph),
             PublishedBy = RecoveryOperator, PublishedAtUtc = at, ExecutionAuthorityJson = JsonSerializer.Serialize(authority, StepJson),
             ProtectedExecutionPinsJson = capture.ProtectedPinsJson });
         await db.SaveChangesAsync(ct);
         definition.PublishedVersionId = versionId; definition.PublishedVersionNumber = 1;
         await db.SaveChangesAsync(ct);
         var version = new FlowVersionDto(versionId, flowId, 7, 1, graph,
-            FlowContractValidation.Hash(Encoding.UTF8.GetBytes(graphJson)), RecoveryOperator, at);
+            FlowGraphSerialization.Hash(graph), RecoveryOperator, at);
         return new(version, script, trigger.Id, investigation.Id, repair.Id, rerun.Id, recovered.Id);
     }
 }
