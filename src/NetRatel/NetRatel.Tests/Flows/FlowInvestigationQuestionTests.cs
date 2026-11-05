@@ -39,6 +39,18 @@ public sealed class FlowInvestigationQuestionTests
     }
 
     [Fact]
+    public void Request_source_is_retained_when_there_is_no_job_definition_name()
+    {
+        var draft = Create();
+        draft = draft with { Event = draft.Event with { ExecutionEvent = draft.Event.ExecutionEvent! with
+        {
+            SourceKind = FlowExecutionSourceKind.Request, RequestKind = "synthetic-gateway",
+            Definition = new(null), Provenance = FlowExecutionEventProvenance.RequestStateCommit
+        } } };
+        Assert.Contains("Request source: synthetic-gateway", FlowInvestigationQuestion.Compose(draft));
+    }
+
+    [Fact]
     public void Captured_JSON_property_order_does_not_change_the_automated_question()
     {
         var draft = Create() with

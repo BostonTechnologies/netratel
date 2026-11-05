@@ -191,6 +191,7 @@ public sealed partial class NetclawPersistencePostgresTests
             Assert.Equal(prepared.Fields.Description, wire.Description);
             Assert.Contains("Original execution facts", wire.Description);
             Assert.Contains("Outcome: Unsupported", wire.Description);
+            Assert.Contains("Synthetic request target", wire.Description);
             Assert.Contains("NetRatel execution occurrence", wire.Description);
             Assert.DoesNotContain("NetRatel monitoring occurrence", wire.Description);
             Assert.Contains("/requests", wire.Description);

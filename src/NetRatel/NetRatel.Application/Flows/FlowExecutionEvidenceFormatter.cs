@@ -83,7 +83,10 @@ public static class FlowExecutionEvidenceFormatter
     {
         ValidateOriginal(original, original.TenantId);
         var text = new StringBuilder("Original execution facts\nProvenance: ").Append(Safe(original.Provenance, 64)).Append('\n');
-        text.Append("Source: ").Append(original.SourceKind).Append("\nOutcome: ").Append(original.Outcome)
+        text.Append("Source: ").Append(original.SourceKind);
+        if (original.SourceKind == FlowExecutionSourceKind.Request && original.RequestKind is not null)
+            text.Append("\nRequest source: ").Append(Safe(original.RequestKind, 128));
+        text.Append("\nOutcome: ").Append(original.Outcome)
             .Append("\nRaw status: ").Append(Safe(original.RawStatus, 64))
             .Append("\nDefinition: ").Append(Safe(original.Definition.Name, 128)).Append(" (")
             .Append(Safe(original.Definition.Id, FlowExecutionEventLimits.MaximumIdentifierLength)).Append(')')
