@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Requests;
 using NetRatel.Infrastructure.Persistence;
@@ -213,8 +214,14 @@ public static class ExecutionLifecycleOutbox
             var row = await query.AsNoTracking().SingleOrDefaultAsync(ct);
             if (row is null || row.ExecutionId != binding.ExecutionId || PositiveDecimal(row.JobDefinitionId) != PositiveDecimal(binding.JobDefinitionId) ||
                 row.TargetTenantId != binding.TenantId || row.TargetAgentId != binding.AgentId ||
-                row.SourceSystem != binding.SourceSystem || FlowExecutionOutcomes.FromAuthoritativeStatus(row.Status) is not null)
+                row.SourceSystem != binding.SourceSystem) continue;
+            if (FlowExecutionOutcomes.FromAuthoritativeStatus(row.Status) is not null)
+            {
+                if (details.Run.Status == JobRunState.TimedOut &&
+                    FlowExecutionOutcomes.FromAuthoritativeStatus(row.Status) == FlowExecutionOutcome.TimedOut)
+                    await RecordRequestAsync(db, row, string.Empty, details.Run.CompletedAtUtc ?? DateTimeOffset.UtcNow, ct);
                 continue;
+            }
             // Only a bounded reference is copied; the actual immutable terminal body remains in its canonical result.
             var result = JsonSerializer.Serialize(new { jobRunId = runId, status, resultHash });
             await requests.UpdateAsync(new(binding.RequestId, null, null, null, null, status,
@@ -231,9 +238,17 @@ public static class ExecutionLifecycleOutbox
             if (candidate.Request is { } request)
             {
                 if (HasSubmission(db, request)) value = value with { DefinitionSourceKind = FlowExecutionSourceKind.Job };
-                if (LinkedJob(db, request) is { } run) value = CorrelateJob(value, run);
+                if (LinkedJob(db, request) is { } run)
+                {
+                    value = CorrelateJob(value, run);
+                    if (FlowExecutionOutcomes.FromAuthoritativeStatus(value.RawStatus) == FlowExecutionOutcome.TimedOut)
+                        value = RequestTimeoutOutcome(value, run, Control(db, run.Id));
+                }
             }
             value = ApplyAdmission(value, Admission(db, value));
+            value = ApplyNativeScriptReplay(db, value);
+            if (!db.OutboxMessages.Local.Any(x => x.Id == value.EventId) &&
+                db.OutboxMessages.AsNoTracking().Any(x => x.Id == value.EventId)) continue;
             Append(db, value);
         }
     }
@@ -247,9 +262,17 @@ public static class ExecutionLifecycleOutbox
             if (candidate.Request is { } request)
             {
                 if (await HasTrustedSubmissionAsync(db, request, ct)) value = value with { DefinitionSourceKind = FlowExecutionSourceKind.Job };
-                if (await LinkedJobAsync(db, request, ct) is { } run) value = CorrelateJob(value, run);
+                if (await LinkedJobAsync(db, request, ct) is { } run)
+                {
+                    value = CorrelateJob(value, run);
+                    if (FlowExecutionOutcomes.FromAuthoritativeStatus(value.RawStatus) == FlowExecutionOutcome.TimedOut)
+                        value = RequestTimeoutOutcome(value, run, await ControlAsync(db, run.Id, ct));
+                }
             }
             value = ApplyAdmission(value, await AdmissionAsync(db, value, ct));
+            value = await ApplyNativeScriptReplayAsync(db, value, ct);
+            if (!db.OutboxMessages.Local.Any(x => x.Id == value.EventId) &&
+                await db.OutboxMessages.AsNoTracking().AnyAsync(x => x.Id == value.EventId, ct)) continue;
             Append(db, value);
         }
     }
@@ -261,8 +284,15 @@ public static class ExecutionLifecycleOutbox
         var value = RequestEvent(row, previousStatus, observedAtUtc);
         if (value is null) return;
         if (await HasTrustedSubmissionAsync(db, row, ct)) value = value with { DefinitionSourceKind = FlowExecutionSourceKind.Job };
-        if (await LinkedJobAsync(db, row, ct) is { } run) value = CorrelateJob(value, run);
+        if (await LinkedJobAsync(db, row, ct) is { } run)
+        {
+            value = CorrelateJob(value, run);
+            if (FlowExecutionOutcomes.FromAuthoritativeStatus(value.RawStatus) == FlowExecutionOutcome.TimedOut)
+                value = RequestTimeoutOutcome(value, run, await ControlAsync(db, run.Id, ct));
+        }
         value = ApplyAdmission(value, await AdmissionAsync(db, value, ct));
+        if (db.OutboxMessages.Local.Any(x => x.Id == value.EventId) ||
+            await db.OutboxMessages.AsNoTracking().AnyAsync(x => x.Id == value.EventId, ct)) return;
         Append(db, value);
     }
 
@@ -319,6 +349,8 @@ public static class ExecutionLifecycleOutbox
         if (row.TargetTenantId is not > 0 || row.Id <= 0 ||
             string.Equals(row.Status, previousStatus, StringComparison.OrdinalIgnoreCase) ||
             FlowExecutionOutcomes.FromAuthoritativeStatus(row.Status) is not { } outcome) return null;
+        var unprovedTimeout = outcome == FlowExecutionOutcome.TimedOut;
+        if (unprovedTimeout) outcome = FlowExecutionOutcome.Unknown;
         var id = row.Id.ToString(CultureInfo.InvariantCulture);
         // Browser claim/edit identifiers are descriptive until an immutable server-owned binding proves them.
         var attempt = id;
@@ -333,7 +365,7 @@ public static class ExecutionLifecycleOutbox
             CompletedAtUtc = row.UpdatedAtUtc,
             RequestKind = Bound(row.SourceSystem, FlowExecutionEventLimits.MaximumIdentifierLength),
             CorrelationId = "request:" + id,
-            ReasonCode = "request_" + outcome.ToString().ToLowerInvariant(),
+            ReasonCode = unprovedTimeout ? "request_timeout_evidence_unavailable" : "request_" + outcome.ToString().ToLowerInvariant(),
             Reason = Bound(row.ResultMessage, 512),
             Results = [new("request-result", id, Digest(row.ResultData), row.ResultData is not null)],
             Replay = new(FlowExecutionSourceKind.Request, definition, target, "request:" + id, id, attempt,
@@ -342,11 +374,12 @@ public static class ExecutionLifecycleOutbox
         };
     }
 
-    public static FlowExecutionEventDto? ScriptEvent(JobTaskActivityRecord row, string? previousStatus, DateTimeOffset observedAtUtc)
+    public static FlowExecutionEventDto? ScriptEvent(JobTaskActivityRecord row, string? previousStatus, DateTimeOffset observedAtUtc,
+        bool terminalEvidenceChanged = false)
     {
         if (row.TenantId is not > 0 || string.IsNullOrWhiteSpace(row.RequestId) ||
             row.TaskType is not (TaskKinds.ExecLibraryScript or TaskKinds.Legacy_RunLibraryScript) ||
-            string.Equals(row.Status, previousStatus, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(row.Status, previousStatus, StringComparison.OrdinalIgnoreCase) && !terminalEvidenceChanged ||
             FlowScriptExecutionOutcomes.ClassifyCommittedResult(row.Status, row.ExitCode, row.ResultJson) is not { } terminal) return null;
         var outcome = terminal.Outcome;
         var policy = TaskOutputProtection.Metadata(row);
@@ -357,9 +390,11 @@ public static class ExecutionLifecycleOutbox
         var result = TaskOutputProtection.Project(row, row.ResultJson);
         var id = row.RequestId;
         var parent = row.JobRunId?.ToString(CultureInfo.InvariantCulture);
-        return Create(row.TenantId.Value, FlowExecutionSourceKind.Script, definition, id, id, target,
-            outcome, row.Status.Trim(), observedAtUtc, observedAtUtc, row.CompletedAtUtc ?? row.CreatedAtUtc) with
+        var accepted = Create(row.TenantId.Value, FlowExecutionSourceKind.Script, definition, id, id, target,
+            outcome, row.Status.Trim(), observedAtUtc, observedAtUtc, row.CompletedAtUtc ?? row.CreatedAtUtc);
+        return accepted with
         {
+            EventId = Identity($"script-evidence|{accepted.EventId:N}|{terminal.ExitCode?.ToString(CultureInfo.InvariantCulture)}|{Digest(result)}"),
             StartedAtUtc = row.StartedAtUtc,
             CompletedAtUtc = row.CompletedAtUtc,
             ParentExecutionId = parent,
@@ -375,6 +410,18 @@ public static class ExecutionLifecycleOutbox
         };
     }
 
+    // Candidate capture and transaction ownership use the same native transition predicate.
+    internal static bool HasScriptTransition(EntityEntry<JobTaskActivityRecord> entry) =>
+        entry.State == EntityState.Added || entry.State == EntityState.Modified &&
+        (!string.Equals(entry.Property(row => row.Status).OriginalValue, entry.Entity.Status, StringComparison.OrdinalIgnoreCase) ||
+         ScriptTerminalEvidenceChanged(entry));
+
+    private static bool ScriptTerminalEvidenceChanged(EntityEntry<JobTaskActivityRecord> entry) =>
+        entry.State == EntityState.Modified &&
+        (entry.Property(row => row.ExitCode).OriginalValue != entry.Entity.ExitCode ||
+         !string.Equals(entry.Property(row => row.ResultJson).OriginalValue, entry.Entity.ResultJson, StringComparison.Ordinal) ||
+         entry.Property(row => row.CompletedAtUtc).OriginalValue != entry.Entity.CompletedAtUtc);
+
     private static IReadOnlyList<(FlowExecutionEventDto Event, RequestRecord? Request)> Candidates(OrchestratorDbContext db)
     {
         db.ChangeTracker.DetectChanges();
@@ -386,11 +433,11 @@ public static class ExecutionLifecycleOutbox
             var previous = entry.State == EntityState.Added ? null : entry.Property(x => x.Status).OriginalValue;
             if (RequestEvent(entry.Entity, previous, observed) is { } value) candidates.Add((value, entry.Entity));
         }
-        foreach (var entry in db.ChangeTracker.Entries<JobTaskActivityRecord>().Where(x => x.State is EntityState.Added or EntityState.Modified))
+        foreach (var entry in db.ChangeTracker.Entries<JobTaskActivityRecord>().Where(HasScriptTransition))
         {
-            if (entry.State == EntityState.Modified && !entry.Property(x => x.Status).IsModified) continue;
             var previous = entry.State == EntityState.Added ? null : entry.Property(x => x.Status).OriginalValue;
-            if (ScriptEvent(entry.Entity, previous, observed) is { } value) candidates.Add((value, null));
+            if (ScriptEvent(entry.Entity, previous, observed, ScriptTerminalEvidenceChanged(entry)) is { } value)
+                candidates.Add((value, null));
         }
         return candidates;
     }
@@ -500,6 +547,35 @@ public static class ExecutionLifecycleOutbox
         catch (JsonException) { return false; }
     }
 
+    private static JobRunControlRecord? Control(OrchestratorDbContext db, long runId) =>
+        db.Set<JobRunControlRecord>().Local.SingleOrDefault(x => x.RunId == runId) ??
+        db.Set<JobRunControlRecord>().AsNoTracking().SingleOrDefault(x => x.RunId == runId);
+
+    private static Task<JobRunControlRecord?> ControlAsync(OrchestratorDbContext db, long runId, CancellationToken ct) =>
+        db.Set<JobRunControlRecord>().Local.SingleOrDefault(x => x.RunId == runId) is { } local
+            ? Task.FromResult<JobRunControlRecord?>(local)
+            : db.Set<JobRunControlRecord>().AsNoTracking().SingleOrDefaultAsync(x => x.RunId == runId, ct);
+
+    private static FlowExecutionEventDto RequestTimeoutOutcome(FlowExecutionEventDto value, JobRunRecord run,
+        JobRunControlRecord? control)
+    {
+        if (FlowExecutionOutcomes.FromAuthoritativeStatus(value.RawStatus) != FlowExecutionOutcome.TimedOut ||
+            run.Status != (int)JobRunState.TimedOut || control?.RunId != run.Id ||
+            control.TerminalReadyAtUtc is null || control.TerminalResultHash is not { Length: 64 } hash ||
+            !hash.All(char.IsAsciiHexDigit)) return value;
+        // Mutable request labels do not establish deadlines. The accepted native result does.
+        // Its immutable hash gives duplicate/backfill delivery a stable identity even if the raw
+        // request had already claimed timeout before its real parent result became ready.
+        return value with
+        {
+            EventId = Identity($"event|{value.OccurrenceId:N}|{(int)FlowExecutionOutcome.TimedOut}|{value.RawStatus.ToUpperInvariant()}|job-result|{hash}"),
+            Outcome = FlowExecutionOutcome.TimedOut,
+            ReasonCode = "request_timedout",
+            Reason = Bound(run.Error, 512),
+            Results = [.. (value.Results ?? []), new("job-result", Decimal(run.Id), hash, Available: true)]
+        };
+    }
+
     private static FlowExecutionEventDto CorrelateJob(FlowExecutionEventDto value, JobRunRecord run)
     {
         var id = Decimal(run.Id);
@@ -527,6 +603,54 @@ public static class ExecutionLifecycleOutbox
             supported ? null : "canonical_replay_material_unavailable");
     }
 
+    private static FlowExecutionEventDto ApplyNativeScriptReplay(OrchestratorDbContext db, FlowExecutionEventDto value)
+    {
+        if (value.SourceKind != FlowExecutionSourceKind.Script) return value;
+        var pinned = db.Set<ScriptExecutionReplayRecord>().Local.SingleOrDefault(row =>
+            row.RequestId == value.ExecutionId && row.TenantId == value.TenantId) ??
+            db.Set<ScriptExecutionReplayRecord>().AsNoTracking().SingleOrDefault(row =>
+                row.RequestId == value.ExecutionId && row.TenantId == value.TenantId);
+        return ApplyNativeScriptReplay(value, pinned);
+    }
+
+    private static async Task<FlowExecutionEventDto> ApplyNativeScriptReplayAsync(OrchestratorDbContext db,
+        FlowExecutionEventDto value, CancellationToken ct)
+    {
+        if (value.SourceKind != FlowExecutionSourceKind.Script) return value;
+        var pinned = db.Set<ScriptExecutionReplayRecord>().Local.SingleOrDefault(row =>
+            row.RequestId == value.ExecutionId && row.TenantId == value.TenantId) ??
+            await db.Set<ScriptExecutionReplayRecord>().AsNoTracking().SingleOrDefaultAsync(row =>
+                row.RequestId == value.ExecutionId && row.TenantId == value.TenantId, ct);
+        return ApplyNativeScriptReplay(value, pinned);
+    }
+
+    private static FlowExecutionEventDto ApplyNativeScriptReplay(FlowExecutionEventDto value,
+        ScriptExecutionReplayRecord? pinned)
+    {
+        // Only the canonical activity's exact protected script payload can advertise script replay.
+        // A child task never substitutes its parent job. Admission independently decrypts and
+        // verifies this material and current authority before creating another native execution.
+        if (pinned is null || value.SourceKind != FlowExecutionSourceKind.Script ||
+            pinned.RequestId != value.ExecutionId || pinned.TenantId != value.TenantId ||
+            pinned.AgentId == Guid.Empty || pinned.AgentId != value.Target.AgentId ||
+            pinned.ScriptId <= 0 || pinned.ScriptRevision <= 0 ||
+            value.Definition.Id != pinned.ScriptId.ToString(CultureInfo.InvariantCulture) ||
+            value.Definition.Revision != pinned.ScriptRevision.ToString(CultureInfo.InvariantCulture) ||
+            !IsReplayDigest(pinned.ScriptContentHash) || !IsReplayDigest(pinned.PayloadHash) ||
+            !string.Equals(value.Definition.ContentHash, pinned.ScriptContentHash, StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(pinned.ProtectedSnapshotJson)) return value;
+        var definition = new FlowExecutionDefinitionDto(pinned.ScriptId.ToString(CultureInfo.InvariantCulture),
+            Bound(pinned.ScriptName, 512), pinned.ScriptRevision.ToString(CultureInfo.InvariantCulture), pinned.ScriptContentHash);
+        return value with
+        {
+            Definition = definition,
+            Replay = new(FlowExecutionSourceKind.Script, definition, value.Target, "script-execution:" + value.ExecutionId,
+                value.ExecutionId, value.AttemptId, true)
+        };
+    }
+
+    private static bool IsReplayDigest(string? hash) => hash is { Length: 64 } && hash.All(char.IsAsciiHexDigit);
+
     private static IQueryable<ExecutionAdmissionRecord> Admissions(OrchestratorDbContext db, FlowExecutionEventDto value)
     {
         var kind = value.SourceKind == FlowExecutionSourceKind.Script && value.ParentExecutionId is null
@@ -548,12 +672,15 @@ public static class ExecutionLifecycleOutbox
         ExecutionAdmissionCausation? cause = null;
         if (admission.CausationJson is { } json)
         {
-            if (Encoding.UTF8.GetByteCount(json) > 2048)
+            if (Encoding.UTF8.GetByteCount(json) > 8192)
                 throw new InvalidOperationException("Accepted execution causation exceeds its metadata budget.");
             cause = JsonSerializer.Deserialize<ExecutionAdmissionCausation>(json)
                 ?? throw new InvalidOperationException("Accepted execution causation is unavailable.");
         }
         var denied = value.Outcome == FlowExecutionOutcome.Failed && admission.AuthorityDeniedAtUtc is not null;
+        var linkedRerun = !string.IsNullOrWhiteSpace(cause?.SourceExecutionId) &&
+            (value.SourceKind == FlowExecutionSourceKind.Job ||
+             value.SourceKind == FlowExecutionSourceKind.Script && value.ParentExecutionId is null);
         var replay = value.Replay;
         if (admission.Kind == (int)ExecutionAdmissionKind.LibraryScript && value.SourceKind == FlowExecutionSourceKind.Script &&
             value.Definition.Id is not null && value.Definition.Revision is not null &&
@@ -565,6 +692,8 @@ public static class ExecutionLifecycleOutbox
         {
             Outcome = denied ? FlowExecutionOutcome.Denied : value.Outcome,
             ReasonCode = denied ? "execution_authority_denied" : value.ReasonCode,
+            ParentExecutionId = linkedRerun ? cause!.SourceExecutionId : value.ParentExecutionId,
+            RootExecutionId = linkedRerun ? cause!.RootExecutionId ?? cause.SourceExecutionId : value.RootExecutionId,
             Causation = new(cause?.RootOccurrenceId ?? value.OccurrenceId.ToString("N"), cause?.ParentEventId,
                 admission.FlowRunId, admission.NodeId, cause?.HopCount ?? 0, cause?.RecoveryAttempt ?? 0),
             Replay = replay

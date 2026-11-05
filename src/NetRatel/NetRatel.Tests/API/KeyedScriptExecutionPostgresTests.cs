@@ -290,8 +290,32 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
     [Fact]
     public async Task Original_native_script_rerun_keeps_full_source_identity_null_parameters_shell_target_and_runtime_after_edits()
     {
-        var original = await SeedAsync();
         var requestId = "9007199254740997-native-" + new string('x', 180);
+        FlowExecutionReplayDescriptorDto replay = null!;
+        FlowExecutionEventDto source = null!;
+        var original = await SeedAsync(current =>
+        {
+            var selected = current.Version.Graph.Nodes[0];
+            var definition = selected.ExecutionAction!.Definition;
+            replay = new(FlowExecutionSourceKind.Script, definition, selected.ExecutionAction.Target!,
+                "script-execution:" + requestId, requestId, requestId, true);
+            var occurred = current.Event.OccurredAtUtc;
+            source = new(Guid.NewGuid(), Guid.NewGuid(), 7, FlowExecutionSourceKind.Script,
+                definition, requestId, requestId, replay.Target, FlowExecutionOutcome.Failed, "Failed", occurred, occurred)
+            {
+                Replay = replay, ExitCode = 1, CompletedAtUtc = occurred,
+                RootExecutionId = "9007199254740993-synthetic-original-root", Provenance = "script-terminal-commit"
+            };
+            var rerun = new FlowNodeDto(selected.Id, FlowNodeKind.RerunOriginalExecution, "Rerun original", new(0, 0)) { Rerun = new() };
+            var graph = new FlowGraphDto(2, [rerun], [], new());
+            return current with
+            {
+                Version = current.Version with { Graph = graph,
+                    ConfigurationHash = FlowContractValidation.Hash(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(graph, Json))) },
+                Event = current.Event with { EventId = source.EventId, OccurrenceId = source.OccurrenceId,
+                    OccurredAtUtc = source.OccurredAtUtc, ExecutionEvent = source }
+            };
+        });
         var schema = new ScriptParamInfo(1, original.Snapshot.Script.Id, "optional", "string", false,
             "must-not-be-added-during-replay", null, null);
         var pin = original.Snapshot with { Parameters = [schema] };
@@ -303,24 +327,9 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
             Preferred = ShellExecutor.Bash, Parameters = null, TimeoutSeconds = 37,
             WorkingDirectory = "/tmp/synthetic-original", OutputPolicy = policy
         };
-        var replay = new FlowExecutionReplayDescriptorDto(FlowExecutionSourceKind.Script,
-            new(pin.Script.Id.ToString(), pin.Script.Name, pin.Script.SourceRevision.ToString(), pin.ContentHash),
-            new(original.AgentId, "Synthetic source"), "script-execution:" + requestId, requestId, requestId, true);
-        var now = DateTimeOffset.UtcNow;
-        var source = new FlowExecutionEventDto(Guid.NewGuid(), Guid.NewGuid(), 7, FlowExecutionSourceKind.Script,
-            replay.Definition, requestId, requestId, replay.Target, FlowExecutionOutcome.Failed, "Failed", now, now)
-            { Replay = replay, ExitCode = 1, CompletedAtUtc = now, RootExecutionId = "9007199254740993-synthetic-original-root",
-                Provenance = "script-activity-state-commit" };
-        var node = new FlowNodeDto(original.Identity.NodeId, FlowNodeKind.RerunOriginalExecution, "Rerun original", new(0, 0))
-            { Rerun = new() };
-        var graph = new FlowGraphDto(2, [node], [], new());
-        var graphJson = JsonSerializer.Serialize(graph, Json);
-        var lease = original.FlowLease! with
-        {
-            Version = original.FlowLease.Version with { Graph = graph, ConfigurationHash = FlowContractValidation.Hash(Encoding.UTF8.GetBytes(graphJson)) },
-            Event = original.FlowLease.Event with { EventId = source.EventId, OccurrenceId = source.OccurrenceId,
-                OccurredAtUtc = source.OccurredAtUtc, ExecutionEvent = source }
-        };
+        var lease = original.FlowLease!;
+        var node = lease.Version.Graph.Nodes[0];
+        var now = source.OccurredAtUtc;
         await using (var setup = new OrchestratorDbContext(_options))
         {
             await using (var transaction = await setup.Database.BeginTransactionAsync())
@@ -336,14 +345,6 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
                 now, ResultJson: """{"exitCode":1}""", ExitCode: 1));
             await new ScriptService(setup).UpdateAsync(new(pin.Script.Id, null, null, null,
                 "printf changed-native-source", null, null, pin.Script.SourceRevision));
-            var version = await setup.FlowVersions.SingleAsync();
-            setup.Entry(version).Property(row => row.GraphJson).CurrentValue = graphJson;
-            setup.Entry(version).Property(row => row.ConfigurationHash).CurrentValue = lease.Version.ConfigurationHash;
-            var run = await setup.FlowRuns.SingleAsync();
-            run.EventId = source.EventId; run.OccurrenceId = source.OccurrenceId;
-            run.EventJson = JsonSerializer.Serialize(lease.Event, Json);
-            run.EventFingerprint = FlowContractValidation.Hash(Encoding.UTF8.GetBytes(run.EventJson));
-            await setup.SaveChangesAsync();
         }
         FlowExecutionActionDispatcher Dispatcher(OrchestratorDbContext context) => new(context, new Pins(null), new NoJobs(),
             Service(context), new JobRunService(context, _keys), new ExecutionAdmissionStore(context, _keys, TimeProvider.System),
@@ -379,7 +380,7 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
             new FlowExecutionAuthority(db, new Verifier(), _access, _source, clock ?? TimeProvider.System), _commands, clock ?? TimeProvider.System,
             new ScriptExecutionReplayStore(db, _keys, clock ?? TimeProvider.System));
 
-    private async Task<KeyedScriptAdmissionRequest> SeedAsync()
+    private async Task<KeyedScriptAdmissionRequest> SeedAsync(Func<FlowRunLease, FlowRunLease>? configureLease = null)
     {
         await using var db = new OrchestratorDbContext(_options);
         var now = new DateTimeOffset(DateTimeOffset.UtcNow.UtcTicks / 10 * 10, TimeSpan.Zero);
@@ -401,6 +402,8 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
             new(agent, Guid.NewGuid(), "Synthetic rule", "Synthetic worker", "resource", "metric", "Warning", 1, null, now), authority);
         var lease = new FlowRunLease(runId, Guid.NewGuid(), Guid.NewGuid(), 1, now.AddMinutes(2),
             Guid.NewGuid(), version, envelope, 1);
+        lease = configureLease?.Invoke(lease) ?? lease;
+        version = lease.Version; envelope = lease.Event; graph = version.Graph;
         db.FlowDefinitions.Add(new() { Id = flow, TenantId = 7, Name = "Synthetic flow", Enabled = true,
             DraftJson = JsonSerializer.Serialize(graph, Json) });
         db.FlowVersions.Add(new() { Id = versionId, TenantId = 7, FlowId = flow, VersionNumber = 1,

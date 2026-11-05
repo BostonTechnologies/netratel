@@ -19,7 +19,7 @@ public sealed class FlowExecutionLifecycleOutboxTests
     [InlineData("Success", FlowExecutionOutcome.Succeeded)]
     [InlineData("Completed", FlowExecutionOutcome.Succeeded)]
     [InlineData("Failed", FlowExecutionOutcome.Failed)]
-    [InlineData("TimedOut", FlowExecutionOutcome.TimedOut)]
+    [InlineData("TimedOut", FlowExecutionOutcome.Unknown)]
     [InlineData("Unknown", FlowExecutionOutcome.Unknown)]
     public async Task Request_only_terminal_transition_is_durable_without_a_job(string status, FlowExecutionOutcome expected)
     {
@@ -191,12 +191,19 @@ public sealed class FlowExecutionLifecycleOutboxTests
         Assert.Equal(node, fact.Causation.NodeId);
         Assert.Equal(2, fact.Causation.HopCount);
         Assert.Equal(1, fact.Causation.RecoveryAttempt);
+        Assert.Equal("42", fact.ParentExecutionId);
+        Assert.Equal("42", fact.RootExecutionId);
     }
 
     [Theory]
     [InlineData("Completed", 1, "{\"exitCode\":1}", FlowExecutionOutcome.Failed)]
     [InlineData("Completed", 0, "{\"exitCode\":0}", FlowExecutionOutcome.Succeeded)]
     [InlineData("Completed", null, "{}", FlowExecutionOutcome.Unknown)]
+    [InlineData("Completed", 0, "{invalid", FlowExecutionOutcome.Unknown)]
+    [InlineData("Failed", 1, "{invalid", FlowExecutionOutcome.Unknown)]
+    [InlineData("TimedOut", -1, "{invalid", FlowExecutionOutcome.TimedOut)]
+    [InlineData("Cancelled", null, "{invalid", FlowExecutionOutcome.Cancelled)]
+    [InlineData("Unknown", null, "{invalid", FlowExecutionOutcome.Unknown)]
     [InlineData("Failed", -1, "{\"exitCode\":-1,\"timedOut\":true}", FlowExecutionOutcome.TimedOut)]
     [InlineData("Failed", -1, "{\"exitCode\":-1,\"timedOut\":true,\"outcomeUnknown\":true}", FlowExecutionOutcome.Unknown)]
     [InlineData("Failed", null, "{\"cancelled\":true}", FlowExecutionOutcome.Cancelled)]
@@ -266,19 +273,23 @@ public sealed class FlowExecutionLifecycleOutboxTests
         Assert.Equal(1, allocations);
     }
 
-    [Fact]
-    public async Task Caller_claimed_execution_cannot_manufacture_parent_or_replay_authority()
+    [Theory]
+    [InlineData("Failed", FlowExecutionOutcome.Failed)]
+    [InlineData("TimedOut", FlowExecutionOutcome.Unknown)]
+    public async Task Caller_claimed_execution_cannot_manufacture_parent_timeout_or_replay_authority(string rawStatus, FlowExecutionOutcome expected)
     {
         await using var db = Memory();
         var agent = Guid.NewGuid();
         var now = DateTimeOffset.UtcNow;
         db.JobRuns.Add(new() { Id = 42, JobId = 41, TenantId = 7, AgentId = agent, StartedBy = "synthetic-source",
-            Status = (int)JobRunState.Failed, CreatedAtUtc = now });
+            Status = (int)(rawStatus == "TimedOut" ? JobRunState.TimedOut : JobRunState.Failed), CreatedAtUtc = now });
+        db.Set<JobRunControlRecord>().Add(new() { RunId = 42, TerminalReadyAtUtc = now, TerminalResultHash = new string('a', 64) });
         await db.SaveChangesAsync();
         var requests = new RequestService(db, new EphemeralDataProtectionProvider());
         var request = await requests.CreateAsync(new("synthetic-source", string.Empty, "41", null, 7, agent));
-        await requests.UpdateAsync(new(request.Id, null, null, null, "42", "Failed", null, null, null, null));
+        await requests.UpdateAsync(new(request.Id, null, null, null, "42", rawStatus, null, null, null, null));
         var fact = Read(await db.OutboxMessages.SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType));
+        Assert.Equal(expected, fact.Outcome);
         Assert.Equal("request:" + request.Id, fact.CorrelationId);
         Assert.Equal(request.Id.ToString(), fact.AttemptId);
         Assert.Null(fact.ParentExecutionId);
@@ -319,6 +330,140 @@ public sealed class FlowExecutionLifecycleOutboxTests
         Assert.Equal(terminal.UpdatedAtUtc, afterRetry.UpdatedAtUtc);
         Assert.Equal(savedPayload, (await db.OutboxMessages.SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType)).PayloadJson);
         Assert.Equal("job-run:42", fact.CorrelationId);
+    }
+
+    [Fact]
+    public async Task Request_timeout_requires_accepted_terminal_ready_proof_and_later_verification_is_idempotent()
+    {
+        await using var db = Memory();
+        var agent = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        db.JobRuns.Add(new() { Id = 42, JobId = 41, TenantId = 7, AgentId = agent, StartedBy = "synthetic-source",
+            Status = (int)JobRunState.TimedOut, CreatedAtUtc = now, CompletedAtUtc = now });
+        var control = new JobRunControlRecord { RunId = 42 };
+        db.Set<JobRunControlRecord>().Add(control);
+        await db.SaveChangesAsync();
+        var requests = new RequestService(db, new EphemeralDataProtectionProvider());
+        var request = await requests.CreateAsync(new("synthetic-source", string.Empty, "41", null, 7, agent));
+        var run = new JobRunInfo(42, 41, 7, string.Empty, "synthetic-source", JobRunState.TimedOut, 0,
+            now, null, now, "Authoritative native deadline.", null, null, agent);
+        await ExecutionLifecycleOutbox.RecordAcceptedRequestJobBindingAsync(db, request, run, default);
+        await db.SaveChangesAsync();
+        var claimed = (await requests.UpdateAsync(new(request.Id, null, null, null, "42", "TimedOut",
+            "Unproved timeout claim.", null, null, null)))!;
+        var unproved = Read(await db.OutboxMessages.SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType));
+        Assert.Equal(FlowExecutionOutcome.Unknown, unproved.Outcome);
+        Assert.Equal("TimedOut", unproved.RawStatus);
+        Assert.Equal("request_timeout_evidence_unavailable", unproved.ReasonCode);
+        var details = new JobRunDetails(run, [], []);
+        var resultHash = JobRunProjectionHash.Compute(details);
+        control.TerminalReadyAtUtc = now;
+        control.TerminalResultHash = resultHash;
+        await db.SaveChangesAsync();
+        await ExecutionLifecycleOutbox.ProjectAcceptedRequestTerminalsAsync(db, details, resultHash, requests, default);
+        await db.SaveChangesAsync();
+        var facts = (await db.OutboxMessages.Where(x => x.Type == FlowExecutionEventLimits.OutboxType).ToArrayAsync())
+            .Select(Read).ToArray();
+        Assert.Equal(2, facts.Length);
+        var verified = Assert.Single(facts, fact => fact.Outcome == FlowExecutionOutcome.TimedOut);
+        Assert.NotEqual(unproved.EventId, verified.EventId);
+        Assert.Equal(unproved.OccurrenceId, verified.OccurrenceId);
+        Assert.Equal("TimedOut", verified.RawStatus);
+        Assert.Contains(verified.Results!, value => value.Kind == "job-result" && value.ContentHash == resultHash);
+        await ExecutionLifecycleOutbox.ProjectAcceptedRequestTerminalsAsync(db, details, resultHash, requests, default);
+        await db.SaveChangesAsync();
+        Assert.Equal(2, await db.OutboxMessages.CountAsync(x => x.Type == FlowExecutionEventLimits.OutboxType));
+        Assert.Equal(claimed.UpdatedAtUtc, (await requests.GetAsync(request.Id))!.UpdatedAtUtc);
+    }
+
+    [Fact]
+    public async Task Late_script_result_writes_append_actual_terminal_evidence_without_mutating_earlier_facts()
+    {
+        await using var db = Memory();
+        var now = DateTimeOffset.UtcNow;
+        const string requestId = "synthetic-late-script";
+        db.JobTaskActivities.Add(new()
+        {
+            Id = 20, RequestId = requestId, TenantId = 7, AgentId = Guid.NewGuid(),
+            TaskType = TaskKinds.ExecLibraryScript, Status = "Completed", ScriptName = "Synthetic pinned script",
+            OutputProtectionJson = JsonSerializer.Serialize(TaskOutputPolicy.Create([], 91, 4, new string('A', 64))),
+            CreatedAtUtc = now.AddMinutes(-1), CompletedAtUtc = now
+        });
+        await db.SaveChangesAsync();
+        var first = await db.OutboxMessages.SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType);
+        var originalPayload = first.PayloadJson;
+        Assert.Equal(FlowExecutionOutcome.Unknown, Read(first).Outcome);
+        Assert.False(Assert.Single(Read(first).Results!).Available);
+        var jobs = new JobRunService(db, new EphemeralDataProtectionProvider());
+        const string terminalBody = "{\"exitCode\":7,\"stdout\":\"synthetic terminal output\"}";
+        await jobs.UpdateTaskActivityStatusAsync(new(requestId, "Completed", null, now, terminalBody, ExitCode: 7));
+        var facts = (await db.OutboxMessages.Where(x => x.Type == FlowExecutionEventLimits.OutboxType).ToArrayAsync())
+            .Select(Read).ToArray();
+        Assert.Equal(2, facts.Length);
+        var failed = Assert.Single(facts, fact => fact.Outcome == FlowExecutionOutcome.Failed);
+        Assert.Equal("Completed", failed.RawStatus);
+        Assert.Equal(7, failed.ExitCode);
+        Assert.True(Assert.Single(failed.Results!).Available);
+        Assert.NotEqual(Read(first).EventId, failed.EventId);
+        await jobs.UpdateTaskActivityStatusAsync(new(requestId, "Completed", null, now, terminalBody, ExitCode: 7));
+        Assert.Equal(2, await db.OutboxMessages.CountAsync(x => x.Type == FlowExecutionEventLimits.OutboxType));
+        await jobs.UpdateTaskActivityStatusAsync(new(requestId, "Completed", null, now,
+            "{\"exitCode\":7,\"stdout\":\"synthetic final diagnostics\"}", ExitCode: 7));
+        Assert.Equal(3, await db.OutboxMessages.CountAsync(x => x.Type == FlowExecutionEventLimits.OutboxType));
+        Assert.Equal(originalPayload, (await db.OutboxMessages.SingleAsync(x => x.Id == first.Id)).PayloadJson);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Linked_top_level_reruns_keep_the_trusted_original_parent_and_root(bool script)
+    {
+        await using var db = Memory();
+        var agent = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        var execution = script ? "synthetic-script-rerun" : "42";
+        var original = script ? new string('父', 256) : "9007199254740993";
+        var root = script ? new string('源', 256) : "9007199254740001";
+        var occurrence = script ? new string('起', 128) : "synthetic-original-occurrence";
+        var cause = new ExecutionAdmissionCausation(occurrence, Guid.NewGuid(), 1, 1, original)
+            { RootExecutionId = root };
+        var admission = new ExecutionAdmissionRecord
+        {
+            ActionKey = Guid.NewGuid(), TenantId = 7, PrincipalId = "synthetic-configuring-operator",
+            FlowVersionId = Guid.NewGuid(), FlowRunId = Guid.NewGuid(), NodeId = Guid.NewGuid(), NodeAttempt = 1,
+            Kind = script ? (int)ExecutionAdmissionKind.LibraryScript : (int)ExecutionAdmissionKind.Job,
+            ExecutionId = execution, PayloadHash = new string('a', 64), ProtectedPayloadJson = "synthetic protected material",
+            CausationJson = JsonSerializer.Serialize(cause), CreatedAtUtc = now
+        };
+        db.Set<ExecutionAdmissionRecord>().Add(admission);
+        // Canonical admission commits before native terminal activity can arrive.
+        await db.SaveChangesAsync();
+        if (script)
+        {
+            db.JobTaskActivities.Add(new() { Id = 20, RequestId = execution, TenantId = 7, AgentId = agent,
+                TaskType = TaskKinds.ExecLibraryScript, Status = "Completed", ExitCode = 7, ResultJson = "{\"exitCode\":7}",
+                CreatedAtUtc = now, CompletedAtUtc = now, ScriptName = "Synthetic pinned script",
+                OutputProtectionJson = JsonSerializer.Serialize(TaskOutputPolicy.Create([], 91, 4, new string('A', 64))) });
+        }
+        else db.JobRuns.Add(new() { Id = 42, JobId = 41, TenantId = 7, AgentId = agent, CreatedAtUtc = now,
+            CompletedAtUtc = now, Status = (int)JobRunState.Failed, StartedBy = "synthetic-source" });
+        await db.SaveChangesAsync();
+        if (!script)
+        {
+            var details = new JobRunDetails(new(42, 41, 7, string.Empty, "synthetic-source", JobRunState.Failed, 0,
+                now, null, now, null, null, null, agent), [], []);
+            await ExecutionLifecycleOutbox.RecordJobAsync(db, details, JobRunProjectionHash.Compute(details), now, default);
+            await db.SaveChangesAsync();
+        }
+        var value = Read(await db.OutboxMessages.SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType));
+        Assert.Equal(original, value.ParentExecutionId);
+        Assert.Equal(root, value.RootExecutionId);
+        Assert.Equal(occurrence, value.Causation!.RootOccurrenceId);
+        Assert.Equal(cause.ParentEventId, value.Causation.ParentEventId);
+        Assert.Equal(admission.FlowRunId, value.Causation.FlowRunId);
+        Assert.True(FlowExecutionEventValidator.Validate(value).Valid);
+        var legacy = "{\"RootOccurrenceId\":\"legacy\",\"ParentEventId\":null,\"HopCount\":0,\"RecoveryAttempt\":0,\"SourceExecutionId\":null}";
+        Assert.Equal(legacy, JsonSerializer.Serialize(JsonSerializer.Deserialize<ExecutionAdmissionCausation>(legacy)));
     }
 
     private static FlowExecutionEventDto Read(OutboxMessage row) =>

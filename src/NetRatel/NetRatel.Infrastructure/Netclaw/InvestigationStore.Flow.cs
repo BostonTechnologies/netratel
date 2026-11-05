@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Flows;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared.Security;
 
 namespace NetRatel.Infrastructure.Netclaw;
 
@@ -25,7 +26,7 @@ public sealed partial class InvestigationStore
         var action = await db.FlowActions.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == row.TenantId && x.RunId == runId && x.IdempotencyKey == row.SourceActionKey, ct);
         if (action is null) return;
         var draft = JsonSerializer.Deserialize<FlowIncidentActionDraft>(action.DraftJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
-        if (draft is null || draft.Kind != FlowActionKind.NetclawInvestigation || draft.Event.EventId != message || draft.Event.TenantId != row.TenantId || draft.RunId != runId) return;
+        if (draft is null || draft.Kind != FlowActionKind.NetclawInvestigation || FlowAiCorrelation.MessageId(draft) != message || draft.Event.TenantId != row.TenantId || draft.RunId != runId) return;
         var result = new FlowAiResultDto(row.TenantId, runId, draft.Event.FlowVersionId, action.NodeId, row.Id, message, status, observedAt, observedAt);
         if (status == FlowAiResultStatus.Completed)
         {
@@ -49,7 +50,7 @@ public sealed partial class InvestigationStore
     public static string SafeResultText(string? value, int maximum)
     {
         if (string.IsNullOrEmpty(value)) return "";
-        var safe = new string(value.Where(x => !char.IsControl(x) || x is '\n' or '\r' or '\t').ToArray());
+        var safe = OperatorOutputRedactor.Redact(new string(value.Where(x => !char.IsControl(x) || x is '\n' or '\r' or '\t').ToArray()));
         // Return plain bounded discovery data. It is never rendered as HTML or interpreted as graph instructions.
         if (safe.Length > maximum) safe = safe[..maximum];
         if (safe.Length > 0 && char.IsHighSurrogate(safe[^1])) safe = safe[..^1];

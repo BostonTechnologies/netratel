@@ -141,7 +141,7 @@ public static class AgentTaskEndpoints
             [FromServices] OrchestratorDbContext db,
             IJobRunService runs,
             IScriptService scripts,
-            IScriptExecutionReplayStore replayPins,
+            [FromServices] IScriptExecutionReplayStore replayPins,
             IAgentCommandAuthorityDispatcher commands,
             IEventRecorder events,
             ICorrelationContext correlation,
