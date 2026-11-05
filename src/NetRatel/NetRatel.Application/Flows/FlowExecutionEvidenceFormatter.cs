@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.Json.Serialization;
 using NetRatel.Shared.Contracts.Flows;
 using NetRatel.Shared.Security;
 
@@ -14,7 +15,11 @@ public enum FlowRecoveryActionState
 /// <summary>Recorded action evidence only. Acceptance is distinct from a correlated authoritative terminal event.</summary>
 public sealed record FlowRecoveryAttemptEvidence(Guid NodeId, int Attempt, string ActionName,
     FlowRecoveryActionState State, bool IsOriginalRerun, string? AcceptedExecutionId = null,
-    FlowExecutionEventDto? TerminalEvent = null);
+    FlowExecutionEventDto? TerminalEvent = null)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Code { get; init; }
+}
 
 /// <summary>
 /// Bounded plain-text presentation of immutable source facts and separately labelled findings. This pure
@@ -183,6 +188,7 @@ public static class FlowExecutionEvidenceFormatter
         text.Append("\n").Append(attempt.IsOriginalRerun ? "Original rerun" : "Configured repair").Append(" attempt ").Append(attempt.Attempt)
             .Append(": ").Append(Safe(attempt.ActionName, 128)).Append("\nState: ").Append(attempt.State)
             .Append("\nAccepted execution: ").Append(Safe(attempt.AcceptedExecutionId, FlowExecutionEventLimits.MaximumIdentifierLength));
+        if (attempt.Code is not null) text.Append("\nCode: ").Append(Safe(attempt.Code, 128));
         if (attempt.TerminalEvent is { } terminal)
             text.Append("\nRecorded terminal outcome: ").Append(terminal.Outcome)
                 .Append("\nDefinition: ").Append(Safe(terminal.Definition.Name, 128))
@@ -233,6 +239,7 @@ public static class FlowExecutionEvidenceFormatter
             attempts is not null && (attempts.Count > FlowGraphV2Limits.MaximumNodes ||
                 attempts.Any(x => x is null || x.NodeId == Guid.Empty || x.Attempt is < 1 or > FlowExecutionEventLimits.MaximumRecoveryAttempts ||
                     !Enum.IsDefined(x.State) || !FlowGraphValidator.IsBoundedText(x.ActionName, FlowLimits.MaximumNameLength) ||
+                    x.Code is not null && !FlowGraphValidator.IsBoundedText(x.Code, 128) ||
                     x.AcceptedExecutionId is not null && !FlowGraphValidator.IsBoundedText(x.AcceptedExecutionId, FlowExecutionEventLimits.MaximumIdentifierLength) ||
                     x.TerminalEvent is not null && x.TerminalEvent.TenantId != tenantId) ||
                 attempts.Select(x => (x.NodeId, x.Attempt)).Distinct().Count() != attempts.Count))

@@ -146,6 +146,28 @@ public sealed class FlowIncidentEnrichmentTests
             Assert.Single(FlowRecoveryEvidence.FromOutputs(fixture.Lease, outputs, [fixture.FirstRerunId])).State);
     }
 
+    [Theory]
+    [InlineData(FlowExecutionActionDisposition.Denied, "rerun-attempts-exhausted", FlowRecoveryActionState.Exhausted)]
+    [InlineData(FlowExecutionActionDisposition.Denied, "execution-causation-exhausted", FlowRecoveryActionState.Exhausted)]
+    [InlineData(FlowExecutionActionDisposition.Denied, "execution-authority-denied", FlowRecoveryActionState.Denied)]
+    [InlineData(FlowExecutionActionDisposition.Unknown, "original-outcome-unknown", FlowRecoveryActionState.Unknown)]
+    [InlineData(FlowExecutionActionDisposition.Unsupported, "original-execution-not-replayable", FlowRecoveryActionState.Unsupported)]
+    public void Canonical_denied_exhausted_unknown_and_unsupported_codes_remain_explicit(
+        FlowExecutionActionDisposition disposition, string code, FlowRecoveryActionState expected)
+    {
+        var fixture = Create();
+        var outputs = new Dictionary<Guid, JsonElement>
+        {
+            [fixture.FirstRerunId] = JsonSerializer.SerializeToElement(new FlowExecutionActionResult(disposition, code), Json)
+        };
+        var attempt = Assert.Single(FlowRecoveryEvidence.FromOutputs(fixture.Lease, outputs, [fixture.FirstRerunId]));
+        Assert.Equal(expected, attempt.State);
+        Assert.Equal(code, attempt.Code);
+        var final = FlowIncidentEnrichment.Prepare(fixture.Incident, fixture.AiDraft, fixture.AiResult, [attempt]);
+        Assert.Contains("Code: " + code, final.Fields.Description);
+        Assert.DoesNotContain("Recovered (", final.Fields.Description);
+    }
+
     [Fact]
     public void Long_bounded_repair_history_retains_the_final_rerun_proof_before_truncating_display()
     {

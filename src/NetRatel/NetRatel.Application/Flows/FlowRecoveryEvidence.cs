@@ -66,7 +66,8 @@ public static class FlowRecoveryEvidence
                 state = FlowRecoveryActionState.Unknown;
             attempts.Add(new(node.Id, Math.Max(1, receipt?.RecoveryAttempt ?? 1),
                 ActionName(node), state,
-                node.Kind == FlowNodeKind.RerunOriginalExecution, acceptedId, terminal));
+                node.Kind == FlowNodeKind.RerunOriginalExecution, acceptedId, terminal)
+                { Code = result is not null && FlowGraphValidator.IsBoundedText(result.Code, 128) ? result.Code : null });
         }
         return attempts.AsReadOnly();
     }
@@ -90,7 +91,9 @@ public static class FlowRecoveryEvidence
 
     private static FlowRecoveryActionState State(FlowExecutionActionResult? result) => result is null ||
         !Enum.IsDefined(result.Disposition) || !FlowGraphValidator.IsBoundedText(result.Code, 128)
-        ? FlowRecoveryActionState.Unknown : result.Disposition switch
+        ? FlowRecoveryActionState.Unknown : result.Disposition == FlowExecutionActionDisposition.Denied &&
+            (result.Code is "rerun-attempts-exhausted" or "execution-causation-exhausted")
+            ? FlowRecoveryActionState.Exhausted : result.Disposition switch
         {
             FlowExecutionActionDisposition.Pending => FlowRecoveryActionState.Pending,
             FlowExecutionActionDisposition.Running => FlowRecoveryActionState.Running,
