@@ -127,7 +127,8 @@
         @if (_view == "installations")
         {
             <div class="table-heading"><h3>Installed software</h3><span data-testid="inventory-counts">@(_installations?.Total ?? 0) installed entries · @(_installations?.Devices ?? 0) distinct devices</span></div>
-            <MudTable T="SoftwareInstallationDto" Items="@(_installations?.Items ?? Array.Empty<SoftwareInstallationDto>())" Dense="true" Hover="true" Elevation="0" Breakpoint="Breakpoint.Sm" Class="inventory-data">
+            <MudTable T="SoftwareInstallationDto" Items="@(_installations?.Items ?? Array.Empty<SoftwareInstallationDto>())" Dense="true" Hover="true" Elevation="0" Breakpoint="Breakpoint.Sm" Class="inventory-data"
+                      RowClass="inventory-installation-row" OnRowClick="args => TogglePackageDetails(args.Item)">
                 <HeaderContent>
                     <MudTh><MudButton Size="Size.Small" OnClick='() => SortAsync("name")'>Software @(_sort == "name" ? (_descending ? "↓" : "↑") : "")</MudButton></MudTh>
                     <MudTh><MudButton Size="Size.Small" OnClick='() => SortAsync("version")'>Version</MudButton></MudTh>
@@ -136,68 +137,73 @@
                     @if (!AgentId.HasValue) { <MudTh>Client</MudTh><MudTh>Last complete scan</MudTh> }
                 </HeaderContent>
                 <RowTemplate>
-                    <MudTd DataLabel="Software" data-testid="inventory-row"><strong>@context.Package.Name</strong></MudTd>
+                    <MudTd DataLabel="Software" data-testid="inventory-row">
+                        <div class="inventory-software-cell">
+                            <span @onclick:stopPropagation="true">
+                                <MudIconButton Icon="@(IsPackageExpanded(context) ? Icons.Material.Filled.ExpandLess : Icons.Material.Filled.ChevronRight)" Size="Size.Small"
+                                               aria-label="@($"{(IsPackageExpanded(context) ? "Collapse" : "Expand")} details for {context.Package.Name} on {ClientLabel(context.AgentId, context.Client)}")"
+                                               aria-expanded="@IsPackageExpanded(context).ToString().ToLowerInvariant()" aria-controls="@PackageDetailsId(context)"
+                                               OnClick="() => TogglePackageDetails(context)" data-testid="inventory-details-toggle" />
+                            </span>
+                            <strong>@context.Package.Name</strong>
+                        </div>
+                    </MudTd>
                     <MudTd DataLabel="Version"><span class="inventory-version">@context.Package.Version</span></MudTd>
                     <MudTd DataLabel="Publisher"><span class="publisher" title="@context.Package.Publisher">@context.Package.Publisher</span></MudTd>
                     <MudTd DataLabel="Source" Class="source-cell"><MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@context.Package.Source</MudChip></MudTd>
                     @if (!AgentId.HasValue)
                     {
-                        <MudTd DataLabel="Client"><MudButton Size="Size.Small" Color="Color.Primary" OnClick="@(() => OpenClientAsync(context.AgentId, context.Client))" title="@context.AgentId.ToString()">@ClientLabel(context.AgentId, context.Client)</MudButton></MudTd>
+                        <MudTd DataLabel="Client"><span @onclick:stopPropagation="true"><MudButton Size="Size.Small" Color="Color.Primary" OnClick="@(() => OpenClientAsync(context.AgentId, context.Client))" title="@context.AgentId.ToString()">@ClientLabel(context.AgentId, context.Client)</MudButton></span></MudTd>
                         <MudTd DataLabel="Last complete scan"><span class="inventory-caption">@Time(context.LastSuccessfulScanUtc)</span></MudTd>
                     }
                 </RowTemplate>
                 <ChildRowContent>
-                    <tr class="inventory-detail-row" @key="(context.AgentId, context.Identity)">
-                        <td colspan="@(AgentId.HasValue ? 4 : 6)">
-                            <details class="inventory-package-details" data-testid="inventory-package-details">
-                                <summary>
-                                    <span class="inventory-detail-title">
-                                        <MudIcon Icon="@Icons.Material.Outlined.Inventory2" Size="Size.Small" />
-                                        <strong>Package details</strong>
-                                        <span class="inventory-detail-subtitle">@context.Package.Name · @context.Package.Version</span>
-                                    </span>
-                                    <span class="inventory-detail-chevron"><MudIcon Icon="@Icons.Material.Filled.ExpandMore" Size="Size.Small" /></span>
-                                </summary>
-                                <div class="inventory-detail-grid">
-                                    <section class="inventory-detail-card" aria-label="Package identity">
-                                        <h4><MudIcon Icon="@Icons.Material.Outlined.Inventory2" Size="Size.Small" />Package identity</h4>
-                                        <dl>
-                                            <dt>Name</dt><dd>@context.Package.Name</dd>
-                                            <dt>Version</dt><dd class="inventory-version">@context.Package.Version</dd>
-                                            <dt>Publisher</dt><dd>@Reported(context.Package.Publisher)</dd>
-                                            <dt>Package ID</dt><dd><code>@Reported(context.Package.PackageId)</code></dd>
-                                            <dt>Source</dt><dd>@context.Package.Source</dd>
-                                        </dl>
-                                    </section>
-                                    <section class="inventory-detail-card" aria-label="Installation">
-                                        <h4><MudIcon Icon="@Icons.Material.Outlined.FolderOpen" Size="Size.Small" />Installation</h4>
-                                        <dl>
-                                            <dt>Install location</dt><dd>@Reported(context.Package.InstallLocation)</dd>
-                                            <dt>Install date</dt><dd>@Reported(context.Package.InstallDate)</dd>
-                                            <dt>Scope</dt><dd>@Reported(context.Package.Scope)</dd>
-                                        </dl>
-                                    </section>
-                                    <section class="inventory-detail-card" aria-label="Client and platform">
-                                        <h4><MudIcon Icon="@Icons.Material.Filled.Dns" Size="Size.Small" />Client &amp; platform</h4>
-                                        <dl>
-                                            <dt>Client</dt><dd>@ClientLabel(context.AgentId, context.Client)</dd>
-                                            <dt>Operating system</dt><dd>@Reported(context.Os)</dd>
-                                            <dt>Architecture</dt><dd>@Reported(context.Package.Architecture)</dd>
-                                            <dt>Agent ID</dt><dd><code>@context.AgentId</code></dd>
-                                        </dl>
-                                    </section>
-                                    <section class="inventory-detail-card" aria-label="Collection and freshness">
-                                        <h4><MudIcon Icon="@Icons.Material.Filled.Timeline" Size="Size.Small" />Collection &amp; freshness</h4>
-                                        <dl>
-                                            <dt>Detected</dt><dd>@Time(context.DetectedAtUtc)</dd>
-                                            <dt>Last complete scan</dt><dd>@Time(context.LastSuccessfulScanUtc)</dd>
-                                        </dl>
-                                        <p class="inventory-detail-note">From the last complete inventory. A refresh keeps this snapshot available until a new scan completes.</p>
-                                    </section>
+                    @if (IsPackageExpanded(context))
+                    {
+                        <tr class="inventory-detail-row" @key="(context.AgentId, context.Identity)">
+                            <td colspan="@(AgentId.HasValue ? 4 : 6)">
+                                <div class="inventory-package-details" id="@PackageDetailsId(context)" data-testid="inventory-package-details">
+                                    <div class="inventory-detail-grid">
+                                        <section class="inventory-detail-card" aria-label="Package identity">
+                                            <h4><MudIcon Icon="@Icons.Material.Outlined.Inventory2" Size="Size.Small" />Package identity</h4>
+                                            <dl>
+                                                <dt>Name</dt><dd>@context.Package.Name</dd>
+                                                <dt>Version</dt><dd class="inventory-version">@context.Package.Version</dd>
+                                                <dt>Publisher</dt><dd>@Reported(context.Package.Publisher)</dd>
+                                                <dt>Package ID</dt><dd><code>@Reported(context.Package.PackageId)</code></dd>
+                                                <dt>Source</dt><dd>@context.Package.Source</dd>
+                                            </dl>
+                                        </section>
+                                        <section class="inventory-detail-card" aria-label="Installation">
+                                            <h4><MudIcon Icon="@Icons.Material.Outlined.FolderOpen" Size="Size.Small" />Installation</h4>
+                                            <dl>
+                                                <dt>Install location</dt><dd>@Reported(context.Package.InstallLocation)</dd>
+                                                <dt>Install date</dt><dd>@Reported(context.Package.InstallDate)</dd>
+                                                <dt>Scope</dt><dd>@Reported(context.Package.Scope)</dd>
+                                            </dl>
+                                        </section>
+                                        <section class="inventory-detail-card" aria-label="Client and platform">
+                                            <h4><MudIcon Icon="@Icons.Material.Filled.Dns" Size="Size.Small" />Client &amp; platform</h4>
+                                            <dl>
+                                                <dt>Client</dt><dd>@ClientLabel(context.AgentId, context.Client)</dd>
+                                                <dt>Operating system</dt><dd>@Reported(context.Os)</dd>
+                                                <dt>Architecture</dt><dd>@Reported(context.Package.Architecture)</dd>
+                                                <dt>Agent ID</dt><dd><code>@context.AgentId</code></dd>
+                                            </dl>
+                                        </section>
+                                        <section class="inventory-detail-card" aria-label="Collection and freshness">
+                                            <h4><MudIcon Icon="@Icons.Material.Filled.Timeline" Size="Size.Small" />Collection &amp; freshness</h4>
+                                            <dl>
+                                                <dt>Detected</dt><dd>@Time(context.DetectedAtUtc)</dd>
+                                                <dt>Last complete scan</dt><dd>@Time(context.LastSuccessfulScanUtc)</dd>
+                                            </dl>
+                                            <p class="inventory-detail-note">From the last complete inventory. A refresh keeps this snapshot available until a new scan completes.</p>
+                                        </section>
+                                    </div>
                                 </div>
-                            </details>
-                        </td>
-                    </tr>
+                            </td>
+                        </tr>
+                    }
                 </ChildRowContent>
                 <NoRecordsContent>
                     <div class="inventory-empty" data-testid="inventory-empty">

@@ -20,6 +20,8 @@ public partial class SoftwareInventoryPanel
     private SoftwarePage<SoftwareChangeDto>? _changes;
     private SoftwarePage<SoftwareInventoryClientDto>? _clients;
     private SoftwareInventoryClientDto? _selectedClient;
+    private readonly HashSet<(Guid AgentId, string Identity)> _expandedPackages = [];
+    private readonly string _detailsIdPrefix = $"inventory-package-{Guid.NewGuid():N}";
     private CancellationTokenSource _scope = new();
     private CancellationTokenSource? _load;
     private (int, Guid?) _active = (-1, null);
@@ -61,6 +63,14 @@ public partial class SoftwareInventoryPanel
         _ => error.Replace('_', ' ')
     };
     private string ExportUrl() => SoftwareInventoryApiService.QueryUrl(TenantId, "export.csv", Query());
+    private bool IsPackageExpanded(SoftwareInstallationDto item) => _expandedPackages.Contains((item.AgentId, item.Identity));
+    private string PackageDetailsId(SoftwareInstallationDto item) => $"{_detailsIdPrefix}-{item.AgentId:N}-{item.Identity}";
+    private void TogglePackageDetails(SoftwareInstallationDto? item)
+    {
+        if (item is null) return;
+        var key = (item.AgentId, item.Identity);
+        if (!_expandedPackages.Add(key)) _expandedPackages.Remove(key);
+    }
     private SoftwareInventoryQuery Query() => new(_page, EffectivePageSize, Optional(_search), Optional(_name), Optional(_version),
         Optional(_publisher), Optional(_os), Optional(_source), AgentId ?? _selectedClient?.AgentId, Optional(_filterStatus), _sort, _descending);
 
@@ -70,6 +80,7 @@ public partial class SoftwareInventoryPanel
         _scope.Cancel(); _scope.Dispose(); _scope = new();
         _load?.Cancel();
         _active = (TenantId, AgentId);
+        _expandedPackages.Clear();
         _status = null; _summary = null; _installations = null; _aggregate = null; _changes = null; _clients = null;
         _page = 0; _error = null; _statusError = null; _summaryError = null; _selectedClient = null;
         _refreshing = false; _loading = false;
@@ -165,7 +176,11 @@ public partial class SoftwareInventoryPanel
             {
                 var result = await Api.InstallationsAsync(tenant, query, requestToken);
                 requestToken.ThrowIfCancellationRequested();
-                if (generation == _generation) _installations = result;
+                if (generation == _generation)
+                {
+                    _installations = result;
+                    _expandedPackages.IntersectWith(result.Items.Select(item => (item.AgentId, item.Identity)));
+                }
             }
         }
         catch (OperationCanceledException) when (requestToken.IsCancellationRequested) { }
