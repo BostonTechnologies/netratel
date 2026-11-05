@@ -8,6 +8,8 @@ Open **Signals → Flows**, choose an authorized tenant, and create the named in
 
 Save retains stable node IDs, properties, positions and viewport in NetRatel's canonical schema; a canvas or CLR object is never persisted.
 
+**Undo graph edit** and **Redo graph edit** retain up to 32 local snapshots, coalescing a name edit or physical canvas gesture. Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y use graph history when focus is outside an editable field; text fields retain their native undo behavior. Restoring an edit keeps the current pan/zoom and saved definition revision, and never saves, publishes or runs an action. Incomplete unsafe intermediate forms are skipped on restoration. Reloading or changing tenant/flow starts a new local history.
+
 The compact toolbar includes a searchable, collapsible node library and **Fullscreen workspace** for both drafts and immutable viewers. Fullscreen covers the viewport; the browser Fullscreen API is requested directly from the click where supported, with a full-window fallback. The existing dialog and popover providers stay inside the native fullscreen document. Entering or leaving keeps the same canvas adapter, selected node, draft and pan/zoom. Escape keeps the editor open; use its explicit Close action to leave.
 
 Preview sample data opens in a modal dialog and does not reduce the canvas height. Closing the dialog returns focus to Preview. A captured trace opens a floating playback inspector with play/pause, previous/next, restart, speed and per-node Input/Output/Outcome. Selecting a node also selects its captured step. Pure nodes expose calculated values; the trace stops at the first external action and labels its output unavailable. No AI findings or action success is invented. Large snapshots are explicit bounded text excerpts, and missing, captured null and captured empty values remain distinct.
@@ -35,6 +37,10 @@ Allowed mapping placeholders are `{ruleName}`, `{clientName}`, `{resource}`, `{m
 ## Authority and durable execution
 
 AI discovery supports `{aiSummary}`, `{aiEvidence}`, `{aiRecommendations}`, `{aiStatus}`, `{aiObservedAt}` and `{aiInvestigationId}` in mappings. **Alert raised → Map alert fields → AI: Investigate alert → RatelDesk: Create incident** waits for the exact automated turn's persisted terminal result before incident delivery. A durable continuation resumes at the waiting node rather than replaying the graph. Approval waits remain visible. A new investigation snapshots the current tenant default; published optional guidance stays pinned. Failure policy can stop the flow or continue with the original alert and an accurately labelled unsuccessful outcome. The final incident description adds a labelled investigation reference and discovery section even when mapping precedes AI. Original measured alert facts remain immutable.
+
+Execution-source investigations use the saved flow publisher and credential in the actual tenant, the exact accepted action/message and its native target. They do not claim a Monitoring occurrence or borrow the Netclaw connection owner's permissions. Source admission can outlive the yielded Flow worker lease; current publisher grants, the accepted source/intent, published version and enabled flow are rechecked before a turn starts.
+
+Execution-source AI is diagnostic-only. The current native Netclaw 0.28.2 session protocol cannot enforce or prove a diagnostic-only tool policy for a saved turn. The source worker therefore returns **Unsupported**, code `netclaw-investigation-tool-policy-unavailable`, before `SendMessage`: no AI turn starts and findings remain unavailable. A prompt, connection label or later tool trace does not supply this capability. Existing alert investigations retain their established behavior and configured daemon approvals. Permitted pinned repairs remain separate canonical script/job graph actions with their existing authority and approval policy; an AI completion or repair command is not verified recovery. See the [protocol evidence and integration boundary](../evidence/flows-investigation-policy-20261105.md).
 
 The API evaluates `flow.read`, `flow.edit`, `flow.publish` and `flow.execute` together with the selected tenant. Existing roles are not silently widened; deployments must explicitly grant the new permissions. A flow/immutable-version/run ID from another tenant is insufficient to read or change it.
 
@@ -78,6 +84,7 @@ Rerun support requires the original protected execution material. A canonical jo
 Deferred source deliveries are scheduled by their next due time so old parent waits and capacity retries cannot starve newly due work. A known-parent wait that passes the existing immutable event retry age finishes as an expired delivery; the source outcome and native request/job state remain unchanged.
 
 The lifecycle delivery worker is inert until the trusted execution-event ingress is registered. It passes server-owned fact and delivery IDs, and the ingress independently verifies the pinned selection and fresh configured authority. The in-memory `RequestEventBus` remains a UI channel and does not admit automation. Preview and playback do not write this ledger or dispatch its subscriptions.
+
 
 ## Schema transition
 

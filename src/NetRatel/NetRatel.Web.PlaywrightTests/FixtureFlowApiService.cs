@@ -79,6 +79,8 @@ internal sealed class FixtureFlowApiService : IFlowApiService
             ? node with { ConnectorId = Guid.NewGuid(), ConnectorRevision = 1 } : node).ToArray() };
         _definitions[flow.Id] = flow with { Draft = graph };
     }
+    public Task<FlowDryRunResultDto> DryRunExecutionAsync(int tenantId, FlowExecutionDryRunRequest request, CancellationToken token = default)
+    { DryRunCalls++; return Task.FromResult(FlowExecutionPreview.DryRun(request, tenantId)); }
     public Task<IReadOnlyList<FlowConnectorReferenceDto>> GetConnectorsAsync(int tenantId, CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowConnectorReferenceDto>>([]);
     public Task<IReadOnlyList<FlowVersionDto>> GetVersionsAsync(int tenantId, Guid flowId, CancellationToken token = default) { HistoryReads++; Find(tenantId, flowId); return Task.FromResult<IReadOnlyList<FlowVersionDto>>(_versions.GetValueOrDefault(flowId, []).ToArray()); }
     public Task<IReadOnlyList<FlowRunSummaryDto>> GetRunsAsync(int tenantId, Guid flowId, CancellationToken token = default) { HistoryReads++; Find(tenantId, flowId); return Task.FromResult<IReadOnlyList<FlowRunSummaryDto>>(_runs.Values.Select(r => r.Run).Where(r => r.FlowId == flowId).ToArray()); }

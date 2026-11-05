@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text;
+using System.Text.Json;
 using System.Text.Encodings.Web;
 using AwesomeAssertions;
 using Microsoft.AspNetCore.Authentication;
@@ -85,6 +86,60 @@ public sealed partial class FlowEndpointTests
         (await http.PostAsync(Path, content)).StatusCode.Should().Be(HttpStatusCode.RequestEntityTooLarge);
         host.Services.GetRequiredService<ExecutionSentinel>().Calls.Should().Be(0);
         await using var scope = host.Services.CreateAsyncScope(); (await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().FlowDefinitions.CountAsync()).Should().Be(0);
+    }
+
+
+    [Fact]
+    public async Task Source_neutral_preview_accepts_bounded_large_fixtures_for_a_reader_without_runtime_or_database_writes()
+    {
+        using var host = await HostAsync(); var http = host.GetTestClient();
+        http.DefaultRequestHeaders.Authorization = new("Test", "read");
+        var original = FlowExecutionPreviewTests.Graph();
+        var nodes = new List<FlowNodeDto> { original.Nodes.Single(node => node.Id == FlowExecutionPreviewTests.TriggerId) };
+        var script = original.Nodes.Single(node => node.Id == FlowExecutionPreviewTests.RepairId);
+        for (var index = 0; index < 4; index++)
+            nodes.Add(script with { Id = Guid.NewGuid(), Name = "Synthetic sample script " + index });
+        nodes.Add(original.Nodes.Single(node => node.Id == FlowExecutionPreviewTests.SuccessId));
+        FlowEdgeDto Edge(Guid source, string port, Guid target) => new(source, port, target, "in") { Id = Guid.NewGuid() };
+        var edges = new List<FlowEdgeDto> { Edge(nodes[0].Id, "event", nodes[1].Id) };
+        for (var index = 1; index < nodes.Count - 1; index++)
+            foreach (var port in FlowNodeCatalogue.Find(nodes[index].Kind)!.Ports.Where(port => port.Direction == FlowPortDirection.Output))
+                edges.Add(Edge(nodes[index].Id, port.Id, nodes[index + 1].Id));
+        var fixtures = nodes.Where(node => node.Kind == FlowNodeKind.RunLibraryScript)
+            .Select(node => new FlowPreviewFixtureDto(node.Id, "succeeded")
+            { Output = JsonSerializer.SerializeToElement(new { outcome = "succeeded", summary = new string('s', 12000) }) }).ToArray();
+        var request = new FlowExecutionDryRunRequest(new(2, nodes, edges, new()), FlowExecutionPreviewTests.Event(), Fixtures: fixtures);
+        JsonSerializer.SerializeToUtf8Bytes(request).Length.Should().BeGreaterThan((int)FlowRequestBodyLimitMiddleware.MaximumBytes);
+        var response = await http.PostAsJsonAsync(Path + "/dry-run-execution", request);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var preview = (await response.Content.ReadFromJsonAsync<FlowDryRunResultDto>())!;
+        preview.Valid.Should().BeTrue(); preview.Code.Should().Be("inert-preview");
+        preview.Trace!.Steps.Should().HaveCount(6);
+        preview.Trace.Truncated.Should().BeTrue();
+        (await http.PostAsJsonAsync(Path.Replace("/17/", "/18/", StringComparison.Ordinal) + "/dry-run-execution", request)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        host.Services.GetRequiredService<ExecutionSentinel>().Calls.Should().Be(0);
+        await using var scope = host.Services.CreateAsyncScope(); var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        (await db.FlowDefinitions.CountAsync()).Should().Be(0);
+        (await db.FlowVersions.CountAsync()).Should().Be(0);
+        (await db.FlowRuns.CountAsync()).Should().Be(0);
+        (await db.FlowActions.CountAsync()).Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Execution_preview_declared_and_chunked_bodies_obey_their_own_finite_budget(bool chunked, bool uppercasePath)
+    {
+        using var host = await HostAsync(); var http = host.GetTestClient(); http.DefaultRequestHeaders.Authorization = new("Test", "read");
+        var bytes = Encoding.UTF8.GetBytes("{\"fixture\":\"" + new string('x', FlowPreviewLimits.MaximumRequestBytes) + "\"}");
+        using HttpContent content = chunked ? new UnknownLengthContent(bytes) : new ByteArrayContent(bytes);
+        content.Headers.ContentType = new("application/json");
+        var target = Path + "/dry-run-execution";
+        if (uppercasePath) target = target.ToUpperInvariant();
+        (await http.PostAsync(target, content)).StatusCode.Should().Be(HttpStatusCode.RequestEntityTooLarge);
+        host.Services.GetRequiredService<ExecutionSentinel>().Calls.Should().Be(0);
     }
 
     private static async Task<IHost> HostAsync()

@@ -33,6 +33,7 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
         public Guid? MessageId { get; } = messageId;
         public string SessionId { get; set; } = string.Empty;
         public bool Created { get; set; }
+        public bool IsExecutionInvestigation { get; init; }
         public DateTimeOffset AuthenticatedAtUtc { get; set; }
         public Channel<SessionUpdate> Outputs { get; } = Channel.CreateBounded<SessionUpdate>(256);
         public CancellationTokenSource Lifetime { get; } = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
@@ -185,10 +186,34 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
             // Authorization and the pinned connection can change while session negotiation is awaited.
             if (!await AuthorizedAsync(provider, row, message.Actor!, ct) ||
                 !await db.Set<NetclawConnectionRecord>().AsNoTracking().AnyAsync(x => x.TenantId == tenantId && x.Enabled && x.Revision == owner.Profile.Revision, ct) ||
-                !await AdmitAutomaticMessageAsync(provider, row, owner.Profile, ct) || !await StillOwnAsync(ct))
+                !await AdmitAutomaticMessageAsync(provider, row, owner.Profile, owner.SessionId, ct) || !await StillOwnAsync(ct))
             {
-                await NotSentAsync(id, messageId, "The connection, permissions or monitoring state changed before the message was sent.", ct);
+                await NotSentAsync(id, messageId, row.Automated && row.OccurrenceId is null
+                    ? "The connection, permissions or source admission changed before the AI turn was sent."
+                    : "The connection, permissions or monitoring state changed before the message was sent.", ct);
                 await RetireAsync(id); return;
+            }
+            if (row.Automated && row.OccurrenceId is null)
+            {
+                var policy = await EnforceSourceInvestigationPolicyAsync(provider, row, owner, timeout.Token);
+                if (!policy.Allowed)
+                {
+                    await NotSentAsync(id, messageId, policy.Code + ": No AI turn was started. " +
+                        "Diagnostic-only tool enforcement is unavailable for this saved source turn.", ct,
+                        policy.Code == NativeFlowInvestigationToolPolicy.UnavailableCode
+                            ? FlowAiResultStatus.Unsupported : FlowAiResultStatus.Failed);
+                    await RetireAsync(id); return;
+                }
+                // A future verified policy negotiation can await remote I/O. Current source authority,
+                // saved turn and connector revision must still hold immediately before text admission.
+                if (!await AuthorizedAsync(provider, row, message.Actor!, ct) ||
+                    !await db.Set<NetclawConnectionRecord>().AsNoTracking().AnyAsync(x => x.TenantId == tenantId &&
+                        x.Enabled && x.Revision == owner.Profile.Revision, ct) ||
+                    !await AdmitAutomaticMessageAsync(provider, row, owner.Profile, owner.SessionId, ct) || !await StillOwnAsync(ct))
+                {
+                    await NotSentAsync(id, messageId, "Current source authority, saved turn or connection changed before the AI turn was sent.", ct);
+                    await RetireAsync(id); return;
+                }
             }
             await store.ValidateContextAsync(row, ct);
             await store.RecordContextAsync(id, context with { SendAttemptedAtUtc = clock.GetUtcNow() }, ct);
@@ -229,7 +254,8 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
                 await RetireAsync(id);
             }
             if (owners.Count >= 25) throw new InvestigationConflictException("The assistant is at connection capacity. Try again after another turn completes.");
-            var owner = new SessionOwner(clients.Create(profile), profile, row.ActiveMessageId, stopping);
+            var owner = new SessionOwner(clients.Create(profile), profile, row.ActiveMessageId, stopping)
+                { IsExecutionInvestigation = row.Automated && row.OccurrenceId is null };
             try
             {
                 var joined = await owner.Client.ConnectAsync(row.RemoteSessionId, output =>
@@ -283,6 +309,19 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
                 !await db.Set<AiInvestigationApprovalRecord>().AsNoTracking().AnyAsync(x => x.InvestigationId == id && x.MessageId == messageId && x.CallId == callId && x.SelectedKey == key && x.Actor == actor, ct) ||
                 !await db.Set<NetclawConnectionRecord>().AsNoTracking().AnyAsync(x => x.TenantId == tenantId && x.Enabled && x.Revision == owner.Profile.Revision, ct) || !await StillOwnAsync(ct))
                 throw new InvestigationConflictException("The approval or current authority changed before delivery.");
+            if (owner.IsExecutionInvestigation)
+            {
+                var saved = await db.Set<AiInvestigationRecord>().AsNoTracking()
+                    .SingleAsync(row => row.TenantId == tenantId && row.Id == id, ct);
+                // An operator's approval cannot substitute for the published execution authority
+                // or make an unrestricted source investigation safe to resume.
+                var policy = await EnforceSourceInvestigationPolicyAsync(provider, saved, owner, timeout.Token);
+                if (!policy.Allowed || !await AuthorizedAsync(provider, saved, saved.CreatedBy, ct) ||
+                    !await AdmitAutomaticMessageAsync(provider, saved, owner.Profile, owner.SessionId, ct) ||
+                    !await db.Set<NetclawConnectionRecord>().AsNoTracking().AnyAsync(row => row.TenantId == tenantId &&
+                        row.Enabled && row.Revision == owner.Profile.Revision, ct) || !await StillOwnAsync(ct))
+                    throw new InvestigationConflictException("The saved source turn has no verified diagnostic-only policy or current execution authority.");
+            }
             await owner.Client.RespondAsync(owner.SessionId, callId, key, timeout.Token);
         }
         catch (Exception exception)
