@@ -86,9 +86,11 @@ public sealed partial class JobRunOwnedBoundaryPostgresTests
             (await store.GetOrCreateActionAsync(first, draft, token))!.Status.Should().Be(FlowActionStatus.Pending);
             (await store.StartActionAsync(first, draft.ActionNodeId, token))!.Status.Should().Be(FlowActionStatus.Dispatching);
             var now = h.Clock.GetUtcNow();
+            var investigationId = Guid.NewGuid();
             var result = new FlowIncidentActionResult(FlowIncidentActionResultKind.Succeeded, "synthetic-investigation-completed")
             {
-                AiResult = new(7, runId, published.Version.Id, draft.ActionNodeId, Guid.NewGuid(),
+                Receipt = new(investigationId.ToString("D")),
+                AiResult = new(7, runId, published.Version.Id, draft.ActionNodeId, investigationId,
                     FlowAiCorrelation.MessageId(draft), FlowAiResultStatus.Completed, now, now,
                     "Synthetic provider disposition selects the configured repair.",
                     "Synthetic fixture result; no external model or diagnostic tool was invoked.",
