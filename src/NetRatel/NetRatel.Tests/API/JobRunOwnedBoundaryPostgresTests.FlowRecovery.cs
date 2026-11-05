@@ -202,6 +202,9 @@ public sealed partial class JobRunOwnedBoundaryPostgresTests
             var run = await db.FlowRuns.AsNoTracking().SingleAsync(row => row.Id == runId, ct);
             run.Status.Should().Be(FlowRunStatus.Succeeded);
             var checkpoint = JsonSerializer.Deserialize<FlowContinuationDto>(run.ContinuationJson!, StepJson)!.Node!;
+            checkpoint.Trace!.Steps.Single(step => step.NodeId == published.TriggerId).ExecutionReference.Should().Be(
+                new FlowExecutionReferenceDto(FlowExecutionSourceKind.Job, failure.Definition.Id,
+                    original.Id.ToString(CultureInfo.InvariantCulture)));
             checkpoint.NodeId.Should().Be(published.RecoveredId);
             var order = checkpoint.Trace!.Steps.OrderBy(step => step.Sequence).Select(step => step.NodeId).ToArray();
             order.Should().Equal(published.TriggerId, published.InvestigationId, published.RepairId, published.RerunId, published.RecoveredId);
@@ -217,6 +220,9 @@ public sealed partial class JobRunOwnedBoundaryPostgresTests
             var nativeStep = Assert.Single(nativeDetails.Steps);
             var nativeActivity = Assert.Single(nativeDetails.Activities);
             var recorded = checkpoint.Outputs[published.RerunId];
+            checkpoint.Trace.Steps.Single(step => step.NodeId == published.RerunId).ExecutionReference.Should().Be(
+                new FlowExecutionReferenceDto(FlowExecutionSourceKind.Job,
+                    rerun.TerminalEvent.Definition.Id!, rerunId.ToString(CultureInfo.InvariantCulture)));
             recorded.GetProperty("exitCode").GetInt32().Should().Be(0);
             var excerpt = recorded.GetProperty("stdout").GetString()!;
             System.Text.Encoding.UTF8.GetByteCount(excerpt).Should().BeLessThanOrEqualTo(8192);
