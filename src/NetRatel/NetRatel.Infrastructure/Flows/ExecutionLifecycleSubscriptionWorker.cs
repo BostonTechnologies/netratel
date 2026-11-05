@@ -11,6 +11,8 @@ using NetRatel.Shared.Contracts.Flows;
 
 namespace NetRatel.Infrastructure.Flows;
 
+internal sealed record FlowSourceContributorSelection(IReadOnlyList<Guid> EventIds, bool Truncated);
+
 /// <summary>
 /// Delivers server-selected immutable subscription intents. This service remains inert until the trusted
 /// execution ingress is registered; it never constructs browser envelopes or borrows a source principal.
@@ -164,6 +166,10 @@ public sealed class ExecutionLifecycleSubscriptionWorker(IServiceScopeFactory sc
     }
 
     internal static async Task<IReadOnlyList<Guid>> ContributorsAsync(OrchestratorDbContext db,
+        FlowExecutionSubscriptionDeliveryDto delivery, DateTimeOffset now, CancellationToken ct) =>
+        (await SelectContributorsAsync(db, delivery, now, ct)).EventIds;
+
+    internal static async Task<FlowSourceContributorSelection> SelectContributorsAsync(OrchestratorDbContext db,
         FlowExecutionSubscriptionDeliveryDto delivery, DateTimeOffset now, CancellationToken ct)
     {
         var tenant = delivery.TenantId.ToString(CultureInfo.InvariantCulture);
@@ -180,13 +186,14 @@ public sealed class ExecutionLifecycleSubscriptionWorker(IServiceScopeFactory sc
                 ORDER BY "Source", ("PayloadJson"::jsonb ->> 'sourceEventId')::uuid, "Id"
                 LIMIT {FlowExecutionEventLimits.MaximumReferences + 1}
                 """).AsNoTracking().ToArrayAsync(ct);
-        return rows.Select(row => (row.Source, Delivery: ExecutionLifecycleSubscriptions.ReadDelivery(row.PayloadJson)))
+        var candidates = rows.Select(row => (row.Source, Delivery: ExecutionLifecycleSubscriptions.ReadDelivery(row.PayloadJson)))
             .Where(item => item.Delivery is { } value && value.FlowVersionId == delivery.FlowVersionId &&
                 value.TriggerNodeId == delivery.TriggerNodeId && value.ActiveSinceUtc == delivery.ActiveSinceUtc &&
                 value.AdmissionKey == delivery.AdmissionKey)
             .OrderBy(item => item.Source, StringComparer.Ordinal).ThenBy(item => item.Delivery!.SourceEventId)
-            .Select(item => item.Delivery!.SourceEventId).Prepend(delivery.SourceEventId).Distinct()
-            .Take(FlowExecutionEventLimits.MaximumReferences).ToArray();
+            .Select(item => item.Delivery!.SourceEventId).Prepend(delivery.SourceEventId).Distinct().ToArray();
+        return new(candidates.Take(FlowExecutionEventLimits.MaximumReferences).ToArray(),
+            candidates.Length > FlowExecutionEventLimits.MaximumReferences);
     }
 
     private static Task<int> FinishAsync(IQueryable<OutboxMessage> owned, string status, string? code, CancellationToken ct) =>
