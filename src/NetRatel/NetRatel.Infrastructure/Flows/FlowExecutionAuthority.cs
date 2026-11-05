@@ -62,14 +62,28 @@ public sealed class FlowExecutionAuthority(OrchestratorDbContext db, IFlowExecut
                 node.Kind is FlowNodeKind.RunJob or FlowNodeKind.RunLibraryScript or FlowNodeKind.RerunOriginalExecution) ||
             !await db.FlowRuntimeIdentity.AsNoTracking().AnyAsync(row => row.Id == 1 && row.SourceInstanceId == lease.SourceInstanceId, ct))
             throw new ExecutionAdmissionDeniedException("The immutable version or published execution authority differs.");
+        FlowContinuationDto? continuation;
+        try { continuation = run.ContinuationJson is null ? null : JsonSerializer.Deserialize<FlowContinuationDto>(run.ContinuationJson, Json); }
+        catch (JsonException) { throw new ExecutionAdmissionDeniedException("The persisted action checkpoint is invalid."); }
+        var node = continuation?.Node;
+        if (node is null || continuation!.ResumeNodeId != identity.NodeId || node.NodeId != identity.NodeId ||
+            node.Progress != FlowNodeProgress.Dispatching || node.Attempt != identity.NodeAttempt ||
+            !FlowNodeCheckpointRules.Valid(lease, node) ||
+            FlowActionKeys.CreateExecution(lease, identity.NodeId, identity.NodeAttempt) != identity.ActionKey)
+            throw new ExecutionAdmissionDeniedException("The persisted action checkpoint does not admit this physical dispatch.");
         var databaseNow = await db.Database.SqlQuery<DateTimeOffset>($"SELECT clock_timestamp() AS \"Value\"").SingleAsync(ct);
         var now = clock.GetUtcNow();
         if (databaseNow > now) now = databaseNow;
         if (run.LeaseExpiresAtUtc <= now)
             throw new ExecutionAdmissionDeniedException("The flow lease was reclaimed or expired.");
+        if (node.DeadlineAtUtc <= now)
+            throw new ExecutionAdmissionDeniedException("The flow node deadline expired before physical dispatch.");
         if (transaction is not null) await transaction.CommitAsync(ct);
-        if (lease.ExpiresAtUtc <= clock.GetUtcNow())
+        now = clock.GetUtcNow();
+        if (lease.ExpiresAtUtc <= now)
             throw new ExecutionAdmissionDeniedException("The flow lease expired before physical dispatch.");
+        if (node.DeadlineAtUtc <= now)
+            throw new ExecutionAdmissionDeniedException("The flow node deadline expired before physical dispatch.");
     }
 
     /// <summary>Later native job steps use persisted source proof and current authority, never an expired worker lease.</summary>
