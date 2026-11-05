@@ -29,12 +29,15 @@ public sealed record FlowInputBindingDto(FlowInputSource Source, FlowDataType Da
     Guid? NodeId = null, JsonElement? Literal = null);
 public sealed record FlowParameterDefinitionDto(string Name, FlowDataType DataType, bool Required = false);
 public sealed record FlowPredicateDto(FlowInputBindingDto Input, FlowComparison Comparison, JsonElement Value);
+public sealed record FlowExecutionDefinitionReferenceDto(FlowExecutionSourceKind SourceKind, string Id);
 
 public sealed record FlowExecutionTriggerSettingsDto(IReadOnlyList<FlowExecutionSourceKind> Sources,
     IReadOnlyList<FlowExecutionOutcome> Outcomes, FlowExecutionScope Scope)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? DefinitionIds { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<FlowExecutionDefinitionReferenceDto>? DefinitionReferences { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<Guid>? AgentIds { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -52,6 +55,10 @@ public sealed record FlowExecutionActionSettingsDto(FlowExecutionSourceKind Sour
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<FlowParameterDefinitionDto>? Parameters { get; init; }
     public int TimeoutMinutes { get; init; } = 60;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public NetRatel.Shared.ClientEnvironment Environment { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? WorkingDirectory { get; init; }
 }
 
 public sealed record FlowRerunSettingsDto(int MaximumAttempts = 1, int TimeoutMinutes = 60);

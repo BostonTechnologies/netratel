@@ -92,6 +92,32 @@ public sealed class FlowGraphV2ContractTests
     }
 
     [Fact]
+    public void Combined_source_selectors_are_qualified_and_execution_conditions_cannot_read_alert_fields()
+    {
+        var graph = RecoveryGraph();
+        var trigger = graph.Nodes.Single(node => node.Kind == FlowNodeKind.ExecutionEvent);
+        var selected = trigger.ExecutionTrigger! with
+        {
+            Sources = [FlowExecutionSourceKind.Job, FlowExecutionSourceKind.Script],
+            DefinitionIds = ["42"]
+        };
+        FlowGraphV2Validator.ValidateDraft(Replace(graph, node => node.Id == trigger.Id,
+            node => node with { ExecutionTrigger = selected })).Issues.Should()
+            .Contain(issue => issue.Code == "execution-trigger" && issue.NodeId == trigger.Id);
+        selected = selected with
+        {
+            DefinitionIds = null,
+            DefinitionReferences = [new(FlowExecutionSourceKind.Job, "42"), new(FlowExecutionSourceKind.Script, "42")]
+        };
+        FlowGraphV2Validator.ValidateDraft(Replace(graph, node => node.Id == trigger.Id,
+            node => node with { ExecutionTrigger = selected })).Valid.Should().BeTrue();
+        var condition = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.Condition, "Incorrect alert condition", new(0, 300),
+            Condition: new(FlowValueField.NumericValue, FlowComparison.GreaterThan, 90));
+        FlowGraphV2Validator.ValidateDraft(graph with { Nodes = [.. graph.Nodes, condition] }).Issues.Should()
+            .Contain(issue => issue.Code == "condition-source" && issue.NodeId == condition.Id);
+    }
+
+    [Fact]
     public void A_value_produced_on_only_one_branch_is_unavailable_after_convergence()
     {
         var graph = RecoveryGraph();

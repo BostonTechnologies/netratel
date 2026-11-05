@@ -23,7 +23,7 @@ public static class ExecutionLifecycleOutbox
         foreach (var candidate in Candidates(db))
         {
             var value = candidate.Event;
-            if (candidate.Request is { } request && LinkedJob(db, request, value.Outcome) is { } runId)
+            if (candidate.Request is { } request && LinkedJob(db, request) is { } runId)
                 value = CorrelateJob(value, runId);
             Append(db, value);
         }
@@ -35,7 +35,7 @@ public static class ExecutionLifecycleOutbox
         foreach (var candidate in Candidates(db))
         {
             var value = candidate.Event;
-            if (candidate.Request is { } request && await LinkedJobAsync(db, request, value.Outcome, ct) is { } runId)
+            if (candidate.Request is { } request && await LinkedJobAsync(db, request, ct) is { } runId)
                 value = CorrelateJob(value, runId);
             Append(db, value);
         }
@@ -47,7 +47,7 @@ public static class ExecutionLifecycleOutbox
     {
         var value = RequestEvent(row, previousStatus, observedAtUtc);
         if (value is null) return;
-        if (await LinkedJobAsync(db, row, value.Outcome, ct) is { } runId) value = CorrelateJob(value, runId);
+        if (await LinkedJobAsync(db, row, ct) is { } runId) value = CorrelateJob(value, runId);
         Append(db, value);
     }
 
@@ -66,7 +66,7 @@ public static class ExecutionLifecycleOutbox
         var metadata = JobRunInputProtection.Metadata(row);
         var id = Decimal(row.Id);
         var occurred = details.Run.CompletedAtUtc ?? terminalReadyAtUtc;
-        var definition = new FlowExecutionDefinitionDto(Decimal(row.JobId), metadata.DefinitionName,
+        var definition = new FlowExecutionDefinitionDto(Decimal(row.JobId), Bound(metadata.DefinitionName, 512),
             metadata.DefinitionRevision);
         var target = new FlowExecutionTargetDto(row.AgentId, Bound(row.TargetDisplayName ?? row.TargetName, 512),
             Bound(row.TargetHostName, 512));
@@ -98,13 +98,13 @@ public static class ExecutionLifecycleOutbox
         var execution = PositiveDecimal(row.ExecutionId);
         var attempt = execution ?? id;
         var metadata = JobRunInputProtection.Metadata(new() { InputSensitivityJson = row.InputSensitivityJson });
-        var definition = new FlowExecutionDefinitionDto(PositiveDecimal(row.JobDefinitionId), metadata.DefinitionName,
+        var definition = new FlowExecutionDefinitionDto(PositiveDecimal(row.JobDefinitionId), Bound(metadata.DefinitionName, 512),
             metadata.DefinitionRevision);
         var target = new FlowExecutionTargetDto(row.TargetAgentId);
         return Create(row.TargetTenantId.Value, FlowExecutionSourceKind.Request, definition, id, attempt, target,
             outcome, row.Status.Trim(), row.UpdatedAtUtc, observedAtUtc) with
         {
-            StartedAtUtc = row.CreatedAtUtc,
+            StartedAtUtc = row.CreatedAtUtc <= row.UpdatedAtUtc ? row.CreatedAtUtc : null,
             CompletedAtUtc = row.UpdatedAtUtc,
             RequestKind = Bound(row.SourceSystem, FlowExecutionEventLimits.MaximumIdentifierLength),
             CorrelationId = "request:" + id,
@@ -137,7 +137,7 @@ public static class ExecutionLifecycleOutbox
             CompletedAtUtc = row.CompletedAtUtc,
             ParentExecutionId = parent,
             RootExecutionId = parent ?? id,
-            CorrelationId = parent is null ? "script-execution:" + id : "job-run:" + parent,
+            CorrelationId = parent is null ? BoundedCorrelation("script-execution:", id) : "job-run:" + parent,
             ExitCode = row.ExitCode,
             ReasonCode = "script_" + outcome.ToString().ToLowerInvariant(),
             Results = [new("script-result", id, Digest(result), result is not null)],
@@ -174,27 +174,17 @@ public static class ExecutionLifecycleOutbox
         if (!long.TryParse(executionId, NumberStyles.None, CultureInfo.InvariantCulture, out var runId) ||
             !long.TryParse(definitionId, NumberStyles.None, CultureInfo.InvariantCulture, out var jobId))
             return db.JobRuns.Where(_ => false);
-        return from run in db.JobRuns.AsNoTracking()
-               join control in db.Set<JobRunControlRecord>().AsNoTracking() on run.Id equals control.RunId
-               where run.Id == runId && run.JobId == jobId && run.TenantId == row.TargetTenantId &&
-                   run.AgentId == row.TargetAgentId && run.StartedBy == row.SourceSystem && control.TerminalReadyAtUtc != null
-               select run;
+        // Correlation identifies the persisted accepted submission, not a fabricated terminal outcome.
+        // Combined subscriptions wait for this known parent's terminal-ready result separately.
+        return db.JobRuns.AsNoTracking().Where(run => run.Id == runId && run.JobId == jobId &&
+            run.TenantId == row.TargetTenantId && run.AgentId == row.TargetAgentId && run.StartedBy == row.SourceSystem);
     }
 
-    private static string? LinkedJob(OrchestratorDbContext db, RequestRecord row, FlowExecutionOutcome outcome)
-    {
-        var run = LinkedJobs(db, row).SingleOrDefault();
-        return run is not null && FlowExecutionOutcomes.FromAuthoritativeStatus(((JobRunState)run.Status).ToString()) == outcome
-            ? Decimal(run.Id) : null;
-    }
+    private static string? LinkedJob(OrchestratorDbContext db, RequestRecord row) =>
+        LinkedJobs(db, row).Select(run => run.Id).SingleOrDefault() is > 0 and var id ? Decimal(id) : null;
 
-    private static async Task<string?> LinkedJobAsync(OrchestratorDbContext db, RequestRecord row,
-        FlowExecutionOutcome outcome, CancellationToken ct)
-    {
-        var run = await LinkedJobs(db, row).SingleOrDefaultAsync(ct);
-        return run is not null && FlowExecutionOutcomes.FromAuthoritativeStatus(((JobRunState)run.Status).ToString()) == outcome
-            ? Decimal(run.Id) : null;
-    }
+    private static async Task<string?> LinkedJobAsync(OrchestratorDbContext db, RequestRecord row, CancellationToken ct) =>
+        await LinkedJobs(db, row).Select(run => run.Id).SingleOrDefaultAsync(ct) is > 0 and var id ? Decimal(id) : null;
 
     private static FlowExecutionEventDto CorrelateJob(FlowExecutionEventDto value, string runId) => value with
     {
@@ -246,7 +236,17 @@ public static class ExecutionLifecycleOutbox
     private static string? PositiveDecimal(string? value) => ulong.TryParse(value, NumberStyles.None,
         CultureInfo.InvariantCulture, out var id) && id > 0 ? id.ToString(CultureInfo.InvariantCulture) : null;
     private static string Decimal(long value) => value.ToString(CultureInfo.InvariantCulture);
-    private static string? Bound(string? value, int limit) => value is null ? null : value[..Math.Min(value.Length, limit)];
+    private static string? Bound(string? value, int limit)
+    {
+        if (value is null) return null;
+        var length = Math.Min(value.Length, limit);
+        if (length > 0 && length < value.Length && char.IsHighSurrogate(value[length - 1]) &&
+            char.IsLowSurrogate(value[length])) length--;
+        return value[..length];
+    }
+    private static string BoundedCorrelation(string prefix, string id) =>
+        prefix.Length + id.Length <= FlowExecutionEventLimits.MaximumIdentifierLength ? prefix + id : prefix + "sha256:" + Digest(id);
+
     private static string? Digest(string? value) => value is null ? null : Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
     private static Guid Identity(string value) => new(SHA256.HashData(Encoding.UTF8.GetBytes("NetRatel.Flow.Execution.V1|" + value)).AsSpan(0, 16));
 }

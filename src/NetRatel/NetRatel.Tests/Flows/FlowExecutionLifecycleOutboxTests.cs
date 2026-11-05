@@ -25,7 +25,7 @@ public sealed class FlowExecutionLifecycleOutboxTests
     {
         await using var db = Memory();
         var requests = new RequestService(db, new EphemeralDataProtectionProvider());
-        var row = await requests.CreateAsync(new("synthetic-source", string.Empty, null, null, 7, null));
+        var row = await requests.CreateAsync(new("synthetic-source", string.Empty, "missing-definition", null, 7, null));
         await requests.UpdateAsync(new(row.Id, null, null, null, null, status, "synthetic result", null, null, null));
         var saved = Assert.Single(await db.OutboxMessages.AsNoTracking().ToArrayAsync());
         var value = Read(saved);
@@ -78,6 +78,62 @@ public sealed class FlowExecutionLifecycleOutboxTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => db.SaveChangesAsync());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Request_correlation_uses_the_accepted_parent_before_or_after_terminal_ready(bool terminalReady)
+    {
+        await using var db = Memory();
+        var agent = Guid.NewGuid();
+        const long runId = 9007199254740993;
+        var now = DateTimeOffset.UtcNow;
+        db.JobRuns.Add(new()
+        {
+            Id = runId, JobId = 41, TenantId = 7, AgentId = agent, StartedBy = "synthetic-source",
+            Status = (int)(terminalReady ? JobRunState.Failed : JobRunState.Running), CreatedAtUtc = now
+        });
+        if (terminalReady) db.Set<JobRunControlRecord>().Add(new()
+        { RunId = runId, TerminalReadyAtUtc = now, TerminalResultHash = new string('a', 64) });
+        await db.SaveChangesAsync();
+        var requests = new RequestService(db, new EphemeralDataProtectionProvider());
+        var row = await requests.CreateAsync(new("synthetic-source", string.Empty, "41", null, 7, agent));
+        await requests.UpdateAsync(new(row.Id, null, null, null, runId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "Failed", null, null, null, null));
+        var fact = Read(Assert.Single(await db.OutboxMessages.AsNoTracking().ToArrayAsync()));
+        Assert.Equal("job-run:" + runId, fact.CorrelationId);
+        Assert.Equal(runId.ToString(), fact.AttemptId);
+        Assert.Equal(runId.ToString(), fact.ParentExecutionId);
+        Assert.Equal(FlowExecutionSourceKind.Request, fact.SourceKind);
+        Assert.Equal("Failed", fact.RawStatus);
+        Assert.Equal(FlowExecutionOutcome.Failed, fact.Outcome);
+        Assert.Empty(await db.OutboxMessages.Where(x => x.Source == "job-terminal-ready").ToArrayAsync());
+    }
+
+    [Fact]
+    public void Source_bounds_keep_valid_unicode_and_native_identifiers_without_fabricating_start_time()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var script = ExecutionLifecycleOutbox.ScriptEvent(new()
+        {
+            RequestId = new string('x', 256), TenantId = 7, TaskType = TaskKinds.ExecLibraryScript,
+            Status = "Completed", ScriptName = new string('n', 511) + "😀", TargetDisplayName = new string('t', 511) + "😀",
+            CompletedAtUtc = now
+        }, "Running", now)!;
+        Assert.Equal(256, script.ExecutionId.Length);
+        Assert.Equal(new string('n', 511), script.Definition.Name);
+        Assert.Equal(new string('t', 511), script.Target.DisplayName);
+        Assert.True(script.CorrelationId!.Length <= FlowExecutionEventLimits.MaximumIdentifierLength);
+        Assert.True(FlowExecutionEventValidator.Validate(script).Valid);
+        var skewed = ExecutionLifecycleOutbox.RequestEvent(new()
+        {
+            Id = 1, TargetTenantId = 7, SourceSystem = "synthetic-source", JobDefinitionId = "missing-definition",
+            Status = "Failed", CreatedAtUtc = now.AddMinutes(1), UpdatedAtUtc = now
+        }, "New", now)!;
+        Assert.Null(skewed.StartedAtUtc);
+        Assert.Equal(now, skewed.CompletedAtUtc);
+        Assert.True(FlowExecutionEventValidator.Validate(skewed).Valid);
+    }
+
     private static FlowExecutionEventDto Read(OutboxMessage row) =>
         JsonSerializer.Deserialize(row.PayloadJson, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto)!;
     private static OrchestratorDbContext Memory() => new(new DbContextOptionsBuilder<OrchestratorDbContext>()
@@ -100,7 +156,7 @@ public sealed class FlowExecutionLifecycleOutboxPostgreSqlTests(PostgreSqlPersis
         {
             await db.Database.MigrateAsync(ct);
             var requests = new RequestService(db, keys);
-            id = (await requests.CreateAsync(new("synthetic-source", string.Empty, null, null, 7, null), ct)).Id;
+            id = (await requests.CreateAsync(new("synthetic-source", string.Empty, "missing-definition", null, 7, null), ct)).Id;
             await using (var transaction = await db.Database.BeginTransactionAsync(ct))
             {
                 await requests.UpdateAsync(new(id, null, null, null, null, "Failed", null, null, null, null), ct);
