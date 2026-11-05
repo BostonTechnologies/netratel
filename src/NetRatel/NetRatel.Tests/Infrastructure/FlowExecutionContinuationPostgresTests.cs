@@ -114,7 +114,7 @@ public sealed class FlowExecutionContinuationPostgresTests(PostgreSqlPersistence
 
         var run = await db.FlowRuns.AsNoTracking().SingleAsync(ct);
         Assert.Equal(FlowRunStatus.WaitingForExecution, run.Status);
-        Assert.Equal(fixture.Input.EventId, run.EventId);
+        Assert.Equal(fixture.Input.SourceAdmissionKey, run.EventId);
         Assert.Empty(await db.JobTaskActivities.AsNoTracking().ToArrayAsync(ct));
     }
 
@@ -179,12 +179,12 @@ public sealed class FlowExecutionContinuationPostgresTests(PostgreSqlPersistence
             .SingleAsync(row => row.Type == FlowExecutionSubscriptionLimits.OutboxType, ct)).PayloadJson)!;
         var aggregate = FlowExecutionEventMatching.Aggregate(versionId, triggerId, settings, [fact]);
         Assert.Equal(selection.AdmissionKey, aggregate.AdmissionKey);
-        var input = new FlowEventEnvelope(7, aggregate.AdmissionKey, fact.OccurrenceId, versionId, fact.OccurredAtUtc, null, principal)
-            { ExecutionEvent = fact, SourceDeliveryId = selection.DeliveryId, SourceEventIds = aggregate.ContributingEventIds };
+        var input = new FlowEventEnvelope(7, fact.EventId, fact.OccurrenceId, versionId, fact.OccurredAtUtc, null, principal)
+            { ExecutionEvent = fact, SourceAdmissionKey = aggregate.AdmissionKey, SourceDeliveryId = selection.DeliveryId, SourceEventIds = aggregate.ContributingEventIds };
         Assert.True(FlowContractValidation.ValidEnvelope(input));
         var runId = Guid.NewGuid();
         db.FlowRuns.Add(new() { Id = runId, TenantId = 7, FlowId = flowId, FlowVersionId = versionId,
-            EventId = input.EventId, OccurrenceId = input.OccurrenceId, EventJson = JsonSerializer.Serialize(input, Json),
+            EventId = aggregate.AdmissionKey, OccurrenceId = input.OccurrenceId, EventJson = JsonSerializer.Serialize(input, Json),
             EventFingerprint = FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(input, Json)),
             Status = FlowRunStatus.WaitingForExecution, CreatedAtUtc = fact.ObservedAtUtc, Fence = 1 });
         await db.SaveChangesAsync(ct);

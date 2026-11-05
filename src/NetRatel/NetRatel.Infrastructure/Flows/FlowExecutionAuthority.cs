@@ -131,7 +131,7 @@ public sealed class FlowExecutionAuthority(OrchestratorDbContext db, IFlowExecut
         var source = await db.FlowRuntimeIdentity.AsNoTracking().SingleOrDefaultAsync(row => row.Id == 1, ct);
         if (definition is not { Enabled: true } || definition.EnabledSinceUtc > input.OccurredAtUtc ||
             version.PublishedAtUtc > input.OccurredAtUtc || run is null || run.FlowId != version.FlowId ||
-            run.FlowVersionId != identity.FlowVersionId || run.EventId != input.EventId || run.OccurrenceId != input.OccurrenceId ||
+            run.FlowVersionId != identity.FlowVersionId || run.EventId != (input.SourceAdmissionKey ?? input.EventId) || run.OccurrenceId != input.OccurrenceId ||
             run.EventFingerprint != candidate.EventFingerprint ||
             run.Status is not (FlowRunStatus.Running or FlowRunStatus.RetryWaiting or FlowRunStatus.WaitingForAi or
                 FlowRunStatus.AwaitingApproval or FlowRunStatus.WaitingForExecution) ||
