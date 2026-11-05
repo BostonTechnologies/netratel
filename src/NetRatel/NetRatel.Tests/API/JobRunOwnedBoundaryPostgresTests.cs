@@ -39,7 +39,7 @@ using Xunit;
 
 namespace NetRatel.Tests.API;
 
-public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixture postgres)
+public sealed partial class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixture postgres)
     : IClassFixture<PostgreSqlPersistenceFixture>
 {
     [Fact]
@@ -1066,6 +1066,9 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         public MutableClock Clock { get; } = new();
         public RecordingGateway Gateway { get; private set; } = null!;
         public bool RetainStepScriptReplay { get; private set; }
+        public bool RetainFlowRecovery { get; private set; }
+        public StepReplayCommands RepairCommands { get; } = new();
+        public Guid RecoveryConnectorId { get; } = Guid.NewGuid();
         public ActorRouter Primary { get; private set; } = null!;
         public ActorRouter Replica { get; private set; } = null!;
         public Guid AgentId { get; } = Guid.NewGuid();
@@ -1088,9 +1091,9 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             return await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().JobShadowObservations
                 .AsNoTracking().Where(x => x.JobRunId == runId).OrderBy(x => x.SourceEventId).ToArrayAsync(ct);
         }
-        public static async Task<Harness> CreateAsync(string connection, CancellationToken ct, string? legacyClientIdentity = null, bool retainStepScriptReplay = false)
+        public static async Task<Harness> CreateAsync(string connection, CancellationToken ct, string? legacyClientIdentity = null, bool retainStepScriptReplay = false, bool retainFlowRecovery = false)
         {
-            var h = new Harness { RetainStepScriptReplay = retainStepScriptReplay };
+            var h = new Harness { RetainStepScriptReplay = retainStepScriptReplay || retainFlowRecovery, RetainFlowRecovery = retainFlowRecovery };
             var services = new ServiceCollection();
             services.AddDbContext<OrchestratorDbContext>(o => o.UseNpgsql(connection).AddInterceptors(h.Gate));
             services.AddDbContext<NetRatelIdentityDbContext>(o => o.UseNpgsql(connection));
@@ -1105,6 +1108,22 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             services.AddScoped<IJobExecutionSnapshotCapture, PinnedJobExecutionSnapshotCapture>();
             services.AddScoped<IScriptExecutionReplayStore, ScriptExecutionReplayStore>();
             services.AddScoped<NetRatel.Application.Requests.IRequestService, RequestService>();
+            if (retainFlowRecovery)
+            {
+                services.AddLogging();
+                services.AddSingleton<Microsoft.Extensions.Configuration.IConfiguration>(
+                    new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build());
+                services.AddScoped<IEffectiveAccessService, EffectiveAccessService>();
+                services.AddNetRatelFlows();
+                services.AddScoped<FlowExecutionAuthority>();
+                services.AddScoped<IKeyedExecutionAuthority>(provider => provider.GetRequiredService<FlowExecutionAuthority>());
+                services.AddScoped<IExecutionAdmissionStore, ExecutionAdmissionStore>();
+                services.AddScoped<IFlowExecutionDefinitionPins, FlowExecutionDefinitionPins>();
+                services.AddSingleton<NetRatel.API.Gateway.IAgentCommandAuthorityDispatcher>(h.RepairCommands);
+                services.AddScoped<IKeyedScriptExecutionService, KeyedScriptExecutionService>();
+                services.AddScoped<IAkkaJobAuthorityService>(provider => h.Authority(provider, false));
+                services.AddScoped<IFlowExecutionActionDispatcher, FlowExecutionActionDispatcher>();
+            }
             h.Services = services.BuildServiceProvider();
             h._actors = ActorSystem.Create("owned-job-pg-" + Guid.NewGuid().ToString("N"));
             var store = h.Services.GetRequiredService<IJobObservationStore>();
@@ -1178,6 +1197,8 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             new RecordingRealtimeFanoutSink(), new JobAuthorityIdGenerator(), new TestEnvironment(),
             managedGuard: managedGuard, db: services.GetRequiredService<OrchestratorDbContext>(), clock: Clock,
             requests: services.GetRequiredService<IRequestService>(),
+            executionAdmissions: RetainFlowRecovery ? services.GetRequiredService<IExecutionAdmissionStore>() : null,
+            executionAuthority: RetainFlowRecovery ? services.GetRequiredService<IKeyedExecutionAuthority>() : null,
             snapshotCapture: RetainStepScriptReplay ? services.GetRequiredService<IJobExecutionSnapshotCapture>() : null,
             scriptReplayPins: RetainStepScriptReplay ? services.GetRequiredService<IScriptExecutionReplayStore>() : null);
         public async Task<JobRunInfo> StartAsync(CancellationToken ct, string? inputs = null, NetRatel.Shared.ClientEnvironment? environment = null)
