@@ -23,6 +23,24 @@ public interface IFlowApiService
     Task<FlowRunDetailDto> GetRunAsync(int tenantId, Guid flowId, Guid runId, CancellationToken token = default);
     Task<FlowVersionDto> GetVersionAsync(int tenantId, Guid versionId, CancellationToken token = default);
     Task<FlowRunDetailDto> GetRunByIdAsync(int tenantId, Guid runId, CancellationToken token = default);
+    Task<FlowSchemaCapabilitiesDto> GetSchemaCapabilitiesAsync(int tenantId, CancellationToken token = default) =>
+        Task.FromResult(new FlowSchemaCapabilitiesDto([FlowLimits.SchemaVersion], [FlowLimits.SchemaVersion]));
+    Task<IReadOnlyList<FlowTemplateDescriptorDto>> GetTemplatesAsync(int tenantId, CancellationToken token = default) =>
+        Task.FromException<IReadOnlyList<FlowTemplateDescriptorDto>>(new NotSupportedException("Flow templates are unavailable."));
+    Task<FlowDefinitionDto> CreateFromTemplateAsync(int tenantId, FlowCreateFromTemplateRequest request, CancellationToken token = default) =>
+        Task.FromException<FlowDefinitionDto>(new NotSupportedException("Flow templates are unavailable."));
+    Task<IReadOnlyList<FlowExecutionTargetSelectionDto>> GetSelectedExecutionTargetsAsync(int tenantId, FlowExecutionSourceKind sourceKind,
+        IReadOnlyList<Guid> ids, CancellationToken token = default) =>
+        Task.FromException<IReadOnlyList<FlowExecutionTargetSelectionDto>>(new NotSupportedException("Selected endpoint metadata is unavailable."));
+    Task<FlowExecutionDefinitionsPageDto> SearchExecutionDefinitionsAsync(int tenantId, FlowExecutionSourceKind sourceKind,
+        string? search = null, string? afterId = null, int limit = 50, CancellationToken token = default) =>
+        Task.FromException<FlowExecutionDefinitionsPageDto>(new NotSupportedException("Execution definition search is unavailable."));
+    Task<FlowExecutionTargetsPageDto> SearchExecutionTargetsAsync(int tenantId, FlowExecutionSourceKind sourceKind,
+        string? search = null, string? afterId = null, int limit = 50, CancellationToken token = default) =>
+        Task.FromException<FlowExecutionTargetsPageDto>(new NotSupportedException("Execution target search is unavailable."));
+    Task<FlowExecutionActionSettingsDto> GetExecutionDefinitionAsync(int tenantId, FlowExecutionSourceKind sourceKind,
+        string definitionId, CancellationToken token = default) =>
+        Task.FromException<FlowExecutionActionSettingsDto>(new NotSupportedException("Execution definition details are unavailable."));
 }
 
 public sealed class FlowApiException(HttpStatusCode statusCode, string? code = null) : HttpRequestException(MessageFor(statusCode, code), null, statusCode)
@@ -34,6 +52,9 @@ public sealed class FlowApiException(HttpStatusCode statusCode, string? code = n
         "connector-disabled-or-owner-denied" or "connector-authority" or "connector-current-authority-denied" => "The connector is disabled or its owner no longer has permission. Choose an authorized connector in this tenant. Your draft is preserved.",
         "connector-revision-unavailable" => "The connector changed. Select its current reference and save the draft again.",
         "connector-unavailable" => "The selected connector is unavailable. Review Flows connectors before publishing; your draft is preserved.",
+        "execution-definition-source-unsupported" => "This lifecycle source has no runnable library definition. Choose a job or library script.",
+        "execution-definition-unavailable" => "The selected execution definition is unavailable in this tenant.",
+        "execution-definition-query-invalid" or "execution-definition-id-invalid" or "execution-target-query-invalid" => "The definition search or selection is invalid. Reload the catalogue.",
         "mapping-output-limit" => "The sample expands beyond the incident field limits. Shorten the title or description template.",
         "canonical-principal-required" => "This session cannot publish. Sign in again with an authorized operator account; your draft is preserved.",
         _ => StatusMessage(status)
@@ -73,11 +94,54 @@ public sealed class FlowApiService(IHttpClientFactory factory) : IFlowApiService
     public Task<FlowVersionDto> GetVersionAsync(int tenantId, Guid versionId, CancellationToken token = default) => SendAsync<FlowVersionDto>(HttpMethod.Get, Root(tenantId) + $"/versions/{versionId:D}", null, token);
     public Task<FlowRunDetailDto> GetRunByIdAsync(int tenantId, Guid runId, CancellationToken token = default) => SendAsync<FlowRunDetailDto>(HttpMethod.Get, Root(tenantId) + $"/runs/{runId:D}", null, token);
 
+    public Task<FlowSchemaCapabilitiesDto> GetSchemaCapabilitiesAsync(int tenantId, CancellationToken token = default) =>
+        SendAsync<FlowSchemaCapabilitiesDto>(HttpMethod.Get, Root(tenantId) + "/schema-capabilities", null, token);
+    public Task<IReadOnlyList<FlowTemplateDescriptorDto>> GetTemplatesAsync(int tenantId, CancellationToken token = default) =>
+        SendAsync<IReadOnlyList<FlowTemplateDescriptorDto>>(HttpMethod.Get, Root(tenantId) + "/templates", null, token);
+    public Task<FlowDefinitionDto> CreateFromTemplateAsync(int tenantId, FlowCreateFromTemplateRequest request, CancellationToken token = default) =>
+        SendAsync<FlowDefinitionDto>(HttpMethod.Post, Root(tenantId) + "/from-template", request, token);
+    public Task<IReadOnlyList<FlowExecutionTargetSelectionDto>> GetSelectedExecutionTargetsAsync(int tenantId, FlowExecutionSourceKind sourceKind,
+        IReadOnlyList<Guid> ids, CancellationToken token = default)
+    {
+        var path = $"{Root(tenantId)}/execution-definitions/targets/selected?sourceKind={Uri.EscapeDataString(sourceKind.ToString())}";
+        foreach (var id in ids) path += "&ids=" + id.ToString("D");
+        return SendAsync<IReadOnlyList<FlowExecutionTargetSelectionDto>>(HttpMethod.Get, path, null, token);
+    }
+    public Task<FlowExecutionDefinitionsPageDto> SearchExecutionDefinitionsAsync(int tenantId, FlowExecutionSourceKind sourceKind,
+        string? search = null, string? afterId = null, int limit = 50, CancellationToken token = default)
+    {
+        var path = $"{Root(tenantId)}/execution-definitions?sourceKind={Uri.EscapeDataString(sourceKind.ToString())}&limit={limit}";
+        if (!string.IsNullOrWhiteSpace(search)) path += "&search=" + Uri.EscapeDataString(search.Trim());
+        if (!string.IsNullOrEmpty(afterId)) path += "&afterId=" + Uri.EscapeDataString(afterId);
+        return SendAsync<FlowExecutionDefinitionsPageDto>(HttpMethod.Get, path, null, token);
+    }
+    public Task<FlowExecutionTargetsPageDto> SearchExecutionTargetsAsync(int tenantId, FlowExecutionSourceKind sourceKind,
+        string? search = null, string? afterId = null, int limit = 50, CancellationToken token = default)
+    {
+        var path = $"{Root(tenantId)}/execution-definitions/targets?sourceKind={Uri.EscapeDataString(sourceKind.ToString())}&limit={limit}";
+        if (!string.IsNullOrWhiteSpace(search)) path += "&search=" + Uri.EscapeDataString(search.Trim());
+        if (!string.IsNullOrEmpty(afterId)) path += "&afterId=" + Uri.EscapeDataString(afterId);
+        return SendAsync<FlowExecutionTargetsPageDto>(HttpMethod.Get, path, null, token);
+    }
+    public async Task<FlowExecutionActionSettingsDto> GetExecutionDefinitionAsync(int tenantId, FlowExecutionSourceKind sourceKind,
+        string definitionId, CancellationToken token = default)
+    {
+        try
+        {
+            return await SendAsync<FlowExecutionActionSettingsDto>(HttpMethod.Get,
+                $"{Root(tenantId)}/execution-definitions/{Uri.EscapeDataString(sourceKind.ToString())}/{Uri.EscapeDataString(definitionId)}", null, token);
+        }
+        catch (FlowApiException error) when (error.StatusCode == HttpStatusCode.NotFound && error.Code is null)
+        { throw new FlowApiException(HttpStatusCode.NotFound, "execution-definition-unavailable"); }
+    }
+
     private async Task<T> SendAsync<T>(HttpMethod method, string path, object? body, CancellationToken token)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromSeconds(30));
         using var request = new HttpRequestMessage(method, path);
+        if (body is FlowSaveDraftRequest { Graph.SchemaVersion: FlowGraphV2Limits.SchemaVersion } or FlowGraphDto { SchemaVersion: FlowGraphV2Limits.SchemaVersion })
+            request.Headers.Add("X-NetRatel-Flow-Schema", FlowGraphV2Limits.SchemaVersion.ToString(System.Globalization.CultureInfo.InvariantCulture));
         if (body is not null) request.Content = JsonContent.Create(body, body.GetType());
         try
         {

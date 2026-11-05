@@ -1,0 +1,130 @@
+@using System.Globalization
+@using System.Text.Json
+@using NetRatel.Shared.Contracts.Flows
+@using NetRatel.Web.Services.Flows
+
+<section class="flow-predicate-fields" data-testid="flow-predicate-fields">
+@if (Node.Condition is { } legacy)
+{
+    <p>Preserved alert condition: @legacy.Field @legacy.Comparison @(legacy.NumericValue?.ToString(CultureInfo.InvariantCulture) ?? legacy.TextValue)</p>
+    <button type="button" @onclick="ConvertLegacy" disabled="@Disabled" data-testid="flow-condition-use-typed">Use typed field controls</button>
+    <p class="flow-predicate-help">The saved alert condition keeps its behavior until explicitly converted.</p>
+}
+else
+{
+    <fieldset disabled="@Disabled">
+        <label>Value type<select value="@_type" @onchange="SetType" data-testid="flow-condition-type"><option value="@FlowDataType.Text">Text</option><option value="@FlowDataType.Number">Number</option><option value="@FlowDataType.Boolean">Boolean</option></select></label>
+        <FlowInputBindingField @key="@(Node.Id.ToString() + ":" + _type)" NodeId="Node.Id" Label="Condition input" DataType="_type"
+            Value="_input" ValueChanged="SetInput" EventFields="_fields" Producers="_producers" Disabled="Disabled" />
+        <label>Comparison<select value="@_comparison" @onchange="SetComparison" data-testid="flow-condition-comparison">
+            @foreach (var comparison in Enum.GetValues<FlowComparison>().Where(comparison => _type == FlowDataType.Number || comparison is FlowComparison.Equal or FlowComparison.NotEqual))
+            { <option value="@comparison">@ComparisonName(comparison)</option> }
+        </select></label>
+        @if (_type == FlowDataType.Boolean)
+        { <label><input type="checkbox" checked="@(_value.ValueKind == JsonValueKind.True)" @onchange="SetBoolean" data-testid="flow-condition-match" /> Compare with true (unchecked means false)</label> }
+        else if (_type == FlowDataType.Text && AllowedValues is { Count: > 0 } values)
+        {
+            <label>Compare with<select value="@_text" @onchange="SetValue" data-testid="flow-condition-match">
+                @foreach (var value in values) { <option value="@value">@value</option> }
+                @if (!values.Contains(_text, StringComparer.Ordinal)) { <option value="@_text">Stored value: @_text</option> }
+            </select></label>
+        }
+        else
+        { <label>Compare with<input value="@_text" type="@(_type == FlowDataType.Number ? "number" : "text")" step="any" maxlength="@FlowGraphV2Limits.MaximumBindingBytes" @onchange="SetValue" data-testid="flow-condition-match" /></label> }
+    </fieldset>
+    <p class="flow-predicate-help">The chosen comparison follows the True or False port. Missing values are reported explicitly by validation, preview and execution.</p>
+}
+@if (_error is not null) { <p role="alert">@_error</p> }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public FlowNodeDto Node { get; set; } = default!;
+    [Parameter, EditorRequired] public FlowGraphDto Graph { get; set; } = default!;
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback<FlowNodeDto> Changed { get; set; }
+    private Guid _node; private FlowPredicateDto? _seen;
+    private FlowDataType _type = FlowDataType.Text;
+    private FlowInputBindingDto? _input;
+    private FlowComparison _comparison = FlowComparison.Equal;
+    private JsonElement _value = JsonSerializer.SerializeToElement("");
+    private string _text = ""; private string? _error;
+    private IReadOnlyList<FlowBindingFieldDto> _fields = [];
+    private IReadOnlyList<FlowNodeDto> _producers = [];
+    private IReadOnlyList<string>? AllowedValues
+    {
+        get
+        {
+            if (_input is not { } input) return null;
+            return input.Source switch
+            {
+                FlowInputSource.Event => _fields.FirstOrDefault(field => field.Path == input.Path)?.AllowedValues,
+                FlowInputSource.NodeOutput when _producers.FirstOrDefault(node => node.Id == input.NodeId) is { } producer =>
+                    FlowBindingCatalogue.OutputFields(producer.Kind).FirstOrDefault(field => field.Path == input.Path)?.AllowedValues,
+                _ => null
+            };
+        }
+    }
+    protected override void OnParametersSet()
+    {
+        _fields = FlowAuthoringContext.EventFields(Graph); _producers = FlowAuthoringContext.AvailableProducers(Graph, Node.Id);
+        if (_node == Node.Id && Equals(_seen, Node.Predicate)) return;
+        _node = Node.Id; _seen = Node.Predicate; _error = null;
+        _type = Node.Predicate?.Input.DataType ?? (Graph.Nodes.Any(node => node.Kind == FlowNodeKind.ExecutionEvent) ? FlowDataType.Text : FlowDataType.Number);
+        _input = Node.Predicate?.Input; _comparison = Node.Predicate?.Comparison ?? FlowComparison.Equal;
+        _value = Node.Predicate?.Value ?? DefaultValue(_type); _text = ValueText(_value);
+    }
+    private Task Emit()
+    {
+        if (Disabled) return Task.CompletedTask;
+        _error = null;
+        var predicate = _input is null ? null : new FlowPredicateDto(_input, _comparison, _value);
+        _seen = predicate; return Changed.InvokeAsync(Node with { Condition = null, Predicate = predicate });
+    }
+    private Task SetType(ChangeEventArgs args)
+    {
+        if (Disabled || !Enum.TryParse<FlowDataType>(args.Value?.ToString(), out var type) || type is not (FlowDataType.Text or FlowDataType.Number or FlowDataType.Boolean)) return Task.CompletedTask;
+        _type = type; _input = null; _comparison = FlowComparison.Equal; _value = DefaultValue(type); _text = ValueText(_value); return Emit();
+    }
+    private Task SetInput(FlowInputBindingDto? input) { if (Disabled) return Task.CompletedTask; _input = input; return Emit(); }
+    private Task SetComparison(ChangeEventArgs args)
+    {
+        if (!Enum.TryParse<FlowComparison>(args.Value?.ToString(), out var comparison) || !Enum.IsDefined(comparison) ||
+            _type != FlowDataType.Number && comparison is not (FlowComparison.Equal or FlowComparison.NotEqual)) return Task.CompletedTask;
+        _comparison = comparison; return Emit();
+    }
+    private Task SetBoolean(ChangeEventArgs args) { _value = JsonSerializer.SerializeToElement(args.Value is true); return Emit(); }
+    private Task SetValue(ChangeEventArgs args)
+    {
+        if (Disabled) return Task.CompletedTask;
+        var text = args.Value?.ToString() ?? "";
+        if (_type == FlowDataType.Number)
+        {
+            if (!double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var number) || !double.IsFinite(number))
+            { _error = "Enter a finite comparison value. The previous value is retained."; return Task.CompletedTask; }
+            _value = JsonSerializer.SerializeToElement(number);
+        }
+        else _value = JsonSerializer.SerializeToElement(text);
+        _text = text; return Emit();
+    }
+    private Task ConvertLegacy()
+    {
+        if (Disabled || Node.Condition is not { } condition) return Task.CompletedTask;
+        var path = condition.Field switch
+        {
+            FlowValueField.NumericValue => "alert.numericValue", FlowValueField.Severity => "alert.severity", FlowValueField.Metric => "alert.metric",
+            FlowValueField.Resource => "alert.resource", FlowValueField.RuleName => "alert.ruleName", FlowValueField.ClientName => "alert.clientName",
+            FlowValueField.ServiceState => "alert.serviceState", _ => ""
+        };
+        if (path.Length == 0 || !_fields.Any(field => field.Path == path)) { _error = "This preserved condition requires an alert source."; return Task.CompletedTask; }
+        _type = condition.Field == FlowValueField.NumericValue ? FlowDataType.Number : FlowDataType.Text;
+        _input = new(FlowInputSource.Event, _type, path); _comparison = condition.Comparison;
+        _value = _type == FlowDataType.Number ? JsonSerializer.SerializeToElement(condition.NumericValue ?? 0) : JsonSerializer.SerializeToElement(condition.TextValue ?? "");
+        _text = ValueText(_value); return Emit();
+    }
+    private static JsonElement DefaultValue(FlowDataType type) => type switch
+    { FlowDataType.Number => JsonSerializer.SerializeToElement(0), FlowDataType.Boolean => JsonSerializer.SerializeToElement(false), _ => JsonSerializer.SerializeToElement("") };
+    private static string ValueText(JsonElement value) => value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : value.GetRawText();
+    private static string ComparisonName(FlowComparison comparison) => comparison switch
+    { FlowComparison.Equal => "equals", FlowComparison.NotEqual => "does not equal", FlowComparison.GreaterThan => "greater than", FlowComparison.GreaterThanOrEqual => "greater than or equal",
+      FlowComparison.LessThan => "less than", FlowComparison.LessThanOrEqual => "less than or equal", _ => "Unsupported comparison" };
+}

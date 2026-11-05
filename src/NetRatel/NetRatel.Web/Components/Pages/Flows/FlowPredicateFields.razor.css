@@ -1,0 +1,5 @@
+.flow-predicate-fields { display: grid; gap: .5rem; min-width: 0; }
+.flow-predicate-fields fieldset { display: grid; gap: .65rem; min-width: 0; border: none; padding: 0; }
+.flow-predicate-fields input:not([type=checkbox]), .flow-predicate-fields select { width: 100%; padding: .4rem; border: 1px solid var(--mud-palette-divider); border-radius: .25rem; color: inherit; background: var(--mud-palette-surface); }
+.flow-predicate-help { color: var(--mud-palette-text-secondary); font-size: .8rem; }
+.flow-predicate-fields button { color: var(--mud-palette-primary); padding: .4rem; }

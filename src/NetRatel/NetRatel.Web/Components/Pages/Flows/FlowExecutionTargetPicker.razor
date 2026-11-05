@@ -1,0 +1,73 @@
+@using NetRatel.Shared.Contracts.Flows
+@using NetRatel.Web.Services.Flows
+@implements IDisposable
+@inject IFlowApiService Api
+
+<section class="flow-target-picker" data-testid="flow-execution-target-picker">
+    <label>Search enabled endpoints by name or hostname<input type="search" value="@_search" @onchange="SearchAsync" maxlength="256" disabled="@Disabled" data-testid="flow-target-search" /></label>
+    @if (_loading) { <p role="status">Loading endpoints…</p> }
+    @if (_error is not null) { <p role="alert">@_error</p><button type="button" @onclick="ReloadAsync" disabled="@Disabled">Retry</button> }
+    <div class="flow-target-options">
+        @foreach (var target in _page.Items)
+        {
+            <button type="button" disabled="@(Disabled || _loading)" @onclick="() => Choose(target)" data-testid="flow-target-choice" data-agent-id="@target.AgentId">
+                <strong>@(target.DisplayName ?? target.HostName ?? "Endpoint metadata unavailable")</strong>
+                @if (target.HostName is { } host && host != target.DisplayName) { <small>@host</small> }
+            </button>
+        }
+        @if (!_loading && _error is null && _page.Items.Count == 0) { <p>No matching enabled endpoints.</p> }
+    </div>
+    <div class="flow-target-pages"><button type="button" @onclick="ReloadAsync" disabled="@(Disabled || _loading)">First page</button>
+        <button type="button" @onclick="NextAsync" disabled="@(Disabled || _loading || _page.NextAfterId is null)" data-testid="flow-target-next">Next page</button>
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public int TenantId { get; set; }
+    [Parameter] public Guid NodeId { get; set; }
+    [Parameter] public FlowExecutionSourceKind SourceKind { get; set; } = FlowExecutionSourceKind.Script;
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback<FlowExecutionTargetDto> Selected { get; set; }
+    private FlowExecutionTargetsPageDto _page = new([]);
+    private CancellationTokenSource _read = new();
+    private int _tenant; private Guid _node; private FlowExecutionSourceKind _source;
+    private long _generation; private bool _loading, _disposed, _disabled;
+    private string _search = ""; private string? _error;
+    protected override async Task OnParametersSetAsync()
+    {
+        var changed = _tenant != TenantId || _node != NodeId || _source != SourceKind;
+        var enabled = _disabled && !Disabled; _disabled = Disabled;
+        if (Disabled) { _read.Cancel(); ++_generation; _loading = false; return; }
+        if (!changed && !enabled) return;
+        _tenant = TenantId; _node = NodeId; _source = SourceKind; _search = ""; _page = new([]);
+        await ReadAsync(null);
+    }
+    private Task SearchAsync(ChangeEventArgs args) { _search = args.Value?.ToString() ?? ""; return ReadAsync(null); }
+    private Task ReloadAsync() => ReadAsync(null);
+    private Task NextAsync() => _page.NextAfterId is { } cursor ? ReadAsync(cursor) : Task.CompletedTask;
+    private bool Current(long generation, int tenant, Guid node, FlowExecutionSourceKind source) =>
+        !_disposed && !Disabled && generation == _generation && tenant == TenantId && node == NodeId && source == SourceKind;
+    private async Task ReadAsync(string? after)
+    {
+        if (_disposed || Disabled) return;
+        _read.Cancel(); _read.Dispose(); _read = new();
+        var token = _read.Token; var generation = ++_generation; var tenant = TenantId; var node = NodeId; var source = SourceKind;
+        _loading = true; _error = null;
+        try
+        {
+            var page = await Api.SearchExecutionTargetsAsync(tenant, source, _search, after, 50, token);
+            if (!Current(generation, tenant, node, source)) return;
+            if (page.Items is null || page.Items.Any(target => target is null || target.AgentId is null || target.AgentId == Guid.Empty))
+                throw new HttpRequestException("The endpoint catalogue returned an invalid target.");
+            _page = page;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
+        catch (Exception error) when (error is HttpRequestException or NotSupportedException)
+        { if (Current(generation, tenant, node, source)) _error = error is FlowApiException ? error.Message : "Endpoint discovery is unavailable in this tenant. The configured target is retained."; }
+        finally { if (Current(generation, tenant, node, source)) _loading = false; }
+    }
+    private Task Choose(FlowExecutionTargetDto target) => _disposed || Disabled || _loading || _tenant != TenantId || _node != NodeId || _source != SourceKind ||
+        !_page.Items.Any(item => ReferenceEquals(item, target)) || target.AgentId is null || target.AgentId == Guid.Empty
+        ? Task.CompletedTask : Selected.InvokeAsync(target);
+    public void Dispose() { _disposed = true; ++_generation; _read.Cancel(); _read.Dispose(); }
+}
