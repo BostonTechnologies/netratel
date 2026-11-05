@@ -26,7 +26,7 @@
     {
         <FlowEditor @ref="_editor" InitialSelectedNodeId="RequestedNodeId" @key="(_editorDefinition.Id, _version?.Id)" Definition="_editorDefinition" TenantName="@Access!.TenantName" Connectors="_connectors"
             CanEdit="@(Access.CanEdit)" CanPublish="@(Access.CanPublish)" ReadOnly="@(_version is not null)" VersionNumber="@(_version?.VersionNumber ?? 0)"
-            RecordedRunId="_recordedRun?.Run.Id" RecordedTrace="_recordedRun?.Trace" RecordedConfigurationHash="_version?.ConfigurationHash"
+            RecordedRunId="_recordedRun?.Run.Id" RecordedTrace="_recordedRun?.Trace" RecordedConfigurationHash="@_version?.ConfigurationHash"
             Saved="DefinitionSaved" Closed="CloseEditor" DirtyChanged="DirtyChanged" />
     }
     else

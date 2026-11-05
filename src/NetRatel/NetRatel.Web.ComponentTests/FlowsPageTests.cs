@@ -182,6 +182,8 @@ public sealed class FlowsPageTests : AsyncBunitContext
         await _dialogs.InvokeAsync(() => _dialogs.Find("[data-testid=flow-run-replay]").ClickAsync(new()));
         await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-trace-player]").Should().ContainSingle());
         var player = cut.Find("[data-testid=flow-trace-player]");
+        cut.FindComponent<FlowEditor>().Instance.RecordedConfigurationHash.Should().Be(hash);
+        cut.FindComponent<FlowTracePlayer>().Instance.ScopeId.Should().StartWith("flow-editor-");
         player.TextContent.Should().Contain(captured ? "Recorded playback" : "no captured node snapshots");
         if (captured) player.TextContent.Should().Contain("Exact recorded output");
         cut.FindComponent<FlowCanvas>().Instance.Adapter.Capture().Nodes[0].Name.Should().Be("Published captured trigger");
