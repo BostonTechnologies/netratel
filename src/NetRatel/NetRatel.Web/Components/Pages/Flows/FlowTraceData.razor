@@ -1,0 +1,30 @@
+@using System.Text.Json
+@using NetRatel.Shared.Contracts.Flows
+
+@if (Snapshot.State == FlowTraceDataState.Missing)
+{
+    <p>Data unavailable. No result was captured or supplied.</p>
+}
+else if (Snapshot.State == FlowTraceDataState.Null)
+{
+    <pre>null</pre>
+}
+else if (Snapshot.State == FlowTraceDataState.Truncated)
+{
+    <p>Truncated snapshot@(Snapshot.OriginalUtf8Bytes is { } bytes ? $" ({bytes} original UTF-8 bytes)" : "").</p>
+    @if (Snapshot.Excerpt is not null) { <p>Text excerpt only:</p><pre>@Snapshot.Excerpt</pre> }
+}
+else if (Snapshot.Value is { } value)
+{
+    <pre>@JsonSerializer.Serialize(value, Json)</pre>
+}
+else
+{
+    <p>Captured data unavailable.</p>
+}
+@if (Snapshot.Reference is not null) { <p>Authorized output reference: <code>@Snapshot.Reference</code></p> }
+
+@code {
+    [Parameter, EditorRequired] public FlowTraceSnapshotDto Snapshot { get; set; } = default!;
+    private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
+}

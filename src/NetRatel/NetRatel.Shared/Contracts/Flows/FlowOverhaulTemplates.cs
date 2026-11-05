@@ -51,7 +51,7 @@ public static class FlowOverhaulTemplates
     {
         var source = Trigger("Job or request failed", [FlowExecutionSourceKind.Job, FlowExecutionSourceKind.Request],
             [FlowExecutionOutcome.Failed]);
-        var filter = Condition("Confirm the failed outcome", "Failed", new(340, 100));
+        var filter = Condition("Confirm the failed outcome", FlowNodeCatalogue.Failed, new(340, 100));
         var ai = Node(FlowNodeKind.InvestigateWithAi, "Investigate original failure", 660, 100);
         var mapping = Map("Enrich original execution evidence", 980, 100);
         var incident = Node(FlowNodeKind.CreateIncident, "RatelDesk: Create incident", 1300, 100);
@@ -107,7 +107,7 @@ public static class FlowOverhaulTemplates
     {
         var source = Trigger("Request timed out or remains unknown", [FlowExecutionSourceKind.Request],
             [FlowExecutionOutcome.TimedOut, FlowExecutionOutcome.Unknown]);
-        var condition = Condition("Authoritative timeout", "TimedOut", new(340, 100));
+        var condition = Condition("Authoritative timeout", FlowNodeCatalogue.TimedOut, new(340, 100));
         var timeout = Map("Map authoritative timeout", 660, 100) with
         {
             Mapping = new("Request timeout: {definitionName}", "The source recorded an authoritative timeout.\nExecution: {executionId}\nReason: {reason}")

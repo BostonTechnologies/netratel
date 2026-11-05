@@ -1,5 +1,6 @@
 using System.Text.Json;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Application.Flows;
 using Xunit;
 
 namespace NetRatel.Tests.Flows;
@@ -56,10 +57,29 @@ public sealed class FlowOverhaulTemplateTests
         Assert.DoesNotContain(graph.Nodes, node => node.Kind is FlowNodeKind.RunJob or FlowNodeKind.RunLibraryScript or
             FlowNodeKind.RerunOriginalExecution or FlowNodeKind.InvestigateWithAi);
         var condition = Assert.Single(graph.Nodes, node => node.Kind == FlowNodeKind.Condition);
-        Assert.Equal("TimedOut", condition.Predicate!.Value.GetString());
+        Assert.Equal(FlowNodeCatalogue.TimedOut, condition.Predicate!.Value.GetString());
         var mappingIds = graph.Edges.Where(edge => edge.SourceNodeId == condition.Id).Select(edge => edge.TargetNodeId).ToArray();
         Assert.Equal(2, mappingIds.Distinct().Count());
         Assert.Contains(graph.Nodes, node => node.Mapping?.DescriptionTemplate.Contains("not a definitive failure or timeout", StringComparison.Ordinal) == true);
+    }
+
+    [Theory]
+    [InlineData(FlowOverhaulTemplates.ExecutionFailureIncident, FlowExecutionOutcome.Failed, true)]
+    [InlineData(FlowOverhaulTemplates.ExecutionFailureIncident, FlowExecutionOutcome.Succeeded, false)]
+    [InlineData(FlowOverhaulTemplates.RequestTimeoutUnknown, FlowExecutionOutcome.TimedOut, true)]
+    [InlineData(FlowOverhaulTemplates.RequestTimeoutUnknown, FlowExecutionOutcome.Unknown, false)]
+    public void Template_conditions_evaluate_real_canonical_event_outcomes(string templateId,
+        FlowExecutionOutcome outcome, bool expected)
+    {
+        var graph = FlowOverhaulTemplates.CreateDraft(templateId);
+        var predicate = Assert.Single(graph.Nodes, node => node.Kind == FlowNodeKind.Condition).Predicate!;
+        var time = new DateTimeOffset(2026, 11, 5, 12, 0, 0, TimeSpan.Zero);
+        var source = new FlowExecutionEventDto(Guid.NewGuid(), Guid.NewGuid(), 17, FlowExecutionSourceKind.Request,
+            null, "9007199254740993", "attempt-1", new(null, "Synthetic endpoint"), outcome,
+            outcome.ToString(), time, time);
+        var result = FlowValueEvaluation.Matches(predicate, source, null, new Dictionary<Guid, JsonElement>());
+        Assert.True(result.Available, result.Code);
+        Assert.Equal(expected, result.Result);
     }
 
     [Fact]
