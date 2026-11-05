@@ -45,7 +45,8 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
                 var timeout = node.ExecutionAction!.TimeoutMinutes * 60;
                 var run = await jobs.StartKeyedAsync(new(identity, job, new("flow-action", inputs,
                     null, ExpectedRuntimeSeconds: timeout, GraceSeconds: 0, HardTimeoutSeconds: timeout,
-                    Environment: node.ExecutionAction.Environment)) { FlowLease = request.Lease }, ct);
+                    Environment: node.ExecutionAction.Environment == NetRatel.Shared.ClientEnvironment.None
+                        ? null : node.ExecutionAction.Environment)) { FlowLease = request.Lease }, ct);
                 return await ObserveAsync(request, new(request.ActionKey, ExecutionAdmissionKind.Job,
                     run.Id.ToString(CultureInfo.InvariantCulture)), ct);
             }
