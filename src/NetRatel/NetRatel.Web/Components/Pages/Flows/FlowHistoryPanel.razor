@@ -70,7 +70,7 @@
                     {
                         <div class="history-ai-result" data-testid="flow-ai-result">
                             <p>AI result: @AiStatusLabel(ai.Status) · @(ai.CompletedAtUtc?.ToUniversalTime().ToString("u") ?? "Waiting for completion")</p>
-                            <p>Failure policy: @(action.AiFailureBehavior == FlowAiFailureBehavior.StopFlow ? "Stop the flow" : "Continue with the alert")</p>
+                            <p>Failure policy: @AiFailurePolicy(detail, action)</p>
                             @if (ai.InvestigationId is { } aiInvestigation && aiInvestigation != Guid.Empty)
                             { <a href="@($"/ai/ops?tenantId={TenantId}&investigation={aiInvestigation:D}")">Open AI investigation</a> }
                             @if (!string.IsNullOrWhiteSpace(ai.Summary)) { <p>@ai.Summary</p> }
@@ -164,6 +164,20 @@
             await _focusModule.InvokeVoidAsync("restoreFocus", target, "flow-history-dismiss");
         }
         catch (JSDisconnectedException) { _focusModule = null; }
+    }
+
+
+    private string AiFailurePolicy(FlowRunDetailDto detail, FlowActionSummaryDto action)
+    {
+        int? schema = detail.ExecutionEvent is not null ? FlowGraphV2Limits.SchemaVersion :
+            detail.Trace?.GraphSchemaVersion ?? Versions.FirstOrDefault(version => version.Id == detail.Run.FlowVersionId &&
+                version.FlowId == detail.Run.FlowId && version.TenantId == TenantId)?.Graph.SchemaVersion;
+        return schema switch
+        {
+            FlowGraphV2Limits.SchemaVersion => "Follow the configured outcome branch",
+            1 => action.AiFailureBehavior == FlowAiFailureBehavior.StopFlow ? "Stop the flow" : "Continue with the alert",
+            _ => "Unavailable for this historical version"
+        };
     }
 
     private static Color RunColor(FlowRunStatus status) => status switch

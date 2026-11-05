@@ -61,9 +61,9 @@ public sealed class FlowExecutionEventFactsTests : AsyncBunitContext
         var source = Event();
         var run = new FlowRunSummaryDto(Guid.NewGuid(), flow.Id, Guid.NewGuid(), source.EventId, source.OccurrenceId,
             FlowRunStatus.WaitingForExecution, source.OccurredAtUtc, null, "execution-pending");
-        var detail = new FlowRunDetailDto(run, null, []) { ExecutionEvent = source };
+        var detail = new FlowRunDetailDto(run, null, [AiAction(run, source.OccurredAtUtc, FlowAiFailureBehavior.StopFlow)]) { ExecutionEvent = source };
         var cut = Render<FlowHistoryPanel>(p => p.Add(c => c.Flow, flow).Add(c => c.TenantId, 17).Add(c => c.Detail, detail));
-        cut.Find("[data-testid=flow-run-result]").TextContent.Should().Contain("Waiting for execution").And.Contain("Original request execution");
+        cut.Find("[data-testid=flow-run-result]").TextContent.Should().Contain("Waiting for execution").And.Contain("Original request execution").And.Contain("Follow the configured outcome branch");
         cut.FindComponent<FlowExecutionEventFacts>().Instance.Event.Should().BeSameAs(source);
         cut.Markup.Should().NotContain("Alert that started this run");
         cut.Find("[data-testid=flow-source-execution-id]").TextContent.Should().Be("9223372036854775807");
@@ -74,6 +74,39 @@ public sealed class FlowExecutionEventFactsTests : AsyncBunitContext
         cut.Find("[data-testid=flow-source-unavailable]").TextContent.Should().Contain("Original source data is unavailable");
         cut.Find("[data-testid=flow-run-data-unavailable]").TextContent.Should().Contain("source-read-denied");
         cut.Markup.Should().NotContain("9223372036854775807").And.NotContain("No node snapshots were captured");
+    }
+
+
+    [Theory]
+    [InlineData(1, FlowAiFailureBehavior.StopFlow, "Stop the flow")]
+    [InlineData(1, FlowAiFailureBehavior.ContinueWithAlert, "Continue with the alert")]
+    [InlineData(2, FlowAiFailureBehavior.StopFlow, "Follow the configured outcome branch")]
+    public void Ai_failure_routing_uses_the_immutable_version_instead_of_the_current_draft(int schema,
+        FlowAiFailureBehavior behavior, string expected)
+    {
+        var original = FlowEditorTests.Definition();
+        var graph2 = FlowDraftMigration.UpgradeToSchemaTwo(original.Draft);
+        var published = schema == 1 ? original.Draft : graph2;
+        var flow = original with { Draft = schema == 1 ? graph2 : original.Draft };
+        var time = Event().OccurredAtUtc;
+        var version = new FlowVersionDto(Guid.NewGuid(), flow.Id, 17, 1, published, "synthetic-hash", "Synthetic operator", time);
+        var run = new FlowRunSummaryDto(Guid.NewGuid(), flow.Id, version.Id, Guid.NewGuid(), Guid.NewGuid(), FlowRunStatus.Failed, time, time);
+        var alert = new FlowEventDataDto(Guid.NewGuid(), Guid.NewGuid(), "Recorded monitoring rule", "Synthetic client", "cpu", "CPU", "warning", 95, null, time);
+        var detail = new FlowRunDetailDto(run, alert, [AiAction(run, time, behavior)]);
+        var cut = Render<FlowHistoryPanel>(p => p.Add(c => c.Flow, flow).Add(c => c.TenantId, 17)
+            .Add(c => c.Versions, new[] { version }).Add(c => c.Detail, detail));
+        cut.Find("[data-testid=flow-ai-result]").TextContent.Should().Contain("Failure policy: " + expected);
+        if (schema == 2) cut.Find("[data-testid=flow-ai-result]").TextContent.Should().NotContain("Stop the flow").And.NotContain("Continue with the alert");
+    }
+
+    private static FlowActionSummaryDto AiAction(FlowRunSummaryDto run, DateTimeOffset time, FlowAiFailureBehavior behavior)
+    {
+        var node = Guid.NewGuid();
+        return new(node, "source-investigation", FlowActionStatus.Failed, 1, null, "ai-unsupported", null)
+        {
+            Kind = FlowActionKind.NetclawInvestigation, Name = "Configured source investigation", AiFailureBehavior = behavior,
+            AiResult = new(17, run.Id, run.FlowVersionId, node, null, Guid.NewGuid(), FlowAiResultStatus.Unsupported, time, time)
+        };
     }
 
     private static FlowExecutionEventDto Event()
