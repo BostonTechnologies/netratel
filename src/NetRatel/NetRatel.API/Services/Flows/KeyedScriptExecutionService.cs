@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using NetRatel.API.Endpoints;
 using NetRatel.API.Gateway;
 using NetRatel.Application.Jobs;
+using NetRatel.Application.Flows;
 using NetRatel.Application.Presence;
 using NetRatel.Application.Scripts;
 using NetRatel.Infrastructure.Flows;
@@ -45,8 +46,35 @@ public sealed class KeyedScriptExecutionService(OrchestratorDbContext db, IExecu
         { Binding = request.Identity.ActionKey.ToString("N"), ScriptContentHash = request.Snapshot.ContentHash };
         invocation.OutputPolicy = outputPolicy;
         var normalized = request with { Parameters = parameters };
+        return await AdmitPreparedAsync(new(normalized, JsonSerializer.Serialize(invocation), outputPolicy),
+            request.FlowLease, cancellationToken);
+    }
+
+    /// <summary>Retries only a provably unstarted protected admission, preserving its exact native payload and key.</summary>
+    public async Task<KeyedScriptAdmissionResult> ResumeAsync(ExecutionAdmissionIdentity identity, string executionId,
+        FlowRunLease lease, CancellationToken cancellationToken = default)
+    {
+        identity.Validate();
+        var binding = await admissions.FindByExecutionAsync(ExecutionAdmissionKind.LibraryScript, executionId, cancellationToken);
+        if (binding is null || binding.Identity != identity || binding.Kind != ExecutionAdmissionKind.LibraryScript)
+            throw new ExecutionAdmissionDeniedException("The protected script execution binding is unavailable.");
+        var submitted = JsonSerializer.Deserialize<Submission>(binding.PayloadJson, Json)
+            ?? throw new InvalidOperationException("The protected script admission is unavailable.");
+        if (submitted.Request.Identity != identity)
+            throw new ExecutionAdmissionDeniedException("The protected script execution identity differs.");
+        Validate(submitted.Request);
+        await authority.RequireScriptAsync(identity, submitted.Request.Snapshot.Script.Id, submitted.Request.AgentId, cancellationToken);
+        return await AdmitPreparedAsync(submitted, lease, cancellationToken);
+    }
+
+    private async Task<KeyedScriptAdmissionResult> AdmitPreparedAsync(Submission proposal, FlowRunLease? lease,
+        CancellationToken cancellationToken)
+    {
+        var request = proposal.Request;
+        var invocation = JsonSerializer.Deserialize<ExecLibraryScriptPayload>(proposal.PayloadJson)
+            ?? throw new InvalidOperationException("The pinned canonical script payload is unavailable.");
         var binding = await admissions.ReserveAsync(new(request.Identity, ExecutionAdmissionKind.LibraryScript,
-            JsonSerializer.Serialize(new Submission(normalized, JsonSerializer.Serialize(invocation), outputPolicy), Json)),
+            JsonSerializer.Serialize(proposal, Json)),
             () => Guid.NewGuid().ToString("N"), cancellationToken);
         var submitted = JsonSerializer.Deserialize<Submission>(binding.PayloadJson, Json)
             ?? throw new InvalidOperationException("The protected script admission is unavailable.");
@@ -72,7 +100,7 @@ public sealed class KeyedScriptExecutionService(OrchestratorDbContext db, IExecu
         if (!commands.IsAvailable(client)) return new(binding, activity);
         var claimed = await admissions.TryBeginDispatchAsync(binding, async ct =>
         {
-            await authority.RequireFirstDispatchAsync(binding.Identity, request.FlowLease, ct);
+            await authority.RequireFirstDispatchAsync(binding.Identity, lease, ct);
             await authority.RequireScriptAsync(binding.Identity, submitted.Request.Snapshot.Script.Id, submitted.Request.AgentId, ct);
             var target = await db.Agents.AsNoTracking().SingleAsync(agent => agent.Id == client.AgentId &&
                 agent.TenantId == client.TenantId, ct);
@@ -88,7 +116,7 @@ public sealed class KeyedScriptExecutionService(OrchestratorDbContext db, IExecu
         }, async ct =>
         {
             await authority.RequireScriptAsync(binding.Identity, submitted.Request.Snapshot.Script.Id, submitted.Request.AgentId, ct);
-            await authority.RequireFirstDispatchAsync(binding.Identity, request.FlowLease, ct);
+            await authority.RequireFirstDispatchAsync(binding.Identity, lease, ct);
         }, cancellationToken);
         if (!claimed)
         {
@@ -100,7 +128,7 @@ public sealed class KeyedScriptExecutionService(OrchestratorDbContext db, IExecu
         try
         {
             await authority.RequireScriptAsync(binding.Identity, submitted.Request.Snapshot.Script.Id, submitted.Request.AgentId, cancellationToken);
-            await authority.RequireFirstDispatchAsync(binding.Identity, request.FlowLease, cancellationToken);
+            await authority.RequireFirstDispatchAsync(binding.Identity, lease, cancellationToken);
         }
         catch (ExecutionAdmissionDeniedException)
         {

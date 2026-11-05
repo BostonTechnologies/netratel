@@ -206,6 +206,69 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         _commands.Dispatches.Should().Be(1);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_reserved_offline_script_resumes_after_restart_with_the_same_id_and_never_resends_a_started_claim(bool ambiguousSend)
+    {
+        var original = await SeedAsync();
+        var action = new FlowExecutionActionRequest(original.FlowLease!, original.Identity.NodeId, original.Identity.ActionKey, 1);
+        FlowExecutionActionDispatcher Dispatcher(OrchestratorDbContext context) => new(context, new Pins(new(original.Identity.NodeId,
+            FlowNodeKind.RunLibraryScript, original.FlowLease!.Version.Graph.Nodes[0].ExecutionAction!.Definition,
+            new(original.AgentId), Script: original.Snapshot)), new NoJobs(), Service(context), new JobRunService(context, _keys),
+            new ExecutionAdmissionStore(context, _keys, TimeProvider.System),
+            new FlowExecutionAuthority(context, new Verifier(), _access, _source, TimeProvider.System));
+        _commands.Available = false;
+        FlowExecutionActionResult reserved;
+        await using (var first = new OrchestratorDbContext(_options))
+        {
+            reserved = await Dispatcher(first).DispatchAsync(action);
+            reserved.Disposition.Should().Be(FlowExecutionActionDisposition.Pending);
+            reserved.Code.Should().Be("script-reserved");
+            (await first.Set<ExecutionAdmissionRecord>().SingleAsync()).DispatchStartedAtUtc.Should().BeNull();
+            (await first.JobTaskActivities.CountAsync()).Should().Be(0);
+        }
+        _commands.Dispatches.Should().Be(0);
+        var renewed = original.FlowLease! with { Token = Guid.NewGuid(), WorkerId = Guid.NewGuid(),
+            Fence = original.FlowLease.Fence + 1, ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(2) };
+        await using (var edit = new OrchestratorDbContext(_options))
+        {
+            await new ScriptService(edit).UpdateAsync(new(original.Snapshot.Script.Id, null, null, null,
+                "printf changed-after-reservation", null, null, original.Snapshot.Script.SourceRevision));
+            var run = await edit.FlowRuns.SingleAsync();
+            run.LeaseToken = renewed.Token; run.LeaseOwner = renewed.WorkerId; run.Fence = renewed.Fence;
+            run.LeaseExpiresAtUtc = renewed.ExpiresAtUtc;
+            await edit.SaveChangesAsync();
+        }
+        action = action with { Lease = renewed };
+        _commands.Available = true;
+        _commands.ThrowAfterSend = ambiguousSend;
+        await using (var restarted = new OrchestratorDbContext(_options))
+        {
+            var resumed = await Dispatcher(restarted).ObserveAsync(action, reserved.Receipt!);
+            resumed.Receipt!.ExecutionId.Should().Be(reserved.Receipt!.ExecutionId);
+            resumed.Disposition.Should().Be(ambiguousSend ? FlowExecutionActionDisposition.Unknown : FlowExecutionActionDisposition.Pending);
+            var binding = await restarted.Set<ExecutionAdmissionRecord>().SingleAsync();
+            binding.DispatchStartedAtUtc.Should().NotBeNull();
+            if (ambiguousSend) binding.DispatchAcceptedAtUtc.Should().BeNull();
+            else binding.DispatchAcceptedAtUtc.Should().NotBeNull();
+            (await restarted.JobTaskActivities.SingleAsync()).RequestId.Should().Be(reserved.Receipt.ExecutionId);
+        }
+        _commands.Dispatches.Should().Be(1);
+        _commands.Payload.Should().Contain(original.Snapshot.Script.Content).And.NotContain("changed-after-reservation");
+        await using (var observe = new OrchestratorDbContext(_options))
+            (await Dispatcher(observe).ObserveAsync(action, reserved.Receipt!)).Receipt!.ExecutionId.Should().Be(reserved.Receipt!.ExecutionId);
+        _commands.Dispatches.Should().Be(1);
+        await using (var terminal = new OrchestratorDbContext(_options))
+            await new JobRunService(terminal, _keys).UpdateTaskActivityStatusAsync(new(reserved.Receipt!.ExecutionId,
+                "Completed", null, DateTimeOffset.UtcNow, ResultJson: """{"stdout":"synthetic resumed result","exitCode":0}""", ExitCode: 0));
+        await using var final = new OrchestratorDbContext(_options);
+        var completed = await Dispatcher(final).ObserveAsync(action, reserved.Receipt!);
+        completed.Disposition.Should().Be(FlowExecutionActionDisposition.Succeeded);
+        completed.Output!.ExecutionId.Should().Be(reserved.Receipt!.ExecutionId);
+        _commands.Dispatches.Should().Be(1);
+    }
+
     private sealed class Pins(FlowPinnedExecutionDefinition? value) : IFlowExecutionDefinitionPins
     {
         public Task<FlowPinnedExecutionDefinition?> ResolveAsync(int tenant, Guid version, Guid node, CancellationToken ct = default)
@@ -352,7 +415,8 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         public int Dispatches { get; private set; }
         public string Payload { get; private set; } = "";
         public bool ThrowAfterSend { get; set; }
-        public bool IsAvailable(ClientKey client) => true;
+        public bool Available { get; set; } = true;
+        public bool IsAvailable(ClientKey client) => Available;
         public Task DispatchAsync(ClientKey client, string commandId, string correlationId, string taskType, string payload, int environment, CancellationToken ct)
         {
             Dispatches++; Payload = payload;
