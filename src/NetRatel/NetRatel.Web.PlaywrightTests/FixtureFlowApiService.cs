@@ -78,7 +78,7 @@ internal sealed class FixtureFlowApiService : IFlowApiService
         SeededVersionId = version.Id;
         _definitions[flow.Id] = flow with { PublishedVersionId = version.Id, PublishedVersionNumber = 1, Name = "Changed draft name" };
     }
-    public Task<FlowValidationResultDto> ValidateAsync(int tenantId, FlowGraphDto graph, CancellationToken token = default) { ValidateCalls++; return Task.FromResult(FlowGraphValidator.ValidateComplete(graph)); }
+    public Task<FlowValidationResultDto> ValidateAsync(int tenantId, FlowGraphDto graph, CancellationToken token = default) { ValidateCalls++; return Task.FromResult(graph.SchemaVersion == FlowGraphV2Limits.SchemaVersion ? FlowGraphV2Validator.ValidateComplete(graph) : FlowGraphValidator.ValidateComplete(graph)); }
     public Task<FlowDryRunResultDto> DryRunAsync(int tenantId, FlowDryRunRequest request, CancellationToken token = default)
     { DryRunCalls++; return Task.FromResult(FlowPureEvaluation.DryRun(request)); }
     public void SeedPreviewGraph()

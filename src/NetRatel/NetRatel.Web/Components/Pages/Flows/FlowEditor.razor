@@ -812,7 +812,39 @@
     private FlowConnectorReferenceDto? SelectedConnector(FlowNodeDto node) => Connectors.FirstOrDefault(c => c.Id == node.ConnectorId && c.TenantId == Definition.TenantId && c.Kind == TargetKind(node));
     private string NodeLabel(Guid? id) => id is null ? "" : _adapter?.Metadata.Values.FirstOrDefault(n => n.Id == id)?.Name ?? "Unknown node";
     private static string Number(double value) => value.ToString("0.######", CultureInfo.InvariantCulture);
-    private static string IssueText(FlowValidationIssueDto issue) => issue.Code switch
+    private string IssueText(FlowValidationIssueDto issue)
+    {
+        if (_adapter?.SchemaVersion != FlowGraphV2Limits.SchemaVersion) return LegacyIssueText(issue);
+        if (issue.Code.StartsWith("outcome-path-", StringComparison.Ordinal))
+        {
+            var outcome = issue.Code["outcome-path-".Length..];
+            var node = _adapter.Metadata.Values.FirstOrDefault(value => value.Id == issue.NodeId);
+            var name = node is null ? outcome.Replace('_', ' ') : FlowNodeCatalogue.Port(node.Kind, outcome, FlowPortDirection.Output)?.Name ?? outcome.Replace('_', ' ');
+            return $"Connect the {name} outcome to another step or Finish.";
+        }
+        return issue.Code switch
+        {
+            "trigger-count" => "Keep exactly one alert or execution event trigger.",
+            "execution-trigger" => "Choose execution sources, outcomes and an authorized tenant or selected-definition scope. An empty selection does not mean all.",
+            "execution-action" or "execution-action-required" => "Choose an available library script or job, retain its definition and configure its inputs and endpoint.",
+            "execution-definition-not-pinned" => "Publish must capture the selected definition revision, hash and native parameter schema.",
+            "job-bound-target-required" => "Select a job with its own bound endpoint. Job actions do not substitute the source event endpoint.",
+            "execution-parameters" or "input-type" or "input-unknown" => "Match the selected definition's parameter names and types. Review retained mappings after changing definitions.",
+            "input-binding" or "input-required" => "Configure each required typed input from an allowed event field, earlier output or literal.",
+            "input-unavailable" => "Choose an output from a node on every path to this step.",
+            "input-path" or "unreachable-path" => "Connect every node from the selected trigger through an explicit outcome path.",
+            "typed-port" => "Connect compatible output and input ports with the same type.",
+            "outcome-fanout" => "Each named outcome supports one connection. Choose an explicit next step for each outcome.",
+            "edge-id" or "edge-node" => "Keep stable, unique connections between nodes in this draft.",
+            "edge-route" => $"Use at most {FlowGraphV2Limits.MaximumRoutePoints} finite route points within the canvas bounds.",
+            "condition-ambiguous" => "Convert the stored legacy condition explicitly before configuring a typed condition.",
+            "condition" or "condition-required" or "condition-source" => "Choose a typed input and a matching comparison value.",
+            "rerun-budget" or "rerun-settings-required" => $"Configure a finite linked rerun budget from 1 to {FlowGraphV2Limits.MaximumRecoveryAttempts}. Unknown and unsupported executions remain explicit.",
+            "graph-limit" or "graph-bytes" => $"Keep the draft within {FlowGraphV2Limits.MaximumNodes} nodes, {FlowGraphV2Limits.MaximumEdges} connections and the graph size limit.",
+            _ => LegacyIssueText(issue)
+        };
+    }
+    private static string LegacyIssueText(FlowValidationIssueDto issue) => issue.Code switch
     {
         "connector-required" or "connector-reference" or "connector-revision-required" => "Select an owned connector reference.",
         "unreachable-path" or "input-path" or "output-path" => "Connect every node from Alert raised through mapping to an action or action group.",

@@ -650,7 +650,7 @@ internal sealed class FakeFlowApi : IFlowApiService
     public Task<FlowDefinitionDto> CloneAsync(int tenantId, Guid flowId, FlowCloneRequest request, CancellationToken token = default) => throw new NotSupportedException();
     public Task<FlowDefinitionDto> SetEnabledAsync(int tenantId, Guid flowId, FlowEnabledRequest request, CancellationToken token = default) => throw new NotSupportedException();
     public Task<FlowVersionDto> PublishAsync(int tenantId, Guid flowId, FlowRevisionRequest request, CancellationToken token = default) { PublishCalls++; throw new NotSupportedException(); }
-    public Task<FlowValidationResultDto> ValidateAsync(int tenantId, FlowGraphDto graph, CancellationToken token = default) { ValidateCalls++; return Task.FromResult(FlowGraphValidator.ValidateComplete(graph)); }
+    public Task<FlowValidationResultDto> ValidateAsync(int tenantId, FlowGraphDto graph, CancellationToken token = default) { ValidateCalls++; return Task.FromResult(graph.SchemaVersion == FlowGraphV2Limits.SchemaVersion ? FlowGraphV2Validator.ValidateComplete(graph) : FlowGraphValidator.ValidateComplete(graph)); }
     public Task<FlowDryRunResultDto> DryRunAsync(int tenantId, FlowDryRunRequest request, CancellationToken token = default) { DryRunCalls++; return Preview?.Invoke(request) ?? Task.FromResult(new FlowDryRunResultDto(false, false, "connector-required", null, [], [new("connector-required")])); }
     public Task<FlowDryRunResultDto> DryRunExecutionAsync(int tenantId, FlowExecutionDryRunRequest request, CancellationToken token = default)
     { DryRunCalls++; return ExecutionPreview?.Invoke(request) ?? throw new InvalidOperationException("No execution preview fixture configured."); }

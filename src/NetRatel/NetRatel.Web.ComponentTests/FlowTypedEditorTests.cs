@@ -149,6 +149,23 @@ public sealed class FlowTypedEditorTests : AsyncBunitContext
         _api.SaveCalls.Should().Be(0); _api.DryRunCalls.Should().Be(0);
     }
 
+
+    [Fact]
+    public async Task Typed_Validation_Explains_Execution_Inputs_And_Named_Outcomes_Without_Alert_Only_Instructions()
+    {
+        var source = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.ExecutionEvent, "Synthetic job source", new(0, 0))
+        { ExecutionTrigger = new([FlowExecutionSourceKind.Job], [FlowExecutionOutcome.Failed], FlowExecutionScope.AllInTenant) };
+        var job = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.RunJob, "Follow-up job", new(400, 0));
+        var graph = new FlowGraphDto(2, [source, job], [new(source.Id, "event", job.Id, "in") { Id = Guid.NewGuid() }], new());
+        var cut = Editor(FlowEditorTests.Definition() with { Draft = graph }, true);
+        await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-validate]").ClickAsync(new()));
+        var issues = cut.Find("[data-testid=flow-validation-issues]").TextContent;
+        issues.Should().Contain("library script or job").And.Contain("outcome").And.Contain("Finish");
+        issues.Should().NotContain("from Alert raised").And.NotContain("one mapping");
+        _api.ValidateCalls.Should().Be(1); _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
+    }
+
     private IRenderedComponent<FlowEditor> Editor(FlowDefinitionDto definition, bool supportsTwo) => Render<FlowEditor>(p => p
         .Add(component => component.Definition, definition).Add(component => component.TenantName, "Synthetic tenant")
         .Add(component => component.CanEdit, true).Add(component => component.CanPublish, true)
