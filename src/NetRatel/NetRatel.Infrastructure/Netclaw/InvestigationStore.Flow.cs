@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Flows;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared.Security;
 
 namespace NetRatel.Infrastructure.Netclaw;
 
@@ -49,7 +50,7 @@ public sealed partial class InvestigationStore
     public static string SafeResultText(string? value, int maximum)
     {
         if (string.IsNullOrEmpty(value)) return "";
-        var safe = new string(value.Where(x => !char.IsControl(x) || x is '\n' or '\r' or '\t').ToArray());
+        var safe = OperatorOutputRedactor.Redact(new string(value.Where(x => !char.IsControl(x) || x is '\n' or '\r' or '\t').ToArray()));
         // Return plain bounded discovery data. It is never rendered as HTML or interpreted as graph instructions.
         if (safe.Length > maximum) safe = safe[..maximum];
         if (safe.Length > 0 && char.IsHighSurrogate(safe[^1])) safe = safe[..^1];
