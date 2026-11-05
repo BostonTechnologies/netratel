@@ -60,6 +60,23 @@ public sealed class FlowEditorHistoryTests
     }
 
     [Fact]
+    public void Returning_To_The_Previous_State_Within_A_Gesture_Does_Not_Add_A_Redundant_Undo()
+    {
+        var graph = FlowGraphTemplates.IncidentFromAlert();
+        var history = new FlowEditorHistory(); history.Reset("Initial", graph, null);
+        history.Record("Saved name", graph, null, "first-name-edit");
+        history.BreakGroup();
+        history.Record("Saved name edited", graph, null, "second-name-edit");
+        history.Record("Saved name", graph, null, "second-name-edit");
+        Assert.Equal(2, history.Count);
+        history.Record("Saved name", graph, null, "second-name-edit");
+        history.Record("Saved name again", graph, null, "second-name-edit");
+        Assert.Equal(3, history.Count);
+        Assert.Equal("Saved name", history.Undo(_ => true)!.Name);
+        Assert.Equal("Initial", history.Undo(_ => true)!.Name);
+    }
+
+    [Fact]
     public void Name_With_Newline_And_Edited_Collection_Are_Snapshotted_Without_Mutable_References()
     {
         var original = FlowGraphTemplates.IncidentFromAlert();

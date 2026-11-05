@@ -25,7 +25,7 @@
     else if (_adapter is not null && _current is not null)
     {
         <div class="flow-toolbar">
-            <label class="flow-name">Flow name<input @bind="_name" @bind:event="oninput" @bind:after="NameEdited" @onblur="EndNameEdit" maxlength="@FlowLimits.MaximumNameLength" disabled="@(ReadOnly || _busy || !CanEdit)" data-testid="flow-name" /></label>
+            <label class="flow-name">Flow name<input @bind="_name" @bind:event="oninput" @bind:after="NameEdited" @onfocus="BeginNameEdit" @onblur="EndNameEdit" maxlength="@FlowLimits.MaximumNameLength" disabled="@(ReadOnly || _busy || !CanEdit)" data-testid="flow-name" /></label>
             <span class="flow-context">@TenantName</span>
             <span role="status" data-testid="flow-dirty">@(ReadOnly ? $"Immutable version {VersionNumber}" : _busy ? OperationLabel : _dirty ? "Unsaved changes" : $"Saved draft · revision {_current.Revision}")</span>
             <div class="flow-editor-actions">
@@ -341,8 +341,17 @@
         if (_module is not null) await _module.InvokeVoidAsync("closePreview", _shellId, _previewId);
     }
     private static string Fingerprint(string name, FlowGraphDto graph) => name + "\n" + JsonSerializer.Serialize(graph);
-    private Task NameEdited() { _historyGroup = "name"; return CheckDirty(); }
-    private void EndNameEdit() { _historyGroup = null; _history.BreakGroup(); }
+    private void BeginNameEdit() => _historyGroup = "name:" + Guid.NewGuid().ToString("N");
+    private Task NameEdited()
+    {
+        if (_historyGroup?.StartsWith("name:", StringComparison.Ordinal) != true) BeginNameEdit();
+        return CheckDirty();
+    }
+    private void EndNameEdit()
+    {
+        if (_historyGroup?.StartsWith("name:", StringComparison.Ordinal) == true) _historyGroup = null;
+        _history.BreakGroup();
+    }
     [JSInvokable]
     public Task BeginCanvasEditGesture() => InvokeAsync(() => { if (!_disposed && !_busy && CanEdit && !ReadOnly) _historyGroup = Guid.NewGuid().ToString("N"); });
     [JSInvokable]

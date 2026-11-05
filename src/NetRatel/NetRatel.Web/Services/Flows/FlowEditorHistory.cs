@@ -27,9 +27,14 @@ public sealed class FlowEditorHistory
         var fingerprint = name + "\n" + json;
         var entry = new FlowEditorHistoryEntry(fingerprint, name.Length, selection);
         if (_cursor >= 0 && _entries[_cursor].Fingerprint == fingerprint)
-        { _entries[_cursor] = entry; _group = group; return; }
+        { _entries[_cursor] = entry; return; }
         if (_cursor + 1 < _entries.Count) _entries.RemoveRange(_cursor + 1, _entries.Count - _cursor - 1);
-        if (group is not null && group == _group && _cursor > 0) _entries[_cursor] = entry;
+        if (group is not null && group == _group && _cursor > 0)
+        {
+            if (_entries[_cursor - 1].Fingerprint == fingerprint)
+            { _entries.RemoveAt(_cursor); _cursor--; _entries[_cursor] = entry; _group = null; return; }
+            _entries[_cursor] = entry;
+        }
         else { _entries.Add(entry); _cursor++; }
         _group = group;
         if (_entries.Count > MaximumEntries) { _entries.RemoveAt(0); _cursor--; }
