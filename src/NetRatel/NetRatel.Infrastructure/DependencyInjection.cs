@@ -70,6 +70,7 @@ public static class DependencyInjection
         services.AddScoped<IEventPublisher, InternalEventPublisher>();
         services.AddScoped<IJobDefinitionService, JobDefinitionService>();
         services.AddScoped<IJobRunService, JobRunService>();
+        services.AddScoped<IExecutionAdmissionStore, ExecutionAdmissionStore>();
         services.AddScoped<IRequestService, RequestService>();
         services.AddScoped<ITenantService, TenantService>();
         services.AddScoped<ISecretService, SecretService>();

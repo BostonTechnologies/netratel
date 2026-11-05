@@ -12,6 +12,34 @@ namespace NetRatel.Tests.Infrastructure;
 public sealed class JobRunServiceTests
 {
     [Fact]
+    public async Task Pinned_canonical_job_snapshot_survives_reload_without_exposing_private_sources()
+    {
+        await using var db = CreateDb();
+        var keys = new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider();
+        var now = DateTimeOffset.UtcNow;
+        var agent = Guid.NewGuid();
+        const string content = "printf private-flow-source";
+        var definition = new JobDefinitionDetails(new(11, "pinned-job", "/", null, 7, string.Empty, now, now, null, agent), [], []);
+        var script = new ScriptInfo(12, "pinned-script", "/", "synthetic", content, null, "bash", now, now, 3);
+        var snapshot = new PinnedJobExecutionSnapshot(definition,
+            [new(script, [], Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(content))))]);
+        db.Jobs.Add(new() { Id = 11, Name = "pinned-job", TenantId = 7, AgentId = agent, CreatedAtUtc = now, UpdatedAtUtc = now });
+        await db.SaveChangesAsync();
+        var service = new JobRunService(db, keys);
+        service.BindPinnedExecutionSnapshot(21, snapshot);
+        await service.UpsertRunAsync(new(21, 11, 7, string.Empty, "flow-keyed:synthetic", JobRunState.Pending, 0, now,
+            null, null, null, "{}", null, agent));
+        db.ChangeTracker.Clear();
+
+        var reloaded = new JobRunService(db, keys);
+        (await reloaded.GetPinnedExecutionSnapshotAsync(21))!.ComputeDigest().Should().Be(snapshot.ComputeDigest());
+        var ordinary = await reloaded.GetAsync(21);
+        ordinary!.SubmittedDefinitionRevision.Should().Be(snapshot.ComputeDigest());
+        System.Text.Json.JsonSerializer.Serialize(ordinary).Should().NotContain(content);
+        (await db.JobRuns.SingleAsync()).ProtectedExecutionJson.Should().NotContain(content);
+    }
+
+    [Fact]
     public async Task Reviewed_execution_snapshot_survives_service_reload_without_entering_ordinary_run_output()
     {
         await using var db = CreateDb();
