@@ -19,6 +19,55 @@ public sealed class SoftwareInventoryPanelTests : AsyncBunitContext
         Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
         Services.AddSingleton<ISoftwareInventoryApiService>(_api);
     }
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Installation_rows_expand_existing_details_without_extra_collapsed_rows(bool clientScoped)
+    {
+        var first = _api.Items[0] with
+        {
+            Package = _api.Items[0].Package with { InstallLocation = "/opt/example", InstallDate = "2026-11-01", Scope = "machine" }
+        };
+        var second = clientScoped
+            ? first with { Identity = "other-package", Package = first.Package with { Name = "Other Tool" } }
+            : first with { AgentId = Guid.NewGuid(), Client = "Another client" };
+        _api.Items = [first, second];
+        var cut = Render<SoftwareInventoryPanel>(parameters => parameters.Add(panel => panel.TenantId, 7)
+            .Add(panel => panel.AgentId, clientScoped ? Agent : (Guid?)null));
+        if (!clientScoped) cut.FindAll("[role='tab']").Single(tab => tab.TextContent.Trim() == "Installations").Click();
+
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid='inventory-row']").Should().HaveCount(2));
+        cut.FindAll("tbody > tr").Should().HaveCount(2);
+        cut.FindAll("[data-testid='inventory-package-details']").Should().BeEmpty();
+        cut.FindAll("[data-testid='inventory-details-toggle']").Should().OnlyContain(button => button.GetAttribute("aria-expanded") == "false");
+
+        cut.FindAll("[data-testid='inventory-row']")[0].Closest("tr")!.Click();
+        var details = cut.Find("[data-testid='inventory-package-details']");
+        details.QuerySelectorAll("section").Select(section => section.GetAttribute("aria-label")).Should()
+            .Equal("Package identity", "Installation", "Client and platform", "Collection and freshness");
+        details.TextContent.Should().Contain("Example Tool").And.Contain("/opt/example").And.Contain("2026-11-01")
+            .And.Contain("Example client").And.Contain("linux").And.Contain("x64").And.Contain("machine");
+        details.Closest("td")!.GetAttribute("colspan").Should().Be(clientScoped ? "4" : "6");
+        cut.FindAll("tbody > tr").Should().HaveCount(3);
+        cut.FindAll("[data-testid='inventory-details-toggle']")[0].GetAttribute("aria-controls").Should().Be(details.Id);
+        cut.FindAll("[data-testid='inventory-details-toggle']")[0].GetAttribute("aria-expanded").Should().Be("true");
+        cut.FindAll("[data-testid='inventory-details-toggle']")[1].GetAttribute("aria-expanded").Should().Be("false");
+
+        cut.FindAll("[data-testid='inventory-details-toggle']")[1].Click();
+        cut.FindAll("[data-testid='inventory-package-details']").Should().HaveCount(2);
+        cut.FindAll("[data-testid='inventory-details-toggle']")[0].Click();
+        cut.Find("[data-testid='inventory-package-details']").TextContent.Should().Contain(clientScoped ? "Other Tool" : "Another client");
+        cut.FindAll("[data-testid='inventory-details-toggle']")[1].Click();
+        cut.FindAll("[data-testid='inventory-package-details']").Should().BeEmpty();
+        cut.FindAll("tbody > tr").Should().HaveCount(2);
+
+        cut.FindAll("[data-testid='inventory-details-toggle']")[0].Click();
+        cut.Render(parameters => parameters.Add(panel => panel.TenantId, 8));
+        if (!clientScoped) cut.FindAll("[role='tab']").Single(tab => tab.TextContent.Trim() == "Installations").Click();
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid='inventory-details-toggle']").Should().HaveCount(2)
+            .And.OnlyContain(button => button.GetAttribute("aria-expanded") == "false"));
+        cut.FindAll("[data-testid='inventory-package-details']").Should().BeEmpty();
+    }
     [Fact]
     public void Fresh_inventory_uses_cache_and_explicit_refresh_forces_a_new_request()
     {
@@ -98,6 +147,8 @@ public sealed class SoftwareInventoryPanelTests : AsyncBunitContext
     }
     private sealed class Api : ISoftwareInventoryApiService
     {
+        public IReadOnlyList<SoftwareInstallationDto> Items { get; set; } =
+            [new(Agent, "Example client", "identity", new("Example Tool", "1", "Example", "x64", "example", "rpm"), "linux", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)];
         public SoftwareInventoryStatus Status { get; set; } = new(7, Agent, DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddDays(7), null, new(), true);
         public List<bool> Forces { get; } = [];
         public bool Empty { get; set; }
@@ -114,6 +165,10 @@ public sealed class SoftwareInventoryPanelTests : AsyncBunitContext
             return Task.FromResult(Status with { LatestScan = new(Guid.NewGuid(), "Pending", DateTimeOffset.UtcNow, null, 0, 0, []) });
         }
         public Task<SoftwarePage<SoftwareInstallationDto>> InstallationsAsync(int tenant, SoftwareInventoryQuery query, CancellationToken ct) => Task.FromResult(new SoftwarePage<SoftwareInstallationDto>(
-            Empty ? [] : [new(Agent, "Example client", "identity", new("Example Tool", "1", "Example", "x64", "example", "rpm"), "linux", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)], Empty ? 0 : 1, 0, 50, Empty ? 0 : 1));
+            Empty ? [] : Items, Empty ? 0 : Items.Count, 0, 50, Empty ? 0 : Items.Select(item => item.AgentId).Distinct().Count()));
+        public Task<SoftwarePage<SoftwarePrevalenceDto>> AggregateAsync(int tenant, SoftwareInventoryQuery query, CancellationToken ct) =>
+            Task.FromResult(new SoftwarePage<SoftwarePrevalenceDto>([], 0, 0, 50));
+        public Task<SoftwareInventorySummary> SummaryAsync(int tenant, CancellationToken ct) =>
+            Task.FromResult(new SoftwareInventorySummary(0, 0, 0, 0, 0, 0, 0, 0, null));
     }
 }
