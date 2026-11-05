@@ -409,6 +409,65 @@ public sealed class AkkaJobAuthorityServiceTests
         runs.Run.Error.Should().Contain("execution-admission-denied");
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_later_keyed_step_rechecks_source_admission_before_preparation_and_after_activity_save(bool revokeDuringPreparation)
+    {
+        var agent = Guid.NewGuid();
+        var definitions = new OneStepDefinitions(agent, stepCount: 2);
+        var snapshot = new PinnedJobExecutionSnapshot((await definitions.GetDetailsAsync(41))!, []);
+        var runs = new InMemoryRuns();
+        var gateway = new AvailableGateway();
+        var authority = new KeyedAuthority();
+        var service = new AkkaJobAuthorityService(definitions, runs,
+            new JobTaskBridge(new EmptyScripts(), NullLogger<JobTaskBridge>.Instance), gateway, new AcceptingRouter(),
+            new RecordingRealtimeFanoutSink(), new JobAuthorityIdGenerator(), new TestHostEnvironment(),
+            executionAdmissions: new MemoryAdmissions(), keyedAuthority: authority);
+        await service.StartKeyedAsync(new(AdmissionIdentity(), snapshot, new("operator", "{}", null)), CancellationToken.None);
+        var firstChecks = authority.FirstChecks;
+        firstChecks.Should().BeGreaterThan(0);
+        authority.ContinuationChecks.Should().Be(0);
+        if (revokeDuringPreparation) runs.AfterActivityCreated = () => authority.ContinuationAllowed = false;
+        else authority.ContinuationAllowed = false;
+
+        await service.RecordLifecycleAsync(new(7, agent), Lifecycle(runs, JobGatewayLifecycleStatus.Completed, 3,
+            """{"exitCode":0}""", 0), CancellationToken.None);
+
+        authority.Allowed.Should().BeTrue();
+        authority.FirstChecks.Should().Be(firstChecks);
+        authority.ContinuationChecks.Should().BeGreaterThan(0);
+        gateway.DispatchCount.Should().Be(1);
+        runs.Run!.Status.Should().Be(JobRunState.Failed);
+        runs.Run.Error.Should().Contain("execution-admission-denied");
+        if (revokeDuringPreparation) runs.Activity!.Status.Should().Be("Failed");
+    }
+
+    [Fact]
+    public async Task An_admitted_later_keyed_step_uses_persisted_source_checks_without_reusing_the_first_worker_lease()
+    {
+        var agent = Guid.NewGuid();
+        var definitions = new OneStepDefinitions(agent, stepCount: 2);
+        var runs = new InMemoryRuns();
+        var gateway = new AvailableGateway();
+        var authority = new KeyedAuthority();
+        var service = new AkkaJobAuthorityService(definitions, runs,
+            new JobTaskBridge(new EmptyScripts(), NullLogger<JobTaskBridge>.Instance), gateway, new AcceptingRouter(),
+            new RecordingRealtimeFanoutSink(), new JobAuthorityIdGenerator(), new TestHostEnvironment(),
+            executionAdmissions: new MemoryAdmissions(), keyedAuthority: authority);
+        await service.StartKeyedAsync(new(AdmissionIdentity(), new((await definitions.GetDetailsAsync(41))!, []),
+            new("operator", "{}", null)), CancellationToken.None);
+        var firstChecks = authority.FirstChecks;
+
+        await service.RecordLifecycleAsync(new(7, agent), Lifecycle(runs, JobGatewayLifecycleStatus.Completed, 3,
+            """{"exitCode":0}""", 0), CancellationToken.None);
+
+        authority.FirstChecks.Should().Be(firstChecks);
+        authority.ContinuationChecks.Should().BeGreaterThanOrEqualTo(3);
+        gateway.DispatchCount.Should().Be(2);
+        runs.Run!.Status.Should().Be(JobRunState.Running);
+    }
+
     private static ExecutionAdmissionIdentity AdmissionIdentity()
         => new(Guid.NewGuid(), 7, "operator@example.test", Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 1);
 
@@ -416,8 +475,18 @@ public sealed class AkkaJobAuthorityServiceTests
     {
         public bool Allowed { get; set; } = true;
         public int Checks { get; private set; }
+        public int FirstChecks { get; private set; }
+        public int ContinuationChecks { get; private set; }
+        public bool ContinuationAllowed { get; set; } = true;
+        public Task RequireContinuationAsync(ExecutionAdmissionIdentity identity, CancellationToken ct)
+        {
+            ContinuationChecks++;
+            if (!ContinuationAllowed) throw new ExecutionAdmissionDeniedException("The original flow source is no longer admitted.");
+            return Task.CompletedTask;
+        }
         public Task RequireFirstDispatchAsync(ExecutionAdmissionIdentity identity, NetRatel.Application.Flows.FlowRunLease? lease, CancellationToken ct)
         {
+            FirstChecks++;
             if (!Allowed) throw new ExecutionAdmissionDeniedException("The configuring principal is no longer authorized.");
             return Task.CompletedTask;
         }
@@ -534,13 +603,19 @@ public sealed class AkkaJobAuthorityServiceTests
         public List<JobTaskLogInfo> Logs { get; } = [];
         public JobStepRunInfo? Step => Steps.OrderBy(x => x.Ordinal).FirstOrDefault();
         public JobTaskActivityInfo? Activity { get; private set; }
+        public Action? AfterActivityCreated { get; set; }
         public Task<JobRunInfo> UpsertRunAsync(UpsertJobRunCommand c, CancellationToken ct = default) => Task.FromResult(Run = new(c.RunId, c.JobId, c.TenantId, c.ClientIdentity, c.StartedBy, c.Status, c.CurrentStepOrdinal, c.CreatedAtUtc, c.StartedAtUtc, c.CompletedAtUtc, c.Error, c.InputsJson, c.OptionsJson, c.AgentId, c.Environment, c.TargetDisplayName, c.TargetHostName, c.TargetName));
         public Task<JobStepRunInfo> UpsertStepRunAsync(UpsertJobStepRunCommand c, CancellationToken ct = default)
         {
             var step = new JobStepRunInfo(c.StepRunId, c.JobRunId, c.JobStepId, c.Status, c.Ordinal, c.TaskRequestId, c.Error, c.StartedAtUtc, c.CompletedAtUtc);
             Steps.RemoveAll(x => x.Id == c.StepRunId); Steps.Add(step); return Task.FromResult(step);
         }
-        public Task<JobTaskActivityInfo> CreateTaskActivityAsync(CreateJobTaskActivityCommand c, CancellationToken ct = default) => Task.FromResult(Activity = new(1, c.RequestId, c.JobRunId, c.JobStepId, c.ClientIdentity, c.TenantId, c.TaskType, c.Status, c.Error, c.CreatedAtUtc, c.CompletedAtUtc, c.AgentId, c.ResultJson, c.Environment, c.StartedAtUtc, c.ExitCode, c.TargetDisplayName, c.TargetHostName, c.TargetName, c.ScriptName, c.ScriptType, c.CommandLabel, c.ScriptContentHash));
+        public Task<JobTaskActivityInfo> CreateTaskActivityAsync(CreateJobTaskActivityCommand c, CancellationToken ct = default) 
+        {
+            Activity = new(1, c.RequestId, c.JobRunId, c.JobStepId, c.ClientIdentity, c.TenantId, c.TaskType, c.Status, c.Error, c.CreatedAtUtc, c.CompletedAtUtc, c.AgentId, c.ResultJson, c.Environment, c.StartedAtUtc, c.ExitCode, c.TargetDisplayName, c.TargetHostName, c.TargetName, c.ScriptName, c.ScriptType, c.CommandLabel, c.ScriptContentHash);
+            AfterActivityCreated?.Invoke();
+            return Task.FromResult(Activity);
+        }
         public Task<JobTaskActivityInfo?> UpdateTaskActivityStatusAsync(UpdateJobTaskActivityStatusCommand c, CancellationToken ct = default)
         {
             Activity = Activity! with

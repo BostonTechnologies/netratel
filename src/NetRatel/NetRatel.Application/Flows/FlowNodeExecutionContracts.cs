@@ -42,6 +42,8 @@ public sealed record FlowNodeCheckpointDto(Guid NodeId, int Revision, int Sequen
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public FlowTraceDto? Trace { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyDictionary<Guid, FlowIncidentFieldsDto>? PreparedActionFields { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public FlowRunStatus? ResultStatus { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ResultCode { get; init; }
@@ -86,6 +88,12 @@ public static class FlowNodeCheckpointRules
             state.Inputs.Any(pair => !FlowGraphValidator.IsBoundedText(pair.Key, 64) || pair.Value.ValueKind == JsonValueKind.Undefined) ||
             state.Outputs.Any(pair => !lease.Version.Graph.Nodes.Any(node => node.Id == pair.Key) || pair.Value.ValueKind == JsonValueKind.Undefined))
             return false;
+        if (state.PreparedActionFields is { } preparedFields &&
+            (preparedFields.Count > FlowLimits.MaximumActionsPerGroup || preparedFields.Any(pair =>
+                (node.Kind == FlowNodeKind.ActionGroup ? node.Actions?.Any(action => action.Id == pair.Key) != true : pair.Key != node.Id) ||
+                pair.Value is null || !FlowGraphValidator.IsBoundedText(pair.Value.Title, FlowLimits.MaximumTitleLength) ||
+                !FlowGraphValidator.IsBoundedText(pair.Value.Description, FlowLimits.MaximumDescriptionLength, multiline: true) ||
+                pair.Value.Priority is < 0 or > 3))) return false;
         if (state.AcceptedSourceKind is { } kind && !Enum.IsDefined(kind) ||
             state.AcceptedExecutionId is not null && !FlowGraphValidator.IsBoundedText(state.AcceptedExecutionId, FlowExecutionEventLimits.MaximumIdentifierLength) ||
             (state.AcceptedSourceKind is null) != (state.AcceptedExecutionId is null) ||
@@ -167,6 +175,9 @@ public static class FlowNodeCheckpointRules
                 next.Progress == FlowNodeProgress.Prepared && next.Attempt == 1 && next.AcceptedReceipt is null &&
                 next.AcceptedExecutionId is null && !previous.Outputs.ContainsKey(next.NodeId) &&
                 nextSteps.Count == priorSteps.Count;
+        foreach (var pair in previous.PreparedActionFields ?? new Dictionary<Guid, FlowIncidentFieldsDto>())
+            if (next.PreparedActionFields?.TryGetValue(pair.Key, out var fields) != true ||
+                JsonSerializer.Serialize(pair.Value) != JsonSerializer.Serialize(fields)) return false;
         if (previous.NodeId != next.NodeId || previous.Sequence != next.Sequence ||
             previous.Attempt != next.Attempt || previous.DispatchKey != next.DispatchKey ||
             previous.StartedAtUtc != next.StartedAtUtc || previous.DeadlineAtUtc != next.DeadlineAtUtc ||

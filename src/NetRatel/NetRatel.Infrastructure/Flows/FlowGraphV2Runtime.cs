@@ -199,28 +199,37 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
                 new[] { new FlowActionTargetDto(node.Id, node.Kind == FlowNodeKind.InvestigateWithAi
                     ? FlowActionKind.NetclawInvestigation : FlowActionKind.RatelDeskIncident, node.ConnectorId, node.ConnectorRevision) };
             var results = new Dictionary<Guid, FlowIncidentActionResult>();
-            var rawFields = FieldsForAction(lease, state);
-            async Task<FlowIncidentActionResult> RunTargetAsync(FlowActionTargetDto target)
-            {
-                var draft = new FlowIncidentActionDraft(lease.Event.TenantId, lease.RunId, target.Id, target.ConnectorId!.Value,
+            FlowIncidentActionDraft Draft(FlowActionTargetDto target) =>
+                new(lease.Event.TenantId, lease.RunId, target.Id, target.ConnectorId!.Value,
                     target.ConnectorRevision!.Value, lease.SourceInstanceId, FlowActionKeys.Create(lease, target.Id), lease.Event,
-                    target.Kind == FlowActionKind.NetclawInvestigation ? state.Fields ?? InitialFields(lease) : rawFields)
+                    target.Kind == FlowActionKind.NetclawInvestigation ? state.Fields ?? InitialFields(lease) :
+                        current!.PreparedActionFields?.GetValueOrDefault(target.Id) ?? FieldsForAction(lease, current))
                 { Kind = target.Kind, AiSettings = target.Kind == FlowActionKind.NetclawInvestigation ? node.AiSettings : null,
                     AiDeadlineAtUtc = target.Kind == FlowActionKind.NetclawInvestigation ? state.DeadlineAtUtc : null };
+
+            async Task<bool> PrepareTargetAsync(FlowActionTargetDto target)
+            {
+                if (current!.PreparedActionFields?.ContainsKey(target.Id) == true) return true;
+                var draft = Draft(target);
                 if (target.Kind == FlowActionKind.RatelDeskIncident && lease.Event.ExecutionEvent is not null)
                 {
-                    var attempts = FlowRecoveryEvidence.FromOutputs(lease, current!.Outputs, Order(current));
+                    var attempts = FlowRecoveryEvidence.FromOutputs(lease, current.Outputs, Order(current));
                     await using var targetScope = scopes.CreateAsyncScope();
                     var enriched = await targetScope.ServiceProvider.GetRequiredService<FlowIncidentEvidenceReader>().ReadAsync(draft,
                         current.Investigation?.ActionNodeId, attempts, ct).ConfigureAwait(false);
-                    if (enriched.Disposition == FlowIncidentEvidenceDisposition.Waiting)
-                        return new(FlowIncidentActionResultKind.RetryableSafe, "incident-investigation-pending");
                     if (enriched.Disposition != FlowIncidentEvidenceDisposition.Ready || enriched.Draft is null)
-                        return new(FlowIncidentActionResultKind.Unavailable, enriched.Code ?? "incident-evidence-unavailable");
+                    {
+                        results[target.Id] = new(FlowIncidentActionResultKind.Unavailable,
+                            enriched.Code ?? "incident-evidence-unavailable");
+                        return true;
+                    }
                     draft = enriched.Draft;
                 }
-                return await executeAction(draft, ct).ConfigureAwait(false);
+                var fields = (current.PreparedActionFields ?? new Dictionary<Guid, FlowIncidentFieldsDto>()).ToDictionary(pair => pair.Key, pair => pair.Value);
+                fields.Add(target.Id, draft.Fields);
+                return await SaveAsync(current with { Revision = current.Revision + 1, PreparedActionFields = fields }).ConfigureAwait(false);
             }
+            Task<FlowIncidentActionResult> RunTargetAsync(FlowActionTargetDto target) => executeAction(Draft(target), ct);
             // Findings must be final before an incident in the same independent group freezes its semantic payload.
             foreach (var target in targets.Where(target => target.Kind == FlowActionKind.NetclawInvestigation))
             {
@@ -235,7 +244,11 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
             }
             if (!results.Values.Any(result => result.Kind == FlowIncidentActionResultKind.Waiting))
             {
-                var others = await Task.WhenAll(targets.Where(target => target.Kind != FlowActionKind.NetclawInvestigation)
+                // Freeze fields once, sequentially, before bounded sibling dispatch. Every resumed
+                // target consumes this persisted value; no receiver enriches an already frozen payload.
+                foreach (var target in targets.Where(target => target.Kind != FlowActionKind.NetclawInvestigation))
+                    if (!await PrepareTargetAsync(target).ConfigureAwait(false)) return Resume("incident-fields-not-committed");
+                var others = await Task.WhenAll(targets.Where(target => target.Kind != FlowActionKind.NetclawInvestigation && !results.ContainsKey(target.Id))
                     .Select(async target => (target.Id, Result: await velox.ExecuteNodeAsync(lease.RunId, node, _ => RunTargetAsync(target), ct).ConfigureAwait(false))))
                     .ConfigureAwait(false);
                 foreach (var item in others) results.Add(item.Id, item.Result);
@@ -443,11 +456,14 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
         }
         return FlowTypedMapping.Map(mapping, lease.Event.ExecutionEvent, lease.Event.Data, inputs, state.Investigation);
     }
-    internal static FlowIncidentFieldsDto InitialFields(FlowRunLease lease) => lease.Event.ExecutionEvent is { } source
-        ? new(("Execution " + source.Outcome + ": " + (source.Definition.Name ?? source.ExecutionId))[..Math.Min(200,
-            ("Execution " + source.Outcome + ": " + (source.Definition.Name ?? source.ExecutionId)).Length)],
-            "Original execution outcome: " + source.Outcome + ". Raw status: " + source.RawStatus + ".")
-        : new("Monitoring alert", "Original monitoring alert.");
+    internal static FlowIncidentFieldsDto InitialFields(FlowRunLease lease)
+    {
+        if (lease.Event.ExecutionEvent is not { } source) return new("Monitoring alert", "Original monitoring alert.");
+        var fields = FlowExecutionEvidenceFormatter.Values(source);
+        var title = ("Execution " + fields["outcome"] + ": " + fields["definitionName"]).ReplaceLineEndings(" ").Replace('\t', ' ');
+        return new(string.Concat(title.EnumerateRunes().Take(100).Select(rune => rune.ToString())),
+            "Original execution outcome: " + source.Outcome + ". Raw status: " + source.RawStatus + ".");
+    }
     private static string SafeCode(string code) => code.Length is > 0 and <= 128 &&
         code.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '.' or '_') ? code : "node-input-unavailable";
 }

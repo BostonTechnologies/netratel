@@ -43,22 +43,13 @@ public sealed partial class FlowPersistenceService
         else
         {
             FlowIncidentActionDraft expected;
-            try
+            if (draft.Kind == FlowActionKind.NetclawInvestigation)
+                expected = draft with { Fields = state.Fields ?? FlowGraphV2Runtime.InitialFields(lease) };
+            else
             {
-                var raw = draft.Kind == FlowActionKind.NetclawInvestigation ? state.Fields ?? FlowGraphV2Runtime.InitialFields(lease) :
-                    FlowGraphV2Runtime.FieldsForAction(lease, state);
-                expected = draft with { Fields = raw };
-                if (draft.Kind == FlowActionKind.RatelDeskIncident && lease.Event.ExecutionEvent is not null)
-                {
-                    var attempts = FlowRecoveryEvidence.FromOutputs(lease, state.Outputs,
-                        (state.Trace?.Steps ?? []).OrderBy(step => step.Sequence).Select(step => step.NodeId).ToArray());
-                    var evidence = await new FlowIncidentEvidenceReader(db).ReadAsync(expected, state.Investigation?.ActionNodeId,
-                        attempts, ct).ConfigureAwait(false);
-                    if (evidence.Disposition != FlowIncidentEvidenceDisposition.Ready || evidence.Draft is null) return null;
-                    expected = evidence.Draft;
-                }
+                if (state.PreparedActionFields?.TryGetValue(draft.ActionNodeId, out var frozen) != true) return null;
+                expected = draft with { Fields = frozen };
             }
-            catch (Exception error) when (error is ArgumentException or InvalidOperationException) { return null; }
             if (Serialize(expected) != Serialize(draft)) return null;
             action = new FlowActionRecord { RunId = draft.RunId, NodeId = draft.ActionNodeId, TenantId = draft.TenantId,
                 IdempotencyKey = draft.IdempotencyKey, DraftJson = Serialize(draft), ConnectorRevision = draft.ConnectorRevision,

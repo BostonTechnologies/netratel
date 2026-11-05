@@ -76,7 +76,7 @@ public sealed partial class FlowPersistenceService
         var version = new FlowVersionRecord { Id = versionId, FlowId = row.Id, TenantId = row.TenantId,
             VersionNumber = row.PublishedVersionNumber + 1, GraphJson = json,
             ConfigurationHash = FlowContractValidation.Hash(Encoding.UTF8.GetBytes(json)), PublishedBy = authority.PrincipalId,
-            PublishedAtUtc = Now, ProtectedExecutionPinsJson = capture.ProtectedPinsJson, ExecutionAuthorityJson = Serialize(authority) };
+            PublishedAtUtc = await ActivationNowAsync(db, ct).ConfigureAwait(false), ProtectedExecutionPinsJson = capture.ProtectedPinsJson, ExecutionAuthorityJson = Serialize(authority) };
         db.FlowVersions.Add(version);
         row.PublishedVersionId = version.Id; row.PublishedVersionNumber = version.VersionNumber; row.Revision++;
         row.UpdatedAtUtc = version.PublishedAtUtc;

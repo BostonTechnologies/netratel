@@ -245,6 +245,16 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         action = action with { Lease = renewed };
         _commands.Available = true;
         _commands.ThrowAfterSend = ambiguousSend;
+        await using (var expiredObserver = new OrchestratorDbContext(_options))
+        {
+            var expired = await Dispatcher(expiredObserver).ObserveAsync(action with
+                { AllowUnstartedDispatch = false, DeadlineAtUtc = original.FlowLease.Event.OccurredAtUtc.AddSeconds(-1) }, reserved.Receipt!);
+            expired.Receipt!.ExecutionId.Should().Be(reserved.Receipt!.ExecutionId);
+            expired.Disposition.Should().Be(FlowExecutionActionDisposition.Pending);
+            (await expiredObserver.Set<ExecutionAdmissionRecord>().SingleAsync()).DispatchStartedAtUtc.Should().BeNull();
+            (await expiredObserver.JobTaskActivities.CountAsync()).Should().Be(0);
+        }
+        _commands.Dispatches.Should().Be(0);
         await using (var restarted = new OrchestratorDbContext(_options))
         {
             var resumed = await Dispatcher(restarted).ObserveAsync(action, reserved.Receipt!);
@@ -265,7 +275,8 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
             await new JobRunService(terminal, _keys).UpdateTaskActivityStatusAsync(new(reserved.Receipt!.ExecutionId,
                 "Completed", null, DateTimeOffset.UtcNow, ResultJson: """{"stdout":"synthetic resumed result","exitCode":0}""", ExitCode: 0));
         await using var final = new OrchestratorDbContext(_options);
-        var completed = await Dispatcher(final).ObserveAsync(action, reserved.Receipt!);
+        var completed = await Dispatcher(final).ObserveAsync(action with
+            { AllowUnstartedDispatch = false, DeadlineAtUtc = original.FlowLease.Event.OccurredAtUtc.AddSeconds(-1) }, reserved.Receipt!);
         completed.Disposition.Should().Be(FlowExecutionActionDisposition.Succeeded);
         completed.Output!.ExecutionId.Should().Be(reserved.Receipt!.ExecutionId);
         _commands.Dispatches.Should().Be(1);
@@ -330,6 +341,63 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         result.Binding.DispatchAcceptedAtUtc.Should().NotBeNull();
         _commands.Dispatches.Should().Be(1);
         (await recovered.JobTaskActivities.CountAsync()).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Node_deadline_expiring_during_activity_save_rolls_back_the_unstarted_claim_and_prevents_later_resume()
+    {
+        var request = await SeedAsync();
+        var deadline = request.FlowLease!.Event.OccurredAtUtc.AddSeconds(30);
+        await using (var configure = new OrchestratorDbContext(_options))
+        {
+            var run = await configure.FlowRuns.SingleAsync();
+            var continuation = JsonSerializer.Deserialize<FlowContinuationDto>(run.ContinuationJson!, Json)!;
+            run.ContinuationJson = JsonSerializer.Serialize(continuation with
+                { Node = continuation.Node! with { DeadlineAtUtc = deadline } }, Json);
+            await configure.SaveChangesAsync();
+        }
+        var clock = new AdmissionClock();
+        var options = new DbContextOptionsBuilder<OrchestratorDbContext>(_options)
+            .AddInterceptors(new AfterActivitySave(() => clock.UtcNow = deadline.AddSeconds(1))).Options;
+        await using (var dispatch = new OrchestratorDbContext(options))
+        {
+            var attempt = () => Service(dispatch, clock: clock).StartKeyedAsync(request);
+            await attempt.Should().ThrowAsync<ExecutionAdmissionDeniedException>().WithMessage("*node deadline*");
+        }
+        await using var restarted = new OrchestratorDbContext(_options);
+        (await restarted.JobTaskActivities.CountAsync()).Should().Be(0);
+        var binding = await restarted.Set<ExecutionAdmissionRecord>().SingleAsync();
+        binding.DispatchStartedAtUtc.Should().BeNull();
+        binding.DispatchAcceptedAtUtc.Should().BeNull();
+        var retry = () => Service(restarted, clock: clock).StartKeyedAsync(request);
+        await retry.Should().ThrowAsync<ExecutionAdmissionDeniedException>().WithMessage("*node deadline*");
+        _commands.Dispatches.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Missing_or_mismatched_persisted_action_checkpoint_cannot_create_a_script_activity(bool mismatch)
+    {
+        var request = await SeedAsync();
+        await using (var configure = new OrchestratorDbContext(_options))
+        {
+            var run = await configure.FlowRuns.SingleAsync();
+            if (mismatch)
+            {
+                var continuation = JsonSerializer.Deserialize<FlowContinuationDto>(run.ContinuationJson!, Json)!;
+                run.ContinuationJson = JsonSerializer.Serialize(continuation with
+                    { Node = continuation.Node! with { NodeId = Guid.NewGuid() } }, Json);
+            }
+            else run.ContinuationJson = null;
+            await configure.SaveChangesAsync();
+        }
+        await using var dispatch = new OrchestratorDbContext(_options);
+        var attempt = () => Service(dispatch).StartKeyedAsync(request);
+        await attempt.Should().ThrowAsync<ExecutionAdmissionDeniedException>().WithMessage("*checkpoint*");
+        (await dispatch.JobTaskActivities.CountAsync()).Should().Be(0);
+        (await dispatch.Set<ExecutionAdmissionRecord>().SingleAsync()).DispatchStartedAtUtc.Should().BeNull();
+        _commands.Dispatches.Should().Be(0);
     }
 
     private sealed class AdmissionClock : TimeProvider
@@ -492,7 +560,10 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         db.FlowVersions.Add(new() { Id = versionId, TenantId = 7, FlowId = flow, VersionNumber = 1,
             GraphJson = JsonSerializer.Serialize(graph, Json), ConfigurationHash = version.ConfigurationHash,
             PublishedBy = "operator", PublishedAtUtc = now, ExecutionAuthorityJson = JsonSerializer.Serialize(authority, Json) });
-        db.FlowRuns.Add(new() { Id = runId, TenantId = 7, FlowId = flow, FlowVersionId = versionId,
+        var checkpoint = new FlowNodeCheckpointDto(nodeId, 1, 1, FlowNodeProgress.Dispatching,
+            FlowActionKeys.Create(lease, nodeId), envelope.OccurredAtUtc, envelope.OccurredAtUtc.AddMinutes(10));
+        db.FlowRuns.Add(new() { ContinuationJson = JsonSerializer.Serialize(new FlowContinuationDto(nodeId, null) { Node = checkpoint }, Json),
+            Id = runId, TenantId = 7, FlowId = flow, FlowVersionId = versionId,
             EventId = envelope.EventId, OccurrenceId = envelope.OccurrenceId, EventJson = JsonSerializer.Serialize(envelope, Json),
             EventFingerprint = FlowContractValidation.Hash(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(envelope, Json))),
             Status = FlowRunStatus.Running, Fence = 1, LeaseToken = lease.Token, LeaseOwner = lease.WorkerId,
@@ -500,7 +571,7 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         db.FlowRuntimeIdentity.Add(new() { Id = 1, SourceInstanceId = lease.SourceInstanceId });
         await db.SaveChangesAsync();
         var pin = new PinnedJobScriptSnapshot(script, [], Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(script.Content))));
-        return new(new(Guid.NewGuid(), 7, "operator", versionId, runId, nodeId, 1), pin, agent,
+        return new(new(FlowActionKeys.CreateExecution(lease, nodeId), 7, "operator", versionId, runId, nodeId, 1), pin, agent,
             new Dictionary<string, string>()) { FlowLease = lease };
     }
 
