@@ -28,7 +28,10 @@ public enum FlowExecutionActionDisposition
 
 /// <summary>Resolved inputs are server-owned and omitted from trace receipts. The durable runtime supplies its exact current lease.</summary>
 public sealed record FlowExecutionActionRequest(FlowRunLease Lease, Guid NodeId, Guid ActionKey, int NodeAttempt,
-    string? InputsJson = null, FlowExecutionReplayDescriptorDto? OriginalReplay = null);
+    string? InputsJson = null, FlowExecutionReplayDescriptorDto? OriginalReplay = null)
+{
+    public int RecoveryAttempt { get; init; }
+}
 public sealed record FlowExecutionActionReceipt(Guid ActionKey, ExecutionAdmissionKind Kind, string ExecutionId,
     string? SourceExecutionId = null, int RecoveryAttempt = 0);
 

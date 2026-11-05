@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Jobs;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Shared.Contracts.Flows;
 
 namespace NetRatel.Infrastructure.Services;
 
@@ -22,6 +23,11 @@ public sealed class ExecutionAdmissionStore(OrchestratorDbContext db, IDataProte
             throw new InvalidOperationException("Canonical execution admission must own its PostgreSQL transaction.");
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        if (submission.Identity.Causation?.SourceExecutionId is not null)
+        {
+            var runKey = BinaryPrimitives.ReadInt32BigEndian(SHA256.HashData(submission.Identity.FlowRunId.ToByteArray()));
+            await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({0x4E524652}, {runKey})", cancellationToken);
+        }
         // The two-int advisory namespace is independent from job ownership's bigint locks.
         var lockKey = BinaryPrimitives.ReadInt32BigEndian(SHA256.HashData(submission.Identity.ActionKey.ToByteArray()));
         await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({0x4E52454B}, {lockKey})", cancellationToken);
@@ -36,6 +42,7 @@ public sealed class ExecutionAdmissionStore(OrchestratorDbContext db, IDataProte
             await transaction.CommitAsync(cancellationToken);
             return replay;
         }
+        await RequireRerunBudgetAsync(submission.Identity, cancellationToken);
         var executionId = allocateExecutionId();
         if (string.IsNullOrWhiteSpace(executionId) || executionId.Length > 128 ||
             submission.Kind == ExecutionAdmissionKind.Job &&
@@ -119,6 +126,28 @@ public sealed class ExecutionAdmissionStore(OrchestratorDbContext db, IDataProte
             .ExecuteUpdateAsync(setters => setters.SetProperty(record => record.DispatchAcceptedAtUtc,
                 record => record.DispatchAcceptedAtUtc ?? acceptedAt), cancellationToken);
         if (updated != 1) throw new InvalidOperationException("The canonical physical dispatch claim disappeared.");
+    }
+
+    private async Task RequireRerunBudgetAsync(ExecutionAdmissionIdentity identity, CancellationToken ct)
+    {
+        if (identity.Causation?.SourceExecutionId is not { } sourceId) return;
+        var version = await db.FlowVersions.AsNoTracking().SingleOrDefaultAsync(row =>
+            row.TenantId == identity.TenantId && row.Id == identity.FlowVersionId, ct);
+        var graph = version is null ? null : JsonSerializer.Deserialize<FlowGraphDto>(version.GraphJson,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var node = graph?.Nodes.SingleOrDefault(node => node.Id == identity.NodeId);
+        if (node?.Kind != FlowNodeKind.RerunOriginalExecution)
+            throw new ExecutionAdmissionDeniedException("Only the published original-rerun node can claim a linked rerun budget.");
+        var maximum = graph!.Nodes.Where(node => node.Kind == FlowNodeKind.RerunOriginalExecution)
+            .Max(node => node.Rerun?.MaximumAttempts ?? 1);
+        if (maximum is < 1 or > FlowExecutionEventLimits.MaximumRecoveryAttempts || identity.Causation.RecoveryAttempt > maximum)
+            throw new ExecutionAdmissionBudgetExhaustedException();
+        var causalRows = await db.Set<ExecutionAdmissionRecord>().AsNoTracking().Where(row =>
+            row.TenantId == identity.TenantId && row.FlowRunId == identity.FlowRunId && row.CausationJson != null)
+            .Select(row => row.CausationJson).Take(FlowGraphV2Limits.MaximumNodes * 8 + 1).ToArrayAsync(ct);
+        if (causalRows.Length > FlowGraphV2Limits.MaximumNodes * 8 ||
+            causalRows.Count(json => JsonSerializer.Deserialize<ExecutionAdmissionCausation>(json!)?.SourceExecutionId == sourceId) >= maximum)
+            throw new ExecutionAdmissionBudgetExhaustedException();
     }
 
     private static bool Matches(ExecutionAdmissionRecord row, ExecutionAdmissionSubmission submission)
