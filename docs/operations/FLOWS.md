@@ -1,76 +1,126 @@
-# Monitoring flows
+# Flows
 
-Flows support bounded drafts, previews, RatelDesk incidents and Discord/Slack notifications. Automatic incident delivery requires an authorized RatelDesk connector whose receiver provides verified atomic idempotency. A normal create endpoint alone does not establish that contract. Discord and Slack use separately configured incoming webhook targets; see [notification connectors](../integrations/NOTIFICATION-CONNECTORS.md).
+Flows connect monitoring alerts and execution outcomes to typed decisions, investigation, permitted library scripts or jobs, and incidents or notifications. Automatic RatelDesk delivery requires an authorized connector with verified atomic idempotency. Discord and Slack use separately configured incoming webhooks; see [notification connectors](../integrations/NOTIFICATION-CONNECTORS.md).
 
-## Editing and publishing
+## Create and configure a draft
 
-Open **Signals → Flows**, choose an authorized tenant, and create the named incident template. The real VeloxDev canvas supports moving nodes, connecting typed ports, deleting edges/nodes, pan, zoom, fit and minimap. The property forms offer a keyboard path to node positions, conditions and mappings. Visible input/output ports provide keyboard and touch connection authoring: activate an output, then a compatible input, or Cancel connection. Select a saved curve to inspect or remove it; read-only viewers allow inspection. Saved connections use curved paths and share Core hit-test geometry. Pointer-down immediately draws a dashed browser-local preview; compatible inputs highlight, invalid drops explain the rejection, and cancellation clears the preview. Pointer movement and hover do not capture the graph or send rendering frames through the server. Each committed drop uses the same authoritative native command/validation path as keyboard and touch.
+Open **Signals → Flows** and choose an authorized tenant. Choose a named template, give the flow a meaningful name, and configure its source, definitions, targets and destinations. Templates are disabled, unpublished drafts. Creation, editing, validation and preview perform no real actions. Publishing creates an immutable version; enabling admits matching future source transitions under that version's configuring authority.
 
-Save retains stable node IDs, properties, positions and viewport in NetRatel's canonical schema; a canvas or CLR object is never persisted.
+The templates cover:
 
-The compact toolbar includes a searchable, collapsible node library and **Fullscreen workspace** for both drafts and immutable viewers. Fullscreen covers the viewport; the browser Fullscreen API is requested directly from the click where supported, with a full-window fallback. The existing dialog and popover providers stay inside the native fullscreen document. Entering or leaving keeps the same canvas adapter, selected node, draft and pan/zoom. Escape keeps the editor open; use its explicit Close action to leave.
+| Template | Configure before publication |
+| --- | --- |
+| Alert to incident | The existing alert mapping and RatelDesk destination; optional investigation remains available. |
+| Job or request failure to incident | Execution scope, failure filter, supported investigation connection and RatelDesk destination. |
+| Library script repair and linked rerun | Selected source scripts, a permitted pinned repair script and unresolved-incident destination. |
+| Job success to follow-up script | Job scope, pinned follow-up script, explicit target/input choices and failure destination. |
+| Job success to notification | Job scope and named notification destinations. |
+| Request timeout and unknown outcome | Request scope and incident destination; distinct messages without automatic reruns. |
 
-Preview sample data opens in a modal dialog and does not reduce the canvas height. Closing the dialog returns focus to Preview. A captured trace opens a floating playback inspector with play/pause, previous/next, restart, speed and per-node Input/Output/Outcome. Selecting a node also selects its captured step. Pure nodes expose calculated values; the trace stops at the first external action and labels its output unavailable. No AI findings or action success is invented. Large snapshots are explicit bounded text excerpts, and missing, captured null and captured empty values remain distinct.
+Unconfigured selections remain visible in a draft. Complete validation and publication reject missing required selections, inputs, outcome routes or connector references. Selected source definitions never silently become an all-tenant subscription. A clone is another disabled draft with independent node, edge and action identities.
 
-Evaluation uses the current draft and never saves, publishes or dispatches an action. Editing the draft or changing tenant/flow removes its old trace. Playback moves through captured data entirely in the browser, respects reduced motion, and pauses while hidden or offscreen; backward stepping performs no evaluation or network command.
+## Editor and viewer
 
-The initial catalogue is deliberately small:
+The compact toolbar contains save, validation, preview and fullscreen controls. The searchable, collapsible palette leaves most space for the canvas; select a node to edit its configuration. Node headers identify their category and source or action, with useful definition, target and configuration summaries. Destination selectors configure actual integrations and credentials.
 
-1. Alert raised.
-2. An optional typed condition.
-3. Map alert fields.
-4. An optional AI: Investigate alert step with a bounded deadline, failure disposition and tenant guidance.
-5. RatelDesk: Create incident, or an action group containing one to eight supported independent actions. AI may also end an AI-only path.
+**Fullscreen workspace** fills the viewport in both editor and immutable viewer modes. The browser Fullscreen API is used where supported, with a full-window fallback. Dialogs, tooltips and popovers stay inside that root. Entering or leaving preserves the draft, selection, focus and pan/zoom. Escape cancels a connection or route gesture first and never discards the editor; use its explicit Close action.
 
-A published graph has one reachable acyclic path, at most one condition, one mapping, one sequential AI step and one final action or action group, or an AI-only final step. Drafts can remain incomplete while being edited. Publish requires a complete valid path and enabled, currently authorized connectors with the capability required by each action. Publish pins every connector configuration revision and selected optional prompt revision and creates an immutable version. Later draft edits, guidance edits and credential rotation cannot silently change the semantic target or fields of an existing version/run. After editing a target, choose **Use updated target** in the action settings and republish any flow that should use it. Clone creates a disabled draft with new node IDs.
+Visible named ports are the connection controls. Drag an output to an input, or activate an output with keyboard/touch and then activate a compatible input. A dashed curved line appears before pointer release. Compatible targets highlight; invalid targets explain the rejection. Cancel clears the gesture without saving an edge. The same draft validation applies to every authoring path.
 
-Select an existing incident action and use **Add more actions** to retain that incident target while adding notification actions. Each child has a stable ID and its own target, durable delivery state and receipt. The mapped title and description feed every action; priority applies to incident actions. One failed destination does not prevent the other children from running. History shows each result and reports a partially succeeded run when some destinations succeed and others fail or remain uncertain. A safe retry resumes only the children that still need delivery; successful children are not sent again.
+Select a saved curve to inspect or remove it. In schema two, **Add route point** adds a saved bend; drag a point, adjust its coordinates, or use arrow keys (Shift moves by ten units). Tab leaves a handle normally. **Reset route** returns to automatic curves. Up to eight finite world-coordinate points are saved per edge; selection, hover, ghost lines and playback are transient. Save/reload retains stable node/edge identities, routes, positions and viewport. Pan, zoom, fit, resize and the minimap use the native Velox surface.
 
-Read, draft save, validate and dry run never construct an executing workflow or create an incident. Dry run is pure DTO evaluation and shows mapped fields or an explicit condition-false skip. Publish stores a version; monitoring's durable event ingress is the execution boundary. No browser execution endpoint is exposed.
+## Triggers, actions and branches
 
-Allowed mapping placeholders are `{ruleName}`, `{clientName}`, `{resource}`, `{metric}`, `{severity}`, `{value}`, `{serviceState}`, `{occurredAt}`, `{offlineSummary}`, `{offlineCount}` and `{offlineClients}`. Offline events automatically include the bounded outage summary in incident descriptions and notifications even when an older template does not contain the new placeholders. Numeric comparisons use a finite numeric value. Text comparisons use exact ordinal equality/inequality. Arbitrary code, CLR type names, SQL, shell commands, arbitrary webhook URLs in graphs, loops, runtime redirects, schedules and remediation are unavailable.
+A graph has one trigger and an acyclic sequence of exclusive decisions. **Execution event** subscribes to job executions, library-script executions or requests. It is a different category from **Run job** and **Run library script**, which create work. Script events describe actual executions, not edits to a library definition.
+
+Choose the source families and genuine terminal outcomes, then choose all matching executions in the authorized tenant or selected jobs/scripts. Searchable names retain their source family, so a job and a script with the same numeric ID are distinct. Agent and request-kind filters narrow supported sources. A job action shows and retains its own bound tenant/agent; it does not substitute the triggering event's client.
+
+Combined subscriptions may aggregate correlated job/request/script facts for the same accepted execution attempt and outcome. Each flow version and trigger is admitted independently, and contributing source references are retained. Separate attempts or different outcomes remain distinct. A request-only admission failure can trigger immediately without a job.
+
+| Outcome | Meaning and operator response |
+| --- | --- |
+| `succeeded` | A committed native terminal success. Request `Success` and `Completed` normalize to success while retaining the raw status. |
+| `failed` | A definitive failure, including a completed script with an authoritative nonzero exit result. |
+| `timed_out` | An authoritative deadline result; a mutable request label alone is insufficient. |
+| `cancelled` | A committed cancellation. |
+| `unknown` | Completion or delivery is unconfirmed. Preserve evidence and investigate; do not blindly rerun. |
+| `unsupported` | Required replay material, execution support or enforced investigation capability is unavailable. |
+| `denied` | Current source, execution, credential or target authority does not permit the action. |
+
+Named outcome ports choose one next node. Conditions choose true or false; mappings produce a result. Alternatives may converge on one downstream node as an exclusive token, not a parallel join. Every declared outcome needs an explicit route in a published graph. Use **Finish** for an intentionally terminal branch. An independent notification action group retains each destination's stable identity and delivery receipt.
+
+Typed inputs come from allowlisted event facts, earlier typed outputs or literals. Definitions retain their parameter names/types and required inputs. Missing data is unavailable; captured null, an empty string, zero and false remain distinct. A value from an earlier node must be available on every incoming path. Secret references are not rendered into incident templates or exposed as preview values. Arbitrary expressions, generated shell code, CLR types, SQL, graph-defined webhook URLs, cycles and hidden health checks are not execution inputs.
+
+## Versions and existing alert flows
+
+Upgrading an old draft to schema two is explicit and creates a new saved revision. Existing schema-one drafts, published graph bytes/configuration hashes, connector revisions, receiver receipts and running continuations retain their original behavior. An old schema-one writer cannot downgrade and erase a newer draft. Published viewers and historical replay use immutable versions.
+
+Schema-one alert graphs retain their bounded single path: alert, optional condition, mapping, optional sequential investigation and a final incident/action group, or an AI-only final step. Their eight-node/seven-edge/32 KiB limits remain unchanged. Schema two permits repeated action kinds and bounded branches, with 32 nodes, 64 edges and 128 KiB canonical graph JSON. These authoring bounds do not raise execution, action-payload or trace budgets.
+
+Alert mappings retain `{ruleName}`, `{clientName}`, `{resource}`, `{metric}`, `{severity}`, `{value}`, `{serviceState}`, `{occurredAt}`, `{offlineSummary}`, `{offlineCount}` and `{offlineClients}`. Offline alerts add their bounded outage summary even for older templates. Execution mappings use native values such as `{sourceKind}`, `{definitionName}`, `{definitionRevision}`, `{executionId}`, `{attemptId}`, `{targetName}`, `{outcome}`, `{rawStatus}`, `{reason}`, `{exitCode}` and `{executionLink}`. They never manufacture monitoring rule, metric or alert data.
+
+Publication pins execution definitions, library revisions/content hashes, input schemas, actual targets, connector configuration revisions and optional investigation guidance. Later definition or credential edits cannot change an admitted run's semantic payload. After changing a destination, choose its updated reference and republish the flows that should use it.
+
+## Preview and historical playback
+
+Preview setup opens in a dialog and does not push the canvas down. Select a synthetic monitoring or execution sample. To follow an external action's outcome, explicitly provide its sample outcome/output fixture. Without a fixture, the pure evaluator stops at that effect boundary and labels unavailable data. Conditions and mappings calculate real pure values; preview does not invent action success or AI findings.
+
+A floating player offers play/pause, next/previous, restart, speed and exit. Selecting a node or captured step shows Input, Output, Outcome, chosen port, attempt and available timing/error data. Simulated, recorded, missing, captured empty/null and truncated values are labelled. Copy exports only the visible authorized bounded value or excerpt. Unvisited nodes have no captured output.
+
+Historical replay reads the run's immutable graph and recorded snapshots, not the current draft. Older runs without snapshots say data unavailable. A changed draft or tenant/flow/version context removes stale traces and fences late responses. Recorded values are not replaced with edited preview samples.
+
+Playback and backward stepping are presentation only. They perform zero script/job dispatches, AI turns, notifications or incident writes. Motion stays in the browser, respects reduced motion, pauses when hidden/offscreen and disposes timers/listeners when closed. It does not save the graph, dirty the draft or send per-frame SignalR updates.
 
 ## Authority and durable execution
 
-AI discovery supports `{aiSummary}`, `{aiEvidence}`, `{aiRecommendations}`, `{aiStatus}`, `{aiObservedAt}` and `{aiInvestigationId}` in mappings. **Alert raised → Map alert fields → AI: Investigate alert → RatelDesk: Create incident** waits for the exact automated turn's persisted terminal result before incident delivery. A durable continuation resumes at the waiting node rather than replaying the graph. Approval waits remain visible. A new investigation snapshots the current tenant default; published optional guidance stays pinned. Failure policy can stop the flow or continue with the original alert and an accurately labelled unsuccessful outcome. The final incident description adds a labelled investigation reference and discovery section even when mapping precedes AI. Original measured alert facts remain immutable.
+The API checks `flow.read`, `flow.edit`, `flow.publish` and `flow.execute` for the selected tenant. Existing roles are not widened. A foreign flow/version/run ID grants no access. Source subscriptions and native execution selectors also check their current source permissions. Configuring an action grants no service/global-admin authority.
 
-The API evaluates `flow.read`, `flow.edit`, `flow.publish` and `flow.execute` together with the selected tenant. Existing roles are not silently widened; deployments must explicitly grant the new permissions. A flow/immutable-version/run ID from another tenant is insufficient to read or change it.
+Monitoring uses its pinned configuring principal and optional integration credential, retaining occurrence, suppression, bypass and fresh-evidence admission. Job/script/request sources use their own immutable transition and subscription evidence. RequestEventBus is a UI channel, not automation ingress. Native source state, transition fact and selected subscription intent commit durably together, including direct relational callback projections; a job event waits for its complete terminal result.
 
-Monitoring lists immutable published versions only for an exact tenant with both `flow.read` and `flow.execute`. Selecting or changing a rule action requires those permissions; editing other fields while retaining its selected version preserves the original configuring identity. The bridge persists the real run ID under the exact outbox lease. Recovery of a known run polls it, and a lost handoff response uses the exact tenant/event/version lookup without another enqueue.
+Before an unstarted effect, current principal/account status, tenant permission, credential scope/revocation/expiry, target validity, flow enablement and pinned revision are checked again. Native jobs keep their bound target. Already accepted work is observed through its canonical service; queue admission is pending, not success.
 
-Monitoring supplies the persisted configuring principal and optional integration credential on its pinned event. Backend execution uses that authority, with no borrowed Operator or global system principal. Current principal existence, local-account enablement, tenant permission and integration credential scope/revocation/expiry are checked again before a side effect. Flow enablement and monitoring's current occurrence/suppression guard are checked before preparation. The accepted-write path uses the caller's PostgreSQL connection and transaction, admitting the exact Flow lease and fresh authority/Monitoring state under the existing configuration, owner, evidence, latest-series, outbox and run/action locks. Entry and late checks use the later of trusted time and live PostgreSQL `clock_timestamp()`. Admission is rechecked before `SaveChanges` and after awaited `SaveChanges`, before commit; denied admission, cancellation, errors or a missing provider/transaction leave the write rolled back. Connector dispatch checks its current owner, grants, enablement, independent credential availability and pinned configuration revision.
+Runs persist node inputs/output references, decisions, selected outcomes, accepted execution IDs, attempt keys and continuations. Long jobs/scripts/investigations yield the worker and resume on the exact committed result. Routine polling does not spend another execution attempt. Lease token, worker identity, increasing fence, expiry and checkpoint revision protect writes; a stale worker cannot overwrite a reclaimed run.
 
-Each run creates a separate actual VeloxDev Core compiler/model/helper/runtime context. The backend worker can continue while every browser is closed. The initial topology is one bounded worker; no additional broker or cluster is required.
-
-Before the first send, the database commits a stable action key and the exact semantic draft, pinned target revision and source occurrence metadata. Incident preparation additionally resolves the organization, customer, assignment, categories and priority into its durable receiver payload. A database transaction marks each action `Dispatching` under the current run lease before its dispatcher is called. The lease token, worker identity, increasing fence and expiry protect every receipt/outcome write. A stale worker cannot overwrite a reclaimed run.
-
-Recovery preserves these distinctions:
+Canonical admission commits a stable action key and protected exact source/inputs/target before exposing work. A crash after acceptance but before the flow saves its receipt recovers the same native execution ID. Transport retries reuse their key; a deliberate rerun creates one new linked attempt.
 
 | Durable evidence | Recovery behavior |
 | --- | --- |
-| No send started | Current admission and the exact persisted payload may proceed under a new lease. |
-| Successful incident receipt committed | Finalize the run without sending again. |
-| A send started, with no receipt and no verified safe replay | Record `DeliveryUnknown`; do not retry blindly. |
-| Verified receiver replay contract | A permitted retry retains the same key and semantic payload. |
-| Explicit safe transient failure | Retry within the bounded attempts/backoff/age budget. |
-| Suppressed, revoked, disabled, unavailable or invalid dependency | Preserve an explicit failed/skipped outcome. |
+| No send started | A fresh authorized lease may proceed with the same pinned payload/key. |
+| A successful receipt is committed | Finalize without sending again. |
+| Send started, no receipt, no verified replay contract | Record Unknown/DeliveryUnknown; do not retry blindly. |
+| Verified receiver replay contract | A permitted retry uses the same key and frozen semantic payload. |
+| Proven safe transient rejection | Retry within the existing attempts/backoff/age budget. |
+| Suppressed, revoked, disabled, unavailable or invalid dependency | Preserve the explicit failed/skipped/denied disposition. |
 
-Incoming webhooks do not provide the verified replay contract used for RatelDesk incidents. Notification rate-limit rejections can be retried within the run budget, but a timeout or ambiguous response after a send is recorded as `DeliveryUnknown`. Recovery does not blindly post the notification again.
+Incoming webhooks do not provide RatelDesk's verified replay contract. A rate-limit rejection may be safely retried; an ambiguous timeout after a send remains DeliveryUnknown. Exhaustion never overwrites verified success or ambiguous delivery evidence with a generic failure. Re-enabling a definition does not resurrect an old disabled event, and metric recovery does not automatically resolve a helpdesk ticket.
 
-Exhausting a retry budget preserves a verified success receipt or an ambiguous send instead of overwriting it with a generic failure. An event aimed at a known version of a disabled flow records a real failed run, and re-enabling the definition does not resurrect that event. Metric recovery does not automatically resolve a helpdesk incident.
+## Investigation, repair and verified recovery
 
-The initial bounds are eight nodes, seven edges, 32 KiB canonical graph, 8 KiB event, 24 KiB prepared action, 20-second execution deadline, 60-second lease, five action attempts and a 24-hour retry age. There are at most 128 definitions/tenant, 128 versions/definition, 256 active runs/tenant and 4,096 retained runs/tenant. Run history reads return at most 100 rows. Detailed terminal history is pruned after 90 days; ambiguous deliveries retain their keys and evidence. After pruning, an original event older than the 24-hour ingress window cannot start a new action. The monitoring bridge must retain the original immutable event timestamp when redelivering. Receiver deduplication retention must cover the supported retry window before safe replay can be enabled.
+Investigation receives the original failure, useful source/target/definition names, authorized bounded diagnostics and earlier outputs. Findings stay separate from original evidence. The incident may use `{aiSummary}`, `{aiEvidence}`, `{aiRecommendations}`, `{aiStatus}`, `{aiObservedAt}` and `{aiInvestigationId}`; mapping before investigation still receives final enrichment.
 
-## Schema transition
+Automatic investigation requires an enforceable restricted tool capability. The current Netclaw protocol cannot express a per-turn restricted profile. When that restriction cannot be enforced, execution-source investigation returns explicit Unsupported/unavailable before sending a remote turn. A session name or prompt is not tool authorization. Existing approval requirements remain in force; an already authorized library action does not gain a new mandatory reviewer. Generated arbitrary code is not silently executable. See [Netclaw integration](../integrations/netclaw-http-mcp.md).
 
-The compatible schema-two contracts are available for the overhaul while the current editor,
-save/publish routes and monitoring runtime remain on schema one. A draft upgrade is explicit;
-published versions, configuration hashes and running schema-one continuations are not rewritten.
-The new contract separates execution-event triggers from script/job/rerun actions and defines
-exclusive named outcomes, typed input bindings, stable edge IDs and finite optional routes.
-Its 32-node/64-edge/128 KiB budget is independent of existing execution and receipt bounds.
-The [API contract reference](../contracts/API_REFERENCE.md#flows) describes this transition.
-Execution activation and authoring of those new actions require their durable runtime integration.
+Configure permitted pinned library/job repair actions and explicit targets in the graph. **Rerun original execution** uses a trusted replay descriptor for the original definition, inputs and target. Supported script/job-backed requests use their canonical execution services; missing historical replay material and non-replayable requests return Unsupported. Unknown outcomes do not cause blind reruns.
+
+The default recovery budget is one linked rerun, with a finite configured maximum of three and explicit causation to prevent recursive failure-trigger loops. Repair-command success, accepted rerun IDs and AI text do not prove recovery. Only the linked rerun's authoritative terminal success reaches the recovered branch. An additional health check is an explicit graph action and condition.
+
+An unresolved incident includes the original failure, source/target names, definition/run/attempt links, bounded diagnostic evidence, separately labelled findings, actual repair attempts and the verified rerun outcome or explicit uncertainty. Final enrichment is assembled before the first send; its semantic payload then stays frozen under the existing receiver key and receipt contract.
+
+## Operational bounds and retest
+
+Graph limits are independent of the 20-second worker execution slice, 60-second lease, five safe action attempts and 24-hour retry age. Operation deadlines are explicit and finite; yielding does not hold a worker for the operation's lifetime. Execution events are bounded to 16 KiB with exact string IDs and bounded diagnostic references. Detailed snapshots and excerpts have separate capture budgets; truncation is visible.
+
+There are at most 128 definitions/tenant, 128 versions/definition, 256 active runs/tenant and 4,096 retained runs/tenant. History reads return at most 100 rows. Detailed terminal history is pruned after 90 days; ambiguous deliveries retain their keys and evidence. An original event older than the 24-hour ingress window cannot start another effect after pruning. Receiver deduplication retention must cover the supported retry window before safe replay can be enabled.
+
+Use synthetic executions in a disposable tenant for acceptance:
+
+1. Load an old alert flow and its immutable version; verify its original mappings and receipt.
+2. Create a disabled template, configure named sources/definitions/targets/destinations, validate, then publish/enable deliberately.
+3. Enter editor and viewer fullscreen; open preview/settings, connect/cancel ports, adjust a route at several zoom/pan positions and save/reload.
+4. Preview a failed execution with explicit action fixtures. Step backward/restart and inspect missing/null/empty/truncated values; verify no real action occurred.
+5. Run the configured failure path in the disposable environment. Verify permitted repair and one linked rerun by native IDs and actual terminal result; unresolved/Unknown/Unsupported/Denied/exhausted paths stay explicit.
+6. Restart at acceptance and waiting boundaries, redeliver the same source event and confirm one native execution and one enriched incident. Inspect historical replay against the recorded version.
+7. Check selected and all-tenant subscriptions, request-only rejection, correlated job/request aggregation, revoked authority and a representative graph near the v2 bounds.
 
 ## VeloxDev compatibility and notices
 
@@ -81,3 +131,4 @@ The adapter uses real native create/connect/move commands and waits for the matc
 The native Razor CSS/JS assets are referenced under `_content/VeloxDev.Razor/` using the application's base path. The full upstream MIT copyright/permission notice is in [THIRD-PARTY-NOTICES.txt](../THIRD-PARTY-NOTICES.txt) and is copied into build/publish output.
 
 Focused verification uses `NetRatel.Tests.Flows.*` for canonical validation, actual Core context isolation, API authorization/inertness/body limits and real PostgreSQL migrations/restarts/receipt/fencing/retention. PostgreSQL cases use the repository's standard Testcontainers fixture. Web component and Chromium tests exercise the actual editor, native connections and drag/layout/viewport save/reload, theme/zoom/mobile reflow and inert preview counters. Tests use deterministic receiver fixtures; they do not create tickets on a live helpdesk.
+
