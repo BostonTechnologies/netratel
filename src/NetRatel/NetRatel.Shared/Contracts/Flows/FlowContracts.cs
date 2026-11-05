@@ -78,7 +78,11 @@ public sealed record FlowEventDataDto(Guid AgentId, Guid RuleId, string RuleName
 public sealed record FlowIncidentFieldsDto(string Title, string Description, int? Priority = null);
 public sealed record FlowDryRunRequest(FlowGraphDto Graph, FlowEventDataDto Input);
 public sealed record FlowDryRunResultDto(bool Valid, bool Skipped, string Code, FlowIncidentFieldsDto? Incident,
-    IReadOnlyList<Guid> VisitedNodeIds, IReadOnlyList<FlowValidationIssueDto> Issues);
+    IReadOnlyList<Guid> VisitedNodeIds, IReadOnlyList<FlowValidationIssueDto> Issues)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FlowTraceDto? Trace { get; init; }
+}
 public sealed record FlowCreateRequest(string Name, bool UseTemplate = true);
 public sealed record FlowSaveDraftRequest(long ExpectedRevision, string Name, FlowGraphDto Graph);
 public sealed record FlowRevisionRequest(long ExpectedRevision);
@@ -101,7 +105,11 @@ public sealed record FlowActionSummaryDto(Guid NodeId, string IdempotencyKey, Fl
     public FlowAiResultDto? AiResult { get; init; }
     public FlowAiFailureBehavior? AiFailureBehavior { get; init; }
 }
-public sealed record FlowRunDetailDto(FlowRunSummaryDto Run, FlowEventDataDto Input, IReadOnlyList<FlowActionSummaryDto> Actions);
+public sealed record FlowRunDetailDto(FlowRunSummaryDto Run, FlowEventDataDto Input, IReadOnlyList<FlowActionSummaryDto> Actions)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FlowTraceDto? Trace { get; init; }
+}
 public sealed record FlowConnectorReferenceDto(Guid Id, int TenantId, string Name, bool Enabled, bool CanExecute, string? UnavailableReason = null, long Revision = 0)
 {
     public FlowActionKind Kind { get; init; }

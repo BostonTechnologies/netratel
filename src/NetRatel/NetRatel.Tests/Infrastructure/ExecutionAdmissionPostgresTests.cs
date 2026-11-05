@@ -120,7 +120,7 @@ public sealed class ExecutionAdmissionPostgresTests(PostgreSqlPersistenceFixture
                 await new JobRunService(crashed, _keys).CreateTaskActivityAsync(new(binding.ExecutionId,
                     null, null, "", 7, "os-info", "Pending", null, DateTimeOffset.UtcNow, null), ct);
                 throw new IOException("synthetic crash before commit");
-            }, CancellationToken.None);
+            }, _ => Task.CompletedTask, CancellationToken.None);
             await prepare.Should().ThrowAsync<IOException>();
         }
         await using (var read = new OrchestratorDbContext(_options))
@@ -135,13 +135,13 @@ public sealed class ExecutionAdmissionPostgresTests(PostgreSqlPersistenceFixture
             {
                 await new JobRunService(accepted, _keys).CreateTaskActivityAsync(new(binding.ExecutionId,
                     null, null, "", 7, "os-info", "Pending", null, DateTimeOffset.UtcNow, null), ct);
-            }, CancellationToken.None))
+            }, _ => Task.CompletedTask, CancellationToken.None))
                 .Should().BeTrue();
         }
         await using var restarted = new OrchestratorDbContext(_options);
         var replayed = false;
         var reloaded = new ExecutionAdmissionStore(restarted, _keys, TimeProvider.System);
-        (await reloaded.TryBeginDispatchAsync(binding, _ => { replayed = true; return Task.CompletedTask; }, CancellationToken.None))
+        (await reloaded.TryBeginDispatchAsync(binding, _ => { replayed = true; return Task.CompletedTask; }, _ => Task.CompletedTask, CancellationToken.None))
             .Should().BeFalse();
         replayed.Should().BeFalse();
         (await restarted.JobTaskActivities.CountAsync()).Should().Be(1);

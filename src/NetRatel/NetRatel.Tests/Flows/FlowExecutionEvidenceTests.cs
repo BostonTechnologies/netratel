@@ -63,10 +63,10 @@ public sealed class FlowExecutionEvidenceTests
         var original = Source();
         var terminal = original with
         {
-            EventId = Guid.NewGuid(), ExecutionId = "9007199254740994", AttemptId = "2",
-            Outcome = FlowExecutionOutcome.Succeeded, RawStatus = "Completed", Replay = null,
+            EventId = Guid.NewGuid(), ExecutionId = "9007199254740994", AttemptId = "9007199254740994",
+            Outcome = FlowExecutionOutcome.Succeeded, RawStatus = "Completed", Replay = null, ExitCode = 0,
             ParentExecutionId = original.ExecutionId, RootExecutionId = original.ExecutionId,
-            Causation = new(original.OccurrenceId.ToString("D"), original.EventId, RunId, NodeId, 1, 1)
+            Causation = new(original.Causation?.RootOccurrenceId ?? original.OccurrenceId.ToString("D"), original.EventId, RunId, NodeId, 1, 1)
         };
         var rerun = new FlowRecoveryAttemptEvidence(NodeId, 1, "Rerun original", FlowRecoveryActionState.Succeeded,
             true, terminal.ExecutionId, terminal);
@@ -138,12 +138,18 @@ public sealed class FlowExecutionEvidenceTests
     [Fact]
     public void Script_links_use_the_canonical_request_identity_and_preserve_large_identifiers()
     {
-        var original = Source() with { SourceKind = FlowExecutionSourceKind.Script, Replay = null };
+        var original = Source() with { SourceKind = FlowExecutionSourceKind.Script, Replay = null, Provenance = "script-terminal-commit" };
         var description = FlowExecutionEvidenceFormatter.DescribeOriginal(original);
         Assert.Contains("Execution: 9007199254740993", description);
         Assert.Contains("Execution view: /tasks/request/9007199254740993", description);
         var supported = original with { ExecutionId = "42" };
         Assert.Contains("Execution view: /tasks/request/42", FlowExecutionEvidenceFormatter.DescribeOriginal(supported));
+        var nativeId = new string('x', 248) + "/?#%";
+        var exact = original with { ExecutionId = nativeId, AttemptId = nativeId };
+        var nativeDescription = FlowExecutionEvidenceFormatter.DescribeOriginal(exact);
+        Assert.Contains("Execution: " + nativeId, nativeDescription);
+        Assert.Contains("Attempt: " + nativeId, nativeDescription);
+        Assert.Contains("Execution view: /tasks/request/" + Uri.EscapeDataString(nativeId), nativeDescription);
     }
 
     [Fact]
@@ -163,12 +169,13 @@ public sealed class FlowExecutionEvidenceTests
         var target = new FlowExecutionTargetDto(Guid.Parse("d0000000-0000-0000-0000-000000000001"), "Synthetic worker", "worker.example.test");
         var at = DateTimeOffset.Parse("2026-11-05T12:00:00Z");
         return new(Guid.Parse("e0000000-0000-0000-0000-000000000001"), Guid.Parse("f0000000-0000-0000-0000-000000000001"),
-            17, FlowExecutionSourceKind.Job, definition, "9007199254740993", "1", target,
+            17, FlowExecutionSourceKind.Job, definition, "9007199254740993", "9007199254740993", target,
             FlowExecutionOutcome.Failed, "Failed", at, at)
         {
             StartedAtUtc = at.AddSeconds(-10), CompletedAtUtc = at, ExitCode = 12, ReasonCode = "job-step-failed",
             Reason = "The synthetic volume is full.", Provenance = "job-terminal-ready",
-            Replay = new(FlowExecutionSourceKind.Job, definition, target, "job-run:9007199254740993", "9007199254740993", "1", true)
+            Causation = new("f000000000000000000000000000000001"),
+            Replay = new(FlowExecutionSourceKind.Job, definition, target, "job-run:9007199254740993", "9007199254740993", "9007199254740993", true)
         };
     }
 

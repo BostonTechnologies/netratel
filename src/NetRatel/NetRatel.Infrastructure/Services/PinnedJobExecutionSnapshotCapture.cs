@@ -48,7 +48,7 @@ public sealed class PinnedJobExecutionSnapshotCapture(OrchestratorDbContext db, 
         return snapshot;
     }
 
-    private static ulong? LegacyScriptId(string? payload)
+    internal static ulong? LegacyScriptId(string? payload)
     {
         if (string.IsNullOrWhiteSpace(payload)) return null;
         try

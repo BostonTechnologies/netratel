@@ -1,6 +1,8 @@
 using System.Text.Json;
 using AwesomeAssertions;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Mcp.Core;
+using NetRatel.Shared.Operations;
 using Xunit;
 
 namespace NetRatel.Tests.Flows;
@@ -19,6 +21,30 @@ public sealed class FlowGraphV2ContractTests
         graph.Nodes.Should().OnlyContain(node => node.ExecutionTrigger == null && node.ExecutionAction == null &&
             node.Rerun == null && node.Predicate == null && node.Inputs == null);
         graph.Edges.Should().OnlyContain(edge => edge.Id == null && edge.Route == null);
+    }
+
+    [Fact]
+    public void Existing_managed_MCP_flow_operations_keep_their_schema_one_contract_while_v2_execution_is_gated()
+    {
+        var schema = NetRatelMcpToolDefinitions.CreateForHttp("dev")
+            .Single(tool => tool.ProtocolTool.Name == "netratel_flows").ProtocolTool.InputSchema.GetRawText();
+        schema.Should().Contain("InvestigateWithAi").And.Contain("actions").And.Contain("connectorRevision")
+            .And.NotContain("executionTrigger").And.NotContain("executionAction").And.NotContain("predicate")
+            .And.NotContain("RunLibraryScript").And.NotContain("RerunOriginalExecution");
+        // Existing frozen catalog digest tests still verify exact bytes on both transports.
+    }
+
+    [Fact]
+    public void Managed_schema_one_ingress_rejects_schema_two_even_when_new_fields_have_been_stripped()
+    {
+        var descriptor = ManagedOperationCatalog.Find("netratel_flows", "validate")!;
+        var stripped = new FlowGraphDto(2, [], [], new());
+        var request = JsonSerializer.SerializeToElement(new { tenantId = 17, data = stripped }, ManagedOperationCatalog.JsonOptions);
+        ManagedOperationCatalog.TryValidate(descriptor, request, out var error).Should().BeFalse();
+        error.Should().Contain("schema one");
+        var legacy = JsonSerializer.Deserialize<FlowGraphDto>(LegacyPublishedFixture, Json)!;
+        ManagedOperationCatalog.TryValidate(descriptor,
+            JsonSerializer.SerializeToElement(new { tenantId = 17, data = legacy }, ManagedOperationCatalog.JsonOptions), out _).Should().BeTrue();
     }
 
     [Fact]
