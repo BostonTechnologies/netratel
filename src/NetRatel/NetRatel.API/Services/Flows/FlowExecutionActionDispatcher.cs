@@ -243,6 +243,7 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
         {
             Causation = new(cause?.RootOccurrenceId ?? lease.Event.OccurrenceId.ToString("N"), source?.EventId,
                 (cause?.HopCount ?? 0) + 1, recovery, rerun ? source?.Replay?.SourceExecutionId : null)
+            { RootExecutionId = rerun ? source?.RootExecutionId ?? source?.Replay?.SourceExecutionId : null }
         };
         identity.Validate(); return identity;
     }

@@ -109,7 +109,8 @@ public sealed class ExecutionAdmissionPostgresTests(PostgreSqlPersistenceFixture
     [Fact]
     public async Task Concurrent_different_rerun_nodes_share_one_default_budget_and_retries_keep_the_accepted_id()
     {
-        var first = Identity() with { Causation = new("original-occurrence", RecoveryAttempt: 1, SourceExecutionId: "original-execution") };
+        var first = Identity() with { Causation = new("original-occurrence", RecoveryAttempt: 1, SourceExecutionId: "original-execution")
+            { RootExecutionId = "9007199254740997-original-root" } };
         var second = first with { ActionKey = Guid.NewGuid(), NodeId = Guid.NewGuid() };
         await using (var seed = new OrchestratorDbContext(_options))
         {
@@ -142,6 +143,14 @@ public sealed class ExecutionAdmissionPostgresTests(PostgreSqlPersistenceFixture
         allocations.Should().Be(1);
         var retry = await Admit(accepted.Identity);
         retry!.ExecutionId.Should().Be(accepted.ExecutionId);
+        retry.Identity.Causation!.RootExecutionId.Should().Be("9007199254740997-original-root");
+        await using (var conflict = new OrchestratorDbContext(_options))
+        {
+            var changedRoot = accepted.Identity with { Causation = accepted.Identity.Causation! with { RootExecutionId = "another-root" } };
+            var changed = () => new ExecutionAdmissionStore(conflict, _keys, TimeProvider.System)
+                .ReserveAsync(new(changedRoot, ExecutionAdmissionKind.Job, "{}"), () => "must-not-allocate", CancellationToken.None);
+            await changed.Should().ThrowAsync<InvalidOperationException>().WithMessage("*already bound*");
+        }
         (await Admit(accepted.Identity with { ActionKey = Guid.NewGuid(), NodeAttempt = 2 })).Should().BeNull();
         await using var verify = new OrchestratorDbContext(_options);
         (await verify.Set<ExecutionAdmissionRecord>().CountAsync()).Should().Be(1);

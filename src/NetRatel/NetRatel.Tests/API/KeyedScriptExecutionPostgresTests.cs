@@ -309,7 +309,8 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         var now = DateTimeOffset.UtcNow;
         var source = new FlowExecutionEventDto(Guid.NewGuid(), Guid.NewGuid(), 7, FlowExecutionSourceKind.Script,
             replay.Definition, requestId, requestId, replay.Target, FlowExecutionOutcome.Failed, "Failed", now, now)
-            { Replay = replay, ExitCode = 1, CompletedAtUtc = now, Provenance = "script-activity-state-commit" };
+            { Replay = replay, ExitCode = 1, CompletedAtUtc = now, RootExecutionId = "9007199254740993-synthetic-original-root",
+                Provenance = "script-activity-state-commit" };
         var node = new FlowNodeDto(original.Identity.NodeId, FlowNodeKind.RerunOriginalExecution, "Rerun original", new(0, 0))
             { Rerun = new() };
         var graph = new FlowGraphDto(2, [node], [], new());
@@ -344,23 +345,32 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
             run.EventFingerprint = FlowContractValidation.Hash(Encoding.UTF8.GetBytes(run.EventJson));
             await setup.SaveChangesAsync();
         }
-        var identity = original.Identity with { Causation = new(source.OccurrenceId.ToString("N"), source.EventId,
-            HopCount: 1, RecoveryAttempt: 1, SourceExecutionId: requestId) };
-        KeyedScriptAdmissionResult accepted;
+        FlowExecutionActionDispatcher Dispatcher(OrchestratorDbContext context) => new(context, new Pins(null), new NoJobs(),
+            Service(context), new JobRunService(context, _keys), new ExecutionAdmissionStore(context, _keys, TimeProvider.System),
+            new FlowExecutionAuthority(context, new Verifier(), _access, _source, TimeProvider.System));
+        var action = new FlowExecutionActionRequest(lease, node.Id, original.Identity.ActionKey, 1, OriginalReplay: replay)
+            { RecoveryAttempt = 1 };
+        FlowExecutionActionResult accepted;
         await using (var first = new OrchestratorDbContext(_options))
-            accepted = await Service(first).StartReplayAsync(identity, lease, replay);
-        accepted.Binding.ExecutionId.Should().NotBe(requestId);
-        accepted.Binding.Identity.Causation!.SourceExecutionId.Should().Be(requestId);
+            accepted = await Dispatcher(first).DispatchAsync(action);
+        accepted.Disposition.Should().Be(FlowExecutionActionDisposition.Pending);
+        accepted.Receipt!.ExecutionId.Should().NotBe(requestId);
+        accepted.Receipt.SourceExecutionId.Should().Be(requestId);
+        accepted.Receipt.RecoveryAttempt.Should().Be(1);
         var actual = JsonSerializer.Deserialize<ExecLibraryScriptPayload>(_commands.Payload!)!;
         actual.ScriptContent.Should().Be(pin.Script.Content).And.NotContain("changed-native-source");
         actual.Parameters.Should().BeNull();
         actual.Preferred.Should().Be(ShellExecutor.Bash);
         actual.TimeoutSeconds.Should().Be(37);
         actual.WorkingDirectory.Should().Be("/tmp/synthetic-original");
-        actual.OutputPolicy!.Binding.Should().Be(identity.ActionKey.ToString("N"));
+        actual.OutputPolicy!.Binding.Should().Be(original.Identity.ActionKey.ToString("N"));
         await using var restarted = new OrchestratorDbContext(_options);
-        var same = await Service(restarted).StartReplayAsync(identity, lease, replay);
-        same.Binding.ExecutionId.Should().Be(accepted.Binding.ExecutionId);
+        var same = await Dispatcher(restarted).DispatchAsync(action);
+        same.Receipt!.ExecutionId.Should().Be(accepted.Receipt.ExecutionId);
+        var binding = await new ExecutionAdmissionStore(restarted, _keys, TimeProvider.System)
+            .FindByExecutionAsync(ExecutionAdmissionKind.LibraryScript, accepted.Receipt.ExecutionId, CancellationToken.None);
+        binding!.Identity.Causation!.SourceExecutionId.Should().Be(requestId);
+        binding.Identity.Causation.RootExecutionId.Should().Be(source.RootExecutionId);
         _commands.Dispatches.Should().Be(1);
     }
 
