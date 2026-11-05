@@ -166,6 +166,29 @@ public sealed class FlowTypedEditorTests : AsyncBunitContext
         _api.ValidateCalls.Should().Be(1); _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
     }
 
+
+    [Fact]
+    public async Task Typed_Condition_Card_Summarizes_The_Configured_Source_Comparison_And_Value_Without_Secret_References()
+    {
+        var source = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.ExecutionEvent, "Synthetic source", new(0, 0));
+        var producer = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.RunLibraryScript, "Synthetic diagnostic", new(300, 0));
+        var condition = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.Condition, "Outcome condition", new(600, 0))
+        { Predicate = new(new(FlowInputSource.Event, FlowDataType.Text, "event.outcome"), FlowComparison.Equal, JsonSerializer.SerializeToElement("failed")) };
+        await using var adapter = new FlowCanvasAdapter();
+        await adapter.RestoreAsync(new(2, [source, producer, condition], [], new()));
+        var cut = Render<FlowCanvas>(p => p.Add(component => component.Adapter, adapter));
+        var summary = () => cut.Find($"[data-node-id='{condition.Id}'] .flow-node-summary").TextContent;
+        await cut.WaitForAssertionAsync(() => summary().Should().Be("event.outcome equals \"failed\""));
+        await cut.InvokeAsync(() => adapter.Update(condition with
+        { Predicate = condition.Predicate! with { Input = new(FlowInputSource.NodeOutput, FlowDataType.Text, "summary", producer.Id) } }));
+        await cut.WaitForAssertionAsync(() => summary().Should().Be("Synthetic diagnostic.summary equals \"failed\""));
+        await cut.InvokeAsync(() => adapter.Update(condition with
+        { Predicate = condition.Predicate! with { Input = new(FlowInputSource.SecretReference, FlowDataType.SecretReference, "PRIVATE_VARIABLE_NAME") } }));
+        await cut.WaitForAssertionAsync(() => summary().Should().Be("Condition input unavailable"));
+        summary().Should().NotContain("PRIVATE_VARIABLE_NAME");
+        _api.SaveCalls.Should().Be(0); _api.DryRunCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
+    }
+
     private IRenderedComponent<FlowEditor> Editor(FlowDefinitionDto definition, bool supportsTwo) => Render<FlowEditor>(p => p
         .Add(component => component.Definition, definition).Add(component => component.TenantName, "Synthetic tenant")
         .Add(component => component.CanEdit, true).Add(component => component.CanPublish, true)
