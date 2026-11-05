@@ -9,9 +9,9 @@ public static class FlowServiceRegistration
 {
     public static IServiceCollection AddNetRatelFlows(this IServiceCollection services)
     {
-        services.AddHostedService<ExecutionLifecycleSubscriptionWorker>();
         services.TryAddSingleton(TimeProvider.System); services.TryAddSingleton<FlowPersistenceService>();
         services.TryAddSingleton<IFlowDefinitionService>(provider => provider.GetRequiredService<FlowPersistenceService>());
+        services.TryAddSingleton<IFlowTemplateService>(provider => provider.GetRequiredService<FlowPersistenceService>());
         services.TryAddSingleton<IFlowEventIngress>(provider => provider.GetRequiredService<FlowPersistenceService>());
         services.TryAddSingleton<IFlowExecutionStore>(provider => provider.GetRequiredService<FlowPersistenceService>());
         services.TryAddSingleton<IFlowRuntimeAdapter, VeloxFlowRuntimeAdapter>(); services.TryAddSingleton<FlowRunProcessor>();
@@ -19,6 +19,7 @@ public static class FlowServiceRegistration
         services.TryAddScoped<IFlowTransactionAdmission, MonitoringFlowTransactionAdmission>();
         services.TryAddScoped<IFlowDispatchGuard, UnavailableMonitoringDispatchGuard>();
         services.TryAddScoped<IFlowConnectorCatalog, UnavailableFlowConnector>(); services.TryAddScoped<IFlowIncidentActionDispatcher, UnavailableFlowConnector>();
+        services.AddHostedService<ExecutionLifecycleSubscriptionWorker>();
         return services;
     }
     private sealed class UnavailableMonitoringDispatchGuard : IFlowDispatchGuard

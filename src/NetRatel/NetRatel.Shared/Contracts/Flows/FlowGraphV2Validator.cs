@@ -70,7 +70,7 @@ public static class FlowGraphV2Validator
                 Error("node-properties", node.Id);
 
             if (node.Kind == FlowNodeKind.ExecutionEvent &&
-                (node.ExecutionTrigger is { } trigger ? !ValidTrigger(trigger) : complete))
+                (node.ExecutionTrigger is { } trigger ? !ValidTrigger(trigger, complete) : complete))
                 Error("execution-trigger", node.Id);
             if (node.Kind == FlowNodeKind.Condition)
             {
@@ -250,7 +250,7 @@ public static class FlowGraphV2Validator
         return true;
     }
 
-    private static bool ValidTrigger(FlowExecutionTriggerSettingsDto trigger)
+    private static bool ValidTrigger(FlowExecutionTriggerSettingsDto trigger, bool complete)
     {
         if (trigger.Sources is not { Count: > 0 and <= 3 } || !trigger.Sources.All(Enum.IsDefined) ||
             trigger.Sources.Distinct().Count() != trigger.Sources.Count ||
@@ -265,7 +265,7 @@ public static class FlowGraphV2Validator
             references.Where(reference => reference is not null).Select(reference => (reference.SourceKind, reference.Id)).Distinct().Count() != references.Count)
             return false;
         if (trigger.Scope == FlowExecutionScope.AllInTenant ? ids.Count != 0 || references.Count != 0 :
-            ids.Count == 0 && references.Count == 0 || ids.Count > 0 && (references.Count > 0 || trigger.Sources.Count != 1))
+            complete && ids.Count == 0 && references.Count == 0 || ids.Count > 0 && (references.Count > 0 || trigger.Sources.Count != 1))
             return false;
         return (trigger.AgentIds is null || trigger.AgentIds.Count <= FlowGraphV2Limits.MaximumSelectedDefinitions &&
                 trigger.AgentIds.All(id => id != Guid.Empty) && trigger.AgentIds.Distinct().Count() == trigger.AgentIds.Count) &&

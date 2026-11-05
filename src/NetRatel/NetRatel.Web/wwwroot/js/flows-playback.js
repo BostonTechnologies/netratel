@@ -93,7 +93,8 @@ export function attach(playerId, contextKey) {
     };
     const exit = () => {
         playing = false; cancelTimer(); clearVisuals(); root.hidden = true;
-        scope?.querySelector('[data-testid="flow-dry-run-toggle"]')?.focus({ preventScroll: true });
+        const focusTarget = scope.querySelector('[data-testid="flow-dry-run-toggle"]') ?? scope.querySelector('[data-testid="flow-close"]');
+        focusTarget?.focus({ preventScroll: true });
     };
     const click = event => {
         const target = event.target instanceof Element ? event.target : null;
