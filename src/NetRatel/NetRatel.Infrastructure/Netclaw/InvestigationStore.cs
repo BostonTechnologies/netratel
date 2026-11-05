@@ -61,7 +61,7 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
             SourceActionKey = sourceActionKey, FlowRunId = flowRunId, LastActivityUtc = clock.GetUtcNow(),
             PromptSnapshotsJson = JsonSerializer.Serialize(snapshots), SelectedPromptReferencesJson = referencesJson };
         await ComposeAsync(row, Guid.NewGuid(), "", new string('s', 256), ct);
-        db.Add(row); Append(db, row, "created", sourceActionKey is null ? "Investigation opened." : "Investigation opened by a published monitoring flow.", actor);
+        db.Add(row); Append(db, row, "created", sourceActionKey is null ? "Investigation opened." : "Investigation opened by a published flow.", actor);
         await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
         return row;
     }

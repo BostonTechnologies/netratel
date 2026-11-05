@@ -59,17 +59,19 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
         if (await ResolveFlowPromptsAsync(tenantId, request.Graph, false, ct) is null) return new(FlowWriteDisposition.Invalid, Code: "ai-prompt-unavailable");
         var draft = request.Graph with { Nodes = request.Graph.Nodes.Select(node => node.AiSettings is { } settings
             ? node with { AiSettings = settings with { PinnedPrompts = null } } : node).ToArray() };
-        return await MutateAsync(tenantId, flowId, request.ExpectedRevision, actorId, "draft-saved", row => { row.Name = request.Name.Trim(); row.DraftJson = Serialize(draft); }, ct);
+        return await MutateAsync(tenantId, flowId, request.ExpectedRevision, actorId, "draft-saved", row => { row.Name = request.Name.Trim(); row.DraftJson = Serialize(draft); }, ct,
+            row => Parse<FlowGraphDto>(row.DraftJson).SchemaVersion > request.Graph.SchemaVersion ? "graph-schema-downgrade" : null);
     }
     public Task<FlowDefinitionWriteResult> SetEnabledAsync(int tenantId, Guid flowId, FlowEnabledRequest request, string actorId, CancellationToken ct = default) =>
         MutateAsync(tenantId, flowId, request.ExpectedRevision, actorId, request.Enabled ? "enabled" : "disabled", row => row.Enabled = request.Enabled, ct);
 
-    private Task<FlowDefinitionWriteResult> MutateAsync(int tenantId, Guid flowId, long expected, string actorId, string operation, Action<FlowDefinitionRecord> change, CancellationToken ct) => WithDb(async (db, _) =>
+    private Task<FlowDefinitionWriteResult> MutateAsync(int tenantId, Guid flowId, long expected, string actorId, string operation, Action<FlowDefinitionRecord> change, CancellationToken ct, Func<FlowDefinitionRecord, string?>? validate = null) => WithDb(async (db, _) =>
     {
         if (expected < 1 || !ValidActor(actorId)) return new FlowDefinitionWriteResult(FlowWriteDisposition.Invalid);
         await using var transaction = await BeginAsync(db, ct).ConfigureAwait(false); await TenantLockAsync(db, tenantId, ct).ConfigureAwait(false);
         var row = await db.FlowDefinitions.SingleOrDefaultAsync(row => row.TenantId == tenantId && row.Id == flowId, ct).ConfigureAwait(false);
         if (row is null) return new(FlowWriteDisposition.NotFound); if (row.Revision != expected) return new(FlowWriteDisposition.Conflict);
+        if (validate?.Invoke(row) is { } rejected) return new(FlowWriteDisposition.Invalid, Code: rejected);
         change(row); row.Revision = checked(row.Revision + 1); row.UpdatedAtUtc = clock.GetUtcNow(); Audit(db, row, actorId, operation);
         try { await db.SaveChangesAsync(ct).ConfigureAwait(false); } catch (DbUpdateConcurrencyException) { return new(FlowWriteDisposition.Conflict); }
         if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false); return new(FlowWriteDisposition.Stored, Definition(row));

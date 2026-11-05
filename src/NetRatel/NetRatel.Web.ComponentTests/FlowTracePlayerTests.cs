@@ -1,3 +1,6 @@
+using System.Collections.Concurrent;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.JSInterop;
 using System.Text.Json;
 using AwesomeAssertions;
 using Bunit;
@@ -71,6 +74,63 @@ public sealed class FlowTracePlayerTests : AsyncBunitContext
             .Add(x => x.ExpectedGraphSchemaVersion, 2));
         cut.Find("[data-testid=flow-trace-unsupported]").TextContent.Should().Contain("trace format is unsupported");
         cut.FindAll("[data-trace-panel]").Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_late_module_import_is_disposed_without_attaching_to_a_new_context()
+    {
+        var runtime = new DeferredImportRuntime();
+        Services.AddSingleton<IJSRuntime>(runtime);
+        var first = new FlowTraceDto(1, "same-graph", FlowTraceProvenance.Recorded,
+            [new(0, Guid.NewGuid(), "Old recorded node", FlowTraceStepStatus.Completed, "event",
+                FlowTraceProvenance.Recorded, new(FlowTraceDataState.Missing), new(FlowTraceDataState.Missing))]);
+        var latest = first with { Steps = [first.Steps[0] with { NodeName = "Current recorded node" }] };
+        var cut = Render<FlowTracePlayer>(p => p.Add(x => x.Trace, first).Add(x => x.ContextKey, "old-run"));
+        await cut.WaitForAssertionAsync(() => runtime.Imports.Count.Should().Be(1));
+        cut.Render(p => p.Add(x => x.Trace, latest).Add(x => x.ContextKey, "current-run"));
+        await cut.WaitForAssertionAsync(() => runtime.Imports.Count.Should().Be(2));
+        var pending = runtime.Imports.ToArray();
+        var currentModule = new TrackedJavaScriptReference();
+        pending[1].SetResult(currentModule);
+        await cut.WaitForAssertionAsync(() => currentModule.AttachCalls.Should().Be(1));
+
+        var staleModule = new TrackedJavaScriptReference();
+        pending[0].SetResult(staleModule);
+        await cut.WaitForAssertionAsync(() => staleModule.DisposeCalls.Should().Be(1));
+        staleModule.AttachCalls.Should().Be(0);
+        currentModule.DisposeCalls.Should().Be(0);
+        cut.Markup.Should().Contain("Current recorded node").And.NotContain("Old recorded node");
+    }
+
+    private sealed class DeferredImportRuntime : IJSRuntime
+    {
+        public ConcurrentQueue<TaskCompletionSource<IJSObjectReference>> Imports { get; } = new();
+        public ValueTask<TValue> InvokeAsync<TValue>(string identifier, object?[]? args) =>
+            InvokeAsync<TValue>(identifier, CancellationToken.None, args);
+        public ValueTask<TValue> InvokeAsync<TValue>(string identifier, CancellationToken cancellationToken, object?[]? args)
+        {
+            if (identifier != "import") throw new InvalidOperationException("Only a module import is expected.");
+            var pending = new TaskCompletionSource<IJSObjectReference>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Imports.Enqueue(pending);
+            return Resolve<TValue>(pending.Task);
+        }
+        private static async ValueTask<TValue> Resolve<TValue>(Task<IJSObjectReference> pending) =>
+            (TValue)(object)await pending;
+    }
+
+    private sealed class TrackedJavaScriptReference : IJSObjectReference
+    {
+        public int AttachCalls { get; private set; }
+        public int DisposeCalls { get; private set; }
+        public ValueTask<TValue> InvokeAsync<TValue>(string identifier, object?[]? args) =>
+            InvokeAsync<TValue>(identifier, CancellationToken.None, args);
+        public ValueTask<TValue> InvokeAsync<TValue>(string identifier, CancellationToken cancellationToken, object?[]? args)
+        {
+            if (identifier != "attach") return ValueTask.FromResult(default(TValue)!);
+            AttachCalls++;
+            return ValueTask.FromResult((TValue)(object)new TrackedJavaScriptReference());
+        }
+        public ValueTask DisposeAsync() { DisposeCalls++; return ValueTask.CompletedTask; }
     }
 
 }
