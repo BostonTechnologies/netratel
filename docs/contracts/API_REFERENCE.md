@@ -160,6 +160,14 @@ simulated timing remains null. Native output uses the existing authorized redact
 with explicit missing, empty, withheld and truncated labels and exact string execution references. Preview
 performs zero script/job admissions, AI turns, notifications and incident writes.
 
+Actual node traces may include null-omitted `executionReference` metadata outside their bounded input/output
+snapshots. It contains Job or Script `sourceKind`, exact string `executionId` and `definitionId` (omitted for
+legacy Script identities without a known library definition). Job definition/run IDs are canonical positive
+Int64 decimal strings. The trusted native trigger or accepted canonical receipt supplies the reference;
+truncating a snapshot does not remove it. It grants no read authority: the separate native execution viewer
+checks current JobManagement/ScriptExecute permissions and bounds its log/output display. Simulated
+traces do not create native references; omitted historical references remain unavailable.
+
 There is no browser/API execute route. Durable native transitions commit immutable source facts and
 selected subscription intents; the trusted backend ingress consumes their exact IDs and rechecks
 current source authority. Combined subscriptions aggregate only the configured version/trigger,
