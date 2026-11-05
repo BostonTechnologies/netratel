@@ -147,6 +147,7 @@ public static class FlowNodeCheckpointRules
                     !FlowGraphValidator.IsBoundedText(step.NodeName, FlowLimits.MaximumNameLength) ||
                     lease.Version.Graph.Nodes.Single(node => node.Id == step.NodeId).Name != step.NodeName ||
                     !FlowGraphValidator.IsBoundedText(step.Outcome, 128) || step.DurationMilliseconds < 0 ||
+                    step.DurationMilliseconds > FlowLimits.MaximumRetryAge.Ticks / TimeSpan.TicksPerMillisecond ||
                     !SnapshotValid(step.Input) || !SnapshotValid(step.Output)) ||
                 trace.Steps.Sum(step => SnapshotBytes(step.Input) + SnapshotBytes(step.Output)) > FlowTraceLimits.MaximumSnapshotTotalBytes))
                 return false;

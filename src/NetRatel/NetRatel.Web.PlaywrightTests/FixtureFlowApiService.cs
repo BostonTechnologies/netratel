@@ -1,4 +1,5 @@
 using System.Net;
+using System.Collections.Concurrent;
 using System.Text.Json;
 using NetRatel.Application.Flows;
 using NetRatel.Shared.Contracts.Flows;
@@ -15,6 +16,10 @@ internal sealed class FixtureFlowApiService : IFlowApiService
     public Guid? SeededRunId { get; private set; }
     public int VersionLookups, RunLookups, HistoryReads;
     public int SaveCalls, ValidateCalls, DryRunCalls, PublishCalls;
+    public int CapabilityReads, ExecutionDefinitionReads;
+    private readonly Dictionary<(FlowExecutionSourceKind Source, string Id), FlowExecutionActionSettingsDto> _executionDefinitions = [];
+    private readonly ConcurrentQueue<(FlowExecutionSourceKind Source, string Search)> _executionSearches = new();
+    public IReadOnlyList<(FlowExecutionSourceKind Source, string Search)> ExecutionSearches => _executionSearches.ToArray();
     public FlowGraphDto? SavedGraph { get; private set; }
     public TaskCompletionSource<FlowDefinitionDto>? SavePending { get; set; }
     public bool ConflictNextSave { get; set; }
@@ -25,7 +30,65 @@ internal sealed class FixtureFlowApiService : IFlowApiService
         var flow = new FlowDefinitionDto(Guid.NewGuid(), tenantId, "Incident from alert", 1, false, FlowGraphTemplates.IncidentFromAlert(), null, 0, DateTimeOffset.UtcNow);
         _definitions[flow.Id] = flow;
     }
-    public Task<FlowSchemaCapabilitiesDto> GetSchemaCapabilitiesAsync(int tenantId, CancellationToken token = default) => Task.FromResult(FlowSchemaCapabilities.Current);
+    public Task<FlowSchemaCapabilitiesDto> GetSchemaCapabilitiesAsync(int tenantId, CancellationToken token = default)
+    { CapabilityReads++; return Task.FromResult(FlowSchemaCapabilities.Current); }
+    public (FlowExecutionActionSettingsDto SourceJob, FlowExecutionActionSettingsDto Job, FlowExecutionActionSettingsDto Script) SeedExecutionAuthoringCatalogue()
+    {
+        var source = new FlowExecutionActionSettingsDto(FlowExecutionSourceKind.Job,
+            new("42", "Synthetic source job", "3", new string('c', 64)))
+        { Target = new(Guid.NewGuid(), "Source synthetic endpoint", "source.example.invalid"), Parameters = [] };
+        var job = new FlowExecutionActionSettingsDto(FlowExecutionSourceKind.Job,
+            new("9007199254740993", "Synthetic maintenance job", "7", new string('a', 64)))
+        { Target = new(Guid.NewGuid(), "Bound synthetic repair endpoint", "repair.example.invalid"), Parameters = [new("message", FlowDataType.Text, true)] };
+        var script = new FlowExecutionActionSettingsDto(FlowExecutionSourceKind.Script,
+            new("9007199254740995", "Synthetic diagnostic script", "11", new string('b', 64)))
+        { Parameters = [new("message", FlowDataType.Text, true)] };
+        foreach (var definition in new[] { source, job, script })
+            _executionDefinitions[(definition.SourceKind, definition.Definition.Id)] = definition;
+        return (source, job, script);
+    }
+    public Task<FlowExecutionDefinitionsPageDto> SearchExecutionDefinitionsAsync(int tenantId, FlowExecutionSourceKind sourceKind,
+        string? search = null, string? afterId = null, int limit = 50, CancellationToken token = default)
+    {
+        RequireCatalogueTenant(tenantId); token.ThrowIfCancellationRequested();
+        _executionSearches.Enqueue((sourceKind, search ?? ""));
+        var items = _executionDefinitions.Values.Where(action => action.SourceKind == sourceKind &&
+            (string.IsNullOrWhiteSpace(search) || action.Definition.Name!.Contains(search, StringComparison.OrdinalIgnoreCase)) &&
+            (afterId is null || StringComparer.Ordinal.Compare(action.Definition.Id, afterId) > 0))
+            .OrderBy(action => action.Definition.Id, StringComparer.Ordinal).Take(limit)
+            .Select(action => new FlowExecutionDefinitionOptionDto(action.SourceKind, action.Definition, action.Target)).ToArray();
+        return Task.FromResult(new FlowExecutionDefinitionsPageDto(items));
+    }
+    public Task<FlowExecutionActionSettingsDto> GetExecutionDefinitionAsync(int tenantId, FlowExecutionSourceKind sourceKind,
+        string definitionId, CancellationToken token = default)
+    {
+        RequireCatalogueTenant(tenantId); token.ThrowIfCancellationRequested(); ExecutionDefinitionReads++;
+        return Task.FromResult(_executionDefinitions.GetValueOrDefault((sourceKind, definitionId)) ??
+            throw new FlowApiException(HttpStatusCode.NotFound, "execution-definition-unavailable"));
+    }
+    public Task<FlowExecutionTargetsPageDto> SearchExecutionTargetsAsync(int tenantId, FlowExecutionSourceKind sourceKind,
+        string? search = null, string? afterId = null, int limit = 50, CancellationToken token = default)
+    {
+        RequireCatalogueTenant(tenantId); token.ThrowIfCancellationRequested();
+        var targets = _executionDefinitions.Values.Where(action => action.SourceKind == sourceKind).Select(action => action.Target)
+            .OfType<FlowExecutionTargetDto>().Where(target => string.IsNullOrWhiteSpace(search) ||
+                (target.DisplayName ?? target.HostName ?? "").Contains(search, StringComparison.OrdinalIgnoreCase)).Take(limit).ToArray();
+        return Task.FromResult(new FlowExecutionTargetsPageDto(targets));
+    }
+    public Task<IReadOnlyList<FlowExecutionTargetSelectionDto>> GetSelectedExecutionTargetsAsync(int tenantId,
+        FlowExecutionSourceKind sourceKind, IReadOnlyList<Guid> ids, CancellationToken token = default)
+    {
+        RequireCatalogueTenant(tenantId); token.ThrowIfCancellationRequested();
+        return Task.FromResult<IReadOnlyList<FlowExecutionTargetSelectionDto>>(ids.Select(id =>
+        {
+            var target = _executionDefinitions.Values.Where(action => action.SourceKind == sourceKind)
+                .Select(action => action.Target).FirstOrDefault(target => target?.AgentId == id);
+            return new FlowExecutionTargetSelectionDto(target ?? new(id), target is not null);
+        }).ToArray());
+    }
+    private void RequireCatalogueTenant(int tenantId)
+    { if (tenantId != _tenantId) throw new FlowApiException(HttpStatusCode.Forbidden); }
+
     public Task<IReadOnlyList<FlowTemplateDescriptorDto>> GetTemplatesAsync(int tenantId, CancellationToken token = default) =>
         Task.FromResult(FlowOverhaulTemplates.Descriptors);
     public Task<FlowDefinitionDto> CreateFromTemplateAsync(int tenantId, FlowCreateFromTemplateRequest request, CancellationToken token = default)

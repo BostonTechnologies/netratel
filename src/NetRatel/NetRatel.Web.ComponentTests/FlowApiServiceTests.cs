@@ -124,6 +124,18 @@ public sealed class FlowApiServiceTests
         Assert.Null(headers[0]); Assert.Equal("2", headers[1]); Assert.Equal("2", headers[2]);
     }
 
+    [Fact]
+    public async Task Oversized_Definition_Name_Has_An_Actionable_Message_Without_Server_Details()
+    {
+        var factory = new Factory(_ => new(HttpStatusCode.UnprocessableEntity) { Content = JsonContent.Create(new
+        { code = "execution-definition-name-limit", detail = "protected native definition detail" }) });
+        var api = new FlowApiService(factory);
+        var error = await Assert.ThrowsAsync<FlowApiException>(() => api.GetExecutionDefinitionAsync(17, FlowExecutionSourceKind.Job, "42"));
+        Assert.Equal("This definition name exceeds the supported 512-character limit.", error.Message);
+        Assert.DoesNotContain("protected native definition", error.Message, StringComparison.Ordinal);
+        Assert.Single(factory.Requests);
+    }
+
     private sealed class Factory(Func<HttpRequestMessage, HttpResponseMessage> respond) : IHttpClientFactory
     {
         public List<(string Route, string? Body)> Requests { get; } = [];

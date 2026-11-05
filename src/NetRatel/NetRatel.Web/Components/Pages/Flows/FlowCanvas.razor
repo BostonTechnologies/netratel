@@ -42,7 +42,7 @@
                     {
                     <WorkflowSlotLayoutBehavior Node="node" IsEnabled="true">
                         <WorkflowNodeDragBehavior Node="node" IsEnabled="@(!ReadOnly)" Style="@NodeStyle(node)">
-                            <article class="flow-node @(Adapter.SchemaVersion == 2 ? "schema-two" : "") @(SelectedNodeId == metadata.Id ? "selected" : "")" data-design-width="@Adapter.DesignSize(metadata.Kind).Width" data-node-id="@metadata.Id" data-node-kind="@metadata.Kind" style="@CardStyle(node)">
+                            <article class="flow-node @(Adapter.SchemaVersion == 2 ? "schema-two" : "") @(SelectedNodeId == metadata.Id ? "selected" : "")" data-design-width="@Adapter.DesignSize(metadata.Kind).Width" data-node-id="@metadata.Id" data-node-kind="@metadata.Kind" data-world-x="@Number(node.Anchor.Horizontal * Adapter.Tree.Layout.Scale.Horizontal)" data-world-y="@Number(node.Anchor.Vertical * Adapter.Tree.Layout.Scale.Horizontal)" style="@CardStyle(node)">
                                 <header class="flow-node-header">
                                     <div role="button" tabindex="0" class="flow-node-title" @onclick="() => Selected.InvokeAsync(metadata.Id)" @onkeydown="e => SelectFromKeyboard(metadata.Id, e)" data-testid="flow-node-title">@if (Adapter.SchemaVersion == FlowGraphV2Limits.SchemaVersion) { <small class="flow-node-header-kind">@FlowNodeCatalogue.Find(metadata.Kind)?.Category · @FlowNodeCatalogue.Find(metadata.Kind)?.Name</small> }@metadata.Name</div>
                                     <div class="flow-node-actions" @onpointerdown:stopPropagation @onmousedown:stopPropagation @onclick:stopPropagation>

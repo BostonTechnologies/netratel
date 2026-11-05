@@ -46,7 +46,7 @@
     }
     else if (_source == nameof(FlowInputSource.SecretReference))
     {
-        <label>Environment variable name<input value="@_path" @onchange="SetReference" maxlength="128" autocomplete="off" data-testid="flow-binding-secret-reference" /></label>
+        <label>Environment variable name<input value="@_path" @onchange="SetReference" maxlength="@FlowExecutionInputNames.MaximumEnvironmentReferenceNameLength" autocomplete="off" data-testid="flow-binding-secret-reference" /></label>
         <p class="flow-binding-help">Uses the named variable on the selected execution target. Store its name, never the secret value. Preview and AI do not receive the value.</p>
     }
     else if (_source == nameof(FlowInputSource.Literal))
@@ -132,10 +132,9 @@
     private Task SetReference(ChangeEventArgs args)
     {
         var path = args.Value?.ToString()?.Trim() ?? ""; _path = path;
-        if (path.Length is < 1 or > 128 || !(char.IsAsciiLetter(path[0]) || path[0] == '_') ||
-            !path.All(character => char.IsAsciiLetterOrDigit(character) || character == '_'))
+        if (!FlowExecutionInputNames.IsEnvironmentReferenceName(path))
         {
-            _error = "Use a target environment variable name: a letter or underscore, followed by letters, digits or underscore (up to 128 characters). The previous reference is retained.";
+            _error = $"Use a target environment variable name: a letter or underscore, followed by letters, digits or underscore (up to {FlowExecutionInputNames.MaximumEnvironmentReferenceNameLength} characters). The previous reference is retained.";
             return Task.CompletedTask;
         }
         return Emit(new(FlowInputSource.SecretReference, FlowDataType.SecretReference, path));

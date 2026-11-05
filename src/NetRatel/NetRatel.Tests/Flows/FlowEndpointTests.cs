@@ -87,7 +87,8 @@ public sealed partial class FlowEndpointTests
         await using var scope = host.Services.CreateAsyncScope(); (await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().FlowDefinitions.CountAsync()).Should().Be(0);
     }
 
-    private static async Task<IHost> HostAsync()
+    internal static async Task<IHost> HostAsync(string? postgresConnection = null,
+        IEffectiveAccessService? accessOverride = null, IFlowExecutionAuthorityVerifier? authorityOverride = null)
     {
         var database = Guid.NewGuid().ToString("N");
         var builder = Host.CreateDefaultBuilder().ConfigureWebHost(web =>
@@ -95,17 +96,33 @@ public sealed partial class FlowEndpointTests
             web.UseTestServer(); web.ConfigureServices(services =>
             {
                 services.AddRouting(); services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, Authentication>("Test", _ => { }); services.AddAuthorization();
-                services.AddDbContext<OrchestratorDbContext>(options => options.UseInMemoryDatabase(database));
-                services.AddSingleton<IEffectiveAccessService, Access>(); services.AddSingleton<ExecutionSentinel>(); services.AddNetRatelFlows();
+                services.AddDbContext<OrchestratorDbContext>(options =>
+                {
+                    if (postgresConnection is null) options.UseInMemoryDatabase(database);
+                    else options.UseNpgsql(postgresConnection);
+                });
+                if (accessOverride is null) services.AddSingleton<IEffectiveAccessService, Access>();
+                else services.AddSingleton<IEffectiveAccessService>(accessOverride);
+                services.AddSingleton<ExecutionSentinel>(); services.AddNetRatelFlows();
+                if (authorityOverride is not null) services.AddSingleton<IFlowExecutionAuthorityVerifier>(authorityOverride);
+                if (postgresConnection is not null)
+                    services.AddSingleton<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>(
+                        new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
                 services.AddSingleton<IFlowConnectorCatalog, Catalog>();
                 services.AddSingleton<IFlowRuntimeAdapter>(provider => provider.GetRequiredService<ExecutionSentinel>());
                 services.AddSingleton<IFlowIncidentActionDispatcher>(provider => provider.GetRequiredService<ExecutionSentinel>());
             });
             web.Configure(app => { app.UseMiddleware<FlowRequestBodyLimitMiddleware>(); app.UseRouting(); app.UseAuthentication(); app.UseAuthorization(); app.UseEndpoints(endpoints => endpoints.MapFlowEndpoints()); });
         });
-        var host = await builder.StartAsync();
-        await using var scope = host.Services.CreateAsyncScope(); var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
-        db.Tenants.AddRange(new Tenant { Id = 17, Name = "Authorized" }, new Tenant { Id = 18, Name = "Protected" }); await db.SaveChangesAsync(); return host;
+        var host = builder.Build();
+        await using (var scope = host.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            if (postgresConnection is not null) await db.Database.MigrateAsync();
+            db.Tenants.AddRange(new Tenant { Id = 17, Name = "Authorized" }, new Tenant { Id = 18, Name = "Protected" });
+            await db.SaveChangesAsync();
+        }
+        await host.StartAsync(); return host;
     }
     private sealed class Authentication(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder)
         : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)

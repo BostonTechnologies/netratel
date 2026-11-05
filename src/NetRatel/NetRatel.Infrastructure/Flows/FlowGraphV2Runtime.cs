@@ -334,7 +334,7 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
         }
     }
 
-    private static FlowNodeCheckpointDto Complete(FlowRunLease lease, FlowNodeDto node, FlowNodeCheckpointDto state,
+    private FlowNodeCheckpointDto Complete(FlowRunLease lease, FlowNodeDto node, FlowNodeCheckpointDto state,
         string? port, JsonElement? output, FlowIncidentFieldsDto? fields, FlowRunStatus? terminal = null, string? code = null)
     {
         var edge = port is null ? null : lease.Version.Graph.Edges.Single(candidate => candidate.SourceNodeId == node.Id && candidate.SourcePort == port);
@@ -342,18 +342,24 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
         if (output is { } value) outputs[node.Id] = FlowJsonCanonical.Capture(value);
         var step = new FlowNodeTraceDto(state.Sequence, node.Id, node.Name, FlowTraceStepStatus.Completed, port ?? code ?? "completed",
             FlowTraceProvenance.Actual, Snapshot(JsonSerializer.SerializeToElement(state.Inputs, Json)), Snapshot(output))
-        { SelectedPort = port, EdgeId = edge?.Id, NextNodeId = edge?.TargetNodeId, Attempt = state.Attempt };
+        { SelectedPort = port, EdgeId = edge?.Id, NextNodeId = edge?.TargetNodeId, Attempt = state.Attempt, DurationMilliseconds = ElapsedMilliseconds(state) };
         return state with { Revision = state.Revision + 1, Progress = FlowNodeProgress.Completed,
             Output = output is { } recordedOutput ? FlowJsonCanonical.Capture(recordedOutput) : null, Outputs = outputs, SelectedPort = port, SelectedEdgeId = edge?.Id, NextNodeId = edge?.TargetNodeId,
             Fields = fields, WaitingActionIds = null, Trace = Append(lease, state.Trace, step), ResultStatus = terminal, ResultCode = code };
     }
-    private static FlowNodeCheckpointDto Fail(FlowRunLease lease, FlowNodeDto node, FlowNodeCheckpointDto state, string code)
+    private FlowNodeCheckpointDto Fail(FlowRunLease lease, FlowNodeDto node, FlowNodeCheckpointDto state, string code)
     {
         var step = new FlowNodeTraceDto(state.Sequence, node.Id, node.Name, FlowTraceStepStatus.Unavailable, code,
             FlowTraceProvenance.Actual, Snapshot(JsonSerializer.SerializeToElement(state.Inputs, Json)), new(FlowTraceDataState.Missing))
-        { ErrorCode = code, Attempt = state.Attempt };
+        { ErrorCode = code, Attempt = state.Attempt, DurationMilliseconds = ElapsedMilliseconds(state) };
         return state with { Revision = state.Revision + 1, Progress = FlowNodeProgress.Failed,
             ResultStatus = FlowRunStatus.Failed, ResultCode = code, Trace = Append(lease, state.Trace, step) };
+    }
+    // Logical node elapsed time includes a durable wait/restart, not only the final worker turn.
+    private long ElapsedMilliseconds(FlowNodeCheckpointDto state)
+    {
+        var elapsed = clock.GetUtcNow() - state.StartedAtUtc;
+        return Math.Clamp(elapsed.Ticks, 0, FlowLimits.MaximumRetryAge.Ticks) / TimeSpan.TicksPerMillisecond;
     }
     private static FlowTraceDto Append(FlowRunLease lease, FlowTraceDto? trace, FlowNodeTraceDto step)
     {

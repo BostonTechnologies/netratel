@@ -1,4 +1,7 @@
 using System.Globalization;
+using Microsoft.AspNetCore.DataProtection;
+using NetRatel.Application.Jobs;
+using NetRatel.Shared.Contracts.Tasks;
 using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -198,6 +201,152 @@ public sealed class FlowExecutionIngressPostgresTests(PostgreSqlPersistenceFixtu
         Assert.Equal(0, await verify.JobRuns.CountAsync()); Assert.Equal(0, await verify.FlowActions.CountAsync());
     }
 
+
+    [Fact]
+    public async Task Large_script_request_aggregate_waits_for_parent_and_has_one_representative_for_first_or_last_claim()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var ct = deadline.Token;
+        var settings = new FlowExecutionTriggerSettingsDto(
+            [FlowExecutionSourceKind.Script, FlowExecutionSourceKind.Request], [FlowExecutionOutcome.Succeeded], FlowExecutionScope.AllInTenant);
+        await using var h = await Harness.CreateAsync(postgres, settings);
+        const long parentId = 9007199254740993;
+        var nativeAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var target = Guid.NewGuid();
+        FlowExecutionEventDto[] facts;
+        FlowExecutionSubscriptionDeliveryDto[] deliveries;
+        Guid triggerId;
+        await using (var scope = h.Provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var version = await db.FlowVersions.AsNoTracking().SingleAsync(x => x.Id == h.VersionId, ct);
+            triggerId = JsonSerializer.Deserialize<FlowGraphDto>(version.GraphJson, Json)!.Nodes
+                .Single(node => node.Kind == FlowNodeKind.ExecutionEvent).Id;
+            db.Agents.Add(new() { Id = target, TenantId = 17, Name = "Synthetic group target", CreatedAtUtc = nativeAt.AddMinutes(-1) });
+            db.Jobs.Add(new() { Id = 41, TenantId = 17, AgentId = target, Name = "Synthetic correlated parent",
+                CreatedAtUtc = nativeAt.AddMinutes(-1), UpdatedAtUtc = nativeAt });
+            db.JobRuns.Add(new() { Id = parentId, JobId = 41, TenantId = 17, AgentId = target, StartedBy = "synthetic-source",
+                Status = (int)JobRunState.Running, CreatedAtUtc = nativeAt.AddMinutes(-1), StartedAtUtc = nativeAt.AddMinutes(-1) });
+            db.Set<JobRunControlRecord>().Add(new() { RunId = parentId });
+            await db.SaveChangesAsync(ct);
+
+            // Real activity transitions below create the facts/intents. Select adversarial source IDs:
+            // the smallest event has a delivery ID after more than a full bound of other same-kind events.
+            var candidates = Enumerable.Range(0, 256).Select(index =>
+            {
+                var row = new JobTaskActivityRecord { Id = index + 100, RequestId = $"synthetic/script/𝄞/{index:D3}",
+                    JobRunId = parentId, TenantId = 17, AgentId = target, TaskType = TaskKinds.ExecLibraryScript,
+                    ScriptName = "Synthetic submitted script", Status = "Completed", ExitCode = 0,
+                    CreatedAtUtc = nativeAt.AddMinutes(-1), StartedAtUtc = nativeAt.AddMinutes(-1), CompletedAtUtc = nativeAt,
+                    OutputProtectionJson = JsonSerializer.Serialize(TaskOutputPolicy.Create([], 91, 4, new string('A', 64))) };
+                var fact = ExecutionLifecycleOutbox.ScriptEvent(row, "Pending", nativeAt)!;
+                return (Row: row, Fact: fact, Delivery: ExecutionLifecycleSubscriptions.DeliveryId(h.VersionId, triggerId, fact.EventId));
+            }).ToArray();
+            var peers = FlowExecutionEventLimits.MaximumReferences + 2;
+            var adversarial = candidates.OrderBy(item => item.Fact.EventId).Select(item => new
+            {
+                First = item,
+                Others = candidates.Where(other => other.Fact.EventId.CompareTo(item.Fact.EventId) > 0 &&
+                    other.Delivery.CompareTo(item.Delivery) < 0).Take(peers).ToArray()
+            }).First(group => group.Others.Length == peers);
+            var activities = adversarial.Others.Select(item => item.Row).Prepend(adversarial.First.Row).ToArray();
+            foreach (var row in activities) { row.Status = "Pending"; row.ExitCode = null; row.CompletedAtUtc = null; }
+            db.JobTaskActivities.AddRange(activities);
+            await db.SaveChangesAsync(ct);
+            foreach (var row in activities) { row.Status = "Completed"; row.ExitCode = 0; row.CompletedAtUtc = nativeAt; }
+            await db.SaveChangesAsync(ct);
+            facts = (await db.OutboxMessages.AsNoTracking().Where(x => x.Type == FlowExecutionEventLimits.OutboxType)
+                .Select(x => x.PayloadJson).ToArrayAsync(ct))
+                .Select(json => JsonSerializer.Deserialize(json, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto)!)
+                .OrderBy(fact => fact.EventId).ToArray();
+            Assert.Equal(peers + 1, facts.Length);
+            Assert.Equal(adversarial.First.Fact.EventId, facts[0].EventId);
+            foreach (var fact in facts)
+            {
+                Assert.Equal(FlowExecutionSourceKind.Script, fact.SourceKind);
+                Assert.Equal(FlowExecutionOutcome.Succeeded, fact.Outcome);
+                Assert.Equal("Completed", fact.RawStatus);
+                Assert.Equal(parentId.ToString(CultureInfo.InvariantCulture), fact.ParentExecutionId);
+                Assert.Contains(fact.ExecutionId, activities.Select(row => row.RequestId));
+            }
+            deliveries = (await db.OutboxMessages.AsNoTracking().Where(x => x.Type == FlowExecutionSubscriptionLimits.OutboxType)
+                .Select(x => x.PayloadJson).ToArrayAsync(ct)).Select(ParseDelivery).ToArray();
+        }
+        FlowExecutionEventAdmissionRequest Claim(FlowExecutionEventDto fact)
+        {
+            var delivery = Assert.Single(deliveries, item => item.SourceEventId == fact.EventId);
+            return new(17, h.VersionId, fact.EventId, [fact.EventId], delivery.DeliveryId);
+        }
+        var ingress = h.Provider.GetRequiredService<IFlowExecutionEventIngress>();
+        var pending = await ingress.EnqueueExecutionAsync(Claim(facts[^1]), ct);
+        Assert.Equal(FlowIngressDisposition.CapacityExceeded, pending.Disposition);
+        Assert.Equal("execution-parent-result-pending", pending.Code);
+        await using (var scope = h.Provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            Assert.Equal(0, await db.FlowRuns.CountAsync(ct));
+            var parent = await db.JobRuns.SingleAsync(x => x.Id == parentId, ct);
+            parent.Status = (int)JobRunState.Succeeded; parent.CompletedAtUtc = nativeAt;
+            await db.SaveChangesAsync(ct);
+            var details = (await new JobRunService(db, scope.ServiceProvider.GetRequiredService<IDataProtectionProvider>())
+                .GetDetailsAsync((ulong)parentId, ct))!;
+            var control = await db.Set<JobRunControlRecord>().SingleAsync(x => x.RunId == parentId, ct);
+            control.TerminalReadyAtUtc = DateTimeOffset.UtcNow;
+            control.TerminalResultHash = JobRunProjectionHash.Compute(details);
+            await ExecutionLifecycleOutbox.RecordJobAsync(db, details, control.TerminalResultHash, control.TerminalReadyAtUtc.Value, ct);
+            await db.SaveChangesAsync(ct);
+            var aggregates = new List<FlowExecutionEventAggregateDto>();
+            foreach (var fact in new[] { facts[0], facts[^1] })
+            {
+                var delivery = Assert.Single(deliveries, item => item.SourceEventId == fact.EventId);
+                var selected = await ExecutionLifecycleSubscriptionWorker.SelectContributorsAsync(db, delivery, DateTimeOffset.UtcNow, ct);
+                Assert.True(selected.Truncated);
+                var ids = selected.EventIds;
+                Assert.Equal(FlowExecutionEventLimits.MaximumReferences, ids.Count);
+                Assert.Contains(fact.EventId, ids);
+                Assert.Contains(facts[0].EventId, ids);
+                aggregates.Add(FlowExecutionEventMatching.Aggregate(h.VersionId, triggerId, settings,
+                    ids.Select(id => facts.Single(item => item.EventId == id)).ToArray()));
+            }
+            Assert.Equal(aggregates[0].AdmissionKey, aggregates[1].AdmissionKey);
+            Assert.Equal(facts[0].EventId, aggregates[0].Representative.EventId);
+            Assert.Equal(aggregates[0].Representative.EventId, aggregates[1].Representative.EventId);
+        }
+        // The trusted ingress must gather the complete canonical group even when a caller supplies one ID.
+        var accepted = await ingress.EnqueueExecutionAsync(Claim(facts[^1]), ct);
+        Assert.Equal(FlowIngressDisposition.Enqueued, accepted.Disposition);
+        string frozen;
+        await using (var scope = h.Provider.CreateAsyncScope())
+            frozen = (await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().FlowRuns.AsNoTracking().SingleAsync(ct)).EventJson;
+        using (var acceptedEnvelope = JsonDocument.Parse(frozen))
+        {
+            Assert.True(acceptedEnvelope.RootElement.GetProperty("sourceEventIdsTruncated").GetBoolean());
+            Assert.Equal(FlowExecutionEventLimits.MaximumReferences, acceptedEnvelope.RootElement.GetProperty("sourceEventIds").GetArrayLength());
+        }
+        foreach (var fact in facts)
+        {
+            var duplicate = await ingress.EnqueueExecutionAsync(Claim(fact), ct);
+            Assert.Equal(FlowIngressDisposition.Duplicate, duplicate.Disposition);
+            Assert.Equal(accepted.RunId, duplicate.RunId);
+        }
+        var lease = (await h.Provider.GetRequiredService<IFlowExecutionStore>().ClaimAsync(Guid.NewGuid(), ct))!;
+        Assert.Equal(facts[0].EventId, lease.Event.ExecutionEvent!.EventId);
+        Assert.Equal(facts[0].ExecutionId, lease.Event.ExecutionEvent.ExecutionId);
+        Assert.True((await h.AdmitAsync(lease)).Allowed);
+        h.Grants.ScriptRead = false;
+        var revoked = await h.AdmitAsync(lease);
+        Assert.False(revoked.Allowed); Assert.Equal("execution-source-read-denied", revoked.Code);
+        Assert.True(h.Grants.ScriptReadCalls > 0);
+        Assert.Equal(AccessPolicy.PrincipalId, h.Grants.ScriptPrincipalObserved);
+        Assert.Equal(0, h.Grants.MonitoringReadCalls);
+        await using var final = h.Provider.CreateAsyncScope();
+        var verify = final.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        Assert.Equal(frozen, (await verify.FlowRuns.AsNoTracking().SingleAsync(ct)).EventJson);
+        var consumer = "flow-source:" + accepted.RunId!.Value.ToString("N", CultureInfo.InvariantCulture);
+        Assert.Equal(facts.Length, await verify.OutboxProcessedEvents.CountAsync(x => x.ConsumerName == consumer, ct));
+        Assert.Equal(0, await verify.FlowActions.CountAsync(ct));
+    }
+
     private static FlowExecutionSubscriptionDeliveryDto ParseDelivery(string json) =>
         JsonSerializer.Deserialize(json, FlowExecutionSubscriptionJsonContext.Default.FlowExecutionSubscriptionDeliveryDto)!;
     private sealed record Selected(int RequestId, FlowExecutionEventDto Fact, string SourcePayload,
@@ -207,6 +356,9 @@ public sealed class FlowExecutionIngressPostgresTests(PostgreSqlPersistenceFixtu
     {
         public const string PrincipalId = "synthetic-source-publisher";
         public bool NativeRead { get; set; } = true;
+        public bool ScriptRead { get; set; } = true;
+        public int ScriptReadCalls { get; private set; }
+        public string? ScriptPrincipalObserved { get; private set; }
         public int MonitoringReadCalls { get; private set; }
         public string? NativePrincipalObserved { get; private set; }
         public Task<bool> AuthorizeAsync(int tenantId, FlowExecutionAuthorityDto authority, CancellationToken cancellationToken = default) =>
@@ -217,9 +369,11 @@ public sealed class FlowExecutionIngressPostgresTests(PostgreSqlPersistenceFixtu
             if (permission == NetRatelPermissions.MonitoringRead) MonitoringReadCalls++;
             var configuredPrincipal = principal.FindFirstValue("netratel_principal_id");
             if (permission == NetRatelPermissions.JobManagement) NativePrincipalObserved = configuredPrincipal;
+            if (permission == NetRatelPermissions.ScriptExecute) { ScriptReadCalls++; ScriptPrincipalObserved = configuredPrincipal; }
             return Task.FromResult(tenantId == 17 && configuredPrincipal == PrincipalId &&
                 permission != NetRatelPermissions.MonitoringRead &&
-                (permission != NetRatelPermissions.JobManagement || NativeRead));
+                (permission != NetRatelPermissions.JobManagement || NativeRead) &&
+                (permission != NetRatelPermissions.ScriptExecute || ScriptRead));
         }
         public Task<int[]?> GetAuthorizedTenantIdsAsync(ClaimsPrincipal principal, string permission,
             CancellationToken cancellationToken = default) => Task.FromResult<int[]?>([17]);
@@ -235,7 +389,7 @@ public sealed class FlowExecutionIngressPostgresTests(PostgreSqlPersistenceFixtu
         public AccessPolicy Grants { get; } = new();
         public ServiceProvider Provider { get; }
         public Guid FlowId { get; private set; }
-        private Guid VersionId { get; set; }
+        public Guid VersionId { get; private set; }
 
         public ServiceProvider NewProvider()
         {
@@ -247,7 +401,7 @@ public sealed class FlowExecutionIngressPostgresTests(PostgreSqlPersistenceFixtu
             services.AddNetRatelFlows(); services.AddScoped<IRequestService, RequestService>();
             return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         }
-        public static async Task<Harness> CreateAsync(PostgreSqlPersistenceFixture fixture)
+        public static async Task<Harness> CreateAsync(PostgreSqlPersistenceFixture fixture, FlowExecutionTriggerSettingsDto? settings = null)
         {
             var harness = new Harness(await fixture.CreateDatabaseAsync());
             await using (var scope = harness.Provider.CreateAsyncScope())
@@ -258,13 +412,13 @@ public sealed class FlowExecutionIngressPostgresTests(PostgreSqlPersistenceFixtu
                     new Tenant { Id = 18, Name = "Separate synthetic tenant" });
                 await db.SaveChangesAsync();
             }
-            harness.VersionId = await harness.AddSubscriptionAsync();
+            harness.VersionId = await harness.AddSubscriptionAsync(settings);
             return harness;
         }
-        public async Task<Guid> AddSubscriptionAsync()
+        public async Task<Guid> AddSubscriptionAsync(FlowExecutionTriggerSettingsDto? settings = null)
         {
             var trigger = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.ExecutionEvent, "Synthetic request failure", new(0, 0))
-            { ExecutionTrigger = new([FlowExecutionSourceKind.Request], [FlowExecutionOutcome.Failed], FlowExecutionScope.AllInTenant) };
+            { ExecutionTrigger = settings ?? new([FlowExecutionSourceKind.Request], [FlowExecutionOutcome.Failed], FlowExecutionScope.AllInTenant) };
             var finish = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.Finish, "Record original failure", new(360, 0));
             var graph = new FlowGraphDto(2, [trigger, finish],
                 [new(trigger.Id, FlowNodeCatalogue.Event, finish.Id, FlowNodeCatalogue.Input) { Id = Guid.NewGuid() }], new());

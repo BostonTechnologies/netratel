@@ -22,7 +22,7 @@ public static partial class FlowEndpoints
         group.MapGet("/templates", TemplatesAsync); group.MapPost("/from-template", CreateFromTemplateAsync);
         group.MapGet("/versions/{versionId:guid}", VersionByIdAsync); group.MapGet("/runs/{runId:guid}", RunByIdAsync);
         group.MapPost("/validate", ValidateAsync); group.MapPost("/dry-run", DryRunAsync);
-        group.MapPost("/dry-run-execution", DryRunExecutionAsync);
+        group.MapPost("/dry-run-execution", ExecutionDryRunAsync);
         group.MapGet("/{flowId:guid}", GetAsync);
         group.MapPut("/{flowId:guid}/draft", SaveAsync); group.MapPost("/{flowId:guid}/clone", CloneAsync);
         group.MapPut("/{flowId:guid}/enabled", EnabledAsync); group.MapPost("/{flowId:guid}/publish", PublishAsync);
@@ -86,7 +86,8 @@ public static partial class FlowEndpoints
             var permission = execution.SourceKind == FlowExecutionSourceKind.Script
                 ? NetRatelPermissions.ScriptExecute : NetRatelPermissions.JobManagement;
             if (execution.TenantId != tenantId || !await access.AuthorizeAsync(http.User, permission, tenantId, ct).ConfigureAwait(false))
-                return run with { Input = null, ExecutionEvent = null, Trace = null, DataUnavailableReason = "source-read-denied",
+                return run with { Input = null, ExecutionEvent = null, SourceEventIds = null, SourceEventIdsTruncated = false,
+                    Trace = null, DataUnavailableReason = "source-read-denied",
                     Actions = run.Actions.Select(action => action with { AiResult = null }).ToArray() };
         }
         var traceContainsAi = false;
