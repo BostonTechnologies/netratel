@@ -78,7 +78,6 @@ public static class FlowExecutionEventMatching
                 .Distinct(StringComparer.Ordinal).Skip(1).Any())
                 throw new ArgumentException("A source event identity cannot describe different immutable facts.");
         var ordered = facts.DistinctBy(fact => fact.EventId).OrderBy(fact => fact.SourceKind)
-            .ThenBy(fact => fact.ExecutionId, StringComparer.Ordinal).ThenBy(fact => fact.AttemptId, StringComparer.Ordinal)
             .ThenBy(fact => fact.EventId).ToArray();
         return new(key, ordered[0], ordered.Take(FlowExecutionEventLimits.MaximumReferences).Select(fact => fact.EventId).ToArray(),
             ordered.Length > FlowExecutionEventLimits.MaximumReferences);

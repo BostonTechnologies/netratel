@@ -278,7 +278,7 @@ public static class FlowGraphV2Validator
     }
 
     private static bool ValidDefinition(FlowExecutionDefinitionDto? definition) => definition is not null &&
-        Text(definition.Id, 128) && (definition.Name is null || Text(definition.Name, 128)) &&
+        Text(definition.Id, 128) && (definition.Name is null || Text(definition.Name, 512)) &&
         (definition.Revision is null || Text(definition.Revision, 128)) &&
         (definition.ContentHash is null || Hash(definition.ContentHash));
     private static bool ValidBinding(FlowInputBindingDto? binding)

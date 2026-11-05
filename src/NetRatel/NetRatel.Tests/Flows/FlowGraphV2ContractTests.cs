@@ -276,6 +276,21 @@ public sealed class FlowGraphV2ContractTests
         validation.Issues.Should().Contain(issue => issue.Code == "secret-reference-source" && issue.NodeId == map.Id);
     }
 
+
+    [Theory]
+    [InlineData(200, true)]
+    [InlineData(512, true)]
+    [InlineData(513, false)]
+    public void Pinned_action_names_accept_native_library_names_with_an_explicit_presentation_bound(int length, bool valid)
+    {
+        var graph = Replace(RecoveryGraph(), node => node.Kind == FlowNodeKind.RunLibraryScript, node => node with
+        {
+            ExecutionAction = node.ExecutionAction! with
+            { Definition = node.ExecutionAction.Definition with { Name = new string('N', length) } }
+        });
+        FlowGraphV2Validator.ValidatePublished(graph).Valid.Should().Be(valid);
+    }
+
     private static FlowGraphDto Replace(FlowGraphDto graph, Func<FlowNodeDto, bool> predicate,
         Func<FlowNodeDto, FlowNodeDto> update) => graph with { Nodes = graph.Nodes.Select(node => predicate(node) ? update(node) : node).ToArray() };
 
