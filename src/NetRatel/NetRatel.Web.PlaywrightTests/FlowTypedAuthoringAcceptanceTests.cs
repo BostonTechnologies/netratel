@@ -78,11 +78,36 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         var routeMilliseconds = clock.Elapsed.TotalMilliseconds;
         var routed = await MeasurementsAsync(page);
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-near-limit-route.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+        await page.SetViewportSizeAsync(195, 422);
+        await page.GetByTestId("flow-fit").ClickAsync();
+        for (var point = 1; point < FlowGraphV2Limits.MaximumRoutePoints; point++)
+            await page.GetByTestId("flow-route-add").ClickAsync();
+        await Assertions.Expect(handle).ToHaveCountAsync(FlowGraphV2Limits.MaximumRoutePoints);
+        var lastRemove = page.GetByRole(AriaRole.Button, new() { Name = "Remove route point 8", Exact = true });
+        await lastRemove.ScrollIntoViewIfNeededAsync();
+        Assert.True(await lastRemove.EvaluateAsync<bool>("""
+            button => {
+                const tools=button.closest('.flow-edge-tools'),panel=tools.closest('.flow-canvas-panel');
+                const t=tools.getBoundingClientRect(),p=panel.getBoundingClientRect(),r=button.getBoundingClientRect();
+                const x=r.left+r.width/2,y=r.top+r.height/2,hit=document.elementFromPoint(x,y);
+                return t.height>0&&t.top>=p.top&&t.bottom<=p.bottom+1&&
+                    x>=p.left&&x<=p.right&&y>=p.top&&y<=p.bottom&&(hit===button||button.contains(hit));
+            }
+            """), "The bounded inspector and its last route control must remain inside the narrow canvas and accept an ordinary pointer.");
+        await lastRemove.ClickAsync();
+        await Assertions.Expect(handle).ToHaveCountAsync(7);
+        var lastY = page.GetByRole(AriaRole.Spinbutton, new() { Name = "Point 7 Y", Exact = true });
+        await lastY.FocusAsync(); await page.Keyboard.PressAsync("Tab");
+        var keyboardRemove = page.GetByRole(AriaRole.Button, new() { Name = "Remove route point 7", Exact = true });
+        await Assertions.Expect(keyboardRemove).ToBeFocusedAsync();
+        await page.Keyboard.PressAsync("Enter"); await Assertions.Expect(handle).ToHaveCountAsync(6);
+        var narrowRoute = await MeasurementsAsync(page);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-near-limit-route-narrow.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
         await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit.json"), JsonSerializer.Serialize(new
         {
             schemaVersion = graph.SchemaVersion, nodeCount = graph.Nodes.Count, edgeCount = graph.Edges.Count,
             mountMilliseconds, fitMilliseconds, panZoomMilliseconds, routeMilliseconds,
-            fitted, moved, routed, assertions = "32 native nodes;61 curves;all cards fit;7 outcome ports fit;actual pan and zoom;route edit and Tab exit",
+            fitted, moved, routed, narrowRoute, assertions = "32 native nodes;61 curves;all cards fit;7 outcome ports fit;actual pan and zoom;route edit and Tab exit;narrow bounded inspector with pointer and keyboard reachability",
             noExecutionWrites = fixture.FlowsData.SaveCalls == seedWrites && fixture.FlowsData.PublishCalls == 0 && fixture.FlowsData.DryRunCalls == 0
         }, new JsonSerializerOptions { WriteIndented = true }));
         Assert.Equal(seedWrites, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls); Assert.Equal(0, fixture.FlowsData.DryRunCalls);
