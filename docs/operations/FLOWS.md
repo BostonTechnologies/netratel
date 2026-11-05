@@ -65,14 +65,27 @@ The initial bounds are eight nodes, seven edges, 32 KiB canonical graph, 8 KiB e
 
 ## Schema transition
 
-The compatible schema-two contracts are available for the overhaul while the current editor,
-save/publish routes and monitoring runtime remain on schema one. A draft upgrade is explicit;
+The compatible schema-two contracts and inert canvas adapter are available for the overhaul while
+the default authoring, save/publish routes and monitoring runtime remain on schema one. A draft upgrade is explicit;
 published versions, configuration hashes and running schema-one continuations are not rewritten.
 The new contract separates execution-event triggers from script/job/rerun actions and defines
 exclusive named outcomes, typed input bindings, stable edge IDs and finite optional routes.
 Its 32-node/64-edge/128 KiB budget is independent of existing execution and receipt bounds.
 The [API contract reference](../contracts/API_REFERENCE.md#flows) describes this transition.
 Execution activation and authoring of those new actions require their durable runtime integration.
+
+Schema-two snapshots retain their original schema, node settings, named ports, stable edge IDs and
+optional route points when loaded and captured. Cards derive their height from the real port count;
+schema-one geometry remains unchanged. Compatibility highlights are calculated from the current
+topology and occupied ports once per structural revision, with full validation repeated on a drop.
+
+In an editable schema-two draft, selecting a curve exposes **Add route point**, coordinate fields
+and **Reset route**. Drag a selected handle, or use arrow keys (Shift moves ten world units) and the
+coordinate fields. At most eight finite points within ±20,000 world units are saved per edge.
+Reset removes custom routing and retains the edge identity. Selected handles sit above nodes;
+readonly viewers permit inspection without route changes. Routing preview stays local to the browser
+and commits one layout change when a gesture completes. These controls do not migrate a schema-one
+draft or activate an execution node.
 
 ## VeloxDev compatibility and notices
 
