@@ -59,6 +59,7 @@ else
                         <label><input type="checkbox" @bind="fixture.Enabled" data-testid="flow-sample-fixture-enabled" /> Provide a sample result</label>
                         <fieldset disabled="@(!fixture.Enabled)">
                             <label>Simulated outcome<select @bind="fixture.Outcome" data-testid="flow-sample-fixture-outcome">
+                                <option value="">Choose a simulated outcome</option>
                                 @foreach (var outcome in Enum.GetValues<FlowExecutionOutcome>()) { <option value="@Port(outcome)">@OutcomeLabel(outcome)</option> }
                             </select></label>
                             <label>Sample output JSON<textarea @bind="fixture.Output" maxlength="@FlowPreviewLimits.MaximumFixtureBytes" rows="5" data-testid="flow-sample-fixture-output"></textarea></label>
@@ -186,6 +187,8 @@ else
         var total = 0;
         foreach (var input in _fixtures.Where(value => value.Enabled))
         {
+            if (!Enum.GetValues<FlowExecutionOutcome>().Any(value => Port(value) == input.Outcome))
+            { _error = "Choose the simulated outcome for " + input.Name + "."; return; }
             var fixture = new FlowPreviewFixtureDto(input.NodeId, input.Outcome);
             if (!string.IsNullOrWhiteSpace(input.Output))
             {
@@ -229,7 +232,7 @@ else
         public string Name { get; } = name;
         public FlowNodeKind Kind { get; } = kind;
         public bool Enabled { get; set; }
-        public string Outcome { get; set; } = FlowNodeCatalogue.Succeeded;
+        public string Outcome { get; set; } = "";
         public string Output { get; set; } = "";
     }
 }

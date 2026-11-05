@@ -82,6 +82,25 @@ public sealed class FlowExecutionPreviewSetupTests : AsyncBunitContext
         sent.Should().HaveCount(4);
     }
 
+
+    [Fact]
+    public async Task Enabling_a_sample_requires_an_explicit_outcome_instead_of_defaulting_to_success()
+    {
+        var sent = new List<FlowExecutionDryRunRequest>();
+        var cut = Render<FlowExecutionPreviewSetup>(p => p.Add(c => c.Graph, Graph(external: true))
+            .Add(c => c.TenantId, 17).Add(c => c.ContextKey, "draft-a").Add(c => c.Preview, request => sent.Add(request)));
+        await Change(cut, "flow-sample-fixture-enabled", true);
+        cut.Find("[data-testid=flow-sample-fixture-outcome]").GetAttribute("value").Should().Be("");
+        await Submit(cut);
+        sent.Should().BeEmpty();
+        cut.Find("[data-testid=flow-sample-error]").TextContent.Should().Contain("Choose the simulated outcome").And.Contain("Sample external job");
+        await Change(cut, "flow-sample-fixture-outcome", FlowNodeCatalogue.Denied);
+        await Submit(cut);
+        sent.Should().ContainSingle();
+        sent[0].Fixtures!.Single().Outcome.Should().Be(FlowNodeCatalogue.Denied);
+        sent[0].Fixtures!.Single().Output.ValueKind.Should().Be(JsonValueKind.Undefined);
+    }
+
     [Fact]
     public async Task Invalid_or_oversized_fixture_json_does_not_submit_a_preview()
     {
@@ -89,6 +108,7 @@ public sealed class FlowExecutionPreviewSetupTests : AsyncBunitContext
         var cut = Render<FlowExecutionPreviewSetup>(p => p.Add(c => c.Graph, Graph(external: true))
             .Add(c => c.TenantId, 17).Add(c => c.ContextKey, "tenant-17-draft-a").Add(c => c.Preview, _ => calls++));
         await Change(cut, "flow-sample-fixture-enabled", true);
+        await Change(cut, "flow-sample-fixture-outcome", FlowNodeCatalogue.Succeeded);
         await Change(cut, "flow-sample-fixture-output", "{broken");
         await Submit(cut);
         calls.Should().Be(0);
@@ -108,6 +128,7 @@ public sealed class FlowExecutionPreviewSetupTests : AsyncBunitContext
             .Add(c => c.Preview, request => sent.Add(request)));
         await Change(cut, "flow-sample-execution-id", "old-tenant-id");
         await Change(cut, "flow-sample-fixture-enabled", true);
+        await Change(cut, "flow-sample-fixture-outcome", FlowNodeCatalogue.Succeeded);
         await Change(cut, "flow-sample-fixture-output", "{\"summary\":\"Old sample\"}");
         await Submit(cut);
         cut.Render(p => p.Add(c => c.Graph, graph).Add(c => c.TenantId, 23).Add(c => c.ContextKey, "tenant-23-draft-a").Add(c => c.Preview, request => sent.Add(request)));
@@ -149,6 +170,7 @@ public sealed class FlowExecutionPreviewSetupTests : AsyncBunitContext
             .Add(c => c.ContextKey, "draft-a").Add(c => c.Preview, request => sent.Add(request)));
         await Change(cut, "flow-sample-execution-id", "sample-to-keep");
         await Change(cut, "flow-sample-fixture-enabled", true);
+        await Change(cut, "flow-sample-fixture-outcome", FlowNodeCatalogue.Succeeded);
         await Change(cut, "flow-sample-fixture-output", "{\"summary\":\"Retained sample\"}");
         await Submit(cut);
         var moved = graph with
