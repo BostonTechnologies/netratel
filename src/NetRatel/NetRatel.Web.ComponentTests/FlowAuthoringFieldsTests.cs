@@ -106,6 +106,10 @@ public sealed class FlowAuthoringFieldsTests : AsyncBunitContext
         await cut.InvokeAsync(() => cut.Find("[data-testid=flow-trigger-request-system-add]").ClickAsync(new()));
         Assert.Equal("Canonical.Source", Assert.Single(changed!.ExecutionTrigger!.RequestKinds!));
         Assert.Contains(FlowExecutionOutcome.Unknown, changed.ExecutionTrigger.Outcomes);
+        cut.Render(p => p.Add(component => component.Node, changed));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-trigger-source-Request]").ChangeAsync(new() { Value = false }));
+        Assert.Contains("Retain at least one execution source", cut.Find("[role=alert]").TextContent, StringComparison.Ordinal);
+        Assert.Contains(FlowExecutionSourceKind.Request, changed.ExecutionTrigger.Sources);
         Assert.Equal(0, _api.SaveCalls); Assert.Equal(0, _api.PublishCalls); Assert.Equal(0, _api.DryRunCalls);
     }
 

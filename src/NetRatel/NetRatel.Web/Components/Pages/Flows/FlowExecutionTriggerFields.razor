@@ -14,13 +14,13 @@
         </select></label>
         @foreach (var source in Enum.GetValues<FlowExecutionSourceKind>())
         {
-            <label class="flow-trigger-check"><input type="checkbox" checked="@Settings.Sources.Contains(source)" @onchange="e => ToggleSource(source, e)" data-testid="@($"flow-trigger-source-{source}")" />@SourceName(source)</label>
+            <label class="flow-trigger-check"><input type="checkbox" @bind:get="Settings.Sources.Contains(source)" @bind:set="value => ToggleSource(source, value)" data-testid="@($"flow-trigger-source-{source}")" />@SourceName(source)</label>
         }
     </fieldset>
     <fieldset disabled="@Disabled"><legend>Outcomes</legend>
         @foreach (var outcome in Enum.GetValues<FlowExecutionOutcome>())
         {
-            <label class="flow-trigger-check"><input type="checkbox" checked="@Settings.Outcomes.Contains(outcome)" @onchange="e => ToggleOutcome(outcome, e)" data-testid="@($"flow-trigger-outcome-{outcome}")" />@OutcomeName(outcome)</label>
+            <label class="flow-trigger-check"><input type="checkbox" @bind:get="Settings.Outcomes.Contains(outcome)" @bind:set="value => ToggleOutcome(outcome, value)" data-testid="@($"flow-trigger-outcome-{outcome}")" />@OutcomeName(outcome)</label>
         }
         <p class="flow-trigger-help">Timed out means the source committed an authoritative timeout. Unknown remains separate from failure and never authorizes a blind rerun.</p>
     </fieldset>
@@ -54,7 +54,7 @@
             }
             <p class="flow-trigger-help">Matching uses definition IDs across revisions. Job or script backed request events retain the Request source and can match these selected definitions, including admission failures before a run exists.</p>
         }
-        <label class="flow-trigger-check"><input type="checkbox" checked="@Settings.AggregateCorrelatedEvents" @onchange="SetAggregation" data-testid="flow-trigger-aggregate" />Aggregate correlated source events per subscription, execution attempt and outcome</label>
+        <label class="flow-trigger-check"><input type="checkbox" @bind:get="Settings.AggregateCorrelatedEvents" @bind:set="SetAggregation" data-testid="flow-trigger-aggregate" />Aggregate correlated source events per subscription, execution attempt and outcome</label>
     </fieldset>
     <fieldset disabled="@Disabled"><legend>Endpoint filter (optional)</legend>
         <p class="flow-trigger-help">No selected endpoints means all endpoints allowed by this subscription's current tenant authority. Endpoint state shown here is catalogue availability, not online presence.</p>
@@ -138,11 +138,11 @@
         if (Disabled || _disposed) return Task.CompletedTask;
         _error = null; return Changed.InvokeAsync(Node with { ExecutionTrigger = settings });
     }
-    private Task ToggleSource(FlowExecutionSourceKind source, ChangeEventArgs args)
+    private Task ToggleSource(FlowExecutionSourceKind source, bool selected)
     {
         if (Disabled) return Task.CompletedTask;
         var sources = Settings.Sources.ToHashSet();
-        if (args.Value is true) sources.Add(source); else sources.Remove(source);
+        if (selected) sources.Add(source); else sources.Remove(source);
         return SetSources(sources);
     }
     private Task SetPreset(ChangeEventArgs args) => !Disabled && Enum.TryParse<FlowExecutionSourceKind>(args.Value?.ToString(), out var source) && Enum.IsDefined(source)
@@ -156,18 +156,18 @@
         { _error = "Remove the request source system filters before removing Request events."; return Task.CompletedTask; }
         return Emit(Settings with { Sources = sources.Order().ToArray() });
     }
-    private Task ToggleOutcome(FlowExecutionOutcome outcome, ChangeEventArgs args)
+    private Task ToggleOutcome(FlowExecutionOutcome outcome, bool selected)
     {
         if (Disabled) return Task.CompletedTask;
         var outcomes = Settings.Outcomes.ToHashSet();
-        if (args.Value is true) outcomes.Add(outcome); else outcomes.Remove(outcome);
+        if (selected) outcomes.Add(outcome); else outcomes.Remove(outcome);
         if (outcomes.Count == 0) { _error = "Retain at least one outcome."; return Task.CompletedTask; }
         return Emit(Settings with { Outcomes = outcomes.Order().ToArray() });
     }
     private Task SetScope(ChangeEventArgs args) => int.TryParse(args.Value?.ToString(), out var value) && Enum.IsDefined((FlowExecutionScope)value)
         ? Emit(Settings with { Scope = (FlowExecutionScope)value, DefinitionIds = value == (int)FlowExecutionScope.AllInTenant ? null : Settings.DefinitionIds,
             DefinitionReferences = value == (int)FlowExecutionScope.AllInTenant ? null : Settings.DefinitionReferences ?? [] }) : Task.CompletedTask;
-    private Task SetAggregation(ChangeEventArgs args) => Emit(Settings with { AggregateCorrelatedEvents = args.Value is true });
+    private Task SetAggregation(bool value) => Emit(Settings with { AggregateCorrelatedEvents = value });
     private Task AddDefinition(FlowExecutionDefinitionOptionDto option)
     {
         if (Disabled || Settings.DefinitionIds is { Count: > 0 } || string.IsNullOrWhiteSpace(option.Definition.Id) || !DefinitionSources.Contains(option.SourceKind)) return Task.CompletedTask;
@@ -196,7 +196,7 @@
         if (Disabled || string.IsNullOrWhiteSpace(kind) || kind.Length > 256 || kind.Any(char.IsControl)) { _error = "Enter an exact source system value of up to 256 characters."; return Task.CompletedTask; }
         var kinds = Settings.RequestKinds?.ToList() ?? [];
         if (kinds.Contains(kind, StringComparer.Ordinal)) return Task.CompletedTask;
-        if (kinds.Count >= 32) { _error = "A trigger supports at most 32 request source systems."; return Task.CompletedTask; }
+        if (kinds.Count >= FlowGraphV2Limits.MaximumRequestSourceSystems) { _error = $"A trigger supports at most {FlowGraphV2Limits.MaximumRequestSourceSystems} request source systems."; return Task.CompletedTask; }
         _requestKind = ""; return Emit(Settings with { RequestKinds = [.. kinds, kind] });
     }
     private Task RemoveRequestKind(string kind) => Emit(Settings with { RequestKinds = Settings.RequestKinds?.Where(item => item != kind).ToArray() ?? [] });
