@@ -171,8 +171,19 @@ public static class ManagedOperationCatalog
         {
             try
             {
-                if (request.GetProperty("data").Deserialize(dataType, JsonOptions) is null)
+                var body = request.GetProperty("data").Deserialize(dataType, JsonOptions);
+                if (body is null)
                     return Invalid("data must contain the typed request body.", out error);
+                var flowGraph = body switch
+                {
+                    FlowGraphDto graph => graph,
+                    FlowDryRunRequest dryRun => dryRun.Graph,
+                    FlowSaveDraftRequest save => save.Graph,
+                    _ => null
+                };
+                if (descriptor.Tool == "netratel_flows" && flowGraph is not null &&
+                    flowGraph.SchemaVersion != FlowLimits.SchemaVersion)
+                    return Invalid("Existing managed Flows operations require graph schema one; this graph schema is unsupported.", out error);
             }
             catch (JsonException)
             {

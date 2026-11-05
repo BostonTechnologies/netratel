@@ -47,6 +47,29 @@ public sealed class FlowPostgreSqlTests(PostgreSqlPersistenceFixture postgres)
     }
 
     [Fact]
+    public async Task A_schema_one_writer_cannot_downgrade_a_newer_draft_or_erase_its_metadata()
+    {
+        await using var h = await Harness.CreateAsync(postgres);
+        var created = (await h.Definitions.CreateAsync(17, new("Newer draft fixture"), "editor")).Definition!;
+        var upgraded = FlowDraftMigration.UpgradeToSchemaTwo(created.Draft);
+        var serialized = JsonSerializer.Serialize(upgraded, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        await using (var scope = h.Provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var row = await db.FlowDefinitions.SingleAsync(row => row.Id == created.Id);
+            row.DraftJson = serialized;
+            await db.SaveChangesAsync();
+        }
+        var result = await h.Definitions.SaveDraftAsync(17, created.Id,
+            new(created.Revision, "Old writer", created.Draft), "editor");
+        result.Disposition.Should().Be(FlowWriteDisposition.Invalid);
+        result.Code.Should().Be("graph-schema-downgrade");
+        var retained = (await h.Definitions.GetAsync(17, created.Id))!;
+        retained.Revision.Should().Be(created.Revision);
+        JsonSerializer.Serialize(retained.Draft, new JsonSerializerOptions(JsonSerializerDefaults.Web)).Should().Be(serialized);
+    }
+
+    [Fact]
     public async Task Concurrent_duplicate_ingress_has_one_real_run_and_rejects_changed_payload_and_foreign_version()
     {
         await using var h = await Harness.CreateAsync(postgres); var version = await h.PublishAsync(); var input = h.Event(version);
