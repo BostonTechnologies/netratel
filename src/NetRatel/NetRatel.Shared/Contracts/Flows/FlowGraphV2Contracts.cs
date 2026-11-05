@@ -15,6 +15,7 @@ public static class FlowGraphV2Limits
     public const int MaximumBindingBytes = 4096;
     public const int MaximumPathLength = 256;
     public const int MaximumSelectedDefinitions = 128;
+    public const int MaximumRequestSourceSystems = 32;
     public const int MaximumOperationMinutes = 1440;
     public const int MaximumRecoveryAttempts = 3;
 }
@@ -26,10 +27,16 @@ public enum FlowPortDirection { Input = 1, Output = 2 }
 
 /// <summary>Values are bound through this allowlisted data contract, never CLR names or executable expressions.</summary>
 public sealed record FlowInputBindingDto(FlowInputSource Source, FlowDataType DataType, string? Path = null,
-    Guid? NodeId = null, JsonElement? Literal = null);
+    Guid? NodeId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonConverter(typeof(FlowNullableJsonElementConverter))] JsonElement? Literal = null);
 public sealed record FlowParameterDefinitionDto(string Name, FlowDataType DataType, bool Required = false);
 public sealed record FlowPredicateDto(FlowInputBindingDto Input, FlowComparison Comparison, JsonElement Value);
-public sealed record FlowExecutionDefinitionReferenceDto(FlowExecutionSourceKind SourceKind, string Id);
+public sealed record FlowExecutionDefinitionReferenceDto(FlowExecutionSourceKind SourceKind, string Id)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Name { get; init; }
+}
 
 public sealed record FlowExecutionTriggerSettingsDto(IReadOnlyList<FlowExecutionSourceKind> Sources,
     IReadOnlyList<FlowExecutionOutcome> Outcomes, FlowExecutionScope Scope)

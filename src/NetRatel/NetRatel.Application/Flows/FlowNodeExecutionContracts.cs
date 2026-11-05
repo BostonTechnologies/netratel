@@ -19,6 +19,7 @@ public sealed record FlowNodeCheckpointDto(Guid NodeId, int Revision, int Sequen
     public IReadOnlyDictionary<string, JsonElement> Inputs { get; init; } = new Dictionary<string, JsonElement>();
     public IReadOnlyDictionary<Guid, JsonElement> Outputs { get; init; } = new Dictionary<Guid, JsonElement>();
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [JsonConverter(typeof(FlowNullableJsonElementConverter))]
     public JsonElement? Output { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? SelectedPort { get; init; }
