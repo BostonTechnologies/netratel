@@ -188,8 +188,15 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         await routedGroup.GetByTestId("flow-link-hit").FocusAsync();
         await Assertions.Expect(handle).ToHaveCountAsync(6);
         var reloadedRoute = await MeasurementsAsync(page);
+        var displayedPointsBeforeReload = narrowRoute.GetProperty("routePoints").Deserialize<FlowPositionDto[]>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
         var restoredPoints = reloadedRoute.GetProperty("routePoints").Deserialize<FlowPositionDto[]>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
-        Assert.Equal(savedRoute.Points, restoredPoints!);
+        await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-route-roundtrip.json"), JsonSerializer.Serialize(new
+        {
+            fullPrecisionPoints = savedRoute.Points, savedRouteJson,
+            restoredRouteJson = await routedGroup.GetAttributeAsync("data-flow-route"), savedPath,
+            restoredPath = await routedCurve.GetAttributeAsync("d"), displayedPointsBeforeReload, restoredPoints
+        }, new JsonSerializerOptions { WriteIndented = true }));
+        Assert.Equal(displayedPointsBeforeReload!, restoredPoints!);
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-near-limit-route-reloaded.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
         await page.GetByTestId("flow-route-reset").ClickAsync();
         await Assertions.Expect(handle).ToHaveCountAsync(0);

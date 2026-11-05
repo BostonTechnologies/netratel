@@ -183,6 +183,14 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
                 if(event.pointerType==='touch'&&port)window.flowTouchPortEvents.push({
                     pointerType:event.pointerType,nodeId:port.dataset.portNode,direction:port.dataset.portDirection});
             },true);
+            window.flowPortReleases=[];
+            window.addEventListener('pointerup',event=>{
+                if(event.pointerType!=='mouse')return;
+                const hit=document.elementFromPoint(event.clientX,event.clientY),port=hit?.closest('.flow-port');
+                window.flowPortReleases.push({trusted:event.isTrusted,x:event.clientX,y:event.clientY,
+                    hit:{tag:hit?.tagName,id:hit?.id,classes:hit?.getAttribute('class')},
+                    nodeId:port?.dataset.portNode,direction:port?.dataset.portDirection,portId:port?.dataset.portId});
+            },true);
             """);
         var frames = new TransientMoveFrames(page);
         var errors = new List<string>(); page.PageError += (_, error) => errors.Add(error);
@@ -249,12 +257,20 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         Assert.Equal(0, await page.Locator(".flow-port.compatible,.flow-port.incompatible,.flow-port.pending").CountAsync());
         await page.Mouse.UpAsync();
 
+        await page.EvaluateAsync("window.flowPortReleases=[]");
         await GestureAsync(page, page.Locator($"[data-port-node='{trigger}'][data-port-direction=output] svg"),
             page.Locator($"[data-port-node='{mapping}'][data-port-direction=output] svg"), "flows-invalid-output-drop.png");
-        await Assertions.Expect(page.GetByTestId("flow-connection-message")).ToContainTextAsync("Choose an output and an input port.");
+        var invalidReleases = await page.EvaluateAsync<JsonElement>("() => window.flowPortReleases");
+        await File.WriteAllTextAsync(Path.Combine(transientEvidence, "flows-native-invalid-release.json"), invalidReleases.GetRawText());
+        var invalidRelease = Assert.Single(invalidReleases.EnumerateArray());
+        Assert.True(invalidRelease.GetProperty("trusted").GetBoolean());
+        Assert.Equal(mapping, invalidRelease.GetProperty("nodeId").GetString());
+        Assert.Equal("output", invalidRelease.GetProperty("direction").GetString());
+        Assert.Equal("out", invalidRelease.GetProperty("portId").GetString());
+        await Assertions.Expect(page.GetByTestId("flow-connection-message")).ToContainTextAsync("Drop on a compatible input.");
         await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(0);
         Assert.Equal(0, await page.Locator(".flow-port.compatible,.flow-port.incompatible,.flow-port.pending").CountAsync());
-        var invalidDrop = new { message = await page.GetByTestId("flow-connection-message").InnerTextAsync(),
+        var invalidDrop = new { invalidRelease, message = await page.GetByTestId("flow-connection-message").InnerTextAsync(),
             edges = await page.GetByTestId("flow-link").CountAsync(), ghostHidden = await page.GetByTestId("flow-virtual-link").EvaluateAsync<bool>("path => path.hasAttribute('hidden')") };
         Assert.True(invalidDrop.ghostHidden);
 
