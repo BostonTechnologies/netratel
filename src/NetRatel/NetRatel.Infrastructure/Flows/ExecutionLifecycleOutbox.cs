@@ -786,9 +786,6 @@ public static class ExecutionLifecycleOutbox
         FlowGraphValidator.IsBoundedText(value, FlowExecutionEventLimits.MaximumIdentifierLength) &&
         !value.Any(char.IsControl) ? value : null;
 
-    private static string? PositiveDecimal(string? value) => ulong.TryParse(value, NumberStyles.None,
-        CultureInfo.InvariantCulture, out var id) && id > 0 ? id.ToString(CultureInfo.InvariantCulture) : null;
-    private static string Decimal(long value) => value.ToString(CultureInfo.InvariantCulture);
     private static string? Bound(string? value, int limit)
     {
         if (value is null) return null;
