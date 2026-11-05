@@ -148,7 +148,7 @@ public static class FlowNodeCheckpointRules
                     lease.Version.Graph.Nodes.Single(node => node.Id == step.NodeId).Name != step.NodeName ||
                     !FlowGraphValidator.IsBoundedText(step.Outcome, 128) || step.DurationMilliseconds < 0 ||
                     step.DurationMilliseconds > FlowLimits.MaximumRetryAge.Ticks / TimeSpan.TicksPerMillisecond ||
-                    !SnapshotValid(step.Input) || !SnapshotValid(step.Output)) ||
+                    !SnapshotValid(step.Input) || !SnapshotValid(step.Output) || !ExecutionReferenceValid(lease, step)) ||
                 trace.Steps.Sum(step => SnapshotBytes(step.Input) + SnapshotBytes(step.Output)) > FlowTraceLimits.MaximumSnapshotTotalBytes))
                 return false;
         }
@@ -206,6 +206,27 @@ public static class FlowNodeCheckpointRules
 
     private static int SnapshotBytes(FlowTraceSnapshotDto snapshot) =>
         snapshot.Value is { } value ? JsonSerializer.SerializeToUtf8Bytes(value).Length : 0;
+    private static bool ExecutionReferenceValid(FlowRunLease lease, FlowNodeTraceDto step)
+    {
+        if (step.ExecutionReference is not { } reference) return true;
+        if (!FlowExecutionReferenceDto.IsValid(reference)) return false;
+        var node = lease.Version.Graph.Nodes.Single(candidate => candidate.Id == step.NodeId);
+        var source = node.Kind switch
+        {
+            FlowNodeKind.ExecutionEvent => lease.Event.ExecutionEvent?.SourceKind,
+            FlowNodeKind.RunJob => FlowExecutionSourceKind.Job,
+            FlowNodeKind.RunLibraryScript => FlowExecutionSourceKind.Script,
+            FlowNodeKind.RerunOriginalExecution => lease.Event.ExecutionEvent?.Replay?.SourceKind,
+            _ => null
+        };
+        var definition = node.Kind switch
+        {
+            FlowNodeKind.ExecutionEvent => lease.Event.ExecutionEvent?.Definition.Id,
+            FlowNodeKind.RerunOriginalExecution => lease.Event.ExecutionEvent?.Replay?.Definition.Id,
+            _ => node.ExecutionAction?.Definition.Id
+        };
+        return source is { } kind && FlowExecutionReferenceDto.Create(kind, definition, reference.ExecutionId) == reference;
+    }
     private static bool SnapshotValid(FlowTraceSnapshotDto? snapshot)
     {
         if (snapshot is null || !Enum.IsDefined(snapshot.State) ||
