@@ -158,6 +158,8 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         var fixture = _fixture!;
         await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1600, Height = 1000 } });
         var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000);
+        // Test the cancellable full-window fallback explicitly; native fullscreen Escape is browser-owned.
+        await page.AddInitScriptAsync("Object.defineProperty(document, 'fullscreenEnabled', { configurable: true, get: () => false });");
         var errors = new List<string>(); page.PageError += (_, error) => errors.Add(error);
         foreach (var (path, mime) in new[] { ("/_content/VeloxDev.Razor/veloxdev.workflow.css", "text/css"), ("/_content/VeloxDev.Razor/veloxdev.workflow.js", "text/javascript"), ("/js/flows-editor.js", "text/javascript") })
         {
@@ -182,6 +184,19 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         var trigger = await page.Locator("[data-node-kind=AlertRaised]").GetAttributeAsync("data-node-id");
         var mapping = await page.Locator("[data-node-kind=MapIncident]").GetAttributeAsync("data-node-id");
         var action = await page.Locator("[data-node-kind=CreateIncident]").GetAttributeAsync("data-node-id");
+        await page.GetByTestId("flow-focus").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-focus")).ToHaveAttributeAsync("aria-pressed", "true");
+        var cancelPort = (await page.Locator($"[data-port-node='{trigger}'][data-port-direction=output] svg").BoundingBoxAsync())!;
+        await page.Mouse.MoveAsync(cancelPort.X + cancelPort.Width / 2, cancelPort.Y + cancelPort.Height / 2);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(cancelPort.X + 100, cancelPort.Y + 40, new() { Steps = 4 });
+        await page.WaitForFunctionAsync("() => !document.querySelector('[data-testid=flow-virtual-link]').hasAttribute('hidden')");
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(page.GetByTestId("flow-virtual-link")).ToHaveAttributeAsync("hidden", "hidden");
+        await Assertions.Expect(page.GetByTestId("flow-focus")).ToHaveAttributeAsync("aria-pressed", "true");
+        await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(0);
+        Assert.Equal(0, await page.Locator(".flow-port.compatible,.flow-port.incompatible,.flow-port.pending").CountAsync());
+        await page.Mouse.UpAsync();
         await GestureAsync(page, page.Locator($"[data-port-node='{trigger}'][data-port-direction=output] svg"), page.Locator($"[data-port-node='{mapping}'][data-port-direction=input] svg"));
         await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(1);
         await GestureAsync(page, page.Locator($"[data-port-node='{mapping}'][data-port-direction=output] svg"), page.Locator($"[data-port-node='{action}'][data-port-direction=input] svg"));

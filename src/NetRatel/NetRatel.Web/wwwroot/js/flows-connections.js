@@ -51,15 +51,16 @@ export function attach(id, reference) {
     const down = event => {
         const source = event.target.closest?.('.flow-port');
         if (!source || !panel.contains(source)) return;
+        if (gesture && gesture.pointerId !== event.pointerId) return;
         suppressClick = false;
         if (!writable()) { event.preventDefault(); event.stopImmediatePropagation(); return; }
         if (event.pointerType === 'touch' || source.dataset.portDirection !== 'output' || event.button !== 0) return;
-        gesture = { source, targets: highlight(source), x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, moved: false };
+        gesture = { source, pointerId: event.pointerId, targets: highlight(source), x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, moved: false };
         if (message()) message().textContent = 'Drag to a highlighted input. Escape cancels.';
         draw(); // Visible immediately while the pointer is still held down.
     };
     const move = event => {
-        if (!gesture) return;
+        if (!gesture || gesture.pointerId !== event.pointerId) return;
         gesture.x = event.clientX; gesture.y = event.clientY;
         gesture.moved ||= Math.hypot(event.clientX - gesture.startX, event.clientY - gesture.startY) > 4;
         const target = portAt(event);
@@ -71,7 +72,7 @@ export function attach(id, reference) {
         if (!frame) frame = requestAnimationFrame(draw);
     };
     const up = event => {
-        if (!gesture) return;
+        if (!gesture || gesture.pointerId !== event.pointerId) return;
         const source = gesture.source.dataset.portNode, target = portAt(event);
         suppressClick = gesture.moved;
         const valid = target && panel.contains(target) && target.dataset.portDirection === 'input' && gesture.targets.has(target.dataset.portNode);
@@ -88,9 +89,9 @@ export function attach(id, reference) {
         const port = event.target.closest?.('.flow-port');
         if (!port || !panel.contains(port)) return;
         event.preventDefault(); event.stopPropagation();
-        if (writable()) port.querySelector('button')?.click();
+        if (writable() && !gesture && event.touches.length === 1) port.querySelector('button')?.click();
     };
-    const cancelPointer = () => { if (gesture) cancel(); };
+    const cancelPointer = event => { if (gesture?.pointerId === event.pointerId) cancel(); };
     const keys = event => {
         if (event.key !== 'Escape' || (!gesture && !panel.dataset.connectionStart)) return;
         event.preventDefault(); event.stopImmediatePropagation(); cancel();
@@ -132,17 +133,22 @@ export function attach(id, reference) {
     document.addEventListener('pointerup', up);
     document.addEventListener('pointercancel', cancelPointer);
     document.addEventListener('lostpointercapture', cancelPointer);
-    document.addEventListener('keydown', keys, true);
+    // Window capture runs before the shell's document capture handler. Gestures
+    // consume Escape first in window fallback; a browser may still end native fullscreen.
+    window.addEventListener('keydown', keys, true);
+    const fullscreen = () => { if (!document.fullscreenElement) cancel(); };
+    document.addEventListener('fullscreenchange', fullscreen);
     window.addEventListener('blur', cancel);
     canvases.set(id, () => {
         disposed = true;
         if (frame) cancelAnimationFrame(frame);
         observer.disconnect(); removed.disconnect(); clearHighlights();
+        document.removeEventListener('fullscreenchange', fullscreen);
         panel.removeEventListener('pointerdown', down, true); panel.removeEventListener('mousedown', mouseGuard, true); panel.removeEventListener('click', clickGuard, true);
         panel.removeEventListener('touchstart', touch, true);
         document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up);
         document.removeEventListener('pointercancel', cancelPointer); document.removeEventListener('lostpointercapture', cancelPointer);
-        document.removeEventListener('keydown', keys, true); window.removeEventListener('blur', cancel);
+        window.removeEventListener('keydown', keys, true); window.removeEventListener('blur', cancel);
         ghost()?.setAttribute('hidden', 'hidden');
     });
 }
