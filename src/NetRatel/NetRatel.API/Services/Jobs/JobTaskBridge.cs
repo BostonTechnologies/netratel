@@ -111,6 +111,33 @@ public sealed class JobTaskBridge
             : new(false, null, null, build.Error);
     }
 
+    /// <summary>Uses the existing task translation with only the admitted immutable source set.</summary>
+    public Task<JobGatewayTaskInvocation> BuildPinnedGatewayInvocationAsync(JobRunInfo run, JobStepInfo step,
+        IReadOnlyDictionary<string, object?> inputs, JobExecutionRuntimePolicy runtimePolicy,
+        PinnedJobExecutionSnapshot snapshot, CancellationToken cancellationToken, TaskOutputPolicy? outputPolicy = null)
+    {
+        snapshot.Validate(run.TenantId ?? 0);
+        if (snapshot.Definition.Job.Id != run.JobId || snapshot.Definition.Job.AgentId != run.AgentId ||
+            !snapshot.Definition.Steps.Contains(step))
+            return Task.FromResult(new JobGatewayTaskInvocation(false, null, null, "The pinned job step does not match this run."));
+        return new JobTaskBridge(new PinnedScripts(snapshot.Scripts), _logger)
+            .BuildGatewayInvocationAsync(run, step, inputs, runtimePolicy, cancellationToken, outputPolicy);
+    }
+
+    private sealed class PinnedScripts(IReadOnlyList<PinnedJobScriptSnapshot> snapshots) : IScriptService
+    {
+        public Task<ScriptInfo?> GetAsync(ulong scriptId, CancellationToken ct = default)
+            => Task.FromResult(snapshots.SingleOrDefault(snapshot => snapshot.Script.Id == scriptId)?.Script);
+        public Task<IReadOnlyList<ScriptParamInfo>> GetParamsAsync(ulong scriptId, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<ScriptParamInfo>>(snapshots.SingleOrDefault(snapshot => snapshot.Script.Id == scriptId)?.Parameters ?? []);
+        public Task<IReadOnlyList<ScriptInfo>> ListAsync(CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<ScriptInfo>>(snapshots.Select(snapshot => snapshot.Script).ToArray());
+        public Task<ScriptInfo> CreateAsync(CreateScriptCommand command, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<ScriptInfo?> UpdateAsync(UpdateScriptCommand command, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<ScriptInfo?> DeleteAsync(ulong scriptId, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<ScriptInfo?> ParseManifestAsync(ulong scriptId, string? manifestRaw, CancellationToken ct = default) => throw new NotSupportedException();
+    }
+
     public static bool ResultPayloadHasSuccessfulExitCode(string? resultPayloadJson)
     {
         if (string.IsNullOrWhiteSpace(resultPayloadJson))

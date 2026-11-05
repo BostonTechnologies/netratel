@@ -22,6 +22,8 @@ namespace NetRatel.API.Services.Jobs;
 public interface IAkkaJobAuthorityService
 {
     Task<JobRunInfo> StartAsync(ulong jobId, RunJobRequest request, CancellationToken cancellationToken);
+    Task<JobRunInfo> StartKeyedAsync(KeyedJobAdmissionRequest admission, CancellationToken cancellationToken)
+        => throw new NotSupportedException("Canonical keyed job admission is unavailable.");
     Task<JobRunInfo> StartReviewedMcpAsync(McpOperatorJobExecutionSnapshot snapshot, RunJobRequest request, CancellationToken cancellationToken)
         => throw new InvalidOperationException("This job authority does not support reviewed MCP snapshots.");
     Task<JobRunInfo> StartManagedAsync(ulong jobId, RunJobRequest request, int recordedRequestId, ClaimsPrincipal principal, CancellationToken cancellationToken)
@@ -48,7 +50,9 @@ public sealed class AkkaJobAuthorityService(
     ManagedOrchestrationInvocationGuard? managedGuard = null,
     OrchestratorDbContext? db = null,
     TimeProvider? clock = null,
-    NetRatelAkkaOptions? options = null) : IAkkaJobAuthorityService
+    NetRatelAkkaOptions? options = null,
+    IExecutionAdmissionStore? executionAdmissions = null,
+    IKeyedExecutionAuthority? keyedAuthority = null) : IAkkaJobAuthorityService
 {
     private const string Authority = "akka";
     private const string Feature = "jobs";
@@ -115,7 +119,68 @@ public sealed class AkkaJobAuthorityService(
             throw new InvalidOperationException("Reviewed MCP execution requires a server-owned snapshot.");
         if (request.StartedBy?.Trim().StartsWith("service:", StringComparison.Ordinal) == true)
             throw new InvalidOperationException("Managed service identity requires the recorded ingress entry point.");
+        if (request.StartedBy?.Trim().StartsWith("flow-keyed:", StringComparison.Ordinal) == true)
+            throw new InvalidOperationException("Flow execution identity requires canonical keyed admission.");
         return StartCoreAsync(jobId, request, null, null, cancellationToken);
+    }
+
+    public async Task<JobRunInfo> StartKeyedAsync(KeyedJobAdmissionRequest admission, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(admission);
+        admission.Identity.Validate();
+        admission.Snapshot.Validate(admission.Identity.TenantId);
+        if (!string.IsNullOrEmpty(admission.Request.ClientIdentityOverride))
+            throw new InvalidOperationException("A keyed job retains its published bound target.");
+        if (executionAdmissions is null || keyedAuthority is null)
+            throw new InvalidOperationException("Canonical keyed job admission authority is unavailable.");
+        await keyedAuthority.RequireAllowedAsync(admission.Identity, admission.Snapshot.Definition.Job, cancellationToken);
+        var pinned = admission with { Request = admission.Request with { StartedBy = $"flow-keyed:{admission.Identity.ActionKey:N}" } };
+        var binding = await executionAdmissions.ReserveAsync(new(admission.Identity, ExecutionAdmissionKind.Job,
+            JsonSerializer.Serialize(pinned)), () => ids.Next().ToString(System.Globalization.CultureInfo.InvariantCulture), cancellationToken);
+        var submitted = ReadKeyedSubmission(binding);
+        var runId = ulong.Parse(binding.ExecutionId, System.Globalization.CultureInfo.InvariantCulture);
+        return await OwnAsync(runId, async ct =>
+        {
+            await keyedAuthority.RequireAllowedAsync(submitted.Identity, submitted.Snapshot.Definition.Job, ct);
+            var existing = await jobRuns.GetAsync(runId, ct);
+            if (existing is not null)
+            {
+                if (existing.JobId != submitted.Snapshot.Definition.Job.Id || existing.TenantId != submitted.Identity.TenantId ||
+                    existing.AgentId != submitted.Snapshot.Definition.Job.AgentId || existing.StartedBy != submitted.Request.StartedBy)
+                    throw new InvalidOperationException("The canonical job identity differs from its admitted binding.");
+                // A lost flow receipt observes this execution, including pending or unknown.
+                // It never replays gateway IO after a committed canonical intent.
+                return existing;
+            }
+            return await StartOwnedAsync(submitted.Snapshot.Definition.Job.Id, submitted.Request, null, null,
+                runId, ct, pinnedSnapshot: submitted.Snapshot);
+        }, cancellationToken);
+    }
+
+    private static KeyedJobAdmissionRequest ReadKeyedSubmission(ExecutionAdmissionBinding binding)
+    {
+        var submitted = JsonSerializer.Deserialize<KeyedJobAdmissionRequest>(binding.PayloadJson)
+            ?? throw new InvalidOperationException("The pinned canonical job submission is unavailable.");
+        if (binding.Kind != ExecutionAdmissionKind.Job || binding.Identity != submitted.Identity ||
+            submitted.Request.StartedBy != $"flow-keyed:{binding.Identity.ActionKey:N}")
+            throw new InvalidOperationException("The canonical job submission binding is invalid.");
+        submitted.Snapshot.Validate(binding.Identity.TenantId);
+        return submitted;
+    }
+
+    private async Task<KeyedJobAdmissionRequest> RequireKeyedDispatchAsync(JobRunInfo run, CancellationToken ct)
+    {
+        if (executionAdmissions is null || keyedAuthority is null)
+            throw new ExecutionAdmissionDeniedException("The canonical execution authority is unavailable.");
+        var binding = await executionAdmissions.FindByExecutionAsync(ExecutionAdmissionKind.Job,
+            run.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), ct)
+            ?? throw new ExecutionAdmissionDeniedException("The canonical execution binding is unavailable.");
+        var submitted = ReadKeyedSubmission(binding);
+        if (submitted.Identity.TenantId != run.TenantId || submitted.Snapshot.Definition.Job.Id != run.JobId ||
+            submitted.Snapshot.Definition.Job.AgentId != run.AgentId || submitted.Request.StartedBy != run.StartedBy)
+            throw new ExecutionAdmissionDeniedException("The canonical execution target differs from its admitted binding.");
+        await keyedAuthority.RequireAllowedAsync(submitted.Identity, submitted.Snapshot.Definition.Job, ct);
+        return submitted;
     }
 
     public Task<JobRunInfo> StartReviewedMcpAsync(McpOperatorJobExecutionSnapshot snapshot, RunJobRequest request, CancellationToken cancellationToken)
@@ -145,11 +210,12 @@ public sealed class AkkaJobAuthorityService(
     }
 
     private async Task<JobRunInfo> StartOwnedAsync(ulong jobId, RunJobRequest request, int? recordedRequestId, ClaimsPrincipal? principal, ulong runId, CancellationToken cancellationToken,
-        McpOperatorJobExecutionSnapshot? mcpSnapshot = null)
+        McpOperatorJobExecutionSnapshot? mcpSnapshot = null, PinnedJobExecutionSnapshot? pinnedSnapshot = null)
     {
-        var definition = mcpSnapshot?.Definition ?? await jobDefinitions.GetDetailsAsync(jobId, cancellationToken).ConfigureAwait(false)
+        var definition = pinnedSnapshot?.Definition ?? mcpSnapshot?.Definition ?? await jobDefinitions.GetDetailsAsync(jobId, cancellationToken).ConfigureAwait(false)
             ?? throw new KeyNotFoundException($"Job {jobId} was not found.");
-        if (mcpSnapshot is null) jobRuns.BindSubmittedDefinition(runId, definition);
+        if (pinnedSnapshot is not null) jobRuns.BindPinnedExecutionSnapshot(runId, pinnedSnapshot);
+        else if (mcpSnapshot is null) jobRuns.BindSubmittedDefinition(runId, definition);
         else jobRuns.BindMcpExecutionSnapshot(runId, mcpSnapshot);
         if (recordedRequestId is { } ingressId)
         {
@@ -433,7 +499,22 @@ public sealed class AkkaJobAuthorityService(
             await FailBeforeDispatchAsync(run, cancellationToken, "The reviewed MCP execution snapshot is unavailable.");
             return (await jobRuns.GetAsync(run.Id, cancellationToken))!;
         }
-        var definition = mcpSnapshot?.Definition ?? await jobDefinitions.GetDetailsAsync(run.JobId, cancellationToken).ConfigureAwait(false)
+        var pinnedSnapshot = await jobRuns.GetPinnedExecutionSnapshotAsync(run.Id, cancellationToken).ConfigureAwait(false);
+        if (run.StartedBy.StartsWith("flow-keyed:", StringComparison.Ordinal))
+        {
+            try
+            {
+                var admitted = await RequireKeyedDispatchAsync(run, cancellationToken);
+                if (pinnedSnapshot is null || pinnedSnapshot.ComputeDigest() != admitted.Snapshot.ComputeDigest())
+                    throw new ExecutionAdmissionDeniedException("The pinned canonical job snapshot is unavailable or changed.");
+            }
+            catch (ExecutionAdmissionDeniedException)
+            {
+                await FailBeforeDispatchAsync(run, cancellationToken, "execution-admission-denied: The current flow execution authority is unavailable.");
+                return (await jobRuns.GetAsync(run.Id, cancellationToken))!;
+            }
+        }
+        var definition = pinnedSnapshot?.Definition ?? mcpSnapshot?.Definition ?? await jobDefinitions.GetDetailsAsync(run.JobId, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Job definition {run.JobId} was not found.");
         if (run.StartedBy.StartsWith("service:", StringComparison.Ordinal))
         {
@@ -449,12 +530,14 @@ public sealed class AkkaJobAuthorityService(
 
         var step = definition.Steps.SingleOrDefault(item => item.Id == next.JobStepId)
             ?? throw new InvalidOperationException($"Job step {next.JobStepId} was not found.");
-        var invocation = await taskBridge.BuildGatewayInvocationAsync(
-            run,
-            step,
-            JobTemplateHelper.ParseInputs(await jobRuns.GetExecutionInputsAsync(run.Id, cancellationToken)),
-            JobExecutionRuntimePolicy.FromOptions(await jobRuns.GetExecutionOptionsAsync(run.Id, cancellationToken)),
-            cancellationToken, await jobRuns.GetRunOutputPolicyAsync(run.Id, cancellationToken), mcpSnapshot).ConfigureAwait(false);
+        var resolvedInputs = JobTemplateHelper.ParseInputs(await jobRuns.GetExecutionInputsAsync(run.Id, cancellationToken));
+        var runtimePolicy = JobExecutionRuntimePolicy.FromOptions(await jobRuns.GetExecutionOptionsAsync(run.Id, cancellationToken));
+        var outputPolicy = await jobRuns.GetRunOutputPolicyAsync(run.Id, cancellationToken);
+        var invocation = pinnedSnapshot is null
+            ? await taskBridge.BuildGatewayInvocationAsync(run, step, resolvedInputs, runtimePolicy,
+                cancellationToken, outputPolicy, mcpSnapshot).ConfigureAwait(false)
+            : await taskBridge.BuildPinnedGatewayInvocationAsync(run, step, resolvedInputs, runtimePolicy,
+                pinnedSnapshot, cancellationToken, outputPolicy).ConfigureAwait(false);
         if (!invocation.Success || string.IsNullOrWhiteSpace(invocation.TaskType) || invocation.PayloadJson is null)
         {
             await FailBeforeDispatchAsync(run, cancellationToken, invocation.Error ?? "The job step could not be translated for gateway execution.");
@@ -508,6 +591,8 @@ public sealed class AkkaJobAuthorityService(
         {
             if (run.StartedBy.StartsWith("service:", StringComparison.Ordinal))
                 await managedGuard!.AuthorizeDispatchAsync(run, definition.Job, cancellationToken);
+            if (run.StartedBy.StartsWith("flow-keyed:", StringComparison.Ordinal))
+                await RequireKeyedDispatchAsync(run, cancellationToken);
             await sessions.DispatchAsync(client, new JobGatewayStepDispatch(
                 run.Id, step.Id, next.Id, next.Ordinal, activity.RequestId, $"akka-job-{run.Id}", invocation.TaskType, invocation.PayloadJson,
                 Environment: (int)(run.Environment ?? ClientEnvironment.None), nextVersion, nextSequence, now, ExpectedOwner: dispatchOwner), cancellationToken).ConfigureAwait(false);
@@ -519,6 +604,13 @@ public sealed class AkkaJobAuthorityService(
                 control.Revision++;
                 await db.SaveChangesAsync(cancellationToken);
             }
+        }
+        catch (ExecutionAdmissionDeniedException)
+        {
+            await BeginAfterTransportAsync(cancellationToken);
+            await FailBeforeDispatchAsync(running, cancellationToken, "execution-admission-denied: The current flow execution authority is unavailable.");
+            await CommitBeforeTransportAsync(cancellationToken);
+            throw;
         }
         catch (ManagedOrchestrationGrantUnavailableException)
         {

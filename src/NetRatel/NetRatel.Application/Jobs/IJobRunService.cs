@@ -212,6 +212,10 @@ public interface IJobRunService
     // Called by the server authority immediately after loading the submitted definition;
     // never populated from RunJobRequest or any caller-supplied sensitivity flags.
     void BindSubmittedDefinition(ulong runId, JobDefinitionDetails definition) { }
+    void BindPinnedExecutionSnapshot(ulong runId, PinnedJobExecutionSnapshot snapshot)
+        => throw new NotSupportedException("Pinned canonical job snapshots are unavailable.");
+    Task<PinnedJobExecutionSnapshot?> GetPinnedExecutionSnapshotAsync(ulong runId, CancellationToken ct = default)
+        => Task.FromResult<PinnedJobExecutionSnapshot?>(null);
     void BindMcpExecutionSnapshot(ulong runId, McpOperatorJobExecutionSnapshot snapshot)
         => throw new NotSupportedException("Reviewed MCP job execution snapshots are unavailable.");
     Task<McpOperatorJobExecutionSnapshot?> GetMcpExecutionSnapshotAsync(ulong runId, CancellationToken ct = default)
