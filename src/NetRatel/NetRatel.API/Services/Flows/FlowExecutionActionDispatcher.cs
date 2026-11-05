@@ -89,6 +89,12 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
             var submission = JsonSerializer.Deserialize<ScriptSubmission>(binding.PayloadJson, Json)
                 ?? throw new InvalidOperationException("The protected script submission is unavailable.");
             await authority.RequireScriptAsync(expected, submission.Request.Snapshot.Script.Id, submission.Request.AgentId, ct);
+            if (binding.DispatchStartedAtUtc is null)
+            {
+                var resumed = await scripts.ResumeAsync(expected, binding.ExecutionId, request.Lease, ct);
+                return await ScriptResultAsync(request, resumed.Binding, resumed.Activity, resumed.DispatchUncertain,
+                    resumed.AuthorityDenied, ct);
+            }
             return await ScriptResultAsync(request, binding, await runs.GetActivityByRequestIdAsync(binding.ExecutionId, ct),
                 binding.DispatchStartedAtUtc is not null && binding.DispatchAcceptedAtUtc is null,
                 binding.AuthorityDeniedAtUtc is not null, ct);
@@ -218,19 +224,8 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
         return Result(FlowExecutionActionDisposition.Unsupported, "original-request-not-replayable");
     }
 
-    private async Task<FlowExecutionEventDto?> TerminalAsync(int tenantId, FlowExecutionSourceKind kind, string id, CancellationToken ct)
-    {
-        var candidates = await db.OutboxMessages.AsNoTracking().Where(row => row.Type == FlowExecutionEventLimits.OutboxType &&
-            row.TenantId == tenantId.ToString(CultureInfo.InvariantCulture) && row.EntityId == id)
-            .OrderByDescending(row => row.OccurredUtc).Take(8).Select(row => row.PayloadJson).ToArrayAsync(ct);
-        foreach (var json in candidates)
-        {
-            var value = JsonSerializer.Deserialize<FlowExecutionEventDto>(json, Json);
-            if (value?.TenantId == tenantId && value.SourceKind == kind && value.ExecutionId == id &&
-                FlowExecutionEventValidator.Validate(value).Valid) return value;
-        }
-        return null;
-    }
+    private Task<FlowExecutionEventDto?> TerminalAsync(int tenantId, FlowExecutionSourceKind kind, string id, CancellationToken ct) =>
+        FlowExecutionTerminalFacts.ReadAsync(db, tenantId, kind, id, ct);
     private static FlowNodeDto Node(FlowExecutionActionRequest request) =>
         request.Lease.Version.Graph.Nodes.SingleOrDefault(node => node.Id == request.NodeId)
         ?? throw new ArgumentException("The immutable action node is unavailable.");

@@ -10,6 +10,9 @@ public static class FlowGraphV2Limits
     public const int MaximumNodes = 32;
     public const int MaximumEdges = 64;
     public const int MaximumGraphBytes = 131072;
+    public const int MaximumEventBytes = 24576;
+    public const int MaximumActionBytes = 49152;
+    public const int MaximumValueDepth = 16;
     public const int MaximumRoutePoints = 8;
     public const int MaximumBindings = 32;
     public const int MaximumBindingBytes = 4096;

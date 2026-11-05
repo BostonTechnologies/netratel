@@ -377,6 +377,26 @@ public sealed class FlowExecutionLifecycleOutboxTests
         Assert.Equal(claimed.UpdatedAtUtc, (await requests.GetAsync(request.Id))!.UpdatedAtUtc);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Unavailable_request_source_filter_does_not_abort_or_relabel_the_native_terminal_write(bool oversized)
+    {
+        await using var db = Memory();
+        var sourceSystem = oversized ? new string('s', 257) : "synthetic\nsource";
+        var requests = new RequestService(db, new EphemeralDataProtectionProvider());
+        var created = await requests.CreateAsync(new(sourceSystem, string.Empty, "missing-definition", null, 7, null));
+        await requests.UpdateAsync(new(created.Id, null, null, null, null, "Failed", "Synthetic request failure", null, null, null));
+        var native = await db.Requests.AsNoTracking().SingleAsync();
+        Assert.Equal(sourceSystem, native.SourceSystem);
+        Assert.Equal("Failed", native.Status);
+        var source = Read(await db.OutboxMessages.AsNoTracking().SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType));
+        Assert.Null(source.RequestKind);
+        Assert.Equal(FlowExecutionSourceKind.Request, source.SourceKind);
+        Assert.Equal(FlowExecutionOutcome.Failed, source.Outcome);
+        Assert.True(FlowExecutionEventValidator.Validate(source).Valid);
+    }
+
     [Fact]
     public async Task Late_script_result_writes_append_actual_terminal_evidence_without_mutating_earlier_facts()
     {
@@ -566,10 +586,12 @@ public sealed class FlowExecutionLifecycleOutboxPostgreSqlTests(PostgreSqlPersis
         Assert.Equal(requestId, value.AttemptId);
         Assert.Null(value.ParentExecutionId);
         Assert.Equal(requestId, value.RootExecutionId);
-        Assert.NotNull(value.Causation);
-        Assert.Equal(value.OccurrenceId.ToString("N"), value.Causation.RootOccurrenceId);
+        Assert.Equal(value.OccurrenceId.ToString("N"), value.Causation!.RootOccurrenceId);
         Assert.Null(value.Causation.FlowRunId);
         Assert.Null(value.Causation.NodeId);
+        Assert.Null(value.Causation.ParentEventId);
+        Assert.Equal(0, value.Causation.HopCount);
+        Assert.Equal(0, value.Causation.RecoveryAttempt);
         Assert.Equal(FlowExecutionOutcome.Failed, value.Outcome);
         Assert.Equal("Completed", value.RawStatus);
         Assert.Equal(7, value.ExitCode);

@@ -104,6 +104,8 @@ public sealed partial class FlowPersistenceService
 
     public Task<FlowActionExecutionState?> GetOrCreateActionAsync(FlowRunLease lease, FlowIncidentActionDraft draft, CancellationToken ct = default) => WithDb<FlowActionExecutionState?>(async (db, _) =>
     {
+        if (lease.Version.Graph.SchemaVersion == FlowGraphV2Limits.SchemaVersion)
+            return await GetOrCreateNodeActionAsync(db, lease, draft, ct).ConfigureAwait(false);
         if (draft.RunId != lease.RunId || draft.TenantId != lease.Event.TenantId || draft.SourceInstanceId != lease.SourceInstanceId ||
             draft.IdempotencyKey != FlowActionKeys.Create(lease, draft.ActionNodeId) || Serialize(draft.Event) != Serialize(lease.Event)) return null;
         var target = FlowGraphValidator.ActionTargets(lease.Version.Graph).SingleOrDefault(action => action.Id == draft.ActionNodeId);
@@ -308,12 +310,12 @@ public sealed partial class FlowPersistenceService
         if (result.AiResult is not null)
         {
             if (result.AiResult.TenantId != lease.Event.TenantId || result.AiResult.FlowRunId != lease.RunId || result.AiResult.FlowVersionId != lease.Version.Id ||
-                result.AiResult.ActionNodeId != nodeId || result.AiResult.MessageId != lease.Event.EventId) return false;
+                result.AiResult.ActionNodeId != nodeId || result.AiResult.MessageId != FlowAiCorrelation.MessageId(Parse<FlowIncidentActionDraft>(row.DraftJson))) return false;
             row.AiResultJson = Serialize(result.AiResult);
             var aiNode = lease.Version.Graph.Nodes.SingleOrDefault(node => node.Id == nodeId && node.Kind == FlowNodeKind.InvestigateWithAi);
             var group = lease.Version.Graph.Nodes.SingleOrDefault(node => node.Kind == FlowNodeKind.ActionGroup && node.Actions!.Any(action => action.Id == nodeId));
             var resume = aiNode?.Id ?? group?.Id;
-            if (resume is { } checkpointNode)
+            if (lease.Version.Graph.SchemaVersion == FlowLimits.SchemaVersion && resume is { } checkpointNode)
             {
                 var mapping = lease.Version.Graph.Nodes.Single(node => node.Kind == FlowNodeKind.MapIncident).Mapping!;
                 if (result.Kind != FlowIncidentActionResultKind.Waiting && aiNode is not null &&
@@ -330,6 +332,8 @@ public sealed partial class FlowPersistenceService
     public Task<bool> CompleteRunAsync(FlowRunLease lease, FlowRuntimeResult result, CancellationToken ct = default) => WithDb(async (db, _) =>
     {
         if (!Enum.IsDefined(result.Status) || result.Status is FlowRunStatus.Queued or FlowRunStatus.Running || !ValidCode(result.Code)) return false;
+        if (lease.Version.Graph.SchemaVersion == FlowGraphV2Limits.SchemaVersion)
+            return await CompleteNodeRunAsync(db, lease, result, ct).ConfigureAwait(false);
         await using var transaction = await BeginAsync(db, ct).ConfigureAwait(false); var run = await CurrentLeaseAsync(db, lease, ct).ConfigureAwait(false); if (run is null) return false;
         var actions = await db.FlowActions.Where(row => row.TenantId == run.TenantId && row.RunId == run.Id).ToListAsync(ct).ConfigureAwait(false);
         foreach (var action in actions.Where(row => row.Status == FlowActionStatus.Dispatching))

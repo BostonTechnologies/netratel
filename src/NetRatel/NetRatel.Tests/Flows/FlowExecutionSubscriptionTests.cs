@@ -281,6 +281,173 @@ public sealed class FlowExecutionSubscriptionPostgreSqlTests(PostgreSqlPersisten
         }
     }
 
+    [Fact]
+    public async Task Deferred_old_deliveries_do_not_starve_a_new_due_source_intent()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var ct = deadline.Token;
+        var connection = await postgres.CreateDatabaseAsync(ct);
+        var options = new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(connection).Options;
+        var keys = new EphemeralDataProtectionProvider();
+        var flowId = Guid.NewGuid();
+        var versionId = Guid.NewGuid();
+        var active = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await using (var setup = new OrchestratorDbContext(options))
+        {
+            await setup.Database.MigrateAsync(ct);
+            var definition = new FlowDefinitionRecord
+            {
+                Id = flowId, TenantId = 7, Name = "Synthetic due work", Revision = 1, Enabled = true,
+                EnabledSinceUtc = active, DraftJson = "{}", CreatedAtUtc = active, UpdatedAtUtc = active
+            };
+            setup.FlowDefinitions.Add(definition);
+            setup.FlowVersions.Add(Version(versionId, flowId, Guid.NewGuid(), 1, active));
+            await setup.SaveChangesAsync(ct);
+            definition.PublishedVersionId = versionId;
+            definition.PublishedVersionNumber = 1;
+            await setup.SaveChangesAsync(ct);
+            var requests = new RequestService(setup, keys);
+            for (var index = 0; index < FlowExecutionSubscriptionLimits.MaximumBatch; index++)
+            {
+                var request = await requests.CreateAsync(new("synthetic-old", string.Empty, "missing-definition", null, 7, null), ct);
+                await requests.UpdateAsync(new(request.Id, null, null, null, null, "Failed", null, null, null, null), ct);
+            }
+        }
+        var clock = new SubscriptionClock(DateTimeOffset.UtcNow.AddMinutes(1));
+        var ingress = new CapacityIngress();
+        var services = new ServiceCollection().AddSingleton<TimeProvider>(clock)
+            .AddDbContext<OrchestratorDbContext>(builder => builder.UseNpgsql(connection))
+            .AddSingleton<IFlowExecutionEventIngress>(ingress).BuildServiceProvider();
+        await using (services)
+        {
+            var worker = new ExecutionLifecycleSubscriptionWorker(services.GetRequiredService<IServiceScopeFactory>(),
+                NullLogger<ExecutionLifecycleSubscriptionWorker>.Instance, clock);
+            await worker.ProcessBatchAsync(ct);
+            Assert.Equal(FlowExecutionSubscriptionLimits.MaximumBatch, ingress.Calls.Count);
+            Guid fresh;
+            await using (var source = new OrchestratorDbContext(options))
+            {
+                var requests = new RequestService(source, keys);
+                var request = await requests.CreateAsync(new("synthetic-fresh", string.Empty, "missing-definition", null, 7, null), ct);
+                await requests.UpdateAsync(new(request.Id, null, null, null, null, "Failed", null, null, null, null), ct);
+                fresh = await source.OutboxMessages.Where(row => row.Type == FlowExecutionEventLimits.OutboxType &&
+                        row.EntityId == request.Id.ToString()).Select(row => row.Id).SingleAsync(ct);
+            }
+            clock.Advance(TimeSpan.FromSeconds(6));
+            await worker.ProcessBatchAsync(ct);
+            var retriedBatch = ingress.Calls.Skip(FlowExecutionSubscriptionLimits.MaximumBatch).ToArray();
+            Assert.Equal(FlowExecutionSubscriptionLimits.MaximumBatch, retriedBatch.Length);
+            Assert.Contains(retriedBatch, call => call.SourceEventId == fresh);
+            Assert.Equal(FlowExecutionSubscriptionLimits.MaximumBatch - 1,
+                retriedBatch.Count(call => call.SourceEventId != fresh));
+            await using var verify = new OrchestratorDbContext(options);
+            Assert.Equal(FlowExecutionSubscriptionLimits.MaximumBatch + 1,
+                await verify.OutboxMessages.CountAsync(row => row.Type == FlowExecutionSubscriptionLimits.OutboxType &&
+                    row.Status == OutboxStatuses.Pending, ct));
+        }
+    }
+
+    private sealed class SubscriptionClock(DateTimeOffset initial) : TimeProvider
+    {
+        private DateTimeOffset _now = initial;
+        public override DateTimeOffset GetUtcNow() => _now;
+        public void Advance(TimeSpan elapsed) => _now += elapsed;
+    }
+
+    private sealed class CapacityIngress : IFlowExecutionEventIngress
+    {
+        public List<FlowExecutionEventAdmissionRequest> Calls { get; } = [];
+        public Task<FlowIngressResult> EnqueueExecutionAsync(FlowExecutionEventAdmissionRequest input,
+            CancellationToken cancellationToken = default)
+        {
+            Calls.Add(input);
+            return Task.FromResult(new FlowIngressResult(FlowIngressDisposition.CapacityExceeded, null, "synthetic-capacity"));
+        }
+    }
+
+    [Fact]
+    public async Task An_expired_known_parent_wait_finishes_delivery_without_changing_unknown_source_facts()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var ct = deadline.Token;
+        var connection = await postgres.CreateDatabaseAsync(ct);
+        var options = new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(connection).Options;
+        var keys = new EphemeralDataProtectionProvider();
+        var flowId = Guid.NewGuid();
+        var versionId = Guid.NewGuid();
+        var agent = Guid.NewGuid();
+        var active = DateTimeOffset.UtcNow.AddMinutes(-1);
+        Guid sourceId;
+        string originalPayload;
+        await using (var setup = new OrchestratorDbContext(options))
+        {
+            await setup.Database.MigrateAsync(ct);
+            var definition = new FlowDefinitionRecord
+            {
+                Id = flowId, TenantId = 7, Name = "Synthetic parent wait", Revision = 1, Enabled = true,
+                EnabledSinceUtc = active, DraftJson = "{}", CreatedAtUtc = active, UpdatedAtUtc = active
+            };
+            setup.FlowDefinitions.Add(definition);
+            setup.FlowVersions.Add(Version(versionId, flowId, Guid.NewGuid(), 1, active,
+                FlowExecutionSubscriptionWaitTests.Trigger() with { Outcomes = [FlowExecutionOutcome.Unknown] }));
+            setup.Agents.Add(new() { Id = agent, TenantId = 7, Name = "synthetic-host", CreatedAtUtc = active });
+            setup.Jobs.Add(new() { Id = 9, TenantId = 7, AgentId = agent, Name = "Synthetic bound job",
+                CreatedAtUtc = active, UpdatedAtUtc = active });
+            setup.JobRuns.Add(new() { Id = 41, JobId = 9, TenantId = 7, AgentId = agent, CreatedAtUtc = active,
+                StartedAtUtc = active, StartedBy = "synthetic-parent", Status = (int)JobRunState.Running });
+            setup.Set<JobRunControlRecord>().Add(new() { RunId = 41 });
+            await setup.SaveChangesAsync(ct);
+            definition.PublishedVersionId = versionId;
+            definition.PublishedVersionNumber = 1;
+            await setup.SaveChangesAsync(ct);
+            var requests = new RequestService(setup, keys);
+            var request = await requests.CreateAsync(new("synthetic-parent", string.Empty, "9", null, 7, agent), ct);
+            await using (var accepted = await setup.Database.BeginTransactionAsync(ct))
+            {
+                var run = new JobRunInfo(41, 9, 7, string.Empty, "synthetic-parent", JobRunState.Running, 0,
+                    active, active, null, null, null, null, agent);
+                await ExecutionLifecycleOutbox.RecordAcceptedRequestJobBindingAsync(setup, request, run, ct);
+                await requests.UpdateAsync(new(request.Id, null, null, null, "41", "Unknown",
+                    "Synthetic unknown delivery", null, null, null), ct);
+                await accepted.CommitAsync(ct);
+            }
+            var row = await setup.OutboxMessages.AsNoTracking().SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType, ct);
+            sourceId = row.Id;
+            originalPayload = row.PayloadJson;
+            var fact = JsonSerializer.Deserialize(row.PayloadJson, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto)!;
+            Assert.Equal("job-run:41", fact.CorrelationId);
+            Assert.True(await ExecutionLifecycleSubscriptionWorker.AwaitsKnownParentAsync(setup,
+                FlowExecutionSubscriptionWaitTests.Trigger(), fact, ct));
+        }
+        var clock = new SubscriptionClock(DateTimeOffset.UtcNow + FlowLimits.MaximumRetryAge + TimeSpan.FromSeconds(1));
+        var ingress = new RecordingIngress();
+        var services = new ServiceCollection().AddSingleton<TimeProvider>(clock)
+            .AddDbContext<OrchestratorDbContext>(builder => builder.UseNpgsql(connection))
+            .AddSingleton<IFlowExecutionEventIngress>(ingress).BuildServiceProvider();
+        await using (services)
+        {
+            var worker = new ExecutionLifecycleSubscriptionWorker(services.GetRequiredService<IServiceScopeFactory>(),
+                NullLogger<ExecutionLifecycleSubscriptionWorker>.Instance, clock);
+            await worker.ProcessBatchAsync(ct);
+            await worker.ProcessBatchAsync(ct);
+        }
+        Assert.Empty(ingress.Calls);
+        await using var verify = new OrchestratorDbContext(options);
+        var delivery = await verify.OutboxMessages.AsNoTracking()
+            .SingleAsync(row => row.Type == FlowExecutionSubscriptionLimits.OutboxType, ct);
+        Assert.Equal(OutboxStatuses.Failed, delivery.Status);
+        Assert.Equal("flow-event-expired", delivery.LastError);
+        var source = await verify.OutboxMessages.AsNoTracking().SingleAsync(row => row.Id == sourceId, ct);
+        Assert.Equal(originalPayload, source.PayloadJson);
+        var unchanged = JsonSerializer.Deserialize(source.PayloadJson, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto)!;
+        Assert.Equal(FlowExecutionOutcome.Unknown, unchanged.Outcome);
+        Assert.Equal("Unknown", unchanged.RawStatus);
+        Assert.Equal("Unknown", (await verify.Requests.AsNoTracking().SingleAsync(ct)).Status);
+        Assert.Equal((int)JobRunState.Running, (await verify.JobRuns.AsNoTracking().SingleAsync(ct)).Status);
+        Assert.Null((await verify.Set<JobRunControlRecord>().AsNoTracking().SingleAsync(ct)).TerminalReadyAtUtc);
+        Assert.Empty(await verify.FlowRuns.AsNoTracking().ToArrayAsync(ct));
+    }
+
     private sealed class SubscriptionSelectionObserver : DbCommandInterceptor
     {
         private readonly TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);

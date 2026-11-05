@@ -71,22 +71,37 @@ The event occurrence time is the source transaction's durable transition or term
 
 Source commits pin matching immutable versions and trigger nodes in subscription delivery intents, including the source payload hash, configuration hash and enabled interval. A later publish does not retarget an already selected delivery. Combined subscriptions aggregate by immutable version, trigger, accepted execution attempt and outcome. Known job-backed requests retain their parent correlation even while the final job result is pending; combined admission waits for that result boundary. A request-only admission failure without an accepted job is available immediately. All contributing source facts keep their own identities. Optional presentation names and diagnostic excerpts share the bounded event budget; visible ellipses and a truncation notice identify shortened text. Execution, attempt, parent/root, replay identities and evidence hashes remain exact, and the canonical source retains its full presentation.
 
-A selected job or script filter also matches a request's proven backing definition while retaining the request event family. A caller-edited execution ID does not establish that relationship. The optional request-kind filter matches persisted request source-system values exactly and case-sensitively; it does not describe edits to library definitions. Normal job submission records its immutable target and protected inputs before admission, reserves one execution identity, and commits the accepted request binding inside the native owner transaction before first transport. Concurrent or restarted admission observes that same accepted run.
+A selected job or script filter also matches a request's proven backing definition while retaining the request event family. A caller-edited execution ID does not establish that relationship. The optional request-kind filter matches persisted request source-system values exactly and case-sensitively; it does not describe edits to library definitions. A historical label outside the optional identifier bounds is unavailable to that filter; it is never truncated into another kind, and its native terminal state still commits. Normal job submission records its immutable target and protected inputs before admission, reserves one execution identity, and commits the accepted request binding inside the native owner transaction before first transport. Concurrent or restarted admission observes that same accepted run.
 
 Rerun support requires the original protected execution material. A canonical job can replay its pinned whole job; a library-script execution can replay only its exact pinned script payload and inputs. A script step inside a job remains `Unsupported` until its own complete script execution material is retained; it never silently reruns the whole parent job. A job-backed request can replay the proven canonical job, retaining the request source identity. Legacy or manually claimed requests without trusted replay material remain `Unsupported`.
+
+Deferred source deliveries are scheduled by their next due time so old parent waits and capacity retries cannot starve newly due work. A known-parent wait that passes the existing immutable event retry age finishes as an expired delivery; the source outcome and native request/job state remain unchanged.
 
 The lifecycle delivery worker is inert until the trusted execution-event ingress is registered. It passes server-owned fact and delivery IDs, and the ingress independently verifies the pinned selection and fresh configured authority. The in-memory `RequestEventBus` remains a UI channel and does not admit automation. Preview and playback do not write this ledger or dispatch its subscriptions.
 
 ## Schema transition
 
-The compatible schema-two contracts are available for the overhaul while the current editor,
-save/publish routes and monitoring runtime remain on schema one. A draft upgrade is explicit;
+The compatible schema-two contracts and inert canvas adapter are available for the overhaul while
+the default authoring, save/publish routes and monitoring runtime remain on schema one. A draft upgrade is explicit;
 published versions, configuration hashes and running schema-one continuations are not rewritten.
 The new contract separates execution-event triggers from script/job/rerun actions and defines
 exclusive named outcomes, typed input bindings, stable edge IDs and finite optional routes.
 Its 32-node/64-edge/128 KiB budget is independent of existing execution and receipt bounds.
 The [API contract reference](../contracts/API_REFERENCE.md#flows) describes this transition.
 Execution activation and authoring of those new actions require their durable runtime integration.
+
+Schema-two snapshots retain their original schema, node settings, named ports, stable edge IDs and
+optional route points when loaded and captured. Cards derive their height from the real port count;
+schema-one geometry remains unchanged. Compatibility highlights are calculated from the current
+topology and occupied ports once per structural revision, with full validation repeated on a drop.
+
+In an editable schema-two draft, selecting a curve exposes **Add route point**, coordinate fields
+and **Reset route**. Drag a selected handle, or use arrow keys (Shift moves ten world units) and the
+coordinate fields. At most eight finite points within ±20,000 world units are saved per edge.
+Reset removes custom routing and retains the edge identity. Selected handles sit above nodes;
+readonly viewers permit inspection without route changes. Routing preview stays local to the browser
+and commits one layout change when a gesture completes. These controls do not migrate a schema-one
+draft or activate an execution node.
 
 ## VeloxDev compatibility and notices
 

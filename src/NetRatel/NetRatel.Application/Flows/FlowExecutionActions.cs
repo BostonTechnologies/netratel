@@ -32,6 +32,8 @@ public sealed record FlowExecutionActionRequest(FlowRunLease Lease, Guid NodeId,
     string? InputsJson = null, FlowExecutionReplayDescriptorDto? OriginalReplay = null)
 {
     public int RecoveryAttempt { get; init; }
+    public DateTimeOffset? DeadlineAtUtc { get; init; }
+    public bool AllowUnstartedDispatch { get; init; } = true;
 }
 public sealed record FlowExecutionActionReceipt(Guid ActionKey, ExecutionAdmissionKind Kind, string ExecutionId,
     string? SourceExecutionId = null, int RecoveryAttempt = 0);

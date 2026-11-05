@@ -35,6 +35,14 @@ public sealed class NetclawFlowConnector(OrchestratorDbContext db, NetclawAuthor
             { Kind = FlowActionKind.NetclawInvestigation };
     }
 
+    public async Task<IReadOnlyList<FlowConnectorReferenceDto>> ListForExecutionAsync(int tenantId,
+        FlowExecutionAuthorityDto actor, IReadOnlyList<FlowExecutionSourceKind> sources, CancellationToken cancellationToken = default)
+    {
+        var profile = await profiles.GetAsync(tenantId, cancellationToken);
+        var reference = await GetForExecutionAsync(tenantId, profile.Id, actor, sources, cancellationToken);
+        return reference is null ? [] : [reference];
+    }
+
     public async Task<IReadOnlyList<FlowConnectorReferenceDto>> ListAsync(int tenantId, FlowExecutionAuthorityDto actor, CancellationToken cancellationToken = default)
     {
         var profile = await profiles.GetAsync(tenantId, cancellationToken);
@@ -129,6 +137,11 @@ public sealed class NetclawConnectorCatalog(NotificationAndIncidentConnectorCata
         FlowExecutionAuthorityDto authority, IReadOnlyList<FlowExecutionSourceKind> sources, CancellationToken cancellationToken = default) =>
         await existing.GetAsync(tenantId, connectorId, authority, cancellationToken) ??
         await netclaw.GetForExecutionAsync(tenantId, connectorId, authority, sources, cancellationToken);
+    public async Task<IReadOnlyList<FlowConnectorReferenceDto>> ListForExecutionAsync(int tenantId,
+        FlowExecutionAuthorityDto authority, IReadOnlyList<FlowExecutionSourceKind> sources, CancellationToken cancellationToken = default) =>
+        (await existing.ListAsync(tenantId, authority, cancellationToken))
+            .Concat(await netclaw.ListForExecutionAsync(tenantId, authority, sources, cancellationToken))
+            .OrderBy(reference => reference.Name, StringComparer.OrdinalIgnoreCase).ToArray();
     public async Task<IReadOnlyList<FlowConnectorReferenceDto>> ListAsync(int tenantId, FlowExecutionAuthorityDto authority, CancellationToken cancellationToken = default) =>
         (await existing.ListAsync(tenantId, authority, cancellationToken)).Concat(await netclaw.ListAsync(tenantId, authority, cancellationToken)).ToArray();
 }

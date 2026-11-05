@@ -4,7 +4,7 @@ using NetRatel.Shared.Contracts.Flows;
 
 namespace NetRatel.Application.Flows;
 
-public enum FlowNodeProgress { Prepared = 1, Dispatching = 2, Waiting = 3, AwaitingApproval = 4, Completed = 5 }
+public enum FlowNodeProgress { Prepared = 1, Dispatching = 2, Waiting = 3, AwaitingApproval = 4, Completed = 5, Failed = 6 }
 public enum FlowCheckpointWriteDisposition { Stored, Conflict, LeaseLost, Invalid, Denied }
 
 /// <summary>
@@ -41,6 +41,10 @@ public sealed record FlowNodeCheckpointDto(Guid NodeId, int Revision, int Sequen
     public FlowAiResultDto? Investigation { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public FlowTraceDto? Trace { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FlowRunStatus? ResultStatus { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ResultCode { get; init; }
 }
 
 /// <summary>Writes use the existing run transaction, lease/fence and a checkpoint revision CAS.</summary>
@@ -71,6 +75,11 @@ public static class FlowNodeCheckpointRules
             state.Inputs is null || state.Outputs is null || state.Inputs.Count > FlowGraphV2Limits.MaximumBindings ||
             state.Outputs.Count > FlowGraphV2Limits.MaximumNodes)
             return false;
+        if (state.ResultStatus is { } terminalStatus && terminalStatus is not (FlowRunStatus.Succeeded or FlowRunStatus.Failed or
+                FlowRunStatus.PartiallySucceeded or FlowRunStatus.DeliveryUnknown or FlowRunStatus.Skipped) ||
+            state.ResultCode is { } resultCode && (!FlowGraphValidator.IsBoundedText(resultCode, 128) ||
+                !resultCode.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '.' or '_')) ||
+            (state.ResultStatus is null) != (state.ResultCode is null)) return false;
         var node = lease.Version.Graph.Nodes.SingleOrDefault(node => node.Id == state.NodeId);
         if (node is null || state.Attempt < 1 ||
             state.Attempt > (node.Kind == FlowNodeKind.RerunOriginalExecution ? node.Rerun?.MaximumAttempts ?? 1 : 1) ||
@@ -99,9 +108,9 @@ public static class FlowNodeCheckpointRules
             };
             if (!validWait) return false;
         }
-        if (state.Progress == FlowNodeProgress.Completed)
+        if (state.Progress is FlowNodeProgress.Completed or FlowNodeProgress.Failed)
         {
-            if (FlowNodeCatalogue.IsTerminal(node.Kind))
+            if (FlowNodeCatalogue.IsTerminal(node.Kind) || state.Progress == FlowNodeProgress.Failed)
             {
                 if (state.SelectedPort is not null || state.SelectedEdgeId is not null || state.NextNodeId is not null) return false;
             }
@@ -168,13 +177,13 @@ public static class FlowNodeCheckpointRules
             return false;
         var transition = previous.Progress switch
         {
-            FlowNodeProgress.Prepared => next.Progress is FlowNodeProgress.Dispatching or FlowNodeProgress.Completed,
-            FlowNodeProgress.Dispatching => next.Progress is FlowNodeProgress.Waiting or FlowNodeProgress.AwaitingApproval or FlowNodeProgress.Completed,
-            FlowNodeProgress.Waiting or FlowNodeProgress.AwaitingApproval => next.Progress is FlowNodeProgress.Waiting or FlowNodeProgress.AwaitingApproval or FlowNodeProgress.Completed,
+            FlowNodeProgress.Prepared => next.Progress is FlowNodeProgress.Dispatching or FlowNodeProgress.Completed or FlowNodeProgress.Failed,
+            FlowNodeProgress.Dispatching => next.Progress is FlowNodeProgress.Dispatching or FlowNodeProgress.Waiting or FlowNodeProgress.AwaitingApproval or FlowNodeProgress.Completed or FlowNodeProgress.Failed,
+            FlowNodeProgress.Waiting or FlowNodeProgress.AwaitingApproval => next.Progress is FlowNodeProgress.Dispatching or FlowNodeProgress.Waiting or FlowNodeProgress.AwaitingApproval or FlowNodeProgress.Completed or FlowNodeProgress.Failed,
             _ => false
         };
         if (!transition) return false;
-        if (next.Progress != FlowNodeProgress.Completed) return nextSteps.Count == priorSteps.Count;
+        if (next.Progress is not (FlowNodeProgress.Completed or FlowNodeProgress.Failed)) return nextSteps.Count == priorSteps.Count;
         if (nextSteps.Count != priorSteps.Count + 1) return false;
         var completed = nextSteps[^1];
         return completed.NodeId == next.NodeId && completed.Sequence == next.Sequence &&
