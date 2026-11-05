@@ -86,6 +86,7 @@ public interface IKeyedExecutionAuthority
 }
 
 public sealed class ExecutionAdmissionDeniedException(string message) : InvalidOperationException(message);
+public sealed class ExecutionAdmissionBudgetExhaustedException() : InvalidOperationException("The linked rerun attempt budget is exhausted.");
 
 public sealed record PinnedJobScriptSnapshot(ScriptInfo Script, IReadOnlyList<ScriptParamInfo> Parameters, string ContentHash);
 

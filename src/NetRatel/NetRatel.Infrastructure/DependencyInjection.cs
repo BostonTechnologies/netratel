@@ -75,6 +75,7 @@ public static class DependencyInjection
         services.AddScoped<IKeyedExecutionAuthority>(provider => provider.GetRequiredService<NetRatel.Infrastructure.Flows.FlowExecutionAuthority>());
         services.AddScoped<IJobExecutionSnapshotCapture, PinnedJobExecutionSnapshotCapture>();
         services.AddScoped<NetRatel.Application.Flows.IFlowExecutionDefinitionPins, NetRatel.Infrastructure.Flows.FlowExecutionDefinitionPins>();
+        services.AddScoped<NetRatel.Application.Flows.IFlowExecutionDefinitionCatalog, NetRatel.Infrastructure.Flows.FlowExecutionDefinitionCatalog>();
         services.AddScoped<IRequestService, RequestService>();
         services.AddScoped<ITenantService, TenantService>();
         services.AddScoped<ISecretService, SecretService>();
