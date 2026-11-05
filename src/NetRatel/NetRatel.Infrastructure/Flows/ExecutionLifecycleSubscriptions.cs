@@ -29,6 +29,10 @@ public static class ExecutionLifecycleSubscriptions
         RequireTransaction(db);
         var tenants = facts.Select(x => x.Event.TenantId).Distinct().ToArray();
         var definitions = Definitions(db, tenants).ToArray();
+        var linearizedAt = db.Database.IsNpgsql()
+            ? db.Database.SqlQuery<DateTimeOffset>($"SELECT clock_timestamp() AS \"Value\"").Single()
+            : DateTimeOffset.UtcNow;
+        StampNewFacts(facts, linearizedAt);
         var ids = definitions.Where(x => x.PublishedVersionId != null).Select(x => x.PublishedVersionId!.Value).ToArray();
         var versions = db.FlowVersions.AsNoTracking().Where(x => ids.Contains(x.Id)).ToArray();
         Append(db, facts, definitions, versions);
@@ -41,9 +45,28 @@ public static class ExecutionLifecycleSubscriptions
         RequireTransaction(db);
         var tenants = facts.Select(x => x.Event.TenantId).Distinct().ToArray();
         var definitions = await Definitions(db, tenants).ToArrayAsync(ct);
+        var linearizedAt = db.Database.IsNpgsql()
+            ? await db.Database.SqlQuery<DateTimeOffset>($"SELECT clock_timestamp() AS \"Value\"").SingleAsync(ct)
+            : DateTimeOffset.UtcNow;
+        StampNewFacts(facts, linearizedAt);
         var ids = definitions.Where(x => x.PublishedVersionId != null).Select(x => x.PublishedVersionId!.Value).ToArray();
         var versions = await db.FlowVersions.AsNoTracking().Where(x => ids.Contains(x.Id)).ToArrayAsync(ct);
         Append(db, facts, definitions, versions);
+    }
+
+    // The source transition, selected version and enable interval linearize under the ordered SHARE
+    // locks. Only new, uncommitted facts are stamped here; persisted duplicate facts are never rebuilt.
+    private static void StampNewFacts(List<(OutboxMessage Row, FlowExecutionEventDto Event)> facts, DateTimeOffset at)
+    {
+        for (var index = 0; index < facts.Count; index++)
+        {
+            var (row, fact) = facts[index];
+            var stamped = fact with { OccurredAtUtc = at, ObservedAtUtc = at };
+            row.PayloadJson = JsonSerializer.Serialize(stamped, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto);
+            row.OccurredUtc = at;
+            row.NextAttemptUtc = at;
+            facts[index] = (row, stamped);
+        }
     }
 
     private static IQueryable<FlowDefinitionRecord> Definitions(OrchestratorDbContext db, int[] tenants) =>

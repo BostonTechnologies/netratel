@@ -1,3 +1,5 @@
+using System.Data.Common;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -133,6 +135,83 @@ public sealed class FlowExecutionSubscriptionPostgreSqlTests(PostgreSqlPersisten
             NullLogger<ExecutionLifecycleSubscriptionWorker>.Instance, TimeProvider.System);
         // No DbContext is registered: an inert worker must not even attempt a mutable source scan.
         await worker.ProcessBatchAsync(default);
+    }
+
+    [Fact]
+    public async Task Source_selection_linearizes_after_enable_interval_lock_and_preserves_native_completion_time()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var ct = deadline.Token;
+        var connection = await postgres.CreateDatabaseAsync(ct);
+        var options = new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(connection).Options;
+        var keys = new EphemeralDataProtectionProvider();
+        var flowId = Guid.NewGuid();
+        var versionId = Guid.NewGuid();
+        var triggerId = Guid.NewGuid();
+        var oldInterval = DateTimeOffset.UtcNow.AddMinutes(-1);
+        int requestId;
+        await using (var setup = new OrchestratorDbContext(options))
+        {
+            await setup.Database.MigrateAsync(ct);
+            var definition = new FlowDefinitionRecord { Id = flowId, TenantId = 7, Name = "Synthetic interval source",
+                Revision = 1, Enabled = true, EnabledSinceUtc = oldInterval, CreatedAtUtc = oldInterval,
+                UpdatedAtUtc = oldInterval, DraftJson = "{}" };
+            setup.FlowDefinitions.Add(definition);
+            setup.FlowVersions.Add(Version(versionId, flowId, triggerId, 1, oldInterval));
+            await setup.SaveChangesAsync(ct);
+            definition.PublishedVersionId = versionId;
+            definition.PublishedVersionNumber = 1;
+            await setup.SaveChangesAsync(ct);
+            requestId = (await new RequestService(setup, keys).CreateAsync(
+                new("synthetic-source", string.Empty, "missing-definition", null, 7, null), ct)).Id;
+        }
+        await using var configuration = new OrchestratorDbContext(options);
+        await using var interval = await configuration.Database.BeginTransactionAsync(ct);
+        var locked = await configuration.FlowDefinitions.FromSqlInterpolated(
+            $"SELECT * FROM \"FlowDefinitions\" WHERE \"Id\" = {flowId} FOR UPDATE").SingleAsync(ct);
+        var observer = new SubscriptionSelectionObserver();
+        var sourceOptions = new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(connection)
+            .AddInterceptors(observer).Options;
+        var sourceWrite = Task.Run(async () =>
+        {
+            await using var source = new OrchestratorDbContext(sourceOptions);
+            await new RequestService(source, keys).UpdateAsync(new(requestId, null, null, null, null,
+                "Failed", "Synthetic native terminal failure.", null, null, null), ct);
+        }, ct);
+        await observer.Started.WaitAsync(ct);
+        var enabledAt = await configuration.Database.SqlQuery<DateTimeOffset>(
+            $"SELECT clock_timestamp() AS \"Value\"").SingleAsync(ct);
+        locked.EnabledSinceUtc = enabledAt;
+        locked.Revision++;
+        await configuration.SaveChangesAsync(ct);
+        await interval.CommitAsync(ct);
+        await sourceWrite;
+        await using var verify = new OrchestratorDbContext(options);
+        var row = await verify.OutboxMessages.AsNoTracking().SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType, ct);
+        var fact = JsonSerializer.Deserialize(row.PayloadJson, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto)!;
+        Assert.NotNull(fact.CompletedAtUtc);
+        Assert.True(fact.CompletedAtUtc.Value <= enabledAt);
+        Assert.True(fact.OccurredAtUtc >= enabledAt);
+        var delivery = ExecutionLifecycleSubscriptions.ReadDelivery((await verify.OutboxMessages.AsNoTracking()
+            .SingleAsync(x => x.Type == FlowExecutionSubscriptionLimits.OutboxType, ct)).PayloadJson)!;
+        Assert.Equal(enabledAt, delivery.ActiveSinceUtc);
+        Assert.Equal(row.Id, delivery.SourceEventId);
+        Assert.Equal(ExecutionLifecycleSubscriptions.PayloadHash(row.PayloadJson), delivery.SourcePayloadHash);
+    }
+
+    private sealed class SubscriptionSelectionObserver : DbCommandInterceptor
+    {
+        private readonly TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task Started => _started.Task;
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command,
+            CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("FOR SHARE", StringComparison.Ordinal) &&
+                command.CommandText.Contains("\"FlowDefinitions\"", StringComparison.Ordinal))
+                _started.TrySetResult();
+            return ValueTask.FromResult(result);
+        }
     }
 
     private static FlowVersionRecord Version(Guid id, Guid flowId, Guid triggerId, int number, DateTimeOffset published)

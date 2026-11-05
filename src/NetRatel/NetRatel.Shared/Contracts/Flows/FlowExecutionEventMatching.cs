@@ -96,7 +96,7 @@ public static class FlowExecutionEventMatching
             ids.Any(id => !Identifier(id)) || ids.Distinct(StringComparer.Ordinal).Count() != ids.Count)) return false;
         if (references is { Count: > 0 } && (references.Count > FlowGraphV2Limits.MaximumSelectedDefinitions ||
             references.Any(reference => reference is null || (!sources.Contains(reference.SourceKind) && !(sources.Contains(FlowExecutionSourceKind.Request) && reference.SourceKind is FlowExecutionSourceKind.Job or FlowExecutionSourceKind.Script)) || !Identifier(reference.Id)) ||
-            references.Distinct().Count() != references.Count)) return false;
+            references.Select(reference => (reference.SourceKind, reference.Id)).Distinct().Count() != references.Count)) return false;
         var hasIds = ids is { Count: > 0 };
         var hasReferences = references is { Count: > 0 };
         if (settings.Scope == FlowExecutionScope.AllInTenant && (hasIds || hasReferences) ||

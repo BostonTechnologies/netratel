@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Notifications;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Flows;
 using NetRatel.Shared.Contracts;
 using NetRatel.Shared.Contracts.Monitoring;
 
@@ -14,7 +15,9 @@ public sealed class NetRatelNotificationService(
     private readonly OrchestratorDbContext _db = db;
     private readonly NetRatelNotificationDisplaySanitizer _displaySanitizer = displaySanitizer;
 
-    private IQueryable<OutboxMessage> LegacyMessages => _db.OutboxMessages.Where(message => !message.Type.StartsWith(MonitoringLimits.NotificationEventPrefix));
+    private IQueryable<OutboxMessage> LegacyMessages => _db.OutboxMessages.Where(message =>
+        !message.Type.StartsWith(MonitoringLimits.NotificationEventPrefix) &&
+        !message.Type.StartsWith(ExecutionLifecycleOutbox.EventTypePrefix));
 
     private IQueryable<OutboxMessage> VisibleMessages(string userId)
     {

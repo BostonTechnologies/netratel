@@ -213,8 +213,14 @@ public static class ExecutionLifecycleOutbox
             var row = await query.AsNoTracking().SingleOrDefaultAsync(ct);
             if (row is null || row.ExecutionId != binding.ExecutionId || PositiveDecimal(row.JobDefinitionId) != PositiveDecimal(binding.JobDefinitionId) ||
                 row.TargetTenantId != binding.TenantId || row.TargetAgentId != binding.AgentId ||
-                row.SourceSystem != binding.SourceSystem || FlowExecutionOutcomes.FromAuthoritativeStatus(row.Status) is not null)
+                row.SourceSystem != binding.SourceSystem) continue;
+            if (FlowExecutionOutcomes.FromAuthoritativeStatus(row.Status) is not null)
+            {
+                if (details.Run.Status == JobRunState.TimedOut &&
+                    FlowExecutionOutcomes.FromAuthoritativeStatus(row.Status) == FlowExecutionOutcome.TimedOut)
+                    await RecordRequestAsync(db, row, string.Empty, details.Run.CompletedAtUtc ?? DateTimeOffset.UtcNow, ct);
                 continue;
+            }
             // Only a bounded reference is copied; the actual immutable terminal body remains in its canonical result.
             var result = JsonSerializer.Serialize(new { jobRunId = runId, status, resultHash });
             await requests.UpdateAsync(new(binding.RequestId, null, null, null, null, status,
@@ -231,7 +237,12 @@ public static class ExecutionLifecycleOutbox
             if (candidate.Request is { } request)
             {
                 if (HasSubmission(db, request)) value = value with { DefinitionSourceKind = FlowExecutionSourceKind.Job };
-                if (LinkedJob(db, request) is { } run) value = CorrelateJob(value, run);
+                if (LinkedJob(db, request) is { } run)
+                {
+                    value = CorrelateJob(value, run);
+                    if (FlowExecutionOutcomes.FromAuthoritativeStatus(value.RawStatus) == FlowExecutionOutcome.TimedOut)
+                        value = RequestTimeoutOutcome(value, run, Control(db, run.Id));
+                }
             }
             value = ApplyAdmission(value, Admission(db, value));
             Append(db, value);
@@ -247,7 +258,12 @@ public static class ExecutionLifecycleOutbox
             if (candidate.Request is { } request)
             {
                 if (await HasTrustedSubmissionAsync(db, request, ct)) value = value with { DefinitionSourceKind = FlowExecutionSourceKind.Job };
-                if (await LinkedJobAsync(db, request, ct) is { } run) value = CorrelateJob(value, run);
+                if (await LinkedJobAsync(db, request, ct) is { } run)
+                {
+                    value = CorrelateJob(value, run);
+                    if (FlowExecutionOutcomes.FromAuthoritativeStatus(value.RawStatus) == FlowExecutionOutcome.TimedOut)
+                        value = RequestTimeoutOutcome(value, run, await ControlAsync(db, run.Id, ct));
+                }
             }
             value = ApplyAdmission(value, await AdmissionAsync(db, value, ct));
             Append(db, value);
@@ -261,8 +277,15 @@ public static class ExecutionLifecycleOutbox
         var value = RequestEvent(row, previousStatus, observedAtUtc);
         if (value is null) return;
         if (await HasTrustedSubmissionAsync(db, row, ct)) value = value with { DefinitionSourceKind = FlowExecutionSourceKind.Job };
-        if (await LinkedJobAsync(db, row, ct) is { } run) value = CorrelateJob(value, run);
+        if (await LinkedJobAsync(db, row, ct) is { } run)
+        {
+            value = CorrelateJob(value, run);
+            if (FlowExecutionOutcomes.FromAuthoritativeStatus(value.RawStatus) == FlowExecutionOutcome.TimedOut)
+                value = RequestTimeoutOutcome(value, run, await ControlAsync(db, run.Id, ct));
+        }
         value = ApplyAdmission(value, await AdmissionAsync(db, value, ct));
+        if (db.OutboxMessages.Local.Any(x => x.Id == value.EventId) ||
+            await db.OutboxMessages.AsNoTracking().AnyAsync(x => x.Id == value.EventId, ct)) return;
         Append(db, value);
     }
 
@@ -319,6 +342,8 @@ public static class ExecutionLifecycleOutbox
         if (row.TargetTenantId is not > 0 || row.Id <= 0 ||
             string.Equals(row.Status, previousStatus, StringComparison.OrdinalIgnoreCase) ||
             FlowExecutionOutcomes.FromAuthoritativeStatus(row.Status) is not { } outcome) return null;
+        var unprovedTimeout = outcome == FlowExecutionOutcome.TimedOut;
+        if (unprovedTimeout) outcome = FlowExecutionOutcome.Unknown;
         var id = row.Id.ToString(CultureInfo.InvariantCulture);
         // Browser claim/edit identifiers are descriptive until an immutable server-owned binding proves them.
         var attempt = id;
@@ -333,7 +358,7 @@ public static class ExecutionLifecycleOutbox
             CompletedAtUtc = row.UpdatedAtUtc,
             RequestKind = Bound(row.SourceSystem, FlowExecutionEventLimits.MaximumIdentifierLength),
             CorrelationId = "request:" + id,
-            ReasonCode = "request_" + outcome.ToString().ToLowerInvariant(),
+            ReasonCode = unprovedTimeout ? "request_timeout_evidence_unavailable" : "request_" + outcome.ToString().ToLowerInvariant(),
             Reason = Bound(row.ResultMessage, 512),
             Results = [new("request-result", id, Digest(row.ResultData), row.ResultData is not null)],
             Replay = new(FlowExecutionSourceKind.Request, definition, target, "request:" + id, id, attempt,
@@ -498,6 +523,35 @@ public static class ExecutionLifecycleOutbox
                 ledger.TenantId == binding.TenantId.ToString(CultureInfo.InvariantCulture);
         }
         catch (JsonException) { return false; }
+    }
+
+    private static JobRunControlRecord? Control(OrchestratorDbContext db, long runId) =>
+        db.Set<JobRunControlRecord>().Local.SingleOrDefault(x => x.RunId == runId) ??
+        db.Set<JobRunControlRecord>().AsNoTracking().SingleOrDefault(x => x.RunId == runId);
+
+    private static Task<JobRunControlRecord?> ControlAsync(OrchestratorDbContext db, long runId, CancellationToken ct) =>
+        db.Set<JobRunControlRecord>().Local.SingleOrDefault(x => x.RunId == runId) is { } local
+            ? Task.FromResult<JobRunControlRecord?>(local)
+            : db.Set<JobRunControlRecord>().AsNoTracking().SingleOrDefaultAsync(x => x.RunId == runId, ct);
+
+    private static FlowExecutionEventDto RequestTimeoutOutcome(FlowExecutionEventDto value, JobRunRecord run,
+        JobRunControlRecord? control)
+    {
+        if (FlowExecutionOutcomes.FromAuthoritativeStatus(value.RawStatus) != FlowExecutionOutcome.TimedOut ||
+            run.Status != (int)JobRunState.TimedOut || control?.RunId != run.Id ||
+            control.TerminalReadyAtUtc is null || control.TerminalResultHash is not { Length: 64 } hash ||
+            !hash.All(char.IsAsciiHexDigit)) return value;
+        // Mutable request labels do not establish deadlines. The accepted native result does.
+        // Its immutable hash gives duplicate/backfill delivery a stable identity even if the raw
+        // request had already claimed timeout before its real parent result became ready.
+        return value with
+        {
+            EventId = Identity($"event|{value.OccurrenceId:N}|{(int)FlowExecutionOutcome.TimedOut}|{value.RawStatus.ToUpperInvariant()}|job-result|{hash}"),
+            Outcome = FlowExecutionOutcome.TimedOut,
+            ReasonCode = "request_timedout",
+            Reason = Bound(run.Error, 512),
+            Results = [.. (value.Results ?? []), new("job-result", Decimal(run.Id), hash, Available: true)]
+        };
     }
 
     private static FlowExecutionEventDto CorrelateJob(FlowExecutionEventDto value, JobRunRecord run)
