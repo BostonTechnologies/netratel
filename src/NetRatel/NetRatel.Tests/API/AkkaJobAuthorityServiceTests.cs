@@ -416,6 +416,11 @@ public sealed class AkkaJobAuthorityServiceTests
     {
         public bool Allowed { get; set; } = true;
         public int Checks { get; private set; }
+        public Task RequireFirstDispatchAsync(ExecutionAdmissionIdentity identity, NetRatel.Application.Flows.FlowRunLease? lease, CancellationToken ct)
+        {
+            if (!Allowed) throw new ExecutionAdmissionDeniedException("The configuring principal is no longer authorized.");
+            return Task.CompletedTask;
+        }
         public Task RequireAllowedAsync(ExecutionAdmissionIdentity identity, JobDefinitionInfo definition, CancellationToken ct)
         {
             Checks++;

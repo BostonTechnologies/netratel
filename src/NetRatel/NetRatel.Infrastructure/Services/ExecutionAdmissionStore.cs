@@ -77,6 +77,50 @@ public sealed class ExecutionAdmissionStore(OrchestratorDbContext db, IDataProte
         if (updated != 1) throw new InvalidOperationException("The denied execution admission disappeared.");
     }
 
+    public async Task<bool> TryBeginDispatchAsync(ExecutionAdmissionBinding binding, Func<CancellationToken, Task> prepare, Func<CancellationToken, Task> validate,
+        CancellationToken cancellationToken)
+    {
+        if (db.Database.ProviderName != "Npgsql.EntityFrameworkCore.PostgreSQL" || db.Database.CurrentTransaction is not null)
+            throw new InvalidOperationException("Canonical physical dispatch must own its PostgreSQL transaction.");
+        var submission = new ExecutionAdmissionSubmission(binding.Identity, binding.Kind, binding.PayloadJson);
+        submission.Validate();
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var lockKey = BinaryPrimitives.ReadInt32BigEndian(SHA256.HashData(binding.Identity.ActionKey.ToByteArray()));
+        await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({0x4E52454B}, {lockKey})", cancellationToken);
+        var existing = await db.Set<ExecutionAdmissionRecord>().AsNoTracking()
+            .SingleOrDefaultAsync(record => record.ActionKey == binding.Identity.ActionKey, cancellationToken);
+        if (existing is null || existing.ExecutionId != binding.ExecutionId || !Matches(existing, submission))
+            throw new InvalidOperationException("The physical dispatch does not match its canonical admission.");
+        if (existing.DispatchStartedAtUtc is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return false;
+        }
+        ArgumentNullException.ThrowIfNull(validate);
+        await prepare(cancellationToken);
+        await validate(cancellationToken);
+        var startedAt = clock.GetUtcNow();
+        var updated = await db.Set<ExecutionAdmissionRecord>().Where(record => record.ActionKey == binding.Identity.ActionKey &&
+                record.DispatchStartedAtUtc == null)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(record => record.DispatchStartedAtUtc, startedAt), cancellationToken);
+        if (updated != 1) throw new InvalidOperationException("The canonical dispatch claim was lost.");
+        await validate(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
+    public async Task RecordDispatchAcceptedAsync(ExecutionAdmissionBinding binding, CancellationToken cancellationToken)
+    {
+        if (db.Database.ProviderName != "Npgsql.EntityFrameworkCore.PostgreSQL" || db.Database.CurrentTransaction is not null)
+            throw new InvalidOperationException("Canonical dispatch acceptance must commit independently of physical dispatch.");
+        var acceptedAt = clock.GetUtcNow();
+        var updated = await db.Set<ExecutionAdmissionRecord>().Where(record => record.ActionKey == binding.Identity.ActionKey &&
+                record.Kind == (int)binding.Kind && record.ExecutionId == binding.ExecutionId && record.DispatchStartedAtUtc != null)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(record => record.DispatchAcceptedAtUtc,
+                record => record.DispatchAcceptedAtUtc ?? acceptedAt), cancellationToken);
+        if (updated != 1) throw new InvalidOperationException("The canonical physical dispatch claim disappeared.");
+    }
+
     private static bool Matches(ExecutionAdmissionRecord row, ExecutionAdmissionSubmission submission)
     {
         var identity = submission.Identity;
@@ -95,7 +139,9 @@ public sealed class ExecutionAdmissionStore(OrchestratorDbContext db, IDataProte
         return new(new(row.ActionKey, row.TenantId, row.PrincipalId, row.FlowVersionId, row.FlowRunId, row.NodeId,
             row.NodeAttempt, row.IntegrationCredentialId)
             { Causation = row.CausationJson is null ? null : JsonSerializer.Deserialize<ExecutionAdmissionCausation>(row.CausationJson) },
-            (ExecutionAdmissionKind)row.Kind, row.ExecutionId, payload, row.CreatedAtUtc);
+            (ExecutionAdmissionKind)row.Kind, row.ExecutionId, payload, row.CreatedAtUtc)
+            { DispatchStartedAtUtc = row.DispatchStartedAtUtc, DispatchAcceptedAtUtc = row.DispatchAcceptedAtUtc,
+                AuthorityDeniedAtUtc = row.AuthorityDeniedAtUtc };
     }
 
     private IDataProtector Protector(ExecutionAdmissionRecord row) => protection.CreateProtector(

@@ -153,8 +153,9 @@ public sealed class AkkaJobAuthorityService(
                 // It never replays gateway IO after a committed canonical intent.
                 return existing;
             }
+            await keyedAuthority.RequireFirstDispatchAsync(submitted.Identity, admission.FlowLease, ct);
             return await StartOwnedAsync(submitted.Snapshot.Definition.Job.Id, submitted.Request, null, null,
-                runId, ct, pinnedSnapshot: submitted.Snapshot);
+                runId, ct, pinnedSnapshot: submitted.Snapshot, firstDispatchLease: admission.FlowLease);
         }, cancellationToken);
     }
 
@@ -211,7 +212,8 @@ public sealed class AkkaJobAuthorityService(
     }
 
     private async Task<JobRunInfo> StartOwnedAsync(ulong jobId, RunJobRequest request, int? recordedRequestId, ClaimsPrincipal? principal, ulong runId, CancellationToken cancellationToken,
-        McpOperatorJobExecutionSnapshot? mcpSnapshot = null, PinnedJobExecutionSnapshot? pinnedSnapshot = null)
+        McpOperatorJobExecutionSnapshot? mcpSnapshot = null, PinnedJobExecutionSnapshot? pinnedSnapshot = null,
+        NetRatel.Application.Flows.FlowRunLease? firstDispatchLease = null)
     {
         var definition = pinnedSnapshot?.Definition ?? mcpSnapshot?.Definition ?? await jobDefinitions.GetDetailsAsync(jobId, cancellationToken).ConfigureAwait(false)
             ?? throw new KeyNotFoundException($"Job {jobId} was not found.");
@@ -334,7 +336,7 @@ public sealed class AkkaJobAuthorityService(
         // this stage truthfully; it never starts a replacement physical command.
         await CommitBeforeTransportAsync(cancellationToken);
         await BeginAfterTransportAsync(cancellationToken);
-        return await DispatchNextAsync(run.Id, client, nextVersion: 3, nextSequence: 3, cancellationToken).ConfigureAwait(false);
+        return await DispatchNextAsync(run.Id, client, nextVersion: 3, nextSequence: 3, cancellationToken, firstDispatchLease).ConfigureAwait(false);
     }
 
     public async Task RecordLifecycleAsync(ClientKey client, JobLifecycleUpdateEnvelope lifecycle, CancellationToken cancellationToken)
@@ -480,7 +482,8 @@ public sealed class AkkaJobAuthorityService(
         return true;
     }
 
-    private async Task<JobRunInfo> DispatchNextAsync(ulong runId, ClientKey client, ulong nextVersion, ulong nextSequence, CancellationToken cancellationToken)
+    private async Task<JobRunInfo> DispatchNextAsync(ulong runId, ClientKey client, ulong nextVersion, ulong nextSequence, CancellationToken cancellationToken,
+        NetRatel.Application.Flows.FlowRunLease? firstDispatchLease = null)
     {
         var details = await jobRuns.GetDetailsAsync(runId, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Job run {runId} was not found.");
@@ -603,7 +606,11 @@ public sealed class AkkaJobAuthorityService(
             if (run.StartedBy.StartsWith("service:", StringComparison.Ordinal))
                 await managedGuard!.AuthorizeDispatchAsync(run, definition.Job, cancellationToken);
             if (run.StartedBy.StartsWith("flow-keyed:", StringComparison.Ordinal))
-                await RequireKeyedDispatchAsync(run, cancellationToken);
+            {
+                var keyed = await RequireKeyedDispatchAsync(run, cancellationToken);
+                if (firstDispatchLease is not null)
+                    await keyedAuthority!.RequireFirstDispatchAsync(keyed.Identity, firstDispatchLease, cancellationToken);
+            }
             await sessions.DispatchAsync(client, new JobGatewayStepDispatch(
                 run.Id, step.Id, next.Id, next.Ordinal, activity.RequestId, $"akka-job-{run.Id}", invocation.TaskType, invocation.PayloadJson,
                 Environment: (int)(run.Environment ?? ClientEnvironment.None), nextVersion, nextSequence, now, ExpectedOwner: dispatchOwner), cancellationToken).ConfigureAwait(false);

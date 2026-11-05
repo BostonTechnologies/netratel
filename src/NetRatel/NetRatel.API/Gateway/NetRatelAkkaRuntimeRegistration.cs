@@ -8,6 +8,8 @@ using NetRatel.API.Realtime;
 using NetRatel.API.Realtime.Operations;
 using NetRatel.API.Services;
 using NetRatel.API.Services.Jobs;
+using NetRatel.API.Services.Flows;
+using NetRatel.Application.Scripts;
 using NetRatel.API.Services.Terminal;
 using NetRatel.Akka.Configuration;
 using NetRatel.Akka.Hosting;
@@ -109,6 +111,7 @@ public static class NetRatelAkkaRuntimeRegistration
             serviceProvider.GetRequiredService<AgentCommandGatewaySessionRegistry>());
         services.TryAddSingleton<IAgentCommandAuthorityDispatcher, AgentCommandAuthorityDispatcher>();
         services.TryAddScoped<IAkkaJobAuthorityService, AkkaJobAuthorityService>();
+        services.TryAddScoped<IKeyedScriptExecutionService, KeyedScriptExecutionService>();
         services.TryAddSingleton<AgentJobGatewaySessionRegistry>();
         services.TryAddSingleton<IAgentJobGatewaySessionRegistry>(serviceProvider =>
             serviceProvider.GetRequiredService<AgentJobGatewaySessionRegistry>());

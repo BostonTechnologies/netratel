@@ -14,8 +14,10 @@ internal sealed class JobRunInputProtection(IDataProtectionProvider protection)
     internal const string Mask = "[REDACTED]";
     internal sealed record Parameter(long Id, string Name, string Type, bool Required);
     internal sealed record Sensitivity(string Provenance, string? DefinitionRevision, Parameter[] Parameters,
-        string? PriorTerminalResultHash = null, string? ProtectedTerminalResultHash = null)
+        string? PriorTerminalResultHash = null, string? ProtectedTerminalResultHash = null, string? DefinitionName = null)
     {
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public string? PinnedReplayDefinitionHash { get; init; }
         public bool Legacy => Provenance != "submitted-definition-v1";
         public HashSet<string> Secrets => Parameters.Where(p => p.Type.Equals("secret", StringComparison.OrdinalIgnoreCase))
             .Select(p => p.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -31,7 +33,7 @@ internal sealed class JobRunInputProtection(IDataProtectionProvider protection)
         var snapshot = parameters.OrderBy(p => p.Id).Select(p => new Parameter(p.Id, p.Name, p.Type, p.Required)).ToArray();
         var revision = definition is null ? null : Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
             JsonSerializer.Serialize(new { definition.Id, definition.UpdatedAtUtc, Parameters = snapshot }))));
-        return new(definition is null ? "legacy-unknown-v1" : "submitted-definition-v1", revision, snapshot);
+        return new(definition is null ? "legacy-unknown-v1" : "submitted-definition-v1", revision, snapshot, DefinitionName: definition?.Name);
     }
 
     public static Sensitivity Metadata(JobRunRecord run)
@@ -51,6 +53,17 @@ internal sealed class JobRunInputProtection(IDataProtectionProvider protection)
     public void Store(JobRunRecord run, Sensitivity metadata, string? inputs, string? options, McpOperatorJobExecutionSnapshot? mcpSnapshot = null,
         PinnedJobExecutionSnapshot? pinnedSnapshot = null)
     {
+        if (pinnedSnapshot is not null)
+        {
+            pinnedSnapshot.Validate(run.TenantId ?? 0);
+            var digest = pinnedSnapshot.ComputeDigest();
+            if (pinnedSnapshot.Definition.Job.Id != checked((ulong)run.JobId) ||
+                pinnedSnapshot.Definition.Job.AgentId != run.AgentId || digest != metadata.DefinitionRevision)
+                throw new InvalidOperationException("The protected replay source differs from its immutable run binding.");
+            metadata = metadata with { PinnedReplayDefinitionHash = digest };
+        }
+        else if (metadata.PinnedReplayDefinitionHash is not null)
+            throw new InvalidOperationException("A replay marker requires a protected complete source snapshot.");
         run.InputSensitivityJson = JsonSerializer.Serialize(metadata);
         run.ProtectedExecutionJson = Protector(run).Protect(JsonSerializer.Serialize(new Execution(inputs, options, mcpSnapshot) { PinnedSnapshot = pinnedSnapshot }));
         run.InputsJson = RedactInputs(inputs, metadata);

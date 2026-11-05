@@ -72,7 +72,7 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
 
     public void BindSubmittedDefinition(ulong runId, JobDefinitionDetails definition)
     {
-        var job = new JobDefinition { Id = checked((long)definition.Job.Id), UpdatedAtUtc = definition.Job.UpdatedAtUtc };
+        var job = new JobDefinition { Id = checked((long)definition.Job.Id), Name = definition.Job.Name, UpdatedAtUtc = definition.Job.UpdatedAtUtc };
         var parameters = definition.Params.Select(p => new JobParameterDefinition
             { Id = checked((long)p.Id), Name = p.Name, Type = p.Type, Required = p.Required });
         // Bind exactly once; later lifecycle calls cannot replace submission sensitivity.
