@@ -376,12 +376,13 @@
         var g = await _module.InvokeAsync<double[]>("geometry", ScrollId);
         var marginX = Math.Min(30, Math.Max(4, g[2] * .08));
         var marginY = Math.Min(30, Math.Max(4, g[3] * .08));
+        var topInset = Math.Max(marginY, await _module.InvokeAsync<double>("canvasToolsInset", PanelId));
         var desired = Math.Clamp(Math.Max((nodes.Max(n => n.Position.X + Adapter.DesignSize(n.Kind).Width) - nodes.Min(n => n.Position.X)) / Math.Max(1, g[2] - marginX * 2),
-            (nodes.Max(n => n.Position.Y + Adapter.DesignSize(n.Kind).Height) - nodes.Min(n => n.Position.Y)) / Math.Max(1, g[3] - marginY * 2 - (_overviewOpen ? 92 : 0))), .1, 10);
+            (nodes.Max(n => n.Position.Y + Adapter.DesignSize(n.Kind).Height) - nodes.Min(n => n.Position.Y)) / Math.Max(1, g[3] - topInset - marginY - (_overviewOpen ? 92 : 0))), .1, 10);
         var steps = (int)Math.Ceiling(Math.Log(desired / Adapter.Tree.Layout.Scale.Horizontal, 1.1));
         if (steps != 0) await ZoomAsync(-120 * steps);
         // Native zoom also changes the surface offset. Position using the actual rendered node bounds.
-        await _module.InvokeVoidAsync("fitPosition", ScrollId, marginX, marginY);
+        await _module.InvokeVoidAsync("fitPosition", ScrollId, marginX, topInset);
     }
     private async Task ToggleOverviewAsync()
     {

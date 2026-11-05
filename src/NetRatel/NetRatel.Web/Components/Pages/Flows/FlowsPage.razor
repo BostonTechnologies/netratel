@@ -23,7 +23,7 @@
     else if (_editorDefinition is not null)
     {
         <FlowEditor @ref="_editor" InitialSelectedNodeId="RequestedNodeId" @key="(_editorDefinition.Id, _version?.Id)" Definition="_editorDefinition" TenantName="@Access!.TenantName" Connectors="_connectors"
-            CanEdit="@(Access.CanEdit)" CanPublish="@(Access.CanPublish)" ReadOnly="@(_version is not null)" VersionNumber="@(_version?.VersionNumber ?? 0)"
+            CanEdit="@(Access.CanEdit)" CanPublish="@(Access.CanPublish)" SupportedDraftSchemas="_schemaCapabilities.SupportedDraftSchemas" ExecutableSchemas="_schemaCapabilities.ExecutableSchemas" ReadOnly="@(_version is not null)" VersionNumber="@(_version?.VersionNumber ?? 0)"
             Saved="DefinitionSaved" Closed="CloseEditor" DirtyChanged="DirtyChanged" />
     }
     else
@@ -108,6 +108,8 @@
     [SupplyParameterFromQuery(Name = "nodeId")] public Guid? RequestedNodeId { get; set; }
     [SupplyParameterFromQuery(Name = "search")] public string? RequestedSearch { get; set; }
     private FlowEditor? _editor;
+    private static readonly FlowSchemaCapabilitiesDto LegacyCapabilities = new([FlowLimits.SchemaVersion], [FlowLimits.SchemaVersion]);
+    private FlowSchemaCapabilitiesDto _schemaCapabilities = LegacyCapabilities;
     private (int? Tenant, Guid? Version, Guid? Run, Guid? Draft, Guid? Node) _processedQuery;
     private IReadOnlyList<FlowTenantAccessDto> _tenants = [];
     private IReadOnlyList<FlowDefinitionDto> _flows = [];
@@ -266,11 +268,28 @@
         if (!Current(generation, flow.TenantId) || latest.TenantId != _tenantId || latest.Id != flow.Id) return;
         await OpenEditorCoreAsync(latest, generation, token);
     });
+    private async Task<FlowSchemaCapabilitiesDto> ReadSchemaCapabilitiesAsync(int tenant, CancellationToken token)
+    {
+        try
+        {
+            var capabilities = await Api.GetSchemaCapabilitiesAsync(tenant, token);
+            if (capabilities.SupportedDraftSchemas is null || capabilities.ExecutableSchemas is null ||
+                capabilities.SupportedDraftSchemas.Any(schema => schema <= 0) || capabilities.ExecutableSchemas.Any(schema => schema <= 0))
+                throw new HttpRequestException("The server returned invalid flow schema capabilities.");
+            return new(capabilities.SupportedDraftSchemas.Where(schema => schema is FlowLimits.SchemaVersion or FlowGraphV2Limits.SchemaVersion).Distinct().ToArray(),
+                capabilities.ExecutableSchemas.Where(schema => schema is FlowLimits.SchemaVersion or FlowGraphV2Limits.SchemaVersion).Distinct().ToArray());
+        }
+        catch (FlowApiException exception) when (exception.StatusCode == System.Net.HttpStatusCode.NotFound)
+        { return LegacyCapabilities; }
+    }
     private async Task OpenEditorCoreAsync(FlowDefinitionDto flow, int generation, CancellationToken token)
     {
-        var connectors = await Api.GetConnectorsAsync(flow.TenantId, token);
+        var connectorsTask = Api.GetConnectorsAsync(flow.TenantId, token);
+        var capabilitiesTask = ReadSchemaCapabilitiesAsync(flow.TenantId, token);
+        await Task.WhenAll(connectorsTask, capabilitiesTask);
         if (!Current(generation, flow.TenantId)) return;
-        _connectors = connectors.Where(c => c.TenantId == flow.TenantId).ToArray(); _editorDefinition = flow; _version = null; _dirty = false; _history = null; _historyOpen = false;
+        _schemaCapabilities = await capabilitiesTask;
+        _connectors = (await connectorsTask).Where(c => c.TenantId == flow.TenantId).ToArray(); _editorDefinition = flow; _version = null; _dirty = false; _history = null; _historyOpen = false;
     }
     private Task DefinitionSaved(FlowDefinitionDto flow)
     {

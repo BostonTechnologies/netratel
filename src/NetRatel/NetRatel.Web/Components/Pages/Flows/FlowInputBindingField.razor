@@ -1,5 +1,6 @@
 @using System.Globalization
 @using System.Text.Json
+@using System.Text
 @using NetRatel.Shared.Contracts.Flows
 @implements IDisposable
 
@@ -156,6 +157,8 @@
             catch (JsonException) { _error = "Enter a valid JSON value. The previous mapping is retained."; return; }
         }
         else literal = JsonSerializer.SerializeToElement(_literal);
+        if (Encoding.UTF8.GetByteCount(literal.GetRawText()) > FlowGraphV2Limits.MaximumBindingBytes)
+        { _error = $"This value exceeds {FlowGraphV2Limits.MaximumBindingBytes} UTF-8 bytes. The previous mapping is retained."; return; }
         await Emit(new(FlowInputSource.Literal, DataType, Literal: literal));
     }
     public void Dispose() => _disposed = true;

@@ -78,6 +78,9 @@ public sealed class FlowAuthoringFieldsTests : AsyncBunitContext
         Assert.True(binding!.Literal.HasValue); Assert.Equal(JsonValueKind.Null, binding.Literal.Value.ValueKind);
         var wire = JsonSerializer.SerializeToElement(binding, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         Assert.Equal(JsonValueKind.Null, wire.GetProperty("literal").ValueKind);
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-binding-literal]").ChangeAsync(new() { Value = "\"scalar\"" }));
+        Assert.Contains("object, array or null", cut.Find("[role=alert]").TextContent, StringComparison.Ordinal);
+        Assert.Equal(JsonValueKind.Null, binding.Literal.Value.ValueKind);
     }
 
     [Fact]
