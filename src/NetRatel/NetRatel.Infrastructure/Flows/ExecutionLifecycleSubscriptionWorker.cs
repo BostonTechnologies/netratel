@@ -150,7 +150,7 @@ public sealed class ExecutionLifecycleSubscriptionWorker(IServiceScopeFactory sc
         FlowExecutionTriggerSettingsDto trigger, FlowExecutionEventDto fact, CancellationToken ct)
     {
         if (!trigger.AggregateCorrelatedEvents || trigger.Sources.Count < 2 ||
-            !trigger.Sources.Contains(FlowExecutionSourceKind.Job) || fact.SourceKind == FlowExecutionSourceKind.Job ||
+            fact.SourceKind == FlowExecutionSourceKind.Job ||
             fact.CorrelationId is not { } correlation || !correlation.StartsWith("job-run:", StringComparison.Ordinal) ||
             !long.TryParse(correlation.AsSpan(8), NumberStyles.None, CultureInfo.InvariantCulture, out var runId) || runId <= 0)
             return false;
@@ -170,15 +170,23 @@ public sealed class ExecutionLifecycleSubscriptionWorker(IServiceScopeFactory sc
         var version = delivery.FlowVersionId.ToString("N");
         var key = delivery.AdmissionKey.ToString("N");
         var cutoff = now - FlowLimits.MaximumRetryAge;
-        var rows = await db.OutboxMessages.AsNoTracking().Where(x => x.Type == FlowExecutionSubscriptionLimits.OutboxType &&
-                x.TenantId == tenant && x.EntityId == version && x.CorrelationId == key &&
-                x.OccurredUtc >= delivery.ActiveSinceUtc && x.OccurredUtc > cutoff)
-            .OrderBy(x => x.Source).ThenBy(x => x.Id).Take(FlowExecutionEventLimits.MaximumReferences + 1)
-            .Select(x => x.PayloadJson).ToArrayAsync(ct);
-        return rows.Select(ExecutionLifecycleSubscriptions.ReadDelivery).Where(x => x is not null &&
-                x.FlowVersionId == delivery.FlowVersionId && x.TriggerNodeId == delivery.TriggerNodeId &&
-                x.ActiveSinceUtc == delivery.ActiveSinceUtc && x.AdmissionKey == delivery.AdmissionKey).Select(x => x!.SourceEventId)
-            .Prepend(delivery.SourceEventId).Distinct().Take(FlowExecutionEventLimits.MaximumReferences).ToArray();
+        // The text payload stays immutable. Order by its native event ID before the bound,
+        // so a claimed delivery outside the fixed prefix cannot change the representative.
+        var rows = await db.OutboxMessages.FromSqlInterpolated($"""
+                SELECT * FROM "OutboxMessages"
+                WHERE "Type" = {FlowExecutionSubscriptionLimits.OutboxType} AND "TenantId" = {tenant}
+                    AND "EntityId" = {version} AND "CorrelationId" = {key}
+                    AND "OccurredUtc" >= {delivery.ActiveSinceUtc} AND "OccurredUtc" > {cutoff}
+                ORDER BY "Source", ("PayloadJson"::jsonb ->> 'sourceEventId')::uuid, "Id"
+                LIMIT {FlowExecutionEventLimits.MaximumReferences + 1}
+                """).AsNoTracking().ToArrayAsync(ct);
+        return rows.Select(row => (row.Source, Delivery: ExecutionLifecycleSubscriptions.ReadDelivery(row.PayloadJson)))
+            .Where(item => item.Delivery is { } value && value.FlowVersionId == delivery.FlowVersionId &&
+                value.TriggerNodeId == delivery.TriggerNodeId && value.ActiveSinceUtc == delivery.ActiveSinceUtc &&
+                value.AdmissionKey == delivery.AdmissionKey)
+            .OrderBy(item => item.Source, StringComparer.Ordinal).ThenBy(item => item.Delivery!.SourceEventId)
+            .Select(item => item.Delivery!.SourceEventId).Prepend(delivery.SourceEventId).Distinct()
+            .Take(FlowExecutionEventLimits.MaximumReferences).ToArray();
     }
 
     private static Task<int> FinishAsync(IQueryable<OutboxMessage> owned, string status, string? code, CancellationToken ct) =>
