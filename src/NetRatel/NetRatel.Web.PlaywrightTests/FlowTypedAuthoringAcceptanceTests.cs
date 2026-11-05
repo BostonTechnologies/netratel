@@ -29,7 +29,7 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(32);
         await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(61);
         var mountMilliseconds = clock.Elapsed.TotalMilliseconds;
-        clock.Restart(); await page.GetByTestId("flow-fit").ClickAsync();
+        clock.Restart(); await FitAsync(page);
         await page.GetByTestId("flow-canvas").ScrollIntoViewIfNeededAsync();
         await page.WaitForFunctionAsync("""
             () => {
@@ -79,7 +79,7 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         var routed = await MeasurementsAsync(page);
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-near-limit-route.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
         await page.SetViewportSizeAsync(195, 422);
-        await page.GetByTestId("flow-fit").ClickAsync();
+        await FitAsync(page);
         for (var point = 1; point < FlowGraphV2Limits.MaximumRoutePoints; point++)
             await page.GetByTestId("flow-route-add").ClickAsync();
         await Assertions.Expect(handle).ToHaveCountAsync(FlowGraphV2Limits.MaximumRoutePoints);
@@ -132,13 +132,25 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
     private static Task<JsonElement> MeasurementsAsync(IPage page) => page.GetByTestId("flow-canvas").EvaluateAsync<JsonElement>("""
         panel => ({
             viewport:{width:innerWidth,height:innerHeight,dpr:devicePixelRatio},
-            panel:panel.getBoundingClientRect(),
+            panel:panel.getBoundingClientRect(),fitState:panel.dataset.fitState,fitRevision:Number(panel.dataset.fitRevision),
             scroller:(()=>{const e=panel.querySelector('[id^=flow-scroll-]');return e?{x:e.scrollLeft,y:e.scrollTop,width:e.scrollWidth,height:e.scrollHeight}:null})(),
             nodes:[...panel.querySelectorAll('.flow-node')].map(node=>({id:node.dataset.nodeId,kind:node.dataset.nodeKind,rect:node.getBoundingClientRect(),ports:node.querySelectorAll('.flow-port').length})),
             curves:panel.querySelectorAll('[data-testid=flow-link]').length,
             routePoints:[...panel.querySelectorAll('.flow-route-handle')].map(handle=>({x:Number(handle.dataset.worldX),y:Number(handle.dataset.worldY)}))
         })
         """);
+    private static async Task FitAsync(IPage page)
+    {
+        var canvas = page.GetByTestId("flow-canvas");
+        var previous = long.Parse((await canvas.GetAttributeAsync("data-fit-revision"))!, System.Globalization.CultureInfo.InvariantCulture);
+        await page.GetByTestId("flow-fit").ClickAsync();
+        await page.WaitForFunctionAsync("""
+            previous => {
+                const panel=document.querySelector('[data-testid=flow-canvas]');
+                return panel?.dataset.fitState==='complete'&&Number(panel.dataset.fitRevision)>previous;
+            }
+            """, previous);
+    }
     private static async Task OpenAsync(IPage page, ClientsManagementFixtureHost fixture)
     {
         await page.GotoAsync(fixture.BaseAddress + "/flows", new() { WaitUntil = WaitUntilState.DOMContentLoaded });

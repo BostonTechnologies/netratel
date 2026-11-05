@@ -8,13 +8,13 @@
 @inject IJSRuntime JS
 
 <div class="flow-canvas-tools">
-    <MudTooltip Text="Zoom in"><MudIconButton Icon="@Icons.Material.Filled.ZoomIn" Size="MudBlazor.Size.Small" OnClick="() => ZoomAsync(120)" aria-label="Zoom in" data-testid="flow-zoom-in" /></MudTooltip>
+    <MudTooltip Text="Zoom in"><MudIconButton Icon="@Icons.Material.Filled.ZoomIn" Size="MudBlazor.Size.Small" OnClick="() => ZoomAsync(120)" Disabled="@(_fitState == "fitting")" aria-label="Zoom in" data-testid="flow-zoom-in" /></MudTooltip>
     <span>@((100 / Adapter.Tree.Layout.Scale.Horizontal).ToString("0", CultureInfo.InvariantCulture))%</span>
-    <MudTooltip Text="Zoom out"><MudIconButton Icon="@Icons.Material.Filled.ZoomOut" Size="MudBlazor.Size.Small" OnClick="() => ZoomAsync(-120)" aria-label="Zoom out" data-testid="flow-zoom-out" /></MudTooltip>
-    <MudTooltip Text="Fit graph"><MudIconButton Icon="@Icons.Material.Filled.CenterFocusStrong" Size="MudBlazor.Size.Small" OnClick="FitAsync" aria-label="Fit graph" data-testid="flow-fit" /></MudTooltip>
-    <MudTooltip Text="@(_overviewOpen ? "Hide overview" : "Show overview")"><MudIconButton Icon="@Icons.Material.Filled.Map" Size="MudBlazor.Size.Small" OnClick="ToggleOverviewAsync" aria-expanded="@(_overviewOpen ? "true" : "false")" aria-label="@(_overviewOpen ? "Hide overview" : "Show overview")" data-testid="flow-overview-toggle" /></MudTooltip>
+    <MudTooltip Text="Zoom out"><MudIconButton Icon="@Icons.Material.Filled.ZoomOut" Size="MudBlazor.Size.Small" OnClick="() => ZoomAsync(-120)" Disabled="@(_fitState == "fitting")" aria-label="Zoom out" data-testid="flow-zoom-out" /></MudTooltip>
+    <MudTooltip Text="Fit graph"><MudIconButton Icon="@Icons.Material.Filled.CenterFocusStrong" Size="MudBlazor.Size.Small" OnClick="FitAsync" Disabled="@(_fitState == "fitting")" aria-label="Fit graph" data-testid="flow-fit" /></MudTooltip>
+    <MudTooltip Text="@(_overviewOpen ? "Hide overview" : "Show overview")"><MudIconButton Icon="@Icons.Material.Filled.Map" Size="MudBlazor.Size.Small" OnClick="ToggleOverviewAsync" Disabled="@(_fitState == "fitting")" aria-expanded="@(_overviewOpen ? "true" : "false")" aria-label="@(_overviewOpen ? "Hide overview" : "Show overview")" data-testid="flow-overview-toggle" /></MudTooltip>
 </div>
-<section class="flow-canvas-panel" id="@PanelId" aria-label="Workflow canvas" data-testid="flow-canvas" tabindex="0" data-read-only="@(ReadOnly ? "true" : "false")" data-connection-start="@_connectingFrom" data-connection-port="@_connectingPort" data-inverse-scale="@Adapter.Tree.Layout.Scale.Horizontal.ToString("R", CultureInfo.InvariantCulture)">
+<section class="flow-canvas-panel" id="@PanelId" aria-label="Workflow canvas" data-testid="flow-canvas" tabindex="0" data-read-only="@(ReadOnly ? "true" : "false")" data-connection-start="@_connectingFrom" data-connection-port="@_connectingPort" data-inverse-scale="@Adapter.Tree.Layout.Scale.Horizontal.ToString("R", CultureInfo.InvariantCulture)" data-fit-state="@_fitState" data-fit-revision="@_fitRevision" aria-busy="@(_fitState == "fitting" ? "true" : "false")">
     <FlowSurfaceBehavior @ref="_surface" @key="Adapter.Tree" Tree="Adapter.Tree" IsEnabled="true" ZoomEnabled="true"
         ScrollViewerId="@ScrollId" CanvasId="@CanvasId" Background="var(--mud-palette-background)"
         GridColor="var(--mud-palette-divider)" MajorGridColor="var(--mud-palette-text-disabled)">
@@ -136,6 +136,9 @@
     private DotNetObjectReference<FlowCanvas>? _reference;
     private bool _disposed;
     private bool _overviewOpen;
+    private Task _fitTask = Task.CompletedTask;
+    private long _fitRevision;
+    private string _fitState = "idle";
     private FlowCanvasAdapter? _subscribed;
     private double _scrollX, _scrollY;
     private Guid? _connectingFrom;
@@ -333,6 +336,8 @@
     }
     public async Task<FlowGraphDto> CaptureAsync()
     {
+        var activeFit = _fitTask;
+        if (!activeFit.IsCompleted) await activeFit;
         if (_module is not null)
         {
             var geometry = await _module.InvokeAsync<double[]>("geometry", ScrollId);
@@ -369,20 +374,63 @@
         await _surface.OnWheelZoom(delta, g[0], g[1], g[2], g[3], g[4], g[5]);
     }
     private Task SelectFromKeyboard(Guid id, KeyboardEventArgs e) => e.Key is "Enter" or " " ? Selected.InvokeAsync(id) : Task.CompletedTask;
-    private async Task FitAsync()
+    private Task FitAsync()
     {
-        if (_module is null || _surface is null || Adapter.Tree.Nodes.Count == 0) return;
-        var nodes = Adapter.Capture().Nodes;
-        var g = await _module.InvokeAsync<double[]>("geometry", ScrollId);
-        var marginX = Math.Min(30, Math.Max(4, g[2] * .08));
-        var marginY = Math.Min(30, Math.Max(4, g[3] * .08));
-        var topInset = Math.Max(marginY, await _module.InvokeAsync<double>("canvasToolsInset", PanelId));
-        var desired = Math.Clamp(Math.Max((nodes.Max(n => n.Position.X + Adapter.DesignSize(n.Kind).Width) - nodes.Min(n => n.Position.X)) / Math.Max(1, g[2] - marginX * 2),
-            (nodes.Max(n => n.Position.Y + Adapter.DesignSize(n.Kind).Height) - nodes.Min(n => n.Position.Y)) / Math.Max(1, g[3] - topInset - marginY - (_overviewOpen ? 92 : 0))), .1, 10);
-        var steps = (int)Math.Ceiling(Math.Log(desired / Adapter.Tree.Layout.Scale.Horizontal, 1.1));
-        if (steps != 0) await ZoomAsync(-120 * steps);
-        // Native zoom also changes the surface offset. Position using the actual rendered node bounds.
-        await _module.InvokeVoidAsync("fitPosition", ScrollId, marginX, topInset);
+        if (!_fitTask.IsCompleted) return _fitTask;
+        if (_disposed || _module is null || _surface is null || Adapter.Tree.Nodes.Count == 0) return Task.CompletedTask;
+        _fitTask = FitCoreAsync();
+        return _fitTask;
+    }
+    private async Task FitCoreAsync()
+    {
+        var adapter = Adapter; var module = _module!; var surface = _surface!; var readOnly = ReadOnly;
+        bool Current() => !_disposed && ReferenceEquals(Adapter, adapter) && ReferenceEquals(_module, module);
+        _fitState = "fitting"; StateHasChanged();
+        try
+        {
+            var nodes = adapter.Capture().Nodes;
+            var g = await module.InvokeAsync<double[]>("geometry", ScrollId);
+            if (!Current()) return;
+            var marginX = Math.Min(30, Math.Max(4, g[2] * .08));
+            var marginY = Math.Min(30, Math.Max(4, g[3] * .08));
+            var topInset = Math.Max(marginY, await module.InvokeAsync<double>("canvasToolsInset", PanelId));
+            if (!Current()) return;
+            var desired = Math.Clamp(Math.Max((nodes.Max(n => n.Position.X + adapter.DesignSize(n.Kind).Width) - nodes.Min(n => n.Position.X)) / Math.Max(1, g[2] - marginX * 2),
+                (nodes.Max(n => n.Position.Y + adapter.DesignSize(n.Kind).Height) - nodes.Min(n => n.Position.Y)) / Math.Max(1, g[3] - topInset - marginY - (_overviewOpen ? 92 : 0))), .1, 10);
+            var steps = (int)Math.Ceiling(Math.Log(desired / adapter.Tree.Layout.Scale.Horizontal, 1.1));
+            if (steps != 0) await surface.OnWheelZoom(-120 * steps, g[0], g[1], g[2], g[3], g[4], g[5]);
+            if (!Current()) return;
+            // Flush parent dirty/status changes before reading the final rendered geometry.
+            _scrollX = g[0]; _scrollY = g[1];
+            if (!readOnly) await Changed.InvokeAsync();
+            for (var pass = 0; pass < (readOnly ? 1 : 2); pass++)
+            {
+                if (!Current()) return;
+                await InvokeAsync(StateHasChanged);
+                // The second editing pass also accounts for layout changes caused by the new viewport's dirty label.
+                await module.InvokeVoidAsync("fitPosition", ScrollId, marginX, topInset);
+                if (!Current()) return;
+                var geometry = await module.InvokeAsync<double[]>("geometry", ScrollId);
+                if (!Current()) return;
+                _scrollX = geometry[0]; _scrollY = geometry[1];
+                if (!readOnly) await Changed.InvokeAsync();
+            }
+            if (!Current()) return;
+            _fitRevision++; _fitState = "complete";
+        }
+        catch (Exception exception) when (exception is JSException or InvalidOperationException or TimeoutException)
+        {
+            if (Current())
+            { _fitState = "failed"; _connectionMessage = "Fit could not finish. Your graph is preserved; try Fit again."; }
+        }
+        finally
+        {
+            if (Current())
+            {
+                if (_fitState == "fitting") _fitState = "cancelled";
+                await InvokeAsync(StateHasChanged);
+            }
+        }
     }
     private async Task ToggleOverviewAsync()
     {
