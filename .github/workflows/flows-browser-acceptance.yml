@@ -19,13 +19,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      EXPECTED_SOURCE_SHA: df25fb8895d200b2296402f4bfa8502afd82f2a8
+      EXPECTED_SOURCE_SHA: 60276ce7d7545d7db786e1c8ed5dc5dddf986ff3
       BROWSER_CLASSES: NetRatel.Web.PlaywrightTests.FlowsResponsiveTests NetRatel.Web.PlaywrightTests.FlowPreviewPlaybackTests NetRatel.Web.PlaywrightTests.MonitoringFlowsIntegrationTests
       NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT: ${{ github.workspace }}/TestResults/playwright
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: df25fb8895d200b2296402f4bfa8502afd82f2a8
+          ref: 60276ce7d7545d7db786e1c8ed5dc5dddf986ff3
           fetch-depth: 1
           persist-credentials: false
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
@@ -71,12 +71,12 @@ jobs:
           dotnet test --project src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
             --configuration Release --no-build --no-restore --max-parallel-test-modules 1 \
             --filter-class "${selected_classes[@]}" --filter-not-trait category=compose category=hosted \
-            --minimum-expected-tests 17 --results-directory TestResults/browser \
+            --minimum-expected-tests 20 --results-directory TestResults/browser \
             --report-trx --report-trx-filename browser.trx
       - name: Verify nonzero complete browser execution
         if: always()
         shell: bash
-        run: python3 tools/ci/verify-mtp-trx.py TestResults/browser/browser.trx --expected-executed 17
+        run: python3 tools/ci/verify-mtp-trx.py TestResults/browser/browser.trx --expected-executed 20
       - name: Retain selected TRX, screenshots and sanitized receipts
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
