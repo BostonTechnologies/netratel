@@ -383,7 +383,7 @@
     }
     private async Task FitCoreAsync()
     {
-        var adapter = Adapter; var module = _module!; var surface = _surface!;
+        var adapter = Adapter; var module = _module!; var surface = _surface!; var readOnly = ReadOnly;
         bool Current() => !_disposed && ReferenceEquals(Adapter, adapter) && ReferenceEquals(_module, module);
         _fitState = "fitting"; StateHasChanged();
         try
@@ -402,8 +402,8 @@
             if (!Current()) return;
             // Flush parent dirty/status changes before reading the final rendered geometry.
             _scrollX = g[0]; _scrollY = g[1];
-            if (!ReadOnly) await Changed.InvokeAsync();
-            for (var pass = 0; pass < (ReadOnly ? 1 : 2); pass++)
+            if (!readOnly) await Changed.InvokeAsync();
+            for (var pass = 0; pass < (readOnly ? 1 : 2); pass++)
             {
                 if (!Current()) return;
                 await InvokeAsync(StateHasChanged);
@@ -413,7 +413,7 @@
                 var geometry = await module.InvokeAsync<double[]>("geometry", ScrollId);
                 if (!Current()) return;
                 _scrollX = geometry[0]; _scrollY = geometry[1];
-                if (!ReadOnly) await Changed.InvokeAsync();
+                if (!readOnly) await Changed.InvokeAsync();
             }
             if (!Current()) return;
             _fitRevision++; _fitState = "complete";
