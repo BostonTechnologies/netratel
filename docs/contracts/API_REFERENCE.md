@@ -76,7 +76,40 @@ do not consume enrollment uses. Clients should treat the URL as a bearer
 capability and must not log it. The prior client-script file-response route
 retains its existing response type for compatibility.
 
-## Flows (0.1.1 beta)
+## Flows
+
+The schema-two contract is introduced independently of execution activation. Existing HTTP
+save/publish/validate and monitoring ingress continue to accept schema one; submitting schema two
+to those routes returns `graph-schema` until the durable v2 executor is enabled.
+`FlowGraphV2Validator` is the pure version-two contract validator. It does not dispatch work.
+
+Schema two retains `FlowGraphDto`, existing enum values and nullable-omitted additions. New node
+kinds are execution event (7), run library script (8), run job (9), rerun original execution (10)
+and finish (11). Its catalogue identifies stable named outcome ports independently of labels.
+Each outcome has at most one outgoing edge. Incoming alternatives converge as one exclusive
+token; they are not a parallel join. Completed publication requires every declared outcome
+route, an acyclic reachable graph and valid typed inputs. Inputs from earlier nodes must be
+available on every incoming path. Secret references cannot be rendered into incident templates.
+
+The separate bounds are 32 nodes, 64 edges and 128 KiB graph JSON; schema one's eight-node,
+seven-edge and 32 KiB limits remain unchanged. This budget covers bounded node configuration,
+32 mappings/node and up to eight finite world-coordinate route points/edge. It does not raise
+event, execution-attempt, prepared-action or trace limits. A focused fixture validates 32 nodes
+and 61 edges. Browser responsiveness remains selected acceptance, not an inferred frame-rate claim.
+
+Schema-two edges have a required stable `id` and optional `route.points`. Hover, selection,
+connection ghosts and playback are excluded. `FlowDraftMigration.UpgradeToSchemaTwo` explicitly
+copies an editable schema-one draft and assigns edge IDs; it leaves node IDs and published
+versions untouched. New missing outcome routes remain visible validation issues for the author.
+Saving a draft is distinct from publishing a complete, pinned graph.
+
+Execution lifecycle facts use `FlowExecutionEventDto` schema one, preserving source, original
+status, normalized terminal outcome, definition/run/attempt identity, target, causation and
+bounded evidence references. IDs remain strings across JavaScript. The replay descriptor is
+a server-produced reference to protected immutable inputs; it confers no authority and never
+contains credentials. Unknown/disconnected observations are not failure or timeout. The
+current monitoring ingress rejects an execution envelope until source-specific admission is enabled.
+
 
 `GET /api/v1/flows/tenants` returns tenants paired with `flow.read` authority
 and their effective edit/publish/execute flags. All other routes are under

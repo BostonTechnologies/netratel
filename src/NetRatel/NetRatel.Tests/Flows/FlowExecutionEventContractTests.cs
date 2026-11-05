@@ -44,6 +44,19 @@ public sealed class FlowExecutionEventContractTests
     }
 
     [Fact]
+    public void Required_timestamps_and_well_formed_unicode_keep_event_identity_stable_after_encoding()
+    {
+        var value = new FlowExecutionEventDto(Guid.NewGuid(), Guid.NewGuid(), 7, FlowExecutionSourceKind.Request,
+            new("42", "Synthetic request"), "42", "42", new(Guid.NewGuid()),
+            FlowExecutionOutcome.Failed, "Failed", DateTimeOffset.Parse("2026-11-05T12:00:00Z"), DateTimeOffset.Parse("2026-11-05T12:00:01Z"));
+        Assert.True(FlowExecutionEventValidator.Validate(value).Valid);
+        Assert.Contains("event_timestamp_required", FlowExecutionEventValidator.Validate(value with { OccurredAtUtc = default }).Issues);
+        Assert.Contains("event_timestamp_required", FlowExecutionEventValidator.Validate(value with { ObservedAtUtc = default }).Issues);
+        var malformed = value with { Definition = value.Definition with { Name = new string((char)0xD800, 1) } };
+        Assert.Contains("event_definition_name_invalid", FlowExecutionEventValidator.Validate(malformed).Issues);
+    }
+
+    [Fact]
     public void Envelope_round_trip_preserves_large_ids_native_status_and_missing_versus_empty_data()
     {
         const string id = "18446744073709551615";
