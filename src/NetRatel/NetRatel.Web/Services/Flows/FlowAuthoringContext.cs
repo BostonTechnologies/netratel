@@ -1,10 +1,27 @@
+using System.Text;
+using System.Text.Json;
 using NetRatel.Shared.Contracts.Flows;
 
 namespace NetRatel.Web.Services.Flows;
 
-/// <summary>Presentation-only producer selection. The server validates every binding at publish and execution.</summary>
+/// <summary>Presentation-only authoring helpers. The server validates every binding at publish and execution.</summary>
 public static class FlowAuthoringContext
 {
+    public static bool TryParseFiniteNumber(string text, out JsonElement value)
+    {
+        value = default;
+        if (Encoding.UTF8.GetByteCount(text) > FlowGraphV2Limits.MaximumBindingBytes) return false;
+        try
+        {
+            using var document = JsonDocument.Parse(text);
+            var number = document.RootElement;
+            if (number.ValueKind != JsonValueKind.Number || !number.TryGetDouble(out var finite) || !double.IsFinite(finite)) return false;
+            value = number.Clone();
+            return true;
+        }
+        catch (JsonException) { return false; }
+    }
+
     public static IReadOnlyList<FlowNodeDto> AvailableProducers(FlowGraphDto graph, Guid nodeId)
     {
         var ids = graph.Nodes.Select(node => node.Id).ToHashSet();

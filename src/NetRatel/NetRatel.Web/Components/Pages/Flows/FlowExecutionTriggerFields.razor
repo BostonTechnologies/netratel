@@ -34,6 +34,8 @@
             {
                 <div class="flow-trigger-selected" data-testid="flow-trigger-definition"><strong>@(reference.Name ?? "Definition name unavailable")</strong><small>@DefinitionFamilyName(reference.SourceKind)</small>
                     <details><summary>Definition ID</summary>@reference.Id</details>
+                    @if (!DefinitionSources.Contains(reference.SourceKind))
+                    { <small role="status">This saved definition filter is unavailable for the selected sources. Add its matching execution source or remove the filter. Request events expose job-backed definitions.</small> }
                     <button type="button" @onclick="() => RemoveDefinition(reference)" disabled="@Disabled" aria-label="@($"Remove {reference.Name ?? "selected definition"}")">Remove</button>
                 </div>
             }
@@ -52,7 +54,7 @@
                 <FlowExecutionDefinitionPicker @key="@(Node.Id.ToString() + ":" + _definitionSource)" TenantId="TenantId" NodeId="Node.Id"
                     SourceKind="_definitionSource" Disabled="Disabled" Chosen="AddDefinition" />
             }
-            <p class="flow-trigger-help">Matching uses definition IDs across revisions. Job or script backed request events retain the Request source and can match these selected definitions, including admission failures before a run exists.</p>
+            <p class="flow-trigger-help">Matching uses definition IDs across revisions. Job-backed request events retain the Request source and can match selected jobs, including admission failures before a run exists. Library scripts use Script execution events.</p>
         }
         <label class="flow-trigger-check"><input type="checkbox" @bind:get="Settings.AggregateCorrelatedEvents" @bind:set="SetAggregation" data-testid="flow-trigger-aggregate" />Aggregate correlated source events per subscription, execution attempt and outcome</label>
     </fieldset>
@@ -96,7 +98,9 @@
     [Parameter] public EventCallback<FlowNodeDto> Changed { get; set; }
     private FlowExecutionTriggerSettingsDto Settings => Node.ExecutionTrigger ?? new([FlowExecutionSourceKind.Job], [FlowExecutionOutcome.Failed], FlowExecutionScope.AllInTenant);
     private IEnumerable<FlowExecutionSourceKind> DefinitionSources => new[] { FlowExecutionSourceKind.Job, FlowExecutionSourceKind.Script }
-        .Where(source => Settings.Sources.Contains(source) || Settings.Sources.Contains(FlowExecutionSourceKind.Request));
+        .Where(source => SupportsDefinitionSource(source, Settings.Sources));
+    private static bool SupportsDefinitionSource(FlowExecutionSourceKind family, IEnumerable<FlowExecutionSourceKind> sources) =>
+        sources.Contains(family) || family == FlowExecutionSourceKind.Job && sources.Contains(FlowExecutionSourceKind.Request);
     private FlowExecutionSourceKind _definitionSource = FlowExecutionSourceKind.Job, _targetSource = FlowExecutionSourceKind.Job;
     private string _requestKind = "", _targetContext = "", _sourceContext = "";
     private string? _error, _targetError;
@@ -157,7 +161,9 @@
     private Task SetSources(HashSet<FlowExecutionSourceKind> sources)
     {
         if (sources.Count == 0) { _error = "Retain at least one execution source."; return Task.CompletedTask; }
-        if (Settings.DefinitionReferences?.Any(reference => !sources.Contains(reference.SourceKind) && !sources.Contains(FlowExecutionSourceKind.Request)) == true)
+        if (Settings.DefinitionIds is { Count: > 0 } && !sources.SetEquals(Settings.Sources))
+        { _error = "Remove the saved legacy definition filters before changing execution sources. Their IDs belong to the saved source."; return Task.CompletedTask; }
+        if (Settings.DefinitionReferences?.Any(reference => !SupportsDefinitionSource(reference.SourceKind, sources)) == true)
         { _error = "Remove incompatible selected definitions before removing this source."; return Task.CompletedTask; }
         if (!sources.Contains(FlowExecutionSourceKind.Request) && Settings.RequestKinds is { Count: > 0 })
         { _error = "Remove the request source system filters before removing Request events."; return Task.CompletedTask; }
