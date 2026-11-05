@@ -268,6 +268,7 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         Assert.Equal("output", invalidRelease.GetProperty("direction").GetString());
         Assert.Equal("out", invalidRelease.GetProperty("portId").GetString());
         await Assertions.Expect(page.GetByTestId("flow-connection-message")).ToContainTextAsync("Choose an output and an input port.");
+        await Assertions.Expect(page.GetByTestId("flow-connection-message")).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(0);
         Assert.Equal(0, await page.Locator(".flow-port.compatible,.flow-port.incompatible,.flow-port.pending").CountAsync());
         var invalidDrop = new { invalidRelease, message = await page.GetByTestId("flow-connection-message").InnerTextAsync(),

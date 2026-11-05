@@ -161,6 +161,7 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         var routedCurve = routedGroup.Locator("[data-testid=flow-link]");
         var nodeIds = await page.Locator(".flow-node[data-node-id]").EvaluateAllAsync<string[]>("nodes => nodes.map(node=>node.dataset.nodeId).sort()");
         var edgeIds = await page.Locator(".flow-connection[data-flow-edge-id]").EvaluateAllAsync<string[]>("edges => edges.map(edge=>edge.dataset.flowEdgeId).sort()");
+        var beforeSaveGeometry = await RouteGeometryAsync(page, edgeId);
         await page.GetByTestId("flow-save").ClickAsync();
         await Assertions.Expect(page.GetByTestId("flow-result")).ToContainTextAsync("Draft saved");
         var savedGraph = fixture.FlowsData.SavedGraph!;
@@ -173,7 +174,10 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         var savedPath = (await routedCurve.GetAttributeAsync("d"))!;
         Assert.Contains(" C ", savedPath);
         var beforeReload = await MeasurementsAsync(page);
+        var beforeReloadGeometry = await RouteGeometryAsync(page, edgeId);
         await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-route-saved.json"), JsonSerializer.Serialize(savedGraph));
+        await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-route-before-reload.json"),
+            JsonSerializer.Serialize(new { beforeSaveGeometry, beforeReloadGeometry, savedPath, savedRoute.Points, savedGraph.Viewport }, new JsonSerializerOptions { WriteIndented = true }));
 
         await page.ReloadAsync(new() { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByTestId("flow-row").Filter(new() { HasText = "Synthetic near-limit graph" }).GetByTestId("flow-edit").ClickAsync();
@@ -184,7 +188,22 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         await Assertions.Expect(routedGroup).ToHaveAttributeAsync("data-flow-route", savedRouteJson);
         await Assertions.Expect(routedGroup).ToHaveAttributeAsync("data-flow-source-node", graph.Edges[0].SourceNodeId.ToString());
         await Assertions.Expect(routedGroup).ToHaveAttributeAsync("data-flow-target-node", graph.Edges[0].TargetNodeId.ToString());
-        await Assertions.Expect(routedCurve).ToHaveAttributeAsync("d", savedPath);
+        var afterReloadGeometry = await RouteGeometryAsync(page, edgeId);
+        await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-route-after-reload.json"), afterReloadGeometry.GetRawText());
+        try { await Assertions.Expect(routedCurve).ToHaveAttributeAsync("d", savedPath); }
+        catch (Exception error)
+        {
+            try
+            {
+                var failedGeometry = await RouteGeometryAsync(page, edgeId);
+                await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-route-reload-failure.json"),
+                    JsonSerializer.Serialize(new { error = error.GetType().Name, beforeSaveGeometry, beforeReloadGeometry, afterReloadGeometry, failedGeometry, savedPath }, new JsonSerializerOptions { WriteIndented = true }));
+                await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-near-limit-route-reload-failure.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+            }
+            catch (Exception diagnosticError) when (diagnosticError is PlaywrightException or IOException or UnauthorizedAccessException)
+            { Console.WriteLine($"Route reload evidence could not be retained: {diagnosticError.GetType().Name}"); }
+            throw;
+        }
         await routedGroup.GetByTestId("flow-link-hit").FocusAsync();
         await Assertions.Expect(handle).ToHaveCountAsync(6);
         var reloadedRoute = await MeasurementsAsync(page);
@@ -401,6 +420,39 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
             routePoints:[...panel.querySelectorAll('.flow-route-handle')].map(handle=>({x:Number(handle.dataset.worldX),y:Number(handle.dataset.worldY)}))
         })
         """);
+    private static Task<JsonElement> RouteGeometryAsync(IPage page, Guid edgeId) => page.GetByTestId("flow-canvas").EvaluateAsync<JsonElement>("""
+        (panel,edgeId) => {
+            const group=panel.querySelector('.flow-connection[data-flow-edge-id="'+edgeId+'"]');
+            const scroller=panel.querySelector('.veloxdev-wf-scroll'),canvas=scroller?.querySelector('.veloxdev-wf-canvas');
+            const content=canvas?.querySelector('.veloxdev-wf-canvas-content');
+            const box=element=>{
+                if(!element)return null;
+                const style=getComputedStyle(element);
+                return{rect:element.getBoundingClientRect(),style:element.getAttribute('style'),computed:{
+                    left:style.left,top:style.top,width:style.width,height:style.height,transform:style.transform,
+                    transformOrigin:style.transformOrigin,paddingLeft:style.paddingLeft,paddingTop:style.paddingTop,
+                    borderLeft:style.borderLeftWidth,borderTop:style.borderTopWidth}};
+            };
+            const matrix=element=>{const m=element?.getScreenCTM?.();return m?{a:m.a,b:m.b,c:m.c,d:m.d,e:m.e,f:m.f}:null};
+            const endpoint=attribute=>{
+                const id=group?.getAttribute(attribute),slot=id&&panel.querySelector('[data-veloxdev-slot-id="'+id+'"]');
+                const glyph=slot?.querySelector('.veloxdev-wf-slot-svg')??slot,node=slot?.closest('.flow-node');
+                const native=node?.closest('[data-veloxdev-node-id]');
+                const rect=glyph?.getBoundingClientRect();
+                return{slotId:id,slot:box(slot),glyph:box(glyph),glyphCentre:rect?{x:rect.left+rect.width/2,y:rect.top+rect.height/2}:null,node:box(node),native:box(native),
+                    worldX:node?.dataset.worldX,worldY:node?.dataset.worldY,designWidth:node?.dataset.designWidth};
+            };
+            return{edgeId,viewport:{width:innerWidth,height:innerHeight,dpr:devicePixelRatio,scrollX,scrollY},panel:box(panel),
+                fullscreen:{nativeRoot:document.fullscreenElement?.id,editorClasses:panel.closest('[data-testid=flow-editor]')?.className},
+                inverseScale:panel.dataset.inverseScale,routeScale:group?.dataset.routeScale,route:group?.dataset.flowRoute,
+                path:group?.querySelector('[data-testid=flow-link]')?.getAttribute('d'),
+                hitPath:group?.querySelector('[data-testid=flow-link-hit]')?.getAttribute('d'),
+                svg:{...box(group?.closest('svg')),viewBox:group?.closest('svg')?.getAttribute('viewBox'),matrix:matrix(group?.closest('svg'))},groupMatrix:matrix(group),
+                scroller:{...box(scroller),x:scroller?.scrollLeft,y:scroller?.scrollTop,clientWidth:scroller?.clientWidth,clientHeight:scroller?.clientHeight,scrollWidth:scroller?.scrollWidth,scrollHeight:scroller?.scrollHeight},canvas:box(canvas),
+                content:{...box(content),offsetLeft:content?.offsetLeft,offsetTop:content?.offsetTop,computedLeft:content&&getComputedStyle(content).left,computedTransform:content&&getComputedStyle(content).transform},
+                source:endpoint('data-veloxdev-sender-slot'),target:endpoint('data-veloxdev-receiver-slot')};
+        }
+        """, edgeId.ToString());
     private static async Task FitAsync(IPage page)
     {
         var canvas = page.GetByTestId("flow-canvas");
