@@ -162,7 +162,7 @@ public static class FlowGraphV2Validator
         foreach (var edge in graph.Edges)
         {
             if (edge is null) { Error("edge-id"); continue; }
-            if (edge.Id is not { } id || id == Guid.Empty || !edgeIds.Add(id)) Error("edge-id", edgeId: edge.Id);
+            if (edge.Id is not { } id || id == Guid.Empty || !edgeIds.Add(id)) Error("edge-id", edge.SourceNodeId, edge.Id);
             if (edge.Route is { } route && (route.Points is null || route.Points.Count > FlowGraphV2Limits.MaximumRoutePoints ||
                 route.Points.Any(point => point is null || !Coordinate(point.X) || !Coordinate(point.Y))))
                 Error("edge-route", edgeId: edge.Id);
