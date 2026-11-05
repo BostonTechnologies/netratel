@@ -1,5 +1,6 @@
 @using System.Globalization
 @using System.Text.Json
+@using System.Security.Cryptography
 @using MudBlazor.Extensions
 @using NetRatel.Shared.Contracts.Flows
 @using NetRatel.Shared.Contracts.Netclaw
@@ -97,6 +98,13 @@
             }
             <MudDropZone T="FlowNodeKind" Identifier="canvas" OnlyZone="true" Class="flow-canvas-column">
                 <FlowCanvas @key="_adapter" @ref="_canvas" Adapter="_adapter" TenantId="Definition.TenantId" Connectors="Connectors" ReadOnly="@(ReadOnly || !CanEdit || _busy)" SelectedNodeId="_selected" Selected="SelectNodeAsync" Settings="OpenPropertiesAsync" Delete="RequestRemoveAsync" Changed="CheckDirty" Ready="CanvasReady" InitialViewport="_initialViewport" />
+                @if (_preview?.Trace is { } trace && _previewGraphHash is not null)
+                {
+                    <div class="flow-playback-overlay">
+                        <FlowTracePlayer @key="trace" Trace="trace" ContextKey="@($"{Definition.TenantId}:{Definition.Id:N}:{_generation}:{_previewGraphHash}")"
+                            ExpectedConfigurationHash="@_previewGraphHash" ScopeId="@_shellId" />
+                    </div>
+                }
             </MudDropZone>
             @if (_showProperties)
             {
@@ -245,6 +253,7 @@
     private string? _error, _message, _operation, _reviewedFingerprint;
     private IReadOnlyList<FlowValidationIssueDto> _issues = [];
     private FlowDryRunResultDto? _preview;
+    private string? _previewGraphHash;
     private CancellationTokenSource _lifetime = new();
     private int _generation;
     private MudIconButton? _closeButton;
@@ -271,7 +280,7 @@
             var old = _adapter; _adapter = replacement; _canvas = null; _current = definition; _name = definition.Name;
             _initialViewport = definition.Draft.Viewport; _selected = definition.Draft.Nodes.FirstOrDefault(n => n.Id == InitialSelectedNodeId)?.Id ?? definition.Draft.Nodes.FirstOrDefault()?.Id;
             _showProperties = InitialSelectedNodeId is not null && _selected == InitialSelectedNodeId;
-            _baseline = Fingerprint(definition.Name, definition.Draft); _dirty = false; _issues = []; _preview = null; _showDryRun = false; _reviewedFingerprint = null; _focusPending = true;
+            _baseline = Fingerprint(definition.Name, definition.Draft); _dirty = false; _issues = []; _preview = null; _previewGraphHash = null; _showDryRun = false; _reviewedFingerprint = null; _focusPending = true;
             if (old is not null) await old.DisposeAsync();
             await DirtyChanged.InvokeAsync(false);
         }
@@ -321,7 +330,7 @@
         if (ReadOnly || _adapter is null || _disposed) return;
         var fingerprint = Fingerprint(_name, _canvas?.CaptureCurrent() ?? _adapter.Capture(_initialViewport.ScrollX, _initialViewport.ScrollY));
         if (_reviewedFingerprint is not null && _reviewedFingerprint != fingerprint)
-        { _reviewedFingerprint = null; _issues = []; _preview = null; _message = "Draft changed. Validate the current draft."; }
+        { _reviewedFingerprint = null; _issues = []; _preview = null; _previewGraphHash = null; _message = "Draft changed. Validate the current draft."; }
         var next = fingerprint != _baseline;
         if (next == _dirty) return; _dirty = next; await DirtyChanged.InvokeAsync(next);
     }
@@ -365,7 +374,10 @@
         var graph = await CaptureAsync(); var reviewed = Fingerprint(_name, graph);
         var result = await Api.DryRunAsync(tenant, new(graph, input), token);
         if (!Current(generation, tenant, id)) return;
-        _reviewedFingerprint = reviewed; _preview = result; _issues = result.Issues; await CheckDirty();
+        _reviewedFingerprint = reviewed; _preview = result; _issues = result.Issues;
+        _previewGraphHash = Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(graph, new JsonSerializerOptions(JsonSerializerDefaults.Web))));
+        await CheckDirty();
+        if (_preview?.Trace is { Steps.Count: > 0 }) await ClosePreviewAsync();
     });
     private Task PublishAsync() => ReadOnly || !CanPublish || _dirty ? Task.CompletedTask : CommandAsync("publish", async (tenant, id, token) =>
     {
