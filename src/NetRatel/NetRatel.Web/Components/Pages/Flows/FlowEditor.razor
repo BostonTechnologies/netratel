@@ -116,7 +116,7 @@
                 {
                     <div class="flow-playback-overlay">
                         <FlowTracePlayer @key="runId" Trace="RecordedTrace" ContextKey="@($"{Definition.TenantId}:{Definition.Id:N}:run:{runId:N}:{RecordedConfigurationHash}")"
-                            ExpectedConfigurationHash="@RecordedConfigurationHash" ExpectedGraphSchemaVersion="Definition.Draft.SchemaVersion" ScopeId="@_shellId" />
+                            DataUnavailableReason="@RecordedDataUnavailableReason" ExpectedConfigurationHash="@RecordedConfigurationHash" ExpectedGraphSchemaVersion="Definition.Draft.SchemaVersion" ScopeId="@_shellId" />
                     </div>
                 }
                 else if (_preview?.Trace is { } trace && _previewGraphHash is not null)
@@ -244,6 +244,7 @@
     [Parameter] public Guid? RecordedRunId { get; set; }
     [Parameter] public FlowTraceDto? RecordedTrace { get; set; }
     [Parameter] public string? RecordedConfigurationHash { get; set; }
+    [Parameter] public string? RecordedDataUnavailableReason { get; set; }
     [Parameter] public EventCallback<FlowDefinitionDto> Saved { get; set; }
     [Parameter] public EventCallback Closed { get; set; }
     [Parameter] public EventCallback<bool> DirtyChanged { get; set; }

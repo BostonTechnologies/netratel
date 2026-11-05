@@ -132,6 +132,9 @@ public static class FlowGraphV2Validator
             if (node.Inputs is { } inputs &&
                 (inputs.Count > FlowGraphV2Limits.MaximumBindings || inputs.Any(pair => !Identifier(pair.Key) || !ValidBinding(pair.Value))))
                 Error("input-binding", node.Id);
+            if (node.Kind is not (FlowNodeKind.RunJob or FlowNodeKind.RunLibraryScript) &&
+                node.Inputs?.Values.Any(binding => binding is { Source: FlowInputSource.SecretReference }) == true)
+                Error("secret-reference-source", node.Id);
             if (node.Kind is FlowNodeKind.CreateIncident or FlowNodeKind.InvestigateWithAi)
             {
                 if (complete && node.ConnectorId is null) Error("connector-required", node.Id);
@@ -285,7 +288,7 @@ public static class FlowGraphV2Validator
         {
             FlowInputSource.Event => Path(binding.Path) && binding.NodeId is null && binding.Literal is null && binding.DataType != FlowDataType.SecretReference,
             FlowInputSource.NodeOutput => Path(binding.Path) && binding.NodeId is { } id && id != Guid.Empty && binding.Literal is null && binding.DataType != FlowDataType.SecretReference,
-            FlowInputSource.SecretReference => Text(binding.Path, 256) && binding.NodeId is null && binding.Literal is null && binding.DataType == FlowDataType.SecretReference,
+            FlowInputSource.SecretReference => FlowExecutionInputNames.IsEnvironmentReferenceName(binding.Path) && binding.NodeId is null && binding.Literal is null && binding.DataType == FlowDataType.SecretReference,
             FlowInputSource.Literal => binding.Path is null && binding.NodeId is null && binding.Literal is { } value &&
                 value.ValueKind != JsonValueKind.Undefined && binding.DataType != FlowDataType.SecretReference &&
                 FlowJsonValueBounds.Valid(value, FlowGraphV2Limits.MaximumBindingBytes) && JsonType(value) == binding.DataType,

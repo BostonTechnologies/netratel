@@ -59,9 +59,8 @@ public static class FlowExecutionSecretReferences
         else value.WriteTo(writer);
     }
 
-    public static bool IsNativeReferenceName(string? reference) => reference is { Length: > 0 and <= 128 } &&
-        (char.IsAsciiLetter(reference[0]) || reference[0] == '_') &&
-        reference.All(character => char.IsAsciiLetterOrDigit(character) || character == '_');
+    public static bool IsNativeReferenceName(string? reference) =>
+        FlowExecutionInputNames.IsEnvironmentReferenceName(reference);
 
     private static IReadOnlyDictionary<string, string> References(FlowNodeDto node, FlowPinnedExecutionDefinition pin)
     {

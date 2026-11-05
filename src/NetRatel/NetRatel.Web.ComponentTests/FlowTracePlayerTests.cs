@@ -131,6 +131,16 @@ public sealed class FlowTracePlayerTests : AsyncBunitContext
         cut.Markup.Should().Contain("Captured data unavailable");
     }
 
+    [Fact]
+    public void Reader_redaction_reason_is_not_presented_as_uncaptured_legacy_history()
+    {
+        var cut = Render<FlowTracePlayer>(p => p.Add(x => x.ContextKey, "tenant-17-redacted-run")
+            .Add(x => x.DataUnavailableReason, "source-read-denied"));
+        cut.Find("[data-testid=flow-trace-unavailable]").TextContent.Should().Contain("source-read-denied");
+        cut.Markup.Should().NotContain("no captured node snapshots");
+        cut.FindAll("[data-trace-panel]").Should().BeEmpty();
+    }
+
     private sealed class DeferredImportRuntime : IJSRuntime
     {
         public ConcurrentQueue<TaskCompletionSource<IJSObjectReference>> Imports { get; } = new();
