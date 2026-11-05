@@ -58,8 +58,12 @@ jobs:
       - name: Install PostgreSQL policy scanner
         run: |
           if ! command -v rg >/dev/null; then
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends ripgrep
+            # Hosted images normally have usable indexes. Refresh only when needed
+            # so unrelated repository metadata cannot consume the regression budget.
+            if ! sudo apt-get install -y --no-install-recommends ripgrep; then
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends ripgrep
+            fi
           fi
           rg --version
       - name: Validate source and documentation layout
