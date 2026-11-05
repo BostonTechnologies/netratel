@@ -167,6 +167,17 @@ public sealed partial class NetclawPersistencePostgresTests
         clock.Advance(TimeSpan.FromSeconds(6));
         using var crashed = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var active = original.GetRequiredService<FlowRunProcessor>().ProcessOneAsync(crashed.Token);
+        if (await Task.WhenAny(active, remote.Committed.Task).WaitAsync(ct) == active)
+        {
+            var claimed = await active;
+            await using var inspect = new OrchestratorDbContext(options);
+            var run = await inspect.FlowRuns.AsNoTracking().SingleAsync(row => row.Id == runId, ct);
+            var actions = await inspect.FlowActions.AsNoTracking().Where(row => row.RunId == runId)
+                .Select(row => new { row.NodeId, row.Status, row.Code }).ToArrayAsync(ct);
+            Assert.Fail($"Worker ended before the receiver POST: claimed={claimed}, now={clock.GetUtcNow():O}, " +
+                $"status={run.Status}, code={run.Code}, due={run.NextAttemptAtUtc:O}, " +
+                $"actions={JsonSerializer.Serialize(actions, IncidentJson)}");
+        }
         await remote.Committed.Task.WaitAsync(ct);
         string frozenDraft;
         string frozenPrepared;
@@ -287,6 +298,7 @@ public sealed partial class NetclawPersistencePostgresTests
         services.AddScoped<IRequestService, RequestService>();
         services.AddSingleton<IFlowReceiverEvidenceStore>(provider => provider.GetRequiredService<FlowPersistenceService>());
         services.AddSingleton<IRatelDeskReceiverFingerprint, RatelDeskReceiverFingerprint>();
+        services.AddSingleton<ReceiverPreparationBuilder>();
         services.AddScoped<IRatelDeskConnectorAuthorization, RatelDeskConnectorAuthorization>();
         services.AddScoped<RatelDeskConnectorStore>();
         services.AddScoped<IRatelDeskConnectorStore>(provider => provider.GetRequiredService<RatelDeskConnectorStore>());
