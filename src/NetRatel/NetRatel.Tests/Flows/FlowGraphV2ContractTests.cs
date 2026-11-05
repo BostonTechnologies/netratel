@@ -1,6 +1,7 @@
 using System.Text.Json;
 using AwesomeAssertions;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Mcp.Core;
 using Xunit;
 
 namespace NetRatel.Tests.Flows;
@@ -19,6 +20,17 @@ public sealed class FlowGraphV2ContractTests
         graph.Nodes.Should().OnlyContain(node => node.ExecutionTrigger == null && node.ExecutionAction == null &&
             node.Rerun == null && node.Predicate == null && node.Inputs == null);
         graph.Edges.Should().OnlyContain(edge => edge.Id == null && edge.Route == null);
+    }
+
+    [Fact]
+    public void Existing_managed_MCP_flow_operations_keep_their_schema_one_contract_while_v2_execution_is_gated()
+    {
+        var schema = NetRatelMcpToolDefinitions.CreateForHttp("dev")
+            .Single(tool => tool.ProtocolTool.Name == "netratel_flows").ProtocolTool.InputSchema.GetRawText();
+        schema.Should().Contain("InvestigateWithAi").And.Contain("actions").And.Contain("connectorRevision")
+            .And.NotContain("executionTrigger").And.NotContain("executionAction").And.NotContain("predicate")
+            .And.NotContain("RunLibraryScript").And.NotContain("RerunOriginalExecution");
+        // Existing frozen catalog digest tests still verify exact bytes on both transports.
     }
 
     [Fact]
