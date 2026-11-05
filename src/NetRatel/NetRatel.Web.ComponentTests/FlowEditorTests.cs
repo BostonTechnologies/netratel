@@ -521,6 +521,7 @@ public sealed class FlowEditorTests : AsyncBunitContext
 internal sealed class FakeFlowApi : IFlowApiService
 {
     public int SaveCalls, PublishCalls, ValidateCalls, DryRunCalls;
+    public Func<FlowExecutionDryRunRequest, Task<FlowDryRunResultDto>>? ExecutionPreview;
     public Func<FlowDryRunRequest, Task<FlowDryRunResultDto>>? Preview;
     public FlowSaveDraftRequest? LastSave;
     public TaskCompletionSource<FlowDefinitionDto>? SavePending;
@@ -541,6 +542,8 @@ internal sealed class FakeFlowApi : IFlowApiService
     public Task<FlowVersionDto> PublishAsync(int tenantId, Guid flowId, FlowRevisionRequest request, CancellationToken token = default) { PublishCalls++; throw new NotSupportedException(); }
     public Task<FlowValidationResultDto> ValidateAsync(int tenantId, FlowGraphDto graph, CancellationToken token = default) { ValidateCalls++; return Task.FromResult(FlowGraphValidator.ValidateComplete(graph)); }
     public Task<FlowDryRunResultDto> DryRunAsync(int tenantId, FlowDryRunRequest request, CancellationToken token = default) { DryRunCalls++; return Preview?.Invoke(request) ?? Task.FromResult(new FlowDryRunResultDto(false, false, "connector-required", null, [], [new("connector-required")])); }
+    public Task<FlowDryRunResultDto> DryRunExecutionAsync(int tenantId, FlowExecutionDryRunRequest request, CancellationToken token = default)
+    { DryRunCalls++; return ExecutionPreview?.Invoke(request) ?? throw new InvalidOperationException("No execution preview fixture configured."); }
     public Task<IReadOnlyList<FlowConnectorReferenceDto>> GetConnectorsAsync(int tenantId, CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowConnectorReferenceDto>>([]);
     public Task<IReadOnlyList<FlowVersionDto>> GetVersionsAsync(int tenantId, Guid flowId, CancellationToken token = default) => VersionsLookup?.Invoke(tenantId, flowId, token) ?? Task.FromResult<IReadOnlyList<FlowVersionDto>>([]);
     public Task<IReadOnlyList<FlowRunSummaryDto>> GetRunsAsync(int tenantId, Guid flowId, CancellationToken token = default) => RunsLookup?.Invoke(tenantId, flowId, token) ?? Task.FromResult<IReadOnlyList<FlowRunSummaryDto>>([]);
