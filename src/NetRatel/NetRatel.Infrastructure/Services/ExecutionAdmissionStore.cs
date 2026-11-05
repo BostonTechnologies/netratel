@@ -66,6 +66,17 @@ public sealed class ExecutionAdmissionStore(OrchestratorDbContext db, IDataProte
         return row is null ? null : Project(row);
     }
 
+    public async Task RecordAuthorityDeniedAsync(ExecutionAdmissionKind kind, string executionId, CancellationToken cancellationToken)
+    {
+        if (db.Database.ProviderName != "Npgsql.EntityFrameworkCore.PostgreSQL" || db.Database.CurrentTransaction is null)
+            throw new InvalidOperationException("Authority denial evidence requires the canonical owner transaction.");
+        var deniedAt = clock.GetUtcNow();
+        var updated = await db.Set<ExecutionAdmissionRecord>().Where(record => record.Kind == (int)kind && record.ExecutionId == executionId)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(record => record.AuthorityDeniedAtUtc,
+                record => record.AuthorityDeniedAtUtc ?? deniedAt), cancellationToken);
+        if (updated != 1) throw new InvalidOperationException("The denied execution admission disappeared.");
+    }
+
     private static bool Matches(ExecutionAdmissionRecord row, ExecutionAdmissionSubmission submission)
     {
         var identity = submission.Identity;

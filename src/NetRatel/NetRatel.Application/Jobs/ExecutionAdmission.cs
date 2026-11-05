@@ -57,6 +57,7 @@ public interface IExecutionAdmissionStore
 {
     Task<ExecutionAdmissionBinding> ReserveAsync(ExecutionAdmissionSubmission submission, Func<string> allocateExecutionId, CancellationToken cancellationToken);
     Task<ExecutionAdmissionBinding?> FindByExecutionAsync(ExecutionAdmissionKind kind, string executionId, CancellationToken cancellationToken);
+    Task RecordAuthorityDeniedAsync(ExecutionAdmissionKind kind, string executionId, CancellationToken cancellationToken);
 }
 
 /// <summary>Re-evaluates the actual configuring principal, credential and target at every keyed dispatch boundary.</summary>

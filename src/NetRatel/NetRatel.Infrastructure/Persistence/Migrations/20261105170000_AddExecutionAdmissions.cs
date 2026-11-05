@@ -24,6 +24,7 @@ public sealed class AddExecutionAdmissions : Migration
                 NodeId = table.Column<Guid>(type: "uuid", nullable: false),
                 NodeAttempt = table.Column<int>(type: "integer", nullable: false),
                 CausationJson = table.Column<string>(type: "text", nullable: true),
+                AuthorityDeniedAtUtc = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
                 Kind = table.Column<int>(type: "integer", nullable: false),
                 ExecutionId = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: false),
                 PayloadHash = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),

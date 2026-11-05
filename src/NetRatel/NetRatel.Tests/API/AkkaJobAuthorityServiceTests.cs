@@ -440,6 +440,7 @@ public sealed class AkkaJobAuthorityServiceTests
             _bindings.Add(submission.Identity.ActionKey, (submission, binding));
             return Task.FromResult(binding);
         }
+        public Task RecordAuthorityDeniedAsync(ExecutionAdmissionKind kind, string id, CancellationToken ct) => Task.CompletedTask;
         public Task<ExecutionAdmissionBinding?> FindByExecutionAsync(ExecutionAdmissionKind kind, string id, CancellationToken ct)
             => Task.FromResult(_bindings.Values.Select(entry => entry.Binding).SingleOrDefault(binding => binding.Kind == kind && binding.ExecutionId == id));
     }

@@ -29,6 +29,8 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                 {
                     b.Property<Guid>("ActionKey")
                         .HasColumnType("uuid");
+                    b.Property<DateTimeOffset?>("AuthorityDeniedAtUtc")
+                        .HasColumnType("timestamp with time zone");
                     b.Property<string>("CausationJson")
                         .HasColumnType("text");
                     b.Property<DateTimeOffset>("CreatedAtUtc")

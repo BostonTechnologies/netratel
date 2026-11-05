@@ -76,6 +76,33 @@ public sealed class ExecutionAdmissionPostgresTests(PostgreSqlPersistenceFixture
         (await read.Set<ExecutionAdmissionRecord>().CountAsync()).Should().Be(1);
     }
 
+    [Fact]
+    public async Task Authority_denial_evidence_commits_or_rolls_back_with_the_canonical_owner_transaction()
+    {
+        var submission = new ExecutionAdmissionSubmission(Identity(), ExecutionAdmissionKind.Job, "{}");
+        await using (var reserve = new OrchestratorDbContext(_options))
+            await new ExecutionAdmissionStore(reserve, _keys, TimeProvider.System)
+                .ReserveAsync(submission, () => "314", CancellationToken.None);
+        await using (var denied = new OrchestratorDbContext(_options))
+        {
+            await using var transaction = await denied.Database.BeginTransactionAsync();
+            await new ExecutionAdmissionStore(denied, _keys, TimeProvider.System)
+                .RecordAuthorityDeniedAsync(ExecutionAdmissionKind.Job, "314", CancellationToken.None);
+            await transaction.RollbackAsync();
+        }
+        await using (var unchanged = new OrchestratorDbContext(_options))
+            (await unchanged.Set<ExecutionAdmissionRecord>().SingleAsync()).AuthorityDeniedAtUtc.Should().BeNull();
+        await using (var denied = new OrchestratorDbContext(_options))
+        {
+            await using var transaction = await denied.Database.BeginTransactionAsync();
+            await new ExecutionAdmissionStore(denied, _keys, TimeProvider.System)
+                .RecordAuthorityDeniedAsync(ExecutionAdmissionKind.Job, "314", CancellationToken.None);
+            await transaction.CommitAsync();
+        }
+        await using var committed = new OrchestratorDbContext(_options);
+        (await committed.Set<ExecutionAdmissionRecord>().SingleAsync()).AuthorityDeniedAtUtc.Should().NotBeNull();
+    }
+
     private static ExecutionAdmissionIdentity Identity()
         => new(Guid.NewGuid(), 7, "operator@example.test", Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 1);
 }

@@ -510,6 +510,8 @@ public sealed class AkkaJobAuthorityService(
             }
             catch (ExecutionAdmissionDeniedException)
             {
+                await executionAdmissions!.RecordAuthorityDeniedAsync(ExecutionAdmissionKind.Job,
+                    run.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), cancellationToken);
                 await FailBeforeDispatchAsync(run, cancellationToken, "execution-admission-denied: The current flow execution authority is unavailable.");
                 return (await jobRuns.GetAsync(run.Id, cancellationToken))!;
             }
@@ -608,6 +610,8 @@ public sealed class AkkaJobAuthorityService(
         catch (ExecutionAdmissionDeniedException)
         {
             await BeginAfterTransportAsync(cancellationToken);
+            await executionAdmissions!.RecordAuthorityDeniedAsync(ExecutionAdmissionKind.Job,
+                run.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), cancellationToken);
             await FailBeforeDispatchAsync(running, cancellationToken, "execution-admission-denied: The current flow execution authority is unavailable.");
             await CommitBeforeTransportAsync(cancellationToken);
             throw;
