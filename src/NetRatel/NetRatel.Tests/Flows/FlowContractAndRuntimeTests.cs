@@ -185,7 +185,7 @@ public sealed class FlowContractAndRuntimeTests
         result.Valid.Should().BeTrue(); result.Code.Should().Be("inert-preview"); result.Incident!.Title.Should().Contain("alpha");
         result.VisitedNodeIds.Should().HaveCount(3); JsonSerializer.Serialize(graph).Should().Be(serialized);
         // Pure evaluation has no runtime/store/dispatcher argument or dependency; repeated reads remain inert.
-        FlowPureEvaluation.DryRun(new(graph, input)).Should().BeEquivalentTo(result);
+        JsonSerializer.Serialize(FlowPureEvaluation.DryRun(new(graph, input))).Should().Be(JsonSerializer.Serialize(result));
     }
     [Fact]
     public void Typed_condition_false_has_an_explicit_skipped_preview()
