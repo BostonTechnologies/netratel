@@ -2,7 +2,6 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
-using NetRatel.Application.Flows;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts.Flows;
 
@@ -37,7 +36,7 @@ internal static class FlowExecutionTerminalFacts
             catch (JsonException) { continue; }
             if (value?.EventId == row.Id && value.TenantId == tenantId && value.SourceKind == kind &&
                 value.ExecutionId == executionId && value.Provenance == provenance &&
-                FlowExecutionEventProvenance.IsNative(value) && FlowExecutionEventValidator.Validate(value).Valid)
+                FlowExecutionEventValidator.Validate(value).Valid)
                 return value;
         }
         return null;
