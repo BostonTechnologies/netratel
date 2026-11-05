@@ -12,35 +12,37 @@
 @inject NavigationManager Navigation
 
 <NavigationLock ConfirmExternalNavigation="@(_dirty && !_allowNavigation)" OnBeforeInternalNavigation="BeforeNavigation" />
-<section class="flow-editor @(_focused ? "focused" : "")" data-testid="flow-editor" @onkeydown="KeyDown">
-    <header class="flow-editor-header">
-        <div><h2>@(ReadOnly ? "Published version" : "Flow draft")</h2><p>@TenantName · @(_current?.Name ?? Definition.Name)</p></div>
-        <div class="flow-editor-actions">
-            <MudTooltip Text="@(_focused ? "Exit editor focus" : "Expand editor")"><MudIconButton Icon="@(_focused ? Icons.Material.Filled.FullscreenExit : Icons.Material.Filled.Fullscreen)" Size="MudBlazor.Size.Small" OnClick="() => _focused = !_focused" aria-label="@(_focused ? "Exit editor focus" : "Expand editor")" data-testid="flow-focus" /></MudTooltip>
-            <MudTooltip Text="Close editor"><MudIconButton @ref="_closeButton" Icon="@Icons.Material.Filled.Close" Size="MudBlazor.Size.Small" OnClick="RequestClose" Disabled="@_busy" aria-label="Close editor" data-testid="flow-close" /></MudTooltip>
-        </div>
-    </header>
+<section id="@_shellId" class="flow-editor @(_focused ? "focused" : "")" data-testid="flow-editor" aria-label="@(ReadOnly ? "Published flow viewer" : "Flow editor")" @onkeydown="KeyDown">
+    @if (_loading || _adapter is null)
+    {
+        <header class="flow-editor-header"><h2>@(ReadOnly ? "Published version" : "Flow draft")</h2>
+            <MudIconButton @ref="_closeButton" Icon="@Icons.Material.Filled.Close" Size="MudBlazor.Size.Small" OnClick="RequestClose" Disabled="@_busy" aria-label="Close editor" data-testid="flow-close" />
+        </header>
+    }
     @if (_error is not null) { <div role="alert" class="flow-error" data-testid="flow-error">@_error</div> }
     @if (_loading) { <p role="status">Loading workflow…</p> }
     else if (_adapter is not null && _current is not null)
     {
         <div class="flow-toolbar">
             <label class="flow-name">Flow name<input @bind="_name" @bind:event="oninput" @bind:after="CheckDirty" maxlength="@FlowLimits.MaximumNameLength" disabled="@(ReadOnly || _busy || !CanEdit)" data-testid="flow-name" /></label>
+            <span class="flow-context">@TenantName</span>
             <span role="status" data-testid="flow-dirty">@(ReadOnly ? $"Immutable version {VersionNumber}" : _busy ? OperationLabel : _dirty ? "Unsaved changes" : $"Saved draft · revision {_current.Revision}")</span>
             <div class="flow-editor-actions">
             @if (!ReadOnly)
             {
                 <MudTooltip Text="@SaveHint"><MudIconButton Icon="@Icons.Material.Filled.Save" Size="MudBlazor.Size.Small" Color="Color.Primary" OnClick="SaveAsync" Disabled="@(_busy || !CanEdit || !_dirty)" aria-label="Save draft" data-testid="flow-save" /></MudTooltip>
                 <MudTooltip Text="Validate draft"><MudIconButton Icon="@Icons.Material.Filled.FactCheck" Size="MudBlazor.Size.Small" OnClick="ValidateAsync" Disabled="@_busy" aria-label="Validate draft" data-testid="flow-validate" /></MudTooltip>
-                <MudTooltip Text="Dry run · preview only"><MudIconButton Icon="@Icons.Material.Filled.Science" Size="MudBlazor.Size.Small" OnClick="() => _showDryRun = !_showDryRun" Disabled="@_busy" aria-expanded="@(_showDryRun ? "true" : "false")" aria-label="Dry run" data-testid="flow-dry-run-toggle" /></MudTooltip>
+                <MudTooltip Text="Dry run · preview only"><MudIconButton Icon="@Icons.Material.Filled.Science" Size="MudBlazor.Size.Small" OnClick="TogglePreviewAsync" Disabled="@_busy" aria-expanded="@(_showDryRun ? "true" : "false")" aria-label="Dry run" data-testid="flow-dry-run-toggle" /></MudTooltip>
                 <MudTooltip Text="@PublishHint"><MudIconButton Icon="@Icons.Material.Filled.Publish" Size="MudBlazor.Size.Small" OnClick="PublishAsync" Disabled="@(_busy || _dirty || !CanPublish)" aria-label="Publish version" data-testid="flow-publish" /></MudTooltip>
                 <MudTooltip Text="Reload saved draft"><MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="MudBlazor.Size.Small" OnClick="ReloadAsync" Disabled="@_busy" aria-label="Reload saved draft" data-testid="flow-reload" /></MudTooltip>
             }
+            <MudTooltip Text="@(_paletteCollapsed ? "Show node library" : "Hide node library")"><MudIconButton Icon="@Icons.Material.Filled.AccountTree" Size="MudBlazor.Size.Small" OnClick="() => _paletteCollapsed = !_paletteCollapsed" aria-label="@(_paletteCollapsed ? "Show node library" : "Hide node library")" aria-expanded="@(!_paletteCollapsed ? "true" : "false")" data-testid="flow-palette-toggle" /></MudTooltip>
             <MudTooltip Text="Node properties"><MudIconButton Icon="@Icons.Material.Filled.Tune" Size="MudBlazor.Size.Small" OnClick="TogglePropertiesAsync" aria-expanded="@(_showProperties ? "true" : "false")" aria-label="Node properties" data-testid="flow-properties-toggle" /></MudTooltip>
+            <MudTooltip Text="@(_focused ? "Exit fullscreen" : "Fullscreen workspace")"><MudIconButton Icon="@(_focused ? Icons.Material.Filled.FullscreenExit : Icons.Material.Filled.Fullscreen)" Size="MudBlazor.Size.Small" OnClick="ToggleFocusAsync" aria-label="@(_focused ? "Exit fullscreen" : "Fullscreen workspace")" aria-pressed="@(_focused ? "true" : "false")" data-testid="flow-focus" /></MudTooltip>
+            <MudTooltip Text="Close editor"><MudIconButton @ref="_closeButton" Icon="@Icons.Material.Filled.Close" Size="MudBlazor.Size.Small" OnClick="RequestClose" Disabled="@_busy" aria-label="Close editor" data-testid="flow-close" /></MudTooltip>
             </div>
         </div>
         @if (_message is not null) { <p role="status" class="flow-notice" data-testid="flow-result">@_message</p> }
-        @if (ReadOnly) { <p class="flow-notice">This published graph is immutable. Draft edits and new versions cannot change its definition.</p> }
 
         @if (_issues.Count > 0)
         {
@@ -48,7 +50,10 @@
         }
         @if (_showDryRun && !ReadOnly)
         {
-            <fieldset class="flow-dry-run" disabled="@_busy" data-testid="flow-dry-run-form"><legend>Sample alert — preview only</legend>
+            <dialog id="@_previewId" class="flow-preview-dialog" aria-labelledby="@(_previewId + "-title")" data-testid="flow-preview-dialog" @onkeydown:stopPropagation>
+            <header class="flow-preview-header"><h3 id="@(_previewId + "-title")">Preview sample</h3><MudIconButton Icon="@Icons.Material.Filled.Close" Size="MudBlazor.Size.Small" OnClick="ClosePreviewAsync" aria-label="Close preview" data-testid="flow-preview-close" /></header>
+            <p class="flow-help">Pure evaluation only. No script, job, AI turn, notification or incident is dispatched.</p>
+            <fieldset class="flow-dry-run" disabled="@_busy" data-testid="flow-dry-run-form"><legend>Sample alert</legend>
                 <label>Rule name<input @bind="_sampleRule" /></label><label>Client name<input @bind="_sampleClient" /></label>
                 <label>Resource<input @bind="_sampleResource" /></label><label>Metric<input @bind="_sampleMetric" /></label>
                 <label>Severity<select @bind="_sampleSeverity"><option>warning</option><option>critical</option><option>info</option></select></label>
@@ -62,19 +67,23 @@
                     </div>
                 }
             </fieldset>
+            </dialog>
         }
-        <MudDropContainer T="FlowNodeKind" Items="_nodeKinds" ItemsSelector="@((item, zone) => zone == "library")"
+        <MudDropContainer T="FlowNodeKind" Items="PaletteKinds" ItemsSelector="@((item, zone) => zone == "library")"
             ItemDisabled="@(kind => !CanInsert(kind))" CanDrop="CanDrop" ItemDropped="DropNodeAsync"
             ApplyDropClassesOnDragStarted="true" CanDropClass="flow-drop-allowed" NoDropClass="flow-drop-forbidden"
-            Class="@($"flow-workspace {(_showProperties && _propertiesPinned ? "properties-docked" : "")}")">
+            Class="@($"flow-workspace {(_showProperties && _propertiesPinned ? "properties-docked" : "")} {(_paletteCollapsed ? "palette-collapsed" : "")}")">
             <ChildContent>
+            @if (!_paletteCollapsed)
+            {
             <aside class="flow-library" aria-label="Node library">
                 <h3>Nodes</h3>
+                <label>Search nodes<input type="search" @bind="_paletteQuery" @bind:event="oninput" placeholder="Name or category" data-testid="flow-palette-search" /></label>
                 <MudDropZone T="FlowNodeKind" Identifier="library" Class="flow-palette" AllowReorder="false">
                     <ItemRenderer Context="kind">
                         <div class="flow-palette-item">
                             <MudDragHandle T="FlowNodeKind" Class="flow-palette-handle" aria-label="@($"Drag {FlowCanvas.KindLabel(kind)} to canvas")" data-testid="@($"flow-drag-{kind}")"><MudIcon Icon="@Icons.Material.Filled.DragIndicator" Size="MudBlazor.Size.Small" /></MudDragHandle>
-                            <button type="button" class="flow-palette-label" @onclick="() => _paletteSelection = kind" data-testid="@($"flow-palette-{kind}")">@FlowCanvas.KindLabel(kind)</button>
+                            <button type="button" class="flow-palette-label" @onclick="() => _paletteSelection = kind" data-testid="@($"flow-palette-{kind}")"><small class="flow-palette-category">@PaletteCategory(kind)</small>@FlowCanvas.KindLabel(kind)</button>
                             <MudTooltip Text="@(CanInsert(kind) ? InsertHint(kind) : InsertBlockReason(kind))"><MudIconButton Icon="@Icons.Material.Filled.AddCircleOutline" Size="MudBlazor.Size.Small" OnClick="() => InsertNodeAsync(kind)" Disabled="@(!CanInsert(kind))" aria-label="@InsertHint(kind)" data-testid="@($"flow-add-{kind}")" /></MudTooltip>
                         </div>
                     </ItemRenderer>
@@ -85,6 +94,7 @@
                     @foreach (var n in _adapter.Capture().Nodes) { <option value="@n.Id">@n.Name</option> }
                 </select></label>
             </aside>
+            }
             <MudDropZone T="FlowNodeKind" Identifier="canvas" OnlyZone="true" Class="flow-canvas-column">
                 <FlowCanvas @key="_adapter" @ref="_canvas" Adapter="_adapter" ReadOnly="@(ReadOnly || !CanEdit || _busy)" SelectedNodeId="_selected" Selected="SelectNodeAsync" Settings="OpenPropertiesAsync" Delete="RequestRemoveAsync" Changed="CheckDirty" Ready="CanvasReady" InitialViewport="_initialViewport" />
             </MudDropZone>
@@ -226,6 +236,13 @@
     private bool _closingLeave;
     private int _leaveDialogGeneration;
     private IJSObjectReference? _module;
+    private DotNetObjectReference<FlowEditor>? _shellReference;
+    private readonly string _shellId = "flow-editor-" + Guid.NewGuid().ToString("N");
+    private string _previewId => _shellId + "-preview";
+    private bool _paletteCollapsed;
+    private string _paletteQuery = "";
+    private IEnumerable<FlowNodeKind> PaletteKinds => _nodeKinds.Where(kind => string.IsNullOrWhiteSpace(_paletteQuery) ||
+        $"{FlowCanvas.KindLabel(kind)} {PaletteCategory(kind)} {PaletteHelp(kind)}".Contains(_paletteQuery.Trim(), StringComparison.OrdinalIgnoreCase));
     private static readonly FlowNodeKind[] _nodeKinds = Enum.GetValues<FlowNodeKind>();
     private static readonly DialogOptions _leaveOptions = new() { FullWidth = true, MaxWidth = MaxWidth.Small, BackdropClick = false, CloseOnEscapeKey = false };
     private static readonly DialogOptions _deleteOptions = _leaveOptions with { CloseOnEscapeKey = true };
@@ -261,7 +278,7 @@
             var old = _adapter; _adapter = replacement; _canvas = null; _current = definition; _name = definition.Name;
             _initialViewport = definition.Draft.Viewport; _selected = definition.Draft.Nodes.FirstOrDefault(n => n.Id == InitialSelectedNodeId)?.Id ?? definition.Draft.Nodes.FirstOrDefault()?.Id;
             _showProperties = InitialSelectedNodeId is not null && _selected == InitialSelectedNodeId;
-            _baseline = Fingerprint(definition.Name, definition.Draft); _dirty = false; _issues = []; _preview = null; _reviewedFingerprint = null; _focusPending = true;
+            _baseline = Fingerprint(definition.Name, definition.Draft); _dirty = false; _issues = []; _preview = null; _showDryRun = false; _reviewedFingerprint = null; _focusPending = true;
             if (old is not null) await old.DisposeAsync();
             await DirtyChanged.InvokeAsync(false);
         }
@@ -272,8 +289,38 @@
     private bool Current(int generation, int tenant, Guid id) => !_disposed && generation == _generation && Definition.TenantId == tenant && Definition.Id == id;
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (firstRender)
+        {
+            _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/flows-editor.js");
+            if (_disposed) return;
+            _shellReference = DotNetObjectReference.Create(this);
+            await _module.InvokeVoidAsync("attachShell", _shellId, _shellReference);
+        }
+        if (_showDryRun && _module is not null) await _module.InvokeVoidAsync("showPreview", _shellId, _previewId);
         if (_propertiesFocusPending && _showProperties) { _propertiesFocusPending = false; _focusPending = false; await _propertiesHeader.FocusAsync(); }
         else if (_focusPending && !_loading && _closeButton is not null) { _focusPending = false; await _closeButton.FocusAsync(); }
+    }
+    private async Task ToggleFocusAsync()
+    {
+        _focused = !_focused;
+        if (_module is not null) await _module.InvokeVoidAsync("setShellFocus", _shellId, _focused);
+    }
+    [JSInvokable]
+    public Task FullscreenChanged(bool focused) => InvokeAsync(() =>
+    {
+        if (_disposed) return;
+        _focused = focused;
+        StateHasChanged();
+    });
+    private Task TogglePreviewAsync() => _showDryRun ? ClosePreviewAsync() : OpenPreviewAsync();
+    private Task OpenPreviewAsync() { _showDryRun = true; return Task.CompletedTask; }
+    [JSInvokable]
+    public Task PreviewCancelled() => InvokeAsync(async () => { await ClosePreviewAsync(); if (!_disposed) StateHasChanged(); });
+    private async Task ClosePreviewAsync()
+    {
+        if (_disposed) return;
+        _showDryRun = false;
+        if (_module is not null) await _module.InvokeVoidAsync("closePreview", _shellId, _previewId);
     }
     private static string Fingerprint(string name, FlowGraphDto graph) => name + "\n" + JsonSerializer.Serialize(graph);
     private async Task CheckDirty()
@@ -399,7 +446,12 @@
     private async Task KeyDown(KeyboardEventArgs args)
     {
         if (_pendingLeave is not null || _pendingDelete is not null) return;
-        if (args.Key == "Escape") { if (_showProperties) await ClosePropertiesAsync(); else await RequestClose(); }
+        if (args.Key == "Escape")
+        {
+            if (_showDryRun) await ClosePreviewAsync();
+            else if (_showProperties) await ClosePropertiesAsync();
+            else if (_focused) await ToggleFocusAsync();
+        }
         else if (args.Key == "Delete" && _selected is { } node && !ReadOnly && CanEdit && !_busy)
         {
             _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/flows-editor.js");
@@ -507,6 +559,9 @@
         _from = _from == node.ToString() ? "" : _from; _to = _to == node.ToString() ? "" : _to;
         await CheckDirty();
     });
+    private static string PaletteCategory(FlowNodeKind kind) => kind switch
+    { FlowNodeKind.AlertRaised => "Events", FlowNodeKind.Condition => "Logic", FlowNodeKind.MapIncident => "Data",
+      FlowNodeKind.InvestigateWithAi => "AI", _ => "Integrations" };
     private static string PaletteHelp(FlowNodeKind kind) => kind switch { FlowNodeKind.AlertRaised => "Starts when a monitoring occurrence fires.", FlowNodeKind.Condition => "Checks a selected alert value.", FlowNodeKind.MapIncident => "Sets the message title, description and incident priority.", FlowNodeKind.CreateIncident => "Delivers an incident through an approved RatelDesk connection.", FlowNodeKind.InvestigateWithAi => "Waits for one AI investigation before the next action. Insert it into an existing incident path to retain and enrich the incident.", FlowNodeKind.ActionGroup => "Runs notification, incident and AI actions independently.", _ => "Unsupported node." };
     private Task ConnectAsync() => CommandAsync("connect", async (tenant, id, token) =>
     { if (!CanEdit || ReadOnly || !Guid.TryParse(_from, out var from) || !Guid.TryParse(_to, out var to)) { _error = "Select an output and an input."; return; } var generation = _generation; await _adapter!.ConnectAsync(from, to, token); if (Current(generation, tenant, id)) await CheckDirty(); });
@@ -564,6 +619,11 @@
         _pendingLeave = null;
         _lifetime.Cancel(); _lifetime.Dispose();
         if (_adapter is not null) await _adapter.DisposeAsync();
-        if (_module is not null) { try { await _module.DisposeAsync(); } catch (JSDisconnectedException) { _module = null; } }
+        if (_module is not null)
+        {
+            try { await _module.InvokeVoidAsync("detachShell", _shellId); await _module.DisposeAsync(); }
+            catch (JSDisconnectedException) { _module = null; }
+        }
+        _shellReference?.Dispose();
     }
 }

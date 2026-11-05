@@ -6,6 +6,10 @@ Flows support bounded drafts, previews, RatelDesk incidents and Discord/Slack no
 
 Open **Signals → Flows**, choose an authorized tenant, and create the named incident template. The real VeloxDev canvas supports moving nodes, connecting typed ports, deleting edges/nodes, pan, zoom, fit and minimap. The property forms offer a keyboard path to node positions, conditions, mappings and connections. Save retains stable node IDs, properties, positions and viewport in NetRatel's canonical schema; a canvas or CLR object is never persisted.
 
+The compact toolbar includes a searchable, collapsible node library and **Fullscreen workspace** for both drafts and immutable viewers. Fullscreen covers the viewport; the browser Fullscreen API is requested directly from the click where supported, with a full-window fallback. The existing dialog and popover providers stay inside the native fullscreen document. Entering or leaving keeps the same canvas adapter, selected node, draft and pan/zoom. Escape keeps the editor open; use its explicit Close action to leave.
+
+Preview sample data opens in a modal dialog and does not reduce the canvas height. Closing the dialog returns focus to Preview. Evaluation remains pure and uses the current draft; opening or closing preview does not save or publish it.
+
 The initial catalogue is deliberately small:
 
 1. Alert raised.

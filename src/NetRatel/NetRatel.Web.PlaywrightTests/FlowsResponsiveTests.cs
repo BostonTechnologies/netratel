@@ -89,6 +89,7 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await File.WriteAllTextAsync(Path.Combine(evidence, name + ".json"), geometry.GetRawText());
         Assert.Equal(width, geometry.GetProperty("cssWidth").GetInt32()); Assert.Equal(dpr, geometry.GetProperty("dpr").GetDouble());
         Assert.Equal("16px", geometry.GetProperty("rootFont").GetString());
+        await page.GetByTestId("flow-preview-close").ClickAsync();
         await page.GetByTestId("flow-canvas").ScrollIntoViewIfNeededAsync();
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, name + "-canvas.png"), Animations = ScreenshotAnimations.Disabled });
         await page.GetByTestId("flow-properties-close").ClickAsync();
@@ -103,6 +104,52 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         }
         await CloseEditorAsync(page);
         await Assertions.Expect(opener).ToBeFocusedAsync();
+    }
+
+    [Fact]
+    public async Task Fullscreen_Editor_And_Viewer_Keep_Preview_Modal_And_Preserve_Draft_On_Escape()
+    {
+        var fixture = _fixture!;
+        fixture.FlowsData.SeedRun();
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1280, Height = 800 } });
+        var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000);
+        await OpenPageAsync(page, fixture);
+        await page.GetByTestId("flow-edit").First.ClickAsync();
+        await page.GetByTestId("flow-name").FillAsync("Fullscreen retained draft");
+        var selected = await page.Locator(".flow-node.selected").GetAttributeAsync("data-node-id");
+        await page.GetByTestId("flow-focus").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-focus")).ToHaveAttributeAsync("aria-pressed", "true");
+        var shell = (await page.GetByTestId("flow-editor").BoundingBoxAsync())!;
+        Assert.InRange(shell.X, -1, 1); Assert.InRange(shell.Y, -1, 1);
+        Assert.InRange(shell.Width, 1278, 1282); Assert.InRange(shell.Height, 798, 802);
+        var canvas = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!;
+        await page.GetByTestId("flow-dry-run-toggle").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-preview-dialog")).ToBeVisibleAsync();
+        Assert.True(await page.GetByTestId("flow-preview-dialog").EvaluateAsync<bool>("e => e.matches(':modal')"));
+        var after = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!;
+        Assert.InRange(after.Y, canvas.Y - 1, canvas.Y + 1); Assert.InRange(after.Height, canvas.Height - 1, canvas.Height + 1);
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(page.GetByTestId("flow-preview-dialog")).ToHaveCountAsync(0);
+        await Assertions.Expect(page.GetByTestId("flow-dry-run-toggle")).ToBeFocusedAsync();
+        await Assertions.Expect(page.GetByTestId("flow-name")).ToHaveValueAsync("Fullscreen retained draft");
+        Assert.Equal(selected, await page.Locator(".flow-node.selected").GetAttributeAsync("data-node-id"));
+        var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-fullscreen-editor.png"), Animations = ScreenshotAnimations.Disabled });
+        await page.GetByTestId("flow-close").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-unsaved")).ToBeVisibleAsync();
+        Assert.True(await page.GetByTestId("flow-unsaved").EvaluateAsync<bool>("e => !document.fullscreenElement || document.fullscreenElement.contains(e)"));
+        await page.GetByTestId("flow-discard").ClickAsync();
+        await page.GotoAsync($"{fixture.BaseAddress}/flows?tenantId=17&version={fixture.FlowsData.SeededVersionId:D}", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await Assertions.Expect(page.GetByTestId("flow-dirty")).ToContainTextAsync("Immutable version 1");
+        await page.GetByTestId("flow-focus").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-focus")).ToHaveAttributeAsync("aria-pressed", "true");
+        var viewer = (await page.GetByTestId("flow-editor").BoundingBoxAsync())!;
+        Assert.InRange(viewer.Y, -1, 1); Assert.InRange(viewer.Height, 798, 802);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-fullscreen-viewer.png"), Animations = ScreenshotAnimations.Disabled });
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(page.GetByTestId("flow-editor")).ToHaveCountAsync(1);
+        Assert.Equal(0, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls);
+        Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
     }
 
     [Fact]
