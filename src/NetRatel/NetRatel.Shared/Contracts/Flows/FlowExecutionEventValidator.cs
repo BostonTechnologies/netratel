@@ -48,7 +48,7 @@ public static class FlowExecutionEventValidator
             Target(replay.Target, "replay_target");
             Required(replay.SourceExecutionId, "replay_execution_id");
             Required(replay.SourceAttemptId, "replay_attempt_id");
-            Text(replay.InputsReference, 256, "replay_inputs_reference");
+            Text(replay.InputsReference, 512, "replay_inputs_reference");
             Text(replay.UnsupportedReason, 128, "replay_unsupported_reason");
             if (replay.Supported && (string.IsNullOrWhiteSpace(replay.Definition?.Id) ||
                 string.IsNullOrWhiteSpace(replay.Definition?.Revision) || replay.Definition?.ContentHash is not { Length: 64 } ||
