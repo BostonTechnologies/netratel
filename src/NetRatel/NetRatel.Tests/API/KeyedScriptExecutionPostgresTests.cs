@@ -178,6 +178,30 @@ public sealed class KeyedScriptExecutionPostgresTests(PostgreSqlPersistenceFixtu
         (await db.Set<ExecutionAdmissionRecord>().CountAsync()).Should().Be(0);
     }
 
+
+    [Theory]
+    [InlineData("Failed", """{"timedOut":true}""", null, FlowExecutionActionDisposition.TimedOut)]
+    [InlineData("Failed", """{"outcomeUnknown":true}""", null, FlowExecutionActionDisposition.Unknown)]
+    [InlineData("Completed", "{}", null, FlowExecutionActionDisposition.Unknown)]
+    public async Task Flow_action_classifies_committed_native_terminal_flags_without_fabricating_success(
+        string rawStatus, string resultJson, int? exitCode, FlowExecutionActionDisposition expected)
+    {
+        var original = await SeedAsync();
+        await using var db = new OrchestratorDbContext(_options);
+        var native = new JobRunService(db, _keys);
+        var dispatcher = new FlowExecutionActionDispatcher(db, new Pins(new(original.Identity.NodeId, FlowNodeKind.RunLibraryScript,
+            original.FlowLease!.Version.Graph.Nodes[0].ExecutionAction!.Definition, new(original.AgentId), Script: original.Snapshot)),
+            new NoJobs(), Service(db), native, new ExecutionAdmissionStore(db, _keys, TimeProvider.System),
+            new FlowExecutionAuthority(db, new Verifier(), _access, _source, TimeProvider.System));
+        var request = new FlowExecutionActionRequest(original.FlowLease, original.Identity.NodeId, original.Identity.ActionKey, 1);
+        var accepted = await dispatcher.DispatchAsync(request);
+        await native.UpdateTaskActivityStatusAsync(new(accepted.Receipt!.ExecutionId, rawStatus, null,
+            DateTimeOffset.UtcNow, ResultJson: resultJson, ExitCode: exitCode));
+        var observed = await dispatcher.ObserveAsync(request, accepted.Receipt);
+        observed.Disposition.Should().Be(expected);
+        _commands.Dispatches.Should().Be(1);
+    }
+
     private sealed class Pins(FlowPinnedExecutionDefinition? value) : IFlowExecutionDefinitionPins
     {
         public Task<FlowPinnedExecutionDefinition?> ResolveAsync(int tenant, Guid version, Guid node, CancellationToken ct = default)

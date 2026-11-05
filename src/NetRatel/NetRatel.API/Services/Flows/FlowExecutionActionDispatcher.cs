@@ -131,8 +131,13 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
         var receipt = Receipt(binding);
         if (activity is null) return new(uncertain ? FlowExecutionActionDisposition.Unknown : FlowExecutionActionDisposition.Pending,
             uncertain ? "script-dispatch-unknown" : "script-reserved", receipt);
-        var native = FlowExecutionOutcomes.FromAuthoritativeStatus(activity.Status);
-        var disposition = native switch
+        var committed = await db.JobTaskActivities.AsNoTracking().Where(row => row.RequestId == binding.ExecutionId)
+            .Select(row => new { row.Status, row.ExitCode, row.ResultJson }).SingleOrDefaultAsync(ct);
+        if (committed is null) return new(FlowExecutionActionDisposition.Unknown, "script-committed-result-unavailable", receipt);
+        if (committed.Status != activity.Status) return new(FlowExecutionActionDisposition.Pending, "script-result-projection-pending", receipt);
+        // Classification uses committed native flags; projected/redacted output can intentionally omit them.
+        var native = FlowScriptExecutionOutcomes.ClassifyCommittedResult(committed.Status, committed.ExitCode, committed.ResultJson);
+        var disposition = native?.Outcome switch
         {
             FlowExecutionOutcome.Succeeded => FlowExecutionActionDisposition.Succeeded,
             FlowExecutionOutcome.Failed => FlowExecutionActionDisposition.Failed,
@@ -146,7 +151,7 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
                 activity.Status.Equals("Running", StringComparison.OrdinalIgnoreCase) ? FlowExecutionActionDisposition.Running :
                 FlowExecutionActionDisposition.Pending
         };
-        if (denied && native == FlowExecutionOutcome.Failed) disposition = FlowExecutionActionDisposition.Denied;
+        if (denied && native?.Outcome == FlowExecutionOutcome.Failed) disposition = FlowExecutionActionDisposition.Denied;
         var submitted = JsonSerializer.Deserialize<ScriptSubmission>(binding.PayloadJson, Json)!;
         if (activity.TenantId != binding.Identity.TenantId || activity.AgentId != submitted.Request.AgentId ||
             !string.Equals(activity.ScriptContentHash, submitted.Request.Snapshot.ContentHash, StringComparison.OrdinalIgnoreCase))
@@ -160,7 +165,7 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
         var terminal = await TerminalAsync(binding.Identity.TenantId, FlowExecutionSourceKind.Script, binding.ExecutionId, ct);
         return new(disposition, "script-" + disposition.ToString().ToLowerInvariant(), receipt,
             new(definition, new(activity.AgentId, activity.TargetDisplayName, activity.TargetHostName), binding.ExecutionId,
-                binding.ExecutionId, activity.StartedAtUtc, activity.CompletedAtUtc, activity.ExitCode,
+                binding.ExecutionId, activity.StartedAtUtc, activity.CompletedAtUtc, native?.ExitCode,
                 Summary: Bound(activity.Error), StandardOutput: Text(data, "stdout"), StandardError: Text(data, "stderr"),
                 Data: Bounded(data), OutputAvailable: activity.ResultJson is not null,
                 Truncated: activity.ResultJson is not null && Encoding.UTF8.GetByteCount(activity.ResultJson) > 16384, References: terminal?.Results), terminal);
