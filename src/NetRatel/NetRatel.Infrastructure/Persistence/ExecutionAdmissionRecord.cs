@@ -15,6 +15,8 @@ public sealed class ExecutionAdmissionRecord
     public int NodeAttempt { get; set; }
     public string? CausationJson { get; set; }
     public DateTimeOffset? AuthorityDeniedAtUtc { get; set; }
+    public DateTimeOffset? DispatchStartedAtUtc { get; set; }
+    public DateTimeOffset? DispatchAcceptedAtUtc { get; set; }
     public int Kind { get; set; }
     public string ExecutionId { get; set; } = string.Empty;
     public string PayloadHash { get; set; } = string.Empty;

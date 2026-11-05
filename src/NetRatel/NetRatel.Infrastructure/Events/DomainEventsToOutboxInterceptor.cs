@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using NetRatel.Application.Events;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Flows;
 
 namespace NetRatel.Infrastructure.Events;
 
@@ -42,6 +43,8 @@ public sealed class DomainEventsToOutboxInterceptor : SaveChangesInterceptor
         {
             foreach (var domainEvent in aggregate.DomainEvents)
             {
+                if (domainEvent.EventType.StartsWith(ExecutionLifecycleOutbox.EventTypePrefix, StringComparison.Ordinal))
+                    throw new InvalidOperationException("Execution lifecycle source and selection records require their canonical native writers.");
                 db.Set<OutboxMessage>().Add(new OutboxMessage
                 {
                     Id = domainEvent.EventId,

@@ -17,6 +17,7 @@ public interface IFlowApiService
     Task<FlowVersionDto> PublishAsync(int tenantId, Guid flowId, FlowRevisionRequest request, CancellationToken token = default);
     Task<FlowValidationResultDto> ValidateAsync(int tenantId, FlowGraphDto graph, CancellationToken token = default);
     Task<FlowDryRunResultDto> DryRunAsync(int tenantId, FlowDryRunRequest request, CancellationToken token = default);
+    Task<FlowDryRunResultDto> DryRunExecutionAsync(int tenantId, FlowExecutionDryRunRequest request, CancellationToken token = default);
     Task<IReadOnlyList<FlowConnectorReferenceDto>> GetConnectorsAsync(int tenantId, CancellationToken token = default);
     Task<IReadOnlyList<FlowVersionDto>> GetVersionsAsync(int tenantId, Guid flowId, CancellationToken token = default);
     Task<IReadOnlyList<FlowRunSummaryDto>> GetRunsAsync(int tenantId, Guid flowId, CancellationToken token = default);
@@ -66,6 +67,7 @@ public sealed class FlowApiService(IHttpClientFactory factory) : IFlowApiService
     public Task<FlowVersionDto> PublishAsync(int tenantId, Guid flowId, FlowRevisionRequest request, CancellationToken token = default) => SendAsync<FlowVersionDto>(HttpMethod.Post, Flow(tenantId, flowId) + "/publish", request, token);
     public Task<FlowValidationResultDto> ValidateAsync(int tenantId, FlowGraphDto graph, CancellationToken token = default) => SendAsync<FlowValidationResultDto>(HttpMethod.Post, Root(tenantId) + "/validate", graph, token);
     public Task<FlowDryRunResultDto> DryRunAsync(int tenantId, FlowDryRunRequest request, CancellationToken token = default) => SendAsync<FlowDryRunResultDto>(HttpMethod.Post, Root(tenantId) + "/dry-run", request, token);
+    public Task<FlowDryRunResultDto> DryRunExecutionAsync(int tenantId, FlowExecutionDryRunRequest request, CancellationToken token = default) => SendAsync<FlowDryRunResultDto>(HttpMethod.Post, Root(tenantId) + "/dry-run-execution", request, token);
     public Task<IReadOnlyList<FlowConnectorReferenceDto>> GetConnectorsAsync(int tenantId, CancellationToken token = default) => SendAsync<IReadOnlyList<FlowConnectorReferenceDto>>(HttpMethod.Get, Root(tenantId) + "/connectors", null, token);
     public Task<IReadOnlyList<FlowVersionDto>> GetVersionsAsync(int tenantId, Guid flowId, CancellationToken token = default) => SendAsync<IReadOnlyList<FlowVersionDto>>(HttpMethod.Get, Flow(tenantId, flowId) + "/versions", null, token);
     public Task<IReadOnlyList<FlowRunSummaryDto>> GetRunsAsync(int tenantId, Guid flowId, CancellationToken token = default) => SendAsync<IReadOnlyList<FlowRunSummaryDto>>(HttpMethod.Get, Flow(tenantId, flowId) + "/runs", null, token);

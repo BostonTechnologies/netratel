@@ -49,9 +49,13 @@ export async function attach(id, x, y, reference) {
     const keys = event => { if (event.key === 'Delete' && !isEditing()) event.preventDefault(); };
     const size = () => {
         if (workspace) workspace.style.setProperty('--flow-workspace-top', `${Math.max(0, workspace.getBoundingClientRect().top)}px`);
+        const panel = el.closest('.flow-canvas-panel');
+        if (panel) panel.style.setProperty('--flow-canvas-tools-inset', `${canvasToolsInset(panel.id)}px`);
     };
     const observer = new ResizeObserver(size);
     if (workspace?.parentElement) observer.observe(workspace.parentElement);
+    const tools = el.closest('.flow-canvas-panel')?.parentElement?.querySelector('.flow-canvas-tools');
+    if (tools) observer.observe(tools);
     window.addEventListener('resize', size);
     document.addEventListener('dragstart', start, true);
     document.addEventListener('touchstart', start, { capture: true, passive: true });
@@ -77,6 +81,12 @@ export async function attach(id, x, y, reference) {
 }
 export function detach(id) { viewers.get(id)?.(); viewers.delete(id); }
 export function focus(id) { document.getElementById(id)?.focus(); }
+export function canvasToolsInset(panelId) {
+    const panel = document.getElementById(panelId);
+    const tools = panel?.parentElement?.querySelector('.flow-canvas-tools');
+    if (!panel || !tools || getComputedStyle(tools).position !== 'absolute') return 0;
+    return Math.max(0, Math.ceil(tools.getBoundingClientRect().bottom - panel.getBoundingClientRect().top + 8));
+}
 export async function fitPosition(id, marginX, marginY) {
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const el = document.getElementById(id);
@@ -130,6 +140,7 @@ export function attachShell(id, reference) {
     detachShell(id);
     const root = document.getElementById(id);
     if (!root) return;
+    document.documentElement.classList.add('netratel-flow-editor-open');
     const state = { root, reference, focused: false, ownsNative: false, nativePending: false, disposed: false, unsynchronized: false, returnFocus: null, preview: null };
     const notify = () => {
         if (state.disposed) return;
@@ -177,6 +188,35 @@ export function attachShell(id, reference) {
         event.preventDefault(); event.stopImmediatePropagation();
         void state.setFocus(!state.focused);
     };
+    const historyPointer = event => {
+        if (state.disposed || root.dataset.historyEnabled !== 'true' || event.button > 0 ||
+            !event.target.closest?.('[data-testid="flow-canvas"]')) return;
+        // One callback per physical gesture, before Velox's mousedown/move commands.
+        reference.invokeMethodAsync("BeginCanvasEditGesture").catch(() => {});
+    };
+    const historyKey = event => {
+        if (state.disposed || root.dataset.historyEnabled !== 'true' || isEditing() || event.altKey ||
+            !(event.ctrlKey || event.metaKey) || root.querySelector('dialog[open]')) return;
+        const key = event.key.toLowerCase();
+        if (key !== 'z' && key !== 'y') return;
+        event.preventDefault(); event.stopImmediatePropagation();
+        reference.invokeMethodAsync("NavigateGraphHistory", key === 'y' || event.shiftKey).catch(() => {});
+    };
+    const editingSpace = event => {
+        if (state.disposed || !root.isConnected || event.code !== 'Space' || !root.querySelector('.flow-canvas-panel')) return;
+        const title = event.target.closest?.('.flow-node-title');
+        if (title && root.contains(title)) {
+            event.preventDefault(); event.stopImmediatePropagation();
+            title.click(); // Same selection path as the title's ordinary click.
+            return;
+        }
+        const control = event.target.closest?.('input,textarea,select,button,[contenteditable]');
+        if (!control || control.matches('input[readonly]')) return;
+        if (!control.matches('input,textarea,select,button') && !control.isContentEditable) return;
+        // Velox's document Space handler arms canvas panning and prevents the
+        // browser default. Editing and native control activation keep that default.
+        event.stopImmediatePropagation();
+    };
     const fullscreen = () => {
         if (state.ownsNative && document.fullscreenElement !== document.documentElement) {
             state.ownsNative = false;
@@ -185,7 +225,7 @@ export function attachShell(id, reference) {
     };
     const escape = event => {
         if (event.key !== 'Escape' || !state.focused) return;
-        if (root.querySelector('dialog[open], .flow-properties, .flow-live-link:not([hidden]), [data-connection-start]:not([data-connection-start=""])')) return;
+        if (root.querySelector('dialog[open], .flow-properties, .flow-live-link:not([hidden]), .flow-route-handle.dragging, [data-connection-start]:not([data-connection-start=""])')) return;
         const overlayOpen = [...document.querySelectorAll('.mud-dialog-container, .mud-popover-open')]
             .some(el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
         if (overlayOpen) return;
@@ -202,12 +242,19 @@ export function attachShell(id, reference) {
     observer.observe(document.body, { childList: true, subtree: true });
     observer.observe(root, { attributes: true, attributeFilter: ['class'] });
     root.addEventListener('click', click, true);
+    window.addEventListener('keydown', editingSpace, true);
+    root.addEventListener('pointerdown', historyPointer, true);
+    root.addEventListener('keydown', historyKey, true);
     document.addEventListener('keydown', escape, true);
     document.addEventListener('fullscreenchange', fullscreen);
     state.dispose = () => {
         state.disposed = true;
         observer.disconnect();
         root.removeEventListener('click', click, true);
+        window.removeEventListener('keydown', editingSpace, true);
+        document.documentElement.classList.toggle('netratel-flow-editor-open', [...shells.values()].some(shell => shell !== state && !shell.disposed));
+        root.removeEventListener('pointerdown', historyPointer, true);
+        root.removeEventListener('keydown', historyKey, true);
         document.removeEventListener('keydown', escape, true);
         document.removeEventListener('fullscreenchange', fullscreen);
         if (state.preview) { state.preview.element.removeEventListener('cancel', state.preview.cancel); state.preview.element.close(); }

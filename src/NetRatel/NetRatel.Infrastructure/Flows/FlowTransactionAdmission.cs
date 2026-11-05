@@ -28,6 +28,9 @@ public sealed class MonitoringFlowTransactionAdmission(IFlowExecutionAuthorityVe
             return new(false, "flow-transaction-admission-invalid");
         try
         {
+            // Canonical native admission may later append a terminal source fact in this transaction.
+            // Take the shared configuration fence before either source/Monitoring definition guard.
+            await FlowTenantTransactionLock.AcquireAsync(db, lease.Event.TenantId, cancellationToken).ConfigureAwait(false);
             var connection = (NpgsqlConnection)db.Database.GetDbConnection();
             var transaction = (NpgsqlTransaction)currentTransaction.GetDbTransaction();
             if (lease.ExpiresAtUtc <= await ClientConnectionEpochStore.EffectiveNowAsync(connection, transaction, clock,

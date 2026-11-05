@@ -2,6 +2,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using NetRatel.Application.Scripts;
+using NetRatel.Application.Flows;
+using System.Text.Json.Serialization;
 using NetRatel.Shared.Contracts.Jobs;
 
 namespace NetRatel.Application.Jobs;
@@ -21,13 +23,18 @@ public sealed record ExecutionAdmissionIdentity(
             throw new ArgumentException("A complete bounded execution admission identity is required.");
         if (Causation is { } causation && (string.IsNullOrWhiteSpace(causation.RootOccurrenceId) ||
             causation.RootOccurrenceId.Length > 128 || causation.SourceExecutionId?.Length > 256 ||
-            causation.HopCount is < 0 or > 8 || causation.RecoveryAttempt is < 0 or > 8))
+            causation.RootExecutionId?.Length > 256 || causation.RootExecutionId is not null && string.IsNullOrWhiteSpace(causation.SourceExecutionId) ||
+            causation.HopCount is < 0 or > 8 || causation.RecoveryAttempt is < 0 or > 3))
             throw new ArgumentException("The execution admission causation is invalid or exhausted.");
     }
 }
 
 public sealed record ExecutionAdmissionCausation(string RootOccurrenceId, Guid? ParentEventId = null,
-    int HopCount = 0, int RecoveryAttempt = 0, string? SourceExecutionId = null);
+    int HopCount = 0, int RecoveryAttempt = 0, string? SourceExecutionId = null)
+{
+    // Omitted for old admissions so their protected payload and semantic hash remain unchanged.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? RootExecutionId { get; init; }
+}
 
 public enum ExecutionAdmissionKind { Job = 1, LibraryScript = 2 }
 
@@ -51,22 +58,35 @@ public sealed record ExecutionAdmissionSubmission(ExecutionAdmissionIdentity Ide
 
 /// <summary>The canonical identity is committed before physical dispatch. Its presence means admitted/pending, never success.</summary>
 public sealed record ExecutionAdmissionBinding(ExecutionAdmissionIdentity Identity, ExecutionAdmissionKind Kind,
-    string ExecutionId, string PayloadJson, DateTimeOffset CreatedAtUtc);
+    string ExecutionId, string PayloadJson, DateTimeOffset CreatedAtUtc)
+{
+    public DateTimeOffset? DispatchStartedAtUtc { get; init; }
+    public DateTimeOffset? DispatchAcceptedAtUtc { get; init; }
+    public DateTimeOffset? AuthorityDeniedAtUtc { get; init; }
+}
 
 public interface IExecutionAdmissionStore
 {
     Task<ExecutionAdmissionBinding> ReserveAsync(ExecutionAdmissionSubmission submission, Func<string> allocateExecutionId, CancellationToken cancellationToken);
     Task<ExecutionAdmissionBinding?> FindByExecutionAsync(ExecutionAdmissionKind kind, string executionId, CancellationToken cancellationToken);
     Task RecordAuthorityDeniedAsync(ExecutionAdmissionKind kind, string executionId, CancellationToken cancellationToken);
+    Task<bool> TryBeginDispatchAsync(ExecutionAdmissionBinding binding, Func<CancellationToken, Task> prepare,
+        Func<CancellationToken, Task> validate, CancellationToken cancellationToken)
+        => throw new NotSupportedException("Atomic keyed physical dispatch admission is unavailable.");
+    Task RecordDispatchAcceptedAsync(ExecutionAdmissionBinding binding, CancellationToken cancellationToken)
+        => throw new NotSupportedException("Atomic keyed physical dispatch acceptance is unavailable.");
 }
 
 /// <summary>Re-evaluates the actual configuring principal, credential and target at every keyed dispatch boundary.</summary>
 public interface IKeyedExecutionAuthority
 {
     Task RequireAllowedAsync(ExecutionAdmissionIdentity identity, JobDefinitionInfo pinnedDefinition, CancellationToken cancellationToken);
+    Task RequireFirstDispatchAsync(ExecutionAdmissionIdentity identity, FlowRunLease? lease, CancellationToken cancellationToken)
+        => throw new ExecutionAdmissionDeniedException("Current source admission and flow lease proof are unavailable.");
 }
 
 public sealed class ExecutionAdmissionDeniedException(string message) : InvalidOperationException(message);
+public sealed class ExecutionAdmissionBudgetExhaustedException() : InvalidOperationException("The linked rerun attempt budget is exhausted.");
 
 public sealed record PinnedJobScriptSnapshot(ScriptInfo Script, IReadOnlyList<ScriptParamInfo> Parameters, string ContentHash);
 
@@ -96,4 +116,8 @@ public sealed record PinnedJobExecutionSnapshot(JobDefinitionDetails Definition,
     }
 }
 
-public sealed record KeyedJobAdmissionRequest(ExecutionAdmissionIdentity Identity, PinnedJobExecutionSnapshot Snapshot, RunJobRequest Request);
+public sealed record KeyedJobAdmissionRequest(ExecutionAdmissionIdentity Identity, PinnedJobExecutionSnapshot Snapshot, RunJobRequest Request)
+{
+    // The transport lease changes across worker recovery and is not part of pinned execution semantics.
+    [JsonIgnore] public FlowRunLease? FlowLease { get; init; }
+}

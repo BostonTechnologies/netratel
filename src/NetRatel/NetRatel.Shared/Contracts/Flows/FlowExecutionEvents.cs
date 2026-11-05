@@ -41,6 +41,8 @@ public sealed record FlowExecutionEventDto(Guid EventId, Guid OccurrenceId, int 
     public int? ExitCode { get; init; }
     public string? CorrelationId { get; init; }
     public string? RequestKind { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FlowExecutionSourceKind? DefinitionSourceKind { get; init; }
     public string? ParentExecutionId { get; init; }
     public string? RootExecutionId { get; init; }
     public FlowExecutionCausationDto? Causation { get; init; }

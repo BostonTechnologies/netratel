@@ -12,7 +12,7 @@ public enum FlowRunStatus { Queued = 1, Running = 2, RetryWaiting = 3, Succeeded
 public enum FlowActionStatus { Pending = 1, Dispatching = 2, RetryWaiting = 3, Succeeded = 4, Failed = 5, DeliveryUnknown = 6, WaitingForAi = 7, AwaitingApproval = 8 }
 
 public enum FlowAiFailureBehavior { ContinueWithAlert = 0, StopFlow = 1 }
-public enum FlowAiResultStatus { Queued = 0, Processing = 1, AwaitingApproval = 2, Completed = 3, Failed = 4, Timeout = 5, Cancelled = 6, DeliveryUnknown = 7 }
+public enum FlowAiResultStatus { Queued = 0, Processing = 1, AwaitingApproval = 2, Completed = 3, Failed = 4, Timeout = 5, Cancelled = 6, DeliveryUnknown = 7, Unsupported = 8 }
 public sealed record FlowAiSettingsDto(int DeadlineMinutes = 15, FlowAiFailureBehavior FailureBehavior = FlowAiFailureBehavior.ContinueWithAlert)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

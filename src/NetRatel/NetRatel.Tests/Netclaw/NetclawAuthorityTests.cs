@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Netclaw;
+using NetRatel.Shared.Contracts.Flows;
 using Xunit;
 
 namespace NetRatel.Tests.Netclaw;
@@ -72,6 +73,44 @@ public sealed class NetclawAuthorityTests
         Assert.False(await authority.CanInvokeAsync(18, actor, null, false, default));
         db.PrincipalRoleAssignments.Remove(await db.PrincipalRoleAssignments.SingleAsync()); await db.SaveChangesAsync();
         Assert.False(await authority.CanInvokeAsync(17, actor, null, false, default));
+    }
+
+    [Fact]
+    public async Task Execution_investigation_uses_current_publisher_tenant_and_source_grants_without_borrowing_monitoring_authority()
+    {
+        await using var db = CreateDb();
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var actor = await new ApplicationPrincipalResolver(db).ResolveExternalAsync(Token(now - 60, now + 3600, "ordinary-group"))
+            ?? throw new InvalidOperationException("Missing test publisher.");
+        var required = new[] { NetRatelPermissions.FlowExecute, NetRatelPermissions.ClientManagement,
+            NetRatelPermissions.TelemetryRead, NetRatelPermissions.SecretUse, NetRatelPermissions.JobManagement };
+        var role = new AccessRole { Name = "Source investigator" };
+        foreach (var permission in required) role.Permissions.Add(new() { Permission = permission });
+        db.AccessRoles.Add(role);
+        db.PrincipalRoleAssignments.Add(new() { PrincipalId = actor, RoleId = role.Id, TenantId = 17 });
+        var credential = new IntegrationCredential { Id = "source-only", OwnerPrincipalId = actor,
+            Purpose = IntegrationCredentialPurpose.Api, ExpiresAtUtc = DateTimeOffset.UtcNow.AddHours(1) };
+        foreach (var permission in required.Where(permission => permission != NetRatelPermissions.JobManagement))
+            credential.Grants.Add(new() { TenantId = 17, Permission = permission });
+        db.IntegrationCredentials.Add(credential);
+        await db.SaveChangesAsync();
+        var authority = new NetclawAuthority(new EffectiveAccessService(db, new ConfigurationBuilder().Build()), db);
+        Assert.True(await authority.CanInvestigateExecutionAsync(17, actor, null, [FlowExecutionSourceKind.Job], default));
+        Assert.True(await authority.CanInvestigateExecutionAsync(17, actor, null, [FlowExecutionSourceKind.Request], default));
+        Assert.False(await authority.CanInvokeAsync(17, actor, null, true, default));
+        Assert.False(await authority.CanInvestigateExecutionAsync(17, actor, null, [FlowExecutionSourceKind.Script], default));
+        Assert.False(await authority.CanInvestigateExecutionAsync(18, actor, null, [FlowExecutionSourceKind.Job], default));
+        Assert.False(await authority.CanInvestigateExecutionAsync(17, actor, credential.Id, [FlowExecutionSourceKind.Job], default));
+        credential.Grants.Add(new() { TenantId = 17, Permission = NetRatelPermissions.JobManagement });
+        await db.SaveChangesAsync();
+        Assert.True(await authority.CanInvestigateExecutionAsync(17, actor, credential.Id, [FlowExecutionSourceKind.Job], default));
+        Assert.False(await authority.CanInvestigateExecutionAsync(17, "another-owner", credential.Id, [FlowExecutionSourceKind.Job], default));
+        credential.RevokedAtUtc = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+        Assert.False(await authority.CanInvestigateExecutionAsync(17, actor, credential.Id, [FlowExecutionSourceKind.Job], default));
+        db.PrincipalRoleAssignments.Remove(await db.PrincipalRoleAssignments.SingleAsync());
+        await db.SaveChangesAsync();
+        Assert.False(await authority.CanInvestigateExecutionAsync(17, actor, null, [FlowExecutionSourceKind.Job], default));
     }
 
     private static NetRatelIdentityDbContext CreateDb() => new(new DbContextOptionsBuilder<NetRatelIdentityDbContext>()

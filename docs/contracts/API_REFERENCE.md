@@ -100,13 +100,20 @@ seven-edge and 32 KiB limits remain unchanged. Stable edge `id` and optional `ro
 hover, selection, live connection geometry and playback do not. Explicit migration keeps node IDs,
 assigns edge IDs and exposes missing new outcome routes without rewriting published history.
 Canonical cloning remaps graph-owned node/edge/action identities and bindings into a disabled draft.
+For schema two, `FlowGraphSerialization` sorts JSON object members and normalizes exact numeric
+spellings before size/hash calculation, so PostgreSQL JSONB round trips preserve the configuration
+hash. Schema-one bytes and hashes retain their historical serialization; published versions are not rewritten.
 
 Execution facts use `FlowExecutionEventDto` schema one with exact source, normalized and raw outcome,
 definition/execution/attempt identity, target, timestamps, causation and bounded evidence references.
-Execution IDs remain decimal strings across JavaScript. The native fact budget is 16 KiB; the
+Execution identifiers remain strings across JavaScript; numeric IDs use decimal text without number conversion. The native fact budget is 16 KiB; the
 source-aware runtime wrapper is 24 KiB. These limits are separate from the graph, prepared-action
 and trace budgets. Replay descriptors reference server-owned protected original inputs/definition/target;
-they contain no credentials and confer no authority.
+they contain no credentials and confer no authority. The immutable run envelope retains up to 16
+contributing source-event IDs and an omitted-default `sourceEventIdsTruncated` flag for additional
+references known at admission. Later delivery receipts do not rewrite this flag or snapshot.
+Run-detail reads require current source authority before exposing either; historical absent references
+and withheld references remain unavailable rather than becoming an invented empty list.
 
 `GET /api/v1/flows/tenants` returns authorized tenant names and effective flow permissions.
 All routes below are under `/api/v1/tenants/{tenantId}/flows`; current tenant permission is
@@ -132,11 +139,18 @@ Successful mutations return `FlowDefinitionDto`; publish returns `FlowVersionDto
 use bounded safe codes: 409 for revision conflict, 429 for capacity and 422 for unavailable/unauthorized
 dependencies. An unverified receiver returns `receiver-idempotency-unverified` and preserves the draft.
 Definition/target query denials return 403; unsupported source families return 422 and malformed filters 400.
+Execution definition metadata retains names up to 512 characters; exceeding that bound is explicit.
+Pinned native `secret_reference` inputs accept only an environment-name reference matching
+`[A-Za-z_][A-Za-z0-9_]{0,127}`. The reference name is passed only into protected canonical admission,
+never resolved or rendered by preview, and is excluded from durable node input snapshots.
 
 Schema-two save/validate clients send `X-NetRatel-Flow-Schema: 2` to select the finite graph body
 budget before JSON binding; ordinary schema-one limits remain intact. The separate v2 preview body
 budget includes bounded source and fixtures. Declared and chunked bodies follow the same limits.
-Missing fixture output is unavailable; explicit JSON null and empty values stay distinct. Preview
+Missing fixture output is unavailable; explicit JSON null and empty values stay distinct.
+Recorded node timing uses the persisted start and trusted elapsed time across durable waits;
+simulated timing remains null. Native output uses the existing authorized redacted projection,
+with explicit missing, empty, withheld and truncated labels and exact string execution references. Preview
 performs zero script/job admissions, AI turns, notifications and incident writes.
 
 There is no browser/API execute route. Durable native transitions commit immutable source facts and

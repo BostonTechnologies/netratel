@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -17,6 +18,9 @@ using NetRatel.Application.Notifications;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Notifications;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Services;
+using NetRatel.Infrastructure.Flows;
+using NetRatel.Shared.Contracts.Flows;
 using NetRatel.Shared.Contracts;
 using Xunit;
 
@@ -58,6 +62,55 @@ public sealed class PairingNotificationAudienceTests
         Assert.False(await db.OutboxReadReceipts.AnyAsync(x => x.EventId == foreign.Id || x.UserId != "actor"));
         foreach (var path in new[] { $"/api/v1/events/{own.Id}/retry", $"/api/v1/events/{own.Id}/disable" })
             Assert.Equal(auditReader ? HttpStatusCode.NotFound : HttpStatusCode.Forbidden, (await client.PostAsync(path, null)).StatusCode);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Native_execution_facts_and_subscription_records_are_not_generic_notifications_or_retry_targets(bool auditReader)
+    {
+        using var host = await HostAsync();
+        using var scope = host.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        var requests = new RequestService(db, new EphemeralDataProtectionProvider());
+        var request = await requests.CreateAsync(new("synthetic-source", string.Empty, "missing-definition", null, 1, null));
+        await requests.UpdateAsync(new(request.Id, null, null, null, null, "Failed", "Synthetic source failure.", null, null, null));
+        var native = await db.OutboxMessages.SingleAsync(row => row.Type == FlowExecutionEventLimits.OutboxType);
+        var binding = Message(ExecutionLifecycleOutbox.RequestBindingOutboxType, "actor");
+        var intent = Message(FlowExecutionSubscriptionLimits.OutboxType, "actor");
+        var audit = Message("ordinary.audit", "actor");
+        db.OutboxMessages.AddRange(binding, intent, audit);
+        await db.SaveChangesAsync();
+        var reserved = new[] { native.Id, binding.Id, intent.Id };
+        var client = host.GetTestClient();
+        client.DefaultRequestHeaders.Add("X-Test-Actor", "actor");
+        if (auditReader) client.DefaultRequestHeaders.Add("X-Test-Audit", "yes");
+
+        var page = await client.GetFromJsonAsync<PagedResult<NetRatelNotificationDto>>("/api/v1/notifications");
+        Assert.DoesNotContain(page!.Items, item => reserved.Contains(item.Id));
+        var summary = await client.GetFromJsonAsync<NetRatelNotificationSummaryDto>("/api/v1/notifications/summary");
+        Assert.Equal(auditReader ? 1 : 0, summary!.TotalCount);
+        var unread = await client.GetFromJsonAsync<NetRatelNotificationDto[]>("/api/v1/notifications/unread-errors");
+        Assert.DoesNotContain(unread!, item => reserved.Contains(item.Id));
+        foreach (var id in reserved)
+        {
+            Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/v1/notifications/{id}")).StatusCode);
+            Assert.Equal(auditReader ? HttpStatusCode.NotFound : HttpStatusCode.Forbidden,
+                (await client.GetAsync($"/api/v1/events/{id}")).StatusCode);
+            foreach (var action in new[] { "retry", "disable" })
+                Assert.Equal(auditReader ? HttpStatusCode.NotFound : HttpStatusCode.Forbidden,
+                    (await client.PostAsync($"/api/v1/events/{id}/{action}", null)).StatusCode);
+        }
+        if (auditReader)
+        {
+            var events = await client.GetFromJsonAsync<PagedResult<NetRatelNotificationDto>>("/api/v1/events");
+            Assert.DoesNotContain(events!.Items, item => reserved.Contains(item.Id));
+        }
+        using var marked = await client.PostAsJsonAsync("/api/v1/notifications/mark-read", new { Ids = reserved });
+        marked.EnsureSuccessStatusCode();
+        Assert.False(await db.OutboxReadReceipts.AnyAsync(row => reserved.Contains(row.EventId)));
+        Assert.All(await db.OutboxMessages.AsNoTracking().Where(row => reserved.Contains(row.Id)).ToArrayAsync(),
+            row => Assert.Equal(OutboxStatuses.Pending, row.Status));
     }
 
     [Fact]

@@ -4,17 +4,27 @@
 @inject IJSRuntime JS
 
 <section id="@_id" class="flow-trace-player" data-testid="flow-trace-player" data-context="@ContextKey" data-scope-id="@ScopeId" aria-label="Flow playback" @onkeydown:stopPropagation>
-    @if (Stale)
+    @if (Trace is { SchemaVersion: not 1 })
+    {
+        <p role="alert" data-testid="flow-trace-unsupported">Node data unavailable. This trace format is unsupported.</p>
+    }
+    else if (Stale)
     {
         <p role="alert" data-testid="flow-trace-stale">This trace belongs to a different graph revision. Preview the current draft again.</p>
     }
     else if (Trace is not { Steps.Count: > 0 } trace)
     {
-        <p data-testid="flow-trace-unavailable">Node data unavailable. This run has no captured node snapshots.</p>
+        <p data-testid="flow-trace-unavailable">Node data unavailable.
+            @if (DataUnavailableReason is { Length: > 0 })
+            { <span>Source or node data could not be provided: <code>@DataUnavailableReason</code>.</span> }
+            else
+            { <span>This run has no captured node snapshots.</span> }
+        </p>
     }
     else
     {
         <header><strong>@ProvenanceLabel(trace.Provenance) playback</strong><span>Presentation only · no actions run</span></header>
+        @if (DataUnavailableReason is { Length: > 0 }) { <p class="flow-trace-warning">Some source or node data is unavailable: <code>@DataUnavailableReason</code>.</p> }
         @if (trace.Truncated) { <p class="flow-trace-warning">Some trace data was omitted to stay within the capture budget.</p> }
         <div class="flow-trace-controls" role="group" aria-label="Playback controls">
             <button type="button" data-trace-action="restart" aria-label="Restart playback">Restart</button>
@@ -32,6 +42,7 @@
                 <button type="button" data-trace-step="@index" aria-current="@(index == 0 ? "step" : null)">@($"{index + 1}. {step.NodeName}")</button>
             }
         </div>
+        <p hidden data-trace-unvisited>No step was captured for the selected node. Its input, output and outcome are unavailable.</p>
         @for (var index = 0; index < trace.Steps.Count; index++)
         {
             var step = trace.Steps[index];
@@ -58,21 +69,25 @@
     [Parameter] public FlowTraceDto? Trace { get; set; }
     [Parameter, EditorRequired] public string ContextKey { get; set; } = "";
     [Parameter] public string? ExpectedConfigurationHash { get; set; }
+    [Parameter] public string? DataUnavailableReason { get; set; }
     [Parameter] public string? ScopeId { get; set; }
+    [Parameter] public int? ExpectedGraphSchemaVersion { get; set; }
     private readonly string _id = "flow-trace-" + Guid.NewGuid().ToString("N");
     private IJSObjectReference? _module, _handle;
     private FlowTraceDto? _renderedTrace;
     private string? _renderedContext, _renderedHash, _renderedScope;
+    private int? _renderedGraphSchema;
     private long _generation;
     private bool _pendingAttach, _disposed;
-    private bool Stale => Trace is not null && ExpectedConfigurationHash is not null &&
-        !string.Equals(Trace.ConfigurationHash, ExpectedConfigurationHash, StringComparison.Ordinal);
+    private bool Stale => Trace is not null &&
+        (ExpectedConfigurationHash is not null && !string.Equals(Trace.ConfigurationHash, ExpectedConfigurationHash, StringComparison.Ordinal) ||
+         ExpectedGraphSchemaVersion is not null && Trace.GraphSchemaVersion != ExpectedGraphSchemaVersion);
 
     protected override void OnParametersSet()
     {
         if (ReferenceEquals(_renderedTrace, Trace) && _renderedContext == ContextKey &&
-            _renderedHash == ExpectedConfigurationHash && _renderedScope == ScopeId) return;
-        _renderedTrace = Trace; _renderedContext = ContextKey; _renderedHash = ExpectedConfigurationHash; _renderedScope = ScopeId;
+            _renderedHash == ExpectedConfigurationHash && _renderedScope == ScopeId && _renderedGraphSchema == ExpectedGraphSchemaVersion) return;
+        _renderedTrace = Trace; _renderedGraphSchema = ExpectedGraphSchemaVersion; _renderedContext = ContextKey; _renderedHash = ExpectedConfigurationHash; _renderedScope = ScopeId;
         ++_generation; _pendingAttach = true;
     }
 
@@ -85,9 +100,10 @@
         {
             var old = _handle; _handle = null;
             if (old is not null) { await old.InvokeVoidAsync("dispose"); await old.DisposeAsync(); }
-            if (Stale || Trace is not { Steps.Count: > 0 }) return;
+            if (_disposed || generation != _generation || Stale || Trace is not { SchemaVersion: 1, Steps.Count: > 0 }) return;
+            var imported = _module is null;
             var module = _module ?? await JS.InvokeAsync<IJSObjectReference>("import", "./js/flows-playback.js");
-            if (_disposed || generation != _generation) { if (_module is null) await module.DisposeAsync(); return; }
+            if (_disposed || generation != _generation) { if (imported) await module.DisposeAsync(); return; }
             _module = module;
             var handle = await module.InvokeAsync<IJSObjectReference?>("attach", _id, ContextKey);
             if (_disposed || generation != _generation)

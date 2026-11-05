@@ -38,12 +38,25 @@ public sealed class MonitoringFlowsIntegrationTests(ClientsManagementBrowserFixt
         var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000);
         var errors = new List<string>(); page.PageError += (_, error) => errors.Add(error);
         await page.GotoAsync(host.BaseAddress + "/monitoring", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
-        var row = page.GetByTestId("monitoring-series-row").Filter(new() { HasText = occurrence.OccurrenceId.ToString() });
+        // Identity and automation evidence are presented in the occurrence's sibling details row.
+        var row = page.GetByTestId("monitoring-detail-row").Filter(new() { HasText = occurrence.OccurrenceId.ToString() });
         await row.WaitForAsync(new() { Timeout = 90_000 });
-        await Assertions.Expect(row.GetByTestId("monitoring-incident-receipt")).ToContainTextAsync($"Incident {receipt.IncidentId}");
-        await Assertions.Expect(row.GetByTestId("monitoring-incident-receipt")).ToContainTextAsync(receipt.TrackingId!);
-        await Assertions.Expect(row.GetByTestId("monitoring-incident-receipt").GetByRole(AriaRole.Link, new() { Name = "Open incident", Exact = true }))
-            .ToHaveAttributeAsync("href", receipt.SafeLink!);
+        await OpenOccurrenceDetailsAsync();
+        var monitoringReceipt = row.GetByTestId("monitoring-incident-receipt");
+        await Assertions.Expect(monitoringReceipt.Locator("dt")).ToHaveTextAsync(new[] { "Incident ID" });
+        await Assertions.Expect(monitoringReceipt.Locator("dd code")).ToHaveTextAsync(receipt.IncidentId);
+        await Assertions.Expect(monitoringReceipt).ToContainTextAsync(receipt.TrackingId!);
+        var monitoringTicket = monitoringReceipt.GetByTestId("monitoring-rateldesk-ticket");
+        await Assertions.Expect(monitoringTicket).ToHaveTextAsync("Open RatelDesk ticket");
+        await Assertions.Expect(monitoringTicket).ToHaveAttributeAsync("href", receipt.SafeLink!);
+        await Assertions.Expect(monitoringTicket).ToHaveAttributeAsync("rel", "noopener noreferrer");
+        async Task OpenOccurrenceDetailsAsync()
+        {
+            var details = row.GetByTestId("monitoring-alert-details");
+            if (await details.GetAttributeAsync("open") is null)
+                await details.Locator(":scope > summary").ClickAsync();
+            await Assertions.Expect(details).ToHaveAttributeAsync("open", "");
+        }
         var nav = page.GetByTestId("app-navigation-drawer");
         var signalLinks = await nav.Locator("a[href='/notifications'],a[href='/monitoring'],a[href='/flows']").AllTextContentsAsync();
         Assert.Equal(new[] { "Notifications", "Monitoring", "Flows" }, signalLinks.Select(text => text.Trim()).ToArray());
@@ -55,14 +68,15 @@ public sealed class MonitoringFlowsIntegrationTests(ClientsManagementBrowserFixt
         await Assertions.Expect(page.GetByTestId("flow-run-result")).ToContainTextAsync(input.ClientName);
         await Assertions.Expect(page.GetByTestId("flow-run-result")).ToContainTextAsync("96");
         var actionResult = page.GetByTestId("flow-action-result");
-        await Assertions.Expect(actionResult.Locator("p").First).ToHaveTextAsync("Status: Succeeded · Attempts: 1");
+        var actionStatus = actionResult.GetByText("Status: Succeeded · Attempts: 1", new() { Exact = true });
+        await Assertions.Expect(actionStatus).ToHaveTextAsync("Status: Succeeded · Attempts: 1");
         await Assertions.Expect(actionResult.GetByTestId("flow-action-code")).ToHaveTextAsync("incident-created");
         await Assertions.Expect(actionResult.GetByTestId("flow-incident-id")).ToHaveTextAsync(receipt.IncidentId);
         await Assertions.Expect(actionResult.GetByTestId("flow-incident-tracking")).ToHaveTextAsync(receipt.TrackingId!);
         await Assertions.Expect(actionResult.Locator("dt")).ToHaveTextAsync(new[] { "Incident ID", "Tracking number" });
         var incidentLink = actionResult.GetByRole(AriaRole.Link, new() { Name = "Open incident", Exact = true });
         await Assertions.Expect(incidentLink).ToHaveAttributeAsync("href", receipt.SafeLink!);
-        foreach (var field in new[] { actionResult.Locator("p").First, actionResult.GetByTestId("flow-action-code"), actionResult.GetByTestId("flow-incident-id"), actionResult.GetByTestId("flow-incident-tracking"), incidentLink })
+        foreach (var field in new[] { actionStatus, actionResult.GetByTestId("flow-action-code"), actionResult.GetByTestId("flow-incident-id"), actionResult.GetByTestId("flow-incident-tracking"), incidentLink })
         {
             await Assertions.Expect(field).ToBeVisibleAsync();
             await field.EvaluateAsync("e => e.scrollIntoView({block:'center',inline:'nearest'})");
@@ -70,20 +84,48 @@ public sealed class MonitoringFlowsIntegrationTests(ClientsManagementBrowserFixt
         }
         Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth + 1"));
         Assert.False(await actionResult.EvaluateAsync<bool>("e => e.scrollWidth > e.clientWidth + 1"));
-        await page.GetByTestId("flow-run-detail").FocusAsync();
+        await page.GetByTestId("flow-run-replay").FocusAsync();
         await page.Keyboard.PressAsync("Tab");
         await Assertions.Expect(incidentLink).ToBeFocusedAsync();
         Assert.True(await incidentLink.EvaluateAsync<bool>("e => e.matches(':focus-visible') && getComputedStyle(e).outlineStyle !== 'none' && parseFloat(getComputedStyle(e).outlineWidth) > 0"));
         Assert.Contains("underline", await incidentLink.EvaluateAsync<string>("e => getComputedStyle(e).textDecorationLine"));
-        Assert.True(await incidentLink.EvaluateAsync<bool>("e => {const r=e.getBoundingClientRect();const hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return hit===e||e.contains(hit)}"));
-        Assert.Equal(1, flows.RunLookups); Assert.Equal(1, flows.VersionLookups); Assert.Equal(0, flows.HistoryReads);
+        var hitEvidence = await incidentLink.EvaluateAsync<JsonElement>("""
+            e => {
+                const rect = element => {
+                    const r = element.getBoundingClientRect();
+                    return { x:r.x, y:r.y, width:r.width, height:r.height, right:r.right, bottom:r.bottom };
+                };
+                const describe = element => element ? {
+                    tag:element.tagName, id:element.id, testId:element.getAttribute("data-testid"),
+                    role:element.getAttribute("role"), classes:element.className?.toString(),
+                    text:element.textContent?.trim().slice(0,120), bounds:rect(element)
+                } : null;
+                const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
+                const hit=document.elementFromPoint(x,y);
+                const ancestors=[];
+                for(let parent=e.parentElement; parent && ancestors.length<12; parent=parent.parentElement) {
+                    const style=getComputedStyle(parent);
+                    ancestors.push({ element:describe(parent), overflowX:style.overflowX, overflowY:style.overflowY,
+                        position:style.position, zIndex:style.zIndex, scrollTop:parent.scrollTop,
+                        clientHeight:parent.clientHeight, scrollHeight:parent.scrollHeight });
+                }
+                return { reachable:hit===e||e.contains(hit), point:{x,y}, link:describe(e), hit:describe(hit),
+                    stack:document.elementsFromPoint(x,y).slice(0,6).map(describe),
+                    viewport:{width:innerWidth,height:innerHeight,dpr:devicePixelRatio}, ancestors };
+            }
+            """);
         var evidence = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.GetFullPath("TestResults/playwright");
         Directory.CreateDirectory(evidence);
         var variant = $"{width}x{height}-dpr{dpr}";
+        await File.WriteAllTextAsync(Path.Combine(evidence, $"monitoring-flows-hit-target-{variant}.json"), hitEvidence.GetRawText());
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"monitoring-flows-hit-target-{variant}.png"), Animations = ScreenshotAnimations.Disabled });
+        Assert.True(hitEvidence.GetProperty("reachable").GetBoolean(), "The incident link center must receive pointer input. " + hitEvidence.GetRawText());
+        Assert.Equal(1, flows.RunLookups); Assert.Equal(1, flows.VersionLookups); Assert.Equal(0, flows.HistoryReads);
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"monitoring-flows-run-receipt-{variant}.png"), FullPage = true });
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"monitoring-flows-run-receipt-{variant}-viewport.png") });
         await page.GoBackAsync(new() { WaitUntil = WaitUntilState.DOMContentLoaded });
         await row.WaitForAsync();
+        await OpenOccurrenceDetailsAsync();
         var versionLink = row.GetByRole(AriaRole.Link, new() { Name = "Published flow", Exact = true });
         await Assertions.Expect(versionLink).ToHaveAttributeAsync("href", $"/flows?tenantId=1&version={flows.SeededVersionId:D}");
         await versionLink.ClickAsync();

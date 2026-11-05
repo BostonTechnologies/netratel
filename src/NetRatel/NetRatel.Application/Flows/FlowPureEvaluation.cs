@@ -152,7 +152,14 @@ public static class FlowPureEvaluation
             if (template[index] != '{') { output.Append(template[index]); continue; }
             var end = template.IndexOf('}', index + 1);
             if (end < 0) throw new InvalidOperationException("mapping-template");
-            output.Append(template[(index + 1)..end] switch { "ruleName" => input.RuleName, "clientName" => input.ClientName, "resource" => input.Resource,
+            output.Append(FieldValue(template[(index + 1)..end], input, ai));
+            index = end;
+        }
+        return output.ToString();
+    }
+    /// <summary>Resolves one historical alert placeholder without reinterpreting inserted text as a template.</summary>
+    public static string FieldValue(string field, FlowEventDataDto input, FlowAiResultDto? ai = null) =>
+        field switch { "ruleName" => input.RuleName, "clientName" => input.ClientName, "resource" => input.Resource,
                 "metric" => input.Metric, "severity" => input.Severity, "value" => input.NumericValue?.ToString("R", CultureInfo.InvariantCulture) ?? "Unknown",
                 "serviceState" => input.ServiceState ?? "Unknown", "occurredAt" => input.ObservedAtUtc.ToString("O", CultureInfo.InvariantCulture),
                 "offlineSummary" => input.OfflineSummary?.Summary ?? "", "offlineCount" => input.OfflineSummary is { } offline
@@ -163,9 +170,6 @@ public static class FlowPureEvaluation
                 "aiRecommendations" => ai?.Status == FlowAiResultStatus.Completed ? ai.Recommendations ?? "" : "",
                 "aiStatus" => ai?.Status.ToString() ?? "Pending",
                 "aiObservedAt" => ai?.ObservedAtUtc.ToString("O", CultureInfo.InvariantCulture) ?? "",
-                "aiInvestigationId" => ai?.InvestigationId.ToString("D") ?? "", _ => throw new InvalidOperationException("mapping-template") });
-            index = end;
-        }
-        return output.ToString();
-    }
+                "aiInvestigationId" => ai?.InvestigationId.ToString("D") ?? "", _ => throw new InvalidOperationException("mapping-template") };
+
 }

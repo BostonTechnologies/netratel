@@ -20,6 +20,9 @@ using NetRatel.Application.Jobs;
 using NetRatel.Application.Presence;
 using NetRatel.Application.Scripts;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Flows;
+using NetRatel.Application.Requests;
+using NetRatel.Shared.Contracts.Flows;
 using NetRatel.Infrastructure.ServiceIdentity;
 using NetRatel.Infrastructure.SystemPairing;
 using NetRatel.Infrastructure.Identity;
@@ -33,7 +36,7 @@ using Xunit;
 
 namespace NetRatel.Tests.API;
 
-public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixture postgres)
+public sealed partial class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixture postgres)
     : IClassFixture<PostgreSqlPersistenceFixture>
 {
     [Fact]
@@ -716,11 +719,13 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         private TaskCompletionSource<bool> _entered = NewSignal();
         private TaskCompletionSource<bool> _release = NewSignal();
         public Task Entered => _entered.Task;
+        public Action<OrchestratorDbContext>? ObserveSaved { get; set; }
         public void Arm(ulong runId, GateKind kind) { _runId = runId; _kind = kind; _used = 0; _entered = NewSignal(); _release = NewSignal(); }
         public void Release() => _release.TrySetResult(true);
         public override async ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData eventData, int result, CancellationToken cancellationToken = default)
         {
             var db = eventData.Context;
+            if (db is OrchestratorDbContext native) ObserveSaved?.Invoke(native);
             if (_runId == 0 || db is null) return result;
             var matches = _kind == GateKind.CancelRequested ? db.ChangeTracker.Entries<JobRunControlRecord>().Any(x =>
                 x.Entity.RunId == checked((long)_runId) && x.Entity.CancellationRequestedAtUtc is not null) :
@@ -735,12 +740,102 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         private static TaskCompletionSource<bool> NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
+
+    [Fact]
+    public async Task Canonical_request_binding_commits_before_transport_and_concurrent_restarts_observe_one_native_run_and_terminal_result()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var ct = deadline.Token;
+        await using var h = await Harness.CreateAsync(await postgres.CreateDatabaseAsync(ct), ct);
+        await using (var setup = h.Services.CreateAsyncScope())
+        {
+            var db = setup.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            db.JobParameters.Add(new() { Id = 44, JobId = 41, Name = "phrase", Type = "secret" });
+            (await db.JobSteps.SingleAsync(ct)).Command = "printf '%s' '@option.phrase@'";
+            await db.SaveChangesAsync(ct);
+        }
+        var requestId = await h.SubmitCanonicalRequestAsync("""{"phrase":"synthetic-original-request"}""", ct);
+        h.Gateway.ExpectedCanonicalRequestId = requestId;
+        h.Gateway.AmbiguousNextDispatch = true;
+        var results = await Task.WhenAll(h.StartRequestAsync(requestId, false, ct), h.StartRequestAsync(requestId, true, ct));
+        results.Select(run => run.Id).Distinct().Should().ContainSingle();
+        var runId = results[0].Id;
+        h.Gateway.ObservedCanonicalRequestBeforeTransport.Should().BeTrue();
+        h.Gateway.Dispatches.Should().Be(1);
+        h.Gateway.LastDispatchPayload.Should().Contain("synthetic-original-request").And.NotContain("forged-caller-input");
+        await using (var accepted = h.Services.CreateAsyncScope())
+        {
+            var db = accepted.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var request = await db.Requests.AsNoTracking().SingleAsync(ct);
+            request.ExecutionId.Should().Be(runId.ToString());
+            request.Status.Should().Be("Processing");
+            (await db.OutboxMessages.CountAsync(row => row.Type == ExecutionLifecycleOutbox.RequestBindingOutboxType, ct)).Should().Be(1);
+        }
+        await h.LifecycleAsync(runId, JobGatewayLifecycleStatus.Started, 3, null, false, ct);
+        await h.LifecycleAsync(runId, JobGatewayLifecycleStatus.Completed, 4, """{"stdout":["synthetic completed"],"exitCode":0}""", true, ct);
+        await using var terminal = h.Services.CreateAsyncScope();
+        var terminalDb = terminal.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        var actual = await terminal.ServiceProvider.GetRequiredService<IRequestService>().GetAsync(requestId, ct);
+        actual!.Status.Should().Be("Completed");
+        actual.ResultData.Should().Contain("resultHash");
+        var terminalAt = actual.UpdatedAtUtc;
+        var replay = await h.StartRequestAsync(requestId, false, ct);
+        replay.Id.Should().Be(runId);
+        (await terminal.ServiceProvider.GetRequiredService<IRequestService>().GetAsync(requestId, ct))!.UpdatedAtUtc.Should().Be(terminalAt);
+        var facts = await terminalDb.OutboxMessages.AsNoTracking().Where(row => row.Type == FlowExecutionEventLimits.OutboxType)
+            .Select(row => row.PayloadJson).ToArrayAsync(ct);
+        var events = facts.Select(json => JsonSerializer.Deserialize<FlowExecutionEventDto>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web))!).ToArray();
+        events.Should().Contain(value => value.SourceKind == FlowExecutionSourceKind.Job && value.ExecutionId == runId.ToString() &&
+            value.Outcome == FlowExecutionOutcome.Succeeded);
+        events.Should().Contain(value => value.SourceKind == FlowExecutionSourceKind.Request && value.ExecutionId == requestId.ToString() &&
+            value.ParentExecutionId == runId.ToString() && value.RawStatus == "Completed" && value.Outcome == FlowExecutionOutcome.Succeeded);
+        h.Gateway.Dispatches.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task A_definitive_preaccept_request_rejection_has_no_accepted_binding_or_job_and_cannot_later_dispatch_a_failed_reservation()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var ct = deadline.Token;
+        await using var h = await Harness.CreateAsync(await postgres.CreateDatabaseAsync(ct), ct);
+        var requestId = await h.SubmitCanonicalRequestAsync("{}", ct);
+        await using (var edit = h.Services.CreateAsyncScope())
+        {
+            var db = edit.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var anotherTarget = Guid.NewGuid();
+            db.Agents.Add(new() { Id = anotherTarget, TenantId = 7, Name = "synthetic-retarget", CreatedAtUtc = h.Clock.GetUtcNow() });
+            (await db.Jobs.SingleAsync(ct)).AgentId = anotherTarget;
+            await db.SaveChangesAsync(ct);
+        }
+        var admission = () => h.StartRequestAsync(requestId, false, ct);
+        await admission.Should().ThrowAsync<CanonicalRequestAdmissionRejectedException>();
+        await using (var rejected = h.Services.CreateAsyncScope())
+        {
+            var db = rejected.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            (await db.JobRuns.CountAsync(ct)).Should().Be(0);
+            (await db.OutboxMessages.AnyAsync(row => row.Type == ExecutionLifecycleOutbox.RequestBindingOutboxType, ct)).Should().BeFalse();
+            await rejected.ServiceProvider.GetRequiredService<IRequestService>()
+                .UpdateAsync(new(requestId, null, null, null, null, "Failed", "Synthetic pre-admission target rejection.", null, null, null), ct);
+        }
+        await admission.Should().ThrowAsync<CanonicalRequestAdmissionRejectedException>();
+        await using var verify = h.Services.CreateAsyncScope();
+        var finalDb = verify.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        var fact = await finalDb.OutboxMessages.AsNoTracking().SingleAsync(row => row.Type == FlowExecutionEventLimits.OutboxType, ct);
+        var value = JsonSerializer.Deserialize<FlowExecutionEventDto>(fact.PayloadJson, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        value.SourceKind.Should().Be(FlowExecutionSourceKind.Request);
+        value.Outcome.Should().Be(FlowExecutionOutcome.Failed);
+        value.ParentExecutionId.Should().BeNull();
+        (await finalDb.JobRuns.CountAsync(ct)).Should().Be(0);
+        h.Gateway.Dispatches.Should().Be(0);
+    }
+
     private sealed class Harness : IAsyncDisposable
     {
         public ServiceProvider Services { get; private set; } = null!;
         public SaveGate Gate { get; } = new();
         public MutableClock Clock { get; } = new();
         public RecordingGateway Gateway { get; private set; } = null!;
+        public bool RetainDefinitionSnapshot { get; private set; }
         public ActorRouter Primary { get; private set; } = null!;
         public ActorRouter Replica { get; private set; } = null!;
         public Guid AgentId { get; } = Guid.NewGuid();
@@ -763,9 +858,9 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             return await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().JobShadowObservations
                 .AsNoTracking().Where(x => x.JobRunId == runId).OrderBy(x => x.SourceEventId).ToArrayAsync(ct);
         }
-        public static async Task<Harness> CreateAsync(string connection, CancellationToken ct, string? legacyClientIdentity = null)
+        public static async Task<Harness> CreateAsync(string connection, CancellationToken ct, string? legacyClientIdentity = null, bool retainDefinitionSnapshot = false)
         {
-            var h = new Harness();
+            var h = new Harness { RetainDefinitionSnapshot = retainDefinitionSnapshot };
             var services = new ServiceCollection();
             services.AddDbContext<OrchestratorDbContext>(o => o.UseNpgsql(connection).AddInterceptors(h.Gate));
             services.AddDbContext<NetRatelIdentityDbContext>(o => o.UseNpgsql(connection));
@@ -848,9 +943,32 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             services.GetRequiredService<IJobDefinitionService>(), services.GetRequiredService<IJobRunService>(),
             new JobTaskBridge(new EmptyScripts(), NullLogger<JobTaskBridge>.Instance), Gateway, replica ? Replica : Primary,
             new RecordingRealtimeFanoutSink(), new JobAuthorityIdGenerator(), new TestEnvironment(),
-            managedGuard: managedGuard, db: services.GetRequiredService<OrchestratorDbContext>(), clock: Clock);
+            managedGuard: managedGuard, db: services.GetRequiredService<OrchestratorDbContext>(), clock: Clock,
+            requests: services.GetRequiredService<IRequestService>(),
+            snapshotCapture: RetainDefinitionSnapshot ? new PinnedJobExecutionSnapshotCapture(
+                services.GetRequiredService<OrchestratorDbContext>(), services.GetRequiredService<IJobDefinitionService>(),
+                new ScriptService(services.GetRequiredService<OrchestratorDbContext>())) : null);
         public async Task<JobRunInfo> StartAsync(CancellationToken ct, string? inputs = null)
         { await using var scope = Services.CreateAsyncScope(); return await Authority(scope.ServiceProvider, false).StartAsync(41, new("operator-test", inputs, null), ct); }
+
+        public async Task<int> SubmitCanonicalRequestAsync(string inputs, CancellationToken ct)
+        {
+            await using var scope = Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            var request = await scope.ServiceProvider.GetRequiredService<IRequestService>().CreateAsync(
+                new("synthetic-request-source", AgentId.ToString("D"), "41", inputs, 7, AgentId), ct);
+            await ExecutionLifecycleOutbox.RecordSubmittedRequestIntentAsync(db, request, ct);
+            await db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
+            return request.Id;
+        }
+        public async Task<JobRunInfo> StartRequestAsync(int requestId, bool replica, CancellationToken ct)
+        {
+            await using var scope = Services.CreateAsyncScope();
+            return await Authority(scope.ServiceProvider, replica).StartRequestAsync(41,
+                new("forged-caller-source", """{"phrase":"forged-caller-input"}""", "forged-caller-target"), requestId, ct);
+        }
         private ClaimsPrincipal? _managedPrincipal;
         public async Task<JobRunInfo> StartManagedAsync(ulong runId, int requestId, CancellationToken ct)
         {
@@ -964,6 +1082,8 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         private readonly AgentJobGatewaySessionRegistry _backend = new();
         public int Dispatches;
         public int Cancellations;
+        public int? ExpectedCanonicalRequestId;
+        public bool ObservedCanonicalRequestBeforeTransport;
         public bool AmbiguousNextDispatch;
         public ulong LastDispatchRunId;
         public string? LastDispatchPayload;
@@ -981,6 +1101,17 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             Assert.Equal(dispatch.RequestedAtUtc.AddSeconds(60), control.NativeDeadlineUtc);
             control.DispatchOwnerConnectionId.Should().Be(harness.CommittedOwner.Owner.ConnectionId);
             control.DispatchOwnerEpoch.Should().Be(harness.CommittedOwner.Owner.Epoch);
+            if (ExpectedCanonicalRequestId is { } requestId)
+            {
+                await using var scope = harness.Services.CreateAsyncScope();
+                var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                var request = await db.Requests.AsNoTracking().SingleAsync(row => row.Id == requestId, ct);
+                request.Status.Should().Be("Processing");
+                request.ExecutionId.Should().Be(dispatch.JobRunId.ToString());
+                (await db.OutboxMessages.AnyAsync(row => row.Type == ExecutionLifecycleOutbox.RequestBindingOutboxType &&
+                    row.EntityId == requestId.ToString() && row.CorrelationId == "job-run:" + dispatch.JobRunId, ct)).Should().BeTrue();
+                ObservedCanonicalRequestBeforeTransport = true;
+            }
             await _backend.DispatchAsync(client, dispatch, ct);
             var frame = await harness.Registration.Reader.ReadAsync(ct);
             frame.ConnectionId.Should().Be(harness.CommittedOwner.Owner.ConnectionId.ToString("D"));
@@ -1027,12 +1158,13 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
     private sealed class ActorRouter(IActorRef actor) : IJobRuntimeRouter
     {
         public IActorRef Region => actor;
+        public Func<IJobRunOwner, IJobRunOwner>? OwnerDecoration { get; set; }
         private TaskCompletionSource<bool>? _next;
         public Task ObserveNextOperation() { _next = new(TaskCreationOptions.RunContinuationsAsynchronously); return _next.Task; }
         public async Task<T> ExecuteOwnedAsync<T>(ulong id, Func<IJobRunOwner, CancellationToken, Task<T>> operation, CancellationToken ct)
         {
             var result = await actor.Ask<object>(new ExecuteOwnedJobRun(id, async (owner, ownedCt) =>
-            { Interlocked.Exchange(ref _next, null)?.TrySetResult(true); return await operation(owner, ownedCt); }, ct), TimeSpan.FromSeconds(30), ct);
+            { Interlocked.Exchange(ref _next, null)?.TrySetResult(true); return await operation(OwnerDecoration?.Invoke(owner) ?? owner, ownedCt); }, ct), TimeSpan.FromSeconds(30), ct);
             return (T)result;
         }
         public Task<JobMessageResult> RecordAsync(RecordJobObservation message, CancellationToken ct) => actor.Ask<JobMessageResult>(message, TimeSpan.FromSeconds(30), ct);
