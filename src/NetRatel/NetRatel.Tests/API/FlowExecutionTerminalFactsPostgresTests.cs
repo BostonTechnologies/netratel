@@ -30,14 +30,15 @@ public sealed class FlowExecutionTerminalFactsPostgresTests(PostgreSqlPersistenc
         db.OutboxMessages.Add(Row(expected));
         for (var ordinal = 1; ordinal <= 12; ordinal++)
             db.OutboxMessages.Add(Row(Fact(other, executionId, now.AddMilliseconds(ordinal))));
-        // Even a correctly indexed row must not lend its source identity to a conflicting payload.
-        var forged = Fact(requested, executionId, now.AddSeconds(1)) with { Provenance = Provenance(other) };
-        db.OutboxMessages.Add(Row(forged, source: Provenance(requested)));
-        var mismatchedEvent = Fact(requested, executionId, now.AddSeconds(2));
-        db.OutboxMessages.Add(Row(mismatchedEvent, rowId: Guid.NewGuid()));
         var foreignTenant = Fact(requested, executionId, now.AddSeconds(3)) with { TenantId = 8 };
         db.OutboxMessages.Add(Row(foreignTenant));
         await db.SaveChangesAsync(ct);
+        // The canonical writer rejects these malformed rows. Inject isolated storage corruption with
+        // parameterized test SQL so the reader's independent identity/provenance defenses are exercised.
+        var forged = Fact(requested, executionId, now.AddSeconds(1)) with { Provenance = Provenance(other) };
+        await InsertCorruptRowAsync(db, Row(forged, source: Provenance(requested)), ct);
+        var mismatchedEvent = Fact(requested, executionId, now.AddSeconds(2));
+        await InsertCorruptRowAsync(db, Row(mismatchedEvent, rowId: Guid.NewGuid()), ct);
         db.ChangeTracker.Clear();
 
         var actual = await FlowExecutionTerminalFacts.ReadAsync(db, 7, requested, executionId, ct);
@@ -52,6 +53,14 @@ public sealed class FlowExecutionTerminalFactsPostgresTests(PostgreSqlPersistenc
         Assert.Equal(12, await db.OutboxMessages.CountAsync(row => row.EntityId == executionId &&
             row.Source == otherProvenance, ct));
     }
+
+    private static Task<int> InsertCorruptRowAsync(OrchestratorDbContext db, OutboxMessage row, CancellationToken ct) =>
+        db.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO "OutboxMessages"
+                ("Id", "OccurredUtc", "Type", "PayloadJson", "Source", "CorrelationId", "TenantId", "EntityId", "Status", "Attempts")
+            VALUES ({row.Id}, {row.OccurredUtc}, {row.Type}, {row.PayloadJson}, {row.Source},
+                {row.CorrelationId}, {row.TenantId}, {row.EntityId}, {row.Status}, {row.Attempts})
+            """, ct);
 
     private static FlowExecutionEventDto Fact(FlowExecutionSourceKind kind, string id, DateTimeOffset at) =>
         new(Guid.NewGuid(), Guid.NewGuid(), 7, kind, new("41", "Synthetic definition"), id, id,
