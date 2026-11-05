@@ -189,6 +189,39 @@ public sealed class FlowTypedEditorTests : AsyncBunitContext
         _api.SaveCalls.Should().Be(0); _api.DryRunCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
     }
 
+
+    [Fact]
+    public async Task Canonical_Json_Input_Order_And_Number_Format_Do_Not_Create_Dirty_Or_Undo_State()
+    {
+        var literal = JsonSerializer.Deserialize<JsonElement>("""{"z":1.0,"a":null}""");
+        var mapping = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.MapIncident, "Synthetic mapping", new(30, 70))
+        { Inputs = new Dictionary<string, FlowInputBindingDto> { ["payload"] = new(FlowInputSource.Literal, FlowDataType.Json, Literal: literal) } };
+        var graph = new FlowGraphDto(2, [mapping], [], new());
+        var cut = Editor(FlowEditorTests.Definition() with { Draft = graph }, true);
+        await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
+        var adapter = cut.FindComponent<FlowCanvas>().Instance.Adapter;
+        await cut.InvokeAsync(() => adapter.Update(mapping with
+        {
+            Inputs = new Dictionary<string, FlowInputBindingDto> { ["payload"] = new(FlowInputSource.Literal, FlowDataType.Json,
+                Literal: JsonSerializer.Deserialize<JsonElement>("""{"a":null,"z":1.000e0}""")) }
+        }));
+        await cut.WaitForAssertionAsync(() => cut.Find("[data-testid=flow-save]").HasAttribute("disabled").Should().BeTrue());
+        cut.Find("[data-testid=flow-undo]").HasAttribute("disabled").Should().BeTrue();
+        cut.Find("[data-testid=flow-dirty]").TextContent.Should().Contain("Saved draft");
+        await cut.InvokeAsync(() => adapter.Update(mapping with
+        {
+            Inputs = new Dictionary<string, FlowInputBindingDto> { ["payload"] = new(FlowInputSource.Literal, FlowDataType.Json,
+                Literal: JsonSerializer.Deserialize<JsonElement>("""{"a":null,"z":2}""")) }
+        }));
+        await cut.WaitForAssertionAsync(() => cut.Find("[data-testid=flow-dirty]").TextContent.Should().Contain("Unsaved"));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-undo]").ClickAsync(new()));
+        await cut.WaitForAssertionAsync(() => cut.Find("[data-testid=flow-dirty]").TextContent.Should().Contain("Saved draft"));
+        var restored = cut.FindComponent<FlowCanvas>().Instance.Adapter.Capture().Nodes.Single().Inputs!["payload"].Literal!.Value;
+        restored.GetProperty("z").GetDecimal().Should().Be(1);
+        restored.GetProperty("a").ValueKind.Should().Be(JsonValueKind.Null);
+        _api.SaveCalls.Should().Be(0); _api.DryRunCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
+    }
+
     private IRenderedComponent<FlowEditor> Editor(FlowDefinitionDto definition, bool supportsTwo) => Render<FlowEditor>(p => p
         .Add(component => component.Definition, definition).Add(component => component.TenantName, "Synthetic tenant")
         .Add(component => component.CanEdit, true).Add(component => component.CanPublish, true)

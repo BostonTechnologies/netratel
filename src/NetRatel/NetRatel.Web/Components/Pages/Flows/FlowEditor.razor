@@ -1,6 +1,5 @@
 @using System.Globalization
 @using System.Text.Json
-@using System.Security.Cryptography
 @using MudBlazor.Extensions
 @using NetRatel.Shared.Contracts.Flows
 @using NetRatel.Shared.Contracts.Netclaw
@@ -402,7 +401,7 @@
         _showDryRun = false;
         if (_module is not null) await _module.InvokeVoidAsync("closePreview", _shellId, _previewId);
     }
-    private static string Fingerprint(string name, FlowGraphDto graph) => name + "\n" + JsonSerializer.Serialize(graph);
+    private static string Fingerprint(string name, FlowGraphDto graph) => name + "\n" + (graph.SchemaVersion == FlowGraphV2Limits.SchemaVersion ? FlowGraphSerialization.Serialize(graph) : JsonSerializer.Serialize(graph));
     private void BeginNameEdit() => _historyGroup = "name:" + Guid.NewGuid().ToString("N");
     private Task NameEdited()
     {
@@ -547,7 +546,7 @@
         var result = await Api.DryRunExecutionAsync(tenant, sample with { Graph = graph }, token);
         if (!Current(generation, tenant, id)) return;
         _reviewedFingerprint = reviewed; _preview = result; _issues = result.Issues;
-        _previewGraphHash = Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(graph, new JsonSerializerOptions(JsonSerializerDefaults.Web))));
+        _previewGraphHash = FlowGraphSerialization.Hash(graph);
         _previewGraphSchemaVersion = graph.SchemaVersion;
         await CheckDirty();
         if (_preview?.Trace is { Steps.Count: > 0 }) await ClosePreviewAsync();
@@ -560,7 +559,7 @@
         var result = await Api.DryRunAsync(tenant, new(graph, input), token);
         if (!Current(generation, tenant, id)) return;
         _reviewedFingerprint = reviewed; _preview = result; _issues = result.Issues;
-        _previewGraphHash = Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(graph, new JsonSerializerOptions(JsonSerializerDefaults.Web))));
+        _previewGraphHash = FlowGraphSerialization.Hash(graph);
         _previewGraphSchemaVersion = graph.SchemaVersion;
         await CheckDirty();
         if (_preview?.Trace is { Steps.Count: > 0 }) await ClosePreviewAsync();
