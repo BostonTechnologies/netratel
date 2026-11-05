@@ -15,6 +15,22 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
     private readonly JobRunInputProtection _protection = new(protection);
     private readonly Dictionary<ulong, (ulong JobId, int? TenantId, JobRunInputProtection.Sensitivity Metadata)> _submissions = [];
     private readonly Dictionary<ulong, McpOperatorJobExecutionSnapshot> _mcpSnapshots = [];
+    private readonly Dictionary<ulong, PinnedJobExecutionSnapshot> _pinnedSnapshots = [];
+
+    public void BindPinnedExecutionSnapshot(ulong runId, PinnedJobExecutionSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        snapshot.Validate(snapshot.Definition.Job.TenantId ?? 0);
+        if (!_pinnedSnapshots.TryAdd(runId, snapshot) && _pinnedSnapshots[runId].ComputeDigest() != snapshot.ComputeDigest())
+            throw new InvalidOperationException("A pinned canonical run snapshot is immutable.");
+        BindSubmittedDefinition(runId, snapshot.Definition);
+    }
+
+    public async Task<PinnedJobExecutionSnapshot?> GetPinnedExecutionSnapshotAsync(ulong runId, CancellationToken ct = default)
+    {
+        var run = await _db.JobRuns.AsNoTracking().SingleOrDefaultAsync(row => row.Id == (long)runId, ct);
+        return run?.ProtectedExecutionJson is null ? null : _protection.ForExecution(run).PinnedSnapshot;
+    }
 
     public void BindMcpExecutionSnapshot(ulong runId, McpOperatorJobExecutionSnapshot snapshot)
     {
@@ -235,11 +251,14 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
                 metadata = JobRunInputProtection.Capture(definition, definition?.Parameters ?? []);
             }
             _mcpSnapshots.TryGetValue(command.RunId, out var mcpSnapshot);
+            _pinnedSnapshots.TryGetValue(command.RunId, out var pinnedSnapshot);
             if (mcpSnapshot is not null)
                 metadata = metadata with { DefinitionRevision = mcpSnapshot.ComputeDigest() };
+            if (pinnedSnapshot is not null)
+                metadata = metadata with { DefinitionRevision = pinnedSnapshot.ComputeDigest() };
             _protection.Store(row, metadata,
                 existingHistory ? row.InputsJson : command.InputsJson,
-                existingHistory ? row.OptionsJson : command.OptionsJson, mcpSnapshot);
+                existingHistory ? row.OptionsJson : command.OptionsJson, mcpSnapshot, pinnedSnapshot);
         }
         row.Error = _protection.Diagnostic(row, NormalizeNullable(command.Error));
 

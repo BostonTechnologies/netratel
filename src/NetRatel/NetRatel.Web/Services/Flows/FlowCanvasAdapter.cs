@@ -101,6 +101,24 @@ public sealed class FlowCanvasAdapter : IAsyncDisposable
         Tree.Layout.Scale = new Scale(graph.Viewport.Scale, graph.Viewport.Scale);
     }
 
+    public string? ConnectionRejection(Guid source, Guid target)
+    {
+        var from = Ports.SingleOrDefault(port => port.Value == (source, true)).Key;
+        var to = Ports.SingleOrDefault(port => port.Value == (target, false)).Key;
+        if (from is null || to is null) return "Choose an output and an input port.";
+        var graph = Capture();
+        var validation = FlowGraphValidator.ValidateDraft(graph with
+        { Edges = [.. graph.Edges, new(source, FlowLimits.OutputPort, target, FlowLimits.InputPort)] });
+        if (validation.Valid) return null;
+        return validation.Issues.FirstOrDefault()?.Code switch
+        {
+            "fanout" or "duplicate-edge" => "This port is already connected. Remove its connection first.",
+            "cycle" => "This connection would create a cycle.",
+            "typed-port" => "These ports carry incompatible data.",
+            _ => "The connection is not permitted by the graph's port and draft validation rules."
+        };
+    }
+
     private bool CanConnect(IWorkflowSlotViewModel sender, IWorkflowSlotViewModel receiver)
     {
         if (!Ports.TryGetValue(sender, out var from) || !Ports.TryGetValue(receiver, out var to) || !from.Output || to.Output) return false;

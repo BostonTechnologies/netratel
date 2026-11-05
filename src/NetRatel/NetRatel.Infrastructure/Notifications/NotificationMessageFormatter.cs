@@ -8,7 +8,16 @@ public static class NotificationMessageFormatter
 {
     public static string Format(FlowIncidentActionDraft draft)
     {
-        var data = draft.Event.Data;
+        if (draft.Event.ExecutionEvent is { } execution)
+        {
+            var values = FlowExecutionEvidenceFormatter.Values(execution);
+            var text = $"{Bound(draft.Fields.Title, 200)}\n{Bound(draft.Fields.Description, 1000)}\n\n" +
+                $"Source: {values["sourceKind"]}\nDefinition: {values["definitionName"]}\nOutcome: {values["outcome"]}\n" +
+                $"Execution: {execution.ExecutionId}\nAttempt: {execution.AttemptId}\nTarget: {values["targetName"]}\n" +
+                $"Occurred: {execution.OccurredAtUtc:yyyy-MM-dd HH:mm:ss} UTC\nEvent: {execution.EventId:D}";
+            return Bound(NetRatel.Shared.Security.OperatorOutputRedactor.Redact(text), NotificationConnectorLimits.MaximumMessageLength);
+        }
+        var data = draft.Event.Data ?? throw new ArgumentException("Monitoring alert data is required.");
         var description = data.OfflineSummary?.Summary ?? draft.Fields.Description;
         var message = $"{Bound(draft.Fields.Title, 200)}\n{Bound(description, 1000)}\n\n" +
             $"Rule: {Bound(data.RuleName, 120)}\nSeverity: {Bound(data.Severity, 32)}\n";
