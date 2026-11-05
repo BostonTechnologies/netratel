@@ -74,6 +74,13 @@ public static class ExecutionLifecycleOutbox
             if (!MatchesBinding(row, existing, RequestReservationOutboxType) ||
                 !ulong.TryParse(row.ExecutionId, NumberStyles.None, CultureInfo.InvariantCulture, out runId) || runId == 0 || runId > long.MaxValue)
                 throw new InvalidOperationException("The immutable request reservation differs from its recorded identity.");
+            if (FlowExecutionOutcomes.FromAuthoritativeStatus(row.Status) is not null)
+            {
+                var acceptedId = RequestBindingId(row.TargetTenantId!.Value, row.Id);
+                var accepted = await db.OutboxMessages.AsNoTracking().SingleOrDefaultAsync(x => x.Id == acceptedId, ct);
+                if (!MatchesBinding(row, accepted))
+                    throw new InvalidOperationException("A rejected request cannot reserve a new execution without a deliberate new submission.");
+            }
         }
         else
         {
@@ -83,7 +90,7 @@ public static class ExecutionLifecycleOutbox
             if (runId is 0 or > long.MaxValue) throw new InvalidOperationException("The reserved job identity is invalid.");
             var execution = runId.ToString(CultureInfo.InvariantCulture);
             var binding = new AcceptedRequestJobBinding(row.Id, row.TargetTenantId!.Value, row.TargetAgentId!.Value,
-                row.JobDefinitionId!, execution, row.SourceSystem);
+                PositiveDecimal(row.JobDefinitionId)!, execution, row.SourceSystem);
             row.ExecutionId = execution;
             db.OutboxMessages.Add(new()
             {
@@ -111,7 +118,7 @@ public static class ExecutionLifecycleOutbox
         var execution = run.Id.ToString(CultureInfo.InvariantCulture);
         var id = RequestBindingId(request.TargetTenantId.Value, request.Id);
         var binding = new AcceptedRequestJobBinding(request.Id, request.TargetTenantId.Value, agent,
-            request.JobDefinitionId!, execution, request.SourceSystem);
+            run.JobId.ToString(CultureInfo.InvariantCulture), execution, request.SourceSystem);
         var json = JsonSerializer.Serialize(binding);
         var existing = db.OutboxMessages.Local.SingleOrDefault(x => x.Id == id) ??
             await db.OutboxMessages.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct);
@@ -150,16 +157,27 @@ public static class ExecutionLifecycleOutbox
             await db.OutboxMessages.AsNoTracking().SingleOrDefaultAsync(x => x.Id == reservationId, ct);
         if (!MatchesSubmission(row, submission) || !MatchesBinding(row, reservation, RequestReservationOutboxType))
             throw new InvalidOperationException("Native request acceptance requires its exact immutable submission and reservation.");
-        if (row.ExecutionId is not null && row.ExecutionId != executionId ||
-            row.ExecutionId is null && FlowExecutionOutcomes.FromAuthoritativeStatus(row.Status) is not null)
+        if (row.ExecutionId != executionId)
             throw new InvalidOperationException("The submitted request already has a different accepted disposition.");
+        if (FlowExecutionOutcomes.FromAuthoritativeStatus(row.Status) is not null)
+        {
+            var acceptedId = RequestBindingId(row.TargetTenantId!.Value, row.Id);
+            var accepted = db.OutboxMessages.Local.SingleOrDefault(x => x.Id == acceptedId) ??
+                await db.OutboxMessages.AsNoTracking().SingleOrDefaultAsync(x => x.Id == acceptedId, ct);
+            if (!MatchesBinding(row, accepted))
+                throw new InvalidOperationException("A rejected request cannot acquire an accepted execution on retry.");
+        }
         var request = new RequestInfo(row.Id, row.SourceSystem, row.TargetClientIdentity, row.JobDefinitionId,
             row.ExecutionId, row.Status, row.ResultMessage, row.ResultData, row.JobInputs, row.Logs.AsReadOnly(),
             row.CreatedAtUtc, row.UpdatedAtUtc, row.TargetTenantId, row.TargetAgentId);
         await RecordAcceptedRequestJobBindingAsync(db, request, run, ct);
-        row.ExecutionId = executionId;
-        if (FlowExecutionOutcomes.FromAuthoritativeStatus(row.Status) is null) row.Status = "Processing";
-        row.UpdatedAtUtc = acceptedAtUtc;
+        if (row.ExecutionId != executionId || FlowExecutionOutcomes.FromAuthoritativeStatus(row.Status) is null &&
+            row.Status != "Processing")
+        {
+            row.ExecutionId = executionId;
+            if (FlowExecutionOutcomes.FromAuthoritativeStatus(row.Status) is null) row.Status = "Processing";
+            row.UpdatedAtUtc = acceptedAtUtc;
+        }
     }
 
     /// <summary>
@@ -192,7 +210,7 @@ public static class ExecutionLifecycleOutbox
                 ? db.Requests.FromSqlInterpolated($"SELECT * FROM \"Requests\" WHERE \"Id\" = {binding.RequestId} FOR UPDATE")
                 : db.Requests.Where(x => x.Id == binding.RequestId);
             var row = await query.AsNoTracking().SingleOrDefaultAsync(ct);
-            if (row is null || row.ExecutionId != binding.ExecutionId || row.JobDefinitionId != binding.JobDefinitionId ||
+            if (row is null || row.ExecutionId != binding.ExecutionId || PositiveDecimal(row.JobDefinitionId) != PositiveDecimal(binding.JobDefinitionId) ||
                 row.TargetTenantId != binding.TenantId || row.TargetAgentId != binding.AgentId ||
                 row.SourceSystem != binding.SourceSystem || FlowExecutionOutcomes.FromAuthoritativeStatus(row.Status) is not null)
                 continue;
@@ -418,12 +436,12 @@ public static class ExecutionLifecycleOutbox
 
     private static bool MatchesManaged(RequestRecord row, ManagedOrchestrationRequestBinding? binding) =>
         binding is not null && binding.TenantId == row.TargetTenantId && binding.AgentId == row.TargetAgentId &&
-        binding.JobDefinitionId == row.JobDefinitionId && binding.ExecutionId == row.ExecutionId &&
+        PositiveDecimal(binding.JobDefinitionId) == PositiveDecimal(row.JobDefinitionId) && binding.ExecutionId == row.ExecutionId &&
         binding.ExecutionId is not null && binding.SourceSystem == row.SourceSystem;
 
     private static bool IsManagedSubmission(RequestRecord row, ManagedOrchestrationRequestBinding? binding) =>
         binding is not null && binding.TenantId == row.TargetTenantId && binding.AgentId == row.TargetAgentId &&
-        binding.JobDefinitionId == row.JobDefinitionId && binding.SourceSystem == row.SourceSystem;
+        PositiveDecimal(binding.JobDefinitionId) == PositiveDecimal(row.JobDefinitionId) && binding.SourceSystem == row.SourceSystem;
 
     private static bool HasSubmission(OrchestratorDbContext db, RequestRecord row)
     {
@@ -457,7 +475,7 @@ public static class ExecutionLifecycleOutbox
         {
             var binding = JsonSerializer.Deserialize<AcceptedRequestJobBinding>(ledger.PayloadJson);
             return binding is not null && binding.RequestId == row.Id && binding.TenantId == row.TargetTenantId &&
-                binding.AgentId == row.TargetAgentId && binding.JobDefinitionId == row.JobDefinitionId &&
+                binding.AgentId == row.TargetAgentId && PositiveDecimal(binding.JobDefinitionId) == PositiveDecimal(row.JobDefinitionId) &&
                 binding.ExecutionId == string.Empty && binding.SourceSystem == row.SourceSystem &&
                 ledger.TenantId == binding.TenantId.ToString(CultureInfo.InvariantCulture);
         }
@@ -471,7 +489,7 @@ public static class ExecutionLifecycleOutbox
         {
             var binding = JsonSerializer.Deserialize<AcceptedRequestJobBinding>(ledger.PayloadJson);
             return binding is not null && binding.RequestId == row.Id && binding.TenantId == row.TargetTenantId &&
-                binding.AgentId == row.TargetAgentId && binding.JobDefinitionId == row.JobDefinitionId &&
+                binding.AgentId == row.TargetAgentId && PositiveDecimal(binding.JobDefinitionId) == PositiveDecimal(row.JobDefinitionId) &&
                 binding.ExecutionId == row.ExecutionId && binding.SourceSystem == row.SourceSystem &&
                 ledger.TenantId == binding.TenantId.ToString(CultureInfo.InvariantCulture);
         }

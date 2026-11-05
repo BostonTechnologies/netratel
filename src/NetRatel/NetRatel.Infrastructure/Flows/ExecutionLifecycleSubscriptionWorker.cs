@@ -82,7 +82,7 @@ public sealed class ExecutionLifecycleSubscriptionWorker(IServiceScopeFactory sc
                 }
                 var version = await db.FlowVersions.AsNoTracking().SingleOrDefaultAsync(x =>
                     x.Id == intent.FlowVersionId && x.TenantId == intent.TenantId, ct);
-                FlowGraphDto? graph = version is null ? null : JsonSerializer.Deserialize(version.GraphJson, FlowPersistenceService.Json);
+                FlowGraphDto? graph = version is null ? null : JsonSerializer.Deserialize<FlowGraphDto>(version.GraphJson, FlowPersistenceService.Json);
                 var trigger = graph?.Nodes.SingleOrDefault(x => x.Id == intent.TriggerNodeId)?.ExecutionTrigger;
                 if (version is null || version.ConfigurationHash != intent.ConfigurationHash || trigger is null ||
                     !FlowExecutionEventMatching.Matches(intent.TenantId, trigger, fact, intent.ActiveSinceUtc) ||

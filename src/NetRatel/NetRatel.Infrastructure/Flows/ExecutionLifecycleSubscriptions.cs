@@ -96,7 +96,7 @@ public static class ExecutionLifecycleSubscriptions
                 x.TenantId == definition.TenantId && x.FlowId == definition.Id);
             if (version is null || string.IsNullOrWhiteSpace(version.ExecutionAuthorityJson)) continue;
             FlowGraphDto? graph;
-            try { graph = JsonSerializer.Deserialize(version.GraphJson, FlowPersistenceService.Json); }
+            try { graph = JsonSerializer.Deserialize<FlowGraphDto>(version.GraphJson, FlowPersistenceService.Json); }
             catch (JsonException) { continue; }
             if (graph?.SchemaVersion != FlowGraphV2Limits.SchemaVersion ||
                 !FlowGraphV2Validator.ValidatePublished(graph).Valid) continue;

@@ -217,6 +217,105 @@ public sealed class FlowExecutionLifecycleOutboxTests
         }, "Pending", now));
     }
 
+    [Fact]
+    public async Task Submitted_request_reserves_one_identity_pins_protected_inputs_and_admission_failure_needs_no_job()
+    {
+        await using var db = Memory();
+        var agent = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        db.Jobs.Add(new() { Id = 41, TenantId = 7, AgentId = agent, Name = "Synthetic approved job",
+            CreatedAtUtc = now, UpdatedAtUtc = now });
+        db.JobParameters.Add(new() { Id = 1, JobId = 41, Name = "token", Type = "secret", Required = true });
+        await db.SaveChangesAsync();
+        var requests = new RequestService(db, new EphemeralDataProtectionProvider());
+        var request = await requests.CreateAsync(new("synthetic-source", string.Empty, "41",
+            "{\"token\":\"synthetic-original\"}", 7, agent));
+        await ExecutionLifecycleOutbox.RecordSubmittedRequestIntentAsync(db, request, default);
+        await db.SaveChangesAsync();
+        var material = await requests.GetExecutionMaterialAsync(request.Id);
+        Assert.Equal("{\"token\":\"synthetic-original\"}", material!.InputsJson);
+        Assert.DoesNotContain("synthetic-original", request.JobInputs!);
+        var allocations = 0;
+        ulong Allocate() { allocations++; return 9007199254740993; }
+        var first = await ExecutionLifecycleOutbox.ReserveCanonicalRequestRunAsync(db, request.Id, Allocate, default);
+        var retry = await ExecutionLifecycleOutbox.ReserveCanonicalRequestRunAsync(db, request.Id, Allocate, default);
+        Assert.Equal(first, retry);
+        Assert.Equal(1, allocations);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => requests.UpdateAsync(new(request.Id, null, null,
+            null, null, null, null, null, "{\"token\":\"changed\"}", null)));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => requests.UpdateAsync(new(request.Id, "another-source",
+            null, null, null, null, null, null, null, null)));
+        await requests.UpdateAsync(new(request.Id, null, null, null, null, "Failed", "Admission was rejected.", null, null, null));
+        var fact = Read(await db.OutboxMessages.SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType));
+        Assert.Equal(FlowExecutionSourceKind.Request, fact.SourceKind);
+        Assert.Equal(FlowExecutionSourceKind.Job, fact.DefinitionSourceKind);
+        Assert.Equal("41", fact.Definition.Id);
+        Assert.Null(fact.ParentExecutionId);
+        Assert.False(fact.Replay!.Supported);
+        Assert.Empty(await db.JobRuns.ToArrayAsync());
+        var selected = new FlowExecutionTriggerSettingsDto([FlowExecutionSourceKind.Request],
+            [FlowExecutionOutcome.Failed], FlowExecutionScope.SelectedDefinitions)
+            { DefinitionReferences = [new(FlowExecutionSourceKind.Job, "41")] };
+        Assert.True(FlowExecutionEventMatching.Matches(7, selected, fact, now.AddMinutes(-1)));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            ExecutionLifecycleOutbox.ReserveCanonicalRequestRunAsync(db, request.Id, Allocate, default));
+        Assert.Equal(1, allocations);
+    }
+
+    [Fact]
+    public async Task Caller_claimed_execution_cannot_manufacture_parent_or_replay_authority()
+    {
+        await using var db = Memory();
+        var agent = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        db.JobRuns.Add(new() { Id = 42, JobId = 41, TenantId = 7, AgentId = agent, StartedBy = "synthetic-source",
+            Status = (int)JobRunState.Failed, CreatedAtUtc = now });
+        await db.SaveChangesAsync();
+        var requests = new RequestService(db, new EphemeralDataProtectionProvider());
+        var request = await requests.CreateAsync(new("synthetic-source", string.Empty, "41", null, 7, agent));
+        await requests.UpdateAsync(new(request.Id, null, null, null, "42", "Failed", null, null, null, null));
+        var fact = Read(await db.OutboxMessages.SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType));
+        Assert.Equal("request:" + request.Id, fact.CorrelationId);
+        Assert.Equal(request.Id.ToString(), fact.AttemptId);
+        Assert.Null(fact.ParentExecutionId);
+        Assert.Null(fact.DefinitionSourceKind);
+        Assert.False(fact.Replay!.Supported);
+    }
+
+    [Fact]
+    public async Task Canonical_request_acceptance_is_idempotent_and_does_not_retimestamp_terminal_facts()
+    {
+        await using var db = Memory();
+        var agent = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        db.Jobs.Add(new() { Id = 41, TenantId = 7, AgentId = agent, Name = "Synthetic approved job",
+            CreatedAtUtc = now, UpdatedAtUtc = now });
+        await db.SaveChangesAsync();
+        var requests = new RequestService(db, new EphemeralDataProtectionProvider());
+        var request = await requests.CreateAsync(new("synthetic-source", string.Empty, "041", null, 7, agent));
+        await ExecutionLifecycleOutbox.RecordSubmittedRequestIntentAsync(db, request, default);
+        await db.SaveChangesAsync();
+        await ExecutionLifecycleOutbox.ReserveCanonicalRequestRunAsync(db, request.Id, () => 42, default);
+        db.JobRuns.Add(new() { Id = 42, JobId = 41, TenantId = 7, AgentId = agent, StartedBy = "synthetic-source",
+            Status = (int)JobRunState.Running, CreatedAtUtc = now });
+        var run = new JobRunInfo(42, 41, "Synthetic approved job", 7, string.Empty, "synthetic-source",
+            JobRunState.Running, 0, now, null, null, null, null, null, agent);
+        await ExecutionLifecycleOutbox.RecordCanonicalRequestBindingAsync(db, request.Id, run, now, default);
+        await db.SaveChangesAsync();
+        await ExecutionLifecycleOutbox.RecordCanonicalRequestBindingAsync(db, request.Id, run, now.AddMinutes(1), default);
+        await db.SaveChangesAsync();
+        Assert.Equal(now, (await requests.GetAsync(request.Id))!.UpdatedAtUtc);
+        var terminal = (await requests.UpdateAsync(new(request.Id, null, null, null, null, "Failed", null, null, null, null)))!;
+        var fact = Read(await db.OutboxMessages.SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType));
+        await ExecutionLifecycleOutbox.RecordCanonicalRequestBindingAsync(db, request.Id, run, now.AddMinutes(2), default);
+        await db.SaveChangesAsync();
+        var afterRetry = (await requests.GetAsync(request.Id))!;
+        Assert.Equal("Failed", afterRetry.Status);
+        Assert.Equal(terminal.UpdatedAtUtc, afterRetry.UpdatedAtUtc);
+        Assert.Equal(fact, Read(await db.OutboxMessages.SingleAsync(x => x.Type == FlowExecutionEventLimits.OutboxType)));
+        Assert.Equal("job-run:42", fact.CorrelationId);
+    }
+
     private static FlowExecutionEventDto Read(OutboxMessage row) =>
         JsonSerializer.Deserialize(row.PayloadJson, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto)!;
     private static OrchestratorDbContext Memory() => new(new DbContextOptionsBuilder<OrchestratorDbContext>()
