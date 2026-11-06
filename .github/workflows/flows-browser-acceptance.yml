@@ -1,4 +1,4 @@
-name: Selected Flows route and touch diagnostic
+name: Selected Flows route reload diagnostic
 
 on:
   push:
@@ -14,19 +14,19 @@ concurrency:
 
 jobs:
   browser:
-    name: Selected disposable route and touch diagnostic
+    name: Selected disposable route reload diagnostic
     if: github.repository == 'BostonTechnologies/netratel' && github.ref == 'refs/heads/codex/flows-browser-acceptance'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      EXPECTED_SOURCE_SHA: d95b81333b7a97a1cae9e2ccfbe95addab22d513
-      BROWSER_CLASSES: NetRatel.Web.PlaywrightTests.FlowsResponsiveTests NetRatel.Web.PlaywrightTests.FlowTypedAuthoringAcceptanceTests
-      BROWSER_METHODS: NetRatel.Web.PlaywrightTests.FlowsResponsiveTests.Actual_Native_Drag_And_Pointer_Connections_Save_Reload_Stable_Properties_And_Viewport NetRatel.Web.PlaywrightTests.FlowTypedAuthoringAcceptanceTests.Near_Limit_Graph_Mount_Fit_Pan_Zoom_And_Route_Are_Measured_Without_Execution
+      EXPECTED_SOURCE_SHA: 0ad9879c9a9375a879a782c52371d578109cf2c4
+      BROWSER_CLASSES: NetRatel.Web.PlaywrightTests.FlowTypedAuthoringAcceptanceTests
+      BROWSER_METHODS: NetRatel.Web.PlaywrightTests.FlowTypedAuthoringAcceptanceTests.Near_Limit_Graph_Mount_Fit_Pan_Zoom_And_Route_Are_Measured_Without_Execution
       NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT: ${{ github.workspace }}/TestResults/playwright
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: d95b81333b7a97a1cae9e2ccfbe95addab22d513
+          ref: 0ad9879c9a9375a879a782c52371d578109cf2c4
           fetch-depth: 1
           persist-credentials: false
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
@@ -47,7 +47,7 @@ jobs:
           python3 - "$source_sha" "$version" <<'PY'
           import json, os, sys
           from pathlib import Path
-          identity = {"suite": "selected-flows-route-touch-diagnostic", "sourceKind": "reviewed-unmerged-candidate", "sourceBranch": "codex/flows-browser-route-touch-evidence", "sourceSha": sys.argv[1], "productVersion": sys.argv[2],
+          identity = {"suite": "selected-flows-route-reload-diagnostic", "sourceKind": "reviewed-unmerged-candidate", "sourceBranch": "codex/flows-browser-route-touch-evidence", "sourceSha": sys.argv[1], "productVersion": sys.argv[2],
                       "dotnetSdkVersion": os.environ["NETRATEL_DOTNET_SDK_VERSION"],
                       "runId": os.environ["GITHUB_RUN_ID"], "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
                       "workflowEventSha": os.environ["GITHUB_SHA"],
@@ -73,17 +73,17 @@ jobs:
           dotnet test --project src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
             --configuration Release --no-build --no-restore --max-parallel-test-modules 1 \
             --filter-method "${selected_methods[@]}" --filter-not-trait category=compose category=hosted \
-            --minimum-expected-tests 2 --results-directory TestResults/browser \
+            --minimum-expected-tests 1 --results-directory TestResults/browser \
             --report-trx --report-trx-filename browser.trx
       - name: Verify nonzero complete browser execution
         if: always()
         shell: bash
-        run: python3 tools/ci/verify-mtp-trx.py TestResults/browser/browser.trx --expected-executed 2
+        run: python3 tools/ci/verify-mtp-trx.py TestResults/browser/browser.trx --expected-executed 1
       - name: Retain selected TRX, screenshots and sanitized receipts
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: selected-flows-route-touch-diagnostic-evidence
+          name: selected-flows-route-reload-diagnostic-evidence
           path: |
             TestResults
             src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright
