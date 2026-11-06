@@ -1,0 +1,37 @@
+@using NetRatel.Shared.Contracts.Flows
+
+<p class="flow-execution-details" data-testid="flow-execution-details">
+    @if (TryLink(out var href, out var label))
+    {
+        <a href="@href" target="_blank" rel="noopener noreferrer" data-testid="flow-execution-details-link">@label</a>
+        <small>Opens separately. Access is checked in the execution viewer.</small>
+    }
+    else
+    {
+        <span data-testid="flow-execution-details-unavailable">@UnavailableMessage</span>
+    }
+</p>
+
+@code {
+    [Parameter] public FlowExecutionReferenceDto? Reference { get; set; }
+    [Parameter] public FlowTraceProvenance Provenance { get; set; }
+    [Parameter] public FlowTraceProvenance TraceProvenance { get; set; }
+    private bool Captured => IsCaptured(Provenance) && IsCaptured(TraceProvenance);
+    private string UnavailableMessage => !Captured ? "Execution details are unavailable for simulated or unspecified data."
+        : Reference is null ? "No native execution reference was captured for this step."
+        : "Native execution details are unavailable for this recorded reference.";
+    private bool TryLink(out string href, out string label)
+    {
+        href = label = "";
+        if (!Captured || Reference is not { } reference || !FlowExecutionReferenceDto.IsValid(reference)) return false;
+        if (reference.SourceKind == FlowExecutionSourceKind.Job)
+        {
+            href = $"/jobs/{reference.DefinitionId}/runs/{reference.ExecutionId}";
+            label = "Open job run and logs"; return true;
+        }
+        if (reference.ExecutionId is "." or "..") return false;
+        href = "/tasks/request/" + Uri.EscapeDataString(reference.ExecutionId);
+        label = "Open script execution and logs"; return true;
+    }
+    private static bool IsCaptured(FlowTraceProvenance value) => value is FlowTraceProvenance.Actual or FlowTraceProvenance.Recorded;
+}

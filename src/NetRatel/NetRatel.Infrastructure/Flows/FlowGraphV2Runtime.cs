@@ -342,7 +342,8 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
         if (output is { } value) outputs[node.Id] = FlowJsonCanonical.Capture(value);
         var step = new FlowNodeTraceDto(state.Sequence, node.Id, node.Name, FlowTraceStepStatus.Completed, port ?? code ?? "completed",
             FlowTraceProvenance.Actual, Snapshot(JsonSerializer.SerializeToElement(state.Inputs, Json)), Snapshot(output))
-        { SelectedPort = port, EdgeId = edge?.Id, NextNodeId = edge?.TargetNodeId, Attempt = state.Attempt, DurationMilliseconds = ElapsedMilliseconds(state) };
+        { SelectedPort = port, EdgeId = edge?.Id, NextNodeId = edge?.TargetNodeId, Attempt = state.Attempt,
+            DurationMilliseconds = ElapsedMilliseconds(state), ExecutionReference = NativeReference(lease, node, state) };
         return state with { Revision = state.Revision + 1, Progress = FlowNodeProgress.Completed,
             Output = output is { } recordedOutput ? FlowJsonCanonical.Capture(recordedOutput) : null, Outputs = outputs, SelectedPort = port, SelectedEdgeId = edge?.Id, NextNodeId = edge?.TargetNodeId,
             Fields = fields, WaitingActionIds = null, Trace = Append(lease, state.Trace, step), ResultStatus = terminal, ResultCode = code };
@@ -351,7 +352,8 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
     {
         var step = new FlowNodeTraceDto(state.Sequence, node.Id, node.Name, FlowTraceStepStatus.Unavailable, code,
             FlowTraceProvenance.Actual, Snapshot(JsonSerializer.SerializeToElement(state.Inputs, Json)), new(FlowTraceDataState.Missing))
-        { ErrorCode = code, Attempt = state.Attempt, DurationMilliseconds = ElapsedMilliseconds(state) };
+        { ErrorCode = code, Attempt = state.Attempt, DurationMilliseconds = ElapsedMilliseconds(state),
+            ExecutionReference = NativeReference(lease, node, state) };
         return state with { Revision = state.Revision + 1, Progress = FlowNodeProgress.Failed,
             ResultStatus = FlowRunStatus.Failed, ResultCode = code, Trace = Append(lease, state.Trace, step) };
     }
@@ -382,6 +384,24 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
         var empty = value.ValueKind switch { JsonValueKind.String => value.GetString() == "",
             JsonValueKind.Array => value.GetArrayLength() == 0, JsonValueKind.Object => !value.EnumerateObject().Any(), _ => false };
         return new(value.ValueKind == JsonValueKind.Null ? FlowTraceDataState.Null : empty ? FlowTraceDataState.Empty : FlowTraceDataState.Present) { Value = value };
+    }
+    private static FlowExecutionReferenceDto? NativeReference(FlowRunLease lease, FlowNodeDto node, FlowNodeCheckpointDto state)
+    {
+        if (node.Kind == FlowNodeKind.ExecutionEvent && lease.Event.ExecutionEvent is { } original)
+            return original.TenantId == lease.Event.TenantId && FlowExecutionEventProvenance.IsNative(original)
+                ? FlowExecutionReferenceDto.Create(original.SourceKind, original.Definition.Id, original.ExecutionId) : null;
+        if (node.Kind is not (FlowNodeKind.RunJob or FlowNodeKind.RunLibraryScript or FlowNodeKind.RerunOriginalExecution) ||
+            state.AcceptedReceipt is not { } captured) return null;
+        var receipt = captured.Deserialize<FlowExecutionActionReceipt>(Json);
+        if (receipt is null || receipt.ActionKey != FlowActionKeys.CreateExecution(lease, node.Id, state.Attempt) ||
+            receipt.ExecutionId != state.AcceptedExecutionId) return null;
+        var source = receipt.Kind == ExecutionAdmissionKind.Job ? FlowExecutionSourceKind.Job :
+            receipt.Kind == ExecutionAdmissionKind.LibraryScript ? FlowExecutionSourceKind.Script : (FlowExecutionSourceKind?)null;
+        if (source is null || source != state.AcceptedSourceKind) return null;
+        // A rerun retains the trusted original definition, never a currently selected library item.
+        var definition = node.Kind == FlowNodeKind.RerunOriginalExecution
+            ? lease.Event.ExecutionEvent?.Replay?.Definition.Id : node.ExecutionAction?.Definition.Id;
+        return FlowExecutionReferenceDto.Create(source.Value, definition, receipt.ExecutionId);
     }
     private static FlowExecutionActionResult ConfirmTerminal(FlowRunLease lease, FlowNodeDto node, FlowExecutionActionResult result)
     {

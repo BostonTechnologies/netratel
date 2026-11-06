@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text;
 using System.Text.Json.Serialization;
+using NetRatel.Application.Jobs;
 using NetRatel.Shared.Contracts.Flows;
 
 namespace NetRatel.Application.Flows;
@@ -67,6 +68,8 @@ public static class FlowNodeCheckpointLimits
 /// <summary>Pure state-transition checks. Durable acceptance and current source authority are verified by the store.</summary>
 public static class FlowNodeCheckpointRules
 {
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+
     public static bool Valid(FlowRunLease lease, FlowNodeCheckpointDto? state)
     {
         if (state is null || state.SchemaVersion != 1 || state.Revision <= 0 ||
@@ -148,7 +151,7 @@ public static class FlowNodeCheckpointRules
                     lease.Version.Graph.Nodes.Single(node => node.Id == step.NodeId).Name != step.NodeName ||
                     !FlowGraphValidator.IsBoundedText(step.Outcome, 128) || step.DurationMilliseconds < 0 ||
                     step.DurationMilliseconds > FlowLimits.MaximumRetryAge.Ticks / TimeSpan.TicksPerMillisecond ||
-                    !SnapshotValid(step.Input) || !SnapshotValid(step.Output)) ||
+                    !SnapshotValid(step.Input) || !SnapshotValid(step.Output) || !ExecutionReferenceValid(lease, state, step)) ||
                 trace.Steps.Sum(step => SnapshotBytes(step.Input) + SnapshotBytes(step.Output)) > FlowTraceLimits.MaximumSnapshotTotalBytes))
                 return false;
         }
@@ -206,6 +209,36 @@ public static class FlowNodeCheckpointRules
 
     private static int SnapshotBytes(FlowTraceSnapshotDto snapshot) =>
         snapshot.Value is { } value ? JsonSerializer.SerializeToUtf8Bytes(value).Length : 0;
+    private static bool ExecutionReferenceValid(FlowRunLease lease, FlowNodeCheckpointDto state, FlowNodeTraceDto step)
+    {
+        if (step.ExecutionReference is not { } reference) return true;
+        if (!FlowExecutionReferenceDto.IsValid(reference)) return false;
+        var node = lease.Version.Graph.Nodes.Single(candidate => candidate.Id == step.NodeId);
+        if (node.Kind == FlowNodeKind.ExecutionEvent)
+            return lease.Event.ExecutionEvent is { } original &&
+                FlowExecutionReferenceDto.Create(original.SourceKind, original.Definition.Id, original.ExecutionId) == reference;
+        var source = node.Kind switch
+        {
+            FlowNodeKind.RunJob => FlowExecutionSourceKind.Job,
+            FlowNodeKind.RunLibraryScript => FlowExecutionSourceKind.Script,
+            FlowNodeKind.RerunOriginalExecution => lease.Event.ExecutionEvent?.Replay?.SourceKind,
+            _ => null
+        };
+        var definition = node.Kind switch
+        {
+            FlowNodeKind.RerunOriginalExecution => lease.Event.ExecutionEvent?.Replay?.Definition.Id,
+            _ => node.ExecutionAction?.Definition.Id
+        };
+        if (source is not { } kind || FlowExecutionReferenceDto.Create(kind, definition, reference.ExecutionId) != reference) return false;
+        JsonElement? captured = state.Outputs.TryGetValue(node.Id, out var output) && output.ValueKind == JsonValueKind.Object &&
+            output.TryGetProperty("receipt", out var receipt) && receipt.ValueKind == JsonValueKind.Object ? receipt :
+            state.NodeId == node.Id ? state.AcceptedReceipt : null;
+        if (captured is null) return true; // A terminal denial can omit an earlier receipt; the native viewer still authorizes separately.
+        var accepted = captured.Value.Deserialize<FlowExecutionActionReceipt>(Json);
+        return accepted is not null && accepted.ActionKey == FlowActionKeys.CreateExecution(lease, node.Id, step.Attempt) &&
+            accepted.ExecutionId == reference.ExecutionId && accepted.Kind == (kind == FlowExecutionSourceKind.Job
+                ? ExecutionAdmissionKind.Job : ExecutionAdmissionKind.LibraryScript);
+    }
     private static bool SnapshotValid(FlowTraceSnapshotDto? snapshot)
     {
         if (snapshot is null || !Enum.IsDefined(snapshot.State) ||
