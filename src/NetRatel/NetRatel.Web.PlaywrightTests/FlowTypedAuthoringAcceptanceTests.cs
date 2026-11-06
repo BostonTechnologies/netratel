@@ -130,6 +130,49 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         var routeMilliseconds = clock.Elapsed.TotalMilliseconds;
         var routed = await MeasurementsAsync(page);
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-near-limit-route.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+
+        var beforePointer = routed.GetProperty("routePoints")[0];
+        var handleBounds = (await handle.BoundingBoxAsync())!;
+        var dragStartX = handleBounds.X + handleBounds.Width / 2; var dragStartY = handleBounds.Y + handleBounds.Height / 2;
+        var dragEndX = dragStartX + 12; var dragEndY = dragStartY + 8;
+        await handle.EvaluateAsync("""
+            handle => window.addEventListener('pointerdown',event=>{
+                handle.dataset.probePointerId=String(event.pointerId);
+                handle.dataset.probePointerHit=String(document.elementFromPoint(event.clientX,event.clientY)===handle);
+            },{capture:true,once:true})
+            """);
+        const string pointerState = """
+            (handle,pointerId)=>{const r=handle.getBoundingClientRect();return{pointerId,hit:handle.dataset.probePointerHit==='true',
+                captured:handle.hasPointerCapture(pointerId),dragging:handle.classList.contains('dragging'),
+                worldX:Number(handle.dataset.worldX),worldY:Number(handle.dataset.worldY),clientX:r.left+r.width/2,clientY:r.top+r.height/2}}
+            """;
+        await page.Mouse.MoveAsync(dragStartX, dragStartY); await page.Mouse.DownAsync();
+        int routePointerId;
+        JsonElement pointerHeld;
+        try
+        {
+            routePointerId = await handle.EvaluateAsync<int>("handle=>Number(handle.dataset.probePointerId)");
+            await page.Mouse.MoveAsync(dragEndX, dragEndY, new() { Steps = 8 });
+            await page.EvaluateAsync("() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+            pointerHeld = await handle.EvaluateAsync<JsonElement>(pointerState, routePointerId);
+            await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-route-pointer.json"), JsonSerializer.Serialize(new { beforePointer, dragStartX, dragStartY, dragEndX, dragEndY, pointerHeld }));
+            await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-near-limit-route-pointer-held.png"), Animations = ScreenshotAnimations.Disabled });
+            Assert.True(pointerHeld.GetProperty("hit").GetBoolean()); Assert.True(pointerHeld.GetProperty("captured").GetBoolean());
+            Assert.True(pointerHeld.GetProperty("dragging").GetBoolean());
+            Assert.Equal(beforePointer.GetProperty("x").GetDouble(), pointerHeld.GetProperty("worldX").GetDouble());
+            Assert.Equal(beforePointer.GetProperty("y").GetDouble(), pointerHeld.GetProperty("worldY").GetDouble());
+            Assert.InRange(pointerHeld.GetProperty("clientX").GetDouble(), (double)dragEndX - 1, (double)dragEndX + 1);
+            Assert.InRange(pointerHeld.GetProperty("clientY").GetDouble(), (double)dragEndY - 1, (double)dragEndY + 1);
+        }
+        finally { await page.Mouse.UpAsync(); }
+        await page.WaitForFunctionAsync("previous=>{const h=document.querySelector('[data-testid=flow-route-handle]');return Number(h.dataset.worldX)!==previous.x&&Number(h.dataset.worldY)!==previous.y}",
+            new { x = beforePointer.GetProperty("x").GetDouble(), y = beforePointer.GetProperty("y").GetDouble() });
+        var pointerReleased = await handle.EvaluateAsync<JsonElement>(pointerState, routePointerId);
+        await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-route-pointer.json"), JsonSerializer.Serialize(new { beforePointer, dragStartX, dragStartY, dragEndX, dragEndY, pointerHeld, pointerReleased }));
+        Assert.False(pointerReleased.GetProperty("captured").GetBoolean()); Assert.False(pointerReleased.GetProperty("dragging").GetBoolean());
+        Assert.InRange(pointerReleased.GetProperty("clientX").GetDouble(), (double)dragEndX - 1, (double)dragEndX + 1);
+        Assert.InRange(pointerReleased.GetProperty("clientY").GetDouble(), (double)dragEndY - 1, (double)dragEndY + 1);
+
         await page.SetViewportSizeAsync(195, 422);
         await FitAsync(page);
         for (var point = 1; point < FlowGraphV2Limits.MaximumRoutePoints; point++)
