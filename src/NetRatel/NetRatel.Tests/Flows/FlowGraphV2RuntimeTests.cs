@@ -66,7 +66,7 @@ public sealed class FlowGraphV2RuntimeTests
         recorded.GetProperty("executionId").GetString().Should().Be(Executions.NativeId);
         recorded.GetProperty("receipt").GetProperty("executionId").GetString().Should().Be(Executions.NativeId);
         recorded.GetProperty("terminalEvent").GetProperty("executionId").GetString().Should().Be(Executions.NativeId);
-        var reference = store.Current.Trace.Steps[1].ExecutionReference;
+        var reference = Assert.IsType<FlowExecutionReferenceDto>(store.Current.Trace.Steps[1].ExecutionReference);
         reference.Should().Be(new FlowExecutionReferenceDto(FlowExecutionSourceKind.Script, null, Executions.NativeId));
         JsonSerializer.Serialize(reference, FlowNodeTestData.Json).Should().NotContain("definitionId");
         var reloaded = JsonSerializer.Deserialize<FlowNodeCheckpointDto>(JsonSerializer.Serialize(store.Current, FlowNodeTestData.Json), FlowNodeTestData.Json)!;
@@ -74,7 +74,9 @@ public sealed class FlowGraphV2RuntimeTests
         reloaded.Trace.Steps[0].ExecutionReference.Should().BeNull();
         JsonSerializer.Serialize(reloaded.Trace.Steps[0], FlowNodeTestData.Json).Should().NotContain("executionReference");
         var invalidSteps = reloaded.Trace.Steps.ToArray();
-        invalidSteps[1] = invalidSteps[1] with { ExecutionReference = reference! with { SourceKind = FlowExecutionSourceKind.Request } };
+        invalidSteps[1] = invalidSteps[1] with { ExecutionReference = reference with { SourceKind = FlowExecutionSourceKind.Request } };
+        FlowNodeCheckpointRules.Valid(restarted, reloaded with { Trace = reloaded.Trace with { Steps = invalidSteps } }).Should().BeFalse();
+        invalidSteps[1] = invalidSteps[1] with { ExecutionReference = reference with { ExecutionId = "another-native-request" } };
         FlowNodeCheckpointRules.Valid(restarted, reloaded with { Trace = reloaded.Trace with { Steps = invalidSteps } }).Should().BeFalse();
     }
 

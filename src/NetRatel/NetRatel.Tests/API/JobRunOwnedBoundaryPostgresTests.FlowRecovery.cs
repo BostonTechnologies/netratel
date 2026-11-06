@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using AwesomeAssertions;
 using Microsoft.EntityFrameworkCore;
@@ -205,6 +206,10 @@ public sealed partial class JobRunOwnedBoundaryPostgresTests
             checkpoint.Trace!.Steps.Single(step => step.NodeId == published.TriggerId).ExecutionReference.Should().Be(
                 new FlowExecutionReferenceDto(FlowExecutionSourceKind.Job, failure.Definition.Id,
                     original.Id.ToString(CultureInfo.InvariantCulture)));
+            FlowNodeCheckpointRules.Valid(final, checkpoint).Should().BeTrue();
+            var changed = checkpoint.Trace.Steps.Select(step => step.NodeId == published.TriggerId
+                ? step with { ExecutionReference = step.ExecutionReference! with { ExecutionId = original.Id == 1 ? "2" : "1" } } : step).ToArray();
+            FlowNodeCheckpointRules.Valid(final, checkpoint with { Trace = checkpoint.Trace with { Steps = changed } }).Should().BeFalse();
             checkpoint.NodeId.Should().Be(published.RecoveredId);
             var order = checkpoint.Trace!.Steps.OrderBy(step => step.Sequence).Select(step => step.NodeId).ToArray();
             order.Should().Equal(published.TriggerId, published.InvestigationId, published.RepairId, published.RerunId, published.RecoveredId);
@@ -280,13 +285,44 @@ public sealed partial class JobRunOwnedBoundaryPostgresTests
     }
 
     private static FlowGraphV2Runtime RecoveryDriver(Harness h, FlowPersistenceService store) =>
-        new(store, new VeloxFlowRuntimeAdapter(), h.Services.GetRequiredService<IServiceScopeFactory>(), h.Clock);
+        new(store, new DiagnosticNodeRuntime(), h.Services.GetRequiredService<IServiceScopeFactory>(), h.Clock);
+    private sealed class DiagnosticNodeRuntime : IFlowNodeRuntime
+    {
+        public async Task<T> ExecuteNodeAsync<T>(Guid runId, FlowNodeDto node,
+            Func<CancellationToken, Task<T>> operation, CancellationToken cancellationToken = default)
+        {
+            ExceptionDispatchInfo? failure = null;
+            var calls = 0;
+            var completed = false;
+            try
+            {
+                return await new VeloxFlowRuntimeAdapter().ExecuteNodeAsync(runId, node, async token =>
+                {
+                    calls++;
+                    try
+                    {
+                        var result = await operation(token).ConfigureAwait(false);
+                        completed = true;
+                        return result;
+                    }
+                    catch (Exception error) { failure = ExceptionDispatchInfo.Capture(error); throw; }
+                }, cancellationToken).ConfigureAwait(false);
+            }
+            catch (InvalidOperationException error) when (error.Message == "runtime-node-failed")
+            {
+                failure?.Throw();
+                throw new InvalidOperationException($"Native node boundary failed: kind={node.Kind}, node={node.Id:D}, calls={calls}, completed={completed}.", error);
+            }
+        }
+    }
     private static Task<FlowIncidentActionResult> NoRepeatedInvestigation(FlowIncidentActionDraft draft, CancellationToken ct) =>
         throw new InvalidOperationException("A restarted driver must consume its saved investigation disposition.");
     private static async Task AdvanceRecoveryClockAsync(Harness h, CancellationToken ct)
     {
         var next = h.Clock.GetUtcNow().AddSeconds(6);
-        if (next < DateTimeOffset.UtcNow.AddSeconds(1)) next = DateTimeOffset.UtcNow.AddSeconds(1);
+        var minimum = MutableClock.MicrosecondUtcNow().AddSeconds(1);
+        if (next < minimum) next = minimum;
+        (next.Ticks % 10).Should().Be(0, "the synthetic clock retains PostgreSQL microsecond precision");
         await h.AdvanceWithPresenceHeartbeatsAsync(next, ct);
     }
     private sealed record NativeRecoveryGraph(FlowVersionDto Version, ScriptInfo RepairScript, Guid TriggerId,

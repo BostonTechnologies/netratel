@@ -8,6 +8,18 @@ if [[ "$#" -gt 1 || ! "$deadline" =~ ^([1-9]|[1-9][0-9]|1[01][0-9]|120)$ ]]; the
   exit 2
 fi
 
+# Ubuntu 26's default timeout can leave descendants alive after KILL.
+# Its installed GNU compatibility command retains process-group escalation.
+prepare_timeout=timeout
+if command -v gnutimeout >/dev/null 2>&1; then
+  prepare_timeout=gnutimeout
+fi
+if ! prepare_timeout_version="$("$prepare_timeout" --version 2>/dev/null)" ||
+   [[ "$prepare_timeout_version" != *"(GNU coreutils)"* ]]; then
+  printf 'GNU coreutils timeout is required (timeout or gnutimeout).\n' >&2
+  exit 1
+fi
+
 images=(
   postgres:16-alpine
   # Default resource reaper in Testcontainers 4.15.0; keep its digest identical.
@@ -17,7 +29,7 @@ stage_start="$SECONDS"
 
 # One deadline covers the daemon probe, both serial pulls, and final inspection.
 # Keep timeout's process group so its deadline also terminates Docker children.
-if timeout --signal=TERM --kill-after=5s "${deadline}s" bash -s -- "${images[@]}" <<'PREPARE'
+if "$prepare_timeout" --signal=TERM --kill-after=5s "${deadline}s" bash -s -- "${images[@]}" <<'PREPARE'
 set -euo pipefail
 # Keep the supervisor alive through timeout's KILL grace even if Docker exits
 # on TERM while one of its descendants ignores it. The outer deadline bounds
