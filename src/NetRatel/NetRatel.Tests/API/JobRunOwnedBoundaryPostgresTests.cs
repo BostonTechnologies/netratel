@@ -1419,7 +1419,7 @@ public sealed partial class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersisten
         public DateTimeOffset UtcNow = MicrosecondUtcNow();
         public override DateTimeOffset GetUtcNow() => UtcNow;
         public void ResetToUtcNow() => UtcNow = MicrosecondUtcNow();
-        private static DateTimeOffset MicrosecondUtcNow()
+        internal static DateTimeOffset MicrosecondUtcNow()
         {
             var now = DateTimeOffset.UtcNow;
             return new DateTimeOffset(now.Ticks - now.Ticks % 10, TimeSpan.Zero);

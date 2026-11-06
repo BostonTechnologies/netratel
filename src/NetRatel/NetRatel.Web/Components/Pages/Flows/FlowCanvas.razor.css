@@ -5,3 +5,5 @@
 .flow-route-overlay{position:absolute;left:0;top:0;overflow:visible;pointer-events:none;z-index:12}
 
 .flow-node.schema-two .flow-node-title{padding:4px 8px;max-height:48px;font-size:12px;line-height:14px;-webkit-line-clamp:3}.flow-node-header-kind{display:block;font-size:9px;line-height:10px;font-weight:400;color:var(--mud-palette-text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.flow-connection-status[data-flow-transient] [data-testid="flow-connection-message"],.flow-connection-status:not([data-flow-transient]) [data-testid="flow-connection-transient"]{display:none}

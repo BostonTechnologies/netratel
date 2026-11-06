@@ -66,6 +66,18 @@ public sealed class FlowGraphV2RuntimeTests
         recorded.GetProperty("executionId").GetString().Should().Be(Executions.NativeId);
         recorded.GetProperty("receipt").GetProperty("executionId").GetString().Should().Be(Executions.NativeId);
         recorded.GetProperty("terminalEvent").GetProperty("executionId").GetString().Should().Be(Executions.NativeId);
+        var reference = Assert.IsType<FlowExecutionReferenceDto>(store.Current.Trace.Steps[1].ExecutionReference);
+        reference.Should().Be(new FlowExecutionReferenceDto(FlowExecutionSourceKind.Script, null, Executions.NativeId));
+        JsonSerializer.Serialize(reference, FlowNodeTestData.Json).Should().NotContain("definitionId");
+        var reloaded = JsonSerializer.Deserialize<FlowNodeCheckpointDto>(JsonSerializer.Serialize(store.Current, FlowNodeTestData.Json), FlowNodeTestData.Json)!;
+        reloaded.Trace!.Steps[1].ExecutionReference.Should().Be(reference);
+        reloaded.Trace.Steps[0].ExecutionReference.Should().BeNull();
+        JsonSerializer.Serialize(reloaded.Trace.Steps[0], FlowNodeTestData.Json).Should().NotContain("executionReference");
+        var invalidSteps = reloaded.Trace.Steps.ToArray();
+        invalidSteps[1] = invalidSteps[1] with { ExecutionReference = reference with { SourceKind = FlowExecutionSourceKind.Request } };
+        FlowNodeCheckpointRules.Valid(restarted, reloaded with { Trace = reloaded.Trace with { Steps = invalidSteps } }).Should().BeFalse();
+        invalidSteps[1] = invalidSteps[1] with { ExecutionReference = reference with { ExecutionId = "another-native-request" } };
+        FlowNodeCheckpointRules.Valid(restarted, reloaded with { Trace = reloaded.Trace with { Steps = invalidSteps } }).Should().BeFalse();
     }
 
     [Fact]
@@ -155,16 +167,34 @@ public sealed class FlowGraphV2RuntimeTests
     [Fact]
     public async Task Trace_snapshot_budget_sets_omission_warning_without_preventing_pure_evaluation()
     {
-        var lease = WithGraph(FlowNodeTestData.Lease(), MapChain(20, 3700, true));
-        var store = new Checkpoints(); var dispatch = new Executions();
+        var template = FlowNodeTestData.Graph().Nodes[1];
+        var excerptNode = template with { Id = Guid.NewGuid(), Name = "Bounded native excerpt" };
+        var omittedNode = template with { Id = Guid.NewGuid(), Name = "Native output omitted at trace budget" };
+        var lease = WithGraph(FlowNodeTestData.Lease(), MapChain(20, 3700, true, [excerptNode, omittedNode]));
+        var store = new Checkpoints(); var dispatch = new Executions
+        {
+            TerminalImmediately = true,
+            StandardOutputs = new Dictionary<Guid, string> { [excerptNode.Id] = new('x', 5000), [omittedNode.Id] = new('y', 1500) },
+            ExecutionIds = new Dictionary<Guid, string> { [omittedNode.Id] = "native request/界?retained#exact" }
+        };
         using var services = Services(dispatch);
         var runtime = new FlowGraphV2Runtime(store, new VeloxFlowRuntimeAdapter(), services.GetRequiredService<IServiceScopeFactory>(),
             new FixedClock(lease.CreatedAtUtc.AddSeconds(1)));
         (await runtime.ExecuteAsync(lease, NoIncident)).Status.Should().Be(FlowRunStatus.Succeeded);
         store.Current!.Trace!.Truncated.Should().BeTrue();
         store.Current.Trace.Steps.Should().Contain(step => step.Input.Reference == "snapshot-budget-unavailable");
-        store.Current.Trace.Steps.Should().HaveCount(22);
-        dispatch.Dispatched.Should().BeEmpty();
+        store.Current.Trace.Steps.Should().HaveCount(24);
+        dispatch.Dispatched.Should().Equal(excerptNode.Id, omittedNode.Id);
+        var excerpt = store.Current.Trace.Steps.Single(step => step.NodeId == excerptNode.Id);
+        excerpt.Output.State.Should().Be(FlowTraceDataState.Truncated);
+        excerpt.ExecutionReference.Should().Be(new FlowExecutionReferenceDto(FlowExecutionSourceKind.Script, null, Executions.NativeId));
+        var omitted = store.Current.Trace.Steps.Single(step => step.NodeId == omittedNode.Id);
+        omitted.Output.State.Should().Be(FlowTraceDataState.Missing);
+        omitted.Output.Reference.Should().Be("snapshot-budget-unavailable");
+        omitted.ExecutionReference.Should().Be(new FlowExecutionReferenceDto(FlowExecutionSourceKind.Script, null,
+            dispatch.ExecutionIds[omittedNode.Id]));
+        var captured = JsonSerializer.Deserialize<FlowNodeCheckpointDto>(JsonSerializer.Serialize(store.Current, FlowNodeTestData.Json), FlowNodeTestData.Json)!;
+        captured.Trace!.Steps.Single(step => step.NodeId == omittedNode.Id).ExecutionReference.Should().Be(omitted.ExecutionReference);
     }
 
     [Fact]
@@ -224,6 +254,7 @@ public sealed class FlowGraphV2RuntimeTests
         (await runtime.ExecuteAsync(lease with { Continuation = new(state.NodeId, state.Fields, state.Investigation) { Node = state } }, Action))
             .Status.Should().Be(FlowRunStatus.Succeeded);
         contexts.Should().HaveCount(2); writes.Should().HaveCount(2);
+        store.Current!.Trace!.Steps.Single(step => step.NodeId == lease.Version.Graph.Nodes[0].Id).ExecutionReference.Should().BeNull();
         foreach (var fields in store.Current!.PreparedActionFields!.Values)
         {
             fields.Description.Split("Original execution facts", StringSplitOptions.None).Should().HaveCount(2);
@@ -231,7 +262,7 @@ public sealed class FlowGraphV2RuntimeTests
         }
     }
 
-    private static FlowGraphDto MapChain(int count, int length, bool largeInputs)
+    private static FlowGraphDto MapChain(int count, int length, bool largeInputs, IReadOnlyList<FlowNodeDto>? executionNodes = null)
     {
         var trigger = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.AlertRaised, "Synthetic alert", new(0, 0));
         var maps = Enumerable.Range(0, count).Select(index => new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.MapIncident,
@@ -239,10 +270,11 @@ public sealed class FlowGraphV2RuntimeTests
         { Inputs = largeInputs ? new Dictionary<string, FlowInputBindingDto>
             { ["unused"] = new(FlowInputSource.Literal, FlowDataType.Text, Literal: JsonSerializer.SerializeToElement(new string('i', length))) } : null }).ToArray();
         var finish = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.Finish, "Finish", new(4000, 0));
-        var nodes = new[] { trigger }.Concat(maps).Append(finish).ToArray();
-        return new(2, nodes, nodes.Take(nodes.Length - 1).Select((node, index) =>
-            new FlowEdgeDto(node.Id, index == 0 ? FlowNodeCatalogue.Event : FlowNodeCatalogue.Result, nodes[index + 1].Id,
-                FlowNodeCatalogue.Input) { Id = Guid.NewGuid() }).ToArray(), new());
+        var nodes = new[] { trigger }.Concat(maps).Concat(executionNodes ?? []).Append(finish).ToArray();
+        return new(2, nodes, nodes.Take(nodes.Length - 1).SelectMany((node, index) =>
+            FlowNodeCatalogue.Find(node.Kind)!.Ports.Where(port => port.Direction == FlowPortDirection.Output)
+                .Select(port => new FlowEdgeDto(node.Id, port.Id, nodes[index + 1].Id,
+                    FlowNodeCatalogue.Input) { Id = Guid.NewGuid() })).ToArray(), new());
     }
     private static FlowRunLease SourceGroupLease()
     {
@@ -321,6 +353,8 @@ public sealed class FlowGraphV2RuntimeTests
         public const string NativeId = "18446744073709551615";
         public bool TerminalImmediately { get; init; }
         public bool OmitTerminal { get; init; }
+        public IReadOnlyDictionary<Guid, string> StandardOutputs { get; init; } = new Dictionary<Guid, string>();
+        public IReadOnlyDictionary<Guid, string> ExecutionIds { get; init; } = new Dictionary<Guid, string>();
         public List<Guid> Dispatched { get; } = [];
         public List<string?> InputSubmissions { get; } = [];
         public List<string> Observed { get; } = [];
@@ -337,15 +371,17 @@ public sealed class FlowGraphV2RuntimeTests
         {
             var pin = request.Lease.Version.Graph.Nodes.Single(node => node.Id == request.NodeId).ExecutionAction!;
             var target = new FlowExecutionTargetDto(request.Lease.Event.Data!.AgentId, "Synthetic target");
-            var receipt = new FlowExecutionActionReceipt(request.ActionKey, ExecutionAdmissionKind.LibraryScript, NativeId);
+            var executionId = ExecutionIds.GetValueOrDefault(request.NodeId, NativeId);
+            var receipt = new FlowExecutionActionReceipt(request.ActionKey, ExecutionAdmissionKind.LibraryScript, executionId);
             var source = new FlowExecutionEventDto(Guid.NewGuid(), Guid.NewGuid(), request.Lease.Event.TenantId,
-                FlowExecutionSourceKind.Script, pin.Definition, NativeId, NativeId, target, FlowExecutionOutcome.Succeeded,
+                FlowExecutionSourceKind.Script, pin.Definition, executionId, executionId, target, FlowExecutionOutcome.Succeeded,
                 "Completed", request.Lease.CreatedAtUtc.AddSeconds(2), request.Lease.CreatedAtUtc.AddSeconds(2))
             { Provenance = FlowExecutionEventProvenance.ScriptTerminalCommit, ExitCode = 0, CompletedAtUtc = request.Lease.CreatedAtUtc.AddSeconds(2),
                 Causation = new(request.Lease.Event.OccurrenceId.ToString("N"), FlowRunId: request.Lease.RunId, NodeId: request.NodeId, HopCount: 1) };
             return new(terminal ? FlowExecutionActionDisposition.Succeeded : FlowExecutionActionDisposition.Pending,
                 terminal ? "script-succeeded" : "script-reserved", receipt,
-                terminal ? new(pin.Definition, target, NativeId, NativeId, ExitCode: 0, StandardOutput: "", OutputAvailable: true) : null,
+                terminal ? new(pin.Definition, target, executionId, executionId, ExitCode: 0,
+                    StandardOutput: StandardOutputs.GetValueOrDefault(request.NodeId, ""), OutputAvailable: true) : null,
                 terminal && !OmitTerminal ? source : null);
         }
     }
