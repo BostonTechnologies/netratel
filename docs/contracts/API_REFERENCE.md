@@ -78,65 +78,104 @@ retains its existing response type for compatibility.
 
 ## Flows
 
-The schema-two contract is introduced independently of execution activation. Existing HTTP
-save/publish/validate and monitoring ingress continue to accept schema one; submitting schema two
-to those routes returns `graph-schema` until the durable v2 executor is enabled.
-`FlowGraphV2Validator` is the pure version-two contract validator. It does not dispatch work.
-Existing managed MCP Flows operations continue to advertise the exact schema-one input contract;
-v2 fields and node kinds require an explicit future MCP contract activation. Older schema-one
-writers cannot downgrade a stored newer draft and erase its metadata.
+`GET /api/v1/tenants/{tenantId}/flows/schema-capabilities` separates
+`supportedDraftSchemas` from `executableSchemas`. Authoring and explicit draft upgrades
+use the former; publication requires the latter and complete current dependency checks.
+Schema-one drafts, immutable graph/configuration hashes, enum values and continuations retain
+their historical path. An older writer cannot downgrade a stored newer draft.
+Managed MCP Flows operations retain their schema-one input/export contract; their graphless
+mutation routes cannot alter a schema-two definition.
 
-Schema two retains `FlowGraphDto`, existing enum values and nullable-omitted additions. New node
-kinds are execution event (7), run library script (8), run job (9), rerun original execution (10)
-and finish (11). Its catalogue identifies stable named outcome ports independently of labels.
-Each outcome has at most one outgoing edge. Incoming alternatives converge as one exclusive
-token; they are not a parallel join. Completed publication requires every declared outcome
-route, an acyclic reachable graph and valid typed inputs. Inputs from earlier nodes must be
-available on every incoming path. Secret references cannot be rendered into incident templates.
+Schema two retains `FlowGraphDto` with nullable-omitted additions. Its new kinds are execution
+event (7), run library script (8), run job (9), rerun original execution (10) and finish (11).
+The shared catalogue defines stable named ports independently of displayed labels. Each outcome
+has at most one outgoing edge; alternatives converge as one exclusive token. Publication requires
+all declared outcome routes, an acyclic reachable graph and valid typed inputs. Earlier outputs
+must be available on every incoming path. General joins, cycles and arbitrary executable expressions
+are not accepted.
 
-The separate bounds are 32 nodes, 64 edges and 128 KiB graph JSON; schema one's eight-node,
-seven-edge and 32 KiB limits remain unchanged. This budget covers bounded node configuration,
-32 mappings/node and up to eight finite world-coordinate route points/edge. It does not raise
-event, execution-attempt, prepared-action or trace limits. A focused fixture validates 32 nodes
-and 61 edges. Browser responsiveness remains selected acceptance, not an inferred frame-rate claim.
+The graph budget is 32 nodes, 64 edges and 128 KiB canonical JSON, including at most 32 input
+bindings/node and eight finite world-coordinate route points/edge. Schema one's eight-node,
+seven-edge and 32 KiB limits remain unchanged. Stable edge `id` and optional `route.points` persist;
+hover, selection, live connection geometry and playback do not. Explicit migration keeps node IDs,
+assigns edge IDs and exposes missing new outcome routes without rewriting published history.
+Canonical cloning remaps graph-owned node/edge/action identities and bindings into a disabled draft.
+For schema two, `FlowGraphSerialization` sorts JSON object members and normalizes exact numeric
+spellings before size/hash calculation, so PostgreSQL JSONB round trips preserve the configuration
+hash. Schema-one bytes and hashes retain their historical serialization; published versions are not rewritten.
 
-Schema-two edges have a required stable `id` and optional `route.points`. Hover, selection,
-connection ghosts and playback are excluded. `FlowDraftMigration.UpgradeToSchemaTwo` explicitly
-copies an editable schema-one draft and assigns edge IDs; it leaves node IDs and published
-versions untouched. New missing outcome routes remain visible validation issues for the author.
-Saving a draft is distinct from publishing a complete, pinned graph.
+Execution facts use `FlowExecutionEventDto` schema one with exact source, normalized and raw outcome,
+definition/execution/attempt identity, target, timestamps, causation and bounded evidence references.
+Execution identifiers remain strings across JavaScript; numeric IDs use decimal text without number conversion. The native fact budget is 16 KiB; the
+source-aware runtime wrapper is 24 KiB. These limits are separate from the graph, prepared-action
+and trace budgets. `occurredAtUtc` records the source transition/terminal-ready selection boundary under the durable
+subscription locks and live database clock. Native `startedAtUtc`/`completedAtUtc` remain separate: a delayed
+projection can commit after enable even when native completion was earlier.
+Replay descriptors reference server-owned protected original inputs/definition/target;
+they contain no credentials and confer no authority. The immutable run envelope retains up to 16
+contributing source-event IDs and an omitted-default `sourceEventIdsTruncated` flag for additional
+references known at admission. Later delivery receipts do not rewrite this flag or snapshot.
+Run-detail reads require current source authority before exposing either; historical absent references
+and withheld references remain unavailable rather than becoming an invented empty list.
 
-Execution lifecycle facts use `FlowExecutionEventDto` schema one, preserving source, original
-status, normalized terminal outcome, definition/run/attempt identity, target, causation and
-bounded evidence references. IDs remain strings across JavaScript. The replay descriptor is
-a server-produced reference to protected immutable inputs; it confers no authority and never
-contains credentials. Unknown/disconnected observations are not failure or timeout. The
-current monitoring ingress rejects an execution envelope until source-specific admission is enabled.
-
-
-`GET /api/v1/flows/tenants` returns tenants paired with `flow.read` authority
-and their effective edit/publish/execute flags. All other routes are under
-`/api/v1/tenants/{tenantId}/flows`; the tenant permission is checked before
-definition, version or run disclosure.
+`GET /api/v1/flows/tenants` returns authorized tenant names and effective flow permissions.
+All routes below are under `/api/v1/tenants/{tenantId}/flows`; current tenant permission is
+checked before definition/version/run disclosure.
 
 | Route | Permission and behavior |
 | --- | --- |
-| `GET /`, `/template`, `/connectors`, `/{flowId}` | `flow.read`; bounded definitions, named template or currently authorized connector references. |
-| `POST /validate`, `/dry-run` | `flow.read`; canonical validation and pure inert DTO preview. |
-| `POST /`, `PUT /{flowId}/draft`, `POST /{flowId}/clone`, `PUT /{flowId}/enabled` | `flow.edit`; create or mutate an inert draft using `expectedRevision` for existing definitions. |
-| `POST /{flowId}/publish` | `flow.publish`; create an immutable version after current connector authority/capability/revision checks. |
-| `GET /{flowId}/versions`, `/{flowId}/runs`, `/{flowId}/runs/{runId}` | `flow.read`; bounded version and execution history. |
-| `GET /versions/{versionId}`, `/runs/{runId}` | `flow.read`; direct paired-tenant lookup for monitoring deep links. |
+| `GET /`, `/template`, `/{flowId}` | `flow.read`; bounded definitions and the historical alert template. |
+| `GET /schema-capabilities`, `/templates` | `flow.read`; explicit supported/executable schemas and named disabled configurable templates. |
+| `GET /connectors`, `/execution-connectors?sources=Job&sources=Request` | `flow.read`; current authorized destination references. Source-aware lookup uses the selected native source permissions. |
+| `GET /execution-definitions?sourceKind=Job&search=inventory&afterId=42&limit=50` | `flow.read`, `flow.execute` and native job/script permission; searchable metadata with decimal-string cursor and at most 50 results. |
+| `GET /execution-definitions/{sourceKind}/{definitionId}` | The same source permissions; current revision/hash/input metadata and bound target, with unavailable references explicit. |
+| `GET /execution-definitions/targets?sourceKind=Script&search=synthetic&afterId={agentId}&limit=50` | The same source permissions; eligible named target metadata and GUID cursor. Discovery does not promise online presence or future execution authority. |
+| `GET /execution-definitions/targets/selected?sourceKind=Script&ids={agentId}` | Bounded retained target selections; repeat `ids` for at most 128 entries. |
+| `POST /validate`, `/dry-run`, `/dry-run-execution` | `flow.read`; complete validation and deterministic inert evaluation. V2 preview supplies exactly one source plus optional explicit external outcome/output fixtures. |
+| `POST /`, `POST /from-template` | `flow.edit`; new inert draft. Template creation uses a separate request with template key and name, and returns disabled/unpublished revision one. |
+| `PUT /{flowId}/draft`, `POST /{flowId}/clone`, `PUT /{flowId}/enabled` | `flow.edit`; canonical revision-fenced mutation. Existing definitions require `expectedRevision`. |
+| `POST /{flowId}/publish` | `flow.publish`; immutable version after current execution pin, connector authority/capability/revision and graph checks. |
+| `GET /{flowId}/versions`, `/{flowId}/runs`, `/{flowId}/runs/{runId}` | `flow.read`; bounded paired-tenant history. |
+| `GET /versions/{versionId}`, `/runs/{runId}` | `flow.read`; direct paired lookup for deep links. Source/AI/output permission checks redact unavailable data explicitly. |
 
-Successful mutations return the canonical `FlowDefinitionDto`; publish
-returns `FlowVersionDto`. Writes expose a bounded safe `code` on rejected
-requests: 409 for revision conflicts, 429 for capacity, and 422 for unavailable
-or unauthorized connector dependencies. An unverified RatelDesk receiver
-returns `receiver-idempotency-unverified` and preserves the draft. Flow write
-bodies are bounded before JSON binding, including chunked streams. There is
-no browser/API execute route. The monitoring ingress and backend worker own
-durable execution. See [Flows](../operations/FLOWS.md) for schema bounds, authority,
-receipts/recovery, VeloxDev version and the receiver dependency.
+Successful mutations return `FlowDefinitionDto`; publish returns `FlowVersionDto`. Rejections
+use bounded safe codes: 409 for revision conflict, 429 for capacity and 422 for unavailable/unauthorized
+dependencies. An unverified receiver returns `receiver-idempotency-unverified` and preserves the draft.
+Definition/target query denials return 403; unsupported lookup families return 422 and malformed filters 400.
+Native Request events currently prove Job backing only; library executions emit Script events.
+Publication returns 400/`execution-trigger-source-unavailable` when active selected Script references
+lack the Script source family. Generic pure simulation remains separate from native producer capability;
+legacy single-family definition IDs retain their stored meaning.
+Execution definition metadata retains names up to 512 characters; exceeding that bound is explicit.
+Pinned native `secret_reference` inputs accept only an environment-name reference matching
+`[A-Za-z_][A-Za-z0-9_]{0,127}`. The reference name is passed only into protected canonical admission,
+never resolved or rendered by preview, and is excluded from durable node input snapshots.
+
+Schema-two save/validate clients send `X-NetRatel-Flow-Schema: 2` to select the finite graph body
+budget before JSON binding; ordinary schema-one limits remain intact. The separate v2 preview body
+budget includes bounded source and fixtures. Declared and chunked bodies follow the same limits.
+Missing fixture output is unavailable; explicit JSON null and empty values stay distinct.
+Recorded node timing uses the persisted start and trusted elapsed time across durable waits;
+simulated timing remains null. Native output uses the existing authorized redacted projection,
+with explicit missing, empty, withheld and truncated labels and exact string execution references. Preview
+performs zero script/job admissions, AI turns, notifications and incident writes.
+
+Actual node traces may include null-omitted `executionReference` metadata outside their bounded input/output
+snapshots. It contains Job or Script `sourceKind`, exact string `executionId` and `definitionId` (omitted for
+legacy Script identities without a known library definition). Job definition/run IDs are canonical positive
+Int64 decimal strings. The trusted native trigger or accepted canonical receipt supplies the reference;
+truncating a snapshot does not remove it. It grants no read authority: the separate native execution viewer
+checks current JobManagement/ScriptExecute permissions and bounds its log/output display. Simulated
+traces do not create native references; omitted historical references remain unavailable.
+
+There is no browser/API execute route. Durable native transitions commit immutable source facts and
+selected subscription intents; the trusted backend ingress consumes their exact IDs and rechecks
+current source authority. Combined subscriptions aggregate only the configured version/trigger,
+accepted attempt and outcome, retaining contributing facts. A proven job-backed request or script
+step in an explicit combined aggregate waits for its parent terminal-ready result, even when Job is
+not selected as a source. Request-only failures do not need a job.
+Unknown/DeliveryUnknown is distinct from definitive failure or authoritative timeout.
+See [Flows](../operations/FLOWS.md) for durable admission, replay, recovery and receiver behavior.
 
 ## Release verification
 
