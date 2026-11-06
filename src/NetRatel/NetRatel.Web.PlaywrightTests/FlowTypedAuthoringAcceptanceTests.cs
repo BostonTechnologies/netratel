@@ -205,6 +205,8 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         var nodeIds = await page.Locator(".flow-node[data-node-id]").EvaluateAllAsync<string[]>("nodes => nodes.map(node=>node.dataset.nodeId).sort()");
         var edgeIds = await page.Locator(".flow-connection[data-flow-edge-id]").EvaluateAllAsync<string[]>("edges => edges.map(edge=>edge.dataset.flowEdgeId).sort()");
         var beforeSaveGeometry = await RouteGeometryAsync(page, edgeId);
+        var savedPath = beforeSaveGeometry.GetProperty("path").GetString()!;
+        Assert.Contains(" C ", savedPath);
         await page.GetByTestId("flow-save").ClickAsync();
         await Assertions.Expect(page.GetByTestId("flow-result")).ToContainTextAsync("Draft saved");
         var savedGraph = fixture.FlowsData.SavedGraph!;
@@ -214,13 +216,15 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         var savedRoute = Assert.Single(savedGraph.Edges, value => value.Id == edgeId).Route!;
         Assert.Equal(6, savedRoute.Points.Count);
         var savedRouteJson = (await routedGroup.GetAttributeAsync("data-flow-route"))!;
-        var savedPath = (await routedCurve.GetAttributeAsync("d"))!;
-        Assert.Contains(" C ", savedPath);
+        var immediatePostSavePath = await routedCurve.GetAttributeAsync("d");
+        await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-route-save-phase.json"),
+            JsonSerializer.Serialize(new { savedPath, immediatePostSavePath, savedRouteJson }));
+        await Assertions.Expect(routedCurve).ToHaveAttributeAsync("d", savedPath);
         var beforeReload = await MeasurementsAsync(page);
         var beforeReloadGeometry = await RouteGeometryAsync(page, edgeId);
         await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-route-saved.json"), JsonSerializer.Serialize(savedGraph));
         await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-route-before-reload.json"),
-            JsonSerializer.Serialize(new { beforeSaveGeometry, beforeReloadGeometry, savedPath, savedRoute.Points, savedGraph.Viewport }, new JsonSerializerOptions { WriteIndented = true }));
+            JsonSerializer.Serialize(new { beforeSaveGeometry, beforeReloadGeometry, savedPath, immediatePostSavePath, savedRoute.Points, savedGraph.Viewport }, new JsonSerializerOptions { WriteIndented = true }));
 
         await page.ReloadAsync(new() { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByTestId("flow-row").Filter(new() { HasText = "Synthetic near-limit graph" }).GetByTestId("flow-edit").ClickAsync();
