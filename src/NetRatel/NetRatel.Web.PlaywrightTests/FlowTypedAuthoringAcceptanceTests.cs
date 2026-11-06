@@ -130,6 +130,49 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         var routeMilliseconds = clock.Elapsed.TotalMilliseconds;
         var routed = await MeasurementsAsync(page);
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-near-limit-route.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+
+        var beforePointer = routed.GetProperty("routePoints")[0];
+        var handleBounds = (await handle.BoundingBoxAsync())!;
+        var dragStartX = handleBounds.X + handleBounds.Width / 2; var dragStartY = handleBounds.Y + handleBounds.Height / 2;
+        var dragEndX = dragStartX + 12; var dragEndY = dragStartY + 8;
+        await handle.EvaluateAsync("""
+            handle => window.addEventListener('pointerdown',event=>{
+                handle.dataset.probePointerId=String(event.pointerId);
+                handle.dataset.probePointerHit=String(document.elementFromPoint(event.clientX,event.clientY)===handle);
+            },{capture:true,once:true})
+            """);
+        const string pointerState = """
+            (handle,pointerId)=>{const r=handle.getBoundingClientRect();return{pointerId,hit:handle.dataset.probePointerHit==='true',
+                captured:handle.hasPointerCapture(pointerId),dragging:handle.classList.contains('dragging'),
+                worldX:Number(handle.dataset.worldX),worldY:Number(handle.dataset.worldY),clientX:r.left+r.width/2,clientY:r.top+r.height/2}}
+            """;
+        await page.Mouse.MoveAsync(dragStartX, dragStartY); await page.Mouse.DownAsync();
+        int routePointerId;
+        JsonElement pointerHeld;
+        try
+        {
+            routePointerId = await handle.EvaluateAsync<int>("handle=>Number(handle.dataset.probePointerId)");
+            await page.Mouse.MoveAsync(dragEndX, dragEndY, new() { Steps = 8 });
+            await page.EvaluateAsync("() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+            pointerHeld = await handle.EvaluateAsync<JsonElement>(pointerState, routePointerId);
+            await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-route-pointer.json"), JsonSerializer.Serialize(new { beforePointer, dragStartX, dragStartY, dragEndX, dragEndY, pointerHeld }));
+            await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-near-limit-route-pointer-held.png"), Animations = ScreenshotAnimations.Disabled });
+            Assert.True(pointerHeld.GetProperty("hit").GetBoolean()); Assert.True(pointerHeld.GetProperty("captured").GetBoolean());
+            Assert.True(pointerHeld.GetProperty("dragging").GetBoolean());
+            Assert.Equal(beforePointer.GetProperty("x").GetDouble(), pointerHeld.GetProperty("worldX").GetDouble());
+            Assert.Equal(beforePointer.GetProperty("y").GetDouble(), pointerHeld.GetProperty("worldY").GetDouble());
+            Assert.InRange(pointerHeld.GetProperty("clientX").GetDouble(), (double)dragEndX - 1, (double)dragEndX + 1);
+            Assert.InRange(pointerHeld.GetProperty("clientY").GetDouble(), (double)dragEndY - 1, (double)dragEndY + 1);
+        }
+        finally { await page.Mouse.UpAsync(); }
+        await page.WaitForFunctionAsync("previous=>{const h=document.querySelector('[data-testid=flow-route-handle]');return Number(h.dataset.worldX)!==previous.x&&Number(h.dataset.worldY)!==previous.y}",
+            new { x = beforePointer.GetProperty("x").GetDouble(), y = beforePointer.GetProperty("y").GetDouble() });
+        var pointerReleased = await handle.EvaluateAsync<JsonElement>(pointerState, routePointerId);
+        await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-route-pointer.json"), JsonSerializer.Serialize(new { beforePointer, dragStartX, dragStartY, dragEndX, dragEndY, pointerHeld, pointerReleased }));
+        Assert.False(pointerReleased.GetProperty("captured").GetBoolean()); Assert.False(pointerReleased.GetProperty("dragging").GetBoolean());
+        Assert.InRange(pointerReleased.GetProperty("clientX").GetDouble(), (double)dragEndX - 1, (double)dragEndX + 1);
+        Assert.InRange(pointerReleased.GetProperty("clientY").GetDouble(), (double)dragEndY - 1, (double)dragEndY + 1);
+
         await page.SetViewportSizeAsync(195, 422);
         await FitAsync(page);
         for (var point = 1; point < FlowGraphV2Limits.MaximumRoutePoints; point++)
@@ -155,14 +198,86 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
         await page.Keyboard.PressAsync("Enter"); await Assertions.Expect(handle).ToHaveCountAsync(6);
         var narrowRoute = await MeasurementsAsync(page);
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-near-limit-route-narrow.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+
+        var edgeId = graph.Edges[0].Id!.Value;
+        var routedGroup = page.Locator($".flow-connection[data-flow-edge-id='{edgeId}']");
+        var routedCurve = routedGroup.Locator("[data-testid=flow-link]");
+        var nodeIds = await page.Locator(".flow-node[data-node-id]").EvaluateAllAsync<string[]>("nodes => nodes.map(node=>node.dataset.nodeId).sort()");
+        var edgeIds = await page.Locator(".flow-connection[data-flow-edge-id]").EvaluateAllAsync<string[]>("edges => edges.map(edge=>edge.dataset.flowEdgeId).sort()");
+        var beforeSaveGeometry = await RouteGeometryAsync(page, edgeId);
+        var savedPath = beforeSaveGeometry.GetProperty("path").GetString()!;
+        Assert.Contains(" C ", savedPath);
+        await page.GetByTestId("flow-save").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-result")).ToContainTextAsync("Draft saved");
+        var savedGraph = fixture.FlowsData.SavedGraph!;
+        Assert.Equal(32, savedGraph.Nodes.Count); Assert.Equal(61, savedGraph.Edges.Count);
+        Assert.Equal(graph.Nodes.Select(node => node.Id).Order(), savedGraph.Nodes.Select(node => node.Id).Order());
+        Assert.Equal(graph.Edges.Select(value => value.Id).Order(), savedGraph.Edges.Select(value => value.Id).Order());
+        var savedRoute = Assert.Single(savedGraph.Edges, value => value.Id == edgeId).Route!;
+        Assert.Equal(6, savedRoute.Points.Count);
+        var savedRouteJson = (await routedGroup.GetAttributeAsync("data-flow-route"))!;
+        var immediatePostSavePath = await routedCurve.GetAttributeAsync("d");
+        await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-route-save-phase.json"),
+            JsonSerializer.Serialize(new { savedPath, immediatePostSavePath, savedRouteJson }));
+        await Assertions.Expect(routedCurve).ToHaveAttributeAsync("d", savedPath);
+        var beforeReload = await MeasurementsAsync(page);
+        var beforeReloadGeometry = await RouteGeometryAsync(page, edgeId);
+        await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-route-saved.json"), JsonSerializer.Serialize(savedGraph));
+        await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-route-before-reload.json"),
+            JsonSerializer.Serialize(new { beforeSaveGeometry, beforeReloadGeometry, savedPath, immediatePostSavePath, savedRoute.Points, savedGraph.Viewport }, new JsonSerializerOptions { WriteIndented = true }));
+
+        await page.ReloadAsync(new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("flow-row").Filter(new() { HasText = "Synthetic near-limit graph" }).GetByTestId("flow-edit").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(32);
+        await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(61);
+        Assert.Equal(nodeIds, await page.Locator(".flow-node[data-node-id]").EvaluateAllAsync<string[]>("nodes => nodes.map(node=>node.dataset.nodeId).sort()"));
+        Assert.Equal(edgeIds, await page.Locator(".flow-connection[data-flow-edge-id]").EvaluateAllAsync<string[]>("edges => edges.map(edge=>edge.dataset.flowEdgeId).sort()"));
+        await Assertions.Expect(routedGroup).ToHaveAttributeAsync("data-flow-route", savedRouteJson);
+        await Assertions.Expect(routedGroup).ToHaveAttributeAsync("data-flow-source-node", graph.Edges[0].SourceNodeId.ToString());
+        await Assertions.Expect(routedGroup).ToHaveAttributeAsync("data-flow-target-node", graph.Edges[0].TargetNodeId.ToString());
+        var afterReloadGeometry = await RouteGeometryAsync(page, edgeId);
+        await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-route-after-reload.json"), afterReloadGeometry.GetRawText());
+        try { await Assertions.Expect(routedCurve).ToHaveAttributeAsync("d", savedPath); }
+        catch (Exception error)
+        {
+            try
+            {
+                var failedGeometry = await RouteGeometryAsync(page, edgeId);
+                await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-route-reload-failure.json"),
+                    JsonSerializer.Serialize(new { error = error.GetType().Name, beforeSaveGeometry, beforeReloadGeometry, afterReloadGeometry, failedGeometry, savedPath }, new JsonSerializerOptions { WriteIndented = true }));
+                await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-near-limit-route-reload-failure.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+            }
+            catch (Exception diagnosticError) when (diagnosticError is PlaywrightException or IOException or UnauthorizedAccessException)
+            { Console.WriteLine($"Route reload evidence could not be retained: {diagnosticError.GetType().Name}"); }
+            throw;
+        }
+        await routedGroup.GetByTestId("flow-link-hit").FocusAsync();
+        await Assertions.Expect(handle).ToHaveCountAsync(6);
+        var reloadedRoute = await MeasurementsAsync(page);
+        var displayedPointsBeforeReload = narrowRoute.GetProperty("routePoints").Deserialize<FlowPositionDto[]>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var restoredPoints = reloadedRoute.GetProperty("routePoints").Deserialize<FlowPositionDto[]>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit-route-roundtrip.json"), JsonSerializer.Serialize(new
+        {
+            fullPrecisionPoints = savedRoute.Points, savedRouteJson,
+            restoredRouteJson = await routedGroup.GetAttributeAsync("data-flow-route"), savedPath,
+            restoredPath = await routedCurve.GetAttributeAsync("d"), displayedPointsBeforeReload, restoredPoints
+        }, new JsonSerializerOptions { WriteIndented = true }));
+        Assert.Equal(displayedPointsBeforeReload!, restoredPoints!);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-v2-near-limit-route-reloaded.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+        await page.GetByTestId("flow-route-reset").ClickAsync();
+        await Assertions.Expect(handle).ToHaveCountAsync(0);
+        await Assertions.Expect(page.Locator(".flow-connection[data-flow-route]")).ToHaveCountAsync(0);
+        await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(61);
         await File.WriteAllTextAsync(Path.Combine(evidence, "flows-v2-near-limit.json"), JsonSerializer.Serialize(new
         {
             schemaVersion = graph.SchemaVersion, nodeCount = graph.Nodes.Count, edgeCount = graph.Edges.Count,
             mountMilliseconds, fitMilliseconds, panZoomMilliseconds, routeMilliseconds,
-            fitted, panTarget, panned, moved, routed, narrowRoute, assertions = "32 native nodes;61 curves;all cards fit;7 outcome ports fit;actual pan and zoom;route edit and Tab exit;narrow bounded inspector with pointer and keyboard reachability",
-            noExecutionWrites = fixture.FlowsData.SaveCalls == seedWrites && fixture.FlowsData.PublishCalls == 0 && fixture.FlowsData.DryRunCalls == 0
+            fitted, panTarget, panned, moved, routed, narrowRoute, beforeReload, reloadedRoute, savedRouteJson, savedPath,
+            draftSaves = fixture.FlowsData.SaveCalls - seedWrites,
+            assertions = "32 native nodes;61 curves;all cards fit;7 outcome ports fit;actual pan and zoom;route edit and Tab exit;narrow bounded inspector with pointer and keyboard reachability;save/reload preserves IDs, six route points and exact curve geometry;reset retains all edges",
+            noExecutionWrites = fixture.FlowsData.PublishCalls == 0 && fixture.FlowsData.DryRunCalls == 0 && _outgoingWrites.IsEmpty
         }, new JsonSerializerOptions { WriteIndented = true }));
-        Assert.Equal(seedWrites, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls); Assert.Equal(0, fixture.FlowsData.DryRunCalls);
+        Assert.Equal(seedWrites + 1, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls); Assert.Equal(0, fixture.FlowsData.DryRunCalls);
         Assert.Empty(_outgoingWrites);
         Assert.Empty(errors); Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
     }
@@ -352,6 +467,39 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
             routePoints:[...panel.querySelectorAll('.flow-route-handle')].map(handle=>({x:Number(handle.dataset.worldX),y:Number(handle.dataset.worldY)}))
         })
         """);
+    private static Task<JsonElement> RouteGeometryAsync(IPage page, Guid edgeId) => page.GetByTestId("flow-canvas").EvaluateAsync<JsonElement>("""
+        (panel,edgeId) => {
+            const group=panel.querySelector('.flow-connection[data-flow-edge-id="'+edgeId+'"]');
+            const scroller=panel.querySelector('.veloxdev-wf-scroll'),canvas=scroller?.querySelector('.veloxdev-wf-canvas');
+            const content=canvas?.querySelector('.veloxdev-wf-canvas-content');
+            const box=element=>{
+                if(!element)return null;
+                const style=getComputedStyle(element);
+                return{rect:element.getBoundingClientRect().toJSON(),style:element.getAttribute('style'),computed:{
+                    left:style.left,top:style.top,width:style.width,height:style.height,transform:style.transform,
+                    transformOrigin:style.transformOrigin,paddingLeft:style.paddingLeft,paddingTop:style.paddingTop,
+                    borderLeft:style.borderLeftWidth,borderTop:style.borderTopWidth}};
+            };
+            const matrix=element=>{const m=element?.getScreenCTM?.();return m?{a:m.a,b:m.b,c:m.c,d:m.d,e:m.e,f:m.f}:null};
+            const endpoint=attribute=>{
+                const id=group?.getAttribute(attribute),slot=id&&panel.querySelector('[data-veloxdev-slot-id="'+id+'"]');
+                const glyph=slot?.querySelector('.veloxdev-wf-slot-svg')??slot,node=slot?.closest('.flow-node');
+                const native=node?.closest('[data-veloxdev-node-id]');
+                const rect=glyph?.getBoundingClientRect();
+                return{slotId:id,slot:box(slot),glyph:box(glyph),glyphCentre:rect?{x:rect.left+rect.width/2,y:rect.top+rect.height/2}:null,node:box(node),native:box(native),
+                    worldX:node?.dataset.worldX,worldY:node?.dataset.worldY,designWidth:node?.dataset.designWidth};
+            };
+            return{edgeId,viewport:{width:innerWidth,height:innerHeight,dpr:devicePixelRatio,scrollX,scrollY},panel:box(panel),
+                fullscreen:{nativeRoot:document.fullscreenElement?.id,editorClasses:panel.closest('[data-testid=flow-editor]')?.className},
+                inverseScale:panel.dataset.inverseScale,routeScale:group?.dataset.routeScale,route:group?.dataset.flowRoute,
+                path:group?.querySelector('[data-testid=flow-link]')?.getAttribute('d'),
+                hitPath:group?.querySelector('[data-testid=flow-link-hit]')?.getAttribute('d'),
+                svg:{...box(group?.closest('svg')),viewBox:group?.closest('svg')?.getAttribute('viewBox'),matrix:matrix(group?.closest('svg'))},groupMatrix:matrix(group),
+                scroller:{...box(scroller),x:scroller?.scrollLeft,y:scroller?.scrollTop,clientWidth:scroller?.clientWidth,clientHeight:scroller?.clientHeight,scrollWidth:scroller?.scrollWidth,scrollHeight:scroller?.scrollHeight},canvas:box(canvas),
+                content:{...box(content),offsetLeft:content?.offsetLeft,offsetTop:content?.offsetTop,computedLeft:content&&getComputedStyle(content).left,computedTransform:content&&getComputedStyle(content).transform},
+                source:endpoint('data-veloxdev-sender-slot'),target:endpoint('data-veloxdev-receiver-slot')};
+        }
+        """, edgeId.ToString());
     private static async Task FitAsync(IPage page)
     {
         var canvas = page.GetByTestId("flow-canvas");

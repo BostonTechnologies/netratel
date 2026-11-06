@@ -27,11 +27,13 @@ export function attach(id, reference) {
         const width = Number.parseFloat(native?.style.width), design = Number.parseFloat(node?.dataset.designWidth);
         return width > 0 && design > 0 ? design / width : Number.parseFloat(panel.dataset.inverseScale) || 1;
     };
-    const localPoint = (x, y) => {
-        const canvas = panel.querySelector('.veloxdev-wf-canvas'), content = canvas?.querySelector('.veloxdev-wf-canvas-content');
-        if (!canvas) return null;
-        const origin = canvas.getBoundingClientRect();
-        return { x: x - origin.left - (content?.offsetLeft ?? 0), y: y - origin.top - (content?.offsetTop ?? 0) };
+    const localPoint = (space, x, y) => {
+        const matrix = space?.getScreenCTM();
+        if (!matrix) return null;
+        // The content origin can be fractional after pan/zoom. offsetLeft/Top round
+        // it to integers; the destination SVG's matrix retains the actual frame.
+        const point = new DOMPoint(x, y).matrixTransform(matrix.inverse());
+        return Number.isFinite(point.x) && Number.isFinite(point.y) ? { x: point.x, y: point.y } : null;
     };
     const endpoint = (group, attribute) => {
         const id = group.getAttribute(attribute);
@@ -39,7 +41,7 @@ export function attach(id, reference) {
         const glyph = slot?.querySelector('.veloxdev-wf-slot-svg') ?? slot;
         if (!glyph) return null;
         const rect = glyph.getBoundingClientRect();
-        return localPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+        return localPoint(group, rect.left + rect.width / 2, rect.top + rect.height / 2);
     };
     const routedPath = points => {
         let path = `M ${points[0].x.toFixed(2)},${points[0].y.toFixed(2)}`;
@@ -92,16 +94,14 @@ export function attach(id, reference) {
         if (disposed) return;
         if (routeDrag) { syncRoute(routeDrag.group); return; }
         if (!gesture) return;
-        const path = ghost(), canvas = panel.querySelector('.veloxdev-wf-canvas');
-        const content = canvas?.querySelector('.veloxdev-wf-canvas-content');
+        const path = ghost();
         const glyph = gesture.source.querySelector('svg');
-        if (!path || !canvas || !glyph) return;
-        const origin = canvas.getBoundingClientRect(), anchor = glyph.getBoundingClientRect();
-        const x = (anchor.left + anchor.width / 2) - origin.left - (content?.offsetLeft ?? 0);
-        const y = (anchor.top + anchor.height / 2) - origin.top - (content?.offsetTop ?? 0);
-        const ex = gesture.x - origin.left - (content?.offsetLeft ?? 0);
-        const ey = gesture.y - origin.top - (content?.offsetTop ?? 0);
-        if (![x, y, ex, ey].every(Number.isFinite)) return;
+        if (!path || !glyph) return;
+        const anchor = glyph.getBoundingClientRect();
+        const source = localPoint(path.ownerSVGElement, anchor.left + anchor.width / 2, anchor.top + anchor.height / 2);
+        const target = localPoint(path.ownerSVGElement, gesture.x, gesture.y);
+        if (!source || !target) return;
+        const { x, y } = source, { x: ex, y: ey } = target;
         const pull = Math.max(40, Math.abs(ex - x) / 2);
         path.setAttribute('d', `M ${x},${y} C ${x + pull},${y} ${ex - pull},${ey} ${ex},${ey}`);
         path.removeAttribute('hidden');
@@ -128,7 +128,7 @@ export function attach(id, reference) {
         if (handle && panel.contains(handle)) {
             if (!writable() || event.button !== 0) return;
             event.preventDefault(); event.stopPropagation();
-            const point = localPoint(event.clientX, event.clientY), group = panel.querySelector('[data-flow-edge-id="' + handle.dataset.edgeId + '"][data-flow-route]');
+            const point = localPoint(handle.ownerSVGElement, event.clientX, event.clientY), group = panel.querySelector('[data-flow-edge-id="' + handle.dataset.edgeId + '"][data-flow-route]');
             if (!point || !group) return;
             ++messageGeneration; setMessage('');
             routeDrag = { handle, group, index: Number(handle.dataset.pointIndex), pointerId: event.pointerId };
@@ -149,7 +149,7 @@ export function attach(id, reference) {
     const move = event => {
         if (routeDrag) {
             if (routeDrag.pointerId !== event.pointerId) return;
-            const point = localPoint(event.clientX, event.clientY);
+            const point = localPoint(routeDrag.handle.ownerSVGElement, event.clientX, event.clientY);
             if (point) routePreview = { group: routeDrag.group, index: routeDrag.index, ...point };
             if (!frame) frame = requestAnimationFrame(draw);
             event.stopPropagation();
@@ -185,7 +185,7 @@ export function attach(id, reference) {
     const up = event => {
         if (routeDrag) {
             if (routeDrag.pointerId !== event.pointerId) return;
-            const active = routeDrag, point = localPoint(event.clientX, event.clientY), generation = messageGeneration;
+            const active = routeDrag, point = localPoint(active.handle.ownerSVGElement, event.clientX, event.clientY), generation = messageGeneration;
             routeDrag = null; active.handle.classList.remove('dragging');
             if (active.handle.hasPointerCapture?.(active.pointerId)) active.handle.releasePointerCapture(active.pointerId);
             if (point && !disposed) reference.invokeMethodAsync('CommitRoutePoint', active.group.dataset.flowEdgeId, active.index, point.x, point.y)
@@ -246,20 +246,31 @@ export function attach(id, reference) {
     };
     const observer = new MutationObserver(mutations => {
         if (!panel.isConnected) { detach(id); return; }
+        const routes = new Set();
+        let routeLayoutChanged = false;
         for (const mutation of mutations) {
             if (managedMessage()?.contains(mutation.target) && !gesture && !routeDrag) {
                 ++messageGeneration; setMessage('');
             }
             if (mutation.type === 'attributes' && mutation.attributeName === 'data-flow-route') {
                 if (!routeDrag && routePreview?.group === mutation.target) routePreview = null;
-                syncRoute(mutation.target);
+                routes.add(mutation.target);
             }
-            if (mutation.type === 'attributes' && mutation.attributeName === 'd' && mutation.target.matches('[data-veloxdev-link-curve]')) {
-                // Velox synchronizes the visible curve in the same frame as zoom.
-                // Keep its transparent accessible hit path on that exact geometry.
-                mutation.target.parentElement?.querySelector('.flow-connection-hit')?.setAttribute('d', mutation.target.getAttribute('d') ?? '');
+            if (mutation.type === 'attributes' && mutation.attributeName === 'd') {
+                const routed = mutation.target.closest('[data-flow-route]');
+                if (routed) {
+                    // C# still publishes the native model's hit curve. The browser
+                    // owns the final manual SVG path in its measured frame, including
+                    // after a server render; equal writes make this observer settle.
+                    routes.add(routed);
+                } else if (mutation.target.matches('[data-veloxdev-link-curve]')) {
+                    // Velox synchronizes automatic curves in the same frame as zoom.
+                    mutation.target.parentElement?.querySelector('.flow-connection-hit')?.setAttribute('d', mutation.target.getAttribute('d') ?? '');
+                }
             }
+            routeLayoutChanged ||= mutation.type === 'childList' || mutation.attributeName === 'data-inverse-scale';
         }
+        if (routeLayoutChanged) syncRoutes(); else routes.forEach(syncRoute);
         if (!writable() && routeDrag) cancelRoute();
         if (!writable() && gesture) cancel();
         syncKeyboard();
