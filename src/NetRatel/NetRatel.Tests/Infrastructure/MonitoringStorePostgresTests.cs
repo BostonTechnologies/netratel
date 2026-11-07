@@ -487,6 +487,9 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
                 db.MonitoringSeries.Add(Record(state));
             }
             await db.SaveChangesAsync();
+            var identity = await NetRatel.API.Services.Monitoring.MonitoringIdentityProjection.ReadAsync(db,
+                rig.Client.TenantId, [rig.Client.AgentId], default);
+            identity.Single().DisplayName.Should().Be("synthetic-backup");
         }
         var unfiltered = await rig.Store.ReadTenantSeriesAsync(rig.Client.TenantId, 50, null, default);
         unfiltered.Items.Should().HaveCount(50).And.OnlyContain(row => row.Phase == MonitoringPhase.Healthy);
