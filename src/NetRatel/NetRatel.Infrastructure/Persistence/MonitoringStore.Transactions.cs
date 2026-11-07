@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Application.Monitoring;
 using NetRatel.Application.Presence;
+using NetRatel.Infrastructure.ServiceIdentity;
 using NetRatel.Shared.Contracts.Monitoring;
 using Npgsql;
 
@@ -43,7 +44,7 @@ public sealed partial class MonitoringStore
                 throw new ArgumentException("invalid_unchanged_state");
             return new(MonitoringStoreWriteDisposition.Stored, result.State);
         }
-        result = await AttributeClientIdentityAsync(db, result, current, cancellationToken).ConfigureAwait(false);
+        result = await AttributeClientIdentityAsync(db, scope.ServiceProvider, result, current, cancellationToken).ConfigureAwait(false);
         try
         {
             if (request.ExpectedEvidenceFence is { } mutationFence && !await CheckEpochAsync(db, mutationFence, cancellationToken).ConfigureAwait(false))
@@ -64,24 +65,36 @@ public sealed partial class MonitoringStore
         }
     }
 
-    private static async Task<MonitoringEvaluationResult> AttributeClientIdentityAsync(OrchestratorDbContext db,
+    private static async Task<MonitoringEvaluationResult> AttributeClientIdentityAsync(OrchestratorDbContext db, IServiceProvider services,
         MonitoringEvaluationResult result, MonitoringSeriesRecord? current, CancellationToken cancellationToken)
     {
-        if (MonitoringOfflinePresentation.IsSeries(result.State.Series)) return result;
         if (result.State.Occurrence is { } occurrence)
         {
             var previousOccurrence = current is null ? null : ReadState(current).Occurrence;
             var identity = previousOccurrence?.OccurrenceId == occurrence.OccurrenceId ? previousOccurrence.ClientIdentity : null;
-            if (identity is null)
+            if (identity is null && !MonitoringOfflinePresentation.IsSeries(result.State.Series))
             {
                 var agent = await db.Agents.IgnoreQueryFilters().AsNoTracking().Where(agent => agent.TenantId == result.State.Series.TenantId && agent.Id == result.State.Series.AgentId)
-                    .Select(agent => new { agent.Name, agent.DeviceInfoJson, agent.DeletedAtUtc }).SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-                identity = MonitoringIdentityPresentation.Create(result.State.Series.AgentId, agent?.Name, agent?.DeviceInfoJson, agent?.DeletedAtUtc is not null);
+                    .Select(agent => new { agent.Name, agent.FriendlyName, agent.DeviceInfoJson, agent.DeletedAtUtc }).SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+                identity = MonitoringIdentityPresentation.Create(result.State.Series.AgentId,
+                    string.IsNullOrWhiteSpace(agent?.FriendlyName) ? agent?.Name : agent.FriendlyName, agent?.DeviceInfoJson, agent?.DeletedAtUtc is not null);
+            }
+            var presentation = previousOccurrence?.OccurrenceId == occurrence.OccurrenceId ? previousOccurrence.Presentation : null;
+            // A pre-upgrade open occurrence keeps its original absent presentation, including later operator events.
+            if (previousOccurrence?.OccurrenceId != occurrence.OccurrenceId)
+            {
+                var tenantName = await db.Tenants.IgnoreQueryFilters().AsNoTracking().Where(tenant => tenant.Id == result.State.Series.TenantId)
+                    .Select(tenant => tenant.Name).SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+                var publicSettings = services.GetService<IServicePublicSettingsResolver>();
+                var web = publicSettings is null ? null : (await publicSettings.ResolveAsync(cancellationToken).ConfigureAwait(false)).Identity.WebBaseUrl;
+                presentation = MonitoringIncidentPresentation.Create(result.State.Series, occurrence, tenantName, identity, web);
             }
             result = result with
             {
-                State = result.State with { Occurrence = occurrence with { ClientIdentity = identity } },
-                Events = result.Events.Select(item => item with { ClientIdentity = identity }).ToImmutableArray()
+                State = result.State with { Occurrence = occurrence with { ClientIdentity = identity, Presentation = presentation } },
+                Events = result.Events.Select(item => item with { ClientIdentity = identity, Presentation = presentation,
+                    OfflineAgentIds = MonitoringOfflinePresentation.IsSeries(result.State.Series) ? result.State.OfflineAgentIds : item.OfflineAgentIds }).ToImmutableArray(),
+                Outbox = result.Outbox.Select(item => item with { Presentation = presentation }).ToImmutableArray()
             };
         }
         return result;
@@ -277,6 +290,7 @@ public sealed partial class MonitoringStore
     private static bool PinnedOccurrenceMatches(MonitoringOccurrenceDto old, MonitoringOccurrenceDto candidate) =>
         old.RaisedAtUtc == candidate.RaisedAtUtc && old.BreachSinceAtUtc == candidate.BreachSinceAtUtc &&
         Serialize(old.PinnedRule) == Serialize(candidate.PinnedRule) && old.RaisedEvidence == candidate.RaisedEvidence &&
+        old.Presentation == candidate.Presentation &&
         (old.EndedAtUtc is null || old.EndedAtUtc == candidate.EndedAtUtc && old.ClosureDisposition == candidate.ClosureDisposition);
 
     private async Task EnforceHistoryCapacityAsync(OrchestratorDbContext db, int tenant, int events, int audits, int outbox, CancellationToken ct)

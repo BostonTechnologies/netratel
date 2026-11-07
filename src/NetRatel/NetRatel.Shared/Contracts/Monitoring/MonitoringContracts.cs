@@ -79,7 +79,11 @@ public sealed record MonitoringOccurrenceDto(
     MonitoringFlowDispatchDisposition FlowDispatchDisposition,
     Guid? AcknowledgedBy = null, DateTimeOffset? AcknowledgedAtUtc = null,
     DateTimeOffset? EndedAtUtc = null, MonitoringClosureDisposition? ClosureDisposition = null,
-    MonitoringFlowOutcomeDto? FlowOutcome = null, MonitoringClientIdentityDto? ClientIdentity = null);
+    MonitoringFlowOutcomeDto? FlowOutcome = null, MonitoringClientIdentityDto? ClientIdentity = null)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MonitoringPresentationSnapshotDto? Presentation { get; init; }
+}
 
 /// <summary>Condition-false is Skipped; action-node keys and receipts are derived by the pinned flow runtime.</summary>
 public sealed record MonitoringIncidentReceiptDto(string IncidentId, string? TrackingNumber = null, string? IncidentUrl = null);
@@ -114,14 +118,22 @@ public sealed record MonitoringEventIntent(
     DateTimeOffset AtUtc, MonitoringRuleDto PinnedRule, MonitoringEvidenceDto Evidence,
     MonitoringClosureDisposition? ClosureDisposition = null, string? Reason = null, Guid? OperatorId = null,
     string? OperatorDisplayName = null, MonitoringClientIdentityDto? ClientIdentity = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] ImmutableArray<Guid> OfflineAgentIds = default);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] ImmutableArray<Guid> OfflineAgentIds = default)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MonitoringPresentationSnapshotDto? Presentation { get; init; }
+}
 
 /// <summary>Persist this exact intent with state+event; dispatch later rechecks current authorization/suppression.</summary>
 public sealed record MonitoringOutboxIntent(
     string StableFlowDispatchKey, Guid EventId, Guid OccurrenceId, MonitoringSeriesKey Series,
     Guid PublishedFlowVersionId, DateTimeOffset AtUtc,
     MonitoringRuleDto PinnedRule, MonitoringEvidenceDto PinnedEvidence,
-    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] MonitoringOfflineSnapshotDto? OfflineSummary = null);
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] MonitoringOfflineSnapshotDto? OfflineSummary = null)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MonitoringPresentationSnapshotDto? Presentation { get; init; }
+}
 
 public sealed record MonitoringAuditIntent(
     Guid AuditId, MonitoringSeriesKey Series, string Operation, Guid OperatorId, string Reason,

@@ -22,6 +22,45 @@ namespace NetRatel.Tests.Infrastructure;
 [Collection(PostgreSqlPersistenceCollection.Name)]
 public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fixture)
 {
+    [Fact]
+    public async Task New_occurrence_atomically_pins_authoritative_tenant_identity_into_outbox_and_never_renames_it_on_retry()
+    {
+        await using var rig = await CreateRigAsync(flow: true);
+        await using (var scope = rig.Provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            db.Tenants.Add(new() { Id = rig.Client.TenantId, Name = "Example tenant" });
+            db.Tenants.Add(new() { Id = rig.Client.TenantId + 1, Name = "Other tenant" });
+            var agent = await db.Agents.SingleAsync();
+            agent.Name = "backup-01"; agent.FriendlyName = "Example backup";
+            agent.DeviceInfoJson = "{\"hostName\":\"backup-01\"}";
+            await db.SaveChangesAsync();
+        }
+        await FireAsync(rig);
+        var original = (await rig.Store.LoadSeriesAsync(rig.Key, default))!;
+        var pinned = original.Occurrence!.Presentation!;
+        pinned.TenantName.Should().Be("Example tenant"); pinned.ClientName.Should().Be("Example backup");
+        pinned.Hostname.Should().Be("backup-01"); pinned.Details.Should().NotContain("Other tenant");
+        var before = JsonSerializer.Serialize(pinned);
+        await using (var scope = rig.Provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var agent = await db.Agents.SingleAsync(); agent.Name = "renamed"; agent.FriendlyName = "Renamed backup";
+            (await db.Tenants.SingleAsync(x => x.Id == rig.Client.TenantId)).Name = "Renamed tenant";
+            await db.SaveChangesAsync();
+            var intent = JsonSerializer.Deserialize<MonitoringOutboxIntent>((await db.MonitoringFlowOutbox.SingleAsync()).IntentJson)!;
+            JsonSerializer.Serialize(intent.Presentation).Should().Be(before);
+        }
+        var acknowledged = await rig.Store.OperateOccurrenceAsync(new(rig.Key, original.Occurrence.OccurrenceId, Guid.NewGuid(), "Investigating",
+            original.StateRevision, 1, original.OperatorRevision), clear: false, default);
+        acknowledged.Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
+        JsonSerializer.Serialize(acknowledged.State!.Occurrence!.Presentation).Should().Be(before);
+        (await rig.Store.ReadTenantEventsAsync(rig.Client.TenantId, 20, null, default)).Items
+            .Should().OnlyContain(item => item.Presentation == pinned);
+        var lease = (await rig.Store.ClaimOutboxAsync(new(rig.Client.TenantId, Guid.NewGuid(), 1, TimeSpan.FromMinutes(1)), default)).Single();
+        JsonSerializer.Serialize(lease.Intent.Presentation).Should().Be(before);
+    }
+
     /// <summary>Real provider persistence with deterministic unit clocks; this is not the physical DriveInfo stimulus proof.</summary>
     [Fact]
     public async Task Genuine_disk_collection_marker_survives_provider_restart_and_cached_frames_cannot_complete_or_rearm_hold()
