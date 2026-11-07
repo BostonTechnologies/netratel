@@ -20,6 +20,29 @@ An acknowledgement marks the same occurrence and does not rearm it. Manual clear
 
 Suppression is an audited tenant/rule/client/group/resource overlay with a reason and optional expiry. Evaluation continues. Expiry may release at most one currently fresh, previously undelivered active occurrence; it cannot replay historical resolved episodes or an already delivered occurrence.
 
+## Disk inventory and resource policy
+
+Updated Linux clients read `/proc/self/mountinfo` in their own mount namespace. Capacity inventory carries optional filesystem, source/device, mount-root, read-only and stable backing-capacity metadata. Known read-only SquashFS/EROFS package images and appropriate pseudo filesystems are excluded from capacity alerts by default, with an explicit reason. Real ext4/XFS data volumes becoming read-only remain eligible, as do writable network/backup volumes and independent ZFS datasets. Immutable image roots remain visible as excluded inventory; a container's meaningful overlay `/` remains eligible.
+
+Deduplication requires authoritative backing evidence. Views with the same device, filesystem, source and filesystem root share one deterministic representative. Overlay views require an existing upper directory and the most specific containing mount in that namespace. Neither equal byte counters, a shared pool name nor a mount ID proves duplicate capacity. Subdirectory binds with different filesystem roots remain eligible when independent quota behavior cannot be ruled out from mountinfo. Missing metadata is unclassified and never proves exclusion.
+
+The rule editor's **Disk resource policy** accepts include/exclude mount/path and filesystem patterns. The same optional `condition.diskPolicy` object is used by saved rules, runtime and API/MCP target preview:
+
+```json
+{
+  "includeMounts": ["/", "/data/*", "/backup"],
+  "excludeMounts": ["/data/cache/*"],
+  "includeFileSystems": [],
+  "excludeFileSystems": ["squashfs"]
+}
+```
+
+Patterns match the complete string: `*` matches zero or more characters, including separators, and `?` matches one character. Other characters are literal; there is no regular expression, shell expansion or bracket grammar. At most 32 patterns across the four lists, each up to 256 characters, are accepted. The editor trims each nonempty line. Linux paths use ordinal case-sensitive matching; Windows paths and filesystem names use ordinal case-insensitive matching. Explicit excludes win. If either include list is populated, a match in either is required, and an explicit include can override default exclusions. An existing exact normalized volume must also match. An include cannot turn unsupported or partial telemetry into complete evidence.
+
+**Preview cached disk resources** shows per-resource eligibility/reason, filesystem, collection time, freshness, unclassified older telemetry and inventory truncation. It reads the authorized target clients' existing cache and never collects telemetry. Preview uses the selected freshness budget, defaults to two minutes when omitted through API/MCP, returns at most 16 resources per client and 160 total, and reports truncation. Re-run after editing the policy. The client prioritizes eligible resources before its 64-scope cap and the complete 16,383-byte envelope limit; at most 16 excluded resources are retained. Truncation and absent resources never imply recovery.
+
+Existing clients and rules keep their enrollment and disk resource identities. Normal client upgrade is required to report mount classification; old clients remain readable and are labelled unclassified. Absent/empty policy uses the supported defaults without changing the historical evaluation fingerprint. An explicit policy edit changes the evaluation revision and requires **SuspendOccurrenceAndRequireNewWindow**, the usual reason and reset confirmation. Newly proven default exclusions suspend existing occurrences as **NotApplicable** with a `disk-policy:` reason and a non-recovery target-removal disposition. Partial, missing, changed-in-place, reordered or stale collection metadata cannot clear an unresolved breach. Historical events and prepared incident bytes stay pinned.
+
 ## Alert if Offline
 
 In `/monitoring`, open a rule's side panel and enable **Alert if Offline**. The same direct-client, static-group or all-eligible selection applies to this additional condition. It is off by default for existing rules. Set **Offline grace (seconds)** between 1 and 3,600; the default is 60 seconds. This grace is the offline breach hold. Recovery uses the rule's existing recovery hold.

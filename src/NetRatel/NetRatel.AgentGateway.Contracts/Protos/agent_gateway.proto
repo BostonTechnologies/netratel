@@ -227,6 +227,7 @@ message TelemetryFrame {
   repeated TelemetryDisk disks = 12;
   repeated TelemetryNetwork networks = 13;
   TelemetryTransportHealth transport_health = 14;
+  bool disk_inventory_truncated = 15;
 }
 
 message TelemetryCpu {
@@ -254,6 +255,17 @@ message TelemetryDisk {
   string collection_id = 8;
   google.protobuf.Timestamp collected_at_utc = 9;
   TelemetryDiskCollectionQuality collection_quality = 10;
+  TelemetryDiskMetadata metadata = 11;
+}
+
+// Additive, bounded classification. Missing metadata is unclassified, never an exclusion.
+message TelemetryDiskMetadata {
+  string file_system = 1;
+  string source = 2;
+  string mount_root = 3;
+  string capacity_key = 4;
+  bool read_only = 5;
+  string default_exclusion_reason = 6;
 }
 
 enum TelemetryDiskCollectionQuality {

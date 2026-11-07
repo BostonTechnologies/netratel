@@ -46,7 +46,10 @@ internal static class AgentTelemetryGatewayMapper
                 disk.HasFreeBytes ? disk.FreeBytes : null,
                 Guid.TryParseExact(disk.CollectionId, "D", out var collectionId) && collectionId != Guid.Empty ? collectionId : null,
                 disk.CollectedAtUtc?.ToDateTimeOffset(),
-                (global::NetRatel.Application.Telemetry.TelemetryDiskCollectionQuality)(int)disk.CollectionQuality)).ToArray(),
+                (global::NetRatel.Application.Telemetry.TelemetryDiskCollectionQuality)(int)disk.CollectionQuality,
+                disk.Metadata is null ? null : new NetRatel.Shared.Contracts.Monitoring.TelemetryDiskMetadataDto(
+                    disk.Metadata.FileSystem, disk.Metadata.Source, disk.Metadata.MountRoot, disk.Metadata.CapacityKey,
+                    disk.Metadata.ReadOnly, NullIfWhiteSpace(disk.Metadata.DefaultExclusionReason)))).ToArray(),
             frame.Networks.Select(network => new ApplicationTelemetryNetwork(
                 network.Scope.Trim(),
                 network.RxBytesPerSec,
@@ -59,7 +62,7 @@ internal static class AgentTelemetryGatewayMapper
                     NullIfWhiteSpace(frame.TransportHealth.OsVersion),
                     frame.TransportHealth.LastHeartbeat?.ToDateTimeOffset()),
             "akka",
-            IsAuthoritative: true);
+            IsAuthoritative: true, DiskInventoryTruncated: frame.DiskInventoryTruncated);
 
     public static void ThrowIfInvalid(AgentFrameValidationResult validation)
     {

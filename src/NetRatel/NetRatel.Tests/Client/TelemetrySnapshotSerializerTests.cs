@@ -43,4 +43,27 @@ public sealed class TelemetrySnapshotSerializerTests
         Assert.Equal(64, snapshot.Disks.Count);
         Assert.Equal(64, snapshot.Networks.Count);
     }
+    [Fact]
+    public void EligibleCapacityWinsBeforeScopeAndEnvelopeBudgetsAndExcludedInventoryIsBounded()
+    {
+        var session = new GatewayPresenceSession(91, Guid.NewGuid(), 1, Guid.NewGuid());
+        var snapshot = new TelemetryFrame { Sequence = 1, ObservedAtUtc = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow) };
+        for (var index = 0; index < 64; index++)
+            snapshot.Disks.Add(new TelemetryDisk { Scope = "/snap/" + index, Metadata = new() { DefaultExclusionReason = "package-image" } });
+        for (var index = 0; index < 30; index++)
+            snapshot.Disks.Add(new TelemetryDisk { Scope = "/data/" + new string('é', 120) + index, TotalBytes = 100, FreeBytes = 10,
+                CollectionId = Guid.NewGuid().ToString("D"), CollectedAtUtc = snapshot.ObservedAtUtc.Clone(), CollectionQuality = TelemetryDiskCollectionQuality.Complete });
+        var selected = GatewayTelemetrySnapshotCollector.PrioritizeDisks(snapshot.Disks);
+        Assert.Equal(30, selected.Count(disk => disk.Metadata is null));
+        Assert.Equal(16, selected.Count(disk => disk.Metadata is not null));
+        // Force the complete-envelope trim path, with excluded inventory originally ordered first.
+        snapshot.TransportHealth = new() { OsVersion = new string('x', 12000) };
+        var envelope = TelemetrySnapshotSerializer.CreateEnvelope(snapshot, session, "2.0");
+        Assert.InRange(envelope.CalculateSize(), 1, TelemetrySnapshotSerializer.MaximumEnvelopeBytes);
+        Assert.NotEmpty(envelope.Snapshot.Disks);
+        Assert.All(envelope.Snapshot.Disks, disk => Assert.Null(disk.Metadata));
+        Assert.True(envelope.Snapshot.DiskInventoryTruncated);
+        Assert.Equal(94, snapshot.Disks.Count);
+    }
+
 }

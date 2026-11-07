@@ -151,7 +151,10 @@ public sealed class ClientMonitoringActor : ReceiveActor, IWithTimers
         if (rule.Condition.ResourceName is { } resource) return [MonitoringSeriesEvaluator.DiskResourceKey(resource)];
         var resources = new HashSet<string>(existing.Select(key => key.ResourceKey), StringComparer.Ordinal);
         if (telemetry is not null) foreach (var disk in telemetry.Snapshot.Disks)
-        { try { resources.Add(MonitoringSeriesEvaluator.DiskResourceKey(disk.Scope)); } catch (ArgumentException) { continue; } }
+        {
+            if (!MonitoringDiskPolicy.Select(disk.Scope, disk.Metadata, rule.Condition).Eligible) continue;
+            try { resources.Add(MonitoringSeriesEvaluator.DiskResourceKey(disk.Scope)); } catch (ArgumentException) { continue; }
+        }
         return resources.Order(StringComparer.Ordinal).ToArray();
     }
     private bool IsApplicable(MonitoringRuleDto rule, MonitoringConfigurationSnapshot config, ImmutableArray<Guid> eligible) =>

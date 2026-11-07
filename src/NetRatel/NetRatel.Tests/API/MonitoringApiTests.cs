@@ -108,6 +108,36 @@ public sealed class MonitoringApiTests
     }
 
     [Fact]
+    public async Task DiskPreviewUsesCachedPerResourcePolicyWithFreshnessUnclassifiedAndTruncation()
+    {
+        var fixture = new Fixture();
+        var client = new ClientKey(7, fixture.AgentId); var at = fixture.Clock.GetUtcNow();
+        var package = new TelemetryDiskMetadataDto("squashfs", "/dev/loop7", "/", new string('A', 64), true, "package-image");
+        fixture.Telemetry.Snapshot = new(client, 1, 1, at, at, null, null,
+            [new("/snap/core/42", 1, 1, 0, 100, 100, 0, Guid.NewGuid(), at, TelemetryDiskCollectionQuality.Complete, package),
+             new("/data", 1, 0.8, 0.2, 80, 100, 20, Guid.NewGuid(), at.AddMinutes(-5), TelemetryDiskCollectionQuality.Complete),
+             new("/backup", 1, 0.5, 0.5, 50, 100, 50, Guid.NewGuid(), at, TelemetryDiskCollectionQuality.Complete)],
+            [], null, IsAuthoritative: true, DiskInventoryTruncated: true);
+        var condition = new MonitoringConditionDto(MonitoringMetricKind.DiskFreePercent, MonitoringNumericUnit.Percent, 10, 15, null, null, [],
+            new(["/*"], ["/backup"], [], []));
+        var preview = await fixture.Api.PreviewTargetsAsync(7, new(fixture.Rule.Targets, condition), User, default);
+        var details = Assert.Single(preview.Details);
+        Assert.True(details.DiskInventoryTruncated);
+        Assert.Equal(3, details.Disks.Length);
+        foreach (var disk in details.Disks)
+        {
+            var expected = MonitoringDiskPolicy.Select(disk.Mount, disk.Metadata, condition);
+            Assert.Equal(expected.Eligible, disk.Eligible); Assert.Equal(expected.Reason, disk.Reason);
+        }
+        Assert.True(details.Disks.Single(disk => disk.Mount == "/snap/core/42").Eligible);
+        Assert.False(details.Disks.Single(disk => disk.Mount == "/backup").Eligible);
+        Assert.False(details.Disks.Single(disk => disk.Mount == "/data").Fresh);
+        Assert.False(details.Disks.Single(disk => disk.Mount == "/data").Classified);
+        Assert.Equal(0, fixture.Services.Collections);
+        Assert.Equal(0, fixture.Config.Writes);
+    }
+
+    [Fact]
     public async Task OmittedOptionalImmutableCollectionsAreInitializedBeforePersistenceAndActualHttpSerialization()
     {
         var fixture = new Fixture();
@@ -468,6 +498,7 @@ public sealed class MonitoringApiTests
         public ConfigStore Config { get; } = new();
         public Runtime Runtime { get; } = new();
         public ServicesRouter Services { get; } = new();
+        public TelemetryRouter Telemetry { get; } = new();
         public Sessions Sessions { get; } = new();
         public MonitoringApiService Api { get; }
         public MonitoringServiceWatchPolicySource Source { get; }
@@ -489,7 +520,7 @@ public sealed class MonitoringApiTests
             Source = new(Config, directory, Services, Clock);
             Reconciler = new MonitoringWatchPolicyReconciler(Source, Services, directory, Sessions, Clock, NullLogger<MonitoringWatchPolicyReconciler>.Instance);
             Api = new(Authority, Access, new TenantCatalog(), Config, Runtime, directory, new AgentDirectory(AgentIds, clientDisplayName),
-                Flows, Services, new TelemetryRouter(), Sessions, Reconciler, Clock, NullLogger<MonitoringApiService>.Instance);
+                Flows, Services, Telemetry, Sessions, Reconciler, Clock, NullLogger<MonitoringApiService>.Instance);
         }
     }
 
@@ -604,7 +635,8 @@ public sealed class MonitoringApiTests
     }
     private sealed class TelemetryRouter : IClientTelemetryRouter
     {
-        public Task<ClientTelemetryState> GetSnapshotAsync(ClientKey client, CancellationToken ct) => Task.FromResult(new ClientTelemetryState(client, null));
+        public TelemetrySnapshot? Snapshot { get; set; }
+        public Task<ClientTelemetryState> GetSnapshotAsync(ClientKey client, CancellationToken ct) => Task.FromResult(new ClientTelemetryState(client, Snapshot));
         public Task<TelemetryMessageResult> RecordAsync(RecordTelemetrySnapshot message, CancellationToken ct) => throw new NotSupportedException();
         public Task<ClientTelemetryReadModelSnapshot> GetReadModelAsync(CancellationToken ct) => throw new NotSupportedException();
         public Task<ClientTelemetryRouteStatus> ProbeAsync(CancellationToken ct) => throw new NotSupportedException();

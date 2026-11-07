@@ -23,6 +23,10 @@ public sealed class MonitoringRuleDraft
     public double BreachThreshold { get; set; } = 90;
     public double RecoveryThreshold { get; set; } = 80;
     public string ResourceName { get; set; } = "";
+    public string DiskIncludeMounts { get; set; } = "";
+    public string DiskExcludeMounts { get; set; } = "";
+    public string DiskIncludeFileSystems { get; set; } = "";
+    public string DiskExcludeFileSystems { get; set; } = "";
     public ClientServicePlatform Platform { get; set; } = ClientServicePlatform.Windows;
     public HashSet<ClientServiceState> ExpectedStates { get; set; } = [ClientServiceState.Running];
     public int BreachHoldSeconds { get; set; } = 60;
@@ -46,6 +50,11 @@ public sealed class MonitoringRuleDraft
             draft.Metric = rule.Condition.Kind; draft.Unit = rule.Condition.Unit ?? MonitoringNumericUnit.Percent;
             draft.BreachThreshold = rule.Condition.BreachThreshold ?? 0; draft.RecoveryThreshold = rule.Condition.RecoveryThreshold ?? 0;
             draft.ResourceName = rule.Condition.ResourceName ?? ""; draft.Platform = rule.Condition.ServicePlatform ?? ClientServicePlatform.Windows;
+            if (rule.Condition.DiskPolicy is { } policy)
+            {
+                draft.DiskIncludeMounts = Lines(policy.IncludeMounts); draft.DiskExcludeMounts = Lines(policy.ExcludeMounts);
+                draft.DiskIncludeFileSystems = Lines(policy.IncludeFileSystems); draft.DiskExcludeFileSystems = Lines(policy.ExcludeFileSystems);
+            }
             draft.ExpectedStates = rule.Condition.ExpectedServiceStates.IsDefault ? [] : rule.Condition.ExpectedServiceStates.ToHashSet();
             draft.BreachHoldSeconds = (int)rule.BreachHold.TotalSeconds; draft.RecoveryHoldSeconds = (int)rule.RecoveryHold.TotalSeconds;
             draft.FreshnessSeconds = (int)rule.FreshnessBudget.TotalSeconds; draft.PublishedFlowVersionId = rule.PublishedFlowVersionId;
@@ -79,7 +88,8 @@ public sealed class MonitoringRuleDraft
         var condition = Metric == MonitoringMetricKind.ServiceExpectedState
             ? new MonitoringConditionDto(Metric, null, null, null, ResourceName.Trim(), Platform, ExpectedStates.Order().ToImmutableArray())
             : new MonitoringConditionDto(Metric, Unit, BreachThreshold, RecoveryThreshold,
-                Metric == MonitoringMetricKind.CpuUsagePercent || string.IsNullOrWhiteSpace(ResourceName) ? null : ResourceName.Trim(), null, []);
+                Metric == MonitoringMetricKind.CpuUsagePercent || string.IsNullOrWhiteSpace(ResourceName) ? null : ResourceName.Trim(), null, [],
+                Metric == MonitoringMetricKind.CpuUsagePercent ? null : BuildDiskPolicy());
         var candidate = new MonitoringRuleDto(tenantId, RuleId, (Original?.Revision ?? 0) + 1, Original?.EvaluationRevision ?? 1,
             Name.Trim(), Enabled, Severity, targets, condition, TimeSpan.FromSeconds(BreachHoldSeconds), TimeSpan.FromSeconds(RecoveryHoldSeconds),
             TimeSpan.FromSeconds(FreshnessSeconds), PublishedFlowVersionId,
@@ -102,6 +112,8 @@ public sealed class MonitoringRuleDraft
         if (!permissions.CanManage || permissions.TenantId != tenantId) return "You do not have permission to manage these rules.";
         if (string.IsNullOrWhiteSpace(Name) || Name.Trim().Length > MonitoringLimits.MaximumNameLength)
             return Invalid(nameof(Name), "Enter a rule name (up to 128 characters).", out field);
+        if (!MonitoringDiskPolicy.TryValidate(RawDiskPolicy(), out _))
+            return Invalid(nameof(DiskIncludeMounts), "Use at most 32 disk policy patterns, each up to 256 characters, without control characters.", out field);
         var rule = Build(tenantId);
         if (TargetMode == MonitoringTargetMode.AllEligible && !permissions.CanTargetAll)
             return Invalid(nameof(TargetMode), "All eligible clients requires tenant-wide target permission.", out field);
@@ -131,6 +143,15 @@ public sealed class MonitoringRuleDraft
 
     private static bool ValidForDefinition(MonitoringRuleDto rule) => MonitoringContractValidator.TryValidateRule(
         rule with { PublishedFlowVersionId = null, ExecutionPrincipalId = null, ExecutionCredentialId = null }, out _);
+    private static string Lines(ImmutableArray<string> values) => values.IsDefault ? "" : string.Join("\n", values);
+    private static ImmutableArray<string> Patterns(string value) => value.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToImmutableArray();
+    private MonitoringDiskPolicyDto RawDiskPolicy() => new(Patterns(DiskIncludeMounts), Patterns(DiskExcludeMounts), Patterns(DiskIncludeFileSystems), Patterns(DiskExcludeFileSystems));
+    private MonitoringDiskPolicyDto? BuildDiskPolicy()
+    {
+        var policy = RawDiskPolicy();
+        // Keep validation messages in Validate; invalid drafts must still be renderable.
+        return MonitoringDiskPolicy.TryValidate(policy, out _) ? MonitoringDiskPolicy.Normalize(policy) : policy;
+    }
     private string Signature() => JsonSerializer.Serialize(new { Name, Enabled, Severity, TargetMode, Agents = AgentIds.Order(), Groups = GroupIds.Order(), Metric, Unit,
-        BreachThreshold, RecoveryThreshold, ResourceName, Platform, States = ExpectedStates.Order(), BreachHoldSeconds, RecoveryHoldSeconds, FreshnessSeconds, PublishedFlowVersionId, AlertIfOffline, OfflineGraceSeconds });
+        BreachThreshold, RecoveryThreshold, ResourceName, DiskIncludeMounts, DiskExcludeMounts, DiskIncludeFileSystems, DiskExcludeFileSystems, Platform, States = ExpectedStates.Order(), BreachHoldSeconds, RecoveryHoldSeconds, FreshnessSeconds, PublishedFlowVersionId, AlertIfOffline, OfflineGraceSeconds });
 }

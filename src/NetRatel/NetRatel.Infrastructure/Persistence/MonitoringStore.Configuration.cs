@@ -27,7 +27,7 @@ public sealed partial class MonitoringStore
         return MutateConfigurationAsync(request.Rule.TenantId, request.ExpectedConfigurationRevision, request.OperatorId, request.Reason, "rule", request.Rule.RuleId, "save_rule",
             async (db, before, eligible, ct) =>
             {
-                var rule = request.Rule;
+                var rule = request.Rule with { Condition = request.Rule.Condition with { DiskPolicy = MonitoringDiskPolicy.Normalize(request.Rule.Condition.DiskPolicy) } };
                 ValidateTargets(rule, before.Groups, eligible);
                 if (rule.PublishedFlowVersionId is { } flow && !await publishedFlows.IsPublishedAsync(rule.TenantId, flow, ct).ConfigureAwait(false))
                     throw new ArgumentException("published_flow_unavailable");
