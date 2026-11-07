@@ -569,7 +569,7 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
                 disks.Add(disk);
             }
             catch (Exception exception)
-            { log($"Telemetry shadow disk sample skipped for '{drive.Name}': {exception.Message}"); }
+            { _diskInventoryTruncated = true; log($"Telemetry shadow disk sample skipped for '{drive.Name}': {exception.Message}"); }
         }
         var selected = PrioritizeDisks(disks);
         _diskInventoryTruncated |= selected.Count < disks.Count;

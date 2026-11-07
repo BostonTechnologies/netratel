@@ -73,7 +73,7 @@ public sealed class MonitoringTargetPickerTests : AsyncBunitContext
         cut.Find("[data-testid='monitoring-disk-preview']").Click();
         cut.WaitForAssertion(() => Assert.Contains("package-image", cut.Find("[data-testid='monitoring-disk-preview-results']").TextContent));
         Assert.Equal(new[] { "/snap/*" }, api.Request!.Condition!.DiskPolicy!.ExcludeMounts);
-        Assert.Contains("Unclassified: client upgrade required", cut.Markup);
+        Assert.Contains("Unclassified: mount metadata unavailable", cut.Markup);
         Assert.Contains("Inventory truncated", cut.Markup);
         Assert.Equal(0, api.Saves);
         var original = draft.Build(1) with { Revision = 1, EvaluationRevision = 1 };

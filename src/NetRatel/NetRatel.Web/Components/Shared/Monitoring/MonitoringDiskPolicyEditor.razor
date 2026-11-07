@@ -7,10 +7,10 @@
 <fieldset class="monitoring-disk-policy" data-testid="monitoring-disk-policy">
     <legend>Disk resource policy</legend>
     <p>Defaults exclude known package images, pseudo filesystems and proven duplicate capacity views. Exact volume and this policy apply together.</p>
-    <label>Include mount/path patterns<textarea rows="2" @bind="Draft.DiskIncludeMounts" @bind:event="oninput" aria-label="Include mount/path patterns"></textarea></label>
-    <label>Exclude mount/path patterns<textarea rows="2" @bind="Draft.DiskExcludeMounts" @bind:event="oninput" aria-label="Exclude mount/path patterns"></textarea></label>
-    <label>Include filesystem patterns<textarea rows="2" @bind="Draft.DiskIncludeFileSystems" @bind:event="oninput" aria-label="Include filesystem patterns"></textarea></label>
-    <label>Exclude filesystem patterns<textarea rows="2" @bind="Draft.DiskExcludeFileSystems" @bind:event="oninput" aria-label="Exclude filesystem patterns"></textarea></label>
+    <label>Include mount/path patterns<textarea rows="2" @bind="Draft.DiskIncludeMounts" @bind:event="oninput" @bind:after="PolicyChanged" aria-label="Include mount/path patterns"></textarea></label>
+    <label>Exclude mount/path patterns<textarea rows="2" @bind="Draft.DiskExcludeMounts" @bind:event="oninput" @bind:after="PolicyChanged" aria-label="Exclude mount/path patterns"></textarea></label>
+    <label>Include filesystem patterns<textarea rows="2" @bind="Draft.DiskIncludeFileSystems" @bind:event="oninput" @bind:after="PolicyChanged" aria-label="Include filesystem patterns"></textarea></label>
+    <label>Exclude filesystem patterns<textarea rows="2" @bind="Draft.DiskExcludeFileSystems" @bind:event="oninput" @bind:after="PolicyChanged" aria-label="Exclude filesystem patterns"></textarea></label>
     <small>One whole-string pattern per line; * matches any text and ? one character. Linux paths are case-sensitive. Excludes win; explicit includes override defaults. Maximum 32 patterns, 256 characters each.</small>
     <button type="button" class="monitoring-button" disabled="@_loading" @onclick="Preview" data-testid="monitoring-disk-preview">Preview cached disk resources</button>
     @if (_error is not null) { <p role="alert">@_error</p> }
@@ -26,7 +26,7 @@
             else
             {
                 <ul>@foreach (var disk in client.Disks)
-                { <li><strong>@disk.Mount</strong> · @(disk.Reason == "unclassified-policy" ? "Unconfirmed" : disk.Eligible ? "Eligible" : "Excluded") · @disk.Reason · @(disk.Classified ? disk.Metadata?.FileSystem : "Unclassified: client upgrade required") · @(disk.Fresh ? "Fresh" : "Stale or unproven")<span> · collected @(disk.CollectedAtUtc?.ToString("u") ?? "unknown")</span></li> }</ul>
+                { <li><strong>@disk.Mount</strong> · @(disk.Reason == "unclassified-policy" ? "Unconfirmed" : disk.Eligible ? "Eligible" : "Excluded") · @disk.Reason · @(disk.Classified ? disk.Metadata?.FileSystem : "Unclassified: mount metadata unavailable") · @(disk.Fresh ? "Fresh" : "Stale or unproven")<span> · collected @(disk.CollectedAtUtc?.ToString("u") ?? "unknown")</span></li> }</ul>
             }
             @if (client.DiskInventoryTruncated) { <p>Inventory truncated; additional resources may exist.</p> }
         }
@@ -44,11 +44,20 @@
     private long _generation;
     private CancellationTokenSource? _read;
 
+    private void PolicyChanged()
+    {
+        ++_generation; _read?.Cancel(); _preview = null; _error = null; _loading = false;
+    }
+    private string Signature()
+    {
+        var rule = Draft.Build(TenantId);
+        return System.Text.Json.JsonSerializer.Serialize(new { rule.Targets, rule.Condition, rule.FreshnessBudget });
+    }
     private async Task Preview()
     {
         _read?.Cancel(); _read?.Dispose(); _read = new();
         var generation = ++_generation; var token = _read.Token; var tenant = TenantId;
-        var rule = Draft.Build(tenant);
+        var rule = Draft.Build(tenant); var signature = Signature();
         if (!MonitoringDiskPolicy.TryValidate(rule.Condition.DiskPolicy, out _) ||
             !MonitoringContractValidator.TryValidateTargets(rule.Targets, out _))
         { _error = "Select valid target clients/groups and at most 32 valid disk patterns before previewing."; return; }
@@ -56,7 +65,11 @@
         try
         {
             var preview = await Api.PreviewTargetsAsync(tenant, new(rule.Targets, rule.Condition, rule.FreshnessBudget), token);
-            if (!_disposed && tenant == TenantId && generation == _generation) _preview = preview;
+            if (!_disposed && tenant == TenantId && generation == _generation)
+            {
+                if (signature == Signature()) _preview = preview;
+                else _error = "The target or resource policy changed while loading. Preview again to see current matches.";
+            }
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
         catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException or ArgumentException)
