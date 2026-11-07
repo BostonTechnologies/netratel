@@ -29,6 +29,7 @@ public sealed record MonitoringQueryDto(int TenantId, MonitoringView View = Moni
 public static class MonitoringQueryLimits
 {
     public const int MaximumTextLength = 256;
+    public const int MaximumPageIdentityBytes = 512 * 1024;
     // Binary v1: magic(4), version(1), kind(1), tenant(4), normalized-query SHA256(32),
     // rule(16), agent(16), resource UTF16 length(2), all 512 UTF16 code units(1024).
     // Raw UTF16 preserves escaped and Unicode keys exactly, with no JSON escaping expansion.

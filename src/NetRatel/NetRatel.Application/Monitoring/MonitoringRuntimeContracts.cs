@@ -67,6 +67,10 @@ public interface IMonitoringStore
     Task<ImmutableArray<MonitoringSeriesState>> LoadClientAsync(ClientKey client, CancellationToken cancellationToken);
     Task<MonitoringSeriesPageDto> ReadTenantSeriesAsync(int tenantId, int maximumCount, string? cursor, CancellationToken cancellationToken);
     Task<MonitoringEventPageDto> ReadTenantEventsAsync(int tenantId, int maximumCount, string? cursor, CancellationToken cancellationToken);
+    Task<MonitoringSeriesPageDto> ReadTenantSeriesAsync(MonitoringQueryDto query, string? cursor, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("monitoring_query_not_supported");
+    Task<MonitoringEventPageDto> ReadTenantEventsAsync(MonitoringQueryDto query, string? cursor, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("monitoring_query_not_supported");
     Task<MonitoringSummaryDto> ReadTenantSummaryAsync(int tenantId, CancellationToken cancellationToken);
     Task<MonitoringStoreWriteResult> CommitAsync(MonitoringCommitRequest request, CancellationToken cancellationToken);
     Task<MonitoringStoreWriteResult> OperateOccurrenceAsync(MonitoringOperatorCommand command, bool clear, CancellationToken cancellationToken);
@@ -97,6 +101,10 @@ public interface IMonitoringRuntime
     Task<ImmutableArray<MonitoringSeriesState>> GetClientAsync(ClientKey client, CancellationToken cancellationToken);
     Task<MonitoringSeriesPageDto> ReadTenantAsync(int tenantId, int maximumCount, string? cursor, CancellationToken cancellationToken);
     Task<MonitoringEventPageDto> ReadTenantEventsAsync(int tenantId, int maximumCount, string? cursor, CancellationToken cancellationToken);
+    Task<MonitoringSeriesPageDto> ReadTenantAsync(MonitoringQueryDto query, string? cursor, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("monitoring_query_not_supported");
+    Task<MonitoringEventPageDto> ReadTenantEventsAsync(MonitoringQueryDto query, string? cursor, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("monitoring_query_not_supported");
     Task<MonitoringSummaryDto> ReadTenantSummaryAsync(int tenantId, CancellationToken cancellationToken);
     Task<MonitoringStoreWriteResult> AcknowledgeAsync(MonitoringOperatorCommand command, CancellationToken cancellationToken);
     Task<MonitoringStoreWriteResult> ClearAsync(MonitoringOperatorCommand command, CancellationToken cancellationToken);

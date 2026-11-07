@@ -204,6 +204,8 @@ public sealed partial class MonitoringStore
     private async Task ApplyEvaluationAsync(OrchestratorDbContext db, MonitoringEvaluationResult result, ulong configRevision, CancellationToken ct)
     {
         var state = result.State;
+        if (MonitoringOfflinePresentation.IsSeries(state.Series))
+            result = result with { Events = result.Events.Select(item => item with { OfflineAgentIds = state.OfflineAgentIds }).ToImmutableArray() };
         var now = timeProvider.GetUtcNow();
         await EnforceHistoryCapacityAsync(db, state.Series.TenantId, result.Events.Length, result.Audits.Length, result.Outbox.Length, ct).ConfigureAwait(false);
         var row = db.MonitoringSeries.Local.SingleOrDefault(item => item.TenantId == state.Series.TenantId && item.RuleId == state.Series.RuleId && item.AgentId == state.Series.AgentId && item.ResourceKey == state.Series.ResourceKey)

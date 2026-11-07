@@ -37,12 +37,38 @@ public sealed class ManagedOperationsMcpTests
     }
 
     [Theory]
+    [InlineData(NetRatelMcpTransport.StreamableHttp)]
+    [InlineData(NetRatelMcpTransport.Stdio)]
+    public async Task Monitoring_query_and_long_cursor_keep_the_shared_contract_across_transports(NetRatelMcpTransport transport)
+    {
+        var client = new RecordingClient();
+        var tools = Tools(client, transport);
+        var cursor = new string('A', MonitoringQueryLimits.MaximumCursorLength);
+        var request = JsonSerializer.SerializeToElement(new { tenantId = 7, limit = 100, cursor, view = "Firing",
+            clientId = Guid.NewGuid(), severity = "Warning", text = "backup", fromUtc = "2026-11-01T00:00:00Z", toExclusiveUtc = "2026-11-08T00:00:00Z" });
+        (await tools.netratel_monitoring("series", request)).Success.Should().BeTrue();
+        client.Calls.Single().Body!["request"]!["cursor"]!.GetValue<string>().Should().Be(cursor);
+        var schema = NetRatelMcpToolDefinitions.CreateForHttp("prod").Single(tool => tool.ProtocolTool.Name == "netratel_monitoring")
+            .ProtocolTool.InputSchema.GetProperty("oneOf").EnumerateArray()
+            .Single(operation => operation.GetProperty("properties").GetProperty("operation").GetProperty("const").GetString() == "series")
+            .GetProperty("properties").GetProperty("request").GetProperty("properties");
+        schema.GetProperty("cursor").GetProperty("maxLength").GetInt32().Should().Be(MonitoringQueryLimits.MaximumCursorLength);
+        schema.GetProperty("view").GetProperty("enum").EnumerateArray().Select(item => item.GetString()).Should().Contain("All").And.Contain("Firing");
+        var invalid = JsonSerializer.SerializeToElement(new { tenantId = 7, cursor = cursor + "A" });
+        ManagedOperationCatalog.TryValidate(ManagedOperationCatalog.Find("netratel_monitoring", "series")!, invalid, out _).Should().BeFalse();
+    }
+
+    [Theory]
     [InlineData("{\"tenantId\":\"7\"}")]
     [InlineData("{\"tenantId\":null}")]
     [InlineData("{\"tenantId\":7,\"tenantId\":8}")]
     [InlineData("{\"tenantId\":7,\"limit\":\"50\"}")]
     [InlineData("{\"tenantId\":7,\"limit\":101}")]
     [InlineData("{\"tenantId\":7,\"operatorId\":\"admin\"}")]
+    [InlineData("{\"tenantId\":7,\"view\":\"invalid\"}")]
+    [InlineData("{\"tenantId\":7,\"severity\":17}")]
+    [InlineData("{\"tenantId\":7,\"clientId\":\"not-a-client\"}")]
+    [InlineData("{\"tenantId\":7,\"fromUtc\":\"2026-11-08T00:00:00Z\",\"toExclusiveUtc\":\"2026-11-01T00:00:00Z\"}")]
     public void Invalid_or_impersonating_request_shapes_fail_without_throwing(string json)
     {
         using var request = JsonDocument.Parse(json);

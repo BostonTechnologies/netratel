@@ -110,7 +110,8 @@ public sealed record MonitoringEventIntent(
     Guid EventId, MonitoringEventKind Kind, MonitoringSeriesKey Series, Guid OccurrenceId,
     DateTimeOffset AtUtc, MonitoringRuleDto PinnedRule, MonitoringEvidenceDto Evidence,
     MonitoringClosureDisposition? ClosureDisposition = null, string? Reason = null, Guid? OperatorId = null,
-    string? OperatorDisplayName = null, MonitoringClientIdentityDto? ClientIdentity = null);
+    string? OperatorDisplayName = null, MonitoringClientIdentityDto? ClientIdentity = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] ImmutableArray<Guid> OfflineAgentIds = default);
 
 /// <summary>Persist this exact intent with state+event; dispatch later rechecks current authorization/suppression.</summary>
 public sealed record MonitoringOutboxIntent(

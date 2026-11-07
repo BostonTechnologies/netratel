@@ -30,10 +30,16 @@ public static class MonitoringEndpoints
             ExecuteAsync(() => service.GetConfigurationAsync(tenantId, http.User, ct))).RequireAuthorization(MonitoringAuthorization.ReadPolicy);
         group.MapGet("/summary", (int tenantId, HttpContext http, MonitoringApiService service, CancellationToken ct) =>
             ExecuteAsync(() => service.GetSummaryAsync(tenantId, http.User, ct))).RequireAuthorization(MonitoringAuthorization.ReadPolicy);
-        group.MapGet("/series", (int tenantId, HttpContext http, MonitoringApiService service, int? maximumCount, string? cursor, CancellationToken ct) =>
-            ExecuteAsync(() => service.GetSeriesAsync(tenantId, maximumCount ?? 50, cursor, http.User, ct))).RequireAuthorization(MonitoringAuthorization.ReadPolicy);
-        group.MapGet("/events", (int tenantId, HttpContext http, MonitoringApiService service, int? maximumCount, string? cursor, CancellationToken ct) =>
-            ExecuteAsync(() => service.GetEventsAsync(tenantId, maximumCount ?? 50, cursor, http.User, ct))).RequireAuthorization(MonitoringAuthorization.ReadPolicy);
+        group.MapGet("/series", (int tenantId, HttpContext http, MonitoringApiService service, int? maximumCount, string? cursor,
+            MonitoringView? view, Guid? clientId, MonitoringSeverity? severity, string? text, DateTimeOffset? fromUtc,
+            DateTimeOffset? toExclusiveUtc, MonitoringSort? sort, CancellationToken ct) =>
+            ExecuteAsync(() => service.GetSeriesAsync(new MonitoringQueryDto(tenantId, view ?? MonitoringView.All, clientId, severity,
+                text, fromUtc, toExclusiveUtc, sort, maximumCount ?? 50), cursor, http.User, ct))).RequireAuthorization(MonitoringAuthorization.ReadPolicy);
+        group.MapGet("/events", (int tenantId, HttpContext http, MonitoringApiService service, int? maximumCount, string? cursor,
+            MonitoringView? view, Guid? clientId, MonitoringSeverity? severity, string? text, DateTimeOffset? fromUtc,
+            DateTimeOffset? toExclusiveUtc, MonitoringSort? sort, CancellationToken ct) =>
+            ExecuteAsync(() => service.GetEventsAsync(new MonitoringQueryDto(tenantId, view ?? MonitoringView.All, clientId, severity,
+                text, fromUtc, toExclusiveUtc, sort, maximumCount ?? 50), cursor, http.User, ct))).RequireAuthorization(MonitoringAuthorization.ReadPolicy);
         group.MapGet("/published-flows", (int tenantId, HttpContext http, MonitoringApiService service, CancellationToken ct) =>
             ExecuteAsync(() => service.GetPublishedFlowsAsync(tenantId, http.User, ct))).RequireAuthorization(MonitoringAuthorization.ReadOrManagePolicy);
         group.MapGet("/clients", (int tenantId, HttpContext http, MonitoringApiService service, int? maximumCount, string? cursor, string? search, CancellationToken ct) =>
@@ -71,6 +77,8 @@ public static class MonitoringEndpoints
         catch (MonitoringApiException exception) { return Results.Problem(statusCode: exception.StatusCode, title: exception.Code); }
         catch (ArgumentException exception) when (CapacityErrors.Contains(exception.Message)) { return Results.Problem(statusCode: StatusCodes.Status413PayloadTooLarge, title: exception.Message); }
         catch (InvalidOperationException exception) when (CapacityErrors.Contains(exception.Message)) { return Results.Problem(statusCode: StatusCodes.Status413PayloadTooLarge, title: exception.Message); }
+        catch (ArgumentException exception) when (exception.Message is "monitoring_cursor_restart_required" or "monitoring_cursor_context_mismatch" or "invalid_monitoring_cursor")
+        { return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: exception.Message); }
         catch (ArgumentException) { return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "invalid_monitoring_request"); }
         catch (UnauthorizedAccessException) { return Results.Problem(statusCode: StatusCodes.Status403Forbidden, title: "monitoring_target_authority_required"); }
         catch (InvalidOperationException) { return Results.Problem(statusCode: StatusCodes.Status503ServiceUnavailable, title: "monitoring_unavailable"); }

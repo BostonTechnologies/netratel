@@ -76,3 +76,60 @@ rule, observed/received evidence, automation outcome, and incident/acknowledgeme
 a safe ticket URL. A missing link is shown as missing rather than reconstructed
 from an internal identifier. Flow success remains distinct from confirmed
 incident evidence; unconfirmed and absent results are labelled explicitly.
+
+## Full-result queries and continuation
+
+The series and History endpoints accept one AND-combined query: `view`, `clientId`,
+`severity`, `text`, `fromUtc`, `toExclusiveUtc`, `sort` and `maximumCount`.
+Filters run in PostgreSQL over the authorized tenant before ordering and paging.
+Omitting filters preserves the API's existing series view, including Healthy records.
+The Web page requests its selected Active/Firing view explicitly. Tenant summary
+badges remain tenant totals; `matchingCount` is the count for the complete selected
+query, independently of the returned page and its continuation.
+
+Series `view` supports All, Active, Firing, Pending, Unknown, Acknowledged,
+Suppressed and Offline. Firing is an occurrence lifecycle: Unknown/stale evidence
+cannot remove an unresolved Firing occurrence from that selection. Unknown uses
+both observed and received times, rejects future times and applies the current
+rule's freshness budget (one minute for offline summaries). A client selection
+also matches an offline aggregate containing that client. Severity uses the pinned
+occurrence rule when one exists, otherwise the current rule. Text searches current
+friendly computer/directory names, pinned identity, rule and resource text.
+
+For series, date bounds apply to occurrence **Raised date**; rows without a raised
+time do not match an active date bound. History uses immutable **Event/audit time**.
+The lower bound is inclusive and `toExclusiveUtc` is exclusive. Convert a selected
+inclusive end date to the following day's start in the displayed operator timezone
+before converting to UTC; this preserves daylight-saving day boundaries. History
+retains the ordered union of alert events and non-series configuration/bypass
+audits. Client or severity filters exclude audits because those dimensions do
+not apply. Other History filters run before union paging. New offline events pin
+the exact affected member IDs at that event; older summaries lacking these IDs
+cannot match an exact client filter. Historical names and memberships are never
+reconstructed from current inventory.
+
+Series order is rule UUID, client UUID, resource key; History order is event/audit
+time descending, then immutable item UUID descending. Return `nextCursor` unchanged
+with the same tenant, endpoint, filters, sort and page size. Encode it once as a
+URL query value; do not decode/rebuild its content. A byte budget can return fewer
+rows than requested while still returning a continuation. The next cursor always
+identifies the last row actually returned. An invalid continuation is an explicit
+400 error, distinct from a successful empty page. `monitoring_cursor_context_mismatch`
+means restart the changed query; `monitoring_cursor_restart_required` means restart
+pagination after upgrading from a previous cursor version.
+
+The v1 opaque base64url cursor is bounded to **1,468 characters** across API,
+managed-operation admission, CLI and both MCP transports. The maximum binary
+series token is 1,100 bytes: 4-byte magic, version/kind (2), tenant (4), normalized
+query SHA256 (32), rule/client UUIDs (32), resource length (2) and all 512 UTF16
+code units (1,024). Raw UTF16 preserves escaped/Unicode resource keys without JSON
+escaping expansion; base64's rounded-up bound is 1,468. History tokens are smaller
+and use the same bound. Tokens bind version, endpoint kind, tenant and normalized
+query including selected page size. Pre-upgrade pagination must restart; no old
+record or immutable event is rewritten.
+
+The existing 4 MiB response bound and 200-row API maximum remain. A page reserves
+512 KiB for client identity metadata. When a large offline membership exhausts that
+metadata budget, `clientIdentitiesTruncated` is true; the alert, exact member IDs
+and continuation remain intact, with missing directory details shown honestly.
+Use the authorized client directory search for additional identity details.
