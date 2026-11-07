@@ -186,7 +186,7 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
     {
         var normal = result.Items.Select(item => item.Series.AgentId).Where(id => id != Guid.Empty);
         var members = result.Items.SelectMany(item => item.OfflineAgentIds.IsDefault ? [] : item.OfflineAgentIds);
-        var identities = await ReadPageIdentitiesAsync(tenantId, normal.Concat(selectedClient is { } id ? new[] { id } : []).Concat(members), cancellationToken).ConfigureAwait(false);
+        var identities = await ReadPageIdentitiesAsync(tenantId, normal.Concat(selectedClient is { } selectedClientId ? new[] { selectedClientId } : []).Concat(members), cancellationToken).ConfigureAwait(false);
         return Bounded(result with { ClientIdentities = identities.Items, ClientIdentitiesTruncated = identities.Truncated });
     }
 
