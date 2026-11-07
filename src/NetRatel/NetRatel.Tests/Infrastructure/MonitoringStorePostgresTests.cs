@@ -532,6 +532,7 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
                         1 => raised.LatestEvidence! with { ObservedAtUtc = now.AddMinutes(-6) },
                         2 => raised.LatestEvidence! with { ReceivedAtUtc = now.AddMinutes(-6) },
                         3 => raised.LatestEvidence! with { ObservedAtUtc = now.AddMinutes(1) },
+                        4 => raised.LatestEvidence! with { Classification = MonitoringClassification.Unknown },
                         _ => raised.LatestEvidence
                     },
                     Occurrence = healthy ? null : raised.Occurrence! with
@@ -573,7 +574,7 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
         }
         var firing = await rig.Store.ReadTenantSeriesAsync(new(rig.Client.TenantId, MonitoringView.Firing, MaximumCount: 20), null, default);
         firing.Items.Should().Contain(row => row.EvidenceQuality == MonitoringEvidenceQuality.Unknown);
-        (await rig.Store.ReadTenantSeriesAsync(new(rig.Client.TenantId, MonitoringView.Unknown), null, default)).MatchingCount.Should().Be(4,
+        (await rig.Store.ReadTenantSeriesAsync(new(rig.Client.TenantId, MonitoringView.Unknown), null, default)).MatchingCount.Should().Be(5,
             "Unknown includes current observed/received freshness and future timestamps without removing Firing lifecycle matches");
         var textMatch = await rig.Store.ReadTenantSeriesAsync(new(rig.Client.TenantId, Text: "synthetic-backup", MaximumCount: 1), null, default);
         textMatch.MatchingCount.Should().Be(185, "friendly directory names match before paging, including malformed legacy metadata");

@@ -40,6 +40,7 @@ public sealed partial class MonitoringStore
             LEFT JOIN "Agents" a ON a."TenantId"=s."TenantId" AND a."Id"=s."AgentId"
             CROSS JOIN LATERAL (SELECT
                 s."EvidenceQuality"={(short)MonitoringEvidenceQuality.Unknown}
+                OR COALESCE((s."StateJson" #>> ARRAY['LatestEvidence','Classification'])::integer,0)={(int)MonitoringClassification.Unknown}
                 OR s."StateJson" #>> ARRAY['LatestEvidence','ObservedAtUtc'] IS NULL
                 OR s."StateJson" #>> ARRAY['LatestEvidence','ReceivedAtUtc'] IS NULL
                 OR (s."StateJson" #>> ARRAY['LatestEvidence','ObservedAtUtc'])::timestamptz > {now}
