@@ -18,6 +18,8 @@ public static class MonitoringDateRange
             // A few zones advance at midnight. The selected day starts at its first valid local instant.
             for (var minutes = 0; zone.IsInvalidTime(local) && minutes < 24 * 60; minutes++) local = local.AddMinutes(1);
             if (zone.IsInvalidTime(local)) throw new ArgumentException("The selected date is unavailable in this timezone.");
+            // An ambiguous midnight starts with the earlier occurrence, so the entire local day is included.
+            if (zone.IsAmbiguousTime(local)) return new DateTimeOffset(local, zone.GetAmbiguousTimeOffsets(local).Max()).ToUniversalTime();
             return new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(local, zone), TimeSpan.Zero);
         }
         if (end == DateOnly.MaxValue) throw new ArgumentException("Choose a To date before 9999-12-31.");
