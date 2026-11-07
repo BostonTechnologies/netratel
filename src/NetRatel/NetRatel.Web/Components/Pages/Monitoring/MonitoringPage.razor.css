@@ -125,7 +125,13 @@
 .monitoring-filters > summary:focus-visible { outline:2px solid var(--mud-palette-primary); outline-offset:2px; }
 .monitoring-filter-fields { display:grid; gap:.75rem; grid-template-columns:repeat(2,minmax(0,1fr)); position:absolute; right:0; top:100%; width:min(34rem,calc(100vw - 2rem)); padding:1rem; border:1px solid var(--mud-palette-divider); border-radius:6px; background:var(--mud-palette-surface); box-shadow:var(--mud-elevation-6); z-index:4; max-height:70dvh; overflow:auto; }
 .monitoring-filter-fields ::deep .monitoring-client-picker,.monitoring-filter-fields > small { grid-column:1 / -1; }
-@media(max-width:650px) { .monitoring-table { min-width:52rem; } .monitoring-filter-fields { position:fixed; top:5rem; right:.5rem; width:calc(100vw - 1rem); max-height:70dvh; } }
+@media(max-width:650px) {
+    .monitoring-table { min-width:52rem; }
+    /* Keep the disclosure above its mobile fields so it remains clickable at every scroll position. */
+    .monitoring-filters[open] { flex-basis:100%; }
+    .monitoring-filters > summary { width:fit-content; }
+    .monitoring-filter-fields { position:static; width:100%; margin-top:.5rem; max-height:60dvh; }
+}
 @media(max-width:380px) { .monitoring-filter-fields { grid-template-columns:1fr; } }
 
 @media(max-width:650px) { .monitoring-alert-details { width:min(100%,calc(100vw - 3rem)); } }

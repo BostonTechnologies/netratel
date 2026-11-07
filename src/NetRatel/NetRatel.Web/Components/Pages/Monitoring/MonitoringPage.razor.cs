@@ -28,6 +28,16 @@ public partial class MonitoringPage
     private string? _appliedFilters;
     private string? _severity, _fromDate, _toDate, _filterError;
     private int _pageSize = 20;
+    private bool _filtersOpen;
+    private ElementReference _filtersSummary;
+    private void ToggleFilters() => _filtersOpen = !_filtersOpen;
+    private async Task FiltersKey(KeyboardEventArgs args)
+    {
+        if (args.Key != "Escape" || !_filtersOpen) return;
+        _filtersOpen = false;
+        try { await _filtersSummary.FocusAsync(); }
+        catch (JSDisconnectedException) { return; }
+    }
     private readonly HashSet<DisclosureKey> _expanded = [];
     private sealed record DisclosureKey(int TenantId, Guid RuleId, Guid AgentId, string Resource, Guid? OccurrenceId);
     private static DisclosureKey DetailKey(MonitoringSeriesState row) => new(row.Series.TenantId, row.Series.RuleId, row.Series.AgentId, row.Series.ResourceKey, row.Occurrence?.OccurrenceId);
