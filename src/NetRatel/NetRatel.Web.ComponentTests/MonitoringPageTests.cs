@@ -134,9 +134,10 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         _api.ClientSearch = (tenant, _, _, _) => tenant == 2 ? pending.Task : _api.GetClientsAsync(tenant);
         var cut = Render<NetRatel.Web.Components.Shared.Monitoring.MonitoringClientFilter>(parameters => parameters.Add(component => component.TenantId, 1));
         await cut.WaitForAssertionAsync(() => Assert.Contains("SQL Server", cut.Markup));
-        var update = cut.RenderAsync(parameters => parameters.Add(component => component.TenantId, 2));
+        cut.Render(parameters => parameters.Add(component => component.TenantId, 2));
         await cut.WaitForAssertionAsync(() => Assert.DoesNotContain("SQL Server", cut.Markup));
-        pending.SetException(new HttpRequestException("Directory unavailable")); await update;
+        await cut.InvokeAsync(() => pending.SetException(new HttpRequestException("Directory unavailable")));
+        await cut.WaitForAssertionAsync(() => Assert.Contains("Could not search", cut.Markup));
         Assert.DoesNotContain("SQL Server", cut.Markup); Assert.Contains("Could not search", cut.Markup);
     }
 
