@@ -126,6 +126,11 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         await cut.WaitForAssertionAsync(() => Assert.Contains("From must", cut.Find("[data-testid=monitoring-filter-error]").TextContent));
         Assert.Empty(cut.FindAll("[data-testid=monitoring-series-row]")); Assert.Equal(before, calls);
         Assert.Equal("2", cut.Find("[data-testid=monitoring-tenant]").GetAttribute("value"));
+        await cut.Find("[data-testid=monitoring-refresh]").ClickAsync(new());
+        Assert.Equal(before, calls); Assert.Empty(cut.FindAll("[data-testid=monitoring-series-row]"));
+        var invalidInitial = Render<MonitoringPage>();
+        await invalidInitial.WaitForAssertionAsync(() => Assert.NotEmpty(invalidInitial.FindAll("[data-testid=monitoring-filter-error]")));
+        Assert.Equal(before, calls);
     }
     [Fact]
     public async Task DirectoryFailureAfterTenantChangeCannotDisplayPreviousTenantNames()
