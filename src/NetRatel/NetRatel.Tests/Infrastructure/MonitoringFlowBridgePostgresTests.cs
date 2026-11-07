@@ -143,12 +143,19 @@ public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixtu
             var completed = (await rig.Definitions.GetRunByIdAsync(17, admitted.Id, deadline.Token))!;
             completed.Run.Status.Should().Be(FlowRunStatus.Succeeded); completed.Actions.Should().HaveCount(2);
             rig.Dispatcher.Sends.Should().Be(1); rig.Daemon.Sends.Should().Be(1);
-            rig.Dispatcher.LastRequest!.Fields.Description.Should().Contain("Value: 95").And.Contain("AI investigation")
+            rig.Dispatcher.LastRequest!.Fields.Description.Should().Contain("Measured: 95%").And.Contain("AI investigation")
                 .And.Contain("Storage evidence identifies a full volume.").And.Contain($"/ai/ops?tenantId=17&investigation={investigation:D}");
+            rig.Dispatcher.LastRequest.Event.Data!.NumericValue.Should().Be(95);
+            rig.Dispatcher.LastRequest.Event.Data.AgentId.Should().Be(rig.Client.AgentId);
+            rig.Dispatcher.LastRequest.Event.EventId.Should().Be(handoff.Intent.EventId);
+            rig.Dispatcher.LastRequest.Event.OccurrenceId.Should().Be(handoff.Intent.OccurrenceId);
+            rig.Dispatcher.LastRequest.SourceInstanceId.Should().NotBeEmpty();
             var frozen = rig.Dispatcher.LastRequest;
+            var frozenBytes = JsonSerializer.Serialize(frozen);
             await rig.Daemon.EmitAsync("turn_completed"); // Late duplicate completion is from a retired exact turn.
             (await restarted.GetRequiredService<FlowRunProcessor>().ProcessOneAsync(deadline.Token)).Should().BeFalse();
             rig.Dispatcher.LastRequest.Should().Be(frozen); rig.Dispatcher.Sends.Should().Be(1);
+            JsonSerializer.Serialize(rig.Dispatcher.LastRequest).Should().Be(frozenBytes);
         }
         finally { await worker.StopAsync(default); }
 
@@ -236,6 +243,14 @@ public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixtu
     public async Task AdmittedActorRaiseExecutesActualVeloxOnceAndPersistsMatchingIncidentReceipt()
     {
         await using var rig = await Rig.CreateAsync(postgres);
+        await using (var scope = rig.Provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var agent = await db.Agents.SingleAsync();
+            agent.Name = "worker-01"; agent.FriendlyName = "Example worker";
+            agent.DeviceInfoJson = "{\"hostName\":\"worker-01\"}";
+            await db.SaveChangesAsync();
+        }
         var firing = await rig.FireAsync();
         var lease = await rig.ClaimAsync();
         (await rig.Bridge.ProcessLeaseAsync(lease, default)).Should().BeTrue();
@@ -253,7 +268,15 @@ public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixtu
         state.Occurrence.FlowOutcome.Outcome.Should().Be(MonitoringFlowOutcomeKind.Succeeded);
         state.Occurrence.FlowOutcome.Receipt.Should().Be(new MonitoringIncidentReceiptDto("bridge-incident", "bridge-tracking", "https://fixture.example/incidents/bridge"));
         rig.Dispatcher.LastRequest!.Event.Authority.Should().Be(rig.Authority);
-        rig.Dispatcher.LastRequest.Event.Data.ClientName.Should().Be(rig.Client.AgentId.ToString("D"));
+        rig.Dispatcher.LastRequest.Event.Data!.ClientName.Should().Be("Example worker");
+        rig.Dispatcher.LastRequest.Fields.Title.Should().Contain("worker-01").And.NotContain(rig.Client.AgentId.ToString("D"));
+        rig.Dispatcher.LastRequest.Event.Data.AgentId.Should().Be(rig.Client.AgentId);
+        rig.Dispatcher.LastRequest.Event.Data.NumericValue.Should().Be(95);
+        rig.Dispatcher.LastRequest.Event.Data.Presentation.Should().Be(lease.Intent.Presentation);
+        rig.Dispatcher.LastRequest.Event.EventId.Should().Be(lease.Intent.EventId);
+        rig.Dispatcher.LastRequest.Event.OccurrenceId.Should().Be(lease.Intent.OccurrenceId);
+        rig.Dispatcher.LastRequest.SourceInstanceId.Should().NotBeEmpty();
+        rig.Dispatcher.LastRequest.IdempotencyKey.Should().NotBeNullOrEmpty();
         await rig.RecordAsync(4);
         (await rig.Provider.GetRequiredService<FlowRunProcessor>().ProcessOneAsync()).Should().BeFalse();
         await rig.AssertOneEffectAsync();
