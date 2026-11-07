@@ -25,6 +25,8 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
         await page.GetByTestId("monitoring-interactive").WaitForAsync(new() { State = WaitForSelectorState.Attached });
         await Assertions.Expect(page.GetByTestId("monitoring-series-row")).ToHaveCountAsync(20);
         await Assertions.Expect(page.GetByTestId("monitoring-detail-row")).ToHaveCountAsync(0);
+        await Assertions.Expect(page.GetByTestId("monitoring-state-firing")).ToContainTextAsync("150");
+        await Assertions.Expect(page.GetByTestId("monitoring-series-row").First).ToContainTextAsync("Client 260");
         Assert.Equal(20, _api.QueryReads.Last().MaximumCount);
         var disclosure = page.GetByTestId("monitoring-alert-details").First;
         await disclosure.FocusAsync(); await page.Keyboard.PressAsync("Enter");
@@ -543,7 +545,9 @@ internal sealed class FixtureMonitoringApi : IMonitoringApiService
         if (tenantId == 1 && DelayedTenantOne is not null) { DelayedReadToken = token; return DelayedTenantOne.Task; }
         return Task.FromResult(Configuration(tenantId));
     }
-    public Task<MonitoringSummaryDto> GetSummaryAsync(int tenantId, CancellationToken token = default) => Task.FromResult(new MonitoringSummaryDto(tenantId, 2, Active.Occurrence?.EndedAtUtc is null ? 1 : 0, 0, 1, 0, Active.Suppressed ? 1 : 0, DateTimeOffset.UtcNow, Active.Phase == MonitoringPhase.Firing ? 1 : 0));
+    public Task<MonitoringSummaryDto> GetSummaryAsync(int tenantId, CancellationToken token = default) => Task.FromResult(
+        PagingDataset && tenantId == 1 ? new MonitoringSummaryDto(tenantId, 200, 150, 0, 1, 0, 0, DateTimeOffset.UtcNow, 150) :
+        new MonitoringSummaryDto(tenantId, 2, Active.Occurrence?.EndedAtUtc is null ? 1 : 0, 0, 1, 0, Active.Suppressed ? 1 : 0, DateTimeOffset.UtcNow, Active.Phase == MonitoringPhase.Firing ? 1 : 0));
     public Task<MonitoringSeriesPageDto> GetSeriesAsync(int tenantId, string? cursor = null, CancellationToken token = default) => Task.FromResult(new MonitoringSeriesPageDto(tenantId == 1 ? [Active,
         new(new(1, _disk.RuleId, Agent, "disk:/"), 1, 1, MonitoringPhase.Healthy, MonitoringEvidenceQuality.Unknown)] : [], null, tenantId == 1 ? [_estate[0]] : []));
     public async Task<MonitoringSeriesPageDto> GetSeriesAsync(MonitoringQueryDto query, string? cursor = null, CancellationToken token = default)
@@ -575,7 +579,8 @@ internal sealed class FixtureMonitoringApi : IMonitoringApiService
             (query.FromUtc is null || row.Occurrence?.RaisedAtUtc >= query.FromUtc) && (query.ToExclusiveUtc is null || row.Occurrence?.RaisedAtUtc < query.ToExclusiveUtc)).ToArray();
         var offset = cursor is null ? 0 : int.Parse(cursor, System.Globalization.CultureInfo.InvariantCulture);
         var items = rows.Skip(offset).Take(query.MaximumCount).ToImmutableArray();
-        return new(items, offset + items.Length < rows.Length ? (offset + items.Length).ToString() : null, baseline.ClientIdentities);
+        var identities = PagingDataset && query.TenantId == 1 ? _estate.Where(identity => identity.AgentId == PagingAgent).ToImmutableArray() : baseline.ClientIdentities;
+        return new(items, offset + items.Length < rows.Length ? (offset + items.Length).ToString() : null, identities, MatchingCount: rows.LongLength);
     }
     public Task<MonitoringEventPageDto> GetEventsAsync(MonitoringQueryDto query, string? cursor = null, CancellationToken token = default) => GetEventsAsync(query.TenantId, cursor, token);
     public Task<MonitoringEventPageDto> GetEventsAsync(int tenantId, string? cursor = null, CancellationToken token = default) => Task.FromResult(new MonitoringEventPageDto(tenantId == 1 ? _history : [], null, tenantId == 1 ? [_estate[0]] : []));

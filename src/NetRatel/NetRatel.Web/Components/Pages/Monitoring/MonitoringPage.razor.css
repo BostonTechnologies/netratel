@@ -63,7 +63,7 @@
 .monitoring-editor-shell ::deep .monitoring-form { display:flex; flex-direction:column; gap:1rem; }
 .monitoring-editor-body ::deep .monitoring-form { display:flex; flex-direction:column; gap:1rem; }
 .monitoring-conflict-actions { display:flex; gap:.5rem; flex-wrap:wrap; }
-@media(max-width:650px) { .monitoring-table th:first-child,.monitoring-table th:last-child { width:auto; } }
+@media(max-width:650px) { .monitoring-table th:first-child { width:9rem; } .monitoring-table th:last-child { width:auto; } }
 
 .monitoring-client-filter { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem; }
 
