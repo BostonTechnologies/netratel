@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using MudBlazor;
 using MudBlazor.Services;
 using NetRatel.Shared.Contracts.Monitoring;
+using NetRatel.Application.Monitoring;
 using NetRatel.Web.Components.Shared.Monitoring;
 using NetRatel.Web.Services.Monitoring;
 using Xunit;
@@ -59,6 +60,51 @@ public sealed class MonitoringTargetPickerTests : AsyncBunitContext
         var chip = cut.FindComponents<MudChip<Guid>>().Single();
         await cut.InvokeAsync(() => chip.Instance.OnClose.InvokeAsync(chip.Instance));
         Assert.Empty(selected);
+    }
+
+    [Fact]
+    public void DiskPolicyEditorPreviewsCachedResourcesAndPreservesExplicitRuleReset()
+    {
+        var api = new PolicyApi(); Services.AddSingleton<IMonitoringApiService>(api);
+        var draft = MonitoringRuleDraft.Create(); draft.Name = "Disk capacity"; draft.AgentIds.Add(api.Agent);
+        draft.SelectMetric(MonitoringMetricKind.DiskFreePercent);
+        var cut = Render<MonitoringDiskPolicyEditor>(parameters => parameters.Add(component => component.TenantId, 1)
+            .Add(component => component.Draft, draft));
+        cut.Find("textarea[aria-label='Exclude mount/path patterns']").Input("/snap/*");
+        cut.Find("[data-testid='monitoring-disk-preview']").Click();
+        cut.WaitForAssertion(() => Assert.Contains("package-image", cut.Find("[data-testid='monitoring-disk-preview-results']").TextContent));
+        Assert.Equal(new[] { "/snap/*" }, api.Request!.Condition!.DiskPolicy!.ExcludeMounts);
+        Assert.Contains("Unclassified: mount metadata unavailable", cut.Markup);
+        Assert.Contains("Inventory truncated", cut.Markup);
+        Assert.Equal(0, api.Saves);
+        var original = draft.Build(1) with { Revision = 1, EvaluationRevision = 1 };
+        Assert.True(MonitoringContractValidator.TryValidateRule(original, out var definitionError), definitionError);
+        var edited = MonitoringRuleDraft.Create(original); edited.DiskExcludeMounts = "/snap/*\n/cache/*";
+        Assert.Equal(2UL, edited.Build(1).EvaluationRevision);
+        Assert.NotEqual(MonitoringContractValidator.EvaluationFingerprint(original), MonitoringContractValidator.EvaluationFingerprint(edited.Build(1)));
+        var permissions = new MonitoringPermissionsDto(1, true, true, true, true, true, true);
+        edited.Reason = "Exclude cached package resources";
+        Assert.NotNull(edited.Validate(1, permissions, [], out var invalidField));
+        Assert.Equal(nameof(MonitoringRuleDraft.ResetConfirmed), invalidField);
+        edited.ResetConfirmed = true;
+        Assert.Null(edited.Validate(1, permissions, []));
+    }
+
+    private sealed class PolicyApi : MonitoringTestApi, IMonitoringApiService
+    {
+        public Guid Agent { get; } = Guid.NewGuid();
+        public MonitoringTargetPreviewRequest? Request { get; private set; }
+        public int Saves { get; private set; }
+        public Task<MonitoringTargetPreviewDto> PreviewTargetsAsync(int tenantId, MonitoringTargetPreviewRequest request, CancellationToken token = default)
+        {
+            Request = request;
+            return Task.FromResult(new MonitoringTargetPreviewDto([Agent], 1,
+                [new(Agent, "Backup host", MonitoringTargetSupport.Supported, "cached", Disks:
+                    [new("/snap/core/42", false, "package-image", true, true, DateTimeOffset.UtcNow),
+                     new("/backup", true, "unclassified-legacy", false, false, null)], DiskInventoryTruncated: true)], 1));
+        }
+        public Task<MonitoringConfigurationDto> SaveRuleAsync(int tenantId, MonitoringRuleWriteDto request, CancellationToken token = default)
+        { Saves++; throw new InvalidOperationException("Preview must not save rules."); }
     }
 
     private sealed class PickerApi : MonitoringTestApi, IMonitoringApiService

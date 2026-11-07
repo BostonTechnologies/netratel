@@ -76,6 +76,61 @@ public sealed class MonitoringPageStateTests
         Assert.Contains("Permission", state.Error);
     }
     [Fact]
+    public async Task PagesKeepTheQueryAndUseActualReturnedCountForPreviousAndSizeResets()
+    {
+        var api = new MonitoringTestApi(); var calls = new List<(MonitoringQueryDto Query, string? Cursor)>();
+        var draft = MonitoringRuleDraft.Create(); draft.Name = "Backup capacity"; var rule = draft.Build(1);
+        var now = DateTimeOffset.UtcNow;
+        var evidence = new MonitoringEvidenceDto(new(1, 1), Guid.NewGuid(), now, now, MonitoringEvidenceQuality.Unknown, MonitoringClassification.Unknown, null, 0, null);
+        var row = new MonitoringSeriesState(new(1, rule.RuleId, Guid.NewGuid(), "disk:/backup"), 1, 1, MonitoringPhase.Firing, MonitoringEvidenceQuality.Unknown,
+            Occurrence: new(Guid.NewGuid(), Guid.NewGuid(), now, now, rule, evidence, MonitoringFlowDispatchDisposition.NoFlowSelected));
+        api.QuerySeriesRead = (query, cursor, _) =>
+        {
+            calls.Add((query, cursor));
+            return Task.FromResult(new MonitoringSeriesPageDto(Enumerable.Repeat(row, cursor == "seven" ? 3 : 7).ToImmutableArray(), cursor is null ? "seven" : null));
+        };
+        using var state = new MonitoringPageState(api)
+        {
+            Query = new(1, MonitoringView.Firing, row.Series.AgentId, MonitoringSeverity.Warning, "backup", now.AddDays(-1), now.AddDays(1), MaximumCount: 20)
+        };
+        await state.SelectTenantAsync(1);
+        Assert.Equal("1–7 matching items · more available", state.SeriesPager.Range(7, true));
+        await state.NextSeriesPageAsync("seven");
+        Assert.Equal(7, state.SeriesPager.Offset); Assert.True(state.SeriesPager.CanPrevious);
+        await state.PreviousSeriesPageAsync(); Assert.Equal(0, state.SeriesPager.Offset);
+        Assert.All(calls, call => { Assert.Equal(20, call.Query.MaximumCount); Assert.Equal(row.Series.AgentId, call.Query.ClientId); Assert.Equal("backup", call.Query.Text); Assert.Equal(MonitoringView.Firing, call.Query.View); });
+        await state.SetQueryAsync(state.Query with { MaximumCount = 100, Text = "archive" });
+        Assert.False(state.SeriesPager.CanPrevious); Assert.False(state.SeriesPager.CanFirst);
+        Assert.Equal(100, calls[^1].Query.MaximumCount); Assert.Equal("archive", calls[^1].Query.Text); Assert.Null(calls[^1].Cursor);
+    }
+    [Fact]
+    public async Task ChangedFiltersFenceLateRowsAndErrorsAndPagingFailureIsExplicit()
+    {
+        var api = new MonitoringTestApi(); using var state = new MonitoringPageState(api); await state.SelectTenantAsync(1);
+        var delayed = new TaskCompletionSource<MonitoringSeriesPageDto>(); CancellationToken old = default;
+        api.QuerySeriesRead = (query, _, token) => query.Text == "old" ? Capture(token) : Task.FromResult(new MonitoringSeriesPageDto([], "current"));
+        Task<MonitoringSeriesPageDto> Capture(CancellationToken token) { old = token; return delayed.Task; }
+        var previous = state.SetQueryAsync(state.Query with { Text = "old" });
+        await state.SetQueryAsync(state.Query with { Text = "new" });
+        Assert.True(old.IsCancellationRequested);
+        delayed.SetException(new HttpRequestException("late filter failure")); await previous;
+        Assert.Null(state.Error); Assert.Equal("current", state.Snapshot!.Series.NextCursor);
+        api.QuerySeriesRead = (_, _, _) => throw new HttpRequestException("Invalid continuation. Restart pagination.");
+        await state.NextSeriesPageAsync("foreign");
+        Assert.Contains("Restart pagination", state.Error); Assert.False(state.SeriesPager.CanFirst);
+    }
+    [Theory]
+    [InlineData("2026-03-08", 23, "America/New_York")]
+    [InlineData("2026-11-01", 25, "America/New_York")]
+    [InlineData("2026-11-01", 25, "America/Havana")]
+    public void OperatorLocalInclusiveEndUsesTheFollowingLocalDayAcrossDst(string day, int hours, string zone)
+    {
+        var range = MonitoringDateRange.ToUtc(day, day, TimeZoneInfo.FindSystemTimeZoneById(zone));
+        Assert.Equal(TimeSpan.FromHours(hours), range.ToExclusiveUtc - range.FromUtc);
+        Assert.Equal(TimeSpan.Zero, range.FromUtc!.Value.Offset);
+        Assert.Throws<ArgumentException>(() => MonitoringDateRange.ToUtc("2026-11-02", "2026-11-01", TimeZoneInfo.Utc));
+    }
+    [Fact]
     public void DetachedRuleDraftPreservesErrorsAndRequiresExplicitReset()
     {
         var draft = MonitoringRuleDraft.Create(); draft.Name = "CPU"; draft.Enabled = true; draft.AgentIds.Add(Guid.NewGuid()); draft.Reason = "first rule";
@@ -118,7 +173,10 @@ internal class MonitoringTestApi : IMonitoringApiService
     public Func<int, CancellationToken, Task<MonitoringConfigurationDto>>? ConfigurationRead { get; set; }
     public Func<int, CancellationToken, Task<MonitoringSummaryDto>>? SummaryRead { get; set; }
     public Func<int, string?, CancellationToken, Task<MonitoringSeriesPageDto>>? SeriesRead { get; set; }
+    public Func<MonitoringQueryDto, string?, CancellationToken, Task<MonitoringSeriesPageDto>>? QuerySeriesRead { get; set; }
+    public Func<MonitoringQueryDto, string?, CancellationToken, Task<MonitoringEventPageDto>>? QueryEventsRead { get; set; }
     public Func<int, string?, CancellationToken, Task<MonitoringEventPageDto>>? EventsRead { get; set; }
+    public Func<int, string?, string?, CancellationToken, Task<MonitoringClientPageDto>>? ClientSearch { get; set; }
     public Func<int, MonitoringRuleWriteDto, CancellationToken, Task<MonitoringConfigurationDto>>? RuleSave { get; set; }
     public MonitoringConfigurationDto Configuration(int tenant) => new(tenant, 1, [], [], [], DateTimeOffset.UtcNow);
     public Task<IReadOnlyList<MonitoringTenantDto>> GetTenantsAsync(CancellationToken token = default) => Task.FromResult<IReadOnlyList<MonitoringTenantDto>>([new(1, "SQL tenant"), new(2, "Other tenant")]);
@@ -127,7 +185,34 @@ internal class MonitoringTestApi : IMonitoringApiService
     public Task<MonitoringSummaryDto> GetSummaryAsync(int tenantId, CancellationToken token = default) => SummaryRead?.Invoke(tenantId, token) ?? Task.FromResult(new MonitoringSummaryDto(tenantId, 0, 0, 0, 0, 0, 0, DateTimeOffset.UtcNow));
     public Task<MonitoringSeriesPageDto> GetSeriesAsync(int tenantId, string? cursor = null, CancellationToken token = default) => SeriesRead?.Invoke(tenantId, cursor, token) ?? Task.FromResult(new MonitoringSeriesPageDto([], null));
     public Task<MonitoringEventPageDto> GetEventsAsync(int tenantId, string? cursor = null, CancellationToken token = default) => EventsRead?.Invoke(tenantId, cursor, token) ?? Task.FromResult(new MonitoringEventPageDto([], null));
+    public async Task<MonitoringSeriesPageDto> GetSeriesAsync(MonitoringQueryDto query, string? cursor = null, CancellationToken token = default)
+    {
+        if (QuerySeriesRead is not null) return await QuerySeriesRead(query, cursor, token);
+        var page = await GetSeriesAsync(query.TenantId, cursor, token);
+        return page with { Items = page.Items.Where(row => Matches(row, query)).ToImmutableArray() };
+    }
+    internal static bool Matches(MonitoringSeriesState row, MonitoringQueryDto query)
+    {
+        var active = row.Occurrence is { EndedAtUtc: null };
+        var unknown = row.EvidenceQuality == MonitoringEvidenceQuality.Unknown || row.LatestEvidence is null;
+        var view = query.View switch
+        {
+            MonitoringView.Firing => active && row.Phase == MonitoringPhase.Firing,
+            MonitoringView.Active => active || row.Phase == MonitoringPhase.Pending || unknown,
+            MonitoringView.Pending => row.Phase == MonitoringPhase.Pending,
+            MonitoringView.Unknown => unknown,
+            MonitoringView.Suppressed => row.Suppressed,
+            MonitoringView.Offline => row.LatestEvidence?.OfflineSummary?.OfflineCount > 0,
+            _ => true
+        };
+        return view && (query.ClientId is null || row.Series.AgentId == query.ClientId || !row.OfflineAgentIds.IsDefault && row.OfflineAgentIds.Contains(query.ClientId.Value)) &&
+            (query.Severity is null || row.Occurrence?.PinnedRule.Severity == query.Severity) &&
+            (query.FromUtc is null || row.Occurrence?.RaisedAtUtc >= query.FromUtc) && (query.ToExclusiveUtc is null || row.Occurrence?.RaisedAtUtc < query.ToExclusiveUtc);
+    }
+    public Task<MonitoringEventPageDto> GetEventsAsync(MonitoringQueryDto query, string? cursor = null, CancellationToken token = default) =>
+        QueryEventsRead?.Invoke(query, cursor, token) ?? GetEventsAsync(query.TenantId, cursor, token);
     public Task<MonitoringClientPageDto> GetClientsAsync(int tenantId, string? cursor = null, CancellationToken token = default) => Task.FromResult(new MonitoringClientPageDto([new(Guid.Parse("11111111-1111-1111-1111-111111111111"), "SQL Server", NetRatel.Shared.Contracts.Services.ClientServicePlatform.Windows, MonitoringTargetSupport.Supported, "cached")], null, 1));
+    public Task<MonitoringClientPageDto> SearchClientsAsync(int tenantId, string? search, string? cursor = null, CancellationToken token = default) => ClientSearch?.Invoke(tenantId, search, cursor, token) ?? GetClientsAsync(tenantId, cursor, token);
     public Task<IReadOnlyList<MonitoringPublishedFlowDto>> GetPublishedFlowsAsync(int tenantId, CancellationToken token = default) => Task.FromResult(PublishedFlows);
     public Task<MonitoringTargetPreviewDto> PreviewTargetsAsync(int tenantId, MonitoringTargetPreviewRequest request, CancellationToken token = default) { PreviewCalls++; return Task.FromResult(new MonitoringTargetPreviewDto(request.Targets.AgentIds, 1, [], request.Targets.AgentIds.Length)); }
     public Task<MonitoringConfigurationDto> SaveRuleAsync(int tenantId, MonitoringRuleWriteDto request, CancellationToken token = default) =>

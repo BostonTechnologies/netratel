@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using AwesomeAssertions;
 using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
@@ -29,7 +30,8 @@ public sealed class GenuineDiskCollectionPipelineTests
         {
             Guid.TryParseExact(disk.CollectionId, "D", out var id).Should().BeTrue();
             id.Should().NotBe(Guid.Empty);
-            disk.CollectionQuality.Should().Be(WireQuality.Complete);
+            if (disk.HasTotalBytes) disk.CollectionQuality.Should().Be(WireQuality.Complete);
+            else { disk.CollectionQuality.Should().Be(WireQuality.Unsupported); disk.Metadata.Should().NotBeNull(); }
             disk.CollectedAtUtc.ToDateTimeOffset().Should().BeOnOrBefore(slow.ObservedAtUtc.ToDateTimeOffset());
             fast.Disks.Single(other => other.Scope == disk.Scope).ToByteArray().Should().Equal(disk.ToByteArray());
         }
@@ -172,6 +174,82 @@ public sealed class GenuineDiskCollectionPipelineTests
             mutation.DiskCollection!.CollectionId.Should().Be(initial.DiskCollection!.CollectionId);
             mutation.DiskCollection.PayloadFingerprint.Should().NotBe(initial.DiskCollection.PayloadFingerprint);
         }
+    }
+
+    [Fact]
+    public void LinuxMountMetadataClassifiesPackagePseudoAndProvenBackingViewsWithoutDiscardingRealVolumes()
+    {
+        var lines = new[]
+        {
+            "10 1 8:1 / / rw,relatime shared:1 - ext4 /dev/system rw",
+            "11 1 8:2 / /data/backup/volume rw - ext4 /dev/backup rw",
+            "12 1 7:1 / /snap/core/42 ro - squashfs /dev/loop1 ro",
+            "13 1 8:3 / /readonly-data ro - ext4 /dev/data ro",
+            "14 1 8:1 / /mirror rw - ext4 /dev/system rw",
+            "15 1 0:20 / /a rw - overlay overlay rw,lowerdir=/images,upperdir=/data/backup/volume/upper,workdir=/data/backup/volume/work",
+            "16 1 0:21 / /quota-a rw - zfs pool/quota-a rw",
+            "17 1 0:22 / /quota-b rw - zfs pool/quota-b rw",
+            "18 1 0:23 / /network rw - nfs backup.example:/export rw",
+            "19 1 0:24 / /proc rw - proc proc rw",
+            "20 1 8:1 /archive /subdirectory-view rw - ext4 /dev/system rw"
+        };
+        var parsed = lines.Select(ParseMount).ToArray();
+        var result = LinuxMountInventory.Classify(parsed, _ => true).ToDictionary(item => item.Mount.Mount);
+        Assert.Equal("package-image", result["/snap/core/42"].Metadata.DefaultExclusionReason);
+        Assert.Equal("pseudo-filesystem", result["/proc"].Metadata.DefaultExclusionReason);
+        Assert.Equal("duplicate-capacity", result["/mirror"].Metadata.DefaultExclusionReason);
+        Assert.Equal("duplicate-capacity", result["/a"].Metadata.DefaultExclusionReason);
+        Assert.Equal(result["/data/backup/volume"].Metadata.CapacityKey, result["/a"].Metadata.CapacityKey);
+        foreach (var mount in new[] { "/", "/data/backup/volume", "/readonly-data", "/quota-a", "/quota-b", "/network", "/subdirectory-view" })
+            Assert.Null(result[mount].Metadata.DefaultExclusionReason);
+        Assert.NotEqual(result["/quota-a"].Metadata.CapacityKey, result["/quota-b"].Metadata.CapacityKey);
+        var reordered = LinuxMountInventory.Classify(parsed.Reverse(), _ => true).ToDictionary(item => item.Mount.Mount);
+        Assert.All(result, pair => Assert.Equal(pair.Value.Metadata, reordered[pair.Key].Metadata));
+        // A container's only meaningful overlay root survives, even with visible backing paths.
+        var containerRoot = ParseMount("22 1 0:25 / / rw - overlay overlay rw,upperdir=/data/backup/volume/upper,workdir=/data/backup/volume/work");
+        Assert.Null(LinuxMountInventory.Classify([containerRoot], _ => true).Single().Metadata.DefaultExclusionReason);
+    }
+
+    [Fact]
+    public void LinuxMountParserHandlesOptionalFieldsEscapesAndRefusesUnrepresentableControlScopes()
+    {
+        var mount = ParseMount(@"42 1 8:9 / /data/Backup\040Files rw,nosuid shared:4 master:2 - ext4 /dev/disk\134alias rw,errors=remount-ro");
+        Assert.Equal("/data/Backup Files", mount.Mount);
+        Assert.Equal("/dev/disk\\alias", mount.Source);
+        Assert.Equal(new[] { "shared:4", "master:2" }, mount.OptionalFields);
+        Assert.Contains("errors=remount-ro", mount.SuperOptions);
+        Assert.False(LinuxMountInventory.TryParse(@"42 1 8:9 / /data/bad\011scope rw - ext4 /dev/disk rw", out _));
+        Assert.False(LinuxMountInventory.TryParse("42 1 malformed / /data rw - ext4 /dev/disk rw", out _));
+    }
+
+    [Fact]
+    public void RulePolicyUsesBoundedCaseAwareGlobsExcludesWinAndNullDefaultsKeepLegacyFingerprint()
+    {
+        var rule = Rule();
+        var package = new TelemetryDiskMetadataDto("squashfs", "/dev/loop7", "/", new string('A', 64), true, "package-image");
+        Assert.False(MonitoringDiskPolicy.Select("/snap/core/42", package, rule.Condition).Eligible);
+        var include = rule.Condition with { DiskPolicy = new(["/snap/*"], [], [], []) };
+        Assert.True(MonitoringDiskPolicy.Select("/snap/core/42", package, include).Eligible);
+        Assert.False(MonitoringDiskPolicy.Select("/Snap/core/42", package, include).Eligible);
+        Assert.False(MonitoringDiskPolicy.Select("/snap/core/42", package, include with { DiskPolicy = include.DiskPolicy! with { ExcludeFileSystems = ["squashfs"] } }).Eligible);
+        var windows = include with { DiskPolicy = new([@"C:\DATA\*"], [], [], []) };
+        Assert.True(MonitoringDiskPolicy.Select(@"c:\data\backup", null, windows).Eligible);
+        Assert.Equal("unclassified-legacy", MonitoringDiskPolicy.Select("/data", null, rule.Condition).Reason);
+        var fsPolicy = rule.Condition with { DiskPolicy = new([], [], ["ext4"], []) };
+        Assert.Equal("unclassified-policy", MonitoringDiskPolicy.Select("/data", null, fsPolicy).Reason);
+        Assert.True(MonitoringDiskPolicy.Select("/data", null, fsPolicy).Eligible);
+        Assert.False(MonitoringDiskPolicy.Select("/other", null, rule.Condition with { ResourceName = "/data" }).Eligible);
+        Assert.Equal(MonitoringContractValidator.EvaluationFingerprint(rule), MonitoringContractValidator.EvaluationFingerprint(rule with { Condition = rule.Condition with { DiskPolicy = new([], [], [], []) } }));
+        Assert.NotEqual(MonitoringContractValidator.EvaluationFingerprint(rule), MonitoringContractValidator.EvaluationFingerprint(rule with { Condition = include }));
+        Assert.False(MonitoringDiskPolicy.TryValidate(new(Enumerable.Repeat("/*", 33).ToImmutableArray(), [], [], []), out _));
+        Assert.False(MonitoringDiskPolicy.TryValidate(new([new string('x', 257)], [], [], []), out _));
+        Assert.DoesNotContain("DiskPolicy", System.Text.Json.JsonSerializer.Serialize(rule));
+    }
+
+    private static LinuxMountEntry ParseMount(string line)
+    {
+        Assert.True(LinuxMountInventory.TryParse(line, out var mount));
+        return mount!;
     }
 
     private static TelemetryFrame Frame(DateTimeOffset at) => new()

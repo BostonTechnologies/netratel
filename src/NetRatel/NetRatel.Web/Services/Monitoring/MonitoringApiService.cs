@@ -25,6 +25,8 @@ public interface IMonitoringApiService
             !item.OfflineAgentIds.IsDefault && item.OfflineAgentIds.Contains(agentId)).ToImmutableArray(), NextCursor = null };
     }
     Task<MonitoringEventPageDto> GetEventsAsync(int tenantId, string? cursor = null, CancellationToken token = default);
+    Task<MonitoringSeriesPageDto> GetSeriesAsync(MonitoringQueryDto query, string? cursor = null, CancellationToken token = default) => GetSeriesAsync(query.TenantId, cursor, token);
+    Task<MonitoringEventPageDto> GetEventsAsync(MonitoringQueryDto query, string? cursor = null, CancellationToken token = default) => GetEventsAsync(query.TenantId, cursor, token);
     Task<IReadOnlyList<MonitoringPublishedFlowDto>> GetPublishedFlowsAsync(int tenantId, CancellationToken token = default);
     Task<MonitoringTargetPreviewDto> PreviewTargetsAsync(int tenantId, MonitoringTargetPreviewRequest request, CancellationToken token = default);
     Task<MonitoringConfigurationDto> SaveRuleAsync(int tenantId, MonitoringRuleWriteDto request, CancellationToken token = default);
@@ -80,6 +82,25 @@ public sealed class MonitoringApiService(IHttpClientFactory clients) : IMonitori
     }
     public Task<MonitoringEventPageDto> GetEventsAsync(int tenantId, string? cursor = null, CancellationToken token = default) =>
         GetAsync<MonitoringEventPageDto>(Root(tenantId) + "/events" + PageQuery(cursor), token);
+    public Task<MonitoringSeriesPageDto> GetSeriesAsync(MonitoringQueryDto query, string? cursor = null, CancellationToken token = default) =>
+        GetAsync<MonitoringSeriesPageDto>(Root(query.TenantId) + "/series" + QueryString(query.Normalize(), cursor), token);
+    public Task<MonitoringEventPageDto> GetEventsAsync(MonitoringQueryDto query, string? cursor = null, CancellationToken token = default) =>
+        GetAsync<MonitoringEventPageDto>(Root(query.TenantId) + "/events" + QueryString(query.Normalize(history: true), cursor), token);
+    private static string QueryString(MonitoringQueryDto query, string? cursor)
+    {
+        var values = new List<KeyValuePair<string, string>>
+        {
+            new("maximumCount", query.MaximumCount.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+            new("view", query.View.ToString()), new("sort", query.Sort.ToString()!)
+        };
+        if (cursor is not null) values.Add(new("cursor", cursor));
+        if (query.ClientId is { } client) values.Add(new("clientId", client.ToString("D")));
+        if (query.Severity is { } severity) values.Add(new("severity", severity.ToString()));
+        if (query.Text is { } text) values.Add(new("text", text));
+        if (query.FromUtc is { } from) values.Add(new("fromUtc", from.ToString("O", System.Globalization.CultureInfo.InvariantCulture)));
+        if (query.ToExclusiveUtc is { } to) values.Add(new("toExclusiveUtc", to.ToString("O", System.Globalization.CultureInfo.InvariantCulture)));
+        return "?" + string.Join("&", values.Select(value => Uri.EscapeDataString(value.Key) + "=" + Uri.EscapeDataString(value.Value)));
+    }
     public async Task<IReadOnlyList<MonitoringPublishedFlowDto>> GetPublishedFlowsAsync(int tenantId, CancellationToken token = default) =>
         await GetAsync<MonitoringPublishedFlowDto[]>(Root(tenantId) + "/published-flows", token);
     public async Task<MonitoringTargetPreviewDto> PreviewTargetsAsync(int tenantId, MonitoringTargetPreviewRequest request, CancellationToken token = default)

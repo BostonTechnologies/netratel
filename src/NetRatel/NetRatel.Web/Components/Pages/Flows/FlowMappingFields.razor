@@ -48,7 +48,10 @@
      ("exitCode", "Exit code"), ("startedAt", "Started at"), ("completedAt", "Completed at"), ("executionLink", "Execution link")];
     private static readonly (string Value, string Name)[] AlertTokens =
     [("ruleName", "Rule name"), ("clientName", "Client name"), ("resource", "Resource"), ("metric", "Metric"), ("severity", "Severity"),
-     ("value", "Measured value"), ("serviceState", "Service state"), ("occurredAt", "Observed at"), ("offlineSummary", "Offline summary"), ("offlineClients", "Offline clients")];
+     ("value", "Measured value"), ("serviceState", "Service state"), ("occurredAt", "Observed at"), ("offlineSummary", "Offline summary"), ("offlineClients", "Offline clients"),
+     ("alertTitle", "Human alert title"), ("alertDetails", "Human alert details"), ("hostname", "Pinned hostname"), ("tenantName", "Pinned tenant name"),
+     ("clientUrl", "Open client"), ("alertUrl", "Open exact alert"), ("formattedValue", "Formatted measured value"), ("condition", "Breach threshold and hold"),
+     ("recoveryCondition", "Recovery threshold and hold"), ("raisedAt", "Raised time"), ("diskFree", "Collected free capacity"), ("diskTotal", "Collected total capacity")];
     private static readonly (string Value, string Name)[] AiTokens =
     [("aiSummary", "AI findings summary"), ("aiEvidence", "AI evidence"), ("aiRecommendations", "AI recommendations"), ("aiStatus", "AI outcome")];
     private IEnumerable<(string Value, string Name)> Tokens => (ExecutionSource ? ExecutionTokens : AlertTokens).Concat(AiTokens)

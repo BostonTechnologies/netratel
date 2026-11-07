@@ -13,8 +13,8 @@ namespace NetRatel.Tests.Mcp;
 public sealed class McpCatalogDiscoveryTests
 {
     [Theory]
-    [InlineData(NetRatelMcpTransport.StreamableHttp, "dev", 27, "41fa8825a2bd287d98098bc479c072d098cd9e70b88df18ec7e0524f33e9cbbf")]
-    [InlineData(NetRatelMcpTransport.Stdio, "prod", 33, "5edfdefc01ad1abbef874530ba44981a157f87d9c7cb13eac4a89daba9639474")]
+    [InlineData(NetRatelMcpTransport.StreamableHttp, "dev", 27, "1e4151781c3ff216a89deed51e4ab1307b1a810a7f238c93acd3d811ea4da74c")]
+    [InlineData(NetRatelMcpTransport.Stdio, "prod", 33, "97d7b184b4c98572f4d552f551348bebaf11ebb84d1659b24c191f1b08766bf9")]
     public void Factory_preserves_frozen_schema_bytes_for_selected_surfaces(
         NetRatelMcpTransport transport, string instance, int count, string expectedDigest)
     {

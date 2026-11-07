@@ -23,6 +23,8 @@ internal sealed class AkkaMonitoringRuntime(IRequiredActor<ClientMonitoringRegio
         .AddRange(await store.LoadClientOfflineAsync(client, ct).ConfigureAwait(false));
     public Task<MonitoringSeriesPageDto> ReadTenantAsync(int tenant, int maximumCount, string? cursor, CancellationToken ct) => store.ReadTenantSeriesAsync(tenant, maximumCount, cursor, ct);
     public Task<MonitoringEventPageDto> ReadTenantEventsAsync(int tenant, int maximumCount, string? cursor, CancellationToken ct) => store.ReadTenantEventsAsync(tenant, maximumCount, cursor, ct);
+    public Task<MonitoringSeriesPageDto> ReadTenantAsync(MonitoringQueryDto query, string? cursor, CancellationToken ct) => store.ReadTenantSeriesAsync(query, cursor, ct);
+    public Task<MonitoringEventPageDto> ReadTenantEventsAsync(MonitoringQueryDto query, string? cursor, CancellationToken ct) => store.ReadTenantEventsAsync(query, cursor, ct);
     public Task<MonitoringSummaryDto> ReadTenantSummaryAsync(int tenant, CancellationToken ct) => store.ReadTenantSummaryAsync(tenant, ct);
     public Task<MonitoringStoreWriteResult> AcknowledgeAsync(MonitoringOperatorCommand command, CancellationToken ct) =>
         MonitoringOfflinePresentation.IsSeries(command.Series) ? store.OperateOccurrenceAsync(command, false, ct) : Ask<MonitoringStoreWriteResult>(new AcknowledgeMonitoringOccurrence(command), ct);

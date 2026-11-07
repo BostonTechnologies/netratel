@@ -12,6 +12,8 @@ public static class FlowTypedMapping
         IReadOnlyDictionary<string, string>? simulatedAi = null)
     {
         if ((execution is null) == (alert is null)) throw new ArgumentException("Exactly one original source is required.");
+        if (alert?.Presentation is not null && FlowMonitoringMappingFields.IsHistoricalStock(mapping))
+            mapping = mapping with { TitleTemplate = FlowMonitoringMappingFields.Title, DescriptionTemplate = FlowMonitoringMappingFields.Description };
         var source = execution is null ? null : FlowExecutionEvidenceFormatter.Values(execution, ai);
         string Field(string name)
         {

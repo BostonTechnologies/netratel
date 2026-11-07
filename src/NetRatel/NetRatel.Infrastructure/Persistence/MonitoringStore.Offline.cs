@@ -47,6 +47,7 @@ public sealed partial class MonitoringStore
                 throw new InvalidOperationException("series_capacity_exceeded");
             var result = MonitoringOfflineEvaluation.Evaluate(evaluator, state, rule, observation, now, config.Bypasses, config.Groups);
             if (result.State.StateRevision == result.ExpectedStateRevision) continue;
+            result = await AttributeClientIdentityAsync(db, scope.ServiceProvider, result, row, cancellationToken).ConfigureAwait(false);
             await ApplyEvaluationAsync(db, result, config.Revision, cancellationToken).ConfigureAwait(false);
             await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             evaluated++;

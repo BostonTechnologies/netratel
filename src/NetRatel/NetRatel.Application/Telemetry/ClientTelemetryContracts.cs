@@ -1,4 +1,6 @@
 using NetRatel.Application.Presence;
+using NetRatel.Shared.Contracts.Monitoring;
+using System.Text.Json.Serialization;
 
 namespace NetRatel.Application.Telemetry;
 
@@ -30,7 +32,8 @@ public sealed record TelemetryDisk(
     ulong? FreeBytes = null,
     Guid? CollectionId = null,
     DateTimeOffset? CollectedAtUtc = null,
-    TelemetryDiskCollectionQuality CollectionQuality = TelemetryDiskCollectionQuality.Unknown);
+    TelemetryDiskCollectionQuality CollectionQuality = TelemetryDiskCollectionQuality.Unknown,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] TelemetryDiskMetadataDto? Metadata = null);
 
 public sealed record TelemetryNetwork(
     string Scope,
@@ -55,7 +58,8 @@ public sealed record TelemetrySnapshot(
     IReadOnlyList<TelemetryNetwork> Networks,
     TelemetryTransportHealth? TransportHealth,
     string Source = "akka",
-    bool IsAuthoritative = false);
+    bool IsAuthoritative = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool DiskInventoryTruncated = false);
 
 public enum TelemetryMessageDisposition
 {

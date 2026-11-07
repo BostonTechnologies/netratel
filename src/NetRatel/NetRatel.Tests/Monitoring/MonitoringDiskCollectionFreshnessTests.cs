@@ -263,6 +263,60 @@ public sealed class MonitoringDiskCollectionFreshnessTests
         Assert.Empty(s.Events);
     }
 
+    [Fact]
+    public void ProvenDefaultExclusionSuspendsWithoutRecoveryAndPartialOrStaleMetadataCannotClearBreach()
+    {
+        var s = new Scenario(); s.Observe(0, 0, 5, Id(1)); s.Observe(30, 30, 5, Id(2));
+        var pinned = JsonSerializer.Serialize(s.State.Occurrence!.RaisedEvidence);
+        var facts = new MonitoringDiskFactsDto(100, 0, new("squashfs", "/dev/loop7", "/", new string('A', 64), true, "package-image"));
+        s.Observe(40, 40, 0, Id(3), facts, complete: false);
+        Assert.Equal(MonitoringPhase.Firing, s.State.Phase);
+        s.Observe(41, 100, 0, Id(4), facts);
+        Assert.Equal(MonitoringPhase.Firing, s.State.Phase);
+        s.Observe(101, 101, 0, Id(5), facts);
+        Assert.Equal(MonitoringPhase.NotApplicable, s.State.Phase);
+        Assert.Equal(MonitoringClosureDisposition.TargetRemoved, s.State.Occurrence!.ClosureDisposition);
+        Assert.Equal(pinned, JsonSerializer.Serialize(s.State.Occurrence.RaisedEvidence));
+        Assert.Single(s.Events, item => item.Kind == MonitoringEventKind.AlertSuspended && item.Reason == "disk-policy:package-image");
+        Assert.DoesNotContain(s.Events, item => item.Kind == MonitoringEventKind.AlertResolved);
+        Assert.Single(s.Outbox);
+        Assert.Equal("disk-policy:package-image", s.State.LatestEvidence!.UnknownReason);
+    }
+
+    [Fact]
+    public void ExplicitDiskPolicyEditRequiresNewEvaluationRevisionAndFullResetWindow()
+    {
+        var s = new Scenario(); s.Observe(0, 0, 5, Id(1)); s.Observe(30, 30, 5, Id(2));
+        var updated = s.Rule with { Revision = 2, EvaluationRevision = 2,
+            Condition = s.Rule.Condition with { DiskPolicy = new([], ["/snap/*"], [], []) } };
+        s.Clock.Set(31);
+        var reset = s.Evaluator.ResetDefinition(s.State, updated, MonitoringConditionResetPolicy.SuspendOccurrenceAndRequireNewWindow,
+            Id(250), "Exclude package mount scope");
+        Assert.Equal(2UL, reset.State.EvaluationRevision);
+        Assert.Equal(MonitoringClosureDisposition.ConfigurationChanged, reset.State.Occurrence!.ClosureDisposition);
+        Assert.Null(reset.State.WindowStartedAtUtc);
+        Assert.Single(reset.Events, item => item.Kind == MonitoringEventKind.AlertSuspended);
+        Assert.Empty(reset.Outbox);
+        Assert.Equal(MonitoringContractValidator.EvaluationFingerprint(updated), reset.State.EvaluationFingerprint);
+        Assert.NotEqual(s.State.EvaluationFingerprint, reset.State.EvaluationFingerprint);
+    }
+
+    [Fact]
+    public void MissingFilesystemMetadataCannotRecoverAnExistingOccurrenceUnderFilesystemPolicy()
+    {
+        var s = new Scenario(new([], [], [], ["squashfs"]));
+        var known = new MonitoringDiskFactsDto(100, 5, new("ext4", "/dev/data", "/", new string('A', 64), false));
+        s.Observe(0, 0, 5, Id(1), known); s.Observe(30, 30, 5, Id(2), known);
+        Assert.Equal(MonitoringPhase.Firing, s.State.Phase);
+        var occurrence = s.State.Occurrence!.OccurrenceId;
+        s.Observe(40, 40, 90, Id(3), new(100, 90));
+        Assert.Equal(MonitoringPhase.Firing, s.State.Phase);
+        Assert.Equal(occurrence, s.State.Occurrence!.OccurrenceId);
+        Assert.Equal(MonitoringEvidenceQuality.Unknown, s.State.EvidenceQuality);
+        Assert.Equal("disk-policy-unclassified", s.State.LatestEvidence!.UnknownReason);
+        Assert.DoesNotContain(s.Events, item => item.Kind is MonitoringEventKind.AlertResolved or MonitoringEventKind.AlertSuspended);
+    }
+
     private static Guid Id(int value) => new(value, 0, 0, new byte[8]);
 
     private sealed class Clock : TimeProvider
@@ -287,18 +341,18 @@ public sealed class MonitoringDiskCollectionFreshnessTests
         public List<MonitoringEventIntent> Events { get; } = [];
         public List<MonitoringOutboxIntent> Outbox { get; } = [];
 
-        public Scenario()
+        public Scenario(MonitoringDiskPolicyDto? policy = null)
         {
             Evaluator = new(Clock);
             Rule = new(41, Id(201), 1, 1, "disk", true, MonitoringSeverity.Warning,
                 new(MonitoringTargetMode.AllEligible, [], []),
-                new(MonitoringMetricKind.DiskFreePercent, MonitoringNumericUnit.Percent, 10, 15, "/", null, []),
+                new(MonitoringMetricKind.DiskFreePercent, MonitoringNumericUnit.Percent, 10, 15, "/", null, [], policy),
                 TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(45),
                 Id(202), "test-operator", "test-credential");
             State = Evaluator.CreateInitial(new(41, Rule.RuleId, Id(203), "disk:/"), Rule);
         }
 
-        public MonitoringObservationDto Observe(int collected, int received, double value, Guid id)
+        public MonitoringObservationDto Observe(int collected, int received, double value, Guid id, MonitoringDiskFactsDto? facts = null, bool complete = true)
         {
             Clock.Set(received);
             var collectedAt = Clock.At(collected);
@@ -307,7 +361,7 @@ public sealed class MonitoringDiskCollectionFreshnessTests
             var body = Encoding.UTF8.GetBytes($"{id:D}:{collectedAt:O}:{BitConverter.DoubleToInt64Bits(value)}");
             var stamp = new MonitoringDiskCollectionStamp(id, collectedAt, Convert.ToHexString(SHA256.HashData(body)).ToLowerInvariant());
             var observation = new MonitoringObservationDto(State.Series, new(Epoch, ++Sequence), StreamId,
-                collectedAt, Clock.At(received), true, true, value, DiskCollection: stamp);
+                collectedAt, Clock.At(received), complete, true, value, DiskCollection: stamp, DiskFacts: facts);
             Apply(Evaluator.Evaluate(State, Rule, observation, Epoch, StreamId, Bypasses));
             return observation;
         }

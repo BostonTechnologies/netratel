@@ -15,7 +15,8 @@ public static class FlowGraphV2Validator
         "offlineSummary", "offlineCount", "offlineClients", "aiSummary", "aiEvidence", "aiRecommendations",
         "aiStatus", "aiObservedAt", "aiInvestigationId", "sourceKind", "definitionName", "definitionRevision",
         "executionId", "attemptId", "targetName", "outcome", "rawStatus", "reason", "exitCode",
-        "startedAt", "completedAt", "executionLink"
+        "startedAt", "completedAt", "executionLink", "alertTitle", "alertDetails", "hostname", "tenantName", "clientUrl", "alertUrl",
+        "formattedValue", "condition", "recoveryCondition", "raisedAt", "diskFree", "diskTotal"
     };
 
     public static FlowValidationResultDto ValidateDraft(FlowGraphDto? graph) => Validate(graph, false, false);

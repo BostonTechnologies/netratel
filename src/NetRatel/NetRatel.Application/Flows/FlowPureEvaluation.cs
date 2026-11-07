@@ -69,6 +69,7 @@ public static class FlowPureEvaluation
     public static bool ValidEventData(FlowEventDataDto? data) => data is not null && data.RuleId != Guid.Empty &&
         (data.AgentId != Guid.Empty || ValidOfflineSummary(data)) &&
         (data.OfflineSummary is null || ValidOfflineSummary(data)) &&
+        (data.Presentation is null || MonitoringPresentationSnapshot.IsValid(data.Presentation) && data.Presentation.AgentId == data.AgentId && data.Presentation.RuleId == data.RuleId) &&
         new[] { data.RuleName, data.ClientName, data.Resource, data.Metric, data.Severity }.All(value => FlowGraphValidator.IsBoundedText(value, FlowLimits.MaximumEventTextLength)) &&
         (data.ServiceState is null || FlowGraphValidator.IsBoundedText(data.ServiceState, 128)) &&
         (data.NumericValue is null || double.IsFinite(data.NumericValue.Value)) && data.ObservedAtUtc != default;
@@ -94,6 +95,8 @@ public static class FlowPureEvaluation
     }
     public static FlowIncidentFieldsDto Map(FlowIncidentMappingDto mapping, FlowEventDataDto input, FlowAiResultDto? ai = null)
     {
+        if (input.Presentation is not null && FlowMonitoringMappingFields.IsHistoricalStock(mapping))
+            mapping = mapping with { TitleTemplate = FlowMonitoringMappingFields.Title, DescriptionTemplate = FlowMonitoringMappingFields.Description };
         var title = Expand(mapping.TitleTemplate, input, ai); var description = Expand(mapping.DescriptionTemplate, input, ai);
         if (input.OfflineSummary is { } offline && !description.Contains(offline.Summary, StringComparison.Ordinal))
             description += "\n\n" + offline.Summary;
@@ -160,6 +163,15 @@ public static class FlowPureEvaluation
     /// <summary>Resolves one historical alert placeholder without reinterpreting inserted text as a template.</summary>
     public static string FieldValue(string field, FlowEventDataDto input, FlowAiResultDto? ai = null) =>
         field switch { "ruleName" => input.RuleName, "clientName" => input.ClientName, "resource" => input.Resource,
+                "alertTitle" => input.Presentation?.Title ?? $"{input.Severity}: {input.RuleName} on {input.ClientName}",
+                "alertDetails" => input.Presentation?.Details ?? $"{input.RuleName}\nClient: {input.ClientName}\nResource: {input.Resource}\nMetric: {input.Metric}\nValue: {FieldValue("value", input)}\nService: {FieldValue("serviceState", input)}\nObserved: {FieldValue("occurredAt", input)}",
+                "hostname" => input.Presentation?.Hostname ?? "", "tenantName" => input.Presentation?.TenantName ?? "",
+                "clientUrl" => input.Presentation?.ClientUrl ?? "", "alertUrl" => input.Presentation?.AlertUrl ?? "",
+                "formattedValue" => input.Presentation?.FormattedValue ?? FieldValue("value", input),
+                "condition" => input.Presentation?.Condition ?? "", "recoveryCondition" => input.Presentation?.RecoveryCondition ?? "",
+                "raisedAt" => input.Presentation?.RaisedAtUtc.ToString("O", CultureInfo.InvariantCulture) ?? "",
+                "diskFree" => input.Presentation?.Disk is { } diskFree ? Monitoring.MonitoringIncidentPresentation.Bytes(diskFree.FreeBytes) : "",
+                "diskTotal" => input.Presentation?.Disk is { } diskTotal ? Monitoring.MonitoringIncidentPresentation.Bytes(diskTotal.TotalBytes) : "",
                 "metric" => input.Metric, "severity" => input.Severity, "value" => input.NumericValue?.ToString("R", CultureInfo.InvariantCulture) ?? "Unknown",
                 "serviceState" => input.ServiceState ?? "Unknown", "occurredAt" => input.ObservedAtUtc.ToString("O", CultureInfo.InvariantCulture),
                 "offlineSummary" => input.OfflineSummary?.Summary ?? "", "offlineCount" => input.OfflineSummary is { } offline

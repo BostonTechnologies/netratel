@@ -41,6 +41,42 @@ public sealed class MonitoringApiTests
     private static ClaimsPrincipal User => new(new ClaimsIdentity([new Claim("netratel_principal_id", OperatorId.ToString("N"))], "Test"));
 
     [Fact]
+    public async Task Actual_http_query_and_long_cursor_are_forwarded_without_loss_after_tenant_authorization()
+    {
+        var fixture = new Fixture();
+        using var host = await HostAsync(fixture);
+        var http = host.GetTestClient();
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+        var cursor = new string('A', 308) + "-_";
+        var path = $"/api/v2/tenants/7/monitoring/series?view=Firing&clientId={fixture.AgentId:D}&severity=Warning&text=Backup&maximumCount=20&cursor={Uri.EscapeDataString(cursor)}&fromUtc=2026-11-01T00%3A00%3A00Z&toExclusiveUtc=2026-11-08T00%3A00%3A00Z";
+        (await http.GetAsync(path)).StatusCode.Should().Be(HttpStatusCode.OK);
+        fixture.Runtime.LastQuery.Should().Be(new MonitoringQueryDto(7, MonitoringView.Firing, fixture.AgentId,
+            MonitoringSeverity.Warning, "backup", DateTimeOffset.Parse("2026-11-01T00:00:00Z"),
+            DateTimeOffset.Parse("2026-11-08T00:00:00Z"), MonitoringSort.SeriesIdentity, 20));
+        fixture.Runtime.LastCursor.Should().Be(cursor);
+        fixture.Runtime.LastQuery = null;
+        (await http.GetAsync(path.Replace("tenants/7", "tenants/8", StringComparison.Ordinal))).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        fixture.Runtime.LastQuery.Should().BeNull();
+        (await http.GetAsync(path + "&sort=EventTimeDescending")).StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await http.GetAsync(path.Replace(cursor, new string('A', MonitoringQueryLimits.MaximumCursorLength + 1), StringComparison.Ordinal))).StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Large_offline_membership_keeps_bounded_identity_metadata_without_losing_the_alert()
+    {
+        var fixture = new Fixture(MonitoringLimits.MaximumTargetClients, new string('中', 256));
+        var state = new MonitoringSeriesState(MonitoringOfflinePresentation.Series(7, fixture.Rule.RuleId), 1, 1,
+            MonitoringPhase.Firing, MonitoringEvidenceQuality.Unknown, OfflineAgentIds: fixture.AgentIds);
+        fixture.Runtime.SeriesResult = new([state], null, MatchingCount: 1);
+        var page = await fixture.Api.GetSeriesAsync(7, 20, null, User, default);
+        page.Items.Should().ContainSingle();
+        page.Items.Single().OfflineAgentIds.Should().HaveCount(MonitoringLimits.MaximumTargetClients);
+        page.ClientIdentitiesTruncated.Should().BeTrue();
+        page.ClientIdentities.Should().NotBeEmpty();
+        JsonSerializer.SerializeToUtf8Bytes(page, new JsonSerializerOptions(JsonSerializerDefaults.Web)).Length.Should().BeLessThan(MonitoringApiService.MaximumHttpBytes);
+    }
+
+    [Fact]
     public void Legacy_monitoring_pages_roundtrip_without_new_projections_and_preserve_explicit_empty_arrays()
     {
         var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
@@ -69,6 +105,36 @@ public sealed class MonitoringApiTests
         var preview = JsonSerializer.Deserialize<MonitoringTargetPreviewDto>(JsonSerializer.SerializeToUtf8Bytes(legacyPreview, options), options)!;
         preview.AgentIds.Should().BeEmpty();
         preview.ClientIdentities.IsDefault.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task DiskPreviewUsesCachedPerResourcePolicyWithFreshnessUnclassifiedAndTruncation()
+    {
+        var fixture = new Fixture();
+        var client = new ClientKey(7, fixture.AgentId); var at = fixture.Clock.GetUtcNow();
+        var package = new TelemetryDiskMetadataDto("squashfs", "/dev/loop7", "/", new string('A', 64), true, "package-image");
+        fixture.Telemetry.Snapshot = new(client, 1, 1, at, at, null, null,
+            [new("/snap/core/42", 1, 1, 0, 100, 100, 0, Guid.NewGuid(), at, TelemetryDiskCollectionQuality.Complete, package),
+             new("/data", 1, 0.8, 0.2, 80, 100, 20, Guid.NewGuid(), at.AddMinutes(-5), TelemetryDiskCollectionQuality.Complete),
+             new("/backup", 1, 0.5, 0.5, 50, 100, 50, Guid.NewGuid(), at, TelemetryDiskCollectionQuality.Complete)],
+            [], null, IsAuthoritative: true, DiskInventoryTruncated: true);
+        var condition = new MonitoringConditionDto(MonitoringMetricKind.DiskFreePercent, MonitoringNumericUnit.Percent, 10, 15, null, null, [],
+            new(["/*"], ["/backup"], [], []));
+        var preview = await fixture.Api.PreviewTargetsAsync(7, new(fixture.Rule.Targets, condition), User, default);
+        var details = Assert.Single(preview.Details);
+        Assert.True(details.DiskInventoryTruncated);
+        Assert.Equal(3, details.Disks.Length);
+        foreach (var disk in details.Disks)
+        {
+            var expected = MonitoringDiskPolicy.Select(disk.Mount, disk.Metadata, condition);
+            Assert.Equal(expected.Eligible, disk.Eligible); Assert.Equal(expected.Reason, disk.Reason);
+        }
+        Assert.True(details.Disks.Single(disk => disk.Mount == "/snap/core/42").Eligible);
+        Assert.False(details.Disks.Single(disk => disk.Mount == "/backup").Eligible);
+        Assert.False(details.Disks.Single(disk => disk.Mount == "/data").Fresh);
+        Assert.False(details.Disks.Single(disk => disk.Mount == "/data").Classified);
+        Assert.Equal(0, fixture.Services.Collections);
+        Assert.Equal(0, fixture.Config.Writes);
     }
 
     [Fact]
@@ -432,6 +498,7 @@ public sealed class MonitoringApiTests
         public ConfigStore Config { get; } = new();
         public Runtime Runtime { get; } = new();
         public ServicesRouter Services { get; } = new();
+        public TelemetryRouter Telemetry { get; } = new();
         public Sessions Sessions { get; } = new();
         public MonitoringApiService Api { get; }
         public MonitoringServiceWatchPolicySource Source { get; }
@@ -444,7 +511,7 @@ public sealed class MonitoringApiTests
         {
             RuleId = Guid.NewGuid(), Condition = new(MonitoringMetricKind.ServiceExpectedState, null, null, null, name, ClientServicePlatform.Windows, [ClientServiceState.Running])
         };
-        public Fixture(int clientCount = 1)
+        public Fixture(int clientCount = 1, string clientDisplayName = "Synthetic client")
         {
             Access = new(Authority);
             AgentIds = Enumerable.Range(1, clientCount - 1).Select(_ => Guid.NewGuid()).Prepend(AgentId).ToImmutableArray();
@@ -452,8 +519,8 @@ public sealed class MonitoringApiTests
             var directory = new ClientDirectory(AgentIds, Sessions);
             Source = new(Config, directory, Services, Clock);
             Reconciler = new MonitoringWatchPolicyReconciler(Source, Services, directory, Sessions, Clock, NullLogger<MonitoringWatchPolicyReconciler>.Instance);
-            Api = new(Authority, Access, new TenantCatalog(), Config, Runtime, directory, new AgentDirectory(AgentIds),
-                Flows, Services, new TelemetryRouter(), Sessions, Reconciler, Clock, NullLogger<MonitoringApiService>.Instance);
+            Api = new(Authority, Access, new TenantCatalog(), Config, Runtime, directory, new AgentDirectory(AgentIds, clientDisplayName),
+                Flows, Services, Telemetry, Sessions, Reconciler, Clock, NullLogger<MonitoringApiService>.Instance);
         }
     }
 
@@ -541,9 +608,9 @@ public sealed class MonitoringApiTests
             return new(page, items.Length > maximumCount ? page[^1].Client : null);
         }
     }
-    private sealed class AgentDirectory(ImmutableArray<Guid> agentIds) : IAgentManagementService
+    private sealed class AgentDirectory(ImmutableArray<Guid> agentIds, string displayName) : IAgentManagementService
     {
-        public Task<AgentDetailDto?> GetAsync(int tenant, Guid id, CancellationToken ct) => Task.FromResult<AgentDetailDto?>(tenant == 7 && agentIds.Contains(id) ? new(tenant, id, "Synthetic client", true, null, DateTimeOffset.UtcNow, null, null, null, null) : null);
+        public Task<AgentDetailDto?> GetAsync(int tenant, Guid id, CancellationToken ct) => Task.FromResult<AgentDetailDto?>(tenant == 7 && agentIds.Contains(id) ? new(tenant, id, displayName, true, null, DateTimeOffset.UtcNow, null, null, null, null) : null);
         public Task<AgentListResponse> ListAsync(int tenant, AgentListQuery query, CancellationToken ct) => throw new NotSupportedException();
         public Task DisableAsync(int tenant, Guid id, string reason, string actor, CancellationToken ct) => throw new NotSupportedException();
         public Task EnableAsync(int tenant, Guid id, string actor, CancellationToken ct) => throw new NotSupportedException();
@@ -568,7 +635,8 @@ public sealed class MonitoringApiTests
     }
     private sealed class TelemetryRouter : IClientTelemetryRouter
     {
-        public Task<ClientTelemetryState> GetSnapshotAsync(ClientKey client, CancellationToken ct) => Task.FromResult(new ClientTelemetryState(client, null));
+        public TelemetrySnapshot? Snapshot { get; set; }
+        public Task<ClientTelemetryState> GetSnapshotAsync(ClientKey client, CancellationToken ct) => Task.FromResult(new ClientTelemetryState(client, Snapshot));
         public Task<TelemetryMessageResult> RecordAsync(RecordTelemetrySnapshot message, CancellationToken ct) => throw new NotSupportedException();
         public Task<ClientTelemetryReadModelSnapshot> GetReadModelAsync(CancellationToken ct) => throw new NotSupportedException();
         public Task<ClientTelemetryRouteStatus> ProbeAsync(CancellationToken ct) => throw new NotSupportedException();
@@ -593,6 +661,13 @@ public sealed class MonitoringApiTests
     }
     private sealed class Runtime : IMonitoringRuntime
     {
+        public MonitoringSeriesPageDto SeriesResult { get; set; } = new([], null);
+        public MonitoringQueryDto? LastQuery { get; set; }
+        public string? LastCursor { get; private set; }
+        public Task<MonitoringSeriesPageDto> ReadTenantAsync(MonitoringQueryDto query, string? cursor, CancellationToken ct)
+        { LastQuery = query; LastCursor = cursor; return Task.FromResult(SeriesResult); }
+        public Task<MonitoringEventPageDto> ReadTenantEventsAsync(MonitoringQueryDto query, string? cursor, CancellationToken ct)
+        { LastQuery = query; LastCursor = cursor; return Task.FromResult(new MonitoringEventPageDto([], null, MatchingCount: 0)); }
         public List<MonitoringOperatorCommand> Commands { get; } = [];
         public Task<MonitoringStoreWriteResult> ClearAsync(MonitoringOperatorCommand command, CancellationToken ct) => Apply(command);
         public Task<MonitoringStoreWriteResult> AcknowledgeAsync(MonitoringOperatorCommand command, CancellationToken ct) => Apply(command);
@@ -603,7 +678,7 @@ public sealed class MonitoringApiTests
         public Task<MonitoringInputResult> RecordTelemetryAsync(MonitoringTelemetryInput input, CancellationToken ct) => throw new NotSupportedException();
         public Task<MonitoringInputResult> RecordServicesAsync(MonitoringServicesInput input, CancellationToken ct) => throw new NotSupportedException();
         public Task<ImmutableArray<MonitoringSeriesState>> GetClientAsync(ClientKey client, CancellationToken ct) => Task.FromResult(ImmutableArray<MonitoringSeriesState>.Empty);
-        public Task<MonitoringSeriesPageDto> ReadTenantAsync(int tenant, int max, string? cursor, CancellationToken ct) => Task.FromResult(new MonitoringSeriesPageDto([], null));
+        public Task<MonitoringSeriesPageDto> ReadTenantAsync(int tenant, int max, string? cursor, CancellationToken ct) => Task.FromResult(SeriesResult);
         public Task<MonitoringEventPageDto> ReadTenantEventsAsync(int tenant, int max, string? cursor, CancellationToken ct) => Task.FromResult(new MonitoringEventPageDto([], null));
         public Task<MonitoringSummaryDto> ReadTenantSummaryAsync(int tenant, CancellationToken ct) => Task.FromResult(new MonitoringSummaryDto(tenant, 0, 0, 0, 0, 0, 0, DateTimeOffset.UtcNow));
         public Task RefreshAsync(ClientKey client, CancellationToken ct) => Task.CompletedTask;

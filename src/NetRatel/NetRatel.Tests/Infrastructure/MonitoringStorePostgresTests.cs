@@ -22,6 +22,45 @@ namespace NetRatel.Tests.Infrastructure;
 [Collection(PostgreSqlPersistenceCollection.Name)]
 public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fixture)
 {
+    [Fact]
+    public async Task New_occurrence_atomically_pins_authoritative_tenant_identity_into_outbox_and_never_renames_it_on_retry()
+    {
+        await using var rig = await CreateRigAsync(flow: true);
+        await using (var scope = rig.Provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            db.Tenants.Add(new() { Id = rig.Client.TenantId, Name = "Example tenant" });
+            db.Tenants.Add(new() { Id = rig.Client.TenantId + 1, Name = "Other tenant" });
+            var agent = await db.Agents.SingleAsync();
+            agent.Name = "backup-01"; agent.FriendlyName = "Example backup";
+            agent.DeviceInfoJson = "{\"hostName\":\"backup-01\"}";
+            await db.SaveChangesAsync();
+        }
+        await FireAsync(rig);
+        var original = (await rig.Store.LoadSeriesAsync(rig.Key, default))!;
+        var pinned = original.Occurrence!.Presentation!;
+        pinned.TenantName.Should().Be("Example tenant"); pinned.ClientName.Should().Be("Example backup");
+        pinned.Hostname.Should().Be("backup-01"); pinned.Details.Should().NotContain("Other tenant");
+        var before = JsonSerializer.Serialize(pinned);
+        await using (var scope = rig.Provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var agent = await db.Agents.SingleAsync(); agent.Name = "renamed"; agent.FriendlyName = "Renamed backup";
+            (await db.Tenants.SingleAsync(x => x.Id == rig.Client.TenantId)).Name = "Renamed tenant";
+            await db.SaveChangesAsync();
+            var intent = JsonSerializer.Deserialize<MonitoringOutboxIntent>((await db.MonitoringFlowOutbox.SingleAsync()).IntentJson)!;
+            JsonSerializer.Serialize(intent.Presentation).Should().Be(before);
+        }
+        var acknowledged = await rig.Store.OperateOccurrenceAsync(new(rig.Key, original.Occurrence.OccurrenceId, Guid.NewGuid(), "Investigating",
+            original.StateRevision, 1, original.OperatorRevision), clear: false, default);
+        acknowledged.Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
+        JsonSerializer.Serialize(acknowledged.State!.Occurrence!.Presentation).Should().Be(before);
+        (await rig.Store.ReadTenantEventsAsync(rig.Client.TenantId, 20, null, default)).Items
+            .Should().OnlyContain(item => item.Presentation == pinned);
+        var lease = (await rig.Store.ClaimOutboxAsync(new(rig.Client.TenantId, Guid.NewGuid(), 1, TimeSpan.FromMinutes(1)), default)).Single();
+        JsonSerializer.Serialize(lease.Intent.Presentation).Should().Be(before);
+    }
+
     /// <summary>Real provider persistence with deterministic unit clocks; this is not the physical DriveInfo stimulus proof.</summary>
     [Fact]
     public async Task Genuine_disk_collection_marker_survives_provider_restart_and_cached_frames_cannot_complete_or_rearm_hold()
@@ -31,10 +70,15 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
         {
             RuleId = Guid.NewGuid(), Name = "genuine disk collections", BreachHold = TimeSpan.FromSeconds(30),
             RecoveryHold = TimeSpan.FromSeconds(30), FreshnessBudget = TimeSpan.FromMinutes(1),
-            Condition = new(MonitoringMetricKind.DiskFreeSpace, MonitoringNumericUnit.Bytes, 200, 500, null, null, [])
+            Condition = new(MonitoringMetricKind.DiskFreeSpace, MonitoringNumericUnit.Bytes, 200, 500, null, null, [],
+                new([], ["/snap/*", "/cache/*"], [], []))
         };
         (await rig.Provider.GetRequiredService<IMonitoringConfigurationStore>().SaveRuleAsync(
             new(rule, 1, Guid.NewGuid(), "disk sample regression"), default)).Disposition.Should().Be(MonitoringConfigurationWriteDisposition.Stored);
+        var configurations = rig.Provider.GetRequiredService<IMonitoringConfigurationStore>();
+        var persistedRule = (await configurations.GetAsync(rule.TenantId, default)).Rules.Single(item => item.RuleId == rule.RuleId);
+        persistedRule.Condition.DiskPolicy!.ExcludeMounts.Should().Equal("/cache/*", "/snap/*");
+        MonitoringContractValidator.EvaluationFingerprint(persistedRule).Should().Be(MonitoringContractValidator.EvaluationFingerprint(rule));
         var key = new MonitoringSeriesKey(rig.Client.TenantId, rule.RuleId, rig.Client.AgentId, "disk:/");
         var state = rig.Evaluator.CreateInitial(key, rule);
         MonitoringObservationDto Sample(ulong sequence, MonitoringDiskCollectionStamp stamp) =>
@@ -83,6 +127,18 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
         var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
         (await db.MonitoringOccurrences.CountAsync(row => row.RuleId == rule.RuleId)).Should().Be(1);
         (await db.MonitoringEvents.CountAsync(row => row.OccurrenceId == occurrence)).Should().Be(2);
+        var oldPinnedEvidence = JsonSerializer.Serialize(durable.Occurrence!.RaisedEvidence);
+        var policyEdit = persistedRule with { Revision = 2, EvaluationRevision = 2,
+            Condition = persistedRule.Condition with { DiskPolicy = new([], ["/snap/*", "/cache/*", "/scratch/*"], [], []) } };
+        Func<Task> noReset = async () => await configurations.SaveRuleAsync(new(policyEdit, 2, Guid.NewGuid(), "edit disk exclusions"), default);
+        await noReset.Should().ThrowAsync<ArgumentException>();
+        (await configurations.SaveRuleAsync(new(policyEdit, 2, Guid.NewGuid(), "edit disk exclusions",
+            MonitoringConditionResetPolicy.SuspendOccurrenceAndRequireNewWindow), default)).Disposition.Should().Be(MonitoringConfigurationWriteDisposition.Stored);
+        var reset = (await store.LoadSeriesAsync(key, default))!;
+        reset.EvaluationRevision.Should().Be(2);
+        reset.WindowStartedAtUtc.Should().BeNull();
+        JsonSerializer.Serialize(reset.Occurrence!.RaisedEvidence).Should().Be(oldPinnedEvidence);
+        reset.Occurrence.PinnedRule.Condition.DiskPolicy!.ExcludeMounts.Should().NotContain("/scratch/*");
     }
 
     [Fact]
@@ -446,6 +502,156 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
         state.Occurrence!.ClosureDisposition.Should().Be(MonitoringClosureDisposition.RuleDisabled);
         await using var scope = rig.Provider.CreateAsyncScope();
         (await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().MonitoringFlowOutbox.SingleAsync()).Status.Should().Be(MonitoringOutboxStatus.Cancelled);
+    }
+
+    [Fact]
+    public async Task Full_query_precedes_paging_and_cursor_roundtrips_maximum_escaped_unicode_keys()
+    {
+        await using var rig = await CreateRigAsync();
+        // Keep a non-microsecond-aligned instant whose JSON timestamp rounds upward.
+        // A binary Npgsql clock parameter would truncate it and make every fresh row Unknown.
+        rig.Time.Advance(TimeSpan.FromTicks(17 - rig.Time.GetUtcNow().Ticks % TimeSpan.TicksPerMicrosecond));
+        var raised = await FireAsync(rig);
+        var now = rig.Time.GetUtcNow();
+        var maximumKey = "disk:/a/" + new string('中', 168) + new string('\\', 168) + new string('"', 168);
+        maximumKey.Length.Should().Be(MonitoringLimits.MaximumResourceKeyLength);
+        await using (var scope = rig.Provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            await db.MonitoringSeries.ExecuteDeleteAsync();
+            var agent = await db.Agents.SingleAsync(row => row.Id == rig.Client.AgentId);
+            agent.FriendlyName = "synthetic-backup";
+            agent.DeviceInfoJson = "legacy malformed metadata remains searchable";
+            for (var index = 0; index < 185; index++)
+            {
+                var healthy = index < 50;
+                var key = rig.Key with { ResourceKey = index == 0 ? maximumKey : $"disk:/{(healthy ? "b" : "z")}-{index:D3}" };
+                var state = raised with
+                {
+                    Series = key, Phase = healthy ? MonitoringPhase.Healthy : MonitoringPhase.Firing,
+                    EvidenceQuality = index == 50 ? MonitoringEvidenceQuality.Unknown : MonitoringEvidenceQuality.Fresh,
+                    LatestEvidence = index switch
+                    {
+                        1 => raised.LatestEvidence! with { ObservedAtUtc = now.AddMinutes(-6) },
+                        2 => raised.LatestEvidence! with { ReceivedAtUtc = now.AddMinutes(-6) },
+                        3 => raised.LatestEvidence! with { ObservedAtUtc = now.AddMinutes(1) },
+                        4 => raised.LatestEvidence! with { Classification = MonitoringClassification.Unknown },
+                        _ => raised.LatestEvidence
+                    },
+                    Occurrence = healthy ? null : raised.Occurrence! with
+                    {
+                        OccurrenceId = Guid.NewGuid(), RaisedEventId = Guid.NewGuid(),
+                        PinnedRule = rig.Rule with { Name = "Synthetic disk rule" }
+                    }
+                };
+                db.MonitoringSeries.Add(Record(state));
+            }
+            await db.SaveChangesAsync();
+            var identity = await NetRatel.API.Services.Monitoring.MonitoringIdentityProjection.ReadAsync(db,
+                rig.Client.TenantId, [rig.Client.AgentId], default);
+            identity.Single().DisplayName.Should().Be("synthetic-backup");
+        }
+        var unfiltered = await rig.Store.ReadTenantSeriesAsync(rig.Client.TenantId, 50, null, default);
+        unfiltered.Items.Should().HaveCount(50).And.OnlyContain(row => row.Phase == MonitoringPhase.Healthy);
+        var one = new MonitoringQueryDto(rig.Client.TenantId, MaximumCount: 1);
+        var first = await rig.Store.ReadTenantSeriesAsync(one, null, default);
+        first.Items.Single().Series.ResourceKey.Should().Be(maximumKey);
+        first.NextCursor!.Length.Should().BeGreaterThan(256).And.BeLessThanOrEqualTo(MonitoringQueryLimits.MaximumCursorLength);
+        var next = await rig.Store.ReadTenantSeriesAsync(one, first.NextCursor, default);
+        next.Items.Single().Series.Should().NotBe(first.Items.Single().Series);
+        foreach (var size in new[] { 20, 50, 100 })
+        {
+            var query = new MonitoringQueryDto(rig.Client.TenantId, MonitoringView.Firing, rig.Client.AgentId, MonitoringSeverity.Warning,
+                " SYNTHETIC ", now.AddMinutes(-1), now.AddMinutes(1), MaximumCount: size);
+            var seen = new HashSet<MonitoringSeriesKey>();
+            string? cursor = null;
+            do
+            {
+                var page = await rig.Store.ReadTenantSeriesAsync(query, cursor, default);
+                page.MatchingCount.Should().Be(135);
+                page.Items.Should().HaveCount(Math.Min(size, 135 - seen.Count));
+                foreach (var item in page.Items) seen.Add(item.Series).Should().BeTrue();
+                cursor = page.NextCursor;
+            } while (cursor is not null);
+            seen.Should().HaveCount(135);
+        }
+        var firing = await rig.Store.ReadTenantSeriesAsync(new(rig.Client.TenantId, MonitoringView.Firing, MaximumCount: 20), null, default);
+        firing.Items.Should().Contain(row => row.EvidenceQuality == MonitoringEvidenceQuality.Unknown);
+        (await rig.Store.ReadTenantSeriesAsync(new(rig.Client.TenantId, MonitoringView.Unknown), null, default)).MatchingCount.Should().Be(5,
+            "Unknown includes current observed/received freshness and future timestamps without removing Firing lifecycle matches");
+        var textMatch = await rig.Store.ReadTenantSeriesAsync(new(rig.Client.TenantId, Text: "synthetic-backup", MaximumCount: 1), null, default);
+        textMatch.MatchingCount.Should().Be(185, "friendly directory names match before paging, including malformed legacy metadata");
+        (await rig.Store.ReadTenantSeriesAsync(new(rig.Client.TenantId, FromUtc: now.AddMinutes(-1), MaximumCount: 1), null, default)).MatchingCount.Should().Be(135);
+        (await rig.Store.ReadTenantSeriesAsync(new(rig.Client.TenantId, Text: "no-synthetic-match"), null, default)).Items.Should().BeEmpty();
+        foreach (var query in new[] { one with { TenantId = rig.Client.TenantId + 1 }, one with { MaximumCount = 20 }, one with { View = MonitoringView.Firing } })
+        {
+            Func<Task> foreign = async () => await rig.Store.ReadTenantSeriesAsync(query, first.NextCursor, default);
+            await foreign.Should().ThrowAsync<ArgumentException>().WithMessage("monitoring_cursor_context_mismatch");
+        }
+        Func<Task> wrongEndpoint = async () => await rig.Store.ReadTenantEventsAsync(one, first.NextCursor, default);
+        await wrongEndpoint.Should().ThrowAsync<ArgumentException>().WithMessage("monitoring_cursor_context_mismatch");
+        Func<Task> malformed = async () => await rig.Store.ReadTenantSeriesAsync(one, "%invalid%", default);
+        await malformed.Should().ThrowAsync<ArgumentException>();
+        var legacy = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("{\"TenantId\":80}"));
+        Func<Task> restart = async () => await rig.Store.ReadTenantSeriesAsync(one, legacy, default);
+        await restart.Should().ThrowAsync<ArgumentException>().WithMessage("monitoring_cursor_restart_required");
+
+        var offlineKey = MonitoringOfflinePresentation.Series(rig.Client.TenantId, rig.Rule.RuleId);
+        var offline = raised with { Series = offlineKey, OfflineAgentIds = [rig.Client.AgentId],
+            LatestEvidence = raised.LatestEvidence! with { OfflineSummary = new(1, 1, "synthetic-backup", false) } };
+        await using (var scope = rig.Provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            db.MonitoringSeries.Add(Record(offline)); await db.SaveChangesAsync();
+        }
+        var clientPage = await rig.Store.ReadTenantSeriesAsync(new(rig.Client.TenantId, MonitoringView.Firing, rig.Client.AgentId, MaximumCount: 200), null, default);
+        clientPage.Items.Should().HaveCount(136).And.Contain(row => row.Series == offlineKey);
+
+        MonitoringSeriesRecord Record(MonitoringSeriesState state) => new()
+        {
+            TenantId = state.Series.TenantId, RuleId = state.Series.RuleId, AgentId = state.Series.AgentId, ResourceKey = state.Series.ResourceKey,
+            StateRevision = state.StateRevision, Phase = state.Phase, EvidenceQuality = state.EvidenceQuality,
+            ActiveOccurrenceId = state.Occurrence?.OccurrenceId, LatestOccurrenceId = state.Occurrence?.OccurrenceId,
+            StateJson = JsonSerializer.Serialize(state), UpdatedAtUtc = now
+        };
+    }
+
+    [Fact]
+    public async Task History_filters_apply_before_event_audit_union_and_pin_offline_client_membership()
+    {
+        await using var rig = await CreateRigAsync();
+        var firing = await FireAsync(rig);
+        var now = rig.Time.GetUtcNow();
+        var offlineKey = MonitoringOfflinePresentation.Series(rig.Client.TenantId, rig.Rule.RuleId);
+        var occurrence = firing.Occurrence! with { OccurrenceId = Guid.NewGuid(), RaisedEventId = Guid.NewGuid() };
+        var legacy = new MonitoringEventIntent(occurrence.RaisedEventId, MonitoringEventKind.AlertRaised, offlineKey,
+            occurrence.OccurrenceId, now, rig.Rule, firing.LatestEvidence!);
+        var pinned = legacy with { EventId = Guid.NewGuid(), Kind = MonitoringEventKind.AlertAcknowledged, OfflineAgentIds = [rig.Client.AgentId] };
+        await using (var scope = rig.Provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            db.MonitoringOccurrences.Add(new() { OccurrenceId = occurrence.OccurrenceId, TenantId = rig.Client.TenantId,
+                RuleId = rig.Rule.RuleId, AgentId = Guid.Empty, ResourceKey = offlineKey.ResourceKey,
+                RaisedEventId = occurrence.RaisedEventId, RaisedAtUtc = now, OccurrenceJson = JsonSerializer.Serialize(occurrence) });
+            foreach (var item in new[] { legacy, pinned }) db.MonitoringEvents.Add(new() { EventId = item.EventId,
+                OccurrenceId = item.OccurrenceId, TenantId = rig.Client.TenantId, AtUtc = now, EventJson = JsonSerializer.Serialize(item) });
+            await db.SaveChangesAsync();
+        }
+        var query = new MonitoringQueryDto(rig.Client.TenantId, ClientId: rig.Client.AgentId, Severity: MonitoringSeverity.Warning,
+            Text: "HIGH CPU", FromUtc: now.AddMinutes(-1), ToExclusiveUtc: now.AddMinutes(1), MaximumCount: 1);
+        var first = await rig.Store.ReadTenantEventsAsync(query, null, default);
+        first.MatchingCount.Should().Be(2);
+        first.Audits.Should().BeEmpty();
+        var next = await rig.Store.ReadTenantEventsAsync(query, first.NextCursor, default);
+        next.NextCursor.Should().BeNull();
+        first.Items.Concat(next.Items).Select(item => item.EventId).Should().BeEquivalentTo(new[] { firing.Occurrence!.RaisedEventId, pinned.EventId });
+        var all = await rig.Store.ReadTenantEventsAsync(new(rig.Client.TenantId), null, default);
+        all.Items.Should().HaveCount(3);
+        all.Audits.Should().NotBeEmpty("non-series configuration audits remain in unfiltered immutable History");
+        all.MatchingCount.Should().Be(all.Items.Length + all.Audits.Length);
+        (await rig.Store.ReadTenantEventsAsync(new(rig.Client.TenantId, Severity: MonitoringSeverity.Critical), null, default)).MatchingCount.Should().Be(0);
+        Func<Task> wrongQuery = async () => await rig.Store.ReadTenantEventsAsync(query with { Text = "other" }, first.NextCursor, default);
+        await wrongQuery.Should().ThrowAsync<ArgumentException>().WithMessage("monitoring_cursor_context_mismatch");
     }
 
     [Fact]

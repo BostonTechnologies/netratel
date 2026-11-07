@@ -23,6 +23,7 @@ public static class MonitoringObservationFactory
         var supported = false;
         var observedAtUtc = snapshot.ObservedAtUtc;
         MonitoringDiskCollectionStamp? collection = null;
+        MonitoringDiskFactsDto? diskFacts = null;
         if (valid && rule.Condition.Kind == MonitoringMetricKind.CpuUsagePercent && series.ResourceKey == "cpu")
         {
             value = snapshot.Cpu?.UsagePercent;
@@ -45,11 +46,12 @@ public static class MonitoringObservationFactory
                 // The transport may accept a bounded client clock lead. Retain its proof for
                 // later frames, but this frame cannot become complete monitoring evidence.
                 valid = supported && collection!.CollectedAtUtc <= snapshot.ReceivedAtUtc;
+                if (valid) diskFacts = new(disk.TotalBytes!.Value, disk.FreeBytes!.Value, disk.Metadata);
             }
         }
         else valid = false;
         return new(series, new(snapshot.ConnectionEpoch, snapshot.Sequence), input.Fence.EvidenceStreamId,
-            observedAtUtc, snapshot.ReceivedAtUtc, valid, supported, value, resolution, DiskCollection: collection);
+            observedAtUtc, snapshot.ReceivedAtUtc, valid, supported, value, resolution, DiskCollection: collection, DiskFacts: diskFacts);
     }
 
     public static MonitoringObservationDto FromServices(MonitoringRuleDto rule, MonitoringSeriesKey series, MonitoringServicesInput input)
@@ -101,6 +103,8 @@ public static class MonitoringObservationFactory
             CollectionId = id.ToString("D"), CollectedAtUtc = collected.ToUniversalTime().ToString("O"),
             CollectionQuality = (int)disk.CollectionQuality
         });
+        // Preserve exact legacy fingerprints when metadata is absent. Classified collections bind every metadata byte.
+        if (disk.Metadata is not null) body = body.Concat(JsonSerializer.SerializeToUtf8Bytes(disk.Metadata)).ToArray();
         return new(id, collected, Convert.ToHexString(SHA256.HashData(body)));
     }
 

@@ -262,8 +262,22 @@ permission. A policy for one exact client does not grant tenant configuration,
 history, or group/rule administration. `monitoring client-series`,
 `acknowledge`, and `clear` also check the exact selected client's current
 target policy. The optional `--search` filter belongs to `monitoring clients`
-and accepts at most 256 characters; monitoring series and events use their
-own bounded pages without a text search.
+and accepts at most 256 characters. `monitoring series` and `monitoring events`
+accept additive full-result filters `--view`, `--client-id`, `--severity`, `--text`,
+`--from-utc`, `--to-exclusive-utc` and `--sort`, combined before paging. For example:
+
+```sh
+netratel monitoring series --tenant-id 7 --view Firing --severity Warning --text backup --limit 20
+```
+
+The equivalent `netratel_monitoring/series` or `/events` MCP request uses `view`,
+`clientId`, `severity`, `text`, `fromUtc`, `toExclusiveUtc`, `sort`, `limit` and
+`cursor`. Unfiltered reads retain Healthy series. Pass opaque `nextCursor` strings
+back unchanged (maximum 1,468 characters) and keep all query fields, including
+page size, unchanged. Restart pagination after a query change or cursor-version
+upgrade. Invalid continuation is an explicit error, never an empty result.
+See [Monitoring query semantics](../operations/MONITORING.md#full-result-queries-and-continuation)
+for raised versus event/audit dates, offline membership, audit filters and counts.
 
 For `flows save-draft`, the data contains `expectedRevision`, `name`, and
 `graph`. Obtain a graph from `flows get` or `flows template`; inspect

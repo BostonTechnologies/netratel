@@ -334,6 +334,7 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
     private GatewayCpuSample? _previousCpu;
     private readonly Dictionary<string, GatewayNetworkSample> _previousNetworks = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyList<TelemetryDisk> _disks = [];
+    private bool _diskInventoryTruncated;
     private TelemetryTransportHealth? _health;
 
     public TelemetryFrame CreateFrame(
@@ -359,6 +360,7 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
             ConnectionId = session.ConnectionId.ToString("D"),
             Sequence = sequence,
             ObservedAtUtc = Timestamp.FromDateTimeOffset(observedAtUtc),
+            DiskInventoryTruncated = _diskInventoryTruncated,
             TransportHealth = _health
         };
 
@@ -514,59 +516,71 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
     private IReadOnlyList<TelemetryDisk> SampleDisks()
     {
         var disks = new List<TelemetryDisk>();
-        var scopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        DriveInfo[] drives;
-        try { drives = DriveInfo.GetDrives(); }
+        var scopes = new HashSet<string>(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        _diskInventoryTruncated = false;
+        IReadOnlyList<ClassifiedLinuxMount>? inventory = null;
+        if (OperatingSystem.IsLinux())
+        {
+            try { inventory = LinuxMountInventory.Read(out _diskInventoryTruncated); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            { log($"Disk mount classification unavailable: {exception.Message}"); }
+        }
+        IEnumerable<(DriveInfo Drive, ClassifiedLinuxMount? Mount)> drives;
+        try
+        {
+            drives = inventory is not null ? inventory.Select(mount => (new DriveInfo(mount.Mount.Mount), (ClassifiedLinuxMount?)mount)) :
+                DriveInfo.GetDrives().Select(drive => (drive, (ClassifiedLinuxMount?)null));
+        }
         catch (Exception exception)
         {
-            // Replacing the cache with an empty collection makes missing resources Unknown; never retain old successful bytes.
             log($"Telemetry shadow disk enumeration failed: {exception.Message}");
             return disks;
         }
-        foreach (var drive in drives)
+        foreach (var (drive, mount) in drives)
         {
             try
             {
-                if (!drive.IsReady || drive.TotalSize <= 0)
+                var scope = NormalizeDiskScope(mount?.Mount.Mount ?? (string.IsNullOrWhiteSpace(drive.Name) ? drive.RootDirectory.FullName : drive.Name));
+                if (scope.Length == 0 || scope.Length > 128 || scope.Any(char.IsControl)) { _diskInventoryTruncated = true; continue; }
+                if (!scopes.Add(scope)) continue;
+                var metadata = mount?.Metadata;
+                var disk = new TelemetryDisk { Scope = scope };
+                if (metadata is not null)
+                    disk.Metadata = new() { FileSystem = metadata.FileSystem, Source = metadata.Source, MountRoot = metadata.MountRoot,
+                        CapacityKey = metadata.CapacityKey, ReadOnly = metadata.ReadOnly, DefaultExclusionReason = metadata.DefaultExclusionReason ?? "" };
+                if (drive.IsReady && drive.TotalSize > 0)
                 {
-                    continue;
+                    var totalBytes = drive.TotalSize; var freeBytes = drive.AvailableFreeSpace;
+                    if (freeBytes < 0 || freeBytes > totalBytes) continue;
+                    var totalGb = totalBytes / 1024d / 1024d / 1024d;
+                    var freeGb = freeBytes / 1024d / 1024d / 1024d;
+                    var usedGb = Math.Max(0, totalGb - freeGb);
+                    disk.TotalBytes = checked((ulong)totalBytes); disk.FreeBytes = checked((ulong)freeBytes);
+                    disk.TotalGb = Math.Round(totalGb, 1); disk.UsedGb = Math.Round(usedGb, 1);
+                    disk.FreeGb = Math.Round(freeGb, 1); disk.UsagePercent = Math.Round(usedGb / totalGb * 100d, 1);
+                    disk.CollectionQuality = TelemetryDiskCollectionQuality.Complete;
                 }
-
-                var totalBytes = drive.TotalSize;
-                var freeBytes = drive.AvailableFreeSpace;
-                if (freeBytes < 0 || freeBytes > totalBytes) continue;
-                var totalGb = totalBytes / 1024d / 1024d / 1024d;
-                var freeGb = freeBytes / 1024d / 1024d / 1024d;
-                var usedGb = Math.Max(0, totalGb - freeGb);
-                var scope = NormalizeDiskScope(string.IsNullOrWhiteSpace(drive.Name) ? drive.RootDirectory.FullName : drive.Name);
-                if (string.IsNullOrEmpty(scope) || !scopes.Add(scope) || disks.Count >= MaximumScopesPerFrame)
-                {
-                    continue;
-                }
-
-                disks.Add(new TelemetryDisk
-                {
-                    Scope = scope,
-                    TotalBytes = checked((ulong)totalBytes),
-                    FreeBytes = checked((ulong)freeBytes),
-                    // Identity is minted only after this actual DriveInfo read completes, never on a fast frame or retry.
-                    CollectionId = Guid.NewGuid().ToString("D"),
-                    CollectedAtUtc = Timestamp.FromDateTimeOffset(_timeProvider.GetUtcNow()),
-                    CollectionQuality = TelemetryDiskCollectionQuality.Complete,
-                    TotalGb = Math.Round(totalGb, 1),
-                    UsedGb = Math.Round(usedGb, 1),
-                    FreeGb = Math.Round(freeGb, 1),
-                    UsagePercent = totalGb <= 0 ? 0d : Math.Round(usedGb / totalGb * 100d, 1)
-                });
+                else if (metadata?.DefaultExclusionReason is not null)
+                    disk.CollectionQuality = TelemetryDiskCollectionQuality.Unsupported;
+                else continue;
+                // Mint once after an actual inventory/capacity read; copied frames retain this exact proof.
+                disk.CollectionId = Guid.NewGuid().ToString("D");
+                disk.CollectedAtUtc = Timestamp.FromDateTimeOffset(_timeProvider.GetUtcNow());
+                disks.Add(disk);
             }
             catch (Exception exception)
-            {
-                log($"Telemetry shadow disk sample skipped for '{drive.Name}': {exception.Message}");
-            }
+            { _diskInventoryTruncated = true; log($"Telemetry shadow disk sample skipped for '{drive.Name}': {exception.Message}"); }
         }
-
-        return disks;
+        var selected = PrioritizeDisks(disks);
+        _diskInventoryTruncated |= selected.Count < disks.Count;
+        return selected;
     }
+
+    internal static IReadOnlyList<TelemetryDisk> PrioritizeDisks(IEnumerable<TelemetryDisk> disks) =>
+        disks.Where(disk => disk.Metadata is null || disk.Metadata.DefaultExclusionReason.Length == 0)
+            .OrderBy(disk => disk.Scope, StringComparer.Ordinal)
+            .Concat(disks.Where(disk => disk.Metadata is not null && disk.Metadata.DefaultExclusionReason.Length > 0)
+                .OrderBy(disk => disk.Scope, StringComparer.Ordinal).Take(16)).Take(MaximumScopesPerFrame).ToArray();
 
     internal static string NormalizeDiskScope(string? scope)
     {

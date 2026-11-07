@@ -18,11 +18,19 @@ internal static class TelemetrySnapshotSerializer
         };
         if (envelope.CalculateSize() <= MaximumEnvelopeBytes) return envelope;
         envelope.Snapshot = snapshot.Clone();
+        var prioritized = GatewayTelemetrySnapshotCollector.PrioritizeDisks(envelope.Snapshot.Disks);
+        if (prioritized.Count < envelope.Snapshot.Disks.Count) envelope.Snapshot.DiskInventoryTruncated = true;
+        envelope.Snapshot.Disks.Clear();
+        envelope.Snapshot.Disks.AddRange(prioritized);
         while (envelope.CalculateSize() > MaximumEnvelopeBytes)
         {
             // Absent per-resource data remains Unknown. Do not turn a missing disk into recovered/free evidence.
             if (envelope.Snapshot.Networks.Count > 0) envelope.Snapshot.Networks.RemoveAt(envelope.Snapshot.Networks.Count - 1);
-            else if (envelope.Snapshot.Disks.Count > 0) envelope.Snapshot.Disks.RemoveAt(envelope.Snapshot.Disks.Count - 1);
+            else if (envelope.Snapshot.Disks.Count > 0)
+            {
+                envelope.Snapshot.Disks.RemoveAt(envelope.Snapshot.Disks.Count - 1);
+                envelope.Snapshot.DiskInventoryTruncated = true;
+            }
             else throw new InvalidDataException("Telemetry metadata exceeds the existing transport limit.");
         }
         return envelope;

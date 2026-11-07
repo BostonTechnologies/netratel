@@ -74,6 +74,8 @@ public sealed record FlowEventDataDto(Guid AgentId, Guid RuleId, string RuleName
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public MonitoringOfflineSnapshotDto? OfflineSummary { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MonitoringPresentationSnapshotDto? Presentation { get; init; }
 }
 public sealed record FlowIncidentFieldsDto(string Title, string Description, int? Priority = null);
 public sealed record FlowDryRunRequest(FlowGraphDto Graph, FlowEventDataDto Input);

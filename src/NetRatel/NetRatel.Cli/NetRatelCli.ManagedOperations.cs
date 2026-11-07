@@ -77,6 +77,24 @@ internal static partial class NetRatelCli
             search = new Option<string?>("--search") { Description = "Optional client text filter, at most 256 characters." };
             command.AddOption(search);
         }
+        var monitoringFilters = new Dictionary<string, Option<string?>>(StringComparer.Ordinal);
+        if (descriptor.MonitoringQuery)
+        {
+            foreach (var (property, flag, explanation) in new[]
+            {
+                ("view", "--view", "All (default), Active, Firing, Pending, Unknown, Acknowledged, Suppressed or Offline; History accepts All."),
+                ("clientId", "--client-id", "Exact client UUID; includes current offline aggregates containing this member."),
+                ("severity", "--severity", "Information, Warning or Critical; pinned occurrence severity when available."),
+                ("text", "--text", "Full-result case-insensitive rule/client/resource search, at most 256 characters."),
+                ("fromUtc", "--from-utc", "Inclusive ISO8601 time: occurrence raised time for series, event/audit time for History."),
+                ("toExclusiveUtc", "--to-exclusive-utc", "Exclusive ISO8601 upper bound; convert local inclusive dates before sending."),
+                ("sort", "--sort", "SeriesIdentity for series or EventTimeDescending for History.")
+            })
+            {
+                var filter = new Option<string?>(flag) { Description = explanation };
+                monitoringFilters.Add(property, filter); command.AddOption(filter);
+            }
+        }
         Option<int?>? skip = null;
         if (descriptor.OffsetPaged)
         {
@@ -129,6 +147,8 @@ internal static partial class NetRatelCli
             if (limit is not null && context.ParseResult.GetValueForOption(limit) is { } pageSize) request["limit"] = pageSize;
             if (cursor is not null && context.ParseResult.GetValueForOption(cursor) is { } pageCursor) request["cursor"] = pageCursor;
             if (search is not null && context.ParseResult.GetValueForOption(search) is { } query) request["search"] = query;
+            foreach (var (property, option) in monitoringFilters)
+                if (context.ParseResult.GetValueForOption(option) is { } filterValue) request[property] = filterValue;
             if (skip is not null && context.ParseResult.GetValueForOption(skip) is { } offset) request["skip"] = offset;
             if (after is not null && context.ParseResult.GetValueForOption(after) is { } sequence) request["after"] = sequence;
 

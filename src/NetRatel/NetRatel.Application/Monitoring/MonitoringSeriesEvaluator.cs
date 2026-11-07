@@ -46,6 +46,20 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
             state.LastDiskCollection == observation.DiskCollection)
             return EvaluateCachedDiskCollection(state, rule, observation, bypasses, now, groups);
         var evidence = Classify(state, rule, observation, now, collectionReason);
+        if (isDisk && observation.Complete && observation.Supported && observation.DiskFacts is { } diskFacts &&
+            evidence.UnknownReason is null or "numeric_uncertainty" &&
+            MonitoringDiskPolicy.Select(state.Series.ResourceKey[5..], diskFacts.Metadata, rule.Condition) is { Eligible: false } excluded)
+        {
+            // A proven exclusion is an explicit non-recovery suspension. Missing/partial/stale collections cannot enter this path.
+            var suspended = Suspend(state, rule, MonitoringClosureDisposition.TargetRemoved, null, "disk-policy:" + excluded.Reason);
+            return suspended with { State = suspended.State with
+            {
+                StateRevision = checked(state.StateRevision + 1), Cursor = observation.Cursor, EvidenceStreamId = observation.EvidenceStreamId,
+                LastDiskCollection = observation.DiskCollection, LastDiskTransportReceivedAtUtc = observation.ReceivedAtUtc,
+                LatestEvidence = evidence with { Quality = MonitoringEvidenceQuality.Unknown, Classification = MonitoringClassification.Unknown,
+                    UnknownReason = "disk-policy:" + excluded.Reason }
+            } };
+        }
         var changedEpoch = state.Cursor is { } previousCursor && previousCursor.ConnectionEpoch != observation.Cursor.ConnectionEpoch;
         var changedStream = state.EvidenceStreamId is { } previousStream && previousStream != observation.EvidenceStreamId;
         var gap = state.LatestEvidence is { } previous &&
@@ -204,11 +218,11 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
     }
 
     /// <summary>Authoritative directory changes carry no invented human principal.</summary>
-    public MonitoringEvaluationResult SetAuthoritativeApplicability(MonitoringSeriesState state, MonitoringRuleDto rule, bool applicable)
+    public MonitoringEvaluationResult SetAuthoritativeApplicability(MonitoringSeriesState state, MonitoringRuleDto rule, bool applicable, string? reason = null)
     {
         RequireDefinition(state, rule);
         if (!rule.Enabled || !applicable) return Suspend(state, rule,
-            !rule.Enabled ? MonitoringClosureDisposition.RuleDisabled : MonitoringClosureDisposition.TargetRemoved, null, null);
+            !rule.Enabled ? MonitoringClosureDisposition.RuleDisabled : MonitoringClosureDisposition.TargetRemoved, null, reason);
         if (state.Phase is not (MonitoringPhase.Suspended or MonitoringPhase.NotApplicable)) return Unchanged(state);
         var now = timeProvider.GetUtcNow();
         var working = state with { StateRevision = checked(state.StateRevision + 1), Phase = MonitoringPhase.Healthy,
@@ -353,8 +367,9 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
         left with { Targets = right.Targets, Condition = right.Condition } == right &&
         left.Targets.Mode == right.Targets.Mode && SameArray(left.Targets.AgentIds, right.Targets.AgentIds) &&
         SameArray(left.Targets.GroupIds, right.Targets.GroupIds) &&
-        left.Condition with { ExpectedServiceStates = right.Condition.ExpectedServiceStates } == right.Condition &&
-        SameArray(left.Condition.ExpectedServiceStates, right.Condition.ExpectedServiceStates);
+        left.Condition with { ExpectedServiceStates = right.Condition.ExpectedServiceStates, DiskPolicy = right.Condition.DiskPolicy } == right.Condition &&
+        SameArray(left.Condition.ExpectedServiceStates, right.Condition.ExpectedServiceStates) &&
+        MonitoringDiskPolicy.Equivalent(left.Condition.DiskPolicy, right.Condition.DiskPolicy);
 
     private static bool SameArray<T>(ImmutableArray<T> left, ImmutableArray<T> right) =>
         left.IsDefault == right.IsDefault && (left.IsDefault || left.SequenceEqual(right));
@@ -418,6 +433,9 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
             state.NotBeforeReceivedAtUtc is { } receivedFence && observation.ReceivedAtUtc <= receivedFence ? "before_receipt_fence" :
             state.LatestEvidence is { } previous && observation.Cursor.ConnectionEpoch == previous.Cursor.ConnectionEpoch &&
                 (offline || !IsDisk(rule)) && (observation.ObservedAtUtc <= previous.ObservedAtUtc || observation.ReceivedAtUtc <= previous.ReceivedAtUtc) ? "reordered_clock" : null);
+        if (reason is null && !offline && IsDisk(rule) && observation.DiskFacts is { } facts &&
+            MonitoringDiskPolicy.Select(state.Series.ResourceKey[5..], facts.Metadata, rule.Condition).Reason == "unclassified-policy")
+            reason = "disk-policy-unclassified";
         var classification = MonitoringClassification.Unknown;
         if (reason is null)
         {
@@ -459,7 +477,8 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
             reason is null ? MonitoringEvidenceQuality.Fresh : MonitoringEvidenceQuality.Unknown, classification,
             observation.NumericValue, observation.NumericResolution, observation.ServiceState, reason,
             IsWellFormedDiskCollection(observation.DiskCollection) ? observation.DiskCollection : null,
-            offline && MonitoringOfflinePresentation.IsValid(observation.OfflineSummary) ? observation.OfflineSummary : null);
+            offline && MonitoringOfflinePresentation.IsValid(observation.OfflineSummary) ? observation.OfflineSummary : null,
+            observation.Complete && observation.Supported ? observation.DiskFacts : null);
     }
 
     private MonitoringEvaluationResult Suspend(MonitoringSeriesState state, MonitoringRuleDto rule, MonitoringClosureDisposition disposition, Guid? operatorId, string? reason)

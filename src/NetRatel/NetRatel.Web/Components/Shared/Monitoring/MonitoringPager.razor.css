@@ -1,0 +1,7 @@
+.monitoring-pager { display:flex; align-items:center; flex-wrap:wrap; gap:.5rem; padding:.75rem .25rem .25rem; background:var(--mud-palette-surface); font-size:.8125rem; }
+.monitoring-pager label { display:flex; align-items:center; gap:.35rem; }
+.monitoring-pager button,.monitoring-pager select { font:inherit; padding:.4rem .55rem; border:1px solid var(--mud-palette-divider); border-radius:4px; background:var(--mud-palette-surface); color:var(--mud-palette-text-primary); cursor:pointer; }
+.monitoring-pager button:disabled,.monitoring-pager select:disabled { opacity:.5; cursor:default; }
+.monitoring-pager button:focus-visible,.monitoring-pager select:focus-visible { outline:2px solid var(--mud-palette-primary); outline-offset:2px; }
+.monitoring-pager [role=status] { margin-left:auto; }
+@media(max-width:650px) { .monitoring-pager label { flex-basis:100%; } .monitoring-pager [role=status] { flex-basis:100%; margin-left:0; } }

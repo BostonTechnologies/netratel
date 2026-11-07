@@ -18,6 +18,16 @@ public static class NotificationMessageFormatter
             return Bound(NetRatel.Shared.Security.OperatorOutputRedactor.Redact(text), NotificationConnectorLimits.MaximumMessageLength);
         }
         var data = draft.Event.Data ?? throw new ArgumentException("Monitoring alert data is required.");
+        if (data.Presentation is not null)
+        {
+            var human = $"{Bound(draft.Fields.Title, 200)}\n{Bound(draft.Fields.Description, 1400)}\n\n" +
+                $"Alert: {draft.Event.OccurrenceId:D}\nRule ID: {data.RuleId:D}";
+            // Slack is sent with mrkdwn=false and context escaping by the transport. Discord uses Markdown,
+            // so render this new plain-text presentation literally; transport also disables all mentions.
+            if (draft.Kind == NetRatel.Shared.Contracts.Flows.FlowActionKind.Discord)
+                human = string.Concat(human.SelectMany(c => "\\`*_~[]()>#|".Contains(c) ? new[] { '\\', c } : new[] { c }));
+            return Bound(NetRatel.Shared.Security.OperatorOutputRedactor.Redact(human), NotificationConnectorLimits.MaximumMessageLength);
+        }
         var description = data.OfflineSummary?.Summary ?? draft.Fields.Description;
         var message = $"{Bound(draft.Fields.Title, 200)}\n{Bound(description, 1000)}\n\n" +
             $"Rule: {Bound(data.RuleName, 120)}\nSeverity: {Bound(data.Severity, 32)}\n";

@@ -12,12 +12,41 @@ namespace NetRatel.Web.Components.Pages.Monitoring;
 
 public partial class MonitoringPage
 {
+    [Inject] private Microsoft.Extensions.Logging.ILogger<MonitoringPage> Logger { get; set; } = default!;
     [Inject] private IJSRuntime JS { get; set; } = default!;
     [SupplyParameterFromQuery(Name = "tenantId")] public int? RequestedTenantId { get; set; }
     [SupplyParameterFromQuery(Name = "clientId")] public Guid? RequestedClientId { get; set; }
     [SupplyParameterFromQuery(Name = "state")] public string? RequestedState { get; set; }
     [SupplyParameterFromQuery(Name = "alert")] public Guid? RequestedAlertId { get; set; }
     [SupplyParameterFromQuery(Name = "search")] public string? RequestedSearch { get; set; }
+    [SupplyParameterFromQuery(Name = "severity")] public string? RequestedSeverity { get; set; }
+    [SupplyParameterFromQuery(Name = "from")] public string? RequestedFrom { get; set; }
+    [SupplyParameterFromQuery(Name = "to")] public string? RequestedTo { get; set; }
+    [SupplyParameterFromQuery(Name = "pageSize")] public int? RequestedPageSize { get; set; }
+    [SupplyParameterFromQuery(Name = "view")] public string? RequestedView { get; set; }
+    [SupplyParameterFromQuery(Name = "timeZone")] public string? RequestedTimeZone { get; set; }
+    private string? _appliedFilters;
+    private string? _severity, _fromDate, _toDate, _filterError;
+    private int _pageSize = 20;
+    private bool _filtersOpen;
+    private ElementReference _filtersSummary;
+    private void ToggleFilters() => _filtersOpen = !_filtersOpen;
+    private async Task FiltersKey(KeyboardEventArgs args)
+    {
+        if (args.Key != "Escape" || !_filtersOpen) return;
+        _filtersOpen = false;
+        try { await _filtersSummary.FocusAsync(); }
+        catch (JSDisconnectedException) { return; }
+    }
+    private readonly HashSet<DisclosureKey> _expanded = [];
+    private sealed record DisclosureKey(int TenantId, Guid RuleId, Guid AgentId, string Resource, Guid? OccurrenceId);
+    private static DisclosureKey DetailKey(MonitoringSeriesState row) => new(row.Series.TenantId, row.Series.RuleId, row.Series.AgentId, row.Series.ResourceKey, row.Occurrence?.OccurrenceId);
+    private static string DetailId(MonitoringSeriesState row) => "monitoring-detail-" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes($"{row.Series.TenantId}/{row.Series.RuleId:D}/{row.Series.AgentId:D}/{row.Series.ResourceKey}/{row.Occurrence?.OccurrenceId:D}")))[..24].ToLowerInvariant();
+    private bool Expanded(MonitoringSeriesState row) => _expanded.Contains(DetailKey(row));
+    private void ToggleDetails(MonitoringSeriesState row) { var key = DetailKey(row); if (!_expanded.Remove(key)) _expanded.Add(key); }
+    private void PruneExpansion() => _expanded.IntersectWith(ActiveRows.Select(DetailKey));
+    private ElementReference _scrollRegion;
+    private IJSObjectReference? _resultsModule, _resultsSizer;
     private Guid? _appliedQueryAlert;
     private string? _appliedQuerySearch;
     private MonitoringAlertDetailDto? _selectedAlert;
@@ -83,12 +112,63 @@ public partial class MonitoringPage
     private string TenantName => _tenants.FirstOrDefault(tenant => tenant.TenantId == State.TenantId)?.Name ?? "Tenant";
     private string SubmitText => _editor switch { "ack" => "Acknowledge", "clear" => "Clear alert", "delete" => "Remove", "bypass" => "Apply bypass", _ => "Save changes" };
     private string EditorTitle => _editor switch { "rule" => _draft?.Original is null ? "New monitoring rule" : $"Edit {_draft!.Name}", "group" => _originalGroup is null ? "New client group" : $"Edit {_groupName}", "ack" => "Acknowledge occurrence", "clear" => "Clear occurrence", "delete" => "Remove configuration", _ => "Bypass" };
-    private IEnumerable<MonitoringSeriesState> ActiveRows => State.Snapshot?.Series.Items.Where(row =>
-        (row.Occurrence is { EndedAtUtc: null } || row.Phase == MonitoringPhase.Pending || Health(row) == "Unknown") &&
-        (!MonitoringOfflinePresentation.IsSeries(row.Series) || row.Phase is not (MonitoringPhase.Suspended or MonitoringPhase.NotApplicable)) &&
-        (RequestedClientId is null || row.Series.AgentId == RequestedClientId || !row.OfflineAgentIds.IsDefault && row.OfflineAgentIds.Contains(RequestedClientId.Value)) && MatchesState(row) &&
-        (Contains(RuleName(row.Series.RuleId)) || Contains(ClientName(row.Series.AgentId)) || Contains(ClientContext(row.Series.AgentId)) || Contains(row.Series.ResourceKey) ||
-            Contains(row.LatestEvidence?.OfflineSummary?.Summary ?? ""))) ?? [];
+    // Matching and ordering belong to the persistence query. Never filter a downloaded page here.
+    private IEnumerable<MonitoringSeriesState> ActiveRows => State.Snapshot?.Series.Items ?? [];
+    private int HistoryCount => State.Snapshot is { } snapshot ? snapshot.History.Items.Length + (snapshot.History.Audits.IsDefault ? 0 : snapshot.History.Audits.Length) : 0;
+    private int FilterCount => (State.ClientFilter is null ? 0 : 1) + (string.IsNullOrWhiteSpace(_search) ? 0 : 1) + (_severity is null ? 0 : 1) + (string.IsNullOrEmpty(_fromDate) ? 0 : 1) + (string.IsNullOrEmpty(_toDate) ? 0 : 1);
+    private string QuerySignature => string.Join("|", RequestedSeverity, RequestedFrom, RequestedTo, RequestedPageSize, RequestedView, RequestedTimeZone);
+    private void ReadQueryFields()
+    {
+        _stateFilter = NormalizeStateFilter(RequestedState); _search = RequestedSearch ?? "";
+        _severity = Enum.TryParse<MonitoringSeverity>(RequestedSeverity, true, out var severity) && Enum.IsDefined(severity) ? severity.ToString() : null;
+        _fromDate = RequestedFrom; _toDate = RequestedTo; _pageSize = RequestedPageSize is 20 or 50 or 100 ? RequestedPageSize.Value : 20;
+        _tab = RequestedView?.Equals("history", StringComparison.OrdinalIgnoreCase) == true ? "History" : RequestedView?.Equals("manage", StringComparison.OrdinalIgnoreCase) == true ? "Manage" : "Active";
+        if (!string.IsNullOrWhiteSpace(RequestedTimeZone))
+            try { _timeZone = TimeZoneInfo.FindSystemTimeZoneById(RequestedTimeZone); }
+            catch (Exception error) when (error is TimeZoneNotFoundException or InvalidTimeZoneException) { _filterError = "The linked timezone is unavailable. Choose dates in the displayed timezone."; }
+    }
+    private MonitoringQueryDto BuildQuery(int tenant)
+    {
+        var dates = MonitoringDateRange.ToUtc(_fromDate, _toDate, _timeZone);
+        return new(tenant, _stateFilter switch { "all" => MonitoringView.Active, "pending" => MonitoringView.Pending, "unknown" => MonitoringView.Unknown, "suppressed" => MonitoringView.Suppressed, "offline" => MonitoringView.Offline, _ => MonitoringView.Firing },
+            State.ClientFilter, Enum.TryParse<MonitoringSeverity>(_severity, out var severity) ? severity : null, _search, dates.FromUtc, dates.ToExclusiveUtc, MonitoringSort.SeriesIdentity, _pageSize);
+    }
+    private string FilterUrl(bool includeAlert = false)
+    {
+        var pairs = new List<KeyValuePair<string, string>> { new("tenantId", State.TenantId.ToString()), new("state", _stateFilter), new("pageSize", _pageSize.ToString()), new("view", _tab.ToLowerInvariant()), new("timeZone", _timeZone.Id) };
+        if (State.ClientFilter is { } client) pairs.Add(new("clientId", client.ToString("D")));
+        if (!string.IsNullOrWhiteSpace(_search)) pairs.Add(new("search", _search));
+        if (_severity is not null) pairs.Add(new("severity", _severity));
+        if (!string.IsNullOrEmpty(_fromDate)) pairs.Add(new("from", _fromDate));
+        if (!string.IsNullOrEmpty(_toDate)) pairs.Add(new("to", _toDate));
+        if (includeAlert && RequestedAlertId is { } alert) pairs.Add(new("alert", alert.ToString("D")));
+        return "monitoring?" + string.Join("&", pairs.Select(pair => Uri.EscapeDataString(pair.Key) + "=" + Uri.EscapeDataString(pair.Value)));
+    }
+    private void PersistFilters(bool includeAlert = false)
+    {
+        RequestedTenantId = State.TenantId; RequestedClientId = State.ClientFilter; RequestedState = _stateFilter; RequestedSearch = _search;
+        RequestedSeverity = _severity; RequestedFrom = _fromDate; RequestedTo = _toDate; RequestedPageSize = _pageSize; RequestedView = _tab.ToLowerInvariant(); RequestedTimeZone = _timeZone.Id;
+        if (!includeAlert) RequestedAlertId = null;
+        RememberQuery(); Navigation.NavigateTo(FilterUrl(includeAlert));
+    }
+    private async Task ApplyFilters()
+    {
+        try
+        {
+            var query = BuildQuery(State.TenantId).Normalize();
+            _filterError = null; FenceAlert(); _expanded.Clear(); PersistFilters();
+            await State.SetQueryAsync(query);
+        }
+        catch (ArgumentException error) { FenceAlert(); _expanded.Clear(); State.ClearScope(State.TenantId); _filterError = error.Message == "invalid_monitoring_query" ? "Check the selected filters and dates." : error.Message; }
+    }
+    private Task SearchChanged(ChangeEventArgs args) { _search = args.Value?.ToString() ?? ""; return ApplyFilters(); }
+    private Task SeverityChanged(ChangeEventArgs args) { _severity = string.IsNullOrWhiteSpace(args.Value?.ToString()) ? null : args.Value!.ToString(); return ApplyFilters(); }
+    private Task FromChanged(ChangeEventArgs args) { _fromDate = args.Value?.ToString(); return ApplyFilters(); }
+    private Task ToChanged(ChangeEventArgs args) { _toDate = args.Value?.ToString(); return ApplyFilters(); }
+    private Task ClientChanged(Guid? id) { State.ClientFilter = id; return ApplyFilters(); }
+    private Task PageSizeChanged(ChangeEventArgs args) { _pageSize = int.TryParse(args.Value?.ToString(), out var size) && size is 20 or 50 or 100 ? size : 20; return ApplyFilters(); }
+    private Task ClearFilters() { _search = ""; _severity = _fromDate = _toDate = null; State.ClientFilter = null; _stateFilter = "firing"; return ApplyFilters(); }
+    private void ChangeTab(string tab) { _tab = tab; PersistFilters(includeAlert: true); }
 
     protected override async Task OnInitializedAsync()
     {
@@ -97,9 +177,11 @@ public partial class MonitoringPage
             _tenants = await Api.GetTenantsAsync(_lifetime.Token);
             if (_tenants.Count > 0)
             {
-                State.ClientFilter = RequestedClientId; _stateFilter = NormalizeStateFilter(RequestedState); _search = RequestedSearch ?? "";
+                State.ClientFilter = RequestedClientId; ReadQueryFields();
                 var tenant = RequestedTenantId is { } requested ? _tenants.Any(item => item.TenantId == requested) ? requested : 0 : _tenants[0].TenantId;
                 if (tenant == 0) { _startupError = "The linked tenant does not grant Monitoring access."; RememberQuery(); return; }
+                try { State.Query = BuildQuery(tenant).Normalize(); }
+                catch (ArgumentException error) { State.ClearScope(tenant); _filterError = error.Message; RememberQuery(); return; }
                 await State.SelectTenantAsync(tenant); RememberQuery(); await LoadRequestedAlert();
             }
         }
@@ -114,21 +196,24 @@ public partial class MonitoringPage
         _appliedQueryState = RequestedState;
         _appliedQueryAlert = RequestedAlertId;
         _appliedQuerySearch = RequestedSearch;
+        _appliedFilters = QuerySignature;
     }
     private async Task<bool> ApplyRequestedScope()
     {
         if (_busy || _tenants.Count == 0 ||
-            (_appliedQueryTenant == RequestedTenantId && _appliedQueryClient == RequestedClientId && _appliedQueryState == RequestedState && _appliedQueryAlert == RequestedAlertId && _appliedQuerySearch == RequestedSearch)) return false;
+            (_appliedQueryTenant == RequestedTenantId && _appliedQueryClient == RequestedClientId && _appliedQueryState == RequestedState && _appliedQueryAlert == RequestedAlertId && _appliedQuerySearch == RequestedSearch && _appliedFilters == QuerySignature)) return false;
         FenceAlert();
         var tenant = RequestedTenantId is { } requested ? _tenants.Any(item => item.TenantId == requested) ? requested : 0 : State.TenantId > 0 ? State.TenantId : _tenants[0].TenantId;
         var stateChanged = _appliedQueryState != RequestedState;
         RememberQuery();
-        CloseEditor(); _search = RequestedSearch ?? "";
+        CloseEditor(); ReadQueryFields(); _expanded.Clear();
         if (tenant == 0) { _startupError = "The linked tenant does not grant Monitoring access."; _state?.Dispose(); _state = new(Api); return true; }
         _startupError = null;
         if (stateChanged || State.TenantId != tenant) _stateFilter = NormalizeStateFilter(RequestedState);
         State.ClientFilter = RequestedClientId;
-        if (State.TenantId != tenant) _pendingWatchAtSaveRevision = null;
+        if (State.TenantId != tenant) { _pendingWatchAtSaveRevision = null; State.ClearScope(tenant); }
+        try { State.Query = BuildQuery(tenant).Normalize(); _filterError = null; }
+        catch (ArgumentException error) { State.ClearScope(tenant); _filterError = error.Message; return true; }
         await State.SelectTenantAsync(tenant);
         await LoadRequestedAlert();
         return true;
@@ -159,13 +244,9 @@ public partial class MonitoringPage
         catch (HttpRequestException error) { if (generation == _alertGeneration) _alertError = error.Message; }
         finally { if (generation == _alertGeneration) _loadingAlert = false; }
     }
-    private void CloseSelectedAlert() => Navigation.NavigateTo($"/monitoring?tenantId={State.TenantId}");
-    private void ClearClientFilter()
-    {
-        var query = $"/monitoring?tenantId={State.TenantId}";
-        if (!string.IsNullOrWhiteSpace(_stateFilter)) query += "&state=" + Uri.EscapeDataString(_stateFilter);
-        Navigation.NavigateTo(query, replace: true);
-    }
+    private void CloseSelectedAlert() { FenceAlert(); PersistFilters(); }
+    private Task ClearClientFilter() => ClientChanged(null);
+
     protected override void OnAfterRender(bool firstRender) { if (firstRender) { _interactive = true; StateHasChanged(); } }
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -175,12 +256,27 @@ public partial class MonitoringPage
             {
                 await using var module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/operator-time.js");
                 var name = await module.InvokeAsync<string>("getTimeZone");
-                if (!string.IsNullOrWhiteSpace(name)) _timeZone = TimeZoneInfo.FindSystemTimeZoneById(name);
+                if (string.IsNullOrWhiteSpace(RequestedTimeZone) && !string.IsNullOrWhiteSpace(name))
+                {
+                    _timeZone = TimeZoneInfo.FindSystemTimeZoneById(name);
+                    if (!string.IsNullOrEmpty(_fromDate) || !string.IsNullOrEmpty(_toDate)) await ApplyFilters();
+                }
                 StateHasChanged();
             }
             catch (Exception error) when (error is JSException or JSDisconnectedException or TimeZoneNotFoundException or InvalidTimeZoneException) { _timeZone = TimeZoneInfo.Utc; }
         }
         if (await ApplyRequestedScope()) { StateHasChanged(); return; }
+        try
+        {
+            if (State.Snapshot is not null && _tab is "Active" or "History")
+            {
+                _resultsModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/monitoring-results.js");
+                if (_resultsSizer is null && _resultsModule is not null) _resultsSizer = await _resultsModule.InvokeAsync<IJSObjectReference>("observeResults", _scrollRegion);
+                else if (_resultsSizer is not null) await _resultsSizer.InvokeVoidAsync("setElement", _scrollRegion);
+            }
+            else if (_resultsSizer is not null) await _resultsSizer.InvokeVoidAsync("setElement", (object?)null);
+        }
+        catch (Exception error) when (error is JSException or JSDisconnectedException) { Logger.LogDebug(error, "Monitoring uses CSS viewport sizing because browser sizing is unavailable."); }
         if (_focusInvalid && _editor is not null)
         {
             _focusInvalid = false;
@@ -203,22 +299,28 @@ public partial class MonitoringPage
     private async Task ChangeTenant(ChangeEventArgs args)
     {
         if (_editor is not null || !int.TryParse(args.Value?.ToString(), out var tenant) || !_tenants.Any(t => t.TenantId == tenant)) return;
-        FenceAlert(); CloseEditor(); _search = ""; _stateFilter = "firing"; RequestedTenantId = tenant; RequestedClientId = null; RequestedState = null; RequestedAlertId = null; RequestedSearch = null;
-        RememberQuery(); State.ClientFilter = null; _pendingWatchAtSaveRevision = null; _successMessage = null; await State.SelectTenantAsync(tenant);
-        Navigation.NavigateTo($"/monitoring?tenantId={tenant}", replace: true);
+        FenceAlert(); CloseEditor(); _expanded.Clear(); _search = ""; _severity = _fromDate = _toDate = _filterError = null; _stateFilter = "firing"; RequestedTenantId = tenant; RequestedClientId = null; RequestedState = null; RequestedAlertId = null; RequestedSearch = null;
+        State.ClientFilter = null; State.Query = BuildQuery(tenant); _pendingWatchAtSaveRevision = null; _successMessage = null; await State.SelectTenantAsync(tenant);
+        PersistFilters();
     }
-    private async Task Refresh() { FenceAlert(); await State.RefreshAsync(); await LoadRequestedAlert(); }
-    private Task PageSeries(string? cursor) => State.NextSeriesPageAsync(cursor);
+    private async Task Refresh()
+    {
+        try { State.Query = BuildQuery(State.TenantId).Normalize(); _filterError = null; }
+        catch (ArgumentException error) { FenceAlert(); State.ClearScope(State.TenantId); _filterError = error.Message; return; }
+        FenceAlert(); await State.RefreshAsync(); PruneExpansion(); await LoadRequestedAlert();
+    }
+    private async Task PageSeries(string? cursor) { await State.NextSeriesPageAsync(cursor); if (State.Error is null) _expanded.Clear(); }
+    private async Task PreviousSeries() { await State.PreviousSeriesPageAsync(); if (State.Error is null) _expanded.Clear(); }
     private Task PageHistory(string? cursor) => State.NextHistoryPageAsync(cursor);
+    private Task PreviousHistory() => State.PreviousHistoryPageAsync();
+
     private bool Contains(string? text) => string.IsNullOrWhiteSpace(_search) || text?.Contains(_search, StringComparison.OrdinalIgnoreCase) == true;
     private sealed record HistoryRow(DateTimeOffset AtUtc, MonitoringEventIntent? Event = null, MonitoringHistoryAuditDto? Audit = null);
     private IEnumerable<HistoryRow> HistoryRows => State.Snapshot is { } snapshot
-        ? snapshot.History.Items.Where(MatchesHistory).Select(item => new HistoryRow(item.AtUtc, Event: item))
+        ? snapshot.History.Items.Select(item => new HistoryRow(item.AtUtc, Event: item))
             .Concat((snapshot.History.Audits.IsDefault ? [] : snapshot.History.Audits)
-                .Where(audit => Contains(audit.EntityName) || Contains(audit.Reason) || Contains(audit.OperatorDisplayName) || Contains(ActionName(audit.Action)))
-                .Select(audit => new HistoryRow(audit.AtUtc, Audit: audit))).OrderByDescending(row => row.AtUtc)
+                .Select(audit => new HistoryRow(audit.AtUtc, Audit: audit))).OrderByDescending(row => row.AtUtc).ThenByDescending(row => row.Event?.EventId ?? row.Audit!.AuditId)
         : [];
-    private bool MatchesHistory(MonitoringEventIntent item) => Contains(item.PinnedRule.Name) || Contains(ClientName(item.Series.AgentId)) || Contains(item.Series.ResourceKey);
     private static string ExplainCode(string? code) => code switch
     {
         "platform-mismatch" => "The client platform does not match this rule",
@@ -241,15 +343,6 @@ public partial class MonitoringPage
     private string ClientName(Guid id) => id == Guid.Empty ? "Monitored clients" : ClientIdentityPresentation.Name(State.ClientIdentity(id));
     private string ClientContext(Guid id) => ClientIdentityPresentation.Context(State.ClientIdentity(id));
     private string Time(DateTimeOffset? at) => at is { } value ? TimeZoneInfo.ConvertTime(value, _timeZone).ToString("yyyy-MM-dd HH:mm:ss zzz") : "—";
-    private bool MatchesState(MonitoringSeriesState row) => _stateFilter.ToLowerInvariant() switch
-    {
-        "firing" => row.Occurrence is { EndedAtUtc: null } && row.Phase == MonitoringPhase.Firing,
-        "offline" => row.LatestEvidence?.OfflineSummary?.OfflineCount > 0,
-        "pending" => row.Phase == MonitoringPhase.Pending,
-        "unknown" => Health(row) == "Unknown",
-        "suppressed" => row.Suppressed,
-        _ => true
-    };
     private static string NormalizeStateFilter(string? filter) => filter?.Trim().ToLowerInvariant() switch
     {
         "all" => "all",
@@ -268,7 +361,7 @@ public partial class MonitoringPage
         "suppressed" => "Suppressed alerts",
         _ => "Firing alerts"
     };
-    private void FilterState(string filter) { _stateFilter = NormalizeStateFilter(filter); _tab = "Active"; }
+    private Task FilterState(string filter) { _stateFilter = NormalizeStateFilter(filter); _tab = "Active"; return ApplyFilters(); }
     private static string HistoryActor(MonitoringEventIntent item) => item.OperatorDisplayName ??
         (item.Kind is MonitoringEventKind.AlertCleared or MonitoringEventKind.AlertAcknowledged ? "Recorded operator unavailable" : "System");
     private static string ActionName(string action) => action.Replace('_', '-') switch { "rule-upsert" => "Rule changed", "group-upsert" => "Group changed", "bypass-upsert" => "Bypass applied", "rule-delete" => "Rule removed", "group-delete" => "Group removed", "bypass-delete" => "Bypass revoked", "save-rule" => "Rule changed", "save-group" => "Group changed", "save-bypass" => "Bypass applied", "delete-rule" => "Rule removed", "delete-group" => "Group removed", "delete-bypass" => "Bypass revoked", "ack" => "Acknowledged", "clear" => "Alert cleared", _ => action.Replace('_', ' ').Replace('-', ' ') };
@@ -291,14 +384,18 @@ public partial class MonitoringPage
         return row.EvidenceQuality == MonitoringEvidenceQuality.Unknown || evidence is null || evidence.ObservedAtUtc > now || evidence.ReceivedAtUtc > now ||
             now - evidence.ObservedAtUtc > budget || now - evidence.ReceivedAtUtc > budget ? "Unknown" : evidence.Classification.ToString();
     }
-    private string EvidenceValue(MonitoringSeriesState row)
+    private static string DiskClassification(string reason) => reason switch { "package-image" => "Read-only package image excluded by default", "pseudo-filesystem" => "System pseudo filesystem excluded by default", "duplicate-capacity" => "Duplicate backing-capacity view excluded by default", _ => reason };
+    private MonitoringSeverity? SeverityFor(MonitoringSeriesState row) => row.Occurrence?.PinnedRule.Severity ?? State.Snapshot?.Configuration.Rules.FirstOrDefault(rule => rule.RuleId == row.Series.RuleId)?.Severity;
+    private static Color SeverityColor(MonitoringSeverity? severity) => severity switch { MonitoringSeverity.Critical => Color.Error, MonitoringSeverity.Warning => Color.Warning, MonitoringSeverity.Information => Color.Info, _ => Color.Default };
+    private string EvidenceValue(MonitoringSeriesState row) => FormatEvidenceValue(row.LatestEvidence,
+        row.Occurrence?.PinnedRule.Condition.Kind ?? State.Snapshot?.Configuration.Rules.FirstOrDefault(rule => rule.RuleId == row.Series.RuleId)?.Condition.Kind);
+    private static string FormatEvidenceValue(MonitoringEvidenceDto? evidence, MonitoringMetricKind? kind)
     {
-        if (row.LatestEvidence is not { } evidence) return "Unknown";
+        if (evidence is null) return "Unknown";
         if (evidence.OfflineSummary is { } offline) return offline.Summary;
         if (evidence.ServiceState is { } service) return service.ToString();
         if (evidence.NumericValue is not { } value) return "Unknown";
-        var kind = State.Snapshot?.Configuration.Rules.FirstOrDefault(rule => rule.RuleId == row.Series.RuleId)?.Condition.Kind;
-        var number = kind == MonitoringMetricKind.DiskFreeSpace ? $"{value / Math.Pow(1024, 3):G6} GiB free" : $"{value:G6}%";
+        var number = kind == MonitoringMetricKind.DiskFreeSpace ? $"{value / Math.Pow(1024, 3):G6} GiB free" : kind == MonitoringMetricKind.DiskFreePercent ? $"{value:0.##}% free" : $"{value:G6}%";
         return number + (evidence.NumericResolution > 0 ? " · precision interval retained" : "");
     }
     private IEnumerable<MonitoringBypassDto> AppliedBypasses(MonitoringSeriesState row) => State.Snapshot?.Configuration.Bypasses.Where(b =>
@@ -462,5 +559,16 @@ public partial class MonitoringPage
         { if (State.IsCurrent(tenant, scope) && editor == _editorGeneration) { _conflict = error is HttpRequestException { StatusCode: System.Net.HttpStatusCode.Conflict }; _editorError = error is HttpRequestException ? error.Message : "Could not confirm the save. Your edits are retained; refresh before retrying."; } }
         finally { _busy = false; }
     }
-    public void Dispose() { FenceAlert(); _lifetime.Cancel(); _lifetime.Dispose(); _inventoryRead?.Cancel(); _inventoryRead?.Dispose(); _state?.Dispose(); }
+    public async ValueTask DisposeAsync()
+    {
+        Dispose();
+        try
+        {
+            if (_resultsSizer is not null) { await _resultsSizer.InvokeVoidAsync("dispose"); await _resultsSizer.DisposeAsync(); }
+            if (_resultsModule is not null) await _resultsModule.DisposeAsync();
+        }
+        catch (Exception error) when (error is JSException or JSDisconnectedException or TaskCanceledException) { return; }
+    }
+    private bool _disposed;
+    public void Dispose() { if (_disposed) return; _disposed = true; FenceAlert(); _lifetime.Cancel(); _lifetime.Dispose(); _inventoryRead?.Cancel(); _inventoryRead?.Dispose(); _state?.Dispose(); }
 }

@@ -20,6 +20,29 @@ An acknowledgement marks the same occurrence and does not rearm it. Manual clear
 
 Suppression is an audited tenant/rule/client/group/resource overlay with a reason and optional expiry. Evaluation continues. Expiry may release at most one currently fresh, previously undelivered active occurrence; it cannot replay historical resolved episodes or an already delivered occurrence.
 
+## Disk inventory and resource policy
+
+Updated Linux clients read `/proc/self/mountinfo` in their own mount namespace. Capacity inventory carries optional filesystem, source/device, mount-root, read-only and stable backing-capacity metadata. Known read-only SquashFS/EROFS package images and appropriate pseudo filesystems are excluded from capacity alerts by default, with an explicit reason. Real ext4/XFS data volumes becoming read-only remain eligible, as do writable network/backup volumes and independent ZFS datasets. Immutable image roots remain visible as excluded inventory; a container's meaningful overlay `/` remains eligible.
+
+Deduplication requires authoritative backing evidence. Views with the same device, filesystem, source and filesystem root share one deterministic representative. Overlay views require an existing upper directory and the most specific containing mount in that namespace. Neither equal byte counters, a shared pool name nor a mount ID proves duplicate capacity. Subdirectory binds with different filesystem roots remain eligible when independent quota behavior cannot be ruled out from mountinfo. Missing metadata is unclassified and never proves exclusion. If a filesystem policy cannot be decided without that metadata, evidence remains Unknown and preview says Unconfirmed; a complete new client collection is required.
+
+The rule editor's **Disk resource policy** accepts include/exclude mount/path and filesystem patterns. The same optional `condition.diskPolicy` object is used by saved rules, runtime and API/MCP target preview:
+
+```json
+{
+  "includeMounts": ["/", "/data/*", "/backup"],
+  "excludeMounts": ["/data/cache/*"],
+  "includeFileSystems": [],
+  "excludeFileSystems": ["squashfs"]
+}
+```
+
+Patterns match the complete string: `*` matches zero or more characters, including separators, and `?` matches one character. Other characters are literal; there is no regular expression, shell expansion or bracket grammar. At most 32 patterns across the four lists, each up to 256 characters, are accepted. The editor trims each nonempty line. Linux paths use ordinal case-sensitive matching; Windows paths and filesystem names use ordinal case-insensitive matching. Explicit excludes win. If either include list is populated, a match in either is required, and an explicit include can override default exclusions. An existing exact normalized volume must also match. An include cannot turn unsupported or partial telemetry into complete evidence.
+
+**Preview cached disk resources** shows per-resource eligibility/reason, filesystem, collection time, freshness, unclassified older telemetry and inventory truncation. It reads the authorized target clients' existing cache and never collects telemetry. Preview uses the selected freshness budget, defaults to two minutes when omitted through API/MCP, returns at most 16 resources per client and 160 total, and reports truncation. Re-run after editing the policy. The client prioritizes eligible resources before its 64-scope cap and the complete 16,383-byte envelope limit; at most 16 excluded resources are retained. Truncation and absent resources never imply recovery.
+
+Existing clients and rules keep their enrollment and disk resource identities. Normal client upgrade is required to report mount classification; old clients remain readable and are labelled unclassified. Absent/empty policy uses the supported defaults without changing the historical evaluation fingerprint. An explicit policy edit changes the evaluation revision and requires **SuspendOccurrenceAndRequireNewWindow**, the usual reason and reset confirmation. Newly proven default exclusions suspend existing occurrences as **NotApplicable** with a `disk-policy:` reason and a non-recovery target-removal disposition. Partial, missing, changed-in-place, reordered or stale collection metadata cannot clear an unresolved breach. Historical events and prepared incident bytes stay pinned.
+
 ## Alert if Offline
 
 In `/monitoring`, open a rule's side panel and enable **Alert if Offline**. The same direct-client, static-group or all-eligible selection applies to this additional condition. It is off by default for existing rules. Set **Offline grace (seconds)** between 1 and 3,600; the default is 60 seconds. This grace is the offline breach hold. Recovery uses the rule's existing recovery hold.
@@ -69,10 +92,111 @@ Acceptance includes TimeProvider-based evaluator tests, actual gRPC acknowledgem
 
 ## Expanded alert evidence
 
-Open **Alert details** below an alert row for a full-width view of its target and
+Open **Alert details** in the leading column of an alert row for a full-width view of its target and
 rule, observed/received evidence, automation outcome, and incident/acknowledgement.
 **Flow run and receipt** and **Published flow** open the tenant-qualified records.
 **Open RatelDesk ticket** appears only for a validated incident receipt containing
 a safe ticket URL. A missing link is shown as missing rather than reconstructed
 from an internal identifier. Flow success remains distinct from confirmed
 incident evidence; unconfirmed and absent results are labelled explicitly.
+
+## Full-result queries and continuation
+
+The series and History endpoints accept one AND-combined query: `view`, `clientId`,
+`severity`, `text`, `fromUtc`, `toExclusiveUtc`, `sort` and `maximumCount`.
+Filters run in PostgreSQL over the authorized tenant before ordering and paging.
+Omitting filters preserves the API's existing series view, including Healthy records.
+The Web page requests its selected Active/Firing view explicitly. Tenant summary
+badges remain tenant totals; `matchingCount` is the count for the complete selected
+query, independently of the returned page and its continuation.
+
+Series `view` supports All, Active, Firing, Pending, Unknown, Acknowledged,
+Suppressed and Offline. Firing is an occurrence lifecycle: Unknown/stale evidence
+cannot remove an unresolved Firing occurrence from that selection. Unknown uses
+both observed and received times, rejects future times and applies the current
+rule's freshness budget (one minute for offline summaries). Clock and JSON evidence
+use the same PostgreSQL timestamp conversion, preserving fresh evidence at the
+exact current instant despite .NET's finer timestamp precision. A client selection
+also matches an offline aggregate containing that client. Severity uses the pinned
+occurrence rule when one exists, otherwise the current rule. Text searches current
+friendly computer/directory names, pinned identity, rule and resource text.
+
+For series, date bounds apply to occurrence **Raised date**; rows without a raised
+time do not match an active date bound. History uses immutable **Event/audit time**.
+The lower bound is inclusive and `toExclusiveUtc` is exclusive. Convert a selected
+inclusive end date to the following day's start in the displayed operator timezone
+before converting to UTC; this preserves daylight-saving day boundaries. History
+retains the ordered union of alert events and non-series configuration/bypass
+audits. Client or severity filters exclude audits because those dimensions do
+not apply. Other History filters run before union paging. New offline events pin
+the exact affected member IDs at that event; older summaries lacking these IDs
+cannot match an exact client filter. Historical names and memberships are never
+reconstructed from current inventory.
+
+Series order is rule UUID, client UUID, resource key; History order is event/audit
+time descending, then immutable item UUID descending. Return `nextCursor` unchanged
+with the same tenant, endpoint, filters, sort and page size. Encode it once as a
+URL query value; do not decode/rebuild its content. A byte budget can return fewer
+rows than requested while still returning a continuation. The next cursor always
+identifies the last row actually returned. An invalid continuation is an explicit
+400 error, distinct from a successful empty page. `monitoring_cursor_context_mismatch`
+means restart the changed query; `monitoring_cursor_restart_required` means restart
+pagination after upgrading from a previous cursor version.
+
+The v1 opaque base64url cursor is bounded to **1,468 characters** across API,
+managed-operation admission, CLI and both MCP transports. The maximum binary
+series token is 1,100 bytes: 4-byte magic, version/kind (2), tenant (4), normalized
+query SHA256 (32), rule/client UUIDs (32), resource length (2) and all 512 UTF16
+code units (1,024). Raw UTF16 preserves escaped/Unicode resource keys without JSON
+escaping expansion; base64's rounded-up bound is 1,468. History tokens are smaller
+and use the same bound. Tokens bind version, endpoint kind, tenant and normalized
+query including selected page size. Pre-upgrade pagination must restart; no old
+record or immutable event is rewritten.
+
+The existing 4 MiB response bound and 200-row API maximum remain. A page reserves
+512 KiB for client identity metadata. When a large offline membership exhausts that
+metadata budget, `clientIdentitiesTruncated` is true; the alert, exact member IDs
+and continuation remain intact, with missing directory details shown honestly.
+Use the authorized client directory search for additional identity details.
+
+## Finding alerts and paging
+
+Monitoring opens on **Firing** with **20 rows per page**. State, computer, severity,
+text and date filters combine across the full authorized result before paging;
+a healthy first page cannot hide later firing alerts. **All states** includes
+active occurrences, pending windows and current Unknown evidence. Firing lifecycle
+and current evidence quality are separate: a firing occurrence with stale evidence
+still appears under Firing. The badges are explicitly **tenant totals**.
+
+The compact **Filters** disclosure searches the tenant's computer directory by
+friendly name or hostname, including computers outside the current results page.
+Selections use stable computer IDs and retain an explicit unavailable-metadata
+fallback for deleted or inaccessible names. Search covers computer, rule and
+resource text. Active chips show the selection and **Clear filters** retains the
+authorized tenant and selected page size while clearing client, search, severity,
+dates and an unrelated selected alert.
+
+Active date bounds use the occurrence's **Raised date**, in the displayed operator
+timezone. Rows without a raised timestamp are excluded while date bounds are set.
+**To** includes the selected local calendar day; the query sends the following
+local day's start as its exclusive UTC bound, including daylight-saving changes.
+History uses **event / audit time**. A computer or severity selection excludes
+configuration/audit rows that do not have that dimension. Invalid date order is
+shown as a filter error without issuing a new query.
+
+The results body scrolls within a measured viewport. Column headings and the actual
+pager remain available on desktop and narrow screens; primary columns can scroll
+horizontally. The first-column disclosure supports keyboard activation and reports
+its expanded state. A collapsed alert creates one main row; an expanded alert adds
+one full-width grey detail surface. Paging/filtering clears expansion, refresh
+retains only the same tenant/series/occurrence identity, and a replacement occurrence
+does not inherit an old expansion. Exact occurrence links retrieve the persisted
+occurrence independently of the visible page, including closed alerts.
+
+**20, 50 and 100** are real server page sizes. **First / Previous / Next** use bounded
+opaque cursor history; there is no invented last-page or random-access total.
+Displayed ranges count alert/history items, including a short page caused by the
+response-byte budget, and do not count expanded detail rows. Tenant/query/page-size
+changes reset pagination. A failed read is an explicit error and keeps the last
+successful results labelled as such. Filter, page-size, view and timezone context
+are preserved in the URL for refresh and browser back/forward navigation.

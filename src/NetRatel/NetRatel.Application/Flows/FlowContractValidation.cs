@@ -19,6 +19,7 @@ public static class FlowContractValidation
                 ids.Contains(execution.EventId) && ids.All(id => id != Guid.Empty) && ids.Distinct().Count() == ids.Count &&
                 JsonSerializer.SerializeToUtf8Bytes(input).Length <= FlowGraphV2Limits.MaximumEventBytes;
         return input.SourceAdmissionKey is null && input.SourceDeliveryId is null && input.SourceEventIds is null && !input.SourceEventIdsTruncated && FlowPureEvaluation.ValidEventData(input.Data) &&
+            (input.Data!.Presentation is null || input.Data.Presentation.TenantId == input.TenantId && input.Data.Presentation.OccurrenceId == input.OccurrenceId) &&
             JsonSerializer.SerializeToUtf8Bytes(input).Length <= FlowLimits.MaximumEventBytes;
     }
     public static bool ValidAuthority(FlowExecutionAuthorityDto? authority) => authority is not null &&
