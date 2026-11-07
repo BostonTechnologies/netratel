@@ -209,3 +209,9 @@ Preserve an rc.5 SQLite installation and its data before changing anything.
 Use an explicit PostgreSQL transition plan; NetRatel does not silently convert
 the file or create a replacement empty installation. Historical release
 records remain available for audit.
+
+Application diagnostics default to Warning. See [diagnostic logging and Docker
+retention](CONFIGURATION.md#diagnostic-logging-and-docker-retention) for exact
+Options/environment keys, per-container 200m × 5 rotation, and container
+recreation after changing retention. A Docker restart does not apply new
+log-driver options.

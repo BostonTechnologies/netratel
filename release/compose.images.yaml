@@ -4,6 +4,11 @@ name: netratel
 # replace every placeholder with an approved immutable image digest.
 services:
   postgres:
+    logging:
+      driver: json-file
+      options:
+        max-size: "${NETRATEL_DOCKER_LOG_MAX_SIZE:-200m}"
+        max-file: "${NETRATEL_DOCKER_LOG_MAX_FILE:-5}"
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
@@ -19,6 +24,11 @@ services:
       retries: 20
 
   migrations:
+    logging:
+      driver: json-file
+      options:
+        max-size: "${NETRATEL_DOCKER_LOG_MAX_SIZE:-200m}"
+        max-file: "${NETRATEL_DOCKER_LOG_MAX_FILE:-5}"
     image: ${NETRATEL_MIGRATIONS_IMAGE:?set the approved migrations image digest}
     environment:
       ConnectionStrings__NetRatelDb: Host=postgres;Port=5432;Database=${POSTGRES_DB:-netratel};Username=${POSTGRES_USER:-netratel};Password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
@@ -27,6 +37,11 @@ services:
         condition: service_healthy
 
   volume-init:
+    logging:
+      driver: json-file
+      options:
+        max-size: "${NETRATEL_DOCKER_LOG_MAX_SIZE:-200m}"
+        max-file: "${NETRATEL_DOCKER_LOG_MAX_FILE:-5}"
     image: alpine:3.22
     user: "0:0"
     command: ["sh", "-ceu", "chown -R 1654:1654 /var/netratel && chmod 700 /var/netratel/keys"]
@@ -35,9 +50,15 @@ services:
       - web-keys:/var/netratel/keys
 
   api:
+    logging:
+      driver: json-file
+      options:
+        max-size: "${NETRATEL_DOCKER_LOG_MAX_SIZE:-200m}"
+        max-file: "${NETRATEL_DOCKER_LOG_MAX_FILE:-5}"
     image: ${NETRATEL_API_IMAGE:?set the approved API image digest}
     restart: unless-stopped
     environment:
+      NetRatel__Logging__MinimumLevel: ${NETRATEL_LOG_MINIMUM_LEVEL:-Warning}
       ASPNETCORE_URLS: http://+:9222
       Branding__SiteUrl: ${NETRATEL_PUBLIC_ORIGIN:-}
       Branding__GatewayUrl: ${NETRATEL_PUBLIC_GATEWAY_ORIGIN:-}
@@ -65,10 +86,16 @@ services:
         condition: service_completed_successfully
 
   web:
+    logging:
+      driver: json-file
+      options:
+        max-size: "${NETRATEL_DOCKER_LOG_MAX_SIZE:-200m}"
+        max-file: "${NETRATEL_DOCKER_LOG_MAX_FILE:-5}"
     image: ${NETRATEL_WEB_IMAGE:?set the approved Web image digest}
     ports:
       - "${NETRATEL_WEB_BIND_ADDRESS:-127.0.0.1}:${NETRATEL_WEB_PORT:-8080}:9111"
     environment:
+      NetRatel__Logging__MinimumLevel: ${NETRATEL_LOG_MINIMUM_LEVEL:-Warning}
       ConnectionStrings__NetRatelDb: Host=postgres;Port=5432;Database=${POSTGRES_DB:-netratel};Username=${POSTGRES_USER:-netratel};Password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       ApiBaseUrl: http://api:9222
       NetRatel_KEYS_DIR: /var/netratel/keys

@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 
 namespace NetRatel.Shared.Service.Logging
 {
@@ -12,6 +13,14 @@ namespace NetRatel.Shared.Service.Logging
         private static readonly object Sync = new();
         private static string LogFolderPath = Path.Combine(AppContext.BaseDirectory, "logs");
         private static string LogFilePath = Path.Combine(LogFolderPath, "client.log");
+
+        private static NetRatelLoggingOptions _options = new();
+
+        public static void Configure(NetRatelLoggingOptions options)
+        {
+            options.EnsureValid();
+            _options = options;
+        }
 
         // Set maximum allowed log file size to 1 MB.
         private const long MaxLogFileSize = 1 * 1024 * 1024; // 1 MB in bytes
@@ -52,8 +61,11 @@ namespace NetRatel.Shared.Service.Logging
         /// If the log file exceeds 1MB, it is reset before writing.
         /// </summary>
         /// <param name="message">The message to log.</param>
-        public static void WriteLog(string message)
+        public static void WriteLog(string message) => WriteLog(LogLevel.Information, message);
+
+        public static void WriteLog(LogLevel level, string message)
         {
+            if (!_options.IsEnabled("NetRatel.Shared", level)) return;
             lock (Sync)
             {
                 try

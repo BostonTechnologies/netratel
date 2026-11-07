@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Text;
+using Microsoft.Extensions.Logging;
 
 namespace NetRatel.Client.Service.Logging;
 
@@ -24,7 +25,7 @@ public static class ClientRuntimeLogBuffer
 
     public static event Action<ClientRuntimeLogRecord>? RecordCaptured;
 
-    public static ClientRuntimeLogRecord Capture(string message, DateTimeOffset timestampUtc)
+    public static ClientRuntimeLogRecord Capture(string message, DateTimeOffset timestampUtc, LogLevel? level = null)
     {
         var (prefix, remainder) = SplitPrefix(message);
         var (normalizedMessage, truncated) = Truncate(remainder);
@@ -33,7 +34,7 @@ public static class ClientRuntimeLogBuffer
             Cursor: sequence.ToString(System.Globalization.CultureInfo.InvariantCulture),
             Sequence: sequence,
             TimestampUtc: timestampUtc,
-            Severity: InferSeverity(prefix, normalizedMessage),
+            Severity: level is null ? InferSeverity(prefix, normalizedMessage) : level == LogLevel.Critical ? "Fatal" : level.Value.ToString(),
             SourceId: "netratel-runtime",
             Category: prefix ?? "Other",
             Prefix: prefix,
@@ -133,6 +134,21 @@ public static class ClientRuntimeLogBuffer
 
     private static int EstimateBytes(ClientRuntimeLogRecord record) =>
         Math.Min(MaximumRecordBytes, Encoding.UTF8.GetByteCount(record.Message)) + 192;
+
+    internal static string DiagnosticCategory(string message) => SplitPrefix(message).Prefix ?? "Other";
+
+    internal static LogLevel DiagnosticLevel(string message)
+    {
+        var (prefix, remainder) = SplitPrefix(message);
+        return InferSeverity(prefix, remainder) switch
+        {
+            "Fatal" => LogLevel.Critical,
+            "Error" => LogLevel.Error,
+            "Warning" => LogLevel.Warning,
+            "Debug" => LogLevel.Debug,
+            _ => LogLevel.Information
+        };
+    }
 
     private static string InferSeverity(string? prefix, string message)
     {

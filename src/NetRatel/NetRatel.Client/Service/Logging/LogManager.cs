@@ -5,6 +5,8 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
+using NetRatel.Shared.Service.Logging;
 
 namespace NetRatel.Client.Service.Logging;
 
@@ -13,6 +15,14 @@ public static class LogManager
     private static readonly object Sync = new();
     private static string _logFolderPath = Path.Combine(AppContext.BaseDirectory, "logs");
     private static string _logFilePath = Path.Combine(_logFolderPath, $"netratel-client-{DateTime.UtcNow:yyyyMMdd}.log");
+
+    private static NetRatelLoggingOptions _options = new();
+
+    public static void Configure(NetRatelLoggingOptions options)
+    {
+        options.EnsureValid();
+        _options = options;
+    }
 
     public static string LogFolderPath => _logFolderPath;
     public static string LogFilePath => _logFilePath;
@@ -85,8 +95,14 @@ public static class LogManager
         return string.IsNullOrWhiteSpace(prefix) ? "netratel-client" : prefix;
     }
 
-    public static void WriteLog(string message)
+    // Retain the established severity classification for legacy untyped call
+    // sites; new callers can supply the level explicitly.
+    public static void WriteLog(string message) => WriteLog(ClientRuntimeLogBuffer.DiagnosticLevel(message), message);
+
+    public static void WriteLog(LogLevel level, string message, string? category = null)
     {
+        category ??= "NetRatel.Client." + ClientRuntimeLogBuffer.DiagnosticCategory(message);
+        if (!_options.IsEnabled(category, level)) return;
         var timestampUtc = DateTimeOffset.UtcNow;
         var entry = $"{timestampUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss.fff zzz} - {message}";
         lock (Sync)
@@ -103,7 +119,7 @@ public static class LogManager
         }
 
         Console.WriteLine(entry);
-        ClientRuntimeLogBuffer.Capture(message, timestampUtc);
+        ClientRuntimeLogBuffer.Capture(message, timestampUtc, level);
     }
 
     public static async Task<string> ReadEntireLogAsync(CancellationToken cancellationToken = default)

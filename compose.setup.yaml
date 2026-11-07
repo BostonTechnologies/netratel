@@ -2,6 +2,11 @@
 # The image seeds this durable volume for the non-root tooling identity (UID 10001).
 services:
   mcp-http:
+    logging:
+      driver: json-file
+      options:
+        max-size: "${NETRATEL_DOCKER_LOG_MAX_SIZE:-200m}"
+        max-file: "${NETRATEL_DOCKER_LOG_MAX_FILE:-5}"
     image: ${NETRATEL_MCP_HTTP_IMAGE:-netratel-mcp-http:local}
     command: ["setup", "--target", "http-host"]
     environment:
