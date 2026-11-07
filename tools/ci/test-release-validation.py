@@ -565,7 +565,10 @@ class FastTestContainerPreparationTests(unittest.TestCase):
                 self.assertEqual(1, workflow.count("bash tools/ci/prepare-fast-test-containers.sh"))
                 self.assertLess(workflow.index("- name: Build Release solution"), prepare)
                 self.assertLess(prepare, workflow.index("- name: Run fast regressions (Core, API, Components)"))
-                self.assertIn("timeout-minutes: 20", workflow[:prepare])
+                jobs = dict(re.findall(r"(?ms)^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:|\Z)",
+                                       workflow.split("\njobs:\n", 1)[1]))
+                job, budget = ("dotnet", 20) if "public-pr-validation" in relative else ("validate", 25)
+                self.assertIn(f"timeout-minutes: {budget}", jobs[job])
                 self.assertNotIn("continue-on-error", workflow[prepare:workflow.index("- name: Retain fast regression receipts")])
 
 
