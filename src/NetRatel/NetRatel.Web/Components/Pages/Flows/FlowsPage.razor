@@ -7,6 +7,7 @@
 @inject IFlowApiService Api
 @inject IJSRuntime JS
 @inject NavigationManager Navigation
+@inject ILogger<FlowsPage> Logger
 
 <PageTitle>Flows</PageTitle>
 <main class="flows-page" data-testid="flows-page">
@@ -178,6 +179,7 @@
     private CancellationTokenSource _scope = new();
     private IJSObjectReference? _module, _resultsModule, _resultsObserver;
     private ElementReference _resultsElement;
+    private bool _resultsUnavailable;
     private FlowTenantAccessDto? Access => _tenants.FirstOrDefault(t => t.TenantId == _tenantId);
 
     protected override async Task OnInitializedAsync()
@@ -494,7 +496,7 @@
     private static string HistoryBodyId(int generation) => $"flow-history-body-{generation}";
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (_editorDefinition is null && Access is not null)
+        if (_editorDefinition is null && Access is not null && !_resultsUnavailable)
         {
             try
             {
@@ -502,7 +504,11 @@
                 if (_resultsObserver is null) _resultsObserver = await _resultsModule.InvokeAsync<IJSObjectReference>("observeResults", _resultsElement);
                 else await _resultsObserver.InvokeVoidAsync("setElement", _resultsElement);
             }
-            catch (JSException) { }
+            catch (JSException exception)
+            {
+                _resultsUnavailable = true;
+                Logger.LogWarning(exception, "Flows viewport measurement is unavailable; retaining the CSS scroll bounds.");
+            }
         }
         if (_restoreFocus is not { } id) return; _restoreFocus = null;
         try
@@ -533,7 +539,7 @@
         if (_resultsObserver is not null)
         {
             try { await _resultsObserver.InvokeVoidAsync("dispose"); await _resultsObserver.DisposeAsync(); }
-            catch (JSDisconnectedException) { }
+            catch (JSDisconnectedException) { _resultsObserver = null; }
         }
         foreach (var module in new[] { _module, _historyFocusModule, _resultsModule })
         {
