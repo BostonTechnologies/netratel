@@ -59,7 +59,8 @@ public sealed record MonitoringObservationDto(
     ClientServiceState? ServiceState = null, bool AuthoritativeMissing = false,
     ulong? ServiceWatchPolicyRevision = null, ulong? CurrentServiceWatchPolicyRevision = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MonitoringDiskCollectionStamp? DiskCollection = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MonitoringOfflineSnapshotDto? OfflineSummary = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MonitoringOfflineSnapshotDto? OfflineSummary = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MonitoringDiskFactsDto? DiskFacts = null);
 
 public sealed record MonitoringEvidenceDto(
     MonitoringAcceptedCursor Cursor, Guid EvidenceStreamId, DateTimeOffset ObservedAtUtc, DateTimeOffset ReceivedAtUtc,
@@ -67,7 +68,8 @@ public sealed record MonitoringEvidenceDto(
     double? NumericValue, double NumericResolution, ClientServiceState? ServiceState,
     string? UnknownReason = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MonitoringDiskCollectionStamp? DiskCollection = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MonitoringOfflineSnapshotDto? OfflineSummary = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MonitoringOfflineSnapshotDto? OfflineSummary = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MonitoringDiskFactsDto? DiskFacts = null);
 
 /// <summary>An immutable occurrence keeps its original condition/action version even after a rename or action edit.</summary>
 public sealed record MonitoringOccurrenceDto(
