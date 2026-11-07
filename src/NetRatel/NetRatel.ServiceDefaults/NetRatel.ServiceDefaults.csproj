@@ -25,4 +25,8 @@
     <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\NetRatel.Shared\NetRatel.Shared.csproj" />
+  </ItemGroup>
+
 </Project>

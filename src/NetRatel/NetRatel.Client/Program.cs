@@ -94,6 +94,21 @@ async Task RunClientAsync(CancellationToken nativeStopping)
         return;
     }
 
+    var dotnetEnvironment = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT")
+        ?? Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
+
+    // Keep packaged defaults separate from explicit deployment configuration. The client
+    // loader uses this distinction to preserve a supported installation's legacy file.
+    var packagedDefaults = ClientConfigurationLoader.BuildPackagedDefaults(appBaseDir, dotnetEnvironment);
+    var deploymentOverrides = ClientConfigurationLoader.BuildDeploymentOverrides();
+    var configuration = ClientConfigurationLoader.BuildEffectiveConfiguration(
+        packagedDefaults,
+        deploymentOverrides,
+        appBaseDir,
+        cliArgs);
+    var loggingOptions = NetRatel.Shared.Service.Logging.NetRatelLoggingOptions.Load(configuration);
+    LogManager.Configure(loggingOptions);
+    NetRatel.Shared.Service.Logging.LogManager.Configure(loggingOptions);
     LogManager.Initialize(appBaseDir, ResolveLogDirectory(appBaseDir, cliArgs), ResolveLogFilePrefix(cliArgs));
     NetRatel.Shared.Service.Logging.LogManager.Initialize(LogManager.LogFilePath);
     LogStartupBlock(appBaseDir, cliArgs);
@@ -216,18 +231,6 @@ async Task RunClientAsync(CancellationToken nativeStopping)
     var resetAgentIdentity = cliArgs.Any(a => string.Equals(a, "--reset-agent-identity", StringComparison.OrdinalIgnoreCase));
     var serviceMode = cliArgs.Any(a => string.Equals(a, "--service", StringComparison.OrdinalIgnoreCase));
     var authCheckOnly = cliArgs.Any(a => string.Equals(a, "--auth-check", StringComparison.OrdinalIgnoreCase));
-    var dotnetEnvironment = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT")
-        ?? Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
-
-    // Keep packaged defaults separate from explicit deployment configuration. The client
-    // loader uses this distinction to preserve a supported installation's legacy file.
-    var packagedDefaults = ClientConfigurationLoader.BuildPackagedDefaults(appBaseDir, dotnetEnvironment);
-    var deploymentOverrides = ClientConfigurationLoader.BuildDeploymentOverrides();
-    var configuration = ClientConfigurationLoader.BuildEffectiveConfiguration(
-        packagedDefaults,
-        deploymentOverrides,
-        appBaseDir,
-        cliArgs);
     var clientResolution = ClientConfigurationLoader.ResolveClientOptions(packagedDefaults, deploymentOverrides, appBaseDir, cliArgs);
     var cfg = clientResolution.Options;
     cfg.ApiBaseUrl = ClientEndpointAddress.NormalizeApiBase(cfg.ApiBaseUrl);
@@ -367,7 +370,7 @@ async Task RunClientAsync(CancellationToken nativeStopping)
         if (string.IsNullOrWhiteSpace(enrollmentCode))
         {
             var exitCode = EnrollmentStartupPolicy.GetMissingEnrollmentExitCode(serviceMode);
-            LogManager.WriteLog(serviceMode
+            LogManager.WriteLog(Microsoft.Extensions.Logging.LogLevel.Warning, serviceMode
                 ? "[Auth] Enrollment is required before starting the service. Run NetRatel.Client --enroll <code> --api <url>. Exiting."
                 : "[Auth] Enrollment code is required for first run. Exiting.");
             Environment.ExitCode = exitCode;
@@ -381,12 +384,13 @@ async Task RunClientAsync(CancellationToken nativeStopping)
             creds = await credentialStore.LoadAsync(applicationStopping.Token);
             if (creds is null)
             {
-                LogManager.WriteLog("[Auth] Enrollment credentials were not persisted. Exiting.");
+                LogManager.WriteLog(Microsoft.Extensions.Logging.LogLevel.Error, "[Auth] Enrollment credentials were not persisted. Exiting.");
                 Environment.ExitCode = 11;
                 return;
             }
 
             LogManager.WriteLog($"[Auth] Enrollment succeeded. AgentId={creds.Value.AgentId}");
+            if (enrollOnly) Console.WriteLine("Enrollment succeeded.");
         }
         catch (AgentClientAuthException ex)
         {
@@ -634,9 +638,9 @@ static async Task<int> RunAuthCheckAsync(
     IInjectedEnrollmentBootstrap injectedEnrollmentBootstrap,
     CancellationToken ct)
 {
-    LogManager.WriteLog("[AuthCheck] Starting auth readiness check.");
-    LogManager.WriteLog($"[AuthCheck] appBaseDir={appBaseDir}");
-    LogManager.WriteLog($"[AuthCheck] apiBaseUrl={cfg.ApiBaseUrl}");
+    Console.WriteLine("[AuthCheck] Starting auth readiness check.");
+    Console.WriteLine($"[AuthCheck] appBaseDir={appBaseDir}");
+    Console.WriteLine($"[AuthCheck] apiBaseUrl={cfg.ApiBaseUrl}");
 
     var creds = existingCredentials ?? await credentialStore.LoadAsync(ct);
     if (creds is null)
@@ -646,12 +650,12 @@ static async Task<int> RunAuthCheckAsync(
             creds = await injectedEnrollmentBootstrap.TryEnrollAsync(cfg, enrollmentService, credentialStore, ct);
             if (creds is not null)
             {
-                LogManager.WriteLog($"[AuthCheck] Auto-enrollment from netratel.enroll.json succeeded. agentId={creds.Value.AgentId}");
+                Console.WriteLine($"[AuthCheck] Auto-enrollment from netratel.enroll.json succeeded. agentId={creds.Value.AgentId}");
             }
         }
         catch (AgentClientAuthException ex)
         {
-            LogManager.WriteLog($"[AuthCheck] Injected enrollment failed: {ex.Message}");
+            Console.WriteLine($"[AuthCheck] Injected enrollment failed: {ex.Message}");
             return 11;
         }
     }
@@ -665,31 +669,31 @@ static async Task<int> RunAuthCheckAsync(
             creds = await credentialStore.LoadAsync(ct);
             if (creds is null)
             {
-                LogManager.WriteLog("[AuthCheck] Enrollment credentials were not persisted.");
+                Console.WriteLine("[AuthCheck] Enrollment credentials were not persisted.");
                 return 11;
             }
 
-            LogManager.WriteLog($"[AuthCheck] Enrollment succeeded. agentId={creds.Value.AgentId}");
+            Console.WriteLine($"[AuthCheck] Enrollment succeeded. agentId={creds.Value.AgentId}");
         }
         catch (AgentClientAuthException ex)
         {
-            LogManager.WriteLog($"[AuthCheck] Enrollment failed: {ex.Message}");
+            Console.WriteLine($"[AuthCheck] Enrollment failed: {ex.Message}");
             return 11;
         }
         catch (Exception ex)
         {
-            LogManager.WriteLog($"[AuthCheck] Enrollment persistence failed: {ex.Message}");
+            Console.WriteLine($"[AuthCheck] Enrollment persistence failed: {ex.Message}");
             return 11;
         }
     }
 
     if (creds is null)
     {
-        LogManager.WriteLog("[AuthCheck] Need enrollment: no stored credentials and no enrollment code/netratel.enroll.json available.");
+        Console.WriteLine("[AuthCheck] Need enrollment: no stored credentials and no enrollment code/netratel.enroll.json available.");
         return 10;
     }
 
-    LogManager.WriteLog($"[AuthCheck] Using agentId={creds.Value.AgentId}");
+    Console.WriteLine($"[AuthCheck] Using agentId={creds.Value.AgentId}");
 
     string accessToken;
     DateTimeOffset expiresAtUtc;
@@ -701,17 +705,17 @@ static async Task<int> RunAuthCheckAsync(
             enrollmentService,
             credentialStore,
             injectedEnrollmentBootstrap,
-            message => LogManager.WriteLog($"[AuthCheck] {message}"),
+            message => Console.WriteLine($"[AuthCheck] {message}"),
             ct);
         accessToken = token.AccessToken;
         expiresAtUtc = token.ExpiresAtUtc;
-        LogManager.WriteLog($"[AuthCheck] Access token acquired. expiresAtUtc={expiresAtUtc:O}; {AccessTokenAuditMetadata.Describe(accessToken)}");
+        Console.WriteLine($"[AuthCheck] Access token acquired. expiresAtUtc={expiresAtUtc:O}; {AccessTokenAuditMetadata.Describe(accessToken)}");
     }
     catch (AgentClientAuthException ex)
     {
         if (IsAgentDisabled(ex))
         {
-            LogManager.WriteLog("[AuthCheck] Agent disabled by administrator.");
+            Console.WriteLine("[AuthCheck] Agent disabled by administrator.");
             return 3;
         }
 
@@ -723,12 +727,12 @@ static async Task<int> RunAuthCheckAsync(
             }
             catch (AgentCredentialStoreException storeError)
             {
-                LogManager.WriteLog($"[AuthCheck] Refresh credentials were retained because the installation identity could not be preserved: {storeError.Message}");
+                Console.WriteLine($"[AuthCheck] Refresh credentials were retained because the installation identity could not be preserved: {storeError.Message}");
                 return 12;
             }
         }
 
-        LogManager.WriteLog($"[AuthCheck] Token request failed: {ex.Message}");
+        Console.WriteLine($"[AuthCheck] Token request failed: {ex.Message}");
         return 12;
     }
 
@@ -745,19 +749,19 @@ static async Task<int> RunAuthCheckAsync(
         var pingBody = await pingResponse.Content.ReadAsStringAsync(ct);
         if (!pingResponse.IsSuccessStatusCode)
         {
-            LogManager.WriteLog($"[AuthCheck] Agent ping failed. status={(int)pingResponse.StatusCode}, body={TrimForLog(pingBody)}");
+            Console.WriteLine($"[AuthCheck] Agent ping failed. status={(int)pingResponse.StatusCode}, body={TrimForLog(pingBody)}");
             return 13;
         }
 
-        LogManager.WriteLog($"[AuthCheck] Agent ping succeeded. status={(int)pingResponse.StatusCode}, body={TrimForLog(pingBody)}");
+        Console.WriteLine($"[AuthCheck] Agent ping succeeded. status={(int)pingResponse.StatusCode}, body={TrimForLog(pingBody)}");
     }
     catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
     {
-        LogManager.WriteLog($"[AuthCheck] Agent ping failed: {ex.Message}");
+        Console.WriteLine($"[AuthCheck] Agent ping failed: {ex.Message}");
         return 13;
     }
 
-    LogManager.WriteLog("[AuthCheck] PASS");
+    Console.WriteLine("[AuthCheck] PASS");
     return 0;
 }
 

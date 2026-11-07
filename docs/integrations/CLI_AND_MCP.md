@@ -473,3 +473,8 @@ are written to standard error. Configure the MCP host to supply the file path
 and to restart the process when credentials or the target configuration change.
 
 For every canonical setting and alias, use [shared tooling configuration](configuration.md) and [HTTP MCP configuration](../mcp-http/configuration.md). [Web/YARP routing](../deployment/web-gateway.md) explains the single public origin, API allowlist and optional MCP route.
+
+Stdio MCP diagnostics use the shared [logging Options/environment
+contract](../deployment/CONFIGURATION.md#diagnostic-logging-and-docker-retention)
+with Warning as the default. Diagnostics stay on stderr; stdout remains
+protocol-only. CLI results and setup output retain their existing behavior.

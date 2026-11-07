@@ -98,6 +98,7 @@ if (args is ["--gssapi-application-smoke"])
 }
 
 var builder = WebApplication.CreateBuilder(args);
+builder.AddNetRatelDiagnosticLogging();
 // Public install URLs are bearer capabilities; framework request-start logs include raw paths.
 builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
 NetRatelDatabaseConfigurationResolver.ValidateProvider(builder.Configuration);

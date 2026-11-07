@@ -189,3 +189,9 @@ Server setup adopts a coherent existing generation from its effective canonical 
 Runtime options and secret references are startup inputs. Apply reviewed exports and recreate affected containers after environment changes; restart processes after mounted option/secret changes. Setup cannot change another container's environment. Only the Web gateway's explicitly reloadable YARP file configuration supports its documented transactional reload; do not infer host/delegation hot rotation.
 
 Local redacted validation reports selected target, auth mode, source and path without credential material. Then separately check DNS/TLS, routing, authentication/delegation, MCP initialize and a permitted read-only tool. See [troubleshooting](troubleshooting.md) and [setup/rotation](setup.md).
+
+HTTP MCP shares the [validated diagnostic logging and Docker retention
+contract](../deployment/CONFIGURATION.md#diagnostic-logging-and-docker-retention).
+`NetRatel__Logging__MinimumLevel` defaults to Warning; Compose maps
+`NETRATEL_LOG_MINIMUM_LEVEL` to that process key. Diagnostic opt-ins require a
+restart; Docker retention changes require recreation.

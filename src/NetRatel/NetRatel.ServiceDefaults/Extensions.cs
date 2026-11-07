@@ -3,6 +3,10 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Console;
+using Microsoft.Extensions.Options;
+using NetRatel.Shared.Service.Logging;
+using Serilog.Events;
 using Microsoft.Extensions.ServiceDiscovery;
 using OpenTelemetry;
 using OpenTelemetry.Logs;
@@ -54,16 +58,31 @@ public static class Extensions
         return builder;
     }
 
-    public static TBuilder ConfigureOpenTelemetry<TBuilder>(this TBuilder builder) where TBuilder : IHostApplicationBuilder
+    /// <summary>Also used by the API's restricted bootstrap host, before operational services exist.</summary>
+    public static TBuilder AddNetRatelDiagnosticLogging<TBuilder>(this TBuilder builder) where TBuilder : IHostApplicationBuilder
     {
+        if (builder.Services.Any(descriptor => descriptor.ServiceType == typeof(DiagnosticLoggingRegistration))) return builder;
+        _ = NetRatelLoggingOptions.Load(builder.Configuration);
+        builder.Services.AddSingleton<DiagnosticLoggingRegistration>();
+        builder.Services.AddOptions<NetRatelLoggingOptions>()
+            .Bind(builder.Configuration.GetSection(NetRatelLoggingOptions.SectionName))
+            .Validate(value => value.IsValid(), "Invalid NetRatel:Logging diagnostic thresholds.")
+            .ValidateOnStart();
         var serviceAttributes = ResolveServiceAttributes(builder);
-        var resourceBuilder = CreateResourceBuilder(serviceAttributes);
-
-        builder.Services.AddSerilog((_, loggerConfiguration) =>
+        // Serilog owns the console sink. Keep forwarding to OTEL and product
+        // consumers, but remove the default console provider that would print
+        // each forwarded event a second time. Do not ClearProviders().
+        foreach (var descriptor in builder.Services.Where(descriptor =>
+                     descriptor.ServiceType == typeof(ILoggerProvider) && descriptor.ImplementationType == typeof(ConsoleLoggerProvider)).ToArray())
+            builder.Services.Remove(descriptor);
+        builder.Services.AddSerilog((services, loggerConfiguration) =>
         {
+            var options = services.GetRequiredService<IOptions<NetRatelLoggingOptions>>().Value;
             loggerConfiguration
-                .MinimumLevel.Information()
-                .MinimumLevel.Override("Microsoft.AspNetCore", Serilog.Events.LogEventLevel.Warning)
+                .MinimumLevel.Is(ToSerilog(options.MinimumLevel))
+                .Filter.ByIncludingOnly(log => options.IsEnabled(
+                    log.Properties.TryGetValue("SourceContext", out var source) && source is ScalarValue { Value: string category } ? category : null,
+                    ToMicrosoft(log.Level)))
                 .Enrich.FromLogContext()
                 .Enrich.WithMachineName()
                 .Enrich.WithEnvironmentName()
@@ -76,7 +95,41 @@ public static class Extensions
                 .Enrich.WithProperty("host.name", serviceAttributes.HostName)
                 .Enrich.WithProperty("client", serviceAttributes.ClientName)
                 .WriteTo.Console(new CompactJsonFormatter());
+            foreach (var (category, level) in options.Overrides)
+                loggerConfiguration.MinimumLevel.Override(category, ToSerilog(level));
         }, writeToProviders: true);
+
+        return builder;
+    }
+
+    private sealed class DiagnosticLoggingRegistration;
+
+    private static LogEventLevel ToSerilog(LogLevel level) => level switch
+    {
+        LogLevel.Trace => LogEventLevel.Verbose,
+        LogLevel.Debug => LogEventLevel.Debug,
+        LogLevel.Information => LogEventLevel.Information,
+        LogLevel.Warning => LogEventLevel.Warning,
+        LogLevel.Error => LogEventLevel.Error,
+        _ => LogEventLevel.Fatal
+    };
+
+    private static LogLevel ToMicrosoft(LogEventLevel level) => level switch
+    {
+        LogEventLevel.Verbose => LogLevel.Trace,
+        LogEventLevel.Debug => LogLevel.Debug,
+        LogEventLevel.Information => LogLevel.Information,
+        LogEventLevel.Warning => LogLevel.Warning,
+        LogEventLevel.Error => LogLevel.Error,
+        _ => LogLevel.Critical
+    };
+
+    public static TBuilder ConfigureOpenTelemetry<TBuilder>(this TBuilder builder) where TBuilder : IHostApplicationBuilder
+    {
+        var serviceAttributes = ResolveServiceAttributes(builder);
+        var resourceBuilder = CreateResourceBuilder(serviceAttributes);
+
+        builder.AddNetRatelDiagnosticLogging();
 
         var useOtlpExporter = !string.IsNullOrWhiteSpace(builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]);
 
