@@ -452,6 +452,9 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
     public async Task Full_query_precedes_paging_and_cursor_roundtrips_maximum_escaped_unicode_keys()
     {
         await using var rig = await CreateRigAsync();
+        // Keep a non-microsecond-aligned instant whose JSON timestamp rounds upward.
+        // A binary Npgsql clock parameter would truncate it and make every fresh row Unknown.
+        rig.Time.Advance(TimeSpan.FromTicks(17 - rig.Time.GetUtcNow().Ticks % TimeSpan.TicksPerMicrosecond));
         var raised = await FireAsync(rig);
         var now = rig.Time.GetUtcNow();
         var maximumKey = "disk:/a/" + new string('中', 168) + new string('\\', 168) + new string('"', 168);
