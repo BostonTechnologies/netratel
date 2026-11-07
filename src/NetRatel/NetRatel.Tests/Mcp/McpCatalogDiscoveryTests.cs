@@ -13,8 +13,9 @@ namespace NetRatel.Tests.Mcp;
 public sealed class McpCatalogDiscoveryTests
 {
     [Theory]
-    [InlineData(NetRatelMcpTransport.StreamableHttp, "dev", 27, "41fa8825a2bd287d98098bc479c072d098cd9e70b88df18ec7e0524f33e9cbbf")]
-    [InlineData(NetRatelMcpTransport.Stdio, "prod", 33, "5edfdefc01ad1abbef874530ba44981a157f87d9c7cb13eac4a89daba9639474")]
+    // The only schema delta is optional flows/dry_run data.input.presentation; tool/operation sets and output schemas stay exact.
+    [InlineData(NetRatelMcpTransport.StreamableHttp, "dev", 27, "7445d7552749441b880d265ba656ead4b3962fad009851ae2491d2cce05778a8")]
+    [InlineData(NetRatelMcpTransport.Stdio, "prod", 33, "14d939e5d19ce8b4300c6fa1b5cd263aa8391fdb6681d438271f6c9d353f0d54")]
     public void Factory_preserves_frozen_schema_bytes_for_selected_surfaces(
         NetRatelMcpTransport transport, string instance, int count, string expectedDigest)
     {
