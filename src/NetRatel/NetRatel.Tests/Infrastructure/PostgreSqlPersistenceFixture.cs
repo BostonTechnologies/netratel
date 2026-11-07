@@ -10,6 +10,12 @@ public sealed class PostgreSqlPersistenceCollection : ICollectionFixture<Postgre
     public const string Name = "PostgreSQL persistence";
 }
 
+[CollectionDefinition(Name)]
+public sealed class FlowPostgreSqlPersistenceCollection : ICollectionFixture<PostgreSqlPersistenceFixture>
+{
+    public const string Name = "Flow PostgreSQL persistence";
+}
+
 /// <summary>Shares one real PostgreSQL server while giving every regression an isolated database.</summary>
 public sealed class PostgreSqlPersistenceFixture : IAsyncLifetime
 {

@@ -18,7 +18,7 @@ using Xunit;
 
 namespace NetRatel.Tests.Flows;
 
-[Collection(PostgreSqlPersistenceCollection.Name)]
+[Collection(FlowPostgreSqlPersistenceCollection.Name)]
 public sealed partial class FlowPostgreSqlTests(PostgreSqlPersistenceFixture postgres)
 {
     [Fact]
