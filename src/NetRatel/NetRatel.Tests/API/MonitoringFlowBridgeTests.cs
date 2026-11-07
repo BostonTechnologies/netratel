@@ -115,6 +115,29 @@ public sealed class MonitoringFlowBridgeTests
         FlowPureEvaluation.Map(mapping, input.Data!).Should().Be(FlowPureEvaluation.Map(new(FlowMonitoringMappingFields.Title, FlowMonitoringMappingFields.Description), input.Data!));
     }
 
+    [Fact]
+    public void Admitted_escaped_keys_and_authority_keep_existing_envelope_budget_with_explicit_bounded_presentation()
+    {
+        var rig = new Rig();
+        var key = rig.Intent.Series with { ResourceKey = new string('界', 512) };
+        var rule = rig.Rule with { Name = new string('界', 128), ExecutionPrincipalId = new string('界', 256),
+            ExecutionCredentialId = new string('界', 256) };
+        var original = rig.Intent with { Series = key, PinnedRule = rule };
+        MonitoringFlowEventFactory.Create(original).Should().NotBeNull();
+        var snapshot = MonitoringIncidentPresentation.Create(key, rig.State.Occurrence! with { PinnedRule = rule },
+            "Example tenant", new(key.AgentId, "backup-01"), "https://monitor.example.test/ops");
+        var intent = original with { Presentation = snapshot };
+        var bounded = MonitoringFlowEventFactory.Create(intent)!;
+        bounded.Should().NotBeNull(); FlowContractValidation.ValidEnvelope(bounded).Should().BeTrue();
+        JsonSerializer.SerializeToUtf8Bytes(bounded).Length.Should().BeLessThanOrEqualTo(FlowLimits.MaximumEventBytes);
+        bounded.Data!.NumericValue.Should().Be(original.PinnedEvidence.NumericValue);
+        bounded.Data.Resource.Should().Be(key.ResourceKey);
+        if (bounded.Data.Presentation is null) bounded.Data.ClientName.Should().Contain("details omitted");
+        else bounded.Data.Presentation.Details.Should().Contain("transport limit");
+        JsonSerializer.Serialize(MonitoringFlowEventFactory.Create(intent)).Should().Be(JsonSerializer.Serialize(bounded));
+        intent.Presentation.Should().Be(snapshot);
+    }
+
     [Theory]
     [InlineData("tenant")]
     [InlineData("authority")]

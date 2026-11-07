@@ -68,6 +68,13 @@ complete escaped snapshot to 4,096 bytes; long display text is shortened without
 splitting Unicode scalar values. Exact raw evidence and correlation IDs remain
 in Monitoring history.
 
+If a long admitted resource/authority nearly fills the existing 8,192-byte Flow
+event budget, the canonical envelope deterministically shortens the presentation
+and omits optional links/facts with an explicit notice. At the extreme boundary
+it retains the full snapshot on the occurrence/outbox and sends a labelled
+client-details omission. Raw metric values, resource identity, event keys and
+the transport limit remain intact; retries derive the identical projection.
+
 The RatelDesk payload remains plain text: its existing HTML removal/control
 validation runs before JSON serialization. Slack uses literal text with markup,
 mentions and link unfurl disabled; Discord escapes Markdown in the new plain
