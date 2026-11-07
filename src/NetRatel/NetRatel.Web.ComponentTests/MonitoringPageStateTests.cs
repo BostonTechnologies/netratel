@@ -120,11 +120,12 @@ public sealed class MonitoringPageStateTests
         Assert.Contains("Restart pagination", state.Error); Assert.False(state.SeriesPager.CanFirst);
     }
     [Theory]
-    [InlineData("2026-03-08", 23)]
-    [InlineData("2026-11-01", 25)]
-    public void OperatorLocalInclusiveEndUsesTheFollowingLocalDayAcrossDst(string day, int hours)
+    [InlineData("2026-03-08", 23, "America/New_York")]
+    [InlineData("2026-11-01", 25, "America/New_York")]
+    [InlineData("2026-11-01", 25, "America/Havana")]
+    public void OperatorLocalInclusiveEndUsesTheFollowingLocalDayAcrossDst(string day, int hours, string zone)
     {
-        var range = MonitoringDateRange.ToUtc(day, day, TimeZoneInfo.FindSystemTimeZoneById("America/New_York"));
+        var range = MonitoringDateRange.ToUtc(day, day, TimeZoneInfo.FindSystemTimeZoneById(zone));
         Assert.Equal(TimeSpan.FromHours(hours), range.ToExclusiveUtc - range.FromUtc);
         Assert.Equal(TimeSpan.Zero, range.FromUtc!.Value.Offset);
         Assert.Throws<ArgumentException>(() => MonitoringDateRange.ToUtc("2026-11-02", "2026-11-01", TimeZoneInfo.Utc));

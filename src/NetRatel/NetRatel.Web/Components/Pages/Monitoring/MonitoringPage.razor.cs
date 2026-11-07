@@ -171,7 +171,7 @@ public partial class MonitoringPage
                 var tenant = RequestedTenantId is { } requested ? _tenants.Any(item => item.TenantId == requested) ? requested : 0 : _tenants[0].TenantId;
                 if (tenant == 0) { _startupError = "The linked tenant does not grant Monitoring access."; RememberQuery(); return; }
                 try { State.Query = BuildQuery(tenant).Normalize(); }
-                catch (ArgumentException error) { _filterError = error.Message; }
+                catch (ArgumentException error) { State.ClearScope(tenant); _filterError = error.Message; RememberQuery(); return; }
                 await State.SelectTenantAsync(tenant); RememberQuery(); await LoadRequestedAlert();
             }
         }
@@ -293,7 +293,12 @@ public partial class MonitoringPage
         State.ClientFilter = null; State.Query = BuildQuery(tenant); _pendingWatchAtSaveRevision = null; _successMessage = null; await State.SelectTenantAsync(tenant);
         PersistFilters();
     }
-    private async Task Refresh() { FenceAlert(); await State.RefreshAsync(); PruneExpansion(); await LoadRequestedAlert(); }
+    private async Task Refresh()
+    {
+        try { State.Query = BuildQuery(State.TenantId).Normalize(); _filterError = null; }
+        catch (ArgumentException error) { FenceAlert(); State.ClearScope(State.TenantId); _filterError = error.Message; return; }
+        FenceAlert(); await State.RefreshAsync(); PruneExpansion(); await LoadRequestedAlert();
+    }
     private async Task PageSeries(string? cursor) { await State.NextSeriesPageAsync(cursor); if (State.Error is null) _expanded.Clear(); }
     private async Task PreviousSeries() { await State.PreviousSeriesPageAsync(); if (State.Error is null) _expanded.Clear(); }
     private Task PageHistory(string? cursor) => State.NextHistoryPageAsync(cursor);

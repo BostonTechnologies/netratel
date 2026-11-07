@@ -126,6 +126,11 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         await cut.WaitForAssertionAsync(() => Assert.Contains("From must", cut.Find("[data-testid=monitoring-filter-error]").TextContent));
         Assert.Empty(cut.FindAll("[data-testid=monitoring-series-row]")); Assert.Equal(before, calls);
         Assert.Equal("2", cut.Find("[data-testid=monitoring-tenant]").GetAttribute("value"));
+        await cut.Find("[data-testid=monitoring-refresh]").ClickAsync(new());
+        Assert.Equal(before, calls); Assert.Empty(cut.FindAll("[data-testid=monitoring-series-row]"));
+        var invalidInitial = Render<MonitoringPage>();
+        await invalidInitial.WaitForAssertionAsync(() => Assert.NotEmpty(invalidInitial.FindAll("[data-testid=monitoring-filter-error]")));
+        Assert.Equal(before, calls);
     }
     [Fact]
     public async Task DirectoryFailureAfterTenantChangeCannotDisplayPreviousTenantNames()
@@ -134,9 +139,10 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         _api.ClientSearch = (tenant, _, _, _) => tenant == 2 ? pending.Task : _api.GetClientsAsync(tenant);
         var cut = Render<NetRatel.Web.Components.Shared.Monitoring.MonitoringClientFilter>(parameters => parameters.Add(component => component.TenantId, 1));
         await cut.WaitForAssertionAsync(() => Assert.Contains("SQL Server", cut.Markup));
-        var update = cut.RenderAsync(parameters => parameters.Add(component => component.TenantId, 2));
+        cut.Render(parameters => parameters.Add(component => component.TenantId, 2));
         await cut.WaitForAssertionAsync(() => Assert.DoesNotContain("SQL Server", cut.Markup));
-        pending.SetException(new HttpRequestException("Directory unavailable")); await update;
+        await cut.InvokeAsync(() => pending.SetException(new HttpRequestException("Directory unavailable")));
+        await cut.WaitForAssertionAsync(() => Assert.Contains("Could not search", cut.Markup));
         Assert.DoesNotContain("SQL Server", cut.Markup); Assert.Contains("Could not search", cut.Markup);
     }
 
