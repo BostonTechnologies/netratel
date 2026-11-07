@@ -4,6 +4,7 @@ using System.Text.Json.Schema;
 using System.Text.Json.Serialization.Metadata;
 using NetRatel.Shared.Operations;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared.Contracts.Monitoring;
 
 namespace NetRatel.Mcp.Core;
 
@@ -25,8 +26,23 @@ public static partial class NetRatelMcpToolDefinitions
         if (operation.Paged)
         {
             properties["limit"] = new JsonObject { ["type"] = "integer", ["minimum"] = 1, ["maximum"] = 100, ["default"] = 50 };
-            properties["cursor"] = new JsonObject { ["type"] = "string", ["maxLength"] = 2048,
+            properties["cursor"] = new JsonObject { ["type"] = "string", ["maxLength"] = operation.MonitoringQuery ? MonitoringQueryLimits.MaximumCursorLength : 2048,
                 ["description"] = "Opaque nextCursor from the preceding page; keep other filters unchanged." };
+        }
+        if (operation.MonitoringQuery)
+        {
+            properties["view"] = new JsonObject { ["type"] = "string", ["enum"] = operation.Operation == "events"
+                ? new JsonArray("All") : new JsonArray(Enum.GetNames<MonitoringView>().Select(name => (JsonNode?)JsonValue.Create(name)).ToArray()),
+                ["default"] = "All", ["description"] = "Additive full-result selection. Unfiltered reads include Healthy series." };
+            properties["clientId"] = new JsonObject { ["type"] = "string", ["format"] = "uuid" };
+            properties["severity"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("Information", "Warning", "Critical") };
+            properties["text"] = new JsonObject { ["type"] = "string", ["maxLength"] = MonitoringQueryLimits.MaximumTextLength };
+            properties["fromUtc"] = new JsonObject { ["type"] = "string", ["format"] = "date-time",
+                ["description"] = "Inclusive UTC lower bound: RaisedAtUtc for series, event/audit AtUtc for history." };
+            properties["toExclusiveUtc"] = new JsonObject { ["type"] = "string", ["format"] = "date-time",
+                ["description"] = "Exclusive UTC upper bound. Convert inclusive local end dates to the next local day start first." };
+            properties["sort"] = new JsonObject { ["type"] = "string", ["enum"] = operation.Operation == "events"
+                ? new JsonArray("EventTimeDescending") : new JsonArray("SeriesIdentity") };
         }
         if (operation.Searchable)
             properties["search"] = new JsonObject { ["type"] = "string", ["maxLength"] = 256 };

@@ -33,9 +33,12 @@ public sealed record ManagedOperationDescriptor(string Tool, string Operation, s
             .. ApprovalTarget ? new[] { "callId" } : [],
             .. DataType is not null ? new[] { "data" } : []];
 
+    public bool MonitoringQuery => Tool == "netratel_monitoring" && Operation is "series" or "events";
+
     public IReadOnlyList<string> AllowedProperties =>
         [.. RequiredProperties, .. Paged ? new[] { "limit", "cursor" } : [], .. Searchable ? new[] { "search" } : [],
-            .. OffsetPaged ? new[] { "skip" } : [], .. SequencePaged ? new[] { "after" } : []];
+            .. OffsetPaged ? new[] { "skip" } : [], .. SequencePaged ? new[] { "after" } : [],
+            .. MonitoringQuery ? new[] { "view", "clientId", "severity", "text", "fromUtc", "toExclusiveUtc", "sort" } : []];
 
     public IReadOnlyList<string> AdditionalPermissions => (Tool, Operation) switch
     {
@@ -163,8 +166,14 @@ public static class ManagedOperationCatalog
             return Invalid("search must contain at most 256 characters without control characters.", out error);
         foreach (var name in new[] { "cursor", "resourceKey" })
             if (request.TryGetProperty(name, out var value) &&
-                (value.ValueKind != JsonValueKind.String || value.GetString() is not { Length: <= 2048 } text || text.Any(char.IsControl)))
+                (value.ValueKind != JsonValueKind.String || value.GetString() is not { } text || text.Length > (name == "cursor" && descriptor.MonitoringQuery ? MonitoringQueryLimits.MaximumCursorLength : 2048) || text.Any(char.IsControl)))
                 return Invalid($"{name} must be bounded text without control characters.", out error);
+        if (descriptor.MonitoringQuery)
+        {
+            try { _ = MonitoringQueryJson.Read(request, descriptor.Operation == "events"); }
+            catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or FormatException)
+            { return Invalid("Supply valid monitoring view/client/severity/text/date/sort filters and keep them unchanged while paging.", out error); }
+        }
         if (descriptor.ResourceKey && string.IsNullOrWhiteSpace(request.GetProperty("resourceKey").GetString()))
             return Invalid("resourceKey must identify the exact monitored resource.", out error);
         if (descriptor.DataType is { } dataType)

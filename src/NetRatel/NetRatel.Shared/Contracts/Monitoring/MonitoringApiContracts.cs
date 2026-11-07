@@ -42,9 +42,11 @@ public sealed record MonitoringClientDto(Guid AgentId, string? DisplayName, Clie
 public sealed record MonitoringClientPageDto(ImmutableArray<MonitoringClientDto> Items, string? NextCursor, int Total);
 
 public sealed record MonitoringSeriesPageDto(ImmutableArray<MonitoringSeriesState> Items, string? NextCursor,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] ImmutableArray<MonitoringClientIdentityDto> ClientIdentities = default);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] ImmutableArray<MonitoringClientIdentityDto> ClientIdentities = default, [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? MatchingCount = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool ClientIdentitiesTruncated = false);
 public sealed record MonitoringEventPageDto(ImmutableArray<MonitoringEventIntent> Items, string? NextCursor,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] ImmutableArray<MonitoringClientIdentityDto> ClientIdentities = default, [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] ImmutableArray<MonitoringHistoryAuditDto> Audits = default);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] ImmutableArray<MonitoringClientIdentityDto> ClientIdentities = default, [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] ImmutableArray<MonitoringHistoryAuditDto> Audits = default, [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? MatchingCount = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool ClientIdentitiesTruncated = false);
 
 public sealed record MonitoringHistoryAuditDto(Guid AuditId, string Action, Guid EntityId, string EntityKind,
     string? EntityName, Guid OperatorId, string? OperatorDisplayName, string Reason, DateTimeOffset AtUtc);

@@ -60,9 +60,7 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         RequirePage(maximumCount, cursor);
         var result = await runtime.ReadTenantAsync(tenantId, maximumCount, cursor, cancellationToken).ConfigureAwait(false);
         if (result.Items.Any(item => item.Series.TenantId != tenantId)) throw new InvalidOperationException("Monitoring series returned a different tenant.");
-        return Bounded(result with { ClientIdentities = await ReadIdentitiesAsync(tenantId, result.Items.SelectMany(item =>
-            item.OfflineAgentIds.IsDefault ? new[] { item.Series.AgentId } : item.OfflineAgentIds.Prepend(item.Series.AgentId))
-            .Where(id => id != Guid.Empty).Distinct().Take(MonitoringLimits.MaximumTargetClients), cancellationToken).ConfigureAwait(false) });
+        return await ProjectSeriesPageAsync(tenantId, result, null, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<MonitoringEventPageDto> GetEventsAsync(int tenantId, int maximumCount, string? cursor, ClaimsPrincipal user, CancellationToken cancellationToken)
@@ -71,7 +69,37 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         RequirePage(maximumCount, cursor);
         var result = await runtime.ReadTenantEventsAsync(tenantId, maximumCount, cursor, cancellationToken).ConfigureAwait(false);
         if (result.Items.Any(item => item.Series.TenantId != tenantId)) throw new InvalidOperationException("Monitoring events returned a different tenant.");
-        return Bounded(result with { ClientIdentities = await ReadIdentitiesAsync(tenantId, result.Items.Select(item => item.Series.AgentId).Where(id => id != Guid.Empty), cancellationToken).ConfigureAwait(false) });
+        var identities = await ReadPageIdentitiesAsync(tenantId, result.Items.Select(item => item.Series.AgentId), cancellationToken).ConfigureAwait(false);
+        return Bounded(result with { ClientIdentities = identities.Items, ClientIdentitiesTruncated = identities.Truncated });
+    }
+
+    public async Task<MonitoringSeriesPageDto> GetSeriesAsync(MonitoringQueryDto requested, string? cursor, ClaimsPrincipal user, CancellationToken cancellationToken)
+    {
+        var query = requested.Normalize();
+        if (query.View == MonitoringView.All && query.ClientId is null && query.Severity is null && query.Text is null && query.FromUtc is null && query.ToExclusiveUtc is null)
+            return await GetSeriesAsync(query.TenantId, query.MaximumCount, cursor, user, cancellationToken).ConfigureAwait(false);
+        await RequireAsync(user, NetRatelPermissions.MonitoringRead, new(query.TenantId, MonitoringResourceKind.Tenant), cancellationToken).ConfigureAwait(false);
+        RequirePage(query.MaximumCount, cursor);
+        if (query.ClientId is { } client)
+            await RequireAsync(user, NetRatelPermissions.MonitoringRead, new(query.TenantId, MonitoringResourceKind.Agent, client, client), cancellationToken).ConfigureAwait(false);
+        var result = await runtime.ReadTenantAsync(query, cursor, cancellationToken).ConfigureAwait(false);
+        if (result.Items.Any(item => item.Series.TenantId != query.TenantId)) throw new InvalidOperationException("Monitoring series returned a different tenant.");
+        return await ProjectSeriesPageAsync(query.TenantId, result, query.ClientId, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<MonitoringEventPageDto> GetEventsAsync(MonitoringQueryDto requested, string? cursor, ClaimsPrincipal user, CancellationToken cancellationToken)
+    {
+        var query = requested.Normalize(history: true);
+        if (query.ClientId is null && query.Severity is null && query.Text is null && query.FromUtc is null && query.ToExclusiveUtc is null)
+            return await GetEventsAsync(query.TenantId, query.MaximumCount, cursor, user, cancellationToken).ConfigureAwait(false);
+        await RequireAsync(user, NetRatelPermissions.MonitoringRead, new(query.TenantId, MonitoringResourceKind.Tenant), cancellationToken).ConfigureAwait(false);
+        RequirePage(query.MaximumCount, cursor);
+        if (query.ClientId is { } client)
+            await RequireAsync(user, NetRatelPermissions.MonitoringRead, new(query.TenantId, MonitoringResourceKind.Agent, client, client), cancellationToken).ConfigureAwait(false);
+        var result = await runtime.ReadTenantEventsAsync(query, cursor, cancellationToken).ConfigureAwait(false);
+        if (result.Items.Any(item => item.Series.TenantId != query.TenantId)) throw new InvalidOperationException("Monitoring events returned a different tenant.");
+        var identities = await ReadPageIdentitiesAsync(query.TenantId, result.Items.Select(item => item.Series.AgentId), cancellationToken).ConfigureAwait(false);
+        return Bounded(result with { ClientIdentities = identities.Items, ClientIdentitiesTruncated = identities.Truncated });
     }
 
     public async Task<MonitoringSummaryDto> GetSummaryAsync(int tenantId, ClaimsPrincipal user, CancellationToken cancellationToken)
@@ -151,6 +179,31 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         if (ids.IsDefault || ids.Length > MonitoringLimits.MaximumTargetClients || ids.Contains(Guid.Empty))
             throw new MonitoringApiException(400, "invalid_monitoring_identity_scope");
         return Bounded(await ReadIdentitiesAsync(tenantId, ids, cancellationToken).ConfigureAwait(false));
+    }
+
+    private async Task<MonitoringSeriesPageDto> ProjectSeriesPageAsync(int tenantId, MonitoringSeriesPageDto result, Guid? selectedClient,
+        CancellationToken cancellationToken)
+    {
+        var normal = result.Items.Select(item => item.Series.AgentId).Where(id => id != Guid.Empty);
+        var members = result.Items.SelectMany(item => item.OfflineAgentIds.IsDefault ? [] : item.OfflineAgentIds);
+        var identities = await ReadPageIdentitiesAsync(tenantId, normal.Concat(selectedClient is { } selectedClientId ? new[] { selectedClientId } : []).Concat(members), cancellationToken).ConfigureAwait(false);
+        return Bounded(result with { ClientIdentities = identities.Items, ClientIdentitiesTruncated = identities.Truncated });
+    }
+
+    private async Task<(ImmutableArray<MonitoringClientIdentityDto> Items, bool Truncated)> ReadPageIdentitiesAsync(int tenantId,
+        IEnumerable<Guid> requested, CancellationToken cancellationToken)
+    {
+        var ids = requested.Where(id => id != Guid.Empty).Distinct().Take(MonitoringLimits.MaximumTargetClients + 1).ToArray();
+        var identities = await ReadIdentitiesAsync(tenantId, ids.Take(MonitoringLimits.MaximumTargetClients), cancellationToken).ConfigureAwait(false);
+        var result = ImmutableArray.CreateBuilder<MonitoringClientIdentityDto>();
+        var bytes = 2;
+        foreach (var identity in identities)
+        {
+            var size = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(identity).Length + 1;
+            if (bytes + size > MonitoringQueryLimits.MaximumPageIdentityBytes) break;
+            result.Add(identity); bytes += size;
+        }
+        return (result.ToImmutable(), result.Count < ids.Length);
     }
 
     private async Task<ImmutableArray<MonitoringClientIdentityDto>> ReadIdentitiesAsync(int tenantId, IEnumerable<Guid> requested,
@@ -466,7 +519,7 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
 
     private static void RequirePage(int maximumCount, string? cursor)
     {
-        if (maximumCount is < 1 or > MonitoringLimits.MaximumRowsPerRead || cursor?.Length > 256) throw new MonitoringApiException(400, "invalid_monitoring_page");
+        if (maximumCount is < 1 or > MonitoringLimits.MaximumRowsPerRead || cursor?.Length > MonitoringQueryLimits.MaximumCursorLength) throw new MonitoringApiException(400, "invalid_monitoring_page");
     }
 
     private static MonitoringConfigurationDto ToDto(MonitoringConfigurationSnapshot configuration) => new(configuration.TenantId,

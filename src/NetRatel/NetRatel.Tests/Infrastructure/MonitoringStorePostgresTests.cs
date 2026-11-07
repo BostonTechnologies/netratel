@@ -449,6 +449,152 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
     }
 
     [Fact]
+    public async Task Full_query_precedes_paging_and_cursor_roundtrips_maximum_escaped_unicode_keys()
+    {
+        await using var rig = await CreateRigAsync();
+        var raised = await FireAsync(rig);
+        var now = rig.Time.GetUtcNow();
+        var maximumKey = "disk:/a/" + new string('中', 168) + new string('\\', 168) + new string('"', 168);
+        maximumKey.Length.Should().Be(MonitoringLimits.MaximumResourceKeyLength);
+        await using (var scope = rig.Provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            await db.MonitoringSeries.ExecuteDeleteAsync();
+            var agent = await db.Agents.SingleAsync(row => row.Id == rig.Client.AgentId);
+            agent.FriendlyName = "synthetic-backup";
+            agent.DeviceInfoJson = "legacy malformed metadata remains searchable";
+            for (var index = 0; index < 185; index++)
+            {
+                var healthy = index < 50;
+                var key = rig.Key with { ResourceKey = index == 0 ? maximumKey : $"disk:/{(healthy ? "b" : "z")}-{index:D3}" };
+                var state = raised with
+                {
+                    Series = key, Phase = healthy ? MonitoringPhase.Healthy : MonitoringPhase.Firing,
+                    EvidenceQuality = index == 50 ? MonitoringEvidenceQuality.Unknown : MonitoringEvidenceQuality.Fresh,
+                    LatestEvidence = index switch
+                    {
+                        1 => raised.LatestEvidence! with { ObservedAtUtc = now.AddMinutes(-6) },
+                        2 => raised.LatestEvidence! with { ReceivedAtUtc = now.AddMinutes(-6) },
+                        3 => raised.LatestEvidence! with { ObservedAtUtc = now.AddMinutes(1) },
+                        _ => raised.LatestEvidence
+                    },
+                    Occurrence = healthy ? null : raised.Occurrence! with
+                    {
+                        OccurrenceId = Guid.NewGuid(), RaisedEventId = Guid.NewGuid(),
+                        PinnedRule = rig.Rule with { Name = "Synthetic disk rule" }
+                    }
+                };
+                db.MonitoringSeries.Add(Record(state));
+            }
+            await db.SaveChangesAsync();
+            var identity = await NetRatel.API.Services.Monitoring.MonitoringIdentityProjection.ReadAsync(db,
+                rig.Client.TenantId, [rig.Client.AgentId], default);
+            identity.Single().DisplayName.Should().Be("synthetic-backup");
+        }
+        var unfiltered = await rig.Store.ReadTenantSeriesAsync(rig.Client.TenantId, 50, null, default);
+        unfiltered.Items.Should().HaveCount(50).And.OnlyContain(row => row.Phase == MonitoringPhase.Healthy);
+        var one = new MonitoringQueryDto(rig.Client.TenantId, MaximumCount: 1);
+        var first = await rig.Store.ReadTenantSeriesAsync(one, null, default);
+        first.Items.Single().Series.ResourceKey.Should().Be(maximumKey);
+        first.NextCursor!.Length.Should().BeGreaterThan(256).And.BeLessThanOrEqualTo(MonitoringQueryLimits.MaximumCursorLength);
+        var next = await rig.Store.ReadTenantSeriesAsync(one, first.NextCursor, default);
+        next.Items.Single().Series.Should().NotBe(first.Items.Single().Series);
+        foreach (var size in new[] { 20, 50, 100 })
+        {
+            var query = new MonitoringQueryDto(rig.Client.TenantId, MonitoringView.Firing, rig.Client.AgentId, MonitoringSeverity.Warning,
+                " SYNTHETIC ", now.AddMinutes(-1), now.AddMinutes(1), MaximumCount: size);
+            var seen = new HashSet<MonitoringSeriesKey>();
+            string? cursor = null;
+            do
+            {
+                var page = await rig.Store.ReadTenantSeriesAsync(query, cursor, default);
+                page.MatchingCount.Should().Be(135);
+                page.Items.Should().HaveCount(Math.Min(size, 135 - seen.Count));
+                foreach (var item in page.Items) seen.Add(item.Series).Should().BeTrue();
+                cursor = page.NextCursor;
+            } while (cursor is not null);
+            seen.Should().HaveCount(135);
+        }
+        var firing = await rig.Store.ReadTenantSeriesAsync(new(rig.Client.TenantId, MonitoringView.Firing, MaximumCount: 20), null, default);
+        firing.Items.Should().Contain(row => row.EvidenceQuality == MonitoringEvidenceQuality.Unknown);
+        (await rig.Store.ReadTenantSeriesAsync(new(rig.Client.TenantId, MonitoringView.Unknown), null, default)).MatchingCount.Should().Be(4,
+            "Unknown includes current observed/received freshness and future timestamps without removing Firing lifecycle matches");
+        var textMatch = await rig.Store.ReadTenantSeriesAsync(new(rig.Client.TenantId, Text: "synthetic-backup", MaximumCount: 1), null, default);
+        textMatch.MatchingCount.Should().Be(185, "friendly directory names match before paging, including malformed legacy metadata");
+        (await rig.Store.ReadTenantSeriesAsync(new(rig.Client.TenantId, FromUtc: now.AddMinutes(-1), MaximumCount: 1), null, default)).MatchingCount.Should().Be(135);
+        (await rig.Store.ReadTenantSeriesAsync(new(rig.Client.TenantId, Text: "no-synthetic-match"), null, default)).Items.Should().BeEmpty();
+        foreach (var query in new[] { one with { TenantId = rig.Client.TenantId + 1 }, one with { MaximumCount = 20 }, one with { View = MonitoringView.Firing } })
+        {
+            Func<Task> foreign = async () => await rig.Store.ReadTenantSeriesAsync(query, first.NextCursor, default);
+            await foreign.Should().ThrowAsync<ArgumentException>().WithMessage("monitoring_cursor_context_mismatch");
+        }
+        Func<Task> wrongEndpoint = async () => await rig.Store.ReadTenantEventsAsync(one, first.NextCursor, default);
+        await wrongEndpoint.Should().ThrowAsync<ArgumentException>().WithMessage("monitoring_cursor_context_mismatch");
+        Func<Task> malformed = async () => await rig.Store.ReadTenantSeriesAsync(one, "%invalid%", default);
+        await malformed.Should().ThrowAsync<ArgumentException>();
+        var legacy = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("{\"TenantId\":80}"));
+        Func<Task> restart = async () => await rig.Store.ReadTenantSeriesAsync(one, legacy, default);
+        await restart.Should().ThrowAsync<ArgumentException>().WithMessage("monitoring_cursor_restart_required");
+
+        var offlineKey = MonitoringOfflinePresentation.Series(rig.Client.TenantId, rig.Rule.RuleId);
+        var offline = raised with { Series = offlineKey, OfflineAgentIds = [rig.Client.AgentId],
+            LatestEvidence = raised.LatestEvidence! with { OfflineSummary = new(1, 1, "synthetic-backup", false) } };
+        await using (var scope = rig.Provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            db.MonitoringSeries.Add(Record(offline)); await db.SaveChangesAsync();
+        }
+        var clientPage = await rig.Store.ReadTenantSeriesAsync(new(rig.Client.TenantId, MonitoringView.Firing, rig.Client.AgentId, MaximumCount: 200), null, default);
+        clientPage.Items.Should().HaveCount(136).And.Contain(row => row.Series == offlineKey);
+
+        MonitoringSeriesRecord Record(MonitoringSeriesState state) => new()
+        {
+            TenantId = state.Series.TenantId, RuleId = state.Series.RuleId, AgentId = state.Series.AgentId, ResourceKey = state.Series.ResourceKey,
+            StateRevision = state.StateRevision, Phase = state.Phase, EvidenceQuality = state.EvidenceQuality,
+            ActiveOccurrenceId = state.Occurrence?.OccurrenceId, LatestOccurrenceId = state.Occurrence?.OccurrenceId,
+            StateJson = JsonSerializer.Serialize(state), UpdatedAtUtc = now
+        };
+    }
+
+    [Fact]
+    public async Task History_filters_apply_before_event_audit_union_and_pin_offline_client_membership()
+    {
+        await using var rig = await CreateRigAsync();
+        var firing = await FireAsync(rig);
+        var now = rig.Time.GetUtcNow();
+        var offlineKey = MonitoringOfflinePresentation.Series(rig.Client.TenantId, rig.Rule.RuleId);
+        var occurrence = firing.Occurrence! with { OccurrenceId = Guid.NewGuid(), RaisedEventId = Guid.NewGuid() };
+        var legacy = new MonitoringEventIntent(occurrence.RaisedEventId, MonitoringEventKind.AlertRaised, offlineKey,
+            occurrence.OccurrenceId, now, rig.Rule, firing.LatestEvidence!);
+        var pinned = legacy with { EventId = Guid.NewGuid(), Kind = MonitoringEventKind.AlertAcknowledged, OfflineAgentIds = [rig.Client.AgentId] };
+        await using (var scope = rig.Provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            db.MonitoringOccurrences.Add(new() { OccurrenceId = occurrence.OccurrenceId, TenantId = rig.Client.TenantId,
+                RuleId = rig.Rule.RuleId, AgentId = Guid.Empty, ResourceKey = offlineKey.ResourceKey,
+                RaisedEventId = occurrence.RaisedEventId, RaisedAtUtc = now, OccurrenceJson = JsonSerializer.Serialize(occurrence) });
+            foreach (var item in new[] { legacy, pinned }) db.MonitoringEvents.Add(new() { EventId = item.EventId,
+                OccurrenceId = item.OccurrenceId, TenantId = rig.Client.TenantId, AtUtc = now, EventJson = JsonSerializer.Serialize(item) });
+            await db.SaveChangesAsync();
+        }
+        var query = new MonitoringQueryDto(rig.Client.TenantId, ClientId: rig.Client.AgentId, Severity: MonitoringSeverity.Warning,
+            Text: "HIGH CPU", FromUtc: now.AddMinutes(-1), ToExclusiveUtc: now.AddMinutes(1), MaximumCount: 1);
+        var first = await rig.Store.ReadTenantEventsAsync(query, null, default);
+        first.MatchingCount.Should().Be(2);
+        first.Audits.Should().BeEmpty();
+        var next = await rig.Store.ReadTenantEventsAsync(query, first.NextCursor, default);
+        next.NextCursor.Should().BeNull();
+        first.Items.Concat(next.Items).Select(item => item.EventId).Should().BeEquivalentTo(firing.Occurrence!.RaisedEventId, pinned.EventId);
+        var all = await rig.Store.ReadTenantEventsAsync(new(rig.Client.TenantId), null, default);
+        all.Items.Should().HaveCount(3);
+        all.Audits.Should().NotBeEmpty("non-series configuration audits remain in unfiltered immutable History");
+        all.MatchingCount.Should().Be(all.Items.Length + all.Audits.Length);
+        (await rig.Store.ReadTenantEventsAsync(new(rig.Client.TenantId, Severity: MonitoringSeverity.Critical), null, default)).MatchingCount.Should().Be(0);
+        Func<Task> wrongQuery = async () => await rig.Store.ReadTenantEventsAsync(query with { Text = "other" }, first.NextCursor, default);
+        await wrongQuery.Should().ThrowAsync<ArgumentException>().WithMessage("monitoring_cursor_context_mismatch");
+    }
+
+    [Fact]
     public async Task Byte_budgeted_tenant_pages_have_lossless_continuation_for_large_pinned_rules()
     {
         await using var rig = await CreateRigAsync();
