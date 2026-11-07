@@ -608,6 +608,7 @@ internal sealed class FakeFlowApi : IFlowApiService
     public Func<int, FlowQueryDto, CancellationToken, Task<FlowPageDto>>? QueryLookup;
     public Func<int, Guid, FlowDeleteRequest, CancellationToken, Task<FlowDeleteResultDto>>? DeleteLookup;
     public Func<int, Guid, FlowEnabledRequest, CancellationToken, Task<FlowDefinitionDto>>? EnabledLookup;
+    public Func<int, Guid, CancellationToken, Task<FlowSummaryDto>>? MetadataLookup;
     public IReadOnlyList<FlowTenantAccessDto>? TenantAccess;
     public readonly List<FlowQueryDto> Queries = [];
     public int DeleteCalls, EnabledCalls;
@@ -621,7 +622,8 @@ internal sealed class FakeFlowApi : IFlowApiService
             (string.IsNullOrWhiteSpace(query.Search) || row.Name.Contains(query.Search, StringComparison.OrdinalIgnoreCase))).ToArray();
         return new(rows.Skip(query.PageIndex * query.PageSize).Take(query.PageSize).ToArray(), rows.Length, query.PageIndex, query.PageSize);
     }
-    public async Task<FlowSummaryDto> GetMetadataAsync(int tenantId, Guid flowId, CancellationToken token = default) => Summary(await GetAsync(tenantId, flowId, token));
+    public async Task<FlowSummaryDto> GetMetadataAsync(int tenantId, Guid flowId, CancellationToken token = default) =>
+        MetadataLookup is null ? Summary(await GetAsync(tenantId, flowId, token)) : await MetadataLookup(tenantId, flowId, token);
     public Task<FlowDeleteResultDto> DeleteAsync(int tenantId, Guid flowId, FlowDeleteRequest request, CancellationToken token = default)
     { DeleteCalls++; return DeleteLookup?.Invoke(tenantId, flowId, request, token) ?? throw new NotSupportedException(); }
     public int CapabilityReads;

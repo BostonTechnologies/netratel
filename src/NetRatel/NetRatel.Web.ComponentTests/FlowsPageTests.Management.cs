@@ -13,6 +13,50 @@ namespace NetRatel.Web.ComponentTests;
 
 public sealed partial class FlowsPageTests
 {
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    public async Task History_link_metadata_errors_are_visible_without_opening_an_unauthorized_viewer(HttpStatusCode status)
+    {
+        var id = Guid.NewGuid();
+        _api.MetadataLookup = (_, _, _) => Task.FromException<FlowSummaryDto>(new FlowApiException(status));
+        Services.GetRequiredService<NavigationManager>().NavigateTo($"/flows?tenantId=17&flowId={id:D}");
+        var cut = Render<FlowsPage>();
+        await cut.WaitForAssertionAsync(() => cut.Find("[data-testid=flows-error]").TextContent.Should().Contain(
+            status == HttpStatusCode.NotFound ? "unavailable" : "permission"));
+        _dialogs.FindAll("[data-testid=flow-history-panel]").Should().BeEmpty();
+        _api.MetadataLookup = (_, _, _) => Task.FromResult(FakeFlowApi.Summary(FlowEditorTests.Definition()) with { Id = id });
+        await cut.Find("[data-testid=flows-retry]").ClickAsync(new());
+        await _dialogs.WaitForAssertionAsync(() => _dialogs.FindAll("[data-testid=flow-history-panel]").Should().HaveCount(1));
+        cut.FindAll("[data-testid=flows-error]").Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Replaced_history_link_fences_a_late_metadata_response_and_retains_deleted_history()
+    {
+        var old = FakeFlowApi.Summary(FlowEditorTests.Definition()) with { Name = "Old linked history" };
+        var current = old with { Id = Guid.NewGuid(), Name = "New linked history", Enabled = false, DeletedAtUtc = DateTimeOffset.UtcNow };
+        var pending = new TaskCompletionSource<FlowSummaryDto>(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationToken oldToken = default;
+        _api.MetadataLookup = (_, id, token) =>
+        {
+            if (id != old.Id) return Task.FromResult(current);
+            oldToken = token; return pending.Task;
+        };
+        _api.VersionsLookup = (_, _, _) => Task.FromResult<IReadOnlyList<FlowVersionDto>>([]);
+        _api.RunsLookup = (_, _, _) => Task.FromResult<IReadOnlyList<FlowRunSummaryDto>>([]);
+        var navigation = Services.GetRequiredService<NavigationManager>();
+        navigation.NavigateTo($"/flows?tenantId=17&flowId={old.Id:D}");
+        var cut = Render<FlowsPage>();
+        await cut.WaitForAssertionAsync(() => oldToken.CanBeCanceled.Should().BeTrue());
+        await cut.InvokeAsync(() => navigation.NavigateTo($"/flows?tenantId=17&flowId={current.Id:D}"));
+        await _dialogs.WaitForAssertionAsync(() => _dialogs.Markup.Should().Contain("New linked history").And.Contain("Deleted flow"));
+        oldToken.IsCancellationRequested.Should().BeTrue();
+        await cut.InvokeAsync(() => pending.SetResult(old));
+        _dialogs.Markup.Should().Contain("New linked history").And.NotContain("Old linked history");
+        cut.FindAll("[data-testid=flows-error]").Should().BeEmpty();
+    }
+
     [Fact]
     public async Task Delete_capability_is_independent_of_edit_and_cancel_performs_no_mutation()
     {

@@ -18,7 +18,7 @@
         </select></label>
         @if (_tenantId > 0) { <a href="@($"/flows/connectors?tenantId={_tenantId}")">RatelDesk connectors</a> }
     </header>
-    @if (_error is not null) { <div role="alert" class="flow-error" data-testid="flows-error">@_error<button type="button" @onclick="ReloadAsync" data-testid="flows-retry">Retry</button></div> }
+    @if (_error is not null) { <div role="alert" class="flow-error" data-testid="flows-error">@_error<button type="button" @onclick="RetryReadAsync" data-testid="flows-retry">Retry</button></div> }
     @if (_loadingTenants) { <p role="status">Loading authorized tenants…</p> }
     else if (_tenants.Count == 0) { <p role="status" data-testid="flows-no-access">No tenants grant access to Flows.</p> }
     else if (Access is null) { <p role="status" data-testid="flows-no-access">Choose an authorized tenant to view Flows.</p> }
@@ -216,7 +216,7 @@
         if (Access is null) return;
         if (RequestedDraftId is { } draftId)
         {
-            if (RequestedTenantId is null || draftId == Guid.Empty || RequestedVersionId is not null || RequestedRunId is not null)
+            if (RequestedTenantId is null || draftId == Guid.Empty || RequestedVersionId is not null || RequestedRunId is not null || RequestedHistoryFlowId is not null)
             { _error = "A Flow draft link needs its authorized tenant and one draft."; return; }
             await ScopeCommandAsync(async (tenant, generation, token) =>
             {
@@ -226,10 +226,17 @@
             });
             return;
         }
-        if (RequestedHistoryFlowId is { } historyId && historyId != Guid.Empty)
+        if (RequestedHistoryFlowId is { } historyId)
         {
-            var metadata = await Api.GetMetadataAsync(_tenantId, historyId, _scope.Token);
-            await LoadHistoryAsync(metadata); return;
+            if (RequestedTenantId is null || historyId == Guid.Empty || RequestedVersionId is not null || RequestedRunId is not null)
+            { _error = "A Flow history link needs its authorized tenant and one flow."; return; }
+            await ScopeCommandAsync(async (tenant, generation, token) =>
+            {
+                var metadata = await Api.GetMetadataAsync(tenant, historyId, token);
+                if (!Current(generation, tenant) || metadata.TenantId != tenant || metadata.Id != historyId) return;
+                await LoadHistoryCoreAsync(metadata, tenant, generation, token);
+            }, historyRequest: true);
+            return;
         }
         if (RequestedVersionId is null && RequestedRunId is null) return;
         if (RequestedTenantId is null || RequestedVersionId == Guid.Empty || RequestedRunId == Guid.Empty || RequestedVersionId is not null && RequestedRunId is not null)
@@ -271,8 +278,17 @@
     }
     private void SetRequestError(bool historyRequest, string error)
     {
-        if (historyRequest) _historyError = error;
+        if (historyRequest && _historyOpen) _historyError = error;
         else _error = error;
+    }
+    private async Task RetryReadAsync()
+    {
+        await ReloadAsync();
+        if (_error is null && RequestedHistoryFlowId is not null && !_historyOpen)
+        {
+            _processedQuery = default;
+            await OnParametersSetAsync();
+        }
     }
     private async Task ReloadAsync()
     {
@@ -424,7 +440,9 @@
             _error = "The deletion response was uncertain. Refresh to reconcile this exact flow before any new deletion intent. No automatic retry was made.";
         }
     });
-    private Task LoadHistoryAsync(FlowSummaryDto flow) => ScopeCommandAsync(async (tenant, generation, token) =>
+    private Task LoadHistoryAsync(FlowSummaryDto flow) => ScopeCommandAsync(
+        (tenant, generation, token) => LoadHistoryCoreAsync(flow, tenant, generation, token), historyRequest: true);
+    private async Task LoadHistoryCoreAsync(FlowSummaryDto flow, int tenant, int generation, CancellationToken token)
     {
         if (flow.TenantId != tenant) return;
         BeginHistory(flow);
@@ -439,7 +457,7 @@
             _runs = (await runsTask).Where(r => r.FlowId == flow.Id).OrderByDescending(r => r.CreatedAtUtc).ToArray();
         }
         finally { if (Current(generation, tenant)) _historyLoading = false; }
-    }, historyRequest: true);
+    }
     private void BeginHistory(FlowSummaryDto flow)
     {
         if (!_historyOpen || _history?.Id != flow.Id) ++_historyGeneration;
