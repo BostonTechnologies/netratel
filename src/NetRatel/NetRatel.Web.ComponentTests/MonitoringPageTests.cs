@@ -66,6 +66,80 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         Assert.Contains("Firing", Assert.Single(cut.FindAll("[data-testid=monitoring-series-row]")).TextContent);
     }
 
+    [Fact]
+    public async Task DisclosureRendersOnlyItsChildAndReplacementOccurrenceCannotInheritExpansion()
+    {
+        var alert = Alert("Backup free space");
+        var row = new MonitoringSeriesState(new(1, alert.RuleId, alert.AgentId, alert.Resource), 1, 1, MonitoringPhase.Firing,
+            MonitoringEvidenceQuality.Fresh, LatestEvidence: alert.Occurrence.RaisedEvidence, Occurrence: alert.Occurrence with { EndedAtUtc = null });
+        _api.SeriesRead = (_, _, _) => Task.FromResult(new MonitoringSeriesPageDto([row], null));
+        var cut = Render<MonitoringPage>();
+        await cut.WaitForAssertionAsync(() => Assert.Single(cut.FindAll("[data-testid=monitoring-series-row]")));
+        Assert.Empty(cut.FindAll("[data-testid=monitoring-detail-row]"));
+        var disclosure = cut.Find("[data-testid=monitoring-alert-details]");
+        Assert.Equal("false", disclosure.GetAttribute("aria-expanded"));
+        disclosure.Click(); Assert.Single(cut.FindAll("[data-testid=monitoring-detail-row]"));
+        disclosure.Click(); Assert.Empty(cut.FindAll("[data-testid=monitoring-detail-row]"));
+        disclosure.Click();
+        row = row with { Occurrence = row.Occurrence! with { OccurrenceId = Guid.NewGuid() } };
+        await cut.Find("[data-testid=monitoring-refresh]").ClickAsync(new());
+        Assert.Empty(cut.FindAll("[data-testid=monitoring-detail-row]"));
+        Assert.Equal("false", cut.Find("[data-testid=monitoring-alert-details]").GetAttribute("aria-expanded"));
+        cut.Find("[data-testid=monitoring-alert-details]").Click();
+        await cut.Find("[data-testid=monitoring-tenant]").ChangeAsync(new() { Value = "2" });
+        Assert.Empty(cut.FindAll("[data-testid=monitoring-detail-row]"));
+    }
+    [Fact]
+    public async Task CombinedFiltersRealSizeAndClearAreReflectedInServerQueryAndUrl()
+    {
+        var calls = new List<MonitoringQueryDto>();
+        _api.QuerySeriesRead = (query, _, _) => { calls.Add(query); return Task.FromResult(new MonitoringSeriesPageDto([], null)); };
+        var nav = Services.GetRequiredService<NavigationManager>();
+        nav.NavigateTo("/monitoring?tenantId=1&severity=Critical&from=2026-11-07&to=2026-11-07&timeZone=Africa%2FJohannesburg&pageSize=50&search=backup");
+        var cut = Render<MonitoringPage>();
+        await cut.WaitForAssertionAsync(() => Assert.NotEmpty(calls));
+        Assert.Equal(50, calls[^1].MaximumCount); Assert.Equal("backup", calls[^1].Text); Assert.Equal(MonitoringSeverity.Critical, calls[^1].Severity);
+        Assert.Equal(DateTimeOffset.Parse("2026-11-06T22:00:00Z"), calls[^1].FromUtc);
+        Assert.Equal(DateTimeOffset.Parse("2026-11-07T22:00:00Z"), calls[^1].ToExclusiveUtc);
+        Assert.Contains("4 active filters", cut.Find("[data-testid=monitoring-filter-chips]").TextContent);
+        await cut.Find("[data-testid=monitoring-page-size]").ChangeAsync(new() { Value = "100" });
+        Assert.Equal(100, calls[^1].MaximumCount); Assert.Contains("pageSize=100", nav.Uri);
+        var count = calls.Count;
+        await cut.Find("[data-testid=monitoring-from]").ChangeAsync(new() { Value = "2026-11-08" });
+        Assert.Equal(count, calls.Count); Assert.Contains("From must", cut.Find("[data-testid=monitoring-filter-error]").TextContent);
+        await cut.Find("[data-testid=monitoring-clear-filters]").ClickAsync(new());
+        Assert.Equal(1, calls[^1].TenantId); Assert.Equal(100, calls[^1].MaximumCount); Assert.Null(calls[^1].Severity); Assert.Null(calls[^1].Text);
+        Assert.Empty(cut.FindAll("[data-testid=monitoring-filter-chips]")); Assert.DoesNotContain("alert=", nav.Uri);
+    }
+
+    [Fact]
+    public async Task InvalidDateOnAnotherTenantLinkClearsPriorTenantEvidenceImmediately()
+    {
+        ConfigureMixedAlertStates(); var calls = 0;
+        var original = _api.SeriesRead;
+        _api.QuerySeriesRead = (query, cursor, token) => { calls++; return original!(query.TenantId, cursor, token); };
+        var nav = Services.GetRequiredService<NavigationManager>(); nav.NavigateTo("/monitoring?tenantId=1");
+        var cut = Render<MonitoringPage>();
+        await cut.WaitForAssertionAsync(() => Assert.NotEmpty(cut.FindAll("[data-testid=monitoring-series-row]")));
+        var before = calls;
+        await cut.InvokeAsync(() => nav.NavigateTo("/monitoring?tenantId=2&from=2026-11-08&to=2026-11-07"));
+        await cut.WaitForAssertionAsync(() => Assert.Contains("From must", cut.Find("[data-testid=monitoring-filter-error]").TextContent));
+        Assert.Empty(cut.FindAll("[data-testid=monitoring-series-row]")); Assert.Equal(before, calls);
+        Assert.Equal("2", cut.Find("[data-testid=monitoring-tenant]").GetAttribute("value"));
+    }
+    [Fact]
+    public async Task DirectoryFailureAfterTenantChangeCannotDisplayPreviousTenantNames()
+    {
+        var pending = new TaskCompletionSource<MonitoringClientPageDto>();
+        _api.ClientSearch = (tenant, _, _, _) => tenant == 2 ? pending.Task : _api.GetClientsAsync(tenant);
+        var cut = Render<NetRatel.Web.Components.Shared.Monitoring.MonitoringClientFilter>(parameters => parameters.Add(component => component.TenantId, 1));
+        await cut.WaitForAssertionAsync(() => Assert.Contains("SQL Server", cut.Markup));
+        var update = cut.RenderAsync(parameters => parameters.Add(component => component.TenantId, 2));
+        await cut.WaitForAssertionAsync(() => Assert.DoesNotContain("SQL Server", cut.Markup));
+        pending.SetException(new HttpRequestException("Directory unavailable")); await update;
+        Assert.DoesNotContain("SQL Server", cut.Markup); Assert.Contains("Could not search", cut.Markup);
+    }
+
     private void ConfigureMixedAlertStates()
     {
         var draft = MonitoringRuleDraft.Create();
@@ -289,14 +363,21 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         _api.ConfigurationRead = (tenant, _) => Task.FromResult(_api.Configuration(tenant) with { Rules = [rule] });
         _api.SeriesRead = (_, _, _) => Task.FromResult(new MonitoringSeriesPageDto([state], null));
         var cut = Render<MonitoringPage>();
+        cut.WaitForAssertion(() => Assert.Single(cut.FindAll("[data-testid=monitoring-alert-details]")));
+        Assert.Empty(cut.FindAll("[data-testid=monitoring-detail-row]"));
+        cut.Find("[data-testid=monitoring-alert-details]").Click();
         cut.WaitForAssertion(() => Assert.Contains("NR-123", cut.Find("[data-testid='monitoring-incident-receipt']").TextContent));
         Assert.Equal(receipt.IncidentUrl, cut.Find("[data-testid='monitoring-incident-receipt'] a").GetAttribute("href"));
         Assert.Contains("noopener", cut.Find("[data-testid='monitoring-incident-receipt'] a").GetAttribute("rel"));
         Assert.Contains(cut.FindAll("a"), link => link.GetAttribute("href") == $"/flows?tenantId=1&run={runId:D}");
         var detailRow = cut.Find("[data-testid=monitoring-detail-row]");
-        Assert.Equal("6", detailRow.QuerySelector("td")!.GetAttribute("colspan"));
+        Assert.Equal("7", detailRow.QuerySelector("td")!.GetAttribute("colspan"));
         Assert.Equal(4, detailRow.QuerySelectorAll(".monitoring-detail-card").Length);
-        Assert.NotNull(detailRow.QuerySelector("details > summary"));
+        Assert.NotNull(detailRow.QuerySelector(".monitoring-alert-details[role=region]"));
+        var disclosure = cut.Find("[data-testid=monitoring-alert-details]");
+        Assert.Equal("true", disclosure.GetAttribute("aria-expanded"));
+        Assert.Equal(detailRow.Id, disclosure.GetAttribute("aria-controls"));
+        Assert.Equal("monitoring-alert-details", cut.Find("[data-testid=monitoring-series-row] td:first-child button").GetAttribute("data-testid"));
         Assert.Contains("monitoring-detail-button", cut.Find("[data-testid=monitoring-rateldesk-ticket]").ClassName);
         Assert.Empty(cut.Find("[data-testid=monitoring-series-row]").QuerySelectorAll(".monitoring-detail-card"));
     }
@@ -320,7 +401,9 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         _api.ConfigurationRead = (tenant, _) => Task.FromResult(_api.Configuration(tenant) with { Rules = [rule] });
         _api.SeriesRead = (_, _, _) => Task.FromResult(new MonitoringSeriesPageDto([state], null));
         var cut = Render<MonitoringPage>();
-        cut.WaitForAssertion(() => Assert.Single(cut.FindAll("[data-testid=monitoring-detail-row]")));
+        cut.WaitForAssertion(() => Assert.Single(cut.FindAll("[data-testid=monitoring-alert-details]")));
+        cut.Find("[data-testid=monitoring-alert-details]").Click();
+        Assert.Single(cut.FindAll("[data-testid=monitoring-detail-row]"));
         Assert.Empty(cut.FindAll("[data-testid=monitoring-rateldesk-ticket]"));
         Assert.Equal(receiptVisible ? 1 : 0, cut.FindAll("[data-testid=monitoring-incident-receipt]").Count);
         if (receiptVisible) Assert.Contains("no ticket link was provided", cut.Markup);

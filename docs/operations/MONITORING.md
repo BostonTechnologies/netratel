@@ -69,10 +69,52 @@ Acceptance includes TimeProvider-based evaluator tests, actual gRPC acknowledgem
 
 ## Expanded alert evidence
 
-Open **Alert details** below an alert row for a full-width view of its target and
+Open **Alert details** in the leading column of an alert row for a full-width view of its target and
 rule, observed/received evidence, automation outcome, and incident/acknowledgement.
 **Flow run and receipt** and **Published flow** open the tenant-qualified records.
 **Open RatelDesk ticket** appears only for a validated incident receipt containing
 a safe ticket URL. A missing link is shown as missing rather than reconstructed
 from an internal identifier. Flow success remains distinct from confirmed
 incident evidence; unconfirmed and absent results are labelled explicitly.
+
+## Finding alerts and paging
+
+Monitoring opens on **Firing** with **20 rows per page**. State, computer, severity,
+text and date filters combine across the full authorized result before paging;
+a healthy first page cannot hide later firing alerts. **All states** includes
+active occurrences, pending windows and current Unknown evidence. Firing lifecycle
+and current evidence quality are separate: a firing occurrence with stale evidence
+still appears under Firing. The badges are explicitly **tenant totals**.
+
+The compact **Filters** disclosure searches the tenant's computer directory by
+friendly name or hostname, including computers outside the current results page.
+Selections use stable computer IDs and retain an explicit unavailable-metadata
+fallback for deleted or inaccessible names. Search covers computer, rule and
+resource text. Active chips show the selection and **Clear filters** retains the
+authorized tenant and selected page size while clearing client, search, severity,
+dates and an unrelated selected alert.
+
+Active date bounds use the occurrence's **Raised date**, in the displayed operator
+timezone. Rows without a raised timestamp are excluded while date bounds are set.
+**To** includes the selected local calendar day; the query sends the following
+local day's start as its exclusive UTC bound, including daylight-saving changes.
+History uses **event / audit time**. A computer or severity selection excludes
+configuration/audit rows that do not have that dimension. Invalid date order is
+shown as a filter error without issuing a new query.
+
+The results body scrolls within a measured viewport. Column headings and the actual
+pager remain available on desktop and narrow screens; primary columns can scroll
+horizontally. The first-column disclosure supports keyboard activation and reports
+its expanded state. A collapsed alert creates one main row; an expanded alert adds
+one full-width grey detail surface. Paging/filtering clears expansion, refresh
+retains only the same tenant/series/occurrence identity, and a replacement occurrence
+does not inherit an old expansion. Exact occurrence links retrieve the persisted
+occurrence independently of the visible page, including closed alerts.
+
+**20, 50 and 100** are real server page sizes. **First / Previous / Next** use bounded
+opaque cursor history; there is no invented last-page or random-access total.
+Displayed ranges count alert/history items, including a short page caused by the
+response-byte budget, and do not count expanded detail rows. Tenant/query/page-size
+changes reset pagination. A failed read is an explicit error and keeps the last
+successful results labelled as such. Filter, page-size, view and timezone context
+are preserved in the URL for refresh and browser back/forward navigation.

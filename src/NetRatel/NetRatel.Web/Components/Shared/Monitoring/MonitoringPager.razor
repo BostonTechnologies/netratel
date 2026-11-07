@@ -1,0 +1,22 @@
+@using NetRatel.Web.Services.Monitoring
+<footer class="monitoring-pager" aria-label="Monitoring pagination" data-testid="monitoring-pager">
+    <label>Rows per page<select value="@Size" @onchange="Resize" disabled="@Busy" data-testid="monitoring-page-size"><option value="20">20</option><option value="50">50</option><option value="100">100</option></select></label>
+    <button type="button" class="monitoring-button" disabled="@(Busy || !History.CanFirst)" @onclick="First">First page</button>
+    <button type="button" class="monitoring-button" disabled="@(Busy || !History.CanPrevious)" @onclick="Previous" data-testid="@($"monitoring-previous-{Kind}")">Previous page</button>
+    <button type="button" class="monitoring-button" disabled="@(Busy || NextCursor is null)" @onclick="Next" data-testid="@($"monitoring-next-{Kind}")">Next page</button>
+    <span role="status" aria-live="polite">@History.Range(Count, NextCursor is not null)</span>
+</footer>
+
+@code {
+    [Parameter] public string Kind { get; set; } = "series";
+    [Parameter] public int Size { get; set; }
+    [Parameter] public int Count { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public string? NextCursor { get; set; }
+    [Parameter, EditorRequired] public MonitoringCursorHistory History { get; set; } = default!;
+    [Parameter] public EventCallback First { get; set; }
+    [Parameter] public EventCallback Previous { get; set; }
+    [Parameter] public EventCallback Next { get; set; }
+    [Parameter] public EventCallback<ChangeEventArgs> SizeChanged { get; set; }
+    private Task Resize(ChangeEventArgs args) => SizeChanged.InvokeAsync(args);
+}
