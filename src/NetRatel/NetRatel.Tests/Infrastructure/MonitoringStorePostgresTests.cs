@@ -585,7 +585,7 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
         first.Audits.Should().BeEmpty();
         var next = await rig.Store.ReadTenantEventsAsync(query, first.NextCursor, default);
         next.NextCursor.Should().BeNull();
-        first.Items.Concat(next.Items).Select(item => item.EventId).Should().BeEquivalentTo(firing.Occurrence!.RaisedEventId, pinned.EventId);
+        first.Items.Concat(next.Items).Select(item => item.EventId).Should().BeEquivalentTo(new[] { firing.Occurrence!.RaisedEventId, pinned.EventId });
         var all = await rig.Store.ReadTenantEventsAsync(new(rig.Client.TenantId), null, default);
         all.Items.Should().HaveCount(3);
         all.Audits.Should().NotBeEmpty("non-series configuration audits remain in unfiltered immutable History");
